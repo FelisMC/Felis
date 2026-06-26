@@ -22,7 +22,13 @@ npm-debug.log*
 # ---- Java / Gradle plugins (build artifacts only; build.gradle + src stay) ----
 plugins/*/build/
 plugins/*/.gradle/
+plugins/*/bin/
 .gradle/
+
+# ---- Editor / IDE ----
+.vscode/
+.idea/
+*.iml
 
 # ---- Secrets / keys (NEVER commit) ----
 *.pem
