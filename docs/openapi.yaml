@@ -1,0 +1,1700 @@
+# felis-api — OpenAPI 3.1 description of both faces (spec §7, §14, §28 #7).
+#
+# ONE binary serves TWO http.Handlers (internal / external). This document
+# describes both, distinguished per-operation by the `x-felis-face` extension
+# (an array, because `/healthz` is served by both faces) and `x-felis-tier`
+# (the Zero-Trust grade: public | service | app | admin).
+#
+# VERIFIED vs. HAND-MAINTAINED — read before trusting a field:
+#   * The {method, path} -> {x-felis-face set, x-felis-tier} mapping is
+#     machine-checked. internal/api/openapi_test.go parses this file and asserts
+#     EXACT bidirectional parity against the route tables the handlers are built
+#     from (internalAPIRoutes / externalAPIRoutes in internal/api/api.go). A route
+#     added, removed, re-faced, or re-tiered without updating this file fails
+#     `go test ./...`. So path, method, face and tier are as trustworthy as the code.
+#   * The request/response BODY schemas below are hand-maintained from the Go
+#     handler types and are NOT yet schema-validated against live traffic. Treat
+#     them as documentation (SHAPE-ASSERTED), not as a contract test.
+#
+# The deployment zone (RootDomain, spec §2) never appears here — `example.test`
+# is a placeholder, per the no-hardcoded-domain red line.
+
+openapi: 3.1.0
+
+info:
+  title: felis-api
+  version: 4.1.0
+  description: |
+    Control plane for the Felis Minecraft orchestration platform. The same binary
+    exposes an internal face (service-token auth, for velocity / backend callbacks,
+    never Zero Trust) and an external face (Cloudflare Access JWT auth, for people
+    and the panel). Admin-tier external operations additionally require the admin
+    Access path. See `x-felis-face` / `x-felis-tier` on each operation.
+
+servers:
+  - url: https://api-internal.{root_domain}
+    description: >-
+      Internal face. Service-token auth (Authorization: Bearer <service-token>);
+      reachable only from inside the cluster. Never wrapped in Zero Trust.
+    variables:
+      root_domain:
+        default: example.test
+  - url: https://api.{root_domain}
+    description: >-
+      External face. Cloudflare Access JWT auth on every /api/v1 route; admin-tier
+      routes additionally require the admin Access path.
+    variables:
+      root_domain:
+        default: example.test
+
+tags:
+  - name: health
+    description: Liveness / readiness probes (unauthenticated).
+  - name: servers-internal
+    description: Service-token server lookup and lifecycle callbacks (internal face).
+  - name: lobby
+    description: felis-paper lobby actions velocity drives on the player's behalf (internal face).
+  - name: account-internal
+    description: In-game account-link code minting (internal face).
+  - name: servers
+    description: Operate on your own servers (external face, app tier).
+  - name: console
+    description: Read (SSE) and write (RCON) server console (external face, app tier).
+  - name: backups
+    description: World backup listing and restore (external face, app tier).
+  - name: account
+    description: Web side of account linking (external face, app tier).
+  - name: admin-servers
+    description: Create / mutate server specs (external face, admin tier).
+  - name: images
+    description: Image build and whitelist administration (external face, admin tier).
+
+components:
+  securitySchemes:
+    serviceToken:
+      type: http
+      scheme: bearer
+      description: Static service token presented by velocity / backend callers (internal face).
+    accessJWT:
+      type: apiKey
+      in: header
+      name: Cf-Access-Jwt-Assertion
+      description: >-
+        Cloudflare Access JWT (external face). Admin-tier operations require the
+        token to have traversed the admin Access path; the handler additionally
+        asserts Principal.IsAdmin().
+
+  responses:
+    NoContent:
+      description: Success, no body.
+    BadRequest:
+      description: Malformed or invalid request (validation, bad body, unknown field).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Authentication missing or invalid.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Authenticated but not permitted (ownership / admin / quota).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: No such server / build / record.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: Precondition failed (lost race, not running, already claimed/linked, not stopped).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    PreconditionFailed:
+      description: A required prior step is missing (e.g. account not linked).
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ServiceUnavailable:
+      description: A required subsystem (builder / console / logs / restorer / repo / cluster) is not wired or reachable.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    AccessResult:
+      description: The structured access mutation succeeded; the raw RCON reply is in output.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [name, action, output]
+            properties:
+              name: { type: string }
+              action: { type: string }
+              player: { type: string }
+              node: { type: string }
+              group: { type: string }
+              output: { type: string }
+
+  schemas:
+    Error:
+      type: object
+      description: Uniform error envelope emitted by every handler (internal/api/errors.go).
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable code (e.g. not_found, conflict, forbidden, bad_request).
+            message:
+              type: string
+            request_id:
+              type: string
+              description: Correlates the response with server logs (withRequestID middleware).
+
+    Phase:
+      type: string
+      description: MinecraftServer lifecycle phase (internal/apis/felis/v1alpha1).
+      enum: [Unknown, Stopped, Starting, Running, Stopping, Failed]
+
+    ServerInfo:
+      type: object
+      description: Status projection of one server (internal/api/cluster.go ServerInfo).
+      required: [name, subdomain, phase, ready, playersOnline, playersMax]
+      properties:
+        name: { type: string }
+        subdomain: { type: string }
+        phase: { $ref: '#/components/schemas/Phase' }
+        ready: { type: boolean }
+        autostartPolicy:
+          type: string
+          description: Present only when set; who may wake the server via domain-autostart.
+        desiredState:
+          type: string
+          description: Present only when set; the operator's target state.
+          enum: [Running, Stopped]
+        endpointMode: { type: string }
+        endpointAddress: { type: string }
+        playersOnline: { type: integer, format: int32 }
+        playersMax: { type: integer, format: int32 }
+
+    MyServerView:
+      type: object
+      description: One row of the caller's server list (internal/api/repo.go MyServerView).
+      required: [name, subdomain, owned, claimable]
+      properties:
+        name: { type: string }
+        subdomain: { type: string }
+        owned: { type: boolean }
+        claimable: { type: boolean }
+        phase:
+          allOf: [{ $ref: '#/components/schemas/Phase' }]
+          description: Present only when known.
+
+    BackupView:
+      type: object
+      description: One world backup (internal/api/repo.go BackupView). backup_ref is withheld (spec §286).
+      required: [id, server_name, size_bytes, reason, status, created_at, expires_at]
+      properties:
+        id: { type: string }
+        server_name: { type: string }
+        former_owner:
+          type: string
+          description: Present only when the world had an owner at backup time.
+        size_bytes: { type: integer, format: int64 }
+        reason: { type: string }
+        status: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+
+    Build:
+      type: object
+      description: One image build (internal/build Build).
+      required: [id, image_ref, status, requested_by, created_at]
+      properties:
+        id: { type: string }
+        image_ref: { type: string }
+        status:
+          type: string
+          enum: [pending, building, succeeded, failed, cancelled]
+        dockerfile: { type: string }
+        context_ref: { type: string }
+        base_image: { type: string }
+        requested_by: { type: string }
+        job_name: { type: string }
+        log_ref: { type: string }
+        error: { type: string }
+        created_at: { type: string, format: date-time }
+        finished_at:
+          type: [string, 'null']
+          format: date-time
+          description: Null until the build reaches a terminal status.
+
+    Image:
+      type: object
+      description: One whitelisted image (internal/build Image).
+      required: [image_ref, source, added_by, enabled, added_at]
+      properties:
+        image_ref: { type: string }
+        source: { type: string }
+        build_id: { type: string }
+        added_by: { type: string }
+        enabled: { type: boolean }
+        added_at: { type: string, format: date-time }
+
+    Submission:
+      type: object
+      description: >-
+        One user-submitted modpack in the approval lane (internal/submit
+        Submission — a user-directed extension over the §16 build subsystem).
+        The user supplies only display_name; submitted_by
+        comes from the principal and context_ref/image_ref/build_id/reviewed_by
+        are platform-controlled, never client input.
+      required: [id, submitted_by, display_name, context_ref, status, created_at]
+      properties:
+        id: { type: string }
+        submitted_by: { type: string }
+        display_name: { type: string }
+        context_ref:
+          type: string
+          description: Platform-derived pinned build context; not user-supplied.
+        status:
+          type: string
+          enum: [pending_review, approved, rejected]
+        image_ref:
+          type: string
+          description: Platform-derived push target, set at approval.
+        build_id:
+          type: string
+          description: image_builds.id, set only after the build hand-off succeeds.
+        reviewed_by: { type: string }
+        reject_reason: { type: string }
+        created_at: { type: string, format: date-time }
+        reviewed_at:
+          type: [string, 'null']
+          format: date-time
+          description: Null until an admin approves or rejects.
+
+paths:
+  # ----------------------------------------------------------------- health ---
+  /healthz:
+    get:
+      tags: [health]
+      operationId: healthz
+      summary: Liveness probe.
+      description: Unauthenticated on both faces; kubelet and Cloudflare hold no token.
+      x-felis-face: [internal, external]
+      x-felis-tier: public
+      security: []
+      responses:
+        '200':
+          description: Always ok when the process is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, const: ok }
+
+  /readyz:
+    get:
+      tags: [health]
+      operationId: readyz
+      summary: Readiness probe (internal face only — readiness is an internal concern).
+      x-felis-face: [internal]
+      x-felis-tier: public
+      security: []
+      responses:
+        '200':
+          description: Repo and Cluster are wired.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, const: ready }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  # -------------------------------------------------- internal: servers ------
+  /api/v1/servers:
+    get:
+      tags: [servers-internal]
+      operationId: listServers
+      summary: List all servers (velocity route table).
+      x-felis-face: [internal]
+      x-felis-tier: service
+      security: [{ serviceToken: [] }]
+      responses:
+        '200':
+          description: Every server's status projection.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [servers]
+                properties:
+                  servers:
+                    type: array
+                    items: { $ref: '#/components/schemas/ServerInfo' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    post:
+      tags: [admin-servers]
+      operationId: createServer
+      summary: Create a server (admin).
+      description: Requires the admin Access path; the image must be whitelisted.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ accessJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, subdomain]
+              properties:
+                name: { type: string }
+                subdomain: { type: string }
+                display_name: { type: string }
+                image: { type: string }
+                memory: { type: string }
+                storage: { type: string }
+                autostart_policy: { type: string }
+                resources:
+                  type: object
+                  properties:
+                    cpu: { type: string }
+                    cpu_request: { type: string }
+                    memory: { type: string }
+                    memory_request: { type: string }
+      responses:
+        '201':
+          description: Created; starts Stopped.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, subdomain, desiredState]
+                properties:
+                  name: { type: string }
+                  subdomain: { type: string }
+                  desiredState: { type: string, const: Stopped }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/servers/by-host/{host}:
+    get:
+      tags: [servers-internal]
+      operationId: serverByHost
+      summary: Resolve a server by its connecting hostname (velocity host routing).
+      x-felis-face: [internal]
+      x-felis-tier: service
+      security: [{ serviceToken: [] }]
+      parameters:
+        - { name: host, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The matching server's status projection.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerInfo' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/internal/servers/{name}/ready:
+    post:
+      tags: [servers-internal]
+      operationId: serverReadyCallback
+      summary: Backend readiness callback — the server reports it is accepting players.
+      x-felis-face: [internal]
+      x-felis-tier: service
+      security: [{ serviceToken: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/internal/servers/{name}/join-event:
+    post:
+      tags: [servers-internal]
+      operationId: joinEvent
+      summary: Player-join event by online-mode UUID (activity tracking / idle reset).
+      x-felis-face: [internal]
+      x-felis-tier: service
+      security: [{ serviceToken: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mc_uuid]
+              properties:
+                mc_uuid: { type: string }
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/internal/servers/{name}/wake:
+    post:
+      tags: [servers-internal]
+      operationId: internalWake
+      summary: Domain-autostart wake driven by velocity for a joining player (spec §9.1).
+      description: >-
+        velocity holds no web Principal, so it drives the wake lever with its
+        service token, identifying the player by online-mode UUID. Gated by the
+        server's autostartPolicy and the per-server wake cooldown.
+      x-felis-face: [internal]
+      x-felis-tier: service
+      security: [{ serviceToken: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mc_uuid]
+              properties:
+                mc_uuid: { type: string }
+      responses:
+        '202':
+          description: Wake accepted (or already awake).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, desiredState, phase, ready]
+                properties:
+                  name: { type: string }
+                  desiredState: { type: string, const: Running }
+                  phase: { $ref: '#/components/schemas/Phase' }
+                  ready: { type: boolean }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          description: Wake cooldown is still active for this server.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/internal/servers/{name}/status:
+    get:
+      tags: [servers-internal]
+      operationId: internalStatus
+      summary: Server status projection (velocity polls this after a wake).
+      x-felis-face: [internal]
+      x-felis-tier: service
+      security: [{ serviceToken: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The server's status projection.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerInfo' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/internal/servers/{name}/claim:
+    post:
+      tags: [lobby]
+      operationId: internalClaim
+      summary: Lobby "Claim & Start" by online-mode UUID (spec §12).
+      description: >-
+        The felis-paper lobby holds no token, so velocity claims on its behalf,
+        binding the unowned server to the player's linked account.
+      x-felis-face: [internal]
+      x-felis-tier: service
+      security: [{ serviceToken: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mc_uuid]
+              properties:
+                mc_uuid: { type: string }
+      responses:
+        '200':
+          description: Claimed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, claimed]
+                properties:
+                  name: { type: string }
+                  claimed: { type: boolean, const: true }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+
+  /api/v1/internal/servers/{name}/menu:
+    get:
+      tags: [lobby]
+      operationId: internalMenuStatus
+      summary: Lobby menu projection — status plus the ownership-derived `claimable`.
+      x-felis-face: [internal]
+      x-felis-tier: service
+      security: [{ serviceToken: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: mc_uuid, in: query, required: false, schema: { type: string } }
+      responses:
+        '200':
+          description: Menu projection for the lobby UI.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, phase, ready, playersOnline, playersMax, claimable]
+                properties:
+                  name: { type: string }
+                  phase: { $ref: '#/components/schemas/Phase' }
+                  ready: { type: boolean }
+                  playersOnline: { type: integer, format: int32 }
+                  playersMax: { type: integer, format: int32 }
+                  claimable: { type: boolean }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/internal/account/link/code:
+    post:
+      tags: [account-internal]
+      operationId: createLinkCode
+      summary: Mint a one-time account-link code for a verified online-mode UUID (spec §10).
+      description: Internal-only — the code is born from a UUID the web never holds.
+      x-felis-face: [internal]
+      x-felis-tier: service
+      security: [{ serviceToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mc_uuid]
+              properties:
+                mc_uuid: { type: string }
+      responses:
+        '201':
+          description: Code minted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, expires_at]
+                properties:
+                  code: { type: string }
+                  expires_at: { type: string, format: date-time }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  # ----------------------------------------------------- external: servers ---
+  /api/v1/servers/{name}/wake:
+    post:
+      tags: [servers]
+      operationId: wake
+      summary: Wake your own server.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '202':
+          description: Wake accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, desiredState]
+                properties:
+                  name: { type: string }
+                  desiredState: { type: string, const: Running }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          description: Wake cooldown is still active.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/servers/{name}/stop:
+    post:
+      tags: [servers]
+      operationId: stop
+      summary: Stop your own server.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '202':
+          description: Stop accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, desiredState]
+                properties:
+                  name: { type: string }
+                  desiredState: { type: string, const: Stopped }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/servers/{name}/claim:
+    post:
+      tags: [servers]
+      operationId: claim
+      summary: Claim an unowned server for your linked account.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Claimed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, claimed]
+                properties:
+                  name: { type: string }
+                  claimed: { type: boolean, const: true }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Quota exceeded.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Already claimed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '412':
+          description: Account not linked (the pointer /account/link/start emits).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/servers/{name}/command:
+    post:
+      tags: [console]
+      operationId: command
+      summary: Run a console command via RCON (spec §8 write). Owner/admin only.
+      description: The RCON password is never accepted or returned (spec §286).
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [command]
+              properties:
+                command: { type: string }
+      responses:
+        '200':
+          description: Command output.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, output]
+                properties:
+                  name: { type: string }
+                  output: { type: string }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Server not running.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/servers/{name}/console:
+    get:
+      tags: [console]
+      operationId: serverConsole
+      summary: Stream the running pod's log over SSE (spec §8 read, §262). Owner/admin only.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: An event stream of log lines.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Server not running.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/servers/{name}/access/whitelist:
+    get:
+      tags: [access]
+      operationId: accessWhitelistList
+      summary: List whitelisted players via RCON (spec §7). Owner/admin only.
+      description: >-
+        Runs "whitelist list" against the live server and returns a best-effort
+        parse plus the raw reply. The RCON password is never accepted or returned
+        (spec §286).
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Whitelisted players.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, players, output]
+                properties:
+                  name: { type: string }
+                  players: { type: array, items: { type: string } }
+                  output: { type: string }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Server not running.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      tags: [access]
+      operationId: accessWhitelist
+      summary: Add or remove a player from the whitelist (spec §7). Owner/admin only.
+      description: >-
+        Translates to the RCON "whitelist add|remove <player>" command. The
+        player name is validated against the Minecraft username charset before it
+        is built into a command. The RCON password is never accepted or returned
+        (spec §286).
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, player]
+              properties:
+                action: { type: string, enum: [add, remove] }
+                player: { type: string }
+      responses:
+        '200':
+          $ref: '#/components/responses/AccessResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Server not running.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/servers/{name}/access/ban:
+    post:
+      tags: [access]
+      operationId: accessBan
+      summary: Ban or pardon a player (spec §7). Owner/admin only.
+      description: >-
+        Translates to the RCON "ban|pardon <player>" command. Carries no reason
+        field (a free-text reason would be an injection vector; the audit log
+        records intent). The RCON password is never accepted or returned (§286).
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, player]
+              properties:
+                action: { type: string, enum: [ban, pardon] }
+                player: { type: string }
+      responses:
+        '200':
+          $ref: '#/components/responses/AccessResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Server not running.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/servers/{name}/access/permission:
+    post:
+      tags: [access]
+      operationId: accessPermission
+      summary: Set or unset a LuckPerms permission node (spec §7). Owner/admin only.
+      description: >-
+        Translates to "lp user <player> permission set <node> <true|false>
+        [world=<world>]" (or unset). An omitted value defaults to true (grant),
+        not false (deny). Player, node and world are charset-validated before the
+        command is assembled. The RCON password is never accepted or returned
+        (spec §286).
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, player, node]
+              properties:
+                action: { type: string, enum: [set, unset] }
+                player: { type: string }
+                node: { type: string }
+                value: { type: boolean, description: "set only; omitted => true (grant)" }
+                world: { type: string, description: "optional LuckPerms world context" }
+      responses:
+        '200':
+          $ref: '#/components/responses/AccessResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Server not running.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/servers/{name}/access/group:
+    post:
+      tags: [access]
+      operationId: accessGroup
+      summary: Add or remove a player's LuckPerms parent group (spec §7). Owner/admin only.
+      description: >-
+        Translates to "lp user <player> parent add|remove <group>". Player and
+        group are charset-validated before the command is assembled. The RCON
+        password is never accepted or returned (spec §286).
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action, player, group]
+              properties:
+                action: { type: string, enum: [add, remove] }
+                player: { type: string }
+                group: { type: string }
+      responses:
+        '200':
+          $ref: '#/components/responses/AccessResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Server not running.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/servers/{name}/status:
+    get:
+      tags: [servers]
+      operationId: status
+      summary: Status of your own server.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The server's status projection.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ServerInfo' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/me:
+    get:
+      tags: [servers]
+      operationId: me
+      summary: The caller's own identity and tier (drives panel navigation).
+      description: >-
+        Returns the authenticated principal's user id, email, role and the
+        server-computed is_admin (Principal.IsAdmin(): role admin reached via the
+        admin Access path). The panel reads this once at boot to decide which
+        surfaces to render. It is UX truth, not a security control — admin routes
+        are independently gated server-side, so a hidden nav item never widens
+        access.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      responses:
+        '200':
+          description: The caller's identity.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user_id, email, role, is_admin]
+                properties:
+                  user_id: { type: string }
+                  email: { type: string, format: email }
+                  role:
+                    type: string
+                    enum: [user, admin]
+                    description: The principal's role, mirroring users.role.
+                  is_admin:
+                    type: boolean
+                    description: >-
+                      True only when role is admin AND the request arrived via the
+                      admin Access path (Principal.IsAdmin()).
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/me/servers:
+    get:
+      tags: [servers]
+      operationId: myServers
+      summary: List the servers the caller owns or may claim.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      responses:
+        '200':
+          description: The caller's server list.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [servers]
+                properties:
+                  servers:
+                    type: array
+                    items: { $ref: '#/components/schemas/MyServerView' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/fleet:
+    get:
+      tags: [admin-servers]
+      operationId: fleet
+      summary: The SysAdmin cockpit's fleet-wide server list (admin; cockpit extension, not a spec §7 route).
+      description: >-
+        Every MinecraftServer's CRD+status lifecycle view, for the SysAdmin
+        FleetTable. Admin-tier — it reads every owner's server. A path distinct
+        from the internal velocity GET /api/v1/servers because one {method, path}
+        cannot carry both the service and admin tiers. CRD truth only: owner and
+        the other Postgres business fields are deliberately not joined (§1).
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ accessJWT: [] }]
+      responses:
+        '200':
+          description: Every server's status projection (fleet-wide).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [servers]
+                properties:
+                  servers:
+                    type: array
+                    items: { $ref: '#/components/schemas/ServerInfo' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/backups:
+    get:
+      tags: [backups]
+      operationId: listBackups
+      summary: List world backups (admin sees all; a user sees only worlds they formerly owned).
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      responses:
+        '200':
+          description: Visible backups.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [backups]
+                properties:
+                  backups:
+                    type: array
+                    items: { $ref: '#/components/schemas/BackupView' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/servers/{name}/restore-backup:
+    post:
+      tags: [backups]
+      operationId: restoreBackup
+      summary: Restore a world from a backup (owner-or-admin plus a former-owner match).
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                backup_id:
+                  type: string
+                  description: Which backup to restore; defaults to the latest for the server.
+      responses:
+        '202':
+          description: Restore started.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, status, backup_id]
+                properties:
+                  name: { type: string }
+                  status: { type: string, const: restoring }
+                  backup_id: { type: string }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No matching backup.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Server is not stopped.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/account/link/start:
+    post:
+      tags: [account]
+      operationId: linkStart
+      summary: Report account-link status and in-game instructions (web side, spec §10).
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      responses:
+        '200':
+          description: Current link status.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [linked, instructions]
+                properties:
+                  linked: { type: boolean }
+                  instructions: { type: string }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/account/link/verify:
+    post:
+      tags: [account]
+      operationId: linkVerify
+      summary: Consume an in-game link code and bind the account.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        '200':
+          description: Linked.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [linked, mc_uuid]
+                properties:
+                  linked: { type: boolean, const: true }
+                  mc_uuid: { type: string }
+        '400':
+          description: Invalid or expired code.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Account already linked.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/me/submissions:
+    post:
+      tags: [submissions]
+      operationId: createSubmission
+      summary: Submit a modpack for admin review (user side; user-directed lane over §16). Starts no build.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [display_name]
+              description: >-
+                Only display_name is accepted; the submitter is taken from the
+                principal and the build inputs are platform-derived. Unknown
+                fields (e.g. submitted_by, context_ref) are rejected with 400.
+              properties:
+                display_name: { type: string }
+      responses:
+        '201':
+          description: Submission recorded, pending review.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Submission' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    get:
+      tags: [submissions]
+      operationId: mySubmissions
+      summary: List the caller's own modpack submissions (user-directed lane over §16).
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      responses:
+        '200':
+          description: The caller's submissions, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [submissions]
+                properties:
+                  submissions:
+                    type: array
+                    items: { $ref: '#/components/schemas/Submission' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  # ------------------------------------------------------ external: admin ----
+  /api/v1/servers/{name}:
+    patch:
+      tags: [admin-servers]
+      operationId: patchServer
+      summary: Mutate a server spec (admin). Storage is immutable.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Only the supplied fields are patched; an empty patch is rejected.
+              properties:
+                display_name: { type: string }
+                autostart_policy: { type: string }
+                image: { type: string }
+                memory: { type: string }
+                storage:
+                  type: string
+                  description: Rejected with 400 storage_immutable — present for a clear error, not mutation.
+                resources:
+                  type: object
+                  properties:
+                    cpu: { type: string }
+                    cpu_request: { type: string }
+                    memory: { type: string }
+                    memory_request: { type: string }
+      responses:
+        '200':
+          description: Patched.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, patched]
+                properties:
+                  name: { type: string }
+                  patched:
+                    type: array
+                    items: { type: string }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/images/build:
+    post:
+      tags: [images]
+      operationId: buildImage
+      summary: Submit an image build (admin). A build is build-time RCE against the cluster.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ accessJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [image_ref, dockerfile, context_ref]
+              properties:
+                image_ref: { type: string }
+                dockerfile: { type: string }
+                context_ref: { type: string }
+                base_image: { type: string }
+      responses:
+        '202':
+          description: Build accepted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Build' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/images/build/{id}:
+    get:
+      tags: [images]
+      operationId: getBuild
+      summary: Get one build's status (admin).
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The build.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Build' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/images/build/{id}/logs:
+    get:
+      tags: [images]
+      operationId: buildLogs
+      summary: Stream a build's Job log over SSE (admin, spec §16 / §416).
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: An event stream of build log lines.
+          content:
+            text/event-stream:
+              schema: { type: string }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/images/build/{id}/cancel:
+    post:
+      tags: [images]
+      operationId: cancelBuild
+      summary: Cancel a running build (admin).
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The build after cancellation.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Build' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Build already terminal.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/images:
+    get:
+      tags: [images]
+      operationId: listImages
+      summary: List whitelisted images (admin).
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ accessJWT: [] }]
+      responses:
+        '200':
+          description: The image whitelist.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [images]
+                properties:
+                  images:
+                    type: array
+                    items: { $ref: '#/components/schemas/Image' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      tags: [images]
+      operationId: addImage
+      summary: Whitelist an externally-built image by reference (admin).
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ accessJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [image_ref]
+              properties:
+                image_ref: { type: string }
+      responses:
+        '201':
+          description: Image whitelisted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Image' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    delete:
+      tags: [images]
+      operationId: removeImage
+      summary: Remove an image from the whitelist by reference (admin).
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: ref, in: query, required: true, schema: { type: string } }
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/submissions:
+    get:
+      tags: [submissions]
+      operationId: listSubmissions
+      summary: The admin review queue — every user's modpack submissions (admin; user-directed lane over §16).
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ accessJWT: [] }]
+      responses:
+        '200':
+          description: All submissions, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [submissions]
+                properties:
+                  submissions:
+                    type: array
+                    items: { $ref: '#/components/schemas/Submission' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/submissions/{id}/approve:
+    post:
+      tags: [submissions]
+      operationId: approveSubmission
+      summary: >-
+        Approve a submission and start its Trivy-gated build (admin; user-directed lane over §16).
+        Approval is layered in front of the scan, never instead of it.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The approved submission, with the linked build id.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Submission' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Submission has already been reviewed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/submissions/{id}/reject:
+    post:
+      tags: [submissions]
+      operationId: rejectSubmission
+      summary: Reject a submission with a required reason (admin; user-directed lane over §16). Starts no build.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string }
+      responses:
+        '200':
+          description: The rejected submission.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Submission' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Submission has already been reviewed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
