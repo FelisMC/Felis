@@ -1,0 +1,19 @@
+# Keep the felis image build context tiny: the binary is pure Go (only
+# internal/store/migrations/*.sql is embedded), so none of the web/plugin/doc
+# assets are needed and shipping them would bloat the context and slow `docker
+# build` on a small host.
+.git
+.claude
+node_modules
+panel
+plugins
+docs
+*.md
+deploy
+Dockerfile
+.dockerignore
+.gitignore
+*.pem
+*.key
+felis
+felis.exe
