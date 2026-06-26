@@ -1,0 +1,42 @@
+# ---- Go ----
+*.out
+*.test
+*.prof
+coverage.txt
+# Compiled felis binary (built from ./cmd/felis; note: internal/build is SOURCE,
+# never an artifact — so no bare `build/` rule here).
+/felis
+/felis.exe
+/cmd/felis/felis
+/cmd/felis/felis.exe
+
+# ---- Node / web panel ----
+node_modules/
+panel/dist/
+*.tsbuildinfo
+.env
+.env.local
+.env.*.local
+npm-debug.log*
+
+# ---- Java / Gradle plugins (build artifacts only; build.gradle + src stay) ----
+plugins/*/build/
+plugins/*/.gradle/
+.gradle/
+
+# ---- Secrets / keys (NEVER commit) ----
+*.pem
+*.key
+*.p12
+*.pfx
+*.kubeconfig
+
+# ---- Local agent / loop state ----
+.claude/
+
+# ---- Internal planning & design docs (excluded from the public remote per
+# maintainer; the machine-readable contract docs/openapi.yaml is intentionally
+# NOT ignored. Delete the lines below to publish these.) ----
+docs/Felis-Spec-V4.1.md
+panel/DESIGN.md
+panel/DESIGN-WEB-3SIDES.md
