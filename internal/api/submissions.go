@@ -1,0 +1,187 @@
+package api
+
+import (
+	"context"
+	"errors"
+	"net/http"
+
+	"felis.lolicon.best/internal/submit"
+)
+
+// SubmissionService is the user-modpack approval lane the API depends on (a
+// user-directed extension over the §16 build subsystem — see the internal/submit
+// package doc for its provenance). It is an interface so the submission handlers
+// are unit-tested against a fake; the production implementation is
+// *submit.Manager. The split mirrors
+// ImageBuilder: an admin builds an image directly (POST /images/build), whereas
+// an ordinary user may only SUBMIT a modpack here and an admin must approve it
+// before anything is built. The approval routes are admin-tier (adminOnly runs
+// before the handler); the /me/submissions routes are app-tier and scope to the
+// authenticated principal.
+//
+// The identity that matters is never taken from the body: Create stamps
+// SubmittedBy from the principal and the handler ignores any submitted_by a
+// client tries to send (decodeJSON rejects it as an unknown field), and Approve/
+// Reject record the reviewer from the admin principal's email.
+type SubmissionService interface {
+	// Create records a pending_review submission. It starts NO build (the whole
+	// point of the lane — nothing is built until an admin approves).
+	Create(ctx context.Context, req submit.CreateRequest) (*submit.Submission, error)
+	// ListBy returns one user's submissions, newest first (the "my uploads" view).
+	ListBy(ctx context.Context, submittedBy string) ([]submit.Submission, error)
+	// List returns every submission, newest first (the admin review queue).
+	List(ctx context.Context) ([]submit.Submission, error)
+	// Approve is the admin gate: it claims pending_review -> approved (CAS) and the
+	// winner starts the SAME Trivy-gated build as an admin's direct build.
+	Approve(ctx context.Context, id, reviewedBy string) (*submit.Submission, error)
+	// Reject is the admin's other verdict: pending_review -> rejected with a
+	// required reason; it starts no build.
+	Reject(ctx context.Context, id, reviewedBy, reason string) (*submit.Submission, error)
+}
+
+// createSubmissionRequest is the POST /me/submissions body. The user
+// supplies ONLY a human-friendly label; identity comes from the Access principal
+// and the build inputs (image/context refs) are platform-derived, never from the
+// body. decodeJSON rejects unknown fields, so a client cannot smuggle a
+// submitted_by or a context_ref through this endpoint.
+type createSubmissionRequest struct {
+	DisplayName string `json:"display_name"`
+}
+
+// rejectSubmissionRequest is the POST /submissions/{id}/reject body. A reason is
+// required (the submit layer rejects an empty one with 400).
+type rejectSubmissionRequest struct {
+	Reason string `json:"reason"`
+}
+
+// handleCreateSubmission records a new pending_review submission (app-tier). The
+// submitter is the authenticated principal's id — never the body — so a user can
+// only ever file an upload under their own identity.
+func (a *API) handleCreateSubmission(w http.ResponseWriter, r *http.Request) {
+	if a.Submissions == nil {
+		writeError(w, r, errSubmissionsUnavailable)
+		return
+	}
+	p := principalFromContext(r.Context())
+	var body createSubmissionRequest
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	sub, err := a.Submissions.Create(r.Context(), submit.CreateRequest{
+		DisplayName: body.DisplayName,
+		SubmittedBy: p.UserID,
+	})
+	if err != nil {
+		writeSubmitError(w, r, err)
+		return
+	}
+	a.audit(r, p.Email, "submission.create", sub.ID)
+	writeJSON(w, http.StatusCreated, sub)
+}
+
+// handleMySubmissions lists the caller's own submissions (app-tier). It scopes
+// strictly to the principal's id; there is no parameter that could widen the
+// query to another user's uploads.
+func (a *API) handleMySubmissions(w http.ResponseWriter, r *http.Request) {
+	if a.Submissions == nil {
+		writeError(w, r, errSubmissionsUnavailable)
+		return
+	}
+	p := principalFromContext(r.Context())
+	subs, err := a.Submissions.ListBy(r.Context(), p.UserID)
+	if err != nil {
+		writeSubmitError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"submissions": subs})
+}
+
+// handleListSubmissions is the admin review queue: every submission across all
+// users, newest first (admin-tier — it reads other users' uploads, so it gates
+// on the admin Zero-Trust path via adminOnly).
+func (a *API) handleListSubmissions(w http.ResponseWriter, r *http.Request) {
+	if a.Submissions == nil {
+		writeError(w, r, errSubmissionsUnavailable)
+		return
+	}
+	subs, err := a.Submissions.List(r.Context())
+	if err != nil {
+		writeSubmitError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"submissions": subs})
+}
+
+// handleApproveSubmission is the admin approve gate (admin-tier). The reviewer is
+// the admin principal's email; the build inputs are derived inside the submit
+// layer, so this handler forwards no client-controlled build parameter.
+func (a *API) handleApproveSubmission(w http.ResponseWriter, r *http.Request) {
+	if a.Submissions == nil {
+		writeError(w, r, errSubmissionsUnavailable)
+		return
+	}
+	p := principalFromContext(r.Context())
+	id := r.PathValue("id")
+	sub, err := a.Submissions.Approve(r.Context(), id, p.Email)
+	if err != nil {
+		writeSubmitError(w, r, err)
+		return
+	}
+	a.audit(r, p.Email, "submission.approve", sub.ID)
+	writeJSON(w, http.StatusOK, sub)
+}
+
+// handleRejectSubmission records an admin rejection with a required reason
+// (admin-tier). It starts no build.
+func (a *API) handleRejectSubmission(w http.ResponseWriter, r *http.Request) {
+	if a.Submissions == nil {
+		writeError(w, r, errSubmissionsUnavailable)
+		return
+	}
+	p := principalFromContext(r.Context())
+	id := r.PathValue("id")
+	var body rejectSubmissionRequest
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	sub, err := a.Submissions.Reject(r.Context(), id, p.Email, body.Reason)
+	if err != nil {
+		writeSubmitError(w, r, err)
+		return
+	}
+	a.audit(r, p.Email, "submission.reject", sub.ID)
+	writeJSON(w, http.StatusOK, sub)
+}
+
+// errSubmissionsUnavailable is returned when the approval lane is not configured
+// on this api instance (a nil Submissions service), so the admin/app boundary is
+// still exercised before the subsystem is wired in.
+var errSubmissionsUnavailable = newError(http.StatusServiceUnavailable, "submissions_unavailable",
+	"modpack submission subsystem is not configured")
+
+// writeSubmitError maps submit-package errors onto HTTP status codes. Only the
+// three business sentinels are client-facing: a validation failure is 400, a
+// missing submission is 404, an already-reviewed submission is 409. Everything
+// else — including a build.ErrInvalid raised by the pre-CAS build.Validate (a
+// platform registry/context MISCONFIGURATION, never client input, since every
+// build input is platform-derived) and a post-CAS Submit hand-off failure — is a
+// server-side fault that collapses to 500 via writeError. The lane deliberately
+// does not surface those as 4xx: the client did nothing wrong.
+func writeSubmitError(w http.ResponseWriter, r *http.Request, err error) {
+	switch {
+	case errors.Is(err, submit.ErrInvalid):
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "%s", err.Error()))
+	case errors.Is(err, submit.ErrNotFound):
+		writeError(w, r, newError(http.StatusNotFound, "not_found", "submission not found"))
+	case errors.Is(err, submit.ErrAlreadyReviewed):
+		writeError(w, r, newError(http.StatusConflict, "already_reviewed",
+			"submission has already been reviewed"))
+	default:
+		writeError(w, r, err)
+	}
+}
+
+// Compile-time proof that the production Manager satisfies the API interface.
+var _ SubmissionService = (*submit.Manager)(nil)
