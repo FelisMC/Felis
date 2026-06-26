@@ -4,6 +4,7 @@ import type {
   Identity,
   LinkResult,
   LinkStatus,
+  LoginResult,
   ServerInfo,
   WhitelistImage,
 } from "./types";
@@ -46,6 +47,29 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export const api = {
+  // Local-password auth (spec §B1). login sets an HttpOnly session cookie as a
+  // side effect — the panel never sees it — and returns only what to route on next
+  // (must_change_password forces the change card before any other surface). The
+  // username/password pair is the ONLY local credential; Passkey/PWA are Phase
+  // B2/C. login may 403 `local_auth_disabled` on a Zero-Trust-only deployment.
+  login: (username: string, password: string) =>
+    request<LoginResult>("POST", "/auth/login", { username, password }),
+
+  // logout is idempotent server-side (clears the session row + cookie); calling it
+  // without a session still resolves 200. After it, refreshing /me yields 401, which
+  // the tier model reads as `unauthenticated` and routes back to /login.
+  logout: () => request<{ ok: boolean }>("POST", "/auth/logout"),
+
+  // changePassword is callable during the first-login lockdown (the route is
+  // AllowDuringPasswordChange): the server re-verifies current_password, rejects an
+  // unchanged or weak (8–72 byte) new password, writes the new hash, and revokes
+  // every OTHER session. The caller's own session is kept, so no re-login is needed.
+  changePassword: (current_password: string, new_password: string) =>
+    request<{ ok: boolean }>("POST", "/auth/change-password", {
+      current_password,
+      new_password,
+    }),
+
   // Identity (spec §7 GET /me) — the tier keystone. is_admin is server-computed
   // (Principal.IsAdmin); the panel reads it but re-deriving admin-ness is the
   // backend's job. Drives nav + route guards only; every admin route 403s on its
@@ -103,6 +127,15 @@ export function consoleStreamURL(apiBase: string, name: string): string {
 export function humanizeError(e: unknown): string {
   const err = e as Partial<ApiError>;
   switch (err.code) {
+    // Local-password auth (spec §B1).
+    case "local_auth_disabled":
+      return "Password sign-in is turned off here — reach this console through your organization's secure access.";
+    case "invalid_credentials":
+      return "Incorrect username or password.";
+    case "weak_password":
+      return "Pick a password between 8 and 72 characters.";
+    case "password_unchanged":
+      return "Your new password must differ from the current one.";
     case "not_linked":
       return "Link your Minecraft account before claiming (Account → Link).";
     case "invalid_code":

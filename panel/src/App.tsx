@@ -2,6 +2,9 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { TierProvider } from "@/lib/tier";
 import { AppShell } from "@/components/AppShell";
 import { RequireAdmin } from "@/components/RequireAdmin";
+import { RequireAuth } from "@/components/RequireAuth";
+import { Login } from "@/pages/Login";
+import { ChangePassword } from "@/pages/ChangePassword";
 import { Dashboard } from "@/pages/Dashboard";
 import { MyServers } from "@/pages/MyServers";
 import { ServerConsole } from "@/pages/ServerConsole";
@@ -23,27 +26,38 @@ export default function App() {
     <TierProvider>
       <BrowserRouter>
         <Routes>
-          <Route element={<AppShell />}>
-            {/* User-Side — app-tier */}
-            <Route index element={<Dashboard />} />
-            <Route path="servers" element={<MyServers />} />
-            <Route path="servers/:name" element={<ServerConsole />} />
-            <Route path="account" element={<Account />} />
+          {/* Pre-app local-password surfaces (spec §B1). They sit OUTSIDE
+              RequireAuth — RequireAuth redirects here — and outside AppShell, so
+              they render their own centered chrome with no nav/tier dependency. */}
+          <Route path="/login" element={<Login />} />
+          <Route path="/change-password" element={<ChangePassword />} />
 
-            {/* Admin-Side — admin-tier (server & content ops) */}
-            <Route path="admin" element={<RequireAdmin />}>
-              <Route index element={<AdminHome />} />
-              <Route path="servers" element={<ServerAdmin />} />
-              <Route path="images" element={<ImageAdmin />} />
+          {/* Everything else requires a session. RequireAuth gates the whole app:
+              no/expired session → /login, forced first-login change →
+              /change-password, transient /me failure → still renders (graded ZT). */}
+          <Route element={<RequireAuth />}>
+            <Route element={<AppShell />}>
+              {/* User-Side — app-tier */}
+              <Route index element={<Dashboard />} />
+              <Route path="servers" element={<MyServers />} />
+              <Route path="servers/:name" element={<ServerConsole />} />
+              <Route path="account" element={<Account />} />
+
+              {/* Admin-Side — admin-tier (server & content ops) */}
+              <Route path="admin" element={<RequireAdmin />}>
+                <Route index element={<AdminHome />} />
+                <Route path="servers" element={<ServerAdmin />} />
+                <Route path="images" element={<ImageAdmin />} />
+              </Route>
+
+              {/* SysAdmin-Side — admin-tier (platform observability) */}
+              <Route path="ops" element={<RequireAdmin />}>
+                <Route index element={<OpsOverview />} />
+                <Route path="fleet" element={<FleetTable />} />
+              </Route>
+
+              <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
-
-            {/* SysAdmin-Side — admin-tier (platform observability) */}
-            <Route path="ops" element={<RequireAdmin />}>
-              <Route index element={<OpsOverview />} />
-              <Route path="fleet" element={<FleetTable />} />
-            </Route>
-
-            <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>
       </BrowserRouter>

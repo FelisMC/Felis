@@ -97,4 +97,19 @@ export interface Identity {
   email: string;
   role: "user" | "admin";
   is_admin: boolean;
+  /** Local-password path only: the account owes a forced first-login password
+   *  change. The JWT/Access path always leaves it false. Like `is_admin` it crosses
+   *  the untyped fetch().json() boundary, so consumers MUST compare `=== true` — an
+   *  absent field is `undefined` (correctly "no change owed"), never a thrown access. */
+  must_change_password: boolean;
+}
+
+/** LoginResult mirrors POST /api/v1/auth/login (handlers_auth.go handleLogin). The
+ *  session cookie is set as a side effect (HttpOnly, so the panel never sees it);
+ *  the body carries only what the panel routes on next — chiefly whether to force the
+ *  change-password card before any other surface. */
+export interface LoginResult {
+  user_id: string;
+  role: "user" | "admin";
+  must_change_password: boolean;
 }

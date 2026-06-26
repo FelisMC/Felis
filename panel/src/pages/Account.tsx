@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { CheckCircle2, Link2, ShieldCheck } from "lucide-react";
+import { CheckCircle2, Link2, LogOut, ShieldCheck } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Loading, ErrorState } from "@/components/States";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
+import { useTier } from "@/lib/tier";
 
 // The Account page is the web half of the §10 link flow. A code is born in-game
 // (online-mode auth proves the UUID) and consumed here (the session proves the
@@ -16,6 +17,24 @@ import { useAsync } from "@/lib/hooks";
 
 export function Account() {
   const status = useAsync(() => api.linkStatus(), []);
+  const { refresh } = useTier();
+
+  // Sign-out ends a local-password session: clear it server-side, then refresh /me.
+  // For a local session that read now 401s → the tier model flips to
+  // `unauthenticated` and RequireAuth bounces this page to /login, so no explicit
+  // navigation is needed. (On a Zero-Trust proxied session there is no local cookie
+  // to drop and /me still succeeds — sign-out is a no-op, which is the honest
+  // outcome: you cannot sign out of your org's access proxy from here.)
+  const [signingOut, setSigningOut] = useState(false);
+  async function signOut() {
+    if (signingOut) return;
+    setSigningOut(true);
+    try {
+      await api.logout();
+    } finally {
+      await refresh();
+    }
+  }
 
   // Verify is a mutation, not a read, so it is hand-rolled (the useAsync producer
   // is for the status read). On success we flip linked locally and keep the echoed
@@ -60,10 +79,21 @@ export function Account() {
             <ShieldCheck className="h-4 w-4 text-primary" /> Session
           </CardTitle>
         </CardHeader>
-        <CardContent className="text-sm text-muted-foreground">
-          You reached this panel through the platform's identity proxy (Zero-Trust /
-          Access). The panel itself holds no credentials — every request rides your
-          existing session cookie (spec §7/§8).
+        <CardContent className="space-y-4 text-sm text-muted-foreground">
+          <p>
+            The panel itself holds no credentials — every request rides your existing
+            session cookie, whether issued by local password sign-in or the platform's
+            identity proxy (Zero-Trust / Access) (spec §7/§8).
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={signOut}
+            disabled={signingOut}
+          >
+            <LogOut className="mr-2 h-4 w-4" />
+            {signingOut ? "Signing out…" : "Sign out"}
+          </Button>
         </CardContent>
       </Card>
 
