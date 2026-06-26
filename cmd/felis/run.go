@@ -18,6 +18,7 @@ Commands:
   restore           Extract a world archive into a world volume (internal Job entrypoint)
   manifests         Render the control-plane RBAC + NetworkPolicy install bundle as YAML
   apply             Apply a MinecraftServer manifest
+  breakGlass        Open the local break-glass emergency console (TUI; requires root/sudo)
 
 Run "felis <command> -h" for command-specific flags.
 `
@@ -45,6 +46,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdManifests(rest, stdout, stderr)
 	case "apply":
 		return notImplemented("apply", "MinecraftServer manifest apply", stderr)
+	case "breakGlass":
+		return cmdBreakGlass(rest, stdout, stderr)
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0
