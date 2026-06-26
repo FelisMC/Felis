@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Local env overrides
+.env.local
+.env.*.local
+
+# Logs
+npm-debug.log*
