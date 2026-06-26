@@ -1,0 +1,56 @@
+plugins {
+    id 'java'
+}
+
+group = 'best.lolicon.felis'
+version = '0.1.0'
+
+// Paper 1.21 runs on Java 21, and its API is published as a Java-21 artifact, so
+// this one module needs a Java-21 toolchain (the rest of the suite is 17). The
+// toolchain block makes that requirement explicit and self-enforcing: Gradle uses a
+// detected JDK 21 to compile, regardless of which JDK runs Gradle, and fails loudly
+// if none is present. The shared codec is plain Java-17 source, which 21 compiles
+// forward-compatibly.
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+    maven {
+        name = 'papermc'
+        url = 'https://repo.papermc.io/repository/maven-public/'
+    }
+}
+
+dependencies {
+    // paper-api is compile-only (the server provides it at runtime). It pulls in
+    // Bukkit + Adventure, which is all the lobby face needs.
+    compileOnly 'io.papermc.paper:paper-api:1.21.4-R0.1-SNAPSHOT'
+}
+
+// The lobby is a PURE UI face (spec §12): it speaks only the felis:control
+// plugin-message channel and never holds a felis-api token or talks to felis-api
+// directly. We enforce that physically here — the shared source root is on the
+// path, but the include filter ships ONLY the paper package and the three codec
+// files (Control + ControlFrame + Json). FelisApiClient, LinkClient and the token
+// config are not compiled in at all, so the lobby cannot reach the API even by
+// mistake. If a codec class grows a new dependency, compilation fails loudly here
+// rather than silently widening the lobby's reach.
+sourceSets {
+    main {
+        java {
+            srcDir '../shared/src/main/java'
+            include 'best/lolicon/felis/paper/**'
+            include 'best/lolicon/felis/link/Control.java'
+            include 'best/lolicon/felis/link/ControlFrame.java'
+            include 'best/lolicon/felis/link/Json.java'
+        }
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}

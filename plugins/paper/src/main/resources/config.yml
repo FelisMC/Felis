@@ -1,0 +1,16 @@
+# felis-paper — the lobby UI face (spec §12).
+#
+# This plugin is a PURE UI face: it speaks only the felis:control plugin-message
+# channel to the Velocity proxy. It holds no felis-api token and never contacts
+# felis-api directly. The list below is only which server tiles to show in the
+# /menu GUI; the proxy (and felis-api behind it) stay the source of truth for
+# status, ownership and autostart — every tile is filled in by a live StatusQuery
+# over felis:control when the menu opens, and acting on a tile sends a Wake or
+# Claim frame that the proxy authorizes against the player's verified identity.
+#
+# Replace the examples below with the names of your felis servers (the CRD
+# metadata.name / the server's felis name, not its display title). Up to 54 are
+# shown. An empty list makes /menu say there is nothing to show.
+servers:
+  - smp
+  - creative

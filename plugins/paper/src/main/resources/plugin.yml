@@ -1,0 +1,13 @@
+name: FelisPaper
+version: 0.1.0
+main: best.lolicon.felis.paper.FelisPaperPlugin
+api-version: '1.21'
+authors: [Felis]
+description: Lobby UI face — /menu and /server open a chest GUI that drives the felis:control channel.
+commands:
+  menu:
+    description: Open the Felis server menu.
+    usage: /menu
+  server:
+    description: Open the Felis server menu (alias of /menu).
+    usage: /server

@@ -1,0 +1,25 @@
+modLoader = "javafml"
+loaderVersion = "[47,)"
+license = "MIT"
+issueTrackerURL = "https://example.invalid/felis"
+
+[[mods]]
+modId = "felis_link"
+version = "0.1.0"
+displayName = "Felis Link"
+description = "In-game /link command: mints a one-time account-link code from felis-api."
+authors = "Felis"
+
+[[dependencies.felis_link]]
+    modId = "forge"
+    mandatory = true
+    versionRange = "[47,)"
+    ordering = "NONE"
+    side = "SERVER"
+
+[[dependencies.felis_link]]
+    modId = "minecraft"
+    mandatory = true
+    versionRange = "[1.20.1,1.20.2)"
+    ordering = "NONE"
+    side = "SERVER"

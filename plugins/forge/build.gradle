@@ -1,0 +1,39 @@
+plugins {
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+    id 'java'
+}
+
+group = 'best.lolicon.felis'
+version = '0.1.0'
+
+// MC 1.20.1 / Forge 47.x is a Java-17 line.
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+minecraft {
+    // Official Mojang mappings — same MC names as the Fabric/NeoForge modules.
+    mappings channel: 'official', version: '1.20.1'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    minecraft 'net.minecraftforge:forge:1.20.1-47.3.0'
+}
+
+// The zero-dependency link core is compiled in and reobfuscated with the mod.
+sourceSets {
+    main {
+        java {
+            srcDir '../shared/src/main/java'
+        }
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}

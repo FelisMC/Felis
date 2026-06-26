@@ -1,0 +1,98 @@
+package best.lolicon.felis.forge;
+
+import best.lolicon.felis.link.LinkClient;
+import best.lolicon.felis.link.LinkCode;
+import best.lolicon.felis.link.LinkConfig;
+import best.lolicon.felis.link.LinkConfigLoader;
+import best.lolicon.felis.link.LinkException;
+
+import com.mojang.brigadier.CommandDispatcher;
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
+import com.mojang.logging.LogUtils;
+import net.minecraft.commands.CommandSourceStack;
+import net.minecraft.commands.Commands;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.event.RegisterCommandsEvent;
+import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.minecraftforge.fml.common.Mod;
+import net.minecraftforge.fml.loading.FMLPaths;
+import org.slf4j.Logger;
+
+import java.io.IOException;
+import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+/**
+ * FelisForgeMod is the Forge server-side leg of the §10 account-link flow. On
+ * {@link RegisterCommandsEvent} it installs a {@code /link} command that mints a
+ * one-time code from felis-api for the player's already-verified UUID. As on the
+ * other loaders, the HTTP call runs on a daemon I/O thread and the reply is hopped
+ * back onto the server thread; failures collapse to a generic chat line with
+ * details kept to the server log. If config is missing the mod stays loaded but
+ * never registers the command, so the proxy/server runs un-crippled.
+ */
+@Mod("felis_link")
+public final class FelisForgeMod {
+    private static final Logger LOGGER = LogUtils.getLogger();
+
+    private final ExecutorService io = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "felis-link-io");
+        t.setDaemon(true);
+        return t;
+    });
+    private LinkClient linkClient;
+
+    public FelisForgeMod() {
+        try {
+            LinkConfig config = LinkConfigLoader.load(
+                    FMLPaths.CONFIGDIR.get().resolve("felis-link.properties"));
+            this.linkClient = new LinkClient(config);
+            MinecraftForge.EVENT_BUS.register(this);
+            LOGGER.info("Felis link ready; /link will be registered.");
+        } catch (IOException e) {
+            LOGGER.error("Felis link disabled: {}", e.getMessage());
+        }
+    }
+
+    @SubscribeEvent
+    public void onRegisterCommands(RegisterCommandsEvent event) {
+        register(event.getDispatcher());
+    }
+
+    private void register(CommandDispatcher<CommandSourceStack> dispatcher) {
+        dispatcher.register(Commands.literal("link").executes(ctx -> {
+            CommandSourceStack source = ctx.getSource();
+            ServerPlayer player;
+            try {
+                player = source.getPlayerOrException();
+            } catch (CommandSyntaxException e) {
+                source.sendFailure(Component.literal("/link can only be run by a player."));
+                return 0;
+            }
+            requestAndReply(source.getServer(), player);
+            return 1;
+        }));
+    }
+
+    private void requestAndReply(MinecraftServer server, ServerPlayer player) {
+        UUID uuid = player.getUUID();
+        player.sendSystemMessage(Component.literal("Requesting a link code…"));
+        io.submit(() -> {
+            try {
+                LinkCode code = linkClient.requestCode(uuid);
+                server.execute(() -> player.sendSystemMessage(Component.literal(
+                        "Your link code: " + code.code()
+                        + "  — enter it on the web panel → Account (valid a few minutes).")));
+            } catch (LinkException e) {
+                LOGGER.warn("link code request failed for {} (status={}, code={}): {}",
+                        uuid, e.statusCode(), e.errorCode(), e.getMessage());
+                server.execute(() -> player.sendSystemMessage(Component.literal(
+                        "Couldn't get a link code right now. Please try again in a moment.")));
+            }
+        });
+    }
+}
