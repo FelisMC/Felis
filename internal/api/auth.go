@@ -19,10 +19,18 @@ type Principal struct {
 	Email string
 	// Role is "admin" or "user" (mirrors users.role).
 	Role string
-	// ViaAdminAccess is true only when the request arrived through the admin.*
-	// Zero-Trust hostname (Cloudflare Access). Admin-tier operations require it
-	// in addition to Role=="admin" (spec §14: ZT is graded by operation).
+	// ViaAdminAccess is true only when the request arrived through an admin-graded
+	// path: the admin.* Zero-Trust hostname (Cloudflare Access, the remote face) OR
+	// a local-password session presented on the op.console host (SessionAuth, the
+	// break-glass-enabled face). Admin-tier operations require it in addition to
+	// Role=="admin" (spec §14: ZT is graded by operation). A role=admin session
+	// arriving on the player console (console.*) never sets it.
 	ViaAdminAccess bool
+	// MustChangePassword is set only on the local-password (SessionAuth) path when
+	// the staff account still owes a first-login change. The JWT path leaves it
+	// false. The lockdown middleware fences such a principal to the change-password
+	// and logout surface until it is cleared.
+	MustChangePassword bool
 }
 
 // IsAdmin reports whether the principal may perform admin-tier operations.

@@ -126,6 +126,14 @@ type apiRoute struct {
 	// handler). Internal-face routes never set it.
 	Admin bool
 
+	// AllowDuringPasswordChange opts a route OUT of the must_change_password
+	// lockdown (spec §B). The lockdown is default-deny: every authenticated route is
+	// fenced off for a staff principal that still owes a first-login password change
+	// EXCEPT the few that let it escape the state — change-password, logout, and the
+	// self-identity read /me. A new authenticated route is locked down unless it
+	// sets this, so forgetting the flag fails safe (closed), never open.
+	AllowDuringPasswordChange bool
+
 	h http.HandlerFunc
 }
 
@@ -168,6 +176,15 @@ func (a *API) externalAPIRoutes() []apiRoute {
 	return []apiRoute{
 		{Method: "GET", Pattern: "/healthz", Public: true, h: a.handleHealthz},
 
+		// Local-password auth (spec §B), the op.console login surface. login/logout
+		// are Public (pre-session: a caller has no principal yet, and logout reads the
+		// cookie directly so it works even after expiry). change-password requires a
+		// live session and stays reachable while must_change_password is set
+		// (AllowDuringPasswordChange) so a forced first-login change can complete.
+		{Method: "POST", Pattern: "/api/v1/auth/login", Public: true, h: a.handleLogin},
+		{Method: "POST", Pattern: "/api/v1/auth/logout", Public: true, h: a.handleLogout},
+		{Method: "POST", Pattern: "/api/v1/auth/change-password", AllowDuringPasswordChange: true, h: a.handleChangePassword},
+
 		// App-auth tier: operations on your own servers (spec §14).
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/wake", h: a.handleWake},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/stop", h: a.handleStop},
@@ -195,7 +212,9 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// every authenticated principal may read its OWN identity. is_admin is the
 		// server-computed Principal.IsAdmin() (Role + admin Access path), so the client
 		// never re-derives the graded-ZT rule; it remains UX truth, not enforcement.
-		{Method: "GET", Pattern: "/api/v1/me", h: a.handleMe},
+		// /me is exempt from the first-login lockdown so the panel can read its own
+		// identity (including must_change_password) to render the change-password card.
+		{Method: "GET", Pattern: "/api/v1/me", AllowDuringPasswordChange: true, h: a.handleMe},
 		{Method: "GET", Pattern: "/api/v1/me/servers", h: a.handleMyServers},
 		// World backups (spec §7, §466). Both are app-tier: GET /backups is scoped
 		// inside the handler (admin sees all; a user sees only worlds they formerly
@@ -278,6 +297,12 @@ func (a *API) buildFace(routes []apiRoute, guard func(http.Handler) http.Handler
 		h := rt.h
 		if rt.Admin {
 			h = a.adminOnly(rt.h)
+		}
+		// Default-deny first-login lockdown (spec §B): wrap every authenticated route
+		// unless it explicitly opts out. The wrapper is nil-principal safe, so it is
+		// inert on the internal face (service-token callers carry no Principal).
+		if !rt.AllowDuringPasswordChange {
+			h = a.lockdownDuringPasswordChange(h)
 		}
 		auth.HandleFunc(pattern, h)
 	}

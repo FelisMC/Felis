@@ -49,6 +49,19 @@ var (
 	errUnauthorized = newError(http.StatusUnauthorized, "unauthorized", "authentication required")
 	errForbidden    = newError(http.StatusForbidden, "forbidden", "not permitted")
 	errBadRequest   = newError(http.StatusBadRequest, "bad_request", "invalid request")
+	// errInvalidCredentials is the single, deliberately vague answer to any failed
+	// local-password login (spec §B): unknown username, player row, or wrong
+	// password all collapse to it so the response never reveals which usernames
+	// carry a password. The anti-enumeration dummy-hash compare keeps the timing
+	// uniform alongside it (handlers_auth.go).
+	errInvalidCredentials = newError(http.StatusUnauthorized, "invalid_credentials", "invalid username or password")
+	// errPasswordChangeRequired fences a staff principal that still owes a
+	// first-login password change to the change-password surface. The lockdown
+	// middleware returns it from every authenticated route except the opt-out set
+	// (change-password / logout / me), so a half-onboarded account cannot act until
+	// it sets its own password.
+	errPasswordChangeRequired = newError(http.StatusForbidden, "password_change_required",
+		"change your password before continuing")
 )
 
 // writeJSON writes v as an indented JSON body with the given status.

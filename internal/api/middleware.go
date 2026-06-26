@@ -73,6 +73,23 @@ func (a *API) adminOnly(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// lockdownDuringPasswordChange fences a staff principal that still owes a
+// first-login password change to the change-password surface (spec §B). It is the
+// default-deny half of the lockdown: buildFace wraps every authenticated route
+// with it except the AllowDuringPasswordChange opt-outs, so a half-onboarded
+// account can do nothing but change its password, log out, or read /me. It is
+// nil-principal safe (the internal face sets no Principal), so it passes such
+// requests straight through and only ever acts on the external face.
+func (a *API) lockdownDuringPasswordChange(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if p := principalFromContext(r.Context()); p != nil && p.MustChangePassword {
+			writeError(w, r, errPasswordChangeRequired)
+			return
+		}
+		next(w, r)
+	}
+}
+
 // newRequestID returns a short random hex id. crypto/rand never fails on the
 // platforms we target; on the impossible error path we fall back to a constant
 // so a request still gets a (non-unique) id rather than crashing.

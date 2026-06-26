@@ -122,8 +122,14 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "felis api: restore executor disabled (needs FELIS_IMAGE and FELIS_BACKUP_PVC) — restore endpoint returns 503")
 	}
 
+	// One PGRepo instance backs both the handlers and the session verifier: the
+	// SessionAuth that fronts the external face reads sessions/users/settings from
+	// the same store the auth handlers write to, so a login and the next request
+	// agree on what local auth knows.
+	repo := api.NewPGRepo(drv.DB())
+
 	a := &api.API{
-		Repo:    api.NewPGRepo(drv.DB()),
+		Repo:    repo,
 		Cluster: api.NewK8sCluster(cl, cfg.K8s.Namespace),
 		Console: api.NewK8sConsole(cl, cfg.K8s.Namespace),
 		Logs:    api.NewK8sLogStreamer(clientset, cfg.K8s.Namespace),
@@ -134,9 +140,17 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		Builder:     builder,
 		Restorer:    restorer,
 		Submissions: submissions,
-		// Keyfunc is intentionally nil: the external face fails closed until a
-		// JWKS-backed key function is wired (deployment integration point).
-		External:     api.AccessVerifier{Audience: cfg.Auth.AccessJWTAud},
+		// The external face is fronted by SessionAuth: it prefers a local-password
+		// session cookie and otherwise delegates to the Cloudflare-Access JWT verifier,
+		// so both auth models coexist on one face. The delegate's Keyfunc is
+		// intentionally nil — the JWT path fails closed until a JWKS-backed key function
+		// is wired (deployment integration point) — while the local-password path is
+		// live the moment `felis breakGlass` flips local_auth_enabled on.
+		External: api.SessionAuth{
+			Repo:       repo,
+			Delegate:   api.AccessVerifier{Audience: cfg.Auth.AccessJWTAud},
+			RootDomain: cfg.Server.RootDomain,
+		},
 		RootDomain:   cfg.Server.RootDomain,
 		WakeCooldown: 30 * time.Second,
 	}

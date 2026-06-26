@@ -357,3 +357,150 @@ func (p *PGRepo) Audit(ctx context.Context, e AuditEntry) error {
 		e.Actor, e.Source, e.Action, e.ServerName, e.RequestID)
 	return err
 }
+
+// ---- local-password auth (spec §B) ----
+
+// UserByUsername loads a staff login projection by username, or ErrNotFound. A
+// player row (NULL password_hash) is returned with an empty PasswordHash, never
+// hidden — the caller rejects it by the hash compare, so login cannot be used to
+// enumerate which usernames carry a password.
+func (p *PGRepo) UserByUsername(ctx context.Context, username string) (*StaffUser, error) {
+	const q = `SELECT id, username, COALESCE(email, ''), role::text,
+		COALESCE(password_hash, ''), must_change_password
+		FROM users WHERE username = $1`
+	var u StaffUser
+	switch err := p.db.QueryRowContext(ctx, q, username).Scan(
+		&u.ID, &u.Username, &u.Email, &u.Role, &u.PasswordHash, &u.MustChangePassword); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, ErrNotFound
+	case err != nil:
+		return nil, err
+	}
+	return &u, nil
+}
+
+// UserByID loads the same staff projection by id, or ErrNotFound. The
+// change-password flow re-verifies the caller's current password with it: the
+// session yields a user id, not a username.
+func (p *PGRepo) UserByID(ctx context.Context, id string) (*StaffUser, error) {
+	const q = `SELECT id, username, COALESCE(email, ''), role::text,
+		COALESCE(password_hash, ''), must_change_password
+		FROM users WHERE id = $1`
+	var u StaffUser
+	switch err := p.db.QueryRowContext(ctx, q, id).Scan(
+		&u.ID, &u.Username, &u.Email, &u.Role, &u.PasswordHash, &u.MustChangePassword); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, ErrNotFound
+	case err != nil:
+		return nil, err
+	}
+	return &u, nil
+}
+
+// UpsertOwner creates or resets the Owner account direct-to-Postgres (the
+// break-glass first-run / reset-password path). role is forced to 'admin'; on a
+// username conflict the email, hash and must_change_password flag are overwritten
+// while the existing id is preserved, so live sessions referencing it survive a
+// password reset. The empty email is stored as NULL (users.email is nullable).
+func (p *PGRepo) UpsertOwner(ctx context.Context, id, username, email, passwordHash string, mustChange bool) error {
+	_, err := p.db.ExecContext(ctx,
+		`INSERT INTO users (id, username, email, role, password_hash, must_change_password)
+		 VALUES ($1, $2, NULLIF($3, ''), 'admin', $4, $5)
+		 ON CONFLICT (username) DO UPDATE SET
+		   email = NULLIF($3, ''), role = 'admin',
+		   password_hash = $4, must_change_password = $5`,
+		id, username, email, passwordHash, mustChange)
+	return err
+}
+
+// SetPassword stores a new hash and clears must_change_password (the panel
+// change-password flow). ErrNotFound when no row matches so a stale session
+// cannot silently no-op the change.
+func (p *PGRepo) SetPassword(ctx context.Context, userID, passwordHash string) error {
+	res, err := p.db.ExecContext(ctx,
+		`UPDATE users SET password_hash = $2, must_change_password = false WHERE id = $1`,
+		userID, passwordHash)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// CreateSession records a minted session by the sha-256 of its cookie value
+// (spec §B). Only the hash is stored, mirroring tokens.
+func (p *PGRepo) CreateSession(ctx context.Context, tokenHash, userID string, expiresAt time.Time) error {
+	_, err := p.db.ExecContext(ctx,
+		`INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)`,
+		tokenHash, userID, expiresAt)
+	return err
+}
+
+// SessionUser resolves a live (unrevoked, unexpired at now) session hash to its
+// user, or ErrNotFound.
+func (p *PGRepo) SessionUser(ctx context.Context, tokenHash string, now time.Time) (*SessionedUser, error) {
+	const q = `SELECT u.id, COALESCE(u.email, ''), u.role::text, u.must_change_password
+		FROM sessions s JOIN users u ON u.id = s.user_id
+		WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > $2`
+	var u SessionedUser
+	switch err := p.db.QueryRowContext(ctx, q, tokenHash, now).Scan(
+		&u.ID, &u.Email, &u.Role, &u.MustChangePassword); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, ErrNotFound
+	case err != nil:
+		return nil, err
+	}
+	return &u, nil
+}
+
+// RevokeSession marks a session revoked (logout). Idempotent: a missing or
+// already-revoked session is not an error.
+func (p *PGRepo) RevokeSession(ctx context.Context, tokenHash string) error {
+	_, err := p.db.ExecContext(ctx,
+		`UPDATE sessions SET revoked_at = now() WHERE token_hash = $1 AND revoked_at IS NULL`,
+		tokenHash)
+	return err
+}
+
+// RevokeUserSessionsExcept revokes every live session of a user except
+// keepTokenHash — the change-password flow logs out the account's other devices
+// while keeping the current one.
+func (p *PGRepo) RevokeUserSessionsExcept(ctx context.Context, userID, keepTokenHash string) error {
+	_, err := p.db.ExecContext(ctx,
+		`UPDATE sessions SET revoked_at = now()
+		 WHERE user_id = $1 AND token_hash <> $2 AND revoked_at IS NULL`,
+		userID, keepTokenHash)
+	return err
+}
+
+// ---- runtime platform settings (spec §B platform_settings) ----
+
+// GetSetting reads a setting's raw jsonb value as bytes, or ErrNotFound.
+func (p *PGRepo) GetSetting(ctx context.Context, key string) ([]byte, error) {
+	var value []byte
+	switch err := p.db.QueryRowContext(ctx,
+		`SELECT value FROM platform_settings WHERE key = $1`, key).Scan(&value); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, ErrNotFound
+	case err != nil:
+		return nil, err
+	}
+	return value, nil
+}
+
+// SetSetting upserts a setting's raw jsonb value by key. value is cast to jsonb
+// so a []byte argument lands in the jsonb column without a driver round-trip
+// guessing the type.
+func (p *PGRepo) SetSetting(ctx context.Context, key string, value []byte) error {
+	_, err := p.db.ExecContext(ctx,
+		`INSERT INTO platform_settings (key, value) VALUES ($1, $2::jsonb)
+		 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+		key, string(value))
+	return err
+}

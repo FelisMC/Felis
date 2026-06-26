@@ -173,6 +173,10 @@ func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
 		"email":    p.Email,
 		"role":     p.Role,
 		"is_admin": p.IsAdmin(),
+		// must_change_password is meaningful only on the local-password path; the JWT
+		// path leaves it false. The panel uses it to route a freshly-provisioned staff
+		// account straight to the change-password card before any other surface.
+		"must_change_password": p.MustChangePassword,
 	})
 }
 

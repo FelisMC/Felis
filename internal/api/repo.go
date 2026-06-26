@@ -65,6 +65,32 @@ type BackupRecord struct {
 	SizeBytes   int64
 }
 
+// StaffUser is the login-side projection of a users row that carries a password
+// (spec §B local-auth). Owner/Operator are role=admin rows WITH a bcrypt hash,
+// minted by `felis breakGlass`; players are role=user rows whose PasswordHash is
+// empty. It is loaded by username at login to verify the password and learn
+// whether a first-login change is still pending.
+type StaffUser struct {
+	ID                 string
+	Username           string
+	Email              string
+	Role               string
+	PasswordHash       string
+	MustChangePassword bool
+}
+
+// SessionedUser is the projection resolved from a live session cookie: the
+// identity SessionAuth needs to build a Principal. It omits the password hash —
+// the session has already authenticated the caller — but carries the pending
+// first-login change flag so the lockdown middleware can fence a half-onboarded
+// staff account to the change-password surface.
+type SessionedUser struct {
+	ID                 string
+	Email              string
+	Role               string
+	MustChangePassword bool
+}
+
 // Repo is the business-layer data access the API depends on. It is an interface
 // so handlers are tested against an in-memory fake; the Postgres implementation
 // (pgRepo) is integration-tested only — it requires a live database.
@@ -139,4 +165,50 @@ type Repo interface {
 	SeedServer(ctx context.Context, name, subdomain string) error
 	// Audit appends one audit row.
 	Audit(ctx context.Context, e AuditEntry) error
+
+	// ---- local-password auth (spec §B) ----
+
+	// UserByUsername loads the login projection of a staff account by its unique
+	// username, or ErrNotFound. The caller compares PasswordHash itself so the
+	// anti-enumeration dummy-hash compare runs even on a miss; a player row (NULL
+	// password_hash → empty PasswordHash) is returned too and is rejected by the
+	// caller's hash compare, never by leaking "no such user".
+	UserByUsername(ctx context.Context, username string) (*StaffUser, error)
+	// UserByID loads the same staff projection by user id, or ErrNotFound. The
+	// change-password flow uses it to re-verify the caller's current password: the
+	// session yields a user id, not a username, so this is the id-keyed counterpart
+	// of UserByUsername.
+	UserByID(ctx context.Context, id string) (*StaffUser, error)
+	// UpsertOwner creates or resets the single Owner account direct-to-Postgres
+	// (the `felis breakGlass` first-run / reset-password path). role is forced to
+	// 'admin' and must_change_password to mustChange; on a username conflict the
+	// existing row's email, hash and flag are overwritten so a reset is idempotent.
+	UpsertOwner(ctx context.Context, id, username, email, passwordHash string, mustChange bool) error
+	// SetPassword stores a new bcrypt hash for a user and clears
+	// must_change_password (the panel change-password flow). ErrNotFound when no
+	// row matches, so a stale session cannot silently no-op a password change.
+	SetPassword(ctx context.Context, userID, passwordHash string) error
+	// CreateSession records a minted session: the sha-256 of the opaque cookie
+	// value, its owner, and its expiry (spec §B sessions). Only the hash is stored,
+	// mirroring tokens, so a database read never yields a usable cookie.
+	CreateSession(ctx context.Context, tokenHash, userID string, expiresAt time.Time) error
+	// SessionUser resolves a live (unrevoked, unexpired at now) session hash to its
+	// user, or ErrNotFound. It is the cookie half of SessionAuth.
+	SessionUser(ctx context.Context, tokenHash string, now time.Time) (*SessionedUser, error)
+	// RevokeSession marks a session revoked (logout). It is idempotent: revoking an
+	// absent or already-revoked session is not an error.
+	RevokeSession(ctx context.Context, tokenHash string) error
+	// RevokeUserSessionsExcept revokes every live session of a user except the one
+	// whose hash is keepTokenHash. The change-password flow calls it so a successful
+	// password change logs out the account's other devices but not the current one.
+	RevokeUserSessionsExcept(ctx context.Context, userID, keepTokenHash string) error
+
+	// ---- runtime platform settings (spec §B platform_settings) ----
+
+	// GetSetting reads a runtime setting's raw jsonb value, or ErrNotFound when the
+	// key is absent. The live API reads these per-request so the break-glass TUI can
+	// flip toggles (e.g. local_auth_enabled) direct-to-DB without rolling the pod.
+	GetSetting(ctx context.Context, key string) ([]byte, error)
+	// SetSetting upserts a runtime setting's raw jsonb value by key.
+	SetSetting(ctx context.Context, key string, value []byte) error
 }

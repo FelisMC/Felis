@@ -41,6 +41,21 @@ type fakeRepo struct {
 	links     map[string]string       // mc_uuid -> user_id (mirrors UNIQUE(mc_uuid))
 	// world backups (spec §7, §22). A nil slice lists empty.
 	backups []fakeBackup
+	// local-password auth (spec §B). staff is keyed by username (the login key);
+	// sessions by token_hash; settings by key. They mirror the PG contract so the
+	// hermetic tests exercise the same fail-closed semantics the integration impl
+	// honors.
+	staff    map[string]*StaffUser   // username -> staff login row
+	sessions map[string]*fakeSession // token_hash -> session
+	settings map[string][]byte       // key -> jsonb value
+}
+
+// fakeSession mirrors a sessions row: its owner, its expiry, and whether it has
+// been revoked.
+type fakeSession struct {
+	userID    string
+	expiresAt time.Time
+	revoked   bool
 }
 
 // fakeBackup mirrors a world_backups row: the client-facing view plus the
@@ -65,6 +80,9 @@ func newFakeRepo() *fakeRepo {
 		claimOK: map[string]bool{},
 		seeded:  map[string]bool{}, aliases: map[string]string{},
 		linkCodes: map[string]fakeLinkCode{}, links: map[string]string{},
+		staff:    map[string]*StaffUser{},
+		sessions: map[string]*fakeSession{},
+		settings: map[string][]byte{},
 	}
 }
 
@@ -190,6 +208,94 @@ func (f *fakeRepo) LatestBackup(_ context.Context, serverName string) (*BackupRe
 		FormerOwner: latest.view.FormerOwner, BackupRef: latest.ref,
 		SizeBytes: latest.view.SizeBytes,
 	}, nil
+}
+
+// ---- local-password auth fakes (spec §B) ----
+// Each method mirrors the PGRepo contract: a returned StaffUser is copied so a
+// test cannot mutate the stored row by reference, SessionUser re-reads the
+// CURRENT staff flags (so a password change clears must_change_password for live
+// sessions just as the PG JOIN does), and the settings/sessions semantics match.
+
+func (f *fakeRepo) UserByUsername(_ context.Context, username string) (*StaffUser, error) {
+	if u, ok := f.staff[username]; ok {
+		cp := *u
+		return &cp, nil
+	}
+	return nil, ErrNotFound
+}
+func (f *fakeRepo) UserByID(_ context.Context, id string) (*StaffUser, error) {
+	for _, u := range f.staff {
+		if u.ID == id {
+			cp := *u
+			return &cp, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+func (f *fakeRepo) UpsertOwner(_ context.Context, id, username, email, passwordHash string, mustChange bool) error {
+	// Mirror PG ON CONFLICT (username): preserve the existing id so live sessions
+	// survive a password reset.
+	if existing, ok := f.staff[username]; ok {
+		id = existing.ID
+	}
+	f.staff[username] = &StaffUser{
+		ID: id, Username: username, Email: email, Role: "admin",
+		PasswordHash: passwordHash, MustChangePassword: mustChange,
+	}
+	return nil
+}
+func (f *fakeRepo) SetPassword(_ context.Context, userID, passwordHash string) error {
+	for _, u := range f.staff {
+		if u.ID == userID {
+			u.PasswordHash = passwordHash
+			u.MustChangePassword = false
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+func (f *fakeRepo) CreateSession(_ context.Context, tokenHash, userID string, expiresAt time.Time) error {
+	f.sessions[tokenHash] = &fakeSession{userID: userID, expiresAt: expiresAt}
+	return nil
+}
+func (f *fakeRepo) SessionUser(_ context.Context, tokenHash string, now time.Time) (*SessionedUser, error) {
+	s, ok := f.sessions[tokenHash]
+	if !ok || s.revoked || !s.expiresAt.After(now) {
+		return nil, ErrNotFound
+	}
+	for _, u := range f.staff {
+		if u.ID == s.userID {
+			return &SessionedUser{
+				ID: u.ID, Email: u.Email, Role: u.Role,
+				MustChangePassword: u.MustChangePassword,
+			}, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+func (f *fakeRepo) RevokeSession(_ context.Context, tokenHash string) error {
+	if s, ok := f.sessions[tokenHash]; ok {
+		s.revoked = true
+	}
+	return nil
+}
+func (f *fakeRepo) RevokeUserSessionsExcept(_ context.Context, userID, keepTokenHash string) error {
+	for h, s := range f.sessions {
+		if s.userID == userID && h != keepTokenHash {
+			s.revoked = true
+		}
+	}
+	return nil
+}
+func (f *fakeRepo) GetSetting(_ context.Context, key string) ([]byte, error) {
+	if v, ok := f.settings[key]; ok {
+		return v, nil
+	}
+	return nil, ErrNotFound
+}
+func (f *fakeRepo) SetSetting(_ context.Context, key string, value []byte) error {
+	f.settings[key] = value
+	return nil
 }
 
 // fakeRestorer records the restore it was asked to start and returns a canned

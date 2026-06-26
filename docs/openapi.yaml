@@ -83,6 +83,17 @@ components:
         Cloudflare Access JWT (external face). Admin-tier operations require the
         token to have traversed the admin Access path; the handler additionally
         asserts Principal.IsAdmin().
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: felis_session
+      description: >-
+        Opaque local-password session cookie (external face). Minted by
+        POST /api/v1/auth/login when local auth is enabled, HttpOnly+Secure+
+        SameSite=Lax and host-only, so an op.console session never reaches the
+        player console. Only its sha-256 is persisted. SessionAuth prefers this
+        cookie and otherwise delegates to accessJWT, so the two models coexist on
+        one face.
 
   responses:
     NoContent:
@@ -1066,6 +1077,137 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  # -------------------------------------------------- external: local auth ---
+  /api/v1/auth/login:
+    post:
+      tags: [auth]
+      operationId: login
+      summary: Log in with a local username + password (op.console).
+      description: >-
+        Verifies a username+password against the users row and, on success, mints
+        a host-only session cookie (spec §B). Mounted Public — there is no prior
+        principal — but local auth must be enabled (local_auth_enabled), so a
+        deployment fronted entirely by Zero Trust never accepts a local password.
+        Every failure returns the same vague invalid_credentials after a uniform
+        bcrypt compare, so usernames cannot be enumerated by response or timing.
+      x-felis-face: [external]
+      x-felis-tier: public
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+      responses:
+        '200':
+          description: Session established; the cookie is set on the response.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user_id, role, must_change_password]
+                properties:
+                  user_id: { type: string }
+                  role:
+                    type: string
+                    enum: [user, admin]
+                  must_change_password:
+                    type: boolean
+                    description: >-
+                      True when this account still owes its first-login password
+                      change; the panel routes straight to the change-password card.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          description: Invalid username or password (vague by design).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: Local password login is disabled on this deployment.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/auth/logout:
+    post:
+      tags: [auth]
+      operationId: logout
+      summary: Revoke the current local session and clear the cookie.
+      description: >-
+        Revokes the presented session and clears the cookie (spec §B). Mounted
+        Public and idempotent: it reads the cookie directly, so it works even when
+        the session has already expired and never errors on a missing one.
+      x-felis-face: [external]
+      x-felis-tier: public
+      security: []
+      responses:
+        '200':
+          description: Logged out (idempotent).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, const: true }
+
+  /api/v1/auth/change-password:
+    post:
+      tags: [auth]
+      operationId: changePassword
+      summary: Change the caller's local password (forced first-login or rotation).
+      description: >-
+        Re-verifies the caller's current password, stores a new bcrypt hash, clears
+        must_change_password, and revokes the account's OTHER sessions while keeping
+        the current one (spec §B). Reachable while must_change_password is set, so a
+        forced first-login change can complete — the rest of the API is fenced off
+        until it does. The session authenticates the caller; re-asking the current
+        password additionally blocks a hijacked session from silently rotating the
+        credential.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password: { type: string, format: password }
+                new_password:
+                  type: string
+                  format: password
+                  minLength: 8
+                  maxLength: 72
+                  description: 8–72 bytes; 72 is bcrypt's hard input limit.
+      responses:
+        '200':
+          description: Password changed; other sessions revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, const: true }
+        '400':
+          description: Weak password, or the new password equals the current one.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
   /api/v1/me:
     get:
       tags: [servers]
@@ -1088,7 +1230,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [user_id, email, role, is_admin]
+                required: [user_id, email, role, is_admin, must_change_password]
                 properties:
                   user_id: { type: string }
                   email: { type: string, format: email }
@@ -1101,6 +1243,15 @@ paths:
                     description: >-
                       True only when role is admin AND the request arrived via the
                       admin Access path (Principal.IsAdmin()).
+                  must_change_password:
+                    type: boolean
+                    description: >-
+                      True when a local-password staff account still owes its
+                      first-login password change. Meaningful only on the
+                      local-password path (false on the JWT path). The panel routes
+                      such an account straight to the change-password card. Reachable
+                      while set, alongside change-password and logout, because the
+                      rest of the API is fenced off until the change completes.
         '401':
           $ref: '#/components/responses/Unauthorized'
 
