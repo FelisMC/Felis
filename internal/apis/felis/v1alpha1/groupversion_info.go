@@ -1,5 +1,8 @@
 // Package v1alpha1 contains the felis.lolicon.best/v1alpha1 API group, whose
 // MinecraftServer kind is the lifecycle source-of-truth for Felis (spec §1, §4).
+//
+// +kubebuilder:object:generate=true
+// +groupName=felis.lolicon.best
 package v1alpha1
 
 import (
