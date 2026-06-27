@@ -76,7 +76,7 @@ export function ServerConsole() {
   const streamable = data?.phase === "Running" || data?.phase === "Starting";
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6">
+    <>
       <Link
         to="/servers"
         className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
@@ -143,6 +143,6 @@ export function ServerConsole() {
           </Card>
         </>
       ) : null}
-    </div>
+    </>
   );
 }

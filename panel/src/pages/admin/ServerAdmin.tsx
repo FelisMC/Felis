@@ -23,7 +23,7 @@ export function ServerAdmin() {
   const servers = data ?? [];
 
   return (
-    <div className="mx-auto max-w-6xl space-y-6">
+    <>
       <div className="flex items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">{t("servers")}</h1>
@@ -58,6 +58,6 @@ export function ServerAdmin() {
           {ts("server_admin_footer")}
         </CardContent>
       </Card>
-    </div>
+    </>
   );
 }

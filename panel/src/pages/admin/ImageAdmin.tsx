@@ -17,7 +17,7 @@ export function ImageAdmin() {
   const images = data ?? [];
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6">
+    <>
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">{t("images_title")}</h1>
         <p className="text-sm text-muted-foreground">
@@ -62,6 +62,6 @@ export function ImageAdmin() {
           ))}
         </div>
       )}
-    </div>
+    </>
   );
 }

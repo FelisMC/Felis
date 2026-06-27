@@ -9,7 +9,7 @@ import { PendingBackend } from "@/components/States";
 export function FleetTable() {
   const { t } = useTranslation("ops");
   return (
-    <div className="mx-auto max-w-5xl space-y-6">
+    <>
       <div className="flex items-center gap-3">
         <Network className="h-6 w-6 text-primary" />
         <div>
@@ -24,6 +24,6 @@ export function FleetTable() {
         endpoint="GET /api/v1/admin/servers"
         note={t("fleet_table_pending_note")}
       />
-    </div>
+    </>
   );
 }

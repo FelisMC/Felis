@@ -28,7 +28,7 @@ export function AdminHome() {
   ];
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6">
+    <>
       <div className="flex items-center gap-3">
         <ShieldCheck className="h-6 w-6 text-primary" />
         <div>
@@ -61,6 +61,6 @@ export function AdminHome() {
           {t("footer_post")}
         </CardContent>
       </Card>
-    </div>
+    </>
   );
 }
