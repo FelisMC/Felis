@@ -3,7 +3,7 @@
   "my_servers_subtitle": "Wake, stop, or claim the servers you can manage.",
   "no_servers_linked": "No servers linked to you",
   "no_servers_hint": "Claim an unowned server you have access to, or ask an admin to provision one.",
-  "my_servers_footer": "Servers and game types are provisioned and managed by the platform. You claim a node to operate it; raw cluster config is never exposed here (spec §15).",
+  "my_servers_footer": "Servers and game types are provisioned and managed by the platform. You claim a node to operate it; raw cluster config is never exposed here.",
   "phase_running": "Running",
   "phase_starting": "Starting",
   "phase_stopping": "Stopping",
@@ -28,7 +28,7 @@
   "console_offline_body": "The live console attaches automatically as soon as the server is running.",
   "my_servers_breadcrumb": "My servers",
   "console_card_title": "Console",
-  "console_card_desc": "Live, read-only output streamed from the running pod over SSE (spec §8). Commands run through a separate path — the panel never holds an RCON password.",
+  "console_card_desc": "Live, read-only output streamed from the running pod over SSE. Commands run through a separate path — the panel never holds an RCON password.",
   "log_connecting": "Connecting…",
   "log_live": "Live",
   "log_reconnecting": "Reconnecting…",
@@ -64,5 +64,5 @@
   "create_server_creating": "Creating…",
   "no_servers_managed": "No servers under your management yet",
   "no_servers_managed_hint": "Use \"New server\" to provision one from the vetted spec.",
-  "server_admin_footer": "Server creation goes through the structured form only — the platform maps your choices onto a vetted Kubernetes spec. Raw cluster config (host networking, host paths, arbitrary images, privileged pods) is never expressible here (spec §15)."
+  "server_admin_footer": "Server creation goes through the structured form only — the platform maps your choices onto a vetted Kubernetes spec. Raw cluster config (host networking, host paths, arbitrary images, privileged pods) is never expressible here."
 }

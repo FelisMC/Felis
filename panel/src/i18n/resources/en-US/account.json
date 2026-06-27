@@ -2,7 +2,7 @@
   "title": "Account",
   "subtitle": "Identity and Minecraft linking.",
   "session": "Session",
-  "session_desc": "The panel itself holds no credentials — every request rides your existing session cookie, whether issued by local password sign-in or the platform's identity proxy (Zero-Trust / Access) (spec §7/§8).",
+  "session_desc": "The panel itself holds no credentials — every request rides your existing session cookie, whether issued by local password sign-in or the platform's identity proxy (Zero-Trust / Access).",
   "sign_out": "Sign out",
   "signing_out": "Signing out…",
   "minecraft_link": "Minecraft link",

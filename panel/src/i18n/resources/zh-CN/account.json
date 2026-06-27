@@ -2,7 +2,7 @@
   "title": "账户",
   "subtitle": "身份验证与 Minecraft 关联。",
   "session": "会话",
-  "session_desc": "面板不持有凭据——每次请求均通过当前会话 Cookie 完成认证，无论该 Cookie 由本地密码登录还是平台身份代理（Zero-Trust / Access）签发（spec §7/§8）。",
+  "session_desc": "面板不持有凭据——每次请求均通过当前会话 Cookie 完成认证，无论该 Cookie 由本地密码登录还是平台身份代理（Zero-Trust / Access）签发。",
   "sign_out": "退出登录",
   "signing_out": "退出中…",
   "minecraft_link": "Minecraft 关联",
