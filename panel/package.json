@@ -6,6 +6,7 @@
   "description": "Felis control panel — external face of felis-api (spec §7)",
   "scripts": {
     "dev": "vite",
+    "dev:mock": "vite --mode mock",
     "build": "tsc -b && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
