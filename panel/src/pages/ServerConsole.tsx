@@ -1,5 +1,6 @@
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, Terminal, Moon, ShieldAlert, HelpCircle, type LucideIcon } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { PhaseBadge } from "@/components/PhaseBadge";
@@ -15,37 +16,38 @@ import type { Phase } from "@/lib/types";
 // Stopped/Failed/Stopping each get their own honest line rather than an empty
 // console. `default` covers Unknown plus any future phase the backend may emit
 // that the panel hasn't modelled yet — the screen stays informative regardless.
-function notStreamingCopy(phase: Phase): { icon: LucideIcon; title: string; body: string } {
+function useNotStreamingCopy(phase: Phase): { icon: LucideIcon; title: string; body: string } {
+  const { t } = useTranslation("servers");
   switch (phase) {
     case "Stopped":
       return {
         icon: Moon,
-        title: "Server is asleep",
-        body: "Wake it to boot a pod — the live console attaches automatically the moment it starts up.",
+        title: t("server_asleep_title"),
+        body: t("server_asleep_body"),
       };
     case "Stopping":
       return {
         icon: Moon,
-        title: "Server is shutting down",
-        body: "The pod is terminating, so the live console has detached. It will be asleep in a moment.",
+        title: t("server_shutting_down_title"),
+        body: t("server_shutting_down_body"),
       };
     case "Failed":
       return {
         icon: ShieldAlert,
-        title: "Server failed to start",
-        body: "No pod is running, so there is nothing to stream. Wake it to retry; the console attaches once a pod comes back up.",
+        title: t("server_failed_title"),
+        body: t("server_failed_body"),
       };
     default:
       return {
         icon: HelpCircle,
-        title: "Console is offline",
-        body: "The live console attaches automatically as soon as the server is running.",
+        title: t("console_offline_title"),
+        body: t("console_offline_body"),
       };
   }
 }
 
 function NotStreaming({ phase }: { phase: Phase }) {
-  const { icon: Icon, title, body } = notStreamingCopy(phase);
+  const { icon: Icon, title, body } = useNotStreamingCopy(phase);
   return (
     <div className="flex items-start gap-3 rounded-md border border-dashed border-border bg-muted/30 p-6 text-sm text-muted-foreground">
       <Icon className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground/70" />
@@ -60,6 +62,7 @@ function NotStreaming({ phase }: { phase: Phase }) {
 export function ServerConsole() {
   const { name = "" } = useParams();
   const cfg = useConfig();
+  const { t } = useTranslation("servers");
   const { data, error, loading, reload } = useAsync(
     () => api.status(name),
     [name],
@@ -78,7 +81,7 @@ export function ServerConsole() {
         to="/servers"
         className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
       >
-        <ArrowLeft className="h-4 w-4" /> My servers
+        <ArrowLeft className="h-4 w-4" /> {t("my_servers_breadcrumb")}
       </Link>
 
       {loading && !data ? (
@@ -106,11 +109,11 @@ export function ServerConsole() {
                   size="sm"
                   onClick={() => api.stop(name).then(reload)}
                 >
-                  Stop
+                  {t("stop")}
                 </Button>
               ) : (
                 <Button size="sm" onClick={() => api.wake(name).then(reload)}>
-                  Wake
+                  {t("wake")}
                 </Button>
               )}
             </div>
@@ -119,12 +122,10 @@ export function ServerConsole() {
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
-                <Terminal className="h-4 w-4" /> Console
+                <Terminal className="h-4 w-4" /> {t("console_card_title")}
               </CardTitle>
               <p className="text-sm text-muted-foreground">
-                Live, read-only output streamed from the running pod over SSE
-                (spec §8). Commands run through a separate path — the panel never
-                holds an RCON password.
+                {t("console_card_desc")}
               </p>
             </CardHeader>
             <CardContent>

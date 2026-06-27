@@ -1,0 +1,13 @@
+{
+  "title": "系统管理",
+  "subtitle": "平台可观测性看板——观察视角，非管理入口。",
+  "cluster_wide_fleet": "全平台服务器",
+  "open_fleet_table": "查看全平台服务器列表 →",
+  "footer_pre": "控制面扩缩、RBAC、Secrets 及集群生命周期属于 ",
+  "footer_kubectl": "kubectl / CRD",
+  "footer_post": " 范畴，无法从此处操作。系统管理面仅提供可观测性——遵循四层职责分离原则（构建 / 运行时 / 运维 / 应用）。",
+  "fleet_title": "全平台服务器",
+  "fleet_subtitle": "平台所有服务器——运行状态、所有者、资源用量。",
+  "fleet_table_pending_note": "全平台服务器列表会读取所有服务器的状态（不限于你拥有的）。该管理员层接口为下一个待开发的后端模块，上线后数据将在此呈现。",
+  "ops_overview_pending_note": "全平台服务器读取（所有服务器，非仅个人拥有）支撑集群汇总及 3D 视图。该管理员层接口尚待开发，与用户层 GET /me/servers 不同。"
+}

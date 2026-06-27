@@ -1,4 +1,5 @@
 import { Outlet } from "react-router-dom";
+import { useTranslation } from "react-i18next";
 import { useTier } from "@/lib/tier";
 import { Loading, NotAuthorized } from "@/components/States";
 
@@ -11,6 +12,7 @@ import { Loading, NotAuthorized } from "@/components/States";
 // settled, isAdmin is the fail-closed verdict (false on any /me failure).
 export function RequireAdmin() {
   const { isAdmin, loading } = useTier();
-  if (loading) return <Loading label="Checking access…" />;
+  const { t } = useTranslation("common");
+  if (loading) return <Loading label={t("checking_access")} />;
   return isAdmin ? <Outlet /> : <NotAuthorized />;
 }

@@ -6,6 +6,7 @@
   "description": "Felis control panel — external face of felis-api (spec §7)",
   "scripts": {
     "dev": "vite",
+    "dev:mock": "vite --mode mock",
     "build": "tsc -b && vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
@@ -18,9 +19,12 @@
     "@radix-ui/react-slot": "^1.1.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "i18next": "^26.3.3",
+    "i18next-browser-languagedetector": "^8.2.1",
     "lucide-react": "^0.469.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-i18next": "^17.0.8",
     "react-router-dom": "^6.28.2",
     "tailwind-merge": "^2.6.0",
     "three": "^0.172.0"

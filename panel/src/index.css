@@ -55,4 +55,10 @@
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
+
+  /* Global theme toggle transition */
+  .theme-transitioning,
+  .theme-transitioning * {
+    transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, text-decoration-color 150ms ease, fill 150ms ease, stroke 150ms ease !important;
+  }
 }

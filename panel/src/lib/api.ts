@@ -9,6 +9,7 @@ import type {
   WhitelistImage,
 } from "./types";
 import { loadConfig } from "./config";
+import i18next from "i18next";
 
 // Typed client for the felis-api external face (spec §7). Credentials are sent so
 // the upstream Zero-Trust / Access cookie rides along; the panel never holds a
@@ -126,37 +127,38 @@ export function consoleStreamURL(apiBase: string, name: string): string {
 /** humanizeError turns the stable error code into a user-facing line. */
 export function humanizeError(e: unknown): string {
   const err = e as Partial<ApiError>;
+  const t = i18next.getFixedT(null, "errors");
   switch (err.code) {
     // Local-password auth (spec §B1).
     case "local_auth_disabled":
-      return "Password sign-in is turned off here — reach this console through your organization's secure access.";
+      return t("local_auth_disabled");
     case "invalid_credentials":
-      return "Incorrect username or password.";
+      return t("invalid_credentials");
     case "weak_password":
-      return "Pick a password between 8 and 72 characters.";
+      return t("weak_password");
     case "password_unchanged":
-      return "Your new password must differ from the current one.";
+      return t("password_unchanged");
     case "not_linked":
-      return "Link your Minecraft account before claiming (Account → Link).";
+      return t("not_linked");
     case "invalid_code":
-      return "That link code is invalid or expired — run /link again in-game for a fresh code.";
+      return t("invalid_code");
     case "already_linked":
-      return "That Minecraft account is already linked to another user.";
+      return t("already_linked");
     case "quota_exceeded":
-      return "You have reached your server quota.";
+      return t("quota_exceeded");
     case "already_claimed":
-      return "Someone else just claimed this server.";
+      return t("already_claimed");
     case "image_not_whitelisted":
-      return "That image is not on the whitelist.";
+      return t("image_not_whitelisted");
     case "subdomain_taken":
-      return "That subdomain is already in use.";
+      return t("subdomain_taken");
     case "already_exists":
-      return "A server with that name already exists.";
+      return t("already_exists");
     case "cooldown":
-      return "Wake is cooling down — try again shortly.";
+      return t("cooldown");
     default:
-      if (err.status === 401) return "Your session expired — please sign in again.";
-      if (err.status === 403) return "You are not allowed to do that.";
-      return err.message ?? "Something went wrong.";
+      if (err.status === 401) return t("session_expired");
+      if (err.status === 403) return t("forbidden");
+      return err.message ?? t("generic");
   }
 }

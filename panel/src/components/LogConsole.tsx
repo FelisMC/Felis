@@ -1,5 +1,6 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 import { ArrowDown, RotateCw, Trash2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useLogStream } from "@/lib/useLogStream";
@@ -19,11 +20,12 @@ const LEVEL_CLASS: Record<LogLevel, string> = {
 const PIN_THRESHOLD_PX = 24;
 
 function StatusIndicator({ status }: { status: StreamStatus }) {
+  const { t } = useTranslation("servers");
   const map: Record<StreamStatus, { dot: string; label: string; text: string }> = {
-    connecting: { dot: "bg-amber-400 animate-pulse", label: "Connecting…", text: "text-amber-300" },
-    open: { dot: "bg-emerald-400", label: "Live", text: "text-emerald-300" },
-    reconnecting: { dot: "bg-amber-400 animate-pulse", label: "Reconnecting…", text: "text-amber-300" },
-    ended: { dot: "bg-zinc-500", label: "Stream ended", text: "text-zinc-400" },
+    connecting: { dot: "bg-amber-400 animate-pulse", label: t("log_connecting"), text: "text-amber-300" },
+    open: { dot: "bg-emerald-400", label: t("log_live"), text: "text-emerald-300" },
+    reconnecting: { dot: "bg-amber-400 animate-pulse", label: t("log_reconnecting"), text: "text-amber-300" },
+    ended: { dot: "bg-zinc-500", label: t("log_ended"), text: "text-zinc-400" },
   };
   const s = map[status];
   return (
@@ -46,6 +48,7 @@ function StatusIndicator({ status }: { status: StreamStatus }) {
  * scrolling back to the bottom re-pins. The buffer is bounded by the controller.
  */
 export function LogConsole({ url }: { url: string }) {
+  const { t } = useTranslation("servers");
   const { lines, status, clear, reconnect } = useLogStream(url);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pinned, setPinned] = useState(true);
@@ -81,7 +84,7 @@ export function LogConsole({ url }: { url: string }) {
               onClick={reconnect}
               className="border-zinc-700 bg-transparent text-zinc-200 hover:bg-zinc-800 hover:text-zinc-50"
             >
-              <RotateCw className="h-3.5 w-3.5" /> Reconnect
+              <RotateCw className="h-3.5 w-3.5" /> {t("log_reconnect_btn")}
             </Button>
           )}
           <Button
@@ -91,7 +94,7 @@ export function LogConsole({ url }: { url: string }) {
             disabled={lines.length === 0}
             className="text-zinc-300 hover:bg-zinc-800 hover:text-zinc-50"
           >
-            <Trash2 className="h-3.5 w-3.5" /> Clear
+            <Trash2 className="h-3.5 w-3.5" /> {t("log_clear_btn")}
           </Button>
         </div>
       </div>
@@ -106,13 +109,13 @@ export function LogConsole({ url }: { url: string }) {
           {lines.length === 0 ? (
             <p className="select-none py-8 text-center text-zinc-600">
               {status === "ended"
-                ? "Stream ended — reconnect to resume following the log."
-                : "Waiting for output…"}
+                ? t("log_ended_empty")
+                : t("log_waiting")}
             </p>
           ) : (
             lines.map((line) => (
               <div key={line.seq} className={cn("whitespace-pre-wrap break-all", LEVEL_CLASS[line.level])}>
-                {line.text || " "}
+                {line.text || "\u00A0"}
               </div>
             ))
           )}
@@ -126,7 +129,7 @@ export function LogConsole({ url }: { url: string }) {
             onClick={jumpToLatest}
             className="absolute bottom-3 left-1/2 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-primary px-3 py-1 text-xs font-medium text-primary-foreground shadow-lg transition-colors hover:bg-primary/90"
           >
-            <ArrowDown className="h-3.5 w-3.5" /> Jump to latest
+            <ArrowDown className="h-3.5 w-3.5" /> {t("log_jump_latest")}
           </button>
         )}
       </div>

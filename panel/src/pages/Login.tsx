@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { Loader2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { AuthLayout } from "@/components/AuthLayout";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -20,6 +21,7 @@ import { api, humanizeError } from "@/lib/api";
 export function Login() {
   const { loading, identity, mustChangePassword, refresh } = useTier();
   const navigate = useNavigate();
+  const { t } = useTranslation("auth");
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -30,10 +32,10 @@ export function Login() {
   // would briefly see a login form before being redirected away.
   if (loading) {
     return (
-      <AuthLayout title="Felis">
+      <AuthLayout title={t("common:brand_name")}>
         <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />
-          Loading…
+          {t("common:loading")}
         </div>
       </AuthLayout>
     );
@@ -59,12 +61,12 @@ export function Login() {
   }
 
   return (
-    <AuthLayout title="Sign in to Felis" subtitle="Operator console">
+    <AuthLayout title={t("login_title")} subtitle={t("login_subtitle")}>
       <Card>
         <CardContent className="pt-5">
           <form onSubmit={submit} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="username">Username</Label>
+              <Label htmlFor="username">{t("username")}</Label>
               <Input
                 id="username"
                 value={username}
@@ -78,7 +80,7 @@ export function Login() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
+              <Label htmlFor="password">{t("password")}</Label>
               <Input
                 id="password"
                 type="password"
@@ -94,7 +96,7 @@ export function Login() {
               className="w-full"
               disabled={submitting || !username.trim() || !password}
             >
-              {submitting ? "Signing in…" : "Sign in"}
+              {submitting ? t("signing_in") : t("sign_in")}
             </Button>
           </form>
         </CardContent>

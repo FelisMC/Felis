@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { CheckCircle2, Link2, LogOut, ShieldCheck } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -18,6 +19,7 @@ import { useTier } from "@/lib/tier";
 export function Account() {
   const status = useAsync(() => api.linkStatus(), []);
   const { refresh } = useTier();
+  const { t } = useTranslation("account");
 
   // Sign-out ends a local-password session: clear it server-side, then refresh /me.
   // For a local session that read now 401s → the tier model flips to
@@ -67,24 +69,20 @@ export function Account() {
   return (
     <div className="mx-auto max-w-4xl space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Account</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">{t("title")}</h1>
         <p className="text-sm text-muted-foreground">
-          Identity and Minecraft linking.
+          {t("subtitle")}
         </p>
       </div>
 
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
-            <ShieldCheck className="h-4 w-4 text-primary" /> Session
+            <ShieldCheck className="h-4 w-4 text-primary" /> {t("session")}
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4 text-sm text-muted-foreground">
-          <p>
-            The panel itself holds no credentials — every request rides your existing
-            session cookie, whether issued by local password sign-in or the platform's
-            identity proxy (Zero-Trust / Access) (spec §7/§8).
-          </p>
+          <p>{t("session_desc")}</p>
           <Button
             variant="outline"
             size="sm"
@@ -92,7 +90,7 @@ export function Account() {
             disabled={signingOut}
           >
             <LogOut className="mr-2 h-4 w-4" />
-            {signingOut ? "Signing out…" : "Sign out"}
+            {signingOut ? t("signing_out") : t("sign_out")}
           </Button>
         </CardContent>
       </Card>
@@ -100,14 +98,14 @@ export function Account() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
-            <Link2 className="h-4 w-4 text-primary" /> Minecraft link
+            <Link2 className="h-4 w-4 text-primary" /> {t("minecraft_link")}
           </CardTitle>
         </CardHeader>
         <CardContent className="text-sm">
           {linked ? (
             <LinkedState uuid={verifiedUUID} />
           ) : status.loading && !status.data ? (
-            <Loading label="Checking link status…" />
+            <Loading label={t("checking_link")} />
           ) : status.error ? (
             <ErrorState error={status.error} onRetry={status.reload} />
           ) : (
@@ -129,19 +127,17 @@ export function Account() {
  *  just verified it (start does not return it), so a pre-existing link renders
  *  the confirmation without a UUID rather than inventing one. */
 function LinkedState({ uuid }: { uuid: string | null }) {
+  const { t } = useTranslation("account");
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 font-medium text-foreground">
         <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-        Your Minecraft account is linked.
+        {t("linked_title")}
       </div>
-      <p className="text-muted-foreground">
-        Linked sessions can claim and own servers — ownership operations (claim,
-        wake, stop) are unblocked.
-      </p>
+      <p className="text-muted-foreground">{t("linked_desc")}</p>
       {uuid && (
         <div className="flex items-center gap-2 text-muted-foreground">
-          <span className="text-xs uppercase tracking-wide">UUID</span>
+          <span className="text-xs uppercase tracking-wide">{t("uuid_label")}</span>
           <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
             {uuid}
           </code>
@@ -167,34 +163,34 @@ function LinkForm({
   error: string | null;
   onSubmit: (e: FormEvent) => void;
 }) {
+  const { t } = useTranslation("account");
   return (
     <ol className="space-y-4">
       <li className="flex gap-3">
         <StepBadge n={1} />
         <div className="space-y-1">
-          <p className="font-medium text-foreground">Get a code in-game</p>
+          <p className="font-medium text-foreground">{t("step1_title")}</p>
           <p className="text-muted-foreground">
-            Join any server and run{" "}
+            {t("step1_desc_prefix")}
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
               /link
-            </code>{" "}
-            in chat. The server already knows your verified identity, so it hands
-            you a one-time code (valid about 10 minutes).
+            </code>
+            {t("step1_desc_suffix")}
           </p>
         </div>
       </li>
       <li className="flex gap-3">
         <StepBadge n={2} />
         <div className="w-full space-y-2">
-          <p className="font-medium text-foreground">Enter it here</p>
+          <p className="font-medium text-foreground">{t("step2_title")}</p>
           <form onSubmit={onSubmit} className="space-y-2">
-            <Label htmlFor="link-code">Link code</Label>
+            <Label htmlFor="link-code">{t("link_code")}</Label>
             <div className="flex gap-2">
               <Input
                 id="link-code"
                 value={code}
                 onChange={(e) => setCode(e.target.value.toUpperCase())}
-                placeholder="ABCD2345"
+                placeholder={t("link_code_placeholder")}
                 autoComplete="off"
                 autoCapitalize="characters"
                 spellCheck={false}
@@ -206,7 +202,7 @@ function LinkForm({
                 type="submit"
                 disabled={submitting || code.trim().length === 0}
               >
-                {submitting ? "Verifying…" : "Link"}
+                {submitting ? t("verifying") : t("verify_btn")}
               </Button>
             </div>
             {error && <p className="text-sm text-destructive">{error}</p>}

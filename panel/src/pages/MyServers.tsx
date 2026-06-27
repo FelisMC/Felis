@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
 import { ServerCard } from "@/components/ServerCard";
 import { Loading, ErrorState, EmptyState } from "@/components/States";
@@ -10,14 +11,15 @@ import { useAsync, useConfig } from "@/lib/hooks";
 export function MyServers() {
   const cfg = useConfig();
   const { data, error, loading, reload } = useAsync(() => api.myServers(), []);
+  const { t } = useTranslation("servers");
   const servers = data ?? [];
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">My servers</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">{t("my_servers_title")}</h1>
         <p className="text-sm text-muted-foreground">
-          Wake, stop, or claim the servers you can manage.
+          {t("my_servers_subtitle")}
         </p>
       </div>
 
@@ -26,11 +28,11 @@ export function MyServers() {
       ) : error ? (
         <ErrorState error={error} onRetry={reload} />
       ) : !cfg ? (
-        <Loading label="Loading config…" />
+        <Loading label={t("common:loading_config")} />
       ) : servers.length === 0 ? (
         <EmptyState
-          title="No servers linked to you"
-          hint="Claim an unowned server you have access to, or ask an admin to provision one."
+          title={t("no_servers_linked")}
+          hint={t("no_servers_hint")}
         />
       ) : (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -42,9 +44,7 @@ export function MyServers() {
 
       <Card className="border-dashed bg-transparent">
         <CardContent className="p-4 text-xs text-muted-foreground">
-          Servers and game types are provisioned and managed by the platform. You
-          claim a node to operate it; raw cluster config is never exposed here
-          (spec §15).
+          {t("my_servers_footer")}
         </CardContent>
       </Card>
     </div>

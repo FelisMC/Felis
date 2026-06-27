@@ -1,4 +1,5 @@
 import { Boxes, CheckCircle2, CircleSlash } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Loading, ErrorState, EmptyState } from "@/components/States";
@@ -11,17 +12,16 @@ import { useAsync } from "@/lib/hooks";
 // added, so this page surfaces the whitelist honestly and labels the missing
 // mutation rather than shipping dead buttons.
 export function ImageAdmin() {
+  const { t } = useTranslation("admin");
   const { data, error, loading, reload } = useAsync(() => api.listImages(), []);
   const images = data ?? [];
 
   return (
     <div className="mx-auto max-w-4xl space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Images</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">{t("images_title")}</h1>
         <p className="text-sm text-muted-foreground">
-          The platform image whitelist. Only enabled images can back a new server.
-          Editing the whitelist from the Web is auditable (spec §14) — the mutation
-          routes are a pending admin-tier slice, so this view is read-only for now.
+          {t("images_subtitle")}
         </p>
       </div>
 
@@ -31,8 +31,8 @@ export function ImageAdmin() {
         <ErrorState error={error} onRetry={reload} />
       ) : images.length === 0 ? (
         <EmptyState
-          title="No images whitelisted"
-          hint="The whitelist is empty — a platform admin must add one (CLI for now)."
+          title={t("no_images_title")}
+          hint={t("no_images_hint")}
         />
       ) : (
         <div className="space-y-2">
@@ -50,11 +50,11 @@ export function ImageAdmin() {
                 </div>
                 {img.enabled ? (
                   <span className="inline-flex shrink-0 items-center gap-1 text-xs text-primary">
-                    <CheckCircle2 className="h-3.5 w-3.5" /> enabled
+                    <CheckCircle2 className="h-3.5 w-3.5" /> {t("enabled")}
                   </span>
                 ) : (
                   <span className="inline-flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
-                    <CircleSlash className="h-3.5 w-3.5" /> disabled
+                    <CircleSlash className="h-3.5 w-3.5" /> {t("disabled")}
                   </span>
                 )}
               </CardContent>

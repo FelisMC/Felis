@@ -1,0 +1,21 @@
+{
+  "title": "Account",
+  "subtitle": "Identity and Minecraft linking.",
+  "session": "Session",
+  "session_desc": "The panel itself holds no credentials — every request rides your existing session cookie, whether issued by local password sign-in or the platform's identity proxy (Zero-Trust / Access) (spec §7/§8).",
+  "sign_out": "Sign out",
+  "signing_out": "Signing out…",
+  "minecraft_link": "Minecraft link",
+  "checking_link": "Checking link status…",
+  "linked_title": "Your Minecraft account is linked.",
+  "linked_desc": "Linked sessions can claim and own servers — ownership operations (claim, wake, stop) are unblocked.",
+  "uuid_label": "UUID",
+  "step1_title": "Get a code in-game",
+  "step1_desc_prefix": "Join any server and run ",
+  "step1_desc_suffix": " in chat. The server already knows your verified identity, so it hands you a one-time code (valid about 10 minutes).",
+  "step2_title": "Enter it here",
+  "link_code": "Link code",
+  "link_code_placeholder": "ABCD2345",
+  "verify_btn": "Link",
+  "verifying": "Verifying…"
+}

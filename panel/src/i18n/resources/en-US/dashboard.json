@@ -1,0 +1,14 @@
+{
+  "title": "Dashboard",
+  "subtitle": "Your fleet at a glance.",
+  "no_servers_title": "No servers yet",
+  "no_servers_hint": "Create your first server or claim an unowned one.",
+  "go_to_my_servers": "Go to My servers",
+  "stat_servers": "Servers",
+  "stat_running": "Running",
+  "stat_players_online": "Players online",
+  "fleet": "Fleet",
+  "manage": "Manage",
+  "loading_scene": "Loading scene…",
+  "preparing_scene": "Preparing scene…"
+}
