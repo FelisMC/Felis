@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Play, Square, Hand, Users, ExternalLink, Terminal } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { PhaseBadge } from "@/components/PhaseBadge";
 import { api, humanizeError } from "@/lib/api";
@@ -42,41 +42,40 @@ export function ServerCard({ server, cfg, onChanged }: Props) {
   const transitioning = server.phase === "Starting" || server.phase === "Stopping";
 
   return (
-    <Card className="flex flex-col transition-colors hover:border-primary/40">
-      <CardHeader className="flex-row items-start justify-between space-y-0">
-        <div className="min-w-0">
-          <div className="truncate font-semibold">
-            {server.displayName || server.name}
-          </div>
-          <a
-            href={`https://${host}`}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-0.5 inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-          >
-            {host}
-            <ExternalLink className="h-3 w-3" />
-          </a>
-        </div>
+    <Card className="flex flex-col p-4 transition-colors hover:border-primary/40">
+      {/* Header Row */}
+      <div className="flex items-center justify-between gap-2">
+        <span className="truncate text-sm font-semibold text-foreground">
+          {server.displayName || server.name}
+        </span>
         <PhaseBadge phase={server.phase} />
-      </CardHeader>
+      </div>
 
-      <CardContent className="flex-1 text-sm text-muted-foreground">
-        <div className="flex items-center gap-1.5">
+      {/* Info Row */}
+      <div className="mt-2 flex items-center justify-between text-xs text-muted-foreground">
+        <a
+          href={`https://${host}`}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 hover:text-foreground truncate max-w-[70%]"
+        >
+          {host}
+          <ExternalLink className="h-3 w-3 shrink-0" />
+        </a>
+        <div className="flex items-center gap-1.5 shrink-0 mr-1">
+          <span>
+            {running
+              ? `${server.players ?? 0}${server.maxPlayers ? `/${server.maxPlayers}` : ""}`
+              : "—"}
+          </span>
           <Users className="h-3.5 w-3.5" />
-          {running ? (
-            <span>
-              {server.players ?? 0}
-              {server.maxPlayers ? ` / ${server.maxPlayers}` : ""} {t("online")}
-            </span>
-          ) : (
-            <span>—</span>
-          )}
         </div>
-        {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
-      </CardContent>
+      </div>
 
-      <CardFooter className="flex flex-wrap gap-2">
+      {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
+
+      {/* Action Row */}
+      <div className="mt-4 flex flex-wrap gap-2 border-t border-border/50 pt-3">
         {server.owned && (
           <Link to={`/servers/${server.name}`}>
             <Button variant="ghost" size="sm">
@@ -114,7 +113,7 @@ export function ServerCard({ server, cfg, onChanged }: Props) {
               <Play /> {busy === "wake" ? t("waking") : t("wake")}
             </Button>
           ))}
-      </CardFooter>
+      </div>
     </Card>
   );
 }
