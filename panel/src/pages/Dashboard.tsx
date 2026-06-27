@@ -235,7 +235,7 @@ function FleetView({
                   </div>
                   <Link to="/account" className="shrink-0 w-full sm:w-auto">
                     <Button variant="outline" size="sm" className="w-full text-xs">
-                      管理游戏角色
+                      {t("manage_game_character")}
                     </Button>
                   </Link>
                 </>
@@ -291,7 +291,7 @@ function FleetView({
                   <div className="space-y-2">
                     <div className="flex justify-between text-xs">
                       <span className="text-muted-foreground">{t("status_distribution")}</span>
-                      <span className="font-medium text-foreground">{servers.length} 实例</span>
+                      <span className="font-medium text-foreground">{t("instances_count", { count: servers.length })}</span>
                     </div>
                     {servers.length > 0 ? (
                       <div className="h-3 w-full bg-secondary rounded-full overflow-hidden flex">
@@ -427,11 +427,11 @@ function FleetView({
 
                 {/* 极简平台新手引导指引（真实且有用） */}
                 <div className="p-3.5 rounded-lg border bg-accent/5 text-[11px] text-muted-foreground space-y-1.5">
-                  <div className="font-semibold text-foreground text-xs">快速入门指引：</div>
+                  <div className="font-semibold text-foreground text-xs">{t("quick_start_guide")}</div>
                   <ul className="list-disc list-inside space-y-1">
-                    <li>认领无主服后，系统会自动将您的 Minecraft UUID 添加至准入白名单。</li>
-                    <li>服务器如果长时间处于无人在线空闲状态，平台会自动执行休眠存档以节约资源。</li>
-                    <li>游戏入口统一由 Velocity 网关承载，只需连接您的专用子域名即可。</li>
+                    <li>{t("quick_start_step1")}</li>
+                    <li>{t("quick_start_step2")}</li>
+                    <li>{t("quick_start_step3")}</li>
                   </ul>
                 </div>
 
@@ -451,7 +451,7 @@ function FleetView({
         <Card className="lg:col-span-4 flex flex-col overflow-hidden h-full">
           <CardHeader className="space-y-1 pb-4">
             <CardTitle className="text-base">{t("fleet")}</CardTitle>
-            <p className="text-xs text-muted-foreground">三维体素网络拓扑图</p>
+            <p className="text-xs text-muted-foreground">{t("voxel_topology_desc")}</p>
           </CardHeader>
           <CardContent className="flex-1 flex flex-col p-0 justify-between">
             <div className="flex-1 min-h-[220px] w-full bg-gradient-to-b from-transparent to-primary/5 border-b relative">
