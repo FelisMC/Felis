@@ -81,26 +81,6 @@ export function Account() {
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
-            <ShieldCheck className="h-4 w-4 text-primary" /> {t("session")}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4 text-sm text-muted-foreground">
-          <p>{t("session_desc")}</p>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={signOut}
-            disabled={signingOut}
-          >
-            <LogOut className="mr-2 h-4 w-4" />
-            {signingOut ? t("signing_out") : t("sign_out")}
-          </Button>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
             <Link2 className="h-4 w-4 text-primary" /> {t("minecraft_link")}
           </CardTitle>
         </CardHeader>
@@ -120,6 +100,26 @@ export function Account() {
               onSubmit={submit}
             />
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <ShieldCheck className="h-4 w-4 text-primary" /> {t("session")}
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4 text-sm text-muted-foreground">
+          <p>{t("session_desc")}</p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={signOut}
+            disabled={signingOut}
+          >
+            <LogOut className="mr-2 h-4 w-4" />
+            {signingOut ? t("signing_out") : t("sign_out")}
+          </Button>
         </CardContent>
       </Card>
     </>
