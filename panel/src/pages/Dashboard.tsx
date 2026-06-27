@@ -314,7 +314,7 @@ function FleetView({
                     <ShieldCheck className="h-4.5 w-4.5 text-primary shrink-0" />
                     <div>
                       <span className="font-semibold text-foreground mr-1">{images.length}</span>
-                      {t("images_count")}。所有后端镜像运行前均通过 Trivy CVE 漏洞扫描，强制在隔离的安全容器中托管。
+                      {t("images_count")}{t("images_security_note")}
                     </div>
                   </div>
                 </CardContent>

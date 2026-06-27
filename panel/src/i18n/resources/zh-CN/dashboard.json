@@ -32,6 +32,7 @@
   "spec_failed_ratio": "节点故障率",
   "no_servers_monitor": "当前集群暂无服务器实例",
   "images_count": "个支持的白名单镜像环境",
+  "images_security_note": "。所有后端镜像运行前均通过 Trivy CVE 漏洞扫描，强制在隔离的安全容器中托管。",
   "legend_title": "3D 节点监控图例",
   "legend_running": "运行中",
   "legend_starting": "启动中",

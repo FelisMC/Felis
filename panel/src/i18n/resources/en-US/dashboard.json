@@ -32,6 +32,7 @@
   "spec_failed_ratio": "Failed Rate",
   "no_servers_monitor": "No active instances in the cluster",
   "images_count": "Whitelisted backend images available",
+  "images_security_note": ". All backend images undergo Trivy CVE vulnerability scanning before deployment and run in isolated security containers.",
   "legend_title": "3D Node Monitor Legend",
   "legend_running": "Running",
   "legend_starting": "Starting",
