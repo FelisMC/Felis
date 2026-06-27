@@ -12,6 +12,7 @@ import {
   Database,
   Box,
   Hand,
+  LayoutDashboard,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -82,9 +83,12 @@ export function Dashboard() {
 
   return (
     <>
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">{t("title")}</h1>
-        <p className="text-sm text-muted-foreground">{t("subtitle")}</p>
+      <div className="flex items-center gap-3">
+        <LayoutDashboard className="h-6 w-6 text-primary" />
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">{t("title")}</h1>
+          <p className="text-sm text-muted-foreground">{t("subtitle")}</p>
+        </div>
       </div>
 
       {loading && !servers ? (

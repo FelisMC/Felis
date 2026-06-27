@@ -1,3 +1,4 @@
+import { Server } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
 import { ServerCard } from "@/components/ServerCard";
@@ -16,11 +17,14 @@ export function MyServers() {
 
   return (
     <>
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">{t("my_servers_title")}</h1>
-        <p className="text-sm text-muted-foreground">
-          {t("my_servers_subtitle")}
-        </p>
+      <div className="flex items-center gap-3">
+        <Server className="h-6 w-6 text-primary" />
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">{t("my_servers_title")}</h1>
+          <p className="text-sm text-muted-foreground">
+            {t("my_servers_subtitle")}
+          </p>
+        </div>
       </div>
 
       {loading && !data ? (

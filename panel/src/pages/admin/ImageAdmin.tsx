@@ -18,11 +18,14 @@ export function ImageAdmin() {
 
   return (
     <>
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">{t("images_title")}</h1>
-        <p className="text-sm text-muted-foreground">
-          {t("images_subtitle")}
-        </p>
+      <div className="flex items-center gap-3">
+        <Boxes className="h-6 w-6 text-primary" />
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">{t("images_title")}</h1>
+          <p className="text-sm text-muted-foreground">
+            {t("images_subtitle")}
+          </p>
+        </div>
       </div>
 
       {loading && !data ? (

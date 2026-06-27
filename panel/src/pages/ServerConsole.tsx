@@ -91,15 +91,18 @@ export function ServerConsole() {
       ) : data ? (
         <>
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div>
-              <h1 className="text-2xl font-semibold tracking-tight">
-                {data.displayName || data.name}
-              </h1>
-              {cfg && (
-                <p className="text-sm text-muted-foreground">
-                  {hostFor(data.subdomain, cfg)}
-                </p>
-              )}
+            <div className="flex items-center gap-3">
+              <Terminal className="h-6 w-6 text-primary" />
+              <div>
+                <h1 className="text-2xl font-semibold tracking-tight">
+                  {data.displayName || data.name}
+                </h1>
+                {cfg && (
+                  <p className="text-sm text-muted-foreground">
+                    {hostFor(data.subdomain, cfg)}
+                  </p>
+                )}
+              </div>
             </div>
             <div className="flex items-center gap-2">
               <PhaseBadge phase={data.phase} />

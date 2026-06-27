@@ -1,3 +1,4 @@
+import { ServerCog } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
 import { ServerCard } from "@/components/ServerCard";
@@ -24,12 +25,15 @@ export function ServerAdmin() {
 
   return (
     <>
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{t("servers")}</h1>
-          <p className="text-sm text-muted-foreground">
-            {t("server_admin_subtitle")}
-          </p>
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <ServerCog className="h-6 w-6 text-primary" />
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">{t("servers")}</h1>
+            <p className="text-sm text-muted-foreground">
+              {t("server_admin_subtitle")}
+            </p>
+          </div>
         </div>
         {cfg && <CreateServerDialog cfg={cfg} onCreated={reload} />}
       </div>

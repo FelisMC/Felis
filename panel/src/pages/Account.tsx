@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { CheckCircle2, Link2, LogOut, ShieldCheck } from "lucide-react";
+import { CheckCircle2, Link2, LogOut, ShieldCheck, UserRound } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -68,11 +68,14 @@ export function Account() {
 
   return (
     <>
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">{t("title")}</h1>
-        <p className="text-sm text-muted-foreground">
-          {t("subtitle")}
-        </p>
+      <div className="flex items-center gap-3">
+        <UserRound className="h-6 w-6 text-primary" />
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">{t("title")}</h1>
+          <p className="text-sm text-muted-foreground">
+            {t("subtitle")}
+          </p>
+        </div>
       </div>
 
       <Card>
