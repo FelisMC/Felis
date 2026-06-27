@@ -1,27 +1,25 @@
+import { useState } from "react";
 import { ServerCog } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
 import { ServerCard } from "@/components/ServerCard";
+import { Pagination } from "@/components/Pagination";
 import { CreateServerDialog } from "@/components/CreateServerDialog";
 import { Loading, ErrorState, EmptyState } from "@/components/States";
 import { api } from "@/lib/api";
 import { useAsync, useConfig } from "@/lib/hooks";
 
-// ServerAdmin is the Admin-Side create surface. CreateServerDialog lives here (it
-// calls the admin-tier POST /servers, spec §15) rather than on User-Side, where it
-// previously rendered for everyone and relied on a 403 — moving it removes that
-// UX/tier mismatch.
-//
-// The list below currently uses the app-tier GET /me/servers, i.e. the servers
-// THIS admin owns or may manage. A fleet-wide GET /admin/servers (every server,
-// not just mine) is a separate Oracle-verifiable backend slice that powers the
-// SysAdmin-Side FleetTable; it is intentionally not faked in here.
+const PAGE_SIZE = 12;
+
 export function ServerAdmin() {
   const cfg = useConfig();
   const { data, error, loading, reload } = useAsync(() => api.myServers(), []);
   const { t } = useTranslation("admin");
   const { t: ts } = useTranslation("servers");
   const servers = data ?? [];
+  const [page, setPage] = useState(1);
+  const totalPages = Math.max(1, Math.ceil(servers.length / PAGE_SIZE));
+  const paged = servers.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   return (
     <>
@@ -51,7 +49,7 @@ export function ServerAdmin() {
         />
       ) : (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {servers.map((s) => (
+          {paged.map((s) => (
             <ServerCard key={s.name} server={s} cfg={cfg} onChanged={reload} />
           ))}
         </div>
@@ -62,6 +60,15 @@ export function ServerAdmin() {
           {ts("server_admin_footer")}
         </CardContent>
       </Card>
+
+      {servers.length > 0 && (
+        <Pagination
+          page={page}
+          pageSize={PAGE_SIZE}
+          total={servers.length}
+          onChange={(p) => { setPage(p); if (p > totalPages) setPage(totalPages); }}
+        />
+      )}
     </>
   );
 }

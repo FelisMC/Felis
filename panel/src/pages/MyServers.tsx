@@ -1,19 +1,23 @@
+import { useState } from "react";
 import { Server } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
 import { ServerCard } from "@/components/ServerCard";
+import { Pagination } from "@/components/Pagination";
 import { Loading, ErrorState, EmptyState } from "@/components/States";
 import { api } from "@/lib/api";
 import { useAsync, useConfig } from "@/lib/hooks";
 
-// MyServers is the User-Side fleet: list / wake / stop / claim the servers the
-// caller owns or may claim. Creation lives on Admin-Side now (POST /servers is
-// admin-tier) — the platform provisions servers; users claim and operate them.
+const PAGE_SIZE = 12;
+
 export function MyServers() {
   const cfg = useConfig();
   const { data, error, loading, reload } = useAsync(() => api.myServers(), []);
   const { t } = useTranslation("servers");
   const servers = data ?? [];
+  const [page, setPage] = useState(1);
+  const totalPages = Math.max(1, Math.ceil(servers.length / PAGE_SIZE));
+  const paged = servers.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   return (
     <>
@@ -40,7 +44,7 @@ export function MyServers() {
         />
       ) : (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {servers.map((s) => (
+          {paged.map((s) => (
             <ServerCard key={s.name} server={s} cfg={cfg} onChanged={reload} />
           ))}
         </div>
@@ -51,6 +55,15 @@ export function MyServers() {
           {t("my_servers_footer")}
         </CardContent>
       </Card>
+
+      {servers.length > 0 && (
+        <Pagination
+          page={page}
+          pageSize={PAGE_SIZE}
+          total={servers.length}
+          onChange={(p) => { setPage(p); if (p > totalPages) setPage(totalPages); }}
+        />
+      )}
     </>
   );
 }

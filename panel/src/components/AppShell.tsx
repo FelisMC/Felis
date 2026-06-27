@@ -121,8 +121,8 @@ export function AppShell() {
             <ThemeToggle />
           </div>
         </header>
-        <main className="flex-1 p-6">
-          <div className="mx-auto max-w-7xl space-y-7">
+        <main className="flex flex-1 flex-col p-6">
+          <div className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6">
             <Outlet />
           </div>
         </main>

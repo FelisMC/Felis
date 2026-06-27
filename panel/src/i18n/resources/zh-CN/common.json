@@ -19,5 +19,8 @@
   "lang_en": "EN",
   "lang_zh": "中文",
   "lang_toggle_hint": "切换至 {{lang}}",
-  "toggle_theme": "切换主题"
+  "toggle_theme": "切换主题",
+  "pagination_prev": "上一页",
+  "pagination_next": "下一页",
+  "pagination_of": "第 {{current}} / {{total}} 页"
 }

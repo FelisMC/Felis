@@ -19,5 +19,8 @@
   "lang_en": "EN",
   "lang_zh": "中文",
   "lang_toggle_hint": "Switch to {{lang}}",
-  "toggle_theme": "Toggle theme"
+  "toggle_theme": "Toggle theme",
+  "pagination_prev": "Previous",
+  "pagination_next": "Next",
+  "pagination_of": "Page {{current}} of {{total}}"
 }
