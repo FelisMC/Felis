@@ -22,7 +22,7 @@ import { FleetTable } from "@/pages/ops/FleetTable";
 // the split is by concern, not by tier. TierProvider fetches /me once at boot.
 export default function App() {
   return (
-    <ThemeProvider storageKey="felis-theme">
+    <ThemeProvider>
       <TierProvider>
         <BrowserRouter>
         <Routes>

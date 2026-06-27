@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import { Cat, Globe, Sun, Moon, LogOut, UserRound } from "lucide-react";
+import { Cat, Globe, Sun, Moon, LogOut } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import * as SelectPrimitive from "@radix-ui/react-select";
 import { cn } from "@/lib/utils";
@@ -130,7 +130,8 @@ function ThemeToggle() {
       aria-label={t("toggle_theme")}
       title={t("toggle_theme")}
     >
-      {theme === "light" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+      {theme === "light" && <Sun className="h-4 w-4" />}
+      {theme === "dark" && <Moon className="h-4 w-4" />}
     </button>
   );
 }
