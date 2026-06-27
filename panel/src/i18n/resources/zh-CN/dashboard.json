@@ -1,0 +1,14 @@
+{
+  "title": "仪表盘",
+  "subtitle": "服务器运行状态一览。",
+  "no_servers_title": "暂无服务器",
+  "no_servers_hint": "创建一个新服务器或认领一台现有服务器即可开始。",
+  "go_to_my_servers": "前往我的服务器",
+  "stat_servers": "服务器",
+  "stat_running": "运行中",
+  "stat_players_online": "在线玩家",
+  "fleet": "服务器概览",
+  "manage": "管理",
+  "loading_scene": "正在加载 3D 场景…",
+  "preparing_scene": "正在准备场景…"
+}

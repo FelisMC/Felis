@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
 import { ServerCard } from "@/components/ServerCard";
 import { CreateServerDialog } from "@/components/CreateServerDialog";
@@ -17,16 +18,17 @@ import { useAsync, useConfig } from "@/lib/hooks";
 export function ServerAdmin() {
   const cfg = useConfig();
   const { data, error, loading, reload } = useAsync(() => api.myServers(), []);
+  const { t } = useTranslation("admin");
+  const { t: ts } = useTranslation("servers");
   const servers = data ?? [];
 
   return (
     <div className="mx-auto max-w-6xl space-y-6">
       <div className="flex items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Servers</h1>
+          <h1 className="text-2xl font-semibold tracking-tight">{t("servers")}</h1>
           <p className="text-sm text-muted-foreground">
-            Create platform servers from the structured form and manage the ones
-            you operate.
+            {t("server_admin_subtitle")}
           </p>
         </div>
         {cfg && <CreateServerDialog cfg={cfg} onCreated={reload} />}
@@ -37,11 +39,11 @@ export function ServerAdmin() {
       ) : error ? (
         <ErrorState error={error} onRetry={reload} />
       ) : !cfg ? (
-        <Loading label="Loading config…" />
+        <Loading label={ts("common:loading_config")} />
       ) : servers.length === 0 ? (
         <EmptyState
-          title="No servers under your management yet"
-          hint="Use Create server to provision one from the vetted spec."
+          title={ts("no_servers_managed")}
+          hint={ts("no_servers_managed_hint")}
         />
       ) : (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -53,10 +55,7 @@ export function ServerAdmin() {
 
       <Card className="border-dashed bg-transparent">
         <CardContent className="p-4 text-xs text-muted-foreground">
-          Server creation goes through the structured form only — the platform maps
-          your choices onto a vetted Kubernetes spec. Raw cluster config (host
-          networking, host paths, arbitrary images, privileged pods) is never
-          expressible here (spec §15).
+          {ts("server_admin_footer")}
         </CardContent>
       </Card>
     </div>

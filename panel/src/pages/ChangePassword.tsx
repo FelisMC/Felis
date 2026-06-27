@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { Loader2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { AuthLayout } from "@/components/AuthLayout";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -25,6 +26,7 @@ const MIN_PASSWORD = 8;
 export function ChangePassword() {
   const { loading, unauthenticated, mustChangePassword, refresh } = useTier();
   const navigate = useNavigate();
+  const { t } = useTranslation("auth");
 
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
@@ -34,10 +36,10 @@ export function ChangePassword() {
 
   if (loading) {
     return (
-      <AuthLayout title="Felis">
+      <AuthLayout title={t("common:brand_name")}>
         <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />
-          Loading…
+          {t("common:loading")}
         </div>
       </AuthLayout>
     );
@@ -69,18 +71,18 @@ export function ChangePassword() {
 
   return (
     <AuthLayout
-      title="Set a new password"
+      title={t("change_password_title")}
       subtitle={
         mustChangePassword
-          ? "Your account was issued a one-time password. Choose a new one to continue."
-          : "Update your console password."
+          ? t("change_password_subtitle_forced")
+          : t("change_password_subtitle_voluntary")
       }
     >
       <Card>
         <CardContent className="pt-5">
           <form onSubmit={submit} className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="current">Current password</Label>
+              <Label htmlFor="current">{t("current_password")}</Label>
               <Input
                 id="current"
                 type="password"
@@ -92,7 +94,7 @@ export function ChangePassword() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="new-password">New password</Label>
+              <Label htmlFor="new-password">{t("new_password")}</Label>
               <Input
                 id="new-password"
                 type="password"
@@ -103,12 +105,12 @@ export function ChangePassword() {
               />
               {tooShort && (
                 <p className="text-xs text-muted-foreground">
-                  At least {MIN_PASSWORD} characters.
+                  {t("password_min_length", { min: MIN_PASSWORD })}
                 </p>
               )}
             </div>
             <div className="space-y-2">
-              <Label htmlFor="confirm-password">Confirm new password</Label>
+              <Label htmlFor="confirm-password">{t("confirm_new_password")}</Label>
               <Input
                 id="confirm-password"
                 type="password"
@@ -118,12 +120,12 @@ export function ChangePassword() {
                 aria-invalid={mismatch ? true : undefined}
               />
               {mismatch && (
-                <p className="text-xs text-destructive">Passwords don't match.</p>
+                <p className="text-xs text-destructive">{t("password_mismatch")}</p>
               )}
             </div>
             {error && <p className="text-sm text-destructive">{error}</p>}
             <Button type="submit" className="w-full" disabled={!canSubmit}>
-              {submitting ? "Saving…" : "Change password"}
+              {submitting ? t("saving") : t("change_password_btn")}
             </Button>
           </form>
         </CardContent>

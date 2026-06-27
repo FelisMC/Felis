@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Play, Square, Hand, Users, ExternalLink, Terminal } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardFooter, CardHeader } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { PhaseBadge } from "@/components/PhaseBadge";
@@ -16,6 +17,7 @@ interface Props {
 }
 
 export function ServerCard({ server, cfg, onChanged }: Props) {
+  const { t } = useTranslation("servers");
   const [busy, setBusy] = useState<null | "wake" | "stop" | "claim">(null);
   const [error, setError] = useState<string | null>(null);
   const host = hostFor(server.subdomain, cfg);
@@ -65,7 +67,7 @@ export function ServerCard({ server, cfg, onChanged }: Props) {
           {running ? (
             <span>
               {server.players ?? 0}
-              {server.maxPlayers ? ` / ${server.maxPlayers}` : ""} online
+              {server.maxPlayers ? ` / ${server.maxPlayers}` : ""} {t("online")}
             </span>
           ) : (
             <span>—</span>
@@ -78,7 +80,7 @@ export function ServerCard({ server, cfg, onChanged }: Props) {
         {server.owned && (
           <Link to={`/servers/${server.name}`}>
             <Button variant="ghost" size="sm">
-              <Terminal /> Console
+              <Terminal /> {t("console")}
             </Button>
           </Link>
         )}
@@ -89,7 +91,7 @@ export function ServerCard({ server, cfg, onChanged }: Props) {
             disabled={busy !== null}
             onClick={() => act("claim", () => api.claim(server.name))}
           >
-            <Hand /> {busy === "claim" ? "Claiming…" : "Claim"}
+            <Hand /> {busy === "claim" ? t("claiming") : t("claim")}
           </Button>
         )}
         {server.owned &&
@@ -100,7 +102,7 @@ export function ServerCard({ server, cfg, onChanged }: Props) {
               disabled={busy !== null}
               onClick={() => act("stop", () => api.stop(server.name))}
             >
-              <Square /> {busy === "stop" ? "Stopping…" : "Stop"}
+              <Square /> {busy === "stop" ? t("stopping") : t("stop")}
             </Button>
           ) : (
             <Button
@@ -108,7 +110,7 @@ export function ServerCard({ server, cfg, onChanged }: Props) {
               disabled={busy !== null}
               onClick={() => act("wake", () => api.wake(server.name))}
             >
-              <Play /> {busy === "wake" ? "Waking…" : "Wake"}
+              <Play /> {busy === "wake" ? t("waking") : t("wake")}
             </Button>
           ))}
       </CardFooter>

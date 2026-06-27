@@ -23,7 +23,7 @@ import {
 
 export interface NavItem {
   to: string;
-  label: string;
+  key: string;
   icon: LucideIcon;
   /** react-router NavLink `end` — exact-match active styling for index routes. */
   end?: boolean;
@@ -31,8 +31,8 @@ export interface NavItem {
 
 export interface NavSection {
   id: "user" | "admin" | "ops";
-  /** Section heading shown in the sidebar; null renders no heading (User-Side). */
-  title: string | null;
+  /** Section heading key; null renders no heading (User-Side). */
+  titleKey: string | null;
   /** When true the section is shown only to admins (is_admin === true). */
   adminOnly: boolean;
   items: NavItem[];
@@ -41,31 +41,31 @@ export interface NavSection {
 export const NAV_SECTIONS: NavSection[] = [
   {
     id: "user",
-    title: null,
+    titleKey: null,
     adminOnly: false,
     items: [
-      { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
-      { to: "/servers", label: "My servers", icon: Server },
-      { to: "/account", label: "Account", icon: UserRound },
+      { to: "/", key: "dashboard", icon: LayoutDashboard, end: true },
+      { to: "/servers", key: "my_servers", icon: Server },
+      { to: "/account", key: "account", icon: UserRound },
     ],
   },
   {
     id: "admin",
-    title: "Admin",
+    titleKey: "admin_section",
     adminOnly: true,
     items: [
-      { to: "/admin", label: "Overview", icon: ShieldCheck, end: true },
-      { to: "/admin/servers", label: "Servers", icon: ServerCog },
-      { to: "/admin/images", label: "Images", icon: Boxes },
+      { to: "/admin", key: "admin_overview", icon: ShieldCheck, end: true },
+      { to: "/admin/servers", key: "admin_servers", icon: ServerCog },
+      { to: "/admin/images", key: "admin_images", icon: Boxes },
     ],
   },
   {
     id: "ops",
-    title: "SysAdmin",
+    titleKey: "sysadmin_section",
     adminOnly: true,
     items: [
-      { to: "/ops", label: "Overview", icon: Gauge, end: true },
-      { to: "/ops/fleet", label: "Fleet", icon: Network },
+      { to: "/ops", key: "sysadmin_overview", icon: Gauge, end: true },
+      { to: "/ops/fleet", key: "sysadmin_fleet", icon: Network },
     ],
   },
 ];

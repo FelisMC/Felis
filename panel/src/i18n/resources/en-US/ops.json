@@ -1,0 +1,13 @@
+{
+  "title": "SysAdmin",
+  "subtitle": "Platform observability cockpit — a window, not a lever.",
+  "cluster_wide_fleet": "Cluster-wide fleet",
+  "open_fleet_table": "Open fleet table →",
+  "footer_pre": "Control-plane scaling, RBAC, Secrets and cluster lifecycle are ",
+  "footer_kubectl": "kubectl / CRD operations",
+  "footer_post": " and are not reachable from here. SysAdmin-Side is observability only — the four-power separation (build / runtime / operator / app) is preserved.",
+  "fleet_title": "Fleet",
+  "fleet_subtitle": "Every server on the platform — phase, owner, capacity.",
+  "fleet_table_pending_note": "The cluster-wide fleet table reads every server's status (not just yours). That admin-tier read is the next backend slice; rows appear here once it ships.",
+  "ops_overview_pending_note": "A platform-scoped fleet read (every server, not just the ones you own) powers the cluster-wide rollup and 3D fleet view. It is an admin-tier backend slice still to be added — distinct from the app-tier GET /me/servers."
+}

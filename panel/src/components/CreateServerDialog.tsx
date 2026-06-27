@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Plus } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import {
   Dialog,
   DialogContent,
@@ -32,13 +33,16 @@ import type { AutostartPolicy, CreateServerRequest } from "@/lib/types";
 
 const MEMORY_OPTIONS = ["2Gi", "4Gi", "6Gi", "8Gi"];
 const STORAGE_OPTIONS = ["5Gi", "10Gi", "20Gi", "50Gi"];
-const POLICIES: { value: AutostartPolicy; label: string }[] = [
-  { value: "ownerOnly", label: "Owner only — wake from the panel" },
-  { value: "public", label: "Public — any player join wakes it" },
-  { value: "allowlist", label: "Allowlist — listed players wake it" },
-];
 
 const SUBDOMAIN_RE = /^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/;
+
+function policyOptions(t: (key: string) => string): { value: AutostartPolicy; label: string }[] {
+  return [
+    { value: "ownerOnly", label: t("create_server_policy_owner") },
+    { value: "public", label: t("create_server_policy_public") },
+    { value: "allowlist", label: t("create_server_policy_allowlist") },
+  ];
+}
 
 interface Props {
   cfg: RuntimeConfig;
@@ -46,6 +50,7 @@ interface Props {
 }
 
 export function CreateServerDialog({ cfg, onCreated }: Props) {
+  const { t } = useTranslation("servers");
   const [open, setOpen] = useState(false);
   const images = useAsync(() => api.listImages(), []);
 
@@ -94,69 +99,70 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
     }
   }
 
+  const policies = policyOptions(t);
+
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
         <Button>
-          <Plus /> New server
+          <Plus /> {t("create_server_btn")}
         </Button>
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Create a server</DialogTitle>
+          <DialogTitle>{t("create_server_title")}</DialogTitle>
           <DialogDescription>
-            Pick from whitelisted images and sizes — the platform provisions the
-            rest. No raw cluster config is exposed here.
+            {t("create_server_desc")}
           </DialogDescription>
         </DialogHeader>
 
         <div className="grid gap-4">
           <div className="grid gap-2">
-            <Label htmlFor="cs-name">Name</Label>
+            <Label htmlFor="cs-name">{t("create_server_name")}</Label>
             <Input
               id="cs-name"
-              placeholder="survival"
+              placeholder={t("create_server_name_placeholder")}
               value={form.name}
               onChange={(e) => set("name", e.target.value)}
             />
           </div>
 
           <div className="grid gap-2">
-            <Label htmlFor="cs-sub">Subdomain</Label>
+            <Label htmlFor="cs-sub">{t("create_server_subdomain")}</Label>
             <Input
               id="cs-sub"
-              placeholder="survival"
+              placeholder={t("create_server_subdomain_placeholder")}
               value={form.subdomain}
               onChange={(e) => set("subdomain", e.target.value.toLowerCase())}
             />
             <p className="text-xs text-muted-foreground">
               {form.subdomain && !subdomainValid
-                ? "Lowercase letters, digits and hyphens only."
-                : `Will be reachable at ${hostFor(form.subdomain || "name", cfg)}`}
+                ? t("create_server_subdomain_invalid")
+                : t("create_server_subdomain_hint", { host: hostFor(form.subdomain || "name", cfg) })}
             </p>
           </div>
 
           <div className="grid gap-2">
-            <Label htmlFor="cs-display">Display name (optional)</Label>
+            <Label htmlFor="cs-display">{t("create_server_display_name")}</Label>
             <Input
               id="cs-display"
-              placeholder="Survival World"
+              placeholder={t("create_server_display_name_placeholder")}
               value={form.displayName ?? ""}
               onChange={(e) => set("displayName", e.target.value)}
             />
           </div>
 
           <div className="grid gap-2">
-            <Label>Image</Label>
+            <Label>{t("create_server_image")}</Label>
             <Select value={form.image} onValueChange={(v) => set("image", v)}>
               <SelectTrigger>
                 <SelectValue
                   placeholder={
                     images.loading
-                      ? "Loading images…"
+                      ? t("create_server_image_loading")
                       : enabledImages.length
-                        ? "Choose an image"
-                        : "No whitelisted images"
+                        ? t("create_server_image_choose")
+                        : t("create_server_image_none")
                   }
                 />
               </SelectTrigger>
@@ -172,7 +178,7 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
 
           <div className="grid grid-cols-2 gap-4">
             <div className="grid gap-2">
-              <Label>Memory</Label>
+              <Label>{t("create_server_memory")}</Label>
               <Select value={form.memory} onValueChange={(v) => set("memory", v)}>
                 <SelectTrigger>
                   <SelectValue />
@@ -187,7 +193,7 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
               </Select>
             </div>
             <div className="grid gap-2">
-              <Label>Storage</Label>
+              <Label>{t("create_server_storage")}</Label>
               <Select value={form.storage} onValueChange={(v) => set("storage", v)}>
                 <SelectTrigger>
                   <SelectValue />
@@ -204,7 +210,7 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
           </div>
 
           <div className="grid gap-2">
-            <Label>Autostart policy</Label>
+            <Label>{t("create_server_policy")}</Label>
             <Select
               value={form.autostartPolicy}
               onValueChange={(v) => set("autostartPolicy", v as AutostartPolicy)}
@@ -213,7 +219,7 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {POLICIES.map((p) => (
+                {policies.map((p) => (
                   <SelectItem key={p.value} value={p.value}>
                     {p.label}
                   </SelectItem>
@@ -227,10 +233,10 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
 
         <DialogFooter>
           <Button variant="ghost" onClick={() => setOpen(false)} disabled={submitting}>
-            Cancel
+            {t("create_server_cancel")}
           </Button>
           <Button onClick={submit} disabled={!canSubmit}>
-            {submitting ? "Creating…" : "Create"}
+            {submitting ? t("create_server_creating") : t("create_server_submit")}
           </Button>
         </DialogFooter>
       </DialogContent>

@@ -1,0 +1,22 @@
+{
+  "loading": "加载中…",
+  "try_again": "重试",
+  "cancel": "取消",
+  "save": "保存",
+  "create": "创建",
+  "creating": "创建中…",
+  "close_sr": "关闭",
+  "not_authorized_title": "无权访问",
+  "not_authorized_body": "此区域仅供平台管理员使用。若通过直接输入 URL 到达此页面，说明你的账号无管理员权限，API 侧同样会拒绝该请求。",
+  "back_to_dashboard": "返回首页",
+  "not_wired_yet": "功能尚未接入",
+  "pending_backend_prefix": "待接入接口：",
+  "checking_access": "正在验证权限…",
+  "loading_config": "正在加载配置…",
+  "brand_name": "Felis",
+  "brand_tagline": "Kubernetes 原生的 Minecraft 管理平台",
+  "page_title": "Felis · 控制面板",
+  "lang_en": "EN",
+  "lang_zh": "中文",
+  "lang_toggle_hint": "切换至 {{lang}}"
+}

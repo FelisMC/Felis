@@ -1,0 +1,22 @@
+{
+  "loading": "Loading…",
+  "try_again": "Try again",
+  "cancel": "Cancel",
+  "save": "Save",
+  "create": "Create",
+  "creating": "Creating…",
+  "close_sr": "Close",
+  "not_authorized_title": "Not authorized",
+  "not_authorized_body": "This area is for platform administrators. If you reached it by typing the URL, your account does not have admin access — and the API would refuse the request anyway.",
+  "back_to_dashboard": "Back to your dashboard",
+  "not_wired_yet": "Not wired yet",
+  "pending_backend_prefix": "pending backend: ",
+  "checking_access": "Checking access…",
+  "loading_config": "Loading config…",
+  "brand_name": "Felis",
+  "brand_tagline": "K8s-native Minecraft orchestration",
+  "page_title": "Felis · Control Panel",
+  "lang_en": "EN",
+  "lang_zh": "中文",
+  "lang_toggle_hint": "Switch to {{lang}}"
+}

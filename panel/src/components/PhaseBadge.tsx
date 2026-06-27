@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import type { Phase } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import { useTranslation } from "react-i18next";
 
 export type BadgeVariant = "default" | "muted" | "destructive" | "outline";
 
@@ -15,6 +16,15 @@ export const PHASE_COLOR: Record<Phase, string> = {
   Stopped: "#64748b",
   Failed: "#ef4444",
   Unknown: "#94a3b8",
+};
+
+export const PHASE_KEY: Record<Phase, string> = {
+  Running: "servers:phase_running",
+  Starting: "servers:phase_starting",
+  Stopping: "servers:phase_stopping",
+  Stopped: "servers:phase_stopped",
+  Failed: "servers:phase_failed",
+  Unknown: "servers:phase_unknown",
 };
 
 const VARIANT: Record<Phase, BadgeVariant> = {
@@ -43,6 +53,7 @@ export function phaseVariant(phase: Phase): BadgeVariant {
 }
 
 export function PhaseBadge({ phase }: { phase: Phase }) {
+  const { t } = useTranslation();
   return (
     <Badge variant={phaseVariant(phase)} className="gap-1.5">
       <span
@@ -52,7 +63,7 @@ export function PhaseBadge({ phase }: { phase: Phase }) {
         )}
         style={{ backgroundColor: phaseColor(phase) }}
       />
-      {phase}
+      {t(PHASE_KEY[phase] ?? PHASE_KEY.Unknown)}
     </Badge>
   );
 }

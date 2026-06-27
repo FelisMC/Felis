@@ -1,0 +1,21 @@
+{
+  "title": "账户",
+  "subtitle": "身份验证与 Minecraft 关联。",
+  "session": "会话",
+  "session_desc": "面板不持有凭据——每次请求均通过当前会话 Cookie 完成认证，无论该 Cookie 由本地密码登录还是平台身份代理（Zero-Trust / Access）签发（spec §7/§8）。",
+  "sign_out": "退出登录",
+  "signing_out": "退出中…",
+  "minecraft_link": "Minecraft 关联",
+  "checking_link": "正在检查关联状态…",
+  "linked_title": "Minecraft 账户已关联。",
+  "linked_desc": "关联后可认领及管理服务器——所有权相关操作（认领、唤醒、停止）已解锁。",
+  "uuid_label": "UUID",
+  "step1_title": "在游戏中获取验证码",
+  "step1_desc_prefix": "加入任意服务器，在聊天框输入 ",
+  "step1_desc_suffix": " 。服务器已确认你的身份，会提供一个一次性验证码（约 10 分钟内有效）。",
+  "step2_title": "在此输入",
+  "link_code": "关联码",
+  "link_code_placeholder": "ABCD2345",
+  "verify_btn": "关联",
+  "verifying": "验证中…"
+}
