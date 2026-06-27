@@ -28,11 +28,14 @@ const (
 	sessionCookieName = "felis_session"
 	// sessionTTL bounds a local-password session. Staff re-authenticate after it.
 	sessionTTL = 12 * time.Hour
-	// localAuthEnabledKey gates whether local-password sessions are honored. It is
-	// flipped on by `felis breakGlass` direct-to-Postgres at first-run and read
-	// live per-request, so enabling local auth needs no pod roll.
-	localAuthEnabledKey = "local_auth_enabled"
 )
+
+// LocalAuthEnabledKey is the platform_settings key that gates whether
+// local-password sessions are honored. It is flipped on by `felis breakGlass`
+// direct-to-Postgres at first-run and read live per-request, so enabling local
+// auth needs no pod roll. Exported so the break-glass writer and this
+// per-request reader share one source of truth instead of drifting copies.
+const LocalAuthEnabledKey = "local_auth_enabled"
 
 // newSessionToken returns a fresh opaque session value (256 bits, URL-safe). It
 // is the cookie value; only its hash is persisted.
@@ -161,7 +164,7 @@ func (s SessionAuth) Authenticate(r *http.Request) (*Principal, error) {
 // (minting one) consult it, so the two never disagree about whether local auth is
 // live.
 func localAuthEnabled(ctx context.Context, repo Repo) bool {
-	raw, err := repo.GetSetting(ctx, localAuthEnabledKey)
+	raw, err := repo.GetSetting(ctx, LocalAuthEnabledKey)
 	if err != nil {
 		return false // ErrNotFound (never enabled) or a transient read error → closed
 	}

@@ -23,7 +23,7 @@ import (
 func seedAuthAPI(t *testing.T, password string, mustChange bool) (*API, *fakeRepo) {
 	t.Helper()
 	repo := newFakeRepo()
-	repo.settings[localAuthEnabledKey] = []byte("true")
+	repo.settings[LocalAuthEnabledKey] = []byte("true")
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcryptCost)
 	if err != nil {
 		t.Fatalf("hash seed password: %v", err)

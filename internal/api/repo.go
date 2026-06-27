@@ -35,6 +35,12 @@ type AuditEntry struct {
 	Action     string
 	ServerName string
 	RequestID  string
+	// Payload is an optional structured detail blob stored in the audit_logs.payload
+	// jsonb column. It MUST be valid JSON or nil; nil (the zero value) is stored as
+	// SQL NULL, so existing callers that leave it unset are unaffected. The
+	// break-glass console uses it to record the accountability detail (mode, target
+	// owner, OS user, admin account) that does not fit the flat columns.
+	Payload []byte
 }
 
 // BackupView is one row of GET /api/v1/backups (spec §7, world_backups in §22).

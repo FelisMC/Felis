@@ -351,10 +351,16 @@ func (p *PGRepo) LatestBackup(ctx context.Context, serverName string) (*BackupRe
 }
 
 func (p *PGRepo) Audit(ctx context.Context, e AuditEntry) error {
+	// A nil Payload must land as SQL NULL, not the text "null"; a non-nil Payload is
+	// passed as a JSON text the jsonb column parses (same idiom as reaper.PGStore).
+	var payload any
+	if len(e.Payload) > 0 {
+		payload = string(e.Payload)
+	}
 	_, err := p.db.ExecContext(ctx,
-		`INSERT INTO audit_logs (actor, source, action, server_name, request_id)
-		 VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''))`,
-		e.Actor, e.Source, e.Action, e.ServerName, e.RequestID)
+		`INSERT INTO audit_logs (actor, source, action, server_name, request_id, payload)
+		 VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6)`,
+		e.Actor, e.Source, e.Action, e.ServerName, e.RequestID, payload)
 	return err
 }
 
@@ -377,6 +383,22 @@ func (p *PGRepo) UserByUsername(ctx context.Context, username string) (*StaffUse
 		return nil, err
 	}
 	return &u, nil
+}
+
+// AdminExists reports whether any authenticatable staff account already exists —
+// an admin row WITH a bcrypt password hash. It is the break-glass console's
+// bootstrap-vs-recovery switch: false means the typed credential mints the first
+// Owner (no prior identity to verify against), true means the operator must
+// identify against an existing admin for accountability. It is not on the Repo
+// interface because only the break-glass CLI consults it.
+func (p *PGRepo) AdminExists(ctx context.Context) (bool, error) {
+	const q = `SELECT EXISTS (
+		SELECT 1 FROM users WHERE role = 'admin' AND password_hash IS NOT NULL)`
+	var exists bool
+	if err := p.db.QueryRowContext(ctx, q).Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 // UserByID loads the same staff projection by id, or ErrNotFound. The
