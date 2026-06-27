@@ -98,7 +98,7 @@ export function ServerCard({ server, cfg, onChanged }: Props) {
           (running || transitioning ? (
             <Button
               size="sm"
-              variant="outline"
+              variant="destructive"
               disabled={busy !== null}
               onClick={() => act("stop", () => api.stop(server.name))}
             >
@@ -107,6 +107,7 @@ export function ServerCard({ server, cfg, onChanged }: Props) {
           ) : (
             <Button
               size="sm"
+              variant="default"
               disabled={busy !== null}
               onClick={() => act("wake", () => api.wake(server.name))}
             >

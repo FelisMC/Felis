@@ -218,14 +218,14 @@ export function ServerConsole() {
               <PhaseBadge phase={data.phase} />
               {streamable ? (
                 <Button
-                  variant="outline"
+                  variant="destructive"
                   size="sm"
                   onClick={() => api.stop(name).then(reload)}
                 >
                   {t("stop")}
                 </Button>
               ) : (
-                <Button size="sm" onClick={() => api.wake(name).then(reload)}>
+                <Button variant="default" size="sm" onClick={() => api.wake(name).then(reload)}>
                   {t("wake")}
                 </Button>
               )}
