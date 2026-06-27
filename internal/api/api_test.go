@@ -48,6 +48,24 @@ type fakeRepo struct {
 	staff    map[string]*StaffUser   // username -> staff login row
 	sessions map[string]*fakeSession // token_hash -> session
 	settings map[string][]byte       // key -> jsonb value
+	// player email OTPs (spec §B2). Keyed by row id; the verify path scans for the
+	// newest live (user, purpose) just as the PG query does.
+	otps map[string]*fakeEmailOTP
+}
+
+// fakeEmailOTP mirrors an email_otps row: only the code hash is held (never the
+// digits), attempts caps brute force, consumed marks single-use, and createdAt
+// orders the newest-live lookup.
+type fakeEmailOTP struct {
+	id        string
+	userID    string
+	email     string
+	codeHash  string
+	purpose   string
+	attempts  int
+	expiresAt time.Time
+	consumed  bool
+	createdAt time.Time
 }
 
 // fakeSession mirrors a sessions row: its owner, its expiry, and whether it has
@@ -83,6 +101,7 @@ func newFakeRepo() *fakeRepo {
 		staff:    map[string]*StaffUser{},
 		sessions: map[string]*fakeSession{},
 		settings: map[string][]byte{},
+		otps:     map[string]*fakeEmailOTP{},
 	}
 }
 
@@ -121,6 +140,56 @@ func (f *fakeRepo) VerifyLinkCode(_ context.Context, userID, code string, now ti
 	f.linked[userID] = true
 	delete(f.linkCodes, code)
 	return rec.mcUUID, nil
+}
+
+// CreateEmailOTP / VerifyEmailOTP mirror PGRepo's contract so the hermetic tests
+// exercise the same semantics the integration impl honors: a fresh code supersedes
+// the prior live one for (user, purpose), expiry and the attempt cap are checked
+// before the hash compare, a wrong guess costs an attempt without consuming the
+// code, and a match consumes it and flips the user row verified.
+func (f *fakeRepo) CreateEmailOTP(_ context.Context, id, userID, email, codeHash, purpose string, expiresAt time.Time) error {
+	for k, o := range f.otps { // supersede any prior live code (DELETE ... consumed_at IS NULL)
+		if o.userID == userID && o.purpose == purpose && !o.consumed {
+			delete(f.otps, k)
+		}
+	}
+	f.otps[id] = &fakeEmailOTP{
+		id: id, userID: userID, email: email, codeHash: codeHash, purpose: purpose,
+		expiresAt: expiresAt, createdAt: expiresAt, // createdAt proxy: constant TTL ⇒ later expiry == later creation
+	}
+	return nil
+}
+func (f *fakeRepo) VerifyEmailOTP(_ context.Context, userID, purpose, codeHash string, now time.Time) (string, error) {
+	var live *fakeEmailOTP
+	for _, o := range f.otps { // newest live (user, purpose)
+		if o.userID != userID || o.purpose != purpose || o.consumed {
+			continue
+		}
+		if live == nil || o.createdAt.After(live.createdAt) {
+			live = o
+		}
+	}
+	if live == nil {
+		return "", ErrOTPInvalid
+	}
+	if !live.expiresAt.After(now) {
+		return "", ErrOTPInvalid
+	}
+	if live.attempts >= otpMaxAttempts {
+		return "", ErrOTPLocked
+	}
+	if live.codeHash != codeHash {
+		live.attempts++ // a typo costs an attempt but does not consume the code
+		return "", ErrOTPInvalid
+	}
+	live.consumed = true
+	for _, u := range f.staff { // flip the user row verified (UPDATE users ...)
+		if u.ID == userID {
+			u.Email = live.email
+			u.EmailVerified = true
+		}
+	}
+	return live.email, nil
 }
 func (f *fakeRepo) UserInAllowlist(_ context.Context, n, u string) (bool, error) {
 	return f.allowlist[n][u], nil

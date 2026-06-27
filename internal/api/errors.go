@@ -25,6 +25,17 @@ var (
 	// actually up", not a server bug. Handlers map it to 503, not 500, so the
 	// caller is told to wake/retry rather than shown an opaque internal error.
 	ErrConsoleUnavailable = errors.New("server console is unavailable")
+	// ErrOTPInvalid means an email one-time code is unknown, expired, already
+	// consumed, or did not match (spec §B2 onboarding). Like ErrLinkCodeInvalid it
+	// is a client error — the verify endpoint exists; the code is bad — so handlers
+	// map it to 400, not 404. A wrong-but-not-yet-locked guess collapses to it too,
+	// so the response never distinguishes "no such code" from "wrong digits".
+	ErrOTPInvalid = errors.New("email code invalid or expired")
+	// ErrOTPLocked means the live email code has exhausted its attempt budget: too
+	// many wrong guesses (spec §B2). It is distinct from ErrOTPInvalid so handlers
+	// can answer 429 (back off / request a new code) rather than inviting another
+	// guess against a code that will never accept one.
+	ErrOTPLocked = errors.New("email code locked: too many attempts")
 )
 
 // apiError is a handler-level error carrying an HTTP status and a stable,

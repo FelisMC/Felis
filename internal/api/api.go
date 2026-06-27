@@ -66,6 +66,13 @@ type API struct {
 	// runs, distinct from Builder which an admin drives directly.
 	Submissions SubmissionService
 
+	// Mailer delivers player email one-time codes (spec §B2 onboarding). It is
+	// optional: when nil the email-OTP start route mints and persists the code but
+	// logs it server-side instead of mailing it (a KNOWN-LIMITATION — the demo has no
+	// SMTP), so the verify flow is still exercised end-to-end. Production wires a real
+	// sender. The code is never returned to the client on either path.
+	Mailer OTPMailer
+
 	// RootDomain is injected from config (spec §2). It is the only place the
 	// deployment zone enters the API; hostnames are validated against it and
 	// never hardcoded.
@@ -228,6 +235,12 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// authenticated operation.
 		{Method: "POST", Pattern: "/api/v1/account/link/start", h: a.handleLinkStart},
 		{Method: "POST", Pattern: "/api/v1/account/link/verify", h: a.handleLinkVerify},
+		// Email verification (spec §B2 onboarding), web side: /start mints+delivers a
+		// one-time code for the caller's chosen address, /verify redeems it and flips
+		// email_verified. App-tier like the link routes — proving control of your own
+		// email is an ordinary authenticated operation, scoped to the principal.
+		{Method: "POST", Pattern: "/api/v1/account/email/start", h: a.handleEmailOTPStart},
+		{Method: "POST", Pattern: "/api/v1/account/email/verify", h: a.handleEmailOTPVerify},
 		// Modpack submission (user-directed lane over §16), user side: a user files an upload for review
 		// and lists their own. App-tier — the submitter and the "my uploads" scope are
 		// both taken from the principal, never the body, so an ordinary authenticated

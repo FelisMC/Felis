@@ -83,6 +83,10 @@ type StaffUser struct {
 	Role               string
 	PasswordHash       string
 	MustChangePassword bool
+	// EmailVerified mirrors users.email_verified (spec §B2): the address was proven
+	// via an email OTP, not merely asserted. Players carry it through onboarding;
+	// staff rows seeded by break-glass leave it false until a code is redeemed.
+	EmailVerified bool
 }
 
 // SessionedUser is the projection resolved from a live session cookie: the
@@ -171,6 +175,23 @@ type Repo interface {
 	SeedServer(ctx context.Context, name, subdomain string) error
 	// Audit appends one audit row.
 	Audit(ctx context.Context, e AuditEntry) error
+
+	// ---- player email verification (spec §B2 onboarding) ----
+
+	// CreateEmailOTP persists a freshly minted one-time code for (userID, purpose):
+	// only its sha-256 (codeHash), never the digits. It supersedes any prior live
+	// (unconsumed) code for the same (userID, purpose) so a user has at most one
+	// outstanding code per purpose — a re-request invalidates the earlier mail.
+	// expiresAt is the API clock + TTL so expiry is driven by one authoritative clock.
+	CreateEmailOTP(ctx context.Context, id, userID, email, codeHash, purpose string, expiresAt time.Time) error
+	// VerifyEmailOTP redeems the newest live code for (userID, purpose) against
+	// codeHash, atomically (spec §B2). No live code, an expired one, or a consumed
+	// one → ErrOTPInvalid; an exhausted attempt budget → ErrOTPLocked; a hash
+	// mismatch increments attempts and returns ErrOTPInvalid WITHOUT consuming the
+	// code (so a typo does not burn it). On a match the code is consumed and the
+	// user row is flipped to email=<the proven address>, email_verified=true; the
+	// proven email is returned. now is the API clock so expiry is testable.
+	VerifyEmailOTP(ctx context.Context, userID, purpose, codeHash string, now time.Time) (email string, err error)
 
 	// ---- local-password auth (spec §B) ----
 

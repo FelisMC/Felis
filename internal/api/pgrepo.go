@@ -364,6 +364,98 @@ func (p *PGRepo) Audit(ctx context.Context, e AuditEntry) error {
 	return err
 }
 
+// ---- player email verification (spec §B2 onboarding) ----
+
+// CreateEmailOTP supersedes any prior live code for (user, purpose) and inserts the
+// fresh one, in one transaction (spec §B2). The supersede DELETE means a re-request
+// invalidates the earlier mail, so only the most recent code can ever verify — a
+// player who requested twice cannot be confused into typing the stale digits. Only
+// the hash is stored; the digits live only in the email.
+func (p *PGRepo) CreateEmailOTP(ctx context.Context, id, userID, email, codeHash, purpose string, expiresAt time.Time) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM email_otps WHERE user_id = $1 AND purpose = $2 AND consumed_at IS NULL`,
+		userID, purpose); err != nil {
+		return fmt.Errorf("supersede prior otp: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO email_otps (id, user_id, email, code_hash, purpose, expires_at)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		id, userID, email, codeHash, purpose, expiresAt); err != nil {
+		return fmt.Errorf("insert otp: %w", err)
+	}
+	return tx.Commit()
+}
+
+// VerifyEmailOTP redeems the newest live code for (user, purpose) in one
+// transaction (spec §B2). The row is taken FOR UPDATE so a concurrent verify of the
+// same code cannot double-spend it. The branch order is deliberate: expiry and the
+// attempt cap are checked before the hash compare, so an expired or locked code is
+// never silently accepted, and a hash mismatch costs an attempt (UPDATE attempts+1)
+// without consuming the code — a typo must not burn a still-valid code. On a match
+// the code is consumed and the user row is flipped verified, returning the proven
+// address. ErrOTPInvalid / ErrOTPLocked are the only domain errors.
+func (p *PGRepo) VerifyEmailOTP(ctx context.Context, userID, purpose, codeHash string, now time.Time) (string, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+
+	var (
+		id         string
+		email      string
+		storedHash string
+		attempts   int
+		expiresAt  time.Time
+	)
+	switch err := tx.QueryRowContext(ctx,
+		`SELECT id, email, code_hash, attempts, expires_at FROM email_otps
+		 WHERE user_id = $1 AND purpose = $2 AND consumed_at IS NULL
+		 ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+		userID, purpose).Scan(&id, &email, &storedHash, &attempts, &expiresAt); {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", ErrOTPInvalid
+	case err != nil:
+		return "", err
+	}
+
+	if !expiresAt.After(now) {
+		return "", ErrOTPInvalid
+	}
+	if attempts >= otpMaxAttempts {
+		return "", ErrOTPLocked
+	}
+	if storedHash != codeHash {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE email_otps SET attempts = attempts + 1 WHERE id = $1`, id); err != nil {
+			return "", fmt.Errorf("record otp attempt: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return "", err
+		}
+		return "", ErrOTPInvalid
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE email_otps SET consumed_at = $2 WHERE id = $1`, id, now); err != nil {
+		return "", fmt.Errorf("consume otp: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE users SET email = $2, email_verified = true WHERE id = $1`, userID, email); err != nil {
+		return "", fmt.Errorf("mark email verified: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
+	return email, nil
+}
+
 // ---- local-password auth (spec §B) ----
 
 // UserByUsername loads a staff login projection by username, or ErrNotFound. A
@@ -372,11 +464,11 @@ func (p *PGRepo) Audit(ctx context.Context, e AuditEntry) error {
 // enumerate which usernames carry a password.
 func (p *PGRepo) UserByUsername(ctx context.Context, username string) (*StaffUser, error) {
 	const q = `SELECT id, username, COALESCE(email, ''), role::text,
-		COALESCE(password_hash, ''), must_change_password
+		COALESCE(password_hash, ''), must_change_password, email_verified
 		FROM users WHERE username = $1`
 	var u StaffUser
 	switch err := p.db.QueryRowContext(ctx, q, username).Scan(
-		&u.ID, &u.Username, &u.Email, &u.Role, &u.PasswordHash, &u.MustChangePassword); {
+		&u.ID, &u.Username, &u.Email, &u.Role, &u.PasswordHash, &u.MustChangePassword, &u.EmailVerified); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
 	case err != nil:
@@ -406,11 +498,11 @@ func (p *PGRepo) AdminExists(ctx context.Context) (bool, error) {
 // session yields a user id, not a username.
 func (p *PGRepo) UserByID(ctx context.Context, id string) (*StaffUser, error) {
 	const q = `SELECT id, username, COALESCE(email, ''), role::text,
-		COALESCE(password_hash, ''), must_change_password
+		COALESCE(password_hash, ''), must_change_password, email_verified
 		FROM users WHERE id = $1`
 	var u StaffUser
 	switch err := p.db.QueryRowContext(ctx, q, id).Scan(
-		&u.ID, &u.Username, &u.Email, &u.Role, &u.PasswordHash, &u.MustChangePassword); {
+		&u.ID, &u.Username, &u.Email, &u.Role, &u.PasswordHash, &u.MustChangePassword, &u.EmailVerified); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
 	case err != nil:

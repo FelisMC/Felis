@@ -1444,6 +1444,93 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /api/v1/account/email/start:
+    post:
+      tags: [account]
+      operationId: emailOtpStart
+      summary: Mint and deliver an email one-time code for the caller (web onboarding, spec §B2).
+      description: >
+        Generates a one-time code bound to the authenticated principal and the
+        supplied address, persists only its hash, and delivers it out of band. The
+        code is never returned in the response. A re-request supersedes the prior
+        unconsumed code.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        '202':
+          description: Code minted and dispatched (or logged server-side when no mailer is wired).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sent, expires_at]
+                properties:
+                  sent: { type: boolean, const: true }
+                  expires_at: { type: string, format: date-time }
+        '400':
+          description: Missing or malformed email address.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/account/email/verify:
+    post:
+      tags: [account]
+      operationId: emailOtpVerify
+      summary: Redeem an email one-time code and mark the caller's email verified (spec §B2).
+      description: >
+        Consumes a previously delivered code for the authenticated principal. On
+        success the user's email is written and email_verified is set true. Too many
+        incorrect attempts lock the code (429); an unknown, expired, consumed, or
+        mismatched code is a 400.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        '200':
+          description: Email verified.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [verified, email]
+                properties:
+                  verified: { type: boolean, const: true }
+                  email: { type: string, format: email }
+        '400':
+          description: Invalid or expired code.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          description: Too many incorrect attempts; the code is locked.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /api/v1/me/submissions:
     post:
       tags: [submissions]
