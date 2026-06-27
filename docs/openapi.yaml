@@ -643,6 +643,15 @@ paths:
               required: [mc_uuid]
               properties:
                 mc_uuid: { type: string }
+                auth_source:
+                  type: string
+                  enum: [mojang, thirdparty]
+                  default: mojang
+                  description: >
+                    Which Yggdrasil authenticated the in-game UUID (spec §10
+                    dual-Yggdrasil). Optional; an omitted value defaults to the
+                    Mojang-priority source. Captured here because only the in-game
+                    side sees the authentication; it is copied onto the link at verify.
       responses:
         '201':
           description: Code minted.
@@ -1427,10 +1436,14 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [linked, mc_uuid]
+                required: [linked, mc_uuid, auth_source]
                 properties:
                   linked: { type: boolean, const: true }
                   mc_uuid: { type: string }
+                  auth_source:
+                    type: string
+                    enum: [mojang, thirdparty]
+                    description: The source captured at mint, copied onto the durable link.
         '400':
           description: Invalid or expired code.
           content:

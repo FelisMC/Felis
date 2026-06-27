@@ -57,8 +57,8 @@ func TestAccountLinkVertical(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("verify: code = %d, want 200 (%s)", w.Code, w.Body.String())
 	}
-	if b := acctBody(t, w); b["linked"] != true || b["mc_uuid"] != mcUUID {
-		t.Fatalf("verify body = %v, want linked:true mc_uuid:%s", b, mcUUID)
+	if b := acctBody(t, w); b["linked"] != true || b["mc_uuid"] != mcUUID || b["auth_source"] != authSourceMojang {
+		t.Fatalf("verify body = %v, want linked:true mc_uuid:%s auth_source:%s", b, mcUUID, authSourceMojang)
 	}
 	// The link is audited as account.link by the principal's Access email.
 	if n := len(repo.audits); n != 1 || repo.audits[0].Action != "account.link" || repo.audits[0].Actor != "u1@example.net" {
@@ -107,6 +107,10 @@ func TestCreateLinkCode(t *testing.T) {
 		if rec.mcUUID != mcUUID {
 			t.Errorf("stored mc_uuid = %q, want %q", rec.mcUUID, mcUUID)
 		}
+		// An omitted auth_source defaults to the Mojang-priority source.
+		if rec.authSource != authSourceMojang {
+			t.Errorf("default authSource = %q, want %q", rec.authSource, authSourceMojang)
+		}
 		if want := api.now().Add(linkCodeTTL); !rec.expiresAt.Equal(want) {
 			t.Errorf("expiresAt = %v, want %v", rec.expiresAt, want)
 		}
@@ -114,6 +118,24 @@ func TestCreateLinkCode(t *testing.T) {
 			if !strings.ContainsRune(linkCodeAlphabet, c) {
 				t.Errorf("code %q contains out-of-alphabet rune %q", code, c)
 			}
+		}
+	})
+	t.Run("explicit thirdparty is stored", func(t *testing.T) {
+		body := `{"mc_uuid":"` + mcUUID + `","auth_source":"` + authSourceThirdParty + `"}`
+		w := do(ih, "POST", "/api/v1/internal/account/link/code", body, nil)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("code = %d, want 201 (%s)", w.Code, w.Body.String())
+		}
+		code, _ := acctBody(t, w)["code"].(string)
+		if rec := repo.linkCodes[code]; rec.authSource != authSourceThirdParty {
+			t.Errorf("stored authSource = %q, want %q", rec.authSource, authSourceThirdParty)
+		}
+	})
+	t.Run("unrecognised auth_source -> 400", func(t *testing.T) {
+		body := `{"mc_uuid":"` + mcUUID + `","auth_source":"litebans"}`
+		w := do(ih, "POST", "/api/v1/internal/account/link/code", body, nil)
+		if w.Code != http.StatusBadRequest || decodeErr(t, w) != "bad_request" {
+			t.Fatalf("code = %d body %s, want 400 bad_request", w.Code, w.Body.String())
 		}
 	})
 }
@@ -203,6 +225,37 @@ func TestLinkVerifyIdempotent(t *testing.T) {
 	}
 	if repo.links[mcUUID] != "u1" {
 		t.Errorf("links[%s] = %q, want u1", mcUUID, repo.links[mcUUID])
+	}
+}
+
+// TestLinkAuthSourcePropagates proves auth_source survives the whole §10 flow: a
+// thirdparty source captured in-game at mint reaches the durable link and the
+// verify response — the value the web side can never originate itself.
+func TestLinkAuthSourcePropagates(t *testing.T) {
+	const mcUUID = "55555555-5555-5555-5555-555555555555"
+	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
+	repo := newFakeRepo()
+	api := newTestAPI(repo, newFakeCluster())
+	api.External = staticExternal{p: user}
+
+	// Mint in-game with the thirdparty Yggdrasil source.
+	body := `{"mc_uuid":"` + mcUUID + `","auth_source":"` + authSourceThirdParty + `"}`
+	w := do(api.InternalHandler(), "POST", "/api/v1/internal/account/link/code", body, nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("mint: code = %d, want 201 (%s)", w.Code, w.Body.String())
+	}
+	code, _ := acctBody(t, w)["code"].(string)
+
+	// Verify on the web: the response and the stored link must both carry thirdparty.
+	w = do(api.ExternalHandler(), "POST", "/api/v1/account/link/verify", `{"code":"`+code+`"}`, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("verify: code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	if got := acctBody(t, w)["auth_source"]; got != authSourceThirdParty {
+		t.Errorf("verify body auth_source = %v, want %q", got, authSourceThirdParty)
+	}
+	if got := repo.linkAuthSource[mcUUID]; got != authSourceThirdParty {
+		t.Errorf("stored link auth_source = %q, want %q", got, authSourceThirdParty)
 	}
 }
 

@@ -58,10 +58,10 @@ func (p *PGRepo) IsLinked(ctx context.Context, userID string) (bool, error) {
 // driven by one authoritative clock. The code is a PRIMARY KEY; a collision on
 // the crypto/rand value is astronomically unlikely but surfaces as a plain
 // driver error (the caller can retry) rather than being masked here.
-func (p *PGRepo) CreateLinkCode(ctx context.Context, code, mcUUID string, expiresAt time.Time) error {
+func (p *PGRepo) CreateLinkCode(ctx context.Context, code, mcUUID, authSource string, expiresAt time.Time) error {
 	_, err := p.db.ExecContext(ctx,
-		`INSERT INTO account_link_codes (code, mc_uuid, expires_at) VALUES ($1, $2, $3)`,
-		code, mcUUID, expiresAt)
+		`INSERT INTO account_link_codes (code, mc_uuid, auth_source, expires_at) VALUES ($1, $2, $3, $4)`,
+		code, mcUUID, authSource, expiresAt)
 	return err
 }
 
@@ -73,21 +73,21 @@ func (p *PGRepo) CreateLinkCode(ctx context.Context, code, mcUUID string, expire
 // owner's pending code. The UNIQUE(mc_uuid) constraint is the last-resort guard
 // against a concurrent racer that passed the SELECT; that loses to a 500, which
 // is acceptable for this integration-only path.
-func (p *PGRepo) VerifyLinkCode(ctx context.Context, userID, code string, now time.Time) (string, error) {
+func (p *PGRepo) VerifyLinkCode(ctx context.Context, userID, code string, now time.Time) (string, string, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after commit
 
-	var mcUUID string
+	var mcUUID, authSource string
 	switch err := tx.QueryRowContext(ctx,
-		`SELECT mc_uuid FROM account_link_codes WHERE code = $1 AND expires_at > $2`,
-		code, now).Scan(&mcUUID); {
+		`SELECT mc_uuid, auth_source FROM account_link_codes WHERE code = $1 AND expires_at > $2`,
+		code, now).Scan(&mcUUID, &authSource); {
 	case errors.Is(err, sql.ErrNoRows):
-		return "", ErrLinkCodeInvalid
+		return "", "", ErrLinkCodeInvalid
 	case err != nil:
-		return "", err
+		return "", "", err
 	}
 
 	// If this UUID is already linked, only the same user may re-verify (idempotent);
@@ -98,26 +98,31 @@ func (p *PGRepo) VerifyLinkCode(ctx context.Context, userID, code string, now ti
 	case errors.Is(err, sql.ErrNoRows):
 		// not yet linked — fall through to insert
 	case err != nil:
-		return "", err
+		return "", "", err
 	default:
 		if existingUser != userID {
-			return "", ErrConflict
+			return "", "", ErrConflict
 		}
 	}
 
+	// Copy the code's auth_source onto the durable link. On the idempotent
+	// re-verify path DO UPDATE refreshes it (a player who re-linked via a different
+	// Yggdrasil this time gets the latest source stored), keeping the persisted
+	// value equal to the one returned to the caller.
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO account_links (user_id, mc_uuid) VALUES ($1, $2)
-		 ON CONFLICT (user_id, mc_uuid) DO NOTHING`, userID, mcUUID); err != nil {
-		return "", fmt.Errorf("write account link: %w", err)
+		`INSERT INTO account_links (user_id, mc_uuid, auth_source) VALUES ($1, $2, $3)
+		 ON CONFLICT (user_id, mc_uuid) DO UPDATE SET auth_source = EXCLUDED.auth_source`,
+		userID, mcUUID, authSource); err != nil {
+		return "", "", fmt.Errorf("write account link: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM account_link_codes WHERE code = $1`, code); err != nil {
-		return "", fmt.Errorf("consume link code: %w", err)
+		return "", "", fmt.Errorf("consume link code: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return mcUUID, nil
+	return mcUUID, authSource, nil
 }
 
 // QuotaAvailable treats a missing quota row or a NULL max_servers as unlimited;

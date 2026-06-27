@@ -34,7 +34,22 @@ const (
 	// linkCodeLen is the symbol count: a 32^8 ≈ 1.1e12 keyspace, far beyond brute
 	// force inside the TTL.
 	linkCodeLen = 8
+
+	// authSource records which Yggdrasil established the in-game UUID when a code
+	// was minted (spec §10, dual-Yggdrasil): the official Mojang service, or a
+	// configured thirdparty. It is captured at mint (the only place that knows it)
+	// and copied onto the durable link at verify; the web side never sees the
+	// authentication. These mirror the link_auth_source enum (migration 0005).
+	authSourceMojang     = "mojang"
+	authSourceThirdParty = "thirdparty"
 )
+
+// validAuthSource reports whether s is a recognised link_auth_source value. An
+// empty string is NOT valid here — handleCreateLinkCode defaults it before this
+// check, so a non-empty value reaching validation must be one we can store.
+func validAuthSource(s string) bool {
+	return s == authSourceMojang || s == authSourceThirdParty
+}
 
 // newLinkCode returns a cryptographically random, unambiguous link code.
 func newLinkCode() (string, error) {
@@ -49,9 +64,13 @@ func newLinkCode() (string, error) {
 }
 
 // createLinkCodeRequest is the in-game /link callback body (spec §10): the
-// backend reports the verified UUID of the player who ran the command.
+// backend reports the verified UUID of the player who ran the command, plus how
+// that UUID was authenticated (auth_source). auth_source is optional — an older
+// backend that omits it falls back to the Mojang-priority default — but a value
+// that IS sent must be one we can store.
 type createLinkCodeRequest struct {
-	MCUUID string `json:"mc_uuid"`
+	MCUUID     string `json:"mc_uuid"`
+	AuthSource string `json:"auth_source"`
 }
 
 // handleCreateLinkCode mints a one-time link code for a verified in-game UUID
@@ -69,13 +88,25 @@ func (a *API) handleCreateLinkCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "mc_uuid is required"))
 		return
 	}
+	// Default an omitted source to Mojang (spec §10 priority) but reject an
+	// unrecognised one — a typo'd source must not silently land as a stored value
+	// the panel will later mislabel.
+	authSource := req.AuthSource
+	if authSource == "" {
+		authSource = authSourceMojang
+	}
+	if !validAuthSource(authSource) {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
+			"auth_source must be %q or %q", authSourceMojang, authSourceThirdParty))
+		return
+	}
 	code, err := newLinkCode()
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
 	expiresAt := a.now().Add(linkCodeTTL)
-	if err := a.Repo.CreateLinkCode(r.Context(), code, req.MCUUID, expiresAt); err != nil {
+	if err := a.Repo.CreateLinkCode(r.Context(), code, req.MCUUID, authSource, expiresAt); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -110,7 +141,7 @@ func (a *API) handleLinkVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "code is required"))
 		return
 	}
-	mcUUID, err := a.Repo.VerifyLinkCode(r.Context(), p.UserID, code, a.now())
+	mcUUID, authSource, err := a.Repo.VerifyLinkCode(r.Context(), p.UserID, code, a.now())
 	switch {
 	case errors.Is(err, ErrLinkCodeInvalid):
 		writeError(w, r, newError(http.StatusBadRequest, "invalid_code", "link code is invalid or expired"))
@@ -124,7 +155,9 @@ func (a *API) handleLinkVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.audit(r, p.Email, "account.link", "")
-	writeJSON(w, http.StatusOK, map[string]any{"linked": true, "mc_uuid": mcUUID})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"linked": true, "mc_uuid": mcUUID, "auth_source": authSource,
+	})
 }
 
 // handleLinkStart reports the caller's link status and how to link (spec §10,

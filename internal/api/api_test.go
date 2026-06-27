@@ -39,6 +39,9 @@ type fakeRepo struct {
 	// account linking (spec §10)
 	linkCodes map[string]fakeLinkCode // code -> pending binding
 	links     map[string]string       // mc_uuid -> user_id (mirrors UNIQUE(mc_uuid))
+	// linkAuthSource mirrors account_links.auth_source (mc_uuid -> mojang|thirdparty),
+	// the value copied from the consumed code at verify (migration 0005).
+	linkAuthSource map[string]string
 	// world backups (spec §7, §22). A nil slice lists empty.
 	backups []fakeBackup
 	// local-password auth (spec §B). staff is keyed by username (the login key);
@@ -85,8 +88,9 @@ type fakeBackup struct {
 
 // fakeLinkCode mirrors an account_link_codes row.
 type fakeLinkCode struct {
-	mcUUID    string
-	expiresAt time.Time
+	mcUUID     string
+	authSource string
+	expiresAt  time.Time
 }
 
 func newFakeRepo() *fakeRepo {
@@ -98,10 +102,11 @@ func newFakeRepo() *fakeRepo {
 		claimOK: map[string]bool{},
 		seeded:  map[string]bool{}, aliases: map[string]string{},
 		linkCodes: map[string]fakeLinkCode{}, links: map[string]string{},
-		staff:    map[string]*StaffUser{},
-		sessions: map[string]*fakeSession{},
-		settings: map[string][]byte{},
-		otps:     map[string]*fakeEmailOTP{},
+		linkAuthSource: map[string]string{},
+		staff:          map[string]*StaffUser{},
+		sessions:       map[string]*fakeSession{},
+		settings:       map[string][]byte{},
+		otps:           map[string]*fakeEmailOTP{},
 	}
 }
 
@@ -119,27 +124,29 @@ func (f *fakeRepo) ServerByName(_ context.Context, n string) (*ServerRecord, err
 }
 func (f *fakeRepo) IsLinked(_ context.Context, u string) (bool, error)       { return f.linked[u], nil }
 func (f *fakeRepo) QuotaAvailable(_ context.Context, u string) (bool, error) { return f.quota[u], nil }
-func (f *fakeRepo) CreateLinkCode(_ context.Context, code, mcUUID string, expiresAt time.Time) error {
-	f.linkCodes[code] = fakeLinkCode{mcUUID: mcUUID, expiresAt: expiresAt}
+func (f *fakeRepo) CreateLinkCode(_ context.Context, code, mcUUID, authSource string, expiresAt time.Time) error {
+	f.linkCodes[code] = fakeLinkCode{mcUUID: mcUUID, authSource: authSource, expiresAt: expiresAt}
 	return nil
 }
 
 // VerifyLinkCode mirrors PGRepo.VerifyLinkCode exactly so the hermetic tests
 // exercise the same contract the integration impl honors: strict expiry against
 // the passed clock, a different-user UUID → ErrConflict WITHOUT consuming the
-// code, same (user, uuid) idempotent, and the code consumed only on success.
-func (f *fakeRepo) VerifyLinkCode(_ context.Context, userID, code string, now time.Time) (string, error) {
+// code, same (user, uuid) idempotent, the code's auth_source copied onto the link
+// (and refreshed on re-verify), and the code consumed only on success.
+func (f *fakeRepo) VerifyLinkCode(_ context.Context, userID, code string, now time.Time) (string, string, error) {
 	rec, ok := f.linkCodes[code]
 	if !ok || !rec.expiresAt.After(now) {
-		return "", ErrLinkCodeInvalid
+		return "", "", ErrLinkCodeInvalid
 	}
 	if existing, ok := f.links[rec.mcUUID]; ok && existing != userID {
-		return "", ErrConflict // do not consume another user's pending code
+		return "", "", ErrConflict // do not consume another user's pending code
 	}
 	f.links[rec.mcUUID] = userID
+	f.linkAuthSource[rec.mcUUID] = rec.authSource // copy/refresh, mirrors DO UPDATE
 	f.linked[userID] = true
 	delete(f.linkCodes, code)
-	return rec.mcUUID, nil
+	return rec.mcUUID, rec.authSource, nil
 }
 
 // CreateEmailOTP / VerifyEmailOTP mirror PGRepo's contract so the hermetic tests

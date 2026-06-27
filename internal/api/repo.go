@@ -114,18 +114,21 @@ type Repo interface {
 	IsLinked(ctx context.Context, userID string) (bool, error)
 	// CreateLinkCode mints a one-time account-link code for an in-game player
 	// (spec §10: 游戏内 /link → 生成一次性码). The code is born knowing only the
-	// verified mc_uuid (online-mode=true established it); a web user binds it to
-	// their user_id later via VerifyLinkCode. This is internal-face only — the web
-	// has no verified UUID to mint against (the account_link_codes schema has no
-	// user_id column, which forces the in-game origin).
-	CreateLinkCode(ctx context.Context, code, mcUUID string, expiresAt time.Time) error
+	// verified mc_uuid (online-mode=true established it) and the authSource that
+	// established it (mojang|thirdparty, spec §10 dual-Yggdrasil); a web user binds
+	// it to their user_id later via VerifyLinkCode. This is internal-face only — the
+	// web has no verified UUID to mint against (the account_link_codes schema has no
+	// user_id column, which forces the in-game origin), nor does it see the
+	// authentication, which is why authSource also originates here.
+	CreateLinkCode(ctx context.Context, code, mcUUID, authSource string, expiresAt time.Time) error
 	// VerifyLinkCode consumes a non-expired code for the logged-in user and writes
 	// the account_links binding, atomically (spec §10: 网页 verify 填码 → 写
-	// account_links). It returns the bound mc_uuid. A missing or expired code →
+	// account_links). It returns the bound mc_uuid and the authSource captured at
+	// mint (copied from the code onto the durable link). A missing or expired code →
 	// ErrLinkCodeInvalid; a uuid already linked to a *different* user → ErrConflict;
-	// re-verifying the same (user, uuid) pair is idempotent. now is the API clock so
-	// expiry is testable.
-	VerifyLinkCode(ctx context.Context, userID, code string, now time.Time) (mcUUID string, err error)
+	// re-verifying the same (user, uuid) pair is idempotent and refreshes the stored
+	// authSource. now is the API clock so expiry is testable.
+	VerifyLinkCode(ctx context.Context, userID, code string, now time.Time) (mcUUID, authSource string, err error)
 	// QuotaAvailable reports whether the user is under their max_servers quota
 	// (spec §9.3 step ②, evaluated before provisioning).
 	QuotaAvailable(ctx context.Context, userID string) (bool, error)
