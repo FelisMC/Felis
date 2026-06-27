@@ -17,7 +17,7 @@ Commands:
   reaper            Run the world reaper / backup batch
   restore           Extract a world archive into a world volume (internal Job entrypoint)
   manifests         Render the control-plane RBAC + NetworkPolicy install bundle as YAML
-  apply             Apply a MinecraftServer manifest
+  apply             Create a MinecraftServer CRD (direct K8s write; use -f server.json)
   breakGlass        Open the local break-glass emergency console (TUI; requires root/sudo)
 
 Run "felis <command> -h" for command-specific flags.
@@ -45,7 +45,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "manifests":
 		return cmdManifests(rest, stdout, stderr)
 	case "apply":
-		return notImplemented("apply", "MinecraftServer manifest apply", stderr)
+		return cmdApply(rest, stdout, stderr)
 	case "breakGlass":
 		return cmdBreakGlass(rest, stdout, stderr)
 	case "-h", "--help", "help":
@@ -57,10 +57,4 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-// notImplemented reports a subcommand that is wired into the CLI surface but
-// whose implementation lands in a later phase. It fails loudly rather than
-// pretending to do work.
-func notImplemented(name, desc string, stderr io.Writer) int {
-	fmt.Fprintf(stderr, "felis %s: not implemented yet — %s\n", name, desc)
-	return 3
-}
+

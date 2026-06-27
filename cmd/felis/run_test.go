@@ -36,15 +36,31 @@ func TestRunUnknownCommand(t *testing.T) {
 	}
 }
 
-func TestRunNotImplementedSubcommands(t *testing.T) {
-	for _, cmd := range []string{"apply"} {
-		var out, errBuf bytes.Buffer
-		if code := run([]string{cmd}, &out, &errBuf); code != 3 {
-			t.Errorf("%s exit code = %d, want 3", cmd, code)
-		}
-		if !strings.Contains(errBuf.String(), "not implemented yet") {
-			t.Errorf("%s: expected not-implemented notice, got %q", cmd, errBuf.String())
-		}
+func TestRunApplyRequiresFileFlag(t *testing.T) {
+	// Without -f the command must fail with usage (2), not try to contact a
+	// cluster. It can't return 0 because no CRD was created, and it can't return 1
+	// because that would be ambiguous with a real server-side failure.
+	var out, errBuf bytes.Buffer
+	code := run([]string{"apply"}, &out, &errBuf)
+	if code != 2 {
+		t.Errorf("exit code = %d, want 2", code)
+	}
+	if !strings.Contains(errBuf.String(), "missing required flag -f") {
+		t.Errorf("expected -f usage, got %q", errBuf.String())
+	}
+}
+
+func TestRunApplyRejectsInvalidJSON(t *testing.T) {
+	// Sending garbage via a temp file must exit 1 (input error), not panic or hang.
+	var out, errBuf bytes.Buffer
+	code := run([]string{"apply", "-f", "/dev/null"}, &out, &errBuf)
+	// /dev/null is empty → JSON parse fails or validation rejects the zero values;
+	// either way it must exit 1, not panic.
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+	if !strings.Contains(errBuf.String(), "invalid") && !strings.Contains(errBuf.String(), "required") {
+		t.Errorf("expected input error, got %q", errBuf.String())
 	}
 }
 
