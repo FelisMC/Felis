@@ -29,6 +29,7 @@
   "my_servers_breadcrumb": "My servers",
   "console_card_title": "Console",
   "console_card_desc": "Live, read-only output streamed from the running pod over SSE. Commands run through a separate path — the panel never holds an RCON password.",
+  "command_placeholder": "Type a command… e.g. list",
   "log_connecting": "Connecting…",
   "log_live": "Live",
   "log_reconnecting": "Reconnecting…",

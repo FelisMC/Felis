@@ -465,12 +465,52 @@ function handleServerRoute(ctx: SessionContext): boolean {
     sendJSON(ctx.res, 200, { name: serverInfo.name, desiredState: "Stopped" });
     return true;
   }
+  if (is("POST", ctx) && ctx.parts[4] === "command") {
+    if (!canManage(ctx.account, serverInfo)) {
+      sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+      return true;
+    }
+    handleCommandMock(ctx, serverInfo);
+    return true;
+  }
   if (is("POST", ctx) && ctx.parts[4] === "claim") {
     claimServer(ctx, serverInfo);
     return true;
   }
 
   return false;
+}
+
+async function handleCommandMock(
+  ctx: SessionContext,
+  serverInfo: MockServer,
+): Promise<void> {
+  const body = await readJSON<{ command?: string }>(ctx.req);
+  const cmd = body.command?.trim();
+  if (!cmd) {
+    sendError(ctx.res, 400, "bad_request", "command is required");
+    return;
+  }
+  if (serverInfo.phase !== "Running") {
+    sendError(
+      ctx.res,
+      409,
+      "conflict",
+      "server is not running; wake it before sending console commands",
+    );
+    return;
+  }
+  const reply = mockCommandReply(cmd);
+  sendJSON(ctx.res, 200, { output: reply });
+}
+
+function mockCommandReply(cmd: string): string {
+  const lower = cmd.toLowerCase();
+  if (lower === "list") return "There are 2 of a max 20 players online: mock_player, test_player";
+  if (lower === "tps" || lower === "forge tps") return "TPS from last 5s, 10s, 1m, 5m, 15m: 20.00, 20.00, *19.87, 19.95, 19.98";
+  if (cmd.startsWith("say ")) return `[mock_server] ${cmd.slice(4)}`;
+  if (lower === "help") return "--- Showing help ---\n/felis\n/msg\n/list\n/rules";
+  return `[mock] command "${cmd}" executed`;
 }
 
 function claimServer(ctx: SessionContext, serverInfo: MockServer): void {

@@ -91,6 +91,13 @@ export const api = {
   claim: (name: string) =>
     request<{ name: string; claimed: boolean }>("POST", `/servers/${name}/claim`),
 
+  /** sendCommand runs one RCON command against a running server (spec §8 写=RCON).
+   *  The backend strips a leading "/", rejects control characters (newline → 400)
+   *  and caps the command at 1000 bytes. The reply is the server's plain-text
+   *  response body. */
+  sendCommand: (name: string, command: string) =>
+    request<{ output: string }>("POST", `/servers/${name}/command`, { command }),
+
   listImages: () =>
     request<{ images: WhitelistImage[] }>("GET", "/images").then((r) => r.images ?? []),
 

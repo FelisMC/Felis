@@ -1,12 +1,13 @@
+import { useState, useRef, useCallback, useLayoutEffect, type KeyboardEvent } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, Terminal, Moon, ShieldAlert, HelpCircle, type LucideIcon } from "lucide-react";
+import { ArrowLeft, Terminal, Moon, ShieldAlert, HelpCircle, Loader2, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { PhaseBadge } from "@/components/PhaseBadge";
 import { LogConsole } from "@/components/LogConsole";
 import { Loading, ErrorState } from "@/components/States";
-import { api, consoleStreamURL } from "@/lib/api";
+import { api, consoleStreamURL, humanizeError } from "@/lib/api";
 import { useAsync, useConfig } from "@/lib/hooks";
 import { hostFor } from "@/lib/config";
 import type { Phase } from "@/lib/types";
@@ -55,6 +56,115 @@ function NotStreaming({ phase }: { phase: Phase }) {
         <p className="font-medium text-foreground">{title}</p>
         <p>{body}</p>
       </div>
+    </div>
+  );
+}
+
+function loadHistory(name: string): string[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_KEY(name));
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistHistory(name: string, h: string[]): void {
+  try {
+    localStorage.setItem(HISTORY_KEY(name), JSON.stringify(h));
+  } catch {
+    /* storage full — silently drop */
+  }
+}
+
+const MAX_HISTORY = 50;
+const HISTORY_KEY = (name: string) => `felis:cmd:history:${name}`;
+
+/** CommandInput is the §8 write-side console input: a one-line text field that
+ *  sends an RCON command to the running server and displays its plain-text reply.
+ *  Enter sends; Up/Down cycle through persistent per-server command history.
+ *  Only available when the server is Running (RCON reachable). */
+function CommandInput({ name }: { name: string }) {
+  const { t } = useTranslation("servers");
+  const [command, setCommand] = useState("");
+  const [sending, setSending] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const historyRef = useRef<string[]>(loadHistory(name));
+  const cursorRef = useRef(-1);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const composingRef = useRef(false);
+
+  const send = useCallback(async (text: string) => {
+    if (!text || sending) return;
+    setSending(true);
+    setErr(null);
+    setCommand("");
+    const h = historyRef.current;
+    if (h.length === 0 || h[h.length - 1] !== text) {
+      if (h.length >= MAX_HISTORY) h.shift();
+      h.push(text);
+      persistHistory(name, h);
+    }
+    cursorRef.current = h.length;
+    try {
+      await api.sendCommand(name, text);
+    } catch (ex) {
+      setErr(humanizeError(ex));
+    } finally {
+      setSending(false);
+    }
+  }, [name, sending]);
+
+  useLayoutEffect(() => {
+    if (!sending) inputRef.current?.focus();
+  }, [sending]);
+
+  const onKeyDown = useCallback((e: KeyboardEvent<HTMLInputElement>) => {
+    if (composingRef.current) return;
+    const h = historyRef.current;
+    if (e.key === "Enter") {
+      e.preventDefault();
+      send(command.trim());
+      return;
+    }
+    if (h.length === 0) return;
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      const idx = Math.max(0, cursorRef.current === -1 ? h.length - 1 : cursorRef.current - 1);
+      cursorRef.current = idx;
+      setCommand(h[idx]);
+      setTimeout(() => { inputRef.current?.setSelectionRange(h[idx].length, h[idx].length); }, 0);
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      const idx = Math.min(h.length, cursorRef.current + 1);
+      cursorRef.current = idx;
+      setCommand(idx < h.length ? h[idx] : "");
+      if (idx < h.length) {
+        setTimeout(() => { inputRef.current?.setSelectionRange(h[idx].length, h[idx].length); }, 0);
+      }
+    }
+  }, [command, send]);
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-900 px-3 font-mono text-xs text-zinc-200">
+        <span className="shrink-0 select-none text-zinc-500">{">"}</span>
+        <input
+          ref={inputRef}
+          value={command}
+          onChange={(e) => { setCommand(e.target.value); cursorRef.current = -1; }}
+          onKeyDown={onKeyDown}
+          onCompositionStart={() => { composingRef.current = true; }}
+          onCompositionEnd={() => { composingRef.current = false; }}
+          placeholder={t("command_placeholder")}
+          autoComplete="off"
+          spellCheck={false}
+          className="flex-1 bg-transparent py-1.5 text-zinc-200 placeholder:text-zinc-500 focus:outline-none"
+        />
+        {sending && <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0 text-zinc-500" />}
+      </div>
+      {err && <p className="text-xs text-destructive">{err}</p>}
     </div>
   );
 }
@@ -131,14 +241,19 @@ export function ServerConsole() {
                 {t("console_card_desc")}
               </p>
             </CardHeader>
-            <CardContent>
+            <CardContent className="space-y-3">
               {!streamable ? (
                 <NotStreaming phase={data.phase} />
               ) : cfg ? (
-                // key on name so navigating between servers remounts the viewport
-                // (fresh stream + scroll state). useLogStream also resets its
-                // controller when the url changes, so this is belt-and-suspenders.
-                <LogConsole key={name} url={consoleStreamURL(cfg.apiBase, name)} />
+                <>
+                  {/* key on name so navigating between servers remounts the viewport
+                      (fresh stream + scroll state). useLogStream also resets its
+                      controller when the url changes, so this is belt-and-suspenders. */}
+                  <LogConsole key={name} url={consoleStreamURL(cfg.apiBase, name)} />
+                  {data.phase === "Running" && (
+                    <CommandInput name={name} />
+                  )}
+                </>
               ) : (
                 <Loading />
               )}

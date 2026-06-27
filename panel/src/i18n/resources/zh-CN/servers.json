@@ -29,6 +29,7 @@
   "my_servers_breadcrumb": "我的服务器",
   "console_card_title": "控制台",
   "console_card_desc": "通过 SSE 从 Pod 实时流式输出的只读日志。命令执行走独立通道——面板不持有 RCON 密码。",
+  "command_placeholder": "输入命令…如 list",
   "log_connecting": "连接中…",
   "log_live": "实时",
   "log_reconnecting": "重连中…",
