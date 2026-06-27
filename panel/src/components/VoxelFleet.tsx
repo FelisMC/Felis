@@ -34,8 +34,13 @@ export function VoxelFleet({ servers }: Props) {
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    mount.appendChild(renderer.domElement);
+    renderer.domElement.style.position = "absolute";
+    renderer.domElement.style.top = "0";
+    renderer.domElement.style.left = "0";
+    renderer.domElement.style.width = "100%";
+    renderer.domElement.style.height = "100%";
     renderer.domElement.style.display = "block";
+    mount.appendChild(renderer.domElement);
 
     scene.add(new THREE.AmbientLight(0xffffff, 0.55));
     const key = new THREE.DirectionalLight(0xffffff, 1.1);
@@ -157,7 +162,7 @@ export function VoxelFleet({ servers }: Props) {
     };
   }, []);
 
-  return <div ref={mountRef} className="h-full w-full" />;
+  return <div ref={mountRef} className="h-full w-full relative" />;
 }
 
 /** sig is a cheap fingerprint of the fleet's renderable shape (order-independent
