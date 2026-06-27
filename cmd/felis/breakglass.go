@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 
 	"felis.lolicon.best/internal/api"
+	"felis.lolicon.best/internal/cfsetup"
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/store"
 
@@ -41,9 +43,16 @@ import (
 // this is root and can edit Postgres directly — but it produces an honest trail
 // for an honest operator, which is the point.
 //
-// The richer break-glass operations (OP create, halt, sync, S3) land in a later
-// phase; this file is intentionally scoped to the one provisioning operation that
-// makes the local-auth thin thread reachable.
+// The console opens on a thin top-level router (stepMenu) so that operations
+// are peers, not tails of one wizard. Two are wired today: (1) provision/reset
+// the Owner — the thin thread above — and (2) an OPTIONAL Cloudflare Tunnel +
+// Access edge (internal/cfsetup), kept "锦上添花": it is reachable WITHOUT touching
+// the Owner credential, supported but never required, and gated entirely on the
+// operator's own Cloudflare account. The remaining ops (halt, sync, S3) land in a
+// later phase as further menu peers. The edge flow's verifiable logic lives in
+// cfsetup (fail-closed policy, ingress, gating, all unit-tested); what this file
+// adds for it is the untested bubbletea shell plus a `tea.ExecProcess` suspension
+// for the interactive `cloudflared tunnel login` browser consent.
 
 // breakGlassOverrideToken is the literal an operator must type to proceed when no
 // admin credential could be verified. Requiring an explicit, deliberate word (not a
@@ -117,13 +126,13 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	res, err := runBreakGlassTUI(ctx, repo, cfg.Server.RootDomain, accountableOSUser(), adminExists)
+	res, err := runBreakGlassTUI(ctx, repo, cfg.Server.RootDomain, cfg.Auth.AdminHostname, cfg.Auth.PanelHostname, accountableOSUser(), adminExists)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis breakGlass: %v\n", err)
 		return 1
 	}
 
-	if !res.provisioned {
+	if !res.provisioned && !res.edgeConfigured {
 		fmt.Fprintln(stdout, "felis breakGlass: cancelled — no changes made.")
 		return 0
 	}
@@ -132,22 +141,42 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 	// display with it. Re-print a durable summary to the normal screen so the
 	// outcome — and any generated one-time password — survives in scrollback long
 	// enough for the operator to log in.
-	fmt.Fprintf(stdout, "\nfelis breakGlass: Owner account %q provisioned; local-password login is ENABLED.\n", res.username)
-	fmt.Fprintf(stdout, "Recorded as %q (mode: %s, os user: %s).\n", res.accountable, res.mode, res.osUser)
-	if res.displayPassword != "" {
-		// A one-time password was generated (recovery / root override). It is shown,
-		// never persisted: only the bcrypt hash reached the database.
-		fmt.Fprintf(stdout, "One-time password (you MUST change it on first login):\n\n    %s\n\n", res.displayPassword)
-	} else {
-		// Bootstrap: the operator typed the password themselves, so we do NOT echo it
-		// back into scrollback.
-		fmt.Fprintln(stdout, "Log in with the password you just entered (you MUST change it on first login).")
+	if res.provisioned {
+		fmt.Fprintf(stdout, "\nfelis breakGlass: Owner account %q provisioned; local-password login is ENABLED.\n", res.username)
+		fmt.Fprintf(stdout, "Recorded as %q (mode: %s, os user: %s).\n", res.accountable, res.mode, res.osUser)
+		if res.displayPassword != "" {
+			// A one-time password was generated (recovery / root override). It is shown,
+			// never persisted: only the bcrypt hash reached the database.
+			fmt.Fprintf(stdout, "One-time password (you MUST change it on first login):\n\n    %s\n\n", res.displayPassword)
+		} else {
+			// Bootstrap: the operator typed the password themselves, so we do NOT echo it
+			// back into scrollback.
+			fmt.Fprintln(stdout, "Log in with the password you just entered (you MUST change it on first login).")
+		}
+		if res.auditWarning != "" {
+			fmt.Fprintf(stdout, "WARNING: the accountability audit row was NOT written: %s\n", res.auditWarning)
+		}
+		if res.rootDomain != "" {
+			fmt.Fprintf(stdout, "Log in at https://op.console.%s with that username and password.\n", res.rootDomain)
+		}
 	}
-	if res.auditWarning != "" {
-		fmt.Fprintf(stdout, "WARNING: the accountability audit row was NOT written: %s\n", res.auditWarning)
-	}
-	if res.rootDomain != "" {
-		fmt.Fprintf(stdout, "Log in at https://op.console.%s with that username and password.\n", res.rootDomain)
+
+	if res.edgeConfigured {
+		// The Cloudflare edge was provisioned. The remaining steps are the operator's
+		// own (set the audience, run the tunnel) — we do NOT edit felis.toml for them:
+		// editing a config we did not write is a hard-to-reverse change, and the aud is
+		// the one value felis-api must adopt to trust the new edge (spec §14).
+		fmt.Fprintf(stdout, "\nfelis breakGlass: Cloudflare Tunnel + Access edge configured.\n")
+		if len(res.edgeRoutedHosts) > 0 {
+			fmt.Fprintf(stdout, "Routed web hostnames: %s\n", strings.Join(res.edgeRoutedHosts, ", "))
+		}
+		if res.edgeConfigPath != "" {
+			fmt.Fprintf(stdout, "Wrote tunnel config: %s\n", res.edgeConfigPath)
+		}
+		fmt.Fprintf(stdout, "\nACTION REQUIRED — make felis-api trust the edge:\n")
+		fmt.Fprintf(stdout, "  in %s under [auth], set: access_jwt_aud = %q\n", *cfgPath, res.edgeAud)
+		fmt.Fprintln(stdout, "Then start the tunnel:  cloudflared tunnel run")
+		fmt.Fprintln(stdout, "Verify the Access app actually guards the admin face before relying on it.")
 	}
 	return 0
 }
@@ -382,17 +411,40 @@ type breakGlassResult struct {
 	displayPassword string // empty when the operator typed their own bootstrap password
 	auditWarning    string
 	rootDomain      string
+
+	// optional Cloudflare edge outcome (independent of provisioned)
+	edgeConfigured  bool
+	edgeAud         string
+	edgeRoutedHosts []string
+	edgeConfigPath  string
 }
 
 type bgStep int
 
 const (
-	stepAuth     bgStep = iota // recovery: authenticate as an existing admin
-	stepOverride               // recovery: admin auth failed → deliberate root override
-	stepProvision              // collect the Owner target (and password, in bootstrap)
+	stepMenu      bgStep = iota // top-level router: provision vs. optional edge
+	stepAuth                    // recovery: authenticate as an existing admin
+	stepOverride                // recovery: admin auth failed → deliberate root override
+	stepProvision               // collect the Owner target (and password, in bootstrap)
 	stepWorking
 	stepDone
 	stepError
+	// optional Cloudflare edge flow (锦上添花)
+	stepEdgeIntro   // preconditions + interactive `cloudflared tunnel login`
+	stepEdgeInput   // API token / account / who-to-admit / tunnel name / config path
+	stepEdgeWorking // cfsetup.Setup runs against the operator's Cloudflare account
+	stepEdgeDone
+	stepEdgeError
+)
+
+// menuOptionCount is the number of selectable top-level operations. Provision is
+// index 0; the optional Cloudflare edge is index 1.
+const menuOptionCount = 2
+
+// Edge-flow defaults the operator can accept as-is.
+const (
+	defaultTunnelName       = "felis"
+	defaultTunnelConfigPath = "/etc/felis/cloudflared.yml"
 )
 
 // authResultMsg carries the outcome of the off-goroutine admin credential check.
@@ -406,6 +458,19 @@ type authResultMsg struct {
 type performedMsg struct {
 	outcome breakGlassOutcome
 	err     error
+}
+
+// loginDoneMsg fires when the suspended `cloudflared tunnel login` returns. A
+// non-nil err (or a cancelled login) returns to the intro, never an error exit —
+// the operator may simply have closed the browser.
+type loginDoneMsg struct {
+	err error
+}
+
+// edgeDoneMsg carries the outcome of the off-goroutine cfsetup.Setup run.
+type edgeDoneMsg struct {
+	result *cfsetup.Result
+	err    error
 }
 
 var (
@@ -429,6 +494,12 @@ type bgModel struct {
 	osUser      string
 	adminExists bool
 
+	// web hostnames sourced from [auth] config (never re-derived in the shell) —
+	// what the optional edge flow routes. adminHostname is required for the edge;
+	// panelHostname is optional.
+	adminHostname string
+	panelHostname string
+
 	step    bgStep
 	inputs  []textinput.Model
 	focus   int
@@ -445,30 +516,28 @@ type bgModel struct {
 	displayPassword string
 	auditWarning    string
 	err             error
+
+	// optional Cloudflare edge flow
+	cloudflaredPath string          // detected; empty = not on PATH
+	certExists      bool            // ~/.cloudflared/cert.pem present (logged in)
+	loginNote       string          // soft note after a cancelled/failed login
+	edgeResult      *cfsetup.Result // populated on stepEdgeDone
 }
 
-func newBGModel(ctx context.Context, s ownerStore, rootDomain, osUser string, adminExists bool) *bgModel {
-	m := &bgModel{
-		ctx:         ctx,
-		store:       s,
-		rootDomain:  rootDomain,
-		osUser:      osUser,
-		adminExists: adminExists,
+func newBGModel(ctx context.Context, s ownerStore, rootDomain, adminHostname, panelHostname, osUser string, adminExists bool) *bgModel {
+	// The console opens on the top-level router; the bootstrap-vs-recovery branch is
+	// taken only when the operator chooses the provisioning op (enterProvisionFlow).
+	// The optional edge op is a peer, reachable without touching the Owner credential.
+	return &bgModel{
+		ctx:           ctx,
+		store:         s,
+		rootDomain:    rootDomain,
+		adminHostname: adminHostname,
+		panelHostname: panelHostname,
+		osUser:        osUser,
+		adminExists:   adminExists,
+		step:          stepMenu,
 	}
-	if adminExists {
-		// Recovery: an admin already exists, so the operator must identify themselves
-		// before the glass breaks.
-		m.step = stepAuth
-		m.buildAuth()
-	} else {
-		// Bootstrap: no staff account exists yet; the typed credential mints the first
-		// Owner, attributed to the OS user.
-		m.mode = "bootstrap"
-		m.accountable = osUser
-		m.step = stepProvision
-		m.buildProvision(true)
-	}
-	return m
 }
 
 func (m *bgModel) Init() tea.Cmd { return textinput.Blink }
@@ -535,6 +604,22 @@ func (m *bgModel) enterProvision() tea.Cmd {
 	return m.buildProvision(m.mode == "bootstrap")
 }
 
+// enterProvisionFlow is the menu entry into the Owner provision/reset op. It takes
+// the same bootstrap-vs-recovery branch newBGModel used to take at construction:
+// no admin → bootstrap the first Owner from a typed credential; an admin exists →
+// authenticate first so the recovery is attributable.
+func (m *bgModel) enterProvisionFlow() tea.Cmd {
+	m.formErr = ""
+	if m.adminExists {
+		m.step = stepAuth
+		return m.buildAuth()
+	}
+	m.mode = "bootstrap"
+	m.accountable = m.osUser
+	m.step = stepProvision
+	return m.buildProvision(true)
+}
+
 func (m *bgModel) focusInput(i int) tea.Cmd {
 	if i < 0 {
 		i = len(m.inputs) - 1
@@ -593,13 +678,44 @@ func (m *bgModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case loginDoneMsg:
+		// `cloudflared tunnel login` returned. Re-detect to pick up a freshly written
+		// cert.pem; a cancelled/failed login is NOT fatal — it just lands back on the
+		// intro with a note, because the operator may have closed the browser.
+		pre := cfsetup.DetectPreconditions("")
+		m.cloudflaredPath = pre.CloudflaredPath
+		m.certExists = pre.CertExists
+		switch {
+		case msg.err != nil && !m.certExists:
+			m.loginNote = "cloudflared login did not complete: " + msg.err.Error()
+		case !m.certExists:
+			m.loginNote = "login finished but ~/.cloudflared/cert.pem still not found — try again"
+		default:
+			m.loginNote = ""
+		}
+		m.step = stepEdgeIntro
+		return m, nil
+
+	case edgeDoneMsg:
+		if msg.err != nil {
+			m.step, m.err = stepEdgeError, msg.err
+			return m, nil
+		}
+		m.step = stepEdgeDone
+		m.edgeResult = msg.result
+		return m, nil
+
 	case tea.KeyMsg:
 		switch m.step {
-		case stepDone, stepError:
+		case stepMenu:
+			return m.handleMenuKey(msg)
+		case stepEdgeIntro:
+			return m.handleEdgeIntroKey(msg)
+		case stepDone, stepError, stepEdgeDone, stepEdgeError:
 			// Any key dismisses the terminal screen.
 			return m, tea.Quit
-		case stepWorking:
-			// Ignore input while a database write is in flight.
+		case stepWorking, stepEdgeWorking:
+			// Ignore input while a write / setup is in flight.
 			return m, nil
 		default:
 			return m.handleFormKey(msg)
@@ -618,6 +734,10 @@ func (m *bgModel) handleFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Back out of the override to re-enter the admin credential.
 			m.step, m.formErr = stepAuth, ""
 			return m, m.buildAuth()
+		}
+		if m.step == stepEdgeInput {
+			// Back to the edge intro (re-detects preconditions), not a hard exit.
+			return m.enterEdgeIntro()
 		}
 		return m, tea.Quit
 	case "tab", "down":
@@ -638,6 +758,8 @@ func (m *bgModel) submit() (tea.Model, tea.Cmd) {
 		return m.submitOverride()
 	case stepProvision:
 		return m.submitProvision()
+	case stepEdgeInput:
+		return m.submitEdge()
 	}
 	return m, nil
 }
@@ -717,11 +839,203 @@ func performCmd(ctx context.Context, s ownerStore, op breakGlassOp) tea.Cmd {
 	}
 }
 
+// ---- top-level router ----
+
+func (m *bgModel) handleMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "esc":
+		return m, tea.Quit
+	case "up", "shift+tab":
+		if m.focus > 0 {
+			m.focus--
+		}
+		return m, nil
+	case "down", "tab":
+		if m.focus < menuOptionCount-1 {
+			m.focus++
+		}
+		return m, nil
+	case "1":
+		m.focus = 0
+		return m.selectMenu()
+	case "2":
+		m.focus = 1
+		return m.selectMenu()
+	case "enter":
+		return m.selectMenu()
+	}
+	return m, nil
+}
+
+func (m *bgModel) selectMenu() (tea.Model, tea.Cmd) {
+	if m.focus == 1 {
+		return m.enterEdgeIntro()
+	}
+	return m, m.enterProvisionFlow()
+}
+
+// ---- optional Cloudflare edge flow (锦上添花) ----
+
+// enterEdgeIntro detects the operator-only preconditions (cloudflared on PATH, a
+// completed `cloudflared tunnel login`) and shows the intro. Detection is READ-ONLY
+// and re-runs every time the screen is entered so a fresh login is picked up.
+func (m *bgModel) enterEdgeIntro() (tea.Model, tea.Cmd) {
+	m.step = stepEdgeIntro
+	m.formErr, m.loginNote = "", ""
+	pre := cfsetup.DetectPreconditions("")
+	m.cloudflaredPath = pre.CloudflaredPath
+	m.certExists = pre.CertExists
+	return m, nil
+}
+
+// edgeReady reports whether the edge flow can proceed to credential entry: the
+// admin hostname must be configured (it is what the Access app guards) and the
+// operator must have cloudflared installed and be logged in.
+func (m *bgModel) edgeReady() bool {
+	return m.adminHostname != "" && m.cloudflaredPath != "" && m.certExists
+}
+
+func (m *bgModel) handleEdgeIntroKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		// Back to the router with the edge option still highlighted.
+		m.step, m.focus, m.loginNote = stepMenu, 1, ""
+		return m, nil
+	case "l", "L":
+		// Offer the interactive login only when it is the actual blocker.
+		if m.adminHostname != "" && m.cloudflaredPath != "" && !m.certExists {
+			return m.startCloudflaredLogin()
+		}
+		return m, nil
+	case "enter":
+		if m.edgeReady() {
+			return m, m.enterEdgeInput()
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+// startCloudflaredLogin suspends the TUI to run the interactive browser consent.
+// This is the one step cfsetup cannot perform or fake: it authenticates the
+// operator against their OWN Cloudflare account and writes ~/.cloudflared/cert.pem.
+func (m *bgModel) startCloudflaredLogin() (tea.Model, tea.Cmd) {
+	c := exec.CommandContext(m.ctx, m.cloudflaredPath, "tunnel", "login")
+	return m, tea.ExecProcess(c, func(err error) tea.Msg {
+		return loginDoneMsg{err: err}
+	})
+}
+
+// enterEdgeInput installs the credential/scope inputs, pre-filling the safe
+// defaults. The hostnames are NOT collected here — they come from [auth] config.
+func (m *bgModel) enterEdgeInput() tea.Cmd {
+	m.step = stepEdgeInput
+	m.formErr = ""
+	token := bgInput("Cloudflare API token", 200, true)
+	account := bgInput("Cloudflare account ID", 64, false)
+	identity := bgInput("you@example.com  or  @your-domain", 254, false)
+	tunnel := bgInput(defaultTunnelName, 64, false)
+	tunnel.SetValue(defaultTunnelName)
+	cfgPath := bgInput(defaultTunnelConfigPath, 256, false)
+	cfgPath.SetValue(defaultTunnelConfigPath)
+	return m.setInputs([]textinput.Model{token, account, identity, tunnel, cfgPath})
+}
+
+// submitEdge validates the edge inputs and launches cfsetup.Setup. The fail-closed
+// guard and empty-identity refusal live in cfsetup — this only translates the typed
+// identity into an AccessIdentity (a leading "@" means an org email domain, else a
+// specific person) and surfaces cfsetup's errors as a clean stepEdgeError.
+func (m *bgModel) submitEdge() (tea.Model, tea.Cmd) {
+	token := strings.TrimSpace(m.inputs[0].Value())
+	account := strings.TrimSpace(m.inputs[1].Value())
+	identity := strings.TrimSpace(m.inputs[2].Value())
+	tunnel := strings.TrimSpace(m.inputs[3].Value())
+	cfgPath := strings.TrimSpace(m.inputs[4].Value())
+
+	if token == "" {
+		m.formErr = "a Cloudflare API token is required"
+		return m, m.focusInput(0)
+	}
+	if account == "" {
+		m.formErr = "the Cloudflare account ID is required"
+		return m, m.focusInput(1)
+	}
+	if identity == "" {
+		m.formErr = "enter who Access should admit — your email, or @your-domain"
+		return m, m.focusInput(2)
+	}
+	// A bare "@" would scope Access to an empty email domain. cfsetup is fail-closed
+	// (an empty domain admits no one), but reject it here so the operator fixes the
+	// typo rather than silently locking everyone out.
+	if strings.HasPrefix(identity, "@") && strings.TrimPrefix(identity, "@") == "" {
+		m.formErr = "enter a domain after the @, e.g. @your-domain"
+		return m, m.focusInput(2)
+	}
+	if tunnel == "" {
+		tunnel = defaultTunnelName
+	}
+
+	var id cfsetup.AccessIdentity
+	if strings.HasPrefix(identity, "@") {
+		id.EmailDomains = []string{strings.TrimPrefix(identity, "@")}
+	} else {
+		id.Emails = []string{identity}
+	}
+
+	p := cfsetup.Params{
+		PanelHostname:  m.panelHostname,
+		AdminHostname:  m.adminHostname,
+		TunnelName:     tunnel,
+		ConfigPath:     cfgPath,
+		AccessIdentity: id,
+		// Re-detect with the token so a cert.pem written by the in-flow login is seen.
+		Pre: cfsetup.DetectPreconditions(token),
+	}
+	runner := &cfsetup.ExecRunner{
+		Cloudflared: m.cloudflaredPath,
+		APIToken:    token,
+		AccountID:   account,
+	}
+	m.formErr, m.working = "", "Configuring the Cloudflare Tunnel + Access edge…"
+	m.step = stepEdgeWorking
+	return m, edgeSetupCmd(m.ctx, runner, p)
+}
+
+// edgeSetupCmd runs cfsetup.Setup off the UI goroutine.
+func edgeSetupCmd(ctx context.Context, runner cfsetup.Runner, p cfsetup.Params) tea.Cmd {
+	return func() tea.Msg {
+		res, err := cfsetup.Setup(ctx, runner, p)
+		return edgeDoneMsg{result: res, err: err}
+	}
+}
+
 func (m *bgModel) View() string {
 	var b strings.Builder
 	b.WriteString(bgTitleStyle.Render("⚠  FELIS BREAK-GLASS — LOCAL EMERGENCY CONSOLE") + "\n\n")
 
 	switch m.step {
+	case stepMenu:
+		b.WriteString("Choose a break-glass operation:\n\n")
+		provisionDesc := "No staff account yet — bootstrap the first Owner."
+		if m.adminExists {
+			provisionDesc = "An admin exists — authenticate, then reset the Owner credential."
+		}
+		opts := [menuOptionCount]struct{ title, desc string }{
+			{"Provision / reset the Owner account", provisionDesc},
+			{"Set up the Cloudflare edge", "Tunnel + fail-closed Access for the web faces — 锦上添花, optional."},
+		}
+		for i, o := range opts {
+			cursor, title := "   ", o.title
+			if i == m.focus {
+				cursor, title = bgLabelStyle.Render(" ▸ "), bgLabelStyle.Render(o.title)
+			}
+			b.WriteString(fmt.Sprintf("%s%d. %s\n", cursor, i+1, title))
+			b.WriteString("      " + bgHintStyle.Render(o.desc) + "\n\n")
+		}
+		b.WriteString(bgHintStyle.Render("↑↓ move · 1/2 select · enter confirm · esc exit") + "\n")
+
 	case stepAuth:
 		b.WriteString("A staff account already exists. Identify yourself before breaking the glass.\n")
 		b.WriteString("Authenticate as an existing admin — this records WHO performed the recovery.\n")
@@ -773,7 +1087,68 @@ func (m *bgModel) View() string {
 		}
 		b.WriteString(bgHintStyle.Render("tab/↑↓ move · enter provision · esc cancel") + "\n")
 
-	case stepWorking:
+	case stepEdgeIntro:
+		b.WriteString(bgLabelStyle.Render("Optional · Cloudflare Tunnel + Access edge") + bgHintStyle.Render("  (锦上添花 — skippable)") + "\n")
+		b.WriteString("Publishes the web faces over a Cloudflare Tunnel and fronts the SysAdmin\n")
+		b.WriteString("console with a fail-closed Access policy, using YOUR own Cloudflare account.\n")
+		b.WriteString(bgHintStyle.Render("felis stays domain- and IdP-agnostic; bring your own domain/SSO if you prefer.") + "\n\n")
+
+		if m.adminHostname == "" {
+			b.WriteString(bgErrStyle.Render("✗ [auth] admin_hostname is not set in felis.toml") + " — configure it first; it is\n")
+			b.WriteString("  the hostname the Access policy guards.\n\n")
+		} else {
+			b.WriteString(bgLabelStyle.Render("Will route to the local panel:") + "\n")
+			if m.panelHostname != "" {
+				b.WriteString("  • " + m.panelHostname + bgHintStyle.Render("  (Player console)") + "\n")
+			}
+			b.WriteString("  • " + m.adminHostname + bgHintStyle.Render("  (Operator + SysAdmin console — Access-guarded)") + "\n")
+			b.WriteString(bgHintStyle.Render("  The Minecraft game host is deliberately NOT tunneled.") + "\n\n")
+		}
+
+		if m.cloudflaredPath == "" {
+			b.WriteString(bgErrStyle.Render("✗ cloudflared not found on PATH") + " — install it, then esc and re-enter.\n")
+		} else {
+			b.WriteString(bgOKStyle.Render("✓ cloudflared") + " " + bgHintStyle.Render(m.cloudflaredPath) + "\n")
+			if m.certExists {
+				b.WriteString(bgOKStyle.Render("✓ logged in") + bgHintStyle.Render("  (~/.cloudflared/cert.pem present)") + "\n")
+			} else {
+				b.WriteString(bgWarnStyle.Render("• not logged in to Cloudflare") + " — press " + bgLabelStyle.Render("l") + " to run `cloudflared tunnel login`\n")
+				b.WriteString(bgHintStyle.Render("  (opens a browser for consent on your own account).") + "\n")
+			}
+		}
+		if m.loginNote != "" {
+			b.WriteString("\n" + bgWarnStyle.Render(m.loginNote) + "\n")
+		}
+		b.WriteString("\n")
+		switch {
+		case m.edgeReady():
+			b.WriteString(bgHintStyle.Render("enter continue · esc back") + "\n")
+		case m.adminHostname != "" && m.cloudflaredPath != "" && !m.certExists:
+			b.WriteString(bgHintStyle.Render("l login · esc back") + "\n")
+		default:
+			b.WriteString(bgHintStyle.Render("esc back") + "\n")
+		}
+
+	case stepEdgeInput:
+		b.WriteString(bgLabelStyle.Render("Cloudflare edge · credentials & scope") + "\n")
+		b.WriteString(bgHintStyle.Render("Token scopes: Account › Cloudflare Tunnel:Edit · Zone › DNS:Edit · Account › Access Apps and Policies:Edit") + "\n\n")
+		labels := []string{
+			"Cloudflare API token",
+			"Cloudflare account ID",
+			"Admit (your email, or @your-domain)",
+			"Tunnel name",
+			"Tunnel config path",
+		}
+		for i, lbl := range labels {
+			b.WriteString(bgLabelStyle.Render(lbl) + "\n")
+			b.WriteString(m.inputs[i].View() + "\n\n")
+		}
+		if m.formErr != "" {
+			b.WriteString(bgErrStyle.Render(m.formErr) + "\n\n")
+		}
+		b.WriteString(bgHintStyle.Render("tab/↑↓ move · enter configure · esc back") + "\n")
+
+	case stepWorking, stepEdgeWorking:
 		msg := m.working
 		if msg == "" {
 			msg = "Working…"
@@ -802,8 +1177,31 @@ func (m *bgModel) View() string {
 		}
 		b.WriteString(bgHintStyle.Render("press any key to exit") + "\n")
 
-	case stepError:
-		b.WriteString(bgErrStyle.Render("✗ Break-glass failed") + "\n\n")
+	case stepEdgeDone:
+		b.WriteString(bgOKStyle.Render("✓ Cloudflare Tunnel + Access edge configured") + "\n\n")
+		var box string
+		if m.edgeResult != nil {
+			box = bgLabelStyle.Render("access_jwt_aud  ") + bgPwStyle.Render(m.edgeResult.AccessAud)
+			if len(m.edgeResult.RoutedHostnames) > 0 {
+				box += "\n" + bgLabelStyle.Render("routed          ") + strings.Join(m.edgeResult.RoutedHostnames, ", ")
+			}
+			if m.edgeResult.ConfigPath != "" {
+				box += "\n" + bgLabelStyle.Render("tunnel config   ") + m.edgeResult.ConfigPath
+			}
+		}
+		b.WriteString(bgBoxStyle.Render(box) + "\n\n")
+		b.WriteString(bgWarnStyle.Render("ACTION REQUIRED") + " — felis-api will reject the edge until you adopt the audience:\n")
+		b.WriteString("set " + bgLabelStyle.Render("[auth] access_jwt_aud") + " in felis.toml to the value above, then start the\n")
+		b.WriteString("tunnel with " + bgLabelStyle.Render("cloudflared tunnel run") + ".\n\n")
+		b.WriteString(bgHintStyle.Render("Verify the Access app actually guards the admin face before relying on it.") + "\n\n")
+		b.WriteString(bgHintStyle.Render("press any key to exit") + "\n")
+
+	case stepError, stepEdgeError:
+		header := "✗ Break-glass failed"
+		if m.step == stepEdgeError {
+			header = "✗ Cloudflare edge setup failed — no usable edge was created"
+		}
+		b.WriteString(bgErrStyle.Render(header) + "\n\n")
 		b.WriteString(m.err.Error() + "\n\n")
 		b.WriteString(bgHintStyle.Render("press any key to exit") + "\n")
 	}
@@ -813,8 +1211,8 @@ func (m *bgModel) View() string {
 // runBreakGlassTUI drives the bubbletea program and projects the final model onto a
 // breakGlassResult. It is the thin, untested shell; the logic it invokes
 // (authenticateAdmin / performBreakGlass) is unit-tested directly.
-func runBreakGlassTUI(ctx context.Context, s ownerStore, rootDomain, osUser string, adminExists bool) (breakGlassResult, error) {
-	final, err := tea.NewProgram(newBGModel(ctx, s, rootDomain, osUser, adminExists), tea.WithAltScreen()).Run()
+func runBreakGlassTUI(ctx context.Context, s ownerStore, rootDomain, adminHostname, panelHostname, osUser string, adminExists bool) (breakGlassResult, error) {
+	final, err := tea.NewProgram(newBGModel(ctx, s, rootDomain, adminHostname, panelHostname, osUser, adminExists), tea.WithAltScreen()).Run()
 	if err != nil {
 		return breakGlassResult{}, err
 	}
@@ -822,10 +1220,11 @@ func runBreakGlassTUI(ctx context.Context, s ownerStore, rootDomain, osUser stri
 	if !ok {
 		return breakGlassResult{}, errors.New("unexpected final model")
 	}
-	if m.step == stepError {
+	// A terminal-error screen for either flow surfaces as a returned error.
+	if m.step == stepError || m.step == stepEdgeError {
 		return breakGlassResult{}, m.err
 	}
-	return breakGlassResult{
+	res := breakGlassResult{
 		provisioned:     m.step == stepDone,
 		mode:            m.mode,
 		accountable:     m.accountable,
@@ -834,5 +1233,12 @@ func runBreakGlassTUI(ctx context.Context, s ownerStore, rootDomain, osUser stri
 		displayPassword: m.displayPassword,
 		auditWarning:    m.auditWarning,
 		rootDomain:      rootDomain,
-	}, nil
+	}
+	if m.step == stepEdgeDone && m.edgeResult != nil {
+		res.edgeConfigured = true
+		res.edgeAud = m.edgeResult.AccessAud
+		res.edgeRoutedHosts = m.edgeResult.RoutedHostnames
+		res.edgeConfigPath = m.edgeResult.ConfigPath
+	}
+	return res, nil
 }

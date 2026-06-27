@@ -526,6 +526,19 @@ func advance(t *testing.T, m *bgModel, msg tea.Msg) *bgModel {
 	return bm
 }
 
+// enterProvisionViaMenu drives the top-level router into the Owner provision/reset
+// flow the way an operator does on the emergency path: the menu opens with option 1
+// (provision) focused, so a single Enter selects it. The gating sub-tests use this to
+// reach stepAuth (recovery) or stepProvision (bootstrap) through the REAL entry path
+// before asserting the accountability transitions — not by reaching past the menu.
+func enterProvisionViaMenu(t *testing.T, m *bgModel) *bgModel {
+	t.Helper()
+	if m.step != stepMenu {
+		t.Fatalf("expected the model to open on stepMenu, got %v", m.step)
+	}
+	return advance(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+}
+
 // TestBGModelGating drives the break-glass state machine headlessly to lock in the
 // accountability gate: a credential never advances to provisioning without either a
 // verified admin (recovery) or a deliberate, explicit OVERRIDE (root override), and
@@ -534,7 +547,8 @@ func TestBGModelGating(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("recovery starts at auth; a non-matching credential offers override, never provision", func(t *testing.T) {
-		m := newBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "alice", true)
+		m := newBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "", "", "alice", true)
+		m = enterProvisionViaMenu(t, m)
 		if m.step != stepAuth || m.mode != "" {
 			t.Fatalf("initial step/mode = %v/%q, want stepAuth and an unresolved mode", m.step, m.mode)
 		}
@@ -548,7 +562,8 @@ func TestBGModelGating(t *testing.T) {
 	})
 
 	t.Run("recovery with a verified admin enters provision attributed to that admin", func(t *testing.T) {
-		m := newBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "alice", true)
+		m := newBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "", "", "alice", true)
+		m = enterProvisionViaMenu(t, m)
 		m = advance(t, m, authResultMsg{matched: "bob", ok: true})
 		if m.step != stepProvision {
 			t.Fatalf("step = %v, want stepProvision", m.step)
@@ -563,7 +578,8 @@ func TestBGModelGating(t *testing.T) {
 	})
 
 	t.Run("an auth lookup error surfaces an error screen, not a silent override", func(t *testing.T) {
-		m := newBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "alice", true)
+		m := newBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "", "", "alice", true)
+		m = enterProvisionViaMenu(t, m)
 		m = advance(t, m, authResultMsg{err: errors.New("db unreachable")})
 		if m.step != stepError || m.err == nil {
 			t.Errorf("step/err = %v/%v, want stepError with a non-nil err", m.step, m.err)
@@ -571,7 +587,8 @@ func TestBGModelGating(t *testing.T) {
 	})
 
 	t.Run("the root override requires the exact OVERRIDE token", func(t *testing.T) {
-		m := newBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "alice", true)
+		m := newBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "", "", "alice", true)
+		m = enterProvisionViaMenu(t, m)
 		m = advance(t, m, authResultMsg{ok: false}) // → stepOverride
 		m.inputs[0].SetValue("override")            // wrong case must not pass
 		m = advance(t, m, tea.KeyMsg{Type: tea.KeyEnter})
@@ -589,7 +606,8 @@ func TestBGModelGating(t *testing.T) {
 	})
 
 	t.Run("empty admin credentials do not start a verification", func(t *testing.T) {
-		m := newBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "alice", true)
+		m := newBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "", "", "alice", true)
+		m = enterProvisionViaMenu(t, m)
 		m = advance(t, m, tea.KeyMsg{Type: tea.KeyEnter}) // both inputs blank
 		if m.step != stepAuth || m.formErr == "" {
 			t.Errorf("blank submit: step/formErr = %v/%q, want stay on stepAuth with an error", m.step, m.formErr)
@@ -598,7 +616,8 @@ func TestBGModelGating(t *testing.T) {
 
 	t.Run("bootstrap starts at provision as the OS user and requires a valid, matching password", func(t *testing.T) {
 		f := &fakeOwnerStore{}
-		m := newBGModel(ctx, f, testRoot, "deploybot", false)
+		m := newBGModel(ctx, f, testRoot, "", "", "deploybot", false)
+		m = enterProvisionViaMenu(t, m)
 		if m.step != stepProvision || m.mode != "bootstrap" || m.accountable != "deploybot" {
 			t.Fatalf("initial step/mode/accountable = %v/%q/%q, want stepProvision/bootstrap/deploybot", m.step, m.mode, m.accountable)
 		}
@@ -627,6 +646,99 @@ func TestBGModelGating(t *testing.T) {
 		m = advance(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 		if m.step != stepWorking || m.ownerUsername != "owner" {
 			t.Errorf("valid submit: step/owner = %v/%q, want stepWorking/owner", m.step, m.ownerUsername)
+		}
+	})
+}
+
+// TestBGModelEdgeRouting locks in the optional Cloudflare edge flow's routing and its
+// load-bearing guards WITHOUT touching the operator's real Cloudflare account: the
+// menu reaches the edge intro as an independent peer of provisioning (no Owner reset
+// required to get there); an unconfigured admin hostname keeps edgeReady() false so the
+// flow cannot proceed to credential entry; esc returns to the router; and submitEdge
+// refuses empty inputs before any cfsetup.Setup side effect. Every assertion here is
+// environment-independent — the real cloudflared/cert.pem detection and the integration
+// Setup (which shells out / calls the live API) are deliberately NOT exercised.
+func TestBGModelEdgeRouting(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("menu option 2 enters the edge intro as a peer of provisioning, leaving the Owner credential untouched", func(t *testing.T) {
+		f := &fakeOwnerStore{admins: true}
+		m := newBGModel(ctx, f, testRoot, "op.console."+testRoot, "console."+testRoot, "alice", true)
+		if m.step != stepMenu {
+			t.Fatalf("initial step = %v, want stepMenu", m.step)
+		}
+		m = advance(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+		if m.step != stepEdgeIntro {
+			t.Fatalf("after selecting option 2 step = %v, want stepEdgeIntro", m.step)
+		}
+		// Reaching the edge must NOT have provisioned or reset an Owner.
+		if len(f.upserts) != 0 {
+			t.Error("the edge flow must not write any Owner record")
+		}
+	})
+
+	t.Run("esc from the edge intro returns to the router with the edge option highlighted", func(t *testing.T) {
+		m := newBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "op.console."+testRoot, "console."+testRoot, "alice", true)
+		m = advance(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+		m = advance(t, m, tea.KeyMsg{Type: tea.KeyEsc})
+		if m.step != stepMenu || m.focus != 1 {
+			t.Errorf("after esc step/focus = %v/%d, want stepMenu with the edge option (1) focused", m.step, m.focus)
+		}
+	})
+
+	t.Run("an unconfigured admin hostname keeps the edge gated shut regardless of cloudflared/login", func(t *testing.T) {
+		// adminHostname == "" makes edgeReady() false by short-circuit, independent of
+		// whether this box happens to have cloudflared installed and a cert.pem present.
+		m := newBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "", "", "alice", true)
+		m = advance(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
+		if m.step != stepEdgeIntro {
+			t.Fatalf("step = %v, want stepEdgeIntro", m.step)
+		}
+		if m.edgeReady() {
+			t.Fatal("edgeReady() must be false when no admin hostname is configured")
+		}
+		// Enter while not ready must NOT advance to credential entry.
+		m = advance(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+		if m.step != stepEdgeIntro {
+			t.Errorf("enter while not ready advanced to %v, want to stay on stepEdgeIntro", m.step)
+		}
+	})
+
+	t.Run("submitEdge refuses empty credentials before any Cloudflare side effect", func(t *testing.T) {
+		m := newBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "op.console."+testRoot, "console."+testRoot, "alice", true)
+		// Install the edge inputs directly: reaching them via the menu requires a real
+		// cloudflared login (edgeReady()), which this unit test must not depend on.
+		m.enterEdgeInput()
+		if m.step != stepEdgeInput || len(m.inputs) != 5 {
+			t.Fatalf("enterEdgeInput: step/inputs = %v/%d, want stepEdgeInput with 5 inputs", m.step, len(m.inputs))
+		}
+		// All inputs blank: submit (via the real key path) must report an error and stay
+		// put — NOT reach stepEdgeWorking, which is what launches cfsetup.Setup against
+		// the live cloudflared binary / Cloudflare API.
+		m = advance(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+		if m.step != stepEdgeInput || m.formErr == "" {
+			t.Errorf("blank edge submit: step/formErr = %v/%q, want stay on stepEdgeInput with an error", m.step, m.formErr)
+		}
+		if m.step == stepEdgeWorking {
+			t.Error("empty credentials must never reach stepEdgeWorking — that would invoke the integration runner")
+		}
+	})
+
+	t.Run("submitEdge rejects a bare @ identity that would scope Access to an empty domain", func(t *testing.T) {
+		m := newBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "op.console."+testRoot, "console."+testRoot, "alice", true)
+		m.enterEdgeInput()
+		// Token + account present, but identity is a bare "@" (empty domain). This passes
+		// the non-empty check yet must be refused before cfsetup.Setup, because an empty
+		// EmailDomain admits no one — a silent lock-out the operator should fix.
+		m.inputs[0].SetValue("token-value")
+		m.inputs[1].SetValue("account-id")
+		m.inputs[2].SetValue("@")
+		m = advance(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+		if m.step != stepEdgeInput || m.formErr == "" {
+			t.Errorf("bare @ submit: step/formErr = %v/%q, want stay on stepEdgeInput with an error", m.step, m.formErr)
+		}
+		if m.step == stepEdgeWorking {
+			t.Error("a bare @ identity must never reach stepEdgeWorking — that would invoke the integration runner")
 		}
 	})
 }
