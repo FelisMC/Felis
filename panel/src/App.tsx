@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { ThemeProvider } from "@/lib/theme";
 import { TierProvider } from "@/lib/tier";
 import { AppShell } from "@/components/AppShell";
 import { RequireAdmin } from "@/components/RequireAdmin";
@@ -23,8 +24,9 @@ import { FleetTable } from "@/pages/ops/FleetTable";
 // the split is by concern, not by tier. TierProvider fetches /me once at boot.
 export default function App() {
   return (
-    <TierProvider>
-      <BrowserRouter>
+    <ThemeProvider storageKey="felis-theme">
+      <TierProvider>
+        <BrowserRouter>
         <Routes>
           {/* Pre-app local-password surfaces (spec §B1). They sit OUTSIDE
               RequireAuth — RequireAuth redirects here — and outside AppShell, so
@@ -62,5 +64,6 @@ export default function App() {
         </Routes>
       </BrowserRouter>
     </TierProvider>
+  </ThemeProvider>
   );
 }

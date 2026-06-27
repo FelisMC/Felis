@@ -18,5 +18,6 @@
   "page_title": "Felis · 控制面板",
   "lang_en": "EN",
   "lang_zh": "中文",
-  "lang_toggle_hint": "切换至 {{lang}}"
+  "lang_toggle_hint": "切换至 {{lang}}",
+  "toggle_theme": "切换主题"
 }

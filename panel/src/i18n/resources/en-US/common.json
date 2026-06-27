@@ -18,5 +18,6 @@
   "page_title": "Felis · Control Panel",
   "lang_en": "EN",
   "lang_zh": "中文",
-  "lang_toggle_hint": "Switch to {{lang}}"
+  "lang_toggle_hint": "Switch to {{lang}}",
+  "toggle_theme": "Toggle theme"
 }
