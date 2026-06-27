@@ -3,10 +3,8 @@
   "my_servers": "My servers",
   "account": "Account",
   "admin_section": "Admin",
-  "admin_overview": "Overview",
   "admin_servers": "Servers",
   "admin_images": "Images",
   "sysadmin_section": "SysAdmin",
-  "sysadmin_overview": "Overview",
   "sysadmin_fleet": "Fleet"
 }

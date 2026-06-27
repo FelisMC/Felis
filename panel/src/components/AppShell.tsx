@@ -5,9 +5,48 @@ import { useTranslation } from "react-i18next";
 import * as SelectPrimitive from "@radix-ui/react-select";
 import { cn } from "@/lib/utils";
 import { useTier } from "@/lib/tier";
-import { visibleSections } from "@/lib/nav";
+import { visibleSections, type NavSection } from "@/lib/nav";
 import { Select, SelectContent, SelectItem } from "@/components/ui/select";
 import { useTheme } from "@/lib/theme";
+
+function SectionGroup({ section, isFirst }: { section: NavSection; isFirst: boolean }) {
+  const { t } = useTranslation("navigation");
+
+  return (
+    <div
+      className={cn(
+        "flex flex-col gap-0.5",
+        // Sections after the first get a thin divider with breathing room above,
+        // which reads as a structural break without needing a loud heading.
+        !isFirst && "mt-3 border-t border-border/50 pt-3",
+      )}
+    >
+      {section.titleKey && (
+        <div className="mb-1 px-3 text-[11px] font-medium text-muted-foreground/70">
+          {t(section.titleKey)}
+        </div>
+      )}
+      {section.items.map((item) => (
+        <NavLink
+          key={item.to}
+          to={item.to}
+          end={item.end}
+          className={({ isActive }) =>
+            cn(
+              "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
+              isActive
+                ? "bg-primary/15 text-primary"
+                : "text-muted-foreground hover:bg-accent hover:text-foreground",
+            )
+          }
+        >
+          <item.icon className="h-4 w-4" />
+          {t(item.key)}
+        </NavLink>
+      ))}
+    </div>
+  );
+}
 
 function LangToggle() {
   const { i18n } = useTranslation();
@@ -67,33 +106,9 @@ export function AppShell() {
           <span className="text-lg font-semibold tracking-tight">{t("common:brand_name")}</span>
         </div>
 
-        <nav className="flex flex-col gap-4">
-          {sections.map((section) => (
-            <div key={section.id} className="flex flex-col gap-1">
-              {section.titleKey && (
-                <div className="px-3 pb-1 text-xs font-semibold uppercase tracking-wider text-muted-foreground/70">
-                  {t(section.titleKey)}
-                </div>
-              )}
-              {section.items.map((item) => (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  end={item.end}
-                  className={({ isActive }) =>
-                    cn(
-                      "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                      isActive
-                        ? "bg-primary/15 text-primary"
-                        : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                    )
-                  }
-                >
-                  <item.icon className="h-4 w-4" />
-                  {t(item.key)}
-                </NavLink>
-              ))}
-            </div>
+        <nav className="flex flex-col">
+          {sections.map((section, i) => (
+            <SectionGroup key={section.id} section={section} isFirst={i === 0} />
           ))}
         </nav>
 

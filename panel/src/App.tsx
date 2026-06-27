@@ -10,10 +10,8 @@ import { Dashboard } from "@/pages/Dashboard";
 import { MyServers } from "@/pages/MyServers";
 import { ServerConsole } from "@/pages/ServerConsole";
 import { Account } from "@/pages/Account";
-import { AdminHome } from "@/pages/admin/AdminHome";
 import { ServerAdmin } from "@/pages/admin/ServerAdmin";
 import { ImageAdmin } from "@/pages/admin/ImageAdmin";
-import { OpsOverview } from "@/pages/ops/OpsOverview";
 import { FleetTable } from "@/pages/ops/FleetTable";
 
 // Three UX surfaces over two Zero-Trust tiers (DESIGN-WEB-3SIDES):
@@ -45,16 +43,19 @@ export default function App() {
               <Route path="servers/:name" element={<ServerConsole />} />
               <Route path="account" element={<Account />} />
 
-              {/* Admin-Side — admin-tier (server & content ops) */}
+              {/* Admin-Side — admin-tier (server & content ops).
+                  /admin has no landing page; redirect to the first concrete view
+                  so the section root and any stale bookmarks land somewhere useful. */}
               <Route path="admin" element={<RequireAdmin />}>
-                <Route index element={<AdminHome />} />
+                <Route index element={<Navigate to="/admin/servers" replace />} />
                 <Route path="servers" element={<ServerAdmin />} />
                 <Route path="images" element={<ImageAdmin />} />
               </Route>
 
-              {/* SysAdmin-Side — admin-tier (platform observability) */}
+              {/* SysAdmin-Side — admin-tier (platform observability).
+                  Same redirect treatment as /admin — fleet is the meaningful view. */}
               <Route path="ops" element={<RequireAdmin />}>
-                <Route index element={<OpsOverview />} />
+                <Route index element={<Navigate to="/ops/fleet" replace />} />
                 <Route path="fleet" element={<FleetTable />} />
               </Route>
 
