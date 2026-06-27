@@ -461,6 +461,60 @@ func (p *PGRepo) VerifyEmailOTP(ctx context.Context, userID, purpose, codeHash s
 	return email, nil
 }
 
+// ---- player game-login: username-collision reclaim (spec §B3) ----
+
+// ReclaimUsername bars the squatter UUID and stashes its data hold in one
+// transaction (spec §B3 正版优先), returning the hold's EFFECTIVE expiry — the
+// value actually persisted, which the caller echoes so the rejected player is
+// told the truth about how long their data is kept. The blacklist insert is
+// ON CONFLICT (mc_uuid) DO NOTHING; the hold insert is a no-op DO UPDATE so a
+// retried reclaim of an already-stashed UUID does not move the original window
+// yet RETURNING still fires, handing back the FIRST reclaim's expires_at rather
+// than a fresh now()+TTL (DO NOTHING would suppress RETURNING and lose it). The
+// two writes share the tx so a failure on the second rolls back the first: the
+// system is never left with a barred UUID whose data was never held (data loss)
+// nor a hold for a UUID still able to connect (squatter not barred). dataRef ""
+// lands as SQL NULL (the column is nullable — archival may be deferred),
+// mirroring the NULLIF idiom used for optional text elsewhere.
+func (p *PGRepo) ReclaimUsername(ctx context.Context, id, squatterUUID, username, dataRef string, expiresAt time.Time) (time.Time, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return time.Time{}, err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO username_blacklist (mc_uuid, username) VALUES ($1, $2)
+		 ON CONFLICT (mc_uuid) DO NOTHING`,
+		squatterUUID, username); err != nil {
+		return time.Time{}, fmt.Errorf("blacklist squatter uuid: %w", err)
+	}
+	var effective time.Time
+	if err := tx.QueryRowContext(ctx,
+		`INSERT INTO player_data_holds (id, mc_uuid, username, data_ref, expires_at)
+		 VALUES ($1, $2, $3, NULLIF($4, ''), $5)
+		 ON CONFLICT (mc_uuid) DO UPDATE SET mc_uuid = EXCLUDED.mc_uuid
+		 RETURNING expires_at`,
+		id, squatterUUID, username, dataRef, expiresAt).Scan(&effective); err != nil {
+		return time.Time{}, fmt.Errorf("stash data hold: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return time.Time{}, err
+	}
+	return effective, nil
+}
+
+// IsUsernameBlacklisted reports whether an in-game UUID is barred by a prior
+// reclaim (spec §B3). It is a single EXISTS keyed by the UUID — the genuine
+// Mojang player, who shares the contested name under a different UUID, never
+// matches.
+func (p *PGRepo) IsUsernameBlacklisted(ctx context.Context, mcUUID string) (bool, error) {
+	var ok bool
+	err := p.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM username_blacklist WHERE mc_uuid = $1)`, mcUUID).Scan(&ok)
+	return ok, err
+}
+
 // ---- local-password auth (spec §B) ----
 
 // UserByUsername loads a staff login projection by username, or ErrNotFound. A

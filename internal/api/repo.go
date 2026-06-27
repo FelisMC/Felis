@@ -196,6 +196,29 @@ type Repo interface {
 	// proven email is returned. now is the API clock so expiry is testable.
 	VerifyEmailOTP(ctx context.Context, userID, purpose, codeHash string, now time.Time) (email string, err error)
 
+	// ---- player game-login: username-collision reclaim (spec §B3) ----
+
+	// ReclaimUsername records a Mojang-priority username reclaim, atomically (spec
+	// §B3 正版优先): in one transaction it bars the non-genuine squatter UUID
+	// (username_blacklist) and stashes that account's data as a hold the velocity
+	// reclaim callback drives. The two writes are all-or-nothing — a half-applied
+	// reclaim (a barred UUID whose data was never held, or a hold for a UUID still
+	// able to connect) would either lose the player's data or let the squatter back
+	// in. id is the opaque hold row id; dataRef is the opaque archiver handle (""
+	// stored as NULL when archival is deferred); expiresAt is the proposed held_at +
+	// the 30-day window on the API clock. Keyed by mc_uuid on both tables, so a
+	// repeat reclaim of an already-barred UUID is idempotent and never errors on a
+	// duplicate — the block stays on the squatting UUID, never the contested name.
+	// It returns the EFFECTIVE persisted expiry: on a fresh reclaim that is the
+	// passed expiresAt, but on an idempotent retry it is the FIRST reclaim's expiry,
+	// so the caller never reports a window the stored hold does not actually have.
+	ReclaimUsername(ctx context.Context, id, squatterUUID, username, dataRef string, expiresAt time.Time) (time.Time, error)
+	// IsUsernameBlacklisted reports whether an in-game UUID was barred by a prior
+	// reclaim (spec §B3). The velocity login gate calls it on the internal face to
+	// reject a squatter while letting the genuine Mojang UUID — same username,
+	// different UUID — through: the check is keyed by UUID, never by the name.
+	IsUsernameBlacklisted(ctx context.Context, mcUUID string) (bool, error)
+
 	// ---- local-password auth (spec §B) ----
 
 	// UserByUsername loads the login projection of a staff account by its unique

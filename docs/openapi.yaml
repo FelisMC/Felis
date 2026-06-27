@@ -668,6 +668,80 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /api/v1/internal/player/reclaim:
+    post:
+      tags: [account-internal]
+      operationId: reclaimUsername
+      summary: Record a Mojang-priority username reclaim — bar the squatter UUID and stash its data (spec §B3).
+      description: >
+        Internal-only. Velocity records a username-collision reclaim: the
+        non-genuine squatter UUID is barred and its world/player data stashed for
+        a 30-day window so a new account can inherit it. Idempotent — a repeat
+        reclaim of an already-barred UUID is a no-op. The bar is keyed by UUID,
+        never the contested name, so the genuine Mojang player always passes.
+      x-felis-face: [internal]
+      x-felis-tier: service
+      security: [{ serviceToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [squatter_uuid, username]
+              properties:
+                squatter_uuid: { type: string, format: uuid }
+                username: { type: string }
+                data_ref:
+                  type: string
+                  description: >
+                    Optional opaque handle to the data already archived for the
+                    hold (server-side only, never returned). Archival may be
+                    deferred, in which case this is omitted.
+      responses:
+        '200':
+          description: Reclaim recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [blacklisted, username, hold_expires_at]
+                properties:
+                  blacklisted: { type: boolean, const: true }
+                  username: { type: string }
+                  hold_expires_at: { type: string, format: date-time }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/internal/player/blacklist/{mc_uuid}:
+    get:
+      tags: [account-internal]
+      operationId: checkUsernameBlacklist
+      summary: Report whether an in-game UUID was barred by a prior reclaim (spec §B3).
+      description: >
+        Internal-only. The velocity login gate calls it to reject a barred
+        squatter before letting them in; the genuine Mojang UUID — same username,
+        different UUID — is never on the list and always passes.
+      x-felis-face: [internal]
+      x-felis-tier: service
+      security: [{ serviceToken: [] }]
+      parameters:
+        - { name: mc_uuid, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Blacklist status.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [blacklisted]
+                properties:
+                  blacklisted: { type: boolean }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   # ----------------------------------------------------- external: servers ---
   /api/v1/servers/{name}/wake:
     post:

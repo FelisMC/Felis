@@ -54,6 +54,24 @@ type fakeRepo struct {
 	// player email OTPs (spec §B2). Keyed by row id; the verify path scans for the
 	// newest live (user, purpose) just as the PG query does.
 	otps map[string]*fakeEmailOTP
+	// username-collision reclaim (spec §B3). blacklist mirrors username_blacklist
+	// (mc_uuid -> barred), holds mirrors player_data_holds keyed by the held
+	// (squatter) mc_uuid — both keyed by UUID, matching the PG UNIQUE(mc_uuid)
+	// idempotency. They are written together by ReclaimUsername so the fake encodes
+	// the same all-or-nothing contract the PG transaction enforces.
+	blacklist map[string]bool
+	holds     map[string]fakeDataHold
+}
+
+// fakeDataHold mirrors a player_data_holds row at the granularity the verifiable
+// (write-only) layer exercises: which name/data was stashed for the squatter UUID
+// and when the 30-day window ends. reclaimed_by_user_id/reclaimed_at have no fake
+// fields — the inherit flow that would set them is CODE-ONLY (deferred).
+type fakeDataHold struct {
+	id        string
+	username  string
+	dataRef   string
+	expiresAt time.Time
 }
 
 // fakeEmailOTP mirrors an email_otps row: only the code hash is held (never the
@@ -107,6 +125,8 @@ func newFakeRepo() *fakeRepo {
 		sessions:       map[string]*fakeSession{},
 		settings:       map[string][]byte{},
 		otps:           map[string]*fakeEmailOTP{},
+		blacklist:      map[string]bool{},
+		holds:          map[string]fakeDataHold{},
 	}
 }
 
@@ -209,6 +229,23 @@ func (f *fakeRepo) UserByMCUUID(_ context.Context, uuid string) (string, error) 
 		return u, nil
 	}
 	return "", ErrNotFound
+}
+
+// ReclaimUsername mirrors PGRepo.ReclaimUsername: it bars the squatter UUID and
+// stashes the data hold together (the all-or-nothing PG transaction), keyed by
+// mc_uuid so a repeat reclaim of an already-barred UUID is an idempotent no-op
+// (ON CONFLICT (mc_uuid) DO NOTHING on both tables) — the first reclaim wins and
+// a duplicate neither errors nor overwrites the stored hold.
+func (f *fakeRepo) ReclaimUsername(_ context.Context, id, squatterUUID, username, dataRef string, expiresAt time.Time) (time.Time, error) {
+	if h, ok := f.holds[squatterUUID]; ok { // already stashed — idempotent no-op; keep & report the first window
+		return h.expiresAt, nil
+	}
+	f.blacklist[squatterUUID] = true
+	f.holds[squatterUUID] = fakeDataHold{id: id, username: username, dataRef: dataRef, expiresAt: expiresAt}
+	return expiresAt, nil
+}
+func (f *fakeRepo) IsUsernameBlacklisted(_ context.Context, mcUUID string) (bool, error) {
+	return f.blacklist[mcUUID], nil
 }
 func (f *fakeRepo) ClaimServer(_ context.Context, n, u string) (bool, error) {
 	ok, present := f.claimOK[n]

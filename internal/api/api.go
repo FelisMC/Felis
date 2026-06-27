@@ -172,6 +172,13 @@ func (a *API) internalAPIRoutes() []apiRoute {
 		// verified UUID. Internal-only — the code is born from an online-mode UUID the
 		// web never holds (account_link_codes has no user_id column).
 		{Method: "POST", Pattern: "/api/v1/internal/account/link/code", h: a.handleCreateLinkCode},
+		// Username-collision reclaim (spec §B3): velocity records a Mojang-priority
+		// reclaim (bar the squatter UUID + stash its data for 30 days) and gates the
+		// limbo login by checking whether a connecting UUID was barred. Internal-only —
+		// velocity holds a service token, and the bar is keyed by UUID so the genuine
+		// Mojang player (same name, different UUID) always passes.
+		{Method: "POST", Pattern: "/api/v1/internal/player/reclaim", h: a.handleReclaimUsername},
+		{Method: "GET", Pattern: "/api/v1/internal/player/blacklist/{mc_uuid}", h: a.handleCheckBlacklist},
 	}
 }
 
