@@ -454,6 +454,12 @@ const (
 const (
 	defaultTunnelName       = "felis"
 	defaultTunnelConfigPath = "/etc/felis/cloudflared.yml"
+
+	// Cloudflare Dashboard prefill URL for the API token this flow actually uses:
+	// Access app/policy management. Tunnel creation and DNS routing are authorized by
+	// the operator's cloudflared browser login, not by this token.
+	cloudflareAccessTokenTemplateURL = "https://dash.cloudflare.com/profile/api-tokens?permissionGroupKeys=%5B%7B%22key%22%3A%22access%22%2C%22type%22%3A%22edit%22%7D%5D&accountId=*&zoneId=all"
+	cloudflareAPITokenDocsURL        = "https://developers.cloudflare.com/fundamentals/api/how-to/account-owned-token-template/"
 )
 
 // authResultMsg carries the outcome of the off-goroutine admin credential check.
@@ -1178,6 +1184,12 @@ func (m *bgModel) View() string {
 		b.WriteString("console with a fail-closed Access policy, using YOUR own Cloudflare account.\n")
 		b.WriteString(bgHintStyle.Render("Hostnames are editable on the next screen; the Minecraft game host is not tunneled.") + "\n\n")
 
+		b.WriteString(bgLabelStyle.Render("Cloudflare authorization:") + "\n")
+		b.WriteString("  1. Press " + bgLabelStyle.Render("l") + " for `cloudflared tunnel login` browser consent.\n")
+		b.WriteString("  2. Create the Access API token from:\n")
+		b.WriteString("     " + cloudflareAccessTokenTemplateURL + "\n")
+		b.WriteString(bgHintStyle.Render("The link pre-fills the Dashboard token form; Cloudflare still asks you to review and create it.") + "\n")
+		b.WriteString(bgHintStyle.Render("Docs: "+cloudflareAPITokenDocsURL) + "\n\n")
 		b.WriteString(bgLabelStyle.Render("Default web hostnames:") + "\n")
 		if panel := defaultPanelHostname(m.rootDomain, m.panelHostname); panel != "" {
 			b.WriteString("  • " + panel + bgHintStyle.Render("  (Player console)") + "\n")
@@ -1213,7 +1225,8 @@ func (m *bgModel) View() string {
 
 	case stepEdgeInput:
 		b.WriteString(bgLabelStyle.Render("Cloudflare edge · credentials & scope") + "\n")
-		b.WriteString(bgHintStyle.Render("Token scopes: Account › Cloudflare Tunnel:Edit · Zone › DNS:Edit · Account › Access Apps and Policies:Edit") + "\n\n")
+		b.WriteString(bgHintStyle.Render("API token: Account > Access Apps and Policies:Edit. Tunnel/DNS uses `cloudflared tunnel login`.") + "\n")
+		b.WriteString(bgHintStyle.Render("Token template: "+cloudflareAccessTokenTemplateURL) + "\n\n")
 		labels := []string{
 			"Cloudflare API token",
 			"Cloudflare account ID",

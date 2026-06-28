@@ -314,6 +314,10 @@ func (p Preconditions) check() error {
 // Runner is the integration seam: every side-effecting step of the setup. The
 // real implementation (ExecRunner in runner.go) shells out to cloudflared and
 // calls the Cloudflare API and is INTEGRATION-ONLY; tests pass a fake.
+type apiTokenVerifier interface {
+	VerifyAPIToken(ctx context.Context) error
+}
+
 type Runner interface {
 	// CreateTunnel creates (or, idempotently, returns the existing) named tunnel,
 	// yielding its UUID and the path to its credentials file.
@@ -385,6 +389,15 @@ func Setup(ctx context.Context, runner Runner, p Params) (*Result, error) {
 	if err := validateFailClosed(policy); err != nil {
 		return nil, err // belt-and-suspenders: never POST an open policy
 	}
+	// 3. When the real runner can verify the token, do that read-only Cloudflare API
+	//    check before creating tunnels or DNS records. It catches expired/invalid
+	//    tokens earlier; Access account/permission failures can still surface on the
+	//    Access app/policy calls below.
+	if verifier, ok := runner.(apiTokenVerifier); ok {
+		if err := verifier.VerifyAPIToken(ctx); err != nil {
+			return nil, fmt.Errorf("cfsetup: verify Cloudflare API token: %w", err)
+		}
+	}
 
 	hostnames := webHostnames(p)
 	origin := p.PanelOrigin
@@ -392,18 +405,18 @@ func Setup(ctx context.Context, runner Runner, p Params) (*Result, error) {
 		origin = defaultPanelOrigin
 	}
 
-	// 3. Create the tunnel.
+	// 4. Create the tunnel.
 	id, cred, err := runner.CreateTunnel(ctx, p.TunnelName)
 	if err != nil {
 		return nil, fmt.Errorf("cfsetup: create tunnel: %w", err)
 	}
-	// 4. Route DNS for each WEB hostname only (the game host stays off the tunnel).
+	// 5. Route DNS for each WEB hostname only (the game host stays off the tunnel).
 	for _, h := range hostnames {
 		if err := runner.RouteDNS(ctx, id, h); err != nil {
 			return nil, fmt.Errorf("cfsetup: route dns %s: %w", h, err)
 		}
 	}
-	// 5. Render and persist the ingress config.
+	// 6. Render and persist the ingress config.
 	cfgBytes, err := BuildTunnelConfig(id, cred, origin, hostnames)
 	if err != nil {
 		return nil, err
@@ -413,13 +426,13 @@ func Setup(ctx context.Context, runner Runner, p Params) (*Result, error) {
 			return nil, fmt.Errorf("cfsetup: write config: %w", err)
 		}
 	}
-	// 6. Front the admin face with a self-hosted Access app.
+	// 7. Front the admin face with a self-hosted Access app.
 	app := BuildAccessApplication(p.AdminHostname, "Felis SysAdmin Console", p.SessionDuration, p.AllowedIdPs)
 	appID, aud, err := runner.CreateAccessApplication(ctx, app)
 	if err != nil {
 		return nil, fmt.Errorf("cfsetup: create access application: %w", err)
 	}
-	// 7. Attach the guarded fail-closed policy.
+	// 8. Attach the guarded fail-closed policy.
 	if err := runner.CreateAccessPolicy(ctx, appID, policy); err != nil {
 		return nil, fmt.Errorf("cfsetup: create access policy: %w", err)
 	}

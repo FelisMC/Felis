@@ -35,6 +35,17 @@ type recordingRunner struct {
 	aud         string
 }
 
+type verifyingRunner struct {
+	recordingRunner
+	verified  bool
+	verifyErr error
+}
+
+func (r *verifyingRunner) VerifyAPIToken(_ context.Context) error {
+	r.verified = true
+	return r.verifyErr
+}
+
 func (r *recordingRunner) CreateTunnel(_ context.Context, name string) (string, string, error) {
 	r.calls = append(r.calls, "CreateTunnel:"+name)
 	id := r.tunnelID
@@ -249,6 +260,28 @@ func TestSetupGatingHasNoSideEffects(t *testing.T) {
 // every precondition met, an empty AccessIdentity (which would yield a public
 // policy) aborts Setup BEFORE any tunnel/DNS/app is created. The fail-closed guard
 // is wired into the orchestrator, not merely a standalone helper.
+func TestSetupVerifiesAPITokenBeforeCloudflareMutations(t *testing.T) {
+	tokenErr := errors.New("token inactive")
+	runner := &verifyingRunner{verifyErr: tokenErr}
+	p := Params{
+		PanelHostname:  "console." + testRoot,
+		AdminHostname:  "op.console." + testRoot,
+		TunnelName:     "felis",
+		AccessIdentity: AccessIdentity{Emails: []string{"owner@example.net"}},
+		Pre:            goodPreconditions(),
+	}
+	_, err := Setup(context.Background(), runner, p)
+	if !errors.Is(err, tokenErr) {
+		t.Fatalf("err = %v, want token verifier error", err)
+	}
+	if !runner.verified {
+		t.Fatal("Setup did not verify the API token")
+	}
+	if len(runner.calls) != 0 {
+		t.Fatalf("token verification failure made Cloudflare mutations: %v", runner.calls)
+	}
+}
+
 func TestSetupRefusesUnscopedPolicyBeforeSideEffects(t *testing.T) {
 	runner := &recordingRunner{}
 	p := Params{
