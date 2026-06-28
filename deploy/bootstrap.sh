@@ -5,7 +5,7 @@
 #   curl -fsSL <raw-url>/deploy/bootstrap.sh | sudo bash
 #
 # Brings a fresh single-node Linux host from nothing to a running Felis control
-# plane: it installs whatever is missing (picking apt/dnf/yum/zypper by OS), provisions a
+# plane: it installs whatever is missing (picking apt/dnf/yum/zypper/pacman by OS), provisions a
 # swap file on tiny hosts, then configures Docker, k3s and PostgreSQL, builds and
 # imports the felis image, runs database migrations and applies the rendered
 # install bundle (CRD + namespaces + RBAC + NetworkPolicies + control-plane
@@ -67,6 +67,14 @@ die()  { printf '\033[1;31m[fail]\033[0m %s\n' "$*" >&2; exit 1; }
 k3s_cmd() { [ -x "$K3S_BIN" ] || die "k3s binary not found at ${K3S_BIN}"; "$K3S_BIN" "$@"; }
 kube() { k3s_cmd kubectl "$@"; }
 
+as_postgres() {
+  if command -v runuser >/dev/null 2>&1; then
+    runuser -u postgres -- "$@"
+  else
+    sudo -u postgres "$@"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # 0. Privilege & host facts
 # ---------------------------------------------------------------------------
@@ -91,8 +99,10 @@ detect_os() {
     PKG="yum"
   elif command -v zypper >/dev/null 2>&1; then
     PKG="zypper"
+  elif command -v pacman >/dev/null 2>&1; then
+    PKG="pacman"
   else
-    die "no supported package manager (apt/dnf/yum/zypper) found on ${OS_ID} ${OS_VERSION}"
+    die "no supported package manager (apt/dnf/yum/zypper/pacman) found on ${OS_ID} ${OS_VERSION}"
   fi
   log "host: ${PRETTY_NAME:-$OS_ID $OS_VERSION}  (package manager: ${PKG})"
 }
@@ -111,6 +121,7 @@ pkg_install() {
     dnf) dnf install -y "$@" ;;
     yum) yum install -y "$@" ;;
     zypper) zypper --non-interactive install -y "$@" ;;
+    pacman) pacman -S --noconfirm --needed "$@" ;;
   esac
 }
 
@@ -120,6 +131,7 @@ pkg_refresh_once() {
     apt) DEBIAN_FRONTEND=noninteractive apt-get update -y ;;
     dnf|yum) : ;;   # dnf/yum refresh metadata on demand
     zypper) zypper --non-interactive refresh ;;
+    pacman) pacman -Syu --noconfirm ;;
   esac
   _PKG_REFRESHED=1
 }
@@ -257,6 +269,11 @@ install_docker_zypper() {
   pkg_install docker
 }
 
+install_docker_pacman() {
+  log "installing docker from the Arch repositories"
+  pkg_install docker docker-buildx
+}
+
 install_docker() {
   if command -v docker >/dev/null 2>&1; then
     ok "docker already installed"
@@ -265,6 +282,7 @@ install_docker() {
       apt) install_docker_apt ;;
       dnf|yum) install_docker_rpm ;;
       zypper) install_docker_zypper ;;
+      pacman) install_docker_pacman ;;
       *) die "Docker installation is not supported with package manager: ${PKG}" ;;
     esac
   fi
@@ -403,6 +421,31 @@ write_pg_hba_block() {
   rm -f "$tmp" "${tmp}.new"
 }
 
+postgres_data_dir() {
+  case "$PKG" in
+    pacman) printf '%s\n' /var/lib/postgres/data ;;
+    *) printf '%s\n' /var/lib/pgsql/data ;;
+  esac
+}
+
+init_postgres_data_dir() {
+  local data_dir
+  data_dir="$(postgres_data_dir)"
+
+  [ "$PKG" = "apt" ] && return 0
+  [ -f "${data_dir}/PG_VERSION" ] && return 0
+
+  log "initialising postgresql data directory at ${data_dir}"
+  if command -v postgresql-setup >/dev/null 2>&1; then
+    postgresql-setup --initdb || /usr/bin/postgresql-setup initdb
+  elif command -v initdb >/dev/null 2>&1; then
+    install -d -o postgres -g postgres -m 0700 "$data_dir"
+    as_postgres initdb -D "$data_dir"
+  else
+    die "cannot initialise postgresql data directory: postgresql-setup/initdb not found"
+  fi
+}
+
 install_postgres() {
   if command -v psql >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q '^postgresql'; then
     ok "postgresql already installed"
@@ -413,39 +456,29 @@ install_postgres() {
       dnf) pkg_install postgresql-server postgresql ;;
       yum) pkg_install postgresql-server postgresql ;;
       zypper) pkg_install postgresql-server postgresql ;;
+      pacman) pkg_install postgresql ;;
     esac
   fi
 
-  # RPM-family packages, including openSUSE, commonly ship an uninitialised data dir.
-  if [ "$PKG" != "apt" ] && [ ! -f /var/lib/pgsql/data/PG_VERSION ]; then
-    log "initialising postgresql data directory"
-    if command -v postgresql-setup >/dev/null 2>&1; then
-      postgresql-setup --initdb || /usr/bin/postgresql-setup initdb
-    elif command -v initdb >/dev/null 2>&1; then
-      install -d -o postgres -g postgres -m 0700 /var/lib/pgsql/data
-      sudo -u postgres initdb -D /var/lib/pgsql/data
-    else
-      die "cannot initialise postgresql data directory: postgresql-setup/initdb not found"
-    fi
-  fi
+  init_postgres_data_dir
   systemctl enable --now postgresql
   ok "postgresql running"
 }
 
 configure_postgres() {
   local cfg hba
-  cfg="$(sudo -u postgres psql -tAc 'SHOW config_file;' 2>/dev/null || true)"
-  hba="$(sudo -u postgres psql -tAc 'SHOW hba_file;' 2>/dev/null || true)"
+  cfg="$(as_postgres psql -tAc 'SHOW config_file;' 2>/dev/null || true)"
+  hba="$(as_postgres psql -tAc 'SHOW hba_file;' 2>/dev/null || true)"
   [ -n "$cfg" ] && [ -n "$hba" ] || die "could not query postgresql config/hba file paths"
 
   # Listen on all interfaces (applied on restart). ALTER SYSTEM is idempotent.
-  sudo -u postgres psql -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET listen_addresses = '*';" >/dev/null
+  as_postgres psql -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET listen_addresses = '*';" >/dev/null
 
   # Allow the host loopback, the pod CIDR, and the node IP before broader distro defaults.
   write_pg_hba_block "$hba"
 
   # Role + database (idempotent), and (re)set the password to our generated one.
-  sudo -u postgres psql -v ON_ERROR_STOP=1 <<SQL >/dev/null
+  as_postgres psql -v ON_ERROR_STOP=1 <<SQL >/dev/null
 SET password_encryption = 'scram-sha-256';
 DO \$\$
 BEGIN
@@ -456,8 +489,8 @@ END
 \$\$;
 ALTER ROLE ${DB_USER} WITH LOGIN PASSWORD '${DB_PASSWORD}';
 SQL
-  if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" | grep -q 1; then
-    sudo -u postgres createdb -O "$DB_USER" "$DB_NAME"
+  if ! as_postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" | grep -q 1; then
+    as_postgres createdb -O "$DB_USER" "$DB_NAME"
   fi
 
   systemctl restart postgresql
