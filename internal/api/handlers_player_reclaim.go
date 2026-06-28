@@ -75,6 +75,31 @@ func (a *API) handleReclaimUsername(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "username is required"))
 		return
 	}
+	// Admin-on-Yggdrasil exception (spec §B3). Before barring the holder, check
+	// whether the displaced UUID is a Linked Operator/SysAdmin authenticating through
+	// the third-party Yggdrasil. Such a holder is staff on the Login Server, not a
+	// Mojang squatter, so Mojang priority must NOT displace them: refuse the reclaim
+	// outright — no bar, no stash — so the protected admin never enters the blacklist
+	// and the login gate naturally passes them. The exception is scoped strictly to
+	// admins; an ordinary thirdparty player is still reclaimed (Mojang priority holds).
+	protected, err := a.Repo.IsProtectedAdminLink(r.Context(), req.SquatterUUID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if protected {
+		// Distinct audit action so a refusal is never mistaken for a bar — the
+		// accountability record shows the reclaim was declined, and why.
+		payload, _ := json.Marshal(map[string]string{
+			"username": req.Username, "squatter_uuid": req.SquatterUUID, "reason": "protected_admin"})
+		_ = a.Repo.Audit(r.Context(), AuditEntry{
+			Actor: "velocity", Source: "internal", Action: "player.reclaim.refused",
+			RequestID: requestIDFromContext(r.Context()), Payload: payload,
+		})
+		writeError(w, r, newError(http.StatusConflict, "protected_admin",
+			"that username belongs to a linked administrator on the login server and cannot be reclaimed"))
+		return
+	}
 	id, err := newHoldID()
 	if err != nil {
 		writeError(w, r, err)

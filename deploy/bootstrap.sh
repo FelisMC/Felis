@@ -12,8 +12,8 @@
 # Deployments + in-cluster registry).
 #
 # By design it stops short of serving the web panel. After it finishes you run
-# `felis setup` on the host (a TUI) to create the Owner account; the SysAdmin web
-# surface only unlocks once Web Zero-Trust is configured. See deploy/README.md.
+# `felis setup` on the host (a TUI) to create the Owner account and optionally
+# configure the Cloudflare edge. See deploy/README.md.
 #
 # The script is idempotent: re-running it converges rather than duplicating, and
 # generated secrets are persisted to /etc/felis/secrets.env so reruns reuse them.
@@ -152,6 +152,28 @@ install_base() {
   pkg_refresh_once
   pkg_install curl ca-certificates git openssl
   ok "base tools present"
+}
+
+install_cloudflared() {
+  if command -v cloudflared >/dev/null 2>&1; then
+    ok "cloudflared already installed"
+    return 0
+  fi
+  local machine arch url tmp
+  machine="$(uname -m)"
+  case "$machine" in
+    x86_64|amd64) arch="amd64" ;;
+    aarch64|arm64) arch="arm64" ;;
+    armv7l|armv6l) arch="arm" ;;
+    *) die "unsupported architecture for cloudflared: ${machine}" ;;
+  esac
+  url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}"
+  tmp="$(mktemp)"
+  log "installing cloudflared (${arch})"
+  curl -fsSL "$url" -o "$tmp"
+  install -m 0755 "$tmp" /usr/local/bin/cloudflared
+  rm -f "$tmp"
+  ok "cloudflared installed ($(cloudflared --version | head -n 1))"
 }
 
 # ---------------------------------------------------------------------------
@@ -457,9 +479,23 @@ store = "tarLocal"
 local_path = "/var/lib/felis/archives"
 
 [auth]
-admin_hostname = "admin.${FELIS_ROOT_DOMAIN}"
-panel_hostname = "panel.${FELIS_ROOT_DOMAIN}"
+admin_hostname = "op.console.${FELIS_ROOT_DOMAIN}"
+panel_hostname = "console.${FELIS_ROOT_DOMAIN}"
 EOF
+}
+
+ensure_default_config() {
+  local target="${STATE_DIR}/felis.toml"
+  if [ -L "$target" ] && [ "$(readlink "$target")" = "${STATE_DIR}/felis.host.toml" ]; then
+    ok "default host config already points at ${STATE_DIR}/felis.host.toml"
+    return 0
+  fi
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    warn "leaving existing ${target}; setup can use -config ${STATE_DIR}/felis.host.toml if needed"
+    return 0
+  fi
+  ln -s "${STATE_DIR}/felis.host.toml" "$target"
+  ok "default host config: ${target} -> ${STATE_DIR}/felis.host.toml"
 }
 
 # ---------------------------------------------------------------------------
@@ -467,6 +503,7 @@ EOF
 # ---------------------------------------------------------------------------
 run_migrations() {
   write_felis_toml "${STATE_DIR}/felis.host.toml" "127.0.0.1"
+  ensure_default_config
   log "running database migrations (host binary -> 127.0.0.1)"
   "$HOST_BIN" migrate up -config "${STATE_DIR}/felis.host.toml"
   ok "migrations applied"
@@ -517,8 +554,8 @@ summary() {
   kube -n "$CONTROL_NS" get pods -o wide || true
   echo
   log "Web is intentionally NOT enabled yet."
-  log "Next: run  'sudo felis setup'  on this host to create the Owner account."
-  log "The SysAdmin web surface unlocks only after Web Zero-Trust is configured."
+  log "Next: run  'sudo felis setup'  on this host to create the Owner account and configure the web edge."
+  log "Use 'sudo felis breakGlass' only for emergency local Owner recovery/reset."
   echo
 }
 
@@ -527,6 +564,7 @@ main() {
   detect_node_ip
   ensure_swap
   install_base
+  install_cloudflared
   load_or_make_secrets
   install_docker
   install_k3s

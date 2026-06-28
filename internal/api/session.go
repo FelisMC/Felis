@@ -84,22 +84,23 @@ func clearSessionCookie(w http.ResponseWriter) {
 	})
 }
 
-// hostIsAdminConsole reports whether the request arrived on the operator console
-// host, op.console.<root_domain>. The session cookie is host-only, so a session
-// minted on op.console is structurally unable to reach the player console; this
-// is the local-auth analogue of the admin Access path. The Host the API sees must
-// be the real client Host (the ingress must forward it), which the VM check
-// verifies.
-func hostIsAdminConsole(r *http.Request, rootDomain string) bool {
-	if rootDomain == "" {
-		return false
+// hostIsAdminConsole reports whether the request arrived on the configured
+// operator console host. The session cookie is host-only, so a session minted on
+// the admin host is structurally unable to reach the player console. If older
+// configs omit [auth].admin_hostname, fall back to op.console.<root_domain>.
+func hostIsAdminConsole(r *http.Request, rootDomain, adminHostname string) bool {
+	want := strings.TrimSpace(adminHostname)
+	if want == "" {
+		if rootDomain == "" {
+			return false
+		}
+		want = "op.console." + rootDomain
 	}
 	host := r.Host
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
-	want := "op.console." + rootDomain
-	return strings.EqualFold(strings.TrimSuffix(host, "."), want)
+	return strings.EqualFold(strings.TrimSuffix(host, "."), strings.TrimSuffix(want, "."))
 }
 
 // SessionAuth is the composite ExternalAuth for the web face. It prefers a
@@ -113,10 +114,11 @@ func hostIsAdminConsole(r *http.Request, rootDomain string) bool {
 //     rejected and does NOT fall through to the JWT delegate, so a stale or
 //     forged cookie can never be laundered into a JWT attempt.
 type SessionAuth struct {
-	Repo       Repo
-	Delegate   ExternalAuth
-	RootDomain string
-	Now        func() time.Time
+	Repo          Repo
+	Delegate      ExternalAuth
+	RootDomain    string
+	AdminHostname string
+	Now           func() time.Time
 }
 
 func (s SessionAuth) now() time.Time {
@@ -152,7 +154,7 @@ func (s SessionAuth) Authenticate(r *http.Request) (*Principal, error) {
 		UserID:             u.ID,
 		Email:              u.Email,
 		Role:               u.Role,
-		ViaAdminAccess:     u.Role == "admin" && hostIsAdminConsole(r, s.RootDomain),
+		ViaAdminAccess:     u.Role == "admin" && hostIsAdminConsole(r, s.RootDomain, s.AdminHostname),
 		MustChangePassword: u.MustChangePassword,
 	}, nil
 }

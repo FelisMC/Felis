@@ -135,7 +135,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		Logs:    api.NewK8sLogStreamer(clientset, cfg.K8s.Namespace),
 		// Build-log stream (spec §16) is scoped to the BUILD namespace — the same
 		// value the Builder renders Jobs into — so it follows where build Pods run.
-		BuildLogs: api.NewK8sBuildLogStreamer(clientset, cfg.Registry.BuildNamespace),
+		BuildLogs:   api.NewK8sBuildLogStreamer(clientset, cfg.Registry.BuildNamespace),
 		Internal:    api.BearerTokenAuth{Token: token},
 		Builder:     builder,
 		Restorer:    restorer,
@@ -147,9 +147,10 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		// is wired (deployment integration point) — while the local-password path is
 		// live the moment `felis breakGlass` flips local_auth_enabled on.
 		External: api.SessionAuth{
-			Repo:       repo,
-			Delegate:   api.AccessVerifier{Audience: cfg.Auth.AccessJWTAud},
-			RootDomain: cfg.Server.RootDomain,
+			Repo:          repo,
+			Delegate:      api.AccessVerifier{Audience: cfg.Auth.AccessJWTAud},
+			RootDomain:    cfg.Server.RootDomain,
+			AdminHostname: cfg.Auth.AdminHostname,
 		},
 		RootDomain:   cfg.Server.RootDomain,
 		WakeCooldown: 30 * time.Second,

@@ -650,20 +650,18 @@ func TestBGModelGating(t *testing.T) {
 	})
 }
 
-// TestBGModelEdgeRouting locks in the optional Cloudflare edge flow's routing and its
-// load-bearing guards WITHOUT touching the operator's real Cloudflare account: the
-// menu reaches the edge intro as an independent peer of provisioning (no Owner reset
-// required to get there); an unconfigured admin hostname keeps edgeReady() false so the
-// flow cannot proceed to credential entry; esc returns to the router; and submitEdge
-// refuses empty inputs before any cfsetup.Setup side effect. Every assertion here is
-// environment-independent — the real cloudflared/cert.pem detection and the integration
-// Setup (which shells out / calls the live API) are deliberately NOT exercised.
+// TestBGModelEdgeRouting locks in the setup-only Cloudflare edge flow WITHOUT
+// touching the operator's real Cloudflare account: setup option 2 reaches the edge
+// intro as an independent peer of Owner creation; breakGlass has no edge option;
+// hostnames are collected in the setup form; and invalid inputs are refused before
+// any cfsetup.Setup side effect. The real cloudflared/cert.pem detection and the
+// integration Setup (which shells out / calls the live API) are deliberately NOT exercised.
 func TestBGModelEdgeRouting(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("menu option 2 enters the edge intro as a peer of provisioning, leaving the Owner credential untouched", func(t *testing.T) {
+	t.Run("setup menu option 2 enters the edge intro as a peer of provisioning, leaving the Owner credential untouched", func(t *testing.T) {
 		f := &fakeOwnerStore{admins: true}
-		m := newBGModel(ctx, f, testRoot, "op.console."+testRoot, "console."+testRoot, "alice", true)
+		m := newSetupBGModel(ctx, f, testRoot, "op.console."+testRoot, "console."+testRoot, "alice", true)
 		if m.step != stepMenu {
 			t.Fatalf("initial step = %v, want stepMenu", m.step)
 		}
@@ -677,8 +675,8 @@ func TestBGModelEdgeRouting(t *testing.T) {
 		}
 	})
 
-	t.Run("esc from the edge intro returns to the router with the edge option highlighted", func(t *testing.T) {
-		m := newBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "op.console."+testRoot, "console."+testRoot, "alice", true)
+	t.Run("esc from the edge intro returns to the setup router with the edge option highlighted", func(t *testing.T) {
+		m := newSetupBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "op.console."+testRoot, "console."+testRoot, "alice", true)
 		m = advance(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
 		m = advance(t, m, tea.KeyMsg{Type: tea.KeyEsc})
 		if m.step != stepMenu || m.focus != 1 {
@@ -686,31 +684,21 @@ func TestBGModelEdgeRouting(t *testing.T) {
 		}
 	})
 
-	t.Run("an unconfigured admin hostname keeps the edge gated shut regardless of cloudflared/login", func(t *testing.T) {
-		// adminHostname == "" makes edgeReady() false by short-circuit, independent of
-		// whether this box happens to have cloudflared installed and a cert.pem present.
-		m := newBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "", "", "alice", true)
+	t.Run("breakGlass has no edge option 2", func(t *testing.T) {
+		m := newBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "op.console."+testRoot, "console."+testRoot, "alice", true)
 		m = advance(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
-		if m.step != stepEdgeIntro {
-			t.Fatalf("step = %v, want stepEdgeIntro", m.step)
-		}
-		if m.edgeReady() {
-			t.Fatal("edgeReady() must be false when no admin hostname is configured")
-		}
-		// Enter while not ready must NOT advance to credential entry.
-		m = advance(t, m, tea.KeyMsg{Type: tea.KeyEnter})
-		if m.step != stepEdgeIntro {
-			t.Errorf("enter while not ready advanced to %v, want to stay on stepEdgeIntro", m.step)
+		if m.step != stepMenu {
+			t.Fatalf("breakGlass option 2 advanced to %v, want to stay on stepMenu", m.step)
 		}
 	})
 
 	t.Run("submitEdge refuses empty credentials before any Cloudflare side effect", func(t *testing.T) {
-		m := newBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "op.console."+testRoot, "console."+testRoot, "alice", true)
+		m := newSetupBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "op.console."+testRoot, "console."+testRoot, "alice", true)
 		// Install the edge inputs directly: reaching them via the menu requires a real
 		// cloudflared login (edgeReady()), which this unit test must not depend on.
 		m.enterEdgeInput()
-		if m.step != stepEdgeInput || len(m.inputs) != 5 {
-			t.Fatalf("enterEdgeInput: step/inputs = %v/%d, want stepEdgeInput with 5 inputs", m.step, len(m.inputs))
+		if m.step != stepEdgeInput || len(m.inputs) != 7 {
+			t.Fatalf("enterEdgeInput: step/inputs = %v/%d, want stepEdgeInput with 7 inputs", m.step, len(m.inputs))
 		}
 		// All inputs blank: submit (via the real key path) must report an error and stay
 		// put — NOT reach stepEdgeWorking, which is what launches cfsetup.Setup against
@@ -725,13 +713,13 @@ func TestBGModelEdgeRouting(t *testing.T) {
 	})
 
 	t.Run("submitEdge rejects a bare @ identity that would scope Access to an empty domain", func(t *testing.T) {
-		m := newBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "op.console."+testRoot, "console."+testRoot, "alice", true)
+		m := newSetupBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "op.console."+testRoot, "console."+testRoot, "alice", true)
 		m.enterEdgeInput()
 		// Token + account present, but identity is a bare "@" (empty domain). This passes
 		// the non-empty check yet must be refused before cfsetup.Setup, because an empty
 		// EmailDomain admits no one — a silent lock-out the operator should fix.
 		m.inputs[0].SetValue("token-value")
-		m.inputs[1].SetValue("account-id")
+		m.inputs[1].SetValue("1234567890abcdef1234567890abcdef")
 		m.inputs[2].SetValue("@")
 		m = advance(t, m, tea.KeyMsg{Type: tea.KeyEnter})
 		if m.step != stepEdgeInput || m.formErr == "" {
@@ -739,6 +727,23 @@ func TestBGModelEdgeRouting(t *testing.T) {
 		}
 		if m.step == stepEdgeWorking {
 			t.Error("a bare @ identity must never reach stepEdgeWorking — that would invoke the integration runner")
+		}
+	})
+
+	t.Run("submitEdge requires an admin hostname and rejects URLs", func(t *testing.T) {
+		m := newSetupBGModel(ctx, &fakeOwnerStore{admins: true}, testRoot, "", "", "alice", true)
+		m.enterEdgeInput()
+		m.inputs[0].SetValue("token-value")
+		m.inputs[1].SetValue("1234567890abcdef1234567890abcdef")
+		m.inputs[2].SetValue("ops@example.net")
+		m.inputs[3].SetValue("https://console." + testRoot)
+		m.inputs[4].SetValue("")
+		m = advance(t, m, tea.KeyMsg{Type: tea.KeyEnter})
+		if m.step != stepEdgeInput || m.formErr == "" {
+			t.Errorf("bad hostnames: step/formErr = %v/%q, want stay on stepEdgeInput with an error", m.step, m.formErr)
+		}
+		if m.step == stepEdgeWorking {
+			t.Error("invalid hostnames must never reach stepEdgeWorking")
 		}
 	})
 }

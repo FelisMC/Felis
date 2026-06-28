@@ -247,6 +247,22 @@ func (f *fakeRepo) ReclaimUsername(_ context.Context, id, squatterUUID, username
 func (f *fakeRepo) IsUsernameBlacklisted(_ context.Context, mcUUID string) (bool, error) {
 	return f.blacklist[mcUUID], nil
 }
+
+// IsProtectedAdminLink mirrors PGRepo's JOIN of account_links to users: linked,
+// auth_source 'thirdparty', and the linked user an admin — no password-hash test, so
+// an SSO Operator (role='admin', empty PasswordHash) is protected like any other.
+func (f *fakeRepo) IsProtectedAdminLink(_ context.Context, mcUUID string) (bool, error) {
+	userID, ok := f.links[mcUUID]
+	if !ok || f.linkAuthSource[mcUUID] != authSourceThirdParty {
+		return false, nil
+	}
+	for _, u := range f.staff {
+		if u.ID == userID && u.Role == "admin" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
 func (f *fakeRepo) ClaimServer(_ context.Context, n, u string) (bool, error) {
 	ok, present := f.claimOK[n]
 	if !present {
@@ -1015,6 +1031,34 @@ func TestErrorEnvelopeHasRequestID(t *testing.T) {
 
 // ---- real AccessVerifier (JWT aud) ----
 
+func TestSessionAuthUsesConfiguredAdminHostname(t *testing.T) {
+	repo := newFakeRepo()
+	repo.settings[LocalAuthEnabledKey] = []byte("true")
+	repo.staff["owner"] = &StaffUser{ID: "u1", Email: "owner@mc.example.net", Role: "admin"}
+	token := "session-token"
+	repo.sessions[hashCookie(token)] = &fakeSession{userID: "u1", expiresAt: time.Now().Add(time.Hour)}
+	auth := SessionAuth{Repo: repo, RootDomain: "old.example.net", AdminHostname: "op.console.mc.example.net"}
+
+	r := httptest.NewRequest("GET", "https://op.console.mc.example.net/api/v1/me", nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	p, err := auth.Authenticate(r)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if !p.ViaAdminAccess {
+		t.Fatalf("configured admin hostname should grant admin-path access, got %+v", p)
+	}
+
+	r = httptest.NewRequest("GET", "https://op.console.old.example.net/api/v1/me", nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	p, err = auth.Authenticate(r)
+	if err != nil {
+		t.Fatalf("Authenticate fallback host: %v", err)
+	}
+	if p.ViaAdminAccess {
+		t.Fatalf("root-domain fallback host must not grant admin-path access when admin_hostname is configured")
+	}
+}
 func TestAccessVerifier(t *testing.T) {
 	key := []byte("test-signing-key")
 	keyfunc := func(*jwt.Token) (any, error) { return key, nil }

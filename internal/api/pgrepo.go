@@ -515,6 +515,24 @@ func (p *PGRepo) IsUsernameBlacklisted(ctx context.Context, mcUUID string) (bool
 	return ok, err
 }
 
+// IsProtectedAdminLink reports whether mc_uuid belongs to a Linked Operator/SysAdmin
+// who authenticates through the third-party Yggdrasil — the admin-on-Yggdrasil reclaim
+// exception (spec §B3). The EXISTS joins account_links to users on exactly three
+// conjuncts: the UUID is linked, that link authenticated via 'thirdparty', and the
+// linked user is an admin. It intentionally does not test password_hash: an Operator
+// who signs in via SSO (Cloudflare Access, §14) carries role='admin' with a NULL hash
+// and must be protected just the same — the hash is orthogonal to "is staff" and "logs
+// in via the Login Server". Keyed by UUID, the only identity velocity holds.
+func (p *PGRepo) IsProtectedAdminLink(ctx context.Context, mcUUID string) (bool, error) {
+	var ok bool
+	err := p.db.QueryRowContext(ctx,
+		`SELECT EXISTS(
+			SELECT 1 FROM account_links al JOIN users u ON u.id = al.user_id
+			WHERE al.mc_uuid = $1 AND al.auth_source = 'thirdparty' AND u.role = 'admin')`,
+		mcUUID).Scan(&ok)
+	return ok, err
+}
+
 // ---- local-password auth (spec §B) ----
 
 // UserByUsername loads a staff login projection by username, or ErrNotFound. A

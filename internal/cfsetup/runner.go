@@ -153,6 +153,12 @@ func (r *ExecRunner) CreateAccessApplication(ctx context.Context, app AccessAppl
 		} `json:"result"`
 	}
 	if err := r.apiPost(ctx, fmt.Sprintf("/accounts/%s/access/apps", r.AccountID), app, &resp); err != nil {
+		// If application already exists, look it up instead of failing (idempotency)
+		if strings.Contains(err.Error(), "application_already_exists") || strings.Contains(err.Error(), "11010") {
+			if id, aud, lerr := r.lookupAccessApplication(ctx, app.Domain); lerr == nil && id != "" {
+				return id, aud, nil
+			}
+		}
 		return "", "", err
 	}
 	return resp.Result.ID, resp.Result.AUD, nil
@@ -160,7 +166,14 @@ func (r *ExecRunner) CreateAccessApplication(ctx context.Context, app AccessAppl
 
 // CreateAccessPolicy POSTs the policy onto the Access app.
 func (r *ExecRunner) CreateAccessPolicy(ctx context.Context, appID string, policy AccessPolicy) error {
-	return r.apiPost(ctx, fmt.Sprintf("/accounts/%s/access/apps/%s/policies", r.AccountID, appID), policy, nil)
+	if err := r.apiPost(ctx, fmt.Sprintf("/accounts/%s/access/apps/%s/policies", r.AccountID, appID), policy, nil); err != nil {
+		// If policy already exists, treat it as idempotent success
+		if strings.Contains(err.Error(), "policy_already_exists") || strings.Contains(err.Error(), "11015") || strings.Contains(err.Error(), "already_exists") {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // runCloudflared executes the cloudflared binary with the given args, returning
@@ -202,6 +215,25 @@ func (r *ExecRunner) apiPost(ctx context.Context, path string, body, out any) er
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode == http.StatusUnauthorized {
+			return fmt.Errorf("cfsetup: Cloudflare API authentication failed (status 401). Please verify that:\n"+
+				"  1. The API Token is valid, active, and has not expired.\n"+
+				"  2. You did not enter a Global API Key (a Bearer API Token is required).\n"+
+				"  3. The token has the required permissions under the Account scope:\n"+
+				"     - Account > Access Apps and Policies: Edit\n"+
+				"     - Account > Cloudflare Tunnel: Edit\n"+
+				"     - Zone > DNS: Edit\n"+
+				"  Original error: %s", string(raw))
+		}
+		if resp.StatusCode == http.StatusForbidden {
+			return fmt.Errorf("cfsetup: Cloudflare API access forbidden (status 403). Please verify that:\n"+
+				"  1. The API Token has permission to access Account ID %q.\n"+
+				"  2. The token has the required permissions under the Account scope:\n"+
+				"     - Account > Access Apps and Policies: Edit\n"+
+				"     - Account > Cloudflare Tunnel: Edit\n"+
+				"     - Zone > DNS: Edit\n"+
+				"  Original error: %s", r.AccountID, string(raw))
+		}
 		return fmt.Errorf("cfsetup: Cloudflare API %s: status %d: %s", path, resp.StatusCode, string(raw))
 	}
 	// Cloudflare wraps every response in {success, errors, result}; surface a
@@ -219,4 +251,76 @@ func (r *ExecRunner) apiPost(ctx context.Context, path string, body, out any) er
 		}
 	}
 	return nil
+}
+
+// apiGet sends an authenticated JSON GET to the Cloudflare API and, on a
+// non-2xx or success:false body, returns the error. out, when non-nil, receives
+// the decoded response.
+func (r *ExecRunner) apiGet(ctx context.Context, path string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, r.apiBase()+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+r.APIToken)
+	resp, err := r.httpClient().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode == http.StatusUnauthorized {
+			return fmt.Errorf("cfsetup: Cloudflare API authentication failed (status 401). Please verify that:\n"+
+				"  1. The API Token is valid, active, and has not expired.\n"+
+				"  2. You did not enter a Global API Key (a Bearer API Token is required).\n"+
+				"  3. The token has the required permissions under the Account scope:\n"+
+				"     - Account > Access Apps and Policies: Edit\n"+
+				"     - Account > Cloudflare Tunnel: Edit\n"+
+				"     - Zone > DNS: Edit\n"+
+				"  Original error: %s", string(raw))
+		}
+		if resp.StatusCode == http.StatusForbidden {
+			return fmt.Errorf("cfsetup: Cloudflare API access forbidden (status 403). Please verify that:\n"+
+				"  1. The API Token has permission to access Account ID %q.\n"+
+				"  2. The token has the required permissions under the Account scope:\n"+
+				"     - Account > Access Apps and Policies: Edit\n"+
+				"     - Account > Cloudflare Tunnel: Edit\n"+
+				"     - Zone > DNS: Edit\n"+
+				"  Original error: %s", r.AccountID, string(raw))
+		}
+		return fmt.Errorf("cfsetup: Cloudflare API %s: status %d: %s", path, resp.StatusCode, string(raw))
+	}
+	var envelope struct {
+		Success bool              `json:"success"`
+		Errors  []json.RawMessage `json:"errors"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err == nil && !envelope.Success && len(envelope.Errors) > 0 {
+		return fmt.Errorf("cfsetup: Cloudflare API %s: %s", path, string(raw))
+	}
+	if out != nil {
+		if err := json.Unmarshal(raw, out); err != nil {
+			return fmt.Errorf("cfsetup: decode Cloudflare API %s response: %w", path, err)
+		}
+	}
+	return nil
+}
+
+// lookupAccessApplication finds an existing Access application's id and aud by domain.
+func (r *ExecRunner) lookupAccessApplication(ctx context.Context, domain string) (string, string, error) {
+	var resp struct {
+		Result []struct {
+			ID     string `json:"id"`
+			Domain string `json:"domain"`
+			AUD    string `json:"aud"`
+		} `json:"result"`
+	}
+	if err := r.apiGet(ctx, fmt.Sprintf("/accounts/%s/access/apps?per_page=100", r.AccountID), &resp); err != nil {
+		return "", "", err
+	}
+	for _, app := range resp.Result {
+		if app.Domain == domain {
+			return app.ID, app.AUD, nil
+		}
+	}
+	return "", "", fmt.Errorf("cfsetup: access application for domain %q not found in list", domain)
 }

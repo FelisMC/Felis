@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 )
@@ -52,16 +53,54 @@ func TestRunApplyRequiresFileFlag(t *testing.T) {
 
 func TestRunApplyRejectsInvalidJSON(t *testing.T) {
 	// Sending garbage via a temp file must exit 1 (input error), not panic or hang.
+	empty := t.TempDir() + "/empty.json"
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 	var out, errBuf bytes.Buffer
-	code := run([]string{"apply", "-f", "/dev/null"}, &out, &errBuf)
-	// /dev/null is empty → JSON parse fails or validation rejects the zero values;
-	// either way it must exit 1, not panic.
+	code := run([]string{"apply", "-f", empty}, &out, &errBuf)
+	// The empty file must fail JSON parsing or validation; either way it exits 1.
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
 	}
 	if !strings.Contains(errBuf.String(), "invalid") && !strings.Contains(errBuf.String(), "required") {
 		t.Errorf("expected input error, got %q", errBuf.String())
 	}
+}
+
+func TestRunSetupAndBreakGlassCommands(t *testing.T) {
+	t.Run("setup help", func(t *testing.T) {
+		var out, errBuf bytes.Buffer
+		if code := run([]string{"setup", "-h"}, &out, &errBuf); code != 0 {
+			t.Errorf("exit code = %d, want 0", code)
+		}
+		if !strings.Contains(errBuf.String(), "Usage of setup") {
+			t.Errorf("expected setup help, got stderr=%q stdout=%q", errBuf.String(), out.String())
+		}
+		if strings.Contains(errBuf.String(), "Usage of breakGlass") {
+			t.Errorf("setup must not route to breakGlass help, got %q", errBuf.String())
+		}
+	})
+
+	t.Run("breakGlass help", func(t *testing.T) {
+		var out, errBuf bytes.Buffer
+		if code := run([]string{"breakGlass", "-h"}, &out, &errBuf); code != 0 {
+			t.Errorf("exit code = %d, want 0", code)
+		}
+		if !strings.Contains(errBuf.String(), "Usage of breakGlass") {
+			t.Errorf("expected breakGlass help, got stderr=%q stdout=%q", errBuf.String(), out.String())
+		}
+	})
+
+	t.Run("lowercase breakglass is intentionally rejected", func(t *testing.T) {
+		var out, errBuf bytes.Buffer
+		if code := run([]string{"breakglass", "-h"}, &out, &errBuf); code != 2 {
+			t.Errorf("exit code = %d, want 2", code)
+		}
+		if !strings.Contains(errBuf.String(), "unknown command") {
+			t.Errorf("expected lowercase alias rejection, got stderr=%q stdout=%q", errBuf.String(), out.String())
+		}
+	})
 }
 
 func TestRunReaperValidatesConfigBeforeDialing(t *testing.T) {

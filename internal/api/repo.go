@@ -218,6 +218,22 @@ type Repo interface {
 	// reject a squatter while letting the genuine Mojang UUID — same username,
 	// different UUID — through: the check is keyed by UUID, never by the name.
 	IsUsernameBlacklisted(ctx context.Context, mcUUID string) (bool, error)
+	// IsProtectedAdminLink reports whether an in-game UUID belongs to a Linked
+	// Operator/SysAdmin who authenticates through the configured third-party
+	// Yggdrasil — the admin-on-Yggdrasil reclaim exception (spec §B3). Such a holder
+	// is staff logging in via the Login Server, not a Mojang squatter, so a
+	// Mojang-priority reclaim must never bar them. The predicate is exactly three
+	// conjuncts: the UUID is linked (account_links), that link authenticated via
+	// 'thirdparty' (auth_source), and the linked user is an admin (role='admin').
+	// It deliberately does NOT require a local password hash: an Operator who signs
+	// in through SSO (Cloudflare Access, IdP-agnostic per §14) carries role='admin'
+	// with no password_hash, and must be protected all the same — a password hash is
+	// orthogonal to both "is staff" and "logs in via the Login Server". An unlinked
+	// UUID, a Mojang-sourced link, or a non-admin link all yield false, so the
+	// exception never broadens to ordinary thirdparty players (Mojang priority still
+	// displaces them) nor to Mojang-authenticated identities (who have no Login-Server
+	// name to protect). Keyed by UUID — the only identity velocity knows.
+	IsProtectedAdminLink(ctx context.Context, mcUUID string) (bool, error)
 
 	// ---- local-password auth (spec §B) ----
 

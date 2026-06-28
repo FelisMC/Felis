@@ -89,6 +89,9 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "/etc/felis/felis.toml", "path to felis.toml")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
 
@@ -156,8 +159,8 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 		if res.auditWarning != "" {
 			fmt.Fprintf(stdout, "WARNING: the accountability audit row was NOT written: %s\n", res.auditWarning)
 		}
-		if res.rootDomain != "" {
-			fmt.Fprintf(stdout, "Log in at https://op.console.%s with that username and password.\n", res.rootDomain)
+		if url := adminLoginURL(res.rootDomain, res.adminHostname); url != "" {
+			fmt.Fprintf(stdout, "Log in at %s with that username and password.\n", url)
 		}
 	}
 
@@ -411,13 +414,23 @@ type breakGlassResult struct {
 	displayPassword string // empty when the operator typed their own bootstrap password
 	auditWarning    string
 	rootDomain      string
+	adminHostname   string
 
 	// optional Cloudflare edge outcome (independent of provisioned)
-	edgeConfigured  bool
-	edgeAud         string
-	edgeRoutedHosts []string
-	edgeConfigPath  string
+	edgeConfigured    bool
+	edgeAud           string
+	edgeRoutedHosts   []string
+	edgeConfigPath    string
+	edgePanelHostname string
+	edgeAdminHostname string
 }
+
+type consoleMode string
+
+const (
+	consoleModeBreakGlass consoleMode = "breakGlass"
+	consoleModeSetup      consoleMode = "setup"
+)
 
 type bgStep int
 
@@ -436,10 +449,6 @@ const (
 	stepEdgeDone
 	stepEdgeError
 )
-
-// menuOptionCount is the number of selectable top-level operations. Provision is
-// index 0; the optional Cloudflare edge is index 1.
-const menuOptionCount = 2
 
 // Edge-flow defaults the operator can accept as-is.
 const (
@@ -490,6 +499,7 @@ var (
 type bgModel struct {
 	ctx         context.Context
 	store       ownerStore
+	consoleMode consoleMode
 	rootDomain  string
 	osUser      string
 	adminExists bool
@@ -518,19 +528,27 @@ type bgModel struct {
 	err             error
 
 	// optional Cloudflare edge flow
-	cloudflaredPath string          // detected; empty = not on PATH
-	certExists      bool            // ~/.cloudflared/cert.pem present (logged in)
-	loginNote       string          // soft note after a cancelled/failed login
-	edgeResult      *cfsetup.Result // populated on stepEdgeDone
+	cloudflaredPath   string          // detected; empty = not on PATH
+	certExists        bool            // ~/.cloudflared/cert.pem present (logged in)
+	loginNote         string          // soft note after a cancelled/failed login
+	edgeResult        *cfsetup.Result // populated on stepEdgeDone
+	edgePanelHostname string
+	edgeAdminHostname string
 }
 
 func newBGModel(ctx context.Context, s ownerStore, rootDomain, adminHostname, panelHostname, osUser string, adminExists bool) *bgModel {
-	// The console opens on the top-level router; the bootstrap-vs-recovery branch is
-	// taken only when the operator chooses the provisioning op (enterProvisionFlow).
-	// The optional edge op is a peer, reachable without touching the Owner credential.
+	return newBGModelForMode(ctx, s, rootDomain, adminHostname, panelHostname, osUser, adminExists, consoleModeBreakGlass)
+}
+
+func newSetupBGModel(ctx context.Context, s ownerStore, rootDomain, adminHostname, panelHostname, osUser string, adminExists bool) *bgModel {
+	return newBGModelForMode(ctx, s, rootDomain, adminHostname, panelHostname, osUser, adminExists, consoleModeSetup)
+}
+
+func newBGModelForMode(ctx context.Context, s ownerStore, rootDomain, adminHostname, panelHostname, osUser string, adminExists bool, mode consoleMode) *bgModel {
 	return &bgModel{
 		ctx:           ctx,
 		store:         s,
+		consoleMode:   mode,
 		rootDomain:    rootDomain,
 		adminHostname: adminHostname,
 		panelHostname: panelHostname,
@@ -841,6 +859,13 @@ func performCmd(ctx context.Context, s ownerStore, op breakGlassOp) tea.Cmd {
 
 // ---- top-level router ----
 
+func (m *bgModel) menuOptionCount() int {
+	if m.consoleMode == consoleModeSetup {
+		return 2
+	}
+	return 1
+}
+
 func (m *bgModel) handleMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", "esc":
@@ -851,7 +876,7 @@ func (m *bgModel) handleMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "down", "tab":
-		if m.focus < menuOptionCount-1 {
+		if m.focus < m.menuOptionCount()-1 {
 			m.focus++
 		}
 		return m, nil
@@ -859,8 +884,11 @@ func (m *bgModel) handleMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.focus = 0
 		return m.selectMenu()
 	case "2":
-		m.focus = 1
-		return m.selectMenu()
+		if m.menuOptionCount() > 1 {
+			m.focus = 1
+			return m.selectMenu()
+		}
+		return m, nil
 	case "enter":
 		return m.selectMenu()
 	}
@@ -868,8 +896,12 @@ func (m *bgModel) handleMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *bgModel) selectMenu() (tea.Model, tea.Cmd) {
-	if m.focus == 1 {
+	if m.consoleMode == consoleModeSetup && m.focus == 1 {
 		return m.enterEdgeIntro()
+	}
+	if m.consoleMode == consoleModeSetup && m.adminExists {
+		m.formErr = "an Owner/admin already exists; use breakGlass for emergency reset, or choose Cloudflare edge"
+		return m, nil
 	}
 	return m, m.enterProvisionFlow()
 }
@@ -889,10 +921,10 @@ func (m *bgModel) enterEdgeIntro() (tea.Model, tea.Cmd) {
 }
 
 // edgeReady reports whether the edge flow can proceed to credential entry: the
-// admin hostname must be configured (it is what the Access app guards) and the
-// operator must have cloudflared installed and be logged in.
+// operator must have cloudflared installed and be logged in. Hostnames are chosen
+// on the next screen, so an empty [auth] hostname no longer blocks setup.
 func (m *bgModel) edgeReady() bool {
-	return m.adminHostname != "" && m.cloudflaredPath != "" && m.certExists
+	return m.cloudflaredPath != "" && m.certExists
 }
 
 func (m *bgModel) handleEdgeIntroKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -900,12 +932,12 @@ func (m *bgModel) handleEdgeIntroKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "esc":
-		// Back to the router with the edge option still highlighted.
+		// Back to the setup router with the edge option still highlighted.
 		m.step, m.focus, m.loginNote = stepMenu, 1, ""
 		return m, nil
 	case "l", "L":
 		// Offer the interactive login only when it is the actual blocker.
-		if m.adminHostname != "" && m.cloudflaredPath != "" && !m.certExists {
+		if m.cloudflaredPath != "" && !m.certExists {
 			return m.startCloudflaredLogin()
 		}
 		return m, nil
@@ -928,19 +960,24 @@ func (m *bgModel) startCloudflaredLogin() (tea.Model, tea.Cmd) {
 	})
 }
 
-// enterEdgeInput installs the credential/scope inputs, pre-filling the safe
-// defaults. The hostnames are NOT collected here — they come from [auth] config.
+// enterEdgeInput installs the credential/scope inputs, pre-filling safe defaults.
+// Hostnames are explicit setup inputs so an operator can choose console.mc and
+// op.console.mc instead of accepting whatever the bootstrap config guessed.
 func (m *bgModel) enterEdgeInput() tea.Cmd {
 	m.step = stepEdgeInput
 	m.formErr = ""
 	token := bgInput("Cloudflare API token", 200, true)
 	account := bgInput("Cloudflare account ID", 64, false)
 	identity := bgInput("you@example.com  or  @your-domain", 254, false)
+	panelHost := bgInput(defaultPanelHostname(m.rootDomain, m.panelHostname), 253, false)
+	panelHost.SetValue(defaultPanelHostname(m.rootDomain, m.panelHostname))
+	adminHost := bgInput(defaultAdminHostname(m.rootDomain, m.adminHostname), 253, false)
+	adminHost.SetValue(defaultAdminHostname(m.rootDomain, m.adminHostname))
 	tunnel := bgInput(defaultTunnelName, 64, false)
 	tunnel.SetValue(defaultTunnelName)
 	cfgPath := bgInput(defaultTunnelConfigPath, 256, false)
 	cfgPath.SetValue(defaultTunnelConfigPath)
-	return m.setInputs([]textinput.Model{token, account, identity, tunnel, cfgPath})
+	return m.setInputs([]textinput.Model{token, account, identity, panelHost, adminHost, tunnel, cfgPath})
 }
 
 // submitEdge validates the edge inputs and launches cfsetup.Setup. The fail-closed
@@ -951,8 +988,10 @@ func (m *bgModel) submitEdge() (tea.Model, tea.Cmd) {
 	token := strings.TrimSpace(m.inputs[0].Value())
 	account := strings.TrimSpace(m.inputs[1].Value())
 	identity := strings.TrimSpace(m.inputs[2].Value())
-	tunnel := strings.TrimSpace(m.inputs[3].Value())
-	cfgPath := strings.TrimSpace(m.inputs[4].Value())
+	panelHost := normalizeEdgeHostname(m.inputs[3].Value())
+	adminHost := normalizeEdgeHostname(m.inputs[4].Value())
+	tunnel := strings.TrimSpace(m.inputs[5].Value())
+	cfgPath := strings.TrimSpace(m.inputs[6].Value())
 
 	if token == "" {
 		m.formErr = "a Cloudflare API token is required"
@@ -960,6 +999,14 @@ func (m *bgModel) submitEdge() (tea.Model, tea.Cmd) {
 	}
 	if account == "" {
 		m.formErr = "the Cloudflare account ID is required"
+		return m, m.focusInput(1)
+	}
+	if !isHex32(account) {
+		if strings.HasPrefix(account, "cfat_") {
+			m.formErr = "you entered an API token (starting with cfat_) instead of the Cloudflare Account ID"
+		} else {
+			m.formErr = "the Cloudflare Account ID must be a 32-character hexadecimal string"
+		}
 		return m, m.focusInput(1)
 	}
 	if identity == "" {
@@ -973,8 +1020,23 @@ func (m *bgModel) submitEdge() (tea.Model, tea.Cmd) {
 		m.formErr = "enter a domain after the @, e.g. @your-domain"
 		return m, m.focusInput(2)
 	}
+	if err := validateEdgeHostname("player console hostname", panelHost, false); err != nil {
+		m.formErr = err.Error()
+		return m, m.focusInput(3)
+	}
+	if err := validateEdgeHostname("admin console hostname", adminHost, true); err != nil {
+		m.formErr = err.Error()
+		return m, m.focusInput(4)
+	}
+	if panelHost != "" && strings.EqualFold(panelHost, adminHost) {
+		m.formErr = "player console and admin console hostnames must be different"
+		return m, m.focusInput(4)
+	}
 	if tunnel == "" {
 		tunnel = defaultTunnelName
+	}
+	if cfgPath == "" {
+		cfgPath = defaultTunnelConfigPath
 	}
 
 	var id cfsetup.AccessIdentity
@@ -984,9 +1046,11 @@ func (m *bgModel) submitEdge() (tea.Model, tea.Cmd) {
 		id.Emails = []string{identity}
 	}
 
+	m.edgePanelHostname = panelHost
+	m.edgeAdminHostname = adminHost
 	p := cfsetup.Params{
-		PanelHostname:  m.panelHostname,
-		AdminHostname:  m.adminHostname,
+		PanelHostname:  panelHost,
+		AdminHostname:  adminHost,
 		TunnelName:     tunnel,
 		ConfigPath:     cfgPath,
 		AccessIdentity: id,
@@ -1013,19 +1077,33 @@ func edgeSetupCmd(ctx context.Context, runner cfsetup.Runner, p cfsetup.Params) 
 
 func (m *bgModel) View() string {
 	var b strings.Builder
-	b.WriteString(bgTitleStyle.Render("⚠  FELIS BREAK-GLASS — LOCAL EMERGENCY CONSOLE") + "\n\n")
+	title := "FELIS BREAK-GLASS — LOCAL EMERGENCY CONSOLE"
+	if m.consoleMode == consoleModeSetup {
+		title = "FELIS SETUP — LOCAL SETUP CONSOLE"
+	}
+	b.WriteString(bgTitleStyle.Render("⚠  "+title) + "\n\n")
 
 	switch m.step {
 	case stepMenu:
-		b.WriteString("Choose a break-glass operation:\n\n")
-		provisionDesc := "No staff account yet — bootstrap the first Owner."
-		if m.adminExists {
-			provisionDesc = "An admin exists — authenticate, then reset the Owner credential."
+		prompt := "Choose a break-glass operation:"
+		provisionTitle := "Emergency reset the Owner account"
+		provisionDesc := "Authenticate as an existing admin, or use a deliberate root override."
+		if !m.adminExists {
+			provisionTitle = "Create the first Owner account"
+			provisionDesc = "No staff account exists yet — bootstrap the first Owner."
 		}
-		opts := [menuOptionCount]struct{ title, desc string }{
-			{"Provision / reset the Owner account", provisionDesc},
-			{"Set up the Cloudflare edge", "Tunnel + fail-closed Access for the web faces — 锦上添花, optional."},
+		opts := []struct{ title, desc string }{{provisionTitle, provisionDesc}}
+		if m.consoleMode == consoleModeSetup {
+			prompt = "Choose a setup operation:"
+			provisionTitle = "Create the Owner account"
+			provisionDesc = "No staff account exists yet — bootstrap the first Owner."
+			if m.adminExists {
+				provisionDesc = "Already exists — use breakGlass only for emergency reset."
+			}
+			opts[0] = struct{ title, desc string }{provisionTitle, provisionDesc}
+			opts = append(opts, struct{ title, desc string }{"Set up the Cloudflare edge", "Choose web hostnames, create Tunnel DNS, and guard the admin face with Access."})
 		}
+		b.WriteString(prompt + "\n\n")
 		for i, o := range opts {
 			cursor, title := "   ", o.title
 			if i == m.focus {
@@ -1034,7 +1112,14 @@ func (m *bgModel) View() string {
 			b.WriteString(fmt.Sprintf("%s%d. %s\n", cursor, i+1, title))
 			b.WriteString("      " + bgHintStyle.Render(o.desc) + "\n\n")
 		}
-		b.WriteString(bgHintStyle.Render("↑↓ move · 1/2 select · enter confirm · esc exit") + "\n")
+		if m.formErr != "" {
+			b.WriteString(bgWarnStyle.Render(m.formErr) + "\n\n")
+		}
+		hint := "↑↓ move · 1 select · enter confirm · esc exit"
+		if m.menuOptionCount() > 1 {
+			hint = "↑↓ move · 1/2 select · enter confirm · esc exit"
+		}
+		b.WriteString(bgHintStyle.Render(hint) + "\n")
 
 	case stepAuth:
 		b.WriteString("A staff account already exists. Identify yourself before breaking the glass.\n")
@@ -1088,22 +1173,19 @@ func (m *bgModel) View() string {
 		b.WriteString(bgHintStyle.Render("tab/↑↓ move · enter provision · esc cancel") + "\n")
 
 	case stepEdgeIntro:
-		b.WriteString(bgLabelStyle.Render("Optional · Cloudflare Tunnel + Access edge") + bgHintStyle.Render("  (锦上添花 — skippable)") + "\n")
+		b.WriteString(bgLabelStyle.Render("Cloudflare Tunnel + Access edge") + bgHintStyle.Render("  (optional)") + "\n")
 		b.WriteString("Publishes the web faces over a Cloudflare Tunnel and fronts the SysAdmin\n")
 		b.WriteString("console with a fail-closed Access policy, using YOUR own Cloudflare account.\n")
-		b.WriteString(bgHintStyle.Render("felis stays domain- and IdP-agnostic; bring your own domain/SSO if you prefer.") + "\n\n")
+		b.WriteString(bgHintStyle.Render("Hostnames are editable on the next screen; the Minecraft game host is not tunneled.") + "\n\n")
 
-		if m.adminHostname == "" {
-			b.WriteString(bgErrStyle.Render("✗ [auth] admin_hostname is not set in felis.toml") + " — configure it first; it is\n")
-			b.WriteString("  the hostname the Access policy guards.\n\n")
-		} else {
-			b.WriteString(bgLabelStyle.Render("Will route to the local panel:") + "\n")
-			if m.panelHostname != "" {
-				b.WriteString("  • " + m.panelHostname + bgHintStyle.Render("  (Player console)") + "\n")
-			}
-			b.WriteString("  • " + m.adminHostname + bgHintStyle.Render("  (Operator + SysAdmin console — Access-guarded)") + "\n")
-			b.WriteString(bgHintStyle.Render("  The Minecraft game host is deliberately NOT tunneled.") + "\n\n")
+		b.WriteString(bgLabelStyle.Render("Default web hostnames:") + "\n")
+		if panel := defaultPanelHostname(m.rootDomain, m.panelHostname); panel != "" {
+			b.WriteString("  • " + panel + bgHintStyle.Render("  (Player console)") + "\n")
 		}
+		if admin := defaultAdminHostname(m.rootDomain, m.adminHostname); admin != "" {
+			b.WriteString("  • " + admin + bgHintStyle.Render("  (Operator + SysAdmin console — Access-guarded)") + "\n")
+		}
+		b.WriteString("\n")
 
 		if m.cloudflaredPath == "" {
 			b.WriteString(bgErrStyle.Render("✗ cloudflared not found on PATH") + " — install it, then esc and re-enter.\n")
@@ -1123,7 +1205,7 @@ func (m *bgModel) View() string {
 		switch {
 		case m.edgeReady():
 			b.WriteString(bgHintStyle.Render("enter continue · esc back") + "\n")
-		case m.adminHostname != "" && m.cloudflaredPath != "" && !m.certExists:
+		case m.cloudflaredPath != "" && !m.certExists:
 			b.WriteString(bgHintStyle.Render("l login · esc back") + "\n")
 		default:
 			b.WriteString(bgHintStyle.Render("esc back") + "\n")
@@ -1136,6 +1218,8 @@ func (m *bgModel) View() string {
 			"Cloudflare API token",
 			"Cloudflare account ID",
 			"Admit (your email, or @your-domain)",
+			"Player console hostname",
+			"Admin console hostname",
 			"Tunnel name",
 			"Tunnel config path",
 		}
@@ -1172,8 +1256,8 @@ func (m *bgModel) View() string {
 		if m.auditWarning != "" {
 			b.WriteString(bgWarnStyle.Render("⚠ accountability record was NOT written: "+m.auditWarning) + "\n\n")
 		}
-		if m.rootDomain != "" {
-			b.WriteString("Log in at " + bgLabelStyle.Render("https://op.console."+m.rootDomain) + "\n\n")
+		if url := adminLoginURL(m.rootDomain, m.adminHostname); url != "" {
+			b.WriteString("Log in at " + bgLabelStyle.Render(url) + "\n\n")
 		}
 		b.WriteString(bgHintStyle.Render("press any key to exit") + "\n")
 
@@ -1190,8 +1274,14 @@ func (m *bgModel) View() string {
 			}
 		}
 		b.WriteString(bgBoxStyle.Render(box) + "\n\n")
-		b.WriteString(bgWarnStyle.Render("ACTION REQUIRED") + " — felis-api will reject the edge until you adopt the audience:\n")
-		b.WriteString("set " + bgLabelStyle.Render("[auth] access_jwt_aud") + " in felis.toml to the value above, then start the\n")
+		b.WriteString(bgWarnStyle.Render("ACTION REQUIRED") + " — make felis-api trust the edge in felis.toml:\n")
+		if m.edgePanelHostname != "" {
+			b.WriteString("set " + bgLabelStyle.Render("[auth] panel_hostname") + " to " + bgLabelStyle.Render(m.edgePanelHostname) + "\n")
+		}
+		if m.edgeAdminHostname != "" {
+			b.WriteString("set " + bgLabelStyle.Render("[auth] admin_hostname") + " to " + bgLabelStyle.Render(m.edgeAdminHostname) + "\n")
+		}
+		b.WriteString("set " + bgLabelStyle.Render("[auth] access_jwt_aud") + " to the value above, then start the\n")
 		b.WriteString("tunnel with " + bgLabelStyle.Render("cloudflared tunnel run") + ".\n\n")
 		b.WriteString(bgHintStyle.Render("Verify the Access app actually guards the admin face before relying on it.") + "\n\n")
 		b.WriteString(bgHintStyle.Render("press any key to exit") + "\n")
@@ -1208,11 +1298,21 @@ func (m *bgModel) View() string {
 	return b.String()
 }
 
-// runBreakGlassTUI drives the bubbletea program and projects the final model onto a
-// breakGlassResult. It is the thin, untested shell; the logic it invokes
-// (authenticateAdmin / performBreakGlass) is unit-tested directly.
+// runBreakGlassTUI drives the emergency bubbletea program and projects the final
+// model onto a breakGlassResult. The owner/auth logic is unit-tested directly.
 func runBreakGlassTUI(ctx context.Context, s ownerStore, rootDomain, adminHostname, panelHostname, osUser string, adminExists bool) (breakGlassResult, error) {
-	final, err := tea.NewProgram(newBGModel(ctx, s, rootDomain, adminHostname, panelHostname, osUser, adminExists), tea.WithAltScreen()).Run()
+	return runConsoleTUI(ctx, s, rootDomain, adminHostname, panelHostname, osUser, adminExists, consoleModeBreakGlass)
+}
+
+// runSetupTUI drives the normal first-run setup console. It shares the model with
+// breakGlass but starts it in setup mode, where Cloudflare edge setup is available
+// and emergency Owner reset is not.
+func runSetupTUI(ctx context.Context, s ownerStore, rootDomain, adminHostname, panelHostname, osUser string, adminExists bool) (breakGlassResult, error) {
+	return runConsoleTUI(ctx, s, rootDomain, adminHostname, panelHostname, osUser, adminExists, consoleModeSetup)
+}
+
+func runConsoleTUI(ctx context.Context, s ownerStore, rootDomain, adminHostname, panelHostname, osUser string, adminExists bool, mode consoleMode) (breakGlassResult, error) {
+	final, err := tea.NewProgram(newBGModelForMode(ctx, s, rootDomain, adminHostname, panelHostname, osUser, adminExists, mode), tea.WithAltScreen()).Run()
 	if err != nil {
 		return breakGlassResult{}, err
 	}
@@ -1233,12 +1333,71 @@ func runBreakGlassTUI(ctx context.Context, s ownerStore, rootDomain, adminHostna
 		displayPassword: m.displayPassword,
 		auditWarning:    m.auditWarning,
 		rootDomain:      rootDomain,
+		adminHostname:   adminHostname,
 	}
 	if m.step == stepEdgeDone && m.edgeResult != nil {
 		res.edgeConfigured = true
 		res.edgeAud = m.edgeResult.AccessAud
 		res.edgeRoutedHosts = m.edgeResult.RoutedHostnames
 		res.edgeConfigPath = m.edgeResult.ConfigPath
+		res.edgePanelHostname = m.edgePanelHostname
+		res.edgeAdminHostname = m.edgeAdminHostname
 	}
 	return res, nil
+}
+
+func defaultPanelHostname(rootDomain, configured string) string {
+	if h := strings.TrimSpace(configured); h != "" {
+		return h
+	}
+	if rootDomain != "" {
+		return "console." + rootDomain
+	}
+	return ""
+}
+
+func defaultAdminHostname(rootDomain, configured string) string {
+	if h := strings.TrimSpace(configured); h != "" {
+		return h
+	}
+	if rootDomain != "" {
+		return "op.console." + rootDomain
+	}
+	return ""
+}
+
+func normalizeEdgeHostname(s string) string {
+	return strings.Trim(strings.TrimSpace(s), ".")
+}
+
+func validateEdgeHostname(label, host string, required bool) error {
+	if host == "" {
+		if required {
+			return fmt.Errorf("%s is required", label)
+		}
+		return nil
+	}
+	if strings.Contains(host, "://") || strings.ContainsAny(host, "/\\ \t\r\n") {
+		return fmt.Errorf("%s must be a hostname, not a URL", label)
+	}
+	if strings.Contains(host, ":") {
+		return fmt.Errorf("%s must not include a port", label)
+	}
+	if strings.HasPrefix(host, ".") {
+		return fmt.Errorf("%s must not start with a dot", label)
+	}
+	return nil
+}
+
+func isHex32(s string) bool {
+	if len(s) != 32 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }

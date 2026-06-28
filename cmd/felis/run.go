@@ -18,6 +18,7 @@ Commands:
   restore           Extract a world archive into a world volume (internal Job entrypoint)
   manifests         Render the control-plane RBAC + NetworkPolicy install bundle as YAML
   apply             Create a MinecraftServer CRD (direct K8s write; use -f server.json)
+  setup             Open the first-run setup console (TUI; requires root/sudo)
   breakGlass        Open the local break-glass emergency console (TUI; requires root/sudo)
 
 Run "felis <command> -h" for command-specific flags.
@@ -46,6 +47,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdManifests(rest, stdout, stderr)
 	case "apply":
 		return cmdApply(rest, stdout, stderr)
+	case "setup":
+		return cmdSetup(rest, stdout, stderr)
 	case "breakGlass":
 		return cmdBreakGlass(rest, stdout, stderr)
 	case "-h", "--help", "help":
@@ -56,5 +59,3 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 }
-
-
