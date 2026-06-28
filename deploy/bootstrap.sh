@@ -46,6 +46,14 @@ STATE_DIR="/etc/felis"
 SECRETS_ENV="${STATE_DIR}/secrets.env"
 SRC_DIR="/opt/felis/src"
 HOST_BIN="/usr/local/bin/felis"
+K3S_BIN_DIR="${K3S_BIN_DIR:-/usr/local/bin}"
+K3S_BIN="${K3S_BIN_DIR}/k3s"
+
+# ---------------------------------------------------------------------------
+# Clean PATH (sudo may strip /usr/local/bin)
+# ---------------------------------------------------------------------------
+PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+export PATH
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -55,7 +63,8 @@ ok()   { printf '\033[1;32m[ ok ]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[fail]\033[0m %s\n' "$*" >&2; exit 1; }
 
-kube() { k3s kubectl "$@"; }
+k3s_cmd() { [ -x "$K3S_BIN" ] || die "k3s binary not found at ${K3S_BIN}"; "$K3S_BIN" "$@"; }
+kube() { k3s_cmd kubectl "$@"; }
 
 # ---------------------------------------------------------------------------
 # 0. Privilege & host facts
@@ -71,6 +80,8 @@ detect_os() {
   . /etc/os-release
   OS_ID="${ID:-unknown}"
   OS_VERSION="${VERSION_ID:-unknown}"
+  OS_ID_LIKE="${ID_LIKE:-}"
+  OS_CODENAME="${VERSION_CODENAME:-${UBUNTU_CODENAME:-}}"
   if command -v apt-get >/dev/null 2>&1; then
     PKG="apt"
   elif command -v dnf >/dev/null 2>&1; then
@@ -146,12 +157,83 @@ install_base() {
 # ---------------------------------------------------------------------------
 # 3. Docker (used only to build & export the felis image; k3s uses containerd)
 # ---------------------------------------------------------------------------
+docker_apt_repo_os() {
+  case "$OS_ID" in
+    debian|ubuntu)
+      printf '%s\n' "$OS_ID"
+      ;;
+    *)
+      die "Docker apt repository is not configured for ${OS_ID} ${OS_VERSION}"
+      ;;
+  esac
+}
+
+install_docker_apt() {
+  local arch keyring repo_os
+
+  repo_os="$(docker_apt_repo_os)"
+  [ -n "$OS_CODENAME" ] || die "cannot determine apt codename for ${OS_ID} ${OS_VERSION}"
+
+  arch="$(dpkg --print-architecture)"
+  keyring="/etc/apt/keyrings/docker.asc"
+
+  log "installing docker apt repository"
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL "https://download.docker.com/linux/${repo_os}/gpg" -o "$keyring" \
+    || die "failed to download Docker GPG key for ${repo_os}"
+  chmod a+r "$keyring"
+
+  cat > /etc/apt/sources.list.d/docker.list <<EOF
+deb [arch=${arch} signed-by=${keyring}] https://download.docker.com/linux/${repo_os} ${OS_CODENAME} stable
+EOF
+
+  DEBIAN_FRONTEND=noninteractive apt-get update -y
+  pkg_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+}
+
+docker_rpm_repo_url() {
+  case "$OS_ID" in
+    rhel)
+      printf '%s\n' "https://download.docker.com/linux/rhel/docker-ce.repo"
+      ;;
+    centos|almalinux|rocky)
+      printf '%s\n' "https://download.docker.com/linux/centos/docker-ce.repo"
+      ;;
+    *)
+      case " ${OS_ID_LIKE} " in
+        *" rhel "*|*" centos "*)
+          printf '%s\n' "https://download.docker.com/linux/centos/docker-ce.repo"
+          ;;
+        *)
+          die "Docker rpm repository is not configured for ${OS_ID} ${OS_VERSION}"
+          ;;
+      esac
+      ;;
+  esac
+}
+
+install_docker_rpm() {
+  local repo_file repo_url
+
+  repo_file="/etc/yum.repos.d/docker-ce.repo"
+  repo_url="$(docker_rpm_repo_url)"
+
+  log "installing docker rpm repository"
+  mkdir -p "$(dirname "$repo_file")"
+  curl -fsSL "$repo_url" -o "$repo_file" \
+    || die "failed to download Docker repo file: ${repo_url}"
+  pkg_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+}
+
 install_docker() {
   if command -v docker >/dev/null 2>&1; then
     ok "docker already installed"
   else
-    log "installing docker via get.docker.com"
-    curl -fsSL https://get.docker.com | sh
+    case "$PKG" in
+      apt) install_docker_apt ;;
+      dnf|yum) install_docker_rpm ;;
+      *) die "Docker installation is not supported with package manager: ${PKG}" ;;
+    esac
   fi
   systemctl enable --now docker
   ok "docker running"
@@ -163,14 +245,18 @@ install_docker() {
 #    security claim, so we must NOT pass --disable-network-policy.
 # ---------------------------------------------------------------------------
 install_k3s() {
-  if command -v k3s >/dev/null 2>&1; then
-    ok "k3s already installed"
+  if [ -x "$K3S_BIN" ]; then
+    ok "k3s already installed at ${K3S_BIN}"
   else
-    log "installing k3s (no traefik/servicelb/metrics-server)"
+    log "installing k3s into ${K3S_BIN_DIR} (no traefik/servicelb/metrics-server)"
     curl -sfL https://get.k3s.io | \
+      INSTALL_K3S_BIN_DIR="$K3S_BIN_DIR" \
       INSTALL_K3S_EXEC="--disable traefik --disable servicelb --disable metrics-server --write-kubeconfig-mode 644" \
       sh -
   fi
+
+  [ -x "$K3S_BIN" ] || die "k3s installation completed but ${K3S_BIN} is missing"
+
   systemctl enable --now k3s
   export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
   log "waiting for the node to become Ready"
@@ -221,7 +307,7 @@ build_image() {
   chmod 0755 "$HOST_BIN"
 
   log "importing ${FELIS_IMAGE} into k3s containerd"
-  docker save "$FELIS_IMAGE" | k3s ctr images import -
+  docker save "$FELIS_IMAGE" | k3s_cmd ctr images import -
 
   # Reclaim the ~150 MiB the docker daemon holds; reruns restart it on demand.
   systemctl stop docker docker.socket 2>/dev/null || true
@@ -232,6 +318,43 @@ build_image() {
 # 6. PostgreSQL on the host (apt/dnf). felis-api pods reach it at <node-ip>:5432;
 #    migrations run from the host binary against 127.0.0.1.
 # ---------------------------------------------------------------------------
+write_pg_hba_block() {
+  local hba="$1" tmp node_cidr
+
+  node_cidr="${NODE_IP}/32"
+  tmp="$(mktemp)"
+
+  awk \
+    -v db="$DB_NAME" \
+    -v user="$DB_USER" \
+    -v pod="$POD_CIDR" \
+    -v node="$node_cidr" '
+      $0 == "# BEGIN FELIS MANAGED HBA" { skip = 1; next }
+      $0 == "# END FELIS MANAGED HBA" { skip = 0; next }
+      skip { next }
+
+      # Clean up rules appended by older bootstrap versions.
+      $1 == "host" && $2 == db && $3 == user && $5 == "scram-sha-256" &&
+        ($4 == "127.0.0.1/32" || $4 == pod || $4 == node) { next }
+
+      { print }
+    ' "$hba" > "$tmp"
+
+  {
+    printf "# BEGIN FELIS MANAGED HBA\n"
+    printf "# Felis rules must precede distro defaults such as 127.0.0.1 ident.\n"
+    printf "host %s %s 127.0.0.1/32 scram-sha-256\n" "$DB_NAME" "$DB_USER"
+    printf "host %s %s %s scram-sha-256\n" "$DB_NAME" "$DB_USER" "$POD_CIDR"
+    printf "host %s %s %s scram-sha-256\n" "$DB_NAME" "$DB_USER" "$node_cidr"
+    printf "# END FELIS MANAGED HBA\n"
+    printf "\n"
+    cat "$tmp"
+  } > "${tmp}.new"
+
+  cat "${tmp}.new" > "$hba"
+  rm -f "$tmp" "${tmp}.new"
+}
+
 install_postgres() {
   if command -v psql >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q '^postgresql'; then
     ok "postgresql already installed"
@@ -263,17 +386,12 @@ configure_postgres() {
   # Listen on all interfaces (applied on restart). ALTER SYSTEM is idempotent.
   sudo -u postgres psql -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET listen_addresses = '*';" >/dev/null
 
-  # Allow the host loopback, the pod CIDR, and the node IP (covers SNAT either way).
-  local line
-  for line in \
-    "host ${DB_NAME} ${DB_USER} 127.0.0.1/32 scram-sha-256" \
-    "host ${DB_NAME} ${DB_USER} ${POD_CIDR} scram-sha-256" \
-    "host ${DB_NAME} ${DB_USER} ${NODE_IP}/32 scram-sha-256" ; do
-    grep -qF "$line" "$hba" || echo "$line" >> "$hba"
-  done
+  # Allow the host loopback, the pod CIDR, and the node IP before broader distro defaults.
+  write_pg_hba_block "$hba"
 
   # Role + database (idempotent), and (re)set the password to our generated one.
   sudo -u postgres psql -v ON_ERROR_STOP=1 <<SQL >/dev/null
+SET password_encryption = 'scram-sha-256';
 DO \$\$
 BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${DB_USER}') THEN
