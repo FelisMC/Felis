@@ -5,7 +5,7 @@
 #   curl -fsSL <raw-url>/deploy/bootstrap.sh | sudo bash
 #
 # Brings a fresh single-node Linux host from nothing to a running Felis control
-# plane: it installs whatever is missing (picking dnf or apt by OS), provisions a
+# plane: it installs whatever is missing (picking apt/dnf/yum/zypper by OS), provisions a
 # swap file on tiny hosts, then configures Docker, k3s and PostgreSQL, builds and
 # imports the felis image, runs database migrations and applies the rendered
 # install bundle (CRD + namespaces + RBAC + NetworkPolicies + control-plane
@@ -38,6 +38,7 @@ CONTROL_NS="felis"
 MINECRAFT_NS="minecraft"
 BUILD_NS="felis-build"
 POD_CIDR="10.42.0.0/16"          # k3s default cluster CIDR
+SERVICE_CIDR="10.43.0.0/16"      # k3s default service CIDR
 DB_NAME="felis"
 DB_USER="felis"
 REGISTRY_URL="registry.felis.svc:5000"
@@ -88,8 +89,10 @@ detect_os() {
     PKG="dnf"
   elif command -v yum >/dev/null 2>&1; then
     PKG="yum"
+  elif command -v zypper >/dev/null 2>&1; then
+    PKG="zypper"
   else
-    die "no supported package manager (apt/dnf/yum) found on ${OS_ID} ${OS_VERSION}"
+    die "no supported package manager (apt/dnf/yum/zypper) found on ${OS_ID} ${OS_VERSION}"
   fi
   log "host: ${PRETTY_NAME:-$OS_ID $OS_VERSION}  (package manager: ${PKG})"
 }
@@ -107,6 +110,7 @@ pkg_install() {
     apt) DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" ;;
     dnf) dnf install -y "$@" ;;
     yum) yum install -y "$@" ;;
+    zypper) zypper --non-interactive install -y "$@" ;;
   esac
 }
 
@@ -115,6 +119,7 @@ pkg_refresh_once() {
   case "$PKG" in
     apt) DEBIAN_FRONTEND=noninteractive apt-get update -y ;;
     dnf|yum) : ;;   # dnf/yum refresh metadata on demand
+    zypper) zypper --non-interactive refresh ;;
   esac
   _PKG_REFRESHED=1
 }
@@ -247,6 +252,11 @@ install_docker_rpm() {
   pkg_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 }
 
+install_docker_zypper() {
+  log "installing docker from the distribution repositories"
+  pkg_install docker
+}
+
 install_docker() {
   if command -v docker >/dev/null 2>&1; then
     ok "docker already installed"
@@ -254,6 +264,7 @@ install_docker() {
     case "$PKG" in
       apt) install_docker_apt ;;
       dnf|yum) install_docker_rpm ;;
+      zypper) install_docker_zypper ;;
       *) die "Docker installation is not supported with package manager: ${PKG}" ;;
     esac
   fi
@@ -265,8 +276,23 @@ install_docker() {
 # 4. k3s — single node, trimmed for RAM. NetworkPolicy stays ENABLED on purpose:
 #    Felis's minecraft fence (default-deny + allow-rcon/allow-game) is a core
 #    security claim, so we must NOT pass --disable-network-policy.
+#    On SUSE-family hosts firewalld ships active by default; open the required
+#    rules rather than disabling the firewall.
 # ---------------------------------------------------------------------------
+configure_k3s_firewall() {
+  command -v firewall-cmd >/dev/null 2>&1 || return 0
+  systemctl is-active --quiet firewalld || return 0
+
+  log "configuring firewalld for k3s"
+  firewall-cmd --permanent --add-port=6443/tcp
+  firewall-cmd --permanent --zone=trusted --add-source="$POD_CIDR"
+  firewall-cmd --permanent --zone=trusted --add-source="$SERVICE_CIDR"
+  firewall-cmd --reload
+}
+
 install_k3s() {
+  configure_k3s_firewall
+
   if [ -x "$K3S_BIN" ]; then
     ok "k3s already installed at ${K3S_BIN}"
   else
@@ -337,7 +363,7 @@ build_image() {
 }
 
 # ---------------------------------------------------------------------------
-# 6. PostgreSQL on the host (apt/dnf). felis-api pods reach it at <node-ip>:5432;
+# 6. PostgreSQL on the host. felis-api pods reach it at <node-ip>:5432;
 #    migrations run from the host binary against 127.0.0.1.
 # ---------------------------------------------------------------------------
 write_pg_hba_block() {
@@ -386,13 +412,20 @@ install_postgres() {
       apt) pkg_install postgresql ;;
       dnf) pkg_install postgresql-server postgresql ;;
       yum) pkg_install postgresql-server postgresql ;;
+      zypper) pkg_install postgresql-server postgresql ;;
     esac
   fi
-  # RHEL-family ships an uninitialised data dir.
+
+  # RPM-family packages, including openSUSE, commonly ship an uninitialised data dir.
   if [ "$PKG" != "apt" ] && [ ! -f /var/lib/pgsql/data/PG_VERSION ]; then
     log "initialising postgresql data directory"
     if command -v postgresql-setup >/dev/null 2>&1; then
       postgresql-setup --initdb || /usr/bin/postgresql-setup initdb
+    elif command -v initdb >/dev/null 2>&1; then
+      install -d -o postgres -g postgres -m 0700 /var/lib/pgsql/data
+      sudo -u postgres initdb -D /var/lib/pgsql/data
+    else
+      die "cannot initialise postgresql data directory: postgresql-setup/initdb not found"
     fi
   fi
   systemctl enable --now postgresql
