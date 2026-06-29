@@ -668,6 +668,37 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /api/v1/internal/account/link/status/{mc_uuid}:
+    get:
+      tags: [account-internal]
+      operationId: linkStatus
+      summary: Poll whether an in-game UUID has finished linking — the QR scan-to-login completion check (spec §B3).
+      description: >
+        Internal-only, read-only. After a new player scans the QR-encoded link code
+        and the web verify writes the durable account_links row, velocity polls this
+        for the UUID it minted against and admits the player on linked:true, binding
+        the in-game session to user_id. Keyed by the verified UUID (not the scanned
+        code), so it consumes nothing and is safe to poll repeatedly; an unlinked or
+        never-seen UUID returns linked:false, and user_id is present only when linked.
+      x-felis-face: [internal]
+      x-felis-tier: service
+      security: [{ serviceToken: [] }]
+      parameters:
+        - { name: mc_uuid, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Link-completion status; user_id is present only when linked.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [linked]
+                properties:
+                  linked: { type: boolean }
+                  user_id: { type: string }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /api/v1/internal/player/reclaim:
     post:
       tags: [account-internal]

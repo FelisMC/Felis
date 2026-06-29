@@ -116,6 +116,52 @@ func (a *API) handleCreateLinkCode(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleLinkStatus reports whether an in-game UUID has finished linking yet — the
+// completion poll of the QR scan-to-login flow (spec §B3 player game-login; memory
+// player-login-yggdrasil). It is internal-face and read-only, the device-code
+// "poll for completion" step that turns the typed-code link into a scan:
+//
+//	new player joins → velocity mints a code (handleCreateLinkCode) and renders it
+//	  as a QR → player scans it on a phone already signed in to console.<root_domain>
+//	  → that web session's verify (handleLinkVerify) writes the durable account_links
+//	  row bound to THAT user → velocity polls HERE for the same UUID it minted against
+//	  → on {linked:true} it admits the player, binding the in-game session to user_id
+//	  with no reconnect — the whole point of scanning over typing.
+//
+// The poll is keyed by the verified mc_uuid velocity already holds, not by the
+// scanned code, so it is a pure idempotent read of the durable link (UserByMCUUID):
+// there is no transient device-session row, nothing is consumed, and a velocity
+// restart re-polls safely. The secret is the short-TTL code the player scans, never
+// this public UUID, so the read carries no guessing surface and needs no attempt
+// cap — the internal face already gates it to service callers.
+//
+// CODE-ONLY (Java/Velocity, not represented here): rendering the code as a QR, the
+// limbo collision routing, and admitting the polled player into the main server.
+// KNOWN-LIMITATION: the reclaim disambiguation a scan can surface — "start fresh"
+// vs "inherit the 30-day-held data" — is the data-inherit choice that
+// handlers_player_reclaim.go keeps CODE-ONLY (reclaimed_by_user_id stays NULL on
+// the verifiable path); this endpoint reports link completion only, not that choice.
+func (a *API) handleLinkStatus(w http.ResponseWriter, r *http.Request) {
+	mcUUID := r.PathValue("mc_uuid")
+	if mcUUID == "" {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "mc_uuid is required"))
+		return
+	}
+	userID, err := a.Repo.UserByMCUUID(r.Context(), mcUUID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		// Not linked yet. For the poller this is simply "keep waiting": velocity
+		// polls until its own code TTL lapses. A never-seen UUID is indistinguishable
+		// from a not-yet-scanned one, and deliberately so — both mean "do not admit".
+		writeJSON(w, http.StatusOK, map[string]any{"linked": false})
+		return
+	case err != nil:
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"linked": true, "user_id": userID})
+}
+
 // linkVerifyRequest is the panel verify-code body (spec §10): the logged-in user
 // submits the code they were shown in-game.
 type linkVerifyRequest struct {

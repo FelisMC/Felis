@@ -172,6 +172,12 @@ func (a *API) internalAPIRoutes() []apiRoute {
 		// verified UUID. Internal-only — the code is born from an online-mode UUID the
 		// web never holds (account_link_codes has no user_id column).
 		{Method: "POST", Pattern: "/api/v1/internal/account/link/code", h: a.handleCreateLinkCode},
+		// QR scan-to-login completion poll (spec §B3 player game-login). After the player
+		// scans the QR-encoded code and the web verify writes the durable link, velocity
+		// polls this for the UUID it minted against and admits on {linked:true}. Read-only
+		// and keyed by the verified UUID (not the scanned code), so it consumes nothing
+		// and is safe to poll repeatedly.
+		{Method: "GET", Pattern: "/api/v1/internal/account/link/status/{mc_uuid}", h: a.handleLinkStatus},
 		// Username-collision reclaim (spec §B3): velocity records a Mojang-priority
 		// reclaim (bar the squatter UUID + stash its data for 30 days) and gates the
 		// limbo login by checking whether a connecting UUID was barred. Internal-only —
