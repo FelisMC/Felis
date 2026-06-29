@@ -83,7 +83,15 @@ func (m *hostBootstrapModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *hostBootstrapModel) View() string {
 	var b strings.Builder
-	b.WriteString(tuiHeader("Host Bootstrap"))
+	// Share the wizard's progress rail so bootstrap reads as step 1 of one
+	// continuous flow rather than a separate popup with its own banner. Cell 0
+	// (Bootstrap) is active while installing; once it completes we light cell 1
+	// (Preflight) to foreshadow the hand-off to the wizard that runs next.
+	railAt := 0
+	if m.state == hostBootstrapDone {
+		railAt = 1
+	}
+	b.WriteString(tuiStepRail(setupRailSteps, railAt) + "\n\n")
 
 	switch m.state {
 	case hostBootstrapIntro:
@@ -105,6 +113,9 @@ func (m *hostBootstrapModel) View() string {
 		if m.err != nil {
 			b.WriteString(tuiHint.Render(m.err.Error()) + "\n")
 		}
+		// The installer streams on the normal screen during the run; alt-screen
+		// restores it on exit, so the full log is still there to inspect.
+		b.WriteString(tuiHint.Render("The installer's full output remains on screen after you exit.") + "\n")
 		b.WriteString("\n" + tuiSeparator() + "\n")
 		b.WriteString(tuiAction("enter", "retry", "esc", "exit"))
 	}
@@ -128,7 +139,10 @@ func (m *hostBootstrapModel) runBootstrap() tea.Cmd {
 }
 
 func runHostBootstrapTUI(ctx context.Context) (bool, error) {
-	final, err := tea.NewProgram(newHostBootstrapModel(ctx)).Run()
+	// Alt-screen matches the wizard's locked, clear-screen chrome so the two
+	// programs feel like one flow. tea.ExecProcess drops out of alt-screen for the
+	// installer (its output streams on the normal screen) and restores it after.
+	final, err := tea.NewProgram(newHostBootstrapModel(ctx), tea.WithAltScreen()).Run()
 	if err != nil {
 		return false, err
 	}

@@ -43,12 +43,11 @@ func (m *connectChooserModel) build() *huh.Form {
 				huh.NewOption("Cloudflare Tunnel + Access · no open ports", connectCloudflare),
 				huh.NewOption("Reverse proxy (bring your own) · guided", connectReverseProxy),
 			),
-		huh.NewNote().
-			Title("⚠ Security").
-			Description(
-				"With Local or reverse proxy, anyone who can reach the admin hostname can attempt "+
-					"login — the admin console is gated by your Owner password alone. "+
-					"Cloudflare Access adds an edge check in front of it."),
+		// A dim, untitled footnote — deliberately subordinate to the picker above
+		// so the screen reads as a menu, not an info page.
+		huh.NewNote().Description(
+			"⚠  Local / reverse proxy gate the admin console on your Owner password alone. "+
+				"Cloudflare Access adds an edge check in front."),
 	)))
 }
 
@@ -112,6 +111,10 @@ func (m *connectChooserModel) chooseLocal() tea.Cmd {
 }
 
 func (m *connectChooserModel) View() string { return m.form.View() }
+
+// arrowNavOK lets the root repurpose ←/→ to walk the step rail: this screen
+// navigates its options with ↑/↓, so the horizontal arrows are free.
+func (m *connectChooserModel) arrowNavOK() bool { return true }
 
 // ---- Reverse proxy: collect hostnames, record them, render a guide ----
 

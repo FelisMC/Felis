@@ -14,20 +14,6 @@ var (
 	cBgInput = lipgloss.Color("235") // input field bg
 	cWhite   = lipgloss.Color("15")
 
-	// Title bar — inverted primary
-	tuiTitle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(cWhite).
-			Background(cPrimary).
-			Padding(0, 2).
-			Width(70)
-
-	// Section header
-	tuiSection = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(cPrimary).
-			Padding(0, 1)
-
 	// Card styles
 	tuiCardStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).

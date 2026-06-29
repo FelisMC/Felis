@@ -22,7 +22,12 @@ func felisTheme() *huh.Theme {
 	f.ErrorMessage = lipgloss.NewStyle().Foreground(cError)
 
 	f.SelectSelector = lipgloss.NewStyle().Foreground(cPrimary).SetString("▸ ")
-	f.Option = lipgloss.NewStyle().Foreground(cWhite)
+	// Unselected rows recede to dim and the active row is bright cyan + bold, so
+	// the list reads at a glance as a picker with one row chosen — not a wall of
+	// equally-lit info text. huh's single-select paints UnselectedOption (not
+	// Option), which ThemeBase leaves bright; overriding it is the key fix.
+	f.Option = lipgloss.NewStyle().Foreground(cDim)
+	f.UnselectedOption = lipgloss.NewStyle().Foreground(cDim)
 	f.SelectedOption = lipgloss.NewStyle().Foreground(cPrimary).Bold(true)
 	f.NextIndicator = lipgloss.NewStyle().Foreground(cAccent).MarginLeft(1).SetString("→")
 	f.PrevIndicator = lipgloss.NewStyle().Foreground(cAccent).MarginRight(1).SetString("←")

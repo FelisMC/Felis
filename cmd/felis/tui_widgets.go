@@ -3,14 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
-
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/lipgloss"
 )
-
-func tuiHeader(title string) string {
-	return tuiTitle.Render("🐾 "+title) + "\n\n"
-}
 
 func tuiAction(pairs ...string) string {
 	var parts []string
@@ -20,26 +13,8 @@ func tuiAction(pairs ...string) string {
 	return tuiActionBar.Render(strings.Join(parts, "  ·  "))
 }
 
-func tuiFormField(label string, input textinput.Model) string {
-	return fmt.Sprintf("%s\n%s",
-		tuiLabel.Render(label),
-		input.View())
-}
-
 func tuiInfo(text string) string {
 	return tuiInfoBox.Render(tuiHint.Render("ℹ " + text))
-}
-
-func tuiWizardCard(title, desc, body string) string {
-	var b strings.Builder
-	b.WriteString(tuiSection.Render(title))
-	if desc != "" {
-		b.WriteString("\n")
-		b.WriteString(tuiHint.Render(desc))
-	}
-	b.WriteString("\n\n")
-	b.WriteString(tuiCardStyle.Render(body))
-	return b.String()
 }
 
 func tuiErrorBanner(msg string) string {
@@ -48,20 +23,6 @@ func tuiErrorBanner(msg string) string {
 
 func tuiSuccessBanner(msg string) string {
 	return tuiCardFocusedStyle.Render(tuiOK.Render("✓ " + msg))
-}
-
-func tuiInput(placeholder string, charLimit int, password bool) textinput.Model {
-	ti := textinput.New()
-	ti.Placeholder = placeholder
-	ti.CharLimit = charLimit
-	ti.Width = 44
-	ti.Prompt = ""
-	ti.PlaceholderStyle = lipgloss.NewStyle().Foreground(cWhite)
-	if password {
-		ti.EchoMode = textinput.EchoPassword
-		ti.EchoCharacter = '•'
-	}
-	return ti
 }
 
 func tuiSeparator() string {

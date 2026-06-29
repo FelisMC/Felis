@@ -72,6 +72,28 @@ func (r *ExecRunner) apiBase() string {
 	return defaultAPIBase
 }
 
+// VerifyAPIToken satisfies the apiTokenVerifier seam Setup probes for: it does a
+// read-only Cloudflare API call so a bad, expired, wrong-account or
+// under-permissioned token fails BEFORE any tunnel/DNS/config is created, instead
+// of surfacing late at CreateAccessApplication with a half-built edge left behind.
+//
+// It lists Access apps (per_page=1 — the cheapest authenticated read) against the
+// exact account and permission Setup will write to, so a green result means the
+// credential that actually gates the side-effecting calls works. The tunnel and
+// DNS authenticate via cert.pem, not this token, so the Access read is precisely
+// the credential worth pre-checking. apiGet surfaces 401/403 with the actionable
+// permission checklist; this method only adds the cheap pre-flight argument
+// validation so an empty token/account never reaches the wire.
+func (r *ExecRunner) VerifyAPIToken(ctx context.Context) error {
+	if strings.TrimSpace(r.APIToken) == "" {
+		return fmt.Errorf("cfsetup: Cloudflare API token is required")
+	}
+	if strings.TrimSpace(r.AccountID) == "" {
+		return fmt.Errorf("cfsetup: Cloudflare account ID is required")
+	}
+	return r.apiGet(ctx, fmt.Sprintf("/accounts/%s/access/apps?per_page=1", r.AccountID), nil)
+}
+
 // tunnelIDRE extracts the UUID cloudflared prints when a tunnel is created or
 // already exists.
 var tunnelIDRE = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)

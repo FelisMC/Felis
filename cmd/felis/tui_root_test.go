@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -171,6 +172,93 @@ func TestRootBreakGlassQuitsAfterOwner(t *testing.T) {
 	}
 	if !rm.result.provisioned || rm.result.username != "owner" {
 		t.Fatalf("break-glass owner result not recorded: %+v", rm.result)
+	}
+}
+
+func key(t tea.KeyType) tea.KeyMsg { return tea.KeyMsg{Type: t} }
+
+// TestRootRailReviewNavigation locks the ←/→ rail-walk added for ergonomics:
+// from a yielding screen ← steps back through completed stages read-only,
+// → / esc return to the live screen, and ← is ignored on text-input screens
+// (which need the arrow for their cursor). A screenshot can't verify this — the
+// keys only matter live — so the contract lives here.
+func TestRootRailReviewNavigation(t *testing.T) {
+	m := newTestRoot(false, consoleModeSetup, "")
+	m = drive(t, m, preflightDoneMsg{})
+
+	// On the Owner screen (text inputs) ← must NOT hijack the arrow: it stays
+	// with the field, so we remain on the live screen.
+	m = drive(t, m, key(tea.KeyLeft))
+	if m.reviewing != -1 {
+		t.Fatalf("← on the owner (text-input) screen entered review (%d); arrows belong to the field", m.reviewing)
+	}
+
+	// Advance to the Connection chooser (a select — it yields ←/→).
+	m = drive(t, m, ownerResultMsg{username: "owner", displayPassword: "hunter2"})
+	if m.reviewing != -1 {
+		t.Fatalf("fresh chooser should start live, reviewing = %d", m.reviewing)
+	}
+
+	// ← walks back to Owner (read-only recap), then Preflight, then clamps.
+	m = drive(t, m, key(tea.KeyLeft))
+	if m.reviewing != int(stageOwner) {
+		t.Fatalf("first ← = stage %d, want stageOwner %d", m.reviewing, stageOwner)
+	}
+	if v := m.View(); !strings.Contains(v, "Owner account") || !strings.Contains(v, "username") {
+		t.Fatalf("owner review body missing recap, got:\n%s", v)
+	}
+	m = drive(t, m, key(tea.KeyLeft))
+	if m.reviewing != int(stagePreflight) {
+		t.Fatalf("second ← = stage %d, want stagePreflight %d", m.reviewing, stagePreflight)
+	}
+	m = drive(t, m, key(tea.KeyLeft))
+	if m.reviewing != int(stagePreflight) {
+		t.Fatalf("← past the first step should clamp, got %d", m.reviewing)
+	}
+
+	// → walks forward; stepping past the last completed step returns to live.
+	m = drive(t, m, key(tea.KeyRight))
+	if m.reviewing != int(stageOwner) {
+		t.Fatalf("→ = stage %d, want stageOwner %d", m.reviewing, stageOwner)
+	}
+	m = drive(t, m, key(tea.KeyRight))
+	if m.reviewing != -1 {
+		t.Fatalf("→ past the last completed step should return live, reviewing = %d", m.reviewing)
+	}
+	if v := m.View(); !strings.Contains(v, "reach the panel") {
+		t.Fatalf("returning live should show the chooser, got:\n%s", v)
+	}
+
+	// esc is an immediate escape hatch back to the live screen.
+	m = drive(t, m, key(tea.KeyLeft))
+	if m.reviewing < 0 {
+		t.Fatalf("← should re-enter review")
+	}
+	m = drive(t, m, key(tea.KeyEsc))
+	if m.reviewing != -1 {
+		t.Fatalf("esc should return to the live screen, reviewing = %d", m.reviewing)
+	}
+}
+
+// TestSetupRailSpansBootstrap locks the cross-program progress rail: the
+// host-bootstrap screen shows Bootstrap as the live step 1, and once the wizard
+// takes over Bootstrap is carried as a completed (✓) step ahead of the live one.
+// This is what makes the rail read as one continuous bar across the two separate
+// bubbletea programs instead of restarting when the wizard launches.
+func TestSetupRailSpansBootstrap(t *testing.T) {
+	boot := newHostBootstrapModel(context.Background())
+	if v := boot.View(); !strings.Contains(v, "1. Bootstrap") || !strings.Contains(v, "Preflight") {
+		t.Fatalf("bootstrap screen should show the shared rail with Bootstrap as step 1, got:\n%s", v)
+	}
+
+	m := newTestRoot(false, consoleModeSetup, "")
+	m = drive(t, m, tea.WindowSizeMsg{Width: 90, Height: 30})
+	m = drive(t, m, preflightDoneMsg{})
+	if _, ok := m.screen.(*ownerModel); !ok {
+		t.Fatalf("expected owner screen after preflight, got %T", m.screen)
+	}
+	if v := m.View(); !strings.Contains(v, "✓ Bootstrap") {
+		t.Fatalf("wizard rail should carry Bootstrap as a completed step, got:\n%s", v)
 	}
 }
 

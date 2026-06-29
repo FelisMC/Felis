@@ -23,6 +23,10 @@ type summaryModel struct {
 
 func (m *summaryModel) Init() tea.Cmd { return nil }
 
+// arrowNavOK lets the root repurpose ←/→ to walk back through completed steps;
+// the summary takes no text input, so the horizontal arrows are free.
+func (m *summaryModel) arrowNavOK() bool { return true }
+
 func (m *summaryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if key, ok := msg.(tea.KeyMsg); ok {
 		switch key.String() {

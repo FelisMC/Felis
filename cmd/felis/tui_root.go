@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 
 	"felis.lolicon.best/internal/cfsetup"
 
@@ -15,6 +16,14 @@ import (
 // avoid overflowing the frame.
 type sizeable interface {
 	setSize(width, height int)
+}
+
+// arrowNavigable is implemented by screens that don't need ←/→ for their own
+// input (selects, summaries), so the root may repurpose those keys to walk back
+// through completed steps. Text-input screens omit it and keep the arrows for
+// cursor movement — that's the "don't fight the input fields" rule.
+type arrowNavigable interface {
+	arrowNavOK() bool
 }
 
 // ---- Connection methods ----
@@ -82,11 +91,22 @@ const (
 	stageSummary
 )
 
+// setupRailSteps is the one progress rail shared by the whole first-run flow,
+// spanning both bubbletea programs: the host-bootstrap installer is rail cell 0,
+// and the post-install wizard owns cells 1–4. Defining it once keeps the two
+// programs' breadcrumbs identical so the rail reads as a single continuous bar
+// rather than restarting when the wizard takes over.
+var setupRailSteps = []string{"Bootstrap", "Preflight", "Owner", "Connection", "Done"}
+
 type rootModel struct {
 	ctx context.Context
 
 	screen tea.Model
 	stage  wizardStage
+
+	// reviewing is the index of a completed step the operator is looking back at
+	// (read-only), or -1 when the live screen is in front. Driven by ←/→.
+	reviewing int
 
 	width  int
 	height int
@@ -108,6 +128,7 @@ type rootModel struct {
 func newRootModel(ctx context.Context, store ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, osUser string, adminExists bool, mode consoleMode) *rootModel {
 	rm := &rootModel{
 		ctx:         ctx,
+		reviewing:   -1,
 		dbURL:       dbURL,
 		store:       store,
 		osUser:      osUser,
@@ -138,6 +159,15 @@ func (m *rootModel) Init() tea.Cmd {
 }
 
 func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Rail navigation claims ←/→ before anything else sees them. While reviewing
+	// it owns every key so nothing leaks into the live screen underneath;
+	// otherwise it only takes ← (to enter review) and lets the rest fall through.
+	if key, ok := msg.(tea.KeyMsg); ok {
+		if handled, model, cmd := m.handleRailKey(key); handled {
+			return model, cmd
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -199,8 +229,89 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // first View — the fix for the rail being clipped off the top of the frame.
 func (m *rootModel) adopt(s tea.Model) (tea.Model, tea.Cmd) {
 	m.screen = s
+	m.reviewing = -1 // every stage change drops back to the live screen
 	m.pushSize()
 	return m, s.Init()
+}
+
+// handleRailKey implements ←/→ navigation of the step rail. While reviewing a
+// completed step it owns every key (so nothing leaks into the live screen);
+// otherwise it claims only ← to enter review, and only when the active screen
+// doesn't need the arrows for its own text input.
+func (m *rootModel) handleRailKey(k tea.KeyMsg) (bool, tea.Model, tea.Cmd) {
+	if m.reviewing >= 0 {
+		switch k.String() {
+		case "ctrl+c":
+			return true, m, tea.Quit
+		case "left":
+			if m.reviewing > 0 {
+				m.reviewing--
+			}
+			return true, m, nil
+		case "right":
+			m.reviewing++
+			if m.reviewing >= int(m.stage) {
+				m.reviewing = -1 // caught up to the live step
+			}
+			return true, m, nil
+		case "esc", "enter":
+			m.reviewing = -1
+			return true, m, nil
+		default:
+			return true, m, nil // swallow everything else while reviewing
+		}
+	}
+	if k.String() == "left" && m.canEnterReview() {
+		m.reviewing = int(m.stage) - 1
+		return true, m, nil
+	}
+	return false, m, nil
+}
+
+// canEnterReview reports whether the live screen will yield ←/→ to the rail.
+func (m *rootModel) canEnterReview() bool {
+	if m.mode != consoleModeSetup || m.adminExistsAtStart() || m.stage == 0 {
+		return false
+	}
+	n, ok := m.screen.(arrowNavigable)
+	return ok && n.arrowNavOK()
+}
+
+// displayStage is the rail position currently shown — the reviewed step when
+// looking back, otherwise the live stage.
+func (m *rootModel) displayStage() int {
+	if m.reviewing >= 0 {
+		return m.reviewing
+	}
+	return int(m.stage)
+}
+
+// reviewBody renders a read-only recap of an already-completed step. Steps in
+// this wizard commit as you finish them (the Owner account and its one-time
+// password are created on submit), so review is deliberately look-only — there
+// is no re-editing a step you've passed.
+func (m *rootModel) reviewBody(stage int) string {
+	var b strings.Builder
+	switch wizardStage(stage) {
+	case stagePreflight:
+		b.WriteString(tuiOK.Render("✓ Preflight") + "\n")
+		b.WriteString(tuiHint.Render("Control plane verified before configuration."))
+	case stageOwner:
+		b.WriteString(tuiOK.Render("✓ Owner account") + "\n")
+		if m.result.username != "" {
+			b.WriteString(tuiLabel.Render("username  ") + m.result.username + "\n")
+		}
+		b.WriteString(tuiHint.Render("Created and recorded. The one-time password was shown on the Owner step."))
+	case stageConnect:
+		b.WriteString(tuiOK.Render("✓ Connection") + "\n")
+		b.WriteString(tuiLabel.Render("method    ") + connectMethodLabel(m.result.connectMethod) + "\n")
+		if m.result.panelURL != "" {
+			b.WriteString(tuiLabel.Render("panel     ") + m.result.panelURL)
+		}
+	}
+	b.WriteString("\n\n" + tuiHint.Render("read-only · ") + tuiLabel.Render("←/→") +
+		tuiHint.Render(" walk steps · ") + tuiLabel.Render("esc") + tuiHint.Render(" back"))
+	return b.String()
 }
 
 // pushSize gives the active screen the area left after the step rail.
@@ -227,7 +338,7 @@ func (m *rootModel) chromeHeight() int {
 	if m.mode != consoleModeSetup || m.adminExistsAtStart() {
 		return 0
 	}
-	return lipgloss.Height(m.rail()) + 1
+	return lipgloss.Height(m.railWithHint()) + 1
 }
 
 func (m *rootModel) View() string {
@@ -235,7 +346,11 @@ func (m *rootModel) View() string {
 		return ""
 	}
 	if m.mode == consoleModeSetup && !m.adminExistsAtStart() {
-		return m.rail() + "\n\n" + m.screen.View()
+		body := m.screen.View()
+		if m.reviewing >= 0 {
+			body = m.reviewBody(m.reviewing)
+		}
+		return m.railWithHint() + "\n\n" + body
 	}
 	return m.screen.View()
 }
@@ -250,7 +365,25 @@ func (m *rootModel) adminExistsAtStart() bool {
 }
 
 func (m *rootModel) rail() string {
-	return tuiStepRail([]string{"Preflight", "Owner", "Connection", "Done"}, int(m.stage))
+	// Bootstrap is rail cell 0 and is always done by the time the wizard runs (an
+	// open DB is the proof), so the wizard's own stages render starting at cell 1.
+	return tuiStepRail(setupRailSteps, m.displayStage()+1)
+}
+
+// railWithHint appends a discoverability hint when ←/→ can walk the rail — while
+// reviewing, or on a live screen that yields the arrows.
+func (m *rootModel) railWithHint() string {
+	r := m.rail()
+	switch {
+	case m.reviewing >= 0:
+		// Mid-review both directions move; → eventually returns to the live step.
+		r += tuiRailSep.Render("    ") + tuiRailTodo.Render("←/→ review steps")
+	case m.canEnterReview():
+		// At the live frontier only ← does anything — there's nothing ahead, so
+		// don't advertise → and have it silently no-op.
+		r += tuiRailSep.Render("    ") + tuiRailTodo.Render("← review steps")
+	}
+	return r
 }
 
 // applyConnectResult records the chosen connection outcome onto the result.
