@@ -4,138 +4,15 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"os/exec"
 	"strings"
 	"time"
 
 	"felis.lolicon.best/internal/store"
-
-	tea "github.com/charmbracelet/bubbletea"
 )
 
-type pgCheckMsg struct {
-	running   bool
-	reachable bool
-	err       error
-}
-
-type pgInstallMsg struct{ err error }
-
-type pgCreateMsg struct{ err error }
-
-type postgresModel struct {
-	dbURL  string
-	osUser string
-
-	state    string // "checking", "missing", "installing", "creating", "done", "error"
-	lastErr  error
-	pgExists bool
-}
-
-func newPostgresModel(dbURL, osUser string) *postgresModel {
-	return &postgresModel{
-		dbURL:  dbURL,
-		osUser: osUser,
-		state:  "checking",
-	}
-}
-
-func (m *postgresModel) Init() tea.Cmd {
-	return checkPostgresCmd(m.dbURL)
-}
-
-func (m *postgresModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case pgCheckMsg:
-		if msg.err != nil || !msg.reachable {
-			m.state = "missing"
-			m.lastErr = msg.err
-			return m, nil
-		}
-		return m, func() tea.Msg { return pgDoneMsg{} }
-
-	case pgInstallMsg:
-		if msg.err != nil {
-			m.state = "error"
-			m.lastErr = msg.err
-			return m, nil
-		}
-		m.state = "creating"
-		return m, createDatabaseCmd(m.dbURL)
-
-	case pgCreateMsg:
-		if msg.err != nil {
-			m.state = "error"
-			m.lastErr = msg.err
-			return m, nil
-		}
-		return m, func() tea.Msg { return pgDoneMsg{} }
-
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "esc":
-			return m, func() tea.Msg { return switchToDashboard{} }
-		case "i", "I":
-			if m.state == "missing" {
-				m.state = "installing"
-				return m, installPostgresCmd()
-			}
-		}
-	}
-	return m, nil
-}
-
-func (m *postgresModel) View() string {
-	var b strings.Builder
-	b.WriteString(tuiHeader("Database Setup"))
-
-	switch m.state {
-	case "checking":
-		b.WriteString(tuiHint.Render("Checking PostgreSQL status…") + "\n")
-	case "missing":
-		b.WriteString(tuiWarn.Render("PostgreSQL is not reachable.") + "\n\n")
-		if m.lastErr != nil {
-			b.WriteString(tuiHint.Render(m.lastErr.Error()) + "\n\n")
-		}
-		b.WriteString(tuiInfo("Press i to install PostgreSQL, or esc to skip.") + "\n")
-	case "installing":
-		b.WriteString(tuiHint.Render("Installing PostgreSQL via apt…") + "\n")
-		b.WriteString(tuiInfo("This may take up to a minute.") + "\n")
-	case "creating":
-		b.WriteString(tuiHint.Render("PostgreSQL installed. Creating database…") + "\n")
-	case "done":
-		b.WriteString(tuiOK.Render("✓ Database is ready.") + "\n")
-	case "error":
-		b.WriteString(tuiErr.Render("Failed to set up PostgreSQL:") + "\n")
-		if m.lastErr != nil {
-			b.WriteString(tuiHint.Render(m.lastErr.Error()) + "\n")
-		}
-	}
-
-	b.WriteString("\n")
-	b.WriteString(tuiSeparator())
-	b.WriteString("\n")
-	switch m.state {
-	case "missing":
-		b.WriteString(tuiAction("i", "install", "esc", "back"))
-	case "done", "error":
-		b.WriteString(tuiAction("esc", "back"))
-	default:
-		b.WriteString(tuiAction("esc", "cancel"))
-	}
-	return b.String()
-}
-
-func checkPostgresCmd(dbURL string) tea.Cmd {
-	return func() tea.Msg {
-		err := checkPostgres(dbURL)
-		if err != nil {
-			return pgCheckMsg{reachable: false, err: err}
-		}
-		return pgCheckMsg{reachable: true}
-	}
-}
-
+// checkPostgres proves the configured database is reachable and accepts a
+// connection. Host bootstrap provisions PostgreSQL, so in the normal setup flow
+// this succeeds immediately; the preflight stage uses it to fail fast otherwise.
 func checkPostgres(dbURL string) error {
 	cfg, err := parseDBURL(dbURL)
 	if err != nil {
@@ -155,52 +32,6 @@ func checkPostgres(dbURL string) error {
 	}
 	drv.Close()
 	return nil
-}
-
-func installPostgresCmd() tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-		defer cancel()
-		cmd := exec.CommandContext(ctx, "apt-get", "install", "-y", "postgresql")
-		out, err := cmd.CombinedOutput()
-		if err != nil {
-			return pgInstallMsg{err: fmt.Errorf("%w: %s", err, string(out))}
-		}
-		// Start the service.
-		start := exec.CommandContext(ctx, "systemctl", "restart", "postgresql")
-		start.CombinedOutput()
-		return pgInstallMsg{}
-	}
-}
-
-func createDatabaseCmd(dbURL string) tea.Cmd {
-	return func() tea.Msg {
-		cfg, err := parseDBURL(dbURL)
-		if err != nil {
-			return pgCreateMsg{err: err}
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		// Create user and database via PostgreSQL command line.
-		cmds := [][]string{
-			{"psql", "-c", fmt.Sprintf("CREATE USER %s WITH PASSWORD '%s';", cfg.user, cfg.pass)},
-			{"psql", "-c", fmt.Sprintf("CREATE DATABASE %s OWNER %s;", cfg.db, cfg.user)},
-			{"psql", "-c", fmt.Sprintf("GRANT ALL PRIVILEGES ON DATABASE %s TO %s;", cfg.db, cfg.user)},
-		}
-		for _, args := range cmds {
-			cmd := exec.CommandContext(ctx, "su", append([]string{"-", "postgres", "-c"}, strings.Join(args, " "))...)
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				// Ignore "already exists" errors.
-				s := string(out)
-				if strings.Contains(s, "already exists") {
-					continue
-				}
-				return pgCreateMsg{err: fmt.Errorf("%w: %s", err, s)}
-			}
-		}
-		return pgCreateMsg{}
-	}
 }
 
 type dbCfg struct {

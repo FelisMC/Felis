@@ -2,21 +2,45 @@ package main
 
 import (
 	"context"
-	"fmt"
 
 	"felis.lolicon.best/internal/cfsetup"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
+
+// sizeable is implemented by screens that need to know the terminal area
+// available to them (after the root reserves space for the step rail). huh-based
+// screens forward this to form.WithWidth/WithHeight; custom screens use it to
+// avoid overflowing the frame.
+type sizeable interface {
+	setSize(width, height int)
+}
+
+// ---- Connection methods ----
+
+type connectMethod int
+
+const (
+	connectLocal connectMethod = iota
+	connectCloudflare
+	connectReverseProxy
+)
+
+func connectMethodLabel(m connectMethod) string {
+	switch m {
+	case connectCloudflare:
+		return "Cloudflare Tunnel + Access"
+	case connectReverseProxy:
+		return "Reverse proxy (your own front)"
+	default:
+		return "Local only (NodePort + self-signed TLS)"
+	}
+}
 
 // ---- Messages: sub-model → root ----
 
-type pgDoneMsg struct{ err error }
-
-type migrationDoneMsg struct {
-	n   int
-	err error
-}
+type preflightDoneMsg struct{}
 
 type ownerResultMsg struct {
 	username        string
@@ -27,25 +51,45 @@ type ownerResultMsg struct {
 	err             error
 }
 
-type edgeResultMsg struct {
-	result        *cfsetup.Result
+// connectResultMsg is emitted by every connection method (the chooser for
+// local, the edge model for Cloudflare, the reverse-proxy model for BYO). It is
+// the single, method-agnostic outcome the root advances on.
+type connectResultMsg struct {
+	method        connectMethod
 	panelHostname string
 	adminHostname string
-	err           error
+	edge          *cfsetup.Result // Cloudflare only
+	guide         string          // reverse-proxy only
 }
 
-type panelCheckMsg struct{ result panelAccessResult }
+// goBackMsg returns from a connection sub-screen to the chooser.
+type goBackMsg struct{}
 
-// switchToDashboard tells the root to show the dashboard.
-type switchToDashboard struct{}
+func goBack() tea.Cmd { return func() tea.Msg { return goBackMsg{} } }
+
+// reconfigureConnectMsg is sent from the re-run status screen to re-enter the
+// connection chooser.
+type reconfigureConnectMsg struct{}
 
 // ---- rootModel: top-level session ----
+
+type wizardStage int
+
+const (
+	stagePreflight wizardStage = iota
+	stageOwner
+	stageConnect
+	stageSummary
+)
 
 type rootModel struct {
 	ctx context.Context
 
-	screen    tea.Model       // current active screen
-	dashboard *dashboardModel // always preserved
+	screen tea.Model
+	stage  wizardStage
+
+	width  int
+	height int
 
 	result breakGlassResult
 	err    error
@@ -57,10 +101,11 @@ type rootModel struct {
 	rootDomain  string
 	adminHost   string
 	panelHost   string
+	accessAud   string
 	adminExists bool
 }
 
-func newRootModel(ctx context.Context, store ownerStore, dbURL, rootDomain, adminHostname, panelHostname, osUser string, adminExists bool, mode consoleMode) *rootModel {
+func newRootModel(ctx context.Context, store ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, osUser string, adminExists bool, mode consoleMode) *rootModel {
 	rm := &rootModel{
 		ctx:         ctx,
 		dbURL:       dbURL,
@@ -69,70 +114,48 @@ func newRootModel(ctx context.Context, store ownerStore, dbURL, rootDomain, admi
 		rootDomain:  rootDomain,
 		adminHost:   adminHostname,
 		panelHost:   panelHostname,
+		accessAud:   accessAud,
 		adminExists: adminExists,
 		mode:        mode,
-		dashboard:   newDashboardModel(ctx, store, dbURL, osUser, rootDomain, adminHostname, panelHostname),
 		result: breakGlassResult{
 			osUser:        osUser,
 			rootDomain:    rootDomain,
 			adminHostname: adminHostname,
 		},
 	}
-	rm.dashboard.adminExists = adminExists
-	rm.refreshDashboard()
 	if mode == consoleModeBreakGlass {
+		rm.stage = stageOwner
 		rm.screen = newOwnerModel(ctx, store, osUser, adminExists)
 	} else {
-		rm.screen = rm.dashboard
+		rm.stage = stagePreflight
+		rm.screen = newPreflightModel(dbURL, rootDomain)
 	}
 	return rm
 }
 
 func (m *rootModel) Init() tea.Cmd {
-	if m.mode == consoleModeSetup {
-		return m.checkStatus()
-	}
 	return m.screen.Init()
 }
 
 func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
-	case pgDoneMsg:
-		if msg.err != nil {
-			m.dashboard.pgStatus = statusFailed
-			m.dashboard.pgDetail = msg.err.Error()
-			m.showDashboard()
-			return m, nil
-		}
-		m.dashboard.pgStatus = statusDone
-		m.dashboard.pgDetail = "ready"
-		m.showDashboard()
-		return m, m.checkMigrations()
+	case tea.WindowSizeMsg:
+		m.width, m.height = msg.Width, msg.Height
+		m.pushSize()
+		return m, nil
 
-	case migrationDoneMsg:
-		if msg.err == nil {
-			m.dashboard.mgStatus = statusDone
-			m.dashboard.mgDetail = fmt.Sprintf("%d applied", msg.n)
-		} else {
-			m.dashboard.mgStatus = statusFailed
-			m.dashboard.mgDetail = msg.err.Error()
+	case preflightDoneMsg:
+		if m.adminExists {
+			// Re-run: setup already happened. Land on the status screen.
+			return m.showStatus()
 		}
-		m.showDashboard()
-		if msg.err != nil {
-			return m, nil
-		}
-		return m, m.checkPanel()
+		m.stage = stageOwner
+		return m.adopt(newOwnerModel(m.ctx, m.store, m.osUser, false))
 
 	case ownerResultMsg:
 		if msg.err != nil {
-			if m.mode == consoleModeBreakGlass {
-				m.err = msg.err
-				return m, tea.Quit
-			}
-			m.dashboard.owStatus = statusFailed
-			m.dashboard.owDetail = msg.err.Error()
-			m.showDashboard()
-			return m, nil
+			m.err = msg.err
+			return m, tea.Quit
 		}
 		m.result.provisioned = true
 		m.result.username = msg.username
@@ -144,122 +167,155 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		m.adminExists = true
-		m.dashboard.adminExists = true
-		m.dashboard.owStatus = statusDone
-		m.dashboard.owDetail = msg.username
-		m.showDashboard()
-		return m, m.checkPanel()
+		m.stage = stageConnect
+		return m.adopt(newConnectChooserModel(m.rootDomain, m.adminHost, m.panelHost))
 
-	case panelCheckMsg:
-		m.result.panelURL = msg.result.url
-		if msg.result.err != nil {
-			m.dashboard.paStatus = statusFailed
-			m.dashboard.paDetail = msg.result.err.Error()
-		} else {
-			m.dashboard.paStatus = statusDone
-			m.dashboard.paDetail = msg.result.url
-		}
-		m.showDashboard()
-		return m, nil
+	case connectResultMsg:
+		m.applyConnectResult(msg)
+		return m.showSummary()
 
-	case edgeResultMsg:
-		if msg.err != nil {
-			if m.mode == consoleModeBreakGlass {
-				m.err = msg.err
-				return m, tea.Quit
-			}
-			m.dashboard.egStatus = statusFailed
-			m.dashboard.egDetail = msg.err.Error()
-			m.showDashboard()
-			return m, nil
-		}
-		m.result.edgeConfigured = true
-		m.result.edgeAud = msg.result.AccessAud
-		m.result.edgeRoutedHosts = msg.result.RoutedHostnames
-		m.result.edgeConfigPath = msg.result.ConfigPath
-		m.result.edgePanelHostname = msg.panelHostname
-		m.result.edgeAdminHostname = msg.adminHostname
-		if m.mode == consoleModeBreakGlass {
-			return m, tea.Quit
-		}
-		m.dashboard.egStatus = statusDone
-		m.dashboard.egDetail = "configured"
-		m.showDashboard()
-		return m, nil
+	case goBackMsg:
+		m.stage = stageConnect
+		return m.adopt(newConnectChooserModel(m.rootDomain, m.adminHost, m.panelHost))
 
-	case switchToDashboard:
-		m.refreshDashboard()
-		return m, m.checkStatus()
-
+	case reconfigureConnectMsg:
+		m.stage = stageConnect
+		return m.adopt(newConnectChooserModel(m.rootDomain, m.adminHost, m.panelHost))
 	}
 
 	if m.screen != nil {
 		newScreen, cmd := m.screen.Update(msg)
-		if newScreen != nil {
-			if newScreen != m.screen {
-				m.screen = newScreen
-				return m, tea.Batch(cmd, m.screen.Init())
-			}
+		if newScreen != nil && newScreen != m.screen {
+			adopted, initCmd := m.adopt(newScreen)
+			return adopted, tea.Batch(cmd, initCmd)
 		}
 		return m, cmd
 	}
 	return m, nil
 }
 
-func (m *rootModel) View() string {
-	if m.screen != nil {
-		return m.screen.View()
-	}
-	return ""
+// adopt installs a new screen, hands it the current size, and returns its Init.
+// Centralizing screen swaps here guarantees every screen is sized before its
+// first View — the fix for the rail being clipped off the top of the frame.
+func (m *rootModel) adopt(s tea.Model) (tea.Model, tea.Cmd) {
+	m.screen = s
+	m.pushSize()
+	return m, s.Init()
 }
 
-func (m *rootModel) showDashboard() {
-	m.screen = m.dashboard
-}
-
-func (m *rootModel) refreshDashboard() {
-	d := m.dashboard
-	d.pgStatus = statusPending
-	d.mgStatus = statusPending
-	d.owStatus = statusOptional
-	d.paStatus = statusPending
-	d.egStatus = statusOptional
-	if m.adminExists {
-		d.owStatus = statusDone
-		d.owDetail = "already exists (use breakGlass to reset)"
+// pushSize gives the active screen the area left after the step rail.
+func (m *rootModel) pushSize() {
+	if m.height == 0 {
+		return
 	}
-	if m.result.provisioned {
-		d.owStatus = statusDone
-		d.owDetail = m.result.username
-	}
-	if m.result.edgeConfigured {
-		d.egStatus = statusDone
-		d.egDetail = "configured"
-	}
-	if m.result.panelURL != "" {
-		d.paStatus = statusDone
-		d.paDetail = m.result.panelURL
-	}
-}
-
-func (m *rootModel) checkStatus() tea.Cmd {
-	return func() tea.Msg {
-		if err := checkPostgres(m.dbURL); err != nil {
-			return pgDoneMsg{err: err}
+	if s, ok := m.screen.(sizeable); ok {
+		// Reserve one extra row: huh renders a hair taller than its WithHeight
+		// budget (the help line sits outside it). Clipping the rail off the top is
+		// the bug we're fixing, so we round the budget down — a blank bottom row is
+		// invisible, an overflowed top is not.
+		avail := m.height - m.chromeHeight() - 1
+		if avail < 1 {
+			avail = 1
 		}
-		return pgDoneMsg{}
+		s.setSize(m.width, avail)
 	}
 }
 
-func (m *rootModel) checkMigrations() tea.Cmd {
-	return func() tea.Msg {
-		n, err := countMigrations(m.dbURL)
-		return migrationDoneMsg{n: n, err: err}
+// chromeHeight is the number of rows the root paints around the screen — the
+// rail plus its blank separator, or 0 when the rail is hidden.
+func (m *rootModel) chromeHeight() int {
+	if m.mode != consoleModeSetup || m.adminExistsAtStart() {
+		return 0
 	}
+	return lipgloss.Height(m.rail()) + 1
 }
 
-func (m *rootModel) checkPanel() tea.Cmd {
-	return func() tea.Msg {
-		return panelCheckMsg{result: checkPanelAccess(m.rootDomain)}
+func (m *rootModel) View() string {
+	if m.screen == nil {
+		return ""
 	}
+	if m.mode == consoleModeSetup && !m.adminExistsAtStart() {
+		return m.rail() + "\n\n" + m.screen.View()
+	}
+	return m.screen.View()
+}
+
+// adminExistsAtStart reports whether this run began with an Owner already
+// present (a re-run). The rail only makes sense for the first-run linear wizard.
+func (m *rootModel) adminExistsAtStart() bool {
+	// adminExists flips true once we provision the Owner mid-run; the rail should
+	// keep showing through the connect/summary stages of that same first run. So
+	// only suppress the rail when the Owner pre-existed AND we never provisioned.
+	return m.adminExists && !m.result.provisioned
+}
+
+func (m *rootModel) rail() string {
+	return tuiStepRail([]string{"Preflight", "Owner", "Connection", "Done"}, int(m.stage))
+}
+
+// applyConnectResult records the chosen connection outcome onto the result.
+func (m *rootModel) applyConnectResult(msg connectResultMsg) {
+	m.result.connectMethod = msg.method
+	if msg.panelHostname != "" {
+		m.result.panelHostname = msg.panelHostname
+	}
+	if msg.adminHostname != "" {
+		m.result.adminHostname = msg.adminHostname
+	}
+	switch msg.method {
+	case connectCloudflare:
+		m.result.connectConfigured = true
+		m.result.edgeConfigured = true
+		if msg.edge != nil {
+			m.result.edgeAud = msg.edge.AccessAud
+			m.result.edgeRoutedHosts = msg.edge.RoutedHostnames
+			m.result.edgeConfigPath = msg.edge.ConfigPath
+		}
+	case connectReverseProxy:
+		m.result.connectConfigured = true
+		m.result.reverseProxyGuide = msg.guide
+	}
+	m.result.panelURL = panelURLFor(msg.method, msg.panelHostname, m.rootDomain)
+}
+
+func (m *rootModel) showSummary() (tea.Model, tea.Cmd) {
+	m.stage = stageSummary
+	routed := m.result.edgeRoutedHosts
+	if len(routed) == 0 && m.result.connectMethod == connectReverseProxy && m.result.panelHostname != "" {
+		routed = []string{m.result.panelHostname}
+	}
+	return m.adopt(&summaryModel{
+		panelURL:      m.result.panelURL,
+		ownerUsername: m.result.username,
+		ownerPassword: m.result.displayPassword,
+		accessLabel:   connectMethodLabel(m.result.connectMethod),
+		routedHosts:   routed,
+		localHint:     m.result.connectMethod == connectLocal,
+	})
+}
+
+// showStatus is the re-run landing: prove the backend is up, then point the
+// operator at the panel without forcing any reconfiguration.
+func (m *rootModel) showStatus() (tea.Model, tea.Cmd) {
+	m.stage = stageSummary
+	method := connectLocal
+	accessLabel := "configured (manage in panel)"
+	if m.accessAud != "" {
+		method = connectCloudflare
+		accessLabel = connectMethodLabel(connectCloudflare)
+	}
+	m.result.panelURL = panelURLFor(method, m.panelHost, m.rootDomain)
+	return m.adopt(&summaryModel{
+		panelURL:     m.result.panelURL,
+		accessLabel:  accessLabel,
+		alreadySetUp: true,
+		localHint:    m.accessAud == "" && rootDomainEmbeddedIP(m.rootDomain) != "",
+	})
+}
+
+func panelURLFor(method connectMethod, panelHostname, rootDomain string) string {
+	if method != connectLocal && panelHostname != "" {
+		return "https://" + panelHostname
+	}
+	return localPanelURL(rootDomain)
 }

@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 )
 
 type owAuthMsg struct {
@@ -31,6 +33,10 @@ const (
 	owError
 )
 
+// ownerModel collects the owner account. The input phases (admin auth, root
+// override, owner details) are huh forms; the async phases (verifying,
+// provisioning) show a spinner; the done phase shows the credential card. The
+// outward contract is unchanged: it emits an ownerResultMsg when finished.
 type ownerModel struct {
 	ctx         context.Context
 	store       ownerStore
@@ -38,13 +44,23 @@ type ownerModel struct {
 	adminExists bool
 	mode        string // "bootstrap", "recovery", "root_override"
 	accountable string
+	attempt     string
 
 	step    owStep
-	inputs  []textinput.Model
-	focus   int
-	formErr string
+	form    *huh.Form
+	sp      spinner.Model
 	working string
-	attempt string
+
+	width, height int
+
+	// huh-bound form values
+	authUser     string
+	authPass     string
+	overrideTok  string
+	ownerUser    string
+	ownerEmail   string
+	ownerPass    string
+	ownerConfirm string
 
 	username        string
 	displayPassword string
@@ -52,49 +68,72 @@ type ownerModel struct {
 }
 
 func newOwnerModel(ctx context.Context, store ownerStore, osUser string, adminExists bool) *ownerModel {
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = tuiLabel
+
 	m := &ownerModel{
 		ctx:         ctx,
 		store:       store,
 		osUser:      osUser,
 		adminExists: adminExists,
+		sp:          sp,
+		ownerUser:   "owner",
 	}
 	if adminExists {
 		m.step = owAuth
+		m.form = m.buildAuthForm()
 	} else {
 		m.mode = "bootstrap"
 		m.accountable = osUser
 		m.step = owProvision
+		m.form = m.buildProvisionForm()
 	}
 	return m
 }
 
-func (m *ownerModel) Init() tea.Cmd {
-	if m.step == owAuth {
-		return m.buildAuth()
+func (m *ownerModel) Init() tea.Cmd { return m.form.Init() }
+
+func (m *ownerModel) setSize(w, h int) {
+	m.width, m.height = w, h
+	if m.form != nil {
+		m.form = m.form.WithWidth(w).WithHeight(h)
 	}
-	return m.buildProvision(true)
+}
+
+// sized applies the current terminal area to a freshly built form so phase
+// transitions don't reset back to huh's default 80-column layout.
+func (m *ownerModel) sized(f *huh.Form) *huh.Form {
+	if m.width > 0 {
+		return f.WithWidth(m.width).WithHeight(m.height)
+	}
+	return f
+}
+
+func (m *ownerModel) isFormStep() bool {
+	return m.step == owAuth || m.step == owOverride || m.step == owProvision
 }
 
 func (m *ownerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case owAuthMsg:
-		m.working = ""
 		if msg.err != nil {
-			return m, func() tea.Msg { return ownerResultMsg{err: msg.err} }
+			return m, m.failCmd(msg.err)
 		}
 		if msg.ok {
 			m.mode = "recovery"
 			m.accountable = msg.matched
 			m.step = owProvision
-			return m, m.buildProvision(false)
+			m.form = m.sized(m.buildProvisionForm())
+			return m, m.form.Init()
 		}
 		m.step = owOverride
-		m.formErr = ""
-		return m, m.buildOverride()
+		m.form = m.sized(m.buildOverrideForm())
+		return m, m.form.Init()
 
 	case owProvisionMsg:
 		if msg.err != nil {
-			return m, func() tea.Msg { return ownerResultMsg{err: msg.err} }
+			return m, m.failCmd(msg.err)
 		}
 		m.step = owDone
 		m.displayPassword = msg.outcome.displayPassword
@@ -103,157 +142,107 @@ func (m *ownerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case spinner.TickMsg:
+		if m.step == owWorking {
+			var cmd tea.Cmd
+			m.sp, cmd = m.sp.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		switch m.step {
-		case owDone, owError:
+		case owDone:
 			switch msg.String() {
 			case "ctrl+c", "esc", "enter":
-				if m.step == owDone {
-					return m, m.ownerResultCmd()
-				}
-				return m, nil
+				return m, m.ownerResultCmd()
 			}
 			return m, nil
 		case owWorking:
+			if msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
 			return m, nil
-		default:
-			return m.handleFormKey(msg)
+		default: // form steps — intercept cancel/back, let huh handle the rest
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc":
+				if m.step == owOverride {
+					m.step = owAuth
+					m.form = m.sized(m.buildAuthForm())
+					return m, m.form.Init()
+				}
+				return m, tea.Quit
+			}
 		}
 	}
-	// Forward to inputs.
-	if m.step != owWorking && m.step != owDone && m.step != owError {
-		return m, m.updateInputs(msg)
+
+	// Drive the active form.
+	if m.isFormStep() && m.form != nil {
+		form, cmd := m.form.Update(msg)
+		if f, ok := form.(*huh.Form); ok {
+			m.form = f
+		}
+		switch m.form.State {
+		case huh.StateCompleted:
+			return m.onFormComplete()
+		case huh.StateAborted:
+			return m, tea.Quit
+		}
+		return m, cmd
 	}
 	return m, nil
 }
 
-func (m *ownerModel) View() string {
-	var b strings.Builder
-	b.WriteString(tuiHeader("Owner Account"))
-
+func (m *ownerModel) onFormComplete() (tea.Model, tea.Cmd) {
 	switch m.step {
 	case owAuth:
-		b.WriteString(tuiHint.Render("A staff account exists. Identify yourself before proceeding.") + "\n\n")
-		b.WriteString(tuiWizardCard("Admin Authentication", "",
-			tuiFormField("Admin username", m.inputs[0])+"\n\n"+
-				tuiFormField("Admin password", m.inputs[1])))
-		if m.formErr != "" {
-			b.WriteString("\n" + tuiErrorBanner(m.formErr) + "\n")
-		}
-		b.WriteString("\n" + tuiSeparator() + "\n")
-		b.WriteString(tuiAction("tab/↑↓", "move", "enter", "verify", "esc", "cancel"))
-
+		m.attempt = strings.TrimSpace(m.authUser)
+		m.step = owWorking
+		m.working = "Verifying admin credential…"
+		user, pass := m.authUser, m.authPass
+		return m, tea.Batch(m.sp.Tick, func() tea.Msg {
+			matched, ok, err := authenticateAdmin(m.ctx, m.store, user, pass)
+			return owAuthMsg{matched: matched, ok: ok, err: err}
+		})
 	case owOverride:
-		b.WriteString(tuiErrorBanner("That credential did not match.") + "\n\n")
-		b.WriteString(tuiHint.Render(fmt.Sprintf("You can proceed as OS user %q with root authority.", m.osUser)) + "\n\n")
-		b.WriteString(tuiWizardCard("Root Override", "",
-			tuiFormField("Type "+breakGlassOverrideToken+" to confirm", m.inputs[0])))
-		if m.formErr != "" {
-			b.WriteString("\n" + tuiErrorBanner(m.formErr) + "\n")
-		}
-		b.WriteString("\n" + tuiSeparator() + "\n")
-		b.WriteString(tuiAction("enter", "confirm", "esc", "go back"))
-
+		m.mode = "root_override"
+		m.accountable = m.osUser
+		m.step = owProvision
+		m.form = m.sized(m.buildProvisionForm())
+		return m, m.form.Init()
 	case owProvision:
-		if m.mode == "bootstrap" {
-			b.WriteString(tuiHint.Render(fmt.Sprintf("Creating the first Owner. Recorded as OS user %q.", m.osUser)) + "\n\n")
-		} else if m.mode == "root_override" {
-			b.WriteString(tuiWarn.Render("Root override — a one-time password will be generated.") + "\n\n")
-		} else {
-			b.WriteString(tuiHint.Render(fmt.Sprintf("Authenticated as %q — a one-time password will be generated.", m.accountable)) + "\n\n")
-		}
-		var fields string
-		fields = tuiFormField("Owner username", m.inputs[0]) + "\n\n"
-		fields += tuiFormField("Owner email (optional)", m.inputs[1])
-		if m.mode == "bootstrap" {
-			fields += "\n\n" + tuiFormField("Owner password", m.inputs[2])
-			fields += "\n\n" + tuiFormField("Confirm password", m.inputs[3])
-		}
-		b.WriteString(tuiWizardCard("Account Details", "", fields))
-		if m.formErr != "" {
-			b.WriteString("\n" + tuiErrorBanner(m.formErr) + "\n")
-		}
-		b.WriteString("\n" + tuiSeparator() + "\n")
-		b.WriteString(tuiAction("tab/↑↓", "move", "enter", "provision", "esc", "cancel"))
-
-	case owWorking:
-		msg := m.working
-		if msg == "" {
-			msg = "Working…"
-		}
-		b.WriteString(tuiHint.Render(msg) + "\n")
-
-	case owDone:
-		b.WriteString(tuiSuccessBanner("Owner account is ready.") + "\n\n")
-		var box strings.Builder
-		box.WriteString(tuiLabel.Render("username  ") + m.username + "\n")
-		if m.displayPassword != "" {
-			box.WriteString(tuiLabel.Render("password  ") + tuiPassword.Render(m.displayPassword) + "\n\n")
-			box.WriteString(tuiWarn.Render("Record this password — it is shown only once.") + "\n")
-		} else {
-			box.WriteString(tuiHint.Render("Log in with the password you entered.") + "\n")
-		}
-		if m.auditWarning != "" {
-			box.WriteString("\n" + tuiWarn.Render("Audit warning: "+m.auditWarning) + "\n")
-		}
-		b.WriteString(tuiCardStyle.Render(box.String()) + "\n\n")
-		b.WriteString(tuiSeparator() + "\n")
-		b.WriteString(tuiAction("enter/esc", "back"))
-
-	case owError:
-		b.WriteString(tuiErrorBanner("Owner provisioning failed.") + "\n")
-		b.WriteString("\n" + tuiSeparator() + "\n")
-		b.WriteString(tuiAction("esc", "exit"))
+		m.username = strings.TrimSpace(m.ownerUser)
+		m.step = owWorking
+		m.working = "Provisioning Owner account…"
+		return m, tea.Batch(m.sp.Tick, m.provisionCmd())
 	}
-	return b.String()
+	return m, nil
 }
 
-func (m *ownerModel) handleFormKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+c":
-		return m, tea.Quit
-	case "esc":
-		if m.step == owOverride {
-			m.step, m.formErr = owAuth, ""
-			return m, m.buildAuth()
-		}
-		return m, func() tea.Msg { return switchToDashboard{} }
-	case "tab", "down":
-		m.focus = m.focus + 1
-		if m.focus >= len(m.inputs) {
-			m.focus = 0
-		}
-		return m, m.focusInput(m.focus)
-	case "shift+tab", "up":
-		m.focus = m.focus - 1
-		if m.focus < 0 {
-			m.focus = len(m.inputs) - 1
-		}
-		return m, m.focusInput(m.focus)
-	case "enter":
-		return m.submit()
+func (m *ownerModel) provisionCmd() tea.Cmd {
+	password := ""
+	if m.mode == "bootstrap" {
+		password = m.ownerPass
 	}
-	return m, m.updateInputs(msg)
+	op := breakGlassOp{
+		mode:           m.mode,
+		accountable:    m.accountable,
+		osUser:         m.osUser,
+		ownerUsername:  m.username,
+		ownerEmail:     m.ownerEmail,
+		ownerPassword:  password,
+		attemptedAdmin: m.attempt,
+	}
+	return func() tea.Msg {
+		out, err := performBreakGlass(m.ctx, m.store, op)
+		return owProvisionMsg{outcome: out, err: err}
+	}
 }
 
-func (m *ownerModel) focusInput(i int) tea.Cmd {
-	var cmd tea.Cmd
-	for j := range m.inputs {
-		if j == i {
-			cmd = m.inputs[j].Focus()
-		} else {
-			m.inputs[j].Blur()
-		}
-	}
-	return cmd
-}
-
-func (m *ownerModel) updateInputs(msg tea.Msg) tea.Cmd {
-	cmds := make([]tea.Cmd, len(m.inputs))
-	for i := range m.inputs {
-		m.inputs[i], cmds[i] = m.inputs[i].Update(msg)
-	}
-	return tea.Batch(cmds...)
+func (m *ownerModel) failCmd(err error) tea.Cmd {
+	return func() tea.Msg { return ownerResultMsg{err: err} }
 }
 
 func (m *ownerModel) ownerResultCmd() tea.Cmd {
@@ -268,113 +257,131 @@ func (m *ownerModel) ownerResultCmd() tea.Cmd {
 	}
 }
 
-func (m *ownerModel) setInputs(ins []textinput.Model) tea.Cmd {
-	m.inputs = ins
-	m.focus = 0
-	return m.focusInput(0)
+// ---- form builders ----
+
+func (m *ownerModel) buildAuthForm() *huh.Form {
+	return m.sized(newFelisForm(huh.NewGroup(
+		huh.NewNote().
+			Title("Admin authentication").
+			Description("A staff account already exists. Identify yourself to continue."),
+		huh.NewInput().
+			Title("Admin username").
+			Value(&m.authUser).
+			Validate(requiredField("admin username")),
+		huh.NewInput().
+			Title("Admin password").
+			EchoMode(huh.EchoModePassword).
+			Value(&m.authPass).
+			Validate(requiredField("admin password")),
+	)))
 }
 
-func (m *ownerModel) buildAuth() tea.Cmd {
-	user := tuiInput("admin username", 64, false)
-	pass := tuiInput("admin password", 128, true)
-	return m.setInputs([]textinput.Model{user, pass})
+func (m *ownerModel) buildOverrideForm() *huh.Form {
+	return m.sized(newFelisForm(huh.NewGroup(
+		huh.NewNote().
+			Title("Root override").
+			Description(fmt.Sprintf("That credential did not match. Proceed as OS user %q with root authority by typing the confirmation token.", m.osUser)),
+		huh.NewInput().
+			Title("Type "+breakGlassOverrideToken+" to confirm").
+			Value(&m.overrideTok).
+			Validate(func(s string) error {
+				if s != breakGlassOverrideToken {
+					return errors.New("type " + breakGlassOverrideToken + " exactly to proceed")
+				}
+				return nil
+			}),
+	)))
 }
 
-func (m *ownerModel) buildOverride() tea.Cmd {
-	confirm := tuiInput("type "+breakGlassOverrideToken, 16, false)
-	return m.setInputs([]textinput.Model{confirm})
-}
-
-func (m *ownerModel) buildProvision(withPassword bool) tea.Cmd {
-	user := tuiInput("owner", 64, false)
-	user.SetValue("owner")
-	email := tuiInput("(optional)", 254, false)
-	ins := []textinput.Model{user, email}
-	if withPassword {
-		ins = append(ins, tuiInput("at least 8 characters", 128, true))
-		ins = append(ins, tuiInput("re-enter password", 128, true))
+func (m *ownerModel) buildProvisionForm() *huh.Form {
+	desc := fmt.Sprintf("Create the first Owner — recorded as OS user %q.", m.osUser)
+	switch m.mode {
+	case "recovery":
+		desc = fmt.Sprintf("Authenticated as %q — a one-time password will be generated.", m.accountable)
+	case "root_override":
+		desc = "Root override — a one-time password will be generated."
 	}
-	return m.setInputs(ins)
-}
 
-func (m *ownerModel) submit() (tea.Model, tea.Cmd) {
-	switch m.step {
-	case owAuth:
-		return m.submitAuth()
-	case owOverride:
-		return m.submitOverride()
-	case owProvision:
-		return m.submitProvision()
+	fields := []huh.Field{
+		huh.NewNote().Title("Owner account").Description(desc),
+		huh.NewInput().
+			Title("Owner username").
+			Value(&m.ownerUser).
+			Validate(requiredField("owner username")),
+		huh.NewInput().
+			Title("Owner email").
+			Description("optional").
+			Placeholder("you@example.com").
+			Value(&m.ownerEmail),
 	}
-	return m, nil
-}
-
-func (m *ownerModel) submitAuth() (tea.Model, tea.Cmd) {
-	user := strings.TrimSpace(m.inputs[0].Value())
-	pass := m.inputs[1].Value()
-	if user == "" || pass == "" {
-		m.formErr = "enter the username and password of an existing admin"
-		return m, nil
-	}
-	m.attempt = user
-	m.formErr, m.working = "", "Verifying admin credential…"
-	m.step = owWorking
-	return m, func() tea.Msg {
-		matched, ok, err := authenticateAdmin(m.ctx, m.store, user, pass)
-		return owAuthMsg{matched: matched, ok: ok, err: err}
-	}
-}
-
-func (m *ownerModel) submitOverride() (tea.Model, tea.Cmd) {
-	if m.inputs[0].Value() != breakGlassOverrideToken {
-		m.formErr = "type " + breakGlassOverrideToken + " exactly to proceed"
-		return m, nil
-	}
-	m.mode = "root_override"
-	m.accountable = m.osUser
-	m.step = owProvision
-	return m, m.buildProvision(false)
-}
-
-func (m *ownerModel) submitProvision() (tea.Model, tea.Cmd) {
-	owner := strings.TrimSpace(m.inputs[0].Value())
-	if owner == "" {
-		m.formErr = "owner username is required"
-		return m, m.focusForField(0)
-	}
-	email := m.inputs[1].Value()
-	password := ""
 	if m.mode == "bootstrap" {
-		pw := m.inputs[2].Value()
-		confirm := m.inputs[3].Value()
-		if err := validateOwnerPassword(pw); err != nil {
-			m.formErr = err.Error()
-			return m, m.focusForField(2)
-		}
-		if pw != confirm {
-			m.formErr = "the two passwords do not match"
-			return m, m.focusForField(3)
-		}
-		password = pw
+		fields = append(fields,
+			huh.NewInput().
+				Title("Owner password").
+				Description("at least 8 characters").
+				EchoMode(huh.EchoModePassword).
+				Value(&m.ownerPass).
+				Validate(validateOwnerPassword),
+			huh.NewInput().
+				Title("Confirm password").
+				EchoMode(huh.EchoModePassword).
+				Value(&m.ownerConfirm).
+				Validate(func(s string) error {
+					if s != m.ownerPass {
+						return errors.New("the two passwords do not match")
+					}
+					return nil
+				}),
+		)
 	}
-	m.username = owner
-	m.formErr, m.working = "", "Provisioning Owner account…"
-	m.step = owWorking
-	return m, func() tea.Msg {
-		out, err := performBreakGlass(m.ctx, m.store, breakGlassOp{
-			mode:           m.mode,
-			accountable:    m.accountable,
-			osUser:         m.osUser,
-			ownerUsername:  owner,
-			ownerEmail:     email,
-			ownerPassword:  password,
-			attemptedAdmin: m.attempt,
-		})
-		return owProvisionMsg{outcome: out, err: err}
+	return m.sized(newFelisForm(huh.NewGroup(fields...)))
+}
+
+func requiredField(name string) func(string) error {
+	return func(s string) error {
+		if strings.TrimSpace(s) == "" {
+			return errors.New(name + " is required")
+		}
+		return nil
 	}
 }
 
-func (m *ownerModel) focusForField(i int) tea.Cmd {
-	m.focus = i
-	return m.focusInput(i)
+// ---- views ----
+
+func (m *ownerModel) View() string {
+	switch m.step {
+	case owWorking:
+		msg := m.working
+		if msg == "" {
+			msg = "Working…"
+		}
+		return "  " + m.sp.View() + " " + tuiHint.Render(msg) + "\n"
+	case owDone:
+		return m.doneView()
+	default:
+		if m.form == nil {
+			return ""
+		}
+		return m.form.View()
+	}
+}
+
+func (m *ownerModel) doneView() string {
+	var b strings.Builder
+	b.WriteString(tuiSuccessBanner("Owner account is ready.") + "\n\n")
+
+	var box strings.Builder
+	box.WriteString(tuiLabel.Render("username  ") + m.username + "\n")
+	if m.displayPassword != "" {
+		box.WriteString(tuiLabel.Render("password  ") + tuiPassword.Render(m.displayPassword) + "\n\n")
+		box.WriteString(tuiWarn.Render("Record this password — it is shown only once."))
+	} else {
+		box.WriteString(tuiHint.Render("Log in with the password you entered."))
+	}
+	if m.auditWarning != "" {
+		box.WriteString("\n\n" + tuiWarn.Render("Audit warning: "+m.auditWarning))
+	}
+	b.WriteString(tuiCardStyle.Render(box.String()) + "\n\n")
+	b.WriteString(tuiAction("enter", "continue"))
+	return b.String()
 }

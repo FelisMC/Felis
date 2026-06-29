@@ -84,7 +84,7 @@ func cmdSetup(args []string, stdout, stderr io.Writer) int {
 	}
 	defer setup.drv.Close()
 
-	res, err := runSetupTUI(ctx, setup.repo, setup.cfg.Database.URL, setup.cfg.Server.RootDomain, setup.cfg.Auth.AdminHostname, setup.cfg.Auth.PanelHostname, accountableOSUser(), setup.adminExists)
+	res, err := runSetupTUI(ctx, setup.repo, setup.cfg.Database.URL, setup.cfg.Server.RootDomain, setup.cfg.Auth.AdminHostname, setup.cfg.Auth.PanelHostname, setup.cfg.Auth.AccessJWTAud, accountableOSUser(), setup.adminExists)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis setup: %v\n", err)
 		return 1
@@ -94,9 +94,9 @@ func cmdSetup(args []string, stdout, stderr io.Writer) int {
 		panelURL = localPanelURL(setup.cfg.Server.RootDomain)
 	}
 
-	if !res.provisioned && !res.edgeConfigured {
+	if !res.provisioned && !res.connectConfigured {
 		if bootstrapped {
-			fmt.Fprintln(stdout, "felis setup: host bootstrap completed; Owner/edge setup skipped.")
+			fmt.Fprintln(stdout, "felis setup: host bootstrap completed; Owner/connection setup skipped.")
 			if panelURL != "" {
 				fmt.Fprintf(stdout, "Panel: %s\n", panelURL)
 				fmt.Fprintln(stdout, "The local HTTPS certificate is self-signed; your browser may ask for confirmation on first visit.")
@@ -127,15 +127,22 @@ func cmdSetup(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
-	if res.edgeConfigured {
-		fmt.Fprintf(stdout, "\nfelis setup: Cloudflare Tunnel + Access edge configured.\n")
-		if len(res.edgeRoutedHosts) > 0 {
-			fmt.Fprintf(stdout, "Routed web hostnames: %s\n", strings.Join(res.edgeRoutedHosts, ", "))
+	if res.connectConfigured {
+		switch res.connectMethod {
+		case connectCloudflare:
+			fmt.Fprintf(stdout, "\nfelis setup: Cloudflare Tunnel + Access configured.\n")
+			if len(res.edgeRoutedHosts) > 0 {
+				fmt.Fprintf(stdout, "Routed web hostnames: %s\n", strings.Join(res.edgeRoutedHosts, ", "))
+			}
+			if res.edgeConfigPath != "" {
+				fmt.Fprintf(stdout, "Wrote tunnel config: %s\n", res.edgeConfigPath)
+			}
+			fmt.Fprintln(stdout, "Felis config, Kubernetes Secret, API rollout and cloudflared service were updated.")
+		case connectReverseProxy:
+			fmt.Fprintf(stdout, "\nfelis setup: reverse-proxy front configured. Point your proxy at the origin:\n\n")
+			fmt.Fprintln(stdout, res.reverseProxyGuide)
+			fmt.Fprintln(stdout, "Felis config, Kubernetes Secret and API rollout were updated.")
 		}
-		if res.edgeConfigPath != "" {
-			fmt.Fprintf(stdout, "Wrote tunnel config: %s\n", res.edgeConfigPath)
-		}
-		fmt.Fprintln(stdout, "Felis config, Kubernetes Secret, API rollout and cloudflared service were updated.")
 	}
 	return 0
 }

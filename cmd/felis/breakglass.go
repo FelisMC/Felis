@@ -125,7 +125,7 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	res, err := runBreakGlassTUI(ctx, repo, cfg.Database.URL, cfg.Server.RootDomain, cfg.Auth.AdminHostname, cfg.Auth.PanelHostname, accountableOSUser(), adminExists)
+	res, err := runBreakGlassTUI(ctx, repo, cfg.Database.URL, cfg.Server.RootDomain, cfg.Auth.AdminHostname, cfg.Auth.PanelHostname, cfg.Auth.AccessJWTAud, accountableOSUser(), adminExists)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis breakGlass: %v\n", err)
 		return 1
@@ -411,7 +411,13 @@ type breakGlassResult struct {
 	adminHostname   string
 	panelURL        string
 
-	// optional Cloudflare edge outcome (independent of provisioned)
+	// connection outcome (independent of provisioned)
+	connectMethod     connectMethod
+	connectConfigured bool
+	panelHostname     string
+	reverseProxyGuide string
+
+	// Cloudflare-specific edge detail (set only when connectMethod is Cloudflare)
 	edgeConfigured    bool
 	edgeAud           string
 	edgeRoutedHosts   []string
@@ -438,16 +444,16 @@ const (
 	cloudflareAPITokenDocsURL        = "https://developers.cloudflare.com/fundamentals/api/how-to/account-owned-token-template/"
 )
 
-func runBreakGlassTUI(ctx context.Context, s ownerStore, dbURL, rootDomain, adminHostname, panelHostname, osUser string, adminExists bool) (breakGlassResult, error) {
-	return runConsoleTUI(ctx, s, dbURL, rootDomain, adminHostname, panelHostname, osUser, adminExists, consoleModeBreakGlass)
+func runBreakGlassTUI(ctx context.Context, s ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, osUser string, adminExists bool) (breakGlassResult, error) {
+	return runConsoleTUI(ctx, s, dbURL, rootDomain, adminHostname, panelHostname, accessAud, osUser, adminExists, consoleModeBreakGlass)
 }
 
-func runSetupTUI(ctx context.Context, s ownerStore, dbURL, rootDomain, adminHostname, panelHostname, osUser string, adminExists bool) (breakGlassResult, error) {
-	return runConsoleTUI(ctx, s, dbURL, rootDomain, adminHostname, panelHostname, osUser, adminExists, consoleModeSetup)
+func runSetupTUI(ctx context.Context, s ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, osUser string, adminExists bool) (breakGlassResult, error) {
+	return runConsoleTUI(ctx, s, dbURL, rootDomain, adminHostname, panelHostname, accessAud, osUser, adminExists, consoleModeSetup)
 }
 
-func runConsoleTUI(ctx context.Context, s ownerStore, dbURL, rootDomain, adminHostname, panelHostname, osUser string, adminExists bool, mode consoleMode) (breakGlassResult, error) {
-	rm := newRootModel(ctx, s, dbURL, rootDomain, adminHostname, panelHostname, osUser, adminExists, mode)
+func runConsoleTUI(ctx context.Context, s ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, osUser string, adminExists bool, mode consoleMode) (breakGlassResult, error) {
+	rm := newRootModel(ctx, s, dbURL, rootDomain, adminHostname, panelHostname, accessAud, osUser, adminExists, mode)
 	final, err := tea.NewProgram(rm, tea.WithAltScreen()).Run()
 	if err != nil {
 		return breakGlassResult{}, err

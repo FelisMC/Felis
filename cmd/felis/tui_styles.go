@@ -46,7 +46,7 @@ var (
 
 	// Hint / help text
 	tuiHint = lipgloss.NewStyle().
-			Foreground(cWhite)
+		Foreground(cWhite)
 
 	// Success text
 	tuiOK = lipgloss.NewStyle().
@@ -76,36 +76,25 @@ var (
 			Padding(0, 1)
 
 	// Status icon styles
-	tuiIconOK    = lipgloss.NewStyle().Bold(true).Foreground(cSuccess).Render("✓")
-	tuiIconInPro = lipgloss.NewStyle().Bold(true).Foreground(cPrimary).Render("→")
-	tuiIconOpt   = lipgloss.NewStyle().Foreground(cWhite).Render("○")
-	tuiIconErr   = lipgloss.NewStyle().Bold(true).Foreground(cError).Render("✗")
-	tuiIconSpin  = lipgloss.NewStyle().Bold(true).Foreground(cWarning).Render("⟳")
-
-	// Step card dimensions
-	tuiStepWidth  = 60
-	tuiStepHeight = 5
+	tuiIconOK   = lipgloss.NewStyle().Bold(true).Foreground(cSuccess).Render("✓")
+	tuiIconOpt  = lipgloss.NewStyle().Foreground(cWhite).Render("○")
+	tuiIconSpin = lipgloss.NewStyle().Bold(true).Foreground(cWarning).Render("⟳")
 
 	// Info box — subtle background
 	tuiInfoBox = lipgloss.NewStyle().
 			Background(cBgDark).
 			Padding(1, 2).
 			Width(60)
-)
 
-func tuiIcon(status stepStatus) string {
-	switch status {
-	case statusDone:
-		return tuiIconOK
-	case statusPending:
-		return tuiIconInPro
-	case statusOptional:
-		return tuiIconOpt
-	case statusFailed:
-		return tuiIconErr
-	case statusRunning:
-		return tuiIconSpin
-	default:
-		return " "
-	}
-}
+	// Step rail (breadcrumb) — shows where you are in the linear wizard.
+	tuiRailDone   = lipgloss.NewStyle().Foreground(cSuccess)
+	tuiRailActive = lipgloss.NewStyle().Bold(true).Foreground(cWhite).Background(cPrimary).Padding(0, 1)
+	tuiRailTodo   = lipgloss.NewStyle().Foreground(cDim)
+	tuiRailSep    = lipgloss.NewStyle().Foreground(cDim)
+
+	// Code/guide block — monospace-ish snippet on a subtle background.
+	tuiCodeBox = lipgloss.NewStyle().
+			Foreground(cWhite).
+			Background(cBgInput).
+			Padding(0, 1)
+)

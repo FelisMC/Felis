@@ -24,10 +24,8 @@ func applyCloudflareEdge(ctx context.Context, result *cfsetup.Result, panelHost,
 	if adminHost == "" {
 		return fmt.Errorf("admin hostname is required")
 	}
-	for _, path := range []string{hostSetupConfigPath, podSetupConfigPath} {
-		if err := updateAuthConfig(path, panelHost, adminHost, result.AccessAud); err != nil {
-			return err
-		}
+	if err := writeConnectionConfig(panelHost, adminHost, result.AccessAud); err != nil {
+		return err
 	}
 	if err := applyFelisConfigSecret(ctx); err != nil {
 		return err
@@ -39,6 +37,38 @@ func applyCloudflareEdge(ctx context.Context, result *cfsetup.Result, panelHost,
 		return err
 	}
 	return kubectl(ctx, "-n", "felis", "rollout", "status", "deployment/felis-api", "--timeout=180s")
+}
+
+// applyReverseProxy records the operator's chosen public hostnames and rolls the
+// API so the panel serves them. No Access audience is set: the admin console is
+// gated by the Owner's local-password session, and the operator's own reverse
+// proxy (Caddy/nginx/Traefik/…) terminates TLS in front of the NodePort origin.
+func applyReverseProxy(ctx context.Context, panelHost, adminHost string) error {
+	if adminHost == "" {
+		return fmt.Errorf("admin hostname is required")
+	}
+	if err := writeConnectionConfig(panelHost, adminHost, ""); err != nil {
+		return err
+	}
+	if err := applyFelisConfigSecret(ctx); err != nil {
+		return err
+	}
+	if err := kubectl(ctx, "-n", "felis", "rollout", "restart", "deployment/felis-api"); err != nil {
+		return err
+	}
+	return kubectl(ctx, "-n", "felis", "rollout", "status", "deployment/felis-api", "--timeout=180s")
+}
+
+// writeConnectionConfig stamps the chosen hostnames (and optional Access audience)
+// into both the host and pod config files. An empty aud clears any prior
+// Cloudflare audience, which is correct when switching to a non-Access front.
+func writeConnectionConfig(panelHost, adminHost, aud string) error {
+	for _, path := range []string{hostSetupConfigPath, podSetupConfigPath} {
+		if err := updateAuthConfig(path, panelHost, adminHost, aud); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func updateAuthConfig(path, panelHost, adminHost, aud string) error {

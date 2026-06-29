@@ -154,7 +154,7 @@ func (m *edgeModel) View() string {
 
 	switch m.step {
 	case egIntro:
-		b.WriteString(tuiHint.Render("Publish web faces securely via Cloudflare Tunnel + Access.") + "\n\n")
+		b.WriteString(tuiHint.Render("Publish the panel via Cloudflare Tunnel + Access — no open ports, TLS and admin identity handled by Cloudflare. Press esc to pick a different method.") + "\n\n")
 		b.WriteString(tuiLabel.Render("Status") + "\n")
 		if m.cloudflaredPath == "" {
 			b.WriteString("  " + tuiErr.Render("✗ cloudflared not installed") + " — press i to install\n\n")
@@ -276,7 +276,7 @@ func (m *edgeModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.step == egDone {
 				return m, m.sendEdgeResult()
 			}
-			return m, func() tea.Msg { return switchToDashboard{} }
+			return m, goBack()
 		case "enter":
 			if m.step == egDone {
 				return m, m.sendEdgeResult()
@@ -297,7 +297,7 @@ func (m *edgeModel) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *edgeModel) handleIntroKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", "esc":
-		return m, func() tea.Msg { return switchToDashboard{} }
+		return m, goBack()
 	case "i", "I":
 		if m.cloudflaredPath == "" {
 			m.installing = true
@@ -531,8 +531,9 @@ func (m *edgeModel) runEdgeSetup(runner cfsetup.Runner, p cfsetup.Params) tea.Cm
 
 func (m *edgeModel) sendEdgeResult() tea.Cmd {
 	return func() tea.Msg {
-		return edgeResultMsg{
-			result:        m.result,
+		return connectResultMsg{
+			method:        connectCloudflare,
+			edge:          m.result,
 			panelHostname: m.panelSet,
 			adminHostname: m.adminSet,
 		}

@@ -8,24 +8,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-type stepStatus int
-
-const (
-	statusDone     stepStatus = iota
-	statusPending
-	statusOptional
-	statusRunning
-	statusFailed
-)
-
-type dashboardStep struct {
-	title  string
-	status stepStatus
-	detail string
-}
-
 func tuiHeader(title string) string {
-	return tuiTitle.Render("🐾 " + title) + "\n\n"
+	return tuiTitle.Render("🐾 "+title) + "\n\n"
 }
 
 func tuiAction(pairs ...string) string {
@@ -34,17 +18,6 @@ func tuiAction(pairs ...string) string {
 		parts = append(parts, tuiLabel.Render(pairs[i])+" "+tuiHint.Render(pairs[i+1]))
 	}
 	return tuiActionBar.Render(strings.Join(parts, "  ·  "))
-}
-
-func tuiStatusLine(icon, label, detail string, focused bool) string {
-	line := fmt.Sprintf("  %s  %s", icon, tuiLabel.Render(label))
-	if detail != "" {
-		line += "\n     " + tuiHint.Render(detail)
-	}
-	if focused {
-		return tuiCardFocusedStyle.Width(tuiStepWidth).Render(line)
-	}
-	return tuiCardStyle.Width(tuiStepWidth).Render(line)
 }
 
 func tuiFormField(label string, input textinput.Model) string {
@@ -57,25 +30,6 @@ func tuiInfo(text string) string {
 	return tuiInfoBox.Render(tuiHint.Render("ℹ " + text))
 }
 
-type progressStep struct {
-	label string
-	done  bool
-}
-
-func tuiProgress(steps []progressStep) string {
-	var b strings.Builder
-	for _, s := range steps {
-		if s.done {
-			b.WriteString("  " + tuiIconOK + " " + s.label + "\n")
-		} else if len(steps) > 0 && s == steps[0] {
-			continue
-		} else {
-			b.WriteString("  " + tuiIconOpt + " " + s.label + "\n")
-		}
-	}
-	return b.String()
-}
-
 func tuiWizardCard(title, desc, body string) string {
 	var b strings.Builder
 	b.WriteString(tuiSection.Render(title))
@@ -86,15 +40,6 @@ func tuiWizardCard(title, desc, body string) string {
 	b.WriteString("\n\n")
 	b.WriteString(tuiCardStyle.Render(body))
 	return b.String()
-}
-
-func tuiResultCard(title string, pairs ...string) string {
-	var b strings.Builder
-	b.WriteString(tuiOK.Render(title) + "\n\n")
-	for i := 0; i+1 < len(pairs); i += 2 {
-		b.WriteString(tuiLabel.Render(pairs[i]) + "  " + tuiPassword.Render(pairs[i+1]) + "\n")
-	}
-	return tuiCardStyle.Render(b.String())
 }
 
 func tuiErrorBanner(msg string) string {
@@ -121,4 +66,33 @@ func tuiInput(placeholder string, charLimit int, password bool) textinput.Model 
 
 func tuiSeparator() string {
 	return tuiHint.Render(strings.Repeat("─", 70))
+}
+
+// tuiStepRail renders a breadcrumb of wizard stages. Steps before `current`
+// render as done, `current` is highlighted, and later steps are dimmed.
+func tuiStepRail(steps []string, current int) string {
+	var parts []string
+	for i, s := range steps {
+		switch {
+		case i < current:
+			parts = append(parts, tuiRailDone.Render("✓ "+s))
+		case i == current:
+			parts = append(parts, tuiRailActive.Render(fmt.Sprintf("%d. %s", i+1, s)))
+		default:
+			parts = append(parts, tuiRailTodo.Render(fmt.Sprintf("%d. %s", i+1, s)))
+		}
+	}
+	return tuiRailSep.Render("  ") + strings.Join(parts, tuiRailSep.Render("  →  "))
+}
+
+// tuiGuideBlock renders a titled, copy-pasteable snippet (e.g. a Caddyfile).
+func tuiGuideBlock(title, body string) string {
+	var b strings.Builder
+	if title != "" {
+		b.WriteString(tuiLabel.Render(title) + "\n")
+	}
+	for _, line := range strings.Split(body, "\n") {
+		b.WriteString(tuiCodeBox.Render(line) + "\n")
+	}
+	return b.String()
 }
