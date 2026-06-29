@@ -70,6 +70,12 @@ type ownerStore interface {
 	// UserByUsername loads a staff login projection for credential verification.
 	UserByUsername(ctx context.Context, username string) (*api.StaffUser, error)
 	UpsertOwner(ctx context.Context, id, username, email, passwordHash string, mustChange bool) error
+	// InsertOperator mints a NEW Operator staff account. Unlike UpsertOwner it is
+	// insert-only: a username already taken is a conflict (api.ErrConflict), never a
+	// silent reset, so adding an Operator can never clobber the Owner or an existing
+	// Operator. The row is role=admin, identical in shape to the Owner — Felis has no
+	// separate operator DB role (migration 0003: staff = role=admin WITH a hash).
+	InsertOperator(ctx context.Context, id, username, email, passwordHash string, mustChange bool) error
 	SetSetting(ctx context.Context, key string, value []byte) error
 	// Audit records the break-glass accountability row.
 	Audit(ctx context.Context, e api.AuditEntry) error
@@ -304,6 +310,41 @@ func provisionOwner(ctx context.Context, s ownerStore, username, email, password
 	return nil
 }
 
+// provisionOperator mints a NEW Operator staff account direct-to-Postgres. Like the
+// Owner it is role=admin with must_change_password=true — Felis has no separate
+// operator DB role, so an Operator is simply an additional staff admin (migration
+// 0003). UNLIKE provisionOwner, which upserts the single Owner and resets it on a
+// username conflict, this is insert-only: a username already taken returns
+// api.ErrConflict rather than overwriting a live account, so adding an Operator can
+// never silently clobber the Owner's or another Operator's credential. Only the
+// bcrypt hash reaches the database; the plaintext never does.
+func provisionOperator(ctx context.Context, s ownerStore, username, email, password string) error {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return errors.New("operator username is required")
+	}
+	if err := validateOwnerPassword(password); err != nil {
+		return err
+	}
+	id := newOwnerID()
+	if id == "" {
+		return errors.New("generate operator id: entropy source failed")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("hash operator password: %w", err)
+	}
+	if err := s.InsertOperator(ctx, id, username, strings.TrimSpace(email), string(hash), true); err != nil {
+		if errors.Is(err, api.ErrConflict) {
+			// Wrap %w so errors.Is(err, api.ErrConflict) still holds — the TUI can render
+			// a "name already taken" message — while keeping a clear human string.
+			return fmt.Errorf("operator %q already exists: %w", username, err)
+		}
+		return fmt.Errorf("write operator: %w", err)
+	}
+	return nil
+}
+
 // enableLocalAuth flips the runtime local_auth_enabled toggle on
 // direct-to-Postgres. It is a load-bearing write of break-glass: without it
 // handleLogin returns 403 and the freshly provisioned Owner cannot log in, so a
@@ -393,6 +434,64 @@ func auditBreakGlass(ctx context.Context, s ownerStore, op breakGlassOp) error {
 		Actor:   op.accountable,
 		Source:  "break-glass",
 		Action:  "break_glass." + op.mode,
+		Payload: blob,
+	})
+}
+
+// performAddOperator mints a NEW Operator account and records a best-effort
+// accountability row. It mirrors performBreakGlass — a typed password is used as-is,
+// an empty one is replaced with a generated one-time password returned for one-time
+// display (the common case: hand a fresh credential to the new operator) — with two
+// deliberate differences. (1) It provisions insert-only (provisionOperator), so it
+// can never reset an existing account the way the Owner upsert does. (2) It does NOT
+// touch local_auth_enabled: adding an Operator presupposes an already-configured,
+// running system (an admin is present to authorize it), so flipping the global auth
+// gate as a side effect of "add a user" would be surprising — that toggle belongs to
+// the Owner break-glass thread alone. The audit is best-effort and written only after
+// a successful provision; a conflict mints nothing, so there is nothing to attribute.
+func performAddOperator(ctx context.Context, s ownerStore, op breakGlassOp) (breakGlassOutcome, error) {
+	password := op.ownerPassword
+	generated := false
+	if password == "" {
+		p, err := generateBootstrapPassword()
+		if err != nil {
+			return breakGlassOutcome{}, err
+		}
+		password, generated = p, true
+	}
+	if err := provisionOperator(ctx, s, op.ownerUsername, op.ownerEmail, password); err != nil {
+		return breakGlassOutcome{}, err
+	}
+	out := breakGlassOutcome{auditErr: auditAddOperator(ctx, s, op)}
+	if generated {
+		out.displayPassword = password
+	}
+	return out, nil
+}
+
+// auditAddOperator writes the operator-creation accountability row. It mirrors
+// auditBreakGlass — same actor/source/payload shape, so one reader can tell a
+// verified (recovery) add from an unverified (root_override) one — under the distinct
+// break_glass.operator_create action, naming the new account under an "operator" key
+// rather than "owner".
+func auditAddOperator(ctx context.Context, s ownerStore, op breakGlassOp) error {
+	payload := map[string]any{
+		"mode":     op.mode,
+		"operator": op.ownerUsername,
+		"os_user":  op.osUser,
+		"verified": op.mode == "recovery",
+	}
+	if op.attemptedAdmin != "" {
+		payload["admin_account"] = op.attemptedAdmin
+	}
+	blob, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return s.Audit(ctx, api.AuditEntry{
+		Actor:   op.accountable,
+		Source:  "break-glass",
+		Action:  "break_glass.operator_create",
 		Payload: blob,
 	})
 }

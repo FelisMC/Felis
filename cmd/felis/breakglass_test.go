@@ -17,12 +17,14 @@ import (
 // audit) is exercised without a database or a terminal.
 type fakeOwnerStore struct {
 	upserts  []upsertCall
+	inserts  []upsertCall
 	settings map[string][]byte
 	audits   []api.AuditEntry
 	users    map[string]*api.StaffUser // keyed by username
 	admins   bool                      // AdminExists answer
 
 	upsertErr error
+	insertErr error
 	setErr    error
 	auditErr  error
 	userErr   error // non-not-found error from UserByUsername
@@ -56,6 +58,28 @@ func (f *fakeOwnerStore) UpsertOwner(_ context.Context, id, username, email, pas
 		return f.upsertErr
 	}
 	f.upserts = append(f.upserts, upsertCall{id, username, email, passwordHash, mustChange})
+	return nil
+}
+
+// InsertOperator records an insert-only Operator provision. A username already in
+// the users map is a conflict (api.ErrConflict), mirroring the PGRepo ON CONFLICT
+// DO NOTHING + zero-RowsAffected contract; a fresh one is recorded and reflected
+// into users so a later lookup — or a second insert of the same name — sees it.
+func (f *fakeOwnerStore) InsertOperator(_ context.Context, id, username, email, passwordHash string, mustChange bool) error {
+	if f.insertErr != nil {
+		return f.insertErr
+	}
+	if _, taken := f.users[username]; taken {
+		return api.ErrConflict
+	}
+	f.inserts = append(f.inserts, upsertCall{id, username, email, passwordHash, mustChange})
+	if f.users == nil {
+		f.users = map[string]*api.StaffUser{}
+	}
+	f.users[username] = &api.StaffUser{
+		ID: id, Username: username, Email: email,
+		Role: "admin", PasswordHash: passwordHash, MustChangePassword: mustChange,
+	}
 	return nil
 }
 
@@ -504,6 +528,208 @@ func TestAccountableOSUser(t *testing.T) {
 		t.Setenv("SUDO_USER", "")
 		if got := accountableOSUser(); got != "root" {
 			t.Errorf("accountableOSUser() = %q, want root", got)
+		}
+	})
+}
+
+func TestProvisionOperator(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("happy path mints a must-change admin with a verifiable hash", func(t *testing.T) {
+		f := &fakeOwnerStore{}
+		const pw = "valid-test-pw"
+		if err := provisionOperator(ctx, f, "ops-jordan", "jordan@example.com", pw); err != nil {
+			t.Fatalf("provisionOperator: %v", err)
+		}
+		// Insert-only: it records an insert and never touches the Owner upsert path.
+		if len(f.upserts) != 0 {
+			t.Errorf("want 0 owner upserts, got %d — operator-add must not use the Owner path", len(f.upserts))
+		}
+		if len(f.inserts) != 1 {
+			t.Fatalf("want 1 insert, got %d", len(f.inserts))
+		}
+		got := f.inserts[0]
+		if got.username != "ops-jordan" {
+			t.Errorf("username = %q, want ops-jordan", got.username)
+		}
+		if got.email != "jordan@example.com" {
+			t.Errorf("email = %q, want jordan@example.com", got.email)
+		}
+		// must_change_password=true arms the API lockdown for the new operator too.
+		if !got.mustChange {
+			t.Error("mustChange = false, want true (forced first-login change)")
+		}
+		if !strings.HasPrefix(got.id, "usr-") {
+			t.Errorf("id = %q, want usr- prefix", got.id)
+		}
+		// Only the hash is stored; the typed plaintext must verify against it.
+		if bcrypt.CompareHashAndPassword([]byte(got.passwordHash), []byte(pw)) != nil {
+			t.Error("typed password does not verify against the stored hash")
+		}
+		if got.passwordHash == pw {
+			t.Error("stored hash equals plaintext — password was not hashed")
+		}
+	})
+
+	t.Run("a taken username is a conflict, not a silent reset", func(t *testing.T) {
+		// The Owner already holds this username. Operator-add must refuse rather than
+		// overwrite it the way UpsertOwner would.
+		f := &fakeOwnerStore{users: map[string]*api.StaffUser{
+			"owner": {ID: "usr-owner", Username: "owner", Role: "admin", PasswordHash: "x"},
+		}}
+		err := provisionOperator(ctx, f, "owner", "", "valid-test-pw")
+		if err == nil {
+			t.Fatal("want error when the username is already taken")
+		}
+		// The sentinel must remain matchable so the TUI can render "name already taken".
+		if !errors.Is(err, api.ErrConflict) {
+			t.Errorf("error = %v, want it to wrap api.ErrConflict", err)
+		}
+		if len(f.inserts) != 0 {
+			t.Errorf("want no insert on conflict, got %d", len(f.inserts))
+		}
+		// The pre-existing account must be untouched.
+		if f.users["owner"].PasswordHash != "x" {
+			t.Error("conflicting insert clobbered the existing account's hash")
+		}
+	})
+
+	t.Run("trims surrounding whitespace", func(t *testing.T) {
+		f := &fakeOwnerStore{}
+		if err := provisionOperator(ctx, f, "  ops  ", "  e@x.io  ", "valid-test-pw"); err != nil {
+			t.Fatalf("provisionOperator: %v", err)
+		}
+		if f.inserts[0].username != "ops" || f.inserts[0].email != "e@x.io" {
+			t.Errorf("got username=%q email=%q, want trimmed", f.inserts[0].username, f.inserts[0].email)
+		}
+	})
+
+	t.Run("rejects an empty username before any write", func(t *testing.T) {
+		f := &fakeOwnerStore{}
+		if err := provisionOperator(ctx, f, "   ", "", "valid-test-pw"); err == nil {
+			t.Fatal("want error for empty username")
+		}
+		if len(f.inserts) != 0 {
+			t.Errorf("want no insert on validation failure, got %d", len(f.inserts))
+		}
+	})
+
+	t.Run("rejects a weak password before any write", func(t *testing.T) {
+		f := &fakeOwnerStore{}
+		if err := provisionOperator(ctx, f, "ops", "", "short"); err == nil {
+			t.Fatal("want error for a sub-8-byte password")
+		}
+		if len(f.inserts) != 0 {
+			t.Errorf("want no insert on weak password, got %d", len(f.inserts))
+		}
+	})
+
+	t.Run("propagates a non-conflict store error without mislabeling it", func(t *testing.T) {
+		f := &fakeOwnerStore{insertErr: errors.New("boom")}
+		err := provisionOperator(ctx, f, "ops", "", "valid-test-pw")
+		if err == nil {
+			t.Fatal("want error when the store fails")
+		}
+		// A generic store fault must NOT be mistaken for a username conflict.
+		if errors.Is(err, api.ErrConflict) {
+			t.Error("a generic store error was misreported as a conflict")
+		}
+	})
+}
+
+func TestPerformAddOperator(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("typed password is used as-is, never echoed, and never flips local auth", func(t *testing.T) {
+		f := &fakeOwnerStore{}
+		op := breakGlassOp{
+			mode:           "recovery",
+			accountable:    "root",
+			osUser:         "alice",
+			ownerUsername:  "ops-jordan",
+			ownerEmail:     "jordan@example.com",
+			ownerPassword:  "valid-test-pw",
+			attemptedAdmin: "root",
+		}
+		out, err := performAddOperator(ctx, f, op)
+		if err != nil {
+			t.Fatalf("performAddOperator: %v", err)
+		}
+		// The operator's password was typed, so it must NOT be surfaced for display.
+		if out.displayPassword != "" {
+			t.Errorf("displayPassword = %q, want empty for a typed password", out.displayPassword)
+		}
+		if len(f.inserts) != 1 || bcrypt.CompareHashAndPassword([]byte(f.inserts[0].passwordHash), []byte("valid-test-pw")) != nil {
+			t.Error("operator was not provisioned with the typed password")
+		}
+		// Adding an Operator must NOT flip the global local-auth gate (Owner-only).
+		if _, ok := f.settings[api.LocalAuthEnabledKey]; ok {
+			t.Error("local auth was enabled — operator-add must not touch the global gate")
+		}
+		e, payload := auditOf(t, f)
+		if e.Actor != "root" || e.Source != "break-glass" || e.Action != "break_glass.operator_create" {
+			t.Errorf("audit envelope = %+v, want actor=root source=break-glass action=break_glass.operator_create", e)
+		}
+		// The new account is recorded under "operator", not "owner".
+		if payload["operator"] != "ops-jordan" {
+			t.Errorf("payload.operator = %v, want ops-jordan", payload["operator"])
+		}
+		if _, present := payload["owner"]; present {
+			t.Error("payload.owner present, want the new account under the operator key")
+		}
+		if payload["verified"] != true || payload["admin_account"] != "root" {
+			t.Errorf("payload = %v, want verified=true admin_account=root", payload)
+		}
+	})
+
+	t.Run("an empty password generates a one-time credential matching the stored hash", func(t *testing.T) {
+		f := &fakeOwnerStore{}
+		op := breakGlassOp{mode: "root_override", accountable: "alice", osUser: "alice", ownerUsername: "ops", attemptedAdmin: "typo-admin"}
+		out, err := performAddOperator(ctx, f, op)
+		if err != nil {
+			t.Fatalf("performAddOperator: %v", err)
+		}
+		if out.displayPassword == "" {
+			t.Fatal("displayPassword empty, want a generated one-time password to hand off")
+		}
+		// The shown password must be the one actually stored (as a hash).
+		if bcrypt.CompareHashAndPassword([]byte(f.inserts[0].passwordHash), []byte(out.displayPassword)) != nil {
+			t.Error("displayed password does not match the stored hash")
+		}
+		_, payload := auditOf(t, f)
+		if payload["verified"] != false {
+			t.Errorf("payload.verified = %v, want false for root_override", payload["verified"])
+		}
+	})
+
+	t.Run("an audit failure does not fail the operator-add", func(t *testing.T) {
+		f := &fakeOwnerStore{auditErr: errors.New("audit sink down")}
+		op := breakGlassOp{mode: "recovery", accountable: "root", osUser: "alice", ownerUsername: "ops", attemptedAdmin: "root"}
+		out, err := performAddOperator(ctx, f, op)
+		if err != nil {
+			t.Fatalf("performAddOperator returned %v, want nil — a dead audit sink must not fail the add", err)
+		}
+		if out.auditErr == nil {
+			t.Error("auditErr = nil, want the surfaced audit failure")
+		}
+		if len(f.inserts) != 1 {
+			t.Error("operator was not provisioned despite a recoverable audit failure")
+		}
+	})
+
+	t.Run("a conflict mints nothing and writes no audit row", func(t *testing.T) {
+		f := &fakeOwnerStore{users: map[string]*api.StaffUser{
+			"owner": {ID: "usr-owner", Username: "owner", Role: "admin", PasswordHash: "x"},
+		}}
+		op := breakGlassOp{mode: "recovery", accountable: "root", osUser: "alice", ownerUsername: "owner", ownerPassword: "valid-test-pw", attemptedAdmin: "root"}
+		if _, err := performAddOperator(ctx, f, op); err == nil {
+			t.Fatal("want error when the operator username is already taken")
+		}
+		if len(f.inserts) != 0 {
+			t.Error("a conflicting add should mint nothing")
+		}
+		if len(f.audits) != 0 {
+			t.Error("a conflicting add should write no audit row")
 		}
 	})
 }

@@ -604,6 +604,32 @@ func (p *PGRepo) UpsertOwner(ctx context.Context, id, username, email, passwordH
 	return err
 }
 
+// InsertOperator mints a NEW Operator (additional staff admin) account
+// direct-to-Postgres. role is forced to 'admin' — Felis has no separate operator
+// role, so an Operator is an additional admin row identical in shape to the Owner
+// (migration 0003). UNLIKE UpsertOwner this is insert-only: a username conflict is
+// left untouched (ON CONFLICT DO NOTHING) and reported as ErrConflict via a zero
+// RowsAffected, so adding an Operator can never silently reset the Owner's or
+// another Operator's credential. The empty email is stored as NULL.
+func (p *PGRepo) InsertOperator(ctx context.Context, id, username, email, passwordHash string, mustChange bool) error {
+	res, err := p.db.ExecContext(ctx,
+		`INSERT INTO users (id, username, email, role, password_hash, must_change_password)
+		 VALUES ($1, $2, NULLIF($3, ''), 'admin', $4, $5)
+		 ON CONFLICT (username) DO NOTHING`,
+		id, username, email, passwordHash, mustChange)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrConflict
+	}
+	return nil
+}
+
 // SetPassword stores a new hash and clears must_change_password (the panel
 // change-password flow). ErrNotFound when no row matches so a stale session
 // cannot silently no-op the change.
