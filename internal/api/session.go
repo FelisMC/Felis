@@ -88,6 +88,8 @@ func clearSessionCookie(w http.ResponseWriter) {
 // operator console host. The session cookie is host-only, so a session minted on
 // the admin host is structurally unable to reach the player console. If older
 // configs omit [auth].admin_hostname, fall back to op.console.<root_domain>.
+// Local bootstrap may also use the node's private/loopback IP directly when
+// wildcard DNS is unavailable; that is treated as the local admin face.
 func hostIsAdminConsole(r *http.Request, rootDomain, adminHostname string) bool {
 	want := strings.TrimSpace(adminHostname)
 	if want == "" {
@@ -99,6 +101,9 @@ func hostIsAdminConsole(r *http.Request, rootDomain, adminHostname string) bool 
 	host := r.Host
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
+	}
+	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
+		return ip.IsLoopback() || ip.IsPrivate()
 	}
 	return strings.EqualFold(strings.TrimSuffix(host, "."), strings.TrimSuffix(want, "."))
 }

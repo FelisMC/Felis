@@ -32,9 +32,8 @@ import (
 )
 
 // defaultPanelOrigin is where the tunnel forwards the web hostnames when the
-// caller does not override it: the felis-api listen port (config defaultListen
-// is 0.0.0.0:8080), reachable on the box as loopback.
-const defaultPanelOrigin = "http://localhost:8080"
+// caller does not override it: the local HTTPS NodePort exposed by bootstrap.
+const defaultPanelOrigin = "https://127.0.0.1:30443"
 
 // defaultSessionDuration is the recommended Access session length when unset.
 const defaultSessionDuration = "24h"
@@ -253,8 +252,13 @@ type tunnelConfig struct {
 // ingressRule is one cloudflared ingress entry. A rule with an empty Hostname is
 // the catch-all (must be last).
 type ingressRule struct {
-	Hostname string `json:"hostname,omitempty"`
-	Service  string `json:"service"`
+	Hostname      string         `json:"hostname,omitempty"`
+	Service       string         `json:"service"`
+	OriginRequest *originRequest `json:"originRequest,omitempty"`
+}
+
+type originRequest struct {
+	NoTLSVerify bool `json:"noTLSVerify,omitempty"`
 }
 
 // BuildTunnelConfig renders the cloudflared config.yml that routes each web
@@ -273,11 +277,20 @@ func BuildTunnelConfig(tunnelID, credentialsFile, panelOrigin string, hostnames 
 		return nil, errors.New("cfsetup: at least one web hostname is required")
 	}
 	cfg := tunnelConfig{Tunnel: tunnelID, CredentialsFile: credentialsFile}
+	seen := map[string]struct{}{}
 	for _, h := range hostnames {
 		if h == "" {
 			return nil, errors.New("cfsetup: empty hostname in ingress")
 		}
-		cfg.Ingress = append(cfg.Ingress, ingressRule{Hostname: h, Service: panelOrigin})
+		if _, ok := seen[h]; ok {
+			continue
+		}
+		seen[h] = struct{}{}
+		rule := ingressRule{Hostname: h, Service: panelOrigin}
+		if strings.HasPrefix(panelOrigin, "https://") {
+			rule.OriginRequest = &originRequest{NoTLSVerify: true}
+		}
+		cfg.Ingress = append(cfg.Ingress, rule)
 	}
 	// The mandatory trailing catch-all: anything not explicitly routed gets a bare
 	// 404, never a forward to the origin.
@@ -339,13 +352,14 @@ type Runner interface {
 type Params struct {
 	PanelHostname   string // console.<root_domain> (Player web)
 	AdminHostname   string // op.console.<root_domain> (Operator+SysAdmin web)
-	PanelOrigin     string // where the tunnel forwards; default http://localhost:8080
+	PanelOrigin     string // where the tunnel forwards; default HTTPS NodePort origin
 	TunnelName      string
 	ConfigPath      string // where to write config.yml
 	SessionDuration string
 	AllowedIdPs     []string       // restrict the Access app to these IdPs (SSO)
 	AccessIdentity  AccessIdentity // WHO the policy admits (fail-closed)
 	Pre             Preconditions
+	OnProgress      func(string) // optional, called at each step for TUI display
 }
 
 // Result reports what Setup produced, including the Access `aud` the caller must
@@ -357,6 +371,7 @@ type Result struct {
 	AccessAppID     string
 	AccessAud       string
 	RoutedHostnames []string
+	Progress        []string // ordered steps completed, for TUI display
 }
 
 // Setup runs the recommended Cloudflare Tunnel + Access provisioning end to end
@@ -376,6 +391,12 @@ func Setup(ctx context.Context, runner Runner, p Params) (*Result, error) {
 	if p.TunnelName == "" {
 		return nil, errors.New("cfsetup: tunnel name is required")
 	}
+	notify := func(s string) {
+		if p.OnProgress != nil {
+			p.OnProgress(s)
+		}
+	}
+	var prog []string
 	// 1. Gate on operator-only preconditions — no side effects on failure.
 	if err := p.Pre.check(); err != nil {
 		return nil, err
@@ -387,16 +408,16 @@ func Setup(ctx context.Context, runner Runner, p Params) (*Result, error) {
 		return nil, err
 	}
 	if err := validateFailClosed(policy); err != nil {
-		return nil, err // belt-and-suspenders: never POST an open policy
+		return nil, err
 	}
 	// 3. When the real runner can verify the token, do that read-only Cloudflare API
-	//    check before creating tunnels or DNS records. It catches expired/invalid
-	//    tokens earlier; Access account/permission failures can still surface on the
-	//    Access app/policy calls below.
+	//    check before creating tunnels or DNS records.
 	if verifier, ok := runner.(apiTokenVerifier); ok {
+		notify("Verifying API token…")
 		if err := verifier.VerifyAPIToken(ctx); err != nil {
 			return nil, fmt.Errorf("cfsetup: verify Cloudflare API token: %w", err)
 		}
+		prog = append(prog, "Verified API token")
 	}
 
 	hostnames := webHostnames(p)
@@ -406,17 +427,23 @@ func Setup(ctx context.Context, runner Runner, p Params) (*Result, error) {
 	}
 
 	// 4. Create the tunnel.
+	notify("Creating tunnel " + p.TunnelName + "…")
 	id, cred, err := runner.CreateTunnel(ctx, p.TunnelName)
 	if err != nil {
 		return nil, fmt.Errorf("cfsetup: create tunnel: %w", err)
 	}
-	// 5. Route DNS for each WEB hostname only (the game host stays off the tunnel).
+	prog = append(prog, "Created tunnel")
+
+	// 5. Route DNS for each WEB hostname only.
 	for _, h := range hostnames {
+		notify("Routing DNS " + h + "…")
 		if err := runner.RouteDNS(ctx, id, h); err != nil {
 			return nil, fmt.Errorf("cfsetup: route dns %s: %w", h, err)
 		}
+		prog = append(prog, "Routed "+h)
 	}
 	// 6. Render and persist the ingress config.
+	notify("Writing tunnel config…")
 	cfgBytes, err := BuildTunnelConfig(id, cred, origin, hostnames)
 	if err != nil {
 		return nil, err
@@ -425,17 +452,22 @@ func Setup(ctx context.Context, runner Runner, p Params) (*Result, error) {
 		if err := runner.WriteTunnelConfig(p.ConfigPath, cfgBytes); err != nil {
 			return nil, fmt.Errorf("cfsetup: write config: %w", err)
 		}
+		prog = append(prog, "Wrote "+p.ConfigPath)
 	}
 	// 7. Front the admin face with a self-hosted Access app.
+	notify("Creating Access application…")
 	app := BuildAccessApplication(p.AdminHostname, "Felis SysAdmin Console", p.SessionDuration, p.AllowedIdPs)
 	appID, aud, err := runner.CreateAccessApplication(ctx, app)
 	if err != nil {
 		return nil, fmt.Errorf("cfsetup: create access application: %w", err)
 	}
+	prog = append(prog, "Created Access app")
 	// 8. Attach the guarded fail-closed policy.
+	notify("Attaching Access policy…")
 	if err := runner.CreateAccessPolicy(ctx, appID, policy); err != nil {
 		return nil, fmt.Errorf("cfsetup: create access policy: %w", err)
 	}
+	prog = append(prog, "Attached Access policy")
 
 	return &Result{
 		TunnelID:        id,
@@ -444,6 +476,7 @@ func Setup(ctx context.Context, runner Runner, p Params) (*Result, error) {
 		AccessAppID:     appID,
 		AccessAud:       aud,
 		RoutedHostnames: hostnames,
+		Progress:        prog,
 	}, nil
 }
 

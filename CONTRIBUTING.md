@@ -175,11 +175,11 @@ Run integration/deploy commands from the repository root on the Linux host:
 cd /path/to/Felis
 ```
 
-The one-line bootstrap script is intended for a clean Linux host, not a typical
-macOS development machine:
+The setup TUI is intended for a clean Linux host, not a typical macOS
+development machine:
 
 ```bash
-sudo -E bash deploy/bootstrap.sh
+sudo felis setup
 ```
 
 Useful overrides:
@@ -191,16 +191,10 @@ export FELIS_IMAGE=felis:dev
 export FELIS_ROOT_DOMAIN=<node-ip>.nip.io
 ```
 
-The bootstrap flow installs/configures system services, builds the Felis image,
-imports it into k3s, runs migrations, applies CRDs/manifests, and deploys the
-control plane.
-
-After bootstrap, use the break-glass console to create or recover the Owner
-account:
-
-```bash
-sudo felis breakGlass
-```
+The setup flow wraps the host bootstrap, then continues to Owner account setup
+and optional Cloudflare edge setup in the same command. The raw
+`deploy/bootstrap.sh` script remains available for low-level host provisioning
+when debugging the installer itself.
 
 Use a VM or disposable Linux server for this. Treat it as an integration and
 acceptance environment, while keeping normal coding and quick tests local.

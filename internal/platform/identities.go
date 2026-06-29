@@ -53,6 +53,7 @@ const (
 	DefaultControlNamespace   = "felis"
 	DefaultMinecraftNamespace = "minecraft"
 	DefaultBuildNamespace     = "felis-build"
+	DefaultPanelNodePort      = int32(30443)
 
 	defaultRegistryPort int32 = 5000
 
@@ -88,6 +89,9 @@ type Params struct {
 	// control namespace (registry co-located with the control plane).
 	RegistryNamespace string
 	RegistryPort      int32
+	// PanelNodePort exposes the built-in HTTPS panel/API origin from the node.
+	// It defaults to 30443 so a fresh setup can finish with a concrete browser URL.
+	PanelNodePort int32
 	// PackageSourceCIDRs is the explicit package-mirror egress allowlist for build
 	// Pods (spec §16). Empty means no internet egress at all — the locked-down
 	// default the build subsystem already enforces.
@@ -158,6 +162,9 @@ func (p Params) withDefaults() Params {
 	}
 	if p.RegistryPort == 0 {
 		p.RegistryPort = defaultRegistryPort
+	}
+	if p.PanelNodePort == 0 {
+		p.PanelNodePort = DefaultPanelNodePort
 	}
 	if p.RegistryImage == "" {
 		p.RegistryImage = defaultRegistryImage

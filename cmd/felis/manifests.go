@@ -41,6 +41,7 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 	buildNS := fs.String("build-namespace", platform.DefaultBuildNamespace, "namespace image-build Jobs run in")
 	registryNS := fs.String("registry-namespace", "", "namespace of the in-cluster registry (default: control namespace)")
 	registryPort := fs.Int("registry-port", 5000, "port the in-cluster registry listens on")
+	panelNodePort := fs.Int("panel-node-port", int(platform.DefaultPanelNodePort), "NodePort that exposes the built-in HTTPS panel/API origin")
 	felisImage := fs.String("felis-image", "", "container image the felis-api/operator Deployments run, also passed through as FELIS_IMAGE (REQUIRED)")
 	registryImage := fs.String("registry-image", "", "in-cluster registry image (default: registry:2)")
 	backupPVC := fs.String("backup-pvc", "", "name of the backup PVC advertised to the restore executor via FELIS_BACKUP_PVC (default none = restore endpoint returns 503)")
@@ -75,6 +76,10 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "felis manifests: invalid CIDR %q: %v\n", cidr, err)
 			return 2
 		}
+	}
+	if *panelNodePort < 30000 || *panelNodePort > 32767 {
+		fmt.Fprintf(stderr, "felis manifests: --panel-node-port must be in Kubernetes NodePort range 30000-32767 (got %d)\n", *panelNodePort)
+		return 2
 	}
 
 	// Retention/reaper rendering is opt-in and needs all three storage coordinates
@@ -114,6 +119,7 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 		BuildNamespace:     *buildNS,
 		RegistryNamespace:  *registryNS,
 		RegistryPort:       int32(*registryPort),
+		PanelNodePort:      int32(*panelNodePort),
 		FelisImage:         *felisImage,
 		RegistryImage:      *registryImage,
 		BackupPVC:          *backupPVC,

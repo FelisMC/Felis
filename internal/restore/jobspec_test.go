@@ -197,8 +197,9 @@ func TestRestoreJobContainerIsHardened(t *testing.T) {
 	}
 }
 
-// The container must invoke `felis restore` with the archive parameters as
-// plain flags — and crucially the world PVC name the operator/reaper agree on.
+// The container must invoke the felis restore binary by absolute path with the
+// archive parameters as plain flags — and crucially the world PVC name the
+// operator/reaper agree on.
 func TestRestoreJobInvokesFelisRestoreWithParams(t *testing.T) {
 	p := sampleJobParams()
 	job, err := RestoreJob(p)
@@ -206,8 +207,8 @@ func TestRestoreJobInvokesFelisRestoreWithParams(t *testing.T) {
 		t.Fatalf("RestoreJob: %v", err)
 	}
 	c := singleContainer(t, job)
-	if len(c.Command) < 2 || c.Command[0] != "felis" || c.Command[1] != "restore" {
-		t.Errorf("command = %v, want [felis restore ...]", c.Command)
+	if len(c.Command) < 2 || c.Command[0] != felisBinaryPath || c.Command[1] != "restore" {
+		t.Errorf("command = %v, want [%s restore ...]", c.Command, felisBinaryPath)
 	}
 	if !argPairPresent(c.Args, "--server", p.Server) {
 		t.Errorf("args must carry --server %q, got %v", p.Server, c.Args)

@@ -13,6 +13,7 @@ import (
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/build"
 	"felis.lolicon.best/internal/config"
+	"felis.lolicon.best/internal/panel"
 	"felis.lolicon.best/internal/restore"
 	"felis.lolicon.best/internal/store"
 	"felis.lolicon.best/internal/submit"
@@ -34,7 +35,14 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "/etc/felis/felis.toml", "path to felis.toml")
 	internalAddr := fs.String("internal-addr", ":8081", "internal-face listen address (service token, no Zero Trust)")
+	httpsAddr := fs.String("https-addr", "", "external HTTPS listen address (disabled unless --tls-cert and --tls-key are also set)")
+	tlsCert := fs.String("tls-cert", "", "TLS certificate path for --https-addr")
+	tlsKey := fs.String("tls-key", "", "TLS private key path for --https-addr")
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if (*httpsAddr == "") != (*tlsCert == "" || *tlsKey == "") {
+		fmt.Fprintln(stderr, "felis api: --https-addr requires both --tls-cert and --tls-key")
 		return 2
 	}
 
@@ -157,13 +165,23 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stderr, "felis api: external face fails closed (Access JWKS key function not configured)")
 
+	externalHandler := panel.Handler(a.ExternalHandler(), cfg.Server.RootDomain)
 	internalSrv := &http.Server{Addr: *internalAddr, Handler: a.InternalHandler()}
-	externalSrv := &http.Server{Addr: cfg.Server.Listen, Handler: a.ExternalHandler()}
+	externalSrv := &http.Server{Addr: cfg.Server.Listen, Handler: externalHandler}
 
-	errc := make(chan error, 2)
+	errc := make(chan error, 3)
 	go func() { errc <- internalSrv.ListenAndServe() }()
 	go func() { errc <- externalSrv.ListenAndServe() }()
-	fmt.Fprintf(stdout, "felis api: internal=%s external=%s\n", *internalAddr, cfg.Server.Listen)
+	var httpsSrv *http.Server
+	if *httpsAddr != "" {
+		httpsSrv = &http.Server{Addr: *httpsAddr, Handler: externalHandler}
+		go func() { errc <- httpsSrv.ListenAndServeTLS(*tlsCert, *tlsKey) }()
+	}
+	if httpsSrv != nil {
+		fmt.Fprintf(stdout, "felis api: internal=%s external=%s https=%s\n", *internalAddr, cfg.Server.Listen, *httpsAddr)
+	} else {
+		fmt.Fprintf(stdout, "felis api: internal=%s external=%s\n", *internalAddr, cfg.Server.Listen)
+	}
 
 	// reconcileBuilds drives the scan-gate translation: poll unfinished builds
 	// and advance any whose Job has reached a terminal phase. GET on a build also
@@ -176,6 +194,9 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		defer cancel()
 		_ = internalSrv.Shutdown(shutdownCtx)
 		_ = externalSrv.Shutdown(shutdownCtx)
+		if httpsSrv != nil {
+			_ = httpsSrv.Shutdown(shutdownCtx)
+		}
 		return 0
 	case err := <-errc:
 		if err != nil && err != http.ErrServerClosed {

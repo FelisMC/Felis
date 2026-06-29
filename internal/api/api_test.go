@@ -1058,6 +1058,16 @@ func TestSessionAuthUsesConfiguredAdminHostname(t *testing.T) {
 	if p.ViaAdminAccess {
 		t.Fatalf("root-domain fallback host must not grant admin-path access when admin_hostname is configured")
 	}
+
+	r = httptest.NewRequest("GET", "https://10.211.55.4:30443/api/v1/me", nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	p, err = auth.Authenticate(r)
+	if err != nil {
+		t.Fatalf("Authenticate private IP host: %v", err)
+	}
+	if !p.ViaAdminAccess {
+		t.Fatalf("private IP local panel should grant admin-path access, got %+v", p)
+	}
 }
 func TestAccessVerifier(t *testing.T) {
 	key := []byte("test-signing-key")

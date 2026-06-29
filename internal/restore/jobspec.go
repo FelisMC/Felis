@@ -20,8 +20,9 @@ const (
 	managedByValue = "felis-restore"
 	componentValue = "world-restore"
 
-	worldVolume  = "world"
-	backupVolume = "backup"
+	worldVolume     = "world"
+	backupVolume    = "backup"
+	felisBinaryPath = "/usr/local/bin/felis"
 )
 
 // JobParams are the rendered inputs to a restore Job, derived from a server +
@@ -78,10 +79,10 @@ func restoreLabels(p JobParams) map[string]string {
 //   - activeDeadlineSeconds + backoffLimit=0 so a wedged or malicious archive
 //     cannot loop or run forever; ttlSecondsAfterFinished GCs the finished Job.
 //
-// The container runs `felis restore` (cmd/felis), which extracts the archive at
-// BackupRef from the backup mount into the world mount. BackupRef is an absolute
-// path, so the backup PVC MUST be mounted at BackupRoot — the same path the
-// reaper wrote it under — for the ref to resolve.
+// The container runs `/usr/local/bin/felis restore` (cmd/felis), which extracts
+// the archive at BackupRef from the backup mount into the world mount. BackupRef
+// is an absolute path, so the backup PVC MUST be mounted at BackupRoot — the
+// same path the reaper wrote it under — for the ref to resolve.
 func RestoreJob(p JobParams) (*batchv1.Job, error) {
 	if p.Image == "" {
 		return nil, fmt.Errorf("restore: image is empty")
@@ -105,7 +106,7 @@ func RestoreJob(p JobParams) (*batchv1.Job, error) {
 	container := corev1.Container{
 		Name:    "restore",
 		Image:   p.Image,
-		Command: []string{"felis", "restore"},
+		Command: []string{felisBinaryPath, "restore"},
 		Args: []string{
 			"--server", p.Server,
 			"--ref", p.BackupRef,

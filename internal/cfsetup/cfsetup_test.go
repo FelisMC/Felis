@@ -368,3 +368,30 @@ func TestIngressSafetyInvariants(t *testing.T) {
 		}
 	}
 }
+
+func TestIngressHTTPSOriginUsesNoTLSVerifyAndDeduplicatesHostnames(t *testing.T) {
+	const origin = "https://127.0.0.1:30443"
+	raw, err := BuildTunnelConfig(
+		"11111111-2222-3333-4444-555555555555",
+		"/root/.cloudflared/x.json",
+		origin,
+		[]string{"op.console." + testRoot, "op.console." + testRoot},
+	)
+	if err != nil {
+		t.Fatalf("BuildTunnelConfig: %v", err)
+	}
+	var cfg tunnelConfig
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		t.Fatalf("generated config is not valid YAML: %v\n%s", err, raw)
+	}
+	if len(cfg.Ingress) != 2 {
+		t.Fatalf("ingress count = %d, want one routed host plus catch-all: %#v", len(cfg.Ingress), cfg.Ingress)
+	}
+	rule := cfg.Ingress[0]
+	if rule.Service != origin {
+		t.Fatalf("service = %q, want %q", rule.Service, origin)
+	}
+	if rule.OriginRequest == nil || !rule.OriginRequest.NoTLSVerify {
+		t.Fatalf("originRequest = %#v, want noTLSVerify=true", rule.OriginRequest)
+	}
+}

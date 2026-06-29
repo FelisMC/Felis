@@ -40,15 +40,6 @@ import (
 // the worlds to one node implicitly; a multi-node deployment MUST add one (or the
 // CronJob could schedule on a node where the hostPath is empty) — a hazard left on
 // record here until multi-node retention is built.
-//
-// Deliberately NOT rendered:
-//   - A Service for felis-api. Its external face (8080) is exposed out-of-band
-//     (Ingress/LoadBalancer is a deployment choice) and its internal face's only
-//     consumer is the Velocity plugin; nothing in-tree dials a felis-api Service
-//     name, so rendering one would be a speculative selector. The registry Service
-//     IS rendered because registry.<ns>.svc:5000 is a pinned consumer hardcoded
-//     across the build subsystem and config.
-
 const (
 	// configSecretName / serviceTokenSecretName are referenced BY NAME and NEVER
 	// rendered into the bundle: felis.toml carries the database URL (a credential)
@@ -59,6 +50,7 @@ const (
 	configSecretKey        = "felis.toml"
 	configMountPath        = "/etc/felis"
 	configFilePath         = "/etc/felis/felis.toml"
+	felisBinaryPath        = "/usr/local/bin/felis"
 	serviceTokenSecretName = "felis-service-token"
 	serviceTokenSecretKey  = "token"
 
@@ -67,7 +59,10 @@ const (
 	// agreement lives in the out-of-band config Secret and cannot be enforced here.
 	apiExternalPort     int32 = 8080
 	apiInternalPort     int32 = 8081
+	apiHTTPSPort        int32 = 8443
 	operatorMetricsPort int32 = 8080
+	apiTLSSecretName          = "felis-api-tls"
+	apiTLSMountPath           = "/etc/felis/tls"
 
 	registryName        = "registry"
 	registryDataPath    = "/var/lib/registry"
@@ -113,6 +108,7 @@ func Workloads(p Params) []Object {
 	p = p.withDefaults()
 	objs := []Object{
 		APIDeployment(p),
+		apiService(p),
 		OperatorDeployment(p),
 		registryDeployment(p),
 		registryService(p),
@@ -169,18 +165,23 @@ func APIDeployment(p Params) *appsv1.Deployment {
 	container := corev1.Container{
 		Name:    ComponentAPI,
 		Image:   p.FelisImage,
-		Command: []string{"felis", "api"},
+		Command: []string{felisBinaryPath, "api"},
 		Args: []string{
 			"--config", configFilePath,
 			"--internal-addr", fmt.Sprintf(":%d", apiInternalPort),
+			"--https-addr", fmt.Sprintf(":%d", apiHTTPSPort),
+			"--tls-cert", apiTLSMountPath + "/tls.crt",
+			"--tls-key", apiTLSMountPath + "/tls.key",
 		},
 		Env: env,
 		Ports: []corev1.ContainerPort{
 			{Name: "external", ContainerPort: apiExternalPort, Protocol: corev1.ProtocolTCP},
+			{Name: "https", ContainerPort: apiHTTPSPort, Protocol: corev1.ProtocolTCP},
 			{Name: "internal", ContainerPort: apiInternalPort, Protocol: corev1.ProtocolTCP},
 		},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: configVolume, MountPath: configMountPath, ReadOnly: true},
+			{Name: "tls", MountPath: apiTLSMountPath, ReadOnly: true},
 			{Name: tmpVolume, MountPath: "/tmp"},
 		},
 		Resources:       controlPlaneResources(),
@@ -194,10 +195,37 @@ func APIDeployment(p Params) *appsv1.Deployment {
 				Secret: &corev1.SecretVolumeSource{SecretName: configSecretName},
 			},
 		},
+		{
+			Name: "tls",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: apiTLSSecretName},
+			},
+		},
 		{Name: tmpVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 	}
 
 	return controlPlaneDeployment(p, SAAPI, container, volumes)
+}
+
+// apiService exposes the built-in HTTPS panel/API origin as a stable NodePort.
+func apiService(p Params) *corev1.Service {
+	p = p.withDefaults()
+	labels := controlPlanePodLabels(ComponentAPI)
+	return &corev1.Service{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
+		ObjectMeta: metav1.ObjectMeta{Name: SAAPI, Namespace: p.ControlNamespace, Labels: labels},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeNodePort,
+			Selector: labels,
+			Ports: []corev1.ServicePort{{
+				Name:       "https",
+				Port:       443,
+				TargetPort: intstr.FromString("https"),
+				NodePort:   p.PanelNodePort,
+				Protocol:   corev1.ProtocolTCP,
+			}},
+		},
+	}
 }
 
 // OperatorDeployment renders the felis-operator Deployment (spec §5). It runs as
@@ -213,7 +241,7 @@ func OperatorDeployment(p Params) *appsv1.Deployment {
 	container := corev1.Container{
 		Name:    ComponentOperator,
 		Image:   p.FelisImage,
-		Command: []string{"felis", "operator"},
+		Command: []string{felisBinaryPath, "operator"},
 		Args: []string{
 			"--namespace", p.MinecraftNamespace,
 			"--metrics-bind-address", fmt.Sprintf(":%d", operatorMetricsPort),
@@ -271,7 +299,7 @@ func reaperCronJob(p Params) *batchv1.CronJob {
 	container := corev1.Container{
 		Name:    ComponentReaper,
 		Image:   p.FelisImage,
-		Command: []string{"felis", "reaper"},
+		Command: []string{felisBinaryPath, "reaper"},
 		Args: []string{
 			"--config", configFilePath,
 			"--worlds-root", worldsMountPath,

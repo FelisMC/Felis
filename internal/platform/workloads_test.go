@@ -153,14 +153,21 @@ func TestAPIDeployment_Wiring(t *testing.T) {
 	d := APIDeployment(p)
 	ps, c := podSpec(t, d)
 
-	if got := append(append([]string{}, c.Command...), c.Args...); !containsSeq(got, []string{"felis", "api"}) {
-		t.Errorf("api command/args = %v, want it to start `felis api`", got)
+	if got := append(append([]string{}, c.Command...), c.Args...); !containsSeq(got, []string{felisBinaryPath, "api"}) {
+		t.Errorf("api command/args = %v, want it to start `%s api`", got, felisBinaryPath)
 	}
 	if !contains(c.Args, "--config") || !contains(c.Args, configFilePath) {
 		t.Errorf("api args must mount config at %s, got %v", configFilePath, c.Args)
 	}
 	if !contains(c.Args, "--internal-addr") {
 		t.Errorf("api args must set --internal-addr, got %v", c.Args)
+	}
+	if !contains(c.Args, "--https-addr") || !contains(c.Args, ":8443") {
+		t.Errorf("api args must set HTTPS listener, got %v", c.Args)
+	}
+	if !contains(c.Args, "--tls-cert") || !contains(c.Args, apiTLSMountPath+"/tls.crt") ||
+		!contains(c.Args, "--tls-key") || !contains(c.Args, apiTLSMountPath+"/tls.key") {
+		t.Errorf("api args must point at mounted TLS secret, got %v", c.Args)
 	}
 	if c.Image != p.FelisImage {
 		t.Errorf("api image = %q, want FelisImage %q", c.Image, p.FelisImage)
@@ -194,10 +201,41 @@ func TestAPIDeployment_Wiring(t *testing.T) {
 	if m := mountByName(c.VolumeMounts, configVolume); m == nil || !m.ReadOnly {
 		t.Error("config volume must be mounted read-only")
 	}
+	tlsVol := volumeByName(ps.Volumes, "tls")
+	if tlsVol == nil || tlsVol.Secret == nil || tlsVol.Secret.SecretName != apiTLSSecretName {
+		t.Fatalf("tls volume must mount Secret %q, got %#v", apiTLSSecretName, tlsVol)
+	}
+	if m := mountByName(c.VolumeMounts, "tls"); m == nil || !m.ReadOnly || m.MountPath != apiTLSMountPath {
+		t.Errorf("tls volume mount = %#v, want read-only at %s", m, apiTLSMountPath)
+	}
 
 	// No backup PVC in testParams ⇒ no FELIS_BACKUP_PVC env (restore degrades to 503).
 	if envVar(c.Env, "FELIS_BACKUP_PVC") != nil {
 		t.Error("FELIS_BACKUP_PVC must be absent when no backup PVC is configured")
+	}
+}
+
+func TestAPIService_NodePort(t *testing.T) {
+	p := testParams()
+	p.PanelNodePort = 30445
+	svc := apiService(p)
+	dep := APIDeployment(p)
+
+	if svc.Name != SAAPI || svc.Namespace != p.ControlNamespace {
+		t.Errorf("api Service = %s/%s, want %s/%s", svc.Namespace, svc.Name, p.ControlNamespace, SAAPI)
+	}
+	if svc.Spec.Type != corev1.ServiceTypeNodePort {
+		t.Errorf("api Service type = %s, want NodePort", svc.Spec.Type)
+	}
+	if !mapSelectorMatches(svc.Spec.Selector, dep.Spec.Template.Labels) {
+		t.Errorf("api Service selector %v does not select api pod labels %v", svc.Spec.Selector, dep.Spec.Template.Labels)
+	}
+	if len(svc.Spec.Ports) != 1 {
+		t.Fatalf("api Service ports = %v, want one", svc.Spec.Ports)
+	}
+	port := svc.Spec.Ports[0]
+	if port.Port != 443 || port.TargetPort.StrVal != "https" || port.NodePort != p.PanelNodePort {
+		t.Errorf("api Service port = %#v, want 443 -> https NodePort %d", port, p.PanelNodePort)
 	}
 }
 
@@ -219,8 +257,8 @@ func TestOperatorDeployment_Wiring(t *testing.T) {
 	d := OperatorDeployment(p)
 	ps, c := podSpec(t, d)
 
-	if got := append(append([]string{}, c.Command...), c.Args...); !containsSeq(got, []string{"felis", "operator"}) {
-		t.Errorf("operator command/args = %v, want it to start `felis operator`", got)
+	if got := append(append([]string{}, c.Command...), c.Args...); !containsSeq(got, []string{felisBinaryPath, "operator"}) {
+		t.Errorf("operator command/args = %v, want it to start `%s operator`", got, felisBinaryPath)
 	}
 	if !contains(c.Args, "--namespace") || !contains(c.Args, p.MinecraftNamespace) {
 		t.Errorf("operator must watch --namespace %s, got %v", p.MinecraftNamespace, c.Args)
@@ -299,12 +337,12 @@ func TestRegistry_DeploymentServicePVC(t *testing.T) {
 }
 
 // TestWorkloads_BundleContents sanity-checks the slice Workloads returns: the two
-// control-plane Deployments + the registry Deployment/Service/PVC, every one with
-// TypeMeta (so its YAML header renders).
+// control-plane Deployments, the api Service, and the registry Deployment/Service/PVC,
+// every one with TypeMeta (so its YAML header renders).
 func TestWorkloads_BundleContents(t *testing.T) {
 	objs := Workloads(testParams())
-	if len(objs) != 5 {
-		t.Fatalf("Workloads returned %d objects, want 5", len(objs))
+	if len(objs) != 6 {
+		t.Fatalf("Workloads returned %d objects, want 6", len(objs))
 	}
 	for _, o := range objs {
 		gvk := o.GetObjectKind().GroupVersionKind()
@@ -444,9 +482,9 @@ func TestReaperCronJob_Shape(t *testing.T) {
 		t.Error("reaper container must drop ALL capabilities")
 	}
 
-	// Entrypoint: `felis reaper --config <cfg> --worlds-root /worlds`.
-	if got := append(append([]string{}, c.Command...), c.Args...); !containsSeq(got, []string{"felis", "reaper"}) {
-		t.Errorf("reaper command/args = %v, want it to start `felis reaper`", got)
+	// Entrypoint: `/usr/local/bin/felis reaper --config <cfg> --worlds-root /worlds`.
+	if got := append(append([]string{}, c.Command...), c.Args...); !containsSeq(got, []string{felisBinaryPath, "reaper"}) {
+		t.Errorf("reaper command/args = %v, want it to start `%s reaper`", got, felisBinaryPath)
 	}
 	if !contains(c.Args, "--config") || !contains(c.Args, configFilePath) {
 		t.Errorf("reaper must read config at %s, got %v", configFilePath, c.Args)

@@ -11,9 +11,9 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
-// cmdRestore is the in-Pod entrypoint the restore Job runs (internal/restore
-// renders a Pod whose command is `felis restore`). It extracts a world archive
-// from the backup mount into the world mount and exits — it is NOT a
+// cmdRestore is the in-Pod entrypoint the restore Job runs. internal/restore
+// renders a Pod whose command is `/usr/local/bin/felis restore`. It extracts a
+// world archive from the backup mount into the world mount and exits — it is NOT a
 // user-facing command and is never invoked by hand.
 //
 // It deliberately holds NO database credentials and never calls config.Load:

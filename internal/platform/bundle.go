@@ -35,11 +35,9 @@ type Object interface {
 // make the SAs and NetworkPolicy peers refer to something real (see workloads.go).
 // The reaper CronJob is also part of Workloads, rendered only when the retention
 // storage topology is supplied (WorldsHostPath + BackupPVC + ArchiveLocalPath —
-// workloads.go documents the gate and the shape-asserted hostPath caveat). Still
-// deliberately NOT rendered: a felis-api Service (its exposure is an out-of-band
-// deployment choice and nothing in-tree dials it). The per-server StatefulSet is
-// never a static manifest — the operator renders it at reconcile time
-// (internal/operator).
+// workloads.go documents the gate and the shape-asserted hostPath caveat). The
+// per-server StatefulSet is never a static manifest — the operator renders it at
+// reconcile time (internal/operator).
 func Objects(p Params) []Object {
 	p = p.withDefaults()
 	var objs []Object

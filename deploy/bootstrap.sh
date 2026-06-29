@@ -11,20 +11,23 @@
 # install bundle (CRD + namespaces + RBAC + NetworkPolicies + control-plane
 # Deployments + in-cluster registry).
 #
-# By design it stops short of serving the web panel. After it finishes you run
-# `felis setup` on the host (a TUI) to create the Owner account and optionally
-# configure the Cloudflare edge. See deploy/README.md.
+# The recommended entrypoint is now `sudo felis setup`, which wraps this
+# bootstrap in a TUI and then continues to the Owner/edge setup. This script
+# remains usable directly for raw host provisioning.
 #
 # The script is idempotent: re-running it converges rather than duplicating, and
 # generated secrets are persisted to /etc/felis/secrets.env so reruns reuse them.
 #
 # Tunables (export before running to override the demo defaults):
-#   FELIS_REPO_URL    git URL to build from   (default: the upstream repo)
-#   FELIS_REF         branch/tag/sha          (default: main)
+#   FELIS_REPO_URL    git URL to build from   (raw script mode only)
+#   FELIS_REF         branch/tag/sha          (raw script mode only)
 #   FELIS_IMAGE       local image tag         (default: felis:demo  — never :latest)
 #   FELIS_ROOT_DOMAIN deployment root domain  (default: <node-ip>.nip.io)
+#   FELIS_PANEL_NODEPORT local HTTPS panel/API NodePort (default: 30443)
 #   FELIS_EGRESS_MODE loadbalancer|nodeport   (default: nodeport — no MetalLB on a demo box)
-set -euo pipefail
+#   PKG_LOCK_TIMEOUT seconds to wait for package-manager locks (default: 900)
+#   APT_LOCK_TIMEOUT legacy alias for PKG_LOCK_TIMEOUT
+set -Eeuo pipefail
 
 # ---------------------------------------------------------------------------
 # Configuration & constants
@@ -33,6 +36,9 @@ FELIS_REPO_URL="${FELIS_REPO_URL:-https://github.com/MliroLirrorsIngenuity/Felis
 FELIS_REF="${FELIS_REF:-main}"
 FELIS_IMAGE="${FELIS_IMAGE:-felis:demo}"
 FELIS_EGRESS_MODE="${FELIS_EGRESS_MODE:-nodeport}"
+FELIS_PANEL_NODEPORT="${FELIS_PANEL_NODEPORT:-30443}"
+PKG_LOCK_TIMEOUT="${PKG_LOCK_TIMEOUT:-${APT_LOCK_TIMEOUT:-900}}"
+APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-$PKG_LOCK_TIMEOUT}"
 
 CONTROL_NS="felis"
 MINECRAFT_NS="minecraft"
@@ -45,10 +51,48 @@ REGISTRY_URL="registry.felis.svc:5000"
 
 STATE_DIR="/etc/felis"
 SECRETS_ENV="${STATE_DIR}/secrets.env"
+BOOTSTRAP_DONE="${STATE_DIR}/bootstrap.done"
+PANEL_TLS_CERT="${STATE_DIR}/panel-tls.crt"
+PANEL_TLS_KEY="${STATE_DIR}/panel-tls.key"
 SRC_DIR="/opt/felis/src"
 HOST_BIN="/usr/local/bin/felis"
 K3S_BIN_DIR="${K3S_BIN_DIR:-/usr/local/bin}"
 K3S_BIN="${K3S_BIN_DIR}/k3s"
+APT_LOCK_FILES=(
+  /var/lib/dpkg/lock-frontend
+  /var/lib/dpkg/lock
+  /var/cache/apt/archives/lock
+  /var/lib/apt/lists/lock
+)
+APT_BACKGROUND_TIMERS=(
+  apt-daily.timer
+  apt-daily-upgrade.timer
+)
+APT_BACKGROUND_SERVICES=(
+  apt-daily.service
+  apt-daily-upgrade.service
+  unattended-upgrades.service
+)
+DNF_BACKGROUND_TIMERS=(
+  dnf-makecache.timer
+  dnf-automatic.timer
+)
+DNF_BACKGROUND_SERVICES=(
+  dnf-makecache.service
+  dnf-automatic.service
+)
+YUM_BACKGROUND_TIMERS=(
+  yum-cron.timer
+)
+YUM_BACKGROUND_SERVICES=(
+  yum-cron.service
+)
+ZYPPER_BACKGROUND_TIMERS=(
+  packagekit-background.timer
+)
+ZYPPER_BACKGROUND_SERVICES=(
+  packagekit.service
+)
 
 # ---------------------------------------------------------------------------
 # Clean PATH (sudo may strip /usr/local/bin)
@@ -64,6 +108,37 @@ ok()   { printf '\033[1;32m[ ok ]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[warn]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[fail]\033[0m %s\n' "$*" >&2; exit 1; }
 
+TEMP_PATHS=()
+DOCKER_CONTAINERS=()
+PKG_TIMERS_TO_RESTORE=()
+
+on_error() {
+  local line="$1" code="$2"
+  warn "bootstrap failed near line ${line} (exit ${code})"
+}
+
+cleanup() {
+  local id path unit
+  for unit in "${PKG_TIMERS_TO_RESTORE[@]-}"; do
+    [ -n "$unit" ] || continue
+    systemctl start "$unit" >/dev/null 2>&1 || true
+  done
+  if command -v docker >/dev/null 2>&1; then
+    for id in "${DOCKER_CONTAINERS[@]-}"; do
+      [ -n "$id" ] && docker rm "$id" >/dev/null 2>&1 || true
+    done
+  fi
+  for path in "${TEMP_PATHS[@]-}"; do
+    [ -n "$path" ] && rm -rf -- "$path" || true
+  done
+}
+
+remember_temp() { TEMP_PATHS+=("$1"); }
+remember_container() { DOCKER_CONTAINERS+=("$1"); }
+
+trap 'on_error "$LINENO" "$?"' ERR
+trap cleanup EXIT
+
 k3s_cmd() { [ -x "$K3S_BIN" ] || die "k3s binary not found at ${K3S_BIN}"; "$K3S_BIN" "$@"; }
 kube() { k3s_cmd kubectl "$@"; }
 
@@ -75,12 +150,161 @@ as_postgres() {
   fi
 }
 
+bootstrap_from_tui() {
+  [ "${FELIS_BOOTSTRAP_FROM_TUI:-}" = "1" ]
+}
+
+pause_package_background_timers() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+
+  local active=0 timers=() services=() unit
+  case "${PKG:-}" in
+    apt) timers=("${APT_BACKGROUND_TIMERS[@]}"); services=("${APT_BACKGROUND_SERVICES[@]}") ;;
+    dnf) timers=("${DNF_BACKGROUND_TIMERS[@]}"); services=("${DNF_BACKGROUND_SERVICES[@]}") ;;
+    yum) timers=("${YUM_BACKGROUND_TIMERS[@]}"); services=("${YUM_BACKGROUND_SERVICES[@]}") ;;
+    zypper) timers=("${ZYPPER_BACKGROUND_TIMERS[@]}"); services=("${ZYPPER_BACKGROUND_SERVICES[@]}") ;;
+    *) return 0 ;;
+  esac
+
+  for unit in "${timers[@]}"; do
+    if systemctl is-active --quiet "$unit"; then
+      PKG_TIMERS_TO_RESTORE+=("$unit")
+      active=1
+    fi
+  done
+  if [ "$active" -eq 1 ]; then
+    log "pausing package-manager timers during bootstrap: ${PKG_TIMERS_TO_RESTORE[*]}"
+    systemctl stop "${PKG_TIMERS_TO_RESTORE[@]}" || warn "could not stop package-manager timers; package operations may need to wait"
+  fi
+  for unit in "${services[@]}"; do
+    if systemctl is-active --quiet "$unit"; then
+      log "stopping package-manager background service during bootstrap: ${unit}"
+      systemctl stop "$unit" || warn "could not stop ${unit}; package operations may need to wait"
+    fi
+  done
+}
+
+pkg_lock_files() {
+  case "${PKG:-}" in
+    apt) printf '%s\n' "${APT_LOCK_FILES[@]}" ;;
+    dnf|yum)
+      printf '%s\n' \
+        /var/lib/rpm/.rpm.lock \
+        /var/lib/dnf/rpmdb_lock.pid \
+        /var/cache/dnf/metadata_lock.pid \
+        /run/dnf.pid \
+        /var/run/dnf.pid
+      ;;
+    zypper)
+      printf '%s\n' \
+        /var/lib/rpm/.rpm.lock \
+        /run/zypp.pid \
+        /var/run/zypp.pid
+      ;;
+    pacman) printf '%s\n' /var/lib/pacman/db.lck ;;
+  esac
+}
+
+pkg_lock_process_names() {
+  case "${PKG:-}" in
+    dnf) printf '%s\n' dnf dnf5 rpm ;;
+    yum) printf '%s\n' yum rpm ;;
+    zypper) printf '%s\n' zypper rpm ;;
+    pacman) printf '%s\n' pacman ;;
+  esac
+}
+
+pkg_busy_pids() {
+  local file file_count name
+  {
+    if command -v fuser >/dev/null 2>&1; then
+      local files=()
+      file_count=0
+      while IFS= read -r file; do
+        if [ -e "$file" ]; then
+          files+=("$file")
+          file_count=$((file_count + 1))
+        fi
+      done < <(pkg_lock_files)
+      [ "$file_count" -eq 0 ] || fuser "${files[@]}" 2>/dev/null | tr ' ' '\n'
+    fi
+    if command -v pgrep >/dev/null 2>&1; then
+      while IFS= read -r name; do
+        [ -n "$name" ] && pgrep -x "$name" 2>/dev/null || true
+      done < <(pkg_lock_process_names)
+    fi
+  } | awk 'NF && !seen[$1]++'
+}
+
+pkg_lock_busy() {
+  [ -n "$(pkg_busy_pids)" ]
+}
+
+pkg_lock_holders() {
+  local pids
+  pids="$(pkg_busy_pids | paste -sd, - || true)"
+  [ -n "$pids" ] || return 0
+  ps -o pid=,comm= -p "$pids" 2>/dev/null | awk '{$1=$1; print}' | paste -sd ';' -
+}
+
+wait_for_pkg_locks() {
+  local deadline holders next_notice
+  deadline=$((SECONDS + PKG_LOCK_TIMEOUT))
+  next_notice=0
+  while pkg_lock_busy; do
+    if [ "$SECONDS" -ge "$next_notice" ]; then
+      holders="$(pkg_lock_holders)"
+      if [ -n "$holders" ]; then
+        log "waiting for ${PKG} package locks to clear (timeout ${PKG_LOCK_TIMEOUT}s; holders: ${holders})"
+      else
+        log "waiting for ${PKG} package locks to clear (timeout ${PKG_LOCK_TIMEOUT}s)"
+      fi
+      next_notice=$((SECONDS + 30))
+    fi
+    [ "$SECONDS" -lt "$deadline" ] || die "${PKG} package manager is still busy after ${PKG_LOCK_TIMEOUT}s; wait for the current package operation to finish, then retry"
+    sleep 5
+  done
+}
+
+apt_get() {
+  wait_for_pkg_locks
+  DEBIAN_FRONTEND=noninteractive apt-get \
+    -o DPkg::Lock::Timeout="$PKG_LOCK_TIMEOUT" \
+    "$@"
+}
+
+validate_timeout() {
+  local name="$1" value="$2"
+  case "$value" in
+    ''|*[!0-9]*) die "${name} must be a non-negative integer (seconds), got: ${value}" ;;
+  esac
+}
+
+validate_nodeport() {
+  local name="$1" value="$2"
+  case "$value" in
+    ''|*[!0-9]*) die "${name} must be a Kubernetes NodePort integer, got: ${value}" ;;
+  esac
+  if [ "$value" -lt 30000 ] || [ "$value" -gt 32767 ]; then
+    die "${name} must be in Kubernetes NodePort range 30000-32767, got: ${value}"
+  fi
+}
+
+validate_settings() {
+  validate_timeout PKG_LOCK_TIMEOUT "$PKG_LOCK_TIMEOUT"
+  validate_timeout APT_LOCK_TIMEOUT "$APT_LOCK_TIMEOUT"
+  validate_nodeport FELIS_PANEL_NODEPORT "$FELIS_PANEL_NODEPORT"
+}
+
 # ---------------------------------------------------------------------------
 # 0. Privilege & host facts
 # ---------------------------------------------------------------------------
 if [ "$(id -u)" -ne 0 ]; then
-  log "re-executing under sudo"
-  exec sudo -E bash "$0" "$@"
+  if [ -r "$0" ]; then
+    log "re-executing under sudo"
+    exec sudo -E bash "$0" "$@"
+  fi
+  die "must run as root (for a piped installer, use: curl -fsSL <url> | sudo bash)"
 fi
 
 detect_os() {
@@ -117,21 +341,21 @@ detect_node_ip() {
 
 pkg_install() {
   case "$PKG" in
-    apt) DEBIAN_FRONTEND=noninteractive apt-get install -y "$@" ;;
-    dnf) dnf install -y "$@" ;;
-    yum) yum install -y "$@" ;;
-    zypper) zypper --non-interactive install -y "$@" ;;
-    pacman) pacman -S --noconfirm --needed "$@" ;;
+    apt) apt_get install -y "$@" ;;
+    dnf) wait_for_pkg_locks; dnf install -y "$@" ;;
+    yum) wait_for_pkg_locks; yum install -y "$@" ;;
+    zypper) wait_for_pkg_locks; zypper --non-interactive install -y "$@" ;;
+    pacman) wait_for_pkg_locks; pacman -S --noconfirm --needed "$@" ;;
   esac
 }
 
 pkg_refresh_once() {
   [ -n "${_PKG_REFRESHED:-}" ] && return 0
   case "$PKG" in
-    apt) DEBIAN_FRONTEND=noninteractive apt-get update -y ;;
+    apt) apt_get update -y ;;
     dnf|yum) : ;;   # dnf/yum refresh metadata on demand
-    zypper) zypper --non-interactive refresh ;;
-    pacman) pacman -Syu --noconfirm ;;
+    zypper) wait_for_pkg_locks; zypper --non-interactive refresh ;;
+    pacman) wait_for_pkg_locks; pacman -Syu --noconfirm ;;
   esac
   _PKG_REFRESHED=1
 }
@@ -166,8 +390,15 @@ ensure_swap() {
 # 2. Base packages
 # ---------------------------------------------------------------------------
 install_base() {
+  local packages=(ca-certificates openssl)
+
   pkg_refresh_once
-  pkg_install curl ca-certificates git openssl
+  command -v curl >/dev/null 2>&1 || packages+=(curl)
+  if ! bootstrap_from_tui && ! command -v git >/dev/null 2>&1; then
+    packages+=(git)
+  fi
+
+  pkg_install "${packages[@]}"
   ok "base tools present"
 }
 
@@ -186,6 +417,7 @@ install_cloudflared() {
   esac
   url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}"
   tmp="$(mktemp)"
+  remember_temp "$tmp"
   log "installing cloudflared (${arch})"
   curl -fsSL "$url" -o "$tmp"
   install -m 0755 "$tmp" /usr/local/bin/cloudflared
@@ -226,12 +458,15 @@ install_docker_apt() {
 deb [arch=${arch} signed-by=${keyring}] https://download.docker.com/linux/${repo_os} ${OS_CODENAME} stable
 EOF
 
-  DEBIAN_FRONTEND=noninteractive apt-get update -y
+  apt_get update -y
   pkg_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 }
 
 docker_rpm_repo_url() {
   case "$OS_ID" in
+    fedora)
+      printf '%s\n' "https://download.docker.com/linux/fedora/docker-ce.repo"
+      ;;
     rhel)
       printf '%s\n' "https://download.docker.com/linux/rhel/docker-ce.repo"
       ;;
@@ -303,6 +538,7 @@ configure_k3s_firewall() {
 
   log "configuring firewalld for k3s"
   firewall-cmd --permanent --add-port=6443/tcp
+  firewall-cmd --permanent --add-port="${FELIS_PANEL_NODEPORT}/tcp"
   firewall-cmd --permanent --zone=trusted --add-source="$POD_CIDR"
   firewall-cmd --permanent --zone=trusted --add-source="$SERVICE_CIDR"
   firewall-cmd --reload
@@ -339,7 +575,7 @@ install_k3s() {
 }
 
 # ---------------------------------------------------------------------------
-# 5. Source + image build + host binary + containerd import
+# 5. Source/binary + image build + containerd import
 # ---------------------------------------------------------------------------
 fetch_source() {
   if [ -n "${FELIS_SKIP_FETCH:-}" ]; then
@@ -360,19 +596,69 @@ fetch_source() {
   ok "source ready at ${SRC_DIR}"
 }
 
-build_image() {
-  systemctl start docker
+install_embedded_binary() {
+  local src
+  src="${FELIS_BOOTSTRAP_BINARY:-}"
+  [ -n "$src" ] || die "FELIS_BOOTSTRAP_BINARY is not set; cannot install the embedded setup binary"
+  [ -x "$src" ] || die "FELIS_BOOTSTRAP_BINARY is not executable: ${src}"
+
+  mkdir -p "$(dirname "$HOST_BIN")"
+  if [ "$(readlink -f "$src")" != "$(readlink -f "$HOST_BIN" 2>/dev/null || true)" ]; then
+    log "installing current felis binary onto the host (${HOST_BIN})"
+    install -m 0755 "$src" "$HOST_BIN"
+  else
+    ok "host binary already installed at ${HOST_BIN}"
+  fi
+}
+
+build_image_from_binary() {
+  local tmp
+  tmp="$(mktemp -d)"
+  remember_temp "$tmp"
+  cp "$HOST_BIN" "${tmp}/felis"
+  cat > "${tmp}/Dockerfile" <<'EOF'
+FROM gcr.io/distroless/base-debian12:nonroot
+ENV PATH=/usr/local/bin:/usr/bin:/bin
+COPY felis /usr/local/bin/felis
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/felis"]
+EOF
+  chmod 0755 "${tmp}/felis"
+
+  log "building ${FELIS_IMAGE} from the current felis binary"
+  docker build -t "$FELIS_IMAGE" "$tmp"
+  rm -rf "$tmp"
+}
+
+verify_image_starts() {
+  log "verifying ${FELIS_IMAGE} starts"
+  docker run --rm --user 1000:1000 --entrypoint /usr/local/bin/felis "$FELIS_IMAGE" help >/dev/null
+}
+
+build_image_from_source() {
   log "building ${FELIS_IMAGE} (this compiles the Go binary; first run is slow)"
   docker build -t "$FELIS_IMAGE" "$SRC_DIR"
 
   log "extracting the felis binary onto the host (${HOST_BIN})"
   local cid
   cid="$(docker create "$FELIS_IMAGE")"
+  remember_container "$cid"
   docker cp "${cid}:/usr/local/bin/felis" "$HOST_BIN"
   docker rm "$cid" >/dev/null
   chmod 0755 "$HOST_BIN"
+}
+
+build_image() {
+  systemctl start docker
+  if bootstrap_from_tui; then
+    build_image_from_binary
+  else
+    build_image_from_source
+  fi
+  verify_image_starts
 
   log "importing ${FELIS_IMAGE} into k3s containerd"
+  remove_k3s_image "$FELIS_IMAGE"
   docker save "$FELIS_IMAGE" | k3s_cmd ctr images import -
 
   # Reclaim the ~150 MiB the docker daemon holds; reruns restart it on demand.
@@ -380,15 +666,27 @@ build_image() {
   ok "image built, binary on host, image imported"
 }
 
+remove_k3s_image() {
+  local image="$1"
+  k3s_cmd ctr images rm "$image" >/dev/null 2>&1 || true
+  case "$image" in
+    */*) ;;
+    *) k3s_cmd ctr images rm "docker.io/library/${image}" >/dev/null 2>&1 || true ;;
+  esac
+}
+
 # ---------------------------------------------------------------------------
 # 6. PostgreSQL on the host. felis-api pods reach it at <node-ip>:5432;
 #    migrations run from the host binary against 127.0.0.1.
 # ---------------------------------------------------------------------------
 write_pg_hba_block() {
-  local hba="$1" tmp node_cidr
+  local hba="$1" tmp tmp_new node_cidr
 
   node_cidr="${NODE_IP}/32"
   tmp="$(mktemp)"
+  tmp_new="${tmp}.new"
+  remember_temp "$tmp"
+  remember_temp "$tmp_new"
 
   awk \
     -v db="$DB_NAME" \
@@ -415,10 +713,10 @@ write_pg_hba_block() {
     printf "# END FELIS MANAGED HBA\n"
     printf "\n"
     cat "$tmp"
-  } > "${tmp}.new"
+  } > "$tmp_new"
 
-  cat "${tmp}.new" > "$hba"
-  rm -f "$tmp" "${tmp}.new"
+  cat "$tmp_new" > "$hba"
+  rm -f "$tmp" "$tmp_new"
 }
 
 postgres_data_dir() {
@@ -512,13 +810,59 @@ load_or_make_secrets() {
   DB_PASSWORD="${DB_PASSWORD:-$(openssl rand -hex 24)}"
   SERVICE_TOKEN="${SERVICE_TOKEN:-$(openssl rand -hex 32)}"
   SESSION_SECRET="${SESSION_SECRET:-$(openssl rand -hex 32)}"
-  umask 077
-  cat > "$SECRETS_ENV" <<EOF
+  (
+    umask 077
+    cat > "$SECRETS_ENV" <<EOF
 DB_PASSWORD=${DB_PASSWORD}
 SERVICE_TOKEN=${SERVICE_TOKEN}
 SESSION_SECRET=${SESSION_SECRET}
 EOF
+  )
   chmod 0600 "$SECRETS_ENV"
+}
+
+ensure_panel_tls_cert() {
+  mkdir -p "$STATE_DIR"
+  chmod 0700 "$STATE_DIR"
+  if [ -s "$PANEL_TLS_CERT" ] && [ -s "$PANEL_TLS_KEY" ]; then
+    ok "panel TLS certificate already present"
+    return 0
+  fi
+
+  local cn conf
+  cn="op.console.${FELIS_ROOT_DOMAIN}"
+  conf="$(mktemp)"
+  remember_temp "$conf"
+  cat > "$conf" <<EOF
+[req]
+default_bits = 2048
+distinguished_name = dn
+x509_extensions = v3_req
+prompt = no
+
+[dn]
+CN = ${cn}
+
+[v3_req]
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = op.console.${FELIS_ROOT_DOMAIN}
+DNS.2 = console.${FELIS_ROOT_DOMAIN}
+DNS.3 = localhost
+IP.1 = 127.0.0.1
+IP.2 = ${NODE_IP}
+EOF
+
+  log "generating self-signed panel TLS certificate"
+  openssl req -x509 -newkey rsa:2048 -sha256 -days 825 -nodes \
+    -keyout "$PANEL_TLS_KEY" \
+    -out "$PANEL_TLS_CERT" \
+    -subj "/CN=${cn}" \
+    -config "$conf" >/dev/null 2>&1
+  chmod 0600 "$PANEL_TLS_KEY"
+  chmod 0644 "$PANEL_TLS_CERT"
+  ok "panel TLS certificate ready (${PANEL_TLS_CERT})"
 }
 
 write_felis_toml() {
@@ -551,12 +895,20 @@ EOF
 }
 
 ensure_default_config() {
-  local target="${STATE_DIR}/felis.toml"
+  local target="${STATE_DIR}/felis.toml" backup
   if [ -L "$target" ] && [ "$(readlink "$target")" = "${STATE_DIR}/felis.host.toml" ]; then
     ok "default host config already points at ${STATE_DIR}/felis.host.toml"
     return 0
   fi
   if [ -e "$target" ] || [ -L "$target" ]; then
+    if bootstrap_from_tui; then
+      backup="${target}.bak.$(date -u +%Y%m%d%H%M%S).$$"
+      warn "replacing existing ${target}; backup saved at ${backup}"
+      mv "$target" "$backup"
+      ln -s "${STATE_DIR}/felis.host.toml" "$target"
+      ok "default host config: ${target} -> ${STATE_DIR}/felis.host.toml"
+      return 0
+    fi
     warn "leaving existing ${target}; setup can use -config ${STATE_DIR}/felis.host.toml if needed"
     return 0
   fi
@@ -576,11 +928,19 @@ run_migrations() {
 }
 
 deploy_bundle() {
+  local had_api=0 had_operator=0
   export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
   write_felis_toml "${STATE_DIR}/felis.pod.toml" "${NODE_IP}"
 
+  kube -n "$CONTROL_NS" get deployment felis-api >/dev/null 2>&1 && had_api=1
+  kube -n "$CONTROL_NS" get deployment felis-operator >/dev/null 2>&1 && had_operator=1
+
   log "applying MinecraftServer CRD"
-  kube apply -f "${SRC_DIR}/deploy/crd/"
+  if bootstrap_from_tui; then
+    "$HOST_BIN" bootstrap-assets crd | kube apply -f -
+  else
+    kube apply -f "${SRC_DIR}/deploy/crd/"
+  fi
 
   log "ensuring namespaces"
   local ns
@@ -588,25 +948,72 @@ deploy_bundle() {
     kube create namespace "$ns" --dry-run=client -o yaml | kube apply -f -
   done
 
-  log "provisioning felis-config + felis-service-token secrets (out-of-band, never in the bundle)"
+  log "provisioning felis-config + felis-service-token + panel TLS secrets (out-of-band, never in the bundle)"
   kube -n "$CONTROL_NS" create secret generic felis-config \
     --from-file=felis.toml="${STATE_DIR}/felis.pod.toml" \
     --dry-run=client -o yaml | kube apply -f -
   kube -n "$CONTROL_NS" create secret generic felis-service-token \
     --from-literal=token="${SERVICE_TOKEN}" \
     --dry-run=client -o yaml | kube apply -f -
+  kube -n "$CONTROL_NS" create secret tls felis-api-tls \
+    --cert="$PANEL_TLS_CERT" \
+    --key="$PANEL_TLS_KEY" \
+    --dry-run=client -o yaml | kube apply -f -
 
   log "rendering + applying the control-plane bundle"
   "$HOST_BIN" manifests \
     --felis-image "$FELIS_IMAGE" \
+    --panel-node-port "$FELIS_PANEL_NODEPORT" \
     --velocity-cidr "${NODE_IP}/32" \
     | kube apply -f -
+  restart_existing_control_plane "$had_api" "$had_operator"
 
   log "waiting for control-plane rollouts"
   local d
   for d in $(kube -n "$CONTROL_NS" get deploy -o name); do
-    kube -n "$CONTROL_NS" rollout status "$d" --timeout=180s || warn "rollout not complete: $d"
+    if ! kube -n "$CONTROL_NS" rollout status "$d" --timeout=180s; then
+      diagnose_rollout "$d"
+      die "control-plane rollout did not complete: ${d}"
+    fi
   done
+}
+
+restart_existing_control_plane() {
+  local had_api="$1" had_operator="$2"
+  [ "$had_api$had_operator" != "00" ] || return 0
+
+  log "restarting existing control-plane deployments to pick up ${FELIS_IMAGE}"
+  [ "$had_api" = "1" ] && kube -n "$CONTROL_NS" rollout restart deployment/felis-api
+  [ "$had_operator" = "1" ] && kube -n "$CONTROL_NS" rollout restart deployment/felis-operator
+}
+
+diagnose_rollout() {
+  local deploy="$1" name selector pod
+  name="${deploy##*/}"
+  warn "rollout not complete: ${deploy}"
+  kube -n "$CONTROL_NS" describe "$deploy" || true
+
+  case "$name" in
+    felis-api) selector='app.kubernetes.io/name=felis,app.kubernetes.io/component=api' ;;
+    felis-operator) selector='app.kubernetes.io/name=felis,app.kubernetes.io/component=operator' ;;
+    registry) selector='app.kubernetes.io/name=felis,app.kubernetes.io/component=registry' ;;
+    *) selector='' ;;
+  esac
+  [ -n "$selector" ] || return 0
+
+  kube -n "$CONTROL_NS" get pods -l "$selector" -o wide || true
+  for pod in $(kube -n "$CONTROL_NS" get pods -l "$selector" -o name 2>/dev/null); do
+    warn "pod detail: ${pod}"
+    kube -n "$CONTROL_NS" describe "$pod" || true
+    warn "recent logs: ${pod}"
+    kube -n "$CONTROL_NS" logs "$pod" --all-containers --tail=120 || true
+    kube -n "$CONTROL_NS" logs "$pod" --all-containers --previous --tail=120 || true
+  done
+}
+
+mark_bootstrap_done() {
+  date -u +%Y-%m-%dT%H:%M:%SZ > "$BOOTSTRAP_DONE"
+  chmod 0644 "$BOOTSTRAP_DONE"
 }
 
 # ---------------------------------------------------------------------------
@@ -619,27 +1026,41 @@ summary() {
   echo
   kube -n "$CONTROL_NS" get pods -o wide || true
   echo
-  log "Web is intentionally NOT enabled yet."
-  log "Next: run  'sudo felis setup'  on this host to create the Owner account and configure the web edge."
+  log "Panel URL: https://${NODE_IP}:${FELIS_PANEL_NODEPORT}"
+  log "DNS alias (if your resolver supports it): https://op.console.${FELIS_ROOT_DOMAIN}:${FELIS_PANEL_NODEPORT}"
+  log "The local HTTPS certificate is self-signed; your browser may ask for confirmation on first visit."
+  if [ "${FELIS_BOOTSTRAP_FROM_TUI:-}" = "1" ]; then
+    log "Returning to the setup console to create the Owner account and verify panel access."
+  else
+    log "Next: run  'sudo felis setup'  on this host to create the Owner account."
+  fi
   log "Use 'sudo felis breakGlass' only for emergency local Owner recovery/reset."
   echo
 }
 
 main() {
+  validate_settings
   detect_os
+  pause_package_background_timers
   detect_node_ip
   ensure_swap
   install_base
   install_cloudflared
   load_or_make_secrets
+  ensure_panel_tls_cert
   install_docker
   install_k3s
-  fetch_source
+  if bootstrap_from_tui; then
+    install_embedded_binary
+  else
+    fetch_source
+  fi
   build_image
   install_postgres
   configure_postgres
   run_migrations
   deploy_bundle
+  mark_bootstrap_done
   summary
 }
 
