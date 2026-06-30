@@ -259,6 +259,33 @@ func (p *PGRepo) MyServers(ctx context.Context, userID string) ([]MyServerView, 
 	return out, rows.Err()
 }
 
+// ServerOwners returns name -> owner display identity for every currently-owned,
+// non-deleted server (the SysAdmin cockpit's fleet read). The INNER JOIN drops
+// unclaimed servers (owner_id NULL) and the deleted_at filter drops soft-deleted
+// ones, so the map holds only servers that have a live owner — the cockpit reads a
+// missing key as "no owner". The display value prefers the recognizable email
+// (the same identity the audit log records as the human actor, §6) and falls back
+// to the never-NULL username when the address is absent.
+func (p *PGRepo) ServerOwners(ctx context.Context) (map[string]string, error) {
+	const q = `SELECT s.name, COALESCE(NULLIF(u.email, ''), u.username)
+		FROM servers s JOIN users u ON u.id = s.owner_id
+		WHERE s.deleted_at IS NULL`
+	rows, err := p.db.QueryContext(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]string)
+	for rows.Next() {
+		var name, owner string
+		if err := rows.Scan(&name, &owner); err != nil {
+			return nil, err
+		}
+		out[name] = owner
+	}
+	return out, rows.Err()
+}
+
 // SeedServer inserts the business rows backing a newly created server (spec
 // §15): the servers row (owner_id left NULL — the server is created unowned and
 // claimed later, spec §9.3) and its subdomain alias. Both inserts are

@@ -3,6 +3,7 @@ import type { Plugin } from "vite";
 import type {
   AutostartPolicy,
   CreateServerRequest,
+  FleetServer,
   Identity,
   LoginResult,
   Phase,
@@ -133,6 +134,12 @@ function initialState(): MockState {
       server("survival", "Survival SMP", "Running", "owner", {
         players: 7,
         maxPlayers: 20,
+        autostartPolicy: "public",
+      }),
+      server("lobby", "Hub Lobby", "Running", "linked", {
+        players: 28,
+        maxPlayers: 60,
+        autostartPolicy: "public",
       }),
       server("creative", "Creative Lab", "Stopped", "user", {
         autostartPolicy: "public",
@@ -142,11 +149,45 @@ function initialState(): MockState {
         autostartPolicy: "allowlist",
         maxPlayers: 12,
       }),
+      server("broken", "Broken Node", "Failed", "user", {
+        autostartPolicy: "ownerOnly",
+        maxPlayers: 8,
+      }),
       server("claim-me", "Claimable Node", "Stopped", null, {
         maxPlayers: 10,
       }),
+      ...generatedServers(),
     ],
   };
+}
+
+// generatedServers fills the mock fleet past one page so the SysAdmin cockpit's
+// pagination and fuzzy search are actually exercisable in dev. Deterministic (no
+// Math.random) so the demo is stable across reloads: phase / owner / policy /
+// capacity all cycle. 8 themes × 3 = 24 servers; with the 6 hand-authored ones the
+// fleet is 30 → two pages at PAGE_SIZE 20.
+function generatedServers(): MockServer[] {
+  const phases: Phase[] = ["Running", "Stopped", "Starting", "Failed", "Running", "Stopped"];
+  const owners: (AccountID | null)[] = ["owner", "linked", "user", null];
+  const policies: AutostartPolicy[] = ["ownerOnly", "public", "allowlist"];
+  const themes = ["smp", "creative", "skyblock", "anarchy", "minigames", "build", "pvp", "vanilla"];
+  const out: MockServer[] = [];
+  let i = 0;
+  for (const theme of themes) {
+    for (let n = 1; n <= 3; n++) {
+      const phase = phases[i % phases.length];
+      const max = 10 + ((i * 7) % 50);
+      out.push(
+        server(`${theme}-${String(n).padStart(2, "0")}`, `${theme} #${n}`, phase, owners[i % owners.length], {
+          players: phase === "Running" ? 1 + ((i * 3) % max) : 0,
+          maxPlayers: max,
+          autostartPolicy: policies[i % policies.length],
+        }),
+      );
+      i++;
+    }
+  }
+  return out;
 }
 
 function mockStartupMessage(): string {
@@ -287,6 +328,31 @@ function visibleServers(state: MockState, accountInfo: MockAccount): ServerInfo[
     .map((serverInfo) => projectServer(serverInfo, accountInfo));
 }
 
+// fleetView projects the internal mock servers into the GET /fleet wire shape
+// (the SysAdmin cockpit's read). It is the mock mirror of the Go fleetServerView:
+// the CRD field names (playersOnline/playersMax, ready, endpoint*) — NOT the
+// me/servers projection's players/maxPlayers — plus the owner joined as the email
+// (COALESCE(email, username) server-side). Endpoint and live player counts are
+// gated on Running, exactly as the real cluster reports them.
+function fleetView(state: MockState): FleetServer[] {
+  return state.servers.map((s, i) => {
+    const ready = s.phase === "Running";
+    return {
+      name: s.name,
+      subdomain: s.subdomain,
+      phase: s.phase,
+      ready,
+      desiredState: s.desiredState,
+      autostartPolicy: s.autostartPolicy,
+      endpointMode: "domain",
+      endpointAddress: ready ? `10.43.0.${10 + i}:25565` : undefined,
+      playersOnline: ready ? s.players ?? 0 : 0,
+      playersMax: s.maxPlayers ?? 0,
+      owner: s.owner ? state.accounts[s.owner].email : "",
+    };
+  });
+}
+
 function projectServer(serverInfo: MockServer, accountInfo: MockAccount): ServerInfo {
   const { owner: _owner, ...wire } = serverInfo;
   const owned = canManage(accountInfo, serverInfo);
@@ -371,6 +437,15 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       return true;
     case "GET me":
       sendJSON(ctx.res, 200, identity(ctx.account));
+      return true;
+    case "GET fleet":
+      // Admin-tier, fleet-wide — mirrors the real adminOnly gate (a non-admin is
+      // 403'd before the handler) so the cockpit's RequireAdmin path is exercised.
+      if (ctx.account.role !== "admin") {
+        sendError(ctx.res, 403, "forbidden", "admin account required");
+        return true;
+      }
+      sendJSON(ctx.res, 200, { servers: fleetView(ctx.state) });
       return true;
     case "POST auth/change-password":
       ctx.account.mustChangePassword = false;

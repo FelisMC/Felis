@@ -208,17 +208,39 @@ func (a *API) handleMyServers(w http.ResponseWriter, r *http.Request) {
 // same CRD-truth source as the velocity pull, §1) but is a DISTINCT handler so
 // each route's provenance and tier stay honest, and so the two never share a
 // {method, path} key — the OpenAPI parity test forbids one path carrying both the
-// service and admin tiers across faces. CRD truth only: owner and the other
-// Postgres business fields are deliberately not joined here (§1 — the CRD is the
-// lifecycle authority, Postgres the business authority; this read stays on the
-// lifecycle side).
+// service and admin tiers across faces. Lifecycle is read from the CRD (§1); the
+// one business field the cockpit needs — the owner — is joined READ-ONLY from
+// Postgres at request time (§6 business authority) purely for display. This keeps
+// §1 honest: owner is never written back to the CRD and the CRD is never treated
+// as its source; the two stores keep their split, the read just renders both.
 func (a *API) handleFleet(w http.ResponseWriter, r *http.Request) {
 	servers, err := a.Cluster.ListServers(r.Context())
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"servers": servers})
+	// Owner is presentational and best-effort. The cockpit exists for the lifecycle
+	// view, so a Postgres hiccup must degrade to owner-less rows, never 500 the whole
+	// fleet: a lookup error is swallowed and owners stays nil, leaving every row's
+	// Owner "" (a nil map reads as zero values).
+	owners, _ := a.Repo.ServerOwners(r.Context())
+	views := make([]fleetServerView, len(servers))
+	for i, s := range servers {
+		views[i] = fleetServerView{ServerInfo: s, Owner: owners[s.Name]}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"servers": views})
+}
+
+// fleetServerView is one row of the SysAdmin cockpit's fleet read: the CRD
+// lifecycle view (ServerInfo, §1 authority) with the owner's display identity
+// joined alongside. The embed keeps every lifecycle field flat in the JSON so the
+// shape is a strict superset of ServerInfo; Owner is the only addition.
+type fleetServerView struct {
+	ServerInfo
+	// Owner is the claiming user's display identity (email, or username when the
+	// address is absent), or "" when the server is unclaimed or the best-effort
+	// owner lookup failed — the cockpit renders "" as "unclaimed".
+	Owner string `json:"owner,omitempty"`
 }
 
 // createServerRequest is the structured §15 create-server form. This is the

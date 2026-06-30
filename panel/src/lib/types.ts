@@ -34,6 +34,32 @@ export interface ServerInfo {
   owned?: boolean;
 }
 
+/** FleetServer is one row of GET /api/v1/fleet — the SysAdmin cockpit's fleet-wide
+ *  read (admin-tier). It mirrors the Go fleetServerView: the CRD lifecycle
+ *  projection plus the owner joined read-only from Postgres for display.
+ *
+ *  It is a DISTINCT type from ServerInfo, not a reuse: /fleet emits the raw CRD
+ *  shape — `playersOnline`/`playersMax` (not players/maxPlayers), plus `ready` and
+ *  the `endpoint*` runtime fields — whereas ServerInfo is the /me/servers
+ *  projection. Sharing one interface would silently read `undefined` across the
+ *  fetch().json() boundary for every renamed field. */
+export interface FleetServer {
+  name: string;
+  subdomain: string;
+  phase: Phase;
+  ready: boolean;
+  desiredState?: "Running" | "Stopped";
+  autostartPolicy?: AutostartPolicy;
+  endpointMode?: string;
+  endpointAddress?: string;
+  playersOnline: number;
+  playersMax: number;
+  /** Owner's display identity (email, or username when the address is absent).
+   *  Empty/absent for an unclaimed server or when the best-effort owner lookup
+   *  failed — the cockpit renders that as "unclaimed". */
+  owner?: string;
+}
+
 /** WhitelistImage is one row of GET /images (the create-form dropdown source). */
 export interface WhitelistImage {
   image_ref: string;

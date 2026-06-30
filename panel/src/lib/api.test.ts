@@ -151,3 +151,47 @@ describe("local-password auth wire shapes", () => {
     expect(humanizeError({ code: "password_unchanged" })).toMatch(/differ/i);
   });
 });
+
+// Pin the GET /fleet wire shape (the SysAdmin cockpit's read). It is the ONLY
+// place the panel asserts the fleetServerView fields: the cockpit consumes the raw
+// CRD names (playersOnline/playersMax, not players/maxPlayers) plus the joined
+// `owner`, all crossing the untyped fetch().json() boundary. If the Go handler's
+// JSON ever drifts to the /me/servers shape — or drops owner — typecheck/build stay
+// green while the table silently renders blank players and "unclaimed" everywhere.
+describe("api.fleet wire shape", () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("GETs /fleet and unwraps .servers with the CRD field names + owner", async () => {
+    const fetchSpy = fakeFetch({
+      servers: [
+        {
+          name: "survival",
+          subdomain: "survival",
+          phase: "Running",
+          ready: true,
+          playersOnline: 3,
+          playersMax: 20,
+          owner: "alice@example.test",
+        },
+      ],
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const servers = await api.fleet();
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock
+      .calls[0];
+    expect(String(url)).toBe("/fleet");
+    expect((opts as RequestInit).method).toBe("GET");
+    expect((opts as RequestInit).credentials).toBe("include");
+    expect(servers).toHaveLength(1);
+    expect(servers[0].playersOnline).toBe(3);
+    expect(servers[0].playersMax).toBe(20);
+    expect(servers[0].owner).toBe("alice@example.test");
+  });
+
+  it("defaults to [] when the body carries no servers key", async () => {
+    const fetchSpy = fakeFetch({});
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.fleet()).toEqual([]);
+  });
+});

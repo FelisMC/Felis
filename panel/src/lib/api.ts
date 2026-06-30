@@ -1,6 +1,7 @@
 import type {
   ApiError,
   CreateServerRequest,
+  FleetServer,
   Identity,
   LinkResult,
   LinkStatus,
@@ -79,6 +80,13 @@ export const api = {
 
   myServers: () =>
     request<{ servers: ServerInfo[] }>("GET", "/me/servers").then((r) => r.servers ?? []),
+
+  // fleet is the SysAdmin cockpit's fleet-wide read (admin-tier GET /fleet): every
+  // server's CRD lifecycle view plus its owner. It 403s for a non-admin principal —
+  // the panel only renders the cockpit link behind is_admin, and the route guards
+  // again server-side regardless of what the UI shows.
+  fleet: () =>
+    request<{ servers: FleetServer[] }>("GET", "/fleet").then((r) => r.servers ?? []),
 
   status: (name: string) => request<ServerInfo>("GET", `/servers/${name}/status`),
 

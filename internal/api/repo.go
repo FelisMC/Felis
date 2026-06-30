@@ -176,6 +176,15 @@ type Repo interface {
 	RecordJoin(ctx context.Context, name, mcUUID string) error
 	// MyServers lists the servers a user owns or may claim.
 	MyServers(ctx context.Context, userID string) ([]MyServerView, error)
+	// ServerOwners maps each currently-owned server to its owner's display identity
+	// (email, or username when the address is absent), for the SysAdmin cockpit's
+	// fleet read. It is a READ-ONLY presentational join: owner stays authored in
+	// Postgres (§6 business authority) and is never written back to the CRD, so this
+	// does not breach §1's store-of-record split. Unclaimed and soft-deleted servers
+	// are simply absent from the map, so a missing key reads as "no owner". The
+	// cockpit treats it as best-effort — a lookup error degrades to owner-less rows
+	// rather than failing the fleet read — so callers may ignore the error.
+	ServerOwners(ctx context.Context) (map[string]string, error)
 	// AllBackups lists every present world backup, newest first (spec §7 GET
 	// /backups, admin scope). Expired/deleted rows are never returned.
 	AllBackups(ctx context.Context) ([]BackupView, error)

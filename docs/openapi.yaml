@@ -1417,14 +1417,15 @@ paths:
         Every MinecraftServer's CRD+status lifecycle view, for the SysAdmin
         FleetTable. Admin-tier — it reads every owner's server. A path distinct
         from the internal velocity GET /api/v1/servers because one {method, path}
-        cannot carry both the service and admin tiers. CRD truth only: owner and
-        the other Postgres business fields are deliberately not joined (§1).
+        cannot carry both the service and admin tiers. Lifecycle is CRD truth (§1);
+        the owner is the only business field, joined READ-ONLY from Postgres (§6)
+        for display — best-effort, so a Postgres blip degrades to owner-less rows.
       x-felis-face: [external]
       x-felis-tier: admin
       security: [{ accessJWT: [] }]
       responses:
         '200':
-          description: Every server's status projection (fleet-wide).
+          description: Every server's status projection (fleet-wide), each with its owner.
           content:
             application/json:
               schema:
@@ -1433,7 +1434,17 @@ paths:
                 properties:
                   servers:
                     type: array
-                    items: { $ref: '#/components/schemas/ServerInfo' }
+                    items:
+                      allOf:
+                        - $ref: '#/components/schemas/ServerInfo'
+                        - type: object
+                          properties:
+                            owner:
+                              type: string
+                              description: >-
+                                The owner's display identity (email, or username when
+                                the address is absent). Absent for an unclaimed server
+                                or when the best-effort owner lookup failed.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':

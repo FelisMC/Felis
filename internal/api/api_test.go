@@ -31,6 +31,11 @@ type fakeRepo struct {
 	// the account_links-bridged web view of the same data.
 	allowUUID map[string]map[string]bool
 	mine      map[string][]MyServerView
+	// owners mirrors the ServerOwners join (name -> owner display identity); only
+	// claimed servers appear. ownersErr forces the lookup to fail so a test can
+	// prove the fleet read degrades to owner-less rows rather than 500ing.
+	owners    map[string]string
+	ownersErr error
 	claimOK   map[string]bool // name -> claim succeeds; absent name -> ErrNotFound
 	audits    []AuditEntry
 	joins     []string
@@ -139,6 +144,7 @@ func newFakeRepo() *fakeRepo {
 		linked: map[string]bool{}, quota: map[string]bool{},
 		allowlist: map[string]map[string]bool{}, allowUUID: map[string]map[string]bool{},
 		mine:    map[string][]MyServerView{},
+		owners:  map[string]string{},
 		claimOK: map[string]bool{},
 		seeded:  map[string]bool{}, aliases: map[string]string{},
 		linkCodes: map[string]fakeLinkCode{}, links: map[string]string{},
@@ -410,6 +416,12 @@ func (f *fakeRepo) RecordJoin(_ context.Context, n, uuid string) error {
 }
 func (f *fakeRepo) MyServers(_ context.Context, u string) ([]MyServerView, error) {
 	return f.mine[u], nil
+}
+func (f *fakeRepo) ServerOwners(_ context.Context) (map[string]string, error) {
+	if f.ownersErr != nil {
+		return nil, f.ownersErr
+	}
+	return f.owners, nil
 }
 func (f *fakeRepo) SeedServer(_ context.Context, name, subdomain string) error {
 	if f.seedErr != nil {
@@ -861,21 +873,68 @@ func TestFleetAdminRead(t *testing.T) {
 		}
 	})
 
-	t.Run("admin reads the whole fleet", func(t *testing.T) {
-		api := newTestAPI(newFakeRepo(), cl)
+	// fleetRow mirrors the on-the-wire fleetServerView: the lifecycle fields plus
+	// the presentational owner join. A server absent from ServerOwners (unclaimed)
+	// or a failed lookup must serialize owner as "" (omitempty drops it).
+	type fleetRow struct {
+		Name  string `json:"name"`
+		Owner string `json:"owner"`
+	}
+	adminAPI := func(repo *fakeRepo) *API {
+		api := newTestAPI(repo, cl)
 		api.External = staticExternal{p: &Principal{UserID: "a1", Email: "a1@example.net",
 			Role: "admin", ViaAdminAccess: true}}
+		return api
+	}
+	readFleet := func(t *testing.T, api *API) []fleetRow {
+		t.Helper()
 		w := do(api.ExternalHandler(), "GET", "/api/v1/fleet", "", nil)
 		if w.Code != http.StatusOK {
 			t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
 		}
-		var got map[string][]ServerInfo
+		var got map[string][]fleetRow
 		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 			t.Fatalf("body not JSON: %v", err)
 		}
+		return got["servers"]
+	}
+
+	t.Run("admin reads the whole fleet", func(t *testing.T) {
+		rows := readFleet(t, adminAPI(newFakeRepo()))
 		// Fleet-wide: all three servers, not a caller-scoped subset.
-		if len(got["servers"]) != 3 {
-			t.Fatalf("servers = %d, want 3 (the fleet read must not be caller-scoped)", len(got["servers"]))
+		if len(rows) != 3 {
+			t.Fatalf("servers = %d, want 3 (the fleet read must not be caller-scoped)", len(rows))
+		}
+	})
+
+	t.Run("owner merges for claimed, absent for unclaimed", func(t *testing.T) {
+		repo := newFakeRepo()
+		// Only "survival" is claimed; "creative"/"skyblock" stay unowned.
+		repo.owners["survival"] = "alice@example.net"
+		byName := map[string]string{}
+		for _, r := range readFleet(t, adminAPI(repo)) {
+			byName[r.Name] = r.Owner
+		}
+		if byName["survival"] != "alice@example.net" {
+			t.Fatalf("survival owner = %q, want alice@example.net", byName["survival"])
+		}
+		if byName["creative"] != "" {
+			t.Fatalf("creative owner = %q, want empty (unclaimed)", byName["creative"])
+		}
+	})
+
+	t.Run("owner lookup failure degrades to owner-less rows", func(t *testing.T) {
+		repo := newFakeRepo()
+		repo.owners["survival"] = "alice@example.net" // would merge, but the lookup errors
+		repo.ownersErr = fmt.Errorf("postgres unreachable")
+		rows := readFleet(t, adminAPI(repo)) // must still be 200, not 500
+		if len(rows) != 3 {
+			t.Fatalf("servers = %d, want 3 (a Postgres blip must not drop the fleet)", len(rows))
+		}
+		for _, r := range rows {
+			if r.Owner != "" {
+				t.Fatalf("%s owner = %q, want empty (owner lookup failed → degrade)", r.Name, r.Owner)
+			}
 		}
 	})
 }
