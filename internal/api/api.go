@@ -73,6 +73,15 @@ type API struct {
 	// sender. The code is never returned to the client on either path.
 	Mailer OTPMailer
 
+	// Passkey verifies WebAuthn credential-creation ceremonies (spec §14 / Phase 6
+	// passkey bind). It is optional: when nil the passkey register routes report 503
+	// rather than panic, so the authenticated enrollment boundary is exercised before
+	// the go-webauthn verifier is wired in (cmd/felis). The credential-management
+	// reads/deletes do not need it (they read the Repo), only the begin/finish
+	// ceremony. Tests inject a fake verifier so the enrollment state machine is
+	// exercised without real attestation crypto.
+	Passkey PasskeyVerifier
+
 	// RootDomain is injected from config (spec §2). It is the only place the
 	// deployment zone enters the API; hostnames are validated against it and
 	// never hardcoded.
@@ -268,6 +277,18 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// email is an ordinary authenticated operation, scoped to the principal.
 		{Method: "POST", Pattern: "/api/v1/account/email/start", h: a.handleEmailOTPStart},
 		{Method: "POST", Pattern: "/api/v1/account/email/verify", h: a.handleEmailOTPVerify},
+		// Passkey enrollment (spec §14 WebAuthn / Phase 6 bind), web side: /register/begin
+		// mints a credential-creation challenge for the caller, /register/finish verifies
+		// the authenticator's attestation and binds the passkey, and the credentials
+		// collection lists and unbinds the caller's OWN passkeys. App-tier like the email
+		// routes — binding a passkey to your own account is an ordinary authenticated
+		// operation, scoped entirely to the principal (the body never names a user). This
+		// is enrollment only; passkey LOGIN/assertion is a deferred slice (see migration
+		// 0007 and handlers_passkey.go).
+		{Method: "POST", Pattern: "/api/v1/account/passkey/register/begin", h: a.handlePasskeyRegisterBegin},
+		{Method: "POST", Pattern: "/api/v1/account/passkey/register/finish", h: a.handlePasskeyRegisterFinish},
+		{Method: "GET", Pattern: "/api/v1/account/passkey/credentials", h: a.handlePasskeyList},
+		{Method: "DELETE", Pattern: "/api/v1/account/passkey/credentials/{id}", h: a.handlePasskeyDelete},
 		// Modpack submission (user-directed lane over §16), user side: a user files an upload for review
 		// and lists their own. App-tier — the submitter and the "my uploads" scope are
 		// both taken from the principal, never the body, so an ordinary authenticated

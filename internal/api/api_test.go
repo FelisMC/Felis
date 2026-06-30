@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -61,6 +63,26 @@ type fakeRepo struct {
 	// the same all-or-nothing contract the PG transaction enforces.
 	blacklist map[string]bool
 	holds     map[string]fakeDataHold
+	// player passkey enrollment (spec §14 / Phase 6). passkeyCreds is keyed by row id
+	// and mirrors webauthn_credentials (the credential_id UNIQUE guard is enforced in
+	// CreatePasskeyCredential); passkeyChallenges is keyed by row id and mirrors
+	// webauthn_challenges, so the consume path scans the newest live (user, purpose)
+	// just as the PG query does.
+	passkeyCreds      map[string]PasskeyCredential
+	passkeyChallenges map[string]*fakePasskeyChallenge
+}
+
+// fakePasskeyChallenge mirrors a webauthn_challenges row: its owner and purpose, the
+// opaque stashed SessionData, single-use via consumed, and createdAt to order the
+// newest-live lookup the consume path performs.
+type fakePasskeyChallenge struct {
+	id          string
+	userID      string
+	purpose     string
+	sessionData []byte
+	expiresAt   time.Time
+	consumed    bool
+	createdAt   time.Time
 }
 
 // fakeDataHold mirrors a player_data_holds row at the granularity the verifiable
@@ -127,6 +149,8 @@ func newFakeRepo() *fakeRepo {
 		otps:           map[string]*fakeEmailOTP{},
 		blacklist:      map[string]bool{},
 		holds:          map[string]fakeDataHold{},
+		passkeyCreds:   map[string]PasskeyCredential{},
+		passkeyChallenges: map[string]*fakePasskeyChallenge{},
 	}
 }
 
@@ -217,6 +241,113 @@ func (f *fakeRepo) VerifyEmailOTP(_ context.Context, userID, purpose, codeHash s
 		}
 	}
 	return live.email, nil
+}
+
+// CreatePasskeyChallenge / ConsumePasskeyChallengeByUser mirror PGRepo's contract so
+// the hermetic tests exercise the same semantics: a fresh begin supersedes the prior
+// live challenge for (user, purpose), and the consume path redeems the newest live one
+// (expiry checked before consuming), single-use.
+func (f *fakeRepo) CreatePasskeyChallenge(_ context.Context, id, userID, purpose string, sessionData []byte, expiresAt time.Time) error {
+	for k, c := range f.passkeyChallenges { // supersede prior live (DELETE ... consumed_at IS NULL)
+		if c.userID == userID && c.purpose == purpose && !c.consumed {
+			delete(f.passkeyChallenges, k)
+		}
+	}
+	f.passkeyChallenges[id] = &fakePasskeyChallenge{
+		id: id, userID: userID, purpose: purpose, sessionData: sessionData,
+		expiresAt: expiresAt, createdAt: expiresAt, // createdAt proxy: constant TTL ⇒ later expiry == later creation
+	}
+	return nil
+}
+func (f *fakeRepo) ConsumePasskeyChallengeByUser(_ context.Context, userID, purpose string, now time.Time) ([]byte, error) {
+	var live *fakePasskeyChallenge
+	for _, c := range f.passkeyChallenges { // newest live (user, purpose)
+		if c.userID != userID || c.purpose != purpose || c.consumed {
+			continue
+		}
+		if live == nil || c.createdAt.After(live.createdAt) {
+			live = c
+		}
+	}
+	if live == nil || !live.expiresAt.After(now) {
+		return nil, ErrPasskeyChallengeInvalid
+	}
+	live.consumed = true
+	return live.sessionData, nil
+}
+
+// CreatePasskeyCredential mirrors PGRepo: a credential_id already bound to ANY account
+// → ErrConflict (the UNIQUE guard), never a silent rebind.
+func (f *fakeRepo) CreatePasskeyCredential(_ context.Context, c PasskeyCredential) error {
+	for _, ex := range f.passkeyCreds {
+		if ex.CredentialID == c.CredentialID {
+			return ErrConflict
+		}
+	}
+	f.passkeyCreds[c.ID] = c
+	return nil
+}
+
+// PasskeyCredentialsForUser mirrors PGRepo: the user's own passkeys, newest first.
+// CreatedAt orders the list; id is a deterministic tie-break for the frozen test clock
+// (the PG ORDER BY is created_at DESC; same-instant rows are simply stable here).
+func (f *fakeRepo) PasskeyCredentialsForUser(_ context.Context, userID string) ([]PasskeyCredential, error) {
+	var out []PasskeyCredential
+	for _, c := range f.passkeyCreds {
+		if c.UserID == userID {
+			out = append(out, c)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID > out[j].ID
+		}
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	return out, nil
+}
+
+// DeletePasskeyCredential mirrors PGRepo: scoped to userID so a caller can only unbind
+// their OWN credential; no matching (user, id) row → ErrNotFound.
+func (f *fakeRepo) DeletePasskeyCredential(_ context.Context, userID, id string) error {
+	if c, ok := f.passkeyCreds[id]; ok && c.UserID == userID {
+		delete(f.passkeyCreds, id)
+		return nil
+	}
+	return ErrNotFound
+}
+
+// fakePasskeyVerifier is the hermetic PasskeyVerifier: it performs no real attestation
+// crypto, so it exercises the enrollment STATE MACHINE (challenge persistence, consume,
+// conflict, audit) without go-webauthn. BeginRegistration returns a fixed options blob
+// and an opaque session marker; FinishRegistration returns the credential the test
+// preloaded, or a forced error when failErr is set (to drive the 400 path).
+type fakePasskeyVerifier struct {
+	options    json.RawMessage
+	credential VerifiedCredential
+	failErr    error
+	// lastUser/lastSession capture what the handler passed, so a test can assert the
+	// stashed SessionData round-trips and the existing credentials reach the verifier.
+	lastUser    PasskeyUser
+	lastSession []byte
+}
+
+func (v *fakePasskeyVerifier) BeginRegistration(user PasskeyUser) (json.RawMessage, []byte, error) {
+	v.lastUser = user
+	opts := v.options
+	if opts == nil {
+		opts = json.RawMessage(`{"publicKey":{"challenge":"ZmFrZQ"}}`)
+	}
+	return opts, []byte("session:" + user.ID), nil
+}
+
+func (v *fakePasskeyVerifier) FinishRegistration(user PasskeyUser, sessionData []byte, _ io.Reader) (VerifiedCredential, error) {
+	v.lastUser = user
+	v.lastSession = sessionData
+	if v.failErr != nil {
+		return VerifiedCredential{}, v.failErr
+	}
+	return v.credential, nil
 }
 func (f *fakeRepo) UserInAllowlist(_ context.Context, n, u string) (bool, error) {
 	return f.allowlist[n][u], nil

@@ -167,6 +167,22 @@ components:
               type: string
               description: Correlates the response with server logs (withRequestID middleware).
 
+    PasskeyCredential:
+      type: object
+      description: >
+        Display projection of one bound passkey (internal/api/handlers_passkey.go
+        passkeyCredentialView). Carries no secret — the public key is never returned.
+      required: [id, name, created_at]
+      properties:
+        id: { type: string, description: Opaque passkey row id (used to unbind it). }
+        name: { type: string, description: Caller-supplied nickname; empty if none. }
+        aaguid: { type: string, description: Authenticator model id, present only when known. }
+        created_at: { type: string, format: date-time }
+        last_used_at:
+          type: string
+          format: date-time
+          description: Present only once an assertion is verified (deferred login path).
+
     Phase:
       type: string
       description: MinecraftServer lifecycle phase (internal/apis/felis/v1alpha1).
@@ -1645,6 +1661,142 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '429':
           description: Too many incorrect attempts; the code is locked.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/account/passkey/register/begin:
+    post:
+      tags: [account]
+      operationId: passkeyRegisterBegin
+      summary: Begin a passkey (WebAuthn) registration ceremony for the caller (spec §14, Phase 6 bind).
+      description: >
+        Mints a credential-creation challenge bound to the authenticated principal,
+        stashes the server-side ceremony state under a short TTL, and returns the
+        WebAuthn publicKey creation options for navigator.credentials.create(). The
+        challenge is never echoed by the client. Enrollment only — passkey login is a
+        deferred slice. 503 when the WebAuthn verifier is not configured on this instance.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      responses:
+        '200':
+          description: "WebAuthn credential-creation options (the publicKey document)."
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Opaque WebAuthn PublicKeyCredentialCreationOptions, passed verbatim to the browser.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          description: Passkey subsystem is not configured.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/account/passkey/register/finish:
+    post:
+      tags: [account]
+      operationId: passkeyRegisterFinish
+      summary: Finish a passkey registration ceremony and bind the credential (spec §14, Phase 6 bind).
+      description: >
+        Consumes the caller's live registration challenge (single-use), verifies the
+        authenticator's attestation against the server-stashed ceremony state, and
+        persists the public credential. A missing or expired ceremony is a 400; an
+        attestation that fails verification is a 400; a credential already bound to any
+        account is a 409. 503 when the WebAuthn verifier is not configured.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [attestation]
+              properties:
+                name: { type: string, description: Human nickname for the passkey (e.g. "My phone"). }
+                attestation:
+                  type: object
+                  description: The raw navigator.credentials.create() result the browser posts back.
+      responses:
+        '201':
+          description: Passkey bound.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PasskeyCredential' }
+        '400':
+          description: No live ceremony, or the attestation could not be verified.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: This passkey is already bound to an account.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: Passkey subsystem is not configured.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/account/passkey/credentials:
+    get:
+      tags: [account]
+      operationId: passkeyList
+      summary: List the passkeys the caller has bound (spec §14, Phase 6 bind).
+      description: >
+        Returns the authenticated principal's own bound passkeys, newest first, as
+        display projections (never the public key). Reading the credential list does
+        not need the WebAuthn verifier, so it succeeds even where begin/finish report 503.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      responses:
+        '200':
+          description: The caller's bound passkeys.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [credentials]
+                properties:
+                  credentials:
+                    type: array
+                    items: { $ref: '#/components/schemas/PasskeyCredential' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/account/passkey/credentials/{id}:
+    delete:
+      tags: [account]
+      operationId: passkeyDelete
+      summary: Unbind one of the caller's passkeys (spec §14, Phase 6 bind).
+      description: >
+        Removes a passkey scoped to the authenticated principal, so a caller can only
+        unbind their OWN credential. An unknown or cross-user id is a 404; it never
+        silently no-ops as success.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+          description: The passkey row id (from the credential list).
+      responses:
+        '204':
+          description: Passkey unbound.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No such passkey for this caller.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
