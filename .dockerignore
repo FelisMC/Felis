@@ -1,15 +1,15 @@
-# Keep the felis image build context tiny: the binary is pure Go (only
-# internal/store/migrations/*.sql is embedded), so none of the web/plugin/doc
-# assets are needed and shipping them would bloat the context and slow `docker
-# build` on a small host.
+# Keep the felis image build context lean, but mind the embeds: three trees MUST
+# stay in the context or the image build fails. internal/store/migrations/*.sql,
+# deploy/bootstrap.sh and deploy/crd/*.yaml are //go:embed-ed by Go packages the
+# binary compiles, and internal/panel/static is the panel the Dockerfile panel
+# stage builds from panel/. Exclude only build-irrelevant trees below; never add
+# panel/, deploy/, or internal/ here without checking `grep -rn go:embed`.
 .git
 .claude
-node_modules
-panel
+**/node_modules
 plugins
 docs
 *.md
-deploy
 Dockerfile
 .dockerignore
 .gitignore
