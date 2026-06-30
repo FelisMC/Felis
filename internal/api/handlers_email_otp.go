@@ -121,16 +121,36 @@ func (a *API) handleEmailOTPStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "a valid email is required"))
 		return
 	}
-	// Throttle sends on both the caller and the recipient before minting anything,
-	// so a refused request mints no code and mails nothing. The recipient key is
-	// lower-cased so case variants of one address can't sidestep the per-mailbox cap.
+	// Atomically reserve the cooldown on both the caller and the recipient BEFORE
+	// minting, so a burst of truly concurrent starts yields exactly one winner. Here
+	// the throttle is the sole defense and each admitted send is a real, non-idempotent
+	// email, so an allowed→record peek would let N goroutines slip past together and
+	// bomb a mailbox. The recipient key is lower-cased so case variants of one address
+	// can't sidestep the per-mailbox cap. If any later step fails the deferred rollback
+	// frees both windows, so a failed mint or delivery never consumes the cooldown —
+	// the same property the old record-after-send gave, now race-free.
 	userKey, emailKey := "user:"+p.UserID, "email:"+strings.ToLower(email)
 	lim := a.otpLimiter()
-	if !lim.allowed(userKey, otpResendCooldown) || !lim.allowed(emailKey, otpResendCooldown) {
+	userAt, ok := lim.reserve(userKey, otpResendCooldown)
+	if !ok {
 		writeError(w, r, newError(http.StatusTooManyRequests, "otp_resend_cooldown",
 			"a code was sent recently; wait a moment before requesting another"))
 		return
 	}
+	emailAt, ok := lim.reserve(emailKey, otpResendCooldown)
+	if !ok {
+		lim.release(userKey, userAt)
+		writeError(w, r, newError(http.StatusTooManyRequests, "otp_resend_cooldown",
+			"a code was sent recently; wait a moment before requesting another"))
+		return
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			lim.release(userKey, userAt)
+			lim.release(emailKey, emailAt)
+		}
+	}()
 	code, err := newEmailOTP()
 	if err != nil {
 		writeError(w, r, err)
@@ -150,10 +170,9 @@ func (a *API) handleEmailOTPStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	// Start both cooldowns only after a code was actually sent: a failed mint or
-	// delivery above must not consume the throttle, mirroring the wake path.
-	lim.record(userKey)
-	lim.record(emailKey)
+	// The send succeeded: keep both reservations (the deferred rollback becomes a
+	// no-op) so the cooldown windows stand.
+	committed = true
 	a.audit(r, auditActor(p), "account.email.otp_sent", "")
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"sent":       true,

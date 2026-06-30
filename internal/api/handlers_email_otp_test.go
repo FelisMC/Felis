@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -411,5 +413,119 @@ func TestEmailOTPMailerError(t *testing.T) {
 		if a.Action == "account.email.otp_sent" {
 			t.Error("a failed delivery must not be audited as otp_sent")
 		}
+	}
+}
+
+// flakyMailer fails its first SendOTP, then succeeds, so a test can observe whether
+// a failed delivery left the cooldown consumed (a retry would be wrongly throttled)
+// or released (the retry is admitted, as it must be).
+type flakyMailer struct {
+	calls int
+}
+
+func (m *flakyMailer) SendOTP(_ context.Context, _, _ string) error {
+	m.calls++
+	if m.calls == 1 {
+		return errors.New("smtp down")
+	}
+	return nil
+}
+
+// TestEmailOTPStartFailedDeliveryReleasesCooldown covers the new reserve→rollback
+// path: a send that reserves the cooldown but then fails to deliver must release it,
+// so the very next attempt at the same instant is admitted rather than 429'd. Without
+// the deferred release a transient SMTP blip would lock a player out for the whole
+// window — strictly worse than the throttle is meant to be.
+func TestEmailOTPStartFailedDeliveryReleasesCooldown(t *testing.T) {
+	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
+	mailer := &flakyMailer{}
+	api := newTestAPI(newFakeRepo(), newFakeCluster())
+	api.External = staticExternal{p: user}
+	api.Mailer = mailer
+	api.Now = func() time.Time { return time.Unix(1_700_000_000, 0) } // frozen: same window
+	eh := api.ExternalHandler()
+
+	if w := do(eh, "POST", "/api/v1/account/email/start", `{"email":"player@example.net"}`, nil); w.Code < 500 {
+		t.Fatalf("first send (mailer fails): code = %d, want 5xx (%s)", w.Code, w.Body.String())
+	}
+	// Same instant, same caller and recipient: had the failed send burned the window
+	// this would be a 429. The rollback frees it, so the retry delivers.
+	if w := do(eh, "POST", "/api/v1/account/email/start", `{"email":"player@example.net"}`, nil); w.Code != http.StatusAccepted {
+		t.Fatalf("retry after failed delivery: code = %d, want 202 (the failed send must release the cooldown) (%s)", w.Code, w.Body.String())
+	}
+	if mailer.calls != 2 {
+		t.Errorf("mailer calls = %d, want 2 (one failed, one delivered)", mailer.calls)
+	}
+}
+
+// gateMailer blocks every SendOTP until all concurrent callers have arrived, making
+// any check-then-act window in the throttle deterministically observable instead of
+// scheduler-dependent. It is the committed counterpart of the adversarial burst probe.
+type gateMailer struct {
+	calls   int64
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (m *gateMailer) SendOTP(_ context.Context, _, _ string) error {
+	atomic.AddInt64(&m.calls, 1)
+	m.entered <- struct{}{}
+	<-m.release
+	return nil
+}
+
+// TestEmailOTPStartConcurrentBurstBounded is the regression guard for the email-bomb
+// closure under concurrency. net/http serves each request on its own goroutine, so a
+// throttle that peeks then records in two steps lets a burst of starts for one victim
+// from one principal all slip through together. The atomic reserve admits exactly one;
+// the rest get 429. (Runs without -race — the gate makes the race deterministic.)
+func TestEmailOTPStartConcurrentBurstBounded(t *testing.T) {
+	const n = 8
+	mailer := &gateMailer{entered: make(chan struct{}, n), release: make(chan struct{})}
+	api := newTestAPI(newFakeRepo(), newFakeCluster())
+	api.External = staticExternal{p: &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}}
+	api.Mailer = mailer
+	api.Now = func() time.Time { return time.Unix(1_700_000_000, 0) } // frozen: one shared window
+	eh := api.ExternalHandler()
+
+	var wg sync.WaitGroup
+	codes := make([]int, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			w := do(eh, "POST", "/api/v1/account/email/start", `{"email":"victim@example.net"}`, nil)
+			codes[i] = w.Code
+		}(i)
+	}
+
+	// Drain whoever reached the mailer, then release them. A correct throttle admits
+	// exactly one; a buggy one lets several arrive before any records, and they pile
+	// up here within the deadline.
+	deadline := time.After(2 * time.Second)
+	reached := 0
+loop:
+	for reached < n {
+		select {
+		case <-mailer.entered:
+			reached++
+		case <-deadline:
+			break loop
+		}
+	}
+	close(mailer.release)
+	wg.Wait()
+
+	accepted := 0
+	for _, c := range codes {
+		if c == http.StatusAccepted {
+			accepted++
+		}
+	}
+	if got := atomic.LoadInt64(&mailer.calls); got != 1 {
+		t.Errorf("burst delivered %d mails for one victim from one account in one window; want exactly 1 (accepted=%d, reached=%d)", got, accepted, reached)
+	}
+	if accepted != 1 {
+		t.Errorf("burst accepted %d starts; want exactly 1 (the rest must be 429)", accepted)
 	}
 }

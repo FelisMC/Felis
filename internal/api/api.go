@@ -421,6 +421,45 @@ func (c *cooldownLimiter) record(name string) {
 	c.last[name] = c.now()
 }
 
+// reserve atomically checks name's cooldown AND, if the window is open, records it
+// in the same critical section, returning the reservation time and true. Unlike
+// allowed→record there is no gap between the check and the commit, so a burst of
+// truly concurrent callers yields exactly one winner. Use it where the throttle is
+// the SOLE defense and each admitted call has a non-idempotent side effect (an OTP
+// email): an allowed peek would let N goroutines pass together before any records
+// and bomb a mailbox. The wake path can stay on allowed→record because its real
+// gate is the running cap and its side effect (SetDesiredState) is idempotent. A
+// non-positive window disables the throttle (the reservation is a no-op).
+func (c *cooldownLimiter) reserve(name string, window time.Duration) (time.Time, bool) {
+	if window <= 0 {
+		return time.Time{}, true
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if last, ok := c.last[name]; ok && c.now().Sub(last) < window {
+		return time.Time{}, false
+	}
+	t := c.now()
+	c.last[name] = t
+	return t, true
+}
+
+// release rolls back a reservation made at reservedAt, but only if it is still the
+// current one — a later reserve that superseded it is left intact. It lets a caller
+// undo its hold when a downstream step fails, so a failed mint or delivery never
+// consumes the window, without a slow failing caller clobbering a newer holder. A
+// zero reservedAt (a disabled-window reserve) matches nothing and is a no-op.
+func (c *cooldownLimiter) release(name string, reservedAt time.Time) {
+	if reservedAt.IsZero() {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if last, ok := c.last[name]; ok && last.Equal(reservedAt) {
+		delete(c.last, name)
+	}
+}
+
 // ---- running-server cap ----
 
 // withinRunningCap reports whether waking info's server is allowed under the
