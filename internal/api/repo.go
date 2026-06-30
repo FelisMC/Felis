@@ -89,6 +89,26 @@ type StaffUser struct {
 	EmailVerified bool
 }
 
+// PasskeyCredential is one bound passkey (Phase 6 WebAuthn enrollment). It carries
+// only public, non-secret attestation material: a WebAuthn public key is meant to
+// be public (unlike a session token), so it is safe at rest. CredentialID is the
+// authenticator's globally-unique handle (base64url) and PublicKey the COSE key
+// (base64); SignCount is the uint32 signature counter captured at registration.
+// LastUsedAt is nil until an assertion is verified — the login/step-up path that
+// would stamp it is out of scope for this enrollment-only slice (deferred), so it
+// stays nil through the flow this type backs.
+type PasskeyCredential struct {
+	ID           string
+	UserID       string
+	CredentialID string
+	PublicKey    string
+	SignCount    uint32
+	AAGUID       string
+	Name         string
+	CreatedAt    time.Time
+	LastUsedAt   *time.Time
+}
+
 // SessionedUser is the projection resolved from a live session cookie: the
 // identity SessionAuth needs to build a Principal. It omits the password hash —
 // the session has already authenticated the caller — but carries the pending
@@ -195,6 +215,39 @@ type Repo interface {
 	// user row is flipped to email=<the proven address>, email_verified=true; the
 	// proven email is returned. now is the API clock so expiry is testable.
 	VerifyEmailOTP(ctx context.Context, userID, purpose, codeHash string, now time.Time) (email string, err error)
+
+	// ---- player passkey enrollment (spec §14 WebAuthn / Phase 6 bind) ----
+
+	// CreatePasskeyChallenge persists the server-side state of a credential-creation
+	// ceremony for (userID, purpose): the opaque go-webauthn SessionData blob and its
+	// expiry. Only the server holds it, so the client cannot forge the challenge it
+	// must answer at finish. It supersedes any prior live (unconsumed) challenge for
+	// the same (userID, purpose) so a re-begin invalidates the earlier ceremony —
+	// at most one outstanding challenge per (user, purpose). expiresAt is the API
+	// clock + TTL so expiry is driven by one authoritative clock.
+	CreatePasskeyChallenge(ctx context.Context, id, userID, purpose string, sessionData []byte, expiresAt time.Time) error
+	// ConsumePasskeyChallengeByUser redeems the newest live (unconsumed, unexpired at
+	// now) challenge for (userID, purpose), atomically: it stamps consumed_at and
+	// returns the stashed SessionData so finish can validate the attestation against
+	// it. No live challenge → ErrPasskeyChallengeInvalid. Single-use: a second finish
+	// for the same ceremony finds nothing live and fails. now is the API clock so
+	// expiry is testable. Bound to user_id — enrollment always has a principal, so
+	// there is no usernameless consume-by-hash variant (login is a deferred slice).
+	ConsumePasskeyChallengeByUser(ctx context.Context, userID, purpose string, now time.Time) (sessionData []byte, err error)
+	// CreatePasskeyCredential stores a freshly verified passkey for a user (Phase 6
+	// enrollment). It writes only public attestation material (credential_id,
+	// public_key, sign_count, aaguid) plus the caller's nickname. A credential_id
+	// already bound to ANY account → ErrConflict (the UNIQUE guard); the handler maps
+	// that to 409 rather than silently rebinding an authenticator.
+	CreatePasskeyCredential(ctx context.Context, c PasskeyCredential) error
+	// PasskeyCredentialsForUser lists the passkeys a user has bound, newest first, for
+	// the credential-management view. It returns only display fields (never a secret —
+	// a passkey carries none); LastUsedAt is nil where no assertion has been verified.
+	PasskeyCredentialsForUser(ctx context.Context, userID string) ([]PasskeyCredential, error)
+	// DeletePasskeyCredential removes the passkey row id, scoped to userID so a caller
+	// can only unbind their OWN credential. No matching (user, id) row → ErrNotFound,
+	// so a stale or cross-user id cannot silently no-op as success.
+	DeletePasskeyCredential(ctx context.Context, userID, id string) error
 
 	// ---- player game-login: username-collision reclaim (spec §B3) ----
 

@@ -721,3 +721,149 @@ func (p *PGRepo) SetSetting(ctx context.Context, key string, value []byte) error
 		key, string(value))
 	return err
 }
+
+// ---- player passkey enrollment (spec §14 WebAuthn / Phase 6 bind, migration 0007) ----
+
+// CreatePasskeyChallenge supersedes any prior live challenge for (user, purpose) and
+// inserts the fresh one, in one transaction (mirrors CreateEmailOTP). The supersede
+// DELETE means a re-begin invalidates the earlier ceremony, so only the most recent
+// challenge can ever finish — at most one outstanding challenge per (user, purpose).
+// The opaque SessionData is held server-side so the client cannot forge the challenge
+// it must answer at finish.
+func (p *PGRepo) CreatePasskeyChallenge(ctx context.Context, id, userID, purpose string, sessionData []byte, expiresAt time.Time) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM webauthn_challenges WHERE user_id = $1 AND purpose = $2 AND consumed_at IS NULL`,
+		userID, purpose); err != nil {
+		return fmt.Errorf("supersede prior passkey challenge: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO webauthn_challenges (id, user_id, purpose, session_data, expires_at)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		id, userID, purpose, sessionData, expiresAt); err != nil {
+		return fmt.Errorf("insert passkey challenge: %w", err)
+	}
+	return tx.Commit()
+}
+
+// ConsumePasskeyChallengeByUser redeems the newest live (unconsumed, unexpired at now)
+// challenge for (user, purpose) in one transaction (mirrors VerifyEmailOTP). The row is
+// taken FOR UPDATE so a concurrent finish cannot double-spend it; expiry is checked
+// before consuming so a stale challenge is never accepted. On success consumed_at is
+// stamped (single-use) and the stashed SessionData is returned. No live row →
+// ErrPasskeyChallengeInvalid.
+func (p *PGRepo) ConsumePasskeyChallengeByUser(ctx context.Context, userID, purpose string, now time.Time) ([]byte, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+
+	var (
+		id          string
+		sessionData []byte
+		expiresAt   time.Time
+	)
+	switch err := tx.QueryRowContext(ctx,
+		`SELECT id, session_data, expires_at FROM webauthn_challenges
+		 WHERE user_id = $1 AND purpose = $2 AND consumed_at IS NULL
+		 ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+		userID, purpose).Scan(&id, &sessionData, &expiresAt); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, ErrPasskeyChallengeInvalid
+	case err != nil:
+		return nil, err
+	}
+
+	if !expiresAt.After(now) {
+		return nil, ErrPasskeyChallengeInvalid
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE webauthn_challenges SET consumed_at = $2 WHERE id = $1`, id, now); err != nil {
+		return nil, fmt.Errorf("consume passkey challenge: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return sessionData, nil
+}
+
+// CreatePasskeyCredential stores a freshly verified passkey (enrollment). Only public
+// attestation material is written; a credential_id already bound to ANY account is left
+// untouched (ON CONFLICT DO NOTHING) and reported as ErrConflict via a zero RowsAffected,
+// so an authenticator is never silently rebound. Empty aaguid/name land as SQL NULL.
+func (p *PGRepo) CreatePasskeyCredential(ctx context.Context, c PasskeyCredential) error {
+	res, err := p.db.ExecContext(ctx,
+		`INSERT INTO webauthn_credentials (id, user_id, credential_id, public_key, sign_count, aaguid, name, created_at)
+		 VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''), $8)
+		 ON CONFLICT (credential_id) DO NOTHING`,
+		c.ID, c.UserID, c.CredentialID, c.PublicKey, int64(c.SignCount), c.AAGUID, c.Name, c.CreatedAt)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrConflict
+	}
+	return nil
+}
+
+// PasskeyCredentialsForUser lists the passkeys a user has bound, newest first, for the
+// credential-management view. Nullable aaguid/name collapse to "" via COALESCE; the
+// nullable last_used_at maps to a *time.Time (nil until an assertion is verified).
+func (p *PGRepo) PasskeyCredentialsForUser(ctx context.Context, userID string) ([]PasskeyCredential, error) {
+	const q = `SELECT id, user_id, credential_id, public_key, sign_count,
+		COALESCE(aaguid, ''), COALESCE(name, ''), created_at, last_used_at
+		FROM webauthn_credentials WHERE user_id = $1 ORDER BY created_at DESC`
+	rows, err := p.db.QueryContext(ctx, q, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PasskeyCredential
+	for rows.Next() {
+		var (
+			c         PasskeyCredential
+			signCount int64
+			lastUsed  sql.NullTime
+		)
+		if err := rows.Scan(&c.ID, &c.UserID, &c.CredentialID, &c.PublicKey, &signCount,
+			&c.AAGUID, &c.Name, &c.CreatedAt, &lastUsed); err != nil {
+			return nil, err
+		}
+		c.SignCount = uint32(signCount)
+		if lastUsed.Valid {
+			t := lastUsed.Time
+			c.LastUsedAt = &t
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// DeletePasskeyCredential removes the passkey row id, scoped to userID so a caller can
+// only unbind their OWN credential. No matching (user, id) row → ErrNotFound via a zero
+// RowsAffected, so a stale or cross-user id cannot silently no-op as success.
+func (p *PGRepo) DeletePasskeyCredential(ctx context.Context, userID, id string) error {
+	res, err := p.db.ExecContext(ctx,
+		`DELETE FROM webauthn_credentials WHERE id = $1 AND user_id = $2`, id, userID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}

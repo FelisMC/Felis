@@ -36,6 +36,12 @@ var (
 	// can answer 429 (back off / request a new code) rather than inviting another
 	// guess against a code that will never accept one.
 	ErrOTPLocked = errors.New("email code locked: too many attempts")
+	// ErrPasskeyChallengeInvalid means a passkey enrollment ceremony cannot be
+	// finished: there is no live (unconsumed, unexpired) challenge for the caller and
+	// purpose (Phase 6 WebAuthn bind). Like ErrOTPInvalid it is a client error — the
+	// finish endpoint exists; the ceremony state is gone (never begun, already
+	// consumed, or expired) — so handlers map it to 400, not 404.
+	ErrPasskeyChallengeInvalid = errors.New("passkey challenge invalid or expired")
 )
 
 // apiError is a handler-level error carrying an HTTP status and a stable,
