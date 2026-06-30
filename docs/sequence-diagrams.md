@@ -30,7 +30,7 @@ sequenceDiagram
         Player->>Backend: connect
     else backend not ready and lobby configured
         Velocity-->>Player: initial server = lobby
-        Velocity->>API: POST /internal/servers/{name}/wake {mc_uuid}
+        Velocity->>API: POST /api/v1/internal/servers/{name}/wake {mc_uuid}
         API->>Cluster: GetServer(name)
         API->>API: authorize autostartPolicy, cooldown, running cap
         API->>Cluster: SetDesiredState(name, Running)
@@ -41,7 +41,7 @@ sequenceDiagram
         Backend-->>Operator: RCON-ready / lifecycle ready
         Operator-->>Cluster: status.ready=true
         loop every waiting tick
-            Velocity->>API: GET /internal/servers/{name}/status
+            Velocity->>API: GET /api/v1/internal/servers/{name}/status
             API->>Cluster: GetServer(name)
             API-->>Velocity: ready flag
         end
@@ -49,12 +49,12 @@ sequenceDiagram
         Velocity-->>Player: "ready - moving you in"
         Velocity->>Player: Connect request to backend
         Player->>Backend: connect
-        Velocity->>API: POST /internal/servers/{name}/join-event {mc_uuid}
+        Velocity->>API: POST /api/v1/internal/servers/{name}/join-event {mc_uuid}
         API->>API: RecordJoin; refresh activity and allowlist UUID
         API-->>Velocity: 204
     else backend not ready and no lobby configured
         Velocity-->>Player: disconnect with reconnect-later message
-        Velocity->>API: POST /internal/servers/{name}/wake {mc_uuid}
+        Velocity->>API: POST /api/v1/internal/servers/{name}/wake {mc_uuid}
         API->>Cluster: SetDesiredState(name, Running) if authorized
         API-->>Velocity: 202 or branchable error
     end
@@ -117,10 +117,10 @@ sequenceDiagram
     participant APIExternal as felis-api external face
 
     Player->>Game: /link
-    Game->>Game: read verified online-mode UUID and auth_source
+    Game->>Game: read verified online-mode UUID
     Game->>LinkClient: requestCode(mc_uuid)
-    LinkClient->>APIInternal: POST /api/v1/internal/account/link/code {mc_uuid, auth_source}
-    APIInternal->>APIInternal: validate UUID and auth_source; generate 8-symbol code
+    LinkClient->>APIInternal: POST /api/v1/internal/account/link/code {mc_uuid}
+    APIInternal->>APIInternal: validate UUID; default auth_source=mojang if absent; generate 8-symbol code
     APIInternal->>Repo: CreateLinkCode(code, mc_uuid, auth_source, expires_at)
     Repo-->>APIInternal: inserted account_link_codes row
     APIInternal-->>LinkClient: 201 {code, expires_at}
