@@ -379,11 +379,19 @@ func principalFromContext(ctx context.Context) *Principal {
 	return nil
 }
 
-// ---- wake cooldown ----
+// ---- per-key cooldown (wake + OTP) ----
 
-// cooldownLimiter is an in-memory per-server rate limiter for the wake lever.
-// It is process-local; with multiple api replicas the effective cooldown is
-// per-replica, which is acceptable because the operator reconcile is idempotent.
+// cooldownLimiter is an in-memory per-key cooldown. It backs two throttles with
+// separate keyspaces: the wake lever (key = server name, via allowed/record) and
+// the email-OTP start (keys = principal and recipient, via the atomic
+// reserve/release). It is process-local, so with multiple api replicas the
+// effective cooldown is per-replica. For wake that is acceptable — the operator
+// reconcile is idempotent, so a burst slipping through is harmless. For OTP it is a
+// real KNOWN-LIMITATION: each admitted send is a non-idempotent email, so across N
+// replicas a determined caller could draw up to N codes per window. The atomic
+// reserve/release pair closes the intra-replica concurrent burst (the bug fixed in
+// #35); cross-replica bounding would need a shared store (out of scope for the
+// single-replica demo).
 type cooldownLimiter struct {
 	mu     sync.Mutex
 	now    func() time.Time
