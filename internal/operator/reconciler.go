@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	"felis.lolicon.best/internal/metrics"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -235,6 +236,16 @@ func (r *Reconciler) markStarting(server *v1alpha1.MinecraftServer, reason, msg 
 	server.Status.Phase = v1alpha1.PhaseStarting
 	server.Status.Ready = false
 	server.Status.ObservedGeneration = server.Generation
+	// Anchor felis_start_duration_seconds (spec §23) at the first Starting pass of
+	// this start attempt. Set-once (cleared on stop) so re-entrant Starting
+	// reconciles preserve the original anchor and the observed duration spans the
+	// whole start, not just the last requeue. A server that reaches readiness
+	// without ever passing through Starting leaves this nil, and markRunningReady
+	// skips the observation rather than recording a bogus one.
+	if server.Status.StartRequestedAt == nil {
+		t := r.now()
+		server.Status.StartRequestedAt = &t
+	}
 	server.Status.Endpoint = v1alpha1.EndpointStatus{Mode: v1alpha1.EndpointFallback, Address: server.Spec.FallbackServer}
 	server.Status.LiveMotd = server.Spec.Motd.Starting
 	r.setCondition(server, v1alpha1.ConditionReady, metav1.ConditionFalse, reason, msg)
@@ -248,6 +259,13 @@ func (r *Reconciler) markRunningReady(server *v1alpha1.MinecraftServer) {
 	if server.Status.ReadySignalAt == nil {
 		t := r.now()
 		server.Status.ReadySignalAt = &t
+		// Observe felis_start_duration_seconds (spec §23) exactly once, when
+		// readiness is first reached. StartRequestedAt was persisted by an earlier
+		// Starting reconcile; if it is nil the server became ready without a
+		// Starting pass and there is no meaningful start interval to record.
+		if server.Status.StartRequestedAt != nil {
+			metrics.StartDurationSeconds.Observe(t.Sub(server.Status.StartRequestedAt.Time).Seconds())
+		}
 	}
 	server.Status.Endpoint = v1alpha1.EndpointStatus{Mode: v1alpha1.EndpointDirect, Address: gameAddress(server)}
 	server.Status.LiveMotd = server.Spec.Motd.Running
@@ -269,6 +287,9 @@ func (r *Reconciler) markStopped(server *v1alpha1.MinecraftServer) {
 	server.Status.Ready = false
 	server.Status.ObservedGeneration = server.Generation
 	server.Status.ReadySignalAt = nil
+	// Clear the start anchor so the next Running transition re-anchors and
+	// felis_start_duration_seconds measures the new start, not since the last one.
+	server.Status.StartRequestedAt = nil
 	server.Status.Players = v1alpha1.PlayersStatus{}
 	server.Status.Endpoint = v1alpha1.EndpointStatus{Mode: v1alpha1.EndpointFallback, Address: server.Spec.FallbackServer}
 	server.Status.LiveMotd = server.Spec.Motd.Stopped

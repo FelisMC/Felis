@@ -234,6 +234,13 @@ type MinecraftServerStatus struct {
 	LiveMotd string `json:"liveMotd,omitempty"`
 	// ReadySignalAt is when the first RCON probe succeeded.
 	ReadySignalAt *metav1.Time `json:"readySignalAt,omitempty"`
+	// StartRequestedAt is when the current start attempt was first observed
+	// (the first Starting reconcile after desiredState=Running). It anchors the
+	// felis_start_duration_seconds histogram (spec §23): the operator observes
+	// ReadySignalAt-StartRequestedAt the moment readiness is first reached, then
+	// clears this on stop so the next start re-anchors. Persisted in status
+	// because the two endpoints fall in different reconcile passes.
+	StartRequestedAt *metav1.Time `json:"startRequestedAt,omitempty"`
 	// ObservedGeneration is the spec generation this status reflects.
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 	// Conditions are the standard metav1 conditions (Ready, RconReached, ...).

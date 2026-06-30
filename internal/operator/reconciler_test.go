@@ -8,7 +8,9 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	"felis.lolicon.best/internal/metrics"
 	"felis.lolicon.best/internal/operator"
+	dto "github.com/prometheus/client_model/go"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -116,6 +118,18 @@ func markPodReady(t *testing.T, c client.Client, name string) {
 	sts := getSTS(t, c, name)
 	sts.Status.Replicas = 1
 	sts.Status.ReadyReplicas = 1
+	if err := c.Status().Update(context.Background(), sts); err != nil {
+		t.Fatalf("update sts status: %v", err)
+	}
+}
+
+// markPodTerminated simulates the StatefulSet's pods finishing termination after
+// a scale-to-zero, which the fake client does not do on its own.
+func markPodTerminated(t *testing.T, c client.Client, name string) {
+	t.Helper()
+	sts := getSTS(t, c, name)
+	sts.Status.Replicas = 0
+	sts.Status.ReadyReplicas = 0
 	if err := c.Status().Update(context.Background(), sts); err != nil {
 		t.Fatalf("update sts status: %v", err)
 	}
@@ -296,3 +310,91 @@ func isConditionTrue(server *v1alpha1.MinecraftServer, condType string) bool {
 }
 
 func ptrTime(t metav1.Time) *metav1.Time { return &t }
+
+// startDurationState reads the global felis_start_duration_seconds histogram's
+// accumulated sample count and sum directly (Histogram implements Metric.Write),
+// so assertions can be expressed as deltas and never depend on observations
+// other tests made into the same process-wide collector.
+func startDurationState(t *testing.T) (count uint64, sum float64) {
+	t.Helper()
+	var m dto.Metric
+	if err := metrics.StartDurationSeconds.Write(&m); err != nil {
+		t.Fatalf("read start_duration_seconds histogram: %v", err)
+	}
+	return m.GetHistogram().GetSampleCount(), m.GetHistogram().GetSampleSum()
+}
+
+// TestReconcileRunning_ObservesStartDuration proves the felis_start_duration_seconds
+// wiring (spec §23) end-to-end across reconcile passes: the Starting pass anchors
+// status.startRequestedAt, the value survives the patchStatus round-trip, and the
+// first Running pass observes ReadySignalAt-StartRequestedAt into the histogram.
+// A step-advancing clock (90s between the two passes) makes the observed duration
+// a non-zero, exact value rather than the 0 a constant clock would yield.
+func TestReconcileRunning_ObservesStartDuration(t *testing.T) {
+	r, c := newReconciler(t, fakeProber{}, runningServer(), rconSecret())
+
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	clock := base
+	// Override the constant fixedNow with a clock the test advances between passes.
+	// now() is stable within a single reconcile; only the explicit bump moves it.
+	r.Now = func() metav1.Time { return metav1.NewTime(clock) }
+
+	beforeCount, beforeSum := startDurationState(t)
+
+	reconcile(t, r, "survival") // Starting: anchors startRequestedAt = base
+	starting := getServer(t, c, "survival")
+	if starting.Status.StartRequestedAt == nil || !starting.Status.StartRequestedAt.Equal(ptrTime(metav1.NewTime(base))) {
+		t.Fatalf("startRequestedAt = %v, want %v", starting.Status.StartRequestedAt, base)
+	}
+
+	clock = base.Add(90 * time.Second) // 90s elapse before the pod reports ready
+	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival") // Running: observes 90s and sets readySignalAt
+
+	ready := getServer(t, c, "survival")
+	if ready.Status.Phase != v1alpha1.PhaseRunning || !ready.Status.Ready {
+		t.Fatalf("status = %s ready=%v, want Running ready", ready.Status.Phase, ready.Status.Ready)
+	}
+
+	afterCount, afterSum := startDurationState(t)
+	if got := afterCount - beforeCount; got != 1 {
+		t.Fatalf("histogram sample count delta = %d, want exactly 1 observation", got)
+	}
+	if got := afterSum - beforeSum; got != 90 {
+		t.Errorf("observed start duration = %vs, want 90s", got)
+	}
+}
+
+// TestReconcileRunning_StartDurationObservedOnce guards against a re-observation
+// bug: once a server is Running, further reconciles must not re-Observe the
+// histogram (the once-only readySignalAt guard owns the Observe), and a Stop must
+// clear startRequestedAt so a subsequent start re-anchors instead of measuring
+// from the original boot.
+func TestReconcileRunning_StartDurationObservedOnce(t *testing.T) {
+	r, c := newReconciler(t, fakeProber{}, runningServer(), rconSecret())
+
+	reconcile(t, r, "survival") // Starting
+	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival") // Running -> one observation
+
+	afterFirst, _ := startDurationState(t)
+
+	reconcile(t, r, "survival") // still Running -> must NOT observe again
+	afterSecond, _ := startDurationState(t)
+	if afterSecond != afterFirst {
+		t.Errorf("re-reconcile of a Running server observed again: %d -> %d", afterFirst, afterSecond)
+	}
+
+	// Stopping must clear the anchor so the next start measures afresh.
+	stopped := getServer(t, c, "survival")
+	stopped.Spec.DesiredState = v1alpha1.DesiredStopped
+	if err := c.Update(context.Background(), stopped); err != nil {
+		t.Fatalf("set desiredState=Stopped: %v", err)
+	}
+	reconcile(t, r, "survival")            // scales spec to 0; pods still terminating
+	markPodTerminated(t, c, "survival")    // pods finish draining
+	reconcile(t, r, "survival")            // reaches Stopped, clears startRequestedAt
+	if s := getServer(t, c, "survival"); s.Status.StartRequestedAt != nil {
+		t.Errorf("startRequestedAt = %v after Stop, want nil so the next start re-anchors", s.Status.StartRequestedAt)
+	}
+}

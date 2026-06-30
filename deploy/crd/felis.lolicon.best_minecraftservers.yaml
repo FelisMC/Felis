@@ -383,6 +383,16 @@ spec:
                 description: ReadySignalAt is when the first RCON probe succeeded.
                 format: date-time
                 type: string
+              startRequestedAt:
+                description: |-
+                  StartRequestedAt is when the current start attempt was first observed
+                  (the first Starting reconcile after desiredState=Running). It anchors the
+                  felis_start_duration_seconds histogram (spec §23): the operator observes
+                  ReadySignalAt-StartRequestedAt the moment readiness is first reached, then
+                  clears this on stop so the next start re-anchors. Persisted in status
+                  because the two endpoints fall in different reconcile passes.
+                format: date-time
+                type: string
             type: object
         type: object
     served: true
