@@ -57,6 +57,27 @@ var (
 	})
 )
 
+// SyncServerGauge republishes felis_servers_total from a full snapshot of the
+// fleet's per-server states. states holds one entry per MinecraftServer the
+// operator knows about (its desiredState).
+//
+// It Resets the GaugeVec before Setting one child per distinct state, so a state
+// that has drained to zero reports 0 rather than its stale last value. That is
+// the whole reason a periodic full-snapshot is used instead of inc/dec on
+// reconcile transitions: a snapshot is self-correcting and cannot drift on a
+// missed event. Producing the states slice (a cached List of MinecraftServers)
+// is the untestable I/O edge; this Reset+tally+Set logic is pure and unit-tested.
+func SyncServerGauge(states []string) {
+	ServersTotal.Reset()
+	counts := make(map[string]int, len(states))
+	for _, s := range states {
+		counts[s]++
+	}
+	for state, n := range counts {
+		ServersTotal.WithLabelValues(state).Set(float64(n))
+	}
+}
+
 // Collectors returns every felis_* collector in a stable order. Production and
 // tests register the same slice, so the test asserting the full set is exposed
 // also pins the production surface.

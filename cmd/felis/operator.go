@@ -79,6 +79,15 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 		return 1
 	}
 
+	// Republish felis_servers_total from a periodic full List of the fleet. A
+	// per-object reconcile can never maintain a fleet-wide gauge correctly, so a
+	// snapshot Runnable owns it; it shares the manager's cached client and stops
+	// with the manager.
+	if err := mgr.Add(&operator.GaugeSyncer{Client: mgr.GetClient()}); err != nil {
+		fmt.Fprintf(stderr, "felis operator: add gauge syncer: %v\n", err)
+		return 1
+	}
+
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		fmt.Fprintf(stderr, "felis operator: manager exited: %v\n", err)
 		return 1

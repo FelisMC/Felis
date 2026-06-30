@@ -54,6 +54,30 @@ func TestRegisterExposesNamedFelisMetrics(t *testing.T) {
 	}
 }
 
+func TestSyncServerGaugeResetsStaleStates(t *testing.T) {
+	// Self-contained (Reset->sync->assert within this one test) so it never
+	// clobbers another test's ServersTotal children. The correctness point is the
+	// Reset inside SyncServerGauge: a state present in one snapshot but absent from
+	// the next must drain to 0, not retain its stale last value forever.
+	SyncServerGauge([]string{"Running", "Running", "Stopped"})
+	if got := testutil.ToFloat64(ServersTotal.WithLabelValues("Running")); got != 2 {
+		t.Errorf("Running = %v, want 2", got)
+	}
+	if got := testutil.ToFloat64(ServersTotal.WithLabelValues("Stopped")); got != 1 {
+		t.Errorf("Stopped = %v, want 1", got)
+	}
+
+	// Next snapshot: the two Running servers are gone. Without the Reset the gauge
+	// would still report Running=2; with it, the child drains to 0.
+	SyncServerGauge([]string{"Stopped"})
+	if got := testutil.ToFloat64(ServersTotal.WithLabelValues("Running")); got != 0 {
+		t.Errorf("Running after drain = %v, want 0", got)
+	}
+	if got := testutil.ToFloat64(ServersTotal.WithLabelValues("Stopped")); got != 1 {
+		t.Errorf("Stopped = %v, want 1", got)
+	}
+}
+
 func TestRegisterIsIdempotent(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	if err := Register(reg); err != nil {
