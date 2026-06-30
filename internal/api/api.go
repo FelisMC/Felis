@@ -95,6 +95,9 @@ type API struct {
 
 	cooldownOnce sync.Once
 	cooldown     *cooldownLimiter
+
+	otpCooldownOnce sync.Once
+	otpCooldown     *cooldownLimiter
 }
 
 // now returns the current time using the injected clock.
@@ -111,6 +114,17 @@ func (a *API) limiter() *cooldownLimiter {
 		a.cooldown = &cooldownLimiter{now: a.now, last: map[string]time.Time{}}
 	})
 	return a.cooldown
+}
+
+// otpLimiter lazily builds a SEPARATE cooldown limiter for email-OTP sends, so an
+// OTP resend throttle never shares state with the wake throttle. Keyed by
+// principal and by recipient (see handleEmailOTPStart), it bounds how often a code
+// may be mailed and closes the email-bomb vector.
+func (a *API) otpLimiter() *cooldownLimiter {
+	a.otpCooldownOnce.Do(func() {
+		a.otpCooldown = &cooldownLimiter{now: a.now, last: map[string]time.Time{}}
+	})
+	return a.otpCooldown
 }
 
 // apiRoute is one served HTTP route. Each face exposes its routes as a single

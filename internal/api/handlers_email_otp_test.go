@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -150,6 +151,81 @@ func TestEmailOTPStartValidation(t *testing.T) {
 	})
 }
 
+// TestEmailOTPStartRateLimited closes the email-bomb vector: handleEmailOTPStart is
+// an authenticated primitive that mails arbitrary addresses, so a resend cooldown
+// bounds it on both the caller (a fan-out across many addresses) and the recipient
+// (a convergence of many accounts on one mailbox).
+func TestEmailOTPStartRateLimited(t *testing.T) {
+	const emailA, emailB = "a@example.net", "b@example.net"
+	u1 := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
+	u2 := &Principal{UserID: "u2", Email: "u2@example.net", Role: "user"}
+	start := func(eh http.Handler, email string) *httptest.ResponseRecorder {
+		return do(eh, "POST", "/api/v1/account/email/start", `{"email":"`+email+`"}`, nil)
+	}
+
+	t.Run("same caller and recipient is throttled, then recovers after the cooldown", func(t *testing.T) {
+		repo := newFakeRepo()
+		mailer := &captureMailer{}
+		api := newTestAPI(repo, newFakeCluster())
+		api.External = staticExternal{p: u1}
+		api.Mailer = mailer
+		clock := time.Unix(1_700_000_000, 0)
+		api.Now = func() time.Time { return clock }
+		eh := api.ExternalHandler()
+
+		if w := start(eh, emailA); w.Code != http.StatusAccepted {
+			t.Fatalf("first send: code = %d, want 202 (%s)", w.Code, w.Body.String())
+		}
+		// An immediate resend is refused with 429 — and mints/mails nothing.
+		if w := start(eh, emailA); w.Code != http.StatusTooManyRequests || decodeErr(t, w) != "otp_resend_cooldown" {
+			t.Fatalf("immediate resend: code = %d body %s, want 429 otp_resend_cooldown", w.Code, w.Body.String())
+		}
+		if mailer.calls != 1 {
+			t.Errorf("mailer calls = %d, want 1 (the throttled resend must not mail)", mailer.calls)
+		}
+		if len(repo.otps) != 1 {
+			t.Errorf("persisted codes = %d, want 1 (the throttled resend must not mint)", len(repo.otps))
+		}
+		// Once the cooldown elapses the same address may be mailed again.
+		clock = clock.Add(otpResendCooldown + time.Second)
+		if w := start(eh, emailA); w.Code != http.StatusAccepted {
+			t.Fatalf("post-cooldown send: code = %d, want 202 (%s)", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("one caller cannot fan out across addresses", func(t *testing.T) {
+		api := newTestAPI(newFakeRepo(), newFakeCluster())
+		api.External = staticExternal{p: u1}
+		api.Mailer = &captureMailer{}
+		eh := api.ExternalHandler()
+
+		if w := start(eh, emailA); w.Code != http.StatusAccepted {
+			t.Fatalf("send to A: code = %d, want 202", w.Code)
+		}
+		// A different recipient, same caller, same instant: the per-caller key throttles.
+		if w := start(eh, emailB); w.Code != http.StatusTooManyRequests {
+			t.Fatalf("fan-out to B: code = %d, want 429", w.Code)
+		}
+	})
+
+	t.Run("many callers cannot converge on one recipient", func(t *testing.T) {
+		api := newTestAPI(newFakeRepo(), newFakeCluster())
+		api.External = staticExternal{p: u1}
+		api.Mailer = &captureMailer{}
+		eh := api.ExternalHandler()
+
+		if w := start(eh, emailA); w.Code != http.StatusAccepted {
+			t.Fatalf("u1 send to A: code = %d, want 202", w.Code)
+		}
+		// A different caller targeting the same address, same instant: the per-recipient
+		// key throttles even though u2 has never sent before.
+		api.External = staticExternal{p: u2}
+		if w := start(eh, emailA); w.Code != http.StatusTooManyRequests {
+			t.Fatalf("u2 converge on A: code = %d, want 429", w.Code)
+		}
+	})
+}
+
 // TestEmailOTPVerifyRejections is the redeem-side failure matrix. The expired and
 // locked cases plant rows directly: the test clock is frozen, so an already-expired
 // or already-exhausted row is the only way to reach those branches deterministically.
@@ -275,10 +351,15 @@ func TestEmailOTPSupersede(t *testing.T) {
 	api := newTestAPI(repo, newFakeCluster())
 	api.External = staticExternal{p: user}
 	api.Mailer = mailer
+	// A re-request is a fresh send, so it must clear the resend cooldown: advance the
+	// clock past it between the two starts (supersede is orthogonal to the throttle).
+	clock := time.Unix(1_700_000_000, 0)
+	api.Now = func() time.Time { return clock }
 	eh := api.ExternalHandler()
 
 	do(eh, "POST", "/api/v1/account/email/start", `{"email":"player@example.net"}`, nil)
 	first := mailer.code
+	clock = clock.Add(otpResendCooldown + time.Second)
 	do(eh, "POST", "/api/v1/account/email/start", `{"email":"player@example.net"}`, nil)
 	second := mailer.code
 

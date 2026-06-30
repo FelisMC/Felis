@@ -41,6 +41,12 @@ const (
 	// a value in [0, otpCodeBound) zero-pads to exactly otpCodeDigits digits.
 	otpCodeDigits = 6
 	otpCodeBound  = 1_000_000
+	// otpResendCooldown is the minimum spacing between OTP sends. Without it,
+	// handleEmailOTPStart is an email-bomb primitive: an authenticated caller could
+	// drive unbounded mail to any address they type. The cooldown is enforced on two
+	// keys (principal and recipient) so neither one account fanning out across many
+	// addresses, nor many accounts converging on one address, can flood a mailbox.
+	otpResendCooldown = 60 * time.Second
 )
 
 // OTPMailer delivers a one-time code to an email address. It is a seam, not a
@@ -115,6 +121,16 @@ func (a *API) handleEmailOTPStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "a valid email is required"))
 		return
 	}
+	// Throttle sends on both the caller and the recipient before minting anything,
+	// so a refused request mints no code and mails nothing. The recipient key is
+	// lower-cased so case variants of one address can't sidestep the per-mailbox cap.
+	userKey, emailKey := "user:"+p.UserID, "email:"+strings.ToLower(email)
+	lim := a.otpLimiter()
+	if !lim.allowed(userKey, otpResendCooldown) || !lim.allowed(emailKey, otpResendCooldown) {
+		writeError(w, r, newError(http.StatusTooManyRequests, "otp_resend_cooldown",
+			"a code was sent recently; wait a moment before requesting another"))
+		return
+	}
 	code, err := newEmailOTP()
 	if err != nil {
 		writeError(w, r, err)
@@ -134,6 +150,10 @@ func (a *API) handleEmailOTPStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	// Start both cooldowns only after a code was actually sent: a failed mint or
+	// delivery above must not consume the throttle, mirroring the wake path.
+	lim.record(userKey)
+	lim.record(emailKey)
 	a.audit(r, auditActor(p), "account.email.otp_sent", "")
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"sent":       true,
