@@ -3,9 +3,11 @@ import {
   VIEW_MODES,
   availableViewModes,
   effectiveViewMode,
+  landingPathForView,
   parseViewMode,
   restoreViewMode,
   sectionsForView,
+  viewModeLabelKey,
   type ViewMode,
 } from "./viewmode";
 import { visibleSections } from "./nav";
@@ -160,5 +162,33 @@ describe("sectionsForView (UX ceiling, composed on visibleSections)", () => {
         }
       }
     }
+  });
+});
+
+describe("landingPathForView", () => {
+  it("opens each home at its section root", () => {
+    expect(landingPathForView("user")).toBe("/");
+    expect(landingPathForView("admin")).toBe("/admin");
+    expect(landingPathForView("ops")).toBe("/ops");
+  });
+
+  it("falls through to the User home for an out-of-band value", () => {
+    expect(landingPathForView("nope" as unknown as ViewMode)).toBe("/");
+  });
+
+  it("targets a real, navigable path for every known home", () => {
+    // Guards against a home being added without a landing route: each must resolve to
+    // an absolute path the router can reach.
+    for (const v of VIEW_MODES) {
+      expect(landingPathForView(v)).toMatch(/^\//);
+    }
+  });
+});
+
+describe("viewModeLabelKey", () => {
+  it("derives the navigation i18n key for each home", () => {
+    expect(viewModeLabelKey("user")).toBe("view_user");
+    expect(viewModeLabelKey("admin")).toBe("view_admin");
+    expect(viewModeLabelKey("ops")).toBe("view_ops");
   });
 });

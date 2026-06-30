@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider } from "@/lib/theme";
 import { TierProvider } from "@/lib/tier";
+import { ViewModeProvider } from "@/lib/viewmode-store";
 import { AppShell } from "@/components/AppShell";
 import { RequireAdmin } from "@/components/RequireAdmin";
 import { RequireAuth } from "@/components/RequireAuth";
@@ -24,6 +25,10 @@ export default function App() {
   return (
     <ThemeProvider>
       <TierProvider>
+        {/* ViewModeProvider sits inside TierProvider (it reads the live is_admin flag)
+            and outside BrowserRouter (it holds no route state; the switcher navigates
+            via useNavigate from within the router). */}
+        <ViewModeProvider>
         <BrowserRouter>
         <Routes>
           {/* Pre-app local-password surfaces (spec §B1). They sit OUTSIDE
@@ -64,6 +69,7 @@ export default function App() {
           </Route>
         </Routes>
       </BrowserRouter>
+      </ViewModeProvider>
     </TierProvider>
   </ThemeProvider>
   );

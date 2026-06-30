@@ -5,8 +5,11 @@ import { useTranslation } from "react-i18next";
 import * as SelectPrimitive from "@radix-ui/react-select";
 import { cn } from "@/lib/utils";
 import { useTier } from "@/lib/tier";
-import { visibleSections, type NavSection } from "@/lib/nav";
+import { type NavSection } from "@/lib/nav";
+import { sectionsForView } from "@/lib/viewmode";
+import { useViewMode } from "@/lib/viewmode-store";
 import { Select, SelectContent, SelectItem } from "@/components/ui/select";
+import { RoleSwitcher } from "@/components/RoleSwitcher";
 import { useTheme } from "@/lib/theme";
 import { api } from "@/lib/api";
 
@@ -138,11 +141,14 @@ function ThemeToggle() {
 
 export function AppShell() {
   const { isAdmin } = useTier();
+  const { view } = useViewMode();
   const { t, i18n } = useTranslation("navigation");
-  // Sections are derived purely from is_admin: User-Side always, Admin/SysAdmin
-  // only for admins. isAdmin is fail-closed (false while /me loads or on failure),
-  // so admin sections appear only once identity is confirmed.
-  const sections = visibleSections(isAdmin);
+  // Sections are derived from is_admin AND the chosen home: visibleSections drops
+  // every admin-gated section for a non-admin (fail-closed — false while /me loads or
+  // on failure), then the role-switcher's view narrows further to the home the admin
+  // is currently viewing. sectionsForView can only ever narrow, never widen, so an
+  // admin who steps down to the User-home sees a plain user's sidebar.
+  const sections = sectionsForView(view, isAdmin);
 
   // Sync document metadata with the active language.
   useEffect(() => {
@@ -176,10 +182,13 @@ export function AppShell() {
             </span>
           </div>
 
-          {/* 2. Profile Card */}
+          {/* 2. Role switcher (admin-only; renders nothing for a plain user) */}
+          <RoleSwitcher />
+
+          {/* 3. Profile Card */}
           <UserStrip />
 
-          {/* 3. Branding Sign-off (sits tight at the absolute bottom with leading-tight and centered) */}
+          {/* 4. Branding Sign-off (sits tight at the absolute bottom with leading-tight and centered) */}
           <div className="px-1 text-[10px] text-muted-foreground/50 leading-tight text-center">
             {t("common:brand_tagline")}
           </div>

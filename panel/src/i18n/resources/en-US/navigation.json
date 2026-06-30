@@ -6,5 +6,9 @@
   "admin_servers": "Servers",
   "admin_images": "Images",
   "sysadmin_section": "SysAdmin",
-  "sysadmin_fleet": "Fleet"
+  "sysadmin_fleet": "Fleet",
+  "view_switch_label": "Viewing as",
+  "view_user": "User",
+  "view_admin": "Admin",
+  "view_ops": "SysAdmin"
 }
