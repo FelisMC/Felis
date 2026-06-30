@@ -111,32 +111,3 @@ export function sectionsForView(view: ViewMode, isAdmin: boolean): NavSection[] 
   const ceiling = VIEW_RANK[effectiveViewMode(view, isAdmin)];
   return visibleSections(isAdmin).filter((s) => VIEW_RANK[s.id] <= ceiling);
 }
-
-/**
- * landingPathForView maps a (already-resolved) view to the route its home opens at.
- * Switching the role-switcher navigates here so the chosen home shows a meaningful
- * page rather than wherever the user happened to be. The admin/ops roots redirect to
- * their first concrete view (App.tsx), so naming the section root keeps this list
- * short and decoupled from which concrete page is "first". It does NOT gate — callers
- * pass a view already resolved by effectiveViewMode — so an out-of-band value falls
- * through to the always-safe User home.
- */
-export function landingPathForView(view: ViewMode): string {
-  switch (view) {
-    case "admin":
-      return "/admin";
-    case "ops":
-      return "/ops";
-    default:
-      return "/";
-  }
-}
-
-/**
- * viewModeLabelKey returns the i18n (navigation namespace) key for a view's switcher
- * label, keeping the key derivation in one tested place so the menu and any future
- * caller never hand-build a key that drifts from the translation files.
- */
-export function viewModeLabelKey(view: ViewMode): string {
-  return `view_${view}`;
-}

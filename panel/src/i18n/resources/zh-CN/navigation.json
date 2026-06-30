@@ -6,9 +6,5 @@
   "admin_servers": "服务器",
   "admin_images": "镜像",
   "sysadmin_section": "系统管理",
-  "sysadmin_fleet": "全平台服务器",
-  "view_switch_label": "当前视图",
-  "view_user": "用户",
-  "view_admin": "管理",
-  "view_ops": "系统管理"
+  "sysadmin_fleet": "全平台服务器"
 }
