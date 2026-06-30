@@ -23,9 +23,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
-type fakeProber struct{ err error }
+type fakeProber struct {
+	err     error
+	players operator.PlayerCount
+}
 
-func (f fakeProber) Probe(context.Context, string, string) error { return f.err }
+func (f fakeProber) Probe(context.Context, string, string) (operator.PlayerCount, error) {
+	return f.players, f.err
+}
 
 func newScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
@@ -233,6 +238,23 @@ func TestReconcileRunning_RconProbeGatesReadiness(t *testing.T) {
 	}
 	if !isConditionTrue(server, v1alpha1.ConditionRconReached) {
 		t.Error("RconReached condition should be True")
+	}
+}
+
+func TestReconcileRunning_PopulatesPlayerTally(t *testing.T) {
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 3, Max: 20}}, runningServer(), rconSecret())
+
+	reconcile(t, r, "survival") // creates workload, Starting
+	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival") // pod ready + probe OK -> Running
+
+	server := getServer(t, c, "survival")
+	if server.Status.Phase != v1alpha1.PhaseRunning {
+		t.Fatalf("phase = %s, want Running", server.Status.Phase)
+	}
+	// The probe's tally must land on Status.Players so the panel stops reporting 0/0.
+	if server.Status.Players.Online != 3 || server.Status.Players.Max != 20 {
+		t.Errorf("status players = %d/%d, want 3/20", server.Status.Players.Online, server.Status.Players.Max)
 	}
 }
 

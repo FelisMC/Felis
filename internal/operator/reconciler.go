@@ -108,7 +108,9 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		return ctrl.Result{RequeueAfter: requeueStarting}, nil
 	}
 
-	// Then the operator gates true readiness on an RCON probe (spec §5).
+	// Then the operator gates true readiness on an RCON probe (spec §5), which
+	// also samples the current player tally for Status.Players.
+	var players PlayerCount
 	if server.Spec.Rcon.Enabled {
 		password, err := r.rconPassword(ctx, server)
 		if err != nil {
@@ -118,16 +120,18 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 			}
 			return ctrl.Result{RequeueAfter: requeueSecret}, nil
 		}
-		if err := r.Prober.Probe(ctx, rconAddress(server), password); err != nil {
+		pc, err := r.Prober.Probe(ctx, rconAddress(server), password)
+		if err != nil {
 			r.markStarting(server, "RconNotReachable", err.Error())
 			if perr := r.patchStatus(ctx, server); perr != nil {
 				return ctrl.Result{}, perr
 			}
 			return ctrl.Result{RequeueAfter: requeueStarting}, nil
 		}
+		players = pc
 	}
 
-	r.markRunningReady(server)
+	r.markRunningReady(server, players)
 	return ctrl.Result{}, r.patchStatus(ctx, server)
 }
 
@@ -252,10 +256,13 @@ func (r *Reconciler) markStarting(server *v1alpha1.MinecraftServer, reason, msg 
 	r.setCondition(server, v1alpha1.ConditionRconReached, metav1.ConditionFalse, reason, msg)
 }
 
-func (r *Reconciler) markRunningReady(server *v1alpha1.MinecraftServer) {
+func (r *Reconciler) markRunningReady(server *v1alpha1.MinecraftServer, players PlayerCount) {
 	server.Status.Phase = v1alpha1.PhaseRunning
 	server.Status.Ready = true
 	server.Status.ObservedGeneration = server.Generation
+	// Refresh the player tally sampled by this reconcile's RCON probe so the panel
+	// reports live occupancy instead of the 0/0 markStopped leaves behind.
+	server.Status.Players = v1alpha1.PlayersStatus{Online: players.Online, Max: players.Max}
 	if server.Status.ReadySignalAt == nil {
 		t := r.now()
 		server.Status.ReadySignalAt = &t
