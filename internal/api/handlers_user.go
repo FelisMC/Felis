@@ -39,7 +39,7 @@ func (a *API) handleWake(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	if !a.limiter().allow(name, a.WakeCooldown) {
+	if !a.limiter().allowed(name, a.WakeCooldown) {
 		writeError(w, r, newError(http.StatusTooManyRequests, "cooldown", "wake is cooling down, retry shortly"))
 		return
 	}
@@ -60,6 +60,11 @@ func (a *API) handleWake(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	// The wake actually flipped, so consume the per-server cooldown only now: a 503
+	// at_capacity or the SetDesiredState failure above must not burn it (a player
+	// held at capacity should retry the instant a slot frees, not wait out a
+	// cooldown their refused wake never earned).
+	a.limiter().record(name)
 	a.audit(r, p.Email, "wake", name)
 	writeJSON(w, http.StatusAccepted, map[string]any{"name": name, "desiredState": "Running"})
 }

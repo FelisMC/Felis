@@ -377,19 +377,34 @@ type cooldownLimiter struct {
 	window time.Duration
 }
 
-// allow reports whether name may wake now, recording the attempt when allowed.
-func (c *cooldownLimiter) allow(name string, window time.Duration) bool {
+// allowed reports whether name may wake now WITHOUT recording the attempt. A
+// non-positive window disables the throttle. Splitting the check (allowed) from
+// the commit (record) lets the wake path consult the cooldown for its 429 before
+// a downstream gate — the §9.1 running-cap 503 — decides whether the wake will
+// actually happen, so a wake refused at capacity never burns the per-server
+// cooldown.
+func (c *cooldownLimiter) allowed(name string, window time.Duration) bool {
 	if window <= 0 {
 		return true
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	t := c.now()
-	if last, ok := c.last[name]; ok && t.Sub(last) < window {
+	if last, ok := c.last[name]; ok && c.now().Sub(last) < window {
 		return false
 	}
-	c.last[name] = t
 	return true
+}
+
+// record starts name's cooldown at the current time. The wake path calls it only
+// after the wake actually flips desiredState, so neither a 503 at_capacity nor a
+// SetDesiredState error consumes the cooldown. allowed→record is deliberately not
+// atomic: like the running-cap above, the cooldown is a soft throttle (a burst of
+// truly concurrent wakes may each pass allowed before any records), which is
+// harmless because SetDesiredState is idempotent.
+func (c *cooldownLimiter) record(name string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.last[name] = c.now()
 }
 
 // ---- running-server cap ----

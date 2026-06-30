@@ -148,7 +148,7 @@ func (a *API) handleInternalWake(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	if !a.limiter().allow(name, a.WakeCooldown) {
+	if !a.limiter().allowed(name, a.WakeCooldown) {
 		writeError(w, r, newError(http.StatusTooManyRequests, "cooldown", "wake is cooling down, retry shortly"))
 		return
 	}
@@ -170,6 +170,10 @@ func (a *API) handleInternalWake(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	// Consume the shared per-server cooldown only after the wake flips, so a join
+	// the cap held with 503 (or a SetDesiredState error) leaves the cooldown
+	// untouched and the next join attempt is not also throttled.
+	a.limiter().record(name)
 	_ = a.Repo.Audit(r.Context(), AuditEntry{
 		Actor: "velocity", Source: "internal", Action: "wake", ServerName: name,
 		RequestID: requestIDFromContext(r.Context()),

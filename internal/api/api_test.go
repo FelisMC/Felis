@@ -977,6 +977,44 @@ func TestWakeRunningCap(t *testing.T) {
 	})
 }
 
+// TestWakeCooldownNotBurnedAtCapacity is the §9.1 regression guard for the
+// cooldown/cap ordering: a wake the running-cap refuses with 503 must NOT start
+// the per-server cooldown. Otherwise a player held because the cluster was
+// momentarily full would, once a slot frees, still be made to wait out a 30s
+// cooldown their refused wake never earned. With the clock frozen, a 503 followed
+// by the same server waking the instant capacity frees must return 202, not 429.
+func TestWakeCooldownNotBurnedAtCapacity(t *testing.T) {
+	cl := newFakeCluster()
+	target := &ServerInfo{Name: "survival", AutostartPolicy: "public",
+		DesiredState: string(v1alpha1.DesiredStopped)}
+	cl.byName["survival"] = target
+	cl.list = []ServerInfo{*target, {Name: "other", DesiredState: string(v1alpha1.DesiredRunning)}}
+	api := newTestAPI(newFakeRepo(), cl)
+	api.WakeCooldown = time.Minute
+	api.MaxRunningServers = 1
+	api.External = staticExternal{p: &Principal{UserID: "u", Role: "user"}}
+	h := api.ExternalHandler()
+
+	// The cluster is full (1 running == cap): the wake is refused with 503 and must
+	// leave the cooldown unstarted.
+	if w := do(h, "POST", "/api/v1/servers/survival/wake", "", nil); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("at-capacity wake code = %d, want 503", w.Code)
+	}
+	if _, set := cl.desired["survival"]; set {
+		t.Fatal("desiredState must not change when refused at capacity")
+	}
+
+	// A slot frees (the other server is gone). The same server, same frozen clock,
+	// must now wake — a 429 here would prove the 503 had burned the cooldown.
+	cl.list = []ServerInfo{*target}
+	if w := do(h, "POST", "/api/v1/servers/survival/wake", "", nil); w.Code != http.StatusAccepted {
+		t.Fatalf("post-capacity wake code = %d, want 202 (the 503 must not burn the cooldown)", w.Code)
+	}
+	if cl.desired["survival"] != v1alpha1.DesiredRunning {
+		t.Fatalf("desired = %q, want Running", cl.desired["survival"])
+	}
+}
+
 // ---- Zero-Trust admin boundary (§14) ----
 
 func TestAdminBoundary(t *testing.T) {
