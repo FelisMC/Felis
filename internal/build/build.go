@@ -36,6 +36,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"felis.lolicon.best/internal/metrics"
 )
 
 // Status mirrors the build_status enum (spec §6).
@@ -307,6 +309,12 @@ func (b *Builder) Submit(ctx context.Context, req Request) (*Build, error) {
 	if err != nil {
 		// The pending row exists; mark it failed so it is not reconciled forever.
 		_ = b.Store.FinishBuild(ctx, bld.ID, StatusFailed, "job creation failed: "+err.Error(), b.now())
+		// felis_image_build_failures_total (spec §23): this terminal-failure path
+		// records the build directly, not via finishAt, so it increments the counter
+		// itself. The FinishBuild error is deliberately ignored (the build is failed
+		// for the caller regardless), so the count tracks the failure event, not the
+		// store write.
+		metrics.ImageBuildFailuresTotal.Inc()
 		bld.Status = StatusFailed
 		bld.Error = "job creation failed: " + err.Error()
 		return bld, fmt.Errorf("build: create job: %w", err)
@@ -443,6 +451,16 @@ func (b *Builder) finish(ctx context.Context, bld *Build, status Status, msg str
 func (b *Builder) finishAt(ctx context.Context, bld *Build, status Status, msg string, at time.Time) (*Build, error) {
 	if err := b.Store.FinishBuild(ctx, bld.ID, status, msg, at); err != nil {
 		return nil, err
+	}
+	if status == StatusFailed {
+		// felis_image_build_failures_total (spec §23) counts builds that reached a
+		// failed terminal state — a kaniko failure or a CRITICAL CVE surfaced by
+		// trivy's --exit-code 1, observed here as the Sync JobFailed/JobUnknown
+		// verdict. Cancellations (StatusCancelled) are deliberately not failures.
+		// Incremented only after the failed status is persisted, so the counter
+		// never runs ahead of the store. (Submit's job-creation path records its
+		// failure outside finishAt and increments there.)
+		metrics.ImageBuildFailuresTotal.Inc()
 	}
 	bld.Status = status
 	bld.Error = msg

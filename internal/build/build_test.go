@@ -5,6 +5,9 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"felis.lolicon.best/internal/metrics"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 var testNow = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -354,6 +357,56 @@ func TestSyncAllAdvancesUnfinishedBuilds(t *testing.T) {
 	if n != 1 {
 		t.Errorf("advanced = %d, want 1", n)
 	}
+}
+
+// TestImageBuildFailuresMetricCountsFailedBuilds asserts felis_image_build_failures_total
+// (spec §23) advances exactly once per failed build from BOTH terminal-failure
+// producers, and never on a successful build. There are two distinct Inc sites —
+// finishAt (the Sync verdict) and Submit's job-creation bypass — so each is
+// exercised separately; the success case is the negative control proving the
+// StatusFailed guard discriminates rather than firing on every terminal write.
+// Deltas are read around each action because the counter is a process-global
+// singleton these package tests share (they run sequentially).
+func TestImageBuildFailuresMetricCountsFailedBuilds(t *testing.T) {
+	read := func() float64 { return testutil.ToFloat64(metrics.ImageBuildFailuresTotal) }
+
+	t.Run("sync job-failed verdict increments via finishAt", func(t *testing.T) {
+		b, _, jb := newBuilder()
+		bld, _ := b.Submit(context.Background(), goodRequest())
+		before := read()
+		jb.phase = JobFailed
+		if _, err := b.Sync(context.Background(), bld.ID); err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
+		if got := read() - before; got != 1 {
+			t.Errorf("failures delta = %v, want 1", got)
+		}
+	})
+
+	t.Run("submit job-create failure increments via bypass", func(t *testing.T) {
+		b, _, jb := newBuilder()
+		jb.createErr = errors.New("apiserver down")
+		before := read()
+		if _, err := b.Submit(context.Background(), goodRequest()); err == nil {
+			t.Fatal("expected Submit error when job creation fails")
+		}
+		if got := read() - before; got != 1 {
+			t.Errorf("failures delta = %v, want 1", got)
+		}
+	})
+
+	t.Run("successful build does not increment", func(t *testing.T) {
+		b, _, jb := newBuilder()
+		bld, _ := b.Submit(context.Background(), goodRequest())
+		before := read()
+		jb.phase = JobSucceeded
+		if _, err := b.Sync(context.Background(), bld.ID); err != nil {
+			t.Fatalf("Sync: %v", err)
+		}
+		if got := read() - before; got != 0 {
+			t.Errorf("failures delta on success = %v, want 0", got)
+		}
+	})
 }
 
 // ---- cancellation ----
