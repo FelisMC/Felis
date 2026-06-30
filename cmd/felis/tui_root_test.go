@@ -149,14 +149,19 @@ func TestRootRerunLandsOnStatus(t *testing.T) {
 }
 
 func TestRootBreakGlassQuitsAfterOwner(t *testing.T) {
-	// Break-glass starts at owner and must quit on owner completion without
-	// entering the connection chooser.
+	// Break-glass with a staff account present opens on the operation menu; choosing
+	// "provision/reset the Owner" lands on the owner screen, which must quit on
+	// completion without entering the connection chooser (that step is setup-only).
 	m := newTestRoot(true, consoleModeBreakGlass, "")
+	if m.stage != stageMenu {
+		t.Fatalf("break-glass initial stage = %v, want stageMenu", m.stage)
+	}
+	m = drive(t, m, menuChoiceMsg{op: bgProvisionOwner})
 	if m.stage != stageOwner {
-		t.Fatalf("break-glass initial stage = %v, want stageOwner", m.stage)
+		t.Fatalf("after the menu choice, stage = %v, want stageOwner", m.stage)
 	}
 	if _, ok := m.screen.(*ownerModel); !ok {
-		t.Fatalf("break-glass initial screen = %T, want *ownerModel", m.screen)
+		t.Fatalf("after the menu choice, screen = %T, want *ownerModel", m.screen)
 	}
 
 	next, cmd := m.Update(ownerResultMsg{username: "owner", displayPassword: "pw", mode: "recovery"})

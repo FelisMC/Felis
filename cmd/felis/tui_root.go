@@ -57,6 +57,7 @@ type ownerResultMsg struct {
 	mode            string
 	accountable     string
 	auditWarning    string
+	isOperator      bool // true when an Operator was added rather than the Owner provisioned
 	err             error
 }
 
@@ -89,6 +90,10 @@ const (
 	stageOwner
 	stageConnect
 	stageSummary
+	// stageMenu is the break-glass operation menu. It is appended last so the
+	// setup-flow rail indices (Preflight…Done) are unshifted; the rail is suppressed
+	// in break-glass mode, so this stage never reaches it.
+	stageMenu
 )
 
 // setupRailSteps is the one progress rail shared by the whole first-run flow,
@@ -145,8 +150,18 @@ func newRootModel(ctx context.Context, store ownerStore, dbURL, rootDomain, admi
 		},
 	}
 	if mode == consoleModeBreakGlass {
-		rm.stage = stageOwner
-		rm.screen = newOwnerModel(ctx, store, osUser, adminExists)
+		if adminExists {
+			// A staff account exists, so account operations are peers: open on the menu
+			// (provision/reset Owner, or add Operator).
+			rm.stage = stageMenu
+			rm.screen = newMenuModel()
+		} else {
+			// Fresh machine: bootstrapping the first Owner is the only sensible op, so skip
+			// the menu and go straight to it (offering "add Operator" here would mint a
+			// staff account the login gate still rejects).
+			rm.stage = stageOwner
+			rm.screen = newOwnerModel(ctx, store, osUser, adminExists)
+		}
 	} else {
 		rm.stage = stagePreflight
 		rm.screen = newPreflightModel(dbURL, rootDomain)
@@ -182,12 +197,24 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.stage = stageOwner
 		return m.adopt(newOwnerModel(m.ctx, m.store, m.osUser, false))
 
+	case menuChoiceMsg:
+		// The break-glass menu picked an account operation; build its screen. Both reuse
+		// stageOwner (the rail is suppressed in break-glass, so the stage is only a label).
+		m.stage = stageOwner
+		switch msg.op {
+		case bgAddOperator:
+			return m.adopt(newOperatorModel(m.ctx, m.store, m.osUser))
+		default:
+			return m.adopt(newOwnerModel(m.ctx, m.store, m.osUser, m.adminExists))
+		}
+
 	case ownerResultMsg:
 		if msg.err != nil {
 			m.err = msg.err
 			return m, tea.Quit
 		}
 		m.result.provisioned = true
+		m.result.isOperator = msg.isOperator
 		m.result.username = msg.username
 		m.result.displayPassword = msg.displayPassword
 		m.result.mode = msg.mode

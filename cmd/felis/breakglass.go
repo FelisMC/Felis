@@ -39,16 +39,25 @@ import (
 // this is root and can edit Postgres directly — but it produces an honest trail
 // for an honest operator, which is the point.
 //
-// The console opens on a thin top-level router (stepMenu) so that operations
-// are peers, not tails of one wizard. Two are wired today: (1) provision/reset
-// the Owner — the thin thread above — and (2) an OPTIONAL Cloudflare Tunnel +
-// Access edge (internal/cfsetup), kept "锦上添花": it is reachable WITHOUT touching
-// the Owner credential, supported but never required, and gated entirely on the
-// operator's own Cloudflare account. The remaining ops (halt, sync, S3) land in a
-// later phase as further menu peers. The edge flow's verifiable logic lives in
-// cfsetup (fail-closed policy, ingress, gating, all unit-tested); what this file
-// adds for it is the untested bubbletea shell plus a `tea.ExecProcess` suspension
-// for the interactive `cloudflared tunnel login` browser consent.
+// When a staff account already exists the console opens on a thin top-level menu
+// (menuModel) so that operations are peers, not tails of one wizard. Two account
+// operations are wired today: (1) provision/reset the Owner — the thin thread above,
+// which also re-enables local-password login — and (2) add an Operator: an
+// insert-only mint of an additional staff admin (provisionOperator) that
+// deliberately never touches the global local_auth toggle. On a fresh machine (no
+// Owner yet) the menu is skipped: bootstrapping the first Owner is the only sensible
+// operation, and adding an Operator first would mint a staff account the login gate
+// still rejects. The remaining ops (halt, sync, S3) land in a later phase as further
+// menu peers.
+//
+// An OPTIONAL Cloudflare Tunnel + Access edge (internal/cfsetup) is offered by the
+// first-run SETUP flow (runSetupTUI / the connection chooser), not by this
+// break-glass menu, though its helpers live in this file. It is kept "锦上添花":
+// reachable WITHOUT touching the Owner credential, supported but never required, and
+// gated entirely on the operator's own Cloudflare account. The edge flow's verifiable
+// logic lives in cfsetup (fail-closed policy, ingress, gating, all unit-tested); what
+// this file adds for it is the untested bubbletea shell plus a `tea.ExecProcess`
+// suspension for the interactive `cloudflared tunnel login` browser consent.
 
 // breakGlassOverrideToken is the literal an operator must type to proceed when no
 // admin credential could be verified. Requiring an explicit, deliberate word (not a
@@ -147,7 +156,13 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 	// outcome — and any generated one-time password — survives in scrollback long
 	// enough for the operator to log in.
 	if res.provisioned {
-		fmt.Fprintf(stdout, "\nfelis breakGlass: Owner account %q provisioned; local-password login is ENABLED.\n", res.username)
+		if res.isOperator {
+			// Adding an Operator does NOT flip local_auth_enabled (performAddOperator),
+			// so the summary must not claim it did — only the Owner thread enables login.
+			fmt.Fprintf(stdout, "\nfelis breakGlass: Operator account %q provisioned.\n", res.username)
+		} else {
+			fmt.Fprintf(stdout, "\nfelis breakGlass: Owner account %q provisioned; local-password login is ENABLED.\n", res.username)
+		}
 		fmt.Fprintf(stdout, "Recorded as %q (mode: %s, os user: %s).\n", res.accountable, res.mode, res.osUser)
 		if res.displayPassword != "" {
 			// A one-time password was generated (recovery / root override). It is shown,
@@ -500,6 +515,7 @@ func auditAddOperator(ctx context.Context, s ownerStore, op breakGlassOp) error 
 // post-exit summary. provisioned is false on cancel.
 type breakGlassResult struct {
 	provisioned     bool
+	isOperator      bool // an Operator was added rather than the Owner provisioned
 	mode            string
 	accountable     string
 	osUser          string

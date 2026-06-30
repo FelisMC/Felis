@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 
+	"felis.lolicon.best/internal/api"
+
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
@@ -37,19 +39,28 @@ const (
 // override, owner details) are huh forms; the async phases (verifying,
 // provisioning) show a spinner; the done phase shows the credential card. The
 // outward contract is unchanged: it emits an ownerResultMsg when finished.
+//
+// The same model serves the Add-Operator break-glass operation: the Owner and
+// Operator flows are identical in shape (authenticate or override → collect a
+// username → provision → show a one-time credential), so an operation discriminator
+// switches the few differences (which provision function runs, the on-screen
+// labels, whether a username is defaulted) rather than forking a near-duplicate
+// model. The zero value, bgProvisionOwner, is the original Owner behaviour.
 type ownerModel struct {
 	ctx         context.Context
 	store       ownerStore
 	osUser      string
 	adminExists bool
+	operation   bgOperation
 	mode        string // "bootstrap", "recovery", "root_override"
 	accountable string
 	attempt     string
 
-	step    owStep
-	form    *huh.Form
-	sp      spinner.Model
-	working string
+	step         owStep
+	form         *huh.Form
+	sp           spinner.Model
+	working      string
+	provisionErr error // last provision failure routed back to the form (operator name clash)
 
 	width, height int
 
@@ -92,7 +103,40 @@ func newOwnerModel(ctx context.Context, store ownerStore, osUser string, adminEx
 	return m
 }
 
+// newOperatorModel builds the model for the Add-Operator break-glass operation. It
+// always starts at admin authentication: adding an Operator presupposes an existing
+// admin (that is why the menu only offers it when one exists), so there is no
+// bootstrap branch and the password is always generated. The username is left empty
+// on purpose — defaulting it to "owner" (as the Owner flow does) would make the
+// happy path insert a duplicate and hit ErrConflict on every attempt.
+func newOperatorModel(ctx context.Context, store ownerStore, osUser string) *ownerModel {
+	sp := spinner.New()
+	sp.Spinner = spinner.Dot
+	sp.Style = tuiLabel
+
+	m := &ownerModel{
+		ctx:         ctx,
+		store:       store,
+		osUser:      osUser,
+		adminExists: true,
+		operation:   bgAddOperator,
+		sp:          sp,
+	}
+	m.step = owAuth
+	m.form = m.buildAuthForm()
+	return m
+}
+
 func (m *ownerModel) Init() tea.Cmd { return m.form.Init() }
+
+// subject is the human label for the account being provisioned, branching every
+// on-screen string and the durable summary between the two operations.
+func (m *ownerModel) subject() string {
+	if m.operation == bgAddOperator {
+		return "Operator"
+	}
+	return "Owner"
+}
 
 func (m *ownerModel) setSize(w, h int) {
 	m.width, m.height = w, h
@@ -133,6 +177,17 @@ func (m *ownerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case owProvisionMsg:
 		if msg.err != nil {
+			// A taken Operator username is the expected, recoverable outcome of the
+			// insert-only operator path (refusing the clash is the whole reason it is
+			// insert-only, not an upsert). Route back to the form with a note so the
+			// operator can pick another name, rather than tearing down the console —
+			// any other error is a genuine fault and still ends the session.
+			if m.operation == bgAddOperator && errors.Is(msg.err, api.ErrConflict) {
+				m.provisionErr = msg.err
+				m.step = owProvision
+				m.form = m.sized(m.buildProvisionForm())
+				return m, m.form.Init()
+			}
 			return m, m.failCmd(msg.err)
 		}
 		m.step = owDone
@@ -215,7 +270,7 @@ func (m *ownerModel) onFormComplete() (tea.Model, tea.Cmd) {
 	case owProvision:
 		m.username = strings.TrimSpace(m.ownerUser)
 		m.step = owWorking
-		m.working = "Provisioning Owner account…"
+		m.working = "Provisioning " + m.subject() + " account…"
 		return m, tea.Batch(m.sp.Tick, m.provisionCmd())
 	}
 	return m, nil
@@ -235,8 +290,16 @@ func (m *ownerModel) provisionCmd() tea.Cmd {
 		ownerPassword:  password,
 		attemptedAdmin: m.attempt,
 	}
+	// performAddOperator and performBreakGlass share a signature; the operation
+	// discriminator selects which one runs. The operator path is insert-only and
+	// never flips local auth (see performAddOperator); the Owner path upserts and
+	// enables local-password login.
+	perform := performBreakGlass
+	if m.operation == bgAddOperator {
+		perform = performAddOperator
+	}
 	return func() tea.Msg {
-		out, err := performBreakGlass(m.ctx, m.store, op)
+		out, err := perform(m.ctx, m.store, op)
 		return owProvisionMsg{outcome: out, err: err}
 	}
 }
@@ -253,6 +316,7 @@ func (m *ownerModel) ownerResultCmd() tea.Cmd {
 			mode:            m.mode,
 			accountable:     m.accountable,
 			auditWarning:    m.auditWarning,
+			isOperator:      m.operation == bgAddOperator,
 		}
 	}
 }
@@ -294,6 +358,9 @@ func (m *ownerModel) buildOverrideForm() *huh.Form {
 }
 
 func (m *ownerModel) buildProvisionForm() *huh.Form {
+	subject := m.subject() // "Owner" | "Operator"
+	lower := strings.ToLower(subject)
+
 	desc := fmt.Sprintf("Create the first Owner — recorded as OS user %q.", m.osUser)
 	switch m.mode {
 	case "recovery":
@@ -301,15 +368,30 @@ func (m *ownerModel) buildProvisionForm() *huh.Form {
 	case "root_override":
 		desc = "Root override — a one-time password will be generated."
 	}
+	if m.operation == bgAddOperator {
+		// Operator-add never bootstraps (an admin is already present to authorize it),
+		// so it is always one of the generated-password modes.
+		switch m.mode {
+		case "recovery":
+			desc = fmt.Sprintf("Add an Operator — authenticated as %q; a one-time password will be generated.", m.accountable)
+		case "root_override":
+			desc = "Add an Operator (root override) — a one-time password will be generated."
+		}
+	}
+	if m.provisionErr != nil {
+		// The only error routed back to this form is a username clash on the insert-only
+		// operator path; show a concrete prompt to choose another name.
+		desc = "That username is already taken — choose a different one.\n\n" + desc
+	}
 
 	fields := []huh.Field{
-		huh.NewNote().Title("Owner account").Description(desc),
+		huh.NewNote().Title(subject + " account").Description(desc),
 		huh.NewInput().
-			Title("Owner username").
+			Title(subject + " username").
 			Value(&m.ownerUser).
-			Validate(requiredField("owner username")),
+			Validate(requiredField(lower + " username")),
 		huh.NewInput().
-			Title("Owner email").
+			Title(subject + " email").
 			Description("optional").
 			Placeholder("you@example.com").
 			Value(&m.ownerEmail),
@@ -368,7 +450,7 @@ func (m *ownerModel) View() string {
 
 func (m *ownerModel) doneView() string {
 	var b strings.Builder
-	b.WriteString(tuiSuccessBanner("Owner account is ready.") + "\n\n")
+	b.WriteString(tuiSuccessBanner(m.subject()+" account is ready.") + "\n\n")
 
 	var box strings.Builder
 	box.WriteString(tuiLabel.Render("username  ") + m.username + "\n")
