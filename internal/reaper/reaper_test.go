@@ -12,6 +12,9 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/backup"
+	"felis.lolicon.best/internal/metrics"
+
+	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
 // testNow is the frozen clock for every hermetic case. Idle is expressed as an
@@ -304,6 +307,34 @@ func TestReapIdleWorldFullSequence(t *testing.T) {
 	c := st.byName["alpha"]
 	if c.OwnerID != "" || !c.LastActiveAt.Equal(testNow) || !c.Warned3dAt.IsZero() {
 		t.Fatalf("post-reap state wrong: %+v", c)
+	}
+}
+
+// §23 instrumentation: felis_reaper_worlds_deleted_total advances by exactly one
+// per world whose PVC is actually deleted — in lockstep with Summary.WorldsReaped,
+// and never for a skipped/preserved world. Asserted as a delta because the counter
+// is a process-global singleton other tests in this package also advance.
+func TestReapIncrementsDeletedWorldsMetric(t *testing.T) {
+	before := testutil.ToFloat64(metrics.ReaperWorldsDeletedTotal)
+
+	r, _, cl, _ := newReaper(DefaultConfig(),
+		Candidate{Name: "metric-a", OwnerID: "user-9", LastActiveAt: idleBy(20 * Day)},
+		Candidate{Name: "metric-b", OwnerID: "user-9", LastActiveAt: idleBy(20 * Day)},
+		// Fresh server: under the deadline, must NOT be reaped or counted.
+		Candidate{Name: "metric-fresh", OwnerID: "user-9", LastActiveAt: idleBy(2 * Day)},
+	)
+
+	sum := mustRun(t, r)
+	if sum.WorldsReaped != 2 {
+		t.Fatalf("WorldsReaped = %d, want 2", sum.WorldsReaped)
+	}
+	if cl.deletePVCCalls != 2 {
+		t.Fatalf("deletePVC calls = %d, want 2", cl.deletePVCCalls)
+	}
+
+	delta := testutil.ToFloat64(metrics.ReaperWorldsDeletedTotal) - before
+	if delta != float64(sum.WorldsReaped) {
+		t.Fatalf("felis_reaper_worlds_deleted_total advanced by %v, want %d (one per reaped world)", delta, sum.WorldsReaped)
 	}
 }
 

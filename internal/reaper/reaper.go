@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/backup"
+	"felis.lolicon.best/internal/metrics"
 )
 
 // Day is a calendar day; the retention windows in §18 are expressed in days.
@@ -382,6 +383,10 @@ func (r *Reaper) reap(ctx context.Context, now time.Time, c Candidate, crd Serve
 	}
 
 	sum.WorldsReaped++
+	// felis_reaper_worlds_deleted_total (spec §23) advances in lockstep with the
+	// per-run Summary tally — incremented here, at the one point a world's PVC has
+	// actually been deleted, not at evaluation time.
+	metrics.ReaperWorldsDeletedTotal.Inc()
 	r.log().Info("reaper: world reaped", "server", c.Name, "former_owner", c.OwnerID, "backup_ref", ref)
 	return nil
 }

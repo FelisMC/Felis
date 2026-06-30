@@ -6,12 +6,14 @@ import (
 	"io"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	felismetrics "felis.lolicon.best/internal/metrics"
 	"felis.lolicon.best/internal/operator"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
 
@@ -56,6 +58,16 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(stderr, "felis operator: watching namespace %q\n", *namespace)
+
+	// Publish the named felis_* metrics (spec §23) on the endpoint the manager
+	// already serves (metricsAddr). controller-runtime's metrics server exposes
+	// its global Registry, so registering into it is all that is needed for
+	// /metrics to carry felis_servers_total and friends. Register is idempotent,
+	// so an in-process restart never double-registers fatally.
+	if err := felismetrics.Register(ctrlmetrics.Registry); err != nil {
+		fmt.Fprintf(stderr, "felis operator: register metrics: %v\n", err)
+		return 1
+	}
 
 	r := &operator.Reconciler{
 		Client: mgr.GetClient(),
