@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Server, Search, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { Card, CardContent } from "@/components/ui/card";
 import { ServerCard } from "@/components/ServerCard";
 import { Pagination } from "@/components/Pagination";
 import { Loading, ErrorState, EmptyState } from "@/components/States";
