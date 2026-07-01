@@ -171,6 +171,30 @@ func (r *ExecRunner) WriteTunnelConfig(path string, contents []byte) error {
 	return os.WriteFile(path, contents, 0o644)
 }
 
+// StartConnector installs and starts the cloudflared connector as a managed system
+// service bound to configPath (`cloudflared --config <configPath> service install`),
+// so the tunnel written by WriteTunnelConfig has a running process serving it. On
+// Linux this installs and starts a systemd unit; on macOS a launchd agent; on
+// Windows a service. It is the step that turns a routed-but-dead tunnel (Cloudflare
+// error 1033) into a reachable one, and it runs as the operator (root under the
+// break-glass TUI) since installing a system service requires it.
+//
+// It is idempotent on re-run: an already-installed service is reported by cloudflared
+// and treated as success rather than failing the whole setup. Re-applying a CHANGED
+// config to an already-installed service would need a restart this method does not
+// perform — a caveat noted honestly. INTEGRATION-ONLY.
+func (r *ExecRunner) StartConnector(ctx context.Context, configPath string) error {
+	if strings.TrimSpace(configPath) == "" {
+		return fmt.Errorf("cfsetup: connector config path is required")
+	}
+	// The global --config flag must precede the `service install` subcommand.
+	_, err := r.runCloudflared(ctx, "--config", configPath, "service", "install")
+	if err != nil && strings.Contains(err.Error(), "already installed") {
+		return nil
+	}
+	return err
+}
+
 // CreateAccessApplication POSTs the self-hosted Access app and returns its id and
 // issued aud (spec §14: the aud felis [auth] access_jwt_aud must adopt).
 func (r *ExecRunner) CreateAccessApplication(ctx context.Context, app AccessApplication) (string, string, error) {

@@ -69,6 +69,11 @@ func (r *recordingRunner) WriteTunnelConfig(path string, _ []byte) error {
 	return nil
 }
 
+func (r *recordingRunner) StartConnector(_ context.Context, configPath string) error {
+	r.calls = append(r.calls, "StartConnector:"+configPath)
+	return nil
+}
+
 func (r *recordingRunner) CreateAccessApplication(_ context.Context, app AccessApplication) (string, string, error) {
 	r.calls = append(r.calls, "CreateAccessApplication:"+app.Domain)
 	appID := r.appID
@@ -329,6 +334,71 @@ func TestSetupSucceedsAndReportsAud(t *testing.T) {
 			t.Fatalf("the game host %q must never be routed through the tunnel", testRoot)
 		}
 	}
+}
+
+// TestSetupStartsConnectorAfterWritingConfig pins the anti-1033 invariant, not a
+// call order for its own sake: a successful Setup that wrote a config MUST also start
+// a connector for it (a routed tunnel with no connector returns Cloudflare error
+// 1033), and it must do so only AFTER the config exists (starting a connector for an
+// unwritten config would serve nothing). This is the orchestration half of the fix;
+// the actual `cloudflared service install` is INTEGRATION-ONLY (runner.go).
+func TestSetupStartsConnectorAfterWritingConfig(t *testing.T) {
+	const cfgPath = "/etc/felis/cloudflared.yml"
+	runner := &recordingRunner{}
+	p := Params{
+		PanelHostname:  "console." + testRoot,
+		AdminHostname:  "op.console." + testRoot,
+		TunnelName:     "felis",
+		ConfigPath:     cfgPath,
+		AccessIdentity: AccessIdentity{Emails: []string{"owner@example.net"}},
+		Pre:            goodPreconditions(),
+	}
+	if _, err := Setup(context.Background(), runner, p); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	write := indexOfCall(runner.calls, "WriteTunnelConfig:"+cfgPath)
+	start := indexOfCall(runner.calls, "StartConnector:"+cfgPath)
+	if write < 0 {
+		t.Fatalf("config was never written: %v", runner.calls)
+	}
+	if start < 0 {
+		t.Fatalf("connector was never started — a routed tunnel with no connector returns error 1033: %v", runner.calls)
+	}
+	if start < write {
+		t.Fatalf("connector started before its config was written (would serve nothing): %v", runner.calls)
+	}
+}
+
+// TestSetupSkipsConnectorWhenNoConfigPath proves the connector step is gated on a
+// written config: with ConfigPath unset the caller wants only the Access config, so
+// no service is installed (and no config is written to install one around).
+func TestSetupSkipsConnectorWhenNoConfigPath(t *testing.T) {
+	runner := &recordingRunner{}
+	p := Params{
+		PanelHostname:  "console." + testRoot,
+		AdminHostname:  "op.console." + testRoot,
+		TunnelName:     "felis",
+		AccessIdentity: AccessIdentity{Emails: []string{"owner@example.net"}},
+		Pre:            goodPreconditions(),
+	}
+	if _, err := Setup(context.Background(), runner, p); err != nil {
+		t.Fatalf("Setup: %v", err)
+	}
+	for _, c := range runner.calls {
+		if len(c) >= len("StartConnector") && c[:len("StartConnector")] == "StartConnector" {
+			t.Fatalf("connector was started with no config path to serve: %v", runner.calls)
+		}
+	}
+}
+
+// indexOfCall returns the position of want in calls, or -1.
+func indexOfCall(calls []string, want string) int {
+	for i, c := range calls {
+		if c == want {
+			return i
+		}
+	}
+	return -1
 }
 
 // TestIngressSafetyInvariants parses the generated cloudflared config back and
