@@ -55,12 +55,6 @@ export function ServerAdmin() {
         </div>
       )}
 
-      <Card className="border-dashed bg-transparent">
-        <CardContent className="p-4 text-xs text-muted-foreground">
-          {ts("server_admin_footer")}
-        </CardContent>
-      </Card>
-
       {servers.length > 0 && (
         <Pagination
           page={page}

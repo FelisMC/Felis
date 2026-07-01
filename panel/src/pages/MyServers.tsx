@@ -149,12 +149,6 @@ export function MyServers() {
         </div>
       )}
 
-      <Card className="border-dashed bg-transparent">
-        <CardContent className="p-4 text-xs text-muted-foreground">
-          {t("my_servers_footer")}
-        </CardContent>
-      </Card>
-
       {totalPages > 1 && (
         <Pagination
           page={page}
