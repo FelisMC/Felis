@@ -198,15 +198,15 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	}
 
 	externalHandler := panel.Handler(a.ExternalHandler(), cfg.Server.RootDomain)
-	internalSrv := &http.Server{Addr: *internalAddr, Handler: a.InternalHandler()}
-	externalSrv := &http.Server{Addr: cfg.Server.Listen, Handler: externalHandler}
+	internalSrv := newAPIServer(*internalAddr, a.InternalHandler())
+	externalSrv := newAPIServer(cfg.Server.Listen, externalHandler)
 
 	errc := make(chan error, 3)
 	go func() { errc <- internalSrv.ListenAndServe() }()
 	go func() { errc <- externalSrv.ListenAndServe() }()
 	var httpsSrv *http.Server
 	if *httpsAddr != "" {
-		httpsSrv = &http.Server{Addr: *httpsAddr, Handler: externalHandler}
+		httpsSrv = newAPIServer(*httpsAddr, externalHandler)
 		go func() { errc <- httpsSrv.ListenAndServeTLS(*tlsCert, *tlsKey) }()
 	}
 	if httpsSrv != nil {
@@ -236,6 +236,33 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		return 0
+	}
+}
+
+const (
+	// apiReadHeaderTimeout caps how long a client may take to send its request
+	// headers, defeating a Slowloris that trickles a header line forever to pin a
+	// connection open. It bounds only the header phase, so it is safe on every face —
+	// including the SSE streaming one, whose response, not its request, is long-lived.
+	apiReadHeaderTimeout = 10 * time.Second
+	// apiIdleTimeout caps how long a kept-alive connection may sit idle between
+	// requests before the server closes it, bounding idle-connection exhaustion.
+	apiIdleTimeout = 120 * time.Second
+)
+
+// newAPIServer builds an http.Server with hardened header/idle timeouts (gosec
+// G112) shared by all three felis-api listeners (internal, external, https).
+// WriteTimeout and ReadTimeout are deliberately LEFT UNSET: the external and https
+// faces stream Server-Sent Events (console / build logs, spec §8) for the lifetime
+// of a client's attachment, and a WriteTimeout would sever a healthy long-lived
+// stream mid-flight. Slowloris is closed by ReadHeaderTimeout, which bounds only the
+// header phase and never touches the response.
+func newAPIServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: apiReadHeaderTimeout,
+		IdleTimeout:       apiIdleTimeout,
 	}
 }
 
