@@ -195,3 +195,132 @@ describe("api.fleet wire shape", () => {
     expect(await api.fleet()).toEqual([]);
   });
 });
+
+// Pin the §access wire shapes (handlers_access.go). The panel translates structured
+// fields into the request body — the backend re-validates and concatenates the RCON
+// command, so the {action, player} keys and the GET-vs-POST split on the same path
+// are the contract. A method/path/key drift here is invisible to typecheck (the body
+// is `unknown`), so only these assertions catch it.
+describe("api access-control wire shapes", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("accessWhitelistList GETs the whitelist path and returns players + raw output", async () => {
+    const fetchSpy = fakeFetch({
+      name: "survival",
+      players: ["alice", "bob"],
+      output: "There are 2 whitelisted player(s): alice, bob",
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await api.accessWhitelistList("survival");
+    expect(res.players).toEqual(["alice", "bob"]);
+    expect(res.output).toMatch(/alice, bob/);
+
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock
+      .calls[0];
+    expect(String(url)).toBe("/servers/survival/access/whitelist");
+    expect((opts as RequestInit).method).toBe("GET");
+    expect((opts as RequestInit).credentials).toBe("include");
+  });
+
+  it("accessWhitelist POSTs {action, player} to the same path", async () => {
+    const fetchSpy = fakeFetch({
+      name: "survival",
+      action: "add",
+      player: "alice",
+      output: "[ok]",
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    await api.accessWhitelist("survival", "add", "alice");
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock
+      .calls[0];
+    expect(String(url)).toBe("/servers/survival/access/whitelist");
+    expect((opts as RequestInit).method).toBe("POST");
+    expect(JSON.parse((opts as RequestInit).body as string)).toEqual({
+      action: "add",
+      player: "alice",
+    });
+  });
+
+  it("accessBan POSTs {action, player} to the ban path (no reason field)", async () => {
+    const fetchSpy = fakeFetch({
+      name: "survival",
+      action: "ban",
+      player: "griefer",
+      output: "[ok]",
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    await api.accessBan("survival", "ban", "griefer");
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock
+      .calls[0];
+    expect(String(url)).toBe("/servers/survival/access/ban");
+    expect((opts as RequestInit).method).toBe("POST");
+    expect(JSON.parse((opts as RequestInit).body as string)).toEqual({
+      action: "ban",
+      player: "griefer",
+    });
+  });
+
+  it("accessBanList GETs the ban path and returns players + raw output", async () => {
+    const fetchSpy = fakeFetch({
+      name: "survival",
+      players: ["griefer", "spammer"],
+      output:
+        "There are 2 ban(s):\ngriefer was banned by Server: x\nspammer was banned by Server: y",
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await api.accessBanList("survival");
+    expect(res.players).toEqual(["griefer", "spammer"]);
+    expect(res.output).toMatch(/griefer was banned by/);
+
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock
+      .calls[0];
+    expect(String(url)).toBe("/servers/survival/access/ban");
+    expect((opts as RequestInit).method).toBe("GET");
+    expect((opts as RequestInit).credentials).toBe("include");
+  });
+
+  it("accessPlayers GETs the players path and returns tally + names + raw output", async () => {
+    const fetchSpy = fakeFetch({
+      name: "survival",
+      online: 2,
+      max: 20,
+      players: ["alice", "bob"],
+      output: "There are 2 of a max of 20 players online: alice, bob",
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await api.accessPlayers("survival");
+    expect(res.online).toBe(2);
+    expect(res.max).toBe(20);
+    expect(res.players).toEqual(["alice", "bob"]);
+
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock
+      .calls[0];
+    expect(String(url)).toBe("/servers/survival/access/players");
+    expect((opts as RequestInit).method).toBe("GET");
+    expect((opts as RequestInit).credentials).toBe("include");
+  });
+
+  it("accessKick POSTs {player} to the kick path (no action, no reason)", async () => {
+    const fetchSpy = fakeFetch({
+      name: "survival",
+      player: "griefer",
+      output: "[ok]",
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    await api.accessKick("survival", "griefer");
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock
+      .calls[0];
+    expect(String(url)).toBe("/servers/survival/access/kick");
+    expect((opts as RequestInit).method).toBe("POST");
+    expect(JSON.parse((opts as RequestInit).body as string)).toEqual({
+      player: "griefer",
+    });
+  });
+
+  it("maps the access error codes to stable human copy", async () => {
+    const { humanizeError } = await import("./api");
+    expect(humanizeError({ code: "not_running" })).toMatch(/running|wake/i);
+    expect(humanizeError({ code: "console_unavailable" })).toMatch(/console/i);
+  });
+});

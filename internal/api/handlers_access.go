@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"felis.lolicon.best/internal/naming"
@@ -179,6 +180,43 @@ func (a *API) handleAccessWhitelistList(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+// handleAccessPlayers is the read projector for the online roster: it runs the
+// vanilla "list" command and returns the online/max tally, a best-effort parse of
+// the online player names, and the raw reply. Like the whitelist read, the parse
+// is vanilla-specific (the names arrive after the count line's colon) and the raw
+// output is always returned so a differing format never loses information. This is
+// the only place the panel can learn WHO is online — Status.Players carries the
+// count alone (§141), so this reuses the same RCON reply the prober already sees.
+func (a *API) handleAccessPlayers(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	out, ok := a.issueAccessCommand(w, r, name, "list")
+	if !ok {
+		return
+	}
+	online, max, players := parseListOutput(out)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": name, "online": online, "max": max, "players": players, "output": out,
+	})
+}
+
+// handleAccessBanList is the read projector for the ban list: it runs "banlist"
+// and returns a best-effort parse of the banned names PLUS the raw reply, like the
+// whitelist / players reads. Unlike them the parse cannot key on a colon tail — a
+// ban entry reads "<name> was banned by <source>: <reason>" and the reason carries
+// its own colon — so parseBanlistOutput anchors on the ban marker + name charset
+// instead. The raw reply is always returned so a plugin or localised format never
+// loses information. No audit (a read).
+func (a *API) handleAccessBanList(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	out, ok := a.issueAccessCommand(w, r, name, "banlist")
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": name, "players": parseBanlistOutput(out), "output": out,
+	})
+}
+
 // banRequest is the body of POST .../access/ban (deny / restore a player's
 // ability to join, spec §7). It carries NO reason field on purpose: a free-text
 // reason would be the one place a structured request could splice a second RCON
@@ -214,6 +252,39 @@ func (a *API) handleAccessBan(w http.ResponseWriter, r *http.Request) {
 	a.audit(r, principalFromContext(r.Context()).Email, "access.ban."+body.Action, name)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name": name, "action": body.Action, "player": body.Player, "output": out,
+	})
+}
+
+// kickRequest is the body of POST .../access/kick (remove a player from the
+// server right now, spec §7). Like ban it carries NO reason field — a free-text
+// reason is the one place a structured request could splice a second RCON command,
+// and it buys nothing the audit log does not already record.
+type kickRequest struct {
+	Player string `json:"player"`
+}
+
+// handleAccessKick kicks a player off the running server via "kick <player>".
+// Unlike ban it does not block rejoining; it is the immediate "get out now" that
+// pairs with the online roster. Single-action, so the body carries only a player.
+func (a *API) handleAccessKick(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var body kickRequest
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if !mcNameRe.MatchString(body.Player) {
+		writeError(w, r, errInvalidPlayer)
+		return
+	}
+
+	out, ok := a.issueAccessCommand(w, r, name, "kick "+body.Player)
+	if !ok {
+		return
+	}
+	a.audit(r, principalFromContext(r.Context()).Email, "access.kick", name)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"name": name, "player": body.Player, "output": out,
 	})
 }
 
@@ -348,6 +419,65 @@ func parseWhitelistOutput(out string) []string {
 		if p := strings.TrimSpace(part); p != "" {
 			players = append(players, p)
 		}
+	}
+	return players
+}
+
+// listCountRe matches the count line of vanilla's "list" reply, e.g.
+// "There are 3 of a max of 20 players online: alice, bob, carol". It mirrors the
+// operator prober's listReplyPattern; kept local so the api package does not
+// depend on operator internals for a read it already has the reply for.
+var listCountRe = regexp.MustCompile(`There are (\d+) of a max of (\d+) players online`)
+
+// parseListOutput extracts (online, max, names) from vanilla's "list" reply. The
+// count comes from the "N of a max of M" line; the names come from the tail after
+// the colon, comma-separated (each name is [A-Za-z0-9_], so it never contains a
+// colon or comma of its own). Best-effort and vanilla-specific — the raw reply is
+// always returned alongside — so a plugin or localised format loses nothing. names
+// is non-nil so the JSON renders [] not null; online/max are 0 when the count line
+// does not match (e.g. an empty or unrecognised reply).
+func parseListOutput(out string) (online, max int, players []string) {
+	players = []string{}
+	if i := strings.Index(out, ":"); i >= 0 {
+		for _, part := range strings.Split(out[i+1:], ",") {
+			if p := strings.TrimSpace(part); p != "" {
+				players = append(players, p)
+			}
+		}
+	}
+	if m := listCountRe.FindStringSubmatch(out); m != nil {
+		online, _ = strconv.Atoi(m[1])
+		max, _ = strconv.Atoi(m[2])
+	}
+	return online, max, players
+}
+
+// banEntryRe matches one player-ban entry in vanilla's "banlist" reply, anchored on
+// the "<name> was banned by" marker with the name pinned to mcNameRe's charset. The
+// anchoring is deliberate and NOT interchangeable with the whitelist/list tail
+// parse: "banlist" emits one command-feedback message PER ban, and RCON concatenates
+// them with a separator that is server/version-dependent (newline, space, or none),
+// so a line- or colon-split parser could run the "There are N ban(s):" header into
+// the first entry and emit a non-name. Keying only on the marker + name charset
+// yields the SAME names under every separator and structurally cannot return a
+// non-name (group 1 IS the charset), so a corrupt entry can never reach the one-tap
+// pardon button. It also sidesteps the reason's own colon, which the tail parse can't.
+//
+// We issue plain "banlist", which in vanilla lists PLAYER bans only (IP bans are the
+// separate "banlist ips", which nothing here ever issues), so a "1.2.3.4 was banned
+// by ..." line — whose trailing octet the charset would otherwise capture as a bogus
+// short name — never reaches this parser.
+var banEntryRe = regexp.MustCompile(`([A-Za-z0-9_]{1,16}) was banned by`)
+
+// parseBanlistOutput extracts banned player names from vanilla's "banlist" reply,
+// whose entries read "<name> was banned by <source>: <reason>". Best-effort and
+// vanilla-specific — the raw reply is always returned alongside — so a plugin or
+// localised format loses nothing; the "There are no ban(s)." / header lines carry no
+// marker and are skipped. Returns a non-nil empty slice so the JSON renders [] not null.
+func parseBanlistOutput(out string) []string {
+	players := []string{}
+	for _, m := range banEntryRe.FindAllStringSubmatch(out, -1) {
+		players = append(players, m[1])
 	}
 	return players
 }

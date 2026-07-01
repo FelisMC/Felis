@@ -44,6 +44,9 @@ func TestAccessTranslation(t *testing.T) {
 			`{"action":"ban","player":"Griefer_99"}`, "ban Griefer_99", "access.ban.ban"},
 		{"pardon", "/api/v1/servers/survival/access/ban",
 			`{"action":"pardon","player":"Griefer_99"}`, "pardon Griefer_99", "access.ban.pardon"},
+		// kick has no action field — a single verb — so its label is "access.kick".
+		{"kick", "/api/v1/servers/survival/access/kick",
+			`{"player":"Griefer_99"}`, "kick Griefer_99", "access.kick"},
 		// The *bool trap: omitted value defaults to true (grant), NOT false (deny).
 		{"permission set default grant", "/api/v1/servers/survival/access/permission",
 			`{"action":"set","player":"Steve","node":"essentials.fly"}`,
@@ -100,6 +103,8 @@ func TestAccessInjectionRejected(t *testing.T) {
 		{"whitelist player newline", "/api/v1/servers/survival/access/whitelist", `{"action":"add","player":"ev\nop x"}`},
 		{"ban player semicolon", "/api/v1/servers/survival/access/ban", `{"action":"ban","player":"ev;il"}`},
 		{"ban player space", "/api/v1/servers/survival/access/ban", `{"action":"ban","player":"ev il"}`},
+		{"kick player space", "/api/v1/servers/survival/access/kick", `{"player":"ev il"}`},
+		{"kick player newline", "/api/v1/servers/survival/access/kick", `{"player":"ev\nop x"}`},
 		{"permission player space", "/api/v1/servers/survival/access/permission",
 			`{"action":"set","player":"ev il","node":"essentials.fly"}`},
 		{"group player newline", "/api/v1/servers/survival/access/group",
@@ -379,6 +384,215 @@ func TestParseWhitelistOutput(t *testing.T) {
 		for i := range got {
 			if got[i] != tc.want[i] {
 				t.Fatalf("parseWhitelistOutput(%q)[%d] = %q, want %q", tc.in, i, got[i], tc.want[i])
+			}
+		}
+	}
+}
+
+// TestAccessPlayers exercises the online-roster read projector: GET runs "list"
+// and returns the online/max tally, the parsed names, and the raw reply, owner-
+// gated like the writes and never auditing.
+func TestAccessPlayers(t *testing.T) {
+	t.Run("parses tally, names and raw output", func(t *testing.T) {
+		api, repo, _, console := mkAccess(t)
+		console.reply = "There are 3 of a max of 20 players online: alice, bob, carol"
+		api.External = staticExternal{p: accessOwner}
+		w := do(api.ExternalHandler(), "GET", "/api/v1/servers/survival/access/players", "", nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
+		}
+		var resp struct {
+			Name    string   `json:"name"`
+			Online  int      `json:"online"`
+			Max     int      `json:"max"`
+			Players []string `json:"players"`
+			Output  string   `json:"output"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("body not JSON: %v (%s)", err, w.Body.String())
+		}
+		if resp.Name != "survival" || resp.Online != 3 || resp.Max != 20 || resp.Output != console.reply {
+			t.Fatalf("unexpected response %+v", resp)
+		}
+		if len(resp.Players) != 3 || resp.Players[0] != "alice" || resp.Players[2] != "carol" {
+			t.Fatalf("players = %#v, want [alice bob carol]", resp.Players)
+		}
+		if console.gotCommand != "list" {
+			t.Fatalf("console got %q, want %q", console.gotCommand, "list")
+		}
+		if len(repo.audits) != 0 {
+			t.Fatalf("GET players must not audit: %+v", repo.audits)
+		}
+	})
+
+	t.Run("empty server -> [] not null", func(t *testing.T) {
+		api, _, _, console := mkAccess(t)
+		console.reply = "There are 0 of a max of 20 players online:"
+		api.External = staticExternal{p: accessOwner}
+		w := do(api.ExternalHandler(), "GET", "/api/v1/servers/survival/access/players", "", nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+			t.Fatalf("body not JSON: %v", err)
+		}
+		if string(raw["players"]) != "[]" {
+			t.Fatalf("players = %s, want []", raw["players"])
+		}
+	})
+
+	t.Run("non-owner -> 403, no RCON call", func(t *testing.T) {
+		api, _, _, console := mkAccess(t)
+		api.External = staticExternal{p: &Principal{UserID: "stranger", Role: "user"}}
+		w := do(api.ExternalHandler(), "GET", "/api/v1/servers/survival/access/players", "", nil)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("code = %d, want 403", w.Code)
+		}
+		if console.calls != 0 {
+			t.Fatal("a forbidden caller must not reach RCON")
+		}
+	})
+}
+
+// TestParseListOutput unit-tests the "list" parser directly, including formats
+// issueAccessCommand never produces but a real server might. Names parse from the
+// colon tail independently of the count line, so both are pinned separately.
+func TestParseListOutput(t *testing.T) {
+	cases := []struct {
+		in          string
+		online, max int
+		want        []string
+	}{
+		{"There are 3 of a max of 20 players online: alice, bob, carol", 3, 20, []string{"alice", "bob", "carol"}},
+		{"There are 1 of a max of 20 players online: Steve", 1, 20, []string{"Steve"}},
+		{"There are 0 of a max of 20 players online:", 0, 20, []string{}},
+		{"There are 0 of a max of 20 players online", 0, 20, []string{}},
+		{"", 0, 0, []string{}},
+		// A colon tail with no recognised count line still yields names, tally 0.
+		{"Online: a,  b ,c", 0, 0, []string{"a", "b", "c"}},
+	}
+	for _, tc := range cases {
+		online, max, got := parseListOutput(tc.in)
+		if got == nil {
+			t.Fatalf("parseListOutput(%q) names = nil, want non-nil slice", tc.in)
+		}
+		if online != tc.online || max != tc.max {
+			t.Fatalf("parseListOutput(%q) = (%d,%d), want (%d,%d)", tc.in, online, max, tc.online, tc.max)
+		}
+		if len(got) != len(tc.want) {
+			t.Fatalf("parseListOutput(%q) names = %#v, want %#v", tc.in, got, tc.want)
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Fatalf("parseListOutput(%q)[%d] = %q, want %q", tc.in, i, got[i], tc.want[i])
+			}
+		}
+	}
+}
+
+// TestAccessBanList exercises the ban-list read projector: GET runs "banlist",
+// returns the parsed names plus the raw reply, is owner-gated, and never audits.
+func TestAccessBanList(t *testing.T) {
+	t.Run("parses players and returns raw output", func(t *testing.T) {
+		api, repo, _, console := mkAccess(t)
+		console.reply = "There are 2 ban(s):\nSteve was banned by Server: Griefing\nAlex was banned by Server: Spam"
+		api.External = staticExternal{p: accessOwner}
+		w := do(api.ExternalHandler(), "GET", "/api/v1/servers/survival/access/ban", "", nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
+		}
+		var resp struct {
+			Name    string   `json:"name"`
+			Players []string `json:"players"`
+			Output  string   `json:"output"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("body not JSON: %v (%s)", err, w.Body.String())
+		}
+		if resp.Name != "survival" || resp.Output != console.reply {
+			t.Fatalf("unexpected response %+v", resp)
+		}
+		if len(resp.Players) != 2 || resp.Players[0] != "Steve" || resp.Players[1] != "Alex" {
+			t.Fatalf("players = %#v, want [Steve Alex]", resp.Players)
+		}
+		if console.gotCommand != "banlist" {
+			t.Fatalf("console got %q, want %q", console.gotCommand, "banlist")
+		}
+		if len(repo.audits) != 0 {
+			t.Fatalf("GET ban must not audit: %+v", repo.audits)
+		}
+	})
+
+	t.Run("empty ban list -> [] not null", func(t *testing.T) {
+		api, _, _, console := mkAccess(t)
+		console.reply = "There are no bans."
+		api.External = staticExternal{p: accessOwner}
+		w := do(api.ExternalHandler(), "GET", "/api/v1/servers/survival/access/ban", "", nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+			t.Fatalf("body not JSON: %v", err)
+		}
+		if string(raw["players"]) != "[]" {
+			t.Fatalf("players = %s, want []", raw["players"])
+		}
+	})
+
+	t.Run("non-owner -> 403, no RCON call", func(t *testing.T) {
+		api, _, _, console := mkAccess(t)
+		api.External = staticExternal{p: &Principal{UserID: "stranger", Role: "user"}}
+		w := do(api.ExternalHandler(), "GET", "/api/v1/servers/survival/access/ban", "", nil)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("code = %d, want 403", w.Code)
+		}
+		if console.calls != 0 {
+			t.Fatal("a forbidden caller must not reach RCON")
+		}
+	})
+}
+
+// TestParseBanlistOutput unit-tests the ban parser directly. The critical cases are
+// the SEPARATOR variants: "banlist" emits one feedback message per ban and RCON's
+// concatenation separator is version-dependent, so the parser must return the same
+// names whether entries are newline-, space-, or non-separated — and must never let
+// the header or a reason's own colon/spaces leak into a name (a corrupt name would
+// arm an off-charset pardon).
+func TestParseBanlistOutput(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{
+			"newline-separated",
+			"There are 2 ban(s):\nSteve was banned by Server: Griefing\nAlex was banned by Server: Spam",
+			[]string{"Steve", "Alex"},
+		},
+		{
+			// The separator the wire format might actually use: header + entries
+			// concatenated with spaces, reasons carrying spaces of their own.
+			"space-concatenated with spaced reasons",
+			"There are 2 ban(s): Steve was banned by Server: griefing spawn Alex was banned by Server: spam",
+			[]string{"Steve", "Alex"},
+		},
+		{"single ban", "There are 1 ban(s):\nNotch was banned by Console: rude", []string{"Notch"}},
+		{"no bans", "There are no bans.", []string{}},
+		{"empty", "", []string{}},
+	}
+	for _, tc := range cases {
+		got := parseBanlistOutput(tc.in)
+		if got == nil {
+			t.Fatalf("%s: parseBanlistOutput(%q) = nil, want non-nil slice", tc.name, tc.in)
+		}
+		if len(got) != len(tc.want) {
+			t.Fatalf("%s: parseBanlistOutput(%q) = %#v, want %#v", tc.name, tc.in, got, tc.want)
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Fatalf("%s: parseBanlistOutput(%q)[%d] = %q, want %q", tc.name, tc.in, i, got[i], tc.want[i])
 			}
 		}
 	}

@@ -34,11 +34,28 @@ interface MockServer extends ServerInfo {
   owner: AccountID | null;
 }
 
+interface AccessState {
+  whitelist: string[];
+  banned: string[];
+  // online is the mock's stand-in for the live RCON "list" roster. Kick and ban
+  // splice a player out of it so the demo roster reflects the action on reload.
+  online: string[];
+}
+
 interface MockState {
   accounts: Record<AccountID, MockAccount>;
   servers: MockServer[];
   images: WhitelistImage[];
+  // Per-server §access state, keyed by server name. Lazily created (accessFor) so a
+  // server only gets an entry once its access is touched; "survival" is pre-seeded
+  // so the whitelist panel demos a populated list out of the box.
+  access: Record<string, AccessState>;
 }
+
+// PLAYER_NAME mirrors the backend's mcNameRe (handlers_access.go) so the mock
+// rejects a malformed player exactly as the real API would (400 bad_request),
+// keeping the panel's error path exercisable in dev.
+const PLAYER_NAME = /^[A-Za-z0-9_]{1,16}$/;
 
 interface RequestContext {
   req: IncomingMessage;
@@ -132,7 +149,7 @@ function initialState(): MockState {
     ],
     servers: [
       server("survival", "Survival SMP", "Running", "owner", {
-        players: 7,
+        players: 12,
         maxPlayers: 20,
         autostartPolicy: "public",
       }),
@@ -158,6 +175,34 @@ function initialState(): MockState {
       }),
       ...generatedServers(),
     ],
+    access: {
+      // Seeded past a page (PAGE_SIZE=10) and the search threshold (>8) so the
+      // whitelist's paging + filter are both exercisable in the mock demo.
+      survival: {
+        whitelist: [
+          "mock_player", "test_player", "Notch", "jeb_", "Dinnerbone",
+          "Grumm", "Steve", "Alex", "Herobrine", "Technoblade",
+          "Dream", "GeorgeNotFound", "Sapnap", "BadBoyHalo", "Skeppy",
+          "Tommyinnit", "Tubbo", "Ranboo", "Wilbur_Soot", "Philza",
+          "Captain_Puffy", "Nihachu", "Fundy", "Quackity", "Karl_Jacobs",
+        ],
+        // 12 banned names — past the search threshold (>8) and a page (>10) so the ban
+        // list's filter + paging demo too; kept distinct from the online roster so the
+        // mock reads like a real server (you don't ban who's currently on).
+        banned: [
+          "Griefer_99", "tnt_troll", "hack_client_x", "spam_bot_01", "lava_caster",
+          "dupe_glitcher", "griefKing", "nukebot", "AFK_farmer", "chat_spammer",
+          "xray_cheater", "fly_hacker",
+        ],
+        // 12 online, matching the server's players:12 — past the search threshold (>8)
+        // and a page (>10) so the roster's filter + paging are both exercisable, with a
+        // few non-whitelisted names to try kick / ban on.
+        online: [
+          "mock_player", "test_player", "Notch", "Steve", "Alex", "jeb_",
+          "Dinnerbone", "Griefer_88", "rndGuest_7", "xX_Raider_Xx", "creeper_fan", "Herobrine",
+        ],
+      },
+    },
   };
 }
 
@@ -552,8 +597,172 @@ function handleServerRoute(ctx: SessionContext): boolean {
     claimServer(ctx, serverInfo);
     return true;
   }
+  if (ctx.parts[4] === "access") {
+    return handleAccessMock(ctx, serverInfo);
+  }
 
   return false;
+}
+
+function accessFor(state: MockState, name: string): AccessState {
+  let entry = state.access[name];
+  if (!entry) {
+    entry = { whitelist: [], banned: [], online: [] };
+    state.access[name] = entry;
+  }
+  return entry;
+}
+
+function whitelistOutput(players: string[]): string {
+  if (players.length === 0) return "There are no whitelisted players";
+  return `There are ${players.length} whitelisted player(s): ${players.join(", ")}`;
+}
+
+function listOutput(online: string[], max: number): string {
+  const head = `There are ${online.length} of a max of ${max} players online:`;
+  return online.length === 0 ? head : `${head} ${online.join(", ")}`;
+}
+
+// banlistOutput reproduces vanilla's multiline "banlist" reply: a header line then
+// one "<name> was banned by <source>: <reason>" line per ban. The panel's parser
+// (parseBanlistOutput) keys on the " was banned by " marker, so this exercises the
+// real shape — header + reasons that carry their own colons and spaces — end to end.
+function banlistOutput(banned: string[]): string {
+  if (banned.length === 0) return "There are no bans.";
+  const head = `There are ${banned.length} ban(s):`;
+  const lines = banned.map((p) => `${p} was banned by Server: Banned by an operator.`);
+  return [head, ...lines].join("\n");
+}
+
+// handleAccessMock mirrors issueAccessCommand's two gates — owner/admin AND the
+// server being Running (RCON) — before dispatching the whitelist/ban routes. The GET
+// whitelist read is behind the SAME Running gate as the writes, exactly as the real
+// readiness check covers it (409 not_running on a cold server).
+function handleAccessMock(ctx: SessionContext, serverInfo: MockServer): boolean {
+  if (!canManage(ctx.account, serverInfo)) {
+    sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+    return true;
+  }
+  if (serverInfo.phase !== "Running") {
+    sendError(
+      ctx.res,
+      409,
+      "not_running",
+      "server is not running; wake it before managing access",
+    );
+    return true;
+  }
+
+  const sub = ctx.parts[5];
+  const access = accessFor(ctx.state, serverInfo.name);
+
+  if (is("GET", ctx) && sub === "whitelist") {
+    sendJSON(ctx.res, 200, {
+      name: serverInfo.name,
+      players: [...access.whitelist],
+      output: whitelistOutput(access.whitelist),
+    });
+    return true;
+  }
+  if (is("POST", ctx) && sub === "whitelist") {
+    void handleListMutation(ctx, serverInfo, access, "whitelist");
+    return true;
+  }
+  if (is("GET", ctx) && sub === "players") {
+    const max = serverInfo.maxPlayers ?? 0;
+    sendJSON(ctx.res, 200, {
+      name: serverInfo.name,
+      online: access.online.length,
+      max,
+      players: [...access.online],
+      output: listOutput(access.online, max),
+    });
+    return true;
+  }
+  if (is("POST", ctx) && sub === "kick") {
+    void handleKickMock(ctx, serverInfo, access);
+    return true;
+  }
+  if (is("GET", ctx) && sub === "ban") {
+    sendJSON(ctx.res, 200, {
+      name: serverInfo.name,
+      players: [...access.banned],
+      output: banlistOutput(access.banned),
+    });
+    return true;
+  }
+  if (is("POST", ctx) && sub === "ban") {
+    void handleListMutation(ctx, serverInfo, access, "ban");
+    return true;
+  }
+
+  return false;
+}
+
+// handleKickMock backs POST .../access/kick: charset-validate the player, drop them
+// from the online roster (so a reload reflects it), and echo {name, player, output}.
+async function handleKickMock(
+  ctx: SessionContext,
+  serverInfo: MockServer,
+  access: AccessState,
+): Promise<void> {
+  const body = await readJSON<{ player?: string }>(ctx.req);
+  const player = body.player?.trim() ?? "";
+  if (!PLAYER_NAME.test(player)) {
+    sendError(ctx.res, 400, "bad_request", "invalid player name");
+    return;
+  }
+  const i = access.online.indexOf(player);
+  if (i >= 0) access.online.splice(i, 1);
+  sendJSON(ctx.res, 200, {
+    name: serverInfo.name,
+    player,
+    output: `[mock] kick ${player}`,
+  });
+}
+
+// handleListMutation backs both POST .../access/whitelist (add|remove) and
+// POST .../access/ban (ban|pardon): the same structured {action, player} shape with
+// a charset-validated player, echoing back {name, action, player, output}.
+async function handleListMutation(
+  ctx: SessionContext,
+  serverInfo: MockServer,
+  access: AccessState,
+  kind: "whitelist" | "ban",
+): Promise<void> {
+  const body = await readJSON<{ action?: string; player?: string }>(ctx.req);
+  const player = body.player?.trim() ?? "";
+  if (!PLAYER_NAME.test(player)) {
+    sendError(ctx.res, 400, "bad_request", "invalid player name");
+    return;
+  }
+
+  const list = kind === "whitelist" ? access.whitelist : access.banned;
+  const addAction = kind === "whitelist" ? "add" : "ban";
+  const removeAction = kind === "whitelist" ? "remove" : "pardon";
+
+  if (body.action === addAction) {
+    if (!list.includes(player)) list.push(player);
+    // A ban also removes the player from the live server, so drop them from the
+    // online roster too — the real "ban" kicks them as a side effect.
+    if (kind === "ban") {
+      const oi = access.online.indexOf(player);
+      if (oi >= 0) access.online.splice(oi, 1);
+    }
+  } else if (body.action === removeAction) {
+    const i = list.indexOf(player);
+    if (i >= 0) list.splice(i, 1);
+  } else {
+    sendError(ctx.res, 400, "bad_request", "unknown action");
+    return;
+  }
+
+  sendJSON(ctx.res, 200, {
+    name: serverInfo.name,
+    action: body.action,
+    player,
+    output: `[mock] ${body.action} ${player}`,
+  });
 }
 
 async function handleCommandMock(

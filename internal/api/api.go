@@ -317,7 +317,10 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// strict-charset-validated structured fields (handlers_access.go).
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/access/whitelist", h: a.handleAccessWhitelist},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/access/whitelist", h: a.handleAccessWhitelistList},
+		{Method: "GET", Pattern: "/api/v1/servers/{name}/access/players", h: a.handleAccessPlayers},
+		{Method: "POST", Pattern: "/api/v1/servers/{name}/access/kick", h: a.handleAccessKick},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/access/ban", h: a.handleAccessBan},
+		{Method: "GET", Pattern: "/api/v1/servers/{name}/access/ban", h: a.handleAccessBanList},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/access/permission", h: a.handleAccessPermission},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/access/group", h: a.handleAccessGroup},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/status", h: a.handleStatus},

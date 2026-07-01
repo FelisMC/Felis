@@ -1,13 +1,18 @@
 import type {
+  AccessResult,
   ApiError,
+  BanlistResult,
   CreateServerRequest,
   FleetServer,
   Identity,
+  KickResult,
   LinkResult,
   LinkStatus,
   LoginResult,
+  PlayersResult,
   ServerInfo,
   WhitelistImage,
+  WhitelistResult,
 } from "./types";
 import { loadConfig } from "./config";
 import i18next from "i18next";
@@ -106,6 +111,46 @@ export const api = {
   sendCommand: (name: string, command: string) =>
     request<{ output: string }>("POST", `/servers/${name}/command`, { command }),
 
+  // Access control (spec §7 access). The backend translates these STRUCTURED fields
+  // into RCON commands — every field is charset-validated server-side before it is
+  // concatenated, so there is no free-text injection surface. All are owner-or-admin
+  // gated and require the server to be Running (409 `not_running` otherwise), so the
+  // panel only exposes them on a running server. The reply's `output` is the raw RCON
+  // text, surfaced verbatim as confirmation.
+
+  /** accessWhitelistList reads the server's whitelist. This GET ALSO requires a
+   *  Running server (the readiness gate covers the read, not just the writes), so
+   *  callers must gate the fetch on phase === "Running". */
+  accessWhitelistList: (name: string) =>
+    request<WhitelistResult>("GET", `/servers/${name}/access/whitelist`),
+
+  accessWhitelist: (name: string, action: "add" | "remove", player: string) =>
+    request<AccessResult>("POST", `/servers/${name}/access/whitelist`, {
+      action,
+      player,
+    }),
+
+  /** accessBanList reads the server's ban list. Like accessWhitelistList this GET
+   *  requires a Running server (the readiness gate covers the read too), so callers
+   *  gate the fetch on phase === "Running". */
+  accessBanList: (name: string) =>
+    request<BanlistResult>("GET", `/servers/${name}/access/ban`),
+
+  accessBan: (name: string, action: "ban" | "pardon", player: string) =>
+    request<AccessResult>("POST", `/servers/${name}/access/ban`, {
+      action,
+      player,
+    }),
+
+  /** accessPlayers reads WHO is online (the only source of names — status carries
+   *  the count alone). Like accessWhitelistList this GET requires a Running server,
+   *  so callers gate the fetch on phase === "Running". */
+  accessPlayers: (name: string) =>
+    request<PlayersResult>("GET", `/servers/${name}/access/players`),
+
+  accessKick: (name: string, player: string) =>
+    request<KickResult>("POST", `/servers/${name}/access/kick`, { player }),
+
   listImages: () =>
     request<{ images: WhitelistImage[] }>("GET", "/images").then((r) => r.images ?? []),
 
@@ -171,6 +216,12 @@ export function humanizeError(e: unknown): string {
       return t("already_exists");
     case "cooldown":
       return t("cooldown");
+    // Access control (spec §7): the server must be Running for any RCON-backed
+    // access change; the panel gates on phase, but a stale phase can still race.
+    case "not_running":
+      return t("not_running");
+    case "console_unavailable":
+      return t("console_unavailable");
     default:
       if (err.status === 401) return t("session_expired");
       if (err.status === 403) return t("forbidden");

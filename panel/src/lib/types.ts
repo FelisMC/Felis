@@ -34,6 +34,64 @@ export interface ServerInfo {
   owned?: boolean;
 }
 
+/** WhitelistResult projects GET /servers/{name}/access/whitelist (spec §7 access).
+ *  `players` is a BEST-EFFORT parse of the vanilla "whitelist list" reply done
+ *  server-side (parseWhitelistOutput); `output` is the raw RCON text and is the
+ *  ground truth — on a non-vanilla or localized server the parse may come back
+ *  empty while `output` still names players, so the panel falls back to `output`
+ *  rather than rendering a falsely-empty list. */
+export interface WhitelistResult {
+  name: string;
+  players: string[];
+  output: string;
+}
+
+/** BanlistResult projects GET /servers/{name}/access/ban (spec §7 access). Same
+ *  shape as WhitelistResult: `players` is a BEST-EFFORT parse of the vanilla
+ *  "banlist" reply done server-side (parseBanlistOutput) and `output` is the raw
+ *  RCON text — ground truth. A ban entry reads "<name> was banned by <src>: <reason>",
+ *  so unlike the whitelist the parse anchors on the ban marker (a reason carries its
+ *  own colon); on a non-vanilla or localized server the parse may come back empty
+ *  while `output` still names players, so the panel falls back to `output`. */
+export interface BanlistResult {
+  name: string;
+  players: string[];
+  output: string;
+}
+
+/** AccessResult is the common echo of a successful access mutation (whitelist add/
+ *  remove, ban/pardon): the server replays the structured action it ran plus the
+ *  raw RCON `output`, which the panel surfaces verbatim as confirmation. */
+export interface AccessResult {
+  name: string;
+  action: string;
+  player: string;
+  output: string;
+}
+
+/** PlayersResult projects GET /servers/{name}/access/players (spec §7 access), the
+ *  ONLY source of WHO is online — ServerInfo.players carries the count alone.
+ *  `online`/`max` are the tally; `players` is a BEST-EFFORT parse of the vanilla
+ *  "list" reply (parseListOutput) and, like the whitelist, can come back empty on a
+ *  non-vanilla format while `output` (the raw RCON text, ground truth) still names
+ *  them. `online` can therefore be > `players.length` — show the count, fall back
+ *  to `output` for names. */
+export interface PlayersResult {
+  name: string;
+  online: number;
+  max: number;
+  players: string[];
+  output: string;
+}
+
+/** KickResult echoes a successful kick. Kick is a single verb (no add/remove), so
+ *  unlike AccessResult it carries no `action` — just the player and raw reply. */
+export interface KickResult {
+  name: string;
+  player: string;
+  output: string;
+}
+
 /** FleetServer is one row of GET /api/v1/fleet — the SysAdmin cockpit's fleet-wide
  *  read (admin-tier). It mirrors the Go fleetServerView: the CRD lifecycle
  *  projection plus the owner joined read-only from Postgres for display.

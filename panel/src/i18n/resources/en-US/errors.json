@@ -12,6 +12,8 @@
   "subdomain_taken": "That subdomain is already in use.",
   "already_exists": "A server with that name already exists.",
   "cooldown": "Wake is cooling down — try again shortly.",
+  "not_running": "The server isn't running — wake it before managing access.",
+  "console_unavailable": "Can't reach the server console right now — try again shortly.",
   "session_expired": "Your session expired — please sign in again.",
   "forbidden": "You are not allowed to do that.",
   "generic": "Something went wrong."

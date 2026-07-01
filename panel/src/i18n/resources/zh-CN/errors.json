@@ -12,6 +12,8 @@
   "subdomain_taken": "该子域名已被占用。",
   "already_exists": "同名服务器已存在。",
   "cooldown": "启动冷却中——请稍后再试。",
+  "not_running": "服务器未在运行——请先唤醒它再管理访问权限。",
+  "console_unavailable": "暂时无法连接服务器控制台，请稍后重试。",
   "session_expired": "会话已过期——请重新登录。",
   "forbidden": "你无权执行此操作。",
   "generic": "出了点问题，请稍后重试。"

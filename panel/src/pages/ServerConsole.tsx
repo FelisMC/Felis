@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useLayoutEffect, type KeyboardEvent } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, Terminal, Moon, ShieldAlert, HelpCircle, Loader2, type LucideIcon } from "lucide-react";
+import { ArrowLeft, Terminal, Moon, ShieldAlert, HelpCircle, Loader2, Users, ChevronRight, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -237,9 +237,6 @@ export function ServerConsole() {
               <CardTitle className="flex items-center gap-2 text-base">
                 <Terminal className="h-4 w-4" /> {t("console_card_title")}
               </CardTitle>
-              <p className="text-sm text-muted-foreground">
-                {t("console_card_desc")}
-              </p>
             </CardHeader>
             <CardContent className="space-y-3">
               {!streamable ? (
@@ -259,6 +256,21 @@ export function ServerConsole() {
               )}
             </CardContent>
           </Card>
+
+          {/* Player management lives on its own subpage (whitelist / online / bans),
+              not crammed under the console. This is the doorway to it; the page
+              itself owns the ownership + readiness gating. */}
+          <Link
+            to={`/servers/${name}/players`}
+            className="group flex items-center gap-3 rounded-lg border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent"
+          >
+            <Users className="h-5 w-5 shrink-0 text-primary" />
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-medium">{t("players_link_title")}</p>
+              <p className="text-sm text-muted-foreground">{t("players_link_desc")}</p>
+            </div>
+            <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+          </Link>
         </>
       ) : null}
     </>

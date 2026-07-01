@@ -1069,7 +1069,88 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /api/v1/servers/{name}/access/players:
+    get:
+      tags: [access]
+      operationId: accessPlayers
+      summary: List online players via RCON (spec §7). Owner/admin only.
+      description: >-
+        Runs "list" against the live server and returns the online/max tally, a
+        best-effort parse of the online player names, and the raw reply. This is
+        the only source of WHO is online — Status.Players carries the count alone.
+        The RCON password is never accepted or returned (spec §286).
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Online players.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, online, max, players, output]
+                properties:
+                  name: { type: string }
+                  online: { type: integer }
+                  max: { type: integer }
+                  players: { type: array, items: { type: string } }
+                  output: { type: string }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Server not running.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /api/v1/servers/{name}/access/ban:
+    get:
+      tags: [access]
+      operationId: accessBanList
+      summary: List banned players via RCON (spec §7). Owner/admin only.
+      description: >-
+        Runs "banlist" against the live server and returns a best-effort parse
+        plus the raw reply. The RCON password is never accepted or returned
+        (spec §286).
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Banned players.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, players, output]
+                properties:
+                  name: { type: string }
+                  players: { type: array, items: { type: string } }
+                  output: { type: string }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Server not running.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
     post:
       tags: [access]
       operationId: accessBan
@@ -1096,6 +1177,58 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/AccessResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Server not running.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/servers/{name}/access/kick:
+    post:
+      tags: [access]
+      operationId: accessKick
+      summary: Kick a player off the running server (spec §7). Owner/admin only.
+      description: >-
+        Translates to the RCON "kick <player>" command. Unlike ban it does not
+        block rejoining. Carries no reason field (a free-text reason would be an
+        injection vector; the audit log records intent). The RCON password is
+        never accepted or returned (spec §286).
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [player]
+              properties:
+                player: { type: string }
+      responses:
+        '200':
+          description: The player was kicked; the raw RCON reply is in output.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, player, output]
+                properties:
+                  name: { type: string }
+                  player: { type: string }
+                  output: { type: string }
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
