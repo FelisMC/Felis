@@ -150,12 +150,14 @@ export function MyServers() {
       )}
 
       {totalPages > 1 && (
-        <Pagination
-          page={page}
-          pageSize={PAGE_SIZE}
-          total={filtered.length}
-          onChange={(p) => { setPage(p); if (p > totalPages) setPage(totalPages); }}
-        />
+        <div className="pt-3">
+          <Pagination
+            page={page}
+            pageSize={PAGE_SIZE}
+            total={filtered.length}
+            onChange={(p) => { setPage(p); if (p > totalPages) setPage(totalPages); }}
+          />
+        </div>
       )}
     </div>
   );

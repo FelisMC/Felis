@@ -56,12 +56,14 @@ export function ServerAdmin() {
       )}
 
       {servers.length > 0 && (
-        <Pagination
-          page={page}
-          pageSize={PAGE_SIZE}
-          total={servers.length}
-          onChange={(p) => { setPage(p); if (p > totalPages) setPage(totalPages); }}
-        />
+        <div className="pt-3">
+          <Pagination
+            page={page}
+            pageSize={PAGE_SIZE}
+            total={servers.length}
+            onChange={(p) => { setPage(p); if (p > totalPages) setPage(totalPages); }}
+          />
+        </div>
       )}
     </>
   );
