@@ -5,6 +5,8 @@
   "filter_status_all": "全部状态",
   "search_no_match": "没有匹配的服务器。",
   "search_clear_btn": "清除筛选",
+  "servers_count": "共 {{count}} 台",
+  "servers_count_filtered": "显示 {{shown}} / {{total}} 台",
   "no_servers_linked": "暂无关联的服务器",
   "no_servers_hint": "认领一台你拥有访问权限的服务器，或联系管理员为你分配。",
   "my_servers_footer": "服务器及游戏类型由平台统一管理。认领后即可操作节点，原始集群配置不会暴露在此。",

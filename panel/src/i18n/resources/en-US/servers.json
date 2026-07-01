@@ -5,6 +5,8 @@
   "filter_status_all": "All statuses",
   "search_no_match": "No matching servers found.",
   "search_clear_btn": "Clear filters",
+  "servers_count": "{{count}} servers",
+  "servers_count_filtered": "Showing {{shown}} / {{total}} servers",
   "no_servers_linked": "No servers linked to you",
   "no_servers_hint": "Claim an unowned server you have access to, or ask an admin to provision one.",
   "my_servers_footer": "Servers and game types are provisioned and managed by the platform. You claim a node to operate it; raw cluster config is never exposed here.",
