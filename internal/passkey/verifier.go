@@ -6,9 +6,15 @@
 // this package imports api for the seam types; api never imports this package, which is
 // what keeps the seam (and the api test suite's fake verifier) honest.
 //
-// Scope: ENROLLMENT only, matching handlers_passkey.go. This wraps BeginRegistration and
-// CreateCredential (the credential-creation ceremony). The login/assertion path
-// (BeginLogin/ValidateLogin) is a deferred slice and is intentionally not adapted here.
+// Scope: the full WebAuthn ceremony crypto — both the credential-creation (enrollment:
+// BeginRegistration/FinishRegistration over go-webauthn's BeginRegistration/CreateCredential)
+// and the assertion (login: BeginLogin/FinishLogin over BeginLogin/ValidateLogin) halves.
+// Both are Oracle-verified in verifier_test.go against a virtual authenticator. Only the
+// enrollment half is wired to HTTP handlers today (handlers_passkey.go); the login
+// handlers, session minting, and the panel.* relying-party boundary are a deferred slice,
+// so BeginLogin/FinishLogin here have no api-package caller yet. They are added to the
+// concrete adapter (not the api.PasskeyVerifier interface) precisely so the crypto is
+// built and verified now while the interface grows only when a handler consumes it.
 package passkey
 
 import (
@@ -118,6 +124,64 @@ func (v *Verifier) FinishRegistration(user api.PasskeyUser, sessionData []byte, 
 	}, nil
 }
 
+// BeginLogin starts an assertion (login) ceremony for a KNOWN user. It is username-first
+// by construction, not by preference: go-webauthn scopes allowCredentials to the user's
+// bound passkeys (from WebAuthnCredentials), which is the only fit here because the
+// enrolled credentials are not resident/discoverable and the challenge store is user-keyed
+// (migration 0007) — discoverable ("usernameless") login would need resident-key
+// enrollment plus a non-user-keyed challenge store, a future migration, so it is out of
+// scope. It returns the {"publicKey": {...}} request options for navigator.credentials.get()
+// and the opaque, marshaled SessionData the handler stashes and replays at finish. A user
+// with no bound credential yields an error from go-webauthn (nothing to assert); the caller
+// treats that as "offer the email-OTP fallback instead", never as a server fault.
+func (v *Verifier) BeginLogin(user api.PasskeyUser) (json.RawMessage, []byte, error) {
+	assertion, session, err := v.wa.BeginLogin(webauthnUser{u: user})
+	if err != nil {
+		return nil, nil, err
+	}
+	// CredentialAssertion marshals to {"publicKey": {...}} (its Response field carries the
+	// `publicKey` json tag), exactly the document the browser hands to navigator.credentials.get().
+	options, err := json.Marshal(assertion)
+	if err != nil {
+		return nil, nil, err
+	}
+	// As with registration, we stash the marshaled SessionData verbatim and let the
+	// challenge row's TTL be the sole authority on liveness (no expiry inside SessionData).
+	sessionData, err := json.Marshal(session)
+	if err != nil {
+		return nil, nil, err
+	}
+	return options, sessionData, nil
+}
+
+// FinishLogin verifies the browser's assertion against the stashed SessionData and reports
+// which of the user's credentials signed and the signature counter the authenticator
+// reported. go-webauthn checks the challenge, RP id, and origin against server-held values,
+// that the asserted credential id is one the user actually holds (it returns
+// protocol.ErrorUnknownCredential otherwise), and the signature against the stored COSE
+// public key. It does NOT decide clone/regression policy here: the returned SignCount is
+// the raw ceremony fact, and the handler — which holds the previously-stored counter —
+// decides whether a non-increase is a cloned-authenticator signal. The verified credential
+// id is returned base64url so the handler can look up the exact row to update.
+func (v *Verifier) FinishLogin(user api.PasskeyUser, sessionData []byte, assertion io.Reader) (api.VerifiedAssertion, error) {
+	var session webauthn.SessionData
+	if err := json.Unmarshal(sessionData, &session); err != nil {
+		return api.VerifiedAssertion{}, err
+	}
+	parsed, err := protocol.ParseCredentialRequestResponseBody(assertion)
+	if err != nil {
+		return api.VerifiedAssertion{}, err
+	}
+	cred, err := v.wa.ValidateLogin(webauthnUser{u: user}, session, parsed)
+	if err != nil {
+		return api.VerifiedAssertion{}, err
+	}
+	return api.VerifiedAssertion{
+		CredentialID: base64.RawURLEncoding.EncodeToString(cred.ID),
+		SignCount:    cred.Authenticator.SignCount,
+	}, nil
+}
+
 // excludeDescriptors turns the principal's already-bound passkeys into the
 // excludeCredentials list for a creation ceremony. A stored credential id that does not
 // decode as base64url is skipped rather than aborting the whole ceremony — a single
@@ -171,8 +235,14 @@ func (w webauthnUser) WebAuthnName() string        { return w.u.Name }
 func (w webauthnUser) WebAuthnDisplayName() string { return w.u.DisplayName }
 
 // WebAuthnCredentials returns the principal's bound passkeys as webauthn.Credentials.
-// Enrollment only needs the credential ids (for identity/exclusion bookkeeping), so only
-// the id is populated; a row whose id does not decode is skipped.
+// Enrollment needs only the credential ids (for identity/exclusion bookkeeping); login
+// (assertion) validation additionally needs the stored COSE public key (to verify the
+// signature) and the last-seen signature counter (for clone detection), so both are
+// populated when present. Filling them is backward-compatible with enrollment, which
+// simply ignores the extra fields. A row whose id does not decode is skipped entirely; a
+// row whose public key does not decode is still surfaced (so it counts for exclusion) but
+// with a nil key, so an assertion against it cannot verify — it fails closed rather than
+// silently accepting.
 func (w webauthnUser) WebAuthnCredentials() []webauthn.Credential {
 	out := make([]webauthn.Credential, 0, len(w.u.Credentials))
 	for _, c := range w.u.Credentials {
@@ -180,7 +250,12 @@ func (w webauthnUser) WebAuthnCredentials() []webauthn.Credential {
 		if err != nil {
 			continue
 		}
-		out = append(out, webauthn.Credential{ID: id})
+		cred := webauthn.Credential{ID: id}
+		if key, err := base64.StdEncoding.DecodeString(c.PublicKey); err == nil {
+			cred.PublicKey = key
+		}
+		cred.Authenticator.SignCount = c.SignCount
+		out = append(out, cred)
 	}
 	return out
 }

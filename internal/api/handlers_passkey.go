@@ -16,12 +16,16 @@ import (
 // ceremony — and manages the credentials they have bound. Email-OTP (handlers_email_otp.go)
 // stays the fallback factor, so a player with no passkey is never locked out.
 //
-// Scope: ENROLLMENT only. The login/assertion path (proving a passkey to mint or
-// elevate a session from an unauthenticated state) is a deferred slice — the panel.*
-// passkey relying-party boundary is a later decision (see migration 0007). So every
-// ceremony here rides on a known principal: the challenge is bound to the caller's
-// user_id and the finish verifies against the server-stashed SessionData, never a
-// client-echoed challenge.
+// Scope of the HANDLERS in this file: ENROLLMENT only. Every ceremony here rides on a
+// known principal — the challenge is bound to the caller's user_id and the finish
+// verifies against the server-stashed SessionData, never a client-echoed challenge. The
+// login/assertion path (proving a passkey to mint or elevate a session from an
+// UNauthenticated state) has its cryptographic half built and Oracle-verified in the
+// adapter (internal/passkey BeginLogin/FinishLogin, against a virtual authenticator),
+// and its persist-ready output shape is VerifiedAssertion below — but the login HTTP
+// handlers, the session minting, and the panel.* passkey relying-party boundary/tier
+// decision (see migration 0007) are a deferred slice: this file adds no unauthenticated
+// login route.
 //
 // The cryptographic half is a seam (PasskeyVerifier) so this package never imports
 // go-webauthn: ceremony state crosses the boundary as opaque bytes, the attestation
@@ -83,6 +87,22 @@ type VerifiedCredential struct {
 	PublicKey    string // base64(COSE public key bytes)
 	SignCount    uint32
 	AAGUID       string
+}
+
+// VerifiedAssertion is the output of a finished LOGIN (assertion) ceremony: which of the
+// user's bound credentials proved itself and the signature counter the authenticator
+// reported. Like VerifiedCredential it carries no secret. SignCount is the raw ceremony
+// fact, NOT a policy verdict: the handler that eventually consumes this holds the
+// previously-stored counter and decides whether a non-increase is a cloned-authenticator
+// signal — the verifier deliberately does not, so clone policy lives in one place with
+// the stored state. SignCount is legitimately 0 for authenticators that keep no counter.
+//
+// The login handlers do not exist yet (see the file header): this is the stable seam
+// output the production adapter (internal/passkey) already produces and its Oracle test
+// already asserts on, so wiring the handlers later needs no reshaping here.
+type VerifiedAssertion struct {
+	CredentialID string // base64url(raw credential id) — which bound credential signed
+	SignCount    uint32
 }
 
 // errPasskeyUnavailable is returned when the WebAuthn verifier is not configured on

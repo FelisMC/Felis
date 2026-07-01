@@ -2,6 +2,7 @@ package passkey
 
 import (
 	"encoding/base64"
+	"slices"
 	"strings"
 	"testing"
 
@@ -157,14 +158,7 @@ func TestBeginExcludesBoundCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseAttestationOptions: %v", err)
 	}
-	found := false
-	for _, ex := range attestationOpts.ExcludeCredentials {
-		if ex == existingID {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !slices.Contains(attestationOpts.ExcludeCredentials, existingID) {
 		t.Errorf("excludeCredentials = %v, want it to contain %q", attestationOpts.ExcludeCredentials, existingID)
 	}
 }
@@ -174,5 +168,133 @@ func TestBeginExcludesBoundCredentials(t *testing.T) {
 func TestNewRejectsEmptyRPID(t *testing.T) {
 	if _, err := New("", testRPName, []string{testOrigin}); err == nil {
 		t.Fatal("New accepted an empty RP id; want an error")
+	}
+}
+
+// enrollCredential runs a real credential-creation ceremony and returns the verified
+// credential as the persist-ready stored view a later login validates against. Starting
+// the login tests from a GENUINE COSE public key (not a hand-built one) is what makes them
+// exercise WebAuthnCredentials()' base64 decode path — the exact spot an adapter silently
+// breaks.
+func enrollCredential(t *testing.T, v *Verifier, rp virtualwebauthn.RelyingParty, auth virtualwebauthn.Authenticator, cred virtualwebauthn.Credential) api.PasskeyCredential {
+	t.Helper()
+	options, sessionData, err := v.BeginRegistration(testUser())
+	if err != nil {
+		t.Fatalf("BeginRegistration: %v", err)
+	}
+	attestationOpts, err := virtualwebauthn.ParseAttestationOptions(string(options))
+	if err != nil {
+		t.Fatalf("ParseAttestationOptions: %v", err)
+	}
+	attestationResponse := virtualwebauthn.CreateAttestationResponse(rp, auth, cred, *attestationOpts)
+	vc, err := v.FinishRegistration(testUser(), sessionData, strings.NewReader(attestationResponse))
+	if err != nil {
+		t.Fatalf("FinishRegistration: %v", err)
+	}
+	return api.PasskeyCredential{CredentialID: vc.CredentialID, PublicKey: vc.PublicKey, SignCount: vc.SignCount}
+}
+
+// TestLoginRoundTrip is the PARITY check for the assertion (login) half, deliberately
+// chained onto a REAL enrollment so the login validates against a genuine COSE public key.
+// A real go-webauthn RP (through our adapter) enrolls a virtual authenticator's credential;
+// the verified public key + credential id are fed back as the user's STORED credential into
+// BeginLogin → the virtual authenticator signs an assertion → FinishLogin verifies it. This
+// exercises exactly the path a hand-built credential would skip: WebAuthnCredentials()
+// decoding the base64 COSE key so ValidateLogin can check the signature against it. The
+// authenticator's counter is advanced before the assertion so the test also proves
+// FinishLogin surfaces the real signature counter rather than a hardcoded 0.
+func TestLoginRoundTrip(t *testing.T) {
+	v := newTestVerifier(t)
+	rp := virtualRP()
+	authenticator := virtualwebauthn.NewAuthenticator()
+	cred := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+
+	stored := enrollCredential(t, v, rp, authenticator, cred)
+
+	// The authenticator reports an advanced counter; a fresh enrollment stored 0, so this
+	// is a strict increase (no clone warning) and must survive through to VerifiedAssertion.
+	cred.Counter = 7
+
+	options, sessionData, err := v.BeginLogin(testUser(stored))
+	if err != nil {
+		t.Fatalf("BeginLogin: %v", err)
+	}
+	assertionOpts, err := virtualwebauthn.ParseAssertionOptions(string(options))
+	if err != nil {
+		t.Fatalf("ParseAssertionOptions: %v (options=%s)", err, options)
+	}
+	if assertionOpts.RelyingPartyID != testRPID {
+		t.Fatalf("options RP id = %q, want %q", assertionOpts.RelyingPartyID, testRPID)
+	}
+	// The bound credential must be offered as an allowCredentials entry — username-first,
+	// the ceremony names which credentials the known user may assert.
+	wantID := base64.RawURLEncoding.EncodeToString(cred.ID)
+	if !slices.Contains(assertionOpts.AllowCredentials, wantID) {
+		t.Fatalf("allowCredentials = %v, want it to contain %q", assertionOpts.AllowCredentials, wantID)
+	}
+
+	assertionResponse := virtualwebauthn.CreateAssertionResponse(rp, authenticator, cred, *assertionOpts)
+	va, err := v.FinishLogin(testUser(stored), sessionData, strings.NewReader(assertionResponse))
+	if err != nil {
+		t.Fatalf("FinishLogin: %v", err)
+	}
+	if va.CredentialID != stored.CredentialID {
+		t.Errorf("asserted CredentialID = %q, want %q", va.CredentialID, stored.CredentialID)
+	}
+	if va.SignCount != 7 {
+		t.Errorf("SignCount = %d, want 7 (the authenticator's advanced counter)", va.SignCount)
+	}
+}
+
+// TestLoginOriginMismatchRejected proves FinishLogin actually checks the origin: an
+// assertion signed for an origin the RP does not permit must fail. Without this guard the
+// round-trip test would be hollow — it would accept a signature from anywhere.
+func TestLoginOriginMismatchRejected(t *testing.T) {
+	v := newTestVerifier(t)
+	rp := virtualRP()
+	authenticator := virtualwebauthn.NewAuthenticator()
+	cred := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+	stored := enrollCredential(t, v, rp, authenticator, cred)
+
+	options, sessionData, err := v.BeginLogin(testUser(stored))
+	if err != nil {
+		t.Fatalf("BeginLogin: %v", err)
+	}
+	assertionOpts, err := virtualwebauthn.ParseAssertionOptions(string(options))
+	if err != nil {
+		t.Fatalf("ParseAssertionOptions: %v", err)
+	}
+	// Sign the assertion for a foreign origin the verifier does not permit.
+	evil := virtualwebauthn.RelyingParty{ID: testRPID, Name: testRPName, Origin: "https://evil.example.net"}
+	assertionResponse := virtualwebauthn.CreateAssertionResponse(evil, authenticator, cred, *assertionOpts)
+	if _, err := v.FinishLogin(testUser(stored), sessionData, strings.NewReader(assertionResponse)); err == nil {
+		t.Fatal("FinishLogin accepted an assertion signed for a foreign origin; want rejection")
+	}
+}
+
+// TestLoginUnknownCredentialRejected proves the credential-ownership binding: a valid
+// signature over the right challenge is NOT enough — it must come from one of the user's
+// own bound credentials. The user's stored credential is A, but the assertion is signed by
+// a different, never-bound credential B; go-webauthn must reject it (B is not in the
+// challenge's allowCredentials, nor among the user's credentials).
+func TestLoginUnknownCredentialRejected(t *testing.T) {
+	v := newTestVerifier(t)
+	rp := virtualRP()
+	authenticator := virtualwebauthn.NewAuthenticator()
+	credA := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+	stored := enrollCredential(t, v, rp, authenticator, credA)
+
+	options, sessionData, err := v.BeginLogin(testUser(stored))
+	if err != nil {
+		t.Fatalf("BeginLogin: %v", err)
+	}
+	assertionOpts, err := virtualwebauthn.ParseAssertionOptions(string(options))
+	if err != nil {
+		t.Fatalf("ParseAssertionOptions: %v", err)
+	}
+	credB := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+	assertionResponse := virtualwebauthn.CreateAssertionResponse(rp, authenticator, credB, *assertionOpts)
+	if _, err := v.FinishLogin(testUser(stored), sessionData, strings.NewReader(assertionResponse)); err == nil {
+		t.Fatal("FinishLogin accepted an assertion from an unbound credential; want rejection")
 	}
 }
