@@ -846,10 +846,13 @@ func (p *PGRepo) SetSetting(ctx context.Context, key string, value []byte) error
 
 // ---- player passkey enrollment (spec §14 WebAuthn / Phase 6 bind, migration 0007) ----
 
-// CreatePasskeyChallenge supersedes any prior live challenge for (user, purpose) and
-// inserts the fresh one, in one transaction (mirrors CreateEmailOTP). The supersede
-// DELETE means a re-begin invalidates the earlier ceremony, so only the most recent
-// challenge can ever finish — at most one outstanding challenge per (user, purpose).
+// CreatePasskeyChallenge supersedes any prior challenge for (user, purpose) and inserts
+// the fresh one, in one transaction (mirrors CreateEmailOTP). The supersede DELETE
+// removes ALL prior rows for (user, purpose) — not just the live one — so a re-begin
+// invalidates the earlier ceremony AND reaps any already-consumed or expired row it left
+// behind. That bounds the table at one row per (user, purpose): the begin→finish loop
+// nets zero growth, since each begin sweeps the consumed row the previous finish stamped.
+// (Deleting a consumed row is safe: it has already been redeemed and nothing reads it.)
 // The opaque SessionData is held server-side so the client cannot forge the challenge
 // it must answer at finish.
 func (p *PGRepo) CreatePasskeyChallenge(ctx context.Context, id, userID, purpose string, sessionData []byte, expiresAt time.Time) error {
@@ -860,7 +863,7 @@ func (p *PGRepo) CreatePasskeyChallenge(ctx context.Context, id, userID, purpose
 	defer tx.Rollback() //nolint:errcheck // no-op after commit
 
 	if _, err := tx.ExecContext(ctx,
-		`DELETE FROM webauthn_challenges WHERE user_id = $1 AND purpose = $2 AND consumed_at IS NULL`,
+		`DELETE FROM webauthn_challenges WHERE user_id = $1 AND purpose = $2`,
 		userID, purpose); err != nil {
 		return fmt.Errorf("supersede prior passkey challenge: %w", err)
 	}

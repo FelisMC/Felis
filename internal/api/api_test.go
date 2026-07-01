@@ -285,12 +285,13 @@ func (f *fakeRepo) VerifyEmailOTP(_ context.Context, userID, purpose, codeHash s
 }
 
 // CreatePasskeyChallenge / ConsumePasskeyChallengeByUser mirror PGRepo's contract so
-// the hermetic tests exercise the same semantics: a fresh begin supersedes the prior
-// live challenge for (user, purpose), and the consume path redeems the newest live one
-// (expiry checked before consuming), single-use.
+// the hermetic tests exercise the same semantics: a fresh begin supersedes ALL prior
+// rows for (user, purpose) — live, consumed, or expired — so the table holds at most one
+// row per (user, purpose), and the consume path redeems the newest live one (expiry
+// checked before consuming), single-use.
 func (f *fakeRepo) CreatePasskeyChallenge(_ context.Context, id, userID, purpose string, sessionData []byte, expiresAt time.Time) error {
-	for k, c := range f.passkeyChallenges { // supersede prior live (DELETE ... consumed_at IS NULL)
-		if c.userID == userID && c.purpose == purpose && !c.consumed {
+	for k, c := range f.passkeyChallenges { // supersede all prior (DELETE ... user_id=$1 AND purpose=$2)
+		if c.userID == userID && c.purpose == purpose {
 			delete(f.passkeyChallenges, k)
 		}
 	}
