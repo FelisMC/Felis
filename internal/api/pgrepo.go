@@ -319,7 +319,7 @@ func (p *PGRepo) RecordJoin(ctx context.Context, name, mcUUID string) error {
 
 func (p *PGRepo) MyServers(ctx context.Context, userID string) ([]MyServerView, error) {
 	const q = `SELECT s.name, COALESCE(sa.subdomain, ''),
-		(s.owner_id = $1) AS owned, (s.owner_id IS NULL) AS claimable, COALESCE(s.cached_phase, '')
+		COALESCE(s.owner_id = $1, false) AS owned, (s.owner_id IS NULL) AS claimable, COALESCE(s.cached_phase, '')
 		FROM servers s LEFT JOIN server_aliases sa ON sa.server_name = s.name
 		WHERE s.deleted_at IS NULL AND (s.owner_id = $1 OR s.owner_id IS NULL)
 		ORDER BY s.name`
