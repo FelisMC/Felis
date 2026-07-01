@@ -7,18 +7,52 @@ import (
 	"net/http"
 )
 
-// withRequestID assigns a request id (honoring an inbound X-Request-Id) and
-// echoes it on the response and into the context for the error envelope.
+// withRequestID assigns a request id (honoring a WELL-FORMED inbound X-Request-Id)
+// and echoes it on the response and into the context for the error envelope.
+//
+// A caller-supplied id is honored for cross-service tracing, but only after
+// validation: the id is echoed to the client, embedded in the error envelope, AND
+// persisted verbatim into audit_logs.request_id, so an unvalidated one is an
+// audit-integrity vector — an arbitrarily long value bloats the audit row and a
+// stray control byte could smuggle a forged line into a log sink. A rejected id is
+// replaced with a fresh server-minted one: that one request loses its inbound trace
+// link, which is strictly better than storing attacker-controlled text.
 func withRequestID(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Request-Id")
-		if id == "" {
+		if !validRequestID(id) {
 			id = newRequestID()
 		}
 		w.Header().Set("X-Request-Id", id)
 		ctx := context.WithValue(r.Context(), ctxKeyRequestID, id)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// maxRequestIDLen caps an inbound X-Request-Id we are willing to echo and persist.
+// 64 characters comfortably fits a UUID or a typical distributed-trace id while
+// bounding what reaches audit_logs.request_id.
+const maxRequestIDLen = 64
+
+// validRequestID reports whether an inbound X-Request-Id is safe to echo and store:
+// non-empty, within maxRequestIDLen, and restricted to an unambiguous, log-safe
+// charset (ASCII alphanumerics plus '-', '_', '.'). The byte-length check bounds it
+// regardless of encoding, and the charset excludes whitespace, CR/LF, and every
+// other control or multibyte rune, so nothing that survives can pollute a log line
+// or the audit row.
+func validRequestID(id string) bool {
+	if id == "" || len(id) > maxRequestIDLen {
+		return false
+	}
+	for _, c := range id {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case c == '-', c == '_', c == '.':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // withRecover turns a panicking handler into a 500 envelope instead of a
