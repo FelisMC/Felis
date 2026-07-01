@@ -14,6 +14,7 @@ import (
 	"felis.lolicon.best/internal/build"
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/panel"
+	"felis.lolicon.best/internal/passkey"
 	"felis.lolicon.best/internal/restore"
 	"felis.lolicon.best/internal/store"
 	"felis.lolicon.best/internal/submit"
@@ -164,6 +165,27 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		WakeCooldown: 30 * time.Second,
 	}
 	fmt.Fprintln(stderr, "felis api: external face fails closed (Access JWKS key function not configured)")
+
+	// Passkey (WebAuthn) enrollment verifier (spec §14, Phase 6). The relying party is
+	// the panel (app) face: the RP id is the panel hostname and the single permitted
+	// origin is that host over https, so a credential enrolled here is scoped to the
+	// panel. It is wired only when auth.panel_hostname is configured; otherwise a.Passkey
+	// stays nil and the enrollment begin/finish routes honestly return 503 (the
+	// authenticated enrollment boundary is still enforced by the handlers). Scope is
+	// ENROLLMENT only — the login/assertion path is a deferred slice, and credentials
+	// enrolled under this RP id MUST be asserted under the same RP id when that slice
+	// lands. An admin passkey (if ever added) is a SEPARATE relying party on the admin
+	// host and is not wired here.
+	if cfg.Auth.PanelHostname != "" {
+		pv, err := passkey.New(cfg.Auth.PanelHostname, "Felis", []string{"https://" + cfg.Auth.PanelHostname})
+		if err != nil {
+			fmt.Fprintf(stderr, "felis api: passkey verifier disabled: %v — passkey endpoints return 503\n", err)
+		} else {
+			a.Passkey = pv
+		}
+	} else {
+		fmt.Fprintln(stderr, "felis api: passkey verifier disabled (auth.panel_hostname unset) — passkey endpoints return 503")
+	}
 
 	externalHandler := panel.Handler(a.ExternalHandler(), cfg.Server.RootDomain)
 	internalSrv := &http.Server{Addr: *internalAddr, Handler: a.InternalHandler()}
