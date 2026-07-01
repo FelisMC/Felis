@@ -78,7 +78,7 @@ export function ServerCard({ server, cfg, onChanged }: Props) {
       <div className="mt-4 flex flex-wrap gap-2 border-t border-border/50 pt-3">
         {server.owned && (
           <Link to={`/servers/${server.name}`}>
-            <Button variant="ghost" size="sm">
+            <Button variant="outline" size="sm">
               <Terminal /> {t("console")}
             </Button>
           </Link>
