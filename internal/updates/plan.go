@@ -34,9 +34,14 @@ const (
 // on top. A zero Window (both ends zero) is "unset" and Contains always returns
 // false, so a Scheduled component with no window set can never auto-apply — it holds
 // at notify until a human actually schedules a time.
+// The json tags are load-bearing across a package boundary: the maintenance window
+// is persisted by internal/api (platform_settings key "update_window") as lowercase
+// {"start","end"}, and the update runner reads those bytes back into a Window. With
+// value (not pointer) time.Time, a stored null unmarshals as a no-op, so a cleared
+// or never-set window decodes to the zero Window — Contains false, fails closed.
 type Window struct {
-	Start time.Time
-	End   time.Time
+	Start time.Time `json:"start"`
+	End   time.Time `json:"end"`
 }
 
 // Contains reports whether now is inside the window. An unset (zero) or inverted
