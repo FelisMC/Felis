@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -526,5 +527,149 @@ func TestServerConsoleDisconnectTeardown(t *testing.T) {
 	}
 	if !strings.Contains(w.Body.String(), "data: boot progress 50%\n\n") {
 		t.Fatalf("expected the first event before disconnect, got %q", w.Body.String())
+	}
+}
+
+// lineOnceThenBlockReadCloser yields exactly one line, then blocks every later Read
+// until Close is called. It models a live-but-quiet follow stream: the server printed
+// one line and has since gone silent, so nothing on the SOURCE side can end the relay
+// — the only thing that can is the client side (here, the write deadline firing on a
+// stalled reader). Close unblocks the parked Read so the scan goroutine exits cleanly
+// when relayLogStream tears down, mirroring how src.Close aborts a real pods/log Read.
+type lineOnceThenBlockReadCloser struct {
+	line      []byte
+	sentFirst bool // touched only by the single scan goroutine's Read
+	block     chan struct{}
+	once      sync.Once
+}
+
+func newLineOnceThenBlock(line string) *lineOnceThenBlockReadCloser {
+	return &lineOnceThenBlockReadCloser{line: []byte(line), block: make(chan struct{})}
+}
+
+func (c *lineOnceThenBlockReadCloser) Read(p []byte) (int, error) {
+	if !c.sentFirst {
+		c.sentFirst = true
+		return copy(p, c.line), nil
+	}
+	<-c.block
+	return 0, io.EOF
+}
+
+func (c *lineOnceThenBlockReadCloser) Close() error {
+	c.once.Do(func() { close(c.block) })
+	return nil
+}
+
+// closed reports whether Close ran. Reading a channel's closed-ness is race-free, so
+// the test may call this from another goroutine once the relay has returned.
+func (c *lineOnceThenBlockReadCloser) closed() bool {
+	select {
+	case <-c.block:
+		return true
+	default:
+		return false
+	}
+}
+
+// deadlineStallWriter models a client that connected — the header flush went out — and
+// then stopped reading. Its Write buffers and returns at once (like net/http's bufio-
+// backed *response, a small SSE line never touches the socket at Write); its plain
+// Flush — the one-time header flush — returns immediately; but every deadline-gated
+// FlushError blocks until the write deadline relayLogStream set, then reports
+// os.ErrDeadlineExceeded, exactly how a real socket surfaces a SetWriteDeadline expiry
+// on a stalled reader. http.NewResponseController(w).Flush() prefers FlushError over
+// plain Flush, so the relay's per-event flush travels the blocking path while the
+// header flush does not — which is why the guard has to route flushes through the
+// ResponseController, not the bare http.Flusher whose Flush swallows the error.
+type deadlineStallWriter struct {
+	mu       sync.Mutex
+	hdr      http.Header
+	deadline time.Time
+	sawDL    bool
+}
+
+func newDeadlineStallWriter() *deadlineStallWriter {
+	return &deadlineStallWriter{hdr: http.Header{}}
+}
+
+func (s *deadlineStallWriter) Header() http.Header         { return s.hdr }
+func (s *deadlineStallWriter) WriteHeader(int)             {}
+func (s *deadlineStallWriter) Write(p []byte) (int, error) { return len(p), nil } // buffered: never blocks
+func (s *deadlineStallWriter) Flush()                      {}                      // header flush: instant, best-effort
+
+// FlushError is where the stalled socket bites: it blocks until the deadline the relay
+// set via SetWriteDeadline, then returns the same error a real write reports when that
+// deadline elapses. With no deadline set it returns nil — a healthy, instant flush.
+func (s *deadlineStallWriter) FlushError() error {
+	s.mu.Lock()
+	d := s.deadline
+	s.mu.Unlock()
+	if d.IsZero() {
+		return nil
+	}
+	t := time.NewTimer(time.Until(d))
+	defer t.Stop()
+	<-t.C
+	return os.ErrDeadlineExceeded
+}
+
+func (s *deadlineStallWriter) SetWriteDeadline(t time.Time) error {
+	s.mu.Lock()
+	s.deadline = t
+	s.sawDL = true
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *deadlineStallWriter) deadlineSet() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.sawDL
+}
+
+// TestRelayLogStreamWriteDeadlineSeversStalledReader closes the actual §8 relay leak
+// (audit #1): on a client that connected but stopped reading — request context still
+// live, socket write blocked — the relay must not pin its goroutine and upstream pod-log
+// follow forever. The fix sets a per-write deadline (writeTimeout) via
+// http.ResponseController before each event and abandons the stream when a flush exceeds
+// it. deadlineStallWriter makes the flush block until that deadline then report
+// os.ErrDeadlineExceeded, exactly as a stalled socket does; the source stays open and
+// silent (never EOFs), so the ONLY thing that can end the relay is the deadline. Without
+// the fix (a bare flusher.Flush that swallows the error), the relay would loop forever
+// waiting for a line that never comes and this test would time out — it fails closed on
+// the exact leak it guards.
+func TestRelayLogStreamWriteDeadlineSeversStalledReader(t *testing.T) {
+	orig := writeTimeout
+	writeTimeout = 30 * time.Millisecond
+	defer func() { writeTimeout = orig }()
+
+	src := newLineOnceThenBlock("boot\n")
+	w := newDeadlineStallWriter()
+	// A LIVE request context: the client has NOT disconnected. r.Context() never fires
+	// here, which is precisely why the write deadline — not a context cancel — has to be
+	// what severs the stalled stream.
+	r := httptest.NewRequest("GET", "/api/v1/servers/survival/console", nil)
+
+	done := make(chan struct{})
+	go func() {
+		relayLogStream(w, r, src)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// The write deadline fired and the relay tore the stalled stream down.
+	case <-time.After(2 * time.Second):
+		t.Fatal("relayLogStream did not return on a stalled-but-open reader; the write deadline never severed the stream (leak)")
+	}
+
+	if !w.deadlineSet() {
+		t.Fatal("relay never set a write deadline — the leak guard is not wired into the write path")
+	}
+	// Returning ran the deferred Close: the upstream follow (a real apiserver
+	// connection) is released rather than leaked.
+	if !src.closed() {
+		t.Fatal("relay returned without closing the source — upstream pod-log follow leaked")
 	}
 }

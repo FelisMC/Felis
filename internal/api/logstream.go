@@ -3,7 +3,6 @@ package api
 import (
 	"bufio"
 	"context"
-	"fmt"
 	"io"
 	"net/http"
 	"time"
@@ -59,6 +58,23 @@ const sseHeartbeat = ": keepalive\n\n"
 // heartbeat without waiting; production never reassigns it.
 var heartbeatInterval = 25 * time.Second
 
+// writeTimeout bounds how long a single SSE write+flush to the client may block on
+// the socket before the relay abandons the stream. It is the leak guard's teeth: on
+// a stalled-but-open reader (client connected, its TCP receive window shut, never
+// reading) the flush — where net/http actually drains the socket, since it buffers
+// the small "data:" line rather than writing it through — would otherwise block
+// forever INSIDE the write, with the request context never firing (r.Context()
+// cancels on an actual disconnect, not on a stall). That pins this goroutine and its
+// upstream pod-log follow indefinitely. relayLogStream applies this as a per-write
+// deadline via http.ResponseController, so an unresponsive client is torn down
+// within writeTimeout of a stalled flush instead of leaking. It sits comfortably
+// above any transient slow-client write (a data line is bytes-to-KB) yet well under
+// the ~100s proxy idle drop. Best-effort: writers without deadline support
+// (httptest.ResponseRecorder; some HTTP/2 origins) ignore it and the relay behaves
+// exactly as before. It is a var ONLY so a test can shrink it; production never
+// reassigns it.
+var writeTimeout = 30 * time.Second
+
 // relayLogStream is the shared §8 read-side relay: it copies a line-oriented log
 // source to the client as Server-Sent Events (spec §262 SSE, NOT WebSocket). It
 // is the single reusable artifact the server console (handleServerConsole) and,
@@ -88,6 +104,12 @@ func relayLogStream(w http.ResponseWriter, r *http.Request, src io.ReadCloser) {
 			"streaming is unsupported by this server"))
 		return
 	}
+	// rc carries the two capabilities plain http.Flusher lacks: SetWriteDeadline (to
+	// bound a stalled write) and a Flush whose error is observable — http.Flusher.Flush
+	// swallows the deadline-exceeded error that a stalled socket flush returns. The
+	// per-write deadline set inside writeChunk is what severs an unresponsive client;
+	// the initial header flush below stays a plain best-effort flush (no deadline).
+	rc := http.NewResponseController(w)
 
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
@@ -136,25 +158,46 @@ func relayLogStream(w http.ResponseWriter, r *http.Request, src io.ReadCloser) {
 				// the deferred Close release the source.
 				return
 			}
-			// One log line → one SSE "data:" event. A write error means the client
-			// side is gone; stop (the deferred Close tears the upstream down too).
-			if _, err := fmt.Fprintf(w, "data: %s\n\n", line); err != nil {
+			// One log line → one SSE "data:" event, written under a per-write deadline
+			// so a stalled reader severs the stream (writeChunk → false) instead of
+			// pinning this goroutine; the deferred Close then tears the upstream down.
+			if !writeChunk(rc, w, "data: "+line+"\n\n") {
 				return
 			}
-			flusher.Flush()
 		case <-ticker.C:
 			// No line for a whole interval: emit a comment so the connection stays
-			// warm past the proxy idle timeout. A write error means the client is
-			// gone; stop.
-			if _, err := io.WriteString(w, sseHeartbeat); err != nil {
+			// warm past the proxy idle timeout — same deadline-guarded write, so a
+			// client that has gone silent-but-stalled is torn down here too.
+			if !writeChunk(rc, w, sseHeartbeat) {
 				return
 			}
-			flusher.Flush()
 		case <-ctx.Done():
 			// Client disconnected (request context cancelled). Return; defers run.
 			return
 		}
 	}
+}
+
+// writeChunk writes one framed SSE chunk to the client under a fresh per-write
+// deadline and flushes it, returning false when the client socket is gone so the
+// caller tears the relay (and its upstream follow) down. The deadline is the leak
+// guard: net/http buffers the small write and only touches the socket at Flush, so a
+// stalled reader blocks there — without a deadline that block is unbounded and the
+// request context never fires. Both errors are honored: the write error (a line
+// larger than the buffer can block mid-write) and the flush error — rc.Flush
+// surfaces the os.ErrDeadlineExceeded that plain http.Flusher.Flush swallows.
+// SetWriteDeadline and rc.Flush are best-effort: on a writer without deadline
+// support (httptest.ResponseRecorder; some HTTP/2 origins) the deadline is ignored
+// and rc.Flush reduces to a plain, non-erroring flush, so behaviour is unchanged
+// where the guard cannot apply.
+func writeChunk(rc *http.ResponseController, w io.Writer, chunk string) bool {
+	// Best-effort: an unsupported writer returns an error we ignore, leaving the
+	// write unbounded exactly as before the guard existed.
+	_ = rc.SetWriteDeadline(time.Now().Add(writeTimeout))
+	if _, err := io.WriteString(w, chunk); err != nil {
+		return false
+	}
+	return rc.Flush() == nil
 }
 
 // serverLogContainer is the container whose logs the read-side relay streams. It
