@@ -210,6 +210,56 @@ func TestServerConsoleStream(t *testing.T) {
 	})
 }
 
+// TestServerConsoleStreamPerPrincipalCap pins the audit-hardening bound: a single
+// principal may hold at most MaxStreamsPerPrincipal concurrent SSE streams, and an
+// attach past that is shed with 429 too_many_streams BEFORE any upstream follow is
+// opened. (Honest scope: this bounds the blast radius of the stalled-stream leak, it
+// does NOT close the leak — the per-write deadline that severs a stalled stream is a
+// separate slice.) With the principal already at its one-stream cap the next attach is
+// refused without reaching the streamer; releasing the held slot lets an identical
+// attach through, proving the 429 was the cap and not something else.
+func TestServerConsoleStreamPerPrincipalCap(t *testing.T) {
+	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
+	repo := newFakeRepo()
+	repo.byName["survival"] = &ServerRecord{Name: "survival", OwnerID: "owner1"}
+	api := newTestAPI(repo, newFakeCluster())
+	api.MaxStreamsPerPrincipal = 1
+	streamer := &fakeLogStreamer{}
+	api.Logs = streamer
+	api.External = staticExternal{p: owner}
+
+	// Occupy the principal's one stream slot, mimicking a live attach in flight. This
+	// lazily builds the same one-slot limiter the handler consults.
+	release, ok := api.streamGate().acquire(streamKey(owner))
+	if !ok {
+		t.Fatal("could not acquire the sole stream slot in test setup")
+	}
+
+	// A second concurrent attach is shed with 429 and never reaches the streamer.
+	w := do(api.ExternalHandler(), "GET", "/api/v1/servers/survival/console", "", nil)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("over-cap attach: code = %d, want 429 (%s)", w.Code, w.Body.String())
+	}
+	if code := decodeErr(t, w); code != "too_many_streams" {
+		t.Fatalf("over-cap attach: error code = %q, want too_many_streams", code)
+	}
+	if streamer.calls != 0 {
+		t.Fatalf("an over-cap attach must not open an upstream stream (streamer.calls = %d)", streamer.calls)
+	}
+
+	// Releasing the held slot lets an identical attach through: the finite source EOFs,
+	// so the relay returns immediately with the SSE framing.
+	release()
+	streamer.src = &recordReadCloser{r: strings.NewReader("boot\n")}
+	w = do(api.ExternalHandler(), "GET", "/api/v1/servers/survival/console", "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("after releasing the slot: code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	if streamer.calls != 1 {
+		t.Fatalf("after release the attach should reach the streamer once, got %d", streamer.calls)
+	}
+}
+
 // idleReadCloser is a perfectly quiet log follow: every Read blocks until the
 // context is cancelled, yielding no line at all. It models a Minecraft server
 // that has booted and gone silent (no chat, no log output), which is exactly the

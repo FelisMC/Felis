@@ -118,6 +118,19 @@ func (a *API) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := principalFromContext(r.Context())
+
+	// Bound concurrent SSE streams per principal (shared with the console relay): a
+	// stalled reader pins this relay and its upstream build-pod follow, so cap how many
+	// one principal may hold at once. Acquired before opening the stream and released on
+	// every return path. See streamGate — this bounds blast radius, not the leak itself.
+	release, ok := a.streamGate().acquire(streamKey(p))
+	if !ok {
+		writeError(w, r, newError(http.StatusTooManyRequests, "too_many_streams",
+			"too many open build-log streams; close one and retry"))
+		return
+	}
+	defer release()
+
 	src, err := a.BuildLogs.StreamLogs(r.Context(), id)
 	switch {
 	case errors.Is(err, ErrNotFound):

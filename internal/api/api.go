@@ -110,6 +110,17 @@ type API struct {
 	// one account they need. Enforced via loginLimiter in handleLogin.
 	MaxConcurrentLogins int
 
+	// MaxStreamsPerPrincipal caps how many concurrent Server-Sent Event streams
+	// (console + build-log relays, spec §8) a single principal may hold open at once.
+	// Each relay blocks for the lifetime of a client's attachment and, under a stalled
+	// reader, pins a goroutine plus a kube-apiserver follow connection (relayLogStream).
+	// The cap does NOT fix that leak — the per-write deadline that severs a stalled
+	// stream is a separate slice — but it bounds the blast radius so one principal
+	// cannot accumulate unbounded leaked control-plane connections. Zero — the default
+	// — disables it (same "zero disables" idiom as the levers above); cmd/felis wires a
+	// positive value. Enforced via streamGate in the two relay handlers.
+	MaxStreamsPerPrincipal int
+
 	// Now is the clock, injectable for tests. Defaults to time.Now.
 	Now func() time.Time
 
@@ -121,6 +132,9 @@ type API struct {
 
 	loginCapOnce sync.Once
 	loginCap     *concurrencyLimiter
+
+	streamCapOnce sync.Once
+	streamCap     *streamLimiter
 }
 
 // now returns the current time using the injected clock.
@@ -158,6 +172,31 @@ func (a *API) loginLimiter() *concurrencyLimiter {
 		a.loginCap = newConcurrencyLimiter(a.MaxConcurrentLogins)
 	})
 	return a.loginCap
+}
+
+// streamGate lazily builds the per-principal SSE stream cap bound to
+// MaxStreamsPerPrincipal. A zero cap yields a disabled limiter that admits every
+// stream, so a deployment (or test) that leaves it unset pays nothing.
+func (a *API) streamGate() *streamLimiter {
+	a.streamCapOnce.Do(func() {
+		a.streamCap = newStreamLimiter(a.MaxStreamsPerPrincipal)
+	})
+	return a.streamCap
+}
+
+// streamKey identifies the principal a stream slot is charged to. It prefers the
+// stable user id and falls back to the email so a JWT principal without a user id is
+// still bucketed by identity; an empty key (no authenticated identity, which the
+// external face's auth guard already precludes) shares one bucket, which is safe
+// because it is more restrictive, never less.
+func streamKey(p *Principal) string {
+	if p == nil {
+		return ""
+	}
+	if p.UserID != "" {
+		return p.UserID
+	}
+	return p.Email
 }
 
 // apiRoute is one served HTTP route. Each face exposes its routes as a single
@@ -565,6 +604,61 @@ func (l *concurrencyLimiter) acquire() (release func(), ok bool) {
 	default:
 		return nil, false
 	}
+}
+
+// ---- per-principal stream cap ----
+
+// streamLimiter bounds how many concurrent guarded sections a single KEY may hold at
+// once. It backs the per-principal SSE stream cap (console + build-log relays): each
+// relay blocks for the life of a client's attachment and, under a stalled reader,
+// pins a goroutine plus a kube-apiserver follow connection, so an unbounded number of
+// them from one principal is a control-plane connection-exhaustion vector. Unlike the
+// login concurrencyLimiter (a single global semaphore), this counts per key. A
+// non-positive max disables it (acquire always admits, release is a no-op), the same
+// "zero disables" idiom as the other levers.
+type streamLimiter struct {
+	mu  sync.Mutex
+	n   map[string]int
+	max int
+}
+
+// newStreamLimiter builds a per-key stream cap admitting at most max concurrent
+// holders per key. A non-positive max yields a disabled limiter that admits everyone.
+func newStreamLimiter(max int) *streamLimiter {
+	return &streamLimiter{n: map[string]int{}, max: max}
+}
+
+// acquire reserves a slot for key. It returns a release func and true on success, or
+// nil and false when key already holds max slots. A non-positive max disables the cap
+// (always admits, no-op release). The returned release is guarded by a sync.Once, so
+// a defer that runs it exactly once — or even twice on some paths — never
+// over-decrements the counter.
+func (l *streamLimiter) acquire(key string) (release func(), ok bool) {
+	if l.max <= 0 {
+		return func() {}, true
+	}
+	l.mu.Lock()
+	if l.n[key] >= l.max {
+		l.mu.Unlock()
+		return nil, false
+	}
+	l.n[key]++
+	l.mu.Unlock()
+
+	var once sync.Once
+	return func() { once.Do(func() { l.release(key) }) }, true
+}
+
+// release returns one of key's slots. The counter entry is deleted when it reaches
+// zero so the map does not accumulate a permanent entry per principal ever seen.
+func (l *streamLimiter) release(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.n[key] <= 1 {
+		delete(l.n, key)
+		return
+	}
+	l.n[key]--
 }
 
 // ---- running-server cap ----

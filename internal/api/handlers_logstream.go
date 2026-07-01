@@ -63,6 +63,20 @@ func (a *API) handleServerConsole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Bound concurrent SSE streams per principal BEFORE opening the follow stream, so
+	// an over-cap caller never even ties up a kube-apiserver connection. A stalled
+	// reader keeps this relay (and its upstream follow) alive indefinitely — the write
+	// deadline that actually severs it is a separate slice — so this cap is what stops
+	// one principal from accumulating unbounded leaked control-plane connections. The
+	// slot is held for the whole relay and released on every return path.
+	release, ok := a.streamGate().acquire(streamKey(p))
+	if !ok {
+		writeError(w, r, newError(http.StatusTooManyRequests, "too_many_streams",
+			"too many open console streams; close one and retry"))
+		return
+	}
+	defer release()
+
 	// Open the follow stream. Every error must be resolved HERE, into a normal JSON
 	// envelope, because relayLogStream commits the 200 + SSE headers and no error
 	// body can follow it.

@@ -173,6 +173,10 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		RootDomain:          cfg.Server.RootDomain,
 		WakeCooldown:        30 * time.Second,
 		MaxConcurrentLogins: loginBcryptCap,
+		// Bound concurrent console/build-log SSE streams per principal. Generous enough
+		// for legitimate multi-tab / multi-server watching, while capping how many
+		// upstream follow connections a single caller can tie up if their streams stall.
+		MaxStreamsPerPrincipal: 16,
 	}
 	fmt.Fprintln(stderr, "felis api: external face fails closed (Access JWKS key function not configured)")
 
