@@ -121,6 +121,45 @@ func TestHandleLoginContentTypeGuard(t *testing.T) {
 	}
 }
 
+// TestHandleLoginConcurrencyCap pins the audit-hardening bound on the public login
+// route: bcrypt is CPU-costly and runs on every request (the anti-enumeration dummy
+// included), so at most MaxConcurrentLogins compares may be in flight at once and the
+// excess is shed with a 429 rather than piling more onto every core. Holding the sole
+// slot makes the next login — with otherwise-valid credentials — return 429 auth_busy
+// with no cookie BEFORE any credential check; releasing it lets the identical request
+// succeed, proving the 429 was the cap, not the password. A concurrency cap, not a
+// per-account lockout: the same account gets in the moment the burst clears.
+func TestHandleLoginConcurrencyCap(t *testing.T) {
+	api, _ := seedAuthAPI(t, "correct-horse-battery", false)
+	api.MaxConcurrentLogins = 1
+	h := api.ExternalHandler()
+	body := `{"username":"owner","password":"correct-horse-battery"}`
+
+	// Occupy the one compare slot so the handler finds the cap full. loginLimiter is
+	// lazily built from MaxConcurrentLogins (set just above), so this and the handler
+	// share the same one-token limiter.
+	release, ok := api.loginLimiter().acquire()
+	if !ok {
+		t.Fatal("could not acquire the sole login slot in test setup")
+	}
+	w := do(h, "POST", "/api/v1/auth/login", body, jsonHeader)
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("with the slot held: code = %d, want 429 (%s)", w.Code, w.Body.String())
+	}
+	if code := decodeErr(t, w); code != "auth_busy" {
+		t.Fatalf("error code = %q, want auth_busy", code)
+	}
+	if len(w.Result().Cookies()) != 0 {
+		t.Fatal("no session cookie may be set on a shed login")
+	}
+
+	// Release the slot: the identical request now runs the compare and succeeds.
+	release()
+	if w := do(h, "POST", "/api/v1/auth/login", body, jsonHeader); w.Code != http.StatusOK {
+		t.Fatalf("after releasing the slot: code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+}
+
 // TestHandleLoginInvalidCredentials proves the anti-enumeration uniformity: a wrong
 // password and an unknown username return the SAME 401 invalid_credentials with no
 // cookie, so a caller cannot learn which usernames carry a password.

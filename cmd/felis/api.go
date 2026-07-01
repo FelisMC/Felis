@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	goruntime "runtime"
 	"time"
 
 	"felis.lolicon.best/internal/api"
@@ -137,6 +138,14 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// agree on what local auth knows.
 	repo := api.NewPGRepo(drv.DB())
 
+	// Bound concurrent login bcrypt to roughly the core count (floored so even a 1–2
+	// vCPU demo box tolerates a handful of simultaneous staff logins). bcrypt is
+	// CPU-costly and the public login route runs a full compare on every request, so
+	// this caps the work a login flood can pile on the scheduler; the excess is shed
+	// as a cheap 429. Staff password logins are rare (players never use this path), so
+	// the cap never bites legitimate use.
+	loginBcryptCap := max(goruntime.NumCPU(), 4)
+
 	a := &api.API{
 		Repo:    repo,
 		Cluster: api.NewK8sCluster(cl, cfg.K8s.Namespace),
@@ -161,8 +170,9 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 			RootDomain:    cfg.Server.RootDomain,
 			AdminHostname: cfg.Auth.AdminHostname,
 		},
-		RootDomain:   cfg.Server.RootDomain,
-		WakeCooldown: 30 * time.Second,
+		RootDomain:          cfg.Server.RootDomain,
+		WakeCooldown:        30 * time.Second,
+		MaxConcurrentLogins: loginBcryptCap,
 	}
 	fmt.Fprintln(stderr, "felis api: external face fails closed (Access JWKS key function not configured)")
 

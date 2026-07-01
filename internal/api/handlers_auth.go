@@ -82,7 +82,24 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if u != nil && u.PasswordHash != "" {
 		hash = []byte(u.PasswordHash)
 	}
-	if bcrypt.CompareHashAndPassword(hash, []byte(body.Password)) != nil || u == nil || u.PasswordHash == "" {
+
+	// Bound concurrent bcrypt: this public route runs a full-cost compare on every
+	// request (the anti-enumeration dummy included), so an unbounded flood of
+	// simultaneous logins would pin every core. Take one of a fixed number of compare
+	// slots and shed the excess with a 429 rather than adding to the CPU pile. The
+	// slot guards only the hash — it is released the instant the compare returns,
+	// before the session I/O — and being a concurrency cap (not a per-username
+	// lockout) it never fences the break-glass admin out. The 429 lands before any
+	// credential distinction, so it leaks nothing about the username either.
+	release, ok := a.loginLimiter().acquire()
+	if !ok {
+		writeError(w, r, newError(http.StatusTooManyRequests, "auth_busy",
+			"authentication is busy; retry in a moment"))
+		return
+	}
+	matched := bcrypt.CompareHashAndPassword(hash, []byte(body.Password)) == nil
+	release()
+	if !matched || u == nil || u.PasswordHash == "" {
 		writeError(w, r, errInvalidCredentials)
 		return
 	}

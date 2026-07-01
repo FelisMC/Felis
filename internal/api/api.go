@@ -99,6 +99,17 @@ type API struct {
 	// a positive value. Enforced via withinRunningCap on the wake path.
 	MaxRunningServers int
 
+	// MaxConcurrentLogins bounds how many password logins may run their (CPU-costly)
+	// bcrypt compare at once on the public /auth/login route. bcrypt is deliberately
+	// expensive and the anti-enumeration path runs a full compare on EVERY request,
+	// so an unbounded flood of concurrent logins would pin every core; capping the
+	// simultaneous compares sheds the excess with a cheap 429 instead. Zero — the
+	// default — disables the cap (same "zero disables" idiom as WakeCooldown /
+	// MaxRunningServers); cmd/felis wires a positive value. It is a concurrency cap,
+	// NOT a per-account lockout, so it never fences a break-glass admin out of the
+	// one account they need. Enforced via loginLimiter in handleLogin.
+	MaxConcurrentLogins int
+
 	// Now is the clock, injectable for tests. Defaults to time.Now.
 	Now func() time.Time
 
@@ -107,6 +118,9 @@ type API struct {
 
 	otpCooldownOnce sync.Once
 	otpCooldown     *cooldownLimiter
+
+	loginCapOnce sync.Once
+	loginCap     *concurrencyLimiter
 }
 
 // now returns the current time using the injected clock.
@@ -134,6 +148,16 @@ func (a *API) otpLimiter() *cooldownLimiter {
 		a.otpCooldown = &cooldownLimiter{now: a.now, last: map[string]time.Time{}}
 	})
 	return a.otpCooldown
+}
+
+// loginLimiter lazily builds the login bcrypt concurrency cap bound to
+// MaxConcurrentLogins. A zero cap yields a disabled limiter that admits every
+// caller, so a deployment (or test) that leaves it unset pays nothing.
+func (a *API) loginLimiter() *concurrencyLimiter {
+	a.loginCapOnce.Do(func() {
+		a.loginCap = newConcurrencyLimiter(a.MaxConcurrentLogins)
+	})
+	return a.loginCap
 }
 
 // apiRoute is one served HTTP route. Each face exposes its routes as a single
@@ -500,6 +524,46 @@ func (c *cooldownLimiter) release(name string, reservedAt time.Time) {
 	defer c.mu.Unlock()
 	if last, ok := c.last[name]; ok && last.Equal(reservedAt) {
 		delete(c.last, name)
+	}
+}
+
+// ---- login concurrency cap ----
+
+// concurrencyLimiter bounds how many holders may run a guarded section at once. It
+// backs the public login route's bcrypt cap (handleLogin): a buffered channel of n
+// tokens; acquire takes one WITHOUT blocking (returning ok=false when the section
+// is already full), release returns it. Unlike cooldownLimiter — a per-key time
+// window — this bounds simultaneity, not frequency, which is the right shape for a
+// CPU-costly section a flood would otherwise pin every core running. A non-positive
+// cap disables it (acquire always admits, release is a no-op), mirroring the "zero
+// disables" idiom of WakeCooldown and MaxRunningServers.
+type concurrencyLimiter struct {
+	slots chan struct{}
+}
+
+// newConcurrencyLimiter builds a limiter admitting at most n concurrent holders. A
+// non-positive n yields a disabled limiter (nil slots) that admits everyone.
+func newConcurrencyLimiter(n int) *concurrencyLimiter {
+	if n <= 0 {
+		return &concurrencyLimiter{}
+	}
+	return &concurrencyLimiter{slots: make(chan struct{}, n)}
+}
+
+// acquire tries to take a slot without blocking. It returns a release func and true
+// on success, or nil and false when the section is already at capacity. The disabled
+// limiter (nil slots) always admits and returns a no-op release. release MUST be
+// called exactly once on the success path, so it reads naturally as `release, ok :=
+// l.acquire(); if !ok { shed }; defer/inline release()`.
+func (l *concurrencyLimiter) acquire() (release func(), ok bool) {
+	if l.slots == nil {
+		return func() {}, true
+	}
+	select {
+	case l.slots <- struct{}{}:
+		return func() { <-l.slots }, true
+	default:
+		return nil, false
 	}
 }
 
