@@ -19,7 +19,7 @@ import {
  *  entry, and read the current list. Built to stay usable at a few hundred names —
  *  a live count, a filter and paging (via usePagedNames) once the list is long
  *  enough to need them, and a two-step remove so a name never vanishes on one tap. */
-export function WhitelistSection({ name }: { name: string }) {
+export function WhitelistSection({ name, defaultOpen = true }: { name: string; defaultOpen?: boolean }) {
   const { t } = useTranslation("servers");
   const { data, error, loading, reload } = useAsync(
     () => api.accessWhitelistList(name),
@@ -89,6 +89,7 @@ export function WhitelistSection({ name }: { name: string }) {
       icon={<ListChecks className="h-4 w-4" />}
       title={t("access_whitelist_title")}
       count={!loading && !error ? players.length : undefined}
+      defaultOpen={defaultOpen}
       actions={
         <Button
           variant="ghost"
@@ -147,30 +148,27 @@ export function WhitelistSection({ name }: { name: string }) {
           <div className="space-y-2">
             {showSearch && <SearchBox value={query} onChange={onQuery} />}
 
-            <ul className="divide-y divide-border rounded-md border border-border">
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
               {shown.length === 0 ? (
-                <li className="px-3 py-6 text-center text-xs text-muted-foreground">
+                <div className="col-span-full py-6 text-center text-xs text-muted-foreground">
                   {t("access_search_no_match", { query: query.trim() })}
-                </li>
+                </div>
               ) : (
                 pageItems.map((p) => (
-                  <li
+                  <div
                     key={p}
-                    className="flex items-center justify-between gap-2 px-3 py-2 transition-colors hover:bg-muted/40"
+                    className="flex items-center justify-between gap-3 rounded-lg border border-border bg-card/25 p-2.5 transition-all hover:border-primary/20 hover:bg-accent/40"
                   >
-                    <span className="truncate font-mono text-sm">{p}</span>
+                    <span className="truncate font-mono text-sm font-medium">{p}</span>
                     {/* Removal asks once before it fires: one click arms the row (X →
                         取消 / 移除), a second confirms. Recoverable, but a name gone on
                         a single stray tap is exactly the surprise to avoid. */}
                     {confirming === p ? (
                       <div className="flex shrink-0 items-center gap-1">
-                        <span className="mr-1 hidden text-xs text-muted-foreground sm:inline">
-                          {t("access_whitelist_remove_q")}
-                        </span>
                         <Button
                           variant="ghost"
                           size="sm"
-                          className="h-6 px-2"
+                          className="h-6 px-1.5 text-[10px]"
                           onClick={() => setConfirming(null)}
                           disabled={removing === p}
                         >
@@ -179,12 +177,12 @@ export function WhitelistSection({ name }: { name: string }) {
                         <Button
                           variant="destructive"
                           size="sm"
-                          className="h-6 px-2"
+                          className="h-6 px-1.5 text-[10px]"
                           onClick={() => remove(p)}
                           disabled={removing !== null}
                         >
                           {removing === p ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            <Loader2 className="h-3 w-3 animate-spin" />
                           ) : (
                             t("access_remove")
                           )}
@@ -202,10 +200,10 @@ export function WhitelistSection({ name }: { name: string }) {
                         <X className="h-3.5 w-3.5" />
                       </button>
                     )}
-                  </li>
+                  </div>
                 ))
               )}
-            </ul>
+            </div>
 
             {needFooter && (
               <PagerFooter

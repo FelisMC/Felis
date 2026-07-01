@@ -21,7 +21,7 @@ type RowAction = "kick" | "ban";
  *  alone — so it reads the RCON "list" reply on demand. Refresh is MANUAL (a button
  *  + a last-updated stamp), never a timer: auto-polling would fire an RCON command
  *  per viewer forever, and the roster does not move fast enough to justify it. */
-export function OnlineSection({ name }: { name: string }) {
+export function OnlineSection({ name, defaultOpen = true }: { name: string; defaultOpen?: boolean }) {
   const { t } = useTranslation("servers");
   const { data, error, loading, reload } = useAsync(() => api.accessPlayers(name), [name]);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
@@ -73,6 +73,7 @@ export function OnlineSection({ name }: { name: string }) {
       icon={<Users className="h-4 w-4" />}
       title={t("access_online_title")}
       count={!loading && !error ? (max > 0 ? `${online} / ${max}` : online) : undefined}
+      defaultOpen={defaultOpen}
       actions={
         <Button
           variant="ghost"
@@ -124,36 +125,36 @@ export function OnlineSection({ name }: { name: string }) {
           <div className="space-y-2">
             {showSearch && <SearchBox value={query} onChange={onQuery} />}
 
-            <ul className="divide-y divide-border rounded-md border border-border">
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
               {shown.length === 0 ? (
-                <li className="px-3 py-6 text-center text-xs text-muted-foreground">
+                <div className="col-span-full py-6 text-center text-xs text-muted-foreground">
                   {t("access_search_no_match", { query: query.trim() })}
-                </li>
+                </div>
               ) : (
                 pageItems.map((p) => {
                   // Narrow here so confirming.action is non-null inside the branch.
                   const c = confirming && confirming.player === p ? confirming : null;
                   const isPending = pending?.player === p;
                   return (
-                    <li
+                    <div
                       key={p}
-                      className="flex items-center justify-between gap-2 px-3 py-2 transition-colors hover:bg-muted/40"
+                      className="flex items-center justify-between gap-3 rounded-lg border border-border bg-card/25 p-2.5 transition-all hover:border-primary/20 hover:bg-accent/40"
                     >
                       <span className="flex min-w-0 items-center gap-2">
-                        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500" />
-                        <span className="truncate font-mono text-sm">{p}</span>
+                        <span className="relative flex h-2 w-2 shrink-0">
+                          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"></span>
+                          <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500"></span>
+                        </span>
+                        <span className="truncate font-mono text-sm font-medium">{p}</span>
                       </span>
                       {/* Both kick and ban are disruptive, so each arms a one-step
                           inline confirm before it fires (no native confirm()). */}
                       {c ? (
                         <div className="flex shrink-0 items-center gap-1">
-                          <span className="mr-1 hidden text-xs text-muted-foreground sm:inline">
-                            {c.action === "kick" ? t("access_kick_q") : t("access_ban_q")}
-                          </span>
                           <Button
                             variant="ghost"
                             size="sm"
-                            className="h-6 px-2"
+                            className="h-6 px-1.5 text-[10px]"
                             onClick={() => setConfirming(null)}
                             disabled={isPending}
                           >
@@ -162,12 +163,12 @@ export function OnlineSection({ name }: { name: string }) {
                           <Button
                             variant="destructive"
                             size="sm"
-                            className="h-6 px-2"
+                            className="h-6 px-1.5 text-[10px]"
                             onClick={() => run(p, c.action)}
                             disabled={pending !== null}
                           >
                             {isPending ? (
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              <Loader2 className="h-3 w-3 animate-spin" />
                             ) : c.action === "kick" ? (
                               t("access_kick_btn")
                             ) : (
@@ -180,30 +181,32 @@ export function OnlineSection({ name }: { name: string }) {
                           <Button
                             variant="outline"
                             size="sm"
-                            className="h-7 px-2"
+                            className="h-7 px-2 text-xs gap-1"
                             onClick={() => setConfirming({ player: p, action: "kick" })}
                             disabled={pending !== null}
+                            title={t("access_kick_btn")}
                           >
-                            <LogOut className="h-3.5 w-3.5" />
-                            <span className="hidden sm:inline">{t("access_kick_btn")}</span>
+                            <LogOut className="h-3.5 w-3.5 shrink-0" />
+                            <span>{t("access_kick_btn")}</span>
                           </Button>
                           <Button
                             variant="ghost"
                             size="sm"
-                            className="h-7 px-2 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                            className="h-7 px-2 text-xs text-destructive hover:bg-destructive/10 hover:text-destructive gap-1"
                             onClick={() => setConfirming({ player: p, action: "ban" })}
                             disabled={pending !== null}
+                            title={t("access_ban_btn")}
                           >
-                            <Ban className="h-3.5 w-3.5" />
-                            <span className="hidden sm:inline">{t("access_ban_btn")}</span>
+                            <Ban className="h-3.5 w-3.5 shrink-0" />
+                            <span>{t("access_ban_btn")}</span>
                           </Button>
                         </div>
                       )}
-                    </li>
+                    </div>
                   );
                 })
               )}
-            </ul>
+            </div>
 
             {needFooter && (
               <PagerFooter
