@@ -19,7 +19,7 @@ import {
  *  entry, and read the current list. Built to stay usable at a few hundred names —
  *  a live count, a filter and paging (via usePagedNames) once the list is long
  *  enough to need them, and a two-step remove so a name never vanishes on one tap. */
-export function WhitelistSection({ name, defaultOpen = true }: { name: string; defaultOpen?: boolean }) {
+export function WhitelistSection({ name, defaultOpen = false }: { name: string; defaultOpen?: boolean }) {
   const { t } = useTranslation("servers");
   const { data, error, loading, reload } = useAsync(
     () => api.accessWhitelistList(name),
