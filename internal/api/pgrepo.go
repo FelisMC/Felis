@@ -924,10 +924,13 @@ func (p *PGRepo) ConsumePasskeyChallengeByUser(ctx context.Context, userID, purp
 // so an authenticator is never silently rebound. Empty aaguid/name land as SQL NULL.
 func (p *PGRepo) CreatePasskeyCredential(ctx context.Context, c PasskeyCredential) error {
 	res, err := p.db.ExecContext(ctx,
-		`INSERT INTO webauthn_credentials (id, user_id, credential_id, public_key, sign_count, aaguid, name, created_at)
-		 VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''), $8)
+		`INSERT INTO webauthn_credentials
+		   (id, user_id, credential_id, public_key, sign_count, aaguid, name, created_at,
+		    user_verified, backup_eligible, backup_state)
+		 VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''), $8, $9, $10, $11)
 		 ON CONFLICT (credential_id) DO NOTHING`,
-		c.ID, c.UserID, c.CredentialID, c.PublicKey, int64(c.SignCount), c.AAGUID, c.Name, c.CreatedAt)
+		c.ID, c.UserID, c.CredentialID, c.PublicKey, int64(c.SignCount), c.AAGUID, c.Name, c.CreatedAt,
+		c.UserVerified, c.BackupEligible, c.BackupState)
 	if err != nil {
 		return err
 	}
@@ -946,7 +949,8 @@ func (p *PGRepo) CreatePasskeyCredential(ctx context.Context, c PasskeyCredentia
 // nullable last_used_at maps to a *time.Time (nil until an assertion is verified).
 func (p *PGRepo) PasskeyCredentialsForUser(ctx context.Context, userID string) ([]PasskeyCredential, error) {
 	const q = `SELECT id, user_id, credential_id, public_key, sign_count,
-		COALESCE(aaguid, ''), COALESCE(name, ''), created_at, last_used_at
+		COALESCE(aaguid, ''), COALESCE(name, ''), created_at, last_used_at,
+		user_verified, backup_eligible, backup_state
 		FROM webauthn_credentials WHERE user_id = $1 ORDER BY created_at DESC`
 	rows, err := p.db.QueryContext(ctx, q, userID)
 	if err != nil {
@@ -961,7 +965,8 @@ func (p *PGRepo) PasskeyCredentialsForUser(ctx context.Context, userID string) (
 			lastUsed  sql.NullTime
 		)
 		if err := rows.Scan(&c.ID, &c.UserID, &c.CredentialID, &c.PublicKey, &signCount,
-			&c.AAGUID, &c.Name, &c.CreatedAt, &lastUsed); err != nil {
+			&c.AAGUID, &c.Name, &c.CreatedAt, &lastUsed,
+			&c.UserVerified, &c.BackupEligible, &c.BackupState); err != nil {
 			return nil, err
 		}
 		c.SignCount = uint32(signCount)

@@ -60,6 +60,15 @@ func New(rpID, displayName string, origins []string) (*Verifier, error) {
 		RPID:          rpID,
 		RPDisplayName: displayName,
 		RPOrigins:     origins,
+		// Require user verification (a PIN/biometric, not mere presence) at enrollment,
+		// so a bound passkey always proves two factors — possession of the authenticator
+		// AND the user. go-webauthn stamps this requirement into the SessionData at begin
+		// and enforces the UV flag at CreateCredential, so an authenticator that only
+		// tested presence is rejected. A device that cannot do UV simply falls back to the
+		// email-OTP factor (migration 0004); no one is locked out.
+		AuthenticatorSelection: protocol.AuthenticatorSelection{
+			UserVerification: protocol.VerificationRequired,
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -121,6 +130,15 @@ func (v *Verifier) FinishRegistration(user api.PasskeyUser, sessionData []byte, 
 		PublicKey:    base64.StdEncoding.EncodeToString(cred.PublicKey),
 		SignCount:    cred.Authenticator.SignCount,
 		AAGUID:       aaguidString(cred.Authenticator.AAGUID),
+		// Record the ceremony flags go-webauthn derived from the authenticator data.
+		// UserVerified is redundant with the required-UV policy today (a non-UV finish is
+		// rejected before we get here) but persisting it makes the guarantee auditable and
+		// survives a future policy that permits UV=preferred credentials. BackupEligible/
+		// BackupState tell a later login path whether the passkey is a single-device key or
+		// a syncable/multi-device one — a posture signal worth capturing at bind time.
+		UserVerified:   cred.Flags.UserVerified,
+		BackupEligible: cred.Flags.BackupEligible,
+		BackupState:    cred.Flags.BackupState,
 	}, nil
 }
 

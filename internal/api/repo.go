@@ -107,6 +107,13 @@ type PasskeyCredential struct {
 	Name         string
 	CreatedAt    time.Time
 	LastUsedAt   *time.Time
+	// Ceremony flags captured at enrollment (migration 0009). UserVerified records that a
+	// PIN/biometric was performed at bind; BackupEligible/BackupState record whether the
+	// credential is syncable/backed up. Persisted so a future login path can enforce UV
+	// per credential and reason about single-device vs. synced authenticators.
+	UserVerified   bool
+	BackupEligible bool
+	BackupState    bool
 }
 
 // SessionedUser is the projection resolved from a live session cookie: the

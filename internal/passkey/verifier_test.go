@@ -88,6 +88,41 @@ func TestRegisterRoundTrip(t *testing.T) {
 	if _, err := base64.StdEncoding.DecodeString(vc.PublicKey); err != nil {
 		t.Errorf("PublicKey is not valid base64: %v", err)
 	}
+	// The default virtual authenticator performs user verification, and enrollment now
+	// requires it — so the recorded UserVerified flag must be true. This proves the flag is
+	// captured from the ceremony (not left at its zero value) end to end.
+	if !vc.UserVerified {
+		t.Error("UserVerified = false; a verified enrollment must record UV=true")
+	}
+}
+
+// TestRegisterRequiresUserVerification proves the required-UV policy is enforced, not just
+// advertised: an authenticator that tests presence but does NOT verify the user (no
+// PIN/biometric) must be rejected at finish. go-webauthn stamps UV=required into the
+// SessionData at begin and checks the UV flag at CreateCredential; without this guard a
+// silent, presence-only passkey could be bound. Pairs with TestRegisterRoundTrip (which
+// proves a UV-capable authenticator still succeeds), so the policy neither over- nor
+// under-blocks.
+func TestRegisterRequiresUserVerification(t *testing.T) {
+	v := newTestVerifier(t)
+	rp := virtualRP()
+	// UserNotVerified: the authenticator signs with the UV flag clear.
+	authenticator := virtualwebauthn.NewAuthenticatorWithOptions(virtualwebauthn.AuthenticatorOptions{UserNotVerified: true})
+	cred := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+
+	options, sessionData, err := v.BeginRegistration(testUser())
+	if err != nil {
+		t.Fatalf("BeginRegistration: %v", err)
+	}
+	attestationOpts, err := virtualwebauthn.ParseAttestationOptions(string(options))
+	if err != nil {
+		t.Fatalf("ParseAttestationOptions: %v", err)
+	}
+	attestationResponse := virtualwebauthn.CreateAttestationResponse(rp, authenticator, cred, *attestationOpts)
+
+	if _, err := v.FinishRegistration(testUser(), sessionData, strings.NewReader(attestationResponse)); err == nil {
+		t.Fatal("FinishRegistration accepted a presence-only (no user verification) attestation; want rejection")
+	}
 }
 
 // TestRegisterOriginMismatchRejected proves the adapter is really checking the origin: an

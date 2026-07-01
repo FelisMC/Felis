@@ -109,6 +109,13 @@ type VerifiedCredential struct {
 	PublicKey    string // base64(COSE public key bytes)
 	SignCount    uint32
 	AAGUID       string
+	// Ceremony flags captured at enrollment. UserVerified records that a PIN/biometric
+	// (not mere presence) was performed; BackupEligible/BackupState record whether the
+	// credential is syncable/backed up. All are non-secret ceremony facts a future login
+	// path can enforce or surface per credential.
+	UserVerified   bool
+	BackupEligible bool
+	BackupState    bool
 }
 
 // VerifiedAssertion is the output of a finished LOGIN (assertion) ceremony: which of the
@@ -237,14 +244,17 @@ func (a *API) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Request
 		return
 	}
 	cred := PasskeyCredential{
-		ID:           id,
-		UserID:       p.UserID,
-		CredentialID: vc.CredentialID,
-		PublicKey:    vc.PublicKey,
-		SignCount:    vc.SignCount,
-		AAGUID:       vc.AAGUID,
-		Name:         req.Name,
-		CreatedAt:    a.now(),
+		ID:             id,
+		UserID:         p.UserID,
+		CredentialID:   vc.CredentialID,
+		PublicKey:      vc.PublicKey,
+		SignCount:      vc.SignCount,
+		AAGUID:         vc.AAGUID,
+		Name:           req.Name,
+		CreatedAt:      a.now(),
+		UserVerified:   vc.UserVerified,
+		BackupEligible: vc.BackupEligible,
+		BackupState:    vc.BackupState,
 	}
 	if err := a.Repo.CreatePasskeyCredential(r.Context(), cred); err != nil {
 		if errors.Is(err, ErrConflict) {
