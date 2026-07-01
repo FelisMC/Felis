@@ -191,6 +191,22 @@ func (p *PGRepo) RedeemPlayerBindCode(ctx context.Context, newUserID, code strin
 
 // QuotaAvailable treats a missing quota row or a NULL max_servers as unlimited;
 // otherwise it compares the live owned-server count against the cap (spec §9.3).
+//
+// KNOWN-LIMITATION (audit #4, quota TOCTOU): this check and ClaimServer are two
+// separate statements, not one transaction, so the count read here is not serialized
+// against a concurrent claim's UPDATE. Two claims by the same user for two DIFFERENT
+// ownerless servers can both read count < max_servers (under READ COMMITTED neither
+// sees the other's uncommitted UPDATE) and both succeed, leaving the user one server
+// over quota. Severity is low: it over-provisions the quota by a small margin under a
+// deliberate concurrent burst — it is NOT an authorization, ownership, or isolation
+// break (each server is still claimed atomically via UPDATE ... WHERE owner_id IS
+// NULL, so two users never share one server). Closing it needs Postgres transaction
+// semantics: wrap the count and a conditional UPDATE (gated on count < max_servers) in
+// one tx under pg_advisory_xact_lock(hashtext(user_id)) — or SERIALIZABLE with a retry
+// loop — folding the gate out of the two handlers (handleClaim and the internal UUID
+// claim) into a single repo method. That is INTEGRATION-dependent: it is verifiable
+// only against a real Postgres, not the hermetic fakeRepo suite, so it is documented
+// here rather than patched blind.
 func (p *PGRepo) QuotaAvailable(ctx context.Context, userID string) (bool, error) {
 	var maxServers sql.NullInt64
 	switch err := p.db.QueryRowContext(ctx,

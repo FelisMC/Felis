@@ -232,7 +232,9 @@ func (a *API) handleInternalClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ② quota gate, evaluated before the ownership write (mirrors handleClaim).
+	// ② quota gate, evaluated before the ownership write (mirrors handleClaim). It
+	// shares handleClaim's quota TOCTOU KNOWN-LIMITATION — see QuotaAvailable (audit
+	// #4, ENV-blocked).
 	ok, err := a.Repo.QuotaAvailable(r.Context(), userID)
 	if err != nil {
 		writeError(w, r, err)

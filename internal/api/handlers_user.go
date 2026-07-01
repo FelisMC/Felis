@@ -120,7 +120,9 @@ func (a *API) handleClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ② quota gate, evaluated before the ownership write
+	// ② quota gate, evaluated before the ownership write. This gate and ③ are two
+	// separate statements, not one transaction — see the quota TOCTOU KNOWN-LIMITATION
+	// on QuotaAvailable (audit #4, ENV-blocked: needs real Postgres to close/verify).
 	ok, err := a.Repo.QuotaAvailable(r.Context(), p.UserID)
 	if err != nil {
 		writeError(w, r, err)
