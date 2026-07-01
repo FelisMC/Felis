@@ -339,13 +339,6 @@ type Runner interface {
 	RouteDNS(ctx context.Context, tunnelID, hostname string) error
 	// WriteTunnelConfig persists the rendered config.yml.
 	WriteTunnelConfig(path string, contents []byte) error
-	// StartConnector installs and starts the local cloudflared connector bound to
-	// the written config so the tunnel actually has a running process serving it.
-	// Without this step the tunnel is created and the DNS is routed, but nothing
-	// runs the config — so every routed hostname returns Cloudflare error 1033
-	// (tunnel has no connector), the other half of the 1033 failure mode that
-	// RouteDNS's --overwrite-dns closes.
-	StartConnector(ctx context.Context, configPath string) error
 	// CreateAccessApplication creates the self-hosted Access app and returns its
 	// id and the issued JWT `aud` (which felis [auth] access_jwt_aud must adopt).
 	CreateAccessApplication(ctx context.Context, app AccessApplication) (appID, aud string, err error)
@@ -460,15 +453,13 @@ func Setup(ctx context.Context, runner Runner, p Params) (*Result, error) {
 			return nil, fmt.Errorf("cfsetup: write config: %w", err)
 		}
 		prog = append(prog, "Wrote "+p.ConfigPath)
-		// 6b. Install and start the connector for the config just written, so the
-		//     tunnel is actually served rather than routed-but-dead (error 1033).
-		//     Guarded by ConfigPath: with no config there is nothing to run, and a
-		//     caller wanting only the Access config is not forced to install a service.
-		notify("Starting tunnel connector…")
-		if err := runner.StartConnector(ctx, p.ConfigPath); err != nil {
-			return nil, fmt.Errorf("cfsetup: start connector: %w", err)
-		}
-		prog = append(prog, "Started connector")
+		// Setup stops at writing the config: RUNNING a connector for it is a
+		// host-specific side effect (systemd/launchd/Windows service) that lives
+		// with the caller, not in this host-agnostic package. The felis TUI does it
+		// right after Setup returns (installCloudflaredService in tui_edge_apply.go),
+		// closing the routed-but-dead 1033 the same way RouteDNS's --overwrite-dns
+		// closes the stale-DNS 1033. A caller that skips that step gets a routed
+		// tunnel with no connector — Cloudflare error 1033 — by its own choice.
 	}
 	// 7. Front the admin face with a self-hosted Access app.
 	notify("Creating Access application…")
