@@ -332,6 +332,12 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "GET", Pattern: "/api/v1/submissions", Admin: true, h: a.handleListSubmissions},
 		{Method: "POST", Pattern: "/api/v1/submissions/{id}/approve", Admin: true, h: a.handleApproveSubmission},
 		{Method: "POST", Pattern: "/api/v1/submissions/{id}/reject", Admin: true, h: a.handleRejectSubmission},
+		// Auto-update maintenance window (spec §B; decision core internal/updates).
+		// Admin-tier: it governs whether Felis may apply an update to itself, so setting
+		// it requires the admin Zero-Trust path, not a mere session. API+persistence
+		// only — the runner/executors that consume the window are still INTEGRATION-ONLY.
+		{Method: "GET", Pattern: "/api/v1/updates/window", Admin: true, h: a.handleGetUpdateWindow},
+		{Method: "PUT", Pattern: "/api/v1/updates/window", Admin: true, h: a.handleSetUpdateWindow},
 	}
 }
 

@@ -167,6 +167,26 @@ components:
               type: string
               description: Correlates the response with server logs (withRequestID middleware).
 
+    UpdateWindow:
+      type: object
+      description: >
+        The SysAdmin-set auto-update maintenance window (internal/api/handlers_updates.go
+        updateWindow). An absolute [start,end) interval during which Felis may apply a
+        Scheduled component's update to itself; both ends null means unset (no apply is
+        ever opened). Keys are always present; their values are null when unset.
+      required: [start, end]
+      properties:
+        start:
+          type: string
+          format: date-time
+          nullable: true
+          description: Window start (RFC3339, inclusive), or null when unset.
+        end:
+          type: string
+          format: date-time
+          nullable: true
+          description: Window end (RFC3339, exclusive), or null when unset.
+
     PasskeyCredential:
       type: object
       description: >
@@ -1463,6 +1483,67 @@ paths:
                     items: { $ref: '#/components/schemas/MyServerView' }
         '401':
           $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/updates/window:
+    get:
+      tags: [admin-updates]
+      operationId: getUpdateWindow
+      summary: Read the SysAdmin-set auto-update maintenance window (admin).
+      description: >-
+        The single platform-wide maintenance window during which Felis may apply a
+        Scheduled component's update to itself (decision core internal/updates). An
+        unset window — never set, or explicitly cleared — reads back as
+        {start:null,end:null}. API+persistence only: nothing consumes the window
+        until the INTEGRATION runner and executors are wired, so setting it changes
+        no behavior yet.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ accessJWT: [] }]
+      responses:
+        '200':
+          description: The current maintenance window (both ends null when unset).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateWindow'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    put:
+      tags: [admin-updates]
+      operationId: setUpdateWindow
+      summary: Set or clear the SysAdmin auto-update maintenance window (admin).
+      description: >-
+        Persist the maintenance window as an absolute [start,end) interval. Both
+        ends must be set with end strictly after start, or both null to clear the
+        window to unset. A half-set (exactly one end) or inverted/empty (end not
+        after start) body is rejected 400, mirroring the decision core's fail-closed
+        Window so a malformed schedule can never be stored. No forced auto-update:
+        setting a window only permits an apply inside it; outside, a Scheduled
+        component degrades to notify.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ accessJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateWindow'
+      responses:
+        '200':
+          description: The stored maintenance window (echoed back).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateWindow'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
 
   /api/v1/fleet:
     get:
