@@ -3,10 +3,13 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"felis.lolicon.best/internal/cfsetup"
 	"felis.lolicon.best/internal/config"
@@ -16,6 +19,11 @@ import (
 
 const podSetupConfigPath = "/etc/felis/felis.pod.toml"
 const cloudflaredFelisUnit = "/etc/systemd/system/cloudflared-felis.service"
+
+// felisEdgeTable is the dedicated nftables table Felis owns for edge hardening. A
+// private table lets the whole fence be added and removed atomically without ever
+// touching other rules on the host.
+const felisEdgeTable = "felis_edge"
 
 func applyCloudflareEdge(ctx context.Context, result *cfsetup.Result, panelHost, adminHost, cloudflaredBin string) error {
 	if result == nil || result.AccessAud == "" {
@@ -36,7 +44,30 @@ func applyCloudflareEdge(ctx context.Context, result *cfsetup.Result, panelHost,
 	if err := installCloudflaredService(ctx, cloudflaredBin, result.ConfigPath); err != nil {
 		return err
 	}
-	return kubectl(ctx, "-n", "felis", "rollout", "status", "deployment/felis-api", "--timeout=180s")
+	if err := kubectl(ctx, "-n", "felis", "rollout", "status", "deployment/felis-api", "--timeout=180s"); err != nil {
+		return err
+	}
+	// Final step: with the connector installed and the origin rolled out, close the
+	// direct public path to the panel NodePort so the origin is reachable ONLY via
+	// Cloudflare (the Zero-Trust edge the operator just built). Without this, anyone
+	// who hits https://<node-ip>:<nodeport>/ with the right Host header bypasses
+	// Cloudflare Access entirely.
+	//
+	// It is GATED on the connector actually serving: fencing a dead tunnel would sever
+	// the only web path to a still-up origin. If we cannot confirm the tunnel is
+	// serving we do NOT fence — leaving the port reachable (its pre-tunnel state) is
+	// the fail-safe choice, and the failure is surfaced loudly so the operator knows
+	// the port is still open and can re-run once the tunnel is healthy. On-host
+	// break-glass (SSH + unfenceOriginNodePort / `nft delete table inet felis_edge`)
+	// is the recovery path if the tunnel later dies.
+	nodePort := int32(setupPanelNodePort())
+	if err := verifyConnectorServing(ctx, cloudflaredBin, result.TunnelID); err != nil {
+		return fmt.Errorf("edge origin NOT fenced: tunnel connector not confirmed serving, so NodePort %d stays publicly reachable; verify the tunnel then re-run: %w", nodePort, err)
+	}
+	if err := fenceOriginNodePort(ctx, nodePort); err != nil {
+		return fmt.Errorf("edge fence origin NodePort %d: %w", nodePort, err)
+	}
+	return nil
 }
 
 // applyReverseProxy records the operator's chosen public hostnames and rolls the
@@ -179,4 +210,139 @@ func systemctl(ctx context.Context, args ...string) error {
 		return fmt.Errorf("systemctl %v: %w: %s", args, err, string(out))
 	}
 	return nil
+}
+
+// originFenceRuleset renders the nftables ruleset that fences the panel NodePort so
+// the origin is reachable only over loopback — the hop the host-side cloudflared
+// connector uses (it dials https://127.0.0.1:<nodePort>) — and never from a public
+// interface.
+//
+// The chain hooks prerouting at priority -300 ("raw"), which runs BEFORE kube-proxy
+// programs its NodePort DNAT (the dstnat hook at priority -100). That ordering is the
+// whole trick: an external packet to <node-ip>:<nodePort> is seen here with its
+// ORIGINAL destination port before DNAT rewrites it to a pod IP, so a plain
+// filter/INPUT rule (which the DNAT'd, then-FORWARDed packet never traverses) would
+// miss it, but this one catches it. Loopback is accepted first, so the connector's
+// 127.0.0.1 origin hop — DNAT'd in the OUTPUT path, not prerouting — is never
+// affected. The `inet` family covers both IPv4 and IPv6, closing a public v6 NodePort
+// too. This function is pure so the security-relevant shape is unit-verifiable; the
+// side-effecting apply lives in fenceOriginNodePort.
+func originFenceRuleset(nodePort int32) string {
+	return fmt.Sprintf(`table inet %s {
+	chain prerouting {
+		type filter hook prerouting priority -300; policy accept;
+		iif "lo" accept
+		tcp dport %d drop
+	}
+}
+`, felisEdgeTable, nodePort)
+}
+
+// fenceOriginNodePort installs the nftables fence (originFenceRuleset) so the panel
+// NodePort is closed to the public interface while staying open on loopback for the
+// tunnel connector. It is idempotent — any prior felis_edge table is removed before
+// the fresh ruleset is loaded, so re-running the edge setup re-applies cleanly.
+//
+// INTEGRATION-ONLY: it mutates the host firewall via `nft`. KNOWN-LIMITATION: it
+// targets nftables (the default on modern distros, incl. the bootstrap's Ubuntu/RPM
+// targets). If the `nft` binary is absent it fails LOUD rather than silently leaving
+// the port open — a false sense of security is worse than a clear error. On firewalld
+// hosts the bootstrap opens this port in firewalld's zone and a firewalld reload can
+// flush this standalone table; firewalld-native coordination is not yet handled and
+// is tracked here honestly.
+func fenceOriginNodePort(ctx context.Context, nodePort int32) error {
+	if nodePort <= 0 {
+		return fmt.Errorf("fence origin: invalid node port %d", nodePort)
+	}
+	if _, err := exec.LookPath("nft"); err != nil {
+		return fmt.Errorf("fence origin: `nft` not found — cannot close public access to NodePort %d; install nftables or restrict the port manually: %w", nodePort, err)
+	}
+	// Idempotent pre-clean: drop any stale felis_edge table (no-op on first run).
+	_ = unfenceOriginNodePort(ctx)
+	cmd := exec.CommandContext(ctx, "nft", "-f", "-")
+	cmd.Stdin = strings.NewReader(originFenceRuleset(nodePort))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("fence origin: nft -f -: %w: %s", err, string(out))
+	}
+	return nil
+}
+
+// unfenceOriginNodePort removes the fence, reopening the NodePort on all interfaces.
+// It is the on-host break-glass recovery: if the tunnel dies, the operator SSHes in
+// and reopens the direct panel origin. Idempotent — reopening an already-open port
+// (no felis_edge table) succeeds. INTEGRATION-ONLY.
+func unfenceOriginNodePort(ctx context.Context) error {
+	if _, err := exec.LookPath("nft"); err != nil {
+		return fmt.Errorf("unfence origin: `nft` not found: %w", err)
+	}
+	cmd := exec.CommandContext(ctx, "nft", "delete", "table", "inet", felisEdgeTable)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.ToLower(string(out))
+		// An absent table is the already-open state, not a failure.
+		if strings.Contains(msg, "no such file") || strings.Contains(msg, "does not exist") {
+			return nil
+		}
+		return fmt.Errorf("unfence origin: nft delete table inet %s: %w: %s", felisEdgeTable, err, string(out))
+	}
+	return nil
+}
+
+// verifyConnectorServing polls `cloudflared tunnel info` until the tunnel reports at
+// least one active edge connection — proof the connector is really serving, not just
+// a started-but-disconnected service — before the direct NodePort is fenced.
+// INTEGRATION-ONLY: it shells out to the real cloudflared against the operator's
+// account. It tolerates cloudflared's two known JSON shapes (see connectorConnCount);
+// finding zero is treated as not-yet-connected and retried, then finally surfaced so
+// a real failure is loud rather than silently skipping the fence.
+func verifyConnectorServing(ctx context.Context, cloudflaredBin, tunnelID string) error {
+	if strings.TrimSpace(tunnelID) == "" {
+		return fmt.Errorf("tunnel id is required to verify the connector")
+	}
+	if cloudflaredBin == "" {
+		cloudflaredBin = "cloudflared"
+	}
+	var lastErr error
+	for attempt := range 10 {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(3 * time.Second):
+			}
+		}
+		cmd := exec.CommandContext(ctx, cloudflaredBin, "tunnel", "info", "--output", "json", tunnelID)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			lastErr = fmt.Errorf("cloudflared tunnel info: %w: %s", err, string(out))
+			continue
+		}
+		if connectorConnCount(out) > 0 {
+			return nil
+		}
+		lastErr = fmt.Errorf("tunnel %s reports no active connector connections yet", tunnelID)
+	}
+	return lastErr
+}
+
+// connectorConnCount counts the active connections in `cloudflared tunnel info
+// --output json` output. cloudflared has used two shapes over its versions — a
+// top-level "conns" array and a per-"connectors" one — so this counts both and is
+// pure/unit-verifiable. A parse failure counts as zero (treated as not-yet-serving).
+func connectorConnCount(jsonOut []byte) int {
+	var info struct {
+		Conns      []json.RawMessage `json:"conns"`
+		Connectors []struct {
+			Conns []json.RawMessage `json:"conns"`
+		} `json:"connectors"`
+	}
+	if err := json.Unmarshal(jsonOut, &info); err != nil {
+		return 0
+	}
+	n := len(info.Conns)
+	for _, c := range info.Connectors {
+		n += len(c.Conns)
+	}
+	return n
 }
