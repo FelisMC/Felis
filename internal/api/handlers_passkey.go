@@ -19,13 +19,35 @@ import (
 // Scope of the HANDLERS in this file: ENROLLMENT only. Every ceremony here rides on a
 // known principal — the challenge is bound to the caller's user_id and the finish
 // verifies against the server-stashed SessionData, never a client-echoed challenge. The
-// login/assertion path (proving a passkey to mint or elevate a session from an
-// UNauthenticated state) has its cryptographic half built and Oracle-verified in the
-// adapter (internal/passkey BeginLogin/FinishLogin, against a virtual authenticator),
-// and its persist-ready output shape is VerifiedAssertion below — but the login HTTP
-// handlers, the session minting, and the panel.* passkey relying-party boundary/tier
-// decision (see migration 0007) are a deferred slice: this file adds no unauthenticated
-// login route.
+// login/assertion path (proving a passkey to mint a session from an UNauthenticated
+// state) has its cryptographic half built and Oracle-verified in the adapter
+// (internal/passkey BeginLogin/FinishLogin, against a virtual authenticator) and its
+// persist-ready output shape is VerifiedAssertion below — but the login HTTP handler is
+// a DELIBERATELY deferred slice. Its design checkpoint (task #36) resolved two questions
+// and then deferred, for reasons that outlive this comment:
+//
+//   - RP boundary (RESOLVED): felis-api is the app-login relying party (panel.*); the
+//     WebAuthn-as-security-gate lives at the Cloudflare Access EDGE, not here. Spec §14
+//     ties WebAuthn/posture to admin.* (Access), while panel.* is plain app login with
+//     no WebAuthn requirement — so there is neither a spec-required assertion handler
+//     nor a backend step-up consumer for one (the role-switcher step-up UX is frontend).
+//   - Identifier (BLOCKING): a from-zero login needs a unique, human-typable handle to
+//     resolve the account before its passkeys can be offered. users.email is nullable
+//     and NOT unique (0001_init.sql), and a player's users.username IS their Minecraft
+//     uuid (pgrepo.go RedeemPlayerBindCode mints a uuid-derived unique username) —
+//     opaque, never typed into a form. The username-first assertion the non-resident
+//     credentials + user-keyed challenge store support therefore has nothing to key on.
+//
+// The system's returning-player door is already re-link (control of the in-game identity
+// is the root of trust — handlers_onboard.go re-mints a session through the bind-code
+// flow even after passkey/OTP are bound); passkey and email-OTP are factors on an
+// ALREADY-authenticated principal here, not from-zero login methods. The real enabler
+// for a from-zero passkey login is discoverable ("usernameless") credentials, which
+// sidestep the identifier gap but reshape enrollment (residentKey) and need a
+// non-user-keyed challenge store — a future migration and its own checkpoint (that door
+// partly bypasses the in-game-identity root of trust). The adapter crypto is verified
+// now so that slice inherits correct crypto; this file adds no unauthenticated login
+// route until then.
 //
 // The cryptographic half is a seam (PasskeyVerifier) so this package never imports
 // go-webauthn: ceremony state crosses the boundary as opaque bytes, the attestation
