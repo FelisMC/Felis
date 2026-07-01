@@ -1,10 +1,7 @@
 {
   "dashboard": "Dashboard",
-  "my_servers": "My servers",
+  "my_servers": "Servers",
   "account": "Account",
   "admin_section": "Admin",
-  "admin_servers": "Servers",
-  "admin_images": "Images",
-  "sysadmin_section": "SysAdmin",
-  "sysadmin_fleet": "Fleet"
+  "admin_images": "Images"
 }

@@ -2,9 +2,7 @@ import {
   LayoutDashboard,
   Server,
   UserRound,
-  ServerCog,
   Boxes,
-  Network,
   type LucideIcon,
 } from "lucide-react";
 
@@ -28,7 +26,7 @@ export interface NavItem {
 }
 
 export interface NavSection {
-  id: "user" | "admin" | "ops";
+  id: "user" | "admin";
   /** Section heading key; null renders no heading (User-Side flat list). */
   titleKey: string | null;
   /** When true the section is shown only to admins (is_admin === true). */
@@ -52,16 +50,7 @@ export const NAV_SECTIONS: NavSection[] = [
     titleKey: "admin_section",
     adminOnly: true,
     items: [
-      { to: "/admin/servers", key: "admin_servers", icon: ServerCog },
       { to: "/admin/images", key: "admin_images", icon: Boxes },
-    ],
-  },
-  {
-    id: "ops",
-    titleKey: "sysadmin_section",
-    adminOnly: true,
-    items: [
-      { to: "/ops/fleet", key: "sysadmin_fleet", icon: Network },
     ],
   },
 ];

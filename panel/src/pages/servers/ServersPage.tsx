@@ -27,24 +27,17 @@ import {
 import { PhaseBadge, PHASE_KEY, PHASE_COLOR } from "@/components/PhaseBadge";
 import { Loading, ErrorState, EmptyState } from "@/components/States";
 import { Pagination } from "@/components/Pagination";
+import { CreateServerDialog } from "@/components/CreateServerDialog";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync, useConfig } from "@/lib/hooks";
+import { useTier } from "@/lib/tier";
 import { hostFor, type RuntimeConfig } from "@/lib/config";
 import { matchScore } from "@/lib/fuzzy";
-import type { AutostartPolicy, FleetServer, Phase } from "@/lib/types";
+import type { AutostartPolicy, FleetServer, Phase, ServerInfo } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-// The cockpit polls the fleet read on a fixed interval. It is a list, not a single
-// server, so there is no SSE — a short poll is the right tool. The refresh is
-// SILENT: the table is only torn down for the very first load (loading && !data);
-// every poll swaps the rows underneath, so the table never blinks (a 10s flash is
-// the quickest way to fail "好看"). The tick is skipped while the tab is hidden so
-// a backgrounded cockpit makes no requests, and one fires on re-focus to catch up.
 const REFRESH_MS = 10_000;
 
-// The phases offered in the filter, in lifecycle order. Mirrors the Phase union;
-// labels come from the shared servers:phase_* keys (via PHASE_KEY) so the filter,
-// the badges and the legend always read identically.
 const PHASES: Phase[] = [
   "Running",
   "Starting",
@@ -60,19 +53,27 @@ const POLICY_KEY: Record<AutostartPolicy, string> = {
   allowlist: "policy_allowlist",
 };
 
-// A phase is "live" (a pod is up or in flight) when it is Running or transitioning.
-// The Start/Stop affordance and the players/endpoint columns all key off this.
 function isLive(phase: Phase): boolean {
   return phase === "Running" || phase === "Starting" || phase === "Stopping";
 }
 
-// The fleet is platform-wide — the longest list in the panel — so it paginates
-// client-side over the already-fetched set (no server round-trip per page). Kept
-// short so the table fits a screen without a wall of scrolling.
-const PAGE_SIZE = 10;
+const PAGE_SIZE = 6;
 
-/** Stat is one headline tile of the aggregate header. `accent` colours the icon
- *  chip so Running reads green and Failed reads red at a glance. */
+interface UnifiedServer {
+  name: string;
+  subdomain: string;
+  phase: Phase;
+  ready: boolean;
+  desiredState?: "Running" | "Stopped";
+  autostartPolicy?: AutostartPolicy;
+  playersOnline: number;
+  playersMax: number;
+  owner?: string;
+  endpointAddress?: string | null;
+  claimable?: boolean;
+  owned?: boolean;
+}
+
 function Stat({
   icon: Icon,
   label,
@@ -97,26 +98,26 @@ function Stat({
           <Icon className="h-5 w-5" />
         </div>
         <div className="min-w-0">
-          <div className="text-2xl font-semibold leading-none tabular-nums">{value}</div>
-          <div className="mt-1 truncate text-xs text-muted-foreground">{label}</div>
+          <div className="text-2xl font-semibold leading-none tabular-nums text-left">{value}</div>
+          <div className="mt-1.5 truncate text-xs text-muted-foreground text-left">{label}</div>
         </div>
       </CardContent>
     </Card>
   );
 }
 
-export function FleetTable() {
-  const { t } = useTranslation("ops");
+export function ServersPage() {
+  const { t } = useTranslation(["ops", "servers"]);
+  const { isAdmin } = useTier();
   const cfg = useConfig();
-  const { data, error, loading, reload } = useAsync(() => api.fleet(), []);
-  const servers = useMemo(() => data ?? [], [data]);
+
+  const fetchFn = useMemo(() => (isAdmin ? api.fleet : api.myServers), [isAdmin]);
+  const { data, error, loading, reload } = useAsync(fetchFn, [fetchFn]);
 
   const [query, setQuery] = useState("");
   const [phaseFilter, setPhaseFilter] = useState<Phase | "all">("all");
   const [page, setPage] = useState(1);
 
-  // Silent auto-refresh: skip while hidden, catch up on re-focus. `reload` is
-  // stable (useAsync memoises it on empty deps), so this effect mounts once.
   useEffect(() => {
     const id = window.setInterval(() => {
       if (!document.hidden) reload();
@@ -131,8 +132,38 @@ export function FleetTable() {
     };
   }, [reload]);
 
-  // Aggregates are computed over the WHOLE fleet, never the filtered view — the
-  // header is a true cluster-wide rollup, the filters only narrow the table.
+  const servers = useMemo<UnifiedServer[]>(() => {
+    if (!data) return [];
+    if (isAdmin) {
+      return (data as FleetServer[]).map((s) => ({
+        name: s.name,
+        subdomain: s.subdomain,
+        phase: s.phase,
+        ready: s.ready,
+        desiredState: s.desiredState,
+        autostartPolicy: s.autostartPolicy,
+        playersOnline: s.playersOnline,
+        playersMax: s.playersMax,
+        owner: s.owner,
+        endpointAddress: s.endpointAddress,
+      }));
+    } else {
+      return (data as ServerInfo[]).map((s) => ({
+        name: s.name,
+        subdomain: s.subdomain,
+        phase: s.phase,
+        ready: s.phase === "Running",
+        desiredState: s.desiredState,
+        autostartPolicy: s.autostartPolicy,
+        playersOnline: s.players ?? 0,
+        playersMax: s.maxPlayers ?? 0,
+        owner: s.owned ? t("servers:owned_filter_mine") || "me" : undefined,
+        claimable: s.claimable,
+        owned: s.owned,
+      }));
+    }
+  }, [data, isAdmin, t]);
+
   const stats = useMemo(() => {
     const counts: Record<Phase, number> = {
       Running: 0,
@@ -145,8 +176,6 @@ export function FleetTable() {
     let playersOnline = 0;
     let playersMax = 0;
     for (const s of servers) {
-      // A phase outside the modelled union folds into Unknown (it crosses an
-      // unvalidated JSON boundary), matching how the badge degrades.
       if (counts[s.phase as Phase] !== undefined) counts[s.phase as Phase]++;
       else counts.Unknown++;
       playersOnline += s.playersOnline ?? 0;
@@ -155,26 +184,20 @@ export function FleetTable() {
     return { counts, playersOnline, playersMax, total: servers.length };
   }, [servers]);
 
-  // The visible list: phase-filtered, then fuzzy-matched and ranked by relevance
-  // when there is a query (best matches first); natural order otherwise.
   const visible = useMemo(() => {
     const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    const phaseOk = (s: FleetServer) => phaseFilter === "all" || s.phase === phaseFilter;
+    const phaseOk = (s: UnifiedServer) => phaseFilter === "all" || s.phase === phaseFilter;
     if (terms.length === 0) return servers.filter(phaseOk);
-    const scored: { s: FleetServer; score: number }[] = [];
+    const scored: { s: UnifiedServer; score: number }[] = [];
     for (const s of servers) {
       if (!phaseOk(s)) continue;
       const score = matchScore([s.name, s.subdomain ?? "", s.owner ?? ""], terms);
       if (score >= 0) scored.push({ s, score });
     }
-    // Stable sort: ties keep their natural (insertion) order.
     scored.sort((a, b) => b.score - a.score);
     return scored.map((x) => x.s);
   }, [servers, query, phaseFilter]);
 
-  // Pagination is derived, not stored: clamp the page against the current result
-  // count so a shrinking list (a filter, or a poll that removed rows) can never
-  // strand the view on an empty page.
   const totalPages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
   const paged = visible.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
@@ -184,16 +207,20 @@ export function FleetTable() {
 
   return (
     <div className="space-y-6">
-      {/* Title row — always visible; the live pill + manual refresh live here. */}
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex items-center gap-3">
           <Network className="h-6 w-6 text-primary" />
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">{t("fleet_title")}</h1>
-            <p className="text-sm text-muted-foreground">{t("fleet_subtitle")}</p>
+          <div className="text-left">
+            <h1 className="text-2xl font-semibold tracking-tight">
+              {isAdmin ? t("fleet_title") : t("servers:my_servers_title")}
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              {isAdmin ? t("fleet_subtitle") : t("servers:my_servers_subtitle")}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {isAdmin && cfg && <CreateServerDialog cfg={cfg} onCreated={reload} />}
           <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
             <span className="h-1.5 w-1.5 rounded-full bg-[#22c55e] animate-pulse" />
             {t("fleet_live")}
@@ -218,7 +245,6 @@ export function FleetTable() {
         <Loading />
       ) : (
         <>
-          {/* A poll failed but we still have rows — keep the table, warn inline. */}
           {error && (
             <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
               <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
@@ -226,7 +252,7 @@ export function FleetTable() {
             </div>
           )}
 
-          {/* Aggregate header — true cluster-wide rollup. */}
+          {/* Stats Cards in a full grid row */}
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
             <Stat icon={Server} label={t("fleet_stat_total")} value={stats.total} />
             <Stat
@@ -248,11 +274,11 @@ export function FleetTable() {
             />
           </div>
 
-          {/* Phase distribution bar + legend. */}
+          {/* Distribution card in a full grid row */}
           {stats.total > 0 && (
             <Card>
               <CardContent className="space-y-3 p-4">
-                <div className="text-xs font-medium text-muted-foreground">
+                <div className="text-xs font-medium text-muted-foreground text-left">
                   {t("fleet_distribution")}
                 </div>
                 <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-secondary">
@@ -287,7 +313,7 @@ export function FleetTable() {
             </Card>
           )}
 
-          {/* Controls — search + phase filter + result count. */}
+          {/* Independent Search & Filter bar */}
           <div className="flex flex-wrap items-center gap-3">
             <div className="relative min-w-[14rem] flex-1">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -297,7 +323,7 @@ export function FleetTable() {
                   setQuery(e.target.value);
                   setPage(1);
                 }}
-                placeholder={t("fleet_search_placeholder")}
+                placeholder={isAdmin ? t("fleet_search_placeholder") : t("servers:search_placeholder")}
                 className="pl-9"
               />
             </div>
@@ -330,24 +356,27 @@ export function FleetTable() {
             </span>
           </div>
 
-          {/* The table. */}
           {servers.length === 0 ? (
-            <EmptyState title={t("fleet_empty_title")} hint={t("fleet_empty_hint")} />
+            <EmptyState
+              title={isAdmin ? t("fleet_empty_title") : t("servers:no_servers_linked")}
+              hint={isAdmin ? t("fleet_empty_hint") : t("servers:no_servers_hint")}
+            />
           ) : visible.length === 0 ? (
             <EmptyState
-              title={t("fleet_no_match_title")}
-              hint={t("fleet_no_match_hint")}
+              title={isAdmin ? t("fleet_no_match_title") : t("servers:search_no_match")}
+              hint={isAdmin ? t("fleet_no_match_hint") : t("servers:search_clear_btn")}
             />
           ) : (
             <>
-              <Card className="overflow-hidden">
+              {/* Clean Table Card */}
+              <Card className="overflow-hidden border border-border/80">
                 <div className="overflow-x-auto">
                   <table className="w-full min-w-[56rem] border-collapse text-sm">
                     <thead>
                       <tr className="border-b border-border bg-muted/40 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
                         <th className="px-4 py-2.5 font-medium">{t("fleet_col_status")}</th>
                         <th className="px-4 py-2.5 font-medium">{t("fleet_col_server")}</th>
-                        <th className="px-4 py-2.5 font-medium">{t("fleet_col_owner")}</th>
+                        {isAdmin && <th className="px-4 py-2.5 font-medium">{t("fleet_col_owner")}</th>}
                         <th className="px-4 py-2.5 font-medium">{t("fleet_col_players")}</th>
                         <th className="px-4 py-2.5 font-medium">{t("fleet_col_policy")}</th>
                         <th className="px-4 py-2.5 font-medium">{t("fleet_col_endpoint")}</th>
@@ -358,7 +387,13 @@ export function FleetTable() {
                     </thead>
                     <tbody>
                       {paged.map((s) => (
-                        <FleetRow key={s.name} server={s} cfg={cfg} onChanged={reload} />
+                        <ServerRow
+                          key={s.name}
+                          server={s}
+                          cfg={cfg}
+                          isAdmin={isAdmin}
+                          onChanged={reload}
+                        />
                       ))}
                     </tbody>
                   </table>
@@ -381,18 +416,15 @@ export function FleetTable() {
   );
 }
 
-/** FleetRow is one server's row. Its busy/error state is LOCAL, and the row is
- *  keyed by name in the parent, so a background poll that swaps `data` re-renders
- *  the table without unmounting the row — an in-flight Start/Stop survives the
- *  refresh. Admins may operate ANY server (the wake/stop handlers bypass the owner
- *  check for an admin principal), so the action column is unconditional. */
-function FleetRow({
+function ServerRow({
   server,
   cfg,
+  isAdmin,
   onChanged,
 }: {
-  server: FleetServer;
+  server: UnifiedServer;
   cfg: RuntimeConfig;
+  isAdmin: boolean;
   onChanged: () => void;
 }) {
   const { t } = useTranslation("ops");
@@ -415,17 +447,15 @@ function FleetRow({
 
   const live = isLive(server.phase);
   const host = server.subdomain ? hostFor(server.subdomain, cfg) : "";
-  // An endpoint address is only meaningful while the server is actually serving —
-  // a Failed/Stopped server can carry a stale address, so it is gated on `ready`.
   const endpoint = server.ready && server.endpointAddress ? server.endpointAddress : null;
 
   return (
     <>
       <tr className="border-b border-border/50 transition-colors last:border-0 hover:bg-muted/40">
-        <td className="px-4 py-3 align-middle">
+        <td className="px-4 py-3 align-middle text-left">
           <PhaseBadge phase={server.phase} />
         </td>
-        <td className="px-4 py-3 align-middle">
+        <td className="px-4 py-3 align-middle text-left">
           <div className="font-medium text-foreground">{server.name}</div>
           {host && (
             <a
@@ -439,19 +469,21 @@ function FleetRow({
             </a>
           )}
         </td>
-        <td className="px-4 py-3 align-middle">
-          {server.owner ? (
-            <span className="inline-flex max-w-[16rem] items-center gap-1.5 truncate">
-              <UserRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <span className="truncate" title={server.owner}>
-                {server.owner}
+        {isAdmin && (
+          <td className="px-4 py-3 align-middle text-left">
+            {server.owner ? (
+              <span className="inline-flex max-w-[16rem] items-center gap-1.5 truncate">
+                <UserRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <span className="truncate" title={server.owner}>
+                  {server.owner}
+                </span>
               </span>
-            </span>
-          ) : (
-            <span className="text-xs text-muted-foreground/70">{t("fleet_unclaimed")}</span>
-          )}
-        </td>
-        <td className="px-4 py-3 align-middle tabular-nums">
+            ) : (
+              <span className="text-xs text-muted-foreground/70">{t("fleet_unclaimed")}</span>
+            )}
+          </td>
+        )}
+        <td className="px-4 py-3 align-middle tabular-nums text-left">
           {live ? (
             <span className="inline-flex items-center gap-1.5">
               <Users className="h-3.5 w-3.5 text-muted-foreground" />
@@ -462,7 +494,7 @@ function FleetRow({
             <span className="text-muted-foreground">—</span>
           )}
         </td>
-        <td className="px-4 py-3 align-middle">
+        <td className="px-4 py-3 align-middle text-left">
           {server.autostartPolicy ? (
             <span className="text-xs text-muted-foreground">
               {t(POLICY_KEY[server.autostartPolicy])}
@@ -471,7 +503,7 @@ function FleetRow({
             <span className="text-muted-foreground">—</span>
           )}
         </td>
-        <td className="px-4 py-3 align-middle">
+        <td className="px-4 py-3 align-middle text-left">
           {endpoint ? (
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
               {endpoint}
@@ -502,7 +534,7 @@ function FleetRow({
               </Button>
             )}
             <Link to={`/servers/${server.name}`}>
-              <Button size="sm" variant="ghost">
+              <Button size="sm" variant="outline">
                 <Terminal /> {ts("console")}
               </Button>
             </Link>
@@ -511,7 +543,7 @@ function FleetRow({
       </tr>
       {error && (
         <tr className="bg-destructive/5">
-          <td colSpan={7} className="px-4 py-1.5 text-xs text-destructive">
+          <td colSpan={isAdmin ? 7 : 6} className="px-4 py-1.5 text-xs text-destructive text-left">
             {error}
           </td>
         </tr>
@@ -519,3 +551,5 @@ function FleetRow({
     </>
   );
 }
+
+export default ServersPage;

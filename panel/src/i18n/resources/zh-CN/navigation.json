@@ -1,10 +1,7 @@
 {
   "dashboard": "仪表盘",
-  "my_servers": "我的服务器",
+  "my_servers": "服务器",
   "account": "账户",
   "admin_section": "管理",
-  "admin_servers": "服务器",
-  "admin_images": "镜像",
-  "sysadmin_section": "系统管理",
-  "sysadmin_fleet": "全平台服务器"
+  "admin_images": "镜像"
 }

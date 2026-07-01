@@ -36,7 +36,6 @@ export type ViewMode = NavSection["id"];
 const VIEW_RANK: Record<ViewMode, number> = {
   user: 0,
   admin: 1,
-  ops: 2,
 };
 
 /** VIEW_MODES lists every home, ordered by how much it reveals (User → Ops). It is

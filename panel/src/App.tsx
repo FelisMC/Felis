@@ -7,14 +7,12 @@ import { RequireAuth } from "@/components/RequireAuth";
 import { Login } from "@/pages/Login";
 import { ChangePassword } from "@/pages/ChangePassword";
 import { Dashboard } from "@/pages/Dashboard";
-import { MyServers } from "@/pages/MyServers";
+import { ServersPage } from "@/pages/servers/ServersPage";
 import { ServerConsole } from "@/pages/ServerConsole";
 import { ServerPlayers } from "@/pages/ServerPlayers";
 import { ServerBackups } from "@/pages/ServerBackups";
 import { Account } from "@/pages/Account";
-import { ServerAdmin } from "@/pages/admin/ServerAdmin";
 import { ImageAdmin } from "@/pages/admin/ImageAdmin";
-import { FleetTable } from "@/pages/ops/FleetTable";
 
 // Three UX surfaces over two Zero-Trust tiers (DESIGN-WEB-3SIDES):
 //   /        User-Side    — app-tier, every authenticated principal
@@ -41,7 +39,7 @@ export default function App() {
             <Route element={<AppShell />}>
               {/* User-Side — app-tier */}
               <Route index element={<Dashboard />} />
-              <Route path="servers" element={<MyServers />} />
+              <Route path="servers" element={<ServersPage />} />
               <Route path="servers/:name" element={<ServerConsole />} />
               <Route path="servers/:name/players" element={<ServerPlayers />} />
               <Route path="servers/:name/backups" element={<ServerBackups />} />
@@ -51,16 +49,8 @@ export default function App() {
                   /admin has no landing page; redirect to the first concrete view
                   so the section root and any stale bookmarks land somewhere useful. */}
               <Route path="admin" element={<RequireAdmin />}>
-                <Route index element={<Navigate to="/admin/servers" replace />} />
-                <Route path="servers" element={<ServerAdmin />} />
+                <Route index element={<Navigate to="/admin/images" replace />} />
                 <Route path="images" element={<ImageAdmin />} />
-              </Route>
-
-              {/* SysAdmin-Side — admin-tier (platform observability).
-                  Same redirect treatment as /admin — fleet is the meaningful view. */}
-              <Route path="ops" element={<RequireAdmin />}>
-                <Route index element={<Navigate to="/ops/fleet" replace />} />
-                <Route path="fleet" element={<FleetTable />} />
               </Route>
 
               <Route path="*" element={<Navigate to="/" replace />} />

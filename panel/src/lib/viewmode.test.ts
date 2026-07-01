@@ -30,32 +30,30 @@ describe("availableViewModes", () => {
   });
 
   it("offers an admin every home, ordered least- to most-revealing", () => {
-    expect(availableViewModes(true)).toEqual(["user", "admin", "ops"]);
+    expect(availableViewModes(true)).toEqual(["user", "admin"]);
   });
 
   it("returns a fresh array so a caller cannot mutate the canonical list", () => {
     const a = availableViewModes(true);
     a.push("user");
-    expect(availableViewModes(true)).toEqual(["user", "admin", "ops"]);
+    expect(availableViewModes(true)).toEqual(["user", "admin"]);
   });
 });
 
 describe("VIEW_MODES", () => {
-  it("is the three homes ordered by how much they reveal", () => {
-    expect(VIEW_MODES).toEqual(["user", "admin", "ops"]);
+  it("is the two homes ordered by how much they reveal", () => {
+    expect(VIEW_MODES).toEqual(["user", "admin"]);
   });
 });
 
 describe("effectiveViewMode (fail-closed resolution)", () => {
   it("collapses any admin-level request from a non-admin to user", () => {
     expect(effectiveViewMode("admin", false)).toBe("user");
-    expect(effectiveViewMode("ops", false)).toBe("user");
   });
 
   it("honours an admin's request for any home they are entitled to", () => {
     expect(effectiveViewMode("user", true)).toBe("user");
     expect(effectiveViewMode("admin", true)).toBe("admin");
-    expect(effectiveViewMode("ops", true)).toBe("ops");
   });
 
   it("defaults a null/undefined request to the user home for either tier", () => {
@@ -76,17 +74,17 @@ describe("parseViewMode (shape only, no gating)", () => {
   it("accepts each known home verbatim", () => {
     expect(parseViewMode("user")).toBe("user");
     expect(parseViewMode("admin")).toBe("admin");
-    expect(parseViewMode("ops")).toBe("ops");
   });
 
   it("rejects anything that is not a known home, returning null", () => {
+    expect(parseViewMode("ops")).toBeNull();
     expect(parseViewMode("operator")).toBeNull();
     expect(parseViewMode("Admin")).toBeNull(); // case-sensitive on purpose
     expect(parseViewMode("")).toBeNull();
     expect(parseViewMode(null)).toBeNull();
     expect(parseViewMode(undefined)).toBeNull();
     expect(parseViewMode(2)).toBeNull();
-    expect(parseViewMode({ mode: "ops" })).toBeNull();
+    expect(parseViewMode({ mode: "admin" })).toBeNull();
   });
 });
 
@@ -96,22 +94,18 @@ describe("restoreViewMode (the persisted-value re-gate — escalation vector)", 
   // every load. The contract is that it is re-gated against the LIVE flag every
   // time and never trusted on its own.
 
-  it("honours a stored admin/ops home only while the principal is still an admin", () => {
-    expect(restoreViewMode("ops", true)).toBe("ops");
+  it("honours a stored admin home only while the principal is still an admin", () => {
     expect(restoreViewMode("admin", true)).toBe("admin");
     expect(restoreViewMode("user", true)).toBe("user");
   });
 
-  it("collapses a stored admin/ops home to user for a non-admin (stale or tampered)", () => {
-    // A hand-edited localStorage "ops" on a non-admin account must NOT grant the
-    // SysAdmin view; and a once-admin who has since been demoted re-reads as user.
-    expect(restoreViewMode("ops", false)).toBe("user");
+  it("collapses a stored admin home to user for a non-admin (stale or tampered)", () => {
+    // An admin who has since been demoted re-reads as user.
     expect(restoreViewMode("admin", false)).toBe("user");
   });
 
-  it("collapses to user while the admin flag is still fail-closed false (loading)", () => {
-    // Until /me resolves, isAdmin is false; a restored "ops" must wait at user, not
-    // flash the SysAdmin home and then yank it back.
+  it("collapses a garbage stored value to user even for an admin", () => {
+    expect(restoreViewMode("ops", true)).toBe("user");
     expect(restoreViewMode("ops", false)).toBe("user");
   });
 
@@ -125,7 +119,7 @@ describe("restoreViewMode (the persisted-value re-gate — escalation vector)", 
 
 describe("sectionsForView (UX ceiling, composed on visibleSections)", () => {
   it("shows a non-admin only the User-Side regardless of the requested view", () => {
-    for (const v of ["user", "admin", "ops"] as ViewMode[]) {
+    for (const v of ["user", "admin"] as ViewMode[]) {
       expect(sectionsForView(v, false).map((s) => s.id)).toEqual(["user"]);
     }
   });
@@ -133,11 +127,6 @@ describe("sectionsForView (UX ceiling, composed on visibleSections)", () => {
   it("foregrounds homes up to the chosen ceiling for an admin", () => {
     expect(sectionsForView("user", true).map((s) => s.id)).toEqual(["user"]);
     expect(sectionsForView("admin", true).map((s) => s.id)).toEqual(["user", "admin"]);
-    expect(sectionsForView("ops", true).map((s) => s.id)).toEqual([
-      "user",
-      "admin",
-      "ops",
-    ]);
   });
 
   it("lets an admin step DOWN to the User-home and see only User-Side", () => {
@@ -146,7 +135,6 @@ describe("sectionsForView (UX ceiling, composed on visibleSections)", () => {
     const ids = sectionsForView("user", true).map((s) => s.id);
     expect(ids).toEqual(["user"]);
     expect(ids).not.toContain("admin");
-    expect(ids).not.toContain("ops");
   });
 
   it("never returns more than visibleSections already permits (subset invariant)", () => {
@@ -154,7 +142,7 @@ describe("sectionsForView (UX ceiling, composed on visibleSections)", () => {
     // be a subset of visibleSections(isAdmin) — it can never widen access.
     for (const isAdmin of [true, false]) {
       const permitted = new Set(visibleSections(isAdmin).map((s) => s.id));
-      for (const v of ["user", "admin", "ops"] as ViewMode[]) {
+      for (const v of ["user", "admin"] as ViewMode[]) {
         for (const s of sectionsForView(v, isAdmin)) {
           expect(permitted.has(s.id)).toBe(true);
         }

@@ -19,9 +19,9 @@ describe("visibleSections", () => {
     expect(visibleSections(false)[0].id).toBe("user");
   });
 
-  it("shows User-Side, Admin-Side and SysAdmin-Side to an admin", () => {
+  it("shows User-Side and Admin-Side to an admin", () => {
     const ids = visibleSections(true).map((s) => s.id);
-    expect(ids).toEqual(["user", "admin", "ops"]);
+    expect(ids).toEqual(["user", "admin"]);
   });
 
   it("keeps the User-Side section ungated so it survives both branches", () => {
