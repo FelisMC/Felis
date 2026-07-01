@@ -149,6 +149,29 @@ type Repo interface {
 	// re-verifying the same (user, uuid) pair is idempotent and refreshes the stored
 	// authSource. now is the API clock so expiry is testable.
 	VerifyLinkCode(ctx context.Context, userID, code string, now time.Time) (mcUUID, authSource string, err error)
+	// RedeemPlayerBindCode is the account-less player-console bootstrap (console-tier
+	// access model): it redeems a one-time Bind Code into a PLAYER account + link in
+	// one atomic step, so a first-time player with no Felis account can create one
+	// from the console.<root_domain> door. Unlike VerifyLinkCode it takes NO prior
+	// user — it creates or fetches one, keyed on the verified mc_uuid the code carries:
+	//
+	//   - code missing/expired → ErrLinkCodeInvalid (does not consume it);
+	//   - the uuid is not yet linked → create a role='user' player row with id
+	//     newUserID (NULL password_hash, username derived from the uuid so it is unique
+	//     and deterministic), write the account_links binding, consume the code, and
+	//     return newUserID;
+	//   - the uuid is already linked to a role='user' player → return THAT user
+	//     (idempotent "log in via the game"), consuming the code;
+	//   - the uuid is linked to a role='admin' STAFF account → ErrPlayerBindForbidden
+	//     WITHOUT consuming the code (operators use op.console behind Zero Trust; the
+	//     public bootstrap never mints a session for an admin identity).
+	//
+	// Safe as an unauthenticated entrypoint because a Bind Code is minted internal-face
+	// only (CreateLinkCode), against an online-mode-verified UUID, short-TTL and
+	// single-use — possession already proves control of a Minecraft identity. now is
+	// the API clock so expiry is testable. It returns the effective userID plus the
+	// bound mc_uuid and authSource (for the response + audit).
+	RedeemPlayerBindCode(ctx context.Context, newUserID, code string, now time.Time) (userID, mcUUID, authSource string, err error)
 	// QuotaAvailable reports whether the user is under their max_servers quota
 	// (spec §9.3 step ②, evaluated before provisioning).
 	QuotaAvailable(ctx context.Context, userID string) (bool, error)

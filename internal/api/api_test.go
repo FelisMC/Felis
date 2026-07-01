@@ -199,6 +199,41 @@ func (f *fakeRepo) VerifyLinkCode(_ context.Context, userID, code string, now ti
 	return rec.mcUUID, rec.authSource, nil
 }
 
+// RedeemPlayerBindCode mirrors PGRepo.RedeemPlayerBindCode: it create-or-fetches a
+// player keyed on the code's verified mc_uuid. The staff map stands in for the single
+// users table, so a newly created role='user' player is stored there (uuid-derived
+// username) and resolves through SessionUser/UserByID just like the PG JOIN. An
+// already-linked admin UUID is refused without consuming the code; an already-linked
+// player is fetched idempotently.
+//
+// Contract gap vs PG (benign): on an orphan link (mc_uuid linked but its users row
+// gone) the fake resolves no role and falls through to the idempotent return, minting
+// a session for a ghost id, whereas PG's account_links⋈users JOIN would find no row,
+// take the insert branch and 500 on the UNIQUE(mc_uuid) clash. The account_links.user_id
+// FK makes an orphan link unreachable in production, so this divergence is untestable
+// rather than a real behavioral difference.
+func (f *fakeRepo) RedeemPlayerBindCode(_ context.Context, newUserID, code string, now time.Time) (string, string, string, error) {
+	rec, ok := f.linkCodes[code]
+	if !ok || !rec.expiresAt.After(now) {
+		return "", "", "", ErrLinkCodeInvalid
+	}
+	if existing, ok := f.links[rec.mcUUID]; ok {
+		for _, u := range f.staff { // resolve the linked identity to check its role
+			if u.ID == existing && u.Role != "user" {
+				return "", "", "", ErrPlayerBindForbidden // staff must use op.console; do not consume
+			}
+		}
+		delete(f.linkCodes, code)
+		return existing, rec.mcUUID, rec.authSource, nil
+	}
+	f.staff[rec.mcUUID] = &StaffUser{ID: newUserID, Username: rec.mcUUID, Role: "user"}
+	f.links[rec.mcUUID] = newUserID
+	f.linkAuthSource[rec.mcUUID] = rec.authSource
+	f.linked[newUserID] = true
+	delete(f.linkCodes, code)
+	return newUserID, rec.mcUUID, rec.authSource, nil
+}
+
 // CreateEmailOTP / VerifyEmailOTP mirror PGRepo's contract so the hermetic tests
 // exercise the same semantics the integration impl honors: a fresh code supersedes
 // the prior live one for (user, purpose), expiry and the attempt cap are checked

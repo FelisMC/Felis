@@ -125,6 +125,70 @@ func (p *PGRepo) VerifyLinkCode(ctx context.Context, userID, code string, now ti
 	return mcUUID, authSource, nil
 }
 
+// RedeemPlayerBindCode redeems a Bind Code into a player account + link in one
+// transaction (console-tier access model). It mirrors VerifyLinkCode's structure —
+// strict expiry against the passed clock, the durable-link write, and the DELETE
+// that consumes the code — but creates or fetches the user instead of requiring one.
+// See the Repo interface for the full contract. Like VerifyLinkCode a concurrent
+// racer that passed the SELECT loses to the UNIQUE(mc_uuid)/UNIQUE(username) guard
+// (a 500), acceptable for this integration-only path; the primary idempotency is the
+// mc_uuid-keyed fetch below.
+func (p *PGRepo) RedeemPlayerBindCode(ctx context.Context, newUserID, code string, now time.Time) (string, string, string, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", "", "", err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+
+	var mcUUID, authSource string
+	switch err := tx.QueryRowContext(ctx,
+		`SELECT mc_uuid, auth_source FROM account_link_codes WHERE code = $1 AND expires_at > $2`,
+		code, now).Scan(&mcUUID, &authSource); {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", "", "", ErrLinkCodeInvalid
+	case err != nil:
+		return "", "", "", err
+	}
+
+	// Create-or-fetch keyed on the verified UUID. An already-linked role='user' player
+	// is fetched (idempotent "log in via the game"); a role='admin' STAFF account is
+	// refused (op.console only) BEFORE any consume, so the code survives; an unlinked
+	// UUID births a fresh role='user' player with a uuid-derived unique username.
+	userID := newUserID
+	var existingRole string
+	switch err := tx.QueryRowContext(ctx,
+		`SELECT u.id, u.role::text FROM account_links al JOIN users u ON u.id = al.user_id WHERE al.mc_uuid = $1`,
+		mcUUID).Scan(&userID, &existingRole); {
+	case errors.Is(err, sql.ErrNoRows):
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO users (id, username, role) VALUES ($1, $2, 'user')`,
+			newUserID, mcUUID); err != nil {
+			return "", "", "", fmt.Errorf("create player: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO account_links (user_id, mc_uuid, auth_source) VALUES ($1, $2, $3)`,
+			newUserID, mcUUID, authSource); err != nil {
+			return "", "", "", fmt.Errorf("write account link: %w", err)
+		}
+		userID = newUserID
+	case err != nil:
+		return "", "", "", err
+	default:
+		if existingRole != "user" {
+			return "", "", "", ErrPlayerBindForbidden // staff must use op.console
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM account_link_codes WHERE code = $1`, code); err != nil {
+		return "", "", "", fmt.Errorf("consume link code: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", "", "", err
+	}
+	return userID, mcUUID, authSource, nil
+}
+
 // QuotaAvailable treats a missing quota row or a NULL max_servers as unlimited;
 // otherwise it compares the live owned-server count against the cap (spec §9.3).
 func (p *PGRepo) QuotaAvailable(ctx context.Context, userID string) (bool, error) {

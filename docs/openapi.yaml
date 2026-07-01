@@ -1338,6 +1338,62 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /api/v1/auth/bind:
+    post:
+      tags: [auth]
+      operationId: bindRedeem
+      summary: Redeem a Bind Code into a player account + session (public console bootstrap, spec §10/§B).
+      description: >-
+        The one public, pre-account entrypoint of the player console
+        (console.<root_domain>): an account-less player redeems the one-time Bind
+        Code they generated in the in-game Login Lobby, and the platform creates their
+        player account (role=user), binds it to the verified in-game UUID, and mints a
+        host-only session cookie. Safe to expose unauthenticated because the code is
+        minted internal-face only, against an online-mode-verified UUID, with a short
+        TTL and single use — possession already proves control of a Minecraft identity.
+        An already-linked player UUID logs that player back in (idempotent); a UUID
+        that belongs to staff is refused (403) — operators authenticate at op.console
+        behind Zero Trust, so this never mints a session for an admin identity. Requires
+        local sessions to be enabled (same toggle as login).
+      x-felis-face: [external]
+      x-felis-tier: public
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        '200':
+          description: Player account bootstrapped; the session cookie is set on the response.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user_id, linked, mc_uuid, auth_source]
+                properties:
+                  user_id: { type: string }
+                  linked: { type: boolean, const: true }
+                  mc_uuid: { type: string }
+                  auth_source:
+                    type: string
+                    enum: [mojang, thirdparty]
+                    description: The source captured at mint, copied onto the durable link.
+        '400':
+          description: Invalid or expired bind code.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: Local sessions are disabled, or the code's UUID belongs to a staff account.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /api/v1/me:
     get:
       tags: [servers]

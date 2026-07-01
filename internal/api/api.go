@@ -227,6 +227,14 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "POST", Pattern: "/api/v1/auth/login", Public: true, h: a.handleLogin},
 		{Method: "POST", Pattern: "/api/v1/auth/logout", Public: true, h: a.handleLogout},
 		{Method: "POST", Pattern: "/api/v1/auth/change-password", AllowDuringPasswordChange: true, h: a.handleChangePassword},
+		// Player-console bootstrap (console-tier access model): the account-less
+		// player's door into console.<root_domain>. Public — like login there is no prior
+		// principal — and session-minting, but the artifact it consumes is a one-time
+		// Bind Code minted internal-face against an online-mode-verified UUID, so
+		// possession already proves a Minecraft identity. A code whose UUID belongs to
+		// staff is refused (403) so this never yields an admin session; op.console stays
+		// behind Zero Trust (handlers_onboard.go).
+		{Method: "POST", Pattern: "/api/v1/auth/bind", Public: true, h: a.handleBindRedeem},
 
 		// App-auth tier: operations on your own servers (spec §14).
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/wake", h: a.handleWake},
