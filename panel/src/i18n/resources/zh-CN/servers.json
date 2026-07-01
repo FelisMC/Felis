@@ -128,5 +128,12 @@
   "create_server_creating": "创建中…",
   "no_servers_managed": "你还没有管理的服务器",
   "no_servers_managed_hint": "使用「新建服务器」在线分配。",
-  "server_admin_footer": "服务器仅通过此结构化表单创建——平台将选择映射为审核后的 Kubernetes spec。宿主机网络、宿主机路径、任意镜像、特权 Pod 等原始集群配置在此不可表达。"
+  "server_admin_footer": "服务器仅通过此结构化表单创建——平台将选择映射为审核后的 Kubernetes spec。宿主机网络、宿主机路径、任意镜像、特权 Pod 等原始集群配置在此不可表达。",
+  "edit_server_title": "编辑服务器配置",
+  "edit_server_desc": "配置显示名、自启策略、镜像、内存与CPU",
+  "edit_server_desc_long": "正在修改服务器的 spec 配置。未修改的项将保持原样。",
+  "edit_server_unchanged": "保持不变",
+  "edit_server_immutable": "保持不变 (不可修改)",
+  "edit_server_submit": "保存配置",
+  "edit_server_updating": "正在保存…"
 }

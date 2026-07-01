@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -142,6 +143,13 @@ func (k *K8sCluster) PatchServerSpec(ctx context.Context, name string, p ServerS
 
 // serverInfo projects a MinecraftServer onto the API's lifecycle view.
 func serverInfo(ms *v1alpha1.MinecraftServer) *ServerInfo {
+	var cpuStr string
+	if ms.Spec.Resources.Limits != nil {
+		if limit, ok := ms.Spec.Resources.Limits[corev1.ResourceCPU]; ok {
+			cpuStr = limit.String()
+		}
+	}
+
 	return &ServerInfo{
 		Name:            ms.Name,
 		Subdomain:       ms.Spec.Subdomain,
@@ -153,5 +161,10 @@ func serverInfo(ms *v1alpha1.MinecraftServer) *ServerInfo {
 		EndpointAddress: ms.Status.Endpoint.Address,
 		PlayersOnline:   ms.Status.Players.Online,
 		PlayersMax:      ms.Status.Players.Max,
+		DisplayName:     ms.Spec.DisplayName,
+		Image:           ms.Spec.Image,
+		JavaMemory:      ms.Spec.JavaMemory,
+		StorageSize:     ms.Spec.Storage.Size,
+		CPU:             cpuStr,
 	}
 }

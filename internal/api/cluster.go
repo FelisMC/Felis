@@ -23,6 +23,11 @@ type ServerInfo struct {
 	EndpointAddress string `json:"endpointAddress,omitempty"`
 	PlayersOnline   int32  `json:"playersOnline"`
 	PlayersMax      int32  `json:"playersMax"`
+	DisplayName     string `json:"displayName,omitempty"`
+	Image           string `json:"image,omitempty"`
+	JavaMemory      string `json:"javaMemory,omitempty"`
+	StorageSize     string `json:"storageSize,omitempty"`
+	CPU             string `json:"cpu,omitempty"`
 }
 
 // CreateServerInput is the validated, structured create-server form (spec §15).

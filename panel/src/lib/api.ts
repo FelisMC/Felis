@@ -1,6 +1,7 @@
 import type {
   AccessResult,
   ApiError,
+  AutostartPolicy,
   BackupView,
   BanlistResult,
   CreateServerRequest,
@@ -159,6 +160,24 @@ export const api = {
     request<{ name: string; subdomain: string; desiredState: string }>(
       "POST",
       "/servers",
+      req,
+    ),
+
+  patchServer: (name: string, req: {
+    displayName?: string;
+    autostartPolicy?: AutostartPolicy;
+    image?: string;
+    memory?: string;
+    resources?: {
+      cpu?: string;
+      cpuRequest?: string;
+      memory?: string;
+      memoryRequest?: string;
+    };
+  }) =>
+    request<{ name: string; desiredState: string }>(
+      "PATCH",
+      `/servers/${name}`,
       req,
     ),
 

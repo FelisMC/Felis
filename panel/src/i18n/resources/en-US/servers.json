@@ -128,5 +128,12 @@
   "create_server_creating": "Creating…",
   "no_servers_managed": "No servers under your management yet",
   "no_servers_managed_hint": "Use \"New server\" to provision one from the vetted spec.",
-  "server_admin_footer": "Server creation goes through the structured form only — the platform maps your choices onto a vetted Kubernetes spec. Raw cluster config (host networking, host paths, arbitrary images, privileged pods) is never expressible here."
+  "server_admin_footer": "Server creation goes through the structured form only — the platform maps your choices onto a vetted Kubernetes spec. Raw cluster config (host networking, host paths, arbitrary images, privileged pods) is never expressible here.",
+  "edit_server_title": "Edit Server Config",
+  "edit_server_desc": "Configure display name, autostart policy, image, memory, and CPU",
+  "edit_server_desc_long": "Updating server spec. Fields left unchanged will retain their current values.",
+  "edit_server_unchanged": "Leave unchanged",
+  "edit_server_immutable": "Unchanged (Immutable)",
+  "edit_server_submit": "Save Config",
+  "edit_server_updating": "Saving…"
 }

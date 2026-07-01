@@ -9,8 +9,10 @@ import { LogConsole } from "@/components/LogConsole";
 import { Loading, ErrorState } from "@/components/States";
 import { api, consoleStreamURL, humanizeError } from "@/lib/api";
 import { useAsync, useConfig } from "@/lib/hooks";
+import { useTier } from "@/lib/tier";
 import { hostFor } from "@/lib/config";
-import type { Phase } from "@/lib/types";
+import type { Phase, AutostartPolicy } from "@/lib/types";
+import { EditServerDialog } from "@/components/EditServerDialog";
 
 // notStreamingCopy explains why there is no live feed for a phase that has no
 // streamable pod. The read path only has something to relay once a pod is up, so
@@ -172,6 +174,7 @@ function CommandInput({ name }: { name: string }) {
 export function ServerConsole() {
   const { name = "" } = useParams();
   const cfg = useConfig();
+  const { isAdmin } = useTier();
   const { t } = useTranslation("servers");
   const { data, error, loading, reload } = useAsync(
     () => api.status(name),
@@ -267,6 +270,18 @@ export function ServerConsole() {
 
             {/* Right/Sidebar column: Navigation */}
             <div className="flex flex-col gap-4 lg:col-span-1 shrink-0">
+              {isAdmin && (
+                <EditServerDialog
+                  serverName={name}
+                  currentDisplayName={data.displayName}
+                  currentPolicy={data.autostartPolicy as AutostartPolicy}
+                  currentImage={data.image}
+                  currentMemory={data.javaMemory}
+                  currentStorage={data.storageSize}
+                  currentCpu={data.cpu}
+                  onUpdated={reload}
+                />
+              )}
               {/* Player management lives on its own subpage (whitelist / online / bans),
                   not crammed under the console. This is the doorway to it; the page
                   itself owns the ownership + readiness gating. */}

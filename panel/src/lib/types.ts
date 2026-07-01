@@ -32,6 +32,10 @@ export interface ServerInfo {
   claimable?: boolean;
   /** Whether the caller owns it. */
   owned?: boolean;
+  image?: string;
+  javaMemory?: string;
+  storageSize?: string;
+  cpu?: string;
 }
 
 /** WhitelistResult projects GET /servers/{name}/access/whitelist (spec §7 access).
