@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/naming"
@@ -37,9 +38,10 @@ func (a *API) handleListBackups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"backups": backups})
 }
 
-// handleRestoreBackup starts restoring a server's world from its most recent
-// backup (spec §7 POST /servers/{name}/restore-backup; spec §466: former_owner
-// 3mo 内重新 claim → restore PVC). The authorization is deliberately stricter than
+// handleRestoreBackup starts restoring a server's world from a backup (spec §7
+// POST /servers/{name}/restore-backup; spec §466). It accepts an optional JSON
+// body with a backup_id; when absent it restores the latest backup for the server
+// (backward-compatible default). The authorization is deliberately stricter than
 // ordinary owner-or-admin, in this order:
 //
 //	① name validation
@@ -47,20 +49,22 @@ func (a *API) handleListBackups(w http.ResponseWriter, r *http.Request) {
 //	③ owner-or-admin, else 403. A released world's server row is unowned
 //	   (owner_id NULL → OwnerID ""), so this also enforces "重新 claim": a former
 //	   owner must re-claim the server before they can restore into it.
-//	④ the latest present backup, else 404 no_backup
-//	⑤ former-owner match: a non-admin may restore ONLY a world they formerly owned.
-//	   The current-owner gate in ③ is not enough — user B who re-claims a released
-//	   server could otherwise resurrect user A's world (the backup still carries
-//	   former_owner=A), a data leak. Admin skips this check.
-//	⑥ stopped gate: the world PVC must be free, so restore is refused unless the
-//	   server is fully stopped. A running OR starting server still holds the RWO
-//	   world volume, which a restore Job could not mount — a clean 409 beats a Job
-//	   that fails to schedule.
-//	⑦ hand off to the Restorer. Restore is asynchronous (a restore Job, like an
+//	④ if the optional backup_id is supplied the handler resolves the specific
+//	   backup; otherwise it picks the most recent present backup, else
+//	   404 no_backup
+//	⑤ cross-server guard: a backup requested by id must belong to the server in
+//	   the path — restoring server A's backup onto server B would be a data leak
+//	⑥ former-owner match: a non-admin may restore ONLY a world they formerly
+//	   owned. The current-owner gate in ③ is not enough — user B who
+//	   re-claims a released server could otherwise resurrect user A's world (the
+//	   backup still carries former_owner=A), a data leak. Admin skips this check.
+//	⑦ stopped gate: the world PVC must be free, so restore is refused unless the
+//	   server is fully stopped.
+//	⑧ hand off to the Restorer. Restore is asynchronous (a restore Job, like an
 //	   image build Job), so success means "enqueued" and the handler answers 202.
 //
-// The opaque backup_ref is resolved server-side from the latest backup and handed
-// to the Restorer directly; the client never names a backup by handle (spec §286
+// The opaque backup_ref is resolved server-side from the backup and handed to the
+// Restorer directly; the client never names a backup by handle (spec §286
 // principle).
 func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
@@ -83,15 +87,47 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	backup, err := a.Repo.LatestBackup(r.Context(), name)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			writeError(w, r, newError(http.StatusNotFound, "no_backup",
-				"no restorable backup exists for this server"))
+	// Optional backup_id in the JSON body; absent → LatestBackup (backward compat).
+	var body struct {
+		BackupID string `json:"backup_id"`
+	}
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+		if err := decodeJSON(w, r, &body); err != nil {
+			writeError(w, r, err)
 			return
 		}
-		writeError(w, r, err)
-		return
+	}
+
+	// Resolve the backup record. When backup_id is specified the handler resolves
+	// that exact backup; otherwise it picks the most recent present one.
+	var backup *BackupRecord
+	if body.BackupID != "" {
+		backup, err = a.Repo.BackupByID(r.Context(), body.BackupID)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				writeError(w, r, newError(http.StatusNotFound, "no_backup",
+					"no matching backup exists"))
+				return
+			}
+			writeError(w, r, err)
+			return
+		}
+		// Cross-server guard: the backup must belong to the server named in the path.
+		if backup.ServerName != name {
+			writeError(w, r, errForbidden)
+			return
+		}
+	} else {
+		backup, err = a.Repo.LatestBackup(r.Context(), name)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) {
+				writeError(w, r, newError(http.StatusNotFound, "no_backup",
+					"no restorable backup exists for this server"))
+				return
+			}
+			writeError(w, r, err)
+			return
+		}
 	}
 
 	// A non-admin may restore only a world they formerly owned (spec §466). Without

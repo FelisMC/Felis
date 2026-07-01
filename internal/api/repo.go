@@ -221,6 +221,10 @@ type Repo interface {
 	// carries the server-side backup_ref + former_owner the restore path needs; the
 	// client never sees them.
 	LatestBackup(ctx context.Context, serverName string) (*BackupRecord, error)
+	// BackupByID returns a single present backup by its id, or ErrNotFound when
+	// none matches. Like LatestBackup the returned BackupRecord carries the
+	// server-side backup_ref the restore path needs; the client never sees it.
+	BackupByID(ctx context.Context, id string) (*BackupRecord, error)
 	// SeedServer inserts the business-layer rows for a newly created server (spec
 	// §15): a servers row (owner_id NULL — claimed later, spec §9.3) and its
 	// subdomain alias, both idempotent. It returns ErrConflict if the subdomain is

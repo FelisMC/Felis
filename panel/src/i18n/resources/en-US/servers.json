@@ -41,6 +41,8 @@
   "players_title": "Player management",
   "players_link_title": "Player management",
   "players_link_desc": "Manage the whitelist, online players, and bans.",
+  "backups_link_title": "Backups & restore",
+  "backups_link_desc": "View and restore world backups for this server.",
   "players_back_to_console": "Back to console",
   "players_not_yours_title": "Not your server",
   "players_not_yours_body": "Only the owner or an admin can manage this server's players.",

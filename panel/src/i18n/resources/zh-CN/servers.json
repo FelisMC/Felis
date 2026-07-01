@@ -41,6 +41,8 @@
   "players_title": "玩家管理",
   "players_link_title": "玩家管理",
   "players_link_desc": "管理白名单、在线玩家与封禁。",
+  "backups_link_title": "备份与恢复",
+  "backups_link_desc": "查看并恢复该服务器的世界备份。",
   "players_back_to_console": "返回控制台",
   "players_not_yours_title": "这不是你的服务器",
   "players_not_yours_body": "只有所有者或管理员才能管理此服务器的玩家。",

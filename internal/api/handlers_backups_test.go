@@ -290,4 +290,127 @@ func TestRestoreBackup(t *testing.T) {
 			t.Fatalf("code = %d, want 400", w.Code)
 		}
 	})
+
+	// ---- restore by backup_id ----
+
+	// mkTwo supplements the base mk with two present backups for the same server
+	// so tests can exercise restoring the older one by id. bk2 is older than bk1,
+	// so LatestBackup still returns bk1 — restoring by "bk2" proves it reached the
+	// correct record.
+	mkTwo := func() (*API, *fakeRepo, *fakeCluster, *fakeRestorer) {
+		repo := newFakeRepo()
+		repo.byName["survival"] = &ServerRecord{Name: "survival", OwnerID: "owner1"}
+		repo.backups = []fakeBackup{
+			{view: BackupView{ID: "bk1", ServerName: "survival", FormerOwner: "owner1",
+				Status: "present", Reason: "inactive_15d", SizeBytes: 1024,
+				CreatedAt: time.Unix(1_699_000_000, 0), ExpiresAt: time.Unix(1_706_000_000, 0)}, ref: "ref-bk1"},
+			{view: BackupView{ID: "bk2", ServerName: "survival", FormerOwner: "owner1",
+				Status: "present", Reason: "manual", SizeBytes: 2048,
+				CreatedAt: time.Unix(1_698_000_000, 0), ExpiresAt: time.Unix(1_706_000_000, 0)}, ref: "ref-bk2"},
+		}
+		cl := newFakeCluster()
+		cl.byName["survival"] = &ServerInfo{Name: "survival", Phase: "Stopped",
+			Ready: false, DesiredState: string(v1alpha1.DesiredStopped)}
+		restorer := &fakeRestorer{}
+		api := newTestAPI(repo, cl)
+		api.Restorer = restorer
+		return api, repo, cl, restorer
+	}
+
+	jsonHeaders := map[string]string{"Content-Type": "application/json"}
+
+	t.Run("restore by backup_id -> 202, correct BackupRef sent", func(t *testing.T) {
+		api, _, _, restorer := mkTwo()
+		api.External = staticExternal{p: owner}
+		body := `{"backup_id":"bk2"}`
+		w := do(api.ExternalHandler(), "POST", path, body, jsonHeaders)
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("code = %d, want 202 (%s)", w.Code, w.Body.String())
+		}
+		var resp struct {
+			Name     string `json:"name"`
+			Status   string `json:"status"`
+			BackupID string `json:"backup_id"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("body not JSON: %v (%s)", err, w.Body.String())
+		}
+		if resp.BackupID != "bk2" {
+			t.Fatalf("backup_id = %q, want bk2", resp.BackupID)
+		}
+		if restorer.gotRef != "ref-bk2" {
+			t.Fatalf("restorer ref = %q, want ref-bk2 (proves BackupByID, not LatestBackup)", restorer.gotRef)
+		}
+	})
+
+	t.Run("restore by backup_id not found -> 404 no_backup", func(t *testing.T) {
+		api, _, _, restorer := mkTwo()
+		api.External = staticExternal{p: owner}
+		body := `{"backup_id":"nonexistent"}`
+		w := do(api.ExternalHandler(), "POST", path, body, jsonHeaders)
+		if w.Code != http.StatusNotFound || decodeErr(t, w) != "no_backup" {
+			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
+		}
+		if restorer.calls != 0 {
+			t.Fatal("non-existent backup must not reach the restorer")
+		}
+	})
+
+	t.Run("restore by backup_id that is deleted -> 404 no_backup", func(t *testing.T) {
+		api, repo, _, _ := mkTwo()
+		repo.backups[1].view.Status = "deleted"
+		api.External = staticExternal{p: owner}
+		body := `{"backup_id":"bk2"}`
+		w := do(api.ExternalHandler(), "POST", path, body, jsonHeaders)
+		if w.Code != http.StatusNotFound || decodeErr(t, w) != "no_backup" {
+			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("restore by backup_id cross-server -> 403", func(t *testing.T) {
+		api, repo, _, _ := mkTwo()
+		// bk2 belongs to a different server; restoring it onto survival is forbidden.
+		repo.backups[1].view.ServerName = "creative"
+		api.External = staticExternal{p: owner}
+		body := `{"backup_id":"bk2"}`
+		w := do(api.ExternalHandler(), "POST", path, body, jsonHeaders)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("code = %d, want 403 (cross-server guard)", w.Code)
+		}
+	})
+
+	t.Run("no body -> falls back to LatestBackup (backward compat)", func(t *testing.T) {
+		api, _, _, restorer := mkTwo()
+		api.External = staticExternal{p: owner}
+		w := do(api.ExternalHandler(), "POST", path, "", nil)
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("code = %d, want 202 (%s)", w.Code, w.Body.String())
+		}
+		if restorer.gotRef != "ref-bk1" {
+			t.Fatalf("restorer ref = %q, want ref-bk1 (LatestBackup)", restorer.gotRef)
+		}
+	})
+
+	t.Run("empty JSON body -> falls back to LatestBackup", func(t *testing.T) {
+		api, _, _, restorer := mkTwo()
+		api.External = staticExternal{p: owner}
+		body := `{}`
+		w := do(api.ExternalHandler(), "POST", path, body, jsonHeaders)
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("code = %d, want 202 (%s)", w.Code, w.Body.String())
+		}
+		if restorer.gotRef != "ref-bk1" {
+			t.Fatalf("restorer ref = %q, want ref-bk1 (LatestBackup)", restorer.gotRef)
+		}
+	})
+
+	t.Run("malformed JSON body -> 400", func(t *testing.T) {
+		api, _, _, _ := mkTwo()
+		api.External = staticExternal{p: owner}
+		body := `not json`
+		w := do(api.ExternalHandler(), "POST", path, body, jsonHeaders)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("code = %d, want 400 (%s)", w.Code, w.Body.String())
+		}
+	})
 }

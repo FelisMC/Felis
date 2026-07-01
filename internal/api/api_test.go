@@ -517,6 +517,20 @@ func (f *fakeRepo) LatestBackup(_ context.Context, serverName string) (*BackupRe
 	}, nil
 }
 
+func (f *fakeRepo) BackupByID(_ context.Context, id string) (*BackupRecord, error) {
+	for i := range f.backups {
+		b := &f.backups[i]
+		if b.view.Status == "present" && b.view.ID == id {
+			return &BackupRecord{
+				ID: b.view.ID, ServerName: b.view.ServerName,
+				FormerOwner: b.view.FormerOwner, BackupRef: b.ref,
+				SizeBytes: b.view.SizeBytes,
+			}, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
 // ---- local-password auth fakes (spec §B) ----
 // Each method mirrors the PGRepo contract: a returned StaffUser is copied so a
 // test cannot mutate the stored row by reference, SessionUser re-reads the

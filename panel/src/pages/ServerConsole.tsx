@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useLayoutEffect, type KeyboardEvent } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, Terminal, Moon, ShieldAlert, HelpCircle, Loader2, Users, ChevronRight, type LucideIcon } from "lucide-react";
+import { ArrowLeft, Terminal, Moon, ShieldAlert, HelpCircle, Loader2, Users, Archive, ChevronRight, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -186,13 +186,15 @@ export function ServerConsole() {
   const streamable = data?.phase === "Running" || data?.phase === "Starting";
 
   return (
-    <>
-      <Link
-        to="/servers"
-        className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-      >
-        <ArrowLeft className="h-4 w-4" /> {t("my_servers_breadcrumb")}
-      </Link>
+    <div className="flex flex-col lg:h-[calc(100vh-3.5rem)] lg:min-h-[35rem] gap-4 min-h-0">
+      <div>
+        <Link
+          to="/servers"
+          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft className="h-4 w-4" /> {t("my_servers_breadcrumb")}
+        </Link>
+      </div>
 
       {loading && !data ? (
         <Loading />
@@ -200,7 +202,7 @@ export function ServerConsole() {
         <ErrorState error={error} onRetry={reload} />
       ) : data ? (
         <>
-          <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 shrink-0">
             <div className="flex items-center gap-3">
               <Terminal className="h-6 w-6 text-primary" />
               <div>
@@ -232,47 +234,72 @@ export function ServerConsole() {
             </div>
           </div>
 
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Terminal className="h-4 w-4" /> {t("console_card_title")}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {!streamable ? (
-                <NotStreaming phase={data.phase} />
-              ) : cfg ? (
-                <>
-                  {/* key on name so navigating between servers remounts the viewport
-                      (fresh stream + scroll state). useLogStream also resets its
-                      controller when the url changes, so this is belt-and-suspenders. */}
-                  <LogConsole key={name} url={consoleStreamURL(cfg.apiBase, name)} />
-                  {data.phase === "Running" && (
-                    <CommandInput name={name} />
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-4 flex-1 lg:min-h-0 min-h-0">
+            {/* Left/Main column: Console */}
+            <div className="lg:col-span-3 flex flex-col lg:min-h-0 min-h-0 h-full">
+              <Card className="flex flex-col flex-1 lg:min-h-0 min-h-0">
+                <CardHeader className="py-3.5 shrink-0">
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Terminal className="h-4 w-4" /> {t("console_card_title")}
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3 flex-1 flex flex-col lg:min-h-0 min-h-0 pb-4">
+                  {!streamable ? (
+                    <div className="flex-1 flex flex-col justify-center">
+                      <NotStreaming phase={data.phase} />
+                    </div>
+                  ) : cfg ? (
+                    <div className="flex-1 flex flex-col lg:min-h-0 min-h-0 gap-3">
+                      {/* key on name so navigating between servers remounts the viewport
+                          (fresh stream + scroll state). useLogStream also resets its
+                          controller when the url changes, so this is belt-and-suspenders. */}
+                      <LogConsole key={name} url={consoleStreamURL(cfg.apiBase, name)} />
+                      {data.phase === "Running" && (
+                        <CommandInput name={name} />
+                      )}
+                    </div>
+                  ) : (
+                    <Loading />
                   )}
-                </>
-              ) : (
-                <Loading />
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Player management lives on its own subpage (whitelist / online / bans),
-              not crammed under the console. This is the doorway to it; the page
-              itself owns the ownership + readiness gating. */}
-          <Link
-            to={`/servers/${name}/players`}
-            className="group flex items-center gap-3 rounded-lg border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent"
-          >
-            <Users className="h-5 w-5 shrink-0 text-primary" />
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium">{t("players_link_title")}</p>
-              <p className="text-sm text-muted-foreground">{t("players_link_desc")}</p>
+                </CardContent>
+              </Card>
             </div>
-            <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
-          </Link>
+
+            {/* Right/Sidebar column: Navigation */}
+            <div className="flex flex-col gap-4 lg:col-span-1 shrink-0">
+              {/* Player management lives on its own subpage (whitelist / online / bans),
+                  not crammed under the console. This is the doorway to it; the page
+                  itself owns the ownership + readiness gating. */}
+              <Link
+                to={`/servers/${name}/players`}
+                className="group flex items-center gap-3 rounded-lg border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent"
+              >
+                <Users className="h-5 w-5 shrink-0 text-primary" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium">{t("players_link_title")}</p>
+                  <p className="text-sm text-muted-foreground">{t("players_link_desc")}</p>
+                </div>
+                <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+              </Link>
+
+              {/* Backups & restore — its own subpage, doorway mirrors the players card.
+                  The page owns its ownership gating and works while the server sleeps (a
+                  restore in fact needs it stopped, so this doorway shows at every phase). */}
+              <Link
+                to={`/servers/${name}/backups`}
+                className="group flex items-center gap-3 rounded-lg border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent"
+              >
+                <Archive className="h-5 w-5 shrink-0 text-primary" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium">{t("backups_link_title")}</p>
+                  <p className="text-sm text-muted-foreground">{t("backups_link_desc")}</p>
+                </div>
+                <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+              </Link>
+            </div>
+          </div>
         </>
       ) : null}
-    </>
+    </div>
   );
 }

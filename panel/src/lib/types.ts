@@ -118,6 +118,31 @@ export interface FleetServer {
   owner?: string;
 }
 
+/** BackupView is one row of GET /api/v1/backups (spec §7 backups). A backup is
+ *  written only when the reaper archives an inactive world's PVC before reclaiming
+ *  it (reason "inactive_15d"), so a backup is the SAVED STATE of a world that was
+ *  put to sleep: `former_owner` is who owned it then, `expires_at` the §466
+ *  retention deadline past which it can no longer be restored. The opaque
+ *  backup_ref is deliberately withheld (spec §286) — the panel never names a backup
+ *  by handle; restore resolves the latest present backup server-side.
+ *
+ *  Only `status: "present"` rows are ever listed (the query filters them) and the
+ *  list is created_at-descending, so the FIRST row for a given server is exactly
+ *  the one a restore would recover (LatestBackup's WHERE mirrors this) — the UI must
+ *  name that row, not a plausible proxy. `reason`/`status` cross an unvalidated JSON
+ *  boundary; render unknown values tolerantly. */
+export interface BackupView {
+  id: string;
+  server_name: string;
+  /** Present only when the world had an owner when it was archived. */
+  former_owner?: string;
+  size_bytes: number;
+  reason: string;
+  status: string;
+  created_at: string;
+  expires_at: string;
+}
+
 /** WhitelistImage is one row of GET /images (the create-form dropdown source). */
 export interface WhitelistImage {
   image_ref: string;

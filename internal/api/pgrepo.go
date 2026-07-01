@@ -462,6 +462,21 @@ func (p *PGRepo) LatestBackup(ctx context.Context, serverName string) (*BackupRe
 	return &b, nil
 }
 
+// BackupByID returns a single present backup by its id, or ErrNotFound.
+func (p *PGRepo) BackupByID(ctx context.Context, id string) (*BackupRecord, error) {
+	const q = `SELECT id, server_name, COALESCE(former_owner, ''), backup_ref, COALESCE(size_bytes, 0)
+		FROM world_backups WHERE id = $1 AND status = 'present'`
+	var b BackupRecord
+	switch err := p.db.QueryRowContext(ctx, q, id).Scan(
+		&b.ID, &b.ServerName, &b.FormerOwner, &b.BackupRef, &b.SizeBytes); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, ErrNotFound
+	case err != nil:
+		return nil, err
+	}
+	return &b, nil
+}
+
 func (p *PGRepo) Audit(ctx context.Context, e AuditEntry) error {
 	// A nil Payload must land as SQL NULL, not the text "null"; a non-nil Payload is
 	// passed as a JSON text the jsonb column parses (same idiom as reaper.PGStore).

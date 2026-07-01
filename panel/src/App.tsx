@@ -10,6 +10,7 @@ import { Dashboard } from "@/pages/Dashboard";
 import { MyServers } from "@/pages/MyServers";
 import { ServerConsole } from "@/pages/ServerConsole";
 import { ServerPlayers } from "@/pages/ServerPlayers";
+import { ServerBackups } from "@/pages/ServerBackups";
 import { Account } from "@/pages/Account";
 import { ServerAdmin } from "@/pages/admin/ServerAdmin";
 import { ImageAdmin } from "@/pages/admin/ImageAdmin";
@@ -43,6 +44,7 @@ export default function App() {
               <Route path="servers" element={<MyServers />} />
               <Route path="servers/:name" element={<ServerConsole />} />
               <Route path="servers/:name/players" element={<ServerPlayers />} />
+              <Route path="servers/:name/backups" element={<ServerBackups />} />
               <Route path="account" element={<Account />} />
 
               {/* Admin-Side — admin-tier (server & content ops).

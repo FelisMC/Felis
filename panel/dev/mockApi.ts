@@ -2,6 +2,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Plugin } from "vite";
 import type {
   AutostartPolicy,
+  BackupView,
   CreateServerRequest,
   FleetServer,
   Identity,
@@ -50,6 +51,10 @@ interface MockState {
   // server only gets an entry once its access is touched; "survival" is pre-seeded
   // so the whitelist panel demos a populated list out of the box.
   access: Record<string, AccessState>;
+  // World backups (GET /backups). Global, not keyed by server — the page filters by
+  // server_name client-side, mirroring the real global list endpoint. Scoped per
+  // caller at dispatch (admin sees all; a user only worlds they formerly owned).
+  backups: BackupView[];
 }
 
 // PLAYER_NAME mirrors the backend's mcNameRe (handlers_access.go) so the mock
@@ -130,6 +135,39 @@ const LOGIN_HINT_SCRIPT = `
 })();
 `;
 
+// World-backup seed. A backup is written when the reaper archives an inactive
+// world, so these read as "sleep saves": a handful for survival (recent through one
+// nearly expired, to exercise the relative-time and near-expiry states), one for
+// modded, none for the rest so the empty state shows too. former_owner is the
+// archiving owner; GET /backups is scoped by it for non-admins (BackupsForUser).
+const GiB = 1024 ** 3;
+const DAY_MS = 86_400_000;
+const RETENTION_DAYS = 90;
+
+function backup(server: string, daysAgo: number, sizeBytes: number, formerOwner: string): BackupView {
+  const created = Date.now() - daysAgo * DAY_MS;
+  return {
+    id: `bk-${server}-${daysAgo}`,
+    server_name: server,
+    former_owner: formerOwner,
+    size_bytes: Math.round(sizeBytes),
+    reason: "inactive_15d",
+    status: "present",
+    created_at: new Date(created).toISOString(),
+    expires_at: new Date(created + RETENTION_DAYS * DAY_MS).toISOString(),
+  };
+}
+
+function mockBackups(): BackupView[] {
+  return [
+    backup("survival", 5, 1.4 * GiB, "owner"),
+    backup("survival", 20, 1.3 * GiB, "owner"),
+    backup("survival", 45, 1.2 * GiB, "owner"),
+    backup("survival", 88, 2.1 * GiB, "owner"), // ~2 days from expiry — exercises the urgency state
+    backup("modded", 12, 0.6 * GiB, "owner"),
+  ];
+}
+
 function initialState(): MockState {
   return {
     accounts: {
@@ -203,6 +241,7 @@ function initialState(): MockState {
         ],
       },
     },
+    backups: mockBackups(),
   };
 }
 
@@ -499,6 +538,15 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
     case "GET images":
       sendJSON(ctx.res, 200, { images: ctx.state.images });
       return true;
+    case "GET backups":
+      // Admin sees every archive; a user only worlds they formerly owned — mirrors
+      // AllBackups vs BackupsForUser. The panel filters by server_name client-side.
+      sendJSON(ctx.res, 200, {
+        backups: ctx.state.backups.filter(
+          (b) => ctx.account.role === "admin" || b.former_owner === ctx.account.id,
+        ),
+      });
+      return true;
     case "POST servers":
       await createServerRoute(ctx);
       return true;
@@ -509,7 +557,7 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       await verifyLinkRoute(ctx);
       return true;
     default:
-      return handleServerRoute(ctx);
+      return await handleServerRoute(ctx);
   }
 }
 
@@ -542,7 +590,7 @@ async function verifyLinkRoute(ctx: SessionContext): Promise<void> {
   sendJSON(ctx.res, 200, { linked: true, mc_uuid: MC_UUID });
 }
 
-function handleServerRoute(ctx: SessionContext): boolean {
+async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
   if (ctx.parts[2] !== "servers" || !ctx.parts[3]) return false;
 
   const serverInfo = findServer(ctx.state, decodeURIComponent(ctx.parts[3]));
@@ -597,11 +645,63 @@ function handleServerRoute(ctx: SessionContext): boolean {
     claimServer(ctx, serverInfo);
     return true;
   }
+  if (is("POST", ctx) && ctx.parts[4] === "restore-backup") {
+    return await handleRestoreBackupMock(ctx, serverInfo);
+  }
   if (ctx.parts[4] === "access") {
     return handleAccessMock(ctx, serverInfo);
   }
 
   return false;
+}
+
+// handleRestoreBackupMock mirrors the backend's restore authorization order
+// (handlers_backups.go): owner-or-admin → specific backup by id or latest present
+// backup else 404 no_backup → non-admin former-owner match → stopped gate else
+// 409 not_stopped → 202.
+async function handleRestoreBackupMock(ctx: SessionContext, serverInfo: MockServer): Promise<boolean> {
+  if (!canManage(ctx.account, serverInfo)) {
+    sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+    return true;
+  }
+  let backupId: string | undefined;
+  try {
+    const body = await readJSON<{ backup_id?: string }>(ctx.req);
+    backupId = body.backup_id;
+  } catch (e) {
+    // Ignore if body is empty or unparsable
+  }
+
+  let backup: any = null;
+  if (backupId) {
+    backup = ctx.state.backups.find((b) => b.id === backupId && b.server_name === serverInfo.name && b.status === "present");
+    if (!backup) {
+      sendError(ctx.res, 404, "no_backup", "no restorable backup exists for this server");
+      return true;
+    }
+  } else {
+    const latest = ctx.state.backups
+      .filter((b) => b.server_name === serverInfo.name && b.status === "present")
+      .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
+    if (!latest) {
+      sendError(ctx.res, 404, "no_backup", "no restorable backup exists for this server");
+      return true;
+    }
+    backup = latest;
+  }
+
+  // Non-admins may restore only a world they formerly owned (spec §466).
+  if (ctx.account.role !== "admin" && backup.former_owner !== ctx.account.id) {
+    sendError(ctx.res, 403, "forbidden", "not the former owner of this world");
+    return true;
+  }
+  // The world PVC must be free — a running/starting server still holds it.
+  if (serverInfo.phase !== "Stopped") {
+    sendError(ctx.res, 409, "not_stopped", "stop the server before restoring a backup");
+    return true;
+  }
+  sendJSON(ctx.res, 202, { name: serverInfo.name, status: "restoring", backup_id: backup.id });
+  return true;
 }
 
 function accessFor(state: MockState, name: string): AccessState {

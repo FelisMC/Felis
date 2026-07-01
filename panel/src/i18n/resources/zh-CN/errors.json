@@ -14,6 +14,9 @@
   "cooldown": "启动冷却中——请稍后再试。",
   "not_running": "服务器未在运行——请先唤醒它再管理访问权限。",
   "console_unavailable": "暂时无法连接服务器控制台，请稍后重试。",
+  "no_backup": "这台服务器暂时没有可回档的备份。",
+  "not_stopped": "回档会覆盖世界的实时存储卷，请先把服务器完全停止再回档。",
+  "restore_unavailable": "回档功能当前不可用，请稍后再试。",
   "session_expired": "会话已过期——请重新登录。",
   "forbidden": "你无权执行此操作。",
   "generic": "出了点问题，请稍后重试。"

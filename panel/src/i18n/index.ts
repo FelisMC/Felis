@@ -10,6 +10,7 @@ import enAdmin from "./resources/en-US/admin.json";
 import enOps from "./resources/en-US/ops.json";
 import enErrors from "./resources/en-US/errors.json";
 import enNavigation from "./resources/en-US/navigation.json";
+import enBackups from "./resources/en-US/backups.json";
 import zhCommon from "./resources/zh-CN/common.json";
 import zhAuth from "./resources/zh-CN/auth.json";
 import zhDashboard from "./resources/zh-CN/dashboard.json";
@@ -19,6 +20,7 @@ import zhAdmin from "./resources/zh-CN/admin.json";
 import zhOps from "./resources/zh-CN/ops.json";
 import zhErrors from "./resources/zh-CN/errors.json";
 import zhNavigation from "./resources/zh-CN/navigation.json";
+import zhBackups from "./resources/zh-CN/backups.json";
 
 i18next
   .use(LanguageDetector)
@@ -35,6 +37,7 @@ i18next
         ops: enOps,
         errors: enErrors,
         navigation: enNavigation,
+        backups: enBackups,
       },
       "zh-CN": {
         common: zhCommon,
@@ -46,6 +49,7 @@ i18next
         ops: zhOps,
         errors: zhErrors,
         navigation: zhNavigation,
+        backups: zhBackups,
       },
     },
     fallbackLng: "en-US",

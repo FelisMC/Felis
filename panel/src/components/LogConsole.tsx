@@ -72,9 +72,9 @@ export function LogConsole({ url }: { url: string }) {
   const jumpToLatest = useCallback(() => setPinned(true), []);
 
   return (
-    <div className="overflow-hidden rounded-md border border-border bg-zinc-950">
+    <div className="overflow-hidden rounded-md border border-border bg-zinc-950 flex-1 flex flex-col min-h-0">
       {/* Toolbar */}
-      <div className="flex items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-900/60 px-3 py-2">
+      <div className="flex items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-900/60 px-3 py-2 shrink-0">
         <StatusIndicator status={status} />
         <div className="flex items-center gap-1.5">
           {status === "ended" && (
@@ -100,11 +100,11 @@ export function LogConsole({ url }: { url: string }) {
       </div>
 
       {/* Viewport */}
-      <div className="relative">
+      <div className="relative flex-1 min-h-0">
         <div
           ref={scrollRef}
           onScroll={onScroll}
-          className="h-[28rem] overflow-y-auto px-3 py-2 font-mono text-xs leading-relaxed"
+          className="h-full overflow-y-auto px-3 py-2 font-mono text-xs leading-relaxed"
         >
           {lines.length === 0 ? (
             <p className="select-none py-8 text-center text-zinc-600">

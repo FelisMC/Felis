@@ -1,6 +1,7 @@
 import type {
   AccessResult,
   ApiError,
+  BackupView,
   BanlistResult,
   CreateServerRequest,
   FleetServer,
@@ -161,6 +162,31 @@ export const api = {
       req,
     ),
 
+  // World backups (spec §7). listBackups is the app-tier read: an admin sees every
+  // present backup, a user only the backups of worlds they formerly owned — the
+  // scope is decided server-side from the principal, not by any client filter, so a
+  // user cannot widen it. Only present (restorable) rows come back, newest first;
+  // there is no per-server backups endpoint, so the panel filters by server_name
+  // client-side and the first matching row is the one a restore would recover.
+  listBackups: () =>
+    request<{ backups: BackupView[] }>("GET", "/backups").then((r) => r.backups ?? []),
+
+  // restoreBackup starts an ASYNC restore of a server's world from a backup
+  // (spec §7 POST restore-backup). It accepts an optional backupId in the body: when
+  // absent the backend restores the latest backup and resolves its opaque ref
+  // server-side — the client never names a backup by handle (spec §286).
+  // Preconditions are enforced server-side and surfaced as codes: owner-or-admin +
+  // former-owner match (403), a present backup must exist (404 no_backup), and the
+  // server MUST be fully stopped (409 not_stopped) since the restore writes into
+  // the live world volume. The reply is 202 {name, status:"restoring", backup_id} —
+  // success means the restore Job was enqueued, not that the world is back yet.
+  restoreBackup: (name: string, backupId?: string) =>
+    request<{ name: string; status: string; backup_id: string }>(
+      "POST",
+      `/servers/${name}/restore-backup`,
+      backupId ? { backup_id: backupId } : undefined,
+    ),
+
   // Account linking (spec §10). Both are POST: start reports status from the
   // session principal (no body, side-effect-free), verify consumes a code the
   // player was shown in-game. The panel can never mint a code — that is the
@@ -222,6 +248,15 @@ export function humanizeError(e: unknown): string {
       return t("not_running");
     case "console_unavailable":
       return t("console_unavailable");
+    // World restore (spec §7 restore-backup): the world volume must be free, so a
+    // running/starting server 409s not_stopped; no present backup 404s no_backup;
+    // the restore subsystem may be unwired (503 restore_unavailable).
+    case "no_backup":
+      return t("no_backup");
+    case "not_stopped":
+      return t("not_stopped");
+    case "restore_unavailable":
+      return t("restore_unavailable");
     default:
       if (err.status === 401) return t("session_expired");
       if (err.status === 403) return t("forbidden");
