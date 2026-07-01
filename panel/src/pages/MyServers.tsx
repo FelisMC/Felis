@@ -1,12 +1,16 @@
 import { useState } from "react";
-import { Server } from "lucide-react";
+import { Server, Search, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
 import { ServerCard } from "@/components/ServerCard";
 import { Pagination } from "@/components/Pagination";
 import { Loading, ErrorState, EmptyState } from "@/components/States";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import { useAsync, useConfig } from "@/lib/hooks";
+import { hostFor } from "@/lib/config";
 
 const PAGE_SIZE = 12;
 
@@ -16,8 +20,29 @@ export function MyServers() {
   const { t } = useTranslation("servers");
   const servers = data ?? [];
   const [page, setPage] = useState(1);
-  const totalPages = Math.max(1, Math.ceil(servers.length / PAGE_SIZE));
-  const paged = servers.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+
+  const filtered = servers.filter((s) => {
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      const host = cfg ? hostFor(s.subdomain, cfg).toLowerCase() : "";
+      const name = s.name.toLowerCase();
+      const displayName = (s.displayName || "").toLowerCase();
+      if (!name.includes(q) && !displayName.includes(q) && !host.includes(q)) {
+        return false;
+      }
+    }
+    if (statusFilter !== "all") {
+      if (s.phase !== statusFilter) {
+        return false;
+      }
+    }
+    return true;
+  });
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const paged = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   return (
     <>
@@ -31,6 +56,56 @@ export function MyServers() {
         </div>
       </div>
 
+      {servers.length > 0 && cfg && (
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center my-4">
+          <div className="relative flex-1 max-w-md">
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder={t("search_placeholder")}
+              className="pl-9 pr-8"
+              value={searchQuery}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setPage(1);
+              }}
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchQuery("");
+                  setPage(1);
+                }}
+                className="absolute right-2.5 top-2.5 text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            )}
+          </div>
+          <div className="w-[180px]">
+            <Select
+              value={statusFilter}
+              onValueChange={(val) => {
+                setStatusFilter(val);
+                setPage(1);
+              }}
+            >
+              <SelectTrigger className="w-full">
+                <SelectValue placeholder={t("filter_status_all")} />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{t("filter_status_all")}</SelectItem>
+                <SelectItem value="Running">{t("phase_running")}</SelectItem>
+                <SelectItem value="Starting">{t("phase_starting")}</SelectItem>
+                <SelectItem value="Stopping">{t("phase_stopping")}</SelectItem>
+                <SelectItem value="Stopped">{t("phase_stopped")}</SelectItem>
+                <SelectItem value="Failed">{t("phase_failed")}</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+      )}
+
       {loading && !data ? (
         <Loading />
       ) : error ? (
@@ -42,6 +117,22 @@ export function MyServers() {
           title={t("no_servers_linked")}
           hint={t("no_servers_hint")}
         />
+      ) : filtered.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-12 text-center border border-dashed rounded-lg border-border bg-card/50">
+          <p className="text-sm font-medium text-foreground">{t("search_no_match")}</p>
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-4"
+            onClick={() => {
+              setSearchQuery("");
+              setStatusFilter("all");
+              setPage(1);
+            }}
+          >
+            {t("search_clear_btn")}
+          </Button>
+        </div>
       ) : (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
           {paged.map((s) => (
@@ -56,11 +147,11 @@ export function MyServers() {
         </CardContent>
       </Card>
 
-      {servers.length > 0 && (
+      {filtered.length > 0 && (
         <Pagination
           page={page}
           pageSize={PAGE_SIZE}
-          total={servers.length}
+          total={filtered.length}
           onChange={(p) => { setPage(p); if (p > totalPages) setPage(totalPages); }}
         />
       )}
