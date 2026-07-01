@@ -244,6 +244,10 @@ func TestHandleChangePasswordSuccess(t *testing.T) {
 	// no felis_session cookie, so keep="" and every session of u1 is revoked — the
 	// safe direction the handler documents.
 	repo.sessions["other-device"] = &fakeSession{userID: "u1", expiresAt: api.now().Add(time.Hour)}
+	// A bound passkey for u1: the change must unbind it too. A passkey planted through a
+	// hijacked session needs no password, so it would otherwise survive the reset as a
+	// standing login foothold.
+	repo.passkeyCreds["pk1"] = PasskeyCredential{ID: "pk1", UserID: "u1", CredentialID: "cred-1", PublicKey: "k"}
 
 	w := do(api.ExternalHandler(), "POST", "/api/v1/auth/change-password",
 		`{"current_password":"old-password","new_password":"brand-new-password"}`, jsonHeader)
@@ -260,6 +264,9 @@ func TestHandleChangePasswordSuccess(t *testing.T) {
 	}
 	if !repo.sessions["other-device"].revoked {
 		t.Fatalf("other sessions should be revoked on a password change")
+	}
+	if len(repo.passkeyCreds) != 0 {
+		t.Fatalf("password change left %d passkeys, want 0 — a planted passkey must not survive remediation", len(repo.passkeyCreds))
 	}
 }
 

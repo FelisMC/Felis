@@ -997,3 +997,14 @@ func (p *PGRepo) DeletePasskeyCredential(ctx context.Context, userID, id string)
 	}
 	return nil
 }
+
+// DeleteAllPasskeyCredentialsForUser unbinds every passkey a user holds. Unlike the
+// single-credential delete this does NOT report ErrNotFound on zero rows: removing all of
+// a user's passkeys when they have none is a successful no-op, since "the user holds no
+// passkeys" is exactly the intended post-condition. The change-password flow calls it so a
+// passkey planted through a transiently-hijacked session cannot survive the remediation.
+func (p *PGRepo) DeleteAllPasskeyCredentialsForUser(ctx context.Context, userID string) error {
+	_, err := p.db.ExecContext(ctx,
+		`DELETE FROM webauthn_credentials WHERE user_id = $1`, userID)
+	return err
+}

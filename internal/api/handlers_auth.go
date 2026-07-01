@@ -218,6 +218,16 @@ func (a *API) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Revoking sessions is not enough: a passkey needs no password, so one planted
+	// through a transiently-hijacked session would outlive the reset as a standing login
+	// foothold. A password change is a possible-compromise signal, so unbind every passkey
+	// as part of the same remediation. The user re-enrolls afterward if they want one; the
+	// email-OTP factor stays available in the meantime, so this never locks anyone out.
+	if err := a.Repo.DeleteAllPasskeyCredentialsForUser(r.Context(), u.ID); err != nil {
+		writeError(w, r, err)
+		return
+	}
+
 	a.audit(r, u.Username, "auth.password_change", "")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

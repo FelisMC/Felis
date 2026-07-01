@@ -359,6 +359,17 @@ func (f *fakeRepo) DeletePasskeyCredential(_ context.Context, userID, id string)
 	return ErrNotFound
 }
 
+// DeleteAllPasskeyCredentialsForUser mirrors PGRepo: unbind every passkey the user holds,
+// and removing zero is a successful no-op (never ErrNotFound).
+func (f *fakeRepo) DeleteAllPasskeyCredentialsForUser(_ context.Context, userID string) error {
+	for id, c := range f.passkeyCreds {
+		if c.UserID == userID {
+			delete(f.passkeyCreds, id)
+		}
+	}
+	return nil
+}
+
 // fakePasskeyVerifier is the hermetic PasskeyVerifier: it performs no real attestation
 // crypto, so it exercises the enrollment STATE MACHINE (challenge persistence, consume,
 // conflict, audit) without go-webauthn. BeginRegistration returns a fixed options blob

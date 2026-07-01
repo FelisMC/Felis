@@ -291,6 +291,12 @@ type Repo interface {
 	// can only unbind their OWN credential. No matching (user, id) row → ErrNotFound,
 	// so a stale or cross-user id cannot silently no-op as success.
 	DeletePasskeyCredential(ctx context.Context, userID, id string) error
+	// DeleteAllPasskeyCredentialsForUser unbinds every passkey a user holds. The
+	// change-password flow calls it so a passkey planted via a transiently-hijacked
+	// session does not survive the remediation (password reset + session revoke) as a
+	// standing login foothold. Removing zero rows is success, not an error — an account
+	// with no passkeys is the intended post-condition either way.
+	DeleteAllPasskeyCredentialsForUser(ctx context.Context, userID string) error
 
 	// ---- player game-login: username-collision reclaim (spec §B3) ----
 
