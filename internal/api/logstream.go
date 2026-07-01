@@ -110,6 +110,13 @@ func relayLogStream(w http.ResponseWriter, r *http.Request, src io.ReadCloser) {
 	// per-write deadline set inside writeChunk is what severs an unresponsive client;
 	// the initial header flush below stays a plain best-effort flush (no deadline).
 	rc := http.NewResponseController(w)
+	// Clear any per-write deadline on return. Server.WriteTimeout is deliberately UNSET
+	// (cmd/felis api.go — a WriteTimeout would sever a healthy long SSE stream), and
+	// with it unset net/http never resets the write deadline between keep-alive
+	// requests. So a deadline left set by the last writeChunk would leak onto the NEXT
+	// request that reuses this pooled connection and fail its first write for no reason.
+	// The zero time clears it; best-effort, a no-op on writers without deadline support.
+	defer func() { _ = rc.SetWriteDeadline(time.Time{}) }()
 
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
@@ -118,6 +125,12 @@ func relayLogStream(w http.ResponseWriter, r *http.Request, src io.ReadCloser) {
 	// Defeat proxy buffering (nginx / ingress) so events arrive promptly.
 	h.Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
+	// Best-effort header flush, deliberately WITHOUT a write deadline. A client that
+	// stalls its receive window BEFORE these headers drain is therefore NOT severed by
+	// writeTimeout at connect time — routing this flush through the deadline guard would
+	// break the guard's test specificity, and the connect-time stall is already bounded
+	// by the per-principal stream cap (#44). Only the mid-stream stall (every writeChunk
+	// below) is CLOSED by the deadline guard, not merely bounded.
 	flusher.Flush()
 
 	// bufio.Scanner.Scan blocks until a line arrives, so to interleave a periodic

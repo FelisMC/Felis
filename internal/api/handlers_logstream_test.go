@@ -673,3 +673,71 @@ func TestRelayLogStreamWriteDeadlineSeversStalledReader(t *testing.T) {
 		t.Fatal("relay returned without closing the source — upstream pod-log follow leaked")
 	}
 }
+
+// deadlineRecordWriter records the write deadlines the relay sets and never blocks on
+// flush — a healthy client whose stream simply ends. It pins the deadline-CLEAR half of
+// the leak guard: SetWriteDeadline stores every value, so the test can read back the
+// LAST one the relay left behind after it returns. sawPositive proves a real per-write
+// deadline was applied during streaming, so a broken fix that never sets a deadline at
+// all cannot pass the clear-check by leaving the field zero throughout.
+type deadlineRecordWriter struct {
+	mu           sync.Mutex
+	hdr          http.Header
+	lastDeadline time.Time
+	sawPositive  bool
+}
+
+func newDeadlineRecordWriter() *deadlineRecordWriter {
+	return &deadlineRecordWriter{hdr: http.Header{}}
+}
+
+func (s *deadlineRecordWriter) Header() http.Header         { return s.hdr }
+func (s *deadlineRecordWriter) WriteHeader(int)             {}
+func (s *deadlineRecordWriter) Write(p []byte) (int, error) { return len(p), nil }
+func (s *deadlineRecordWriter) Flush()                      {}
+func (s *deadlineRecordWriter) FlushError() error           { return nil } // healthy: never blocks
+
+func (s *deadlineRecordWriter) SetWriteDeadline(t time.Time) error {
+	s.mu.Lock()
+	s.lastDeadline = t
+	if !t.IsZero() {
+		s.sawPositive = true
+	}
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *deadlineRecordWriter) finalDeadline() (last time.Time, sawPositive bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastDeadline, s.sawPositive
+}
+
+// TestRelayLogStreamClearsWriteDeadlineOnReturn pins the keep-alive hygiene half of the
+// §8 leak guard (audit #1 follow-up). Server.WriteTimeout is deliberately UNSET so a
+// healthy long SSE stream is never severed (cmd/felis api.go), and with it unset net/http
+// never resets the connection's write deadline between keep-alive requests. So the
+// per-write deadline the relay sets must be CLEARED when the relay returns — otherwise it
+// leaks onto the NEXT request that reuses this pooled connection and fails that request's
+// first write for no reason. Here a finite source EOFs cleanly; after the relay returns
+// the writer's final deadline must be the zero value, and a positive deadline must have
+// been set first (so a fix that never sets a deadline at all cannot pass by leaving zero
+// the whole time).
+func TestRelayLogStreamClearsWriteDeadlineOnReturn(t *testing.T) {
+	src := &recordReadCloser{r: strings.NewReader("boot\n")}
+	w := newDeadlineRecordWriter()
+	r := httptest.NewRequest("GET", "/api/v1/servers/survival/console", nil)
+
+	relayLogStream(w, r, src)
+
+	last, sawPositive := w.finalDeadline()
+	if !sawPositive {
+		t.Fatal("relay never set a per-write deadline — the leak guard is not wired into the write path")
+	}
+	if !last.IsZero() {
+		t.Fatalf("relay left a write deadline of %v set on return; it must clear it to the zero value so it cannot leak onto a reused keep-alive connection", last)
+	}
+	if !src.closed {
+		t.Fatal("relay returned without closing the source")
+	}
+}
