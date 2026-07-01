@@ -145,13 +145,19 @@ func (r *ExecRunner) credentialsPath(id string) string {
 	return id + ".json"
 }
 
-// RouteDNS runs `cloudflared tunnel route dns <tunnelID> <hostname>`, creating the
-// proxied CNAME. It is idempotent on cloudflared's side for an existing record.
+// RouteDNS runs `cloudflared tunnel route dns --overwrite-dns <tunnelID> <hostname>`,
+// creating (or repointing) the proxied CNAME so hostname resolves to THIS tunnel.
+//
+// --overwrite-dns is load-bearing, not cosmetic. Without it, when a record for
+// hostname already exists — most commonly a stale CNAME left by an earlier tunnel
+// that was created and later deleted/recreated on the same box — cloudflared refuses
+// with "record already exists" and changes nothing, leaving the name bound to the
+// dead tunnel. The old code swallowed exactly that error as success, so a re-run
+// reported "routed" while the hostname kept returning Cloudflare error 1033: the
+// tunnel it still pointed at had no connector. Overwriting repoints the record at the
+// tunnel we just created, making the route idempotent AND correct on every re-run.
 func (r *ExecRunner) RouteDNS(ctx context.Context, tunnelID, hostname string) error {
-	_, err := r.runCloudflared(ctx, "tunnel", "route", "dns", tunnelID, hostname)
-	if err != nil && strings.Contains(err.Error(), "already exists") {
-		return nil
-	}
+	_, err := r.runCloudflared(ctx, "tunnel", "route", "dns", "--overwrite-dns", tunnelID, hostname)
 	return err
 }
 
