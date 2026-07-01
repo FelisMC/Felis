@@ -255,7 +255,7 @@ func (a *API) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Request
 		writeError(w, r, err)
 		return
 	}
-	a.audit(r, auditActor(p), "account.passkey.registered", "")
+	a.audit(r, auditActor(p), "account.passkey.registered", cred.ID)
 	writeJSON(w, http.StatusCreated, passkeyView(cred))
 }
 

@@ -125,18 +125,20 @@ func TestPasskeyRegisterVertical(t *testing.T) {
 		t.Fatalf("delete left %d credentials, want 0", len(repo.passkeyCreds))
 	}
 
-	// Both mutating halves audit by the caller's Access email.
+	// Both mutating halves audit by the caller's Access email AND name the affected
+	// credential id as the target, so an operator reading the log can tell which
+	// passkey was bound/unbound (register previously logged an empty target).
 	var registered, removed bool
 	for _, a := range repo.audits {
 		switch a.Action {
 		case "account.passkey.registered":
-			registered = a.Actor == "u1@example.net"
+			registered = a.Actor == "u1@example.net" && a.ServerName == id
 		case "account.passkey.removed":
-			removed = a.Actor == "u1@example.net"
+			removed = a.Actor == "u1@example.net" && a.ServerName == id
 		}
 	}
 	if !registered || !removed {
-		t.Errorf("want registered+removed audits by u1@example.net, got %+v", repo.audits)
+		t.Errorf("want registered+removed audits by u1@example.net targeting %s, got %+v", id, repo.audits)
 	}
 }
 
