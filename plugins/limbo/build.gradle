@@ -1,0 +1,58 @@
+plugins {
+    id 'java'
+}
+
+group = 'best.lolicon.felis'
+version = '0.1.0'
+
+// Build with a JDK 21 toolchain but emit portable Java 17 bytecode (options.release
+// below). Current LOOHP/Limbo releases ship Java 21 API classes (class-file major
+// 65), so the compiler JDK must be >= 21 to *read* them — a JDK 17 fails with
+// "wrong version 65.0, should be 61.0". Targeting release 17 keeps the plugin
+// loadable on any Limbo running Java 17+. See deploy/limbo/Dockerfile (21-jdk).
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+    // LOOHP publishes the Limbo API artifact to their own repository.
+    maven {
+        name = 'loohp'
+        url = 'https://repo.loohpjames.com/repository'
+    }
+}
+
+// Pull in the platform-neutral link core (best.lolicon.felis.link) the same way
+// every other module does — a source include, not a jar dependency — so the
+// account-link client (LinkClient), the internal read/drive client (FelisApiClient)
+// and the env/properties config loader compile straight into this jar with nothing
+// to shade. See plugins/README.md "Architecture".
+sourceSets {
+    main {
+        java {
+            srcDir '../shared/src/main/java'
+        }
+    }
+}
+
+// The Limbo API version this plugin compiles against. It is CODE-ONLY in this Go
+// repo (not built by CI); a deployer building the image passes the release that
+// matches the Limbo.jar they bundle, e.g. -PlimboVersion=0.7.11-ALPHA. Kept a
+// property so no specific build number is hardcoded into the tree.
+def limboVersion = project.findProperty('limboVersion') ?: '+'
+
+dependencies {
+    // Limbo provides its own API at runtime (the plugin is loaded into the Limbo
+    // JVM), so it is compile-only — nothing to shade.
+    compileOnly "com.loohp:Limbo:${limboVersion}"
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    // Portable output: read the Java 21 Limbo API with the JDK 21 toolchain above,
+    // but emit Java 17 bytecode so the plugin loads on any Limbo running Java 17+.
+    options.release = 17
+}

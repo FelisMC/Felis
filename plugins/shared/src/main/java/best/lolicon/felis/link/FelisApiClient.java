@@ -137,6 +137,42 @@ public final class FelisApiClient {
         return MenuStatus.fromJson(getObject("/api/v1/internal/servers/" + name + "/menu", 200));
     }
 
+    /**
+     * linkStatus polls whether the verified UUID has finished web account-link — the
+     * completion leg of the in-game login flow (spec §B3). After the player redeems
+     * the Bind Code on {@code console.<root_domain>} the login limbo polls this until
+     * it flips true, then admits/transfers the player. {@code GET
+     * /api/v1/internal/account/link/status/{mc_uuid}} → {@code {"linked":bool,...}};
+     * read-only and keyed by the verified UUID, so it consumes nothing and is safe to
+     * poll repeatedly. Anything but {@code linked:true} (including a missing field) is
+     * reported as not-yet-linked — the caller keeps waiting rather than admitting on
+     * an ambiguous body.
+     */
+    public boolean linkStatus(UUID mcUuid) throws LinkException {
+        Objects.requireNonNull(mcUuid, "mcUuid");
+        Map<?, ?> obj = getObject("/api/v1/internal/account/link/status/" + mcUuid, 200);
+        Object linked = obj.get("linked");
+        return linked instanceof Boolean && (Boolean) linked;
+    }
+
+    /**
+     * isBlacklisted reports whether a connecting UUID was barred by a
+     * username-collision reclaim (spec §B3): the login limbo checks this on join and
+     * refuses a barred squatter UUID before minting a code. {@code GET
+     * /api/v1/internal/player/blacklist/{mc_uuid}} → {@code {"blacklisted":bool}}. The
+     * bar is keyed by UUID, so the genuine Mojang player (same name, different UUID)
+     * always reads false and passes. A body that does not affirm {@code
+     * blacklisted:true} is treated as not-barred (fail-open on this specific read is
+     * deliberate: the authoritative gate is the mint/link flow, and a transport fault
+     * already surfaces as a LinkException the caller fails closed on).
+     */
+    public boolean isBlacklisted(UUID mcUuid) throws LinkException {
+        Objects.requireNonNull(mcUuid, "mcUuid");
+        Map<?, ?> obj = getObject("/api/v1/internal/player/blacklist/" + mcUuid, 200);
+        Object barred = obj.get("blacklisted");
+        return barred instanceof Boolean && (Boolean) barred;
+    }
+
     // ---- transport ----
 
     private Map<?, ?> getObject(String path, int expect) throws LinkException {
