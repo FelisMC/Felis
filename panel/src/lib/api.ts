@@ -18,6 +18,7 @@ import type {
   WhitelistImage,
   WhitelistResult,
   Submission,
+  UpdateWindow,
 } from "./types";
 import { loadConfig } from "./config";
 import i18next from "i18next";
@@ -301,6 +302,10 @@ export const api = {
     requestRaw<Submission>("POST", `/me/submissions/${id}/context`, file, {
       "Content-Type": "application/x-gzip",
     }),
+
+  getUpdateWindow: () => request<UpdateWindow>("GET", "/updates/window"),
+
+  setUpdateWindow: (window: UpdateWindow) => request<UpdateWindow>("PUT", "/updates/window", window),
 };
 
 /**

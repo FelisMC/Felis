@@ -55,6 +55,7 @@ interface MockState {
   builds: Build[];
   passkeys: Record<AccountID, { id: string; name: string; created_at: string }[]>;
   submissions: Submission[];
+  updateWindow: { start: string | null; end: string | null };
 }
 
 // PLAYER_NAME mirrors the backend's mcNameRe (handlers_access.go) so the mock
@@ -333,6 +334,7 @@ function initialState(): MockState {
         reviewed_at: new Date(Date.now() - 10700000).toISOString(),
       },
     ],
+    updateWindow: { start: null, end: null },
   };
 }
 
@@ -630,6 +632,40 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
 
 async function handleSession(ctx: SessionContext): Promise<boolean> {
   switch (route(ctx)) {
+    case "GET updates/window":
+      if (ctx.account.role !== "admin") {
+        sendError(ctx.res, 403, "forbidden", "admin account required");
+        return true;
+      }
+      sendJSON(ctx.res, 200, ctx.state.updateWindow);
+      return true;
+    case "PUT updates/window": {
+      if (ctx.account.role !== "admin") {
+        sendError(ctx.res, 403, "forbidden", "admin account required");
+        return true;
+      }
+      const body = await readJSON<{ start: string | null; end: string | null }>(ctx.req);
+      if (body.start === null && body.end === null) {
+        ctx.state.updateWindow = { start: null, end: null };
+      } else if (body.start === null || body.end === null) {
+        sendError(ctx.res, 400, "bad_request", "start and end must both be set or both be null");
+        return true;
+      } else {
+        const start = new Date(body.start);
+        const end = new Date(body.end);
+        if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+          sendError(ctx.res, 400, "bad_request", "invalid start or end time format");
+          return true;
+        }
+        if (end <= start) {
+          sendError(ctx.res, 400, "bad_request", "end must be after start");
+          return true;
+        }
+        ctx.state.updateWindow = { start: body.start, end: body.end };
+      }
+      sendJSON(ctx.res, 200, ctx.state.updateWindow);
+      return true;
+    }
     case "GET me/servers":
       sendJSON(ctx.res, 200, { servers: visibleServers(ctx.state, ctx.account) });
       return true;

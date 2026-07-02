@@ -6,6 +6,7 @@ import {
   Cpu,
   ClipboardCheck,
   Upload,
+  Clock,
   type LucideIcon,
 } from "lucide-react";
 
@@ -57,6 +58,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { to: "/admin/images", key: "admin_images", icon: Boxes },
       { to: "/admin/builds", key: "admin_builds", icon: Cpu },
       { to: "/admin/submissions", key: "admin_submissions", icon: ClipboardCheck },
+      { to: "/admin/updates", key: "admin_updates", icon: Clock },
     ],
   },
 ];

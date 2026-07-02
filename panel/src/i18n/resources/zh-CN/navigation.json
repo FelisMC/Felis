@@ -6,5 +6,6 @@
   "admin_section": "管理",
   "admin_images": "镜像",
   "admin_builds": "构建流水线",
-  "admin_submissions": "审核提交"
+  "admin_submissions": "审核提交",
+  "admin_updates": "维护窗口"
 }

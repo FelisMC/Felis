@@ -269,3 +269,8 @@ export interface Submission {
   created_at: string;
   reviewed_at?: string;
 }
+
+export interface UpdateWindow {
+  start: string | null;
+  end: string | null;
+}

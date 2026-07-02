@@ -482,4 +482,30 @@ describe("image whitelist and builds wire shapes", () => {
       expect((opts as RequestInit).headers).toEqual({ "Content-Type": "application/x-gzip" });
     });
   });
+
+  describe("updates maintenance window", () => {
+    it("getUpdateWindow GETs from /updates/window", async () => {
+      const win = { start: "2026-07-03T12:00:00Z", end: "2026-07-03T14:00:00Z" };
+      const fetchSpy = fakeFetch(win);
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.getUpdateWindow();
+      expect(res).toEqual(win);
+      const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toBe("/updates/window");
+      expect((opts as RequestInit).method).toBe("GET");
+    });
+
+    it("setUpdateWindow PUTs UpdateWindow payload to /updates/window", async () => {
+      const win = { start: "2026-07-03T12:00:00Z", end: "2026-07-03T14:00:00Z" };
+      const fetchSpy = fakeFetch(win);
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.setUpdateWindow(win);
+      expect(res).toEqual(win);
+      const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toBe("/updates/window");
+      expect((opts as RequestInit).method).toBe("PUT");
+      expect((opts as RequestInit).headers).toEqual({ "Content-Type": "application/json" });
+      expect(JSON.parse((opts as RequestInit).body as string)).toEqual(win);
+    });
+  });
 });
