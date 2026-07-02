@@ -43,6 +43,12 @@ type handler struct {
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// WeChat/QQ in-app browsers cannot run WebAuthn, so steer their document
+	// navigations to a "open in your system browser" interstitial before the SPA
+	// (which is built around passkey enrollment) ever loads. See webview.go.
+	if guardInAppWebView(w, r) {
+		return
+	}
 	switch {
 	case r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || strings.HasPrefix(r.URL.Path, "/api/"):
 		h.api.ServeHTTP(w, r)
