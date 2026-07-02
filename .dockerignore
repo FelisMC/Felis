@@ -7,7 +7,18 @@
 .git
 .claude
 **/node_modules
-plugins
+# plugins/ is code-only and excluded from the MAIN felis image — EXCEPT the two
+# source trees the login-limbo image (deploy/limbo/Dockerfile) compiles: its own
+# module (plugins/limbo) and the shared link core it srcDir-includes (plugins/shared).
+# `plugins/*` excludes each sibling module individually (so plugins/ itself is still
+# walked and the negations below can re-include), then the two build trees are pulled
+# back in and their Gradle outputs re-excluded to keep the context lean. The main
+# image copies none of plugins/, so carrying these two small source dirs is harmless.
+plugins/*
+!plugins/limbo
+!plugins/shared
+plugins/**/build
+plugins/**/.gradle
 docs
 *.md
 Dockerfile
