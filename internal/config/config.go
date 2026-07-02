@@ -37,6 +37,16 @@ type DatabaseConfig struct {
 type VelocityConfig struct {
 	PublicIP        string `toml:"public_ip"`
 	ServiceTokenRef string `toml:"service_token_ref"`
+	// LoginImage is the container image for the always-on "login" limbo (the
+	// LOOHP/Limbo auth gate). setup provisions the login system service only when
+	// this is set; empty means "don't guess" — setup skips the login server and
+	// says so, the same fail-loud stance manifests takes for images it cannot
+	// safely default. No official LOOHP/Limbo image exists, so a deployment builds
+	// one (see deploy/limbo) and points this at the pushed ref.
+	LoginImage string `toml:"login_image"`
+	// LobbyImage is the container image for the always-on "lobby" hub (Paper plus
+	// the felis-paper /menu plugin). Same skip-when-empty contract as LoginImage.
+	LobbyImage string `toml:"lobby_image"`
 }
 
 // AuthConfig is the [auth] table: the two privileged faces and the access-JWT
