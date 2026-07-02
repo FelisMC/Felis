@@ -12,6 +12,7 @@ import {
   Users,
   AlertTriangle,
   UserRound,
+  Hand,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
@@ -108,7 +109,7 @@ function Stat({
 
 export function ServersPage() {
   const { t } = useTranslation(["ops", "servers"]);
-  const { isAdmin } = useTier();
+  const { isAdmin, identity } = useTier();
   const cfg = useConfig();
 
   const fetchFn = useMemo(() => (isAdmin ? api.fleet : api.myServers), [isAdmin]);
@@ -146,6 +147,8 @@ export function ServersPage() {
         playersMax: s.playersMax,
         owner: s.owner,
         endpointAddress: s.endpointAddress,
+        claimable: !s.owner,
+        owned: s.owner === identity?.email,
       }));
     } else {
       return (data as ServerInfo[]).map((s) => ({
@@ -162,7 +165,7 @@ export function ServersPage() {
         owned: s.owned,
       }));
     }
-  }, [data, isAdmin, t]);
+  }, [data, isAdmin, t, identity]);
 
   const stats = useMemo(() => {
     const counts: Record<Phase, number> = {
@@ -429,10 +432,10 @@ function ServerRow({
 }) {
   const { t } = useTranslation("ops");
   const { t: ts } = useTranslation("servers");
-  const [busy, setBusy] = useState<null | "wake" | "stop">(null);
+  const [busy, setBusy] = useState<null | "wake" | "stop" | "claim">(null);
   const [error, setError] = useState<string | null>(null);
 
-  async function act(kind: "wake" | "stop", fn: () => Promise<unknown>) {
+  async function act(kind: "wake" | "stop" | "claim", fn: () => Promise<unknown>) {
     setBusy(kind);
     setError(null);
     try {
@@ -514,30 +517,51 @@ function ServerRow({
         </td>
         <td className="px-4 py-3 align-middle">
           <div className="flex items-center justify-end gap-2">
-            {live ? (
-              <Button
-                size="sm"
-                variant="destructive"
-                disabled={busy !== null}
-                onClick={() => act("stop", () => api.stop(server.name))}
-              >
-                <Square /> {busy === "stop" ? ts("stopping") : ts("stop")}
-              </Button>
+            {server.claimable && !server.owned ? (
+              <>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy !== null}
+                  onClick={() => act("claim", () => api.claim(server.name))}
+                  className="text-primary hover:text-primary hover:bg-primary/5 border-primary/20"
+                >
+                  <Hand /> {busy === "claim" ? ts("claiming") : ts("claim")}
+                </Button>
+                <Button size="sm" variant="outline" disabled>
+                  <Terminal /> {ts("console")}
+                </Button>
+              </>
             ) : (
-              <Button
-                size="sm"
-                variant="default"
-                disabled={busy !== null}
-                onClick={() => act("wake", () => api.wake(server.name))}
-              >
-                <Play /> {busy === "wake" ? ts("waking") : ts("wake")}
-              </Button>
+              <>
+                {live ? (
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    disabled={busy !== null}
+                    onClick={() => act("stop", () => api.stop(server.name))}
+                  >
+                    <Square /> {busy === "stop" ? ts("stopping") : ts("stop")}
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="default"
+                    disabled={busy !== null}
+                    onClick={() => act("wake", () => api.wake(server.name))}
+                  >
+                    <Play /> {busy === "wake" ? ts("waking") : ts("wake")}
+                  </Button>
+                )}
+                {(server.owned || isAdmin) && (
+                  <Link to={`/servers/${server.name}`}>
+                    <Button size="sm" variant="outline">
+                      <Terminal /> {ts("console")}
+                    </Button>
+                  </Link>
+                )}
+              </>
             )}
-            <Link to={`/servers/${server.name}`}>
-              <Button size="sm" variant="outline">
-                <Terminal /> {ts("console")}
-              </Button>
-            </Link>
           </div>
         </td>
       </tr>
