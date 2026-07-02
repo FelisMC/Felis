@@ -94,5 +94,11 @@
   "updates_stat_status": "系统状态",
   "updates_stat_start": "维护开始时间",
   "updates_stat_end": "维护结束时间",
-  "updates_stat_timezone": "本地时区"
+  "updates_stat_timezone": "本地时区",
+  "build_import_submission_label": "从已有的审核提交导入参数",
+  "build_import_submission_placeholder": "选择一个用户提交...",
+  "build_import_submission_none": "无匹配的提交或暂未加载",
+  "build_import_submission_hint": "选择提交将自动填充镜像引用、构建上下文引用和对应的 Dockerfile 审计头。",
+  "build_import_submission_warning_title": "警告：该提交状态为「{{status}}」",
+  "build_import_submission_warning_desc": "手动触发构建不会自动将该提交标记为已同意，也不会更新其关联的构建状态。仅适用于紧急调试或测试。"
 }

@@ -15,6 +15,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { LogConsole } from "@/components/LogConsole";
 import { cn } from "@/lib/utils";
 import { Loading, EmptyState } from "@/components/States";
@@ -22,7 +23,8 @@ import { Pagination } from "@/components/Pagination";
 import { api, buildLogsStreamURL, humanizeError } from "@/lib/api";
 import { formatRelative, formatAbsolute } from "@/lib/format";
 import { useConfig } from "@/lib/hooks";
-import type { Build, BuildStatus } from "@/lib/types";
+import { useTier } from "@/lib/tier";
+import type { Build, BuildStatus, Submission } from "@/lib/types";
 
 const LOCAL_STORAGE_KEY = "felis_triggered_builds";
 const PAGE_SIZE = 10;
@@ -55,6 +57,7 @@ export function ImageBuildPage() {
   const now = Date.now();
   const isZh = locale.startsWith("zh");
   const config = useConfig();
+  const { identity } = useTier();
 
   // Form & Dialog State
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -64,6 +67,54 @@ export function ImageBuildPage() {
   const [baseImage, setBaseImage] = useState("");
   const [triggering, setTriggering] = useState(false);
   const [triggerError, setTriggerError] = useState<string | null>(null);
+
+  const [submissions, setSubmissions] = useState<Submission[]>([]);
+  const [loadingSubmissions, setLoadingSubmissions] = useState(false);
+  const [selectedSub, setSelectedSub] = useState<Submission | null>(null);
+
+  const isOwner = useMemo(() => {
+    if (!identity?.email) return false;
+    const emailLower = identity.email.toLowerCase();
+    return emailLower === "owner@mock.felis.local" || emailLower.startsWith("owner@");
+  }, [identity]);
+
+  const visibleSubmissions = useMemo(() => {
+    if (isOwner) {
+      return submissions;
+    }
+    return submissions.filter((s) => s.status === "approved");
+  }, [submissions, isOwner]);
+
+  useEffect(() => {
+    if (dialogOpen) {
+      setLoadingSubmissions(true);
+      api.listSubmissions()
+        .then(setSubmissions)
+        .catch(() => {})
+        .finally(() => {
+          setLoadingSubmissions(false);
+        });
+    }
+  }, [dialogOpen]);
+
+  const handleSelectSubmission = (subId: string) => {
+    if (!subId || subId.startsWith("_")) return;
+    const sub = submissions.find((s) => s.id === subId);
+    if (!sub) return;
+
+    setSelectedSub(sub);
+
+    const derivedImageRef = sub.image_ref || `registry.felis.svc:5000/user-uploads/${sub.id}:latest`;
+    setImageRef(derivedImageRef);
+    setContextRef(sub.context_ref);
+    setDockerfile(
+      `# felis user-modpack submission ${sub.id}\n` +
+      `# The executed Dockerfile is provided by the uploaded build context:\n` +
+      `#   ${sub.context_ref}\n` +
+      `# Built in the isolated felis-build sandbox and Trivy-gated (spec §16).\n`
+    );
+    setBaseImage("");
+  };
 
   // Build List State
   const [buildIds, setBuildIds] = useState<string[]>([]);
@@ -233,6 +284,7 @@ export function ImageBuildPage() {
           setDialogOpen(o);
           if (!o) {
             setTriggerError(null);
+            setSelectedSub(null);
           }
         }}>
           <DialogTrigger asChild>
@@ -248,6 +300,68 @@ export function ImageBuildPage() {
               </DialogDescription>
             </DialogHeader>
             <form onSubmit={handleTrigger} className="space-y-4">
+              <div className="space-y-1.5 p-3 rounded-lg border border-border bg-muted/20">
+                <Label className="text-xs font-semibold text-muted-foreground">
+                  {t("build_import_submission_label")}
+                </Label>
+                <Select onValueChange={handleSelectSubmission} disabled={triggering}>
+                  <SelectTrigger className="w-full text-xs h-9 bg-background [&>span]:flex [&>span]:w-full [&>span]:items-center [&>span]:justify-between [&>span]:gap-2 pr-2">
+                    <SelectValue placeholder={t("build_import_submission_placeholder")} />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-60 overflow-y-auto">
+                    {loadingSubmissions ? (
+                      <SelectItem value="_loading" disabled>
+                        {t("common:loading_config")}...
+                      </SelectItem>
+                    ) : visibleSubmissions.length === 0 ? (
+                      <SelectItem value="_none" disabled>
+                        {t("build_import_submission_none")}
+                      </SelectItem>
+                    ) : (
+                      visibleSubmissions.map((sub) => (
+                        <SelectItem
+                          key={sub.id}
+                          value={sub.id}
+                          className="w-full pr-4 [&>span:not(.absolute)]:flex-1 [&>span:not(.absolute)]:flex [&>span:not(.absolute)]:items-center [&>span:not(.absolute)]:justify-between"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="font-semibold truncate">{sub.display_name}</span>
+                            <span className="text-[10px] text-muted-foreground font-mono bg-muted/40 px-1.5 py-0.2 rounded shrink-0">
+                              {sub.id}
+                            </span>
+                          </div>
+                          <span className={cn(
+                            "text-[10px] font-semibold px-1.5 py-0.5 rounded border shrink-0",
+                            sub.status === "pending_review" && "bg-amber-500/10 text-amber-500 border-amber-500/20",
+                            sub.status === "approved" && "bg-emerald-500/10 text-emerald-500 border-emerald-500/20",
+                            sub.status === "rejected" && "bg-rose-500/10 text-rose-500 border-rose-500/20"
+                          )}>
+                            {sub.status === "pending_review" ? (isZh ? "待审核" : "Pending") : sub.status === "approved" ? (isZh ? "已同意" : "Approved") : (isZh ? "已驳回" : "Rejected")}
+                          </span>
+                        </SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
+                </Select>
+                <p className="text-[10px] text-muted-foreground/80 leading-normal">
+                  {t("build_import_submission_hint")}
+                </p>
+              </div>
+
+              {selectedSub && selectedSub.status !== "approved" && (
+                <div className="flex items-start gap-2.5 text-xs text-amber-500 bg-amber-500/10 border border-amber-500/30 p-3 rounded-md font-medium">
+                  <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 animate-bounce" />
+                  <div className="space-y-1">
+                    <p className="font-bold text-amber-400">
+                      {t("build_import_submission_warning_title", { status: selectedSub.status === "pending_review" ? (isZh ? "待审核" : "Pending Review") : (isZh ? "已驳回" : "Rejected") })}
+                    </p>
+                    <p className="text-[10px] text-muted-foreground leading-normal">
+                      {t("build_import_submission_warning_desc")}
+                    </p>
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <Label htmlFor="imageRef" className="text-xs font-medium text-muted-foreground">
