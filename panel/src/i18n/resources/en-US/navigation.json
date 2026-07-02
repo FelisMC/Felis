@@ -4,5 +4,6 @@
   "account": "Account",
   "admin_section": "Admin",
   "admin_images": "Images",
-  "admin_builds": "Build Pipeline"
+  "admin_builds": "Build Pipeline",
+  "admin_submissions": "Submissions"
 }

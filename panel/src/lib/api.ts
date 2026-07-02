@@ -16,6 +16,7 @@ import type {
   ServerInfo,
   WhitelistImage,
   WhitelistResult,
+  Submission,
 } from "./types";
 import { loadConfig } from "./config";
 import i18next from "i18next";
@@ -248,6 +249,15 @@ export const api = {
 
   passkeyDelete: (id: string) =>
     request<void>("DELETE", `/account/passkey/credentials/${id}`),
+
+  listSubmissions: () =>
+    request<{ submissions: Submission[] }>("GET", "/submissions").then((r) => r.submissions ?? []),
+
+  approveSubmission: (id: string) =>
+    request<Submission>("POST", `/submissions/${id}/approve`),
+
+  rejectSubmission: (id: string, reason: string) =>
+    request<Submission>("POST", `/submissions/${id}/reject`, { reason }),
 };
 
 /**

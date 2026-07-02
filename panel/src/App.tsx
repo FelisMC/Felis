@@ -14,6 +14,7 @@ import { ServerBackups } from "@/pages/ServerBackups";
 import { Account } from "@/pages/Account";
 import { ImageAdmin } from "@/pages/admin/ImageAdmin";
 import { ImageBuildPage } from "@/pages/admin/ImageBuildPage";
+import { SubmissionsPage } from "@/pages/admin/SubmissionsPage";
 
 // Three UX surfaces over two Zero-Trust tiers (DESIGN-WEB-3SIDES):
 //   /        User-Side    — app-tier, every authenticated principal
@@ -53,6 +54,7 @@ export default function App() {
                 <Route index element={<Navigate to="/admin/images" replace />} />
                 <Route path="images" element={<ImageAdmin />} />
                 <Route path="builds" element={<ImageBuildPage />} />
+                <Route path="submissions" element={<SubmissionsPage />} />
               </Route>
 
               <Route path="*" element={<Navigate to="/" replace />} />

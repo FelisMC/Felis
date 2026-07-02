@@ -245,3 +245,20 @@ export interface Build {
   created_at: string;
   finished_at?: string;
 }
+
+export type SubmissionStatus = "pending_review" | "approved" | "rejected";
+
+/** Submission mirrors an image_submissions row (spec §6, migration 0002). */
+export interface Submission {
+  id: string;
+  submitted_by: string;
+  display_name: string;
+  context_ref: string;
+  status: SubmissionStatus;
+  image_ref?: string;
+  build_id?: string;
+  reviewed_by?: string;
+  reject_reason?: string;
+  created_at: string;
+  reviewed_at?: string;
+}

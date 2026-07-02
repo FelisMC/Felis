@@ -383,4 +383,40 @@ describe("image whitelist and builds wire shapes", () => {
     expect(String(url)).toBe("/images/build/bld-1/cancel");
     expect((opts as RequestInit).method).toBe("POST");
   });
+
+  describe("submissions", () => {
+    it("listSubmissions GETs from /submissions", async () => {
+      const submissions = [{ id: "sub-1", display_name: "test", status: "pending_review" }];
+      const fetchSpy = fakeFetch({ submissions });
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.listSubmissions();
+      expect(res).toEqual(submissions);
+      const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toBe("/submissions");
+      expect((opts as RequestInit).method).toBe("GET");
+    });
+
+    it("approveSubmission POSTs to /submissions/{id}/approve", async () => {
+      const sub = { id: "sub-1", status: "approved" };
+      const fetchSpy = fakeFetch(sub);
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.approveSubmission("sub-1");
+      expect(res).toEqual(sub);
+      const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toBe("/submissions/sub-1/approve");
+      expect((opts as RequestInit).method).toBe("POST");
+    });
+
+    it("rejectSubmission POSTs {reason} to /submissions/{id}/reject", async () => {
+      const sub = { id: "sub-1", status: "rejected", reject_reason: "bad" };
+      const fetchSpy = fakeFetch(sub);
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.rejectSubmission("sub-1", "bad");
+      expect(res).toEqual(sub);
+      const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toBe("/submissions/sub-1/reject");
+      expect((opts as RequestInit).method).toBe("POST");
+      expect(JSON.parse((opts as RequestInit).body as string)).toEqual({ reason: "bad" });
+    });
+  });
 });

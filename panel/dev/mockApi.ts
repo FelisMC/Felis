@@ -11,6 +11,7 @@ import type {
   Phase,
   ServerInfo,
   WhitelistImage,
+  Submission,
 } from "../src/lib/types";
 
 const ACCOUNT_IDS = ["owner", "user", "linked", "setup"] as const;
@@ -53,6 +54,7 @@ interface MockState {
   backups: BackupView[];
   builds: Build[];
   passkeys: Record<AccountID, { id: string; name: string; created_at: string }[]>;
+  submissions: Submission[];
 }
 
 // PLAYER_NAME mirrors the backend's mcNameRe (handlers_access.go) so the mock
@@ -267,6 +269,39 @@ function initialState(): MockState {
       user: [],
       setup: [],
     },
+    submissions: [
+      {
+        id: "sub-1",
+        submitted_by: "user@mock.felis.local",
+        display_name: "Pixelmon Modpack V2",
+        context_ref: "minio/contexts/sub-1/context.tar.gz",
+        status: "pending_review",
+        created_at: new Date(Date.now() - 3600000).toISOString(),
+      },
+      {
+        id: "sub-2",
+        submitted_by: "linked@mock.felis.local",
+        display_name: "Create: Astral pack",
+        context_ref: "minio/contexts/sub-2/context.tar.gz",
+        status: "approved",
+        image_ref: "registry.felis.svc:5000/user-uploads/sub-2:latest",
+        build_id: "bld-1",
+        reviewed_by: "owner@mock.felis.local",
+        created_at: new Date(Date.now() - 7200000).toISOString(),
+        reviewed_at: new Date(Date.now() - 7100000).toISOString(),
+      },
+      {
+        id: "sub-3",
+        submitted_by: "user@mock.felis.local",
+        display_name: "Dangerous Modpack (Exploitative)",
+        context_ref: "minio/contexts/sub-3/context.tar.gz",
+        status: "rejected",
+        reviewed_by: "owner@mock.felis.local",
+        reject_reason: "Contains malicious code in scripts/run.sh that tries to download remote malware.",
+        created_at: new Date(Date.now() - 10800000).toISOString(),
+        reviewed_at: new Date(Date.now() - 10700000).toISOString(),
+      },
+    ],
   };
 }
 
@@ -650,6 +685,7 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
         return true;
       }
       if (await handleImageRoute(ctx)) return true;
+      if (await handleSubmissionRoute(ctx)) return true;
       return await handleServerRoute(ctx);
   }
 }
@@ -810,6 +846,106 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
       return true;
     }
     streamBuildLogs(ctx.req, ctx.res, buildID);
+    return true;
+  }
+
+  return false;
+}
+
+async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
+  if (ctx.parts[2] !== "submissions") return false;
+
+  // GET /api/v1/submissions
+  if (is("GET", ctx) && ctx.parts.length === 3) {
+    if (ctx.account.role !== "admin") {
+      sendError(ctx.res, 403, "forbidden", "admin account required");
+      return true;
+    }
+    sendJSON(ctx.res, 200, { submissions: ctx.state.submissions });
+    return true;
+  }
+
+  // POST /api/v1/submissions/{id}/approve
+  if (is("POST", ctx) && ctx.parts[4] === "approve" && ctx.parts.length === 5) {
+    if (ctx.account.role !== "admin") {
+      sendError(ctx.res, 403, "forbidden", "admin account required");
+      return true;
+    }
+    const id = ctx.parts[3];
+    const sub = ctx.state.submissions.find((s) => s.id === id);
+    if (!sub) {
+      sendError(ctx.res, 404, "not_found", "submission not found");
+      return true;
+    }
+    if (sub.status !== "pending_review") {
+      sendError(ctx.res, 409, "already_reviewed", "submission already reviewed");
+      return true;
+    }
+
+    sub.status = "approved";
+    sub.reviewed_by = ctx.account.email;
+    sub.reviewed_at = new Date().toISOString();
+    sub.image_ref = `registry.felis.svc:5000/user-uploads/${id}:latest`;
+
+    // Trigger mock build
+    const newBuild: Build = {
+      id: `bld-${Date.now()}`,
+      image_ref: sub.image_ref,
+      status: "building",
+      dockerfile: `# felis user-modpack submission ${id}\n# The executed Dockerfile is provided by the uploaded build context:\n#   ${sub.context_ref}\n`,
+      context_ref: sub.context_ref,
+      requested_by: ctx.account.email,
+      created_at: new Date().toISOString(),
+    };
+    ctx.state.builds.unshift(newBuild);
+    sub.build_id = newBuild.id;
+
+    // Succeeded after 15 seconds
+    setTimeout(() => {
+      const b = ctx.state.builds.find((x) => x.id === newBuild.id);
+      if (b && b.status === "building") {
+        b.status = "succeeded";
+        b.finished_at = new Date().toISOString();
+        if (!ctx.state.images.some((i) => i.image_ref === b.image_ref)) {
+          ctx.state.images.unshift({ image_ref: b.image_ref, enabled: true, source: "built" });
+        }
+      }
+    }, 15000);
+
+    sendJSON(ctx.res, 200, sub);
+    return true;
+  }
+
+  // POST /api/v1/submissions/{id}/reject
+  if (is("POST", ctx) && ctx.parts[4] === "reject" && ctx.parts.length === 5) {
+    if (ctx.account.role !== "admin") {
+      sendError(ctx.res, 403, "forbidden", "admin account required");
+      return true;
+    }
+    const id = ctx.parts[3];
+    const sub = ctx.state.submissions.find((s) => s.id === id);
+    if (!sub) {
+      sendError(ctx.res, 404, "not_found", "submission not found");
+      return true;
+    }
+    if (sub.status !== "pending_review") {
+      sendError(ctx.res, 409, "already_reviewed", "submission already reviewed");
+      return true;
+    }
+
+    const body = await readJSON<{ reason?: string }>(ctx.req);
+    const reason = body.reason?.trim();
+    if (!reason) {
+      sendError(ctx.res, 400, "bad_request", "reason is required");
+      return true;
+    }
+
+    sub.status = "rejected";
+    sub.reviewed_by = ctx.account.email;
+    sub.reviewed_at = new Date().toISOString();
+    sub.reject_reason = reason;
+
+    sendJSON(ctx.res, 200, sub);
     return true;
   }
 

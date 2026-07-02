@@ -4,6 +4,7 @@ import {
   UserRound,
   Boxes,
   Cpu,
+  ClipboardCheck,
   type LucideIcon,
 } from "lucide-react";
 
@@ -53,6 +54,7 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { to: "/admin/images", key: "admin_images", icon: Boxes },
       { to: "/admin/builds", key: "admin_builds", icon: Cpu },
+      { to: "/admin/submissions", key: "admin_submissions", icon: ClipboardCheck },
     ],
   },
 ];
