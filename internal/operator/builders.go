@@ -5,12 +5,18 @@ import (
 	"strconv"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	"felis.lolicon.best/internal/naming"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
+
+// envServiceToken is the environment variable the felis-limbo login plugin reads
+// its internal-API bearer credential from. It is injected ONLY into the login
+// system server (see buildEnv), sourced from a Secret, never a literal.
+const envServiceToken = "FELIS_SERVICE_TOKEN"
 
 // Workload constants shared by the builders.
 const (
@@ -148,6 +154,33 @@ func servicePorts(server *v1alpha1.MinecraftServer) []corev1.ServicePort {
 	return ports
 }
 
+// readinessProbe selects the pod readiness probe. By default it is a plain TCP
+// check on the game port; when the server declares an HTTP health port
+// (StartupSpec.HealthHTTPPort > 0) it becomes an HTTP GET on that port, so an
+// RCON-less loader's own "started" signal — not the mere fact that the game
+// socket is bound — gates readiness. Timings are identical across both modes.
+func readinessProbe(server *v1alpha1.MinecraftServer) *corev1.Probe {
+	probe := &corev1.Probe{
+		InitialDelaySeconds: 20,
+		PeriodSeconds:       10,
+		FailureThreshold:    6,
+	}
+	if hp := server.Spec.Startup.HealthHTTPPort; hp > 0 {
+		path := server.Spec.Startup.HealthHTTPPath
+		if path == "" {
+			path = "/healthz"
+		}
+		probe.ProbeHandler = corev1.ProbeHandler{
+			HTTPGet: &corev1.HTTPGetAction{Path: path, Port: intstr.FromInt32(hp)},
+		}
+		return probe
+	}
+	probe.ProbeHandler = corev1.ProbeHandler{
+		TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(GamePort)},
+	}
+	return probe
+}
+
 // buildStatefulSet renders the workload for replicas in {0,1}. It is where
 // graceful shutdown is injected: the pod gets terminationGracePeriodSeconds and
 // (when enabled) a preStop RCON save+stop hook.
@@ -172,16 +205,17 @@ func buildStatefulSet(server *v1alpha1.MinecraftServer, replicas int32) (*appsv1
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: dataVolumeName, MountPath: dataMountPath},
 		},
-		// Readiness here is a plain TCP check (spec §5: readinessProbe is only
+		// Readiness defaults to a plain TCP check (spec §5: readinessProbe is only
 		// tcpSocket; the RCON gate is enforced by the operator, not the kubelet).
-		ReadinessProbe: &corev1.Probe{
-			ProbeHandler: corev1.ProbeHandler{
-				TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(GamePort)},
-			},
-			InitialDelaySeconds: 20,
-			PeriodSeconds:       10,
-			FailureThreshold:    6,
-		},
+		// An RCON-less loader may instead publish an HTTP health endpoint (see
+		// StartupSpec.HealthHTTPPort) that reports true readiness — used below when
+		// set.
+		ReadinessProbe: readinessProbe(server),
+	}
+	if hp := server.Spec.Startup.HealthHTTPPort; hp > 0 {
+		container.Ports = append(container.Ports, corev1.ContainerPort{
+			Name: "health", ContainerPort: hp, Protocol: corev1.ProtocolTCP,
+		})
 	}
 	if len(server.Spec.Args) > 0 {
 		container.Args = append([]string(nil), server.Spec.Args...)
@@ -269,6 +303,27 @@ func buildEnv(server *v1alpha1.MinecraftServer) []corev1.EnvVar {
 				},
 			}},
 		)
+	}
+	// The login system server is the ONE workload that authenticates to the
+	// felis-api internal face (its felis-limbo plugin mints bind codes and polls
+	// link status), so it — and only it — receives the service token. Injected
+	// from a Secret in this namespace, never inlined into the CRD (the same
+	// discipline as RCON_PASSWORD above; the CRD's EnvVar type has no valueFrom
+	// precisely so a user server cannot mount an arbitrary secret). Keyed off the
+	// reserved "login" name, which naming.ValidateServerName forbids any user
+	// server from claiming — so this can never leak the token into a user's pod.
+	// The Secret must exist in this (minecraft) namespace; `felis setup` replicates
+	// it there from the control namespace before creating this server.
+	if server.Name == naming.SystemLoginServer {
+		env = append(env, corev1.EnvVar{
+			Name: envServiceToken,
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: naming.ServiceTokenSecretName},
+					Key:                  naming.ServiceTokenSecretKey,
+				},
+			},
+		})
 	}
 	return env
 }
