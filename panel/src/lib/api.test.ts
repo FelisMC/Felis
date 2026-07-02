@@ -124,6 +124,32 @@ describe("local-password auth wire shapes", () => {
     expect((opts as RequestInit).method).toBe("POST");
   });
 
+  it("bind POSTs {code} to /auth/bind", async () => {
+    const fetchSpy = fakeFetch({
+      user_id: "mock-linked",
+      linked: true,
+      mc_uuid: "uuid-123",
+      auth_source: "mojang",
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await api.bind("ABCD2345");
+    expect(res.user_id).toBe("mock-linked");
+    expect(res.linked).toBe(true);
+    expect(res.mc_uuid).toBe("uuid-123");
+    expect(res.auth_source).toBe("mojang");
+
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock
+      .calls[0];
+    expect(String(url)).toBe("/auth/bind");
+    expect((opts as RequestInit).method).toBe("POST");
+    expect((opts as RequestInit).headers).toEqual({
+      "Content-Type": "application/json",
+    });
+    expect(JSON.parse((opts as RequestInit).body as string)).toEqual({
+      code: "ABCD2345",
+    });
+  });
+
   it("changePassword POSTs {current_password, new_password}", async () => {
     const fetchSpy = fakeFetch({ ok: true });
     vi.stubGlobal("fetch", fetchSpy);

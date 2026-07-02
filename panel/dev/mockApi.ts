@@ -599,6 +599,26 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
       sendJSON(ctx.res, 200, out);
       return true;
     }
+    case "POST auth/bind": {
+      const body = await readJSON<{ code?: string }>(ctx.req);
+      const code = body.code?.trim().toUpperCase();
+      if (!code) {
+        sendError(ctx.res, 400, "bad_request", "code is required");
+        return true;
+      }
+      if (code !== MOCK_LINK_CODE) {
+        sendError(ctx.res, 400, "invalid_code", "bind code is invalid or expired");
+        return true;
+      }
+      setSessionCookie(ctx.res, "linked");
+      sendJSON(ctx.res, 200, {
+        user_id: "mock-linked",
+        linked: true,
+        mc_uuid: MC_UUID,
+        auth_source: "mojang",
+      });
+      return true;
+    }
     case "POST auth/logout":
       clearSessionCookie(ctx.res);
       sendJSON(ctx.res, 200, { ok: true });

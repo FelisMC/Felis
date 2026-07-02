@@ -228,6 +228,13 @@ export interface LoginResult {
   must_change_password: boolean;
 }
 
+export interface BindResult {
+  user_id: string;
+  linked: boolean;
+  mc_uuid: string;
+  auth_source: string;
+}
+
 export type BuildStatus = "pending" | "building" | "succeeded" | "failed" | "cancelled";
 
 /** Build mirrors an image_builds row (spec §6, §16). */

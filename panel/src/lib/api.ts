@@ -12,6 +12,7 @@ import type {
   LinkResult,
   LinkStatus,
   LoginResult,
+  BindResult,
   PlayersResult,
   ServerInfo,
   WhitelistImage,
@@ -98,6 +99,9 @@ export const api = {
   // without a session still resolves 200. After it, refreshing /me yields 401, which
   // the tier model reads as `unauthenticated` and routes back to /login.
   logout: () => request<{ ok: boolean }>("POST", "/auth/logout"),
+
+  bind: (code: string) =>
+    request<BindResult>("POST", "/auth/bind", { code }),
 
   // changePassword is callable during the first-login lockdown (the route is
   // AllowDuringPasswordChange): the server re-verifies current_password, rejects an
