@@ -12,6 +12,7 @@ import (
 
 	"felis.lolicon.best/internal/api"
 	"felis.lolicon.best/internal/config"
+	"felis.lolicon.best/internal/platform"
 	"felis.lolicon.best/internal/store"
 )
 
@@ -144,7 +145,82 @@ func cmdSetup(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stdout, "Felis config, Kubernetes Secret and API rollout were updated.")
 		}
 	}
+
+	// After a real setup pass (Owner provisioned and/or edge configured), make
+	// sure the always-on login/lobby system services exist. This is idempotent
+	// and best-effort — it never fails the setup that got this far.
+	if res.provisioned || res.connectConfigured {
+		provisionSystemServers(ctx, setup.cfg, stdout)
+	}
 	return 0
+}
+
+// provisionSystemServers ensures the login limbo and lobby system services exist
+// after setup, then prints the off-cluster Velocity wiring the operator must
+// apply by hand (Felis never writes the off-cluster proxy config). It is
+// best-effort: unconfigured images or an unreachable cluster degrade to guidance
+// rather than failing setup.
+func provisionSystemServers(ctx context.Context, cfg *config.Config, out io.Writer) {
+	if cfg.Velocity.LoginImage == "" && cfg.Velocity.LobbyImage == "" {
+		fmt.Fprintln(out, "\nfelis setup: login/lobby system servers NOT provisioned — set [velocity] login_image "+
+			"and lobby_image in felis.toml (build them from deploy/limbo and deploy/lobby), then re-run `sudo felis setup`.")
+		return
+	}
+	cl, err := buildSystemServerClient()
+	if err != nil {
+		fmt.Fprintf(out, "\nfelis setup: could not reach the cluster to provision the login/lobby system servers: %v\n"+
+			"Re-run `sudo felis setup` on the control-plane host once the cluster is reachable.\n", err)
+		return
+	}
+	// The login limbo authenticates to the felis-api INTERNAL face, so it needs the
+	// internal base URL, the root domain (to link players at the console), and the
+	// service token. The first two are plain env baked into the pod here; the token
+	// is a Secret the operator injects by reference — but a secretKeyRef is
+	// namespace-local, so first replicate the token Secret from the control namespace
+	// into the minecraft namespace where the login pod runs. The control namespace is
+	// the platform default (there is no felis.toml override for it); a deployment that
+	// renamed it must replicate the Secret by hand.
+	controlNS := platform.DefaultControlNamespace
+	apiBaseURL := platform.InternalAPIBaseURL(controlNS)
+	tokenOutcome := ensureServiceTokenReplica(ctx, cl, controlNS, cfg.K8s.Namespace)
+	outcomes := ensureSystemServers(ctx, cl, cfg.K8s.Namespace, cfg.Velocity.LoginImage, cfg.Velocity.LobbyImage, apiBaseURL, cfg.Server.RootDomain)
+	outcomes = append([]systemServerOutcome{tokenOutcome}, outcomes...)
+	fmt.Fprintln(out, "\nfelis setup: login/lobby system servers (always-on, reaper-exempt):")
+	for _, o := range outcomes {
+		switch {
+		case o.err != nil:
+			fmt.Fprintf(out, "  - %s: ERROR %v\n", o.name, o.err)
+		case o.created:
+			fmt.Fprintf(out, "  - %s: created (DesiredState=Running)\n", o.name)
+		default:
+			fmt.Fprintf(out, "  - %s: skipped (%s)\n", o.name, o.skipped)
+		}
+	}
+	printVelocityWiringGuidance(out, cfg.Server.RootDomain)
+}
+
+// printVelocityWiringGuidance emits the manual off-cluster Velocity config that
+// enforces the login-first topology. Felis auto-registers login/lobby as dynamic
+// backends via /api/v1/servers, but the proxy's DEFAULT landing and waiting-park
+// target live in velocity.toml on the off-cluster Java host, which Felis never
+// writes. The one invariant: the default landing and the initial wait-park are
+// BOTH the login gate — never the lobby — so no connection reaches the lobby (or
+// any backend) without passing authentication first. The Paper lobby is reached
+// only when the login gate transfers an authenticated player onward.
+func printVelocityWiringGuidance(out io.Writer, rootDomain string) {
+	fmt.Fprintln(out, "\nfelis setup: finish the login topology on the off-cluster Velocity host (velocity.toml):")
+	fmt.Fprintln(out, "  1. Set the DEFAULT landing server to \"login\" so every fresh connection hits the")
+	fmt.Fprintln(out, "     auth gate first (try = [\"login\"] under [servers], and the default forced-host).")
+	fmt.Fprintln(out, "  2. Point the waiting-park target at the gate, NOT the lobby:")
+	fmt.Fprintln(out, "     set FELIS_LOBBY_SERVER=login (or lobby-server=login). The limbo holds waiters")
+	fmt.Fprintln(out, "     while their backend wakes, and a player is never parked past authentication.")
+	fmt.Fprintln(out, "  3. Leave the Paper \"lobby\" OUT of the default/fallback paths — it is reached only")
+	fmt.Fprintln(out, "     when the login gate transfers an authenticated player onward.")
+	fmt.Fprintln(out, "  Rationale: rather refuse a connection when login is down than route a player past")
+	fmt.Fprintln(out, "  the gate. Felis already refuses to give any server a fallback of \"lobby\".")
+	if rootDomain != "" {
+		fmt.Fprintf(out, "  (login is the front door for %s; per-server subdomains fall back to login while waking.)\n", rootDomain)
+	}
 }
 
 type configuredSetup struct {
