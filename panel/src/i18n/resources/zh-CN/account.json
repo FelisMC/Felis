@@ -8,7 +8,7 @@
   "minecraft_link": "Minecraft 关联",
   "checking_link": "正在检查关联状态…",
   "linked_title": "Minecraft 账户已关联。",
-  "linked_desc": "关联后可认领及管理服务器——所有权相关操作（认领、唤醒、停止）已解锁。",
+  "linked_desc": "关联后可认领及管理服务器——所有权相关操作（认领、启动、停止）已解锁。",
   "uuid_label": "UUID",
   "step1_title": "在游戏中获取验证码",
   "step1_desc_prefix": "加入任意服务器，在聊天框输入 ",
