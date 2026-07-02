@@ -3,6 +3,7 @@ import type { Plugin } from "vite";
 import type {
   AutostartPolicy,
   BackupView,
+  Build,
   CreateServerRequest,
   FleetServer,
   Identity,
@@ -16,7 +17,7 @@ const ACCOUNT_IDS = ["owner", "user", "linked", "setup"] as const;
 
 type AccountID = (typeof ACCOUNT_IDS)[number];
 type Role = "admin" | "user";
-type Method = "GET" | "POST";
+type Method = "GET" | "POST" | "DELETE";
 type CreateError =
   | "bad_request"
   | "already_exists"
@@ -47,14 +48,9 @@ interface MockState {
   accounts: Record<AccountID, MockAccount>;
   servers: MockServer[];
   images: WhitelistImage[];
-  // Per-server §access state, keyed by server name. Lazily created (accessFor) so a
-  // server only gets an entry once its access is touched; "survival" is pre-seeded
-  // so the whitelist panel demos a populated list out of the box.
   access: Record<string, AccessState>;
-  // World backups (GET /backups). Global, not keyed by server — the page filters by
-  // server_name client-side, mirroring the real global list endpoint. Scoped per
-  // caller at dispatch (admin sees all; a user only worlds they formerly owned).
   backups: BackupView[];
+  builds: Build[];
 }
 
 // PLAYER_NAME mirrors the backend's mcNameRe (handlers_access.go) so the mock
@@ -242,6 +238,25 @@ function initialState(): MockState {
       },
     },
     backups: mockBackups(),
+    builds: [
+      {
+        id: "bld-1",
+        image_ref: "registry.felis.svc:5000/modpack-beta:1.0",
+        status: "succeeded",
+        requested_by: "owner@mock.felis.local",
+        created_at: new Date(Date.now() - 3600000).toISOString(),
+        finished_at: new Date(Date.now() - 3500000).toISOString(),
+      },
+      {
+        id: "bld-2",
+        image_ref: "registry.felis.svc:5000/forge-broken:1.0",
+        status: "failed",
+        error: "trivy found a CRITICAL CVE: CVE-2026-12345 in library/forge",
+        requested_by: "owner@mock.felis.local",
+        created_at: new Date(Date.now() - 1800000).toISOString(),
+        finished_at: new Date(Date.now() - 1700000).toISOString(),
+      },
+    ],
   };
 }
 
@@ -535,9 +550,6 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       ctx.account.mustChangePassword = false;
       sendJSON(ctx.res, 200, { ok: true });
       return true;
-    case "GET images":
-      sendJSON(ctx.res, 200, { images: ctx.state.images });
-      return true;
     case "GET backups":
       // Admin sees every archive; a user only worlds they formerly owned — mirrors
       // AllBackups vs BackupsForUser. The panel filters by server_name client-side.
@@ -557,8 +569,208 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       await verifyLinkRoute(ctx);
       return true;
     default:
+      if (await handleImageRoute(ctx)) return true;
       return await handleServerRoute(ctx);
   }
+}
+
+async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
+  if (ctx.parts[2] !== "images") return false;
+
+  // GET /api/v1/images
+  if (is("GET", ctx) && ctx.parts.length === 3) {
+    sendJSON(ctx.res, 200, { images: ctx.state.images });
+    return true;
+  }
+
+  // POST /api/v1/images (add image)
+  if (is("POST", ctx) && ctx.parts.length === 3) {
+    if (ctx.account.role !== "admin") {
+      sendError(ctx.res, 403, "forbidden", "admin account required");
+      return true;
+    }
+    const body = await readJSON<{ image_ref?: string }>(ctx.req);
+    const ref = body.image_ref?.trim();
+    if (!ref) {
+      sendError(ctx.res, 400, "bad_request", "image_ref is required");
+      return true;
+    }
+    // Check if already exists in whitelist
+    let img = ctx.state.images.find((i) => i.image_ref === ref);
+    if (img) {
+      img.enabled = true;
+    } else {
+      img = { image_ref: ref, enabled: true, source: "external" };
+      ctx.state.images.unshift(img);
+    }
+    sendJSON(ctx.res, 201, img);
+    return true;
+  }
+
+  // DELETE /api/v1/images (remove image)
+  if (is("DELETE", ctx) && ctx.parts.length === 3) {
+    if (ctx.account.role !== "admin") {
+      sendError(ctx.res, 403, "forbidden", "admin account required");
+      return true;
+    }
+    const url = new URL(ctx.req.url ?? "/", "http://localhost");
+    const ref = url.searchParams.get("ref");
+    if (!ref) {
+      sendError(ctx.res, 400, "bad_request", "ref query parameter is required");
+      return true;
+    }
+    const idx = ctx.state.images.findIndex((i) => i.image_ref === ref);
+    if (idx < 0) {
+      sendError(ctx.res, 404, "not_found", "image not found");
+      return true;
+    }
+    ctx.state.images.splice(idx, 1);
+    ctx.res.statusCode = 204;
+    ctx.res.end();
+    return true;
+  }
+
+  // POST /api/v1/images/build (trigger build)
+  if (is("POST", ctx) && ctx.parts[3] === "build" && ctx.parts.length === 4) {
+    if (ctx.account.role !== "admin") {
+      sendError(ctx.res, 403, "forbidden", "admin account required");
+      return true;
+    }
+    const body = await readJSON<{ image_ref?: string; dockerfile?: string; context_ref?: string; base_image?: string }>(ctx.req);
+    if (!body.image_ref || !body.dockerfile || !body.context_ref) {
+      sendError(ctx.res, 400, "bad_request", "image_ref, dockerfile, and context_ref are required");
+      return true;
+    }
+    const newBuild: Build = {
+      id: `bld-${Date.now()}`,
+      image_ref: body.image_ref.trim(),
+      status: "building",
+      dockerfile: body.dockerfile,
+      context_ref: body.context_ref.trim(),
+      base_image: body.base_image?.trim(),
+      requested_by: ctx.account.email,
+      created_at: new Date().toISOString(),
+    };
+    ctx.state.builds.unshift(newBuild);
+
+    // Mock build progression in a timeout
+    setTimeout(() => {
+      const b = ctx.state.builds.find((x) => x.id === newBuild.id);
+      if (b && b.status === "building") {
+        b.status = "succeeded";
+        b.finished_at = new Date().toISOString();
+        // Add to whitelist images
+        if (!ctx.state.images.some((i) => i.image_ref === b.image_ref)) {
+          ctx.state.images.unshift({ image_ref: b.image_ref, enabled: true, source: "built" });
+        }
+      }
+    }, 15000); // Succeeded after 15 seconds
+
+    sendJSON(ctx.res, 202, newBuild);
+    return true;
+  }
+
+  // GET /api/v1/images/build (list builds)
+  if (is("GET", ctx) && ctx.parts[3] === "build" && ctx.parts.length === 4) {
+    if (ctx.account.role !== "admin") {
+      sendError(ctx.res, 403, "forbidden", "admin account required");
+      return true;
+    }
+    sendJSON(ctx.res, 200, { builds: ctx.state.builds });
+    return true;
+  }
+
+  // GET /api/v1/images/build/{id} (get build)
+  if (is("GET", ctx) && ctx.parts[3] === "build" && ctx.parts[4] && ctx.parts.length === 5) {
+    if (ctx.account.role !== "admin") {
+      sendError(ctx.res, 403, "forbidden", "admin account required");
+      return true;
+    }
+    const build = ctx.state.builds.find((b) => b.id === ctx.parts[4]);
+    if (!build) {
+      sendError(ctx.res, 404, "not_found", "build not found");
+      return true;
+    }
+    sendJSON(ctx.res, 200, build);
+    return true;
+  }
+
+  // POST /api/v1/images/build/{id}/cancel (cancel build)
+  if (is("POST", ctx) && ctx.parts[3] === "build" && ctx.parts[5] === "cancel" && ctx.parts.length === 6) {
+    if (ctx.account.role !== "admin") {
+      sendError(ctx.res, 403, "forbidden", "admin account required");
+      return true;
+    }
+    const buildID = ctx.parts[4];
+    const build = ctx.state.builds.find((b) => b.id === buildID);
+    if (!build) {
+      sendError(ctx.res, 404, "not_found", "build not found");
+      return true;
+    }
+    if (build.status === "succeeded" || build.status === "failed" || build.status === "cancelled") {
+      sendError(ctx.res, 409, "already_terminal", "build already terminal");
+      return true;
+    }
+    build.status = "cancelled";
+    build.finished_at = new Date().toISOString();
+    sendJSON(ctx.res, 200, build);
+    return true;
+  }
+
+  // GET /api/v1/images/build/{id}/logs (SSE logs stream)
+  if (is("GET", ctx) && ctx.parts[3] === "build" && ctx.parts[5] === "logs" && ctx.parts.length === 6) {
+    if (ctx.account.role !== "admin") {
+      sendError(ctx.res, 403, "forbidden", "admin account required");
+      return true;
+    }
+    const buildID = ctx.parts[4];
+    const build = ctx.state.builds.find((b) => b.id === buildID);
+    if (!build) {
+      sendError(ctx.res, 404, "not_found", "build not found");
+      return true;
+    }
+    streamBuildLogs(ctx.req, ctx.res, buildID);
+    return true;
+  }
+
+  return false;
+}
+
+function streamBuildLogs(
+  req: IncomingMessage,
+  res: ServerResponse,
+  buildID: string
+): void {
+  const lines = [
+    `[INFO] [Kaniko] Starting build for ID: ${buildID}`,
+    "[INFO] [Kaniko] Pulling base image library/postgres:15",
+    "[INFO] [Kaniko] Successfully pulled base image",
+    "[INFO] [Kaniko] Executing: RUN echo 'setup'",
+    "[INFO] [Kaniko] Pushing image to registry.felis.svc:5000",
+    "[INFO] [Trivy] Starting security scan...",
+    "[INFO] [Trivy] Scanning registry.felis.svc:5000/image",
+    "[INFO] [Trivy] No critical vulnerabilities found. Scan PASSED.",
+    `[INFO] [System] Build succeeded for ${buildID}`,
+  ];
+  let i = 0;
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  res.write(": connected\n\n");
+
+  const timer = setInterval(() => {
+    if (i < lines.length) {
+      res.write(`data: ${lines[i]}\n\n`);
+      i++;
+    } else {
+      clearInterval(timer);
+    }
+  }, 1000);
+
+  req.on("close", () => clearInterval(timer));
 }
 
 async function createServerRoute(ctx: SessionContext): Promise<void> {

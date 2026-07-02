@@ -13,6 +13,7 @@ import { ServerPlayers } from "@/pages/ServerPlayers";
 import { ServerBackups } from "@/pages/ServerBackups";
 import { Account } from "@/pages/Account";
 import { ImageAdmin } from "@/pages/admin/ImageAdmin";
+import { ImageBuildPage } from "@/pages/admin/ImageBuildPage";
 
 // Three UX surfaces over two Zero-Trust tiers (DESIGN-WEB-3SIDES):
 //   /        User-Side    — app-tier, every authenticated principal
@@ -51,6 +52,7 @@ export default function App() {
               <Route path="admin" element={<RequireAdmin />}>
                 <Route index element={<Navigate to="/admin/images" replace />} />
                 <Route path="images" element={<ImageAdmin />} />
+                <Route path="builds" element={<ImageBuildPage />} />
               </Route>
 
               <Route path="*" element={<Navigate to="/" replace />} />

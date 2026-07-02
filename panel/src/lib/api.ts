@@ -4,6 +4,7 @@ import type {
   AutostartPolicy,
   BackupView,
   BanlistResult,
+  Build,
   CreateServerRequest,
   FleetServer,
   Identity,
@@ -156,6 +157,21 @@ export const api = {
   listImages: () =>
     request<{ images: WhitelistImage[] }>("GET", "/images").then((r) => r.images ?? []),
 
+  addImage: (imageRef: string) =>
+    request<WhitelistImage>("POST", "/images", { image_ref: imageRef }),
+
+  removeImage: (imageRef: string) =>
+    request<void>("DELETE", `/images?ref=${encodeURIComponent(imageRef)}`),
+
+  buildImage: (req: { image_ref: string; dockerfile: string; context_ref: string; base_image?: string }) =>
+    request<Build>("POST", "/images/build", req),
+
+  getBuild: (id: string) =>
+    request<Build>("GET", `/images/build/${id}`),
+
+  cancelBuild: (id: string) =>
+    request<Build>("POST", `/images/build/${id}/cancel`),
+
   createServer: (req: CreateServerRequest) =>
     request<{ name: string; subdomain: string; desiredState: string }>(
       "POST",
@@ -227,6 +243,13 @@ export const api = {
  */
 export function consoleStreamURL(apiBase: string, name: string): string {
   return `${apiBase}/servers/${encodeURIComponent(name)}/console`;
+}
+
+/**
+ * buildLogsStreamURL builds the SSE endpoint for build logs.
+ */
+export function buildLogsStreamURL(apiBase: string, id: string): string {
+  return `${apiBase}/images/build/${encodeURIComponent(id)}/logs`;
 }
 
 /** humanizeError turns the stable error code into a user-facing line. */

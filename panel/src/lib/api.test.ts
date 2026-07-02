@@ -324,3 +324,63 @@ describe("api access-control wire shapes", () => {
     expect(humanizeError({ code: "console_unavailable" })).toMatch(/console/i);
   });
 });
+
+describe("image whitelist and builds wire shapes", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("addImage POSTs {image_ref} to /images", async () => {
+    const fetchSpy = fakeFetch({ image_ref: "x", source: "external", enabled: true });
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await api.addImage("x");
+    expect(res.image_ref).toBe("x");
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(String(url)).toBe("/images");
+    expect((opts as RequestInit).method).toBe("POST");
+    expect(JSON.parse((opts as RequestInit).body as string)).toEqual({ image_ref: "x" });
+  });
+
+  it("removeImage DELETEs with ref in query params to /images", async () => {
+    const fetchSpy = fakeFetch(null);
+    vi.stubGlobal("fetch", fetchSpy);
+    await api.removeImage("x");
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(String(url)).toBe("/images?ref=x");
+    expect((opts as RequestInit).method).toBe("DELETE");
+  });
+
+  it("buildImage POSTs build details to /images/build", async () => {
+    const fetchSpy = fakeFetch({ id: "bld-1", image_ref: "x", status: "pending" });
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await api.buildImage({ image_ref: "x", dockerfile: "FROM x", context_ref: "c" });
+    expect(res.id).toBe("bld-1");
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(String(url)).toBe("/images/build");
+    expect((opts as RequestInit).method).toBe("POST");
+    expect(JSON.parse((opts as RequestInit).body as string)).toEqual({
+      image_ref: "x",
+      dockerfile: "FROM x",
+      context_ref: "c",
+    });
+  });
+
+  it("getBuild GETs build status from /images/build/{id}", async () => {
+    const fetchSpy = fakeFetch({ id: "bld-1", image_ref: "x", status: "building" });
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await api.getBuild("bld-1");
+    expect(res.status).toBe("building");
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(String(url)).toBe("/images/build/bld-1");
+    expect((opts as RequestInit).method).toBe("GET");
+  });
+
+  it("cancelBuild POSTs to cancel endpoint /images/build/{id}/cancel", async () => {
+    const fetchSpy = fakeFetch({ id: "bld-1", image_ref: "x", status: "cancelled" });
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await api.cancelBuild("bld-1");
+    expect(res.status).toBe("cancelled");
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(String(url)).toBe("/images/build/bld-1/cancel");
+    expect((opts as RequestInit).method).toBe("POST");
+  });
+});

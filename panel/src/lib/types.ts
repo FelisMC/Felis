@@ -226,3 +226,21 @@ export interface LoginResult {
   role: "user" | "admin";
   must_change_password: boolean;
 }
+
+export type BuildStatus = "pending" | "building" | "succeeded" | "failed" | "cancelled";
+
+/** Build mirrors an image_builds row (spec §6, §16). */
+export interface Build {
+  id: string;
+  image_ref: string;
+  status: BuildStatus;
+  dockerfile?: string;
+  context_ref?: string;
+  base_image?: string;
+  requested_by: string;
+  job_name?: string;
+  log_ref?: string;
+  error?: string;
+  created_at: string;
+  finished_at?: string;
+}

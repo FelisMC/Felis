@@ -3,6 +3,7 @@ import {
   Server,
   UserRound,
   Boxes,
+  Cpu,
   type LucideIcon,
 } from "lucide-react";
 
@@ -51,6 +52,7 @@ export const NAV_SECTIONS: NavSection[] = [
     adminOnly: true,
     items: [
       { to: "/admin/images", key: "admin_images", icon: Boxes },
+      { to: "/admin/builds", key: "admin_builds", icon: Cpu },
     ],
   },
 ];
