@@ -418,5 +418,42 @@ describe("image whitelist and builds wire shapes", () => {
       expect((opts as RequestInit).method).toBe("POST");
       expect(JSON.parse((opts as RequestInit).body as string)).toEqual({ reason: "bad" });
     });
+
+    it("listMySubmissions GETs from /me/submissions", async () => {
+      const submissions = [{ id: "sub-2", display_name: "my test", status: "pending_review" }];
+      const fetchSpy = fakeFetch({ submissions });
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.listMySubmissions();
+      expect(res).toEqual(submissions);
+      const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toBe("/me/submissions");
+      expect((opts as RequestInit).method).toBe("GET");
+    });
+
+    it("createSubmission POSTs {display_name} to /me/submissions", async () => {
+      const sub = { id: "sub-3", display_name: "new submission", status: "pending_review" };
+      const fetchSpy = fakeFetch(sub);
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.createSubmission("new submission");
+      expect(res).toEqual(sub);
+      const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toBe("/me/submissions");
+      expect((opts as RequestInit).method).toBe("POST");
+      expect(JSON.parse((opts as RequestInit).body as string)).toEqual({ display_name: "new submission" });
+    });
+
+    it("uploadSubmissionContext POSTs Blob to /me/submissions/{id}/context", async () => {
+      const sub = { id: "sub-3", display_name: "new submission", status: "pending_review" };
+      const fetchSpy = fakeFetch(sub);
+      vi.stubGlobal("fetch", fetchSpy);
+      const blob = new Blob(["test"], { type: "application/x-gzip" });
+      const res = await api.uploadSubmissionContext("sub-3", blob);
+      expect(res).toEqual(sub);
+      const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toBe("/me/submissions/sub-3/context");
+      expect((opts as RequestInit).method).toBe("POST");
+      expect((opts as RequestInit).body).toBe(blob);
+      expect((opts as RequestInit).headers).toEqual({ "Content-Type": "application/x-gzip" });
+    });
   });
 });

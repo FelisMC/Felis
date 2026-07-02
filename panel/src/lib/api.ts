@@ -57,6 +57,34 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return parsed as T;
 }
 
+async function requestRaw<T>(
+  method: string,
+  path: string,
+  body: Blob,
+  headers?: Record<string, string>,
+): Promise<T> {
+  const { apiBase } = await loadConfig();
+  const res = await fetch(`${apiBase}${path}`, {
+    method,
+    credentials: "include",
+    headers,
+    body,
+  });
+
+  const text = await res.text();
+  const parsed: unknown = text ? JSON.parse(text) : null;
+
+  if (!res.ok) {
+    const err: ApiError = {
+      status: res.status,
+      code: isApiError(parsed) ? parsed.error.code : "error",
+      message: isApiError(parsed) ? parsed.error.message : res.statusText,
+    };
+    throw err;
+  }
+  return parsed as T;
+}
+
 export const api = {
   // Local-password auth (spec §B1). login sets an HttpOnly session cookie as a
   // side effect — the panel never sees it — and returns only what to route on next
@@ -258,6 +286,17 @@ export const api = {
 
   rejectSubmission: (id: string, reason: string) =>
     request<Submission>("POST", `/submissions/${id}/reject`, { reason }),
+
+  listMySubmissions: () =>
+    request<{ submissions: Submission[] }>("GET", "/me/submissions").then((r) => r.submissions ?? []),
+
+  createSubmission: (displayName: string) =>
+    request<Submission>("POST", "/me/submissions", { display_name: displayName }),
+
+  uploadSubmissionContext: (id: string, file: Blob) =>
+    requestRaw<Submission>("POST", `/me/submissions/${id}/context`, file, {
+      "Content-Type": "application/x-gzip",
+    }),
 };
 
 /**

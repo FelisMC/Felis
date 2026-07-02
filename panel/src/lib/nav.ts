@@ -5,6 +5,7 @@ import {
   Boxes,
   Cpu,
   ClipboardCheck,
+  Upload,
   type LucideIcon,
 } from "lucide-react";
 
@@ -44,6 +45,7 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { to: "/", key: "dashboard", icon: LayoutDashboard, end: true },
       { to: "/servers", key: "my_servers", icon: Server },
+      { to: "/submissions", key: "my_submissions", icon: Upload },
       { to: "/account", key: "account", icon: UserRound },
     ],
   },

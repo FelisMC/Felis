@@ -853,10 +853,65 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
 }
 
 async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
-  if (ctx.parts[2] !== "submissions") return false;
+  const isAdminSubmissions = ctx.parts[2] === "submissions";
+  const isMeSubmissions = ctx.parts[2] === "me" && ctx.parts[3] === "submissions";
+  if (!isAdminSubmissions && !isMeSubmissions) return false;
+
+  // GET /api/v1/me/submissions
+  if (isMeSubmissions && is("GET", ctx) && ctx.parts.length === 4) {
+    const userSubs = ctx.state.submissions.filter((s) => s.submitted_by === ctx.account.email);
+    sendJSON(ctx.res, 200, { submissions: userSubs });
+    return true;
+  }
+
+  // POST /api/v1/me/submissions
+  if (isMeSubmissions && is("POST", ctx) && ctx.parts.length === 4) {
+    const body = await readJSON<{ display_name?: string }>(ctx.req);
+    const displayName = body.display_name?.trim();
+    if (!displayName) {
+      sendError(ctx.res, 400, "bad_request", "display_name is required");
+      return true;
+    }
+    const id = `sub-${Date.now()}`;
+    const newSub: Submission = {
+      id,
+      submitted_by: ctx.account.email,
+      display_name: displayName,
+      context_ref: `minio/contexts/${id}/context.tar.gz`,
+      status: "pending_review",
+      created_at: new Date().toISOString(),
+    };
+    ctx.state.submissions.unshift(newSub);
+    sendJSON(ctx.res, 201, newSub);
+    return true;
+  }
+
+  // POST /api/v1/me/submissions/{id}/context
+  if (isMeSubmissions && is("POST", ctx) && ctx.parts[5] === "context" && ctx.parts.length === 6) {
+    const id = ctx.parts[4];
+    const sub = ctx.state.submissions.find((s) => s.id === id);
+    if (!sub) {
+      sendError(ctx.res, 404, "not_found", "submission not found");
+      return true;
+    }
+    if (sub.submitted_by !== ctx.account.email) {
+      sendError(ctx.res, 404, "not_found", "submission not found");
+      return true;
+    }
+    if (sub.status !== "pending_review") {
+      sendError(ctx.res, 409, "already_reviewed", "submission has already been reviewed");
+      return true;
+    }
+
+    // Read the body stream to end so the socket is clean
+    for await (const _ of ctx.req) { /* discard */ }
+
+    sendJSON(ctx.res, 200, sub);
+    return true;
+  }
 
   // GET /api/v1/submissions
-  if (is("GET", ctx) && ctx.parts.length === 3) {
+  if (isAdminSubmissions && is("GET", ctx) && ctx.parts.length === 3) {
     if (ctx.account.role !== "admin") {
       sendError(ctx.res, 403, "forbidden", "admin account required");
       return true;
@@ -866,7 +921,7 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
   }
 
   // POST /api/v1/submissions/{id}/approve
-  if (is("POST", ctx) && ctx.parts[4] === "approve" && ctx.parts.length === 5) {
+  if (isAdminSubmissions && is("POST", ctx) && ctx.parts[4] === "approve" && ctx.parts.length === 5) {
     if (ctx.account.role !== "admin") {
       sendError(ctx.res, 403, "forbidden", "admin account required");
       return true;
@@ -917,7 +972,7 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
   }
 
   // POST /api/v1/submissions/{id}/reject
-  if (is("POST", ctx) && ctx.parts[4] === "reject" && ctx.parts.length === 5) {
+  if (isAdminSubmissions && is("POST", ctx) && ctx.parts[4] === "reject" && ctx.parts.length === 5) {
     if (ctx.account.role !== "admin") {
       sendError(ctx.res, 403, "forbidden", "admin account required");
       return true;
