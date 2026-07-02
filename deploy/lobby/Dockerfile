@@ -17,7 +17,9 @@
 # token.
 
 # ---- build the felis-paper plugin jar (Paper API is Java 21) ----
-FROM eclipse-temurin:21-jdk AS plugin
+# gradle:8.14-jdk21 — an official Gradle image on JDK 21 (this tree vendors no Gradle
+# wrapper, and a bare JDK image ships no `gradle`). JDK 21 matches the Paper API.
+FROM gradle:8.14-jdk21 AS plugin
 WORKDIR /src
 COPY plugins/paper/ ./plugins/paper/
 COPY plugins/shared/ ./plugins/shared/
