@@ -243,6 +243,18 @@ spec:
                 description: Startup bounds how long Starting may last before Failed
                   (spec §5).
                 properties:
+                  healthHTTPPath:
+                    description: HealthHTTPPath is the path for the HTTP readiness
+                      probe (default "/healthz" when HealthHTTPPort is set).
+                    type: string
+                  healthHTTPPort:
+                    description: HealthHTTPPort, when > 0, switches the pod readiness
+                      probe from the default plain-TCP check on the game port to an
+                      HTTP GET on this container port. It exists for RCON-less loaders
+                      (notably LOOHP/Limbo) where the felis-limbo plugin reports true
+                      readiness only after the first server tick.
+                    format: int32
+                    type: integer
                   readinessTimeoutSeconds:
                     description: ReadinessTimeoutSeconds is the budget for the first
                       successful RCON probe.

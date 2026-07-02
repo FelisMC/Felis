@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	"felis.lolicon.best/internal/naming"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -68,6 +69,12 @@ func (k *K8sCluster) ListServers(ctx context.Context) ([]ServerInfo, error) {
 // guaranteed the §22 memory ceiling lives in in.Resources, so the operator
 // never has to derive a cgroup limit from JavaMemory. An existing name maps to
 // ErrConflict so the handler returns 409.
+//
+// Every user server falls back to the login gate while it is stopped or starting
+// — never to the lobby. Routing a fresh connection to the lobby would drop the
+// player past authentication; falling back to login keeps the gate in front of
+// them (and if login itself is down the proxy refuses, which is the intended
+// "rather unreachable than unauthenticated" trade-off).
 func (k *K8sCluster) CreateServer(ctx context.Context, in CreateServerInput) error {
 	ms := &v1alpha1.MinecraftServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -81,6 +88,7 @@ func (k *K8sCluster) CreateServer(ctx context.Context, in CreateServerInput) err
 			JavaMemory:      in.JavaMemory,
 			DesiredState:    v1alpha1.DesiredStopped,
 			AutostartPolicy: in.AutostartPolicy,
+			FallbackServer:  naming.SystemLoginServer,
 			Storage:         v1alpha1.StorageSpec{Size: in.StorageSize},
 			Resources:       in.Resources,
 		},

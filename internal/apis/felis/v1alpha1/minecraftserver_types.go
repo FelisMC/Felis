@@ -208,6 +208,18 @@ type StartupSpec struct {
 	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty"`
 	// ReadinessTimeoutSeconds is the budget for the first successful RCON probe.
 	ReadinessTimeoutSeconds int32 `json:"readinessTimeoutSeconds,omitempty"`
+	// HealthHTTPPort, when > 0, switches the pod readiness probe from the default
+	// plain-TCP check on the game port to an HTTP GET on this container port. It
+	// exists for RCON-less loaders (notably LOOHP/Limbo) where "the socket is
+	// bound" is a weaker signal than the server itself reporting it has finished
+	// starting: the felis-limbo plugin serves such an endpoint and flips it to 200
+	// only after the first server tick. The operator's readiness path is otherwise
+	// unchanged — with rcon disabled, passing this probe (readyReplicas >= 1) is
+	// what marks the server Ready.
+	HealthHTTPPort int32 `json:"healthHTTPPort,omitempty"`
+	// HealthHTTPPath is the path for the HTTP readiness probe (default "/healthz"
+	// when HealthHTTPPort is set).
+	HealthHTTPPath string `json:"healthHTTPPath,omitempty"`
 }
 
 // IdleSpec configures empty-server auto-stop (spec §8).
