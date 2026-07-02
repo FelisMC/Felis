@@ -19,5 +19,11 @@
   "restore_unavailable": "Restore isn't available right now — try again later.",
   "session_expired": "Your session expired — please sign in again.",
   "forbidden": "You are not allowed to do that.",
-  "generic": "Something went wrong."
+  "generic": "Something went wrong.",
+  "otp_resend_cooldown": "Verification code requested too frequently, please try again later.",
+  "otp_locked": "Too many incorrect attempts, please request a new verification code.",
+  "passkey_challenge_invalid": "Passkey challenge is invalid or expired, please try again.",
+  "invalid_attestation": "Could not verify this Passkey, please try again.",
+  "passkey_already_bound": "This Passkey is already bound to another account.",
+  "passkey_unavailable": "Passkey subsystem is not available right now."
 }

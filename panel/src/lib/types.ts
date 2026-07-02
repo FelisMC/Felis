@@ -215,6 +215,7 @@ export interface Identity {
    *  the untyped fetch().json() boundary, so consumers MUST compare `=== true` — an
    *  absent field is `undefined` (correctly "no change owed"), never a thrown access. */
   must_change_password: boolean;
+  email_verified?: boolean;
 }
 
 /** LoginResult mirrors POST /api/v1/auth/login (handlers_auth.go handleLogin). The

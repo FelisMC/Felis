@@ -230,6 +230,24 @@ export const api = {
 
   linkVerify: (code: string) =>
     request<LinkResult>("POST", "/account/link/verify", { code }),
+
+  emailStart: (email: string) =>
+    request<{ sent: boolean; expires_at: string }>("POST", "/account/email/start", { email }),
+
+  emailVerify: (code: string) =>
+    request<{ verified: boolean; email: string }>("POST", "/account/email/verify", { code }),
+
+  passkeyRegisterBegin: () =>
+    request<any>("POST", "/account/passkey/register/begin"),
+
+  passkeyRegisterFinish: (name: string, attestation: any) =>
+    request<any>("POST", "/account/passkey/register/finish", { name, attestation }),
+
+  passkeyList: () =>
+    request<{ credentials: any[] }>("GET", "/account/passkey/credentials"),
+
+  passkeyDelete: (id: string) =>
+    request<void>("DELETE", `/account/passkey/credentials/${id}`),
 };
 
 /**
@@ -272,6 +290,18 @@ export function humanizeError(e: unknown): string {
       return t("invalid_code");
     case "already_linked":
       return t("already_linked");
+    case "otp_resend_cooldown":
+      return t("otp_resend_cooldown");
+    case "otp_locked":
+      return t("otp_locked");
+    case "passkey_challenge_invalid":
+      return t("passkey_challenge_invalid");
+    case "invalid_attestation":
+      return t("invalid_attestation");
+    case "passkey_already_bound":
+      return t("passkey_already_bound");
+    case "passkey_unavailable":
+      return t("passkey_unavailable");
     case "quota_exceeded":
       return t("quota_exceeded");
     case "already_claimed":

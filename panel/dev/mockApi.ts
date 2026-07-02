@@ -30,6 +30,7 @@ interface MockAccount {
   email: string;
   linked: boolean;
   mustChangePassword: boolean;
+  emailVerified: boolean;
 }
 
 interface MockServer extends ServerInfo {
@@ -51,6 +52,7 @@ interface MockState {
   access: Record<string, AccessState>;
   backups: BackupView[];
   builds: Build[];
+  passkeys: Record<AccountID, { id: string; name: string; created_at: string }[]>;
 }
 
 // PLAYER_NAME mirrors the backend's mcNameRe (handlers_access.go) so the mock
@@ -167,10 +169,10 @@ function mockBackups(): BackupView[] {
 function initialState(): MockState {
   return {
     accounts: {
-      owner: account("owner", "admin", true, false),
-      user: account("user", "user", false, false),
-      linked: account("linked", "user", true, false),
-      setup: account("setup", "admin", true, true),
+      owner: account("owner", "admin", true, false, false),
+      user: account("user", "user", false, false, false),
+      linked: account("linked", "user", true, false, true),
+      setup: account("setup", "admin", true, true, false),
     },
     images: [
       { image_ref: "registry.felis.svc:5000/paper-1.21:demo", enabled: true, source: "demo" },
@@ -257,6 +259,14 @@ function initialState(): MockState {
         finished_at: new Date(Date.now() - 1700000).toISOString(),
       },
     ],
+    passkeys: {
+      owner: [
+        { id: "pk-1", name: "YubiKey 5C", created_at: new Date(Date.now() - 30 * DAY_MS).toISOString() },
+      ],
+      linked: [],
+      user: [],
+      setup: [],
+    },
   };
 }
 
@@ -313,12 +323,14 @@ function account(
   role: Role,
   linked: boolean,
   mustChangePassword: boolean,
+  emailVerified: boolean,
 ): MockAccount {
   return {
     id,
     role,
     linked,
     mustChangePassword,
+    emailVerified,
     email: `${id}@mock.felis.local`,
   };
 }
@@ -406,6 +418,7 @@ function identity(accountInfo: MockAccount): Identity {
     role: accountInfo.role,
     is_admin: accountInfo.role === "admin",
     must_change_password: accountInfo.mustChangePassword,
+    email_verified: accountInfo.emailVerified,
   };
 }
 
@@ -568,7 +581,74 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
     case "POST account/link/verify":
       await verifyLinkRoute(ctx);
       return true;
+    case "POST account/email/start": {
+      const body = await readJSON<{ email?: string }>(ctx.req);
+      if (!body.email || !body.email.includes("@")) {
+        sendError(ctx.res, 400, "bad_request", "invalid email");
+        return true;
+      }
+      sendJSON(ctx.res, 202, { sent: true, expires_at: new Date(Date.now() + 600000).toISOString() });
+      return true;
+    }
+    case "POST account/email/verify": {
+      const body = await readJSON<{ code?: string }>(ctx.req);
+      if (body.code?.trim() !== "123456") {
+        sendError(ctx.res, 400, "invalid_code", "email code is invalid or expired");
+        return true;
+      }
+      ctx.account.emailVerified = true;
+      sendJSON(ctx.res, 200, { verified: true, email: ctx.account.email });
+      return true;
+    }
+    case "POST account/passkey/register/begin": {
+      sendJSON(ctx.res, 200, {
+        challenge: "c29tZV9jaGFsbGVuZ2VfZGF0YQ",
+        rp: { name: "Felis Dev" },
+        user: {
+          id: "bW9ja191c2VyX2lk",
+          name: ctx.account.email,
+          displayName: ctx.account.email,
+        },
+        pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+      });
+      return true;
+    }
+    case "POST account/passkey/register/finish": {
+      const body = await readJSON<{ name?: string; attestation?: any }>(ctx.req);
+      if (!body.name || !body.attestation) {
+        sendError(ctx.res, 400, "bad_request", "name and attestation are required");
+        return true;
+      }
+      const newCred = {
+        id: `pk-${Date.now()}`,
+        name: body.name.trim(),
+        created_at: new Date().toISOString(),
+      };
+      if (!ctx.state.passkeys[ctx.account.id]) {
+        ctx.state.passkeys[ctx.account.id] = [];
+      }
+      ctx.state.passkeys[ctx.account.id].unshift(newCred);
+      sendJSON(ctx.res, 201, newCred);
+      return true;
+    }
+    case "GET account/passkey/credentials": {
+      const list = ctx.state.passkeys[ctx.account.id] ?? [];
+      sendJSON(ctx.res, 200, { credentials: list });
+      return true;
+    }
     default:
+      if (ctx.method === "DELETE" && ctx.parts[2] === "account" && ctx.parts[3] === "passkey" && ctx.parts[4] === "credentials" && ctx.parts[5]) {
+        const id = ctx.parts[5];
+        if (ctx.state.passkeys[ctx.account.id]) {
+          const idx = ctx.state.passkeys[ctx.account.id].findIndex((k) => k.id === id);
+          if (idx >= 0) {
+            ctx.state.passkeys[ctx.account.id].splice(idx, 1);
+          }
+        }
+        ctx.res.statusCode = 204;
+        ctx.res.end();
+        return true;
+      }
       if (await handleImageRoute(ctx)) return true;
       return await handleServerRoute(ctx);
   }

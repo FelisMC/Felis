@@ -19,5 +19,11 @@
   "restore_unavailable": "回档功能当前不可用，请稍后再试。",
   "session_expired": "会话已过期——请重新登录。",
   "forbidden": "你无权执行此操作。",
-  "generic": "出了点问题，请稍后重试。"
+  "generic": "出了点问题，请稍后重试。",
+  "otp_resend_cooldown": "验证码发送频繁，请稍后再试。",
+  "otp_locked": "验证码错误次数过多，请重新获取验证码。",
+  "passkey_challenge_invalid": "验证挑战无效或已过期，请重试。",
+  "invalid_attestation": "无法验证此 Passkey，请重试。",
+  "passkey_already_bound": "此 Passkey 已被其他账户绑定。",
+  "passkey_unavailable": "Passkey 功能当前不可用。"
 }

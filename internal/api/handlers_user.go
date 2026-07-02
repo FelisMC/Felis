@@ -175,11 +175,16 @@ func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 // the verified token, no lookup escapes it.
 func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
+	emailVerified := false
+	if u, err := a.Repo.UserByID(r.Context(), p.UserID); err == nil {
+		emailVerified = u.EmailVerified
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"user_id":  p.UserID,
-		"email":    p.Email,
-		"role":     p.Role,
-		"is_admin": p.IsAdmin(),
+		"user_id":              p.UserID,
+		"email":                p.Email,
+		"role":                 p.Role,
+		"is_admin":             p.IsAdmin(),
+		"email_verified":       emailVerified,
 		// must_change_password is meaningful only on the local-password path; the JWT
 		// path leaves it false. The panel uses it to route a freshly-provisioned staff
 		// account straight to the change-password card before any other surface.
