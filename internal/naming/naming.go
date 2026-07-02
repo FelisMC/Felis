@@ -30,6 +30,32 @@ var reserved = map[string]struct{}{
 	"www":      {},
 }
 
+// System server names Felis provisions itself. They deliberately live on the
+// reserved list so no user can claim them, yet the platform must be able to
+// create them — see ValidateSystemServerName.
+const (
+	// SystemLoginServer is the always-on limbo auth gate (LOOHP/Limbo). It is the
+	// front door every fresh connection lands on and the ONLY safe fallback: a
+	// stopped/starting backend routes here, never onward past authentication.
+	SystemLoginServer = "login"
+	// SystemLobbyServer is the post-auth /menu hub (Paper + felis-paper). It is
+	// reachable only after the login gate passes a player through, so it must
+	// never be used as a fallback target (that would bypass the gate).
+	SystemLobbyServer = "lobby"
+)
+
+// ServiceTokenSecretName / ServiceTokenSecretKey name the internal-API bearer
+// credential Secret (spec §7). They are one source of truth shared across
+// subsystems: the platform renderer wires this Secret into the felis-api
+// Deployment, and the operator injects it into the login system server's pod as
+// FELIS_SERVICE_TOKEN via a secretKeyRef (never a literal). The Secret itself is
+// provisioned out-of-band (deploy/bootstrap.sh) and, for the login gate, replicated
+// into the minecraft namespace by `felis setup`; these constants only name it.
+const (
+	ServiceTokenSecretName = "felis-service-token"
+	ServiceTokenSecretKey  = "token"
+)
+
 // ValidateServerName checks the §22 name rule and reservation list.
 func ValidateServerName(name string) error {
 	if !serverNameRE.MatchString(name) {
@@ -40,6 +66,22 @@ func ValidateServerName(name string) error {
 	}
 	if _, ok := reserved[name]; ok {
 		return fmt.Errorf("naming: server name %q is reserved", name)
+	}
+	return nil
+}
+
+// ValidateSystemServerName checks the §22 format rule (^[a-z0-9-]{3,32}$, no
+// leading/trailing dash) but DELIBERATELY skips the reservation check. It is the
+// admission path for platform-provisioned system services (login, lobby), which
+// carry reserved names on purpose: users can never claim them via
+// ValidateServerName, yet setup must still be able to create them. It is not a
+// public claim path — only the setup/system-service provisioner calls it.
+func ValidateSystemServerName(name string) error {
+	if !serverNameRE.MatchString(name) {
+		return fmt.Errorf("naming: invalid system server name %q: must match ^[a-z0-9-]{3,32}$", name)
+	}
+	if strings.HasPrefix(name, "-") || strings.HasSuffix(name, "-") {
+		return fmt.Errorf("naming: system server name %q must not start or end with '-'", name)
 	}
 	return nil
 }

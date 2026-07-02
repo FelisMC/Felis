@@ -37,6 +37,43 @@ func TestValidateServerName(t *testing.T) {
 	}
 }
 
+// ValidateSystemServerName keeps the format rule but drops the reservation
+// check, so the platform can provision the reserved system names (login, lobby)
+// that ValidateServerName correctly refuses to hand to users.
+func TestValidateSystemServerName(t *testing.T) {
+	cases := []struct {
+		name string
+		ok   bool
+	}{
+		{"login", true},  // reserved, but a legal system service
+		{"lobby", true},  // reserved, but a legal system service
+		{"admin", true},  // reserved names are allowed on this path
+		{"survival", true},
+		{"ab", false},        // still too short
+		{"Login", false},     // still case-sensitive
+		{"-leading", false},  // still no leading hyphen
+		{"has space", false}, // still no illegal chars
+	}
+	for _, c := range cases {
+		err := naming.ValidateSystemServerName(c.name)
+		if c.ok && err != nil {
+			t.Errorf("ValidateSystemServerName(%q) = %v, want ok", c.name, err)
+		}
+		if !c.ok && err == nil {
+			t.Errorf("ValidateSystemServerName(%q) = nil, want error", c.name)
+		}
+	}
+
+	// The two paths must genuinely differ on reserved names: user path refuses
+	// "lobby", system path accepts it.
+	if naming.ValidateServerName("lobby") == nil {
+		t.Error("ValidateServerName(lobby) accepted; reserved name must be refused for users")
+	}
+	if naming.ValidateSystemServerName("lobby") != nil {
+		t.Error("ValidateSystemServerName(lobby) refused; system path must accept it")
+	}
+}
+
 func TestWorldPVCName(t *testing.T) {
 	cases := map[string]string{
 		"survival":   "world-survival-0",
