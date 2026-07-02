@@ -3,6 +3,7 @@ package platform
 import (
 	"fmt"
 
+	"felis.lolicon.best/internal/naming"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -51,8 +52,10 @@ const (
 	configMountPath        = "/etc/felis"
 	configFilePath         = "/etc/felis/felis.toml"
 	felisBinaryPath        = "/usr/local/bin/felis"
-	serviceTokenSecretName = "felis-service-token"
-	serviceTokenSecretKey  = "token"
+	// Single-sourced with the operator, which injects the same Secret into the
+	// login system server's pod (see internal/naming).
+	serviceTokenSecretName = naming.ServiceTokenSecretName
+	serviceTokenSecretKey  = naming.ServiceTokenSecretKey
 
 	// Ports, single-sourced with the entrypoints (cmd/felis). The api external
 	// port must match server.listen in felis.toml (default 0.0.0.0:8080); that
@@ -98,6 +101,19 @@ const (
 	// (internal/restore.defaultRunAsID).
 	nonRootUID int64 = 1000
 )
+
+// InternalAPIBaseURL returns the in-cluster base URL of the felis-api INTERNAL
+// face for a caller in another namespace — specifically the login system server,
+// which dials it with the service token to mint bind codes and poll link status.
+// It single-sources the Service name (SAAPI, in the control namespace) and the
+// internal port with the Deployment/Service above, so a rename or port change here
+// can never drift from what the login pod is told to call. Cross-namespace DNS is
+// always resolvable; reachability additionally depends on there being no fence in
+// the way (today neither the minecraft-ns egress nor the control-ns ingress is
+// policy-locked, so the path is open — see internal/platform/netpol.go).
+func InternalAPIBaseURL(controlNamespace string) string {
+	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", SAAPI, controlNamespace, apiInternalPort)
+}
 
 // Workloads renders the running control-plane: the felis-api Deployment, the
 // felis-operator Deployment, and the in-cluster registry (Deployment + Service +
