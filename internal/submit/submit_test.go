@@ -3,12 +3,52 @@ package submit
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
 
 	"felis.lolicon.best/internal/build"
 )
+
+// gzBody returns a minimal gzip-magic-prefixed blob standing in for a real
+// context.tar.gz: UploadContext only sniffs the first two bytes, so the payload
+// after the magic is opaque.
+func gzBody(payload string) string { return "\x1f\x8b\x08\x00" + payload }
+
+// fakeBlobs is an in-memory Blobs transport. It records what was stored so a test
+// can assert the derived id was used, and can force Exists/Put outcomes.
+type fakeBlobs struct {
+	stored      map[string][]byte
+	putErr      error
+	existsErr   error
+	forceExists *bool // overrides the stored-map lookup for the approve-gate tests
+}
+
+func newFakeBlobs() *fakeBlobs { return &fakeBlobs{stored: map[string][]byte{}} }
+
+func (f *fakeBlobs) Put(_ context.Context, id string, r io.Reader) (int64, error) {
+	if f.putErr != nil {
+		return 0, f.putErr
+	}
+	b, err := io.ReadAll(r)
+	if err != nil {
+		return 0, err // e.g. cappedReader tripping — persist nothing, mirror the real store
+	}
+	f.stored[id] = b
+	return int64(len(b)), nil
+}
+
+func (f *fakeBlobs) Exists(_ context.Context, id string) (bool, error) {
+	if f.existsErr != nil {
+		return false, f.existsErr
+	}
+	if f.forceExists != nil {
+		return *f.forceExists, nil
+	}
+	_, ok := f.stored[id]
+	return ok, nil
+}
 
 // testNow is the frozen clock for hermetic assertions.
 var testNow = time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
@@ -451,4 +491,176 @@ func TestListBy(t *testing.T) {
 	if _, err := m.ListBy(context.Background(), ""); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("empty submitter err = %v, want ErrInvalid", err)
 	}
+}
+
+func TestUploadContextStoresUnderDerivedID(t *testing.T) {
+	m, _, _ := newManager()
+	fb := newFakeBlobs()
+	m.Blobs = fb
+	seed, _ := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
+
+	payload := gzBody("the modpack bytes")
+	sub, err := m.UploadContext(context.Background(), seed.ID, "user-1", strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("UploadContext: %v", err)
+	}
+	if sub.ID != seed.ID {
+		t.Fatalf("returned submission %q, want %q", sub.ID, seed.ID)
+	}
+	// The blob is stored under the submission id (the pinned, id-namespaced key),
+	// never a caller-supplied path.
+	got, ok := fb.stored[seed.ID]
+	if !ok {
+		t.Fatalf("nothing stored under id %q; stored keys: %v", seed.ID, keysOf(fb.stored))
+	}
+	if string(got) != payload {
+		t.Fatalf("stored %q, want the uploaded bytes", got)
+	}
+}
+
+func TestUploadContextRejectsNonGzip(t *testing.T) {
+	m, _, _ := newManager()
+	fb := newFakeBlobs()
+	m.Blobs = fb
+	seed, _ := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
+
+	_, err := m.UploadContext(context.Background(), seed.ID, "user-1", strings.NewReader("PK\x03\x04 a zip, not gzip"))
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err = %v, want ErrInvalid", err)
+	}
+	if len(fb.stored) != 0 {
+		t.Fatal("a wrong-format upload must persist nothing")
+	}
+}
+
+func TestUploadContextOversizeRejectedAndNotPersisted(t *testing.T) {
+	m, _, _ := newManager()
+	fb := newFakeBlobs()
+	m.Blobs = fb
+	m.MaxContextBytes = 8 // tiny cap
+	seed, _ := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
+
+	// gzBody's 4-byte magic + payload well over 8 bytes total.
+	_, err := m.UploadContext(context.Background(), seed.ID, "user-1", strings.NewReader(gzBody("this is far too large")))
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err = %v, want ErrInvalid (too large)", err)
+	}
+	if len(fb.stored) != 0 {
+		t.Fatal("an oversize upload must persist nothing")
+	}
+}
+
+func TestUploadContextExactlyAtCapAccepted(t *testing.T) {
+	m, _, _ := newManager()
+	fb := newFakeBlobs()
+	m.Blobs = fb
+	body := gzBody("payload") // measure and cap at exactly this length
+	m.MaxContextBytes = int64(len(body))
+	seed, _ := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
+
+	if _, err := m.UploadContext(context.Background(), seed.ID, "user-1", strings.NewReader(body)); err != nil {
+		t.Fatalf("a blob of exactly the cap must be accepted, got %v", err)
+	}
+	if string(fb.stored[seed.ID]) != body {
+		t.Fatalf("stored %q, want the full body (no truncation at the cap)", fb.stored[seed.ID])
+	}
+}
+
+func TestUploadContextWrongOwnerIsNotFound(t *testing.T) {
+	m, _, _ := newManager()
+	fb := newFakeBlobs()
+	m.Blobs = fb
+	seed, _ := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
+
+	// A different user uploading to user-1's submission sees 404, not 403: the id
+	// is invisible so it cannot be probed.
+	_, err := m.UploadContext(context.Background(), seed.ID, "user-2", strings.NewReader(gzBody("x")))
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+	if len(fb.stored) != 0 {
+		t.Fatal("a non-owner upload must persist nothing")
+	}
+}
+
+func TestUploadContextNotPendingIsAlreadyReviewed(t *testing.T) {
+	m, _, _ := newManager()
+	fb := newFakeBlobs()
+	m.Blobs = fb
+	seed, _ := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
+	if _, err := m.Reject(context.Background(), seed.ID, "admin@x", "nope"); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+	_, err := m.UploadContext(context.Background(), seed.ID, "user-1", strings.NewReader(gzBody("x")))
+	if !errors.Is(err, ErrAlreadyReviewed) {
+		t.Fatalf("err = %v, want ErrAlreadyReviewed (context is frozen once reviewed)", err)
+	}
+}
+
+func TestUploadContextUnknownSubmission(t *testing.T) {
+	m, _, _ := newManager()
+	m.Blobs = newFakeBlobs()
+	_, err := m.UploadContext(context.Background(), "sub-nope", "user-1", strings.NewReader(gzBody("x")))
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestUploadContextNoTransportUnavailable(t *testing.T) {
+	m, _, _ := newManager() // Blobs left nil
+	seed, _ := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
+	_, err := m.UploadContext(context.Background(), seed.ID, "user-1", strings.NewReader(gzBody("x")))
+	if !errors.Is(err, ErrUploadsUnavailable) {
+		t.Fatalf("err = %v, want ErrUploadsUnavailable", err)
+	}
+}
+
+func TestApproveRefusesMissingContext(t *testing.T) {
+	// With a transport wired, approving a submission whose context was never
+	// uploaded fails BEFORE the CAS: the row stays pending and no build starts.
+	m, st, bl := newManager()
+	m.Blobs = newFakeBlobs() // empty → Exists=false
+	seed, _ := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
+
+	_, err := m.Approve(context.Background(), seed.ID, "admin@x")
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err = %v, want ErrInvalid (no context uploaded)", err)
+	}
+	if got := st.subs[seed.ID]; got.Status != StatusPendingReview {
+		t.Fatalf("status = %q, want still pending_review (CAS not reached)", got.Status)
+	}
+	if bl.calls != 0 {
+		t.Fatalf("builds started = %d, want 0", bl.calls)
+	}
+}
+
+func TestApproveProceedsWithUploadedContext(t *testing.T) {
+	// The end-to-end user path: create -> upload -> admin approve -> exactly one
+	// build through the SAME gated Builder.
+	m, _, bl := newManager()
+	m.Blobs = newFakeBlobs()
+	seed, _ := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
+	if _, err := m.UploadContext(context.Background(), seed.ID, "user-1", strings.NewReader(gzBody("mods"))); err != nil {
+		t.Fatalf("UploadContext: %v", err)
+	}
+
+	sub, err := m.Approve(context.Background(), seed.ID, "admin@x")
+	if err != nil {
+		t.Fatalf("Approve: %v", err)
+	}
+	if sub.Status != StatusApproved {
+		t.Fatalf("status = %q, want approved", sub.Status)
+	}
+	if bl.calls != 1 {
+		t.Fatalf("builds started = %d, want 1", bl.calls)
+	}
+}
+
+// keysOf lists a map's keys for test diagnostics.
+func keysOf(m map[string][]byte) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
 }

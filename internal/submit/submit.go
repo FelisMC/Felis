@@ -55,11 +55,13 @@
 package submit
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
 	"time"
@@ -76,13 +78,19 @@ const (
 	StatusRejected      Status = "rejected"
 )
 
-// Sentinels. The API layer maps ErrInvalid→400, ErrNotFound→404 and
-// ErrAlreadyReviewed→409; they are kept distinct from store/cluster failures so
-// those surface as 500.
+// Sentinels. The API layer maps ErrInvalid→400, ErrNotFound→404,
+// ErrAlreadyReviewed→409 and ErrUploadsUnavailable→503; they are kept distinct
+// from store/cluster failures so those surface as 500.
 var (
 	ErrInvalid         = errors.New("submit: invalid request")
 	ErrNotFound        = errors.New("submit: submission not found")
 	ErrAlreadyReviewed = errors.New("submit: submission already reviewed")
+	// ErrUploadsUnavailable means this deployment configured a context store with
+	// no implemented upload transport (a nil Manager.Blobs — e.g. an object-store
+	// base with no client wired). UploadContext returns it so the endpoint reports
+	// an honest 503, never a 500, exactly as the restore executor does when its
+	// integration is not wired.
+	ErrUploadsUnavailable = errors.New("submit: context upload transport not configured")
 )
 
 // invalidf wraps ErrInvalid so every malformed-request case maps to one 400.
@@ -90,9 +98,19 @@ func invalidf(format string, a ...any) error {
 	return fmt.Errorf("%w: "+format, append([]any{ErrInvalid}, a...)...)
 }
 
+// errContextTooLarge trips when an upload exceeds the size cap. It wraps
+// ErrInvalid so an oversize upload maps to a 400; the storage layer's %w wrapping
+// preserves that chain through to the API error mapper.
+var errContextTooLarge = fmt.Errorf("%w: build context exceeds the maximum allowed size", ErrInvalid)
+
 const (
 	maxDisplayName  = 200
 	maxRejectReason = 1000
+	// defaultMaxContextBytes caps an uploaded build-context blob. Modpack contexts
+	// (mods, configs, an occasional bundled world) are large, so the cap is
+	// generous; it bounds what one untrusted upload can write to the uploads PVC,
+	// not a tight quota. Override per-Manager via MaxContextBytes.
+	defaultMaxContextBytes = 1 << 30 // 1 GiB
 )
 
 // displayNameRE constrains the user-supplied label to a calm, single-line set:
@@ -156,6 +174,24 @@ type Builds interface {
 	Submit(ctx context.Context, req build.Request) (*build.Build, error)
 }
 
+// Blobs is the build-context blob transport the lane depends on to place a
+// submitter's uploaded modpack at the platform-derived, id-namespaced location
+// deriveContextRef points Kaniko at. It is the piece the package doc calls a
+// "separate, deferred transport": creation only derives and records the ref, and
+// the bytes behind it arrive through Put here. It is an interface so the Manager
+// is unit-tested against an in-memory fake; the production implementation is the
+// filesystem-backed LocalContextStore.
+//
+// Both methods key off the submission id, never a caller-supplied path, so the
+// write target is as platform-pinned as the derived ref itself. Put stores (and
+// atomically overwrites, while the submission is still pending) the blob; Exists
+// reports whether one has been stored, so Approve can refuse to build a
+// submission whose context was never uploaded.
+type Blobs interface {
+	Put(ctx context.Context, id string, r io.Reader) (int64, error)
+	Exists(ctx context.Context, id string) (bool, error)
+}
+
 // Manager orchestrates the approval lane. It holds no mutable state; the clock
 // and id generator are injectable for hermetic tests.
 type Manager struct {
@@ -171,13 +207,28 @@ type Manager struct {
 	// field. The derived ref is {Registry}/user-uploads/{id}:latest.
 	Registry string
 	// ContextStore is the pinned Kaniko build-context base for user uploads, e.g.
-	// "s3://felis-user-uploads" (mirrors a configured object store). The derived
-	// context ref is {ContextStore}/{id}/context.tar.gz; the modpack blob is
-	// placed there by a separate upload transport (deferred — see package doc).
+	// "s3://felis-user-uploads" (an object store) or a local uploads PVC path. The
+	// derived context ref is {ContextStore}/{id}/context.tar.gz.
 	ContextStore string
+	// Blobs is the upload transport that persists the modpack behind the derived
+	// context ref. When nil (a store with no implemented transport, e.g. an
+	// object-store base with no client), UploadContext returns ErrUploadsUnavailable
+	// so the endpoint reports 503. Its backing MUST match ContextStore so the blob
+	// lands exactly where the derived ref points.
+	Blobs Blobs
+	// MaxContextBytes overrides the uploaded-context size cap; 0 uses
+	// defaultMaxContextBytes.
+	MaxContextBytes int64
 
 	Now   func() time.Time
 	IDGen func() string
+}
+
+func (m *Manager) maxContextBytes() int64 {
+	if m.MaxContextBytes > 0 {
+		return m.MaxContextBytes
+	}
+	return defaultMaxContextBytes
 }
 
 func (m *Manager) now() time.Time {
@@ -218,7 +269,7 @@ func (m *Manager) deriveImageRef(id string) string {
 // selects nothing that reaches Kaniko's --context argument; only the blob behind
 // this pinned, id-namespaced location (placed by the upload transport) varies.
 func (m *Manager) deriveContextRef(id string) string {
-	return fmt.Sprintf("%s/%s/context.tar.gz", strings.TrimRight(m.ContextStore, "/"), id)
+	return fmt.Sprintf("%s/%s/%s", strings.TrimRight(m.ContextStore, "/"), id, contextBlobName)
 }
 
 // auditDockerfile is the audit-archive Dockerfile recorded on the build row. It
@@ -274,6 +325,91 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Submission, e
 	return s, nil
 }
 
+// UploadContext stores the caller's uploaded modpack as the build context for
+// their OWN pending submission — the blob transport the package doc calls
+// deferred. It places the bytes at exactly deriveContextRef(id), the platform-
+// pinned, id-namespaced location Kaniko reads via --context, so the submitter
+// selects nothing that reaches the executor beyond the modpack itself. The row
+// is not mutated (there is no "uploaded" column): the blob store is the source of
+// truth for presence, which Approve consults via Blobs.Exists.
+//
+// The gates mirror the lane's trust model:
+//   - only the submitter may upload; another user's id is invisible (404, not
+//     403) so this endpoint cannot probe other users' submissions;
+//   - the context is mutable ONLY while pending_review — once approved the build
+//     has already consumed it, once rejected it is dead;
+//   - the body must be a gzip tarball (context.tar.gz) and is size-capped, so a
+//     wrong-format or oversize upload is rejected as a 400 without persisting.
+//
+// A re-upload while still pending atomically supersedes the previous blob, so a
+// user can fix their pack before an admin reviews it.
+func (m *Manager) UploadContext(ctx context.Context, id, submittedBy string, r io.Reader) (*Submission, error) {
+	if strings.TrimSpace(submittedBy) == "" {
+		return nil, invalidf("submitter identity is required")
+	}
+	if m.Blobs == nil {
+		return nil, ErrUploadsUnavailable
+	}
+
+	sub, err := m.Store.GetSubmission(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if sub.SubmittedBy != submittedBy {
+		// Not the owner: invisible, so the endpoint cannot confirm the id exists.
+		return nil, ErrNotFound
+	}
+	if sub.Status != StatusPendingReview {
+		return nil, ErrAlreadyReviewed
+	}
+
+	// Sniff the gzip magic before touching the store so a wrong-format upload fails
+	// fast, without persisting anything or reading the whole body.
+	br := bufio.NewReader(r)
+	if magic, err := br.Peek(2); err != nil || magic[0] != 0x1f || magic[1] != 0x8b {
+		return nil, invalidf("build context must be a gzip-compressed tarball (.tar.gz)")
+	}
+
+	// Cap the size: cappedReader trips errContextTooLarge on the first byte past
+	// the limit, so the store never persists an oversize blob (it removes its temp
+	// file on the copy error) and the failure surfaces as a 400, not a 500.
+	if _, err := m.Blobs.Put(ctx, id, &cappedReader{r: br, left: m.maxContextBytes()}); err != nil {
+		return nil, err
+	}
+	return sub, nil
+}
+
+// cappedReader passes through at most left bytes; the first byte beyond the limit
+// trips errContextTooLarge. It reads one probe byte past the limit to tell an
+// exactly-at-limit blob (accepted) from a larger one (rejected), so a stream of
+// exactly the cap is never falsely rejected.
+type cappedReader struct {
+	r    io.Reader
+	left int64
+}
+
+func (c *cappedReader) Read(p []byte) (int, error) {
+	if c.left <= 0 {
+		// At the limit: peek one more byte. Any further data means too large; EOF
+		// means the blob was exactly the cap.
+		var probe [1]byte
+		n, err := c.r.Read(probe[:])
+		if n > 0 {
+			return 0, errContextTooLarge
+		}
+		if err == nil {
+			return 0, io.EOF
+		}
+		return 0, err
+	}
+	if int64(len(p)) > c.left {
+		p = p[:c.left]
+	}
+	n, err := c.r.Read(p)
+	c.left -= int64(n)
+	return n, err
+}
+
 // Approve is the admin gate. It atomically claims the pending_review -> approved
 // transition (CAS) and ONLY the winner starts the build, so concurrent approvals
 // can never double-build. The build runs through the SAME gated Builder.Submit as
@@ -312,6 +448,22 @@ func (m *Manager) Approve(ctx context.Context, id, reviewedBy string) (*Submissi
 	}
 	if sub.Status != StatusPendingReview {
 		return nil, ErrAlreadyReviewed
+	}
+
+	// Refuse to approve a submission whose build context was never uploaded: the
+	// derived context ref would point Kaniko at nothing, failing the build after a
+	// committed CAS. This deterministic check runs BEFORE the CAS (like the
+	// build.Validate below), so a missing blob leaves the row pending, never
+	// stranded in approved. Skipped when no transport is wired (Blobs nil): the
+	// deferred/object-store case cannot be checked here and must not block approve.
+	if m.Blobs != nil {
+		ok, err := m.Blobs.Exists(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			return nil, invalidf("no build context has been uploaded for this submission")
+		}
 	}
 
 	imageRef := m.deriveImageRef(id)

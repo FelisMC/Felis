@@ -16,6 +16,7 @@ type summaryModel struct {
 	ownerUsername string
 	ownerPassword string // one-time; shown once
 	accessLabel   string
+	storageLabel  string // build-context storage backend recap; empty to omit
 	routedHosts   []string
 	alreadySetUp  bool // re-run: Owner pre-existed
 	localHint     bool // show the self-signed-cert note
@@ -32,6 +33,8 @@ func (m *summaryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch key.String() {
 		case "c", "C":
 			return m, func() tea.Msg { return reconfigureConnectMsg{} }
+		case "s", "S":
+			return m, func() tea.Msg { return reconfigureStorageMsg{} }
 		case "ctrl+c", "esc", "enter", "q":
 			return m, tea.Quit
 		}
@@ -59,6 +62,9 @@ func (m *summaryModel) View() string {
 	if m.accessLabel != "" {
 		card.WriteString(tuiLabel.Render("access    ") + m.accessLabel + "\n")
 	}
+	if m.storageLabel != "" {
+		card.WriteString(tuiLabel.Render("storage   ") + m.storageLabel + "\n")
+	}
 	if len(m.routedHosts) > 0 {
 		card.WriteString(tuiLabel.Render("routed    ") + strings.Join(m.routedHosts, ", ") + "\n")
 	}
@@ -72,6 +78,6 @@ func (m *summaryModel) View() string {
 		b.WriteString(tuiHint.Render("  The local certificate is self-signed; your browser may warn on first visit.") + "\n")
 	}
 
-	b.WriteString("\n" + tuiAction("c", "change connection", "enter/esc", "exit"))
+	b.WriteString("\n" + tuiAction("c", "change connection", "s", "change storage", "enter/esc", "exit"))
 	return b.String()
 }

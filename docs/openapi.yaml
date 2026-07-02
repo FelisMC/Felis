@@ -2139,6 +2139,47 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /api/v1/me/submissions/{id}/context:
+    post:
+      tags: [submissions]
+      operationId: uploadSubmissionContext
+      summary: Upload the modpack build context for your own pending submission (user side; user-directed lane over §16).
+      description: >-
+        The request body IS the raw gzip build context (context.tar.gz) — not
+        JSON, not multipart — streamed to the platform-derived, id-namespaced
+        location Kaniko reads via --context. The submitter is taken from the
+        principal; a submission the caller does not own is reported as 404, so
+        this endpoint cannot upload to or probe another user's submission. Only a
+        pending_review submission accepts a context (409 otherwise); a wrong-format
+        or oversize body is rejected with 400. Returns 503 when the deployment's
+        context store has no implemented upload transport.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/gzip:
+            schema: { type: string, format: binary }
+      responses:
+        '200':
+          description: Context stored; the submission (unchanged) is returned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Submission' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   # ------------------------------------------------------ external: admin ----
   /api/v1/servers/{name}:
     patch:

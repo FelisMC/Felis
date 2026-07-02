@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"testing"
 
@@ -18,6 +19,10 @@ import (
 type fakeSubmissions struct {
 	created    *submit.CreateRequest
 	createErr  error
+	uploadedID string
+	uploadedBy string
+	uploadedN  int64
+	uploadErr  error
 	listedBy   string
 	byResult   []submit.Submission
 	byErr      error
@@ -40,6 +45,16 @@ func (f *fakeSubmissions) Create(_ context.Context, req submit.CreateRequest) (*
 	f.created = &cp
 	return &submit.Submission{ID: "sub-1", SubmittedBy: req.SubmittedBy,
 		DisplayName: req.DisplayName, Status: submit.StatusPendingReview}, nil
+}
+
+func (f *fakeSubmissions) UploadContext(_ context.Context, id, submittedBy string, r io.Reader) (*submit.Submission, error) {
+	f.uploadedID, f.uploadedBy = id, submittedBy
+	if f.uploadErr != nil {
+		return nil, f.uploadErr
+	}
+	n, _ := io.Copy(io.Discard, r)
+	f.uploadedN = n
+	return &submit.Submission{ID: id, SubmittedBy: submittedBy, Status: submit.StatusPendingReview}, nil
 }
 
 func (f *fakeSubmissions) ListBy(_ context.Context, submittedBy string) ([]submit.Submission, error) {
@@ -132,6 +147,89 @@ func TestCreateSubmissionValidationIs400(t *testing.T) {
 	}
 	if got := decodeErr(t, w); got != "bad_request" {
 		t.Errorf("error code = %q, want bad_request", got)
+	}
+}
+
+// The upload endpoint forwards the raw body to the transport and stamps the
+// submitter from the principal, never the body — a user can only upload to a
+// submission under their own identity.
+func TestUploadSubmissionContextStreamsBody(t *testing.T) {
+	fs := &fakeSubmissions{}
+	api := appSubAPI(fs)
+	// A tiny gzip-magic-prefixed body stands in for a real context.tar.gz.
+	body := "\x1f\x8b\x08\x00 the modpack bytes"
+	w := do(api.ExternalHandler(), "POST", "/api/v1/me/submissions/sub-9/context", body,
+		map[string]string{"Content-Type": "application/gzip"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	if fs.uploadedID != "sub-9" {
+		t.Errorf("uploaded id = %q, want sub-9", fs.uploadedID)
+	}
+	if fs.uploadedBy != "user-7" {
+		t.Errorf("submitter = %q, want the principal id user-7", fs.uploadedBy)
+	}
+	if fs.uploadedN != int64(len(body)) {
+		t.Errorf("streamed %d bytes, want %d", fs.uploadedN, len(body))
+	}
+}
+
+// A submission the caller does not own reads back as 404 (the transport reports
+// ErrNotFound), so the endpoint cannot probe another user's submission.
+func TestUploadSubmissionContextNotOwnedIs404(t *testing.T) {
+	fs := &fakeSubmissions{uploadErr: submit.ErrNotFound}
+	api := appSubAPI(fs)
+	w := do(api.ExternalHandler(), "POST", "/api/v1/me/submissions/sub-x/context", "\x1f\x8bdata", nil)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("code = %d, want 404 (%s)", w.Code, w.Body.String())
+	}
+}
+
+// Uploading to an already-reviewed submission is a 409.
+func TestUploadSubmissionContextAlreadyReviewedIs409(t *testing.T) {
+	fs := &fakeSubmissions{uploadErr: submit.ErrAlreadyReviewed}
+	api := appSubAPI(fs)
+	w := do(api.ExternalHandler(), "POST", "/api/v1/me/submissions/sub-9/context", "\x1f\x8bdata", nil)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("code = %d, want 409 (%s)", w.Code, w.Body.String())
+	}
+}
+
+// A wrong-format / oversize body surfaces as 400 (the transport wraps ErrInvalid).
+func TestUploadSubmissionContextBadFormatIs400(t *testing.T) {
+	fs := &fakeSubmissions{uploadErr: fmt.Errorf("%w: build context must be a gzip-compressed tarball (.tar.gz)", submit.ErrInvalid)}
+	api := appSubAPI(fs)
+	w := do(api.ExternalHandler(), "POST", "/api/v1/me/submissions/sub-9/context", "not gzip", nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, want 400 (%s)", w.Code, w.Body.String())
+	}
+	if got := decodeErr(t, w); got != "bad_request" {
+		t.Errorf("error code = %q, want bad_request", got)
+	}
+}
+
+// When the deployment's store has no upload transport, the endpoint reports 503
+// (ErrUploadsUnavailable) — an honest "not available here", not a 500.
+func TestUploadSubmissionContextNoTransportIs503(t *testing.T) {
+	fs := &fakeSubmissions{uploadErr: submit.ErrUploadsUnavailable}
+	api := appSubAPI(fs)
+	w := do(api.ExternalHandler(), "POST", "/api/v1/me/submissions/sub-9/context", "\x1f\x8bdata", nil)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("code = %d, want 503 (%s)", w.Code, w.Body.String())
+	}
+	if got := decodeErr(t, w); got != "uploads_unavailable" {
+		t.Errorf("error code = %q, want uploads_unavailable", got)
+	}
+}
+
+// The upload route is app-tier: with no service configured it is 503, exactly
+// like the other /me/submissions routes.
+func TestUploadSubmissionContextWithoutServiceIs503(t *testing.T) {
+	app := appSubAPI(nil)
+	app.Submissions = nil
+	w := do(app.ExternalHandler(), "POST", "/api/v1/me/submissions/sub-9/context", "\x1f\x8bdata", nil)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("code = %d, want 503 (%s)", w.Code, w.Body.String())
 	}
 }
 

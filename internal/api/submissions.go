@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 
 	"felis.lolicon.best/internal/submit"
@@ -27,6 +28,10 @@ type SubmissionService interface {
 	// Create records a pending_review submission. It starts NO build (the whole
 	// point of the lane — nothing is built until an admin approves).
 	Create(ctx context.Context, req submit.CreateRequest) (*submit.Submission, error)
+	// UploadContext stores the modpack blob for the caller's own pending
+	// submission at the platform-derived context ref. submittedBy is the principal,
+	// never the body, so a user can only upload to a submission they own.
+	UploadContext(ctx context.Context, id, submittedBy string, r io.Reader) (*submit.Submission, error)
 	// ListBy returns one user's submissions, newest first (the "my uploads" view).
 	ListBy(ctx context.Context, submittedBy string) ([]submit.Submission, error)
 	// List returns every submission, newest first (the admin review queue).
@@ -78,6 +83,32 @@ func (a *API) handleCreateSubmission(w http.ResponseWriter, r *http.Request) {
 	}
 	a.audit(r, p.Email, "submission.create", sub.ID)
 	writeJSON(w, http.StatusCreated, sub)
+}
+
+// handleUploadSubmissionContext stores the caller's modpack blob as the build
+// context for their own pending submission (app-tier). The request body IS the
+// raw gzip tarball (context.tar.gz) — not JSON, not multipart — streamed straight
+// to the transport; the submit layer sniffs the gzip magic and caps the size. The
+// submitter is the authenticated principal, never the body, and a submission the
+// caller does not own is reported as 404, so this endpoint cannot upload to — or
+// probe the existence of — another user's submission.
+//
+// Uploading does not change the submission row (there is no "uploaded" column):
+// the blob store is the presence source of truth, which admin approval consults.
+func (a *API) handleUploadSubmissionContext(w http.ResponseWriter, r *http.Request) {
+	if a.Submissions == nil {
+		writeError(w, r, errSubmissionsUnavailable)
+		return
+	}
+	p := principalFromContext(r.Context())
+	id := r.PathValue("id")
+	sub, err := a.Submissions.UploadContext(r.Context(), id, p.UserID, r.Body)
+	if err != nil {
+		writeSubmitError(w, r, err)
+		return
+	}
+	a.audit(r, p.Email, "submission.upload", sub.ID)
+	writeJSON(w, http.StatusOK, sub)
 }
 
 // handleMySubmissions lists the caller's own submissions (app-tier). It scopes
@@ -162,8 +193,10 @@ var errSubmissionsUnavailable = newError(http.StatusServiceUnavailable, "submiss
 	"modpack submission subsystem is not configured")
 
 // writeSubmitError maps submit-package errors onto HTTP status codes. Only the
-// three business sentinels are client-facing: a validation failure is 400, a
-// missing submission is 404, an already-reviewed submission is 409. Everything
+// business sentinels are client-facing: a validation failure is 400, a missing
+// submission is 404, an already-reviewed submission is 409, and an unconfigured
+// upload transport is 503 (the store this deployment set has no implemented
+// transport — an honest "not available here", not a client error). Everything
 // else — including a build.ErrInvalid raised by the pre-CAS build.Validate (a
 // platform registry/context MISCONFIGURATION, never client input, since every
 // build input is platform-derived) and a post-CAS Submit hand-off failure — is a
@@ -178,6 +211,9 @@ func writeSubmitError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, submit.ErrAlreadyReviewed):
 		writeError(w, r, newError(http.StatusConflict, "already_reviewed",
 			"submission has already been reviewed"))
+	case errors.Is(err, submit.ErrUploadsUnavailable):
+		writeError(w, r, newError(http.StatusServiceUnavailable, "uploads_unavailable",
+			"modpack upload transport is not configured"))
 	default:
 		writeError(w, r, err)
 	}

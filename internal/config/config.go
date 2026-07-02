@@ -78,6 +78,27 @@ type RegistryConfig struct {
 	// archive (§19 WorldArchiver) and a build context (§16) are different artifacts
 	// with different lifecycles, so the two must not share a store binding.
 	UserUploadsContext string `toml:"user_uploads_context"`
+	// S3 configures the object-store backend for user_uploads_context when it is an
+	// s3:// base (the alternative to a local uploads path). It mirrors
+	// ArchiveS3Config: Endpoint + Region locate the store and the *Ref fields NAME
+	// the environment variables felis-api reads the credentials from — never the
+	// secrets themselves, so no S3 key is ever written into felis.toml. The setup
+	// wizard injects those env vars into felis-api from a separate Secret
+	// (felis-uploads-s3). The bucket (and any key prefix) is taken from
+	// user_uploads_context itself, so it is not duplicated here. Empty for a
+	// local-storage install.
+	S3 RegistryS3Config `toml:"s3"`
+}
+
+// RegistryS3Config is the [registry.s3] subtable: the object-store coordinates for
+// a user_uploads_context that is an s3:// base. It deliberately reads like
+// ArchiveS3Config (endpoint + credential refs) so the two S3 bindings are
+// consistent, but omits Bucket because the s3:// base already carries it.
+type RegistryS3Config struct {
+	Endpoint     string `toml:"endpoint"`
+	Region       string `toml:"region"`
+	AccessKeyRef string `toml:"access_key_ref"`
+	SecretKeyRef string `toml:"secret_key_ref"`
 }
 
 // ArchiveConfig is the [archive] table plus its [archive.s3] subtable (spec §19).

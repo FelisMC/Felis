@@ -7,7 +7,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	goruntime "runtime"
+	"strings"
 	"time"
 
 	"felis.lolicon.best/internal/api"
@@ -16,6 +18,7 @@ import (
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/panel"
 	"felis.lolicon.best/internal/passkey"
+	"felis.lolicon.best/internal/platform"
 	"felis.lolicon.best/internal/restore"
 	"felis.lolicon.best/internal/store"
 	"felis.lolicon.best/internal/submit"
@@ -104,15 +107,43 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// the SAME Trivy-gated Builder runs as for an admin's direct build. Registry
 	// MUST match the Builder's RegistryURL (cfg.Registry.URL) — both are wired from
 	// the one field here so the lane's pre-CAS validate and the Builder's Submit
-	// can never disagree about the push target. The blob upload transport that
-	// populates the derived context ref is deferred (INTEGRATION-ONLY): the
-	// create→approve→reject state machine is real Postgres truth, but a real
-	// Kaniko context pull needs that transport in place.
+	// can never disagree about the push target.
+	//
+	// The blob upload transport is selected by the shape of user_uploads_context —
+	// the two backends the setup wizard chooses between. A local path wires
+	// LocalContextStore (the mounted uploads PVC); an s3:// base wires
+	// S3ContextStore when its credentials resolve. Either way the store's target is
+	// derived from the SAME config field the context ref uses, so the blob lands
+	// exactly where Kaniko's --context points. Anything else — or an s3:// base with
+	// no credentials configured — leaves Blobs nil so POST
+	// /me/submissions/{id}/context returns 503, honest like the restore executor
+	// when its PVC is not supplied. (Letting the sandboxed Kaniko build Pod READ the
+	// context — PVC mount for local, creds+egress for S3 — is a separate deployment
+	// integration.)
+	contextBase := cfg.Registry.UserUploadsContext
+	var blobs submit.Blobs
+	switch {
+	case isLocalUploadsPath(contextBase):
+		// Normalize a file:// URL to the plain path ONCE and feed it to BOTH the
+		// derived ref (ContextStore) and the store (Base), so the recorded
+		// context_ref and the on-disk write location can never diverge.
+		contextBase = strings.TrimPrefix(contextBase, "file://")
+		blobs = &submit.LocalContextStore{Base: contextBase}
+	case strings.HasPrefix(strings.ToLower(contextBase), "s3://"):
+		if s3, err := newS3UploadsStore(cfg.Registry); err != nil {
+			fmt.Fprintf(stderr, "felis api: S3 user-uploads store not configured (%v) — modpack upload transport disabled (POST /api/v1/me/submissions/{id}/context returns 503)\n", err)
+		} else {
+			blobs = s3
+		}
+	default:
+		fmt.Fprintf(stderr, "felis api: user-uploads context %q is neither a local path nor an s3:// base — modpack upload transport disabled (POST /api/v1/me/submissions/{id}/context returns 503)\n", contextBase)
+	}
 	submissions := &submit.Manager{
 		Store:        submit.NewPGStore(drv.DB()),
 		Builds:       builder,
 		Registry:     cfg.Registry.URL,
-		ContextStore: cfg.Registry.UserUploadsContext,
+		ContextStore: contextBase,
+		Blobs:        blobs,
 	}
 
 	// Restore subsystem (spec §7): the weak-SA restore Job mounts the target
@@ -278,6 +309,48 @@ func buildConfig(cfg *config.Config) build.Config {
 		Namespace:   cfg.Registry.BuildNamespace,
 		RegistryURL: cfg.Registry.URL,
 	}
+}
+
+// uploadsSchemeRE matches a leading URL scheme like "s3://" or "gs://".
+var uploadsSchemeRE = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9+.-]*://`)
+
+// isLocalUploadsPath reports whether the user-uploads context base is a local
+// filesystem path (a bare path or a file:// URL), i.e. one LocalContextStore can
+// write to. An s3:// base routes to newS3UploadsStore instead; any other scheme
+// has no implemented transport, so its uploads are left disabled (503).
+func isLocalUploadsPath(base string) bool {
+	if strings.HasPrefix(base, "file://") {
+		return true
+	}
+	return !uploadsSchemeRE.MatchString(base)
+}
+
+// newS3UploadsStore builds the S3 blob transport for an s3:// user_uploads_context.
+// The bucket + key prefix come from the base itself; the endpoint/region come from
+// [registry.s3]; and the credentials are read from the environment variables named
+// by access_key_ref / secret_key_ref (defaulting to the fixed env names the
+// felis-api Deployment injects from the felis-uploads-s3 Secret). Any missing piece
+// is an error, so the caller leaves Blobs nil and the upload endpoint returns 503
+// rather than pretending it can persist a file.
+func newS3UploadsStore(reg config.RegistryConfig) (submit.Blobs, error) {
+	accessRef, secretRef := reg.S3.AccessKeyRef, reg.S3.SecretKeyRef
+	if accessRef == "" {
+		accessRef = platform.UploadsS3AccessKeyEnv
+	}
+	if secretRef == "" {
+		secretRef = platform.UploadsS3SecretKeyEnv
+	}
+	accessKey, secretKey := os.Getenv(accessRef), os.Getenv(secretRef)
+	if accessKey == "" || secretKey == "" {
+		return nil, fmt.Errorf("credentials env %s/%s are empty", accessRef, secretRef)
+	}
+	return submit.NewS3ContextStore(submit.S3StoreConfig{
+		Base:      reg.UserUploadsContext,
+		Endpoint:  reg.S3.Endpoint,
+		Region:    reg.S3.Region,
+		AccessKey: accessKey,
+		SecretKey: secretKey,
+	})
 }
 
 // restoreConfig projects felis.toml + the deployment-supplied image and backup

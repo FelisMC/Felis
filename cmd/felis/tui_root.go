@@ -81,6 +81,11 @@ func goBack() tea.Cmd { return func() tea.Msg { return goBackMsg{} } }
 // connection chooser.
 type reconfigureConnectMsg struct{}
 
+// reconfigureStorageMsg is sent from the summary/status screen to re-enter the
+// storage chooser — the supported way to fix a mistyped S3 detail or switch
+// backends after install, without hand-editing felis.toml and the Secret.
+type reconfigureStorageMsg struct{}
+
 // ---- rootModel: top-level session ----
 
 type wizardStage int
@@ -89,6 +94,7 @@ const (
 	stagePreflight wizardStage = iota
 	stageOwner
 	stageConnect
+	stageStorage
 	stageSummary
 	// stageMenu is the break-glass operation menu. It is appended last so the
 	// setup-flow rail indices (Preflight…Done) are unshifted; the rail is suppressed
@@ -101,7 +107,7 @@ const (
 // and the post-install wizard owns cells 1–4. Defining it once keeps the two
 // programs' breadcrumbs identical so the rail reads as a single continuous bar
 // rather than restarting when the wizard takes over.
-var setupRailSteps = []string{"Bootstrap", "Preflight", "Owner", "Connection", "Done"}
+var setupRailSteps = []string{"Bootstrap", "Preflight", "Owner", "Connection", "Storage", "Done"}
 
 type rootModel struct {
 	ctx context.Context
@@ -112,6 +118,12 @@ type rootModel struct {
 	// reviewing is the index of a completed step the operator is looking back at
 	// (read-only), or -1 when the live screen is in front. Driven by ←/→.
 	reviewing int
+
+	// reconfiguringConnect is set while re-entering the connection chooser from the
+	// summary's "change connection" (or the re-run status screen). In that flow the
+	// storage backend is already configured, so completing the connection returns
+	// straight to the summary instead of forcing the operator back through storage.
+	reconfiguringConnect bool
 
 	width  int
 	height int
@@ -229,13 +241,36 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case connectResultMsg:
 		m.applyConnectResult(msg)
+		if m.reconfiguringConnect {
+			// Changing only the connection — storage is already set, so skip it.
+			m.reconfiguringConnect = false
+			return m.showSummary()
+		}
+		m.stage = stageStorage
+		return m.adopt(newStorageChooserModel(m.rootDomain, storageLocal, s3Inputs{}))
+
+	case storageResultMsg:
+		m.result.storageMethod = msg.method
+		m.result.storageDetail = msg.detail
 		return m.showSummary()
+
+	case storageBackMsg:
+		m.stage = stageStorage
+		return m.adopt(newStorageChooserModel(m.rootDomain, storageLocal, s3Inputs{}))
+
+	case reconfigureStorageMsg:
+		// Fixing/switching storage after install: re-enter the chooser pre-selected on
+		// the current backend, with the non-secret S3 fields pre-filled.
+		method, prefill := currentStorageInputs()
+		m.stage = stageStorage
+		return m.adopt(newStorageChooserModel(m.rootDomain, method, prefill))
 
 	case goBackMsg:
 		m.stage = stageConnect
 		return m.adopt(newConnectChooserModel(m.rootDomain, m.adminHost, m.panelHost))
 
 	case reconfigureConnectMsg:
+		m.reconfiguringConnect = true
 		m.stage = stageConnect
 		return m.adopt(newConnectChooserModel(m.rootDomain, m.adminHost, m.panelHost))
 	}
@@ -334,6 +369,12 @@ func (m *rootModel) reviewBody(stage int) string {
 		b.WriteString(tuiLabel.Render("method    ") + connectMethodLabel(m.result.connectMethod) + "\n")
 		if m.result.panelURL != "" {
 			b.WriteString(tuiLabel.Render("panel     ") + m.result.panelURL)
+		}
+	case stageStorage:
+		b.WriteString(tuiOK.Render("✓ Storage") + "\n")
+		b.WriteString(tuiLabel.Render("backend   ") + storageMethodLabel(m.result.storageMethod) + "\n")
+		if m.result.storageDetail != "" {
+			b.WriteString(tuiHint.Render(m.result.storageDetail))
 		}
 	}
 	b.WriteString("\n\n" + tuiHint.Render("read-only · ") + tuiLabel.Render("←/→") +
@@ -449,6 +490,7 @@ func (m *rootModel) showSummary() (tea.Model, tea.Cmd) {
 		ownerUsername: m.result.username,
 		ownerPassword: m.result.displayPassword,
 		accessLabel:   connectMethodLabel(m.result.connectMethod),
+		storageLabel:  m.result.storageDetail,
 		routedHosts:   routed,
 		localHint:     m.result.connectMethod == connectLocal,
 	})

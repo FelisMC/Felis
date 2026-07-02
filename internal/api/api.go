@@ -369,6 +369,11 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// session is the correct gate (the admin verdict lives below, behind adminOnly).
 		{Method: "POST", Pattern: "/api/v1/me/submissions", h: a.handleCreateSubmission},
 		{Method: "GET", Pattern: "/api/v1/me/submissions", h: a.handleMySubmissions},
+		// The blob upload for a submission the caller owns: the request body is the
+		// raw gzip build context, streamed to the derived, id-namespaced location.
+		// App-tier and owner-scoped (the id must belong to the principal), exactly
+		// like the create/list routes above.
+		{Method: "POST", Pattern: "/api/v1/me/submissions/{id}/context", h: a.handleUploadSubmissionContext},
 		// Admin (Zero-Trust) tier: create / mutate spec / image admission. These gate
 		// on Principal.IsAdmin() inside the handler via the adminOnly wrapper, so the
 		// boundary is exercised even where the body is a later-phase stub.

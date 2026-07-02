@@ -532,6 +532,10 @@ type breakGlassResult struct {
 	panelHostname     string
 	reverseProxyGuide string
 
+	// storage backend outcome
+	storageMethod storageMethod
+	storageDetail string
+
 	// Cloudflare-specific edge detail (set only when connectMethod is Cloudflare)
 	edgeConfigured    bool
 	edgeAud           string

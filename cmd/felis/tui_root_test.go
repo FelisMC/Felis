@@ -73,7 +73,7 @@ func TestRootSetupHappyPath(t *testing.T) {
 		t.Fatalf("owner result not recorded: %+v", m.result)
 	}
 
-	// Reverse-proxy chosen → Summary, with the connection recorded.
+	// Reverse-proxy chosen → Storage chooser, with the connection recorded.
 	guide := "caddy config…"
 	m = drive(t, m, connectResultMsg{
 		method:        connectReverseProxy,
@@ -81,12 +81,11 @@ func TestRootSetupHappyPath(t *testing.T) {
 		adminHostname: "admin.felis.example.com",
 		guide:         guide,
 	})
-	if m.stage != stageSummary {
-		t.Fatalf("after connect, stage = %v, want stageSummary", m.stage)
+	if m.stage != stageStorage {
+		t.Fatalf("after connect, stage = %v, want stageStorage", m.stage)
 	}
-	sum, ok := m.screen.(*summaryModel)
-	if !ok {
-		t.Fatalf("after connect, screen = %T, want *summaryModel", m.screen)
+	if _, ok := m.screen.(*storageChooserModel); !ok {
+		t.Fatalf("after connect, screen = %T, want *storageChooserModel", m.screen)
 	}
 	if !m.result.connectConfigured {
 		t.Fatalf("connectConfigured not set")
@@ -96,6 +95,22 @@ func TestRootSetupHappyPath(t *testing.T) {
 	}
 	if m.result.reverseProxyGuide != guide {
 		t.Fatalf("reverseProxyGuide = %q, want %q", m.result.reverseProxyGuide, guide)
+	}
+
+	// Storage chosen → Summary, with both the connection and storage recorded.
+	m = drive(t, m, storageResultMsg{method: storageS3, detail: "s3://bucket  ·  minio:9000"})
+	if m.stage != stageSummary {
+		t.Fatalf("after storage, stage = %v, want stageSummary", m.stage)
+	}
+	sum, ok := m.screen.(*summaryModel)
+	if !ok {
+		t.Fatalf("after storage, screen = %T, want *summaryModel", m.screen)
+	}
+	if m.result.storageMethod != storageS3 || m.result.storageDetail == "" {
+		t.Fatalf("storage result not recorded: %+v", m.result)
+	}
+	if sum.storageLabel != m.result.storageDetail {
+		t.Fatalf("summary storageLabel = %q, want %q", sum.storageLabel, m.result.storageDetail)
 	}
 	if want := "https://panel.felis.example.com"; sum.panelURL != want {
 		t.Fatalf("summary panelURL = %q, want %q", sum.panelURL, want)
@@ -113,6 +128,7 @@ func TestRootSetupLocalSummary(t *testing.T) {
 	m = drive(t, m, preflightDoneMsg{})
 	m = drive(t, m, ownerResultMsg{username: "owner"})
 	m = drive(t, m, connectResultMsg{method: connectLocal, panelHostname: "panel.felis.example.com"})
+	m = drive(t, m, storageResultMsg{method: storageLocal, detail: "local disk · /var/lib/felis/uploads"})
 
 	sum, ok := m.screen.(*summaryModel)
 	if !ok {
@@ -124,6 +140,83 @@ func TestRootSetupLocalSummary(t *testing.T) {
 	// Local never points at the public hostname.
 	if sum.panelURL == "https://panel.felis.example.com" {
 		t.Fatalf("local summary panelURL should be the local origin, got %q", sum.panelURL)
+	}
+}
+
+// TestRootReconfigureConnectSkipsStorage locks the flow guard: from the finished
+// summary, "change connection" re-enters only the connection chooser and returns
+// straight to the summary — storage was already configured, so the operator is not
+// dragged back through it, and the earlier storage recap is preserved.
+func TestRootReconfigureConnectSkipsStorage(t *testing.T) {
+	m := newTestRoot(false, consoleModeSetup, "")
+	m = drive(t, m, preflightDoneMsg{})
+	m = drive(t, m, ownerResultMsg{username: "owner", displayPassword: "hunter2"})
+	m = drive(t, m, connectResultMsg{method: connectLocal, panelHostname: "panel.felis.example.com"})
+	m = drive(t, m, storageResultMsg{method: storageS3, detail: "s3://bucket"})
+	if _, ok := m.screen.(*summaryModel); !ok {
+		t.Fatalf("after first run, screen = %T, want *summaryModel", m.screen)
+	}
+
+	// "change connection" re-enters the connection chooser.
+	m = drive(t, m, reconfigureConnectMsg{})
+	if m.stage != stageConnect {
+		t.Fatalf("reconfigure stage = %v, want stageConnect", m.stage)
+	}
+	if _, ok := m.screen.(*connectChooserModel); !ok {
+		t.Fatalf("reconfigure screen = %T, want *connectChooserModel", m.screen)
+	}
+
+	// Completing it returns straight to the summary — NOT the storage chooser —
+	// with the original storage recap intact.
+	m = drive(t, m, connectResultMsg{method: connectReverseProxy, panelHostname: "panel.felis.example.com", guide: "caddy…"})
+	if m.stage != stageSummary {
+		t.Fatalf("after reconfigure connect, stage = %v, want stageSummary", m.stage)
+	}
+	sum, ok := m.screen.(*summaryModel)
+	if !ok {
+		t.Fatalf("after reconfigure connect, screen = %T, want *summaryModel", m.screen)
+	}
+	if sum.storageLabel != "s3://bucket" {
+		t.Fatalf("reconfigure summary storageLabel = %q, want preserved %q", sum.storageLabel, "s3://bucket")
+	}
+	if m.result.connectMethod != connectReverseProxy {
+		t.Fatalf("reconfigure did not update connectMethod: %v", m.result.connectMethod)
+	}
+}
+
+// TestRootReconfigureStorageReEntersChooser locks the post-install "change storage"
+// path: from the finished summary it re-enters the storage chooser (not the
+// connection one) and returns to the summary carrying the new storage recap.
+func TestRootReconfigureStorageReEntersChooser(t *testing.T) {
+	m := newTestRoot(false, consoleModeSetup, "")
+	m = drive(t, m, preflightDoneMsg{})
+	m = drive(t, m, ownerResultMsg{username: "owner"})
+	m = drive(t, m, connectResultMsg{method: connectLocal, panelHostname: "panel.felis.example.com"})
+	m = drive(t, m, storageResultMsg{method: storageLocal, detail: "local disk · /var/lib/felis/uploads"})
+	if _, ok := m.screen.(*summaryModel); !ok {
+		t.Fatalf("after first run, screen = %T, want *summaryModel", m.screen)
+	}
+
+	// "change storage" re-enters the storage chooser.
+	m = drive(t, m, reconfigureStorageMsg{})
+	if m.stage != stageStorage {
+		t.Fatalf("reconfigure-storage stage = %v, want stageStorage", m.stage)
+	}
+	if _, ok := m.screen.(*storageChooserModel); !ok {
+		t.Fatalf("reconfigure-storage screen = %T, want *storageChooserModel", m.screen)
+	}
+
+	// Completing it returns to the summary with the updated storage recap.
+	m = drive(t, m, storageResultMsg{method: storageS3, detail: "s3://newbucket"})
+	if m.stage != stageSummary {
+		t.Fatalf("after reconfigure-storage, stage = %v, want stageSummary", m.stage)
+	}
+	sum, ok := m.screen.(*summaryModel)
+	if !ok {
+		t.Fatalf("after reconfigure-storage, screen = %T, want *summaryModel", m.screen)
+	}
+	if sum.storageLabel != "s3://newbucket" {
+		t.Fatalf("summary storageLabel = %q, want updated %q", sum.storageLabel, "s3://newbucket")
 	}
 }
 

@@ -76,6 +76,32 @@ const (
 	registryVolume = "data"
 	worldsVolume   = "worlds"
 	backupVolume   = "backup"
+	uploadsVolume  = "uploads"
+
+	// uploads* wire the user-uploads build-context store into felis-api. The PVC
+	// backs a LOCAL user_uploads_context — durable across pod restarts and
+	// fsGroup-writable by the non-root pod (unlike a root-owned hostPath). It is
+	// always rendered but only written to when uploads are local. The S3 secret/env
+	// carry credentials for an s3:// user_uploads_context and are OPTIONAL, so a
+	// local-storage install (no such Secret) still starts.
+	uploadsPVCName     = "felis-uploads"
+	uploadsStorageSize = "5Gi"
+	// UploadsLocalPath is the in-pod mount of the uploads PVC; a local
+	// user_uploads_context points here so the derived context ref and the on-disk
+	// write location agree. Exported so the setup wizard stamps it into felis.toml.
+	UploadsLocalPath = "/var/lib/felis/uploads"
+	// UploadsS3SecretName is the out-of-band Secret carrying the S3 credentials for
+	// an s3:// user_uploads_context. felis-api mounts its keys into env (optionally)
+	// and the setup wizard creates it. Like configSecretName it is NEVER rendered
+	// into the bundle — the credentials are the same red line.
+	UploadsS3SecretName      = "felis-uploads-s3"
+	UploadsS3SecretAccessKey = "access_key_id"
+	UploadsS3SecretSecretKey = "secret_access_key"
+	// UploadsS3AccessKeyEnv / UploadsS3SecretKeyEnv are the env vars felis-api reads
+	// the S3 credentials from; registry.s3.access_key_ref / secret_key_ref default to
+	// these names. The deployment injects them from UploadsS3SecretName (optional).
+	UploadsS3AccessKeyEnv = "FELIS_UPLOADS_S3_ACCESS_KEY"
+	UploadsS3SecretKeyEnv = "FELIS_UPLOADS_S3_SECRET_KEY"
 
 	// worldsMountPath is where the reaper CronJob mounts the worlds-root (read-only).
 	// It is the default of `felis reaper --worlds-root`; the resolver then reads each
@@ -129,6 +155,7 @@ func Workloads(p Params) []Object {
 		registryDeployment(p),
 		registryService(p),
 		registryPVC(p),
+		uploadsPVC(p),
 	}
 	if reaperEnabled(p) {
 		objs = append(objs, reaperCronJob(p))
@@ -159,6 +186,11 @@ func reaperEnabled(p Params) bool {
 // restore executor launches `felis restore` with the same image. FELIS_BACKUP_PVC
 // is rendered only when a backup PVC is named — otherwise the restore endpoint
 // degrades to 503 rather than enqueuing a Job that cannot mount its backup.
+//
+// The uploads PVC is mounted read-write at UploadsLocalPath for a local
+// user_uploads_context, and the two optional S3 credential env vars
+// (UploadsS3*Env, from the felis-uploads-s3 Secret) feed an s3:// one — the two
+// storage backends the setup wizard chooses between.
 func APIDeployment(p Params) *appsv1.Deployment {
 	p = p.withDefaults()
 
@@ -177,6 +209,20 @@ func APIDeployment(p Params) *appsv1.Deployment {
 	if p.BackupPVC != "" {
 		env = append(env, corev1.EnvVar{Name: "FELIS_BACKUP_PVC", Value: p.BackupPVC})
 	}
+	// S3 credentials for an s3:// user_uploads_context, sourced from the
+	// felis-uploads-s3 Secret. Optional: a local-storage install has no such Secret,
+	// and marking these optional lets the pod start anyway (the store falls back to
+	// the uploads PVC). The setup wizard creates the Secret and rolls the API when
+	// the operator picks S3 storage.
+	optional := boolPtr(true)
+	env = append(env,
+		corev1.EnvVar{Name: UploadsS3AccessKeyEnv, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: UploadsS3SecretName}, Key: UploadsS3SecretAccessKey, Optional: optional,
+		}}},
+		corev1.EnvVar{Name: UploadsS3SecretKeyEnv, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: UploadsS3SecretName}, Key: UploadsS3SecretSecretKey, Optional: optional,
+		}}},
+	)
 
 	container := corev1.Container{
 		Name:    ComponentAPI,
@@ -199,6 +245,10 @@ func APIDeployment(p Params) *appsv1.Deployment {
 			{Name: configVolume, MountPath: configMountPath, ReadOnly: true},
 			{Name: "tls", MountPath: apiTLSMountPath, ReadOnly: true},
 			{Name: tmpVolume, MountPath: "/tmp"},
+			// Read-WRITE: local uploads land here (an s3:// store bypasses it). The
+			// hardened container root is read-only, so this PVC mount is where a local
+			// LocalContextStore can persist a submitted context.
+			{Name: uploadsVolume, MountPath: UploadsLocalPath},
 		},
 		Resources:       controlPlaneResources(),
 		SecurityContext: hardenedContainerSecurityContext(),
@@ -218,6 +268,12 @@ func APIDeployment(p Params) *appsv1.Deployment {
 			},
 		},
 		{Name: tmpVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		{
+			Name: uploadsVolume,
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: uploadsPVCName},
+			},
+		},
 	}
 
 	return controlPlaneDeployment(p, SAAPI, container, volumes)
@@ -504,6 +560,27 @@ func registryPVC(p Params) *corev1.PersistentVolumeClaim {
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			Resources: corev1.VolumeResourceRequirements{
 				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(registryStorageSize)},
+			},
+		},
+	}
+}
+
+// uploadsPVC renders the felis-api user-uploads PVC (spec §16 build-context input
+// domain). It backs a LOCAL user_uploads_context: felis-api mounts it read-write
+// at UploadsLocalPath and LocalContextStore writes each submission's context there.
+// It is always rendered (an s3:// install simply never writes to it) and carries
+// control-plane labels so it reads as part of felis-api's storage. ReadWriteOnce is
+// the fail-safe access mode: the single-node starter binds it to felis-api's node,
+// and a future Kaniko-read integration mounts the same PVC on that node.
+func uploadsPVC(p Params) *corev1.PersistentVolumeClaim {
+	p = p.withDefaults()
+	return &corev1.PersistentVolumeClaim{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"},
+		ObjectMeta: metav1.ObjectMeta{Name: uploadsPVCName, Namespace: p.ControlNamespace, Labels: controlPlanePodLabels(ComponentAPI)},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(uploadsStorageSize)},
 			},
 		},
 	}

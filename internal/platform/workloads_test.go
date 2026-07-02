@@ -215,6 +215,44 @@ func TestAPIDeployment_Wiring(t *testing.T) {
 	}
 }
 
+// TestAPIDeployment_UploadsStorage pins both storage backends' wiring: the local
+// uploads PVC mounted read-write, and the two S3 credential env vars sourced
+// optionally from the felis-uploads-s3 Secret (so a local install still starts).
+func TestAPIDeployment_UploadsStorage(t *testing.T) {
+	ps, c := podSpec(t, APIDeployment(testParams()))
+
+	// Local backend: uploads PVC mounted read-WRITE at UploadsLocalPath.
+	vol := volumeByName(ps.Volumes, uploadsVolume)
+	if vol == nil || vol.PersistentVolumeClaim == nil || vol.PersistentVolumeClaim.ClaimName != uploadsPVCName {
+		t.Fatalf("uploads volume must mount PVC %q, got %#v", uploadsPVCName, vol)
+	}
+	if m := mountByName(c.VolumeMounts, uploadsVolume); m == nil || m.MountPath != UploadsLocalPath || m.ReadOnly {
+		t.Errorf("uploads mount = %#v, want read-write at %s", m, UploadsLocalPath)
+	}
+
+	// S3 backend: both credential env vars come from the Secret (never literals) and
+	// are OPTIONAL, so a local install with no such Secret still starts.
+	for _, ev := range []struct{ name, key string }{
+		{UploadsS3AccessKeyEnv, UploadsS3SecretAccessKey},
+		{UploadsS3SecretKeyEnv, UploadsS3SecretSecretKey},
+	} {
+		e := envVar(c.Env, ev.name)
+		if e == nil || e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil {
+			t.Fatalf("%s must be sourced from a secretKeyRef", ev.name)
+		}
+		ref := e.ValueFrom.SecretKeyRef
+		if ref.Name != UploadsS3SecretName || ref.Key != ev.key {
+			t.Errorf("%s ref = %s/%s, want %s/%s", ev.name, ref.Name, ref.Key, UploadsS3SecretName, ev.key)
+		}
+		if ref.Optional == nil || !*ref.Optional {
+			t.Errorf("%s secretKeyRef must be optional (a local install has no such Secret)", ev.name)
+		}
+		if e.Value != "" {
+			t.Errorf("%s must not carry a literal value", ev.name)
+		}
+	}
+}
+
 func TestAPIService_NodePort(t *testing.T) {
 	p := testParams()
 	p.PanelNodePort = 30445
@@ -341,8 +379,8 @@ func TestRegistry_DeploymentServicePVC(t *testing.T) {
 // every one with TypeMeta (so its YAML header renders).
 func TestWorkloads_BundleContents(t *testing.T) {
 	objs := Workloads(testParams())
-	if len(objs) != 6 {
-		t.Fatalf("Workloads returned %d objects, want 6", len(objs))
+	if len(objs) != 7 {
+		t.Fatalf("Workloads returned %d objects, want 7", len(objs))
 	}
 	for _, o := range objs {
 		gvk := o.GetObjectKind().GroupVersionKind()
