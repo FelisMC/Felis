@@ -11,6 +11,7 @@ import { ServersPage } from "@/pages/servers/ServersPage";
 import { ServerConsole } from "@/pages/ServerConsole";
 import { ServerPlayers } from "@/pages/ServerPlayers";
 import { ServerBackups } from "@/pages/ServerBackups";
+import { ServerLuckPerms } from "@/pages/ServerLuckPerms";
 import { Account } from "@/pages/Account";
 import { ImageAdmin } from "@/pages/admin/ImageAdmin";
 import { ImageBuildPage } from "@/pages/admin/ImageBuildPage";
@@ -47,6 +48,7 @@ export default function App() {
               <Route path="servers/:name" element={<ServerConsole />} />
               <Route path="servers/:name/players" element={<ServerPlayers />} />
               <Route path="servers/:name/backups" element={<ServerBackups />} />
+              <Route path="servers/:name/luckperms" element={<ServerLuckPerms />} />
               <Route path="submissions" element={<MySubmissionsPage />} />
               <Route path="account" element={<Account />} />
 

@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useLayoutEffect, type KeyboardEvent } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, Terminal, Moon, ShieldAlert, HelpCircle, Loader2, Users, Archive, ChevronRight, type LucideIcon } from "lucide-react";
+import { ArrowLeft, Terminal, Moon, Shield, ShieldAlert, HelpCircle, Loader2, Users, Archive, ChevronRight, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -268,7 +268,7 @@ export function ServerConsole() {
               </Card>
             </div>
 
-            {/* Right/Sidebar column: Navigation */}
+             {/* Right/Sidebar column: Navigation */}
             <div className="flex flex-col gap-4 lg:col-span-1 shrink-0">
               {isAdmin && (
                 <EditServerDialog
@@ -281,6 +281,21 @@ export function ServerConsole() {
                   currentCpu={data.cpu}
                   onUpdated={reload}
                 />
+              )}
+              {(data.owned || isAdmin) && (
+                <Link
+                  to={`/servers/${name}/luckperms`}
+                  className="group flex items-center gap-3 rounded-lg border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent"
+                >
+                  <Shield className="h-5 w-5 shrink-0 text-primary" />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium">{t("luckperms_link_title")}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {t("luckperms_link_desc")}
+                    </p>
+                  </div>
+                  <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+                </Link>
               )}
               {/* Player management lives on its own subpage (whitelist / online / bans),
                   not crammed under the console. This is the doorway to it; the page

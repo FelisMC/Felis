@@ -38,12 +38,18 @@ interface MockServer extends ServerInfo {
   owner: AccountID | null;
 }
 
+interface PlayerLuckPerms {
+  groups: string[];
+  permissions: { node: string; value: boolean; world?: string }[];
+}
+
 interface AccessState {
   whitelist: string[];
   banned: string[];
   // online is the mock's stand-in for the live RCON "list" roster. Kick and ban
   // splice a player out of it so the demo roster reflects the action on reload.
   online: string[];
+  luckperms: Record<string, PlayerLuckPerms>;
 }
 
 interface MockState {
@@ -62,6 +68,8 @@ interface MockState {
 // rejects a malformed player exactly as the real API would (400 bad_request),
 // keeping the panel's error path exercisable in dev.
 const PLAYER_NAME = /^[A-Za-z0-9_]{1,16}$/;
+const LP_NODE = /^[A-Za-z0-9_.*-]{1,64}$/;
+const LP_CTX = /^[A-Za-z0-9_-]{1,48}$/;
 
 interface RequestContext {
   req: IncomingMessage;
@@ -240,6 +248,22 @@ function initialState(): MockState {
           "mock_player", "test_player", "Notch", "Steve", "Alex", "jeb_",
           "Dinnerbone", "Griefer_88", "rndGuest_7", "xX_Raider_Xx", "creeper_fan", "Herobrine",
         ],
+        luckperms: {
+          Steve: {
+            groups: ["vip", "default"],
+            permissions: [
+              { node: "essentials.fly", value: true },
+              { node: "essentials.tpa", value: true },
+              { node: "minecraft.command.gamemode", value: false },
+            ],
+          },
+          Alex: {
+            groups: ["default"],
+            permissions: [
+              { node: "essentials.tpa", value: true },
+            ],
+          },
+        },
       },
     },
     backups: mockBackups(),
@@ -1277,7 +1301,7 @@ async function handleRestoreBackupMock(ctx: SessionContext, serverInfo: MockServ
 function accessFor(state: MockState, name: string): AccessState {
   let entry = state.access[name];
   if (!entry) {
-    entry = { whitelist: [], banned: [], online: [] };
+    entry = { whitelist: [], banned: [], online: [], luckperms: {} };
     state.access[name] = entry;
   }
   return entry;
@@ -1326,6 +1350,21 @@ function handleAccessMock(ctx: SessionContext, serverInfo: MockServer): boolean 
   const sub = ctx.parts[5];
   const access = accessFor(ctx.state, serverInfo.name);
 
+  if (is("GET", ctx) && sub === "luckperms") {
+    const player = ctx.parts[6];
+    if (!player || !PLAYER_NAME.test(player)) {
+      sendError(ctx.res, 400, "bad_request", "invalid player name");
+      return true;
+    }
+    const lpData = access.luckperms[player] || { groups: ["default"], permissions: [] };
+    sendJSON(ctx.res, 200, {
+      player,
+      groups: lpData.groups,
+      permissions: lpData.permissions,
+    });
+    return true;
+  }
+
   if (is("GET", ctx) && sub === "whitelist") {
     sendJSON(ctx.res, 200, {
       name: serverInfo.name,
@@ -1365,6 +1404,14 @@ function handleAccessMock(ctx: SessionContext, serverInfo: MockServer): boolean 
     void handleListMutation(ctx, serverInfo, access, "ban");
     return true;
   }
+  if (is("POST", ctx) && sub === "group") {
+    void handleGroupMock(ctx, serverInfo);
+    return true;
+  }
+  if (is("POST", ctx) && sub === "permission") {
+    void handlePermissionMock(ctx, serverInfo);
+    return true;
+  }
 
   return false;
 }
@@ -1388,6 +1435,110 @@ async function handleKickMock(
     name: serverInfo.name,
     player,
     output: `[mock] kick ${player}`,
+  });
+}
+
+async function handleGroupMock(
+  ctx: SessionContext,
+  serverInfo: MockServer,
+): Promise<void> {
+  const body = await readJSON<{ action?: string; player?: string; group?: string }>(ctx.req);
+  const player = body.player?.trim() ?? "";
+  const group = body.group?.trim() ?? "";
+  const action = body.action?.trim() ?? "";
+
+  if (!PLAYER_NAME.test(player)) {
+    sendError(ctx.res, 400, "bad_request", "invalid player name");
+    return;
+  }
+  if (!LP_CTX.test(group)) {
+    sendError(ctx.res, 400, "bad_request", "invalid group name");
+    return;
+  }
+  if (action !== "add" && action !== "remove") {
+    sendError(ctx.res, 400, "bad_request", "invalid action");
+    return;
+  }
+
+  const access = accessFor(ctx.state, serverInfo.name);
+  if (!access.luckperms[player]) {
+    access.luckperms[player] = { groups: ["default"], permissions: [] };
+  }
+  const lp = access.luckperms[player];
+  if (action === "add") {
+    if (!lp.groups.includes(group)) lp.groups.push(group);
+  } else if (action === "remove") {
+    lp.groups = lp.groups.filter((g) => g !== group);
+  }
+
+  sendJSON(ctx.res, 200, {
+    name: serverInfo.name,
+    action,
+    player,
+    group,
+    output: `[mock-luckperms] Added parent group '${group}' for user ${player} in context global`,
+  });
+}
+
+async function handlePermissionMock(
+  ctx: SessionContext,
+  serverInfo: MockServer,
+): Promise<void> {
+  const body = await readJSON<{
+    action?: string;
+    player?: string;
+    node?: string;
+    value?: boolean;
+    world?: string;
+  }>(ctx.req);
+  const player = body.player?.trim() ?? "";
+  const node = body.node?.trim() ?? "";
+  const action = body.action?.trim() ?? "";
+  const value = body.value ?? true;
+  const world = body.world?.trim() ?? "";
+
+  if (!PLAYER_NAME.test(player)) {
+    sendError(ctx.res, 400, "bad_request", "invalid player name");
+    return;
+  }
+  if (!LP_NODE.test(node)) {
+    sendError(ctx.res, 400, "bad_request", "invalid permission node");
+    return;
+  }
+  if (world !== "" && !LP_CTX.test(world)) {
+    sendError(ctx.res, 400, "bad_request", "invalid world context");
+    return;
+  }
+  if (action !== "set" && action !== "unset") {
+    sendError(ctx.res, 400, "bad_request", "invalid action");
+    return;
+  }
+
+  const access = accessFor(ctx.state, serverInfo.name);
+  if (!access.luckperms[player]) {
+    access.luckperms[player] = { groups: ["default"], permissions: [] };
+  }
+  const lp = access.luckperms[player];
+  if (action === "set") {
+    lp.permissions = lp.permissions.filter((p) => !(p.node === node && p.world === world));
+    lp.permissions.push({ node, value, world: world || undefined });
+  } else if (action === "unset") {
+    lp.permissions = lp.permissions.filter((p) => !(p.node === node && p.world === world));
+  }
+
+  const worldSuffix = world ? ` (world=${world})` : "";
+  const outputMsg = action === "set"
+    ? `[mock-luckperms] Set permission ${node} to ${value} for ${player}${worldSuffix}`
+    : `[mock-luckperms] Unset permission ${node} for ${player}${worldSuffix}`;
+
+  sendJSON(ctx.res, 200, {
+    name: serverInfo.name,
+    action,
+    player,
+    node,
+    value,
+    world: world || undefined,
+    output: outputMsg,
   });
 }
 

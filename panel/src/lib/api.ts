@@ -188,6 +188,39 @@ export const api = {
   accessKick: (name: string, player: string) =>
     request<KickResult>("POST", `/servers/${name}/access/kick`, { player }),
 
+  accessLuckPermsInfo: (name: string, player: string) =>
+    request<{
+      player: string;
+      groups: string[];
+      permissions: { node: string; value: boolean; world?: string }[];
+    }>("GET", `/servers/${name}/access/luckperms/${player}`),
+
+  accessPermission: (
+    name: string,
+    action: "set" | "unset",
+    player: string,
+    node: string,
+    value?: boolean,
+    world?: string
+  ) =>
+    request<AccessResult & { node: string; value?: boolean; world?: string }>(
+      "POST",
+      `/servers/${name}/access/permission`,
+      { action, player, node, value, world }
+    ),
+
+  accessGroup: (
+    name: string,
+    action: "add" | "remove",
+    player: string,
+    group: string
+  ) =>
+    request<AccessResult & { group: string }>(
+      "POST",
+      `/servers/${name}/access/group`,
+      { action, player, group }
+    ),
+
   listImages: () =>
     request<{ images: WhitelistImage[] }>("GET", "/images").then((r) => r.images ?? []),
 
