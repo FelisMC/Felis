@@ -72,7 +72,7 @@ export function LogConsole({ url, className }: { url: string; className?: string
   const jumpToLatest = useCallback(() => setPinned(true), []);
 
   return (
-    <div className={cn("overflow-hidden rounded-md border border-border bg-zinc-950 flex-1 flex flex-col min-h-0", className)}>
+    <div className={cn("overflow-hidden rounded-md border border-border bg-black flex-1 flex flex-col min-h-0", className)}>
       {/* Toolbar */}
       <div className="flex items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-900/60 px-3 py-2 shrink-0">
         <StatusIndicator status={status} />

@@ -240,27 +240,27 @@ export function ServerConsole() {
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-4 flex-1 lg:min-h-0 min-h-0">
             {/* Left/Main column: Console */}
             <div className="lg:col-span-3 flex flex-col lg:min-h-0 min-h-0 h-full">
-              <Card className="flex flex-col flex-1 lg:min-h-0 min-h-0 overflow-hidden">
-                <CardContent className="p-0 flex-1 flex flex-col lg:min-h-0 min-h-0">
+              <Card className="dark flex flex-col flex-1 lg:min-h-0 min-h-0 overflow-hidden bg-black text-zinc-50 border-zinc-800">
+                <CardContent className="p-0 flex-1 flex flex-col lg:min-h-0 min-h-0 bg-black">
                   {!streamable ? (
-                    <div className="flex-1 flex flex-col justify-center p-6">
+                    <div className="flex-1 flex flex-col justify-center p-6 bg-black">
                       <NotStreaming phase={data.phase} />
                     </div>
                   ) : cfg ? (
-                    <div className="flex-1 flex flex-col lg:min-h-0 min-h-0">
+                    <div className="flex-1 flex flex-col lg:min-h-0 min-h-0 bg-black">
                       <LogConsole
                         key={name}
                         url={consoleStreamURL(cfg.apiBase, name)}
                         className="border-0 rounded-none bg-transparent"
                       />
                       {data.phase === "Running" && (
-                        <div className="p-3 bg-zinc-950/50 border-t border-zinc-800">
+                        <div className="p-3 bg-zinc-900/40 border-t border-zinc-800">
                           <CommandInput name={name} />
                         </div>
                       )}
                     </div>
                   ) : (
-                    <div className="p-6">
+                    <div className="p-6 bg-black">
                       <Loading />
                     </div>
                   )}
