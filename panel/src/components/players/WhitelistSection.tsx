@@ -4,6 +4,7 @@ import { ListChecks, Loader2, Plus, RotateCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
+import { cn } from "@/lib/utils";
 import {
   CollapsibleSection,
   FeedbackLine,
@@ -131,7 +132,7 @@ export function WhitelistSection({ name, defaultOpen = false }: { name: string; 
           {invalid && <p className="text-xs text-destructive">{t("access_player_invalid")}</p>}
         </div>
 
-        {loading ? (
+        {loading && !data ? (
           <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
             <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("log_connecting")}
           </div>
@@ -145,7 +146,7 @@ export function WhitelistSection({ name, defaultOpen = false }: { name: string; 
             </p>
           </div>
         ) : (
-          <div className="space-y-2">
+          <div className={cn("space-y-2 transition-opacity", loading && "opacity-60 pointer-events-none")}>
             {showSearch && <SearchBox value={query} onChange={onQuery} />}
 
             <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
