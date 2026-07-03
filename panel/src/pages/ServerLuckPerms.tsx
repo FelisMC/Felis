@@ -457,12 +457,12 @@ export function ServerLuckPerms() {
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="p-5 space-y-4">
-                    {lpLoading ? (
+                    {lpLoading && !lpInfo ? (
                       <div className="flex justify-center py-4">
                         <Loader2 className="h-6 w-6 animate-spin text-primary" />
                       </div>
                     ) : (
-                      <>
+                      <div className={cn("space-y-4 transition-opacity", lpLoading && "opacity-60 pointer-events-none")}>
                         <div className="flex flex-wrap gap-1.5">
                           {lpInfo?.groups && lpInfo.groups.length > 0 ? (
                             lpInfo.groups.map((group) => (
@@ -532,7 +532,7 @@ export function ServerLuckPerms() {
                             {t("luckperms_add_group_btn")}
                           </Button>
                         </div>
-                      </>
+                      </div>
                     )}
                   </CardContent>
                 </Card>
@@ -545,12 +545,12 @@ export function ServerLuckPerms() {
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="p-5 space-y-4">
-                    {lpLoading ? (
+                    {lpLoading && !lpInfo ? (
                       <div className="flex justify-center py-4">
                         <Loader2 className="h-6 w-6 animate-spin text-primary" />
                       </div>
                     ) : (
-                      <>
+                      <div className={cn("space-y-4 transition-opacity", lpLoading && "opacity-60 pointer-events-none")}>
                         <div className="rounded-md border border-border bg-muted/10 overflow-hidden">
                           <div className="overflow-x-auto">
                             <table className="w-full text-left border-collapse text-xs">
@@ -703,7 +703,7 @@ export function ServerLuckPerms() {
                             </Button>
                           </div>
                         </form>
-                      </>
+                      </div>
                     )}
                   </CardContent>
                 </Card>
