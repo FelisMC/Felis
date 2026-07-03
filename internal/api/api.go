@@ -73,6 +73,11 @@ type API struct {
 	// sender. The code is never returned to the client on either path.
 	Mailer OTPMailer
 
+	// ResetMailer delivers admin-generated password-reset passwords to the user's
+	// verified email address. Same nil→server-side-log pattern as Mailer; the
+	// password is never returned to the admin caller. Production wires a real sender.
+	ResetMailer ResetMailer
+
 	// Passkey verifies WebAuthn credential-creation ceremonies (spec §14 / Phase 6
 	// passkey bind). It is optional: when nil the passkey register routes report 503
 	// rather than panic, so the authenticated enrollment boundary is exercised before
@@ -218,6 +223,13 @@ type apiRoute struct {
 	// Zero-Trust path (the adminOnly wrapper + Principal.IsAdmin() inside the
 	// handler). Internal-face routes never set it.
 	Admin bool
+
+	// Owner marks an external-face route that requires the platform-level owner
+	// role (Principal.IsOwner()). It is orthogonal to Admin: an owner
+	// intrinsically passes the admin ZT gate (IsAdmin() accepts both admin and
+	// owner), so a route that sets Owner does not also need Admin. Mixing both
+	// on one route is harmless but redundant — an owner passes both.
+	Owner bool
 
 	// AllowDuringPasswordChange opts a route OUT of the must_change_password
 	// lockdown (spec §B). The lockdown is default-deny: every authenticated route is
@@ -409,6 +421,24 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// only — the runner/executors that consume the window are still INTEGRATION-ONLY.
 		{Method: "GET", Pattern: "/api/v1/updates/window", Admin: true, h: a.handleGetUpdateWindow},
 		{Method: "PUT", Pattern: "/api/v1/updates/window", Admin: true, h: a.handleSetUpdateWindow},
+
+		// User admin (spec §7, owner-only). Every route gates on the admin Zero-Trust
+		// path AND the owner role: listing, mutating, disabling, or deleting users is
+		// an owner-tier operation (one level above admin).
+		{Method: "GET", Pattern: "/api/v1/users", Owner: true, h: a.handleListUsers},
+		{Method: "POST", Pattern: "/api/v1/users", Owner: true, h: a.handleCreateUser},
+		{Method: "GET", Pattern: "/api/v1/users/{id}", Owner: true, h: a.handleGetUser},
+		{Method: "PATCH", Pattern: "/api/v1/users/{id}", Owner: true, h: a.handlePatchUser},
+		{Method: "DELETE", Pattern: "/api/v1/users/{id}", Owner: true, h: a.handleDeleteUser},
+		{Method: "POST", Pattern: "/api/v1/users/{id}/disable", Owner: true, h: a.handleDisableUser},
+		{Method: "POST", Pattern: "/api/v1/users/{id}/reset-password", Owner: true, h: a.handleResetPassword},
+		{Method: "GET", Pattern: "/api/v1/users/{id}/quotas", Owner: true, h: a.handleGetQuotas},
+		{Method: "PUT", Pattern: "/api/v1/users/{id}/quotas", Owner: true, h: a.handleSetQuotas},
+		{Method: "GET", Pattern: "/api/v1/users/{id}/sessions", Owner: true, h: a.handleListUserSessions},
+		{Method: "DELETE", Pattern: "/api/v1/users/{id}/sessions", Owner: true, h: a.handleRevokeUserSessions},
+		{Method: "DELETE", Pattern: "/api/v1/users/{id}/sessions/{hash}", Owner: true, h: a.handleRevokeUserSession},
+		{Method: "DELETE", Pattern: "/api/v1/users/{id}/links/{mc_uuid}", Owner: true, h: a.handleUnlinkAccount},
+		{Method: "POST", Pattern: "/api/v1/users/{id}/links", Owner: true, h: a.handleLinkAccount},
 	}
 }
 
@@ -428,9 +458,9 @@ func (a *API) ExternalHandler() http.Handler {
 // buildFace assembles one face from its route table. Public routes are mounted
 // unauthenticated on the outer mux; the rest go on an inner mux behind guard
 // (requireInternal / requireExternal), with Admin routes additionally wrapped in
-// adminOnly. Because both faces are built from the same table the OpenAPI parity
-// test reads, the served surface and the documented surface cannot drift apart
-// without failing the build.
+// adminOnly, and Owner routes in ownerOnly. Because both faces are built from the
+// same table the OpenAPI parity test reads, the served surface and the documented
+// surface cannot drift apart without failing the build.
 func (a *API) buildFace(routes []apiRoute, guard func(http.Handler) http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	auth := http.NewServeMux()
@@ -441,6 +471,9 @@ func (a *API) buildFace(routes []apiRoute, guard func(http.Handler) http.Handler
 			continue
 		}
 		h := rt.h
+		if rt.Owner {
+			h = a.ownerOnly(rt.h)
+		}
 		if rt.Admin {
 			h = a.adminOnly(rt.h)
 		}

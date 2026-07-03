@@ -4,6 +4,7 @@ import { TierProvider } from "@/lib/tier";
 import { AppShell } from "@/components/AppShell";
 import { RequireAdmin } from "@/components/RequireAdmin";
 import { RequireAuth } from "@/components/RequireAuth";
+import { RequireOwner } from "@/components/RequireOwner";
 import { Login } from "@/pages/Login";
 import { ChangePassword } from "@/pages/ChangePassword";
 import { Dashboard } from "@/pages/Dashboard";
@@ -16,6 +17,8 @@ import { Account } from "@/pages/Account";
 import { ImageAdmin } from "@/pages/admin/ImageAdmin";
 import { ImageBuildPage } from "@/pages/admin/ImageBuildPage";
 import { SubmissionsPage } from "@/pages/admin/SubmissionsPage";
+import { UsersPage } from "@/pages/admin/UsersPage";
+import { UserDetailPage } from "@/pages/admin/UserDetailPage";
 import { MySubmissionsPage } from "@/pages/MySubmissionsPage";
 import { UpdatesPage } from "@/pages/admin/UpdatesPage";
 
@@ -61,6 +64,11 @@ export default function App() {
                 <Route path="builds" element={<ImageBuildPage />} />
                 <Route path="submissions" element={<SubmissionsPage />} />
                 <Route path="updates" element={<UpdatesPage />} />
+                {/* Owner-gated: user management (one level above admin). */}
+                <Route element={<RequireOwner />}>
+                  <Route path="users" element={<UsersPage />} />
+                  <Route path="users/:id" element={<UserDetailPage />} />
+                </Route>
               </Route>
 
               <Route path="*" element={<Navigate to="/" replace />} />

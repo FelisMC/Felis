@@ -96,10 +96,25 @@ func (a *API) requireExternal(next http.Handler) http.Handler {
 
 // adminOnly gates an external-face handler on the admin Zero-Trust path. The
 // Access middleware has already authenticated; this enforces that admin-tier
-// operations both carry role=admin and arrived via admin.* (spec §14).
+// operations both carry role=admin AND arrived via admin.* (spec §14).
 func (a *API) adminOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if p := principalFromContext(r.Context()); !p.IsAdmin() {
+			writeError(w, r, errForbidden)
+			return
+		}
+		next(w, r)
+	}
+}
+
+// ownerOnly gates a handler on the owner role — the single platform-level
+// identity above admin. It is stricter than adminOnly: a plain admin with
+// role=admin and valid admin Access path is still refused here. The owner
+// arrives through the same admin Zero-Trust path, so adminOnly is not a
+// prerequisite (the two guards are orthogonal).
+func (a *API) ownerOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if p := principalFromContext(r.Context()); !p.IsOwner() {
 			writeError(w, r, errForbidden)
 			return
 		}

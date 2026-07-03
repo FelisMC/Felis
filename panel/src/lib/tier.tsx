@@ -33,6 +33,9 @@ import { deriveAuth, type AuthState } from "./auth";
 // Rules 1–2 are UX truth, not a security control — see DESIGN-WEB-3SIDES §1.
 
 export interface TierState extends AuthState {
+  /** Owner (platform-level, one above admin) — exposed so nav can show the Users
+   *  section only to the owner identity. Computed server-side, fail-closed. */
+  isOwner: boolean;
   /** Re-fetch /me and recompute the auth state. Awaitable so callers can sequence a
    *  navigation after the context has settled (login → refresh → redirect). */
   refresh: () => Promise<void>;
@@ -42,6 +45,7 @@ const TierContext = createContext<TierState>({
   identity: null,
   loading: true,
   isAdmin: false,
+  isOwner: false,
   unauthenticated: false,
   mustChangePassword: false,
   refresh: async () => {},
@@ -82,9 +86,13 @@ export function TierProvider({ children }: { children: ReactNode }) {
   }, [refresh]);
 
   const state = deriveAuth(identity, error, loading);
+  // isOwner is separate from isAdmin: an owner implicitly passes isAdmin (the
+  // backend grades by operation), but isOwner gates user management. Both are
+  // fail-closed — identity === null or missing fields → false.
+  const isOwner = identity?.is_owner === true;
 
   return (
-    <TierContext.Provider value={{ ...state, refresh }}>
+    <TierContext.Provider value={{ ...state, isOwner, refresh }}>
       {children}
     </TierContext.Provider>
   );

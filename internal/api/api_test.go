@@ -75,6 +75,9 @@ type fakeRepo struct {
 	// just as the PG query does.
 	passkeyCreds      map[string]PasskeyCredential
 	passkeyChallenges map[string]*fakePasskeyChallenge
+	// user admin fakes
+	seededUsers []seededUser
+	fakeQuotas  map[string]*QuotaView
 }
 
 // fakePasskeyChallenge mirrors a webauthn_challenges row: its owner and purpose, the
@@ -155,9 +158,10 @@ func newFakeRepo() *fakeRepo {
 		otps:           map[string]*fakeEmailOTP{},
 		blacklist:      map[string]bool{},
 		holds:          map[string]fakeDataHold{},
-		passkeyCreds:   map[string]PasskeyCredential{},
-		passkeyChallenges: map[string]*fakePasskeyChallenge{},
-	}
+	passkeyCreds:      map[string]PasskeyCredential{},
+	passkeyChallenges: map[string]*fakePasskeyChallenge{},
+	fakeQuotas:        map[string]*QuotaView{},
+}
 }
 
 func (f *fakeRepo) ServerBySubdomain(_ context.Context, s string) (*ServerRecord, error) {
@@ -628,6 +632,233 @@ func (f *fakeRepo) GetSetting(_ context.Context, key string) ([]byte, error) {
 }
 func (f *fakeRepo) SetSetting(_ context.Context, key string, value []byte) error {
 	f.settings[key] = value
+	return nil
+}
+
+// ---- user admin fakes ----
+
+// seededUser is a test-only user row held in the fake repo.
+type seededUser struct {
+	view   UserView
+	detail UserDetail
+}
+
+func (f *fakeRepo) seedUser(u UserView) {
+	su := &StaffUser{ID: u.ID, Username: u.Username, Email: u.Email, Role: u.Role}
+	f.staff[u.Username] = su
+	f.seededUsers = append(f.seededUsers, seededUser{view: u, detail: UserDetail{UserView: u}})
+}
+
+func (f *fakeRepo) ListUsers(_ context.Context, opts ListUsersOpts) ([]UserView, int, error) {
+	var filtered []UserView
+	for _, su := range f.seededUsers {
+		u := su.view
+		if opts.Query != "" {
+			q := strings.ToLower(opts.Query)
+			ul := strings.ToLower(u.Username)
+			el := strings.ToLower(u.Email)
+			if !strings.Contains(ul, q) && !strings.Contains(el, q) {
+				continue
+			}
+		}
+		if opts.Role != "" && u.Role != opts.Role {
+			continue
+		}
+		switch opts.Hidden {
+		case "true":
+			if !u.Disabled {
+				continue
+			}
+		case "false":
+			if u.Disabled {
+				continue
+			}
+		}
+		filtered = append(filtered, u)
+	}
+	total := len(filtered)
+	limit := opts.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	offset := opts.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(filtered) {
+		return []UserView{}, total, nil
+	}
+	end := offset + limit
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+	// Newest first — the PG orders by created_at DESC too.
+	for i, j := 0, len(filtered)-1; i < j; i, j = i+1, j-1 {
+		filtered[i], filtered[j] = filtered[j], filtered[i]
+	}
+	return filtered[offset:end], total, nil
+}
+
+func (f *fakeRepo) UserDetail(_ context.Context, userID string) (*UserDetail, error) {
+	for _, su := range f.seededUsers {
+		if su.view.ID == userID {
+			return &su.detail, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (f *fakeRepo) CreateUser(_ context.Context, input CreateUserInput, _ string) (*UserView, error) {
+	for _, su := range f.seededUsers {
+		if su.view.Username == input.Username {
+			return nil, ErrConflict
+		}
+	}
+	id := "test-" + input.Username
+	u := UserView{
+		ID: id, Username: input.Username, Email: input.Email,
+		Role: input.Role, MustChangePassword: input.MustChange,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	d := UserDetail{UserView: u}
+	f.seededUsers = append(f.seededUsers, seededUser{view: u, detail: d})
+	f.staff[input.Username] = &StaffUser{ID: u.ID, Username: u.Username, Email: u.Email, Role: u.Role}
+	return &u, nil
+}
+
+func (f *fakeRepo) UpdateUser(_ context.Context, userID string, patch UpdateUserInput, _ string) (*UserView, error) {
+	for i, su := range f.seededUsers {
+		if su.view.ID != userID {
+			continue
+		}
+		if patch.Username != nil {
+			for _, other := range f.seededUsers {
+				if other.view.ID != userID && other.view.Username == *patch.Username {
+					return nil, ErrConflict
+				}
+			}
+			f.seededUsers[i].view.Username = *patch.Username
+			f.seededUsers[i].detail.Username = *patch.Username
+		}
+		if patch.Email != nil {
+			f.seededUsers[i].view.Email = *patch.Email
+			f.seededUsers[i].detail.Email = *patch.Email
+		}
+		if patch.Role != nil {
+			f.seededUsers[i].view.Role = *patch.Role
+			f.seededUsers[i].detail.Role = *patch.Role
+		}
+		v := f.seededUsers[i].view
+		return &v, nil
+	}
+	return nil, ErrNotFound
+}
+
+func (f *fakeRepo) DeleteUser(_ context.Context, userID, _ string) error {
+	for i, su := range f.seededUsers {
+		if su.view.ID == userID {
+			f.seededUsers = append(f.seededUsers[:i], f.seededUsers[i+1:]...)
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (f *fakeRepo) SetUserDisabled(_ context.Context, userID string, disabled bool) error {
+	for i, su := range f.seededUsers {
+		if su.view.ID == userID {
+			f.seededUsers[i].view.Disabled = disabled
+			f.seededUsers[i].detail.Disabled = disabled
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+func (f *fakeRepo) AdminResetPassword(_ context.Context, userID, passwordHash string) error {
+	for _, su := range f.seededUsers {
+		if su.view.ID == userID {
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
+// ---- quota admin fakes ----
+
+func (f *fakeRepo) GetQuotas(_ context.Context, userID string) (*QuotaView, error) {
+	v := &QuotaView{UserID: userID}
+	if f.fakeQuotas == nil {
+		return v, nil
+	}
+	if qv, ok := f.fakeQuotas[userID]; ok {
+		v.MaxServers = qv.MaxServers
+		v.MaxCPUMilli = qv.MaxCPUMilli
+		v.MaxMemoryMB = qv.MaxMemoryMB
+		v.MaxStorageGB = qv.MaxStorageGB
+	}
+	return v, nil
+}
+
+func (f *fakeRepo) SetQuotas(_ context.Context, userID string, qi QuotaInput, _ string) (*QuotaView, error) {
+	if f.fakeQuotas == nil {
+		f.fakeQuotas = map[string]*QuotaView{}
+	}
+	if _, ok := f.fakeQuotas[userID]; !ok {
+		f.fakeQuotas[userID] = &QuotaView{UserID: userID}
+	}
+	if qi.MaxServers != nil {
+		f.fakeQuotas[userID].MaxServers = qi.MaxServers
+	}
+	if qi.MaxCPUMilli != nil {
+		f.fakeQuotas[userID].MaxCPUMilli = qi.MaxCPUMilli
+	}
+	if qi.MaxMemoryMB != nil {
+		f.fakeQuotas[userID].MaxMemoryMB = qi.MaxMemoryMB
+	}
+	if qi.MaxStorageGB != nil {
+		f.fakeQuotas[userID].MaxStorageGB = qi.MaxStorageGB
+	}
+	return f.fakeQuotas[userID], nil
+}
+
+// ---- session admin fakes ----
+
+func (f *fakeRepo) ListUserSessions(_ context.Context, userID string, now time.Time) ([]SessionView, error) {
+	var out []SessionView
+	for hash, s := range f.sessions {
+		if s.userID == userID && !s.revoked && s.expiresAt.After(now) {
+			out = append(out, SessionView{TokenHash: hash, CreatedAt: time.Now(), ExpiresAt: s.expiresAt})
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeRepo) RevokeAllUserSessions(_ context.Context, userID string) error {
+	for _, s := range f.sessions {
+		if s.userID == userID {
+			s.revoked = true
+		}
+	}
+	return nil
+}
+
+func (f *fakeRepo) UnlinkAccount(_ context.Context, userID, mcUUID string) error {
+	if f.links[mcUUID] != userID {
+		return ErrNotFound
+	}
+	delete(f.links, mcUUID)
+	delete(f.linkAuthSource, mcUUID)
+	return nil
+}
+
+func (f *fakeRepo) LinkAccount(_ context.Context, userID, mcUUID, authSource string) error {
+	if existing, ok := f.links[mcUUID]; ok && existing != userID {
+		return ErrConflict
+	}
+	f.links[mcUUID] = userID
+	f.linkAuthSource[mcUUID] = authSource
+	f.linked[userID] = true
 	return nil
 }
 

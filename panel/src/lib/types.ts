@@ -208,8 +208,11 @@ export interface ApiError {
 export interface Identity {
   user_id: string;
   email: string;
-  role: "user" | "admin";
+  role: "user" | "admin" | "owner";
   is_admin: boolean;
+  /** Server-computed Principal.IsOwner() — true only for the platform-level
+   *  owner account (one above admin). Owners get user management; admins don't. */
+  is_owner: boolean;
   /** Local-password path only: the account owes a forced first-login password
    *  change. The JWT/Access path always leaves it false. Like `is_admin` it crosses
    *  the untyped fetch().json() boundary, so consumers MUST compare `=== true` — an
@@ -224,7 +227,7 @@ export interface Identity {
  *  change-password card before any other surface. */
 export interface LoginResult {
   user_id: string;
-  role: "user" | "admin";
+  role: "user" | "admin" | "owner";
   must_change_password: boolean;
 }
 
@@ -273,4 +276,66 @@ export interface Submission {
 export interface UpdateWindow {
   start: string | null;
   end: string | null;
+}
+
+// ---- User admin types (internal/api/repo.go UserView, UserDetail, QuotaView, SessionView) ----
+
+export interface UserView {
+  id: string;
+  username: string;
+  email: string;
+  role: "admin" | "user" | "owner";
+  disabled: boolean;
+  email_verified: boolean;
+  server_count: number;
+  must_change_password: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LinkedAccount {
+  mc_uuid: string;
+  auth_source: string;
+  verified_at: string;
+}
+
+export interface UserDetail extends UserView {
+  deleted_at?: string | null;
+  linked_accounts: LinkedAccount[];
+}
+
+export interface CreateUserRequest {
+  username: string;
+  email?: string;
+  role: "admin" | "user";
+  password: string;
+  must_change_password: boolean;
+}
+
+export interface PatchUserRequest {
+  username?: string;
+  email?: string;
+  role?: "admin" | "user";
+}
+
+export interface QuotaView {
+  user_id: string;
+  max_servers?: number | null;
+  max_cpu_milli?: number | null;
+  max_memory_mb?: number | null;
+  max_storage_gb?: number | null;
+}
+
+export interface QuotaInput {
+  max_servers?: number | null;
+  max_cpu_milli?: number | null;
+  max_memory_mb?: number | null;
+  max_storage_gb?: number | null;
+}
+
+export interface SessionView {
+  token_hash: string;
+  created_at: string;
+  expires_at: string;
+  revoked_at?: string | null;
 }

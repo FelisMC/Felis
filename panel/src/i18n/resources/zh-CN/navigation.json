@@ -4,6 +4,8 @@
   "my_submissions": "我的提交",
   "account": "账户",
   "admin_section": "管理",
+  "owner_section": "平台",
+  "admin_users": "用户管理",
   "admin_images": "镜像",
   "admin_builds": "构建流水线",
   "admin_submissions": "审核提交",

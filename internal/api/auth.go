@@ -36,8 +36,17 @@ type Principal struct {
 // IsAdmin reports whether the principal may perform admin-tier operations.
 // Both the role claim and the admin Access path are required: a role=admin
 // session arriving on panel.* must not bypass the Zero-Trust boundary.
+// An owner implicitly passes this check (the owner role is a superset of admin).
 func (p *Principal) IsAdmin() bool {
-	return p != nil && p.Role == "admin" && p.ViaAdminAccess
+	return p != nil && (p.Role == "admin" || p.Role == "owner") && p.ViaAdminAccess
+}
+
+// IsOwner reports whether the principal holds the platform-level owner role
+// — the single identity that may manage users, quotas, and sessions. Only the
+// first staff account minted by break-glass carries this role; every subsequent
+// Operator is a plain admin. Like IsAdmin, it requires the admin Access path.
+func (p *Principal) IsOwner() bool {
+	return p != nil && p.Role == "owner" && p.ViaAdminAccess
 }
 
 // InternalAuth authenticates the internal face (velocity / backend callbacks):

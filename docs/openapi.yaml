@@ -68,6 +68,8 @@ tags:
     description: Create / mutate server specs (external face, admin tier).
   - name: images
     description: Image build and whitelist administration (external face, admin tier).
+  - name: users
+    description: User administration (external face, admin tier only — exposed solely to owner).
 
 components:
   securitySchemes:
@@ -325,6 +327,74 @@ components:
           type: [string, 'null']
           format: date-time
           description: Null until an admin approves or rejects.
+
+    UserView:
+      type: object
+      description: One row of the admin user list (internal/api/repo.go UserView).
+      required: [id, username, role, disabled, email_verified, must_change_password, server_count, created_at, updated_at]
+      properties:
+        id: { type: string }
+        username: { type: string }
+        email: { type: string }
+        role: { type: string, enum: [admin, user] }
+        disabled: { type: boolean }
+        email_verified: { type: boolean }
+        server_count: { type: integer }
+        must_change_password: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    UserDetail:
+      type: object
+      description: Full admin view of one user (internal/api/repo.go UserDetail).
+      required: [id, username, role, disabled, email_verified, must_change_password, server_count, created_at, updated_at, linked_accounts]
+      properties:
+        id: { type: string }
+        username: { type: string }
+        email: { type: string }
+        role: { type: string, enum: [admin, user] }
+        disabled: { type: boolean }
+        email_verified: { type: boolean }
+        server_count: { type: integer }
+        must_change_password: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        deleted_at:
+          type: [string, 'null']
+          format: date-time
+          description: Present only when soft-deleted.
+        linked_accounts:
+          type: array
+          items:
+            type: object
+            required: [mc_uuid, auth_source, verified_at]
+            properties:
+              mc_uuid: { type: string, format: uuid }
+              auth_source: { type: string }
+              verified_at: { type: string, format: date-time }
+
+    QuotaView:
+      type: object
+      description: A user's quotas row (internal/api/repo.go QuotaView). Null fields mean unlimited.
+      required: [user_id]
+      properties:
+        user_id: { type: string }
+        max_servers: { type: integer, nullable: true }
+        max_cpu_milli: { type: integer, nullable: true }
+        max_memory_mb: { type: integer, nullable: true }
+        max_storage_gb: { type: integer, nullable: true }
+
+    SessionView:
+      type: object
+      description: One live session of a user visible to an admin (internal/api/repo.go SessionView).
+      required: [token_hash, created_at, expires_at]
+      properties:
+        token_hash: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+        revoked_at:
+          type: [string, 'null']
+          format: date-time
 
 paths:
   # ----------------------------------------------------------------- health ---
@@ -1785,12 +1855,450 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '409':
-          description: Server is not stopped.
+          description: Submission has already been reviewed.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+
+  # ------------------------------------------------------ users (admin tier) ----
+  /api/v1/users:
+    get:
+      tags: [users]
+      operationId: listUsers
+      summary: List users (admin only).
+      description: >-
+        Returns a page of non-deleted users matching optional query filters, newest
+        first. Every route under /users gates on the admin Zero-Trust path.
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: query, in: query, required: false, schema: { type: string }, description: Substring match on username or email }
+        - { name: role, in: query, required: false, schema: { type: string, enum: [admin, user] } }
+        - { name: disabled, in: query, required: false, schema: { type: string, enum: ["true", "false"] } }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 20, maximum: 100 } }
+        - { name: offset, in: query, required: false, schema: { type: integer, default: 0 } }
+      responses:
+        '200':
+          description: A page of users plus the total unfiltered count.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [users, total]
+                properties:
+                  users:
+                    type: array
+                    items: { $ref: '#/components/schemas/UserView' }
+                  total: { type: integer }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [users]
+      operationId: createUser
+      summary: Create a user (admin only).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ accessJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, role, password]
+              properties:
+                username: { type: string }
+                email: { type: string, format: email }
+                role: { type: string, enum: [admin, user] }
+                password: { type: string, format: password }
+                must_change_password: { type: boolean, default: true }
+      responses:
+        '201':
+          description: User created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserView' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: Username already taken.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/users/{id}:
+    get:
+      tags: [users]
+      operationId: getUser
+      summary: Get user detail (admin only).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Full user detail including linked MC accounts.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserDetail' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [users]
+      operationId: patchUser
+      summary: Edit a user (admin only, cannot patch self).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username: { type: string }
+                email: { type: string, format: email }
+                role: { type: string, enum: [admin, user] }
+      responses:
+        '200':
+          description: Updated user.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserView' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Username conflict.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [users]
+      operationId: deleteUser
+      summary: Soft-delete a user — releases servers, revokes sessions (admin only, cannot delete self).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: User soft-deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted]
+                properties:
+                  deleted: { type: boolean, const: true }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/users/{id}/disable:
+    post:
+      tags: [users]
+      operationId: disableUser
+      summary: Disable or re-enable a user (admin only, cannot disable self).
+      description: >-
+        Disabling a user additionally revokes every live session so the lockout is
+        immediate. Re-enabling simply clears the flag.
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [disabled]
+              properties:
+                disabled: { type: boolean }
+      responses:
+        '200':
+          description: Toggle applied.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, disabled]
+                properties:
+                  id: { type: string }
+                  disabled: { type: boolean }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/users/{id}/reset-password:
+    post:
+      tags: [users]
+      operationId: resetPassword
+      summary: >-
+        Generate a high-entropy random password, deliver it to the user's email, and
+        force a first-login change (admin only). No request body — the server owns
+        entropy. The password is never returned to the admin; only the target email is echoed.
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Password reset. All existing sessions revoked. Password sent to the user's email.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, email]
+                properties:
+                  ok: { type: boolean, const: true }
+                  email: { type: string, description: "The recipient email (empty if the user has none)." }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/users/{id}/quotas:
+    get:
+      tags: [users]
+      operationId: getQuotas
+      summary: Get a user's quotas (admin only).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The user's current quotas (null=unlimited).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QuotaView' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    put:
+      tags: [users]
+      operationId: setQuotas
+      summary: Set a user's quotas (admin only).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                max_servers: { type: integer, nullable: true }
+                max_cpu_milli: { type: integer, nullable: true }
+                max_memory_mb: { type: integer, nullable: true }
+                max_storage_gb: { type: integer, nullable: true }
+      responses:
+        '200':
+          description: Quotas updated.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/QuotaView' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/users/{id}/sessions:
+    get:
+      tags: [users]
+      operationId: listUserSessions
+      summary: List a user's live sessions (admin only).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Live (unrevoked, unexpired) sessions, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessions]
+                properties:
+                  sessions:
+                    type: array
+                    items: { $ref: '#/components/schemas/SessionView' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    delete:
+      tags: [users]
+      operationId: revokeUserSessions
+      summary: Revoke every live session of a user (admin only).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: All sessions revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, const: true }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/users/{id}/sessions/{hash}:
+    delete:
+      tags: [users]
+      operationId: revokeUserSession
+      summary: Revoke a single session of a user (admin only).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: hash, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Session revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, const: true }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/users/{id}/links:
+    post:
+      tags: [users]
+      operationId: linkAccount
+      summary: Force-link a Minecraft UUID to a user, bypassing the code-verification flow (admin only).
+      description: >-
+        The UUID must not already be bound to a different user (409). Same (user, uuid)
+        pair is idempotent (200). auth_source defaults to "mojang".
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mc_uuid]
+              properties:
+                mc_uuid: { type: string, format: uuid }
+                auth_source: { type: string, enum: [mojang, thirdparty], default: mojang }
+      responses:
+        '200':
+          description: UUID linked (or was already linked to this user).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, mc_uuid, auth_source]
+                properties:
+                  ok: { type: boolean, const: true }
+                  mc_uuid: { type: string, format: uuid }
+                  auth_source: { type: string }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: UUID is already linked to a different user.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/users/{id}/links/{mc_uuid}:
+    delete:
+      tags: [users]
+      operationId: unlinkAccount
+      summary: Remove a single Minecraft UUID binding from a user (admin only).
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: mc_uuid, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: UUID unlinked.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, mc_uuid]
+                properties:
+                  ok: { type: boolean, const: true }
+                  mc_uuid: { type: string, format: uuid }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No linked account for this UUID.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/account/link/start:
     post:

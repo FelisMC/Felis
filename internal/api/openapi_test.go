@@ -117,6 +117,8 @@ func oasServedFacets(t *testing.T) map[string]oasFacet {
 		switch {
 		case rt.Public:
 			tier = "public"
+		case rt.Owner:
+			tier = "owner"
 		case rt.Admin:
 			tier = "admin"
 		default:

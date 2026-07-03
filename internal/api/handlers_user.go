@@ -184,6 +184,7 @@ func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
 		"email":                p.Email,
 		"role":                 p.Role,
 		"is_admin":             p.IsAdmin(),
+		"is_owner":             p.IsOwner(),
 		"email_verified":       emailVerified,
 		// must_change_password is meaningful only on the local-password path; the JWT
 		// path leaves it false. The panel uses it to route a freshly-provisioned staff

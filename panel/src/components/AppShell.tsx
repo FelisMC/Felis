@@ -137,12 +137,13 @@ function ThemeToggle() {
 }
 
 export function AppShell() {
-  const { isAdmin } = useTier();
+  const { isAdmin, isOwner } = useTier();
   const { t, i18n } = useTranslation("navigation");
-  // Sections are derived purely from is_admin: User-Side always, Admin/SysAdmin
-  // only for admins. isAdmin is fail-closed (false while /me loads or on failure),
-  // so admin sections appear only once identity is confirmed.
-  const sections = visibleSections(isAdmin);
+  // Sections are derived purely from is_admin and is_owner: User-Side always,
+  // Admin-Side only for admins, Owner-Side only for the platform owner. Both
+  // flags are fail-closed (false while /me loads or on failure), so admin and
+  // owner sections appear only once identity is confirmed.
+  const sections = visibleSections(isAdmin, isOwner);
 
   // Sync document metadata with the active language.
   useEffect(() => {

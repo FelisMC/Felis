@@ -711,25 +711,26 @@ func (p *PGRepo) UserByID(ctx context.Context, id string) (*StaffUser, error) {
 }
 
 // UpsertOwner creates or resets the Owner account direct-to-Postgres (the
-// break-glass first-run / reset-password path). role is forced to 'admin'; on a
-// username conflict the email, hash and must_change_password flag are overwritten
-// while the existing id is preserved, so live sessions referencing it survive a
-// password reset. The empty email is stored as NULL (users.email is nullable).
+// break-glass first-run / reset-password path). role is forced to 'owner' —
+// the platform-level identity one level above admin. On a username conflict the
+// email, hash and must_change_password flag are overwritten while the existing
+// id is preserved, so live sessions referencing it survive a password reset.
+// The empty email is stored as NULL (users.email is nullable).
 func (p *PGRepo) UpsertOwner(ctx context.Context, id, username, email, passwordHash string, mustChange bool) error {
 	_, err := p.db.ExecContext(ctx,
 		`INSERT INTO users (id, username, email, role, password_hash, must_change_password)
-		 VALUES ($1, $2, NULLIF($3, ''), 'admin', $4, $5)
+		 VALUES ($1, $2, NULLIF($3, ''), 'owner', $4, $5)
 		 ON CONFLICT (username) DO UPDATE SET
-		   email = NULLIF($3, ''), role = 'admin',
+		   email = NULLIF($3, ''), role = 'owner',
 		   password_hash = $4, must_change_password = $5`,
 		id, username, email, passwordHash, mustChange)
 	return err
 }
 
 // InsertOperator mints a NEW Operator (additional staff admin) account
-// direct-to-Postgres. role is forced to 'admin' — Felis has no separate operator
-// role, so an Operator is an additional admin row identical in shape to the Owner
-// (migration 0003). UNLIKE UpsertOwner this is insert-only: a username conflict is
+// direct-to-Postgres. role is forced to 'admin' — Felis has a separate 'owner'
+// role (migration 0011) for the single platform owner; Operators are below
+// that. UNLIKE UpsertOwner this is insert-only: a username conflict is
 // left untouched (ON CONFLICT DO NOTHING) and reported as ErrConflict via a zero
 // RowsAffected, so adding an Operator can never silently reset the Owner's or
 // another Operator's credential. The empty email is stored as NULL.
@@ -1007,4 +1008,494 @@ func (p *PGRepo) DeleteAllPasskeyCredentialsForUser(ctx context.Context, userID 
 	_, err := p.db.ExecContext(ctx,
 		`DELETE FROM webauthn_credentials WHERE user_id = $1`, userID)
 	return err
+}
+
+// ---- user admin (spec §7, admin-only) ----
+
+// ListUsers returns a page of non-deleted users matching the optional filters,
+// newest first. total is the unfiltered count so the admin page can render
+// pagination without a second round-trip.
+func (p *PGRepo) ListUsers(ctx context.Context, opts ListUsersOpts) ([]UserView, int, error) {
+	var total int
+	{
+		q := `SELECT count(*) FROM users WHERE deleted_at IS NULL`
+		if err := p.db.QueryRowContext(ctx, q).Scan(&total); err != nil {
+			return nil, 0, err
+		}
+	}
+
+	limit := opts.Limit
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	offset := opts.Offset
+	if offset < 0 {
+		offset = 0
+	}
+
+	// Build the WHERE clause from filters. All args are positional so the order
+	// of appends must match.
+	where := ` WHERE u.deleted_at IS NULL`
+	var args []any
+	argn := 0
+
+	if opts.Query != "" {
+		argn++
+		where += fmt.Sprintf(` AND (u.username ILIKE '%%' || $%d || '%%' OR u.email ILIKE '%%' || $%d || '%%')`, argn, argn)
+		args = append(args, opts.Query)
+	}
+	if opts.Role != "" {
+		argn++
+		where += fmt.Sprintf(` AND u.role::text = $%d`, argn)
+		args = append(args, opts.Role)
+	}
+	switch opts.Hidden {
+	case "true":
+		where += ` AND u.disabled = true`
+	case "false":
+		where += ` AND u.disabled = false`
+	}
+
+	q := `SELECT u.id, u.username, COALESCE(u.email, ''), u.role::text,
+		u.disabled, u.email_verified, u.must_change_password,
+		u.created_at, u.updated_at,
+		COALESCE((SELECT count(*) FROM servers s WHERE s.owner_id = u.id AND s.deleted_at IS NULL), 0)
+	  FROM users u` + where
+	argn++
+	q += fmt.Sprintf(` ORDER BY u.created_at DESC LIMIT $%d OFFSET $%d`, argn, argn+1)
+	args = append(args, limit, offset)
+
+	rows, err := p.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var out []UserView
+	for rows.Next() {
+		var v UserView
+		if err := rows.Scan(&v.ID, &v.Username, &v.Email, &v.Role,
+			&v.Disabled, &v.EmailVerified, &v.MustChangePassword,
+			&v.CreatedAt, &v.UpdatedAt, &v.ServerCount); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, v)
+	}
+	return out, total, rows.Err()
+}
+
+// UserDetail loads one user with its linked MC accounts, or ErrNotFound.
+func (p *PGRepo) UserDetail(ctx context.Context, userID string) (*UserDetail, error) {
+	const q = `SELECT u.id, u.username, COALESCE(u.email, ''), u.role::text,
+		u.disabled, u.email_verified, u.must_change_password,
+		u.created_at, u.updated_at, u.deleted_at,
+		COALESCE((SELECT count(*) FROM servers s WHERE s.owner_id = u.id AND s.deleted_at IS NULL), 0)
+	  FROM users u WHERE u.id = $1`
+	var d UserDetail
+	switch err := p.db.QueryRowContext(ctx, q, userID).Scan(
+		&d.ID, &d.Username, &d.Email, &d.Role,
+		&d.Disabled, &d.EmailVerified, &d.MustChangePassword,
+		&d.CreatedAt, &d.UpdatedAt, &d.DeletedAt, &d.ServerCount); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, ErrNotFound
+	case err != nil:
+		return nil, err
+	}
+
+	// Load linked MC accounts.
+	linkRows, err := p.db.QueryContext(ctx,
+		`SELECT mc_uuid::text, COALESCE(auth_source, 'mojang'), verified_at
+		 FROM account_links WHERE user_id = $1 ORDER BY verified_at`, userID)
+	if err != nil {
+		return &d, nil // best-effort; linked accounts are informational
+	}
+	defer linkRows.Close()
+	for linkRows.Next() {
+		var a LinkedAccount
+		if err := linkRows.Scan(&a.MCUUID, &a.AuthSource, &a.VerifiedAt); err != nil {
+			return &d, nil
+		}
+		d.LinkedAccounts = append(d.LinkedAccounts, a)
+	}
+	return &d, linkRows.Err()
+}
+
+// CreateUser mints a new user row with an initial password hash. A username
+// conflict → ErrConflict.
+func (p *PGRepo) CreateUser(ctx context.Context, input CreateUserInput, _ string) (*UserView, error) {
+	const q = `INSERT INTO users (id, username, email, role, password_hash, must_change_password)
+		VALUES (gen_random_uuid()::text, $1, NULLIF($2, ''), $3::user_role, $4, $5)
+		ON CONFLICT (username) DO NOTHING
+		RETURNING id, username, COALESCE(email, ''), role::text, disabled, email_verified,
+			must_change_password, created_at, updated_at, 0`
+	var v UserView
+	switch err := p.db.QueryRowContext(ctx, q,
+		input.Username, input.Email, input.Role, input.PasswordHash, input.MustChange).Scan(
+		&v.ID, &v.Username, &v.Email, &v.Role,
+		&v.Disabled, &v.EmailVerified, &v.MustChangePassword,
+		&v.CreatedAt, &v.UpdatedAt, &v.ServerCount); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, ErrConflict
+	case err != nil:
+		return nil, err
+	}
+	return &v, nil
+}
+
+// UpdateUser applies the non-nil fields of patch and returns the updated view.
+// A username conflict → ErrConflict; a non-existent user → ErrNotFound.
+func (p *PGRepo) UpdateUser(ctx context.Context, userID string, patch UpdateUserInput, _ string) (*UserView, error) {
+	// Build a dynamic SET clause from non-nil patch fields.
+	var sets []string
+	var args []any
+	argn := 0
+	if patch.Username != nil {
+		argn++
+		sets = append(sets, fmt.Sprintf("username = $%d", argn))
+		args = append(args, *patch.Username)
+	}
+	if patch.Email != nil {
+		argn++
+		sets = append(sets, fmt.Sprintf("email = NULLIF($%d, '')", argn))
+		args = append(args, *patch.Email)
+	}
+	if patch.Role != nil {
+		argn++
+		sets = append(sets, fmt.Sprintf("role = $%d::user_role", argn))
+		args = append(args, *patch.Role)
+	}
+	if len(sets) == 0 {
+		// No fields to update; return the current view.
+		v, err := p.userView(ctx, userID)
+		if err != nil {
+			return nil, err
+		}
+		return v, nil
+	}
+	argn++
+	args = append(args, userID)
+
+	q := `UPDATE users SET ` + fmt.Sprintf("%s", sets[0])
+	for _, s := range sets[1:] {
+		q += ", " + s
+	}
+	q += fmt.Sprintf(` WHERE id = $%d AND deleted_at IS NULL`, argn)
+	q += ` RETURNING id, username, COALESCE(email, ''), role::text, disabled,
+		email_verified, must_change_password, created_at, updated_at,
+		(SELECT count(*) FROM servers WHERE owner_id = users.id AND deleted_at IS NULL)`
+	var v UserView
+	switch err := p.db.QueryRowContext(ctx, q, args...).Scan(
+		&v.ID, &v.Username, &v.Email, &v.Role,
+		&v.Disabled, &v.EmailVerified, &v.MustChangePassword,
+		&v.CreatedAt, &v.UpdatedAt, &v.ServerCount); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, ErrNotFound
+	case err != nil:
+		// A username UNIQUE violation surfaces as a driver error; map it to
+		// ErrConflict so the handler can answer 409.
+		if isUniqueViolation(err) {
+			return nil, ErrConflict
+		}
+		return nil, err
+	}
+	return &v, nil
+}
+
+// userView returns a live user's projection, or ErrNotFound. It is the read half
+// shared by UpdateUser (no-op return) and several other paths.
+func (p *PGRepo) userView(ctx context.Context, userID string) (*UserView, error) {
+	const q = `SELECT id, username, COALESCE(email, ''), role::text, disabled,
+		email_verified, must_change_password, created_at, updated_at,
+		(SELECT count(*) FROM servers WHERE owner_id = users.id AND deleted_at IS NULL)
+		FROM users WHERE id = $1 AND deleted_at IS NULL`
+	var v UserView
+	switch err := p.db.QueryRowContext(ctx, q, userID).Scan(
+		&v.ID, &v.Username, &v.Email, &v.Role,
+		&v.Disabled, &v.EmailVerified, &v.MustChangePassword,
+		&v.CreatedAt, &v.UpdatedAt, &v.ServerCount); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, ErrNotFound
+	case err != nil:
+		return nil, err
+	}
+	return &v, nil
+}
+
+// DeleteUser soft-deletes a user in one transaction: sets deleted_at, revokes
+// every live session, and releases every owned server. The row is preserved so
+// audit_logs.actor references survive.
+func (p *PGRepo) DeleteUser(ctx context.Context, userID, _ string) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	// Verify the user exists and is not already deleted.
+	var exists bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL)`,
+		userID).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return ErrNotFound
+	}
+
+	// Release all owned servers.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE servers SET owner_id = NULL WHERE owner_id = $1 AND deleted_at IS NULL`,
+		userID); err != nil {
+		return err
+	}
+
+	// Revoke every live session.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`,
+		userID); err != nil {
+		return err
+	}
+
+	// Soft-delete the user row.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE users SET disabled = true, deleted_at = now() WHERE id = $1`,
+		userID); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+// SetUserDisabled flips the disabled flag. Setting disabled→true additionally
+// revokes every live session so the account is immediately locked out.
+func (p *PGRepo) SetUserDisabled(ctx context.Context, userID string, disabled bool) error {
+	// Guard: the user must exist and not be deleted.
+	var ok bool
+	if err := p.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL)`,
+		userID).Scan(&ok); err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNotFound
+	}
+
+	if _, err := p.db.ExecContext(ctx,
+		`UPDATE users SET disabled = $2 WHERE id = $1`, userID, disabled); err != nil {
+		return err
+	}
+
+	if disabled {
+		// Revoke every live session so the lockout is immediate.
+		_, _ = p.db.ExecContext(ctx,
+			`UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`,
+			userID)
+	}
+	return nil
+}
+
+// AdminResetPassword stores a new hash and forces must_change_password so the
+// admin-set password is replaced on first login.
+func (p *PGRepo) AdminResetPassword(ctx context.Context, userID, passwordHash string) error {
+	res, err := p.db.ExecContext(ctx,
+		`UPDATE users SET password_hash = $2, must_change_password = true WHERE id = $1 AND deleted_at IS NULL`,
+		userID, passwordHash)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	// Revoke every session so the old password cannot be used via a retained cookie.
+	_, _ = p.db.ExecContext(ctx,
+		`UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`,
+		userID)
+	return nil
+}
+
+// ---- quota admin ----
+
+// GetQuotas returns the quotas row for a user, or a zero-value view when no
+// row exists (meaning unlimited).
+func (p *PGRepo) GetQuotas(ctx context.Context, userID string) (*QuotaView, error) {
+	const q = `SELECT user_id, max_servers, max_cpu_milli, max_memory_mb, max_storage_gb
+		FROM quotas WHERE user_id = $1`
+	v := QuotaView{UserID: userID}
+	switch err := p.db.QueryRowContext(ctx, q, userID).Scan(
+		&v.UserID, &v.MaxServers, &v.MaxCPUMilli, &v.MaxMemoryMB, &v.MaxStorageGB); {
+	case errors.Is(err, sql.ErrNoRows):
+		return &v, nil
+	case err != nil:
+		return nil, err
+	}
+	return &v, nil
+}
+
+// SetQuotas upserts a quotas row. Nil fields are left unchanged; a non-nil
+// zero-value field clears the cap.
+func (p *PGRepo) SetQuotas(ctx context.Context, userID string, qi QuotaInput, setBy string) (*QuotaView, error) {
+	type col struct {
+		name  string
+		value *int
+	}
+	cols := []col{
+		{"max_servers", qi.MaxServers},
+		{"max_cpu_milli", qi.MaxCPUMilli},
+		{"max_memory_mb", qi.MaxMemoryMB},
+		{"max_storage_gb", qi.MaxStorageGB},
+	}
+
+	// Build the ON CONFLICT upsert dynamically.
+	var insCols, insVals []string
+	var upd []string
+	var args []any
+	argn := 0
+	args = append(args, userID) // $1 = user_id
+	argn++
+	args = append(args, setBy) // $2 = updated_by
+	argn++
+	insCols = append(insCols, "user_id", "updated_by")
+	insVals = append(insVals, "$1", "$2")
+
+	for _, c := range cols {
+		if c.value == nil {
+			continue
+		}
+		argn++
+		insCols = append(insCols, c.name)
+		insVals = append(insVals, fmt.Sprintf("$%d", argn))
+		args = append(args, *c.value)
+		upd = append(upd, fmt.Sprintf("%s = EXCLUDED.%s", c.name, c.name))
+	}
+
+	query := fmt.Sprintf(`INSERT INTO quotas (%s) VALUES (%s)
+		ON CONFLICT (user_id) DO UPDATE SET %s, updated_by = $2
+		RETURNING user_id, max_servers, max_cpu_milli, max_memory_mb, max_storage_gb`,
+		joinStr(insCols), joinStr(insVals), joinStr(upd))
+
+	v := QuotaView{}
+	switch err := p.db.QueryRowContext(ctx, query, args...).Scan(
+		&v.UserID, &v.MaxServers, &v.MaxCPUMilli, &v.MaxMemoryMB, &v.MaxStorageGB); {
+	case err != nil:
+		return nil, err
+	}
+	return &v, nil
+}
+
+// ---- session admin ----
+
+// ListUserSessions returns every live session for a user, newest first.
+func (p *PGRepo) ListUserSessions(ctx context.Context, userID string, now time.Time) ([]SessionView, error) {
+	const q = `SELECT token_hash, created_at, expires_at, revoked_at
+		FROM sessions WHERE user_id = $1 AND (revoked_at IS NULL OR revoked_at > $2) AND expires_at > $2
+		ORDER BY created_at DESC`
+	rows, err := p.db.QueryContext(ctx, q, userID, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SessionView
+	for rows.Next() {
+		var s SessionView
+		if err := rows.Scan(&s.TokenHash, &s.CreatedAt, &s.ExpiresAt, &s.RevokedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// RevokeAllUserSessions marks every live session of userID revoked.
+func (p *PGRepo) RevokeAllUserSessions(ctx context.Context, userID string) error {
+	_, err := p.db.ExecContext(ctx,
+		`UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`,
+		userID)
+	return err
+}
+
+// ---- account-link admin ----
+
+// UnlinkAccount removes a single (user_id, mc_uuid) binding.
+func (p *PGRepo) UnlinkAccount(ctx context.Context, userID, mcUUID string) error {
+	res, err := p.db.ExecContext(ctx,
+		`DELETE FROM account_links WHERE user_id = $1 AND mc_uuid = $2`,
+		userID, mcUUID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// LinkAccount force-binds a UUID to a user. A UUID already linked to a different
+// user → ErrConflict; same (user, uuid) pair is idempotent (ON CONFLICT DO
+// NOTHING on the UNIQUE(mc_uuid) constraint, plus an idempotency check via
+// EXISTS).
+func (p *PGRepo) LinkAccount(ctx context.Context, userID, mcUUID, authSource string) error {
+	// Check idempotency first: already linked to this user → success.
+	var exists bool
+	if err := p.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM account_links WHERE user_id = $1 AND mc_uuid = $2)`,
+		userID, mcUUID).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+
+	// Try insert. The UNIQUE(mc_uuid) constraint will reject a UUID already
+	// bound to a different user.
+	res, err := p.db.ExecContext(ctx,
+		`INSERT INTO account_links (user_id, mc_uuid, auth_source, verified_at)
+		 VALUES ($1, $2, $3, now())
+		 ON CONFLICT (mc_uuid) DO NOTHING`,
+		userID, mcUUID, authSource)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrConflict
+	}
+	return nil
+}
+
+// joinStr joins a slice of strings with ", ".
+func joinStr(vals []string) string {
+	if len(vals) == 0 {
+		return ""
+	}
+	s := vals[0]
+	for _, v := range vals[1:] {
+		s += ", " + v
+	}
+	return s
+}
+
+// isUniqueViolation reports whether err is a Postgres unique-constraint
+// violation (code 23505).
+func isUniqueViolation(err error) bool {
+	return stringsContains(err.Error(), "duplicate key") || stringsContains(err.Error(), "23505")
+}
+
+func stringsContains(s, sub string) bool {
+	for i := 0; i <= len(s)-len(sub); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }

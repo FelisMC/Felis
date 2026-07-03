@@ -382,4 +382,151 @@ type Repo interface {
 	GetSetting(ctx context.Context, key string) ([]byte, error)
 	// SetSetting upserts a runtime setting's raw jsonb value by key.
 	SetSetting(ctx context.Context, key string, value []byte) error
+
+	// ---- user admin (spec §7, admin-only) ----
+
+	// ListUsers returns a page of non-deleted users matching the optional filters,
+	// newest first. total is the unfiltered count so the admin page can render
+	// pagination without a second round-trip.
+	ListUsers(ctx context.Context, opts ListUsersOpts) ([]UserView, int, error)
+	// UserDetail loads one user with its linked MC accounts, or ErrNotFound.
+	// A deleted user is returned (the row lives for audit) but flagged.
+	UserDetail(ctx context.Context, userID string) (*UserDetail, error)
+	// CreateUser mints a new user row (role forced to either 'admin' or 'user')
+	// with an initial password hash. createdBy is the actor email for audit. A
+	// username conflict → ErrConflict.
+	CreateUser(ctx context.Context, input CreateUserInput, createdBy string) (*UserView, error)
+	// UpdateUser applies the non-nil fields of patch to the user identified by
+	// userID and returns the updated view. A username conflict → ErrConflict;
+	// a non-existent user → ErrNotFound. updatedBy is the actor email.
+	UpdateUser(ctx context.Context, userID string, patch UpdateUserInput, updatedBy string) (*UserView, error)
+	// DeleteUser soft-deletes the user: sets deleted_at, revokes every live
+	// session, and releases every owned server (owner_id → NULL). deletedBy is
+	// the actor email. A non-existent or already-deleted user → ErrNotFound.
+	// The row is preserved so audit_logs.actor references survive.
+	DeleteUser(ctx context.Context, userID, deletedBy string) error
+	// SetUserDisabled flips the disabled flag on a live (non-deleted) user.
+	// Setting disabled→true additionally revokes every live session so a
+	// disabled account is immediately locked out. A non-existent user →
+	// ErrNotFound; a deleted user → ErrNotFound.
+	SetUserDisabled(ctx context.Context, userID string, disabled bool) error
+	// AdminResetPassword stores a new bcrypt hash for a user and forces
+	// must_change_password, so the admin-set password is replaced on first
+	// login. ErrNotFound when no live row matches.
+	AdminResetPassword(ctx context.Context, userID, passwordHash string) error
+
+	// ---- quota admin (spec §6 quotas, admin-only) ----
+
+	// GetQuotas returns the quotas row for a user, or a zero-value view when no
+	// row exists (which means unlimited per spec §9.3).
+	GetQuotas(ctx context.Context, userID string) (*QuotaView, error)
+	// SetQuotas upserts a quotas row for userID. Nil fields leave the column
+	// untouched; a zero-value (non-nil) field clears the cap (unlimited).
+	SetQuotas(ctx context.Context, userID string, q QuotaInput, setBy string) (*QuotaView, error)
+
+	// ---- session admin (admin-only) ----
+
+	// ListUserSessions returns every live (unrevoked, unexpired at now) session
+	// for a user, newest first. An empty list is not an error.
+	ListUserSessions(ctx context.Context, userID string, now time.Time) ([]SessionView, error)
+	// RevokeAllUserSessions marks every live session of userID revoked.
+	// Revoking zero sessions is not an error.
+	RevokeAllUserSessions(ctx context.Context, userID string) error
+
+	// ---- account-link admin (admin-only) ----
+
+	// UnlinkAccount removes a single (user_id, mc_uuid) binding. It does not
+	// consume the UUID's link code — a re-link by the player later is still
+	// possible — but the admin can unlink without going through the player.
+	// A non-existent binding → ErrNotFound.
+	UnlinkAccount(ctx context.Context, userID, mcUUID string) error
+	// LinkAccount force-binds a verified MC UUID to a user, bypassing the
+	// normal code-verification flow. The UUID must not already be linked to a
+	// different user (→ ErrConflict). A duplicate bind of the same pair is
+	// idempotent. authSource records which Yggdrasil established the UUID
+	// (mojang | thirdparty, spec §10 dual-Yggdrasil).
+	LinkAccount(ctx context.Context, userID, mcUUID, authSource string) error
+}
+
+// ---- user admin types ----
+
+// ListUsersOpts carries the optional filters and pagination for ListUsers.
+// Zero values mean "no filter / default page."
+type ListUsersOpts struct {
+	Query  string // substring match on username or email
+	Role   string // exact role match ("admin" / "user"), or "" for all
+	Hidden string // "true" = disabled only, "false" = enabled only, "" = all
+	Limit  int    // page size; 0 → default 20
+	Offset int    // page offset; 0 → first page
+}
+
+// UserView is one row of the admin user list.
+type UserView struct {
+	ID                 string    `json:"id"`
+	Username           string    `json:"username"`
+	Email              string    `json:"email,omitempty"`
+	Role               string    `json:"role"`
+	Disabled           bool      `json:"disabled"`
+	EmailVerified      bool      `json:"email_verified"`
+	ServerCount        int       `json:"server_count"`
+	MustChangePassword bool      `json:"must_change_password"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
+}
+
+// UserDetail is the full admin view of one user, including linked MC accounts.
+type UserDetail struct {
+	UserView
+	DeletedAt     *time.Time       `json:"deleted_at,omitempty"`
+	LinkedAccounts []LinkedAccount `json:"linked_accounts,omitempty"`
+}
+
+// LinkedAccount is one verified MC-UUID binding (account_links, spec §10).
+type LinkedAccount struct {
+	MCUUID     string    `json:"mc_uuid"`
+	AuthSource string    `json:"auth_source"`
+	VerifiedAt time.Time `json:"verified_at"`
+}
+
+// CreateUserInput is the admin create-user form.
+type CreateUserInput struct {
+	Username        string `json:"username"`
+	Email           string `json:"email,omitempty"`
+	Role            string `json:"role"`
+	PasswordHash    string `json:"-"`
+	MustChange      bool   `json:"must_change_password"`
+}
+
+// UpdateUserInput is the admin patch-user form. Every field is a pointer so
+// an absent field ("leave unchanged") is distinguishable from a zero value.
+type UpdateUserInput struct {
+	Username *string `json:"username,omitempty"`
+	Email    *string `json:"email,omitempty"`
+	Role     *string `json:"role,omitempty"`
+}
+
+// QuotaView is the admin-visible quotas row (spec §6).
+type QuotaView struct {
+	UserID       string `json:"user_id"`
+	MaxServers   *int   `json:"max_servers,omitempty"`
+	MaxCPUMilli  *int   `json:"max_cpu_milli,omitempty"`
+	MaxMemoryMB  *int   `json:"max_memory_mb,omitempty"`
+	MaxStorageGB *int   `json:"max_storage_gb,omitempty"`
+}
+
+// QuotaInput is the admin set-quotas form. Nil fields are left unchanged;
+// a non-nil zero-value field clears the cap (unlimited).
+type QuotaInput struct {
+	MaxServers   *int `json:"max_servers,omitempty"`
+	MaxCPUMilli  *int `json:"max_cpu_milli,omitempty"`
+	MaxMemoryMB  *int `json:"max_memory_mb,omitempty"`
+	MaxStorageGB *int `json:"max_storage_gb,omitempty"`
+}
+
+// SessionView is one live session row visible to an admin.
+type SessionView struct {
+	TokenHash string     `json:"token_hash"`
+	CreatedAt time.Time  `json:"created_at"`
+	ExpiresAt time.Time  `json:"expires_at"`
+	RevokedAt *time.Time `json:"revoked_at,omitempty"`
 }

@@ -326,9 +326,9 @@ func provisionOwner(ctx context.Context, s ownerStore, username, email, password
 }
 
 // provisionOperator mints a NEW Operator staff account direct-to-Postgres. Like the
-// Owner it is role=admin with must_change_password=true — Felis has no separate
-// operator DB role, so an Operator is simply an additional staff admin (migration
-// 0003). UNLIKE provisionOwner, which upserts the single Owner and resets it on a
+// Owner it requires must_change_password=true but carries role='admin' (the single
+// above-admin 'owner' role was added in migration 0011 and is exclusive to the first
+// account — every subsequent staff is a plain admin). UNLIKE provisionOwner, which
 // username conflict, this is insert-only: a username already taken returns
 // api.ErrConflict rather than overwriting a live account, so adding an Operator can
 // never silently clobber the Owner's or another Operator's credential. Only the

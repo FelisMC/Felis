@@ -2,6 +2,7 @@ import {
   LayoutDashboard,
   Server,
   UserRound,
+  Users,
   Boxes,
   Cpu,
   ClipboardCheck,
@@ -30,11 +31,14 @@ export interface NavItem {
 }
 
 export interface NavSection {
-  id: "user" | "admin";
+  id: "user" | "admin" | "owner";
   /** Section heading key; null renders no heading (User-Side flat list). */
   titleKey: string | null;
   /** When true the section is shown only to admins (is_admin === true). */
   adminOnly: boolean;
+  /** When true the section is shown only to the owner (is_owner === true).
+   *  An owner-visible section is implicitly invisible to a plain admin. */
+  ownerOnly: boolean;
   items: NavItem[];
 }
 
@@ -43,6 +47,7 @@ export const NAV_SECTIONS: NavSection[] = [
     id: "user",
     titleKey: null,
     adminOnly: false,
+    ownerOnly: false,
     items: [
       { to: "/", key: "dashboard", icon: LayoutDashboard, end: true },
       { to: "/servers", key: "my_servers", icon: Server },
@@ -54,11 +59,21 @@ export const NAV_SECTIONS: NavSection[] = [
     id: "admin",
     titleKey: "admin_section",
     adminOnly: true,
+    ownerOnly: false,
     items: [
       { to: "/admin/images", key: "admin_images", icon: Boxes },
       { to: "/admin/builds", key: "admin_builds", icon: Cpu },
       { to: "/admin/submissions", key: "admin_submissions", icon: ClipboardCheck },
       { to: "/admin/updates", key: "admin_updates", icon: Clock },
+    ],
+  },
+  {
+    id: "owner",
+    titleKey: "owner_section",
+    adminOnly: false,
+    ownerOnly: true,
+    items: [
+      { to: "/admin/users", key: "admin_users", icon: Users },
     ],
   },
 ];
@@ -67,8 +82,13 @@ export const NAV_SECTIONS: NavSection[] = [
  * visibleSections returns the sections a caller with the given admin flag may see.
  * Pure and total: a non-admin (or the fail-closed `false` used while /me is still
  * loading or after it errors) gets exactly the User-Side section; an admin gets all
- * three. This is the single decision the sidebar renders from.
+ * admin sections; an owner additionally gets the owner-gated sections. This is the
+ * single decision the sidebar renders from.
  */
-export function visibleSections(isAdmin: boolean): NavSection[] {
-  return NAV_SECTIONS.filter((s) => !s.adminOnly || isAdmin);
+export function visibleSections(isAdmin: boolean, isOwner: boolean): NavSection[] {
+  return NAV_SECTIONS.filter((s) => {
+    if (s.ownerOnly) return isOwner;
+    if (s.adminOnly) return isAdmin;
+    return true;
+  });
 }

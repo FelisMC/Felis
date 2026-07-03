@@ -6,6 +6,7 @@ import type {
   BanlistResult,
   Build,
   CreateServerRequest,
+  CreateUserRequest,
   FleetServer,
   Identity,
   KickResult,
@@ -13,8 +14,14 @@ import type {
   LinkStatus,
   LoginResult,
   BindResult,
+  PatchUserRequest,
   PlayersResult,
+  QuotaInput,
+  QuotaView,
   ServerInfo,
+  SessionView,
+  UserDetail,
+  UserView,
   WhitelistImage,
   WhitelistResult,
   Submission,
@@ -339,6 +346,72 @@ export const api = {
   getUpdateWindow: () => request<UpdateWindow>("GET", "/updates/window"),
 
   setUpdateWindow: (window: UpdateWindow) => request<UpdateWindow>("PUT", "/updates/window", window),
+
+  // ---- User admin (admin-tier, spec §7 user admin) ----
+
+  listUsers: (params?: {
+    query?: string;
+    role?: "admin" | "user";
+    disabled?: "true" | "false";
+    limit?: number;
+    offset?: number;
+  }) => {
+    const sp = new URLSearchParams();
+    if (params?.query) sp.set("query", params.query);
+    if (params?.role) sp.set("role", params.role);
+    if (params?.disabled) sp.set("disabled", params.disabled);
+    if (params?.limit) sp.set("limit", String(params.limit));
+    if (params?.offset) sp.set("offset", String(params.offset));
+    const qs = sp.toString();
+    return request<{ users: UserView[]; total: number }>(
+      "GET",
+      `/users${qs ? `?${qs}` : ""}`,
+    ).then((r) => ({ users: r.users ?? [], total: r.total ?? 0 }));
+  },
+
+  getUser: (id: string) => request<UserDetail>("GET", `/users/${id}`),
+
+  createUser: (req: CreateUserRequest) =>
+    request<UserView>("POST", "/users", req),
+
+  patchUser: (id: string, patch: PatchUserRequest) =>
+    request<UserView>("PATCH", `/users/${id}`, patch),
+
+  deleteUser: (id: string) =>
+    request<{ deleted: boolean }>("DELETE", `/users/${id}`),
+
+  disableUser: (id: string, disabled: boolean) =>
+    request<{ id: string; disabled: boolean }>("POST", `/users/${id}/disable`, { disabled }),
+
+  resetUserPassword: (id: string) =>
+    request<{ ok: boolean; email: string }>("POST", `/users/${id}/reset-password`),
+
+  getUserQuotas: (id: string) => request<QuotaView>("GET", `/users/${id}/quotas`),
+
+  setUserQuotas: (id: string, quotas: QuotaInput) =>
+    request<QuotaView>("PUT", `/users/${id}/quotas`, quotas),
+
+  listUserSessions: (id: string) =>
+    request<{ sessions: SessionView[] }>("GET", `/users/${id}/sessions`).then((r) => r.sessions ?? []),
+
+  revokeUserSessions: (id: string) =>
+    request<{ ok: boolean }>("DELETE", `/users/${id}/sessions`),
+
+  revokeUserSession: (id: string, hash: string) =>
+    request<{ ok: boolean }>("DELETE", `/users/${id}/sessions/${encodeURIComponent(hash)}`),
+
+  linkAccount: (id: string, mcUuid: string, authSource?: string) =>
+    request<{ ok: boolean; mc_uuid: string; auth_source: string }>(
+      "POST",
+      `/users/${id}/links`,
+      { mc_uuid: mcUuid, auth_source: authSource ?? "mojang" },
+    ),
+
+  unlinkAccount: (id: string, mcUuid: string) =>
+    request<{ ok: boolean; mc_uuid: string }>(
+      "DELETE",
+      `/users/${id}/links/${encodeURIComponent(mcUuid)}`,
+    ),
 };
 
 /**

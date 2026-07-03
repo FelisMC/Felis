@@ -12,26 +12,44 @@ import type {
   ServerInfo,
   WhitelistImage,
   Submission,
+  UserView,
+  UserDetail,
+  CreateUserRequest,
+  PatchUserRequest,
+  QuotaView,
+  QuotaInput,
+  SessionView,
 } from "../src/lib/types";
 
-const ACCOUNT_IDS = ["owner", "user", "linked", "setup"] as const;
-
-type AccountID = (typeof ACCOUNT_IDS)[number];
-type Role = "admin" | "user";
-type Method = "GET" | "POST" | "DELETE";
+type AccountID = string;
+type Role = "admin" | "user" | "owner";
+type Method = "GET" | "POST" | "DELETE" | "PATCH" | "PUT";
 type CreateError =
   | "bad_request"
   | "already_exists"
   | "subdomain_taken"
   | "image_not_whitelisted";
 
+function isAdmin(role: Role): boolean {
+  return role === "admin" || role === "owner";
+}
+
+function isOwner(role: Role): boolean {
+  return role === "owner";
+}
+
 interface MockAccount {
-  id: AccountID;
+  id: string;
   role: Role;
   email: string;
   linked: boolean;
   mustChangePassword: boolean;
   emailVerified: boolean;
+  disabled?: boolean;
+  created_at?: string;
+  updated_at?: string;
+  quota?: QuotaView;
+  sessions?: SessionView[];
 }
 
 interface MockServer extends ServerInfo {
@@ -180,7 +198,7 @@ function mockBackups(): BackupView[] {
 function initialState(): MockState {
   return {
     accounts: {
-      owner: account("owner", "admin", true, false, false),
+      owner: account("owner", "owner", true, false, false),
       user: account("user", "user", false, false, false),
       linked: account("linked", "user", true, false, true),
       setup: account("setup", "admin", true, true, false),
@@ -483,14 +501,13 @@ async function readJSON<T>(req: IncomingMessage): Promise<T> {
 }
 
 function readAccount(req: IncomingMessage, state: MockState): MockAccount | null {
-  const ids = ACCOUNT_IDS.join("|");
-  const m = new RegExp(`(?:^|;\\s*)${SESSION_COOKIE}=(${ids})(?:;|$)`).exec(
+  const m = new RegExp(`(?:^|;\\s*)${SESSION_COOKIE}=([a-zA-Z0-9_-]+)(?:;|$)`).exec(
     req.headers.cookie ?? "",
   );
-  return m ? state.accounts[m[1] as AccountID] : null;
+  return m ? state.accounts[m[1]] : null;
 }
 
-function setSessionCookie(res: ServerResponse, accountID: AccountID): void {
+function setSessionCookie(res: ServerResponse, accountID: string): void {
   res.setHeader("Set-Cookie", `${SESSION_COOKIE}=${accountID}; Path=/; SameSite=Lax`);
 }
 
@@ -498,9 +515,13 @@ function clearSessionCookie(res: ServerResponse): void {
   res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`);
 }
 
-function loginAccount(username: string): AccountID | null {
+function loginAccount(username: string, state: MockState): string | null {
   const normalized = username.toLowerCase();
-  return ACCOUNT_IDS.includes(normalized as AccountID) ? (normalized as AccountID) : null;
+  const acc = state.accounts[normalized];
+  if (acc && !acc.disabled) {
+    return normalized;
+  }
+  return null;
 }
 
 function identity(accountInfo: MockAccount): Identity {
@@ -508,7 +529,8 @@ function identity(accountInfo: MockAccount): Identity {
     user_id: `mock-${accountInfo.id}`,
     email: accountInfo.email,
     role: accountInfo.role,
-    is_admin: accountInfo.role === "admin",
+    is_admin: isAdmin(accountInfo.role),
+    is_owner: isOwner(accountInfo.role),
     must_change_password: accountInfo.mustChangePassword,
     email_verified: accountInfo.emailVerified,
   };
@@ -519,11 +541,11 @@ function findServer(state: MockState, name: string): MockServer | null {
 }
 
 function canSee(accountInfo: MockAccount, serverInfo: MockServer): boolean {
-  return accountInfo.role === "admin" || serverInfo.owner === accountInfo.id || serverInfo.owner === null;
+  return isAdmin(accountInfo.role) || serverInfo.owner === accountInfo.id || serverInfo.owner === null;
 }
 
 function canManage(accountInfo: MockAccount, serverInfo: MockServer): boolean {
-  return accountInfo.role === "admin" || serverInfo.owner === accountInfo.id;
+  return isAdmin(accountInfo.role) || serverInfo.owner === accountInfo.id;
 }
 
 function visibleServers(state: MockState, accountInfo: MockAccount): ServerInfo[] {
@@ -610,7 +632,7 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
   switch (route(ctx)) {
     case "POST auth/login": {
       const body = await readJSON<{ username?: string; password?: string }>(ctx.req);
-      const accountID = body.username ? loginAccount(body.username.trim()) : null;
+      const accountID = body.username ? loginAccount(body.username.trim(), ctx.state) : null;
       if (!accountID || body.password !== MOCK_PASSWORD) {
         sendError(ctx.res, 403, "invalid_credentials", "invalid mock credentials");
         return true;
@@ -657,14 +679,14 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
 async function handleSession(ctx: SessionContext): Promise<boolean> {
   switch (route(ctx)) {
     case "GET updates/window":
-      if (ctx.account.role !== "admin") {
+      if (!isAdmin(ctx.account.role)) {
         sendError(ctx.res, 403, "forbidden", "admin account required");
         return true;
       }
       sendJSON(ctx.res, 200, ctx.state.updateWindow);
       return true;
     case "PUT updates/window": {
-      if (ctx.account.role !== "admin") {
+      if (!isAdmin(ctx.account.role)) {
         sendError(ctx.res, 403, "forbidden", "admin account required");
         return true;
       }
@@ -699,7 +721,7 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
     case "GET fleet":
       // Admin-tier, fleet-wide — mirrors the real adminOnly gate (a non-admin is
       // 403'd before the handler) so the cockpit's RequireAdmin path is exercised.
-      if (ctx.account.role !== "admin") {
+      if (!isAdmin(ctx.account.role)) {
         sendError(ctx.res, 403, "forbidden", "admin account required");
         return true;
       }
@@ -714,7 +736,7 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       // AllBackups vs BackupsForUser. The panel filters by server_name client-side.
       sendJSON(ctx.res, 200, {
         backups: ctx.state.backups.filter(
-          (b) => ctx.account.role === "admin" || b.former_owner === ctx.account.id,
+          (b) => isAdmin(ctx.account.role) || b.former_owner === ctx.account.id,
         ),
       });
       return true;
@@ -795,10 +817,323 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
         ctx.res.end();
         return true;
       }
+      if (await handleUserRoute(ctx)) return true;
       if (await handleImageRoute(ctx)) return true;
       if (await handleSubmissionRoute(ctx)) return true;
       return await handleServerRoute(ctx);
   }
+}
+
+async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
+  if (ctx.parts[2] !== "users") return false;
+
+  // Owner access check for user management routes
+  if (!isOwner(ctx.account.role)) {
+    sendError(ctx.res, 403, "forbidden", "owner account required");
+    return true;
+  }
+
+  const userIdOrAction = ctx.parts[3];
+
+  // GET /api/v1/users
+  if (is("GET", ctx) && !userIdOrAction) {
+    const url = new URL(ctx.req.url ?? "/", "http://localhost");
+    const search = url.searchParams.get("search")?.toLowerCase() || "";
+    const page = parseInt(url.searchParams.get("page") || "1", 10);
+    const limit = parseInt(url.searchParams.get("limit") || "10", 10);
+
+    const allUsers = Object.values(ctx.state.accounts).map((acc) => {
+      // count active/owned servers
+      const serverCount = ctx.state.servers.filter((s) => s.owner === acc.id).length;
+      return {
+        id: `mock-${acc.id}`,
+        username: acc.id,
+        email: acc.email,
+        role: acc.role,
+        disabled: !!acc.disabled,
+        email_verified: acc.emailVerified,
+        server_count: serverCount,
+        must_change_password: acc.mustChangePassword,
+        created_at: acc.created_at || new Date().toISOString(),
+        updated_at: acc.updated_at || new Date().toISOString(),
+      } as UserView;
+    });
+
+    const filtered = allUsers.filter((u) => {
+      return (
+        u.username.toLowerCase().includes(search) ||
+        u.email.toLowerCase().includes(search)
+      );
+    });
+
+    const paginated = filtered.slice((page - 1) * limit, page * limit);
+
+    sendJSON(ctx.res, 200, {
+      users: paginated,
+      total: filtered.length,
+    });
+    return true;
+  }
+
+  // POST /api/v1/users
+  if (is("POST", ctx) && !userIdOrAction) {
+    const body = await readJSON<CreateUserRequest>(ctx.req);
+    const username = body.username?.trim().toLowerCase();
+    if (!username) {
+      sendError(ctx.res, 400, "bad_request", "username is required");
+      return true;
+    }
+    if (ctx.state.accounts[username]) {
+      sendError(ctx.res, 409, "already_exists", "username is already taken");
+      return true;
+    }
+
+    const newAcc: MockAccount = {
+      id: username,
+      role: body.role || "user",
+      email: body.email || `${username}@example.com`,
+      linked: false,
+      mustChangePassword: body.must_change_password ?? false,
+      emailVerified: true,
+      disabled: false,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      quota: {
+        user_id: `mock-${username}`,
+        max_servers: 3,
+        max_cpu_milli: 4000,
+        max_memory_mb: 8192,
+        max_storage_gb: 50,
+      },
+      sessions: [],
+    };
+
+    ctx.state.accounts[username] = newAcc;
+
+    sendJSON(ctx.res, 201, {
+      id: `mock-${username}`,
+      username: username,
+      email: newAcc.email,
+      role: newAcc.role,
+      disabled: false,
+      email_verified: true,
+      server_count: 0,
+      must_change_password: newAcc.mustChangePassword,
+      created_at: newAcc.created_at,
+      updated_at: newAcc.updated_at,
+    } as UserView);
+    return true;
+  }
+
+  // Routes starting with /api/v1/users/{id}
+  if (userIdOrAction) {
+    const rawId = userIdOrAction;
+    const accountKey = rawId.startsWith("mock-") ? rawId.substring(5) : rawId;
+    const acc = ctx.state.accounts[accountKey];
+
+    if (!acc) {
+      sendError(ctx.res, 404, "not_found", "user not found");
+      return true;
+    }
+
+    const subAction = ctx.parts[4];
+
+    // GET /api/v1/users/{id}
+    if (is("GET", ctx) && !subAction) {
+      const serverCount = ctx.state.servers.filter((s) => s.owner === acc.id).length;
+      const linked_accounts = acc.linked ? [{
+        mc_uuid: MC_UUID,
+        auth_source: "mojang",
+        verified_at: new Date().toISOString()
+      }] : [];
+
+      const detail: UserDetail = {
+        id: `mock-${acc.id}`,
+        username: acc.id,
+        email: acc.email,
+        role: acc.role,
+        disabled: !!acc.disabled,
+        email_verified: acc.emailVerified,
+        server_count: serverCount,
+        must_change_password: acc.mustChangePassword,
+        created_at: acc.created_at || new Date().toISOString(),
+        updated_at: acc.updated_at || new Date().toISOString(),
+        linked_accounts,
+      };
+      sendJSON(ctx.res, 200, detail);
+      return true;
+    }
+
+    // PATCH /api/v1/users/{id}
+    if (is("PATCH", ctx) && !subAction) {
+      const body = await readJSON<PatchUserRequest>(ctx.req);
+
+      if (body.role !== undefined) {
+        if (body.role !== "admin" && body.role !== "user") {
+          sendError(ctx.res, 400, "bad_request", `role must be 'admin' or 'user', got ${body.role}`);
+          return true;
+        }
+        if (ctx.account.id === acc.id && body.role !== ctx.account.role) {
+          sendError(ctx.res, 403, "forbidden", "cannot change your own role");
+          return true;
+        }
+        acc.role = body.role;
+      }
+      if (body.email !== undefined) acc.email = body.email;
+      acc.updated_at = new Date().toISOString();
+
+      const serverCount = ctx.state.servers.filter((s) => s.owner === acc.id).length;
+      sendJSON(ctx.res, 200, {
+        id: `mock-${acc.id}`,
+        username: acc.id,
+        email: acc.email,
+        role: acc.role,
+        disabled: !!acc.disabled,
+        email_verified: acc.emailVerified,
+        server_count: serverCount,
+        must_change_password: acc.mustChangePassword,
+        created_at: acc.created_at || new Date().toISOString(),
+        updated_at: acc.updated_at,
+      } as UserView);
+      return true;
+    }
+
+    // DELETE /api/v1/users/{id}
+    if (is("DELETE", ctx) && !subAction) {
+      if (ctx.account.id === acc.id) {
+        sendError(ctx.res, 403, "forbidden", "cannot delete your own account");
+        return true;
+      }
+      const activeServers = ctx.state.servers.filter(
+        (s) => s.owner === acc.id && s.phase !== "Stopped" && s.phase !== "Failed"
+      );
+      if (activeServers.length > 0) {
+        sendError(
+          ctx.res,
+          409,
+          "active_servers",
+          "cannot delete user with active servers"
+        );
+        return true;
+      }
+
+      ctx.state.servers.forEach((s) => {
+        if (s.owner === acc.id) {
+          s.owner = null;
+        }
+      });
+
+      delete ctx.state.accounts[accountKey];
+      sendJSON(ctx.res, 200, { deleted: true });
+      return true;
+    }
+
+    // POST /api/v1/users/{id}/disable
+    if (is("POST", ctx) && subAction === "disable") {
+      if (ctx.account.id === acc.id) {
+        sendError(ctx.res, 403, "forbidden", "cannot disable your own account");
+        return true;
+      }
+      const body = await readJSON<{ disabled: boolean }>(ctx.req);
+      acc.disabled = !!body.disabled;
+      acc.updated_at = new Date().toISOString();
+      sendJSON(ctx.res, 200, { id: `mock-${acc.id}`, disabled: acc.disabled });
+      return true;
+    }
+
+    // POST /api/v1/users/{id}/reset-password
+    if (is("POST", ctx) && subAction === "reset-password") {
+      acc.mustChangePassword = true;
+      acc.updated_at = new Date().toISOString();
+      sendJSON(ctx.res, 200, { ok: true });
+      return true;
+    }
+
+    // GET /api/v1/users/{id}/quotas
+    if (is("GET", ctx) && subAction === "quotas") {
+      if (!acc.quota) {
+        acc.quota = {
+          user_id: `mock-${acc.id}`,
+          max_servers: 3,
+          max_cpu_milli: 4000,
+          max_memory_mb: 8192,
+          max_storage_gb: 50,
+        };
+      }
+      sendJSON(ctx.res, 200, acc.quota);
+      return true;
+    }
+
+    // PUT /api/v1/users/{id}/quotas
+    if (is("PUT", ctx) && subAction === "quotas") {
+      const body = await readJSON<QuotaInput>(ctx.req);
+      acc.quota = {
+        user_id: `mock-${acc.id}`,
+        max_servers: body.max_servers,
+        max_cpu_milli: body.max_cpu_milli,
+        max_memory_mb: body.max_memory_mb,
+        max_storage_gb: body.max_storage_gb,
+      };
+      acc.updated_at = new Date().toISOString();
+      sendJSON(ctx.res, 200, acc.quota);
+      return true;
+    }
+
+    // GET /api/v1/users/{id}/sessions
+    if (is("GET", ctx) && subAction === "sessions") {
+      if (!acc.sessions) {
+        acc.sessions = [
+          {
+            token_hash: "mock-token-hash-1",
+            created_at: new Date(Date.now() - 3600000).toISOString(),
+            expires_at: new Date(Date.now() + 3600000 * 24).toISOString(),
+          }
+        ];
+      }
+      sendJSON(ctx.res, 200, { sessions: acc.sessions });
+      return true;
+    }
+
+    // DELETE /api/v1/users/{id}/sessions/{hash} — revoke single session
+    if (is("DELETE", ctx) && subAction === "sessions" && ctx.parts[5]) {
+      const hash = ctx.parts[5];
+      if (acc.sessions) {
+        acc.sessions = acc.sessions.filter((s) => s.token_hash !== hash);
+      }
+      sendJSON(ctx.res, 200, { ok: true });
+      return true;
+    }
+
+    // DELETE /api/v1/users/{id}/sessions
+    if (is("DELETE", ctx) && subAction === "sessions" && !ctx.parts[5]) {
+      acc.sessions = [];
+      sendJSON(ctx.res, 200, { ok: true });
+      return true;
+    }
+
+    // POST /api/v1/users/{id}/links — manual link
+    if (is("POST", ctx) && subAction === "links") {
+      const body = await readJSON<{ mc_uuid: string; auth_source?: string }>(ctx.req);
+      if (!body.mc_uuid) {
+        sendError(ctx.res, 400, "bad_request", "mc_uuid is required");
+        return true;
+      }
+      acc.linked = true;
+      acc.updated_at = new Date().toISOString();
+      sendJSON(ctx.res, 200, { ok: true, mc_uuid: body.mc_uuid });
+      return true;
+    }
+
+    // DELETE /api/v1/users/{id}/links/{mc_uuid} — unlink
+    if (is("DELETE", ctx) && subAction === "links" && ctx.parts[5]) {
+      acc.linked = false;
+      acc.updated_at = new Date().toISOString();
+      sendJSON(ctx.res, 200, { ok: true, mc_uuid: ctx.parts[5] });
+      return true;
+    }
+  }
+
+  return false;
 }
 
 async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
@@ -812,7 +1147,7 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
 
   // POST /api/v1/images (add image)
   if (is("POST", ctx) && ctx.parts.length === 3) {
-    if (ctx.account.role !== "admin") {
+    if (!isAdmin(ctx.account.role)) {
       sendError(ctx.res, 403, "forbidden", "admin account required");
       return true;
     }
@@ -836,7 +1171,7 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
 
   // DELETE /api/v1/images (remove image)
   if (is("DELETE", ctx) && ctx.parts.length === 3) {
-    if (ctx.account.role !== "admin") {
+    if (!isAdmin(ctx.account.role)) {
       sendError(ctx.res, 403, "forbidden", "admin account required");
       return true;
     }
@@ -859,7 +1194,7 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
 
   // POST /api/v1/images/build (trigger build)
   if (is("POST", ctx) && ctx.parts[3] === "build" && ctx.parts.length === 4) {
-    if (ctx.account.role !== "admin") {
+    if (!isAdmin(ctx.account.role)) {
       sendError(ctx.res, 403, "forbidden", "admin account required");
       return true;
     }
@@ -899,7 +1234,7 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
 
   // GET /api/v1/images/build (list builds)
   if (is("GET", ctx) && ctx.parts[3] === "build" && ctx.parts.length === 4) {
-    if (ctx.account.role !== "admin") {
+    if (!isAdmin(ctx.account.role)) {
       sendError(ctx.res, 403, "forbidden", "admin account required");
       return true;
     }
@@ -909,7 +1244,7 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
 
   // GET /api/v1/images/build/{id} (get build)
   if (is("GET", ctx) && ctx.parts[3] === "build" && ctx.parts[4] && ctx.parts.length === 5) {
-    if (ctx.account.role !== "admin") {
+    if (!isAdmin(ctx.account.role)) {
       sendError(ctx.res, 403, "forbidden", "admin account required");
       return true;
     }
@@ -924,7 +1259,7 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
 
   // POST /api/v1/images/build/{id}/cancel (cancel build)
   if (is("POST", ctx) && ctx.parts[3] === "build" && ctx.parts[5] === "cancel" && ctx.parts.length === 6) {
-    if (ctx.account.role !== "admin") {
+    if (!isAdmin(ctx.account.role)) {
       sendError(ctx.res, 403, "forbidden", "admin account required");
       return true;
     }
@@ -946,7 +1281,7 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
 
   // GET /api/v1/images/build/{id}/logs (SSE logs stream)
   if (is("GET", ctx) && ctx.parts[3] === "build" && ctx.parts[5] === "logs" && ctx.parts.length === 6) {
-    if (ctx.account.role !== "admin") {
+    if (!isAdmin(ctx.account.role)) {
       sendError(ctx.res, 403, "forbidden", "admin account required");
       return true;
     }
@@ -1023,7 +1358,7 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
 
   // GET /api/v1/submissions
   if (isAdminSubmissions && is("GET", ctx) && ctx.parts.length === 3) {
-    if (ctx.account.role !== "admin") {
+    if (!isAdmin(ctx.account.role)) {
       sendError(ctx.res, 403, "forbidden", "admin account required");
       return true;
     }
@@ -1033,7 +1368,7 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
 
   // POST /api/v1/submissions/{id}/approve
   if (isAdminSubmissions && is("POST", ctx) && ctx.parts[4] === "approve" && ctx.parts.length === 5) {
-    if (ctx.account.role !== "admin") {
+    if (!isAdmin(ctx.account.role)) {
       sendError(ctx.res, 403, "forbidden", "admin account required");
       return true;
     }
@@ -1084,7 +1419,7 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
 
   // POST /api/v1/submissions/{id}/reject
   if (isAdminSubmissions && is("POST", ctx) && ctx.parts[4] === "reject" && ctx.parts.length === 5) {
-    if (ctx.account.role !== "admin") {
+    if (!isAdmin(ctx.account.role)) {
       sendError(ctx.res, 403, "forbidden", "admin account required");
       return true;
     }
@@ -1156,7 +1491,7 @@ function streamBuildLogs(
 }
 
 async function createServerRoute(ctx: SessionContext): Promise<void> {
-  if (ctx.account.role !== "admin") {
+  if (!isAdmin(ctx.account.role)) {
     sendError(ctx.res, 403, "forbidden", "admin account required");
     return;
   }
@@ -1285,7 +1620,7 @@ async function handleRestoreBackupMock(ctx: SessionContext, serverInfo: MockServ
   }
 
   // Non-admins may restore only a world they formerly owned (spec §466).
-  if (ctx.account.role !== "admin" && backup.former_owner !== ctx.account.id) {
+  if (!isAdmin(ctx.account.role) && backup.former_owner !== ctx.account.id) {
     sendError(ctx.res, 403, "forbidden", "not the former owner of this world");
     return true;
   }
