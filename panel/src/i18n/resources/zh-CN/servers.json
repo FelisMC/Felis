@@ -19,6 +19,8 @@
   "online": "人在线",
   "console": "控制台",
   "claim": "认领",
+  "claim_server_title": "认领服务器",
+  "claim_server_desc": "确认认领服务器「{{name}}」吗？认领后你将成为该服务器的所有者，获得控制台、白名单与备份管理权限。",
   "claiming": "认领中…",
   "stop": "停止",
   "stopping": "停止中…",

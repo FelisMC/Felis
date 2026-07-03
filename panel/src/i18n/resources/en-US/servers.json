@@ -19,6 +19,8 @@
   "online": "online",
   "console": "Console",
   "claim": "Claim",
+  "claim_server_title": "Claim Server",
+  "claim_server_desc": "Are you sure you want to claim the server \"{{name}}\"? Once claimed, you will have access to its console, player management, and backups.",
   "claiming": "Claiming…",
   "stop": "Stop",
   "stopping": "Stopping…",

@@ -19,6 +19,14 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Select,
   SelectTrigger,
   SelectValue,
@@ -433,6 +441,7 @@ function ServerRow({
   const { t } = useTranslation("ops");
   const { t: ts } = useTranslation("servers");
   const [busy, setBusy] = useState<null | "wake" | "stop" | "claim">(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function act(kind: "wake" | "stop" | "claim", fn: () => Promise<unknown>) {
@@ -523,14 +532,41 @@ function ServerRow({
                   size="sm"
                   variant="outline"
                   disabled={busy !== null}
-                  onClick={() => act("claim", () => api.claim(server.name))}
+                  onClick={() => setConfirmOpen(true)}
                   className="text-primary hover:text-primary hover:bg-primary/5 border-primary/20"
                 >
-                  <Hand /> {busy === "claim" ? ts("claiming") : ts("claim")}
+                  <Hand /> {ts("claim")}
                 </Button>
                 <Button size="sm" variant="outline" disabled>
                   <Terminal /> {ts("console")}
                 </Button>
+
+                <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+                  <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                      <DialogTitle>{ts("claim_server_title")}</DialogTitle>
+                      <DialogDescription>
+                        {ts("claim_server_desc", { name: server.name })}
+                      </DialogDescription>
+                    </DialogHeader>
+                    <DialogFooter className="gap-2 sm:gap-0">
+                      <Button variant="ghost" onClick={() => setConfirmOpen(false)} disabled={busy !== null}>
+                        {ts("access_cancel")}
+                      </Button>
+                      <Button
+                        variant="default"
+                        onClick={async () => {
+                          await act("claim", () => api.claim(server.name));
+                          setConfirmOpen(false);
+                        }}
+                        disabled={busy !== null}
+                      >
+                        {busy === "claim" && <RefreshCw className="h-4 w-4 animate-spin mr-1" />}
+                        {ts("claim")}
+                      </Button>
+                    </DialogFooter>
+                  </DialogContent>
+                </Dialog>
               </>
             ) : (
               <>
