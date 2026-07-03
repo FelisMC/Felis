@@ -47,7 +47,7 @@ function StatusIndicator({ status }: { status: StreamStatus }) {
  * read history it stops yanking you down and offers a "Jump to latest" pill;
  * scrolling back to the bottom re-pins. The buffer is bounded by the controller.
  */
-export function LogConsole({ url }: { url: string }) {
+export function LogConsole({ url, className }: { url: string; className?: string }) {
   const { t } = useTranslation("servers");
   const { lines, status, clear, reconnect } = useLogStream(url);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -72,7 +72,7 @@ export function LogConsole({ url }: { url: string }) {
   const jumpToLatest = useCallback(() => setPinned(true), []);
 
   return (
-    <div className="overflow-hidden rounded-md border border-border bg-zinc-950 flex-1 flex flex-col min-h-0">
+    <div className={cn("overflow-hidden rounded-md border border-border bg-zinc-950 flex-1 flex flex-col min-h-0", className)}>
       {/* Toolbar */}
       <div className="flex items-center justify-between gap-2 border-b border-zinc-800 bg-zinc-900/60 px-3 py-2 shrink-0">
         <StatusIndicator status={status} />

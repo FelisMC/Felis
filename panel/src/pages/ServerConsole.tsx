@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useLayoutEffect, type KeyboardEvent } fr
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft, Terminal, Moon, ShieldAlert, HelpCircle, Loader2, Users, Archive, ChevronRight, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { PhaseBadge } from "@/components/PhaseBadge";
 import { LogConsole } from "@/components/LogConsole";
@@ -240,29 +240,29 @@ export function ServerConsole() {
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-4 flex-1 lg:min-h-0 min-h-0">
             {/* Left/Main column: Console */}
             <div className="lg:col-span-3 flex flex-col lg:min-h-0 min-h-0 h-full">
-              <Card className="flex flex-col flex-1 lg:min-h-0 min-h-0">
-                <CardHeader className="py-3.5 shrink-0">
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <Terminal className="h-4 w-4" /> {t("console_card_title")}
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3 flex-1 flex flex-col lg:min-h-0 min-h-0 pb-4">
+              <Card className="flex flex-col flex-1 lg:min-h-0 min-h-0 overflow-hidden">
+                <CardContent className="p-0 flex-1 flex flex-col lg:min-h-0 min-h-0">
                   {!streamable ? (
-                    <div className="flex-1 flex flex-col justify-center">
+                    <div className="flex-1 flex flex-col justify-center p-6">
                       <NotStreaming phase={data.phase} />
                     </div>
                   ) : cfg ? (
-                    <div className="flex-1 flex flex-col lg:min-h-0 min-h-0 gap-3">
-                      {/* key on name so navigating between servers remounts the viewport
-                          (fresh stream + scroll state). useLogStream also resets its
-                          controller when the url changes, so this is belt-and-suspenders. */}
-                      <LogConsole key={name} url={consoleStreamURL(cfg.apiBase, name)} />
+                    <div className="flex-1 flex flex-col lg:min-h-0 min-h-0">
+                      <LogConsole
+                        key={name}
+                        url={consoleStreamURL(cfg.apiBase, name)}
+                        className="border-0 rounded-none bg-transparent"
+                      />
                       {data.phase === "Running" && (
-                        <CommandInput name={name} />
+                        <div className="p-3 bg-zinc-950/50 border-t border-zinc-800">
+                          <CommandInput name={name} />
+                        </div>
                       )}
                     </div>
                   ) : (
-                    <Loading />
+                    <div className="p-6">
+                      <Loading />
+                    </div>
                   )}
                 </CardContent>
               </Card>
