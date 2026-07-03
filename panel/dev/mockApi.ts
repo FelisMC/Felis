@@ -1477,7 +1477,6 @@ function claimServer(ctx: SessionContext, serverInfo: MockServer): void {
     return;
   }
   serverInfo.owner = ctx.account.id;
-  setPhase(serverInfo, "Starting");
   sendJSON(ctx.res, 200, { name: serverInfo.name, claimed: true });
 }
 
