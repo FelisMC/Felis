@@ -41,6 +41,10 @@ plugins/*/bin/
 
 # ---- Local agent / loop state ----
 .claude/
+# Autohand-generated agent guide — kept on disk for local tooling, never tracked.
+# It rode in via 0c1cc59, claims precedence over CLAUDE.md, and tells agents to
+# run `go fmt` (destructive on this CRLF working tree).
+AGENTS.md
 
 # ---- Internal planning & design docs (excluded from the public remote per
 # maintainer; the machine-readable contract docs/openapi.yaml is intentionally
