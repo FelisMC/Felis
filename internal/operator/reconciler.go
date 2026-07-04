@@ -131,6 +131,29 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		players = pc
 	}
 
+	// Idle auto-stop (spec §8): when enabled, the server is Running, and the
+	// player tally is zero, track the empty duration and auto-stop when the
+	// configured timeout expires. The existing RCON probe already supplies
+	// the player count — no extra network cost.
+	if server.Spec.Idle.AutoStopEnabled && server.Spec.Idle.EmptySecondsBeforeStop > 0 {
+		if players.Online == 0 {
+			if server.Status.EmptySince == nil {
+				t := r.now()
+				server.Status.EmptySince = &t
+			} else if r.now().Time.Sub(server.Status.EmptySince.Time).Seconds() >=
+				float64(server.Spec.Idle.EmptySecondsBeforeStop) {
+				server.Spec.DesiredState = v1alpha1.DesiredStopped
+				server.Status.EmptySince = nil
+				if err := r.Update(ctx, server); err != nil {
+					return ctrl.Result{}, err
+				}
+				return ctrl.Result{}, nil
+			}
+		} else if server.Status.EmptySince != nil {
+			server.Status.EmptySince = nil
+		}
+	}
+
 	r.markRunningReady(server, players)
 	return ctrl.Result{}, r.patchStatus(ctx, server)
 }
@@ -297,6 +320,7 @@ func (r *Reconciler) markStopped(server *v1alpha1.MinecraftServer) {
 	// Clear the start anchor so the next Running transition re-anchors and
 	// felis_start_duration_seconds measures the new start, not since the last one.
 	server.Status.StartRequestedAt = nil
+	server.Status.EmptySince = nil // reset idle auto-stop timer
 	server.Status.Players = v1alpha1.PlayersStatus{}
 	server.Status.Endpoint = v1alpha1.EndpointStatus{Mode: v1alpha1.EndpointFallback, Address: server.Spec.FallbackServer}
 	server.Status.LiveMotd = server.Spec.Motd.Stopped

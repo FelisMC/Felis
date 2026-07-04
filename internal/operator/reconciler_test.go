@@ -314,6 +314,128 @@ func TestReconcileStopped_ScalesRunningWorkloadDown(t *testing.T) {
 	}
 }
 
+// --- idle auto-stop tests (spec §8) ---------------------------------------
+
+// TestIdleAutoStop_EmptyServerGetsTimestamp verifies that the first Running
+// reconcile with zero players stamps EmptySince and keeps the server Running.
+func TestIdleAutoStop_EmptyServerGetsTimestamp(t *testing.T) {
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20}}, runningServer(), rconSecret())
+	// Enable idle auto-stop with a generous timeout so we don't trigger the
+	// actual stop in this test.
+	s := getServer(t, c, "survival")
+	s.Spec.Idle = v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: 900}
+	if err := c.Update(context.Background(), s); err != nil {
+		t.Fatalf("enable idle: %v", err)
+	}
+
+	reconcile(t, r, "survival")
+	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival")
+
+	server := getServer(t, c, "survival")
+	if server.Status.Phase != v1alpha1.PhaseRunning || !server.Status.Ready {
+		t.Fatalf("phase = %s ready=%v, want Running ready", server.Status.Phase, server.Status.Ready)
+	}
+	if server.Status.EmptySince == nil {
+		t.Fatal("EmptySince should be set for an empty server with idle autostop enabled")
+	}
+}
+
+// TestIdleAutoStop_StopsAfterTimeout exercises the full auto-stop path:
+// first reconcile stamps EmptySince; after advancing the clock past the
+// timeout, the next reconcile flips desiredState to Stopped.
+func TestIdleAutoStop_StopsAfterTimeout(t *testing.T) {
+	prober := fakeProber{players: operator.PlayerCount{Online: 0, Max: 20}}
+	r, c := newReconciler(t, prober, runningServer(), rconSecret())
+
+	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	clock := base
+	r.Now = func() metav1.Time { return metav1.NewTime(clock) }
+
+	// Enable idle auto-stop with a 60s timeout.
+	s := getServer(t, c, "survival")
+	s.Spec.Idle = v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: 60}
+	if err := c.Update(context.Background(), s); err != nil {
+		t.Fatalf("enable idle: %v", err)
+	}
+
+	// First reconcile: Running, 0 players → stamp EmptySince = base.
+	reconcile(t, r, "survival")
+	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival")
+
+	server := getServer(t, c, "survival")
+	if server.Status.Phase != v1alpha1.PhaseRunning {
+		t.Fatalf("phase = %s, want Running", server.Status.Phase)
+	}
+	if server.Status.EmptySince == nil || !server.Status.EmptySince.Equal(ptrTime(metav1.NewTime(base))) {
+		t.Fatalf("EmptySince = %v, want %v", server.Status.EmptySince, base)
+	}
+
+	// Advance past timeout.
+	clock = base.Add(61 * time.Second)
+	reconcile(t, r, "survival")
+
+	server = getServer(t, c, "survival")
+	if server.Spec.DesiredState != v1alpha1.DesiredStopped {
+		t.Fatalf("desiredState = %s, want Stopped after idle timeout", server.Spec.DesiredState)
+	}
+}
+
+// TestIdleAutoStop_ResetsWhenPlayerJoins verifies that EmptySince is cleared
+// when the player tally goes from zero to non-zero.
+func TestIdleAutoStop_ResetsWhenPlayerJoins(t *testing.T) {
+	emptyProber := fakeProber{players: operator.PlayerCount{Online: 0, Max: 20}}
+	r, c := newReconciler(t, emptyProber, runningServer(), rconSecret())
+
+	s := getServer(t, c, "survival")
+	s.Spec.Idle = v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: 900}
+	if err := c.Update(context.Background(), s); err != nil {
+		t.Fatalf("enable idle: %v", err)
+	}
+
+	// First reconcile: Running, 0 players → stamp EmptySince.
+	reconcile(t, r, "survival")
+	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival")
+
+	server := getServer(t, c, "survival")
+	if server.Status.EmptySince == nil {
+		t.Fatal("EmptySince should be set when empty")
+	}
+
+	// Swap to a prober that reports players online.
+	populatedProber := fakeProber{players: operator.PlayerCount{Online: 3, Max: 20}}
+	r.Prober = populatedProber
+	reconcile(t, r, "survival")
+
+	server = getServer(t, c, "survival")
+	if server.Status.EmptySince != nil {
+		t.Fatalf("EmptySince = %v, want nil after players join", server.Status.EmptySince)
+	}
+}
+
+// TestIdleAutoStop_SkipsWhenDisabled verifies that a Running empty server does
+// NOT get an EmptySince timestamp when AutoStopEnabled is false.
+func TestIdleAutoStop_SkipsWhenDisabled(t *testing.T) {
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20}}, runningServer(), rconSecret())
+
+	// Idle is NOT enabled (default).
+	s := getServer(t, c, "survival")
+	if s.Spec.Idle.AutoStopEnabled {
+		t.Fatal("idle autostop should be disabled by default")
+	}
+
+	reconcile(t, r, "survival")
+	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival")
+
+	server := getServer(t, c, "survival")
+	if server.Status.EmptySince != nil {
+		t.Fatalf("EmptySince = %v, want nil when idle autostop is disabled", server.Status.EmptySince)
+	}
+}
+
 // --- helpers ---------------------------------------------------------------
 
 func getSTSErr(c client.Client, name string) (*appsv1.StatefulSet, error) {

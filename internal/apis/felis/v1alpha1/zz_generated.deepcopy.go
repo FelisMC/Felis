@@ -118,6 +118,9 @@ func (in *MinecraftServerStatus) DeepCopyInto(out *MinecraftServerStatus) {
 	if in.StartRequestedAt != nil {
 		out.StartRequestedAt = in.StartRequestedAt.DeepCopy()
 	}
+	if in.EmptySince != nil {
+		out.EmptySince = in.EmptySince.DeepCopy()
+	}
 	if in.Conditions != nil {
 		l := make([]metav1.Condition, len(in.Conditions))
 		for i := range in.Conditions {

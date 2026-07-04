@@ -253,6 +253,11 @@ type MinecraftServerStatus struct {
 	// clears this on stop so the next start re-anchors. Persisted in status
 	// because the two endpoints fall in different reconcile passes.
 	StartRequestedAt *metav1.Time `json:"startRequestedAt,omitempty"`
+	// EmptySince is when the operator first observed 0 online players during a
+	// Running phase (spec §8 idle auto-stop). It is reset when a player joins
+	// or the server stops, so the empty-duration counter starts fresh each time
+	// the server becomes unoccupied.
+	EmptySince *metav1.Time `json:"emptySince,omitempty"`
 	// ObservedGeneration is the spec generation this status reflects.
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 	// Conditions are the standard metav1 conditions (Ready, RconReached, ...).
