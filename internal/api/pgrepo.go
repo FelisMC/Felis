@@ -836,18 +836,6 @@ func (p *PGRepo) RevokeSession(ctx context.Context, tokenHash string) error {
 	return err
 }
 
-// RevokeUserSessionsExcept revokes every live session of a user except keepTokenHash
-// — logs out an account's other devices while keeping the current one. Its original
-// caller (the change-password flow) was removed in the passwordless migration; it is
-// retained for the account-remediation path (P5, #78) and currently has no caller.
-func (p *PGRepo) RevokeUserSessionsExcept(ctx context.Context, userID, keepTokenHash string) error {
-	_, err := p.db.ExecContext(ctx,
-		`UPDATE sessions SET revoked_at = now()
-		 WHERE user_id = $1 AND token_hash <> $2 AND revoked_at IS NULL`,
-		userID, keepTokenHash)
-	return err
-}
-
 // ---- runtime platform settings (spec §B platform_settings) ----
 
 // GetSetting reads a setting's raw jsonb value as bytes, or ErrNotFound.

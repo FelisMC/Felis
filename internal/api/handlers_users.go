@@ -368,6 +368,33 @@ func (a *API) handleRevokeUserSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// handleUnbindUserPasskeys unbinds every passkey a user holds
+// (DELETE /users/{id}/passkeys). It is the admin account-remediation for a
+// compromised authenticator: a passkey planted (or retained) via a transiently
+// hijacked session is a standing login foothold that outlives a mere session
+// revoke, so severing it needs its own owner-tier action. It is deliberately NOT a
+// lockout — the account keeps every other way back in: a player re-enters through
+// the email-OTP door and re-enrolls, an operator through op-login's in-game
+// approval — so an owner can cut a bad credential without stranding the account.
+// DeleteAllPasskeyCredentialsForUser treats removing zero rows as success, so
+// unbinding an account that holds no passkeys is a 200 no-op, not a 404.
+func (a *API) handleUnbindUserPasskeys(w http.ResponseWriter, r *http.Request) {
+	p := principalFromContext(r.Context())
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, r, errBadRequest)
+		return
+	}
+
+	if err := a.Repo.DeleteAllPasskeyCredentialsForUser(r.Context(), id); err != nil {
+		writeError(w, r, err)
+		return
+	}
+
+	a.audit(r, p.Email, "user.unbind_passkeys", id)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 // ---- account-link admin ----
 
 // handleUnlinkAccount removes a single (user_id, mc_uuid) binding

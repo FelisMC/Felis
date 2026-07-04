@@ -440,9 +440,6 @@ type Repo interface {
 	// RevokeSession marks a session revoked (logout). It is idempotent: revoking an
 	// absent or already-revoked session is not an error.
 	RevokeSession(ctx context.Context, tokenHash string) error
-	// RevokeUserSessionsExcept revokes every live session of a user except the one
-	// whose hash is keepTokenHash. Used to log out other devices on a security event.
-	RevokeUserSessionsExcept(ctx context.Context, userID, keepTokenHash string) error
 
 	// ConsumeSetupToken atomically marks a one-time setup token consumed and returns
 	// its user_id, or ErrNotFound when the token is absent, already consumed, or

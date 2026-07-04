@@ -2715,6 +2715,31 @@ paths:
         '403':
           $ref: '#/components/responses/Forbidden'
 
+  /api/v1/users/{id}/passkeys:
+    delete:
+      tags: [users]
+      operationId: unbindUserPasskeys
+      summary: Unbind every passkey of a user (owner only) — authenticator remediation.
+      x-felis-face: [external]
+      x-felis-tier: owner
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: All passkeys unbound (a no-op 200 when the user had none).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: { type: boolean, const: true }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
   /api/v1/users/{id}/links:
     post:
       tags: [users]

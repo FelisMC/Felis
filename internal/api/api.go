@@ -426,6 +426,7 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "GET", Pattern: "/api/v1/users/{id}/sessions", Owner: true, h: a.handleListUserSessions},
 		{Method: "DELETE", Pattern: "/api/v1/users/{id}/sessions", Owner: true, h: a.handleRevokeUserSessions},
 		{Method: "DELETE", Pattern: "/api/v1/users/{id}/sessions/{hash}", Owner: true, h: a.handleRevokeUserSession},
+		{Method: "DELETE", Pattern: "/api/v1/users/{id}/passkeys", Owner: true, h: a.handleUnbindUserPasskeys},
 		{Method: "DELETE", Pattern: "/api/v1/users/{id}/links/{mc_uuid}", Owner: true, h: a.handleUnlinkAccount},
 		{Method: "POST", Pattern: "/api/v1/users/{id}/links", Owner: true, h: a.handleLinkAccount},
 	}

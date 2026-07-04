@@ -662,14 +662,6 @@ func (f *fakeRepo) RevokeSession(_ context.Context, tokenHash string) error {
 	}
 	return nil
 }
-func (f *fakeRepo) RevokeUserSessionsExcept(_ context.Context, userID, keepTokenHash string) error {
-	for h, s := range f.sessions {
-		if s.userID == userID && h != keepTokenHash {
-			s.revoked = true
-		}
-	}
-	return nil
-}
 func (f *fakeRepo) GetSetting(_ context.Context, key string) ([]byte, error) {
 	if v, ok := f.settings[key]; ok {
 		return v, nil
@@ -1226,6 +1218,56 @@ func TestExternalFaceRequiresPrincipal(t *testing.T) {
 	if w := do(api.ExternalHandler(), "GET", "/api/v1/me/servers", "", nil); w.Code != http.StatusUnauthorized {
 		t.Fatalf("code = %d, want 401", w.Code)
 	}
+}
+
+// TestUnbindUserPasskeys proves the authenticator-remediation door
+// (DELETE /users/{id}/passkeys) severs every passkey a target account holds, is
+// gated to the owner role (an Operator-grade admin is refused, so it is stricter
+// than the app-admin surface), and treats an account with no passkeys as a 200
+// no-op rather than a 404 — remediation must be idempotent.
+func TestUnbindUserPasskeys(t *testing.T) {
+	repo := newFakeRepo()
+	api := newTestAPI(repo, newFakeCluster())
+
+	// Seed the target account with two bound passkeys.
+	ctx := context.Background()
+	for _, id := range []string{"pk1", "pk2"} {
+		if err := repo.CreatePasskeyCredential(ctx, PasskeyCredential{
+			ID: id, UserID: "victim", CredentialID: "cred-" + id, PublicKey: "pub",
+		}); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+
+	owner := &Principal{UserID: "owner1", Email: "owner@mc.example.net", Role: "owner", ViaAdminAccess: true}
+
+	t.Run("owner unbinds every passkey", func(t *testing.T) {
+		api.External = staticExternal{p: owner}
+		w := do(api.ExternalHandler(), "DELETE", "/api/v1/users/victim/passkeys", "", nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
+		}
+		creds, _ := repo.PasskeyCredentialsForUser(ctx, "victim")
+		if len(creds) != 0 {
+			t.Fatalf("passkeys remaining = %d, want 0", len(creds))
+		}
+	})
+
+	t.Run("no passkeys is a 200 no-op, not a 404", func(t *testing.T) {
+		api.External = staticExternal{p: owner}
+		w := do(api.ExternalHandler(), "DELETE", "/api/v1/users/ghost/passkeys", "", nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("an Operator-grade admin is refused (owner-only)", func(t *testing.T) {
+		api.External = staticExternal{p: &Principal{UserID: "op1", Role: "admin", ViaAdminAccess: true}}
+		w := do(api.ExternalHandler(), "DELETE", "/api/v1/users/victim/passkeys", "", nil)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("code = %d, want 403", w.Code)
+		}
+	})
 }
 
 // TestMeIdentity proves GET /api/v1/me reports the server-computed identity the
