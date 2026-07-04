@@ -124,6 +124,7 @@
   "users_role_admin": "管理员",
     "users_role_owner": "所有者",
     "users_role_user": "普通用户",
+  "users_col_user": "用户",
   "users_col_role": "角色",
   "users_col_servers": "服务器数",
   "users_col_status": "状态",
