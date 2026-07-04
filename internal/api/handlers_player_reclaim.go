@@ -26,6 +26,12 @@ import (
 // row cannot express) and are not represented here. The block is keyed by UUID,
 // never by the contested name, so the genuine Mojang player — same username,
 // different UUID — is never caught.
+//
+// This UUID-keyed, proxy-detected split matches the real multi-Yggdrasil reference
+// (CaaMoe/MultiLogin binds identity in the plugin as serviceId+online-UUID, keyed by
+// UUID, never by name). §B3's Mojang-priority reclaim goes beyond the common "protect
+// the first-bound name" behavior: it evicts a squatter once the genuine Mojang owner
+// appears and stashes the squatter's data for the code-only inherit path above.
 
 const (
 	// reclaimHoldTTL is the 30-day window a reclaimed account's data is stashed for
