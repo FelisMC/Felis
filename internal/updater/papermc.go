@@ -10,11 +10,15 @@ import (
 	"felis.lolicon.best/internal/updates"
 )
 
-// defaultUserAgent identifies Felis to the PaperMC Fill v3 API, which REQUIRES a
-// non-generic User-Agent that names the software and carries a contact URL — a
-// generic default (curl, wget, Go-http-client) is refused. It uses the public Felis
-// module path as the contact and contains no operator-specific serving domain; a
-// deployment can override it (paperMC.userAgent) with a SysAdmin contact from config.
+// defaultUserAgent identifies Felis to the PaperMC Fill v3 API. PaperMC's API usage
+// policy asks consumers to send a descriptive User-Agent that names the application
+// and carries contact info, and warns that generic/library-default agents (curl, wget,
+// Go-http-client) may be rate-limited or blocked. Enforcement was NOT active on the
+// project-metadata endpoint as of 2026-07-04 — a bare UA still returned HTTP 200 — so
+// sending this is documented etiquette and future-proofing, not an empirically
+// confirmed hard gate. It uses the public Felis module path as the contact and
+// contains no operator-specific serving domain; a deployment can override it
+// (paperMC.userAgent) with a SysAdmin contact from config.
 const defaultUserAgent = "felis-updater/0.1 (+https://felis.lolicon.best)"
 
 // paperMC discovers the latest STABLE version of a PaperMC project (Velocity, for
@@ -25,7 +29,7 @@ const defaultUserAgent = "felis-updater/0.1 (+https://felis.lolicon.best)"
 // network (see papermc_test.go, whose fixture is captured from the real v3 shape).
 type paperMC struct {
 	baseURL   string // e.g. "https://fill.papermc.io"
-	userAgent string // non-generic UA with a contact (Fill v3 requirement)
+	userAgent string // descriptive UA with a contact (PaperMC usage-policy etiquette)
 	hc        *http.Client
 }
 

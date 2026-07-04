@@ -8,22 +8,32 @@ import (
 	"testing"
 )
 
-// velocityV3Fixture is the PaperMC Fill v3 GET /v3/projects/velocity body — its shape
-// and version strings captured verbatim from the live API on 2026-07-04. Grounding
-// the fixture in the real response is what makes this a contract test rather than a
-// self-referential one: the newest overall version is a -SNAPSHOT (3.5.0-SNAPSHOT)
-// while the newest stable release is 3.4.0, so the stable filter is exercised against
-// real-world data, not an invented shape. (The v2 API this replaces now returns 410.)
+// velocityV3Fixture is the PaperMC Fill v3 GET /v3/projects/velocity response body,
+// captured from the live API on 2026-07-04 (keys and version strings exactly as
+// returned; JSON whitespace normalized). Grounding the fixture in the real response is
+// what makes this a contract test rather than a self-referential one:
+//   - the newest overall version is a -SNAPSHOT (3.5.0-SNAPSHOT) while the newest
+//     stable release is 3.4.0, so the stable filter runs against real data; and
+//   - the "versions" object groups the ENTIRE 3.x line under a single key "3.0.0"
+//     (not per-minor keys), so a parser that trusted the group key to bound the
+//     versions inside it would be wrong — proof the key-agnostic flatten is required.
+// (The v2 API this replaces now returns HTTP 410.)
 const velocityV3Fixture = `{
   "project": {"id": "velocity", "name": "Velocity"},
   "versions": {
-    "3.5": ["3.5.0-SNAPSHOT"],
-    "3.4": ["3.4.0", "3.4.0-SNAPSHOT"],
-    "3.3": ["3.3.0-SNAPSHOT"],
-    "3.2": ["3.2.0-SNAPSHOT"],
-    "3.1": ["3.1.2-SNAPSHOT", "3.1.1", "3.1.1-SNAPSHOT", "3.1.0"],
-    "1.1": ["1.1.9"],
-    "1.0": ["1.0.10"]
+    "3.0.0": [
+      "3.5.0-SNAPSHOT",
+      "3.4.0",
+      "3.4.0-SNAPSHOT",
+      "3.3.0-SNAPSHOT",
+      "3.2.0-SNAPSHOT",
+      "3.1.2-SNAPSHOT",
+      "3.1.1",
+      "3.1.1-SNAPSHOT",
+      "3.1.0"
+    ],
+    "1.1.0": ["1.1.9"],
+    "1.0.0": ["1.0.10"]
   }
 }`
 
@@ -61,8 +71,12 @@ func TestPaperMCLatestStableFiltersSnapshots(t *testing.T) {
 	}
 }
 
-// TestPaperMCSendsNonGenericUserAgent proves Felis transmits the contact-carrying,
-// non-generic User-Agent the Fill v3 API requires (a generic UA is refused upstream).
+// TestPaperMCSendsNonGenericUserAgent proves Felis transmits a descriptive,
+// contact-carrying User-Agent rather than a generic library default. PaperMC's API
+// usage policy asks for this and reserves the right to block anonymous/generic agents;
+// upstream enforcement was not active on the project endpoint as of 2026-07-04 (a bare
+// UA got HTTP 200), so this verifies OUR compliance with the policy, not an upstream
+// gate we depend on.
 func TestPaperMCSendsNonGenericUserAgent(t *testing.T) {
 	var gotUA string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
