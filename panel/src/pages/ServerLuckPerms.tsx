@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, Moon, Shield, ShieldX, Users, Search, Plus, Trash2, Undo, History, Loader2 } from "lucide-react";
+import { useParams } from "react-router-dom";
+import { Shield, Users, Search, Plus, Trash2, Undo, History, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { BackLink } from "@/components/BackLink";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -15,7 +16,8 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { PhaseBadge } from "@/components/PhaseBadge";
-import { Loading, ErrorState } from "@/components/States";
+import { Loading, ErrorState, NotYours, NotRunning } from "@/components/States";
+import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
@@ -49,40 +51,6 @@ interface ActionHistoryItem {
   status: "success" | "error";
   output: string;
   reverted?: boolean;
-}
-
-function NotYours() {
-  const { t } = useTranslation("servers");
-  return (
-    <div className="mx-auto flex max-w-md flex-col items-center justify-center gap-3 py-24 text-center">
-      <ShieldX className="h-8 w-8 text-destructive" />
-      <div>
-        <p className="font-medium">{t("players_not_yours_title")}</p>
-        <p className="mt-1 text-sm text-muted-foreground">{t("players_not_yours_body")}</p>
-      </div>
-      <Link to="/servers" className="text-sm font-medium text-primary hover:underline">
-        {t("my_servers_breadcrumb")}
-      </Link>
-    </div>
-  );
-}
-
-function NotRunning({ onWake }: { onWake: () => void }) {
-  const { t } = useTranslation("servers");
-  return (
-    <div className="flex flex-col items-center justify-center gap-4 rounded-lg border border-dashed border-border bg-muted/20 py-16 text-center">
-      <Moon className="h-8 w-8 text-muted-foreground/70" />
-      <div>
-        <p className="font-medium">{t("players_not_running_title")}</p>
-        <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
-          {t("players_not_running_body")}
-        </p>
-      </div>
-      <Button size="sm" onClick={onWake}>
-        {t("wake")}
-      </Button>
-    </div>
-  );
 }
 
 export function ServerLuckPerms() {
@@ -298,12 +266,7 @@ export function ServerLuckPerms() {
   };
 
   const back = (
-    <Link
-      to={`/servers/${name}`}
-      className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mb-4"
-    >
-      <ArrowLeft className="h-4 w-4" /> {t("luckperms_back_to_console")}
-    </Link>
+    <BackLink to={`/servers/${name}`} label={t("luckperms_back_to_console")} />
   );
 
   if (loading && !data) {
@@ -329,18 +292,13 @@ export function ServerLuckPerms() {
   const phase: Phase = data.phase;
 
   const header = (
-    <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
-      <div className="flex items-center gap-3">
-        <Shield className="h-6 w-6 text-primary" />
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">
-            {data.displayName || data.name}
-          </h1>
-          <p className="text-sm text-muted-foreground">{t("luckperms_desc")}</p>
-        </div>
-      </div>
-      <PhaseBadge phase={phase} />
-    </div>
+    <PageHeader
+      icon={Shield}
+      title={data.displayName || data.name}
+      subtitle={t("luckperms_desc")}
+      actions={<PhaseBadge phase={phase} />}
+      className="mb-6"
+    />
   );
 
   return (
@@ -352,9 +310,9 @@ export function ServerLuckPerms() {
       ) : mineError ? (
         <ErrorState error={mineError} onRetry={reloadMine} />
       ) : !owned ? (
-        <NotYours />
+        <NotYours title={t("players_not_yours_title")} body={t("players_not_yours_body")} />
       ) : phase !== "Running" ? (
-        <NotRunning onWake={() => api.wake(name).then(reload)} />
+        <NotRunning title={t("players_not_running_title")} body={t("players_not_running_body")} wakeLabel={t("wake")} onWake={() => api.wake(name).then(reload)} />
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 items-start">
           {/* Left Directory Sidebar: Single card for Search + Online Players */}

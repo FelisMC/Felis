@@ -1,6 +1,7 @@
-import { Loader2, AlertTriangle, Inbox, ShieldX, Construction } from "lucide-react";
+import { Loader2, AlertTriangle, Inbox, ShieldX, Construction, Moon } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
+import { Button } from "@/components/ui/button";
 import { humanizeError } from "@/lib/api";
 
 export function Loading({ label }: { label?: string }) {
@@ -89,6 +90,51 @@ export function PendingBackend({ endpoint, note }: { endpoint: string; note: str
           {t("pending_backend_prefix")}{endpoint}
         </p>
       </div>
+    </div>
+  );
+}
+
+export interface NotYoursProps {
+  title: string;
+  body: string;
+  linkTo?: string;
+  linkLabel?: string;
+}
+
+export function NotYours({ title, body, linkTo = "/servers", linkLabel }: NotYoursProps) {
+  const { t } = useTranslation("servers");
+  return (
+    <div className="mx-auto flex max-w-md flex-col items-center justify-center gap-3 py-24 text-center">
+      <ShieldX className="h-8 w-8 text-destructive" />
+      <div>
+        <p className="font-medium">{title}</p>
+        <p className="mt-1 text-sm text-muted-foreground">{body}</p>
+      </div>
+      <Link to={linkTo} className="text-sm font-medium text-primary hover:underline">
+        {linkLabel ?? t("my_servers_breadcrumb")}
+      </Link>
+    </div>
+  );
+}
+
+export interface NotRunningProps {
+  title: string;
+  body: string;
+  wakeLabel: string;
+  onWake: () => void;
+}
+
+export function NotRunning({ title, body, wakeLabel, onWake }: NotRunningProps) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-4 rounded-lg border border-dashed border-border bg-muted/20 py-16 text-center">
+      <Moon className="h-8 w-8 text-muted-foreground/70" />
+      <div>
+        <p className="font-medium">{title}</p>
+        <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">{body}</p>
+      </div>
+      <Button size="sm" onClick={onWake}>
+        {wakeLabel}
+      </Button>
     </div>
   );
 }

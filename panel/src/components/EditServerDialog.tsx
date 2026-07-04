@@ -1,11 +1,11 @@
 import { useState, useEffect } from "react";
 import { Settings, ChevronRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { ConfirmFooter } from "@/components/ConfirmFooter";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -269,14 +269,15 @@ export function EditServerDialog({
           {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
 
-        <DialogFooter>
-          <Button variant="ghost" onClick={() => setOpen(false)} disabled={submitting}>
-            {t("create_server_cancel")}
-          </Button>
-          <Button onClick={submit} disabled={!canSubmit}>
-            {submitting ? t("edit_server_updating") : t("edit_server_submit")}
-          </Button>
-        </DialogFooter>
+        <ConfirmFooter
+          onCancel={() => setOpen(false)}
+          onConfirm={submit}
+          disabled={!canSubmit}
+          loading={submitting}
+          cancelLabel={t("create_server_cancel")}
+          confirmLabel={t("edit_server_submit")}
+          confirmVariant="default"
+        />
       </DialogContent>
     </Dialog>
   );

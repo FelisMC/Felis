@@ -1,20 +1,24 @@
 import { useState, useMemo } from "react";
-import { ClipboardCheck, CheckCircle2, CircleSlash, Search, ChevronDown, ChevronUp, Check, X, Loader2 } from "lucide-react";
+import { ClipboardCheck, CheckCircle2, CircleSlash, ChevronDown, ChevronUp, Check, X, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { StatCard } from "@/components/StatCard";
+import { PageHeader } from "@/components/PageHeader";
+import { SubmissionStatusBadge } from "@/components/SubmissionStatusBadge";
+import { SearchInput } from "@/components/SearchInput";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ConfirmFooter } from "@/components/ConfirmFooter";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { MessageLine } from "@/components/MessageLine";
 import { Loading, ErrorState, EmptyState } from "@/components/States";
 import { Pagination } from "@/components/Pagination";
 import { api, humanizeError } from "@/lib/api";
@@ -23,32 +27,6 @@ import { formatRelative, formatAbsolute } from "@/lib/format";
 import type { Submission, SubmissionStatus } from "@/lib/types";
 
 const PAGE_SIZE = 10;
-
-function StatCard({
-  icon: Icon,
-  label,
-  value,
-  accentClass,
-}: {
-  icon: any;
-  label: string;
-  value: number;
-  accentClass?: string;
-}) {
-  return (
-    <Card>
-      <CardContent className="flex items-center gap-3 p-4">
-        <div className={cn("rounded-md p-2 bg-muted/30", accentClass || "text-muted-foreground")}>
-          <Icon className="h-5 w-5" />
-        </div>
-        <div>
-          <div className="text-2xl font-bold font-mono leading-none">{value}</div>
-          <div className="mt-1 text-xs text-muted-foreground font-medium">{label}</div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
 
 export function SubmissionsPage() {
   const { t, i18n } = useTranslation("admin");
@@ -142,8 +120,8 @@ export function SubmissionsPage() {
     setRejectDialogOpen(true);
   }
 
-  async function handleRejectSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleRejectSubmit(e?: React.FormEvent) {
+    e?.preventDefault();
     if (!rejectingId || !rejectReason.trim()) return;
     setBusyId(rejectingId);
     setBusyType("reject");
@@ -160,33 +138,12 @@ export function SubmissionsPage() {
     }
   }
 
-  const STATUS_BADGE_STYLE: Record<SubmissionStatus, string> = {
-    pending_review: "bg-amber-500/10 text-amber-500 border-amber-500/20",
-    approved: "bg-emerald-500/10 text-emerald-500 border-emerald-500/20",
-    rejected: "bg-rose-500/10 text-rose-500 border-rose-500/20",
-  };
-
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <ClipboardCheck className="h-6 w-6 text-primary" />
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">{t("submissions_title")}</h1>
-            <p className="text-sm text-muted-foreground">
-              {t("submissions_subtitle")}
-            </p>
-          </div>
-        </div>
-      </div>
+      <PageHeader icon={ClipboardCheck} title={t("submissions_title")} subtitle={t("submissions_subtitle")} className="mb-6" />
 
       {/* Action Error Alert */}
-      {actionError && (
-        <p className="text-xs text-destructive font-medium bg-destructive/10 p-2.5 rounded-md">
-          {actionError}
-        </p>
-      )}
+      {actionError && <MessageLine kind="error" message={actionError} compact />}
 
       {/* Stats Cards Row */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
@@ -201,15 +158,7 @@ export function SubmissionsPage() {
         <CardContent className="p-0">
           {/* Filters Bar */}
           <div className="flex flex-col sm:flex-row gap-3 p-4 border-b">
-            <div className="relative flex-1 w-full">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                placeholder="搜索模组包名称或提交人..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="pl-9"
-              />
-            </div>
+            <SearchInput value={search} onChange={setSearch} placeholder="搜索模组包名称或提交人..." />
             <div className="inline-flex h-9 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground shrink-0 select-none border border-border/40">
               <button
                 type="button"
@@ -332,14 +281,7 @@ export function SubmissionsPage() {
 
                         {/* Status */}
                         <div className="col-span-2 md:text-center py-0.5">
-                          <Badge
-                            variant="outline"
-                            className={cn("text-[10px] px-2 py-0.5 font-semibold capitalize", STATUS_BADGE_STYLE[sub.status])}
-                          >
-                            {sub.status === "pending_review" && t("status_pending_review")}
-                            {sub.status === "approved" && t("status_approved")}
-                            {sub.status === "rejected" && t("status_rejected")}
-                          </Badge>
+                          <SubmissionStatusBadge status={sub.status} />
                         </div>
 
                         {/* Created At */}
@@ -489,30 +431,15 @@ export function SubmissionsPage() {
                 className="flex min-h-[100px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
               />
             </div>
-            <DialogFooter className="gap-2 pt-2">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setRejectDialogOpen(false)}
-                disabled={!!busyId}
-                className="text-xs"
-              >
-                {t("common:cancel")}
-              </Button>
-              <Button
-                type="submit"
-                variant="destructive"
-                disabled={!!busyId || !rejectReason.trim()}
-                className="text-xs gap-1.5"
-              >
-                {busyId && busyType === "reject" ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <X className="h-4 w-4" />
-                )}
-                {t("reject_dialog_submit")}
-              </Button>
-            </DialogFooter>
+            <ConfirmFooter
+              onCancel={() => setRejectDialogOpen(false)}
+              onConfirm={() => handleRejectSubmit()}
+              disabled={!!busyId || !rejectReason.trim()}
+              loading={!!busyId && busyType === "reject"}
+              cancelLabel={t("common:cancel")}
+              confirmLabel={t("reject_dialog_submit")}
+              confirmVariant="destructive"
+            />
           </form>
         </DialogContent>
       </Dialog>

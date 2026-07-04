@@ -1,55 +1,36 @@
 import { useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import {
-  ArrowLeft,
   Archive,
   CheckCircle2,
   Clock,
   HardDrive,
   Loader2,
   RotateCcw,
-  ShieldX,
   UserMinus,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { BackLink } from "@/components/BackLink";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { ConfirmFooter } from "@/components/ConfirmFooter";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { PhaseBadge } from "@/components/PhaseBadge";
-import { Loading, ErrorState, EmptyState } from "@/components/States";
+import { Loading, ErrorState, EmptyState, NotYours } from "@/components/States";
+import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
 import { formatBytes, formatRelative, formatAbsolute, isExpired } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { BackupView } from "@/lib/types";
-
-/** NotYours mirrors ServerPlayers: viewing and restoring backups is owner-or-admin
- *  gated on the backend, but this is a real route anyone can type, so it says so
- *  plainly and offers a way back rather than rendering blank. */
-function NotYours() {
-  const { t } = useTranslation("backups");
-  return (
-    <div className="mx-auto flex max-w-md flex-col items-center justify-center gap-3 py-24 text-center">
-      <ShieldX className="h-8 w-8 text-destructive" />
-      <div>
-        <p className="font-medium">{t("not_yours_title")}</p>
-        <p className="mt-1 text-sm text-muted-foreground">{t("not_yours_body")}</p>
-      </div>
-      <Link to="/servers" className="text-sm font-medium text-primary hover:underline">
-        {t("my_servers_breadcrumb", { ns: "servers" })}
-      </Link>
-    </div>
-  );
-}
 
 /** LatestBackupCard renders the most-recent backup as the restore card — the one a
  *  restore actually recovers (the list is created_at-descending and the backend's
@@ -298,19 +279,13 @@ function RestoreControls({
       )}
       {error && <p className="text-sm text-destructive">{error}</p>}
 
-      <DialogFooter>
-        <Button variant="ghost" onClick={() => setOpen(false)} disabled={submitting}>
-          {t("cancel")}
-        </Button>
-        <Button variant="destructive" onClick={confirmRestore} disabled={submitting}>
-          {submitting ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
-          ) : (
-            <RotateCcw className="h-4 w-4" />
-          )}
-          {t("restore_confirm_yes")}
-        </Button>
-      </DialogFooter>
+      <ConfirmFooter
+        onCancel={() => setOpen(false)}
+        onConfirm={confirmRestore}
+        loading={submitting}
+        cancelLabel={t("cancel")}
+        confirmLabel={t("restore_confirm_yes")}
+      />
     </DialogContent>
   );
 
@@ -365,12 +340,7 @@ export function ServerBackups() {
   const backupsQ = useAsync(() => api.listBackups(), []);
 
   const back = (
-    <Link
-      to={`/servers/${name}`}
-      className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-    >
-      <ArrowLeft className="h-4 w-4" /> {t("back_to_console")}
-    </Link>
+    <BackLink to={`/servers/${name}`} label={t("back_to_console")} />
   );
 
   if (statusQ.loading && !statusQ.data) {
@@ -407,18 +377,13 @@ export function ServerBackups() {
     .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
 
   const header = (
-    <div className="flex flex-wrap items-center justify-between gap-3">
-      <div className="flex items-center gap-3">
-        <Archive className="h-6 w-6 text-primary" />
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">
-            {statusQ.data.displayName || statusQ.data.name}
-          </h1>
-          <p className="text-sm text-muted-foreground">{t("title")}</p>
-        </div>
-      </div>
-      <PhaseBadge phase={statusQ.data.phase} />
-    </div>
+    <PageHeader
+      icon={Archive}
+      title={statusQ.data.displayName || statusQ.data.name}
+      subtitle={t("title")}
+      actions={<PhaseBadge phase={statusQ.data.phase} />}
+      className="mb-6"
+    />
   );
 
   return (
@@ -430,7 +395,7 @@ export function ServerBackups() {
       ) : mineQ.error ? (
         <ErrorState error={mineQ.error} onRetry={mineQ.reload} />
       ) : !owned ? (
-        <NotYours />
+        <NotYours title={t("not_yours_title")} body={t("not_yours_body")} />
       ) : (
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">{t("subtitle")}</p>

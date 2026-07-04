@@ -1,53 +1,31 @@
 import { useState, useMemo } from "react";
-import { Boxes, CheckCircle2, CircleSlash, Plus, Trash2, Loader2, Search, CheckCircle, type LucideIcon } from "lucide-react";
+import { Boxes, CheckCircle2, CircleSlash, Plus, Trash2, Loader2, Wrench } from "lucide-react";
+import { SearchInput } from "@/components/SearchInput";
+import { StatCard } from "@/components/StatCard";
+import { PageHeader } from "@/components/PageHeader";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ConfirmFooter } from "@/components/ConfirmFooter";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import { MessageLine } from "@/components/MessageLine";
 import { Loading, ErrorState, EmptyState } from "@/components/States";
 import { Pagination } from "@/components/Pagination";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 
 const PAGE_SIZE = 10;
-
-function StatCard({
-  icon: Icon,
-  label,
-  value,
-  accentClass,
-}: {
-  icon: LucideIcon;
-  label: string;
-  value: number;
-  accentClass?: string;
-}) {
-  return (
-    <Card>
-      <CardContent className="flex items-center gap-3 p-4">
-        <div className={`rounded-md p-2 bg-muted/30 ${accentClass || "text-muted-foreground"}`}>
-          <Icon className="h-5 w-5" />
-        </div>
-        <div>
-          <div className="text-2xl font-bold font-mono leading-none">{value}</div>
-          <div className="mt-1 text-xs text-muted-foreground font-medium">{label}</div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
 
 export function ImageAdmin() {
   const { t } = useTranslation("admin");
@@ -71,8 +49,10 @@ export function ImageAdmin() {
     const total = images.length;
     const enabled = images.filter((img) => img.enabled).length;
     const disabled = total - enabled;
-    return { total, enabled, disabled };
+    const buildCount = total;
+    return { total, enabled, disabled, buildCount };
   }, [images]);
+  const { total, enabled, disabled, buildCount } = stats;
 
   // Filtered & Paginated Images
   const filteredImages = useMemo(() => {
@@ -111,8 +91,8 @@ export function ImageAdmin() {
     return filteredImages.slice(start, start + PAGE_SIZE);
   }, [filteredImages, page]);
 
-  async function handleAdd(e: React.FormEvent) {
-    e.preventDefault();
+  async function handleAdd(e?: React.FormEvent) {
+    e?.preventDefault();
     if (!newImageRef.trim()) return;
     setSubmitting(true);
     setSubmitError(null);
@@ -143,19 +123,7 @@ export function ImageAdmin() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <Boxes className="h-6 w-6 text-primary" />
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">{t("images_title")}</h1>
-            <p className="text-sm text-muted-foreground">
-              {t("images_subtitle")}
-            </p>
-          </div>
-        </div>
-
-        {/* Dialog for Add External Image */}
+      <PageHeader icon={Boxes} title={t("images_title")} subtitle={t("images_subtitle")} actions={
         <Dialog open={dialogOpen} onOpenChange={(o) => {
           setDialogOpen(o);
           if (!o) {
@@ -164,7 +132,7 @@ export function ImageAdmin() {
           }
         }}>
           <DialogTrigger asChild>
-            <Button className="gap-1.5 text-xs font-semibold shrink-0">
+            <Button size="sm" className="gap-1.5 shrink-0">
               <Plus className="h-4 w-4" /> {t("add_image_btn")}
             </Button>
           </DialogTrigger>
@@ -189,45 +157,26 @@ export function ImageAdmin() {
                   required
                 />
               </div>
-              {submitError && (
-                <p className="text-xs text-destructive mt-1 font-medium bg-destructive/10 p-2.5 rounded-md">
-                  {submitError}
-                </p>
-              )}
-              <DialogFooter className="gap-2 pt-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setDialogOpen(false)}
-                  disabled={submitting}
-                  className="text-xs"
-                >
-                  {t("common:cancel")}
-                </Button>
-                <Button
-                  type="submit"
-                  variant={newImageRef.trim() ? "default" : "outline"}
-                  disabled={submitting || !newImageRef.trim()}
-                  className="text-xs gap-1.5"
-                >
-                  {submitting ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Plus className="h-4 w-4" />
-                  )}
-                  {t("add_image_btn")}
-                </Button>
-              </DialogFooter>
+              {submitError && <MessageLine kind="error" message={submitError} compact />}
+              <ConfirmFooter
+                onCancel={() => setDialogOpen(false)}
+                onConfirm={() => handleAdd()}
+                disabled={submitting || !newImageRef.trim()}
+                loading={submitting}
+                cancelLabel={t("common:cancel")}
+                confirmLabel={t("add_image_btn")}
+              />
             </form>
           </DialogContent>
         </Dialog>
-      </div>
+      } className="mb-6" />
 
       {/* Stats Cards Row */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <StatCard icon={Boxes} label="总镜像数" value={stats.total} />
-        <StatCard icon={CheckCircle} label="已启用" value={stats.enabled} accentClass="text-primary bg-primary/10" />
-        <StatCard icon={CircleSlash} label="已禁用" value={stats.disabled} accentClass="text-muted-foreground bg-muted/20" />
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
+        <StatCard icon={Boxes} label={t("filter_all")} value={total} accentClass="text-primary bg-primary/10" />
+        <StatCard icon={CheckCircle2} label={t("enabled")} value={enabled} accentClass="text-emerald-500 bg-emerald-500/10" />
+        <StatCard icon={CircleSlash} label={t("disabled")} value={disabled} accentClass="text-zinc-500 bg-zinc-500/10" />
+        <StatCard icon={Wrench} label={t("builds_title")} value={buildCount} accentClass="text-primary bg-primary/10" />
       </div>
 
       {/* Whitelist Table Card */}
@@ -235,15 +184,7 @@ export function ImageAdmin() {
         <CardContent className="p-0">
           {/* Filters Bar */}
           <div className="flex flex-col sm:flex-row gap-3 p-4 border-b">
-            <div className="relative flex-1 w-full">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                placeholder="搜索镜像名称或来源..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="pl-9"
-              />
-            </div>
+            <SearchInput value={search} onChange={setSearch} placeholder="搜索镜像名称或来源..." />
             <div className="inline-flex h-9 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground shrink-0 select-none border border-border/40">
               <button
                 type="button"

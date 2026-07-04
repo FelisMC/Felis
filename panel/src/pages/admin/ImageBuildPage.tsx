@@ -1,16 +1,17 @@
 import { useEffect, useState, useMemo, Fragment } from "react";
-import { Cpu, Play, Terminal, Loader2, XCircle, AlertCircle, Plus, Search, ChevronDown } from "lucide-react";
+import { Cpu, Terminal, Loader2, XCircle, AlertCircle, Plus, ChevronDown } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { SearchInput } from "@/components/SearchInput";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ConfirmFooter } from "@/components/ConfirmFooter";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -18,6 +19,8 @@ import {
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { LogConsole } from "@/components/LogConsole";
 import { cn } from "@/lib/utils";
+import { PageHeader } from "@/components/PageHeader";
+import { MessageLine } from "@/components/MessageLine";
 import { Loading, EmptyState } from "@/components/States";
 import { Pagination } from "@/components/Pagination";
 import { api, buildLogsStreamURL, humanizeError } from "@/lib/api";
@@ -216,8 +219,8 @@ export function ImageBuildPage() {
   }, [filteredBuilds, page]);
 
   // Form submission handler
-  const handleTrigger = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleTrigger = async (e?: React.FormEvent) => {
+    e?.preventDefault();
     if (!imageRef.trim() || !contextRef.trim() || !dockerfile.trim()) return;
 
     setTriggering(true);
@@ -269,17 +272,7 @@ export function ImageBuildPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <Cpu className="h-6 w-6 text-primary" />
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">{t("builds_title")}</h1>
-            <p className="text-sm text-muted-foreground">{t("builds_subtitle")}</p>
-          </div>
-        </div>
-
-        {/* Dialog for Trigger Build */}
+      <PageHeader icon={Cpu} title={t("builds_title")} subtitle={t("builds_subtitle")} actions={
         <Dialog open={dialogOpen} onOpenChange={(o) => {
           setDialogOpen(o);
           if (!o) {
@@ -288,7 +281,7 @@ export function ImageBuildPage() {
           }
         }}>
           <DialogTrigger asChild>
-            <Button className="gap-1.5 text-xs font-semibold shrink-0">
+            <Button size="sm" className="gap-1.5 shrink-0">
               <Plus className="h-4 w-4" /> {t("trigger_build_title")}
             </Button>
           </DialogTrigger>
@@ -421,56 +414,27 @@ export function ImageBuildPage() {
                 />
               </div>
 
-              {triggerError && (
-                <div className="flex items-center gap-2 text-xs text-destructive bg-destructive/10 p-2.5 rounded-md font-medium">
-                  <AlertCircle className="h-4 w-4 shrink-0" />
-                  <span>{triggerError}</span>
-                </div>
-              )}
+              {triggerError && <MessageLine kind="error" message={triggerError} compact />}
 
-              <DialogFooter className="gap-2 pt-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setDialogOpen(false)}
-                  disabled={triggering}
-                  className="text-xs"
-                >
-                  {t("common:cancel")}
-                </Button>
-                <Button
-                  type="submit"
-                  variant={imageRef.trim() && contextRef.trim() && dockerfile.trim() ? "default" : "outline"}
-                  disabled={triggering || !imageRef.trim() || !contextRef.trim() || !dockerfile.trim()}
-                  className="text-xs gap-1.5"
-                >
-                  {triggering ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Play className="h-4 w-4" />
-                  )}
-                  {t("trigger_build_btn")}
-                </Button>
-              </DialogFooter>
+              <ConfirmFooter
+                onCancel={() => setDialogOpen(false)}
+                onConfirm={() => handleTrigger()}
+                disabled={triggering || !imageRef.trim() || !contextRef.trim() || !dockerfile.trim()}
+                loading={triggering}
+                cancelLabel={t("common:cancel")}
+                confirmLabel={t("trigger_build_btn")}
+              />
             </form>
           </DialogContent>
         </Dialog>
-      </div>
+      } className="mb-6" />
 
       {/* Build History Table Card */}
       <Card className="w-full">
         <CardContent className="p-0">
           {/* Filters Bar */}
           <div className="p-4 border-b">
-            <div className="relative w-full">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                placeholder="搜索构建 ID、镜像引用或状态..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="pl-9"
-              />
-            </div>
+            <SearchInput value={search} onChange={setSearch} placeholder="搜索构建 ID、镜像引用或状态..." />
           </div>
 
           {/* List Content */}

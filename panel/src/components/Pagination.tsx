@@ -21,7 +21,7 @@ export function Pagination({ page, pageSize, total, onChange }: Props) {
         disabled={page <= 1}
         onClick={() => onChange(page - 1)}
       >
-        <ChevronLeft />
+        <ChevronLeft className="h-4 w-4" />
         {t("pagination_prev")}
       </Button>
       <span className="text-xs text-muted-foreground min-w-[6rem] text-center">
@@ -34,7 +34,7 @@ export function Pagination({ page, pageSize, total, onChange }: Props) {
         onClick={() => onChange(page + 1)}
       >
         {t("pagination_next")}
-        <ChevronRight />
+        <ChevronRight className="h-4 w-4" />
       </Button>
     </div>
   );

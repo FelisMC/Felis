@@ -1,10 +1,12 @@
 import { useState, useRef, useCallback, useLayoutEffect, type KeyboardEvent } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, Terminal, Moon, Shield, ShieldAlert, HelpCircle, Loader2, Users, Archive, ChevronRight, type LucideIcon } from "lucide-react";
+import { Terminal, Moon, Shield, ShieldAlert, HelpCircle, Loader2, Users, Archive, ChevronRight, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { BackLink } from "@/components/BackLink";
 import { PhaseBadge } from "@/components/PhaseBadge";
+import { PageHeader } from "@/components/PageHeader";
 import { LogConsole } from "@/components/LogConsole";
 import { Loading, ErrorState } from "@/components/States";
 import { api, consoleStreamURL, humanizeError } from "@/lib/api";
@@ -191,12 +193,7 @@ export function ServerConsole() {
   return (
     <div className="flex flex-col lg:h-[calc(100vh-3.5rem)] lg:min-h-[35rem] gap-4 min-h-0">
       <div>
-        <Link
-          to="/servers"
-          className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
-        >
-          <ArrowLeft className="h-4 w-4" /> {t("my_servers_breadcrumb")}
-        </Link>
+        <BackLink to="/servers" label={t("my_servers_breadcrumb")} />
       </div>
 
       {loading && !data ? (
@@ -205,37 +202,30 @@ export function ServerConsole() {
         <ErrorState error={error} onRetry={reload} />
       ) : data ? (
         <>
-          <div className="flex flex-wrap items-center justify-between gap-3 shrink-0">
-            <div className="flex items-center gap-3">
-              <Terminal className="h-6 w-6 text-primary" />
-              <div>
-                <h1 className="text-2xl font-semibold tracking-tight">
-                  {data.displayName || data.name}
-                </h1>
-                {cfg && (
-                  <p className="text-sm text-muted-foreground">
-                    {hostFor(data.subdomain, cfg)}
-                  </p>
+          <PageHeader
+            icon={Terminal}
+            title={data.displayName || data.name}
+            subtitle={cfg ? hostFor(data.subdomain, cfg) : undefined}
+            actions={
+              <div className="flex items-center gap-2">
+                <PhaseBadge phase={data.phase} />
+                {streamable ? (
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={() => api.stop(name).then(reload)}
+                  >
+                    {t("stop")}
+                  </Button>
+                ) : (
+                  <Button variant="default" size="sm" onClick={() => api.wake(name).then(reload)}>
+                    {t("wake")}
+                  </Button>
                 )}
               </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <PhaseBadge phase={data.phase} />
-              {streamable ? (
-                <Button
-                  variant="destructive"
-                  size="sm"
-                  onClick={() => api.stop(name).then(reload)}
-                >
-                  {t("stop")}
-                </Button>
-              ) : (
-                <Button variant="default" size="sm" onClick={() => api.wake(name).then(reload)}>
-                  {t("wake")}
-                </Button>
-              )}
-            </div>
-          </div>
+            }
+            className="mb-6"
+          />
 
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-4 flex-1 lg:min-h-0 min-h-0">
             {/* Left/Main column: Console */}

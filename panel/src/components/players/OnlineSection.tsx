@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Ban, Loader2, LogOut, RotateCw, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { InlineConfirm } from "@/components/InlineConfirm";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import {
@@ -134,7 +135,6 @@ export function OnlineSection({ name, defaultOpen = true }: { name: string; defa
                 pageItems.map((p) => {
                   // Narrow here so confirming.action is non-null inside the branch.
                   const c = confirming && confirming.player === p ? confirming : null;
-                  const isPending = pending?.player === p;
                   return (
                     <div
                       key={p}
@@ -150,32 +150,16 @@ export function OnlineSection({ name, defaultOpen = true }: { name: string; defa
                       {/* Both kick and ban are disruptive, so each arms a one-step
                           inline confirm before it fires (no native confirm()). */}
                       {c ? (
-                        <div className="flex shrink-0 items-center gap-1">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-6 px-1.5 text-[10px]"
-                            onClick={() => setConfirming(null)}
-                            disabled={isPending}
-                          >
-                            {t("access_cancel")}
-                          </Button>
-                          <Button
-                            variant="destructive"
-                            size="sm"
-                            className="h-6 px-1.5 text-[10px]"
-                            onClick={() => run(p, c.action)}
-                            disabled={pending !== null}
-                          >
-                            {isPending ? (
-                              <Loader2 className="h-3 w-3 animate-spin" />
-                            ) : c.action === "kick" ? (
-                              t("access_kick_btn")
-                            ) : (
-                              t("access_ban_btn")
-                            )}
-                          </Button>
-                        </div>
+                        <InlineConfirm
+                          open={true}
+                          confirming={pending !== null}
+                          onConfirm={() => run(p, c.action)}
+                          onCancel={() => setConfirming(null)}
+                          confirmLabel={c.action === "kick" ? t("access_kick_btn") : t("access_ban_btn")}
+                          cancelLabel={t("access_cancel")}
+                          size="sm"
+                          className="flex shrink-0 items-center gap-1"
+                        />
                       ) : (
                         <div className="flex shrink-0 items-center gap-1">
                           <Button

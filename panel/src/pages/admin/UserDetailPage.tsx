@@ -1,13 +1,12 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import { MessageLine } from "@/components/MessageLine";
+import { RoleBadge } from "@/components/RoleBadge";
+import { UserStatusBadge } from "@/components/UserStatusBadge";
 import {
-  ArrowLeft,
   UserRound,
   Mail,
-  Shield,
-  Crown,
   Calendar,
-  Circle,
   Key,
   Clock,
   Trash2,
@@ -15,7 +14,6 @@ import {
   PowerOff,
   Save,
   Loader2,
-  AlertCircle,
   CheckCircle2,
   RefreshCw,
   Unlink,
@@ -25,6 +23,7 @@ import {
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { BackLink } from "@/components/BackLink";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -35,15 +34,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { ConfirmFooter } from "@/components/ConfirmFooter";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Loading, ErrorState } from "@/components/States";
+import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
@@ -70,71 +70,43 @@ export function UserDetailPage() {
   return (
     <div className="space-y-6">
       {/* Back link */}
-      <button
-        onClick={() => navigate("/admin/users")}
-        className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
-      >
-        <ArrowLeft className="h-4 w-4" />
-        {t("users_back_to_list")}
-      </button>
+      <BackLink to="/admin/users" label={t("users_back_to_list")} />
 
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
+      <PageHeader
+        icon={(
           <div className={cn(
             "rounded-full p-2",
             user.role === "admin" ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground",
           )}>
             <UserRound className="h-6 w-6" />
           </div>
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">{user.username}</h1>
-            <div className="flex flex-wrap items-center gap-2 mt-1 text-sm text-muted-foreground">
-              {user.email && (
-                <span className="inline-flex items-center gap-1">
-                  <Mail className="h-3.5 w-3.5" />
-                  {user.email}
-                  {user.email_verified && (
-                    <CheckCircle2 className="h-3 w-3 text-emerald-500" />
-                  )}
-                </span>
-              )}
+        )}
+        title={user.username}
+        subtitle={(
+          <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+            {user.email && (
               <span className="inline-flex items-center gap-1">
-                <Calendar className="h-3.5 w-3.5" />
-                {formatAbsolute(user.created_at, locale)}
+                <Mail className="h-3.5 w-3.5" />
+                {user.email}
+                {user.email_verified && (
+                  <CheckCircle2 className="h-3 w-3 text-emerald-500" />
+                )}
               </span>
-            </div>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          {user.disabled ? (
-            <span className="inline-flex items-center gap-1 rounded-full bg-destructive/10 px-3 py-1 text-xs font-medium text-destructive">
-              <Circle className="h-2 w-2 fill-destructive" />
-              {t("users_status_disabled")}
-            </span>
-          ) : (
-            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-medium text-emerald-500">
-              <Circle className="h-2 w-2 fill-emerald-500" />
-              {t("users_status_active")}
-            </span>
-          )}
-          <span className={cn(
-            "inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-medium",
-            user.role === "owner"
-              ? "bg-yellow-500/10 text-yellow-600"
-              : user.role === "admin"
-              ? "bg-primary/10 text-primary"
-              : "bg-muted text-muted-foreground",
-          )}>
-            {user.role === "owner" ? (
-              <Crown className="h-3 w-3" />
-            ) : (
-              <Shield className="h-3 w-3" />
             )}
-            {user.role === "owner" ? t("users_role_owner") : user.role === "admin" ? t("users_role_admin") : t("users_role_user")}
-          </span>
-        </div>
-      </div>
+            <span className="inline-flex items-center gap-1">
+              <Calendar className="h-3.5 w-3.5" />
+              {formatAbsolute(user.created_at, locale)}
+            </span>
+          </div>
+        )}
+        actions={(
+          <div className="flex items-center gap-2">
+            <UserStatusBadge disabled={user.disabled} />
+            <RoleBadge role={user.role} />
+          </div>
+        )}
+        className="mb-6"
+      />
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         {/* Edit profile */}
@@ -227,16 +199,10 @@ function EditProfileCard({ user, onSaved, isSelf }: { user: UserDetail; onSaved:
         )}
 
         {err && (
-          <div className="flex items-center gap-2 rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
-            <AlertCircle className="h-4 w-4 shrink-0" />
-            <p>{err}</p>
-          </div>
+          <MessageLine kind="error" message={err} />
         )}
         {ok && (
-          <div className="flex items-center gap-2 rounded-md border border-emerald-500/20 bg-emerald-500/10 p-3 text-sm text-emerald-500">
-            <CheckCircle2 className="h-4 w-4 shrink-0" />
-            <p>{ok}</p>
-          </div>
+          <MessageLine kind="success" message={ok} />
         )}
 
         <Button
@@ -395,14 +361,7 @@ function LinkedAccountsCard({ user, onChanged }: { user: UserDetail; onChanged: 
           <DialogTitle>{t("users_unlink_dlg_title")}</DialogTitle>
           <DialogDescription>{t("users_unlink_dlg_desc")}</DialogDescription>
         </DialogHeader>
-        <DialogFooter>
-          <Button variant="outline" size="sm" onClick={() => setUnlinkDlg(null)}>
-            {t("common:cancel")}
-          </Button>
-          <Button variant="destructive" size="sm" onClick={handleUnlinkConfirm}>
-            {t("users_unlink_btn")}
-          </Button>
-        </DialogFooter>
+        <ConfirmFooter onCancel={() => setUnlinkDlg(null)} onConfirm={handleUnlinkConfirm} cancelLabel={t("common:cancel")} confirmLabel={t("users_unlink_btn")} />
       </DialogContent>
     </Dialog>
     </>
@@ -512,16 +471,10 @@ function QuotasCard({ userId }: { userId: string }) {
         </div>
 
         {err && (
-          <div className="flex items-center gap-2 rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
-            <AlertCircle className="h-4 w-4 shrink-0" />
-            <p>{err}</p>
-          </div>
+          <MessageLine kind="error" message={err} />
         )}
         {ok && (
-          <div className="flex items-center gap-2 rounded-md border border-emerald-500/20 bg-emerald-500/10 p-3 text-sm text-emerald-500">
-            <CheckCircle2 className="h-4 w-4 shrink-0" />
-            <p>{ok}</p>
-          </div>
+          <MessageLine kind="success" message={ok} />
         )}
 
         <Button onClick={handleSave} disabled={saving} size="sm" className="gap-1.5">
@@ -604,16 +557,10 @@ function SessionsCard({ userId, onChanged }: { userId: string; onChanged: () => 
       </CardHeader>
       <CardContent>
         {err && (
-          <div className="flex items-center gap-2 rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive mb-3">
-            <AlertCircle className="h-4 w-4 shrink-0" />
-            <p>{err}</p>
-          </div>
+          <MessageLine kind="error" message={err} />
         )}
         {ok && (
-          <div className="flex items-center gap-2 rounded-md border border-emerald-500/20 bg-emerald-500/10 p-3 text-sm text-emerald-500 mb-3">
-            <CheckCircle2 className="h-4 w-4 shrink-0" />
-            <p>{ok}</p>
-          </div>
+          <MessageLine kind="success" message={ok} />
         )}
         {loading ? (
           <Loading label="" />
@@ -665,14 +612,7 @@ function SessionsCard({ userId, onChanged }: { userId: string; onChanged: () => 
           <DialogTitle>{t("users_session_revoke_one_dlg_title")}</DialogTitle>
           <DialogDescription>{t("users_session_revoke_one_dlg_desc")}</DialogDescription>
         </DialogHeader>
-        <DialogFooter>
-          <Button variant="outline" size="sm" onClick={() => setRevokeOneDlg(null)}>
-            {t("common:cancel")}
-          </Button>
-          <Button variant="destructive" size="sm" onClick={handleRevokeOne}>
-            {t("users_session_revoke_confirm")}
-          </Button>
-        </DialogFooter>
+        <ConfirmFooter onCancel={() => setRevokeOneDlg(null)} onConfirm={handleRevokeOne} cancelLabel={t("common:cancel")} confirmLabel={t("users_session_revoke_confirm")} />
       </DialogContent>
     </Dialog>
 
@@ -683,14 +623,7 @@ function SessionsCard({ userId, onChanged }: { userId: string; onChanged: () => 
           <DialogTitle>{t("users_session_revoke_all_dlg_title")}</DialogTitle>
           <DialogDescription>{t("users_session_revoke_all_dlg_desc")}</DialogDescription>
         </DialogHeader>
-        <DialogFooter>
-          <Button variant="outline" size="sm" onClick={() => setRevokeAllDlg(false)}>
-            {t("common:cancel")}
-          </Button>
-          <Button variant="destructive" size="sm" onClick={handleRevokeAll}>
-            {t("users_session_revoke_confirm")}
-          </Button>
-        </DialogFooter>
+        <ConfirmFooter onCancel={() => setRevokeAllDlg(false)} onConfirm={handleRevokeAll} cancelLabel={t("common:cancel")} confirmLabel={t("users_session_revoke_confirm")} />
       </DialogContent>
     </Dialog>
     </>
@@ -864,21 +797,7 @@ function DangerDialogs({
             </DialogDescription>
           </DialogHeader>
           {err && <p className="text-sm text-destructive">{err}</p>}
-          <DialogFooter>
-            <Button variant="outline" size="sm" onClick={close} disabled={loading}>
-              {t("common:cancel")}
-            </Button>
-            <Button
-              variant={user.disabled ? "default" : "destructive"}
-              size="sm"
-              disabled={loading}
-              onClick={handleDisable}
-              className="gap-1.5"
-            >
-              {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-              {user.disabled ? t("users_danger_enable_btn") : t("users_danger_disable_btn")}
-            </Button>
-          </DialogFooter>
+          <ConfirmFooter onCancel={close} onConfirm={handleDisable} loading={loading} cancelLabel={t("common:cancel")} confirmLabel={user.disabled ? t("users_danger_enable_btn") : t("users_danger_disable_btn")} confirmVariant={user.disabled ? "default" : "destructive"} />
         </DialogContent>
       </Dialog>
 
@@ -903,20 +822,7 @@ function DangerDialogs({
               {ok}
             </p>
           )}
-          <DialogFooter>
-            <Button variant="outline" size="sm" onClick={close} disabled={loading}>
-              {t("common:cancel")}
-            </Button>
-            <Button
-              size="sm"
-              disabled={loading || ok !== null}
-              onClick={handleResetPassword}
-              className="gap-1.5"
-            >
-              {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-              {t("users_danger_reset_pw_confirm")}
-            </Button>
-          </DialogFooter>
+          <ConfirmFooter onCancel={close} onConfirm={handleResetPassword} loading={loading} disabled={loading || ok !== null} cancelLabel={t("common:cancel")} confirmLabel={t("users_danger_reset_pw_confirm")} />
         </DialogContent>
       </Dialog>
 
@@ -933,22 +839,7 @@ function DangerDialogs({
             </DialogDescription>
           </DialogHeader>
           {err && <p className="text-sm text-destructive">{err}</p>}
-          <DialogFooter>
-            <Button variant="outline" size="sm" onClick={close} disabled={loading}>
-              {t("common:cancel")}
-            </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              disabled={loading}
-              onClick={handleDelete}
-              className="gap-1.5"
-            >
-              {loading && <Loader2 className="h-4 w-4 animate-spin" />}
-              <Trash2 className="h-4 w-4" />
-              {t("users_danger_delete_yes")}
-            </Button>
-          </DialogFooter>
+          <ConfirmFooter onCancel={close} onConfirm={handleDelete} loading={loading} cancelLabel={t("common:cancel")} confirmLabel={t("users_danger_delete_yes")} />
         </DialogContent>
       </Dialog>
     </>

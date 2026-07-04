@@ -6,7 +6,6 @@ import {
   Square,
   Terminal,
   ExternalLink,
-  Search,
   RefreshCw,
   Server,
   Users,
@@ -17,12 +16,12 @@ import {
 import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { SearchInput } from "@/components/SearchInput";
+import { ConfirmFooter } from "@/components/ConfirmFooter";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
@@ -37,6 +36,8 @@ import { PhaseBadge, PHASE_KEY, PHASE_COLOR } from "@/components/PhaseBadge";
 import { Loading, ErrorState, EmptyState } from "@/components/States";
 import { Pagination } from "@/components/Pagination";
 import { CreateServerDialog } from "@/components/CreateServerDialog";
+import { StatCard } from "@/components/StatCard";
+import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync, useConfig } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
@@ -81,38 +82,6 @@ interface UnifiedServer {
   endpointAddress?: string | null;
   claimable?: boolean;
   owned?: boolean;
-}
-
-function Stat({
-  icon: Icon,
-  label,
-  value,
-  accent,
-}: {
-  icon: typeof Server;
-  label: string;
-  value: number | string;
-  accent?: string;
-}) {
-  return (
-    <Card>
-      <CardContent className="flex items-center gap-3 p-4">
-        <div
-          className="rounded-md p-2"
-          style={{
-            backgroundColor: accent ? `${accent}26` : undefined,
-            color: accent,
-          }}
-        >
-          <Icon className="h-5 w-5" />
-        </div>
-        <div className="min-w-0">
-          <div className="text-2xl font-semibold leading-none tabular-nums text-left">{value}</div>
-          <div className="mt-1.5 truncate text-xs text-muted-foreground text-left">{label}</div>
-        </div>
-      </CardContent>
-    </Card>
-  );
 }
 
 export function ServersPage() {
@@ -218,35 +187,30 @@ export function ServersPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <Network className="h-6 w-6 text-primary" />
-          <div className="text-left">
-            <h1 className="text-2xl font-semibold tracking-tight">
-              {isAdmin ? t("fleet_title") : t("servers:my_servers_title")}
-            </h1>
-            <p className="text-sm text-muted-foreground">
-              {isAdmin ? t("fleet_subtitle") : t("servers:my_servers_subtitle")}
-            </p>
+      <PageHeader
+        icon={Network}
+        title={isAdmin ? t("fleet_title") : t("servers:my_servers_title")}
+        subtitle={isAdmin ? t("fleet_subtitle") : t("servers:my_servers_subtitle")}
+        actions={
+          <div className="flex items-center gap-3">
+            <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+              <span className="h-1.5 w-1.5 rounded-full bg-[#22c55e] animate-pulse" />
+              {t("fleet_live")}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={reload}
+              disabled={loading}
+              title={t("fleet_refresh")}
+            >
+              <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+            </Button>
+            {isAdmin && cfg && <CreateServerDialog cfg={cfg} onCreated={reload} />}
           </div>
-        </div>
-        <div className="flex items-center gap-3">
-          {isAdmin && cfg && <CreateServerDialog cfg={cfg} onCreated={reload} />}
-          <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-            <span className="h-1.5 w-1.5 rounded-full bg-[#22c55e] animate-pulse" />
-            {t("fleet_live")}
-          </span>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={reload}
-            disabled={loading}
-            title={t("fleet_refresh")}
-          >
-            <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
-          </Button>
-        </div>
-      </div>
+        }
+        className="mb-6"
+      />
 
       {showInitialLoading ? (
         <Loading />
@@ -265,23 +229,23 @@ export function ServersPage() {
 
           {/* Stats Cards in a full grid row */}
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            <Stat icon={Server} label={t("fleet_stat_total")} value={stats.total} />
-            <Stat
+            <StatCard icon={Server} label={t("fleet_stat_total")} value={stats.total} />
+            <StatCard
               icon={Play}
               label={t("fleet_stat_running")}
               value={stats.counts.Running}
-              accent={PHASE_COLOR.Running}
+              accentColor={PHASE_COLOR.Running}
             />
-            <Stat
+            <StatCard
               icon={Users}
               label={t("fleet_stat_players")}
               value={`${stats.playersOnline} / ${stats.playersMax}`}
             />
-            <Stat
+            <StatCard
               icon={AlertTriangle}
               label={t("fleet_stat_failed")}
               value={stats.counts.Failed}
-              accent={stats.counts.Failed > 0 ? PHASE_COLOR.Failed : undefined}
+              accentColor={stats.counts.Failed > 0 ? PHASE_COLOR.Failed : undefined}
             />
           </div>
 
@@ -326,18 +290,14 @@ export function ServersPage() {
 
           {/* Independent Search & Filter bar */}
           <div className="flex flex-wrap items-center gap-3">
-            <div className="relative min-w-[14rem] flex-1">
-              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={query}
-                onChange={(e) => {
-                  setQuery(e.target.value);
-                  setPage(1);
-                }}
-                placeholder={isAdmin ? t("fleet_search_placeholder") : t("servers:search_placeholder")}
-                className="pl-9"
-              />
-            </div>
+            <SearchInput
+              value={query}
+              onChange={(v) => {
+                setQuery(v);
+                setPage(1);
+              }}
+              placeholder={isAdmin ? t("fleet_search_placeholder") : t("servers:search_placeholder")}
+            />
             <Select
               value={phaseFilter}
               onValueChange={(v) => {
@@ -549,22 +509,18 @@ function ServerRow({
                         {ts("claim_server_desc", { name: server.name })}
                       </DialogDescription>
                     </DialogHeader>
-                    <DialogFooter className="gap-2 sm:gap-0">
-                      <Button variant="ghost" onClick={() => setConfirmOpen(false)} disabled={busy !== null}>
-                        {ts("access_cancel")}
-                      </Button>
-                      <Button
-                        variant="default"
-                        onClick={async () => {
-                          await act("claim", () => api.claim(server.name));
-                          setConfirmOpen(false);
-                        }}
-                        disabled={busy !== null}
-                      >
-                        {busy === "claim" && <RefreshCw className="h-4 w-4 animate-spin mr-1" />}
-                        {ts("claim")}
-                      </Button>
-                    </DialogFooter>
+                    <ConfirmFooter
+                      onCancel={() => setConfirmOpen(false)}
+                      onConfirm={async () => {
+                        await act("claim", () => api.claim(server.name));
+                        setConfirmOpen(false);
+                      }}
+                      disabled={busy !== null}
+                      loading={busy === "claim"}
+                      cancelLabel={ts("access_cancel")}
+                      confirmLabel={ts("claim")}
+                      confirmVariant="default"
+                    />
                   </DialogContent>
                 </Dialog>
               </>

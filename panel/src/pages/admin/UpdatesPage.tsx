@@ -1,6 +1,10 @@
-import React, { useState, useEffect } from "react";
-import { Clock, Loader2, Calendar, AlertCircle, CheckCircle2, Globe, LucideIcon } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Clock, Loader2, Calendar, Globe } from "lucide-react";
+import { MessageLine } from "@/components/MessageLine";
+import { StatCard } from "@/components/StatCard";
+import { PageHeader } from "@/components/PageHeader";
 import { useTranslation } from "react-i18next";
+import { cn } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -9,7 +13,6 @@ import { Loading, ErrorState } from "@/components/States";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { formatAbsolute } from "@/lib/format";
-import { cn } from "@/lib/utils";
 
 function toLocalDatetimeString(dateOrStr: Date | string | null | undefined): string {
   if (!dateOrStr) return "";
@@ -22,36 +25,6 @@ function toLocalDatetimeString(dateOrStr: Date | string | null | undefined): str
   const hh = String(d.getHours()).padStart(2, "0");
   const mm = String(d.getMinutes()).padStart(2, "0");
   return `${YYYY}-${MM}-${DD}T${hh}:${mm}`;
-}
-
-function StatCard({
-  icon: Icon,
-  label,
-  value,
-  accentClass,
-  valueClass,
-}: {
-  icon: LucideIcon;
-  label: string;
-  value: React.ReactNode;
-  accentClass?: string;
-  valueClass?: string;
-}) {
-  return (
-    <Card>
-      <CardContent className="flex items-center gap-3 p-4">
-        <div className={cn("rounded-md p-2 bg-muted/30", accentClass || "text-muted-foreground")}>
-          <Icon className="h-5 w-5" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className={cn("text-sm sm:text-base font-bold font-mono leading-tight truncate", valueClass || "text-foreground")} title={typeof value === "string" ? value : undefined}>
-            {value}
-          </div>
-          <div className="mt-1 text-[11px] text-muted-foreground font-medium">{label}</div>
-        </div>
-      </CardContent>
-    </Card>
-  );
 }
 
 export function UpdatesPage() {
@@ -191,16 +164,7 @@ export function UpdatesPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center gap-3">
-        <Clock className="h-6 w-6 text-primary" />
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{t("updates_title")}</h1>
-          <p className="text-sm text-muted-foreground">
-            {t("updates_subtitle")}
-          </p>
-        </div>
-      </div>
+      <PageHeader icon={Clock} title={t("updates_title")} subtitle={t("updates_subtitle")} className="mb-6" />
 
       {/* Stats Cards Row */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
@@ -209,25 +173,28 @@ export function UpdatesPage() {
           label={t("updates_stat_status")}
           value={statusText}
           accentClass={statusAccentClass}
-          valueClass={statusColorClass}
+          valueClass={cn("text-sm sm:text-base font-bold font-mono leading-tight truncate", statusColorClass)}
         />
         <StatCard
           icon={Calendar}
           label={t("updates_stat_start")}
           value={data?.start ? formatAbsolute(data.start, locale) : "—"}
           accentClass="text-primary bg-primary/10"
+          valueClass="text-sm sm:text-base font-bold font-mono leading-tight truncate"
         />
         <StatCard
           icon={Calendar}
           label={t("updates_stat_end")}
           value={data?.end ? formatAbsolute(data.end, locale) : "—"}
           accentClass="text-primary bg-primary/10"
+          valueClass="text-sm sm:text-base font-bold font-mono leading-tight truncate"
         />
         <StatCard
           icon={Globe}
           label={t("updates_stat_timezone")}
           value={tz}
           accentClass="text-primary bg-primary/10"
+          valueClass="text-sm sm:text-base font-bold font-mono leading-tight truncate"
         />
       </div>
 
@@ -278,17 +245,11 @@ export function UpdatesPage() {
             </div>
 
             {actionError && (
-              <div className="flex items-center gap-2 rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
-                <AlertCircle className="h-4 w-4 shrink-0" />
-                <p>{actionError}</p>
-              </div>
+              <MessageLine kind="error" message={actionError} />
             )}
 
             {successMsg && (
-              <div className="flex items-center gap-2 rounded-md border border-emerald-500/20 bg-emerald-500/10 p-3 text-sm text-emerald-500">
-                <CheckCircle2 className="h-4 w-4 shrink-0" />
-                <p>{successMsg}</p>
-              </div>
+              <MessageLine kind="success" message={successMsg} />
             )}
 
             <div className="flex flex-wrap gap-3 pt-2">

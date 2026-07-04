@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Loading, ErrorState } from "@/components/States";
+import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
@@ -229,15 +230,7 @@ export function Account() {
 
   return (
     <>
-      <div className="flex items-center gap-3">
-        <UserRound className="h-6 w-6 text-primary" />
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{t("title")}</h1>
-          <p className="text-sm text-muted-foreground">
-            {t("subtitle")}
-          </p>
-        </div>
-      </div>
+      <PageHeader icon={UserRound} title={t("title")} subtitle={t("subtitle")} className="mb-6" />
 
       <Card>
         <CardHeader>

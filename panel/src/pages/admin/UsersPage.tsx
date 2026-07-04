@@ -1,12 +1,10 @@
 import { useState, useCallback } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { RoleBadge } from "@/components/RoleBadge";
+import { UserStatusBadge } from "@/components/UserStatusBadge";
 import {
   Users,
   Search,
-  Circle,
-  Shield,
-  UserRound,
-  Crown,
   Server,
   Mail,
   ChevronRight,
@@ -23,6 +21,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Loading, ErrorState, EmptyState } from "@/components/States";
+import { PageHeader } from "@/components/PageHeader";
+import { Pagination } from "@/components/Pagination";
 import { CreateUserDialog } from "@/components/CreateUserDialog";
 import { api } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
@@ -65,22 +65,7 @@ export function UsersPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <Users className="h-6 w-6 text-primary" />
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">{t("users_title")}</h1>
-            <p className="text-sm text-muted-foreground">{t("users_subtitle")}</p>
-          </div>
-        </div>
-        <CreateUserDialog
-          onCreated={(id) => {
-            reload();
-            navigate(`/admin/users/${id}`);
-          }}
-        />
-      </div>
+      <PageHeader icon={Users} title={t("users_title")} subtitle={t("users_subtitle")} actions={<CreateUserDialog onCreated={(id) => { reload(); navigate(`/admin/users/${id}`); }} />} className="mb-6" />
 
       {/* Filters */}
       <Card>
@@ -166,34 +151,8 @@ export function UsersPage() {
             </CardContent>
           </Card>
 
-          {/* Pagination */}
           {totalPages > 1 && (
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">
-                {t("users_total_count", { count: data.total })}
-              </span>
-              <div className="flex items-center gap-1">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={page === 0}
-                  onClick={() => setPage((p) => Math.max(0, p - 1))}
-                >
-                  {t("pagination_prev")}
-                </Button>
-                <span className="px-2 text-muted-foreground">
-                  {page + 1} / {totalPages}
-                </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={page >= totalPages - 1}
-                  onClick={() => setPage((p) => p + 1)}
-                >
-                  {t("pagination_next")}
-                </Button>
-              </div>
-            </div>
+            <Pagination page={page + 1} pageSize={pageSize} total={data.total} onChange={(p) => setPage(p - 1)} />
           )}
         </>
       )}
@@ -226,23 +185,7 @@ function UserRow({ user, locale }: { user: UserView; locale: string }) {
         )}
       </td>
       <td className="px-4 py-3 hidden sm:table-cell">
-        <span className={cn(
-          "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium",
-          user.role === "owner"
-            ? "bg-yellow-500/10 text-yellow-600"
-            : user.role === "admin"
-            ? "bg-primary/10 text-primary"
-            : "bg-muted text-muted-foreground",
-        )}>
-          {user.role === "owner" ? (
-            <Crown className="h-3 w-3" />
-          ) : user.role === "admin" ? (
-            <Shield className="h-3 w-3" />
-          ) : (
-            <UserRound className="h-3 w-3" />
-          )}
-          {user.role === "owner" ? t("users_role_owner") : user.role === "admin" ? t("users_role_admin") : t("users_role_user")}
-        </span>
+        <RoleBadge role={user.role} />
       </td>
       <td className="px-4 py-3 hidden md:table-cell">
         <span className="inline-flex items-center gap-1 text-muted-foreground">
@@ -251,17 +194,7 @@ function UserRow({ user, locale }: { user: UserView; locale: string }) {
         </span>
       </td>
       <td className="px-4 py-3 hidden lg:table-cell">
-        {user.disabled ? (
-          <span className="inline-flex items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive">
-            <Circle className="h-2 w-2 fill-destructive" />
-            {t("users_status_disabled")}
-          </span>
-        ) : (
-          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-medium text-emerald-500">
-            <Circle className="h-2 w-2 fill-emerald-500" />
-            {t("users_status_active")}
-          </span>
-        )}
+        <UserStatusBadge disabled={user.disabled} />
       </td>
       <td className="px-4 py-3 text-muted-foreground hidden lg:table-cell text-xs">
         {formatAbsolute(user.created_at, locale)}

@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ListChecks, Loader2, Plus, RotateCw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { InlineConfirm } from "@/components/InlineConfirm";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
@@ -165,30 +166,16 @@ export function WhitelistSection({ name, defaultOpen = false }: { name: string; 
                         取消 / 移除), a second confirms. Recoverable, but a name gone on
                         a single stray tap is exactly the surprise to avoid. */}
                     {confirming === p ? (
-                      <div className="flex shrink-0 items-center gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 px-1.5 text-[10px]"
-                          onClick={() => setConfirming(null)}
-                          disabled={removing === p}
-                        >
-                          {t("access_cancel")}
-                        </Button>
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          className="h-6 px-1.5 text-[10px]"
-                          onClick={() => remove(p)}
-                          disabled={removing !== null}
-                        >
-                          {removing === p ? (
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                          ) : (
-                            t("access_remove")
-                          )}
-                        </Button>
-                      </div>
+                      <InlineConfirm
+                        open={true}
+                        confirming={removing !== null}
+                        onConfirm={() => remove(p)}
+                        onCancel={() => setConfirming(null)}
+                        confirmLabel={t("access_remove")}
+                        cancelLabel={t("access_cancel")}
+                        size="sm"
+                        className="flex shrink-0 items-center gap-1"
+                      />
                     ) : (
                       <button
                         type="button"

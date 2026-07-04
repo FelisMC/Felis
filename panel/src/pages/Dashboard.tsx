@@ -18,6 +18,8 @@ import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Loading, ErrorState } from "@/components/States";
+import { StatCard } from "@/components/StatCard";
+import { PageHeader } from "@/components/PageHeader";
 import { api } from "@/lib/api";
 import { useAsync, useConfig } from "@/lib/hooks";
 import type { Phase, ServerInfo, WhitelistImage } from "@/lib/types";
@@ -27,30 +29,6 @@ import type { Phase, ServerInfo, WhitelistImage } from "@/lib/types";
 const VoxelFleet = lazy(() =>
   import("@/components/VoxelFleet").then((m) => ({ default: m.VoxelFleet })),
 );
-
-function Stat({
-  icon: Icon,
-  label,
-  value,
-}: {
-  icon: typeof Server;
-  label: string;
-  value: number | string;
-}) {
-  return (
-    <Card>
-      <CardContent className="flex items-center gap-3 p-4">
-        <div className="rounded-md bg-primary/15 p-2 text-primary">
-          <Icon className="h-5 w-5" />
-        </div>
-        <div>
-          <div className="text-2xl font-semibold leading-none">{value}</div>
-          <div className="mt-1 text-xs text-muted-foreground">{label}</div>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
 
 export function Dashboard() {
   const cfg = useConfig();
@@ -83,13 +61,7 @@ export function Dashboard() {
 
   return (
     <>
-      <div className="flex items-center gap-3">
-        <LayoutDashboard className="h-6 w-6 text-primary" />
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{t("title")}</h1>
-          <p className="text-sm text-muted-foreground">{t("subtitle")}</p>
-        </div>
-      </div>
+      <PageHeader icon={LayoutDashboard} title={t("title")} subtitle={t("subtitle")} className="mb-6" />
 
       {loading && !servers ? (
         <Loading />
@@ -211,9 +183,9 @@ function FleetView({
     <div className="space-y-6">
       {/* 顶部 Stat */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-        <Stat icon={Server} label={t("stat_servers")} value={counts.total} />
-        <Stat icon={Play} label={t("stat_running")} value={counts.running} />
-        <Stat icon={Activity} label={t("stat_players_online")} value={counts.players} />
+        <StatCard icon={Server} label={t("stat_servers")} value={counts.total} accentClass="text-primary bg-primary/15" />
+        <StatCard icon={Play} label={t("stat_running")} value={counts.running} accentClass="text-primary bg-primary/15" />
+        <StatCard icon={Activity} label={t("stat_players_online")} value={counts.players} accentClass="text-primary bg-primary/15" />
       </div>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 items-stretch">

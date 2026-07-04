@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { Plus } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { ConfirmFooter } from "@/components/ConfirmFooter";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -104,8 +104,9 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
-        <Button>
-          <Plus /> {t("create_server_btn")}
+        <Button size="sm" className="gap-1.5">
+          <Plus className="h-4 w-4" />
+          {t("create_server_btn")}
         </Button>
       </DialogTrigger>
       <DialogContent>
@@ -231,14 +232,15 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
           {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
 
-        <DialogFooter>
-          <Button variant="ghost" onClick={() => setOpen(false)} disabled={submitting}>
-            {t("create_server_cancel")}
-          </Button>
-          <Button onClick={submit} disabled={!canSubmit}>
-            {submitting ? t("create_server_creating") : t("create_server_submit")}
-          </Button>
-        </DialogFooter>
+        <ConfirmFooter
+          onCancel={() => setOpen(false)}
+          onConfirm={submit}
+          disabled={!canSubmit}
+          loading={submitting}
+          cancelLabel={t("create_server_cancel")}
+          confirmLabel={t("create_server_submit")}
+          confirmVariant="default"
+        />
       </DialogContent>
     </Dialog>
   );

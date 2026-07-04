@@ -20,6 +20,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { MessageLine } from "@/components/MessageLine";
 import { api, humanizeError } from "@/lib/api";
 
 interface Props {
@@ -217,11 +218,7 @@ export function CreateUserDialog({ onCreated }: Props) {
               </span>
             </label>
 
-            {err && (
-              <p className="rounded-md border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">
-                {err}
-              </p>
-            )}
+            {err && <MessageLine kind="error" message={err} />}
 
             <DialogFooter>
               <Button type="submit" disabled={submitting} className="gap-1.5">

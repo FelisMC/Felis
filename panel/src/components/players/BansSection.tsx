@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Ban, Loader2, RotateCw, Undo2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { InlineConfirm } from "@/components/InlineConfirm";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { cn } from "@/lib/utils";
@@ -155,28 +156,15 @@ export function BansSection({ name }: { name: string }) {
               <p className="min-w-0 flex-1 text-xs text-foreground">
                 {t("access_ban_confirm", { player })}
               </p>
-              <Button
-                variant="ghost"
+              <InlineConfirm
+                open={true}
+                confirming={banning}
+                onConfirm={ban}
+                onCancel={() => setArmed(false)}
+                confirmLabel={t("access_ban_confirm_yes")}
+                cancelLabel={t("access_cancel")}
                 size="sm"
-                className="h-7 px-2"
-                onClick={() => setArmed(false)}
-                disabled={banning}
-              >
-                {t("access_cancel")}
-              </Button>
-              <Button
-                variant="destructive"
-                size="sm"
-                className="h-7 px-2"
-                onClick={ban}
-                disabled={banning}
-              >
-                {banning ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  t("access_ban_confirm_yes")
-                )}
-              </Button>
+              />
             </div>
           )}
         </div>
@@ -215,29 +203,16 @@ export function BansSection({ name }: { name: string }) {
                         row (取消 / 解封), a second confirms. Lighter than the ban-by-name
                         confirm because a mistaken pardon is re-bannable in one tap. */}
                     {confirming === p ? (
-                      <div className="flex shrink-0 items-center gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 px-1.5 text-[10px]"
-                          onClick={() => setConfirming(null)}
-                          disabled={pardoning === p}
-                        >
-                          {t("access_cancel")}
-                        </Button>
-                        <Button
-                          size="sm"
-                          className="h-6 px-1.5 text-[10px]"
-                          onClick={() => pardon(p)}
-                          disabled={pardoning !== null}
-                        >
-                          {pardoning === p ? (
-                            <Loader2 className="h-3 w-3 animate-spin" />
-                          ) : (
-                            t("access_pardon_btn")
-                          )}
-                        </Button>
-                      </div>
+                      <InlineConfirm
+                        open={true}
+                        confirming={pardoning !== null}
+                        onConfirm={() => pardon(p)}
+                        onCancel={() => setConfirming(null)}
+                        confirmLabel={t("access_pardon_btn")}
+                        cancelLabel={t("access_cancel")}
+                        size="sm"
+                        className="flex shrink-0 items-center gap-1"
+                      />
                     ) : (
                       <Button
                         variant="outline"
