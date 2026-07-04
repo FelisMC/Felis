@@ -10,30 +10,34 @@
 // Verification boundary — stated honestly so a green test suite is not mistaken for
 // "the updater works against real infra":
 //
-//   - BUILT + UNIT-VERIFIED (Go tests, WSL oracle): the topology, the PaperMC Fill
-//     v3 parser, the routing source, and the Runner's report-only composition. The
-//     PaperMC fixture is captured from the live endpoint, and the live call was
-//     exercised out-of-band on 2026-07-04 (curl fill.papermc.io/v3/projects/velocity):
-//     the response shape matches the fixture and 3.4.0 is confirmed the newest stable
-//     (3.5.0-SNAPSHOT correctly filtered). These prove the parse/plan/compose LOGIC
-//     and that the core is now wired to a caller.
-//
-//   - NOT YET BUILT, but VERIFIABLE HERE (same technique as PaperMC — HTTP GET, JSON
-//     decode, tolerant Parse, prerelease filter, all httptest-testable): the GitHub
-//     Releases source. It is why 3 of the 4 components (felis-api, k3s, cloudflared)
-//     currently report "latest unknown" — RoutingSource returns errGitHubNotWired for
-//     them. This is the next VERIFIABLE slice, not integration remainder; until it
-//     exists the verifiable release-source work is only ~half done.
+//   - BUILT + UNIT-VERIFIED (Go tests, WSL oracle): the topology, BOTH release
+//     sources (PaperMC Fill v3 for Velocity; GitHub Releases for felis-api, k3s and
+//     cloudflared), the routing source, and the Runner's report-only composition. Each
+//     source's parser is a contract test whose fixture is captured from — and whose
+//     live call was exercised out-of-band against — the real endpoint: PaperMC on
+//     2026-07-04 (3.4.0 is newest stable, 3.5.0-SNAPSHOT filtered), GitHub on
+//     2026-07-05 (cloudflared 2026.6.1; k3s v1.36.2+k3s1, its "+k3s1"/"v" tolerated and
+//     its "-rcN"/prerelease builds rejected). These prove the parse/plan/compose LOGIC
+//     and that the core is wired to a caller for every tracked component.
 //
 //   - CAVEATS on what the tests do NOT prove: they run against httptest, not the live
-//     host, so future upstream shape drift is not caught; and while Felis sends a
-//     descriptive User-Agent (PaperMC etiquette), upstream UA enforcement was not
-//     active on the project endpoint on 2026-07-04 (a bare UA got HTTP 200), so the UA
-//     is defensive, not load-bearing.
+//     hosts, so future upstream shape drift is not caught. On User-Agent the two APIs
+//     differ and the code reflects it: GitHub ENFORCES a UA (a bare request is 403'd,
+//     verified 2026-07-05) so Felis's UA is load-bearing there; PaperMC does NOT
+//     enforce (a bare request got HTTP 200 on 2026-07-04) so its UA is only etiquette.
+//     Also: felis-api's topology coord "felis/felis" is a PLACEHOLDER slug — the GitHub
+//     routing/parse logic is verified, but that one component stays dark at runtime (its
+//     Latest errors, degrading to "latest unknown") until a real repository is configured.
 //
-//   - REMAINING INTEGRATION (pure I/O, no verifiable-here logic): the concrete
-//     VersionGatherer (`k3s --version`, image-tag / jar inspection), the concrete
-//     Notifier (SMTP + in-game) and Applier (control-plane image bump, cloudflared
-//     swap), the `felis update` CLI + CronJob entry point, and the runtime append of
-//     the live Pinned Minecraft fleet.
+//   - NOT YET BUILT, but VERIFIABLE HERE (the next slice): the VersionGatherer's
+//     extraction core — command output (`k3s --version`), image tag
+//     (`rancher/k3s:v1.36.2-k3s1`) or jar filename → Version. That is logic over an
+//     exec/read seam, testable with a fake runner à la internal/reaper's ExecRunner,
+//     and load-bearing: a mis-read current version makes every plan wrong (spurious
+//     applies or missed upgrades). Only the seam's actual I/O is un-verifiable here.
+//
+//   - REMAINING INTEGRATION (genuinely I/O-bound — needs a cluster/mailbox to exercise):
+//     the concrete Notifier (SMTP + in-game) and Applier (control-plane image bump,
+//     cloudflared swap), the `felis update` CLI + CronJob entry point, and the runtime
+//     append of the live Pinned Minecraft fleet.
 package updater
