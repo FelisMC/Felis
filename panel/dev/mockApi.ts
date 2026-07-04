@@ -1045,7 +1045,7 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
     if (is("POST", ctx) && subAction === "reset-password") {
       acc.mustChangePassword = true;
       acc.updated_at = new Date().toISOString();
-      sendJSON(ctx.res, 200, { ok: true });
+      sendJSON(ctx.res, 200, { ok: true, email: acc.email || "" });
       return true;
     }
 

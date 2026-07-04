@@ -825,7 +825,11 @@ function DangerDialogs({
     setErr(null);
     try {
       const r = await api.resetUserPassword(user.id);
-      setOk(t("users_pw_reset_ok", { email: r.email }));
+      if (r.email) {
+        setOk(t("users_pw_reset_ok", { email: r.email }));
+      } else {
+        setOk(t("users_pw_reset_ok_no_email"));
+      }
       setLoading(false);
     } catch (e) {
       setErr(humanizeError(e));
