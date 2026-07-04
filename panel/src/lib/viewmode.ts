@@ -36,6 +36,7 @@ export type ViewMode = NavSection["id"];
 const VIEW_RANK: Record<ViewMode, number> = {
   user: 0,
   admin: 1,
+  owner: 2,
 };
 
 /** VIEW_MODES lists every home, ordered by how much it reveals (User → Ops). It is
@@ -50,8 +51,10 @@ export const VIEW_MODES: ViewMode[] = (Object.keys(VIEW_RANK) as ViewMode[]).sor
  * it errors) gets exactly `["user"]`; an admin gets every home. This is the list the
  * avatar menu renders, and the allow-list effectiveViewMode resolves against.
  */
-export function availableViewModes(isAdmin: boolean): ViewMode[] {
-  return isAdmin ? [...VIEW_MODES] : ["user"];
+export function availableViewModes(isAdmin: boolean, isOwner: boolean): ViewMode[] {
+  if (isOwner) return [...VIEW_MODES];
+  if (isAdmin) return ["user", "admin"];
+  return ["user"];
 }
 
 /**
@@ -66,8 +69,9 @@ export function availableViewModes(isAdmin: boolean): ViewMode[] {
 export function effectiveViewMode(
   requested: ViewMode | null | undefined,
   isAdmin: boolean,
+  isOwner: boolean,
 ): ViewMode {
-  const allowed = availableViewModes(isAdmin);
+  const allowed = availableViewModes(isAdmin, isOwner);
   return requested != null && allowed.includes(requested) ? requested : "user";
 }
 
@@ -94,8 +98,8 @@ export function parseViewMode(raw: unknown): ViewMode | null {
  * is closed here. Shape validation (parseViewMode) runs first so a malformed value
  * cannot slip past as a truthy non-ViewMode.
  */
-export function restoreViewMode(raw: unknown, isAdmin: boolean): ViewMode {
-  return effectiveViewMode(parseViewMode(raw), isAdmin);
+export function restoreViewMode(raw: unknown, isAdmin: boolean, isOwner: boolean): ViewMode {
+  return effectiveViewMode(parseViewMode(raw), isAdmin, isOwner);
 }
 
 /**
@@ -106,7 +110,7 @@ export function restoreViewMode(raw: unknown, isAdmin: boolean): ViewMode {
  * of what the principal's is_admin flag already permits — the switcher can only ever
  * narrow the sidebar, never widen it past `visibleSections(isAdmin)`.
  */
-export function sectionsForView(view: ViewMode, isAdmin: boolean): NavSection[] {
-  const ceiling = VIEW_RANK[effectiveViewMode(view, isAdmin)];
-  return visibleSections(isAdmin).filter((s) => VIEW_RANK[s.id] <= ceiling);
+export function sectionsForView(view: ViewMode, isAdmin: boolean, isOwner: boolean): NavSection[] {
+  const ceiling = VIEW_RANK[effectiveViewMode(view, isAdmin, isOwner)];
+  return visibleSections(isAdmin, isOwner).filter((s) => VIEW_RANK[s.id] <= ceiling);
 }

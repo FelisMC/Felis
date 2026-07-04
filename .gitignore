@@ -29,6 +29,8 @@ plugins/*/bin/
 .vscode/
 .idea/
 *.iml
+.DS_Store
+**/.DS_Store
 
 # ---- Secrets / keys (NEVER commit) ----
 *.pem

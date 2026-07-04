@@ -15,6 +15,7 @@ const admin: Identity = {
   role: "admin",
   is_admin: true,
   must_change_password: false,
+  is_owner: false,
 };
 
 const err401 = { status: 401, code: "unauthorized", message: "no session" };

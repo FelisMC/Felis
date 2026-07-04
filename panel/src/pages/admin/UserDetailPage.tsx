@@ -57,7 +57,6 @@ export function UserDetailPage() {
   const { t, i18n } = useTranslation("admin");
   const locale = i18n.language;
   const { identity } = useTier();
-  const isSelf = identity?.user_id === id;
 
   const { data: user, error, loading, reload } = useAsync(
     () => api.getUser(id!),
@@ -178,8 +177,12 @@ function EditProfileCard({ user, onSaved, isSelf }: { user: UserDetail; onSaved:
       await api.patchUser(user.id, patch);
       setOk(t("users_save_ok"));
       onSaved();
-    } catch (e) {
-      setErr(humanizeError(e));
+    } catch (e: any) {
+      if (e && e.code === "already_exists") {
+        setErr(t("users_create_validation_username_taken") || "该用户名已被使用。");
+      } else {
+        setErr(humanizeError(e));
+      }
     } finally {
       setSaving(false);
     }

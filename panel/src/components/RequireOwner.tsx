@@ -1,5 +1,4 @@
 import { Outlet } from "react-router-dom";
-import { useTranslation } from "react-i18next";
 import { useTier } from "@/lib/tier";
 import { NotAuthorized } from "@/components/States";
 import { Loading } from "@/components/States";

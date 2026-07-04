@@ -8,32 +8,34 @@ import { NAV_SECTIONS, visibleSections } from "./nav";
 
 describe("visibleSections", () => {
   it("shows only the User-Side section to a non-admin", () => {
-    const ids = visibleSections(false).map((s) => s.id);
+    const ids = visibleSections(false, false).map((s) => s.id);
     expect(ids).toEqual(["user"]);
   });
 
   it("treats the fail-closed default (false) exactly like a non-admin", () => {
     // TierProvider passes `false` while /me is loading or after it rejects. That
     // path MUST collapse to User-Side only, never leak Admin/Ops nav.
-    expect(visibleSections(false)).toHaveLength(1);
-    expect(visibleSections(false)[0].id).toBe("user");
+    expect(visibleSections(false, false)).toHaveLength(1);
+    expect(visibleSections(false, false)[0].id).toBe("user");
   });
 
   it("shows User-Side and Admin-Side to an admin", () => {
-    const ids = visibleSections(true).map((s) => s.id);
+    const ids = visibleSections(true, false).map((s) => s.id);
     expect(ids).toEqual(["user", "admin"]);
   });
 
   it("keeps the User-Side section ungated so it survives both branches", () => {
     const user = NAV_SECTIONS.find((s) => s.id === "user");
     expect(user?.adminOnly).toBe(false);
-    expect(visibleSections(true)).toContainEqual(user);
-    expect(visibleSections(false)).toContainEqual(user);
+    expect(visibleSections(true, false)).toContainEqual(user);
+    expect(visibleSections(false, false)).toContainEqual(user);
   });
 
-  it("gates every non-user section behind admin", () => {
+  it("gates every non-user section behind admin or owner", () => {
     for (const s of NAV_SECTIONS) {
-      if (s.id !== "user") expect(s.adminOnly).toBe(true);
+      if (s.id !== "user") {
+        expect(s.adminOnly || s.ownerOnly).toBe(true);
+      }
     }
   });
 });
