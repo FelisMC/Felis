@@ -605,10 +605,10 @@ func (f *fakeRepo) BackupByID(_ context.Context, id string) (*BackupRecord, erro
 	return nil, ErrNotFound
 }
 
-// ---- local-password auth fakes (spec §B) ----
+// ---- staff / session auth fakes (spec §B, passwordless) ----
 // Each method mirrors the PGRepo contract: a returned StaffUser is copied so a
 // test cannot mutate the stored row by reference, SessionUser re-reads the
-// CURRENT staff flags (so a password change clears must_change_password for live
+// CURRENT staff row (so a role change or a deleted account takes effect on live
 // sessions just as the PG JOIN does), and the settings/sessions semantics match.
 
 func (f *fakeRepo) UserByUsername(_ context.Context, username string) (*StaffUser, error) {

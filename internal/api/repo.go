@@ -354,11 +354,12 @@ type Repo interface {
 	DeletePasskeyCredential(ctx context.Context, userID, id string) error
 	// DeleteAllPasskeyCredentialsForUser unbinds every passkey a user holds — the
 	// remediation that stops a passkey planted via a transiently-hijacked session from
-	// surviving as a standing login foothold. Its original caller, the change-password
-	// flow, was removed in the passwordless migration, so it currently has no production
-	// caller; it is retained for the account-remediation/reset path (P5, #78). Removing
-	// zero rows is success, not an error — an account with no passkeys is the intended
-	// post-condition either way.
+	// surviving as a standing login foothold. Its production caller is the owner-tier
+	// DELETE /users/{id}/passkeys (handleUnbindUserPasskeys); a complete remediation
+	// pairs it with a session revoke, since unbinding the credential without revoking
+	// live sessions leaves the hijacked session itself, and revoking sessions without
+	// unbinding leaves a re-enrollable credential. Removing zero rows is success, not an
+	// error — an account with no passkeys is the intended post-condition either way.
 	DeleteAllPasskeyCredentialsForUser(ctx context.Context, userID string) error
 
 	// ---- player game-login: username-collision reclaim (spec §B3) ----

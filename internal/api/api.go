@@ -73,11 +73,6 @@ type API struct {
 	// sender. The code is never returned to the client on either path.
 	Mailer OTPMailer
 
-	// ResetMailer delivers admin-generated password-reset passwords to the user's
-	// verified email address. Same nil→server-side-log pattern as Mailer; the
-	// password is never returned to the admin caller. Production wires a real sender.
-	ResetMailer ResetMailer
-
 	// Passkey verifies WebAuthn credential-creation ceremonies (spec §14 / Phase 6
 	// passkey bind). It is optional: when nil the passkey register routes report 503
 	// rather than panic, so the authenticated enrollment boundary is exercised before

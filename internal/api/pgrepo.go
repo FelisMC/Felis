@@ -1020,9 +1020,9 @@ func (p *PGRepo) DeletePasskeyCredential(ctx context.Context, userID, id string)
 // single-credential delete this does NOT report ErrNotFound on zero rows: removing all of
 // a user's passkeys when they have none is a successful no-op, since "the user holds no
 // passkeys" is exactly the intended post-condition. It is the remediation that stops a
-// passkey planted through a transiently-hijacked session from surviving; its original
-// caller (the change-password flow) was removed in the passwordless migration, so it is
-// currently uncalled, retained for the account-remediation/reset path (P5, #78).
+// passkey planted through a transiently-hijacked session from surviving; its production
+// caller is the owner-tier DELETE /users/{id}/passkeys, which a complete remediation
+// pairs with a session revoke (unbinding alone leaves the live hijacked session).
 func (p *PGRepo) DeleteAllPasskeyCredentialsForUser(ctx context.Context, userID string) error {
 	_, err := p.db.ExecContext(ctx,
 		`DELETE FROM webauthn_credentials WHERE user_id = $1`, userID)

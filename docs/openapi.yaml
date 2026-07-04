@@ -2720,6 +2720,14 @@ paths:
       tags: [users]
       operationId: unbindUserPasskeys
       summary: Unbind every passkey of a user (owner only) — authenticator remediation.
+      description: >-
+        Severs a compromised or planted authenticator that would otherwise outlive a
+        session revoke. A complete remediation pairs this with revoking the user's
+        sessions (DELETE /users/{id}/sessions/{hash}): unbinding the credential alone
+        leaves the live hijacked session, and revoking sessions alone leaves a
+        re-enrollable credential. It is not a lockout — the account re-enters via the
+        email-OTP door or op-login and re-enrolls. Removing zero passkeys is a 200
+        no-op, not a 404.
       x-felis-face: [external]
       x-felis-tier: owner
       security: [{ accessJWT: [] }]

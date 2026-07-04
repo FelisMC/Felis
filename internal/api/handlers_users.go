@@ -1,20 +1,11 @@
 package api
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 )
-
-// ResetMailer delivers a freshly-generated admin-reset password to the user's
-// verified email address. nil means the password is logged server-side (the
-// KNOWN-LIMITATION pattern from OTPMailer — production wires a real sender).
-// The password is never returned to the admin caller.
-type ResetMailer interface {
-	SendPasswordReset(ctx context.Context, email, password string) error
-}
 
 // ---- user CRUD ----
 
