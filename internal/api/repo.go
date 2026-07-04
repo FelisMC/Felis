@@ -92,9 +92,9 @@ type StaffUser struct {
 // be public (unlike a session token), so it is safe at rest. CredentialID is the
 // authenticator's globally-unique handle (base64url) and PublicKey the COSE key
 // (base64); SignCount is the uint32 signature counter captured at registration.
-// LastUsedAt is nil until an assertion is verified — the login/step-up path that
-// would stamp it is out of scope for this enrollment-only slice (deferred), so it
-// stays nil through the flow this type backs.
+// LastUsedAt is nil until an assertion stamps it. The passkey login door now exists
+// (Public /auth/passkey/login/{begin,finish}, #72), but no path yet writes
+// last_used_at, so in practice it stays nil; wiring the stamp is a follow-up there.
 type PasskeyCredential struct {
 	ID           string
 	UserID       string
@@ -352,11 +352,13 @@ type Repo interface {
 	// can only unbind their OWN credential. No matching (user, id) row → ErrNotFound,
 	// so a stale or cross-user id cannot silently no-op as success.
 	DeletePasskeyCredential(ctx context.Context, userID, id string) error
-	// DeleteAllPasskeyCredentialsForUser unbinds every passkey a user holds. The
-	// change-password flow calls it so a passkey planted via a transiently-hijacked
-	// session does not survive the remediation (password reset + session revoke) as a
-	// standing login foothold. Removing zero rows is success, not an error — an account
-	// with no passkeys is the intended post-condition either way.
+	// DeleteAllPasskeyCredentialsForUser unbinds every passkey a user holds — the
+	// remediation that stops a passkey planted via a transiently-hijacked session from
+	// surviving as a standing login foothold. Its original caller, the change-password
+	// flow, was removed in the passwordless migration, so it currently has no production
+	// caller; it is retained for the account-remediation/reset path (P5, #78). Removing
+	// zero rows is success, not an error — an account with no passkeys is the intended
+	// post-condition either way.
 	DeleteAllPasskeyCredentialsForUser(ctx context.Context, userID string) error
 
 	// ---- player game-login: username-collision reclaim (spec §B3) ----
@@ -398,18 +400,18 @@ type Repo interface {
 	// name to protect). Keyed by UUID — the only identity velocity knows.
 	IsProtectedAdminLink(ctx context.Context, mcUUID string) (bool, error)
 
-	// ---- local-password auth (spec §B) ----
+	// ---- staff account lookups (spec §B, passwordless) ----
 
 	// UserByUsername loads the login projection of a staff account by its unique
-	// username, or ErrNotFound. The caller compares PasswordHash itself so the
-	// anti-enumeration dummy-hash compare runs even on a miss; a player row (NULL
-	// password_hash → empty PasswordHash) is returned too and is rejected by the
-	// caller's hash compare, never by leaking "no such user".
+	// username, or ErrNotFound. Its caller is the `felis breakGlass` recovery TUI,
+	// which resolves an Owner/Operator username before sending an email-OTP — there is
+	// no password compare (the account is passwordless). A non-staff (role='user') row
+	// resolves too; callers that require staff enforce the role themselves.
 	UserByUsername(ctx context.Context, username string) (*StaffUser, error)
-	// UserByID loads the same staff projection by user id, or ErrNotFound. The
-	// change-password flow uses it to re-verify the caller's current password: the
-	// session yields a user id, not a username, so this is the id-keyed counterpart
-	// of UserByUsername.
+	// UserByID loads the same staff projection by user id, or ErrNotFound. Callers hold
+	// a session (which yields a user id, not a username) and need the account behind it
+	// — e.g. setup redeem/status resolving the lockdown session's owner. It is the
+	// id-keyed counterpart of UserByUsername.
 	UserByID(ctx context.Context, id string) (*StaffUser, error)
 	// UserByEmail resolves a VERIFIED email address to its login projection,
 	// case-insensitively, or ErrNotFound (spec §B email-first login). It is the
@@ -419,9 +421,9 @@ type Repo interface {
 	// else's login by typing their email. Matching is on lower(email) to align with
 	// the users_verified_email_unique partial index (migration 0010), which
 	// guarantees at most one verified row per normalized address, so the result is
-	// unambiguous. A player row (empty PasswordHash) resolves too — email-first
-	// login is passwordless and does not consult the hash — unlike the password
-	// path, which this deliberately does not gate on.
+	// unambiguous. A player (role='user') row resolves too — email-first login is
+	// passwordless and role-agnostic here; the door that consumes this result decides
+	// what each role may do.
 	UserByEmail(ctx context.Context, email string) (*StaffUser, error)
 	// UpsertOwner creates or resets the single Owner account direct-to-Postgres
 	// (the `felis setup` / `felis breakGlass` recovery path). role is forced to

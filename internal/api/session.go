@@ -15,23 +15,23 @@ import (
 	"time"
 )
 
-// Local-password sessions (spec §B). The remote face authenticates statelessly
-// with a Cloudflare-Access JWT and sets no cookie; local-password auth, used on
-// op.console when Zero Trust is not configured (and as the demo's primary web
-// login), needs a server-minted session. We store only the sha-256 of the opaque
-// cookie value, mirroring how service tokens are stored, so a database read never
-// yields a usable cookie.
+// Local sessions (spec §B, passwordless). The remote face authenticates statelessly
+// with a Cloudflare-Access JWT and sets no cookie; the passwordless console login
+// (email-OTP / passkey / setup redeem), used on op.console when Zero Trust is not
+// configured (and as the demo's primary web login), needs a server-minted session.
+// We store only the sha-256 of the opaque cookie value, mirroring how service tokens
+// are stored, so a database read never yields a usable cookie.
 
 const (
 	// sessionCookieName is the host-only session cookie. It carries no Domain
 	// attribute, so an op.console session is never sent to the player console.
 	sessionCookieName = "felis_session"
-	// sessionTTL bounds a local-password session. Staff re-authenticate after it.
+	// sessionTTL bounds a local session. Staff re-authenticate after it.
 	sessionTTL = 12 * time.Hour
 )
 
 // LocalAuthEnabledKey is the platform_settings key that gates whether
-// local-password sessions are honored. It is flipped on by `felis breakGlass`
+// local sessions are honored. It is flipped on by `felis breakGlass`
 // direct-to-Postgres at first-run and read live per-request, so enabling local
 // auth needs no pod roll. Exported so the break-glass writer and this
 // per-request reader share one source of truth instead of drifting copies.
@@ -109,7 +109,7 @@ func hostIsAdminConsole(r *http.Request, rootDomain, adminHostname string) bool 
 }
 
 // SessionAuth is the composite ExternalAuth for the web face. It prefers a
-// local-password session cookie and otherwise delegates to the remote JWT
+// local session cookie and otherwise delegates to the remote JWT
 // verifier, so both auth models coexist on one face:
 //
 //   - No cookie  → delegate to Delegate (the Cloudflare-Access JWT path).

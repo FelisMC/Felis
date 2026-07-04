@@ -722,7 +722,7 @@ func (p *PGRepo) IsProtectedAdminLink(ctx context.Context, mcUUID string) (bool,
 	return ok, err
 }
 
-// ---- local-password auth (spec §B) ----
+// ---- staff account lookups (spec §B, passwordless) ----
 
 // UserByUsername loads a staff login projection by username, or ErrNotFound.
 // The account is passwordless — staff authenticate via email-OTP / passkey, so
@@ -836,9 +836,10 @@ func (p *PGRepo) RevokeSession(ctx context.Context, tokenHash string) error {
 	return err
 }
 
-// RevokeUserSessionsExcept revokes every live session of a user except
-// keepTokenHash — the change-password flow logs out the account's other devices
-// while keeping the current one.
+// RevokeUserSessionsExcept revokes every live session of a user except keepTokenHash
+// — logs out an account's other devices while keeping the current one. Its original
+// caller (the change-password flow) was removed in the passwordless migration; it is
+// retained for the account-remediation path (P5, #78) and currently has no caller.
 func (p *PGRepo) RevokeUserSessionsExcept(ctx context.Context, userID, keepTokenHash string) error {
 	_, err := p.db.ExecContext(ctx,
 		`UPDATE sessions SET revoked_at = now()
@@ -1030,8 +1031,10 @@ func (p *PGRepo) DeletePasskeyCredential(ctx context.Context, userID, id string)
 // DeleteAllPasskeyCredentialsForUser unbinds every passkey a user holds. Unlike the
 // single-credential delete this does NOT report ErrNotFound on zero rows: removing all of
 // a user's passkeys when they have none is a successful no-op, since "the user holds no
-// passkeys" is exactly the intended post-condition. The change-password flow calls it so a
-// passkey planted through a transiently-hijacked session cannot survive the remediation.
+// passkeys" is exactly the intended post-condition. It is the remediation that stops a
+// passkey planted through a transiently-hijacked session from surviving; its original
+// caller (the change-password flow) was removed in the passwordless migration, so it is
+// currently uncalled, retained for the account-remediation/reset path (P5, #78).
 func (p *PGRepo) DeleteAllPasskeyCredentialsForUser(ctx context.Context, userID string) error {
 	_, err := p.db.ExecContext(ctx,
 		`DELETE FROM webauthn_credentials WHERE user_id = $1`, userID)

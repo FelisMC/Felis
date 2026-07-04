@@ -12,7 +12,8 @@ const maxBodyBytes = 1 << 20 // 1 MiB
 
 // requireJSONContentType rejects a request whose body is not declared
 // application/json, returning 415 before any decode. It guards the credential-bearing
-// auth writes (login, change-password) against a cross-site forgery: an HTML form can
+// auth writes (email-OTP, passkey, op-login, setup redeem) against a cross-site
+// forgery: an HTML form can
 // only POST as application/x-www-form-urlencoded, multipart/form-data, or text/plain
 // — never JSON — and a cross-site fetch that forces application/json triggers a CORS
 // preflight this API never answers, so neither form can be forged off-origin. The

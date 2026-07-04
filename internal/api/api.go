@@ -622,54 +622,14 @@ func (c *cooldownLimiter) release(name string, reservedAt time.Time) {
 	}
 }
 
-// ---- login concurrency cap ----
-
-// concurrencyLimiter bounds how many holders may run a guarded section at once. It
-// backs the public login route's bcrypt cap (handleLogin): a buffered channel of n
-// tokens; acquire takes one WITHOUT blocking (returning ok=false when the section
-// is already full), release returns it. Unlike cooldownLimiter — a per-key time
-// window — this bounds simultaneity, not frequency, which is the right shape for a
-// CPU-costly section a flood would otherwise pin every core running. A non-positive
-// cap disables it (acquire always admits, release is a no-op), mirroring the "zero
-// disables" idiom of WakeCooldown and MaxRunningServers.
-type concurrencyLimiter struct {
-	slots chan struct{}
-}
-
-// newConcurrencyLimiter builds a limiter admitting at most n concurrent holders. A
-// non-positive n yields a disabled limiter (nil slots) that admits everyone.
-func newConcurrencyLimiter(n int) *concurrencyLimiter {
-	if n <= 0 {
-		return &concurrencyLimiter{}
-	}
-	return &concurrencyLimiter{slots: make(chan struct{}, n)}
-}
-
-// acquire tries to take a slot without blocking. It returns a release func and true
-// on success, or nil and false when the section is already at capacity. The disabled
-// limiter (nil slots) always admits and returns a no-op release. release MUST be
-// called exactly once on the success path, so it reads naturally as `release, ok :=
-// l.acquire(); if !ok { shed }; defer/inline release()`.
-func (l *concurrencyLimiter) acquire() (release func(), ok bool) {
-	if l.slots == nil {
-		return func() {}, true
-	}
-	select {
-	case l.slots <- struct{}{}:
-		return func() { <-l.slots }, true
-	default:
-		return nil, false
-	}
-}
-
 // ---- per-principal stream cap ----
 
 // streamLimiter bounds how many concurrent guarded sections a single KEY may hold at
 // once. It backs the per-principal SSE stream cap (console + build-log relays): each
 // relay blocks for the life of a client's attachment and, under a stalled reader,
 // pins a goroutine plus a kube-apiserver follow connection, so an unbounded number of
-// them from one principal is a control-plane connection-exhaustion vector. Unlike the
-// login concurrencyLimiter (a single global semaphore), this counts per key. A
+// them from one principal is a control-plane connection-exhaustion vector. Unlike a
+// single global semaphore, this counts per key. A
 // non-positive max disables it (acquire always admits, release is a no-op), the same
 // "zero disables" idiom as the other levers.
 type streamLimiter struct {
