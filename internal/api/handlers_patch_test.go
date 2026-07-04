@@ -17,6 +17,7 @@ func newPatchAPI() (*API, *fakeRepo, *fakeCluster, *fakeBuilder) {
 	cl.byName["survival"] = &ServerInfo{Name: "survival", Subdomain: "survival",
 		AutostartPolicy: string(v1alpha1.AutostartOwnerOnly),
 		DesiredState:    string(v1alpha1.DesiredStopped), Phase: string(v1alpha1.PhaseStopped)}
+	repo.byName["survival"] = &ServerRecord{Name: "survival", Subdomain: "survival"}
 	return api, repo, cl, fb
 }
 

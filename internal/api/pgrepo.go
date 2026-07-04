@@ -294,6 +294,74 @@ func (p *PGRepo) QuotaAvailable(ctx context.Context, userID string) (bool, error
 	return n < maxServers.Int64, nil
 }
 
+// QuotaCheck reports whether accepting a server with resource spec `incoming`
+// would push userID over any quota cap. excludeName is the server row whose own
+// cached resources should be excluded ("" for a fresh claim where the row
+// doesn't exist yet). Four dimensions are checked: server count, CPU millicores,
+// memory MB, and storage MB. A NULL or missing quota row/column means unlimited
+// for that dimension. Like QuotaAvailable, the count check and the write are not
+// serialized — see the QuotaAvailable TOCTOU docstring.
+func (p *PGRepo) QuotaCheck(ctx context.Context, userID string, excludeName string, incoming ResourceSpec) (bool, error) {
+	var maxServers, maxCPU, maxMem, maxStor sql.NullInt64
+	switch err := p.db.QueryRowContext(ctx,
+		`SELECT max_servers, max_cpu_milli, max_memory_mb, max_storage_gb
+		 FROM quotas WHERE user_id = $1`, userID).Scan(
+		&maxServers, &maxCPU, &maxMem, &maxStor); {
+	case errors.Is(err, sql.ErrNoRows):
+		return true, nil // no quota row → unlimited
+	case err != nil:
+		return false, err
+	}
+
+	var count int64
+	var cpuSum, memSum, storSum sql.NullInt64
+	switch err := p.db.QueryRowContext(ctx,
+		`SELECT COUNT(*), COALESCE(SUM(cached_cpu_milli), 0), COALESCE(SUM(cached_memory_mb), 0), COALESCE(SUM(cached_storage_mb), 0)
+		 FROM servers WHERE owner_id = $1 AND deleted_at IS NULL AND name != $2`,
+		userID, excludeName).Scan(&count, &cpuSum, &memSum, &storSum); {
+	case err != nil:
+		return false, err
+	}
+
+	if maxServers.Valid && count >= maxServers.Int64 {
+		return false, nil
+	}
+	if maxCPU.Valid && cpuSum.Int64+int64(incoming.CPUMilli) > maxCPU.Int64 {
+		return false, nil
+	}
+	if maxMem.Valid && memSum.Int64+int64(incoming.MemoryMB) > maxMem.Int64 {
+		return false, nil
+	}
+	if maxStor.Valid && storSum.Int64+int64(incoming.StorageMB) > maxStor.Int64*1024 {
+		return false, nil
+	}
+	return true, nil
+}
+
+// UpdateServerResources updates the resource cache for a server after a spec
+// mutation (spec §7 PATCH). The per-owner aggregate used by QuotaCheck is a
+// SQL SUM over the cached columns, so every mutation must write through here.
+func (p *PGRepo) UpdateServerResources(ctx context.Context, name string, cpuMilli, memoryMB, storageMB int) error {
+	_, err := p.db.ExecContext(ctx,
+		`UPDATE servers SET cached_cpu_milli = $2, cached_memory_mb = $3, cached_storage_mb = $4 WHERE name = $1 AND deleted_at IS NULL`,
+		name, cpuMilli, memoryMB, storageMB)
+	return err
+}
+
+// ServerResources returns the cached resource spec for a server.
+func (p *PGRepo) ServerResources(ctx context.Context, name string) (ResourceSpec, error) {
+	var r ResourceSpec
+	switch err := p.db.QueryRowContext(ctx,
+		`SELECT cached_cpu_milli, cached_memory_mb, cached_storage_mb FROM servers WHERE name = $1 AND deleted_at IS NULL`,
+		name).Scan(&r.CPUMilli, &r.MemoryMB, &r.StorageMB); {
+	case errors.Is(err, sql.ErrNoRows):
+		return r, nil
+	case err != nil:
+		return r, err
+	}
+	return r, nil
+}
+
 // ClaimServer performs the atomic ownership transfer (spec §9.3). A missing
 // server is ErrNotFound; an existing-but-owned server yields claimed=false so the
 // handler can answer 409.
@@ -440,7 +508,7 @@ func (p *PGRepo) ServerOwners(ctx context.Context) (map[string]string, error) {
 // is a PRIMARY KEY, so a no-op insert means it was already bound; we then
 // confirm it resolves to this server and return ErrConflict otherwise, letting
 // the create handler answer 409 before it touches the CRD.
-func (p *PGRepo) SeedServer(ctx context.Context, name, subdomain string) error {
+func (p *PGRepo) SeedServer(ctx context.Context, name, subdomain string, cpuMilli, memoryMB, storageMB int) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -448,7 +516,7 @@ func (p *PGRepo) SeedServer(ctx context.Context, name, subdomain string) error {
 	defer tx.Rollback() //nolint:errcheck // no-op after commit
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO servers (name) VALUES ($1) ON CONFLICT DO NOTHING`, name); err != nil {
+		`INSERT INTO servers (name, cached_cpu_milli, cached_memory_mb, cached_storage_mb) VALUES ($1, $2, $3, $4) ON CONFLICT (name) DO UPDATE SET cached_cpu_milli = EXCLUDED.cached_cpu_milli, cached_memory_mb = EXCLUDED.cached_memory_mb, cached_storage_mb = EXCLUDED.cached_storage_mb`, name, cpuMilli, memoryMB, storageMB); err != nil {
 		return fmt.Errorf("seed server row: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,

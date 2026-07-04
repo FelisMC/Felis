@@ -120,10 +120,16 @@ func (a *API) handleClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ② quota gate, evaluated before the ownership write. This gate and ③ are two
-	// separate statements, not one transaction — see the quota TOCTOU KNOWN-LIMITATION
-	// on QuotaAvailable (audit #4, ENV-blocked: needs real Postgres to close/verify).
-	ok, err := a.Repo.QuotaAvailable(r.Context(), p.UserID)
+	// ② quota gate, evaluated before the ownership write. All four dimensions
+	// (servers, CPU, memory, storage) are checked against the user's quota caps
+	// using the PG-resident resource cache (spec §9.3, §22). The server being
+	// claimed has owner_id=NULL so it is not yet in the per-owner aggregate.
+	res, err := a.Repo.ServerResources(r.Context(), name)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	ok, err := a.Repo.QuotaCheck(r.Context(), p.UserID, "", res)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -376,7 +382,13 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 	// Seed the business rows FIRST (servers + alias). ClaimServer needs the row,
 	// so a CRD-only server would be unclaimable. PG-first means a later CRD
 	// failure leaves a claimable ghost row — acceptable, not transactional.
-	if err := a.Repo.SeedServer(r.Context(), body.Name, body.Subdomain); err != nil {
+	// The resource cache (cpuMilli, memoryMB, storageMB) is seeded alongside so
+	// QuotaCheck can aggregate per-owner usage without cross-system CRD reads.
+	cpuMilli := quantityToMilli(resources.Limits[corev1.ResourceCPU])
+	memMB := quantityToMB(resources.Limits[corev1.ResourceMemory])
+	storQ, _ := resource.ParseQuantity(storage)
+	storMB := quantityToMB(storQ)
+	if err := a.Repo.SeedServer(r.Context(), body.Name, body.Subdomain, cpuMilli, memMB, storMB); err != nil {
 		if errors.Is(err, ErrConflict) {
 			writeError(w, r, newError(http.StatusConflict, "subdomain_taken",
 				"subdomain %q is already in use", body.Subdomain))
@@ -676,6 +688,10 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 	// override block is meaningless without that base. A resources-only patch has no
 	// base ceiling to widen (this endpoint does not read the current spec back), so
 	// it is rejected rather than guessed.
+	var (
+		newResources   corev1.ResourceRequirements
+		resUpdated     bool
+	)
 	if body.Memory != nil {
 		javaMemory, resources, err := resolveResources(*body.Memory, body.Resources)
 		if err != nil {
@@ -688,15 +704,51 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 		if body.Resources != nil {
 			changed = append(changed, "resources")
 		}
+		newResources = resources
+		resUpdated = true
 	} else if body.Resources != nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
 			"resources overrides require memory to be set in the same patch"))
 		return
 	}
 
-	if err := a.Cluster.PatchServerSpec(r.Context(), name, patch); err != nil {
-		a.writeLookupError(w, r, err)
-		return
+	// Resource-cache consistency + quota enforcement (spec §9.3 / §22): every
+	// resource-mutating patch must update the cached columns so QuotaCheck
+	// can aggregate per-owner usage without cross-system CRD reads. For OWNED
+	// servers the owner's cumulative usage must also stay within their quota caps.
+	if resUpdated {
+		newCPU := quantityToMilli(newResources.Limits[corev1.ResourceCPU])
+		newMemMB := quantityToMB(newResources.Limits[corev1.ResourceMemory])
+
+		rec, err := a.Repo.ServerByName(r.Context(), name)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			writeError(w, r, err)
+			return
+		}
+		if rec != nil && rec.OwnerID != "" {
+			ok, err := a.Repo.QuotaCheck(r.Context(), rec.OwnerID, name,
+				ResourceSpec{CPUMilli: newCPU, MemoryMB: newMemMB})
+			if err != nil {
+				writeError(w, r, err)
+				return
+			}
+			if !ok {
+				writeError(w, r, newError(http.StatusForbidden, "quota_exceeded",
+					"this change would exceed the server owner's resource quota"))
+				return
+			}
+		}
+
+		if err := a.Cluster.PatchServerSpec(r.Context(), name, patch); err != nil {
+			a.writeLookupError(w, r, err)
+			return
+		}
+		_ = a.Repo.UpdateServerResources(r.Context(), name, newCPU, newMemMB, 0)
+	} else {
+		if err := a.Cluster.PatchServerSpec(r.Context(), name, patch); err != nil {
+			a.writeLookupError(w, r, err)
+			return
+		}
 	}
 
 	a.audit(r, p.Email, "server.patch", name)
@@ -753,4 +805,26 @@ func (a *API) audit(r *http.Request, actor, action, server string) {
 		ServerName: server,
 		RequestID:  requestIDFromContext(r.Context()),
 	})
+}
+
+// quantityToMilli converts a K8s resource.Quantity to millicores (e.g. "2"→2000,
+// "500m"→500). A zero/unset quantity returns 0.
+func quantityToMilli(q resource.Quantity) int {
+	if q.IsZero() {
+		return 0
+	}
+	return int(q.MilliValue())
+}
+
+// quantityToMB converts a K8s resource.Quantity to whole megabytes, rounding up
+// (e.g. "4Gi"→4096, "1G"→1000). A zero/unset quantity returns 0.
+func quantityToMB(q resource.Quantity) int {
+	if q.IsZero() {
+		return 0
+	}
+	mb := q.Value() / (1024 * 1024)
+	if mb < 1 {
+		return 1
+	}
+	return int(mb)
 }

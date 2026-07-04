@@ -195,6 +195,14 @@ type Repo interface {
 	// QuotaAvailable reports whether the user is under their max_servers quota
 	// (spec §9.3 step ②, evaluated before provisioning).
 	QuotaAvailable(ctx context.Context, userID string) (bool, error)
+	// QuotaCheck reports whether claiming a server with the given resource spec
+	// would push the user over any of their four quota caps: max_servers,
+	// max_cpu_milli, max_memory_mb, and max_storage_gb (spec §9.3 / §22). A nil
+	// or missing quota row/unset column means unlimited for that dimension.
+	// excludeName is the server being claimed/edited ("" when checking a fresh
+	// claim without an existing cached row) so its own current resources are
+	// not double-counted.
+	QuotaCheck(ctx context.Context, userID string, excludeName string, incoming ResourceSpec) (bool, error)
 	// ClaimServer atomically sets owner_id where it is currently NULL and returns
 	// whether a row changed. false means the server was already claimed (spec §9.3:
 	// 0 rows → 409).
@@ -247,11 +255,18 @@ type Repo interface {
 	BackupByID(ctx context.Context, id string) (*BackupRecord, error)
 	// SeedServer inserts the business-layer rows for a newly created server (spec
 	// §15): a servers row (owner_id NULL — claimed later, spec §9.3) and its
-	// subdomain alias, both idempotent. It returns ErrConflict if the subdomain is
-	// already bound to a different server, so the create handler can fail before
-	// touching the CRD. ClaimServer requires this row to exist, so a CRD-only
-	// server would be unclaimable — the create path must seed here first.
-	SeedServer(ctx context.Context, name, subdomain string) error
+	// subdomain alias, both idempotent. The resource cache (cpuMilli, memoryMB,
+	// storageMB) is seeded alongside so QuotaCheck can aggregate per-owner usage
+	// without cross-system CRD reads. It returns ErrConflict if the subdomain is
+	// already bound to a different server.
+	SeedServer(ctx context.Context, name, subdomain string, cpuMilli, memoryMB, storageMB int) error
+	// UpdateServerResources updates the resource cache columns for a server
+	// after a spec mutation (spec §7 PATCH), so the per-owner aggregate stays in
+	// sync.
+	UpdateServerResources(ctx context.Context, name string, cpuMilli, memoryMB, storageMB int) error
+	// ServerResources returns the cached resource spec for a server, or zeroes
+	// when the row does not exist or has been cleared.
+	ServerResources(ctx context.Context, name string) (ResourceSpec, error)
 	// Audit appends one audit row.
 	Audit(ctx context.Context, e AuditEntry) error
 
@@ -587,6 +602,15 @@ type QuotaInput struct {
 	MaxCPUMilli  *int `json:"max_cpu_milli,omitempty"`
 	MaxMemoryMB  *int `json:"max_memory_mb,omitempty"`
 	MaxStorageGB *int `json:"max_storage_gb,omitempty"`
+}
+
+// ResourceSpec is the resource footprint of one server, in the units that the
+// quotas table uses. The resource cache on the servers row mirrors these values
+// so QuotaCheck can aggregate per-owner usage with pure SQL.
+type ResourceSpec struct {
+	CPUMilli  int // CPU in millicores (e.g. 4000 = 4 cores)
+	MemoryMB  int // memory in megabytes (e.g. 4096 = 4 GiB)
+	StorageMB int // storage in megabytes (e.g. 10240 = 10 GiB)
 }
 
 // SessionView is one live session row visible to an admin.

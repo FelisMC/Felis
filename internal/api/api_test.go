@@ -209,6 +209,19 @@ func (f *fakeRepo) ServerByName(_ context.Context, n string) (*ServerRecord, err
 }
 func (f *fakeRepo) IsLinked(_ context.Context, u string) (bool, error)       { return f.linked[u], nil }
 func (f *fakeRepo) QuotaAvailable(_ context.Context, u string) (bool, error) { return f.quota[u], nil }
+
+func (f *fakeRepo) QuotaCheck(_ context.Context, userID string, _ string, _ ResourceSpec) (bool, error) {
+	// For hermetic tests, QuotaCheck delegates to the same QuotaAvailable
+	// store — tests that care about per-dimension checks should use
+	// fakeQuotas with direct inspection.
+	return f.QuotaAvailable(nil, userID)
+}
+
+func (f *fakeRepo) UpdateServerResources(_ context.Context, _ string, _, _, _ int) error { return nil }
+
+func (f *fakeRepo) ServerResources(_ context.Context, _ string) (ResourceSpec, error) {
+	return ResourceSpec{}, nil
+}
 func (f *fakeRepo) CreateLinkCode(_ context.Context, code, mcUUID, authSource string, expiresAt time.Time) error {
 	f.linkCodes[code] = fakeLinkCode{mcUUID: mcUUID, authSource: authSource, expiresAt: expiresAt}
 	return nil
@@ -532,7 +545,7 @@ func (f *fakeRepo) ServerOwners(_ context.Context) (map[string]string, error) {
 	}
 	return f.owners, nil
 }
-func (f *fakeRepo) SeedServer(_ context.Context, name, subdomain string) error {
+func (f *fakeRepo) SeedServer(_ context.Context, name, subdomain string, _, _, _ int) error {
 	if f.seedErr != nil {
 		return f.seedErr
 	}
