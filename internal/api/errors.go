@@ -58,6 +58,14 @@ var (
 	// guard and gets a 409 instead of a raw unique-violation 500. Distinct from
 	// ErrConflict so the message can name the cause (the email is spoken for).
 	ErrEmailTaken = errors.New("email already verified on another account")
+	// ErrTooManyDiscoverableChallenges means the non-user-keyed discoverable ("usernameless")
+	// login challenge store is at its hard cap of live rows (task #40, migration 0013).
+	// Unlike the user-keyed enrollment/login challenges — which self-bound via a per-user
+	// supersede — a from-zero begin has no principal to key a fair per-caller limit on, so the
+	// table is capped globally and a begin over the cap is refused. Distinct from the other
+	// sentinels so the handler answers 429 (a transient "too busy, retry" — the cap self-clears
+	// as challenges expire), never a 400 that invites an immediate retry.
+	ErrTooManyDiscoverableChallenges = errors.New("too many discoverable login challenges in flight")
 )
 
 // apiError is a handler-level error carrying an HTTP status and a stable,

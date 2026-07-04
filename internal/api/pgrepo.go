@@ -1004,6 +1004,91 @@ func (p *PGRepo) ConsumePasskeyChallengeByUser(ctx context.Context, userID, purp
 	return sessionData, nil
 }
 
+// ---- discoverable ("usernameless") passkey login (task #40, migration 0013) ----
+
+// maxLiveDiscoverableChallenges hard-bounds the non-user-keyed discoverable-login challenge
+// store. webauthn_challenges self-bounds via a per-(user,purpose) supersede; a from-zero begin
+// has no such key, so the table is capped: once this many LIVE (unexpired, unconsumed) rows
+// exist, a new begin is refused (ErrTooManyDiscoverableChallenges → 429). The cap is generous —
+// a login challenge lives only passkeyChallengeTTL (5 min) and each row is ~1 KB — so real
+// concurrency never approaches it, while an abusive begin-flood is bounded to a few MB instead
+// of growing without limit. Volumetric per-IP limiting is the edge's job (handlers_auth_email.go):
+// behind Cloudflare RemoteAddr is the proxy, and a usernameless door has no recipient to key a
+// fair per-caller limit on.
+const maxLiveDiscoverableChallenges = 4096
+
+// CreateDiscoverableChallenge stashes a discoverable-login ceremony under an opaque handle,
+// bounding the table in one transaction (see the Repo interface for the full contract). It
+// reaps expired/consumed rows first — the non-user-keyed analog of CreatePasskeyChallenge's
+// supersede — then refuses over the cap rather than inserting. Because the reap ran first, the
+// COUNT is exactly the live-row count, so the cap bounds an adversarial begin-flood (which a
+// reap alone cannot: a burst inside the TTL leaves every fresh row live).
+func (p *PGRepo) CreateDiscoverableChallenge(ctx context.Context, id string, sessionData []byte, now, expiresAt time.Time) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM webauthn_discoverable_challenges WHERE expires_at <= $1 OR consumed_at IS NOT NULL`,
+		now); err != nil {
+		return fmt.Errorf("reap discoverable challenges: %w", err)
+	}
+	var live int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT count(*) FROM webauthn_discoverable_challenges`).Scan(&live); err != nil {
+		return fmt.Errorf("count discoverable challenges: %w", err)
+	}
+	if live >= maxLiveDiscoverableChallenges {
+		return ErrTooManyDiscoverableChallenges
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO webauthn_discoverable_challenges (id, session_data, expires_at)
+		 VALUES ($1, $2, $3)`,
+		id, sessionData, expiresAt); err != nil {
+		return fmt.Errorf("insert discoverable challenge: %w", err)
+	}
+	return tx.Commit()
+}
+
+// ConsumeDiscoverableChallenge redeems the challenge under handle id, single-use (see the Repo
+// interface for the contract). The row is taken FOR UPDATE so a concurrent finish cannot
+// double-spend it; expiry is checked before consuming. No live row → ErrPasskeyChallengeInvalid.
+func (p *PGRepo) ConsumeDiscoverableChallenge(ctx context.Context, id string, now time.Time) ([]byte, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+
+	var (
+		sessionData []byte
+		expiresAt   time.Time
+	)
+	switch err := tx.QueryRowContext(ctx,
+		`SELECT session_data, expires_at FROM webauthn_discoverable_challenges
+		 WHERE id = $1 AND consumed_at IS NULL FOR UPDATE`,
+		id).Scan(&sessionData, &expiresAt); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, ErrPasskeyChallengeInvalid
+	case err != nil:
+		return nil, err
+	}
+
+	if !expiresAt.After(now) {
+		return nil, ErrPasskeyChallengeInvalid
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE webauthn_discoverable_challenges SET consumed_at = $2 WHERE id = $1`, id, now); err != nil {
+		return nil, fmt.Errorf("consume discoverable challenge: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return sessionData, nil
+}
+
 // CreatePasskeyCredential stores a freshly verified passkey (enrollment). Only public
 // attestation material is written; a credential_id already bound to ANY account is left
 // untouched (ON CONFLICT DO NOTHING) and reported as ErrConflict via a zero RowsAffected,

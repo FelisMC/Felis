@@ -40,15 +40,20 @@ import (
 //     (0010_verified_email_unique.sql) plus UserByEmail gave the door the typable handle
 //     it keys on: begin resolves email → account → its bound passkeys.
 //
-// This is an EMAIL-first assertion, not a usernameless one. The system's returning-player
-// root of trust is still re-link (control of the in-game identity — handlers_onboard.go
-// re-mints a session through the bind-code flow even after passkey/OTP are bound); the
-// email and passkey login doors are convenience layered on top, never the root. The real
-// enabler for a TRULY from-zero passkey login (no identifier typed at all) is discoverable
-// ("usernameless") credentials, which sidestep even the email handle but reshape enrollment
-// (residentKey) and need a non-user-keyed challenge store — a future migration and its own
-// checkpoint, task #40 (that door partly bypasses the in-game-identity root of trust). The
-// adapter crypto is verified now so that slice inherits correct crypto.
+// That EMAIL-first assertion is one of TWO login doors this subsystem now offers. The other,
+// the TRULY from-zero door, is discoverable ("usernameless") login (handlers_passkey_discoverable.go,
+// task #40): the browser calls navigator.credentials.get() with an EMPTY allowCredentials, the
+// authenticator offers a resident credential it holds, and the account is resolved from the
+// userHandle inside the signed assertion — no identifier typed at all. It reshaped enrollment
+// (ResidentKey=Preferred in the verifier) and added a non-user-keyed challenge store (migration
+// 0013). Two honest limits frame it: (1) the from-zero door partly bypasses the returning-player
+// root of trust — control of the in-game identity, which handlers_onboard.go re-mints a session
+// through even after passkey/OTP are bound — but it stands on the same footing as the email door
+// (#72): a passkey is a possession+UV two-factor authenticator strong enough to stand alone; and
+// (2) whether an authenticator actually STORES a resident key is a device property no server
+// request compels, so a credential enrolled before this slice, or on hardware that declines
+// residency, stays username-first (BeginLogin) — the from-zero door is inert for it until its
+// owner enrolls a new passkey. The assertion crypto for both doors is Oracle-verified.
 //
 // The cryptographic half is a seam (PasskeyVerifier) so this package never imports
 // go-webauthn: ceremony state crosses the boundary as opaque bytes, the attestation
@@ -102,6 +107,21 @@ type PasskeyVerifier interface {
 	// the browser posts back; sessionData is the blob BeginLogin returned. A failed
 	// verification returns a non-nil error; the handler maps it to 400.
 	FinishLogin(user PasskeyUser, sessionData []byte, assertion io.Reader) (VerifiedAssertion, error)
+	// BeginDiscoverableLogin starts a USERNAMELESS assertion ceremony (task #40): there is no
+	// user yet, so no allowCredentials — the authenticator offers a resident (discoverable)
+	// credential it holds for this RP and reveals the account only in the signed response. It
+	// returns the {"publicKey": {...}} request options for navigator.credentials.get() and the
+	// opaque SessionData the handler stashes under an opaque handle (not a user id) and replays
+	// at finish.
+	BeginDiscoverableLogin() (options json.RawMessage, sessionData []byte, err error)
+	// FinishDiscoverableLogin verifies a usernameless assertion. resolveUser is called with the
+	// authenticator-revealed user handle so the caller loads the account and its bound
+	// credentials WITHOUT any client-supplied identifier; the verifier then checks the asserted
+	// credential id is one that user holds and verifies the signature. A resolveUser error
+	// (unknown handle) fails the ceremony closed; the handle is the account's stable user id, so
+	// resolveUser is a direct id lookup. A failed verification returns a non-nil error the
+	// handler maps to 400.
+	FinishDiscoverableLogin(resolveUser func(userHandle []byte) (PasskeyUser, error), sessionData []byte, assertion io.Reader) (VerifiedAssertion, error)
 }
 
 // PasskeyUser is the relying-party view of the enrolling principal the verifier needs:

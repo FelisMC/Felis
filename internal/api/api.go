@@ -282,6 +282,11 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "GET", Pattern: "/api/v1/auth/setup/status", SetupAllowed: true, h: a.handleSetupStatus},
 		{Method: "POST", Pattern: "/api/v1/auth/passkey/login/begin", Public: true, h: a.handlePasskeyLoginBegin},
 		{Method: "POST", Pattern: "/api/v1/auth/passkey/login/finish", Public: true, h: a.handlePasskeyLoginFinish},
+		// Discoverable ("usernameless") passkey login (task #40): the from-zero sibling of the
+		// email-first pair above — no identifier typed, the account is resolved from the
+		// userHandle inside the signed assertion (handlers_passkey_discoverable.go).
+		{Method: "POST", Pattern: "/api/v1/auth/passkey/login/discoverable/begin", Public: true, h: a.handlePasskeyLoginDiscoverableBegin},
+		{Method: "POST", Pattern: "/api/v1/auth/passkey/login/discoverable/finish", Public: true, h: a.handlePasskeyLoginDiscoverableFinish},
 		{Method: "POST", Pattern: "/api/v1/auth/email/start", Public: true, h: a.handleLoginEmailStart},
 		{Method: "POST", Pattern: "/api/v1/auth/email/verify", Public: true, h: a.handleLoginEmailVerify},
 		{Method: "POST", Pattern: "/api/v1/auth/op-login/start", Public: true, h: a.handleOpLoginStart},

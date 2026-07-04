@@ -2,6 +2,7 @@ package passkey
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -331,5 +332,181 @@ func TestLoginUnknownCredentialRejected(t *testing.T) {
 	assertionResponse := virtualwebauthn.CreateAssertionResponse(rp, authenticator, credB, *assertionOpts)
 	if _, err := v.FinishLogin(testUser(stored), sessionData, strings.NewReader(assertionResponse)); err == nil {
 		t.Fatal("FinishLogin accepted an assertion from an unbound credential; want rejection")
+	}
+}
+
+// TestDiscoverableLoginRoundTrip is the PARITY check for the usernameless (from-zero) half
+// (task #40), and the proof its VERIFY path is real crypto rather than a stub. It differs from
+// TestLoginRoundTrip in the two ways that define discoverable login: the begin names no user
+// (so the request's allowCredentials must be EMPTY), and the account is revealed only by the
+// userHandle the authenticator embeds in the signed assertion — the verifier hands that handle
+// to a resolve callback that stands in for the handler's userHandle → UserByID lookup. Chained
+// onto a REAL enrollment so the assertion validates against a genuine COSE key, and the
+// authenticator's counter is advanced first so the surfaced SignCount is proven real, not a
+// hardcoded 0. What this does NOT prove: that a real authenticator actually STORED a resident
+// key — that residency is a device property (see TestEnrollmentRequestsResidentKey for the only
+// thing a unit test can pin, the request the browser receives).
+func TestDiscoverableLoginRoundTrip(t *testing.T) {
+	v := newTestVerifier(t)
+	rp := virtualRP()
+	authenticator := virtualwebauthn.NewAuthenticator()
+	cred := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+
+	stored := enrollCredential(t, v, rp, authenticator, cred)
+
+	// The authenticator returns the user handle in the assertion — this is what a resident
+	// credential does and what lets the account be resolved from nothing typed. It is the
+	// account's stable user id (WebAuthnID), so the resolver must receive exactly these bytes.
+	authenticator.Options.UserHandle = []byte(testUserID)
+	// Advance the counter so a real (non-zero, strictly increasing) SignCount must survive.
+	cred.Counter = 9
+
+	options, sessionData, err := v.BeginDiscoverableLogin()
+	if err != nil {
+		t.Fatalf("BeginDiscoverableLogin: %v", err)
+	}
+	assertionOpts, err := virtualwebauthn.ParseAssertionOptions(string(options))
+	if err != nil {
+		t.Fatalf("ParseAssertionOptions: %v (options=%s)", err, options)
+	}
+	if assertionOpts.RelyingPartyID != testRPID {
+		t.Fatalf("options RP id = %q, want %q", assertionOpts.RelyingPartyID, testRPID)
+	}
+	// The defining property of a usernameless request: no credential is named. If this were
+	// non-empty the ceremony would be username-first and the test would prove nothing about #40.
+	if len(assertionOpts.AllowCredentials) != 0 {
+		t.Fatalf("allowCredentials = %v, want empty (usernameless request names no credential)", assertionOpts.AllowCredentials)
+	}
+
+	assertionResponse := virtualwebauthn.CreateAssertionResponse(rp, authenticator, cred, *assertionOpts)
+
+	// resolve stands in for the handler's userHandle → UserByID lookup: it records the handle
+	// it was handed (to prove the account is revealed by the authenticator, not the client) and
+	// returns the stored credential so ValidateDiscoverableLogin can verify the signature.
+	var gotHandle []byte
+	resolve := func(userHandle []byte) (api.PasskeyUser, error) {
+		gotHandle = userHandle
+		return testUser(stored), nil
+	}
+	va, err := v.FinishDiscoverableLogin(resolve, sessionData, strings.NewReader(assertionResponse))
+	if err != nil {
+		t.Fatalf("FinishDiscoverableLogin: %v", err)
+	}
+	if string(gotHandle) != testUserID {
+		t.Errorf("resolver received userHandle %q, want %q (the account is revealed by the assertion)", gotHandle, testUserID)
+	}
+	if va.CredentialID != stored.CredentialID {
+		t.Errorf("asserted CredentialID = %q, want %q", va.CredentialID, stored.CredentialID)
+	}
+	if va.SignCount != 9 {
+		t.Errorf("SignCount = %d, want 9 (the authenticator's advanced counter)", va.SignCount)
+	}
+}
+
+// TestDiscoverableLoginResolveFailsClosed proves the from-zero door fails CLOSED when the
+// authenticator-revealed account cannot be resolved: a resolve callback that returns an error
+// (the handler's UserByID found nothing — a handle for a deleted/unknown account) must abort
+// the ceremony, never mint an assertion. Without this the usernameless path could be coaxed
+// into treating an unresolvable handle as success. Pairs with the round-trip above so the
+// resolver neither over- nor under-blocks.
+func TestDiscoverableLoginResolveFailsClosed(t *testing.T) {
+	v := newTestVerifier(t)
+	rp := virtualRP()
+	authenticator := virtualwebauthn.NewAuthenticator()
+	cred := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+
+	enrollCredential(t, v, rp, authenticator, cred)
+	authenticator.Options.UserHandle = []byte("nonexistent-account")
+
+	options, sessionData, err := v.BeginDiscoverableLogin()
+	if err != nil {
+		t.Fatalf("BeginDiscoverableLogin: %v", err)
+	}
+	assertionOpts, err := virtualwebauthn.ParseAssertionOptions(string(options))
+	if err != nil {
+		t.Fatalf("ParseAssertionOptions: %v", err)
+	}
+	assertionResponse := virtualwebauthn.CreateAssertionResponse(rp, authenticator, cred, *assertionOpts)
+
+	resolve := func(userHandle []byte) (api.PasskeyUser, error) {
+		return api.PasskeyUser{}, api.ErrNotFound
+	}
+	if _, err := v.FinishDiscoverableLogin(resolve, sessionData, strings.NewReader(assertionResponse)); err == nil {
+		t.Fatal("FinishDiscoverableLogin accepted an assertion whose account could not be resolved; want rejection")
+	}
+}
+
+// TestDiscoverableLoginUnboundCredentialRejected proves the credential-ownership binding for
+// the usernameless door — the defense unique to it. In username-first login the server names
+// allowCredentials, so an assertion must match a credential the server itself offered. The
+// from-zero door names NOTHING: the authenticator reveals BOTH the userHandle and the signing
+// credential, so the ONLY barrier stopping an attacker from signing with their own resident key
+// while embedding a victim's userHandle is go-webauthn's check that the asserted credential id
+// belongs to the resolved user. Here the resolve callback succeeds (the handle names a REAL
+// account, u1, holding credential A) — unlike TestDiscoverableLoginResolveFailsClosed where it
+// resolves to nothing — but the assertion is signed by credential B, never bound to u1.
+// FinishDiscoverableLogin must reject: a good signature over the right challenge under a valid
+// userHandle is still not enough without membership. This is the exact guard the "account is
+// revealed by the assertion, never named by the client" claim leans on.
+func TestDiscoverableLoginUnboundCredentialRejected(t *testing.T) {
+	v := newTestVerifier(t)
+	rp := virtualRP()
+	authenticator := virtualwebauthn.NewAuthenticator()
+	credA := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+	stored := enrollCredential(t, v, rp, authenticator, credA)
+
+	// A valid handle: it resolves to the real account u1, which holds credential A.
+	authenticator.Options.UserHandle = []byte(testUserID)
+
+	options, sessionData, err := v.BeginDiscoverableLogin()
+	if err != nil {
+		t.Fatalf("BeginDiscoverableLogin: %v", err)
+	}
+	assertionOpts, err := virtualwebauthn.ParseAssertionOptions(string(options))
+	if err != nil {
+		t.Fatalf("ParseAssertionOptions: %v", err)
+	}
+	// Sign with a fresh credential never bound to u1. The resolver still returns u1's real
+	// credential set (credential A) — so the ONLY thing that can reject this is the check that
+	// the asserted credential (B) is among the resolved user's credentials.
+	credB := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+	assertionResponse := virtualwebauthn.CreateAssertionResponse(rp, authenticator, credB, *assertionOpts)
+
+	resolve := func(userHandle []byte) (api.PasskeyUser, error) {
+		return testUser(stored), nil
+	}
+	if _, err := v.FinishDiscoverableLogin(resolve, sessionData, strings.NewReader(assertionResponse)); err == nil {
+		t.Fatal("FinishDiscoverableLogin accepted an assertion signed by a credential not bound to the resolved user; want rejection")
+	}
+}
+
+// TestEnrollmentRequestsResidentKey pins the ONLY server-side half of the from-zero enabler a
+// unit test can prove: that enrollment ASKS the browser for a resident (discoverable) key, i.e.
+// the creation options carry authenticatorSelection.residentKey = "preferred". Whether a real
+// authenticator honors the request — actually persisting a resident key so it can later be
+// asserted usernamelessly — is a device property no unit test can reach, which is exactly why
+// the from-zero door is inert for a credential until its owner enrolls a NEW passkey against
+// these options. "preferred" (not "required") is deliberate: an authenticator that cannot store
+// a resident key still binds a working username-first passkey and falls back to email-OTP, so
+// no one is locked out — asserting the exact string guards against a silent drop to "" (ask for
+// nothing) or a tightening to "required" (which would break the no-lockout ethos).
+func TestEnrollmentRequestsResidentKey(t *testing.T) {
+	v := newTestVerifier(t)
+	options, _, err := v.BeginRegistration(testUser())
+	if err != nil {
+		t.Fatalf("BeginRegistration: %v", err)
+	}
+	var doc struct {
+		PublicKey struct {
+			AuthenticatorSelection struct {
+				ResidentKey string `json:"residentKey"`
+			} `json:"authenticatorSelection"`
+		} `json:"publicKey"`
+	}
+	if err := json.Unmarshal(options, &doc); err != nil {
+		t.Fatalf("unmarshal creation options: %v (options=%s)", err, options)
+	}
+	if got := doc.PublicKey.AuthenticatorSelection.ResidentKey; got != "preferred" {
+		t.Errorf("authenticatorSelection.residentKey = %q, want %q", got, "preferred")
 	}
 }

@@ -6,15 +6,19 @@
 // this package imports api for the seam types; api never imports this package, which is
 // what keeps the seam (and the api test suite's fake verifier) honest.
 //
-// Scope: the full WebAuthn ceremony crypto — both the credential-creation (enrollment:
-// BeginRegistration/FinishRegistration over go-webauthn's BeginRegistration/CreateCredential)
-// and the assertion (login: BeginLogin/FinishLogin over BeginLogin/ValidateLogin) halves.
-// Both are Oracle-verified in verifier_test.go against a virtual authenticator. Only the
-// enrollment half is wired to HTTP handlers today (handlers_passkey.go); the login
-// handlers, session minting, and the panel.* relying-party boundary are a deferred slice,
-// so BeginLogin/FinishLogin here have no api-package caller yet. They are added to the
-// concrete adapter (not the api.PasskeyVerifier interface) precisely so the crypto is
-// built and verified now while the interface grows only when a handler consumes it.
+// Scope: the full WebAuthn ceremony crypto across three halves, each Oracle-verified in
+// verifier_test.go against a virtual authenticator:
+//
+//   - enrollment (BeginRegistration/FinishRegistration over go-webauthn's
+//     BeginRegistration/CreateCredential),
+//   - username-first login (BeginLogin/FinishLogin over BeginLogin/ValidateLogin), where the
+//     account is known and its bound credentials scope allowCredentials, and
+//   - discoverable, "usernameless" login (BeginDiscoverableLogin/FinishDiscoverableLogin over
+//     BeginDiscoverableLogin/ValidateDiscoverableLogin), where the account is unknown at begin
+//     and revealed only by the userHandle inside the signed assertion (task #40).
+//
+// All three are in the api.PasskeyVerifier interface and consumed by handlers today (enrollment
+// + login in handlers_passkey.go, from-zero login in handlers_passkey_discoverable.go).
 package passkey
 
 import (
@@ -68,6 +72,17 @@ func New(rpID, displayName string, origins []string) (*Verifier, error) {
 		// email-OTP factor (migration 0004); no one is locked out.
 		AuthenticatorSelection: protocol.AuthenticatorSelection{
 			UserVerification: protocol.VerificationRequired,
+			// Prefer a discoverable (resident) credential so a passkey can later be asserted
+			// usernamelessly (task #40 from-zero login): the authenticator stores the credential
+			// and can present it with no identifier typed. PREFERRED, not Required, keeps the
+			// no-lockout ethos — an authenticator that cannot make a resident key still binds a
+			// working username-first passkey (BeginLogin) and falls back to email-OTP; only the
+			// from-zero convenience is unavailable. This shapes only the creation options a browser
+			// receives (a server-side request, asserted in TestEnrollmentRequestsResidentKey);
+			// whether a real authenticator honors it — actually storing a resident key — is a device
+			// property no unit test can prove, so already-bound non-resident credentials stay
+			// username-first until their owner enrolls a new passkey.
+			ResidentKey: protocol.ResidentKeyRequirementPreferred,
 		},
 	})
 	if err != nil {
@@ -191,6 +206,68 @@ func (v *Verifier) FinishLogin(user api.PasskeyUser, sessionData []byte, asserti
 		return api.VerifiedAssertion{}, err
 	}
 	cred, err := v.wa.ValidateLogin(webauthnUser{u: user}, session, parsed)
+	if err != nil {
+		return api.VerifiedAssertion{}, err
+	}
+	return api.VerifiedAssertion{
+		CredentialID: base64.RawURLEncoding.EncodeToString(cred.ID),
+		SignCount:    cred.Authenticator.SignCount,
+	}, nil
+}
+
+// BeginDiscoverableLogin starts a USERNAMELESS assertion ceremony (task #40): the caller is
+// not yet identified, so — unlike BeginLogin — there is no user and no allowCredentials. The
+// authenticator picks a resident (discoverable) credential it holds for this RP and reveals
+// the account only inside the signed response at finish. It returns the {"publicKey": {...}}
+// request options for navigator.credentials.get() and the opaque, marshaled SessionData the
+// handler stashes under an opaque handle (migration 0013's non-user-keyed store) and replays
+// at finish. User verification is required, matching enrollment, so a from-zero login still
+// proves possession AND user.
+func (v *Verifier) BeginDiscoverableLogin() (json.RawMessage, []byte, error) {
+	assertion, session, err := v.wa.BeginDiscoverableLogin(webauthn.WithUserVerification(protocol.VerificationRequired))
+	if err != nil {
+		return nil, nil, err
+	}
+	// CredentialAssertion marshals to {"publicKey": {...}} with an EMPTY allowCredentials —
+	// exactly the usernameless document the browser hands to navigator.credentials.get().
+	options, err := json.Marshal(assertion)
+	if err != nil {
+		return nil, nil, err
+	}
+	// As with the other ceremonies, we stash the marshaled SessionData verbatim and let the
+	// challenge row's TTL be the sole authority on liveness (no expiry inside SessionData).
+	sessionData, err := json.Marshal(session)
+	if err != nil {
+		return nil, nil, err
+	}
+	return options, sessionData, nil
+}
+
+// FinishDiscoverableLogin verifies a usernameless assertion (task #40). go-webauthn hands the
+// authenticator-revealed user handle to resolveUser, which the caller uses to load the account
+// and its bound credentials WITHOUT any client-supplied identifier; go-webauthn then checks
+// the asserted credential id is one that user holds and verifies the signature against its
+// stored COSE public key. The user handle is the account's stable id (webauthnUser.WebAuthnID),
+// so resolveUser is a direct id lookup. A resolveUser error (unknown handle) fails the ceremony
+// closed. resolveUser is a plain api-typed callback so the api package still never imports
+// go-webauthn: the adapter wraps it into go-webauthn's DiscoverableUserHandler here.
+func (v *Verifier) FinishDiscoverableLogin(resolveUser func(userHandle []byte) (api.PasskeyUser, error), sessionData []byte, assertion io.Reader) (api.VerifiedAssertion, error) {
+	var session webauthn.SessionData
+	if err := json.Unmarshal(sessionData, &session); err != nil {
+		return api.VerifiedAssertion{}, err
+	}
+	parsed, err := protocol.ParseCredentialRequestResponseBody(assertion)
+	if err != nil {
+		return api.VerifiedAssertion{}, err
+	}
+	handler := func(_, userHandle []byte) (webauthn.User, error) {
+		u, err := resolveUser(userHandle)
+		if err != nil {
+			return nil, err
+		}
+		return webauthnUser{u: u}, nil
+	}
+	cred, err := v.wa.ValidateDiscoverableLogin(handler, session, parsed)
 	if err != nil {
 		return api.VerifiedAssertion{}, err
 	}

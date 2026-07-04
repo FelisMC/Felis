@@ -81,6 +81,12 @@ type fakeRepo struct {
 	// just as the PG query does.
 	passkeyCreds      map[string]PasskeyCredential
 	passkeyChallenges map[string]*fakePasskeyChallenge
+	// discoverable ("usernameless") login challenge store (task #40), keyed by opaque handle id
+	// with no user key, mirroring migration 0013. discoverableFull forces the capped-out path
+	// (ErrTooManyDiscoverableChallenges) so the begin 429 branch is reachable without inserting
+	// thousands of rows.
+	discoverableChallenges map[string]*fakeDiscoverableChallenge
+	discoverableFull       bool
 	// user admin fakes
 	seededUsers []seededUser
 	fakeQuotas  map[string]*QuotaView
@@ -97,6 +103,15 @@ type fakePasskeyChallenge struct {
 	expiresAt   time.Time
 	consumed    bool
 	createdAt   time.Time
+}
+
+// fakeDiscoverableChallenge mirrors a webauthn_discoverable_challenges row (task #40): no user
+// or purpose (a from-zero begin has neither), just the opaque stashed SessionData, its expiry,
+// and single-use via consumed. Keyed by the opaque handle in the map, like the real table's id.
+type fakeDiscoverableChallenge struct {
+	sessionData []byte
+	expiresAt   time.Time
+	consumed    bool
 }
 
 // fakeDataHold mirrors a player_data_holds row at the granularity the verifiable
@@ -191,7 +206,9 @@ func newFakeRepo() *fakeRepo {
 		holds:             map[string]fakeDataHold{},
 		passkeyCreds:      map[string]PasskeyCredential{},
 		passkeyChallenges: map[string]*fakePasskeyChallenge{},
-		fakeQuotas:        map[string]*QuotaView{},
+
+		discoverableChallenges: map[string]*fakeDiscoverableChallenge{},
+		fakeQuotas:             map[string]*QuotaView{},
 	}
 }
 
@@ -366,6 +383,31 @@ func (f *fakeRepo) ConsumePasskeyChallengeByUser(_ context.Context, userID, purp
 	return live.sessionData, nil
 }
 
+// CreateDiscoverableChallenge / ConsumeDiscoverableChallenge mirror PGRepo's non-user-keyed
+// contract (task #40): begin reaps expired/consumed rows then stashes under the opaque handle,
+// and consume redeems by handle, single-use, expiry checked. discoverableFull forces the capped
+// path so the begin 429 branch is reachable without inserting thousands of rows.
+func (f *fakeRepo) CreateDiscoverableChallenge(_ context.Context, id string, sessionData []byte, now, expiresAt time.Time) error {
+	if f.discoverableFull {
+		return ErrTooManyDiscoverableChallenges
+	}
+	for k, c := range f.discoverableChallenges { // reap (DELETE ... expires_at<=now OR consumed_at NOT NULL)
+		if c.consumed || !c.expiresAt.After(now) {
+			delete(f.discoverableChallenges, k)
+		}
+	}
+	f.discoverableChallenges[id] = &fakeDiscoverableChallenge{sessionData: sessionData, expiresAt: expiresAt}
+	return nil
+}
+func (f *fakeRepo) ConsumeDiscoverableChallenge(_ context.Context, id string, now time.Time) ([]byte, error) {
+	c, ok := f.discoverableChallenges[id]
+	if !ok || c.consumed || !c.expiresAt.After(now) {
+		return nil, ErrPasskeyChallengeInvalid
+	}
+	c.consumed = true
+	return c.sessionData, nil
+}
+
 // CreatePasskeyCredential mirrors PGRepo: a credential_id already bound to ANY account
 // → ErrConflict (the UNIQUE guard), never a silent rebind.
 func (f *fakeRepo) CreatePasskeyCredential(_ context.Context, c PasskeyCredential) error {
@@ -436,6 +478,10 @@ type fakePasskeyVerifier struct {
 	// stashed SessionData round-trips and the existing credentials reach the verifier.
 	lastUser    PasskeyUser
 	lastSession []byte
+	// discoverableUserHandle is the userHandle the fake feeds to FinishDiscoverableLogin's
+	// resolver, so a handler test drives the userHandle → UserByID → session-mint wiring for a
+	// chosen account (or an unknown handle, to exercise the resolve-fails branch).
+	discoverableUserHandle []byte
 }
 
 func (v *fakePasskeyVerifier) BeginRegistration(user PasskeyUser) (json.RawMessage, []byte, error) {
@@ -474,6 +520,33 @@ func (v *fakePasskeyVerifier) FinishLogin(user PasskeyUser, sessionData []byte, 
 	if v.failErr != nil {
 		return VerifiedAssertion{}, v.failErr
 	}
+	return v.assertion, nil
+}
+
+func (v *fakePasskeyVerifier) BeginDiscoverableLogin() (json.RawMessage, []byte, error) {
+	if v.beginLoginErr != nil {
+		return nil, nil, v.beginLoginErr
+	}
+	opts := v.options
+	if opts == nil {
+		opts = json.RawMessage(`{"publicKey":{"challenge":"ZGlzYw"}}`)
+	}
+	return opts, []byte("disc-session"), nil
+}
+
+func (v *fakePasskeyVerifier) FinishDiscoverableLogin(resolveUser func([]byte) (PasskeyUser, error), sessionData []byte, _ io.Reader) (VerifiedAssertion, error) {
+	v.lastSession = sessionData
+	if v.failErr != nil {
+		return VerifiedAssertion{}, v.failErr
+	}
+	// Drive the resolver with the configured user handle so the handler's userHandle → UserByID
+	// → session-mint wiring runs end to end; a resolve error (unknown handle) fails the ceremony
+	// exactly as the real ValidateDiscoverableLogin would when the handler cannot be resolved.
+	u, err := resolveUser(v.discoverableUserHandle)
+	if err != nil {
+		return VerifiedAssertion{}, err
+	}
+	v.lastUser = u
 	return v.assertion, nil
 }
 

@@ -350,9 +350,25 @@ type Repo interface {
 	// returns the stashed SessionData so finish can validate the attestation against
 	// it. No live challenge → ErrPasskeyChallengeInvalid. Single-use: a second finish
 	// for the same ceremony finds nothing live and fails. now is the API clock so
-	// expiry is testable. Bound to user_id — enrollment always has a principal, so
-	// there is no usernameless consume-by-hash variant (login is a deferred slice).
+	// expiry is testable. Bound to user_id — enrollment and username-first login both
+	// know the principal at begin; the usernameless from-zero door instead uses the
+	// non-user-keyed pair below.
 	ConsumePasskeyChallengeByUser(ctx context.Context, userID, purpose string, now time.Time) (sessionData []byte, err error)
+	// CreateDiscoverableChallenge persists a DISCOVERABLE ("usernameless") login ceremony
+	// (task #40, migration 0013), keyed by an opaque server-minted handle id — NOT a user,
+	// since a from-zero begin has no principal. In one transaction it reaps expired/consumed
+	// rows (the non-user-keyed analog of CreatePasskeyChallenge's supersede) and then, if the
+	// live count is at the hard cap, refuses with ErrTooManyDiscoverableChallenges rather than
+	// inserting — the cap, not the reap, bounds an adversarial begin-flood, since a burst
+	// inside the TTL leaves every fresh row live. now and expiresAt are both the API clock
+	// (now drives the reap; expiresAt = now + TTL drives liveness).
+	CreateDiscoverableChallenge(ctx context.Context, id string, sessionData []byte, now, expiresAt time.Time) error
+	// ConsumeDiscoverableChallenge redeems the discoverable challenge under handle id,
+	// atomically and single-use (mirrors ConsumePasskeyChallengeByUser without the user key):
+	// it takes the row FOR UPDATE, checks expiry against now, stamps consumed_at, and returns
+	// the stashed SessionData. An unknown, expired, or already-consumed handle →
+	// ErrPasskeyChallengeInvalid, so the finish door never doubles as a state oracle.
+	ConsumeDiscoverableChallenge(ctx context.Context, id string, now time.Time) (sessionData []byte, err error)
 	// CreatePasskeyCredential stores a freshly verified passkey for a user (Phase 6
 	// enrollment). It writes only public attestation material (credential_id,
 	// public_key, sign_count, aaguid) plus the caller's nickname. A credential_id

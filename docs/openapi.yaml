@@ -1709,6 +1709,153 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /api/v1/auth/passkey/login/discoverable/begin:
+    post:
+      tags: [auth]
+      operationId: passkeyLoginDiscoverableBegin
+      summary: Begin a usernameless (discoverable) passkey login (spec §14, §B, task #40).
+      description: >-
+        First leg of the truly from-zero passkey door: unlike the email-first sibling
+        above, the caller supplies NO identifier — the request has no body (only the
+        application/json Content-Type is required as the cross-origin CSRF guard). The
+        response is the WebAuthn PublicKeyCredentialRequestOptions with an EMPTY
+        allowCredentials, plus an opaque login_id: the authenticator picks a resident
+        credential it holds for this RP and the account is revealed only by the
+        userHandle inside the signed assertion at finish. The challenge cannot be
+        user-keyed, so it is stashed under login_id in a non-user-keyed store and echoed
+        back at finish. Mounted Public and gated on local_auth_enabled. There is no
+        recipient or principal to key a per-caller cooldown on (that volumetric limiting
+        is delegated to the edge), so the server-side brake is a hard global cap on live
+        challenges (429 too_many_challenges). Inert for a credential until its owner
+        enrolls a resident passkey; email-OTP and username-first passkey remain the
+        fallbacks, so no authenticator is ever locked out.
+      x-felis-face: [external]
+      x-felis-tier: public
+      security: []
+      requestBody:
+        required: false
+        description: >-
+          No body is read — the whole point is that the caller supplies no identifier —
+          but the application/json Content-Type is required (415 otherwise).
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200':
+          description: >-
+            The WebAuthn assertion options (PublicKeyCredentialRequestOptions) with an
+            empty allowCredentials, passed through verbatim for the browser to consume,
+            plus an opaque login_id the caller echoes at finish. The publicKey member is
+            the WebAuthn standard shape and is not modelled here.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [publicKey, login_id]
+                properties:
+                  publicKey: { type: object, additionalProperties: true }
+                  login_id: { type: string }
+        '400':
+          description: The authenticator library could not start the ceremony (passkey_login_failed).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: Local session login is disabled on this deployment (local_auth_disabled).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '415':
+          description: Request Content-Type was not application/json.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: >-
+            Too many discoverable logins are in flight server-wide; the global cap is hit
+            (too_many_challenges). No per-recipient signal is leaked — the cap is global.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: No passkey verifier is wired on this deployment (passkey_unavailable).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/auth/passkey/login/discoverable/finish:
+    post:
+      tags: [auth]
+      operationId: passkeyLoginDiscoverableFinish
+      summary: Complete a usernameless (discoverable) passkey login and mint a session (spec §14, §B, task #40).
+      description: >-
+        Second leg of the from-zero door: the caller returns the opaque login_id from
+        begin (the only link to the stashed challenge, since it is not user-keyed) and
+        the raw navigator.credentials.get() assertion — and NOTHING that names an
+        account. The stashed challenge is consumed atomically and the assertion is
+        verified against it; the account is resolved from the authenticator-revealed
+        userHandle (the account's stable id), never from anything the client supplied,
+        and the session is minted for the account the assertion actually resolved AND
+        verified to. Both players and staff may log in this way. Every failure mode — a
+        missing/expired/consumed login_id, a bad assertion, AND a userHandle that
+        resolves to no account — collapses into one uniform passkey_login_invalid, so
+        the door reveals nothing (not even whether the handle was well-formed).
+      x-felis-face: [external]
+      x-felis-tier: public
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [login_id, assertion]
+              properties:
+                login_id:
+                  type: string
+                  description: The opaque handle returned by discoverable/begin.
+                assertion:
+                  type: object
+                  additionalProperties: true
+                  description: >-
+                    The raw PublicKeyCredential from navigator.credentials.get(),
+                    passed to the verifier verbatim (WebAuthn standard shape). Its
+                    userHandle selects the account server-side.
+      responses:
+        '200':
+          description: Assertion verified; a host-only session cookie is set on the response.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user_id, role]
+                properties:
+                  user_id: { type: string }
+                  role: { type: string, enum: [user, admin] }
+        '400':
+          description: >-
+            Missing login_id or assertion (bad_request); or the login could not be
+            completed — no live/expired/consumed challenge, a failed assertion, or a
+            userHandle that resolves to no account, all uniform (passkey_login_invalid).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: Local session login is disabled on this deployment (local_auth_disabled).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '415':
+          description: Request body was not application/json.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: No passkey verifier is wired on this deployment (passkey_unavailable).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /api/v1/auth/email/start:
     post:
       tags: [auth]
