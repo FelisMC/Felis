@@ -104,17 +104,6 @@ type API struct {
 	// a positive value. Enforced via withinRunningCap on the wake path.
 	MaxRunningServers int
 
-	// MaxConcurrentLogins bounds how many password logins may run their (CPU-costly)
-	// bcrypt compare at once on the public /auth/login route. bcrypt is deliberately
-	// expensive and the anti-enumeration path runs a full compare on EVERY request,
-	// so an unbounded flood of concurrent logins would pin every core; capping the
-	// simultaneous compares sheds the excess with a cheap 429 instead. Zero — the
-	// default — disables the cap (same "zero disables" idiom as WakeCooldown /
-	// MaxRunningServers); cmd/felis wires a positive value. It is a concurrency cap,
-	// NOT a per-account lockout, so it never fences a break-glass admin out of the
-	// one account they need. Enforced via loginLimiter in handleLogin.
-	MaxConcurrentLogins int
-
 	// MaxStreamsPerPrincipal caps how many concurrent Server-Sent Event streams
 	// (console + build-log relays, spec §8) a single principal may hold open at once.
 	// Each relay blocks for the lifetime of a client's attachment and, under a stalled
@@ -134,9 +123,6 @@ type API struct {
 
 	otpCooldownOnce sync.Once
 	otpCooldown     *cooldownLimiter
-
-	loginCapOnce sync.Once
-	loginCap     *concurrencyLimiter
 
 	streamCapOnce sync.Once
 	streamCap     *streamLimiter
@@ -167,16 +153,6 @@ func (a *API) otpLimiter() *cooldownLimiter {
 		a.otpCooldown = &cooldownLimiter{now: a.now, last: map[string]time.Time{}}
 	})
 	return a.otpCooldown
-}
-
-// loginLimiter lazily builds the login bcrypt concurrency cap bound to
-// MaxConcurrentLogins. A zero cap yields a disabled limiter that admits every
-// caller, so a deployment (or test) that leaves it unset pays nothing.
-func (a *API) loginLimiter() *concurrencyLimiter {
-	a.loginCapOnce.Do(func() {
-		a.loginCap = newConcurrencyLimiter(a.MaxConcurrentLogins)
-	})
-	return a.loginCap
 }
 
 // streamGate lazily builds the per-principal SSE stream cap bound to
@@ -231,13 +207,9 @@ type apiRoute struct {
 	// on one route is harmless but redundant — an owner passes both.
 	Owner bool
 
-	// AllowDuringPasswordChange opts a route OUT of the must_change_password
-	// lockdown (spec §B). The lockdown is default-deny: every authenticated route is
-	// fenced off for a staff principal that still owes a first-login password change
-	// EXCEPT the few that let it escape the state — change-password, logout, and the
-	// self-identity read /me. A new authenticated route is locked down unless it
-	// sets this, so forgetting the flag fails safe (closed), never open.
-	AllowDuringPasswordChange bool
+	// SetupAllowed marks a route as reachable during the setup-lockdown: a session
+	// whose EmailVerified is false is restricted to these routes only.
+	SetupAllowed bool
 
 	h http.HandlerFunc
 }
@@ -283,6 +255,12 @@ func (a *API) internalAPIRoutes() []apiRoute {
 		// Mojang player (same name, different UUID) always passes.
 		{Method: "POST", Pattern: "/api/v1/internal/player/reclaim", h: a.handleReclaimUsername},
 		{Method: "GET", Pattern: "/api/v1/internal/player/blacklist/{mc_uuid}", h: a.handleCheckBlacklist},
+		// Op-login (passwordless console login): an in-game op requests a login that
+		// the web owner/admin approves, then redeems for a session. Internal face
+		// carries the pending queue and the approve action (service-token auth, no
+		// Principal); the external face carries the start/status/finish the op drives.
+		{Method: "GET", Pattern: "/api/v1/internal/op-login/pending", h: a.handleOpLoginPending},
+		{Method: "POST", Pattern: "/api/v1/internal/op-login/{id}/approve", h: a.handleOpLoginApprove},
 	}
 }
 
@@ -294,14 +272,26 @@ func (a *API) externalAPIRoutes() []apiRoute {
 	return []apiRoute{
 		{Method: "GET", Pattern: "/healthz", Public: true, h: a.handleHealthz},
 
-		// Local-password auth (spec §B), the op.console login surface. login/logout
-		// are Public (pre-session: a caller has no principal yet, and logout reads the
-		// cookie directly so it works even after expiry). change-password requires a
-		// live session and stays reachable while must_change_password is set
-		// (AllowDuringPasswordChange) so a forced first-login change can complete.
-		{Method: "POST", Pattern: "/api/v1/auth/login", Public: true, h: a.handleLogin},
+		// logout is Public: it reads the cookie directly so it works even after
+		// expiry. The rest of the auth surface (identifier-first options discovery,
+		// setup redeem/status, passkey login, email OTP login, op-login) is Public and
+		// pre-session: a caller has no principal yet.
 		{Method: "POST", Pattern: "/api/v1/auth/logout", Public: true, h: a.handleLogout},
-		{Method: "POST", Pattern: "/api/v1/auth/change-password", AllowDuringPasswordChange: true, h: a.handleChangePassword},
+		// Identifier-first discovery (#71): given an email, report which console methods
+		// it can use so the SPA prompts for the right authenticator. The deliberate
+		// counter-slice to the anti-enumeration doors — the ONE sanctioned place existence
+		// is disclosed — but it never reveals staffness (methods computed with no role
+		// branch, so a staff and a player address in the same state are indistinguishable).
+		{Method: "POST", Pattern: "/api/v1/auth/options", Public: true, h: a.handleAuthOptions},
+		{Method: "POST", Pattern: "/api/v1/auth/setup/redeem", Public: true, h: a.handleSetupRedeem},
+		{Method: "GET", Pattern: "/api/v1/auth/setup/status", SetupAllowed: true, h: a.handleSetupStatus},
+		{Method: "POST", Pattern: "/api/v1/auth/passkey/login/begin", Public: true, h: a.handlePasskeyLoginBegin},
+		{Method: "POST", Pattern: "/api/v1/auth/passkey/login/finish", Public: true, h: a.handlePasskeyLoginFinish},
+		{Method: "POST", Pattern: "/api/v1/auth/email/start", Public: true, h: a.handleLoginEmailStart},
+		{Method: "POST", Pattern: "/api/v1/auth/email/verify", Public: true, h: a.handleLoginEmailVerify},
+		{Method: "POST", Pattern: "/api/v1/auth/op-login/start", Public: true, h: a.handleOpLoginStart},
+		{Method: "GET", Pattern: "/api/v1/auth/op-login/status/{id}", Public: true, h: a.handleOpLoginStatus},
+		{Method: "POST", Pattern: "/api/v1/auth/op-login/finish", Public: true, h: a.handleOpLoginFinish},
 		// Player-console bootstrap (console-tier access model): the account-less
 		// player's door into console.<root_domain>. Public — like login there is no prior
 		// principal — and session-minting, but the artifact it consumes is a one-time
@@ -341,10 +331,10 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// every authenticated principal may read its OWN identity. is_admin is the
 		// server-computed Principal.IsAdmin() (Role + admin Access path), so the client
 		// never re-derives the graded-ZT rule; it remains UX truth, not enforcement.
-		// /me is exempt from the first-login lockdown so the panel can read its own
-		// identity (including must_change_password) to render the change-password card.
-		{Method: "GET", Pattern: "/api/v1/me", AllowDuringPasswordChange: true, h: a.handleMe},
-		{Method: "GET", Pattern: "/api/v1/me/servers", h: a.handleMyServers},
+		// /me is reachable during setup-lockdown so the panel can read its own
+		// identity (including email_verified) to drive the setup flow.
+		{Method: "GET", Pattern: "/api/v1/me", SetupAllowed: true, h: a.handleMe},
+		{Method: "GET", Pattern: "/api/v1/me/servers", SetupAllowed: true, h: a.handleMyServers},
 		// World backups (spec §7, §466). Both are app-tier: GET /backups is scoped
 		// inside the handler (admin sees all; a user sees only worlds they formerly
 		// owned), and restore is gated by owner-or-admin PLUS a former-owner match, so
@@ -355,26 +345,26 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// pointer handleClaim's 412 emits), /verify consumes the in-game code and binds
 		// the account. App-tier, not admin — linking your own account is an ordinary
 		// authenticated operation.
-		{Method: "POST", Pattern: "/api/v1/account/link/start", h: a.handleLinkStart},
-		{Method: "POST", Pattern: "/api/v1/account/link/verify", h: a.handleLinkVerify},
+		{Method: "POST", Pattern: "/api/v1/account/link/start", SetupAllowed: true, h: a.handleLinkStart},
+		{Method: "POST", Pattern: "/api/v1/account/link/verify", SetupAllowed: true, h: a.handleLinkVerify},
 		// Email verification (spec §B2 onboarding), web side: /start mints+delivers a
 		// one-time code for the caller's chosen address, /verify redeems it and flips
 		// email_verified. App-tier like the link routes — proving control of your own
 		// email is an ordinary authenticated operation, scoped to the principal.
-		{Method: "POST", Pattern: "/api/v1/account/email/start", h: a.handleEmailOTPStart},
-		{Method: "POST", Pattern: "/api/v1/account/email/verify", h: a.handleEmailOTPVerify},
+		{Method: "POST", Pattern: "/api/v1/account/email/start", SetupAllowed: true, h: a.handleEmailOTPStart},
+		{Method: "POST", Pattern: "/api/v1/account/email/verify", SetupAllowed: true, h: a.handleEmailOTPVerify},
 		// Passkey enrollment (spec §14 WebAuthn / Phase 6 bind), web side: /register/begin
 		// mints a credential-creation challenge for the caller, /register/finish verifies
 		// the authenticator's attestation and binds the passkey, and the credentials
 		// collection lists and unbinds the caller's OWN passkeys. App-tier like the email
 		// routes — binding a passkey to your own account is an ordinary authenticated
 		// operation, scoped entirely to the principal (the body never names a user). This
-		// is enrollment only; passkey LOGIN/assertion is a deferred slice (see migration
-		// 0007 and handlers_passkey.go).
-		{Method: "POST", Pattern: "/api/v1/account/passkey/register/begin", h: a.handlePasskeyRegisterBegin},
-		{Method: "POST", Pattern: "/api/v1/account/passkey/register/finish", h: a.handlePasskeyRegisterFinish},
-		{Method: "GET", Pattern: "/api/v1/account/passkey/credentials", h: a.handlePasskeyList},
-		{Method: "DELETE", Pattern: "/api/v1/account/passkey/credentials/{id}", h: a.handlePasskeyDelete},
+		// is the ENROLLMENT side; the passkey LOGIN/assertion door is the Public,
+		// pre-session /api/v1/auth/passkey/login/{begin,finish} pair above.
+		{Method: "POST", Pattern: "/api/v1/account/passkey/register/begin", SetupAllowed: true, h: a.handlePasskeyRegisterBegin},
+		{Method: "POST", Pattern: "/api/v1/account/passkey/register/finish", SetupAllowed: true, h: a.handlePasskeyRegisterFinish},
+		{Method: "GET", Pattern: "/api/v1/account/passkey/credentials", SetupAllowed: true, h: a.handlePasskeyList},
+		{Method: "DELETE", Pattern: "/api/v1/account/passkey/credentials/{id}", SetupAllowed: true, h: a.handlePasskeyDelete},
 		// Modpack submission (user-directed lane over §16), user side: a user files an upload for review
 		// and lists their own. App-tier — the submitter and the "my uploads" scope are
 		// both taken from the principal, never the body, so an ordinary authenticated
@@ -431,7 +421,6 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "PATCH", Pattern: "/api/v1/users/{id}", Owner: true, h: a.handlePatchUser},
 		{Method: "DELETE", Pattern: "/api/v1/users/{id}", Owner: true, h: a.handleDeleteUser},
 		{Method: "POST", Pattern: "/api/v1/users/{id}/disable", Owner: true, h: a.handleDisableUser},
-		{Method: "POST", Pattern: "/api/v1/users/{id}/reset-password", Owner: true, h: a.handleResetPassword},
 		{Method: "GET", Pattern: "/api/v1/users/{id}/quotas", Owner: true, h: a.handleGetQuotas},
 		{Method: "PUT", Pattern: "/api/v1/users/{id}/quotas", Owner: true, h: a.handleSetQuotas},
 		{Method: "GET", Pattern: "/api/v1/users/{id}/sessions", Owner: true, h: a.handleListUserSessions},
@@ -477,21 +466,47 @@ func (a *API) buildFace(routes []apiRoute, guard func(http.Handler) http.Handler
 		if rt.Admin {
 			h = a.adminOnly(rt.h)
 		}
-		// Default-deny first-login lockdown (spec §B): wrap every authenticated route
-		// unless it explicitly opts out. The wrapper is nil-principal safe, so it is
-		// inert on the internal face (service-token callers carry no Principal).
-		if !rt.AllowDuringPasswordChange {
-			h = a.lockdownDuringPasswordChange(h)
+		// Default-deny setup-lockdown: wrap every authenticated route unless it
+		// explicitly opts out. The wrapper is nil-principal safe, so it is inert on
+		// the internal face (service-token callers carry no Principal).
+		if !rt.SetupAllowed {
+			h = a.requireEmailVerified(h)
 		}
 		auth.HandleFunc(pattern, h)
 	}
-	mux.Handle("/api/v1/", guard(auth))
+	guarded := guard(auth)
+	mux.Handle("/api/v1/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, pattern := auth.Handler(r); pattern == "" {
+			http.NotFound(w, r)
+			return
+		}
+		guarded.ServeHTTP(w, r)
+	}))
 	return a.baseChain(mux)
 }
 
 // baseChain wraps a handler in the cross-cutting middleware shared by both faces.
 func (a *API) baseChain(h http.Handler) http.Handler {
 	return withRequestID(withRecover(h))
+}
+
+// requireEmailVerified fences an authenticated route behind the setup-lockdown:
+// a session whose EmailVerified is false (a freshly-onboarded principal that has
+// not yet proved control of its email) is restricted to SetupAllowed routes only.
+// The wrapper is nil-principal safe, so it is inert on the internal face
+// (service-token callers carry no Principal) and on the external face's admin
+// Zero-Trust paths (those carry an IsAdmin/IsOwner principal that has already
+// passed email verification at account creation).
+func (a *API) requireEmailVerified(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p := principalFromContext(r.Context())
+		if p != nil && p.ViaSession && !p.EmailVerified {
+			writeError(w, r, newError(http.StatusForbidden, "setup_required",
+				"email verification is required before this action is available"))
+			return
+		}
+		h(w, r)
+	}
 }
 
 // ---- request context plumbing ----

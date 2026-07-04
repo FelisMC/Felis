@@ -65,17 +65,14 @@ type ownerModel struct {
 	width, height int
 
 	// huh-bound form values
-	authUser     string
-	authPass     string
-	overrideTok  string
-	ownerUser    string
-	ownerEmail   string
-	ownerPass    string
-	ownerConfirm string
+	authUser    string
+	overrideTok string
+	ownerUser   string
+	ownerEmail  string
 
-	username        string
-	displayPassword string
-	auditWarning    string
+	username      string
+	setupTokenURL string
+	auditWarning  string
 }
 
 func newOwnerModel(ctx context.Context, store ownerStore, osUser string, adminExists bool) *ownerModel {
@@ -191,7 +188,7 @@ func (m *ownerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.failCmd(msg.err)
 		}
 		m.step = owDone
-		m.displayPassword = msg.outcome.displayPassword
+		m.setupTokenURL = msg.outcome.setupTokenURL
 		if msg.outcome.auditErr != nil {
 			m.auditWarning = msg.outcome.auditErr.Error()
 		}
@@ -255,10 +252,10 @@ func (m *ownerModel) onFormComplete() (tea.Model, tea.Cmd) {
 	case owAuth:
 		m.attempt = strings.TrimSpace(m.authUser)
 		m.step = owWorking
-		m.working = "Verifying admin credential…"
-		user, pass := m.authUser, m.authPass
+		m.working = "Verifying admin…"
+		user := m.authUser
 		return m, tea.Batch(m.sp.Tick, func() tea.Msg {
-			matched, ok, err := authenticateAdmin(m.ctx, m.store, user, pass)
+			matched, ok, err := authenticateAdmin(m.ctx, m.store, user)
 			return owAuthMsg{matched: matched, ok: ok, err: err}
 		})
 	case owOverride:
@@ -277,17 +274,12 @@ func (m *ownerModel) onFormComplete() (tea.Model, tea.Cmd) {
 }
 
 func (m *ownerModel) provisionCmd() tea.Cmd {
-	password := ""
-	if m.mode == "bootstrap" {
-		password = m.ownerPass
-	}
 	op := breakGlassOp{
 		mode:           m.mode,
 		accountable:    m.accountable,
 		osUser:         m.osUser,
 		ownerUsername:  m.username,
 		ownerEmail:     m.ownerEmail,
-		ownerPassword:  password,
 		attemptedAdmin: m.attempt,
 	}
 	// performAddOperator and performBreakGlass share a signature; the operation
@@ -311,12 +303,12 @@ func (m *ownerModel) failCmd(err error) tea.Cmd {
 func (m *ownerModel) ownerResultCmd() tea.Cmd {
 	return func() tea.Msg {
 		return ownerResultMsg{
-			username:        m.username,
-			displayPassword: m.displayPassword,
-			mode:            m.mode,
-			accountable:     m.accountable,
-			auditWarning:    m.auditWarning,
-			isOperator:      m.operation == bgAddOperator,
+			username:      m.username,
+			setupTokenURL: m.setupTokenURL,
+			mode:          m.mode,
+			accountable:   m.accountable,
+			auditWarning:  m.auditWarning,
+			isOperator:    m.operation == bgAddOperator,
 		}
 	}
 }
@@ -332,11 +324,6 @@ func (m *ownerModel) buildAuthForm() *huh.Form {
 			Title("Admin username").
 			Value(&m.authUser).
 			Validate(requiredField("admin username")),
-		huh.NewInput().
-			Title("Admin password").
-			EchoMode(huh.EchoModePassword).
-			Value(&m.authPass).
-			Validate(requiredField("admin password")),
 	)))
 }
 
@@ -364,18 +351,16 @@ func (m *ownerModel) buildProvisionForm() *huh.Form {
 	desc := fmt.Sprintf("Create the first Owner — recorded as OS user %q.", m.osUser)
 	switch m.mode {
 	case "recovery":
-		desc = fmt.Sprintf("Authenticated as %q — a one-time password will be generated.", m.accountable)
+		desc = fmt.Sprintf("Authenticated as %q.", m.accountable)
 	case "root_override":
-		desc = "Root override — a one-time password will be generated."
+		desc = "Root override — the Owner will be reset."
 	}
 	if m.operation == bgAddOperator {
-		// Operator-add never bootstraps (an admin is already present to authorize it),
-		// so it is always one of the generated-password modes.
 		switch m.mode {
 		case "recovery":
-			desc = fmt.Sprintf("Add an Operator — authenticated as %q; a one-time password will be generated.", m.accountable)
+			desc = fmt.Sprintf("Add an Operator — authenticated as %q.", m.accountable)
 		case "root_override":
-			desc = "Add an Operator (root override) — a one-time password will be generated."
+			desc = "Add an Operator (root override)."
 		}
 	}
 	if m.provisionErr != nil {
@@ -395,26 +380,6 @@ func (m *ownerModel) buildProvisionForm() *huh.Form {
 			Description("optional").
 			Placeholder("you@example.com").
 			Value(&m.ownerEmail),
-	}
-	if m.mode == "bootstrap" {
-		fields = append(fields,
-			huh.NewInput().
-				Title("Owner password").
-				Description("at least 8 characters").
-				EchoMode(huh.EchoModePassword).
-				Value(&m.ownerPass).
-				Validate(validateOwnerPassword),
-			huh.NewInput().
-				Title("Confirm password").
-				EchoMode(huh.EchoModePassword).
-				Value(&m.ownerConfirm).
-				Validate(func(s string) error {
-					if s != m.ownerPass {
-						return errors.New("the two passwords do not match")
-					}
-					return nil
-				}),
-		)
 	}
 	return m.sized(newFelisForm(huh.NewGroup(fields...)))
 }
@@ -454,11 +419,9 @@ func (m *ownerModel) doneView() string {
 
 	var box strings.Builder
 	box.WriteString(tuiLabel.Render("username  ") + m.username + "\n")
-	if m.displayPassword != "" {
-		box.WriteString(tuiLabel.Render("password  ") + tuiPassword.Render(m.displayPassword) + "\n\n")
-		box.WriteString(tuiWarn.Render("Record this password — it is shown only once."))
-	} else {
-		box.WriteString(tuiHint.Render("Log in with the password you entered."))
+	if m.setupTokenURL != "" {
+		box.WriteString("\n" + tuiLabel.Render("setup URL  ") + "\n" + tuiPassword.Render(m.setupTokenURL) + "\n\n")
+		box.WriteString(tuiWarn.Render("Open this URL to complete passwordless login setup. It is shown only once."))
 	}
 	if m.auditWarning != "" {
 		box.WriteString("\n\n" + tuiWarn.Render("Audit warning: "+m.auditWarning))

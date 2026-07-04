@@ -14,7 +14,7 @@ import (
 type summaryModel struct {
 	panelURL      string
 	ownerUsername string
-	ownerPassword string // one-time; shown once
+	setupTokenURL string // one-time first-login URL; shown once
 	accessLabel   string
 	storageLabel  string // build-context storage backend recap; empty to omit
 	routedHosts   []string
@@ -55,9 +55,9 @@ func (m *summaryModel) View() string {
 	if m.ownerUsername != "" {
 		card.WriteString(tuiLabel.Render("owner     ") + m.ownerUsername + "\n")
 	}
-	if m.ownerPassword != "" {
-		card.WriteString(tuiLabel.Render("password  ") + tuiPassword.Render(m.ownerPassword) + "\n")
-		card.WriteString("          " + tuiWarn.Render("shown only once — record it now") + "\n")
+	if m.setupTokenURL != "" {
+		card.WriteString(tuiLabel.Render("setup URL ") + tuiPassword.Render(m.setupTokenURL) + "\n")
+		card.WriteString("          " + tuiWarn.Render("one-time link — open it to finish login setup") + "\n")
 	}
 	if m.accessLabel != "" {
 		card.WriteString(tuiLabel.Render("access    ") + m.accessLabel + "\n")

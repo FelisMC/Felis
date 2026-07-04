@@ -173,6 +173,33 @@ public final class FelisApiClient {
         return barred instanceof Boolean && (Boolean) barred;
     }
 
+    /**
+     * opLoginApprove records an in-game administrator's vouch for a pending op.console
+     * staff login — the second factor of the spec §B op-login door, supplied from
+     * Velocity's {@code /felis web op approve <code>}. It POSTs the approver's verified
+     * online-mode UUID to {@code POST /api/v1/internal/op-login/{id}/approve}; felis-api
+     * resolves that UUID to a linked account and refuses unless it is {@code role=admin}
+     * (403 {@code not_admin}), so this is defence in depth over Velocity's own in-game
+     * guard rather than the sole check. A {@code requestId} naming no live pending
+     * request is 404 {@code op_login_not_found}. Both arrive as branchable
+     * {@link LinkException}s; a 200 that does not affirm {@code approved:true} is a
+     * contract breach, not a refusal.
+     *
+     * <p>{@code requestId} is interpolated into the request path, so the caller must
+     * pass a validated opaque handle (the 32-hex id minted by op-login start) — never
+     * unsanitised chat input. The Velocity command validates the charset first.
+     */
+    public void opLoginApprove(String requestId, UUID approverUuid) throws LinkException {
+        Objects.requireNonNull(requestId, "requestId");
+        Objects.requireNonNull(approverUuid, "approverUuid");
+        String body = "{\"approver_uuid\":\"" + approverUuid + "\"}";
+        Map<?, ?> res = postObject("/api/v1/internal/op-login/" + requestId + "/approve", body, 200);
+        Object approved = res.get("approved");
+        if (!(approved instanceof Boolean) || !((Boolean) approved)) {
+            throw new LinkException(200, "bad_response", "approve returned 200 without approved=true");
+        }
+    }
+
     // ---- transport ----
 
     private Map<?, ?> getObject(String path, int expect) throws LinkException {

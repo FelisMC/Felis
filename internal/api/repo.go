@@ -71,21 +71,19 @@ type BackupRecord struct {
 	SizeBytes   int64
 }
 
-// StaffUser is the login-side projection of a users row that carries a password
-// (spec §B local-auth). Owner/Operator are role=admin rows WITH a bcrypt hash,
-// minted by `felis breakGlass`; players are role=user rows whose PasswordHash is
-// empty. It is loaded by username at login to verify the password and learn
-// whether a first-login change is still pending.
+// StaffUser is the login-side projection of a users row (spec §B passwordless
+// auth). Owner/Operator are role=admin rows, minted by `felis setup` (MC link)
+// and recovered by `felis breakGlass` (email OTP); players are role=user rows.
+// There is no password column — staff authenticate via email-OTP / passkey +
+// in-game approve, never a password.
 type StaffUser struct {
-	ID                 string
-	Username           string
-	Email              string
-	Role               string
-	PasswordHash       string
-	MustChangePassword bool
+	ID       string
+	Username string
+	Email    string
+	Role     string
 	// EmailVerified mirrors users.email_verified (spec §B2): the address was proven
 	// via an email OTP, not merely asserted. Players carry it through onboarding;
-	// staff rows seeded by break-glass leave it false until a code is redeemed.
+	// staff rows seeded by setup leave it false until a code is redeemed.
 	EmailVerified bool
 }
 
@@ -117,15 +115,30 @@ type PasskeyCredential struct {
 }
 
 // SessionedUser is the projection resolved from a live session cookie: the
-// identity SessionAuth needs to build a Principal. It omits the password hash —
-// the session has already authenticated the caller — but carries the pending
-// first-login change flag so the lockdown middleware can fence a half-onboarded
-// staff account to the change-password surface.
+// identity SessionAuth needs to build a Principal. EmailVerified mirrors
+// users.email_verified so the lockdown middleware can gate setup-incomplete
+// accounts without a second DB read.
 type SessionedUser struct {
-	ID                 string
-	Email              string
-	Role               string
-	MustChangePassword bool
+	ID            string
+	Email         string
+	Role          string
+	EmailVerified bool
+}
+
+// OpLoginRequest is one op.console staff-login attempt (spec §B op-login): the
+// durable second factor (in-game approval) that pairs with an email_otps code under
+// purpose 'op_login'. Username is populated only by ListPendingOpLogins (the join the
+// in-game admin needs to name who is waiting); Consumed reflects consumed_at, so the
+// finish path can refuse an already-spent request without a second query.
+type OpLoginRequest struct {
+	ID        string
+	UserID    string
+	Username  string // joined for the in-game pending list; "" elsewhere
+	Email     string
+	Status    string // 'pending' | 'approved' | 'denied'
+	Consumed  bool   // consumed_at IS NOT NULL (single-use guard)
+	ExpiresAt time.Time
+	CreatedAt time.Time
 }
 
 // Repo is the business-layer data access the API depends on. It is an interface
@@ -257,7 +270,55 @@ type Repo interface {
 	// code (so a typo does not burn it). On a match the code is consumed and the
 	// user row is flipped to email=<the proven address>, email_verified=true; the
 	// proven email is returned. now is the API clock so expiry is testable.
+	//
+	// This is the ONBOARDING primitive: verifying the code is the moment the address
+	// becomes proven, so the write is load-bearing. The pre-session LOGIN door must
+	// NOT use it — see ConsumeLoginEmailOTP.
 	VerifyEmailOTP(ctx context.Context, userID, purpose, codeHash string, now time.Time) (email string, err error)
+	// ConsumeLoginEmailOTP redeems the newest live code for (userID, purpose) against
+	// codeHash for the PRE-SESSION email LOGIN door, with the SAME code lifecycle as
+	// VerifyEmailOTP (FOR UPDATE, expiry+lockout before hash compare, mismatch charges
+	// one attempt without consuming) but with NO identity side-effects: it neither
+	// writes users.email nor runs the verified-email uniqueness guard. Login resolved
+	// userID via UserByEmail, which already requires email_verified, so the address is
+	// settled — re-proving control of a code this session must not re-touch the row.
+	// Returning only an error is deliberate: unlike onboarding, login has nothing to
+	// prove about the address, so there is no email to hand back. Errors are exactly
+	// ErrOTPInvalid / ErrOTPLocked (ErrEmailTaken is structurally impossible here).
+	ConsumeLoginEmailOTP(ctx context.Context, userID, purpose, codeHash string, now time.Time) error
+
+	// ---- op.console staff login: in-game approval state machine (spec §B op-login) ----
+
+	// CreateOpLoginRequest records a fresh pending op.console login attempt for a staff
+	// account (spec §B op-login). id is the opaque handle the browser polls; email is a
+	// snapshot for the audit trail. It writes the SECOND factor only — the email-OTP
+	// itself is minted separately under purpose 'op_login' (CreateEmailOTP) — so a row
+	// here means "this staff account is waiting for an in-game admin to vouch". expiresAt
+	// is the API clock + TTL so expiry is driven by one authoritative clock.
+	CreateOpLoginRequest(ctx context.Context, id, userID, email string, expiresAt time.Time) error
+	// OpLoginRequestByID loads a request by its handle, or ErrNotFound. The status poll
+	// and the finish path both use it: finish additionally checks Status=='approved',
+	// !Consumed, and ExpiresAt>now before it will mint a session, so a pending, spent, or
+	// expired request can never be exchanged. Username is left empty (no join needed here).
+	OpLoginRequestByID(ctx context.Context, id string) (*OpLoginRequest, error)
+	// ListPendingOpLogins returns the live (pending, unconsumed, unexpired at now)
+	// requests oldest-first, each joined to its staff username, for the in-game admin's
+	// approval prompt (Velocity polls this on the internal face). A resolved or expired
+	// request drops out of the list, so an admin only ever sees actionable attempts.
+	ListPendingOpLogins(ctx context.Context, now time.Time) ([]OpLoginRequest, error)
+	// ApproveOpLogin marks a pending request approved by approverUserID (the in-game
+	// admin, resolved from their online-mode UUID via UserByMCUUID), atomically: it
+	// stamps status='approved', approved_by, approved_at only WHERE the row is still
+	// pending, unconsumed, and unexpired at now. A request that is gone, already
+	// resolved, or expired affects zero rows and returns ErrNotFound, so a double
+	// approval or an approval of a dead request is a no-op the caller can surface.
+	ApproveOpLogin(ctx context.Context, id, approverUserID string, now time.Time) error
+	// ConsumeOpLoginRequest stamps consumed_at on an APPROVED, unconsumed, unexpired
+	// request, atomically, so it can be exchanged for a session exactly once. Zero rows
+	// affected (pending, already consumed, or expired) → ErrNotFound. This is the finish
+	// path's single-use guard; the email-OTP is consumed separately, so a lost race here
+	// never silently mints a second session.
+	ConsumeOpLoginRequest(ctx context.Context, id string, now time.Time) error
 
 	// ---- player passkey enrollment (spec §14 WebAuthn / Phase 6 bind) ----
 
@@ -350,15 +411,23 @@ type Repo interface {
 	// session yields a user id, not a username, so this is the id-keyed counterpart
 	// of UserByUsername.
 	UserByID(ctx context.Context, id string) (*StaffUser, error)
+	// UserByEmail resolves a VERIFIED email address to its login projection,
+	// case-insensitively, or ErrNotFound (spec §B email-first login). It is the
+	// entry point every email-first web login shares: the address must be proven
+	// (email_verified true), so a merely-asserted or unverified address never
+	// resolves to a session-mintable identity — an attacker cannot claim someone
+	// else's login by typing their email. Matching is on lower(email) to align with
+	// the users_verified_email_unique partial index (migration 0010), which
+	// guarantees at most one verified row per normalized address, so the result is
+	// unambiguous. A player row (empty PasswordHash) resolves too — email-first
+	// login is passwordless and does not consult the hash — unlike the password
+	// path, which this deliberately does not gate on.
+	UserByEmail(ctx context.Context, email string) (*StaffUser, error)
 	// UpsertOwner creates or resets the single Owner account direct-to-Postgres
-	// (the `felis breakGlass` first-run / reset-password path). role is forced to
-	// 'admin' and must_change_password to mustChange; on a username conflict the
-	// existing row's email, hash and flag are overwritten so a reset is idempotent.
-	UpsertOwner(ctx context.Context, id, username, email, passwordHash string, mustChange bool) error
-	// SetPassword stores a new bcrypt hash for a user and clears
-	// must_change_password (the panel change-password flow). ErrNotFound when no
-	// row matches, so a stale session cannot silently no-op a password change.
-	SetPassword(ctx context.Context, userID, passwordHash string) error
+	// (the `felis setup` / `felis breakGlass` recovery path). role is forced to
+	// 'admin'; on a username conflict the existing row's email is overwritten so
+	// a reset is idempotent. The account is passwordless by design.
+	UpsertOwner(ctx context.Context, id, username, email string) error
 	// CreateSession records a minted session: the sha-256 of the opaque cookie
 	// value, its owner, and its expiry (spec §B sessions). Only the hash is stored,
 	// mirroring tokens, so a database read never yields a usable cookie.
@@ -370,9 +439,14 @@ type Repo interface {
 	// absent or already-revoked session is not an error.
 	RevokeSession(ctx context.Context, tokenHash string) error
 	// RevokeUserSessionsExcept revokes every live session of a user except the one
-	// whose hash is keepTokenHash. The change-password flow calls it so a successful
-	// password change logs out the account's other devices but not the current one.
+	// whose hash is keepTokenHash. Used to log out other devices on a security event.
 	RevokeUserSessionsExcept(ctx context.Context, userID, keepTokenHash string) error
+
+	// ConsumeSetupToken atomically marks a one-time setup token consumed and returns
+	// its user_id, or ErrNotFound when the token is absent, already consumed, or
+	// expired. The /setup?token=... web flow redeems it for a lockdown session that
+	// can only complete passwordless login setup (verify email / enroll passkey).
+	ConsumeSetupToken(ctx context.Context, tokenHash string, now time.Time) (userID string, err error)
 
 	// ---- runtime platform settings (spec §B platform_settings) ----
 
@@ -392,9 +466,8 @@ type Repo interface {
 	// UserDetail loads one user with its linked MC accounts, or ErrNotFound.
 	// A deleted user is returned (the row lives for audit) but flagged.
 	UserDetail(ctx context.Context, userID string) (*UserDetail, error)
-	// CreateUser mints a new user row (role forced to either 'admin' or 'user')
-	// with an initial password hash. createdBy is the actor email for audit. A
-	// username conflict → ErrConflict.
+	// CreateUser mints a new user row (role forced to either 'admin' or 'user').
+	// createdBy is the actor email for audit. A username conflict → ErrConflict.
 	CreateUser(ctx context.Context, input CreateUserInput, createdBy string) (*UserView, error)
 	// UpdateUser applies the non-nil fields of patch to the user identified by
 	// userID and returns the updated view. A username conflict → ErrConflict;
@@ -410,10 +483,6 @@ type Repo interface {
 	// disabled account is immediately locked out. A non-existent user →
 	// ErrNotFound; a deleted user → ErrNotFound.
 	SetUserDisabled(ctx context.Context, userID string, disabled bool) error
-	// AdminResetPassword stores a new bcrypt hash for a user and forces
-	// must_change_password, so the admin-set password is replaced on first
-	// login. ErrNotFound when no live row matches.
-	AdminResetPassword(ctx context.Context, userID, passwordHash string) error
 
 	// ---- quota admin (spec §6 quotas, admin-only) ----
 
@@ -462,22 +531,21 @@ type ListUsersOpts struct {
 
 // UserView is one row of the admin user list.
 type UserView struct {
-	ID                 string    `json:"id"`
-	Username           string    `json:"username"`
-	Email              string    `json:"email,omitempty"`
-	Role               string    `json:"role"`
-	Disabled           bool      `json:"disabled"`
-	EmailVerified      bool      `json:"email_verified"`
-	ServerCount        int       `json:"server_count"`
-	MustChangePassword bool      `json:"must_change_password"`
-	CreatedAt          time.Time `json:"created_at"`
-	UpdatedAt          time.Time `json:"updated_at"`
+	ID            string    `json:"id"`
+	Username      string    `json:"username"`
+	Email         string    `json:"email,omitempty"`
+	Role          string    `json:"role"`
+	Disabled      bool      `json:"disabled"`
+	EmailVerified bool      `json:"email_verified"`
+	ServerCount   int       `json:"server_count"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // UserDetail is the full admin view of one user, including linked MC accounts.
 type UserDetail struct {
 	UserView
-	DeletedAt     *time.Time       `json:"deleted_at,omitempty"`
+	DeletedAt      *time.Time      `json:"deleted_at,omitempty"`
 	LinkedAccounts []LinkedAccount `json:"linked_accounts,omitempty"`
 }
 
@@ -490,11 +558,9 @@ type LinkedAccount struct {
 
 // CreateUserInput is the admin create-user form.
 type CreateUserInput struct {
-	Username        string `json:"username"`
-	Email           string `json:"email,omitempty"`
-	Role            string `json:"role"`
-	PasswordHash    string `json:"-"`
-	MustChange      bool   `json:"must_change_password"`
+	Username string `json:"username"`
+	Email    string `json:"email,omitempty"`
+	Role     string `json:"role"`
 }
 
 // UpdateUserInput is the admin patch-user form. Every field is a pointer so

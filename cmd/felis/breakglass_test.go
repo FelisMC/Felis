@@ -2,38 +2,65 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"felis.lolicon.best/internal/api"
-
-	"golang.org/x/crypto/bcrypt"
 )
 
-// fakeOwnerStore records what break-glass provisioning writes and answers the
-// identity lookups, so the core logic (authentication, provisioning, accountability
-// audit) is exercised without a database or a terminal.
+// fakeOwnerStore records what break-glass / setup provisioning writes and answers
+// the identity lookups, so the core logic (admin resolution, provisioning,
+// accountability audit, setup-token mint) is exercised without a database or a
+// terminal. The design is passwordless: accounts carry no credential, and the
+// Owner completes first-login through the setup-token web flow.
 type fakeOwnerStore struct {
 	upserts  []upsertCall
 	inserts  []upsertCall
 	settings map[string][]byte
 	audits   []api.AuditEntry
+	tokens   []setupTokenCall
+	redeems  []redeemCall
 	users    map[string]*api.StaffUser // keyed by username
 	admins   bool                      // AdminExists answer
 
-	upsertErr error
-	insertErr error
-	setErr    error
-	auditErr  error
-	userErr   error // non-not-found error from UserByUsername
-	adminErr  error
+	// RedeemLinkCodeForOwner's success result. redeemUserID defaults to the fresh id
+	// the caller passes (the unlinked-UUID case) when left empty.
+	redeemUserID     string
+	redeemMCUUID     string
+	redeemAuthSource string
+
+	upsertErr      error
+	insertErr      error
+	setErr         error
+	auditErr       error
+	userErr        error // non-not-found error from UserByUsername
+	adminErr       error
+	redeemErr      error
+	createTokenErr error
 }
 
+// upsertCall is a recorded owner/operator provision. Passwordless: the row is pure
+// identity (id, username, email) with an implied role=admin.
 type upsertCall struct {
-	id, username, email, passwordHash string
-	mustChange                        bool
+	id, username, email string
+}
+
+// setupTokenCall is a recorded CreateSetupToken write. Only the hash is persisted.
+type setupTokenCall struct {
+	tokenHash string
+	userID    string
+	expiresAt time.Time
+}
+
+// redeemCall records the inputs RedeemLinkCodeForOwner was called with.
+type redeemCall struct {
+	newUserID string
+	code      string
 }
 
 func (f *fakeOwnerStore) AdminExists(_ context.Context) (bool, error) {
@@ -53,33 +80,55 @@ func (f *fakeOwnerStore) UserByUsername(_ context.Context, username string) (*ap
 	return nil, api.ErrNotFound
 }
 
-func (f *fakeOwnerStore) UpsertOwner(_ context.Context, id, username, email, passwordHash string, mustChange bool) error {
+func (f *fakeOwnerStore) UpsertOwner(_ context.Context, id, username, email string) error {
 	if f.upsertErr != nil {
 		return f.upsertErr
 	}
-	f.upserts = append(f.upserts, upsertCall{id, username, email, passwordHash, mustChange})
+	f.upserts = append(f.upserts, upsertCall{id, username, email})
 	return nil
 }
 
 // InsertOperator records an insert-only Operator provision. A username already in
-// the users map is a conflict (api.ErrConflict), mirroring the PGRepo ON CONFLICT
-// DO NOTHING + zero-RowsAffected contract; a fresh one is recorded and reflected
-// into users so a later lookup — or a second insert of the same name — sees it.
-func (f *fakeOwnerStore) InsertOperator(_ context.Context, id, username, email, passwordHash string, mustChange bool) error {
+// the users map is a conflict (api.ErrConflict), mirroring the PGRepo insert-only
+// contract; a fresh one is recorded and reflected into users so a later lookup — or
+// a second insert of the same name — sees it. The row is passwordless (role=admin).
+func (f *fakeOwnerStore) InsertOperator(_ context.Context, id, username, email string) error {
 	if f.insertErr != nil {
 		return f.insertErr
 	}
 	if _, taken := f.users[username]; taken {
 		return api.ErrConflict
 	}
-	f.inserts = append(f.inserts, upsertCall{id, username, email, passwordHash, mustChange})
+	f.inserts = append(f.inserts, upsertCall{id, username, email})
 	if f.users == nil {
 		f.users = map[string]*api.StaffUser{}
 	}
-	f.users[username] = &api.StaffUser{
-		ID: id, Username: username, Email: email,
-		Role: "admin", PasswordHash: passwordHash, MustChangePassword: mustChange,
+	f.users[username] = &api.StaffUser{ID: id, Username: username, Email: email, Role: "admin"}
+	return nil
+}
+
+// RedeemLinkCodeForOwner records the call and returns the configured Owner identity
+// (or the injected error). The real method consumes a link code and promotes the
+// bound account; the fake models only its inputs and outputs.
+func (f *fakeOwnerStore) RedeemLinkCodeForOwner(_ context.Context, newUserID, code string, _ time.Time) (string, string, string, error) {
+	if f.redeemErr != nil {
+		return "", "", "", f.redeemErr
 	}
+	f.redeems = append(f.redeems, redeemCall{newUserID, code})
+	userID := f.redeemUserID
+	if userID == "" {
+		userID = newUserID // unlinked UUID → the fresh id becomes the Owner
+	}
+	return userID, f.redeemMCUUID, f.redeemAuthSource, nil
+}
+
+// CreateSetupToken records a minted setup token (hash only), or fails with the
+// injected error without recording it.
+func (f *fakeOwnerStore) CreateSetupToken(_ context.Context, tokenHash, userID string, expiresAt time.Time) error {
+	if f.createTokenErr != nil {
+		return f.createTokenErr
+	}
+	f.tokens = append(f.tokens, setupTokenCall{tokenHash, userID, expiresAt})
 	return nil
 }
 
@@ -102,49 +151,18 @@ func (f *fakeOwnerStore) Audit(_ context.Context, e api.AuditEntry) error {
 	return nil
 }
 
-// mkAdmin builds an authenticatable admin row (role=admin, real bcrypt hash) for the
-// fake. MinCost keeps the hash fast — these tests are about wiring, not bcrypt.
-func mkAdmin(t *testing.T, username, password string) *api.StaffUser {
-	t.Helper()
-	h, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
-	if err != nil {
-		t.Fatalf("hash: %v", err)
-	}
-	return &api.StaffUser{ID: "usr-admin", Username: username, Role: "admin", PasswordHash: string(h)}
-}
-
-func TestValidateOwnerPassword(t *testing.T) {
-	cases := []struct {
-		name string
-		pw   string
-		ok   bool
-	}{
-		{"too short", "1234567", false},
-		{"minimum", "12345678", true},
-		{"comfortable", "Mid-Range-1", true},
-		{"at the bcrypt limit", strings.Repeat("a", 72), true},
-		{"past the bcrypt limit", strings.Repeat("a", 73), false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := validateOwnerPassword(tc.pw)
-			if tc.ok && err != nil {
-				t.Errorf("validateOwnerPassword(%d bytes) = %v, want nil", len(tc.pw), err)
-			}
-			if !tc.ok && err == nil {
-				t.Errorf("validateOwnerPassword(%d bytes) = nil, want error", len(tc.pw))
-			}
-		})
-	}
+// mkAdmin builds a resolvable staff row (role=admin). The design is passwordless,
+// so a staff account is identity + role — there is no credential to attach.
+func mkAdmin(username string) *api.StaffUser {
+	return &api.StaffUser{ID: "usr-admin", Username: username, Role: "admin"}
 }
 
 func TestProvisionOwner(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("happy path mints a must-change admin with a verifiable hash", func(t *testing.T) {
+	t.Run("mints a passwordless owner row", func(t *testing.T) {
 		f := &fakeOwnerStore{}
-		const pw = "valid-test-pw"
-		if err := provisionOwner(ctx, f, "owner", "me@example.com", pw); err != nil {
+		if err := provisionOwner(ctx, f, "owner", "me@example.com"); err != nil {
 			t.Fatalf("provisionOwner: %v", err)
 		}
 		if len(f.upserts) != 1 {
@@ -157,26 +175,14 @@ func TestProvisionOwner(t *testing.T) {
 		if got.email != "me@example.com" {
 			t.Errorf("email = %q, want me@example.com", got.email)
 		}
-		// must_change_password=true is load-bearing: it arms the API lockdown so the
-		// Owner can do nothing but change the password on first login.
-		if !got.mustChange {
-			t.Error("mustChange = false, want true (forced first-login change)")
-		}
 		if !strings.HasPrefix(got.id, "usr-") {
 			t.Errorf("id = %q, want usr- prefix", got.id)
-		}
-		// Only the hash is stored; the typed plaintext must verify against it.
-		if bcrypt.CompareHashAndPassword([]byte(got.passwordHash), []byte(pw)) != nil {
-			t.Error("typed password does not verify against the stored hash")
-		}
-		if got.passwordHash == pw {
-			t.Error("stored hash equals plaintext — password was not hashed")
 		}
 	})
 
 	t.Run("trims surrounding whitespace", func(t *testing.T) {
 		f := &fakeOwnerStore{}
-		if err := provisionOwner(ctx, f, "  owner  ", "  e@x.io  ", "valid-test-pw"); err != nil {
+		if err := provisionOwner(ctx, f, "  owner  ", "  e@x.io  "); err != nil {
 			t.Fatalf("provisionOwner: %v", err)
 		}
 		if f.upserts[0].username != "owner" || f.upserts[0].email != "e@x.io" {
@@ -186,7 +192,7 @@ func TestProvisionOwner(t *testing.T) {
 
 	t.Run("rejects an empty username before any write", func(t *testing.T) {
 		f := &fakeOwnerStore{}
-		if err := provisionOwner(ctx, f, "   ", "", "valid-test-pw"); err == nil {
+		if err := provisionOwner(ctx, f, "   ", ""); err == nil {
 			t.Fatal("want error for empty username")
 		}
 		if len(f.upserts) != 0 {
@@ -194,19 +200,9 @@ func TestProvisionOwner(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects a weak password before any write", func(t *testing.T) {
-		f := &fakeOwnerStore{}
-		if err := provisionOwner(ctx, f, "owner", "", "short"); err == nil {
-			t.Fatal("want error for a sub-8-byte password")
-		}
-		if len(f.upserts) != 0 {
-			t.Errorf("want no upsert on weak password, got %d", len(f.upserts))
-		}
-	})
-
 	t.Run("propagates a store error", func(t *testing.T) {
 		f := &fakeOwnerStore{upsertErr: errors.New("boom")}
-		if err := provisionOwner(ctx, f, "owner", "", "valid-test-pw"); err == nil {
+		if err := provisionOwner(ctx, f, "owner", ""); err == nil {
 			t.Fatal("want error when the store fails")
 		}
 	})
@@ -233,66 +229,32 @@ func TestEnableLocalAuth(t *testing.T) {
 	}
 }
 
-func TestGenerateBootstrapPassword(t *testing.T) {
-	const want = 20
-	pw, err := generateBootstrapPassword()
-	if err != nil {
-		t.Fatalf("generateBootstrapPassword: %v", err)
-	}
-	if len(pw) != want {
-		t.Errorf("length = %d, want %d", len(pw), want)
-	}
-	for _, c := range pw {
-		if !strings.ContainsRune(bootstrapPasswordAlphabet, c) {
-			t.Errorf("password contains out-of-alphabet rune %q", c)
-		}
-	}
-	// A generated password must satisfy the same rule provisionOwner enforces.
-	if err := validateOwnerPassword(pw); err != nil {
-		t.Errorf("generated password fails validateOwnerPassword: %v", err)
-	}
-	other, err := generateBootstrapPassword()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if pw == other {
-		t.Error("two calls produced the same password")
-	}
-}
-
 func TestAuthenticateAdmin(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("verifies a matching admin credential", func(t *testing.T) {
-		f := &fakeOwnerStore{users: map[string]*api.StaffUser{"root": mkAdmin(t, "root", "correct horse")}}
-		matched, ok, err := authenticateAdmin(ctx, f, "root", "correct horse")
+	// Password verification is gone (passwordless design): authenticateAdmin now only
+	// resolves the named admin so recovery can attribute the audit to a real identity.
+	// The security boundary is the break-glass root gate, not a typed secret.
+
+	t.Run("resolves an existing admin for attribution", func(t *testing.T) {
+		f := &fakeOwnerStore{users: map[string]*api.StaffUser{"root": mkAdmin("root")}}
+		matched, ok, err := authenticateAdmin(ctx, f, "root")
 		if err != nil {
 			t.Fatalf("authenticateAdmin: %v", err)
 		}
 		if !ok {
-			t.Fatal("ok = false, want true for the correct password")
+			t.Fatal("ok = false, want true for an existing admin")
 		}
 		if matched != "root" {
 			t.Errorf("matched = %q, want root", matched)
 		}
 	})
 
-	t.Run("a wrong password is a non-match, not an error", func(t *testing.T) {
-		f := &fakeOwnerStore{users: map[string]*api.StaffUser{"root": mkAdmin(t, "root", "correct horse")}}
-		_, ok, err := authenticateAdmin(ctx, f, "root", "wrong")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if ok {
-			t.Error("ok = true, want false for a wrong password")
-		}
-	})
-
 	t.Run("a non-admin role can never attribute a break-glass", func(t *testing.T) {
-		player := mkAdmin(t, "alice", "correct horse")
-		player.Role = "user" // a player row, even with a hash, is not staff
+		player := mkAdmin("alice")
+		player.Role = "user" // a player row is not staff
 		f := &fakeOwnerStore{users: map[string]*api.StaffUser{"alice": player}}
-		_, ok, err := authenticateAdmin(ctx, f, "alice", "correct horse")
+		_, ok, err := authenticateAdmin(ctx, f, "alice")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -301,22 +263,9 @@ func TestAuthenticateAdmin(t *testing.T) {
 		}
 	})
 
-	t.Run("a hashless admin row is a non-match", func(t *testing.T) {
-		f := &fakeOwnerStore{users: map[string]*api.StaffUser{
-			"ghost": {Username: "ghost", Role: "admin", PasswordHash: ""},
-		}}
-		_, ok, err := authenticateAdmin(ctx, f, "ghost", "anything")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if ok {
-			t.Error("ok = true, want false when no hash is set")
-		}
-	})
-
 	t.Run("an unknown user is a non-match, not an error", func(t *testing.T) {
 		f := &fakeOwnerStore{}
-		_, ok, err := authenticateAdmin(ctx, f, "nobody", "pw")
+		_, ok, err := authenticateAdmin(ctx, f, "nobody")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -325,19 +274,16 @@ func TestAuthenticateAdmin(t *testing.T) {
 		}
 	})
 
-	t.Run("empty input is a non-match with no store call", func(t *testing.T) {
+	t.Run("an empty username is a non-match with no store call", func(t *testing.T) {
 		f := &fakeOwnerStore{userErr: errors.New("must not be called")}
-		if _, ok, err := authenticateAdmin(ctx, f, "", "pw"); ok || err != nil {
+		if _, ok, err := authenticateAdmin(ctx, f, ""); ok || err != nil {
 			t.Errorf("empty username: ok=%v err=%v, want false,nil", ok, err)
-		}
-		if _, ok, err := authenticateAdmin(ctx, f, "root", ""); ok || err != nil {
-			t.Errorf("empty password: ok=%v err=%v, want false,nil", ok, err)
 		}
 	})
 
 	t.Run("a datastore fault is surfaced", func(t *testing.T) {
 		f := &fakeOwnerStore{userErr: errors.New("db down")}
-		if _, _, err := authenticateAdmin(ctx, f, "root", "pw"); err == nil {
+		if _, _, err := authenticateAdmin(ctx, f, "root"); err == nil {
 			t.Fatal("want error when the store fails")
 		}
 	})
@@ -360,7 +306,7 @@ func auditOf(t *testing.T, f *fakeOwnerStore) (api.AuditEntry, map[string]any) {
 func TestPerformBreakGlass(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("bootstrap uses the typed password and never echoes it", func(t *testing.T) {
+	t.Run("bootstrap provisions the owner, enables local auth, and audits", func(t *testing.T) {
 		f := &fakeOwnerStore{}
 		op := breakGlassOp{
 			mode:          "bootstrap",
@@ -368,21 +314,16 @@ func TestPerformBreakGlass(t *testing.T) {
 			osUser:        "deploybot",
 			ownerUsername: "owner",
 			ownerEmail:    "owner@example.com",
-			ownerPassword: "valid-test-pw",
 		}
 		out, err := performBreakGlass(ctx, f, op)
 		if err != nil {
 			t.Fatalf("performBreakGlass: %v", err)
 		}
-		// The operator typed their own password, so it must NOT be surfaced for display.
-		if out.displayPassword != "" {
-			t.Errorf("displayPassword = %q, want empty for a typed bootstrap password", out.displayPassword)
-		}
 		if out.auditErr != nil {
 			t.Errorf("auditErr = %v, want nil", out.auditErr)
 		}
-		if len(f.upserts) != 1 || bcrypt.CompareHashAndPassword([]byte(f.upserts[0].passwordHash), []byte("valid-test-pw")) != nil {
-			t.Error("owner was not provisioned with the typed password")
+		if len(f.upserts) != 1 || f.upserts[0].username != "owner" {
+			t.Errorf("owner was not provisioned: %+v", f.upserts)
 		}
 		if _, ok := f.settings[api.LocalAuthEnabledKey]; !ok {
 			t.Error("local auth was not enabled — login would 403")
@@ -402,7 +343,7 @@ func TestPerformBreakGlass(t *testing.T) {
 		}
 	})
 
-	t.Run("recovery generates a one-time password and records a verified row", func(t *testing.T) {
+	t.Run("recovery provisions the owner and records a verified row", func(t *testing.T) {
 		f := &fakeOwnerStore{}
 		op := breakGlassOp{
 			mode:           "recovery",
@@ -415,12 +356,14 @@ func TestPerformBreakGlass(t *testing.T) {
 		if err != nil {
 			t.Fatalf("performBreakGlass: %v", err)
 		}
-		if out.displayPassword == "" {
-			t.Fatal("displayPassword empty, want a generated one-time password")
+		if out.auditErr != nil {
+			t.Errorf("auditErr = %v, want nil", out.auditErr)
 		}
-		// The shown password must be the one actually stored (as a hash).
-		if bcrypt.CompareHashAndPassword([]byte(f.upserts[0].passwordHash), []byte(out.displayPassword)) != nil {
-			t.Error("displayed password does not match the stored hash")
+		if len(f.upserts) != 1 {
+			t.Fatalf("want 1 upsert, got %d", len(f.upserts))
+		}
+		if _, ok := f.settings[api.LocalAuthEnabledKey]; !ok {
+			t.Error("local auth was not enabled")
 		}
 		e, payload := auditOf(t, f)
 		if e.Actor != "root" || e.Action != "break_glass.recovery" {
@@ -443,12 +386,8 @@ func TestPerformBreakGlass(t *testing.T) {
 			ownerUsername:  "owner",
 			attemptedAdmin: "typo-admin",
 		}
-		out, err := performBreakGlass(ctx, f, op)
-		if err != nil {
+		if _, err := performBreakGlass(ctx, f, op); err != nil {
 			t.Fatalf("performBreakGlass: %v", err)
-		}
-		if out.displayPassword == "" {
-			t.Error("displayPassword empty, want a generated one-time password")
 		}
 		e, payload := auditOf(t, f)
 		if e.Actor != "alice" || e.Action != "break_glass.root_override" {
@@ -484,7 +423,7 @@ func TestPerformBreakGlass(t *testing.T) {
 
 	t.Run("does not enable local auth or audit if the owner write fails", func(t *testing.T) {
 		f := &fakeOwnerStore{upsertErr: errors.New("boom")}
-		op := breakGlassOp{mode: "bootstrap", accountable: "root", osUser: "root", ownerUsername: "owner", ownerPassword: "valid-test-pw"}
+		op := breakGlassOp{mode: "bootstrap", accountable: "root", osUser: "root", ownerUsername: "owner"}
 		if _, err := performBreakGlass(ctx, f, op); err == nil {
 			t.Fatal("want error when the owner write fails")
 		}
@@ -497,9 +436,9 @@ func TestPerformBreakGlass(t *testing.T) {
 	})
 
 	t.Run("records accountability before enabling local auth, surviving an enableLocalAuth failure", func(t *testing.T) {
-		// The credential is reset by provisionOwner; if the audit were written only
-		// after enableLocalAuth, a failed toggle write would leave that reset with no
-		// "who did it" row. Order guarantees the accountability row lands first.
+		// The Owner is written by provisionOwner; if the audit were written only after
+		// enableLocalAuth, a failed toggle write would leave that write with no "who did
+		// it" row. Order guarantees the accountability row lands first.
 		f := &fakeOwnerStore{setErr: errors.New("settings write down")}
 		op := breakGlassOp{mode: "recovery", accountable: "root", osUser: "alice", ownerUsername: "owner", attemptedAdmin: "root"}
 		if _, err := performBreakGlass(ctx, f, op); err == nil {
@@ -535,10 +474,9 @@ func TestAccountableOSUser(t *testing.T) {
 func TestProvisionOperator(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("happy path mints a must-change admin with a verifiable hash", func(t *testing.T) {
+	t.Run("mints a passwordless operator row (insert-only)", func(t *testing.T) {
 		f := &fakeOwnerStore{}
-		const pw = "valid-test-pw"
-		if err := provisionOperator(ctx, f, "ops-jordan", "jordan@example.com", pw); err != nil {
+		if err := provisionOperator(ctx, f, "ops-jordan", "jordan@example.com"); err != nil {
 			t.Fatalf("provisionOperator: %v", err)
 		}
 		// Insert-only: it records an insert and never touches the Owner upsert path.
@@ -555,19 +493,8 @@ func TestProvisionOperator(t *testing.T) {
 		if got.email != "jordan@example.com" {
 			t.Errorf("email = %q, want jordan@example.com", got.email)
 		}
-		// must_change_password=true arms the API lockdown for the new operator too.
-		if !got.mustChange {
-			t.Error("mustChange = false, want true (forced first-login change)")
-		}
 		if !strings.HasPrefix(got.id, "usr-") {
 			t.Errorf("id = %q, want usr- prefix", got.id)
-		}
-		// Only the hash is stored; the typed plaintext must verify against it.
-		if bcrypt.CompareHashAndPassword([]byte(got.passwordHash), []byte(pw)) != nil {
-			t.Error("typed password does not verify against the stored hash")
-		}
-		if got.passwordHash == pw {
-			t.Error("stored hash equals plaintext — password was not hashed")
 		}
 	})
 
@@ -575,9 +502,9 @@ func TestProvisionOperator(t *testing.T) {
 		// The Owner already holds this username. Operator-add must refuse rather than
 		// overwrite it the way UpsertOwner would.
 		f := &fakeOwnerStore{users: map[string]*api.StaffUser{
-			"owner": {ID: "usr-owner", Username: "owner", Role: "admin", PasswordHash: "x"},
+			"owner": {ID: "usr-owner", Username: "owner", Role: "admin"},
 		}}
-		err := provisionOperator(ctx, f, "owner", "", "valid-test-pw")
+		err := provisionOperator(ctx, f, "owner", "")
 		if err == nil {
 			t.Fatal("want error when the username is already taken")
 		}
@@ -589,14 +516,14 @@ func TestProvisionOperator(t *testing.T) {
 			t.Errorf("want no insert on conflict, got %d", len(f.inserts))
 		}
 		// The pre-existing account must be untouched.
-		if f.users["owner"].PasswordHash != "x" {
-			t.Error("conflicting insert clobbered the existing account's hash")
+		if f.users["owner"].ID != "usr-owner" {
+			t.Error("conflicting insert clobbered the existing account")
 		}
 	})
 
 	t.Run("trims surrounding whitespace", func(t *testing.T) {
 		f := &fakeOwnerStore{}
-		if err := provisionOperator(ctx, f, "  ops  ", "  e@x.io  ", "valid-test-pw"); err != nil {
+		if err := provisionOperator(ctx, f, "  ops  ", "  e@x.io  "); err != nil {
 			t.Fatalf("provisionOperator: %v", err)
 		}
 		if f.inserts[0].username != "ops" || f.inserts[0].email != "e@x.io" {
@@ -606,7 +533,7 @@ func TestProvisionOperator(t *testing.T) {
 
 	t.Run("rejects an empty username before any write", func(t *testing.T) {
 		f := &fakeOwnerStore{}
-		if err := provisionOperator(ctx, f, "   ", "", "valid-test-pw"); err == nil {
+		if err := provisionOperator(ctx, f, "   ", ""); err == nil {
 			t.Fatal("want error for empty username")
 		}
 		if len(f.inserts) != 0 {
@@ -614,19 +541,9 @@ func TestProvisionOperator(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects a weak password before any write", func(t *testing.T) {
-		f := &fakeOwnerStore{}
-		if err := provisionOperator(ctx, f, "ops", "", "short"); err == nil {
-			t.Fatal("want error for a sub-8-byte password")
-		}
-		if len(f.inserts) != 0 {
-			t.Errorf("want no insert on weak password, got %d", len(f.inserts))
-		}
-	})
-
 	t.Run("propagates a non-conflict store error without mislabeling it", func(t *testing.T) {
 		f := &fakeOwnerStore{insertErr: errors.New("boom")}
-		err := provisionOperator(ctx, f, "ops", "", "valid-test-pw")
+		err := provisionOperator(ctx, f, "ops", "")
 		if err == nil {
 			t.Fatal("want error when the store fails")
 		}
@@ -640,7 +557,7 @@ func TestProvisionOperator(t *testing.T) {
 func TestPerformAddOperator(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("typed password is used as-is, never echoed, and never flips local auth", func(t *testing.T) {
+	t.Run("provisions an operator, audits, and never flips local auth", func(t *testing.T) {
 		f := &fakeOwnerStore{}
 		op := breakGlassOp{
 			mode:           "recovery",
@@ -648,19 +565,17 @@ func TestPerformAddOperator(t *testing.T) {
 			osUser:         "alice",
 			ownerUsername:  "ops-jordan",
 			ownerEmail:     "jordan@example.com",
-			ownerPassword:  "valid-test-pw",
 			attemptedAdmin: "root",
 		}
 		out, err := performAddOperator(ctx, f, op)
 		if err != nil {
 			t.Fatalf("performAddOperator: %v", err)
 		}
-		// The operator's password was typed, so it must NOT be surfaced for display.
-		if out.displayPassword != "" {
-			t.Errorf("displayPassword = %q, want empty for a typed password", out.displayPassword)
+		if out.auditErr != nil {
+			t.Errorf("auditErr = %v, want nil", out.auditErr)
 		}
-		if len(f.inserts) != 1 || bcrypt.CompareHashAndPassword([]byte(f.inserts[0].passwordHash), []byte("valid-test-pw")) != nil {
-			t.Error("operator was not provisioned with the typed password")
+		if len(f.inserts) != 1 || f.inserts[0].username != "ops-jordan" {
+			t.Errorf("operator was not provisioned: %+v", f.inserts)
 		}
 		// Adding an Operator must NOT flip the global local-auth gate (Owner-only).
 		if _, ok := f.settings[api.LocalAuthEnabledKey]; ok {
@@ -682,19 +597,14 @@ func TestPerformAddOperator(t *testing.T) {
 		}
 	})
 
-	t.Run("an empty password generates a one-time credential matching the stored hash", func(t *testing.T) {
+	t.Run("root override records an unverified operator row", func(t *testing.T) {
 		f := &fakeOwnerStore{}
 		op := breakGlassOp{mode: "root_override", accountable: "alice", osUser: "alice", ownerUsername: "ops", attemptedAdmin: "typo-admin"}
-		out, err := performAddOperator(ctx, f, op)
-		if err != nil {
+		if _, err := performAddOperator(ctx, f, op); err != nil {
 			t.Fatalf("performAddOperator: %v", err)
 		}
-		if out.displayPassword == "" {
-			t.Fatal("displayPassword empty, want a generated one-time password to hand off")
-		}
-		// The shown password must be the one actually stored (as a hash).
-		if bcrypt.CompareHashAndPassword([]byte(f.inserts[0].passwordHash), []byte(out.displayPassword)) != nil {
-			t.Error("displayed password does not match the stored hash")
+		if len(f.inserts) != 1 {
+			t.Fatalf("want 1 insert, got %d", len(f.inserts))
 		}
 		_, payload := auditOf(t, f)
 		if payload["verified"] != false {
@@ -719,9 +629,9 @@ func TestPerformAddOperator(t *testing.T) {
 
 	t.Run("a conflict mints nothing and writes no audit row", func(t *testing.T) {
 		f := &fakeOwnerStore{users: map[string]*api.StaffUser{
-			"owner": {ID: "usr-owner", Username: "owner", Role: "admin", PasswordHash: "x"},
+			"owner": {ID: "usr-owner", Username: "owner", Role: "admin"},
 		}}
-		op := breakGlassOp{mode: "recovery", accountable: "root", osUser: "alice", ownerUsername: "owner", ownerPassword: "valid-test-pw", attemptedAdmin: "root"}
+		op := breakGlassOp{mode: "recovery", accountable: "root", osUser: "alice", ownerUsername: "owner", attemptedAdmin: "root"}
 		if _, err := performAddOperator(ctx, f, op); err == nil {
 			t.Fatal("want error when the operator username is already taken")
 		}
@@ -730,6 +640,97 @@ func TestPerformAddOperator(t *testing.T) {
 		}
 		if len(f.audits) != 0 {
 			t.Error("a conflicting add should write no audit row")
+		}
+	})
+}
+
+func TestPerformSetupMCBind(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("binds the owner and mints a setup URL whose token hash is what is stored", func(t *testing.T) {
+		f := &fakeOwnerStore{redeemUserID: "usr-owner-1"}
+		out, err := performSetupMCBind(ctx, f, "  abc-123  ", "op.console.example.com")
+		if err != nil {
+			t.Fatalf("performSetupMCBind: %v", err)
+		}
+		const prefix = "https://op.console.example.com/setup?token="
+		if !strings.HasPrefix(out.setupTokenURL, prefix) {
+			t.Fatalf("setup URL = %q, want prefix %q", out.setupTokenURL, prefix)
+		}
+		// The link code is trimmed and upper-cased before redemption.
+		if len(f.redeems) != 1 {
+			t.Fatalf("want 1 redeem, got %d", len(f.redeems))
+		}
+		if f.redeems[0].code != "ABC-123" {
+			t.Errorf("redeemed code = %q, want ABC-123 (trimmed + upper-cased)", f.redeems[0].code)
+		}
+		if !strings.HasPrefix(f.redeems[0].newUserID, "usr-") {
+			t.Errorf("redeem newUserID = %q, want usr- prefix", f.redeems[0].newUserID)
+		}
+		// Exactly one token minted, for the redeemed user, and only its hash stored —
+		// the stored hash must be sha-256 of the raw token carried in the URL.
+		if len(f.tokens) != 1 {
+			t.Fatalf("want 1 setup token, got %d", len(f.tokens))
+		}
+		tok := f.tokens[0]
+		if tok.userID != "usr-owner-1" {
+			t.Errorf("token userID = %q, want usr-owner-1 (the redeemed owner)", tok.userID)
+		}
+		raw := strings.TrimPrefix(out.setupTokenURL, prefix)
+		sum := sha256.Sum256([]byte(raw))
+		if tok.tokenHash != hex.EncodeToString(sum[:]) {
+			t.Error("stored token hash is not sha-256 of the raw token in the URL")
+		}
+		if tok.tokenHash == raw || tok.tokenHash == "" {
+			t.Error("the raw token (or nothing) was stored instead of its hash")
+		}
+		// The token is short-lived and in the future.
+		if !tok.expiresAt.After(time.Now()) {
+			t.Errorf("token expiresAt = %v, want a future time", tok.expiresAt)
+		}
+	})
+
+	t.Run("an empty link code mints nothing", func(t *testing.T) {
+		f := &fakeOwnerStore{}
+		if _, err := performSetupMCBind(ctx, f, "   ", "op.console.example.com"); err == nil {
+			t.Fatal("want error for an empty link code")
+		}
+		if len(f.redeems) != 0 || len(f.tokens) != 0 {
+			t.Errorf("want no redeem/token on an empty code, got redeems=%d tokens=%d", len(f.redeems), len(f.tokens))
+		}
+	})
+
+	t.Run("a link-code redemption failure mints no token", func(t *testing.T) {
+		f := &fakeOwnerStore{redeemErr: errors.New("code expired")}
+		if _, err := performSetupMCBind(ctx, f, "abc-123", "op.console.example.com"); err == nil {
+			t.Fatal("want error when the link code cannot be redeemed")
+		}
+		if len(f.tokens) != 0 {
+			t.Errorf("want no token minted on a redeem failure, got %d", len(f.tokens))
+		}
+	})
+
+	t.Run("a token-store failure surfaces after the bind", func(t *testing.T) {
+		f := &fakeOwnerStore{redeemUserID: "usr-owner-1", createTokenErr: errors.New("db down")}
+		if _, err := performSetupMCBind(ctx, f, "abc-123", "op.console.example.com"); err == nil {
+			t.Fatal("want error when the setup token cannot be stored")
+		}
+		if len(f.redeems) != 1 {
+			t.Errorf("want the redeem to have happened before the token write, got %d", len(f.redeems))
+		}
+		if len(f.tokens) != 0 {
+			t.Errorf("want no recorded token when the store fails, got %d", len(f.tokens))
+		}
+	})
+
+	t.Run("defaults the op.console host when adminHostname is empty", func(t *testing.T) {
+		f := &fakeOwnerStore{redeemUserID: "usr-owner-1"}
+		out, err := performSetupMCBind(ctx, f, "abc-123", "  ")
+		if err != nil {
+			t.Fatalf("performSetupMCBind: %v", err)
+		}
+		if !strings.HasPrefix(out.setupTokenURL, "https://op.console.localhost/setup?token=") {
+			t.Errorf("setup URL = %q, want the op.console.localhost default host", out.setupTokenURL)
 		}
 	})
 }

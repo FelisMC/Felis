@@ -156,11 +156,12 @@ func (s SessionAuth) Authenticate(r *http.Request) (*Principal, error) {
 		return nil, fmt.Errorf("invalid session: %w", err)
 	}
 	return &Principal{
-		UserID:             u.ID,
-		Email:              u.Email,
-		Role:               u.Role,
-		ViaAdminAccess:     u.Role == "admin" && hostIsAdminConsole(r, s.RootDomain, s.AdminHostname),
-		MustChangePassword: u.MustChangePassword,
+		UserID:         u.ID,
+		Email:          u.Email,
+		Role:           u.Role,
+		ViaAdminAccess: u.Role == "admin" && hostIsAdminConsole(r, s.RootDomain, s.AdminHostname),
+		EmailVerified:  u.EmailVerified,
+		ViaSession:     true,
 	}, nil
 }
 

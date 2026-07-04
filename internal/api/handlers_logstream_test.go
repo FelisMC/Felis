@@ -596,7 +596,7 @@ func newDeadlineStallWriter() *deadlineStallWriter {
 func (s *deadlineStallWriter) Header() http.Header         { return s.hdr }
 func (s *deadlineStallWriter) WriteHeader(int)             {}
 func (s *deadlineStallWriter) Write(p []byte) (int, error) { return len(p), nil } // buffered: never blocks
-func (s *deadlineStallWriter) Flush()                      {}                      // header flush: instant, best-effort
+func (s *deadlineStallWriter) Flush()                      {}                     // header flush: instant, best-effort
 
 // FlushError is where the stalled socket bites: it blocks until the deadline the relay
 // set via SetWriteDeadline, then returns the same error a real write reports when that

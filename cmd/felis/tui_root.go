@@ -52,13 +52,13 @@ func connectMethodLabel(m connectMethod) string {
 type preflightDoneMsg struct{}
 
 type ownerResultMsg struct {
-	username        string
-	displayPassword string
-	mode            string
-	accountable     string
-	auditWarning    string
-	isOperator      bool // true when an Operator was added rather than the Owner provisioned
-	err             error
+	username      string
+	setupTokenURL string
+	mode          string
+	accountable   string
+	auditWarning  string
+	isOperator    bool // true when an Operator was added rather than the Owner provisioned
+	err           error
 }
 
 // connectResultMsg is emitted by every connection method (the chooser for
@@ -207,6 +207,9 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.showStatus()
 		}
 		m.stage = stageOwner
+		if m.mode == consoleModeSetup {
+			return m.adopt(newMCBindModel(m.ctx, m.store, m.adminHost, m.osUser))
+		}
 		return m.adopt(newOwnerModel(m.ctx, m.store, m.osUser, false))
 
 	case menuChoiceMsg:
@@ -228,7 +231,7 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.result.provisioned = true
 		m.result.isOperator = msg.isOperator
 		m.result.username = msg.username
-		m.result.displayPassword = msg.displayPassword
+		m.result.setupTokenURL = msg.setupTokenURL
 		m.result.mode = msg.mode
 		m.result.accountable = msg.accountable
 		m.result.auditWarning = msg.auditWarning
@@ -363,7 +366,7 @@ func (m *rootModel) reviewBody(stage int) string {
 		if m.result.username != "" {
 			b.WriteString(tuiLabel.Render("username  ") + m.result.username + "\n")
 		}
-		b.WriteString(tuiHint.Render("Created and recorded. The one-time password was shown on the Owner step."))
+		b.WriteString(tuiHint.Render("Created and recorded. The one-time setup URL was shown on the Owner step."))
 	case stageConnect:
 		b.WriteString(tuiOK.Render("✓ Connection") + "\n")
 		b.WriteString(tuiLabel.Render("method    ") + connectMethodLabel(m.result.connectMethod) + "\n")
@@ -488,7 +491,7 @@ func (m *rootModel) showSummary() (tea.Model, tea.Cmd) {
 	return m.adopt(&summaryModel{
 		panelURL:      m.result.panelURL,
 		ownerUsername: m.result.username,
-		ownerPassword: m.result.displayPassword,
+		setupTokenURL: m.result.setupTokenURL,
 		accessLabel:   connectMethodLabel(m.result.connectMethod),
 		storageLabel:  m.result.storageDetail,
 		routedHosts:   routed,

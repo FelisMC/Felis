@@ -49,6 +49,15 @@ var (
 	// never mints a session for an admin identity. It is distinct from ErrConflict so
 	// the handler answers 403 (wrong door) rather than 409 (already linked).
 	ErrPlayerBindForbidden = errors.New("bind code belongs to a staff account")
+	// ErrEmailTaken means a verified email would collide with another account's
+	// already-verified address (spec §B email-first login foundation, migration 0010).
+	// VerifyEmailOTP returns it — WITHOUT consuming the code, since the address, not
+	// the code, is the problem — when a DIFFERENT user has already proven the same
+	// address case-insensitively. It is the clean, application-level counterpart of
+	// the users_verified_email_unique index: a sequential double-verify meets this
+	// guard and gets a 409 instead of a raw unique-violation 500. Distinct from
+	// ErrConflict so the message can name the cause (the email is spoken for).
+	ErrEmailTaken = errors.New("email already verified on another account")
 )
 
 // apiError is a handler-level error carrying an HTTP status and a stable,
@@ -73,19 +82,6 @@ var (
 	errUnauthorized = newError(http.StatusUnauthorized, "unauthorized", "authentication required")
 	errForbidden    = newError(http.StatusForbidden, "forbidden", "not permitted")
 	errBadRequest   = newError(http.StatusBadRequest, "bad_request", "invalid request")
-	// errInvalidCredentials is the single, deliberately vague answer to any failed
-	// local-password login (spec §B): unknown username, player row, or wrong
-	// password all collapse to it so the response never reveals which usernames
-	// carry a password. The anti-enumeration dummy-hash compare keeps the timing
-	// uniform alongside it (handlers_auth.go).
-	errInvalidCredentials = newError(http.StatusUnauthorized, "invalid_credentials", "invalid username or password")
-	// errPasswordChangeRequired fences a staff principal that still owes a
-	// first-login password change to the change-password surface. The lockdown
-	// middleware returns it from every authenticated route except the opt-out set
-	// (change-password / logout / me), so a half-onboarded account cannot act until
-	// it sets its own password.
-	errPasswordChangeRequired = newError(http.StatusForbidden, "password_change_required",
-		"change your password before continuing")
 )
 
 // writeJSON writes v as an indented JSON body with the given status.

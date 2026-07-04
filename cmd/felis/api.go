@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"regexp"
-	goruntime "runtime"
 	"strings"
 	"time"
 
@@ -169,14 +168,6 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// agree on what local auth knows.
 	repo := api.NewPGRepo(drv.DB())
 
-	// Bound concurrent login bcrypt to roughly the core count (floored so even a 1–2
-	// vCPU demo box tolerates a handful of simultaneous staff logins). bcrypt is
-	// CPU-costly and the public login route runs a full compare on every request, so
-	// this caps the work a login flood can pile on the scheduler; the excess is shed
-	// as a cheap 429. Staff password logins are rare (players never use this path), so
-	// the cap never bites legitimate use.
-	loginBcryptCap := max(goruntime.NumCPU(), 4)
-
 	a := &api.API{
 		Repo:    repo,
 		Cluster: api.NewK8sCluster(cl, cfg.K8s.Namespace),
@@ -201,9 +192,8 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 			RootDomain:    cfg.Server.RootDomain,
 			AdminHostname: cfg.Auth.AdminHostname,
 		},
-		RootDomain:          cfg.Server.RootDomain,
-		WakeCooldown:        30 * time.Second,
-		MaxConcurrentLogins: loginBcryptCap,
+		RootDomain:   cfg.Server.RootDomain,
+		WakeCooldown: 30 * time.Second,
 		// Bound concurrent console/build-log SSE streams per principal. Generous enough
 		// for legitimate multi-tab / multi-server watching, while capping how many
 		// upstream follow connections a single caller can tie up if their streams stall.
@@ -232,7 +222,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "felis api: passkey verifier disabled (auth.panel_hostname unset) — passkey endpoints return 503")
 	}
 
-	externalHandler := panel.Handler(a.ExternalHandler(), cfg.Server.RootDomain)
+	externalHandler := panel.Handler(a.ExternalHandler(), cfg.Server.RootDomain, cfg.Auth.PanelHostname, cfg.Auth.AdminHostname, resolvedVersion())
 	internalSrv := newAPIServer(*internalAddr, a.InternalHandler())
 	externalSrv := newAPIServer(cfg.Server.Listen, externalHandler)
 

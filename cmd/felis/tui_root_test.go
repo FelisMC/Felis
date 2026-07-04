@@ -52,24 +52,26 @@ func TestRootSetupHappyPath(t *testing.T) {
 		t.Fatalf("initial screen = %T, want *preflightModel", m.screen)
 	}
 
-	// Preflight done → Owner.
+	// Preflight done → MC-bind (setup mode establishes the Owner by binding a
+	// Minecraft account, not by typing a username/password). The stage label is
+	// still stageOwner; only the screen differs by mode.
 	m = drive(t, m, preflightDoneMsg{})
 	if m.stage != stageOwner {
 		t.Fatalf("after preflight, stage = %v, want stageOwner", m.stage)
 	}
-	if _, ok := m.screen.(*ownerModel); !ok {
-		t.Fatalf("after preflight, screen = %T, want *ownerModel", m.screen)
+	if _, ok := m.screen.(*mcBindModel); !ok {
+		t.Fatalf("after preflight, screen = %T, want *mcBindModel", m.screen)
 	}
 
 	// Owner provisioned → Connection chooser.
-	m = drive(t, m, ownerResultMsg{username: "owner", displayPassword: "hunter2"})
+	m = drive(t, m, ownerResultMsg{username: "owner", setupTokenURL: "https://op.console.example.com/setup?token=t0ken"})
 	if m.stage != stageConnect {
 		t.Fatalf("after owner, stage = %v, want stageConnect", m.stage)
 	}
 	if _, ok := m.screen.(*connectChooserModel); !ok {
 		t.Fatalf("after owner, screen = %T, want *connectChooserModel", m.screen)
 	}
-	if !m.result.provisioned || m.result.username != "owner" || m.result.displayPassword != "hunter2" {
+	if !m.result.provisioned || m.result.username != "owner" || m.result.setupTokenURL != "https://op.console.example.com/setup?token=t0ken" {
 		t.Fatalf("owner result not recorded: %+v", m.result)
 	}
 
@@ -115,8 +117,8 @@ func TestRootSetupHappyPath(t *testing.T) {
 	if want := "https://panel.felis.example.com"; sum.panelURL != want {
 		t.Fatalf("summary panelURL = %q, want %q", sum.panelURL, want)
 	}
-	if sum.ownerPassword != "hunter2" {
-		t.Fatalf("summary ownerPassword = %q, want %q", sum.ownerPassword, "hunter2")
+	if want := "https://op.console.example.com/setup?token=t0ken"; sum.setupTokenURL != want {
+		t.Fatalf("summary setupTokenURL = %q, want %q", sum.setupTokenURL, want)
 	}
 	if sum.alreadySetUp {
 		t.Fatalf("first-run summary should not be marked alreadySetUp")
@@ -150,7 +152,7 @@ func TestRootSetupLocalSummary(t *testing.T) {
 func TestRootReconfigureConnectSkipsStorage(t *testing.T) {
 	m := newTestRoot(false, consoleModeSetup, "")
 	m = drive(t, m, preflightDoneMsg{})
-	m = drive(t, m, ownerResultMsg{username: "owner", displayPassword: "hunter2"})
+	m = drive(t, m, ownerResultMsg{username: "owner", setupTokenURL: "https://op.console.example.com/setup?token=t0ken"})
 	m = drive(t, m, connectResultMsg{method: connectLocal, panelHostname: "panel.felis.example.com"})
 	m = drive(t, m, storageResultMsg{method: storageS3, detail: "s3://bucket"})
 	if _, ok := m.screen.(*summaryModel); !ok {
@@ -257,7 +259,7 @@ func TestRootBreakGlassQuitsAfterOwner(t *testing.T) {
 		t.Fatalf("after the menu choice, screen = %T, want *ownerModel", m.screen)
 	}
 
-	next, cmd := m.Update(ownerResultMsg{username: "owner", displayPassword: "pw", mode: "recovery"})
+	next, cmd := m.Update(ownerResultMsg{username: "owner", setupTokenURL: "https://op.console.example.com/setup?token=t0ken", mode: "recovery"})
 	rm := next.(*rootModel)
 	if _, ok := rm.screen.(*connectChooserModel); ok {
 		t.Fatalf("break-glass must not enter the connection chooser")
@@ -292,7 +294,7 @@ func TestRootRailReviewNavigation(t *testing.T) {
 	}
 
 	// Advance to the Connection chooser (a select — it yields ←/→).
-	m = drive(t, m, ownerResultMsg{username: "owner", displayPassword: "hunter2"})
+	m = drive(t, m, ownerResultMsg{username: "owner", setupTokenURL: "https://op.console.example.com/setup?token=t0ken"})
 	if m.reviewing != -1 {
 		t.Fatalf("fresh chooser should start live, reviewing = %d", m.reviewing)
 	}
@@ -352,8 +354,8 @@ func TestSetupRailSpansBootstrap(t *testing.T) {
 	m := newTestRoot(false, consoleModeSetup, "")
 	m = drive(t, m, tea.WindowSizeMsg{Width: 90, Height: 30})
 	m = drive(t, m, preflightDoneMsg{})
-	if _, ok := m.screen.(*ownerModel); !ok {
-		t.Fatalf("expected owner screen after preflight, got %T", m.screen)
+	if _, ok := m.screen.(*mcBindModel); !ok {
+		t.Fatalf("expected MC-bind screen after preflight, got %T", m.screen)
 	}
 	if v := m.View(); !strings.Contains(v, "✓ Bootstrap") {
 		t.Fatalf("wizard rail should carry Bootstrap as a completed step, got:\n%s", v)

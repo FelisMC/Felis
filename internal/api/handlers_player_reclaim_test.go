@@ -100,7 +100,7 @@ func TestReclaimProtectsAdminOnYggdrasil(t *testing.T) {
 	const adminUUID = "0a11dead-0000-0000-0000-00000000ad11"
 	repo := newFakeRepo()
 	// An Operator who linked in-game through the third-party Yggdrasil (auth_source).
-	repo.staff["operator1"] = &StaffUser{ID: "op-1", Username: "operator1", Role: "admin", PasswordHash: "$2a$10$VnJ5kZqZ9bQmsCp1uoQ3qO"}
+	repo.staff["operator1"] = &StaffUser{ID: "op-1", Username: "operator1", Role: "admin"}
 	repo.links[adminUUID] = "op-1"
 	repo.linkAuthSource[adminUUID] = authSourceThirdParty
 
@@ -151,26 +151,25 @@ func TestReclaimProtectsAdminOnYggdrasil(t *testing.T) {
 //   - a Mojang-authenticated admin is still reclaimed (pins auth_source='thirdparty') —
 //     an admin's Mojang identity has no Login-Server name to protect (and Mojang names
 //     are unique, so this is operationally moot, but it locks the conjunct);
-//   - an SSO Operator with NO local password is still protected (pins the deliberate
-//     ABSENCE of a password_hash test) — signing in via Cloudflare Access (§14) leaves
-//     role='admin' with a NULL hash, and that holder must be protected all the same.
+//   - an SSO Operator authenticated through the third-party Yggdrasil is protected even
+//     with no local login secret at all — protection turns on role + auth_source, so an
+//     admin who signs in via Cloudflare Access (§14) is covered just the same.
 func TestReclaimAdminProtectionScope(t *testing.T) {
 	const squatter = "0a11dead-0000-0000-0000-00000000ad11"
 	cases := []struct {
 		name      string
 		role      string
 		auth      string
-		passHash  string
 		protected bool // true: reclaim refused (409); false: reclaim succeeds (200, barred)
 	}{
-		{"thirdparty non-admin is reclaimed", "user", authSourceThirdParty, "", false},
-		{"mojang admin is reclaimed", "admin", authSourceMojang, "$2a$10$VnJ5kZqZ9bQmsCp1uoQ3qO", false},
-		{"sso admin without local password is protected", "admin", authSourceThirdParty, "", true},
+		{"thirdparty non-admin is reclaimed", "user", authSourceThirdParty, false},
+		{"mojang admin is reclaimed", "admin", authSourceMojang, false},
+		{"sso admin without local password is protected", "admin", authSourceThirdParty, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			repo := newFakeRepo()
-			repo.staff["holder"] = &StaffUser{ID: "h-1", Username: "holder", Role: tc.role, PasswordHash: tc.passHash}
+			repo.staff["holder"] = &StaffUser{ID: "h-1", Username: "holder", Role: tc.role}
 			repo.links[squatter] = "h-1"
 			repo.linkAuthSource[squatter] = tc.auth
 			api := newTestAPI(repo, newFakeCluster())

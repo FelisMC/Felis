@@ -298,7 +298,7 @@ func (a *API) handleAccessKick(w http.ResponseWriter, r *http.Request) {
 // who omits the field intends. nil therefore means "default to true (grant)";
 // an explicit false is a deliberate deny.
 type permissionRequest struct {
-	Action string `json:"action"`          // set | unset
+	Action string `json:"action"` // set | unset
 	Player string `json:"player"`
 	Node   string `json:"node"`
 	Value  *bool  `json:"value,omitempty"` // set only; nil => true (grant)

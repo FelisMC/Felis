@@ -879,6 +879,94 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /api/v1/internal/op-login/pending:
+    get:
+      tags: [account-internal]
+      operationId: opLoginPending
+      summary: List live pending op.console login requests, oldest first (spec §B).
+      description: >
+        Internal-only. Velocity polls it and pushes waiting requests to online admins,
+        who approve one with /felis web op approve <id>. No pending request is secret
+        to the operator crew.
+      x-felis-face: [internal]
+      x-felis-tier: service
+      security: [{ serviceToken: [] }]
+      responses:
+        '200':
+          description: The pending requests awaiting an in-game vouch.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [pending]
+                properties:
+                  pending:
+                    type: array
+                    items:
+                      type: object
+                      required: [request_id, username, email, created_at]
+                      properties:
+                        request_id: { type: string }
+                        username: { type: string }
+                        email: { type: string }
+                        created_at: { type: string, format: date-time }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/internal/op-login/{id}/approve:
+    post:
+      tags: [account-internal]
+      operationId: opLoginApprove
+      summary: Record an in-game admin's vouch for a pending op.console login (spec §B).
+      description: >
+        Internal-only second factor: velocity submits the online-mode UUID of the
+        in-game admin running /felis web op approve. The API resolves it to a linked
+        role=admin account (else 403 not_admin) and flips the request approved. A
+        missing or no-longer-pending request is 404. Self-approval is allowed — an
+        online staff member vouching as their own admin identity is a genuine second
+        factor distinct from the mailbox.
+      x-felis-face: [internal]
+      x-felis-tier: service
+      security: [{ serviceToken: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [approver_uuid]
+              properties:
+                approver_uuid: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The vouch was recorded; the request is now approved.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [approved]
+                properties:
+                  approved: { type: boolean, const: true }
+        '400':
+          description: approver_uuid is required (bad_request).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The approver is not a linked administrator (not_admin).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: No pending operator login with that id (op_login_not_found).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   # ----------------------------------------------------- external: servers ---
   /api/v1/servers/{name}/wake:
     post:
@@ -1431,18 +1519,22 @@ paths:
           $ref: '#/components/responses/NotFound'
 
   # -------------------------------------------------- external: local auth ---
-  /api/v1/auth/login:
+  /api/v1/auth/options:
     post:
       tags: [auth]
-      operationId: login
-      summary: Log in with a local username + password (op.console).
+      operationId: authOptions
+      summary: Identifier-first login discovery — which methods can this email use (spec §B, #71).
       description: >-
-        Verifies a username+password against the users row and, on success, mints
-        a host-only session cookie (spec §B). Mounted Public — there is no prior
-        principal — but local auth must be enabled (local_auth_enabled), so a
-        deployment fronted entirely by Zero Trust never accepts a local password.
-        Every failure returns the same vague invalid_credentials after a uniform
-        bcrypt compare, so usernames cannot be enumerated by response or timing.
+        Public, pre-session discovery for the SPA's identifier-first form: given a typed
+        email, report which console login methods the account can use (passkey and/or
+        email-OTP) so the UI prompts for the right authenticator. This is the deliberate
+        counter-slice to the anti-enumeration login doors — the ONE sanctioned place
+        account existence is disclosed, so an unknown address returns an empty methods
+        array. It never reveals staffness: methods are computed identically for every
+        resolved account (no role branch), so a staff and a player address in the same
+        credential state return byte-identical bodies. passkey is offered only when a
+        verifier is wired. Sends no mail and mutates nothing; not rate-limited at the app
+        layer (volumetric abuse is bounded at the edge). Gated on local_auth_enabled.
       x-felis-face: [external]
       x-felis-tier: public
       security: []
@@ -1452,37 +1544,521 @@ paths:
           application/json:
             schema:
               type: object
-              required: [username, password]
+              required: [email]
               properties:
-                username: { type: string }
-                password: { type: string, format: password }
+                email: { type: string, format: email }
       responses:
         '200':
-          description: Session established; the cookie is set on the response.
+          description: >-
+            The login methods available for the address, in a deterministic order
+            (passkey before email_otp). An empty array means no verified account.
           content:
             application/json:
               schema:
                 type: object
-                required: [user_id, role, must_change_password]
+                required: [methods]
                 properties:
-                  user_id: { type: string }
-                  role:
-                    type: string
-                    enum: [user, admin]
-                  must_change_password:
-                    type: boolean
-                    description: >-
-                      True when this account still owes its first-login password
-                      change; the panel routes straight to the change-password card.
+                  methods:
+                    type: array
+                    items: { type: string, enum: [passkey, email_otp] }
         '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          description: Invalid username or password (vague by design).
+          description: A valid email is required (bad_request).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '403':
-          description: Local password login is disabled on this deployment.
+          description: Local session login is disabled on this deployment (local_auth_disabled).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '415':
+          description: Request body was not application/json.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/auth/passkey/login/begin:
+    post:
+      tags: [auth]
+      operationId: passkeyLoginBegin
+      summary: Begin a passwordless passkey (WebAuthn) login (spec §14, §B).
+      description: >-
+        First leg of the public, pre-session passkey assertion door: the caller
+        supplies the email that selects the account and, on success, receives the raw
+        PublicKeyCredentialRequestOptions to hand to navigator.credentials.get(). The
+        matching challenge is stashed server-side and redeemed by finish. Mounted
+        Public (no prior principal) and gated on local_auth_enabled. An unknown
+        address and a known account with no enrolled passkey both return the SAME 400
+        no_passkey, so the door is not an existence oracle; a per-recipient cooldown
+        (shared shape with the email-OTP and op-login doors) throttles probing.
+      x-felis-face: [external]
+      x-felis-tier: public
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        '200':
+          description: >-
+            The WebAuthn assertion options (PublicKeyCredentialRequestOptions), passed
+            through verbatim from the authenticator library for the browser to consume.
+            The body is the WebAuthn standard shape and is not modelled here.
+          content:
+            application/json:
+              schema: { type: object, additionalProperties: true }
+        '400':
+          description: >-
+            Invalid email (bad_request); or no passkey is enrolled for the account, or
+            the address is unknown — indistinguishable by design (no_passkey); or the
+            authenticator library could not start the ceremony (passkey_login_failed).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: Local session login is disabled on this deployment (local_auth_disabled).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '415':
+          description: Request body was not application/json.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: A passkey login for this recipient was started too recently (otp_resend_cooldown).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: No passkey verifier is wired on this deployment (passkey_unavailable).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/auth/passkey/login/finish:
+    post:
+      tags: [auth]
+      operationId: passkeyLoginFinish
+      summary: Complete a passkey (WebAuthn) login and mint a session (spec §14, §B).
+      description: >-
+        Second leg of the public passkey door: the caller returns the email (to
+        re-select the account) and the raw navigator.credentials.get() assertion. The
+        stashed login challenge is consumed atomically and the assertion is verified
+        against it; on success a host-only felis_session cookie is minted. Both players
+        and staff may log in this way — a passkey is a two-factor authenticator
+        (possession + user verification), strong enough to stand alone without the
+        in-game approval op-login requires. Every failure mode (unknown address, no
+        live challenge, expired challenge, bad assertion) collapses into one uniform
+        passkey_login_invalid, so the door reveals nothing.
+      x-felis-face: [external]
+      x-felis-tier: public
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, assertion]
+              properties:
+                email: { type: string, format: email }
+                assertion:
+                  type: object
+                  additionalProperties: true
+                  description: >-
+                    The raw PublicKeyCredential from navigator.credentials.get(),
+                    passed to the verifier verbatim (WebAuthn standard shape).
+      responses:
+        '200':
+          description: Assertion verified; a host-only session cookie is set on the response.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user_id, role]
+                properties:
+                  user_id: { type: string }
+                  role: { type: string, enum: [user, admin] }
+        '400':
+          description: >-
+            Invalid email or missing assertion (bad_request); or the login could not be
+            completed — unknown address, no live or expired challenge, or a failed
+            assertion, all uniform (passkey_login_invalid).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: Local session login is disabled on this deployment (local_auth_disabled).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '415':
+          description: Request body was not application/json.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: No passkey verifier is wired on this deployment (passkey_unavailable).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/auth/email/start:
+    post:
+      tags: [auth]
+      operationId: loginEmailStart
+      summary: Begin a passwordless email-OTP login — mail a one-time code (spec §B).
+      description: >-
+        Public, pre-session console door: the caller supplies an email and, if it
+        resolves to a verified account, a one-time code is mailed under the login
+        purpose. An address with no account returns the SAME 202 with no code minted,
+        and the per-recipient cooldown is kept on that path too, so probing reveals
+        nothing (existence is learnt only at the sanctioned /auth/options oracle).
+        Gated on local_auth_enabled.
+      x-felis-face: [external]
+      x-felis-tier: public
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        '202':
+          description: >-
+            Accepted (neutral): a code was mailed if the address has a verified
+            account; the response is identical either way.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sent, expires_at]
+                properties:
+                  sent: { type: boolean, const: true }
+                  expires_at: { type: string, format: date-time }
+        '400':
+          description: A valid email is required (bad_request).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: Local session login is disabled on this deployment (local_auth_disabled).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '415':
+          description: Request body was not application/json.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: A code for this recipient was requested too recently (otp_resend_cooldown).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/auth/email/verify:
+    post:
+      tags: [auth]
+      operationId: loginEmailVerify
+      summary: Redeem an email-OTP login code into a session (spec §B).
+      description: >-
+        Public, pre-session: resolves the address to an account, verifies the code
+        under the login purpose, and on success mints a host-only felis_session. An
+        unknown address, a wrong or expired code, and an attempt-exhausted code all
+        return the IDENTICAL 400 invalid_code, so the door is not an existence or
+        lockout oracle. Staff are refused (403) — but only AFTER a valid code is
+        redeemed, so only the account owner can ever reach that refusal.
+      x-felis-face: [external]
+      x-felis-tier: public
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, code]
+              properties:
+                email: { type: string, format: email }
+                code: { type: string }
+      responses:
+        '200':
+          description: Code accepted; a host-only session cookie is set on the response.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user_id, role]
+                properties:
+                  user_id: { type: string }
+                  role: { type: string, enum: [user, admin] }
+        '400':
+          description: >-
+            A valid email and code are required (bad_request); or the code is wrong,
+            expired, or exhausted (invalid_code, uniform with an unknown address).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: >-
+            Local session login is disabled (local_auth_disabled), or the account is
+            staff and must sign in at the operator console (staff_account).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '415':
+          description: Request body was not application/json.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/auth/op-login/start:
+    post:
+      tags: [auth]
+      operationId: opLoginStart
+      summary: Begin an op.console staff login — mail an OTP, open an approval request (spec §B).
+      description: >-
+        Public, pre-session first leg of the two-factor operator door: resolves the
+        staff address, opens an op_login request, and mails a one-time code under the
+        op_login purpose, returning the request handle the browser polls. A non-staff
+        or unknown address gets the SAME 202 with a random, non-persisted handle and no
+        mail, so this never becomes a staff-enumeration oracle. Gated on
+        local_auth_enabled.
+      x-felis-face: [external]
+      x-felis-tier: public
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        '202':
+          description: >-
+            Accepted (neutral): a request handle to poll. For a staff address a code
+            was mailed and the handle is real; otherwise the handle is a random no-op.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [request_id, expires_at]
+                properties:
+                  request_id: { type: string }
+                  expires_at: { type: string, format: date-time }
+        '400':
+          description: A valid email is required (bad_request).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: Local session login is disabled on this deployment (local_auth_disabled).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '415':
+          description: Request body was not application/json.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: A code for this recipient was requested too recently (otp_resend_cooldown).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/auth/op-login/status/{id}:
+    get:
+      tags: [auth]
+      operationId: opLoginStatus
+      summary: Poll whether an op.console login request has been approved in-game (spec §B).
+      description: >-
+        Public, pre-session read the browser polls after start. Returns approved:true
+        only for a genuinely approved, live, unconsumed request; every other case —
+        unknown, expired, denied, or already-consumed handle — reads approved:false, so
+        a fabricated handle polls false forever and only an in-game admin vouch can flip
+        it true.
+      x-felis-face: [external]
+      x-felis-tier: public
+      security: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The approval state of the request handle.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [approved]
+                properties:
+                  approved: { type: boolean }
+        '403':
+          description: Local session login is disabled on this deployment (local_auth_disabled).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/auth/op-login/finish:
+    post:
+      tags: [auth]
+      operationId: opLoginFinish
+      summary: Redeem an approved op.console request plus its mailed code into a staff session (spec §B).
+      description: >-
+        Public, pre-session final leg: mints a host-only staff session only when BOTH
+        factors have landed — the request is approved-and-live AND the mailed code
+        verifies. Every failure (unknown handle, not-yet-approved, wrong or locked code,
+        lost race) collapses into one uniform 400 op_login_invalid, so a code-less
+        caller learns nothing. Admin is re-asserted before the session is issued.
+      x-felis-face: [external]
+      x-felis-tier: public
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [request_id, code]
+              properties:
+                request_id: { type: string }
+                code: { type: string }
+      responses:
+        '200':
+          description: Both factors proven; a host-only session cookie is set on the response.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user_id, role]
+                properties:
+                  user_id: { type: string }
+                  role: { type: string, enum: [user, admin] }
+        '400':
+          description: >-
+            request_id and code are required (bad_request); or the login could not be
+            completed — unknown handle, not approved, wrong or locked code, or lost
+            race, all uniform (op_login_invalid).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: >-
+            Local session login is disabled (local_auth_disabled), or the resolved
+            account is not an operator (staff_account).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '415':
+          description: Request body was not application/json.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/auth/setup/redeem:
+    post:
+      tags: [auth]
+      operationId: setupRedeem
+      summary: Redeem a one-time setup token into a lockdown session (spec §B).
+      description: >-
+        Public, pre-session first-run door: consumes the one-time setup token minted by
+        the felis TUI (stored and looked up by SHA-256 hash, like session cookies),
+        mints a host-only felis_session, and returns the remaining setup steps so the
+        SPA can drive the wizard. An unknown, consumed, or expired token returns a
+        uniform 400 setup_token_invalid. Gated on local_auth_enabled.
+      x-felis-face: [external]
+      x-felis-tier: public
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: { type: string }
+      responses:
+        '200':
+          description: Token redeemed; a session cookie is set and the setup state is returned.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user_id, username, role, email, email_verified, has_passkey, setup_required]
+                properties:
+                  user_id: { type: string }
+                  username: { type: string }
+                  role: { type: string, enum: [user, admin] }
+                  email: { type: string }
+                  email_verified: { type: boolean }
+                  has_passkey: { type: boolean }
+                  setup_required: { type: boolean }
+        '400':
+          description: >-
+            A token is required (bad_request), or it is unknown, already used, or
+            expired (setup_token_invalid).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: Local session login is disabled on this deployment (local_auth_disabled).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '415':
+          description: Request body was not application/json.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/auth/setup/status:
+    get:
+      tags: [auth]
+      operationId: setupStatus
+      summary: Report the caller's own setup progress (spec §B).
+      description: >-
+        App-tier read the SPA polls after each setup wizard step (email verify, passkey
+        enroll) to decide whether the first-run lockdown can lift. It reads only the
+        principal's own state and is reachable during setup lockdown (the rest of the
+        API is fenced until setup completes).
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: The caller's current setup state.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [user_id, username, role, email, email_verified, has_passkey, setup_required]
+                properties:
+                  user_id: { type: string }
+                  username: { type: string }
+                  role: { type: string, enum: [user, admin] }
+                  email: { type: string }
+                  email_verified: { type: boolean }
+                  has_passkey: { type: boolean }
+                  setup_required: { type: boolean }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The principal's user row was not found (not_found).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -1509,57 +2085,6 @@ paths:
                 required: [ok]
                 properties:
                   ok: { type: boolean, const: true }
-
-  /api/v1/auth/change-password:
-    post:
-      tags: [auth]
-      operationId: changePassword
-      summary: Change the caller's local password (forced first-login or rotation).
-      description: >-
-        Re-verifies the caller's current password, stores a new bcrypt hash, clears
-        must_change_password, and revokes the account's OTHER sessions while keeping
-        the current one (spec §B). Reachable while must_change_password is set, so a
-        forced first-login change can complete — the rest of the API is fenced off
-        until it does. The session authenticates the caller; re-asking the current
-        password additionally blocks a hijacked session from silently rotating the
-        credential.
-      x-felis-face: [external]
-      x-felis-tier: app
-      security: [{ sessionCookie: [] }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [current_password, new_password]
-              properties:
-                current_password: { type: string, format: password }
-                new_password:
-                  type: string
-                  format: password
-                  minLength: 8
-                  maxLength: 72
-                  description: 8–72 bytes; 72 is bcrypt's hard input limit.
-      responses:
-        '200':
-          description: Password changed; other sessions revoked.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [ok]
-                properties:
-                  ok: { type: boolean, const: true }
-        '400':
-          description: Weak password, or the new password equals the current one.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Error' }
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
 
   /api/v1/auth/bind:
     post:
@@ -2054,37 +2579,6 @@ paths:
                 properties:
                   id: { type: string }
                   disabled: { type: boolean }
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403':
-          $ref: '#/components/responses/Forbidden'
-        '404':
-          $ref: '#/components/responses/NotFound'
-
-  /api/v1/users/{id}/reset-password:
-    post:
-      tags: [users]
-      operationId: resetPassword
-      summary: >-
-        Generate a high-entropy random password, deliver it to the user's email, and
-        force a first-login change (admin only). No request body — the server owns
-        entropy. The password is never returned to the admin; only the target email is echoed.
-      x-felis-face: [external]
-      x-felis-tier: owner
-      security: [{ accessJWT: [] }]
-      parameters:
-        - { name: id, in: path, required: true, schema: { type: string } }
-      responses:
-        '200':
-          description: Password reset. All existing sessions revoked. Password sent to the user's email.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [ok, email]
-                properties:
-                  ok: { type: boolean, const: true }
-                  email: { type: string, description: "The recipient email (empty if the user has none)." }
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':

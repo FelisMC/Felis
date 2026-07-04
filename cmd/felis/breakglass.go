@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,13 +13,13 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"felis.lolicon.best/internal/api"
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/store"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"golang.org/x/crypto/bcrypt"
 )
 
 // `felis breakGlass` is the local break-glass emergency console (spec §B). Its
@@ -64,27 +66,31 @@ import (
 // bare Enter) keeps the unverified root override from happening by reflex.
 const breakGlassOverrideToken = "OVERRIDE"
 
-// bootstrapPasswordAlphabet excludes visually ambiguous glyphs (0/O, 1/I/l) so a
-// human can transcribe a generated one-time password off a terminal without error.
-const bootstrapPasswordAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
-
-// ownerStore is the minimal repo surface the break-glass console needs.
+// ownerStore is the minimal repo surface the break-glass / setup console needs.
 // *api.PGRepo satisfies it; the unit tests drive a fake, so the core logic
-// (authentication, provisioning, accountability audit) is exercised without a
+// (recovery, provisioning, accountability audit) is exercised without a
 // database or a terminal.
 type ownerStore interface {
-	// AdminExists reports whether any authenticatable staff account already exists.
+	// AdminExists reports whether any admin account already exists.
 	// It is the bootstrap-vs-recovery switch.
 	AdminExists(ctx context.Context) (bool, error)
-	// UserByUsername loads a staff login projection for credential verification.
+	// UserByUsername loads a staff login projection.
 	UserByUsername(ctx context.Context, username string) (*api.StaffUser, error)
-	UpsertOwner(ctx context.Context, id, username, email, passwordHash string, mustChange bool) error
+	UpsertOwner(ctx context.Context, id, username, email string) error
 	// InsertOperator mints a NEW Operator staff account. Unlike UpsertOwner it is
 	// insert-only: a username already taken is a conflict (api.ErrConflict), never a
 	// silent reset, so adding an Operator can never clobber the Owner or an existing
 	// Operator. The row is role=admin, identical in shape to the Owner — Felis has no
-	// separate operator DB role (migration 0003: staff = role=admin WITH a hash).
-	InsertOperator(ctx context.Context, id, username, email, passwordHash string, mustChange bool) error
+	// separate operator DB role (migration 0003: staff = role=admin).
+	InsertOperator(ctx context.Context, id, username, email string) error
+	// RedeemLinkCodeForOwner consumes an in-game link code and creates-or-promotes
+	// the bound user to role='admin' (Owner). It is the `felis setup` MC-bind path:
+	// the operator enters limbo, runs /link, types the code here, and the bound
+	// account becomes the passwordless Owner. Unlike RedeemPlayerBindCode it does NOT
+	// refuse staff — setup deliberately elevates the bound account.
+	RedeemLinkCodeForOwner(ctx context.Context, newUserID, code string, now time.Time) (userID, mcUUID, authSource string, err error)
+	// CreateSetupToken mints a one-time setup token for first-web-login bootstrap.
+	CreateSetupToken(ctx context.Context, tokenHash, userID string, expiresAt time.Time) error
 	SetSetting(ctx context.Context, key string, value []byte) error
 	// Audit records the break-glass accountability row.
 	Audit(ctx context.Context, e api.AuditEntry) error
@@ -164,20 +170,14 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "\nfelis breakGlass: Owner account %q provisioned; local-password login is ENABLED.\n", res.username)
 		}
 		fmt.Fprintf(stdout, "Recorded as %q (mode: %s, os user: %s).\n", res.accountable, res.mode, res.osUser)
-		if res.displayPassword != "" {
-			// A one-time password was generated (recovery / root override). It is shown,
-			// never persisted: only the bcrypt hash reached the database.
-			fmt.Fprintf(stdout, "One-time password (you MUST change it on first login):\n\n    %s\n\n", res.displayPassword)
-		} else {
-			// Bootstrap: the operator typed the password themselves, so we do NOT echo it
-			// back into scrollback.
-			fmt.Fprintln(stdout, "Log in with the password you just entered (you MUST change it on first login).")
+		if res.setupTokenURL != "" {
+			fmt.Fprintf(stdout, "One-time setup URL (opens a lockdown session to verify email / enroll passkey):\n\n    %s\n\n", res.setupTokenURL)
 		}
 		if res.auditWarning != "" {
 			fmt.Fprintf(stdout, "WARNING: the accountability audit row was NOT written: %s\n", res.auditWarning)
 		}
 		if url := adminLoginURL(res.rootDomain, res.adminHostname); url != "" {
-			fmt.Fprintf(stdout, "Log in at %s with that username and password.\n", url)
+			fmt.Fprintf(stdout, "Admin console: %s\n", url)
 		}
 	}
 
@@ -229,54 +229,12 @@ func newOwnerID() string {
 	return "usr-" + hex.EncodeToString(b[:])
 }
 
-// generateBootstrapPassword returns a fresh one-time password from the unambiguous
-// alphabet. It rejection-samples to avoid modulo bias, so every position is uniform
-// over the alphabet. 20 chars over a 57-symbol alphabet is ~116 bits — far more than
-// the must-change credential needs, and it is rotated on first login regardless.
-func generateBootstrapPassword() (string, error) {
-	const n = 20
-	// Largest multiple of the alphabet size that fits in a byte; bytes at or above it
-	// are discarded so the surviving values map uniformly (no modulo bias).
-	limit := byte(256 - (256 % len(bootstrapPasswordAlphabet)))
-	out := make([]byte, 0, n)
-	var b [1]byte
-	for len(out) < n {
-		if _, err := rand.Read(b[:]); err != nil {
-			return "", fmt.Errorf("generate bootstrap password: %w", err)
-		}
-		if b[0] >= limit {
-			continue
-		}
-		out = append(out, bootstrapPasswordAlphabet[int(b[0])%len(bootstrapPasswordAlphabet)])
-	}
-	return string(out), nil
-}
-
-// validateOwnerPassword mirrors api.validateNewPassword (handlers_auth.go): a
-// break-glass credential must satisfy the SAME 8–72-byte rule the panel's own
-// change-password enforces, so an operator can never set a password here that the
-// web change-password flow would later reject. 72 is bcrypt's hard input limit.
-func validateOwnerPassword(pw string) error {
-	if len(pw) < 8 {
-		return errors.New("password must be at least 8 characters")
-	}
-	if len(pw) > 72 {
-		return errors.New("password must be at most 72 bytes")
-	}
-	return nil
-}
-
-// authenticateAdmin verifies a typed credential against an existing admin account
-// for recovery-mode attribution. matched is the stored username on success.
-//
-// ok==false with err==nil is NOT a failure to surface — it means the credential did
-// not match any admin password. The caller offers an explicit root override instead
-// of refusing, because break-glass must still recover when no admin credential can
-// be produced (a forgotten password is the canonical reason the web login is
-// unreachable in the first place). Only a real datastore fault returns err.
-func authenticateAdmin(ctx context.Context, s ownerStore, username, password string) (matched string, ok bool, err error) {
+// authenticateAdmin resolves a typed admin username for recovery-mode attribution.
+// Password verification is gone (passwordless design); Phase 3 replaces this with
+// email-OTP recovery. For now it confirms the named admin exists.
+func authenticateAdmin(ctx context.Context, s ownerStore, username string) (matched string, ok bool, err error) {
 	username = strings.TrimSpace(username)
-	if username == "" || password == "" {
+	if username == "" {
 		return "", false, nil
 	}
 	u, err := s.UserByUsername(ctx, username)
@@ -286,70 +244,47 @@ func authenticateAdmin(ctx context.Context, s ownerStore, username, password str
 	if err != nil {
 		return "", false, err
 	}
-	// Only an admin row carrying a bcrypt hash is an authenticatable staff identity;
-	// a player row (role=user, hash NULL → empty PasswordHash) can never attribute a
-	// break-glass action.
-	if u.Role != "admin" || u.PasswordHash == "" {
-		return "", false, nil
-	}
-	if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(password)) != nil {
+	if u.Role != "admin" {
 		return "", false, nil
 	}
 	return u.Username, true, nil
 }
 
-// provisionOwner mints or resets the single Owner account direct-to-Postgres with
-// the given (already-validated-by-the-caller) password. The account is created with
-// must_change_password=true, which is load-bearing: it is what arms the API's
-// lockdown middleware so the Owner can do nothing but change the password on first
-// login. Only the bcrypt hash reaches the database; the plaintext never does.
-func provisionOwner(ctx context.Context, s ownerStore, username, email, password string) error {
+// provisionOwner mints or resets the single Owner account direct-to-Postgres,
+// passwordless. The account is role=admin with no password — the Owner completes
+// passwordless login setup via the web setup-token flow after `felis setup`.
+func provisionOwner(ctx context.Context, s ownerStore, username, email string) error {
 	username = strings.TrimSpace(username)
 	if username == "" {
 		return errors.New("owner username is required")
-	}
-	if err := validateOwnerPassword(password); err != nil {
-		return err
 	}
 	id := newOwnerID()
 	if id == "" {
 		return errors.New("generate owner id: entropy source failed")
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return fmt.Errorf("hash owner password: %w", err)
-	}
-	if err := s.UpsertOwner(ctx, id, username, strings.TrimSpace(email), string(hash), true); err != nil {
+	if err := s.UpsertOwner(ctx, id, username, strings.TrimSpace(email)); err != nil {
 		return fmt.Errorf("write owner: %w", err)
 	}
 	return nil
 }
 
 // provisionOperator mints a NEW Operator staff account direct-to-Postgres. Like the
-// Owner it requires must_change_password=true but carries role='admin' (the single
-// above-admin 'owner' role was added in migration 0011 and is exclusive to the first
-// account — every subsequent staff is a plain admin). UNLIKE provisionOwner, which
-// username conflict, this is insert-only: a username already taken returns
-// api.ErrConflict rather than overwriting a live account, so adding an Operator can
-// never silently clobber the Owner's or another Operator's credential. Only the
-// bcrypt hash reaches the database; the plaintext never does.
-func provisionOperator(ctx context.Context, s ownerStore, username, email, password string) error {
+// Owner it is role=admin and passwordless — Felis has no separate operator DB role,
+// so an Operator is simply an additional staff admin (migration 0003). UNLIKE
+// provisionOwner, which upserts the single Owner and resets it on a username
+// conflict, this is insert-only: a username already taken returns api.ErrConflict
+// rather than overwriting a live account, so adding an Operator can never silently
+// clobber the Owner's or another Operator's account.
+func provisionOperator(ctx context.Context, s ownerStore, username, email string) error {
 	username = strings.TrimSpace(username)
 	if username == "" {
 		return errors.New("operator username is required")
-	}
-	if err := validateOwnerPassword(password); err != nil {
-		return err
 	}
 	id := newOwnerID()
 	if id == "" {
 		return errors.New("generate operator id: entropy source failed")
 	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		return fmt.Errorf("hash operator password: %w", err)
-	}
-	if err := s.InsertOperator(ctx, id, username, strings.TrimSpace(email), string(hash), true); err != nil {
+	if err := s.InsertOperator(ctx, id, username, strings.TrimSpace(email)); err != nil {
 		if errors.Is(err, api.ErrConflict) {
 			// Wrap %w so errors.Is(err, api.ErrConflict) still holds — the TUI can render
 			// a "name already taken" message — while keeping a clear human string.
@@ -381,48 +316,82 @@ type breakGlassOp struct {
 	osUser         string // $SUDO_USER (or "root"); recorded in the payload
 	ownerUsername  string
 	ownerEmail     string
-	ownerPassword  string // typed (bootstrap); "" => generate a one-time password
 	attemptedAdmin string // recovery / override: the admin username the operator typed
 }
 
 // breakGlassOutcome is what performBreakGlass reports back to the TUI.
 type breakGlassOutcome struct {
-	displayPassword string // non-empty only when a one-time password was generated
-	auditErr        error  // non-nil if the accountability row could not be written
+	setupTokenURL string // non-empty when setup minted a one-time first-login URL
+	auditErr      error  // non-nil if the accountability row could not be written
 }
 
 // performBreakGlass executes a resolved break-glass operation: provision (or reset)
 // the Owner, enable local-password login, then record a best-effort accountability
-// audit row. A typed ownerPassword (bootstrap) is used as-is; an empty one (recovery
-// / root override) is replaced with a generated one-time password returned for
-// one-time display. The audit write is best-effort: a logging failure is reported
-// via auditErr but does NOT fail the recovery — break-glass must still work when the
-// audit sink is unhappy.
+// audit row. The Owner is passwordless — the setup-token flow handles first-login
+// setup. The audit write is best-effort: a logging failure is reported via auditErr
+// but does NOT fail the recovery — break-glass must still work when the audit sink
+// is unhappy.
 func performBreakGlass(ctx context.Context, s ownerStore, op breakGlassOp) (breakGlassOutcome, error) {
-	password := op.ownerPassword
-	generated := false
-	if password == "" {
-		p, err := generateBootstrapPassword()
-		if err != nil {
-			return breakGlassOutcome{}, err
-		}
-		password, generated = p, true
-	}
-	if err := provisionOwner(ctx, s, op.ownerUsername, op.ownerEmail, password); err != nil {
+	if err := provisionOwner(ctx, s, op.ownerUsername, op.ownerEmail); err != nil {
 		return breakGlassOutcome{}, err
 	}
-	// Record accountability the instant the credential changes — BEFORE enabling
-	// local auth, which can still fail. Auditing only after both writes would let a
-	// failed enableLocalAuth leave a just-reset credential with no "who did it" row;
-	// the audit is best-effort, so doing it first never blocks the recovery.
+	// Record accountability the instant the account is written — BEFORE enabling
+	// local auth, which can still fail. The audit is best-effort, so doing it first
+	// never blocks the recovery.
 	out := breakGlassOutcome{auditErr: auditBreakGlass(ctx, s, op)}
-	if generated {
-		out.displayPassword = password
-	}
 	if err := enableLocalAuth(ctx, s); err != nil {
 		return breakGlassOutcome{}, err
 	}
 	return out, nil
+}
+
+// setupTokenTTL bounds how long a one-time setup URL is valid. The operator opens
+// it right after setup completes, so a generous-but-bounded window is enough.
+const setupTokenTTL = 30 * time.Minute
+
+// newSetupToken returns a fresh opaque setup token (256 bits, URL-safe) and its
+// sha-256 hex hash. Only the hash is persisted; the raw value rides in the URL.
+func newSetupToken() (raw, hash string, err error) {
+	var b [32]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", "", fmt.Errorf("generate setup token: %w", err)
+	}
+	raw = base64.RawURLEncoding.EncodeToString(b[:])
+	sum := sha256.Sum256([]byte(raw))
+	return raw, hex.EncodeToString(sum[:]), nil
+}
+
+// performSetupMCBind is the `felis setup` Owner-establishment path: the operator
+// binds their Minecraft account via an in-game /link code, the bound user is
+// promoted to role='admin' (passwordless Owner), and a one-time setup URL is
+// minted for the first web login where the Owner verifies email / enrolls a
+// passkey. adminHostname is the op.console host the URL points at.
+func performSetupMCBind(ctx context.Context, s ownerStore, code, adminHostname string) (breakGlassOutcome, error) {
+	code = strings.TrimSpace(strings.ToUpper(code))
+	if code == "" {
+		return breakGlassOutcome{}, errors.New("link code is required")
+	}
+	newID := newOwnerID()
+	if newID == "" {
+		return breakGlassOutcome{}, errors.New("generate owner id: entropy source failed")
+	}
+	userID, _, _, err := s.RedeemLinkCodeForOwner(ctx, newID, code, time.Now())
+	if err != nil {
+		return breakGlassOutcome{}, fmt.Errorf("bind minecraft account: %w", err)
+	}
+	raw, hash, err := newSetupToken()
+	if err != nil {
+		return breakGlassOutcome{}, err
+	}
+	if err := s.CreateSetupToken(ctx, hash, userID, time.Now().Add(setupTokenTTL)); err != nil {
+		return breakGlassOutcome{}, fmt.Errorf("mint setup token: %w", err)
+	}
+	host := strings.TrimSpace(adminHostname)
+	if host == "" {
+		host = "op.console.localhost"
+	}
+	url := "https://" + host + "/setup?token=" + raw
+	return breakGlassOutcome{setupTokenURL: url}, nil
 }
 
 // auditBreakGlass writes the break-glass accountability row. The actor is the
@@ -454,9 +423,7 @@ func auditBreakGlass(ctx context.Context, s ownerStore, op breakGlassOp) error {
 }
 
 // performAddOperator mints a NEW Operator account and records a best-effort
-// accountability row. It mirrors performBreakGlass — a typed password is used as-is,
-// an empty one is replaced with a generated one-time password returned for one-time
-// display (the common case: hand a fresh credential to the new operator) — with two
+// accountability row. It mirrors performBreakGlass — passwordless — with two
 // deliberate differences. (1) It provisions insert-only (provisionOperator), so it
 // can never reset an existing account the way the Owner upsert does. (2) It does NOT
 // touch local_auth_enabled: adding an Operator presupposes an already-configured,
@@ -465,22 +432,10 @@ func auditBreakGlass(ctx context.Context, s ownerStore, op breakGlassOp) error {
 // the Owner break-glass thread alone. The audit is best-effort and written only after
 // a successful provision; a conflict mints nothing, so there is nothing to attribute.
 func performAddOperator(ctx context.Context, s ownerStore, op breakGlassOp) (breakGlassOutcome, error) {
-	password := op.ownerPassword
-	generated := false
-	if password == "" {
-		p, err := generateBootstrapPassword()
-		if err != nil {
-			return breakGlassOutcome{}, err
-		}
-		password, generated = p, true
-	}
-	if err := provisionOperator(ctx, s, op.ownerUsername, op.ownerEmail, password); err != nil {
+	if err := provisionOperator(ctx, s, op.ownerUsername, op.ownerEmail); err != nil {
 		return breakGlassOutcome{}, err
 	}
 	out := breakGlassOutcome{auditErr: auditAddOperator(ctx, s, op)}
-	if generated {
-		out.displayPassword = password
-	}
 	return out, nil
 }
 
@@ -514,17 +469,17 @@ func auditAddOperator(ctx context.Context, s ownerStore, op breakGlassOp) error 
 // breakGlassResult is what the TUI hands back to cmdBreakGlass for the durable
 // post-exit summary. provisioned is false on cancel.
 type breakGlassResult struct {
-	provisioned     bool
-	isOperator      bool // an Operator was added rather than the Owner provisioned
-	mode            string
-	accountable     string
-	osUser          string
-	username        string
-	displayPassword string // empty when the operator typed their own bootstrap password
-	auditWarning    string
-	rootDomain      string
-	adminHostname   string
-	panelURL        string
+	provisioned   bool
+	isOperator    bool // an Operator was added rather than the Owner provisioned
+	mode          string
+	accountable   string
+	osUser        string
+	username      string
+	setupTokenURL string // non-empty when setup minted a one-time first-login URL
+	auditWarning  string
+	rootDomain    string
+	adminHostname string
+	panelURL      string
 
 	// connection outcome (independent of provisioned)
 	connectMethod     connectMethod

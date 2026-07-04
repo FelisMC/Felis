@@ -2,15 +2,10 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
-	"log"
-	"math/big"
 	"net/http"
 	"strconv"
 	"strings"
-
-	"golang.org/x/crypto/bcrypt"
 )
 
 // ResetMailer delivers a freshly-generated admin-reset password to the user's
@@ -74,11 +69,9 @@ func (a *API) handleGetUser(w http.ResponseWriter, r *http.Request) {
 
 // createUserRequest is the admin create-user form.
 type createUserRequest struct {
-	Username   string `json:"username"`
-	Email      string `json:"email,omitempty"`
-	Role       string `json:"role"`
-	Password   string `json:"password"`
-	MustChange bool   `json:"must_change_password"`
+	Username string `json:"username"`
+	Email    string `json:"email,omitempty"`
+	Role     string `json:"role"`
 }
 
 // handleCreateUser is the admin-tier create-user endpoint (POST /users).
@@ -104,30 +97,10 @@ func (a *API) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate password: 8–72 bytes (bcrypt limit).
-	if len(body.Password) < 8 {
-		writeError(w, r, newError(http.StatusBadRequest, "weak_password",
-			"password must be at least 8 characters"))
-		return
-	}
-	if len(body.Password) > 72 {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
-			"password must be at most 72 characters"))
-		return
-	}
-
-	hash, err := bcrypt.GenerateFromPassword([]byte(body.Password), bcrypt.DefaultCost)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
 	u, err := a.Repo.CreateUser(r.Context(), CreateUserInput{
-		Username:     body.Username,
-		Email:        body.Email,
-		Role:         body.Role,
-		PasswordHash: string(hash),
-		MustChange:   body.MustChange,
+		Username: body.Username,
+		Email:    body.Email,
+		Role:     body.Role,
 	}, p.Email)
 	if err != nil {
 		if errors.Is(err, ErrConflict) {
@@ -281,79 +254,6 @@ func (a *API) handleDisableUser(w http.ResponseWriter, r *http.Request) {
 	}
 	a.audit(r, p.Email, action, id)
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "disabled": body.Disabled})
-}
-
-// handleResetPassword generates a high-entropy random password, stores its hash,
-// forces must_change_password, and delivers the plaintext to the user's email
-// (server-side log when no mailer is wired). The password is never returned to the
-// admin caller — the response carries only the target email, not the password.
-// (POST /users/{id}/reset-password). No request body — the server owns entropy.
-func (a *API) handleResetPassword(w http.ResponseWriter, r *http.Request) {
-	p := principalFromContext(r.Context())
-	id := r.PathValue("id")
-	if id == "" {
-		writeError(w, r, errBadRequest)
-		return
-	}
-
-	// Load user to get their email.
-	u, err := a.Repo.UserByID(r.Context(), id)
-	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			writeError(w, r, newError(http.StatusNotFound, "not_found", "user not found"))
-			return
-		}
-		writeError(w, r, err)
-		return
-	}
-
-	password, err := generateResetPassword()
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	if err := a.Repo.AdminResetPassword(r.Context(), id, string(hash)); err != nil {
-		writeError(w, r, err)
-		return
-	}
-
-	if a.ResetMailer != nil && u.Email != "" {
-		if err := a.ResetMailer.SendPasswordReset(r.Context(), u.Email, password); err != nil {
-			log.Printf("reset-password: mail delivery failed for %s: %v", u.Email, err)
-		}
-	} else {
-		log.Printf("reset-password: no ResetMailer configured; password for %s (%s): %s",
-			u.Username, id, password)
-	}
-
-	a.audit(r, p.Email, "user.reset_password", id)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":    true,
-		"email": u.Email,
-	})
-}
-
-// generateResetPassword produces a 20-character, high-entropy random password
-// drawn from alphanumerics plus a safe symbol set.
-func generateResetPassword() (string, error) {
-	const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*-_+=?"
-	const n = 20
-	b := make([]byte, n)
-	for i := range b {
-		idx, err := rand.Int(rand.Reader, big.NewInt(int64(len(chars))))
-		if err != nil {
-			return "", err
-		}
-		b[i] = chars[idx.Int64()]
-	}
-	return string(b), nil
 }
 
 // ---- quota admin ----

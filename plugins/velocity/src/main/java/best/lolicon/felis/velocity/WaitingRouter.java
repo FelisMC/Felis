@@ -94,6 +94,19 @@ public final class WaitingRouter {
         wakeAndWait(player, serverName, true);
     }
 
+    /**
+     * enqueueFromCommand parks a player who drove {@code /felis go <server>} from chat
+     * onto the server they named, then wakes it and lets {@link #tick()} transfer them
+     * when ready — the same shared waiting queue as host-based routing and the menu
+     * path, differing only in that it is NOT flagged {@code fromMenu}: a command-driven
+     * go has no felis-paper GUI tile to notify, so no {@code TransferReady} frame is
+     * emitted on readiness. The wake stays autostartPolicy-gated on the verified UUID
+     * exactly as the other origins, so this adds a new entry point, not a new authority.
+     */
+    void enqueueFromCommand(Player player, String serverName) {
+        wakeAndWait(player, serverName, false);
+    }
+
     @Subscribe
     public void onChooseInitialServer(PlayerChooseInitialServerEvent event) {
         Player player = event.getPlayer();

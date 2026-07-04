@@ -19,7 +19,7 @@ func TestWizardViewsFitTerminal(t *testing.T) {
 		msg  tea.Msg
 	}{
 		{"owner", preflightDoneMsg{}},
-		{"connect", ownerResultMsg{username: "owner", displayPassword: "hunter2pw"}},
+		{"connect", ownerResultMsg{username: "owner", setupTokenURL: "https://op.console.example.com/setup?token=t0ken"}},
 		{"summary", connectResultMsg{method: connectLocal, panelHostname: "panel.example.com"}},
 	}
 

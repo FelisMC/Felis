@@ -76,9 +76,9 @@ func TestProvisionCmdSelectsPathByOperation(t *testing.T) {
 		if _, ok := f.settings[api.LocalAuthEnabledKey]; ok {
 			t.Error("the operator path flipped local auth — only the Owner thread may")
 		}
-		// No password was typed, so a one-time credential is surfaced to hand off.
-		if msg.outcome.displayPassword == "" {
-			t.Error("want a generated one-time password to hand to the new operator")
+		// The provision is fully done: the audit row landed (no recoverable audit error).
+		if msg.outcome.auditErr != nil {
+			t.Errorf("operator provision recorded an audit error: %v", msg.outcome.auditErr)
 		}
 	})
 
@@ -171,7 +171,7 @@ func TestOwnerResultCmdCarriesIsOperator(t *testing.T) {
 	ctx := context.Background()
 
 	op := newOperatorModel(ctx, &fakeOwnerStore{}, "root")
-	op.username, op.displayPassword, op.mode, op.accountable = "ops", "pw", "recovery", "root"
+	op.username, op.mode, op.accountable = "ops", "recovery", "root"
 	if res := op.ownerResultCmd()().(ownerResultMsg); !res.isOperator {
 		t.Error("operator result.isOperator = false, want true")
 	}

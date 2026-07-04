@@ -61,6 +61,12 @@ type fakeRepo struct {
 	// player email OTPs (spec §B2). Keyed by row id; the verify path scans for the
 	// newest live (user, purpose) just as the PG query does.
 	otps map[string]*fakeEmailOTP
+	// op-login requests (spec §B op-login). opLogins mirrors op_login_requests keyed
+	// by id; the in-game approve/finish paths mutate status/consumed in place, and
+	// tests plant rows directly to drive the status/finish/pending-list paths.
+	opLogins map[string]*fakeOpLogin
+	// setup tokens (spec §B setup)
+	setupTokens map[string]fakeSetupToken
 	// username-collision reclaim (spec §B3). blacklist mirrors username_blacklist
 	// (mc_uuid -> barred), holds mirrors player_data_holds keyed by the held
 	// (squatter) mc_uuid — both keyed by UUID, matching the PG UNIQUE(mc_uuid)
@@ -141,6 +147,29 @@ type fakeLinkCode struct {
 	expiresAt  time.Time
 }
 
+// fakeOpLogin mirrors an op_login_requests row (spec §B op-login) at the granularity
+// the verifiable layer exercises: status ('pending'|'approved'|'denied') is the
+// projection of (approved_at, denied_at) the handler's status/finish gates read,
+// consumed mirrors consumed_at (the single-use guard), and createdAt orders the
+// pending list oldest-first (the PG ORDER BY created_at).
+type fakeOpLogin struct {
+	id        string
+	userID    string
+	email     string
+	status    string
+	consumed  bool
+	expiresAt time.Time
+	createdAt time.Time
+}
+
+// fakeSetupToken mirrors a setup_tokens row (spec §B setup): a one-time
+// lockdown-enrollment token. ConsumedAt is zero until the /setup flow redeems it.
+type fakeSetupToken struct {
+	TokenHash, UserID string
+	ExpiresAt         time.Time
+	ConsumedAt        time.Time
+}
+
 func newFakeRepo() *fakeRepo {
 	return &fakeRepo{
 		bySub: map[string]*ServerRecord{}, byName: map[string]*ServerRecord{},
@@ -151,17 +180,19 @@ func newFakeRepo() *fakeRepo {
 		claimOK: map[string]bool{},
 		seeded:  map[string]bool{}, aliases: map[string]string{},
 		linkCodes: map[string]fakeLinkCode{}, links: map[string]string{},
-		linkAuthSource: map[string]string{},
-		staff:          map[string]*StaffUser{},
-		sessions:       map[string]*fakeSession{},
-		settings:       map[string][]byte{},
-		otps:           map[string]*fakeEmailOTP{},
-		blacklist:      map[string]bool{},
-		holds:          map[string]fakeDataHold{},
-	passkeyCreds:      map[string]PasskeyCredential{},
-	passkeyChallenges: map[string]*fakePasskeyChallenge{},
-	fakeQuotas:        map[string]*QuotaView{},
-}
+		linkAuthSource:    map[string]string{},
+		staff:             map[string]*StaffUser{},
+		sessions:          map[string]*fakeSession{},
+		settings:          map[string][]byte{},
+		otps:              map[string]*fakeEmailOTP{},
+		opLogins:          map[string]*fakeOpLogin{},
+		setupTokens:       map[string]fakeSetupToken{},
+		blacklist:         map[string]bool{},
+		holds:             map[string]fakeDataHold{},
+		passkeyCreds:      map[string]PasskeyCredential{},
+		passkeyChallenges: map[string]*fakePasskeyChallenge{},
+		fakeQuotas:        map[string]*QuotaView{},
+	}
 }
 
 func (f *fakeRepo) ServerBySubdomain(_ context.Context, s string) (*ServerRecord, error) {
@@ -375,14 +406,19 @@ func (f *fakeRepo) DeleteAllPasskeyCredentialsForUser(_ context.Context, userID 
 }
 
 // fakePasskeyVerifier is the hermetic PasskeyVerifier: it performs no real attestation
-// crypto, so it exercises the enrollment STATE MACHINE (challenge persistence, consume,
-// conflict, audit) without go-webauthn. BeginRegistration returns a fixed options blob
-// and an opaque session marker; FinishRegistration returns the credential the test
-// preloaded, or a forced error when failErr is set (to drive the 400 path).
+// or assertion crypto, so it exercises the enrollment AND login STATE MACHINES (challenge
+// persistence, consume, conflict, audit, session mint) without go-webauthn.
+// BeginRegistration/BeginLogin return a fixed options blob and an opaque session marker;
+// FinishRegistration returns the credential the test preloaded and FinishLogin the
+// assertion it preloaded, or a forced error when failErr is set (to drive the finish 400
+// path). beginLoginErr drives BeginLogin's own failure branch — a user with no assertable
+// credential — which the login-begin handler maps to passkey_login_failed.
 type fakePasskeyVerifier struct {
-	options    json.RawMessage
-	credential VerifiedCredential
-	failErr    error
+	options       json.RawMessage
+	credential    VerifiedCredential
+	assertion     VerifiedAssertion
+	failErr       error
+	beginLoginErr error
 	// lastUser/lastSession capture what the handler passed, so a test can assert the
 	// stashed SessionData round-trips and the existing credentials reach the verifier.
 	lastUser    PasskeyUser
@@ -406,6 +442,28 @@ func (v *fakePasskeyVerifier) FinishRegistration(user PasskeyUser, sessionData [
 	}
 	return v.credential, nil
 }
+
+func (v *fakePasskeyVerifier) BeginLogin(user PasskeyUser) (json.RawMessage, []byte, error) {
+	v.lastUser = user
+	if v.beginLoginErr != nil {
+		return nil, nil, v.beginLoginErr
+	}
+	opts := v.options
+	if opts == nil {
+		opts = json.RawMessage(`{"publicKey":{"challenge":"YXNzZXJ0"}}`)
+	}
+	return opts, []byte("login-session:" + user.ID), nil
+}
+
+func (v *fakePasskeyVerifier) FinishLogin(user PasskeyUser, sessionData []byte, _ io.Reader) (VerifiedAssertion, error) {
+	v.lastUser = user
+	v.lastSession = sessionData
+	if v.failErr != nil {
+		return VerifiedAssertion{}, v.failErr
+	}
+	return v.assertion, nil
+}
+
 func (f *fakeRepo) UserInAllowlist(_ context.Context, n, u string) (bool, error) {
 	return f.allowlist[n][u], nil
 }
@@ -438,7 +496,7 @@ func (f *fakeRepo) IsUsernameBlacklisted(_ context.Context, mcUUID string) (bool
 
 // IsProtectedAdminLink mirrors PGRepo's JOIN of account_links to users: linked,
 // auth_source 'thirdparty', and the linked user an admin — no password-hash test, so
-// an SSO Operator (role='admin', empty PasswordHash) is protected like any other.
+// an SSO Operator (role='admin', with no password) is protected like any other.
 func (f *fakeRepo) IsProtectedAdminLink(_ context.Context, mcUUID string) (bool, error) {
 	userID, ok := f.links[mcUUID]
 	if !ok || f.linkAuthSource[mcUUID] != authSourceThirdParty {
@@ -569,27 +627,16 @@ func (f *fakeRepo) UserByID(_ context.Context, id string) (*StaffUser, error) {
 	}
 	return nil, ErrNotFound
 }
-func (f *fakeRepo) UpsertOwner(_ context.Context, id, username, email, passwordHash string, mustChange bool) error {
+func (f *fakeRepo) UpsertOwner(_ context.Context, id, username, email string) error {
 	// Mirror PG ON CONFLICT (username): preserve the existing id so live sessions
-	// survive a password reset.
+	// survive a re-bootstrap.
 	if existing, ok := f.staff[username]; ok {
 		id = existing.ID
 	}
 	f.staff[username] = &StaffUser{
 		ID: id, Username: username, Email: email, Role: "admin",
-		PasswordHash: passwordHash, MustChangePassword: mustChange,
 	}
 	return nil
-}
-func (f *fakeRepo) SetPassword(_ context.Context, userID, passwordHash string) error {
-	for _, u := range f.staff {
-		if u.ID == userID {
-			u.PasswordHash = passwordHash
-			u.MustChangePassword = false
-			return nil
-		}
-	}
-	return ErrNotFound
 }
 func (f *fakeRepo) CreateSession(_ context.Context, tokenHash, userID string, expiresAt time.Time) error {
 	f.sessions[tokenHash] = &fakeSession{userID: userID, expiresAt: expiresAt}
@@ -604,7 +651,6 @@ func (f *fakeRepo) SessionUser(_ context.Context, tokenHash string, now time.Tim
 		if u.ID == s.userID {
 			return &SessionedUser{
 				ID: u.ID, Email: u.Email, Role: u.Role,
-				MustChangePassword: u.MustChangePassword,
 			}, nil
 		}
 	}
@@ -717,7 +763,7 @@ func (f *fakeRepo) CreateUser(_ context.Context, input CreateUserInput, _ string
 	id := "test-" + input.Username
 	u := UserView{
 		ID: id, Username: input.Username, Email: input.Email,
-		Role: input.Role, MustChangePassword: input.MustChange,
+		Role:      input.Role,
 		CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
 	d := UserDetail{UserView: u}
@@ -769,15 +815,6 @@ func (f *fakeRepo) SetUserDisabled(_ context.Context, userID string, disabled bo
 		if su.view.ID == userID {
 			f.seededUsers[i].view.Disabled = disabled
 			f.seededUsers[i].detail.Disabled = disabled
-			return nil
-		}
-	}
-	return ErrNotFound
-}
-
-func (f *fakeRepo) AdminResetPassword(_ context.Context, userID, passwordHash string) error {
-	for _, su := range f.seededUsers {
-		if su.view.ID == userID {
 			return nil
 		}
 	}
@@ -860,6 +897,152 @@ func (f *fakeRepo) LinkAccount(_ context.Context, userID, mcUUID, authSource str
 	f.linkAuthSource[mcUUID] = authSource
 	f.linked[userID] = true
 	return nil
+}
+
+// ---- op-login & setup token fakes (spec §B op-login / setup) ----
+
+// UserByEmail mirrors PGRepo.UserByEmail: only a VERIFIED address resolves (the
+// address was proven via an email OTP, not merely asserted), and the match is
+// case-insensitive so the caller may type the address in any casing — the STORED
+// casing is what the mailer and audit trail use. A non-verified or unknown address
+// is indistinguishable from no account: both yield ErrNotFound.
+func (f *fakeRepo) UserByEmail(_ context.Context, email string) (*StaffUser, error) {
+	for _, u := range f.staff {
+		if u.EmailVerified && strings.EqualFold(u.Email, email) {
+			su := *u
+			return &su, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+// ConsumeLoginEmailOTP mirrors PGRepo.ConsumeLoginEmailOTP: it redeems the newest
+// live code for (user, purpose) WITHOUT the identity side-effect (login already
+// resolved the userID via UserByEmail, so the address is settled). It charges an
+// attempt on a hash mismatch (exactly like VerifyEmailOTP) but never writes
+// users.email or runs the verified-email guard. A missing/expired/consumed code →
+// ErrOTPInvalid; a mismatch → ErrOTPInvalid too (and costs an attempt without
+// consuming); a locked code → ErrOTPLocked; a match → consumed, nil.
+func (f *fakeRepo) ConsumeLoginEmailOTP(_ context.Context, userID, purpose, codeHash string, now time.Time) error {
+	var live *fakeEmailOTP
+	for _, o := range f.otps { // newest live (user, purpose), mirroring VerifyEmailOTP
+		if o.userID != userID || o.purpose != purpose || o.consumed {
+			continue
+		}
+		if live == nil || o.createdAt.After(live.createdAt) {
+			live = o
+		}
+	}
+	if live == nil || !live.expiresAt.After(now) {
+		return ErrOTPInvalid
+	}
+	if live.attempts >= otpMaxAttempts {
+		return ErrOTPLocked
+	}
+	if live.codeHash != codeHash {
+		live.attempts++ // a typo costs an attempt but does not consume the code
+		return ErrOTPInvalid
+	}
+	live.consumed = true
+	return nil
+}
+
+// CreateOpLoginRequest records a fresh pending op.console login attempt. status is
+// born 'pending'; createdAt orders the pending list (the PG ORDER BY created_at).
+func (f *fakeRepo) CreateOpLoginRequest(_ context.Context, id, userID, email string, expiresAt time.Time) error {
+	f.opLogins[id] = &fakeOpLogin{
+		id: id, userID: userID, email: email, status: "pending",
+		expiresAt: expiresAt, createdAt: expiresAt, // createdAt proxy: constant TTL ⇒ later expiry == later creation
+	}
+	return nil
+}
+
+// OpLoginRequestByID loads a request by handle, projecting the fake row into the
+// OpLoginRequest the status/finish paths read (Status, Consumed, ExpiresAt). Status
+// is the (approved_at, denied_at) projection the handler gates on.
+func (f *fakeRepo) OpLoginRequestByID(_ context.Context, id string) (*OpLoginRequest, error) {
+	r, ok := f.opLogins[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return &OpLoginRequest{
+		ID: r.id, UserID: r.userID, Email: r.email, ExpiresAt: r.expiresAt,
+		Status: r.status, Consumed: r.consumed,
+	}, nil
+}
+
+// ConsumeOpLoginRequest stamps consumed on an unconsumed, unexpired request (the
+// finish path's single-use guard), mirroring the PG zero-rows-else UPDATE. The
+// approval gate is read by the handler BEFORE this call, so consume only checks
+// consumed_at and expiry (exactly as PG does).
+func (f *fakeRepo) ConsumeOpLoginRequest(_ context.Context, id string, now time.Time) error {
+	r, ok := f.opLogins[id]
+	if !ok || r.consumed || !r.expiresAt.After(now) {
+		return ErrNotFound
+	}
+	r.consumed = true
+	return nil
+}
+
+// ListPendingOpLogins returns the live (pending, unconsumed, unexpired) requests
+// oldest-first, mirroring the PG WHERE consumed_at IS NULL AND approved_at IS NULL
+// AND expires_at > now ORDER BY created_at. Username is joined from the staff map
+// (the in-game admin needs to name who is waiting), exactly as the repo.go contract
+// documents — ListPendingOpLogins is the ONLY path that populates Username.
+func (f *fakeRepo) ListPendingOpLogins(_ context.Context, now time.Time) ([]OpLoginRequest, error) {
+	var out []OpLoginRequest
+	for _, r := range f.opLogins {
+		if r.consumed || r.status != "pending" || !r.expiresAt.After(now) {
+			continue
+		}
+		out = append(out, OpLoginRequest{
+			ID: r.id, UserID: r.userID, Username: f.usernameFor(r.userID),
+			Email: r.email, ExpiresAt: r.expiresAt, Status: "pending", CreatedAt: r.createdAt,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].ID < out[j].ID
+		}
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out, nil
+}
+
+// ApproveOpLogin marks a pending request approved by approverUserID, atomically: it
+// flips status to 'approved' only on a still-pending, unconsumed, unexpired row, else
+// ErrNotFound (double approve / dead request is a no-op the caller surfaces as 404).
+func (f *fakeRepo) ApproveOpLogin(_ context.Context, id, approverUserID string, now time.Time) error {
+	r, ok := f.opLogins[id]
+	if !ok || r.consumed || r.status != "pending" || !r.expiresAt.After(now) {
+		return ErrNotFound
+	}
+	r.status = "approved"
+	return nil
+}
+
+// ConsumeSetupToken atomically marks a one-time setup token consumed and returns
+// its user_id, or ErrNotFound when absent, already consumed, or expired.
+func (f *fakeRepo) ConsumeSetupToken(_ context.Context, tokenHash string, now time.Time) (string, error) {
+	tok, ok := f.setupTokens[tokenHash]
+	if !ok || !tok.ConsumedAt.IsZero() || !tok.ExpiresAt.After(now) {
+		return "", ErrNotFound
+	}
+	tok.ConsumedAt = now
+	f.setupTokens[tokenHash] = tok
+	return tok.UserID, nil
+}
+
+// usernameFor joins a userID to its staff username (the ListPendingOpLogins
+// projection the in-game admin needs to name who is waiting). "" when the user is
+// gone — mirroring a missing JOIN row.
+func (f *fakeRepo) usernameFor(userID string) string {
+	for _, u := range f.staff {
+		if u.ID == userID {
+			return u.Username
+		}
+	}
+	return ""
 }
 
 // fakeRestorer records the restore it was asked to start and returns a canned
@@ -994,6 +1177,10 @@ func do(h http.Handler, method, target, body string, headers map[string]string) 
 	h.ServeHTTP(w, r)
 	return w
 }
+
+var jsonHeader = map[string]string{"Content-Type": "application/json"}
+
+func ctHeader(ct string) map[string]string { return map[string]string{"Content-Type": ct} }
 
 func decodeErr(t *testing.T, w *httptest.ResponseRecorder) string {
 	t.Helper()

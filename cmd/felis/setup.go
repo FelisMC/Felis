@@ -24,6 +24,15 @@ const hostBootstrapKubeconfigPath = "/etc/rancher/k3s/k3s.yaml"
 
 var errHostBootstrapCancelled = errors.New("host bootstrap cancelled")
 
+// channelName maps the --dev flag to the release channel deploy/bootstrap.sh
+// understands. Release is the default so a bare `felis setup` is production.
+func channelName(dev bool) string {
+	if dev {
+		return "dev"
+	}
+	return "release"
+}
+
 // cmdSetup is the normal first-run operator console. It is intentionally separate
 // from breakGlass: setup creates the initial Owner and optional web edge; breakGlass
 // is reserved for emergency local recovery/reset.
@@ -31,11 +40,19 @@ func cmdSetup(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", defaultSetupConfigPath, "path to felis.toml")
+	dev := fs.Bool("dev", false, "install the dev channel (felis:dev, main HEAD) instead of the default release channel (felis:release, newest tag)")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		return 2
+	}
+	// The channel governs which image tag/source ref the host bootstrap builds.
+	// runBootstrap forwards the whole environment, so exporting it here is enough
+	// to reach deploy/bootstrap.sh without threading a parameter through the TUI.
+	if err := os.Setenv("FELIS_CHANNEL", channelName(*dev)); err != nil {
+		fmt.Fprintf(stderr, "felis setup: %v\n", err)
+		return 1
 	}
 	configFlagSet := false
 	fs.Visit(func(f *flag.Flag) {
@@ -112,18 +129,16 @@ func cmdSetup(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if res.provisioned {
-		fmt.Fprintf(stdout, "\nfelis setup: Owner account %q provisioned; local-password login is ENABLED.\n", res.username)
+		fmt.Fprintf(stdout, "\nfelis setup: Owner account %q provisioned (passwordless).\n", res.username)
 		fmt.Fprintf(stdout, "Recorded as %q (mode: %s, os user: %s).\n", res.accountable, res.mode, res.osUser)
-		if res.displayPassword != "" {
-			fmt.Fprintf(stdout, "One-time password (you MUST change it on first login):\n\n    %s\n\n", res.displayPassword)
-		} else {
-			fmt.Fprintln(stdout, "Log in with the password you just entered (you MUST change it on first login).")
+		if res.setupTokenURL != "" {
+			fmt.Fprintf(stdout, "Open this URL to complete passwordless login setup (verify email / enroll passkey):\n\n    %s\n\n", res.setupTokenURL)
 		}
 		if res.auditWarning != "" {
 			fmt.Fprintf(stdout, "WARNING: the accountability audit row was NOT written: %s\n", res.auditWarning)
 		}
 		if panelURL != "" {
-			fmt.Fprintf(stdout, "Log in at %s with that username and password.\n", panelURL)
+			fmt.Fprintf(stdout, "Admin console: %s\n", panelURL)
 			fmt.Fprintln(stdout, "The local HTTPS certificate is self-signed; your browser may ask for confirmation on first visit.")
 		}
 	}

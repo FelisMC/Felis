@@ -21,16 +21,23 @@ type Principal struct {
 	Role string
 	// ViaAdminAccess is true only when the request arrived through an admin-graded
 	// path: the admin.* Zero-Trust hostname (Cloudflare Access, the remote face) OR
-	// a local-password session presented on the op.console host (SessionAuth, the
-	// break-glass-enabled face). Admin-tier operations require it in addition to
+	// a local session presented on the op.console host (SessionAuth, the
+	// passwordless face). Admin-tier operations require it in addition to
 	// Role=="admin" (spec §14: ZT is graded by operation). A role=admin session
 	// arriving on the player console (console.*) never sets it.
 	ViaAdminAccess bool
-	// MustChangePassword is set only on the local-password (SessionAuth) path when
-	// the staff account still owes a first-login change. The JWT path leaves it
-	// false. The lockdown middleware fences such a principal to the change-password
-	// and logout surface until it is cleared.
-	MustChangePassword bool
+	// EmailVerified mirrors users.email_verified. The lockdown middleware gates
+	// setup-incomplete accounts (EmailVerified=false, e.g. a freshly bootstrapped
+	// Owner who has not yet proven control of their mailbox) to the setup-wizard
+	// routes only, so an intercepted setup URL cannot yield full admin access
+	// before the email-OTP verification step completes.
+	EmailVerified bool
+	// ViaSession is true when the principal was authenticated via a local session
+	// cookie (SessionAuth), not a Cloudflare-Access JWT. The setup-lockdown gate
+	// only applies to session-authenticated principals — a JWT caller already
+	// passed Zero Trust at the edge, so the local-email-verification gate is not
+	// the right boundary for them.
+	ViaSession bool
 }
 
 // IsAdmin reports whether the principal may perform admin-tier operations.

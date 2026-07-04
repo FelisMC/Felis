@@ -180,16 +180,12 @@ func (a *API) handleMe(w http.ResponseWriter, r *http.Request) {
 		emailVerified = u.EmailVerified
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"user_id":              p.UserID,
-		"email":                p.Email,
-		"role":                 p.Role,
-		"is_admin":             p.IsAdmin(),
-		"is_owner":             p.IsOwner(),
-		"email_verified":       emailVerified,
-		// must_change_password is meaningful only on the local-password path; the JWT
-		// path leaves it false. The panel uses it to route a freshly-provisioned staff
-		// account straight to the change-password card before any other surface.
-		"must_change_password": p.MustChangePassword,
+		"user_id":        p.UserID,
+		"email":          p.Email,
+		"role":           p.Role,
+		"is_admin":       p.IsAdmin(),
+		"is_owner":       p.IsOwner(),
+		"email_verified": emailVerified,
 	})
 }
 

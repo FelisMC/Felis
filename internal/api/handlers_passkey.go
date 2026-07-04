@@ -8,46 +8,47 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
-// Passkey enrollment (spec §14 WebAuthn / Phase 6 bind). An already-authenticated
-// principal binds a passkey to their account — the WebAuthn credential-creation
-// ceremony — and manages the credentials they have bound. Email-OTP (handlers_email_otp.go)
-// stays the fallback factor, so a player with no passkey is never locked out.
+// Passkey (spec §14 WebAuthn). Two slices live in this file: ENROLLMENT — an already-
+// authenticated principal binds a passkey to their account (the WebAuthn credential-
+// creation ceremony) and manages the credentials they have bound — and the public LOGIN
+// (assertion) door, which resolves an account by email, proves one of its bound passkeys,
+// and mints a session from an UNauthenticated state (handlePasskeyLoginBegin/Finish, near
+// the end of this file). Email-OTP (handlers_email_otp.go) stays the fallback factor, so a
+// player with no passkey is never locked out.
 //
-// Scope of the HANDLERS in this file: ENROLLMENT only. Every ceremony here rides on a
-// known principal — the challenge is bound to the caller's user_id and the finish
-// verifies against the server-stashed SessionData, never a client-echoed challenge. The
-// login/assertion path (proving a passkey to mint a session from an UNauthenticated
-// state) has its cryptographic half built and Oracle-verified in the adapter
-// (internal/passkey BeginLogin/FinishLogin, against a virtual authenticator) and its
-// persist-ready output shape is VerifiedAssertion below — but the login HTTP handler is
-// a DELIBERATELY deferred slice. Its design checkpoint (task #36) resolved two questions
-// and then deferred, for reasons that outlive this comment:
+// Every ceremony rides on a challenge bound to a user_id whose finish verifies against the
+// server-stashed SessionData, never a client-echoed challenge. The login door's
+// cryptographic half is built and Oracle-verified in the adapter (internal/passkey
+// BeginLogin/FinishLogin, against a virtual authenticator); its persist-ready output shape
+// is VerifiedAssertion below. The login door's design checkpoint (task #36) resolved two
+// questions that still frame it:
 //
 //   - RP boundary (RESOLVED): felis-api is the app-login relying party (panel.*); the
 //     WebAuthn-as-security-gate lives at the Cloudflare Access EDGE, not here. Spec §14
 //     ties WebAuthn/posture to admin.* (Access), while panel.* is plain app login with
-//     no WebAuthn requirement — so there is neither a spec-required assertion handler
-//     nor a backend step-up consumer for one (the role-switcher step-up UX is frontend).
-//   - Identifier (BLOCKING): a from-zero login needs a unique, human-typable handle to
-//     resolve the account before its passkeys can be offered. users.email is nullable
-//     and NOT unique (0001_init.sql), and a player's users.username IS their Minecraft
-//     uuid (pgrepo.go RedeemPlayerBindCode mints a uuid-derived unique username) —
-//     opaque, never typed into a form. The username-first assertion the non-resident
-//     credentials + user-keyed challenge store support therefore has nothing to key on.
+//     no WebAuthn requirement — so this door is a login convenience, not a spec-required
+//     backend step-up consumer (the role-switcher step-up UX is frontend).
+//   - Identifier (RESOLVED by #69/#70): a from-zero login needs a unique, human-typable
+//     handle to resolve the account before its passkeys can be offered. users.email was
+//     nullable and NOT unique (0001_init.sql), and a player's users.username IS their
+//     Minecraft uuid (pgrepo.go RedeemPlayerBindCode mints a uuid-derived unique username)
+//     — opaque, never typed into a form. The verified-email uniqueness invariant
+//     (0010_verified_email_unique.sql) plus UserByEmail gave the door the typable handle
+//     it keys on: begin resolves email → account → its bound passkeys.
 //
-// The system's returning-player door is already re-link (control of the in-game identity
-// is the root of trust — handlers_onboard.go re-mints a session through the bind-code
-// flow even after passkey/OTP are bound); passkey and email-OTP are factors on an
-// ALREADY-authenticated principal here, not from-zero login methods. The real enabler
-// for a from-zero passkey login is discoverable ("usernameless") credentials, which
-// sidestep the identifier gap but reshape enrollment (residentKey) and need a
-// non-user-keyed challenge store — a future migration and its own checkpoint (that door
-// partly bypasses the in-game-identity root of trust). The adapter crypto is verified
-// now so that slice inherits correct crypto; this file adds no unauthenticated login
-// route until then.
+// This is an EMAIL-first assertion, not a usernameless one. The system's returning-player
+// root of trust is still re-link (control of the in-game identity — handlers_onboard.go
+// re-mints a session through the bind-code flow even after passkey/OTP are bound); the
+// email and passkey login doors are convenience layered on top, never the root. The real
+// enabler for a TRULY from-zero passkey login (no identifier typed at all) is discoverable
+// ("usernameless") credentials, which sidestep even the email handle but reshape enrollment
+// (residentKey) and need a non-user-keyed challenge store — a future migration and its own
+// checkpoint, task #40 (that door partly bypasses the in-game-identity root of trust). The
+// adapter crypto is verified now so that slice inherits correct crypto.
 //
 // The cryptographic half is a seam (PasskeyVerifier) so this package never imports
 // go-webauthn: ceremony state crosses the boundary as opaque bytes, the attestation
@@ -87,6 +88,20 @@ type PasskeyVerifier interface {
 	// blob BeginRegistration returned. A failed verification returns a non-nil error;
 	// the handler maps it to 400 (the ceremony state exists; the attestation is bad).
 	FinishRegistration(user PasskeyUser, sessionData []byte, attestation io.Reader) (VerifiedCredential, error)
+	// BeginLogin starts an assertion (login) ceremony for a known user. It returns the
+	// {"publicKey": {...}} request options for navigator.credentials.get() and the
+	// opaque SessionData the handler stashes and replays at finish. user.Credentials
+	// carries the passkeys already bound so the authenticator can be told which to
+	// offer. A user with no bound credential yields an error (nothing to assert); the
+	// handler treats that as "offer the email-OTP fallback instead", never a server
+	// fault.
+	BeginLogin(user PasskeyUser) (options json.RawMessage, sessionData []byte, err error)
+	// FinishLogin verifies the browser's assertion against the stashed SessionData and
+	// reports which of the user's credentials signed and the signature counter the
+	// authenticator reported. assertion is the raw navigator.credentials.get() result
+	// the browser posts back; sessionData is the blob BeginLogin returned. A failed
+	// verification returns a non-nil error; the handler maps it to 400.
+	FinishLogin(user PasskeyUser, sessionData []byte, assertion io.Reader) (VerifiedAssertion, error)
 }
 
 // PasskeyUser is the relying-party view of the enrolling principal the verifier needs:
@@ -126,12 +141,19 @@ type VerifiedCredential struct {
 // signal — the verifier deliberately does not, so clone policy lives in one place with
 // the stored state. SignCount is legitimately 0 for authenticators that keep no counter.
 //
-// The login handlers do not exist yet (see the file header): this is the stable seam
-// output the production adapter (internal/passkey) already produces and its Oracle test
-// already asserts on, so wiring the handlers later needs no reshaping here.
+// The login handler below (handlePasskeyLoginFinish) obtains this from FinishLogin but
+// currently checks only that the assertion verified — the SignCount/UserVerified consumer
+// the note above anticipates is still future. It is the stable seam output the production
+// adapter (internal/passkey) produces and its Oracle test asserts on, so handler and
+// adapter agree on shape without either reshaping the other.
 type VerifiedAssertion struct {
 	CredentialID string // base64url(raw credential id) — which bound credential signed
 	SignCount    uint32
+	// UserVerified records that a PIN/biometric (not mere presence) was performed
+	// during the assertion ceremony. The verifier enforces UV=required at BeginLogin,
+	// so this is always true for a successful assertion; persisting it makes the
+	// guarantee auditable and survives a future policy that permits UV=preferred.
+	UserVerified bool
 }
 
 // errPasskeyUnavailable is returned when the WebAuthn verifier is not configured on
@@ -222,6 +244,11 @@ func (a *API) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Request
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "attestation is required"))
 		return
 	}
+	name := strings.TrimSpace(req.Name)
+	if len(name) > 100 {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "passkey name must be at most 100 characters"))
+		return
+	}
 	sessionData, err := a.Repo.ConsumePasskeyChallengeByUser(r.Context(), p.UserID, passkeyPurposeRegister, a.now())
 	if err != nil {
 		if errors.Is(err, ErrPasskeyChallengeInvalid) {
@@ -250,7 +277,7 @@ func (a *API) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Request
 		PublicKey:      vc.PublicKey,
 		SignCount:      vc.SignCount,
 		AAGUID:         vc.AAGUID,
-		Name:           req.Name,
+		Name:           name,
 		CreatedAt:      a.now(),
 		UserVerified:   vc.UserVerified,
 		BackupEligible: vc.BackupEligible,
@@ -327,4 +354,230 @@ func (a *API) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	a.audit(r, auditActor(p), "account.passkey.removed", id)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---- passkey login (assertion) ----
+
+// passkeyPurposeLogin scopes a challenge to the login (assertion) flow, keeping it
+// from ever colliding with an enrollment challenge (passkeyPurposeRegister) for the
+// same user. The challenge store is queried per (user, purpose), so the two flows
+// are fully independent even for one account with both a live enrollment and a live
+// login challenge.
+const passkeyPurposeLogin = "passkey_login"
+
+// passkeyLoginBeginRequest is the begin body: the email that resolves the account
+// before its passkeys can be offered. There is no principal yet (this is a
+// pre-session route), so the email is the identifier — the same role the typed
+// email plays in the email-OTP and op-login doors.
+type passkeyLoginBeginRequest struct {
+	Email string `json:"email"`
+}
+
+// handlePasskeyLoginBegin starts a passkey assertion ceremony for a returning user
+// (Public, pre-session). It resolves the typed email to an account, loads the
+// passkeys that account has bound, and asks the verifier for the assertion options
+// + opaque SessionData the browser needs for navigator.credentials.get(). The
+// SessionData is stashed under a short TTL, keyed to the user so the finish step
+// can consume it. Requires local sessions to be enabled (like the other pre-session
+// doors). A user with no bound passkey, an unknown email, and a real account with
+// passkeys are distinguished by status code (400 vs 200) — this is an accepted
+// enumeration trade-off (the /auth/options oracle is the sanctioned place to learn
+// existence), but the per-recipient cooldown below makes probing impractical.
+func (a *API) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request) {
+	if !localAuthEnabled(r.Context(), a.Repo) {
+		writeError(w, r, newError(http.StatusForbidden, "local_auth_disabled",
+			"session login is disabled"))
+		return
+	}
+	if a.Passkey == nil {
+		writeError(w, r, errPasskeyUnavailable)
+		return
+	}
+	if err := requireJSONContentType(r); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	var req passkeyLoginBeginRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	email := strings.TrimSpace(req.Email)
+	if !looksLikeEmail(email) {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "a valid email is required"))
+		return
+	}
+
+	// Per-recipient cooldown reserved BEFORE any work, identical to the email-OTP and
+	// op-login doors: one winner per window, so a burst of probes is throttled. The
+	// key is namespaced apart from the other pre-session doors so they never perturb
+	// each other's throttle.
+	emailKey := "passkey:login:" + strings.ToLower(email)
+	lim := a.otpLimiter()
+	emailAt, ok := lim.reserve(emailKey, otpResendCooldown)
+	if !ok {
+		writeError(w, r, newError(http.StatusTooManyRequests, "otp_resend_cooldown",
+			"a passkey login was started recently; wait a moment before requesting another"))
+		return
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			lim.release(emailKey, emailAt)
+		}
+	}()
+
+	u, err := a.Repo.UserByEmail(r.Context(), email)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			committed = true // keep the reservation so probing is throttled
+			writeError(w, r, newError(http.StatusBadRequest, "no_passkey",
+				"no passkey enrolled for this account; use email or operator login"))
+			return
+		}
+		writeError(w, r, err)
+		return
+	}
+
+	creds, err := a.Repo.PasskeyCredentialsForUser(r.Context(), u.ID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if len(creds) == 0 {
+		committed = true
+		writeError(w, r, newError(http.StatusBadRequest, "no_passkey",
+			"no passkey enrolled for this account; use email or operator login"))
+		return
+	}
+
+	user := PasskeyUser{
+		ID:          u.ID,
+		Name:        email,
+		DisplayName: u.Username,
+		Credentials: creds,
+	}
+	options, sessionData, err := a.Passkey.BeginLogin(user)
+	if err != nil {
+		writeError(w, r, newError(http.StatusBadRequest, "passkey_login_failed",
+			"could not start passkey login"))
+		return
+	}
+	id, err := newPasskeyID()
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	expiresAt := a.now().Add(passkeyChallengeTTL)
+	if err := a.Repo.CreatePasskeyChallenge(r.Context(), id, u.ID, passkeyPurposeLogin, sessionData, expiresAt); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	committed = true
+	writeJSON(w, http.StatusOK, options)
+}
+
+// passkeyLoginFinishRequest is the finish body: the email (to resolve the account,
+// as in the begin step) and the raw navigator.credentials.get() assertion response.
+// Attestation is captured as RawMessage so the handler hands the exact bytes the
+// browser produced to the verifier without re-encoding.
+type passkeyLoginFinishRequest struct {
+	Email     string          `json:"email"`
+	Assertion json.RawMessage `json:"assertion"`
+}
+
+// handlePasskeyLoginFinish verifies a passkey assertion and mints a session (Public,
+// pre-session). It resolves the email to the account, atomically consumes the
+// stashed login challenge (a missing or expired one → 400), verifies the assertion
+// against the SessionData, and mints a felis_session. Both players and staff may
+// log in this way — the passkey is a two-factor authenticator (possession +
+// biometric/PIN), strong enough to stand alone without the in-game approval the
+// op-login flow requires. The session cookie is host-only, so a session minted on
+// console.<root_domain> cannot reach op.console, and ViaAdminAccess is host-checked
+// so admin operations are gated regardless.
+func (a *API) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
+	if !localAuthEnabled(r.Context(), a.Repo) {
+		writeError(w, r, newError(http.StatusForbidden, "local_auth_disabled",
+			"session login is disabled"))
+		return
+	}
+	if a.Passkey == nil {
+		writeError(w, r, errPasskeyUnavailable)
+		return
+	}
+	if err := requireJSONContentType(r); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	var req passkeyLoginFinishRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	email := strings.TrimSpace(req.Email)
+	if !looksLikeEmail(email) {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "a valid email is required"))
+		return
+	}
+	if len(req.Assertion) == 0 {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "assertion is required"))
+		return
+	}
+
+	u, err := a.Repo.UserByEmail(r.Context(), email)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
+				"passkey login could not be completed; begin again"))
+			return
+		}
+		writeError(w, r, err)
+		return
+	}
+
+	sessionData, err := a.Repo.ConsumePasskeyChallengeByUser(r.Context(), u.ID, passkeyPurposeLogin, a.now())
+	if err != nil {
+		if errors.Is(err, ErrPasskeyChallengeInvalid) {
+			writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
+				"passkey login could not be completed; begin again"))
+			return
+		}
+		writeError(w, r, err)
+		return
+	}
+
+	creds, err := a.Repo.PasskeyCredentialsForUser(r.Context(), u.ID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	user := PasskeyUser{
+		ID:          u.ID,
+		Name:        email,
+		DisplayName: u.Username,
+		Credentials: creds,
+	}
+	_, err = a.Passkey.FinishLogin(user, sessionData, bytes.NewReader(req.Assertion))
+	if err != nil {
+		writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
+			"passkey login could not be completed; begin again"))
+		return
+	}
+
+	token, err := newSessionToken()
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	expires := a.now().Add(sessionTTL)
+	if err := a.Repo.CreateSession(r.Context(), hashCookie(token), u.ID, expires); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	setSessionCookie(w, token, expires)
+	a.audit(r, u.Username, "auth.passkey_login", "")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"user_id": u.ID,
+		"role":    u.Role,
+	})
 }

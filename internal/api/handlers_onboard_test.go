@@ -73,8 +73,8 @@ func TestBindRedeemBootstrapsPlayer(t *testing.T) {
 	}
 
 	// A fresh role=user player row was created and bound; the code was consumed.
-	if u := repo.staff[bindTestUUID]; u == nil || u.Role != "user" || u.PasswordHash != "" || u.ID != userID {
-		t.Fatalf("created row = %+v, want role=user, NULL hash, id=%s", u, userID)
+	if u := repo.staff[bindTestUUID]; u == nil || u.Role != "user" || u.ID != userID {
+		t.Fatalf("created row = %+v, want role=user, id=%s", u, userID)
 	}
 	if repo.links[bindTestUUID] != userID {
 		t.Fatalf("account_links[%s] = %q, want %q", bindTestUUID, repo.links[bindTestUUID], userID)

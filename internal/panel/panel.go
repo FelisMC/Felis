@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"net/http"
 	"path"
+	"regexp"
 	"strings"
 )
 
@@ -17,29 +18,104 @@ import (
 var static embed.FS
 
 type runtimeConfig struct {
-	APIBase    string `json:"apiBase"`
-	RootDomain string `json:"rootDomain"`
+	APIBase       string    `json:"apiBase"`
+	RootDomain    string    `json:"rootDomain"`
+	PanelHostname string    `json:"panelHostname,omitempty"`
+	AdminHostname string    `json:"adminHostname,omitempty"`
+	Build         buildInfo `json:"build"`
 }
 
-// Handler wraps the external API handler with the panel SPA.
-func Handler(api http.Handler, rootDomain string) http.Handler {
+// buildInfo is the resolved build stamp the panel renders in its version badge.
+// It is derived once, server-side, from the binary's `main.version` (a
+// `git describe --tags --always --dirty` string) so the panel needs no brittle
+// string parsing — it just renders `Release`, appending `+Commit` when `Dev`.
+type buildInfo struct {
+	// Version is the raw resolved stamp (e.g. "v1.0.0-earlyAccess-3-g1a2b3c4").
+	Version string `json:"version"`
+	// Release is the "big version" — the newest tag with any git-describe suffix
+	// stripped (e.g. "v1.0.0-earlyAccess"). It is what the release channel shows.
+	Release string `json:"release"`
+	// Commit is the short commit the dev channel was built from (e.g. "1a2b3c4"),
+	// empty for a clean release build.
+	Commit string `json:"commit,omitempty"`
+	// Dev is true for a non-release build — the dev channel (main past the tag), an
+	// untagged/bare-SHA build, a dirty tree, or an un-stamped local `go build`.
+	Dev bool `json:"dev"`
+}
+
+// describeSuffix matches the trailing "-<commits>-g<sha>" that `git describe`
+// appends to the newest tag once HEAD is past it — the shape the dev channel
+// (main HEAD) produces. The release channel builds the exact tag, so its stamp
+// carries no such suffix. Match is anchored at end so a tag whose prerelease part
+// itself contains hyphens (v1.0.0-earlyAccess) keeps that part in Release.
+var describeSuffix = regexp.MustCompile(`-([0-9]+)-g([0-9a-f]+)$`)
+
+// releaseTag matches a clean released semantic-version tag (vMAJOR.MINOR.PATCH
+// with an optional -prerelease), i.e. the name the release channel builds. It is
+// permissive on the prerelease so tags like v1.0.0-earlyAccess qualify.
+var releaseTag = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$`)
+
+// parseBuildVersion splits a `git describe` build stamp into the fields the panel
+// version badge renders. Cases: a dev stamp "<tag>-N-gSHA" → Release=<tag>,
+// Commit=SHA, Dev=true; a clean release tag "vX.Y.Z[-pre]" → Release=tag, Dev=false;
+// anything else ("dev", "unknown", a bare short SHA, a dirty tree) → best-effort
+// Release with Dev=true.
+func parseBuildVersion(raw string) buildInfo {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		raw = "dev"
+	}
+	bi := buildInfo{Version: raw}
+	core := strings.TrimSuffix(raw, "-dirty")
+	dirty := core != raw
+
+	switch {
+	case describeSuffix.MatchString(core):
+		m := describeSuffix.FindStringSubmatch(core)
+		bi.Release = core[:len(core)-len(m[0])]
+		bi.Commit = m[2]
+		bi.Dev = true
+	case releaseTag.MatchString(core) && !dirty:
+		bi.Release = core
+		bi.Dev = false
+	default:
+		bi.Release = core
+		bi.Dev = true
+	}
+	return bi
+}
+
+// Handler wraps the external API handler with the panel SPA. version is the
+// binary's resolved build stamp (cmd/felis resolvedVersion()); it is surfaced to
+// the SPA via /config.json for the version badge. panelHost and adminHost are the
+// configured console.<root_domain> and op.console.<root_domain> hostnames (either
+// may be empty when that face is not deployed); they let the SPA detect which home
+// it is being served from by comparing location.host, so one bundle can render the
+// right surface (player console vs SysAdmin console) without a rebuild.
+func Handler(api http.Handler, rootDomain, panelHost, adminHost, version string) http.Handler {
 	files, err := fs.Sub(static, "static")
 	if err != nil {
 		panic(err)
 	}
 	return &handler{
-		api:        api,
-		rootDomain: rootDomain,
-		files:      files,
-		fileServer: http.FileServer(http.FS(files)),
+		api:           api,
+		rootDomain:    rootDomain,
+		panelHostname: panelHost,
+		adminHostname: adminHost,
+		build:         parseBuildVersion(version),
+		files:         files,
+		fileServer:    http.FileServer(http.FS(files)),
 	}
 }
 
 type handler struct {
-	api        http.Handler
-	rootDomain string
-	files      fs.FS
-	fileServer http.Handler
+	api           http.Handler
+	rootDomain    string
+	panelHostname string
+	adminHostname string
+	build         buildInfo
+	files         fs.FS
+	fileServer    http.Handler
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -55,7 +131,13 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/config.json":
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
-		_ = json.NewEncoder(w).Encode(runtimeConfig{APIBase: "/api/v1", RootDomain: h.rootDomain})
+		_ = json.NewEncoder(w).Encode(runtimeConfig{
+			APIBase:       "/api/v1",
+			RootDomain:    h.rootDomain,
+			PanelHostname: h.panelHostname,
+			AdminHostname: h.adminHostname,
+			Build:         h.build,
+		})
 	case h.hasStaticFile(r.URL.Path):
 		h.fileServer.ServeHTTP(w, r)
 	default:

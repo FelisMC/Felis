@@ -189,6 +189,73 @@ func (p *PGRepo) RedeemPlayerBindCode(ctx context.Context, newUserID, code strin
 	return userID, mcUUID, authSource, nil
 }
 
+// RedeemLinkCodeForOwner consumes an in-game link code and creates-or-promotes the
+// bound account to the passwordless Owner (role='admin'). It is the `felis setup`
+// MC-bind path: the operator enters limbo, runs /link, and types the code here.
+// Unlike RedeemPlayerBindCode — which refuses an already-staff account so a game
+// login can never self-elevate — this DELIBERATELY elevates: an unlinked UUID is
+// born directly as staff, and an already-linked account (player OR staff) is
+// promoted in place, preserving its id so any live sessions and its username
+// survive. The elevation is gated by the caller's local-root break-glass
+// authority, not by anything in-band. Returns the Owner's (userID, mcUUID,
+// authSource); an absent or expired code is ErrLinkCodeInvalid and consumes
+// nothing.
+func (p *PGRepo) RedeemLinkCodeForOwner(ctx context.Context, newUserID, code string, now time.Time) (string, string, string, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", "", "", err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+
+	var mcUUID, authSource string
+	switch err := tx.QueryRowContext(ctx,
+		`SELECT mc_uuid, auth_source FROM account_link_codes WHERE code = $1 AND expires_at > $2`,
+		code, now).Scan(&mcUUID, &authSource); {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", "", "", ErrLinkCodeInvalid
+	case err != nil:
+		return "", "", "", err
+	}
+
+	// Create-or-promote keyed on the verified UUID. An unlinked UUID births a fresh
+	// staff row (role='admin') with a uuid-derived username; an already-linked
+	// account is promoted to role='admin' in place (idempotent when it is already
+	// staff), keeping its id and username. Setup elevates on purpose, so there is no
+	// staff refusal here — that guard belongs to the player path only.
+	userID := newUserID
+	switch err := tx.QueryRowContext(ctx,
+		`SELECT user_id FROM account_links WHERE mc_uuid = $1`, mcUUID).Scan(&userID); {
+	case errors.Is(err, sql.ErrNoRows):
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO users (id, username, role) VALUES ($1, $2, 'admin')`,
+			newUserID, mcUUID); err != nil {
+			return "", "", "", fmt.Errorf("create owner: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO account_links (user_id, mc_uuid, auth_source) VALUES ($1, $2, $3)`,
+			newUserID, mcUUID, authSource); err != nil {
+			return "", "", "", fmt.Errorf("write account link: %w", err)
+		}
+		userID = newUserID
+	case err != nil:
+		return "", "", "", err
+	default:
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE users SET role = 'admin' WHERE id = $1`, userID); err != nil {
+			return "", "", "", fmt.Errorf("promote owner: %w", err)
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM account_link_codes WHERE code = $1`, code); err != nil {
+		return "", "", "", fmt.Errorf("consume link code: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", "", "", err
+	}
+	return userID, mcUUID, authSource, nil
+}
+
 // QuotaAvailable treats a missing quota row or a NULL max_servers as unlimited;
 // otherwise it compares the live owned-server count against the cap (spec §9.3).
 //
@@ -657,17 +724,15 @@ func (p *PGRepo) IsProtectedAdminLink(ctx context.Context, mcUUID string) (bool,
 
 // ---- local-password auth (spec §B) ----
 
-// UserByUsername loads a staff login projection by username, or ErrNotFound. A
-// player row (NULL password_hash) is returned with an empty PasswordHash, never
-// hidden — the caller rejects it by the hash compare, so login cannot be used to
-// enumerate which usernames carry a password.
+// UserByUsername loads a staff login projection by username, or ErrNotFound.
+// The account is passwordless — staff authenticate via email-OTP / passkey, so
+// no password column is read.
 func (p *PGRepo) UserByUsername(ctx context.Context, username string) (*StaffUser, error) {
-	const q = `SELECT id, username, COALESCE(email, ''), role::text,
-		COALESCE(password_hash, ''), must_change_password, email_verified
+	const q = `SELECT id, username, COALESCE(email, ''), role::text, email_verified
 		FROM users WHERE username = $1`
 	var u StaffUser
 	switch err := p.db.QueryRowContext(ctx, q, username).Scan(
-		&u.ID, &u.Username, &u.Email, &u.Role, &u.PasswordHash, &u.MustChangePassword, &u.EmailVerified); {
+		&u.ID, &u.Username, &u.Email, &u.Role, &u.EmailVerified); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
 	case err != nil:
@@ -676,32 +741,31 @@ func (p *PGRepo) UserByUsername(ctx context.Context, username string) (*StaffUse
 	return &u, nil
 }
 
-// AdminExists reports whether any authenticatable staff account already exists —
-// an admin row WITH a bcrypt password hash. It is the break-glass console's
-// bootstrap-vs-recovery switch: false means the typed credential mints the first
-// Owner (no prior identity to verify against), true means the operator must
-// identify against an existing admin for accountability. It is not on the Repo
-// interface because only the break-glass CLI consults it.
+// AdminExists reports whether any admin account already exists. It is the
+// break-glass console's bootstrap-vs-recovery switch: false means the typed
+// credential mints the first Owner (no prior identity to verify against), true
+// means the operator must identify against an existing admin for accountability.
+// It is not on the Repo interface because only the break-glass CLI consults it.
 func (p *PGRepo) AdminExists(ctx context.Context) (bool, error) {
-	const q = `SELECT EXISTS (
-		SELECT 1 FROM users WHERE role = 'admin' AND password_hash IS NOT NULL)`
-	var exists bool
-	if err := p.db.QueryRowContext(ctx, q).Scan(&exists); err != nil {
+	const q = `SELECT 1 FROM users WHERE role = 'admin' LIMIT 1`
+	var one int
+	switch err := p.db.QueryRowContext(ctx, q).Scan(&one); {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, nil
+	case err != nil:
 		return false, err
 	}
-	return exists, nil
+	return true, nil
 }
 
 // UserByID loads the same staff projection by id, or ErrNotFound. The
-// change-password flow re-verifies the caller's current password with it: the
-// session yields a user id, not a username.
+// account is passwordless — no password column is read.
 func (p *PGRepo) UserByID(ctx context.Context, id string) (*StaffUser, error) {
-	const q = `SELECT id, username, COALESCE(email, ''), role::text,
-		COALESCE(password_hash, ''), must_change_password, email_verified
+	const q = `SELECT id, username, COALESCE(email, ''), role::text, email_verified
 		FROM users WHERE id = $1`
 	var u StaffUser
 	switch err := p.db.QueryRowContext(ctx, q, id).Scan(
-		&u.ID, &u.Username, &u.Email, &u.Role, &u.PasswordHash, &u.MustChangePassword, &u.EmailVerified); {
+		&u.ID, &u.Username, &u.Email, &u.Role, &u.EmailVerified); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
 	case err != nil:
@@ -711,66 +775,30 @@ func (p *PGRepo) UserByID(ctx context.Context, id string) (*StaffUser, error) {
 }
 
 // UpsertOwner creates or resets the Owner account direct-to-Postgres (the
-// break-glass first-run / reset-password path). role is forced to 'owner' —
-// the platform-level identity one level above admin. On a username conflict the
-// email, hash and must_change_password flag are overwritten while the existing
-// id is preserved, so live sessions referencing it survive a password reset.
-// The empty email is stored as NULL (users.email is nullable).
-func (p *PGRepo) UpsertOwner(ctx context.Context, id, username, email, passwordHash string, mustChange bool) error {
+// break-glass first-run / recovery path). role is forced to 'admin' — the
+// platform-level identity. On a username conflict the email is overwritten
+// while the existing id is preserved, so live sessions referencing it survive
+// a reset. The account is passwordless by design. The empty email is stored
+// as NULL (users.email is nullable).
+func (p *PGRepo) UpsertOwner(ctx context.Context, id, username, email string) error {
 	_, err := p.db.ExecContext(ctx,
-		`INSERT INTO users (id, username, email, role, password_hash, must_change_password)
-		 VALUES ($1, $2, NULLIF($3, ''), 'owner', $4, $5)
-		 ON CONFLICT (username) DO UPDATE SET
-		   email = NULLIF($3, ''), role = 'owner',
-		   password_hash = $4, must_change_password = $5`,
-		id, username, email, passwordHash, mustChange)
+		`INSERT INTO users (id, username, email, role) VALUES ($1, $2, NULLIF($3, ''), 'admin')
+		 ON CONFLICT (username) DO UPDATE SET email = EXCLUDED.email`,
+		id, username, email)
 	return err
 }
 
 // InsertOperator mints a NEW Operator (additional staff admin) account
-// direct-to-Postgres. role is forced to 'admin' — Felis has a separate 'owner'
-// role (migration 0011) for the single platform owner; Operators are below
-// that. UNLIKE UpsertOwner this is insert-only: a username conflict is
-// left untouched (ON CONFLICT DO NOTHING) and reported as ErrConflict via a zero
-// RowsAffected, so adding an Operator can never silently reset the Owner's or
-// another Operator's credential. The empty email is stored as NULL.
-func (p *PGRepo) InsertOperator(ctx context.Context, id, username, email, passwordHash string, mustChange bool) error {
-	res, err := p.db.ExecContext(ctx,
-		`INSERT INTO users (id, username, email, role, password_hash, must_change_password)
-		 VALUES ($1, $2, NULLIF($3, ''), 'admin', $4, $5)
-		 ON CONFLICT (username) DO NOTHING`,
-		id, username, email, passwordHash, mustChange)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return ErrConflict
-	}
-	return nil
-}
-
-// SetPassword stores a new hash and clears must_change_password (the panel
-// change-password flow). ErrNotFound when no row matches so a stale session
-// cannot silently no-op the change.
-func (p *PGRepo) SetPassword(ctx context.Context, userID, passwordHash string) error {
-	res, err := p.db.ExecContext(ctx,
-		`UPDATE users SET password_hash = $2, must_change_password = false WHERE id = $1`,
-		userID, passwordHash)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return ErrNotFound
-	}
-	return nil
+// direct-to-Postgres. role is forced to 'admin'. UNLIKE UpsertOwner this is
+// insert-only: a username conflict is left untouched and surfaces as a driver
+// error, so adding an Operator can never silently reset the Owner's or another
+// Operator's row. The account is passwordless by design. The empty email is
+// stored as NULL.
+func (p *PGRepo) InsertOperator(ctx context.Context, id, username, email string) error {
+	_, err := p.db.ExecContext(ctx,
+		`INSERT INTO users (id, username, email, role) VALUES ($1, $2, NULLIF($3, ''), 'admin')`,
+		id, username, email)
+	return err
 }
 
 // CreateSession records a minted session by the sha-256 of its cookie value
@@ -785,12 +813,12 @@ func (p *PGRepo) CreateSession(ctx context.Context, tokenHash, userID string, ex
 // SessionUser resolves a live (unrevoked, unexpired at now) session hash to its
 // user, or ErrNotFound.
 func (p *PGRepo) SessionUser(ctx context.Context, tokenHash string, now time.Time) (*SessionedUser, error) {
-	const q = `SELECT u.id, COALESCE(u.email, ''), u.role::text, u.must_change_password
+	const q = `SELECT u.id, COALESCE(u.email, ''), u.role::text, COALESCE(u.email_verified, false)
 		FROM sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > $2`
 	var u SessionedUser
 	switch err := p.db.QueryRowContext(ctx, q, tokenHash, now).Scan(
-		&u.ID, &u.Email, &u.Role, &u.MustChangePassword); {
+		&u.ID, &u.Email, &u.Role, &u.EmailVerified); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
 	case err != nil:
@@ -1057,7 +1085,7 @@ func (p *PGRepo) ListUsers(ctx context.Context, opts ListUsersOpts) ([]UserView,
 	}
 
 	q := `SELECT u.id, u.username, COALESCE(u.email, ''), u.role::text,
-		u.disabled, u.email_verified, u.must_change_password,
+		u.disabled, u.email_verified,
 		u.created_at, u.updated_at,
 		COALESCE((SELECT count(*) FROM servers s WHERE s.owner_id = u.id AND s.deleted_at IS NULL), 0)
 	  FROM users u` + where
@@ -1075,7 +1103,7 @@ func (p *PGRepo) ListUsers(ctx context.Context, opts ListUsersOpts) ([]UserView,
 	for rows.Next() {
 		var v UserView
 		if err := rows.Scan(&v.ID, &v.Username, &v.Email, &v.Role,
-			&v.Disabled, &v.EmailVerified, &v.MustChangePassword,
+			&v.Disabled, &v.EmailVerified,
 			&v.CreatedAt, &v.UpdatedAt, &v.ServerCount); err != nil {
 			return nil, 0, err
 		}
@@ -1087,14 +1115,14 @@ func (p *PGRepo) ListUsers(ctx context.Context, opts ListUsersOpts) ([]UserView,
 // UserDetail loads one user with its linked MC accounts, or ErrNotFound.
 func (p *PGRepo) UserDetail(ctx context.Context, userID string) (*UserDetail, error) {
 	const q = `SELECT u.id, u.username, COALESCE(u.email, ''), u.role::text,
-		u.disabled, u.email_verified, u.must_change_password,
+		u.disabled, u.email_verified,
 		u.created_at, u.updated_at, u.deleted_at,
 		COALESCE((SELECT count(*) FROM servers s WHERE s.owner_id = u.id AND s.deleted_at IS NULL), 0)
 	  FROM users u WHERE u.id = $1`
 	var d UserDetail
 	switch err := p.db.QueryRowContext(ctx, q, userID).Scan(
 		&d.ID, &d.Username, &d.Email, &d.Role,
-		&d.Disabled, &d.EmailVerified, &d.MustChangePassword,
+		&d.Disabled, &d.EmailVerified,
 		&d.CreatedAt, &d.UpdatedAt, &d.DeletedAt, &d.ServerCount); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
@@ -1120,19 +1148,18 @@ func (p *PGRepo) UserDetail(ctx context.Context, userID string) (*UserDetail, er
 	return &d, linkRows.Err()
 }
 
-// CreateUser mints a new user row with an initial password hash. A username
-// conflict → ErrConflict.
+// CreateUser mints a new user row. A username conflict → ErrConflict.
 func (p *PGRepo) CreateUser(ctx context.Context, input CreateUserInput, _ string) (*UserView, error) {
-	const q = `INSERT INTO users (id, username, email, role, password_hash, must_change_password)
-		VALUES (gen_random_uuid()::text, $1, NULLIF($2, ''), $3::user_role, $4, $5)
+	const q = `INSERT INTO users (id, username, email, role)
+		VALUES (gen_random_uuid()::text, $1, NULLIF($2, ''), $3::user_role)
 		ON CONFLICT (username) DO NOTHING
 		RETURNING id, username, COALESCE(email, ''), role::text, disabled, email_verified,
-			must_change_password, created_at, updated_at, 0`
+			created_at, updated_at, 0`
 	var v UserView
 	switch err := p.db.QueryRowContext(ctx, q,
-		input.Username, input.Email, input.Role, input.PasswordHash, input.MustChange).Scan(
+		input.Username, input.Email, input.Role).Scan(
 		&v.ID, &v.Username, &v.Email, &v.Role,
-		&v.Disabled, &v.EmailVerified, &v.MustChangePassword,
+		&v.Disabled, &v.EmailVerified,
 		&v.CreatedAt, &v.UpdatedAt, &v.ServerCount); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrConflict
@@ -1181,12 +1208,12 @@ func (p *PGRepo) UpdateUser(ctx context.Context, userID string, patch UpdateUser
 	}
 	q += fmt.Sprintf(` WHERE id = $%d AND deleted_at IS NULL`, argn)
 	q += ` RETURNING id, username, COALESCE(email, ''), role::text, disabled,
-		email_verified, must_change_password, created_at, updated_at,
+		email_verified, created_at, updated_at,
 		(SELECT count(*) FROM servers WHERE owner_id = users.id AND deleted_at IS NULL)`
 	var v UserView
 	switch err := p.db.QueryRowContext(ctx, q, args...).Scan(
 		&v.ID, &v.Username, &v.Email, &v.Role,
-		&v.Disabled, &v.EmailVerified, &v.MustChangePassword,
+		&v.Disabled, &v.EmailVerified,
 		&v.CreatedAt, &v.UpdatedAt, &v.ServerCount); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
@@ -1205,13 +1232,13 @@ func (p *PGRepo) UpdateUser(ctx context.Context, userID string, patch UpdateUser
 // shared by UpdateUser (no-op return) and several other paths.
 func (p *PGRepo) userView(ctx context.Context, userID string) (*UserView, error) {
 	const q = `SELECT id, username, COALESCE(email, ''), role::text, disabled,
-		email_verified, must_change_password, created_at, updated_at,
+		email_verified, created_at, updated_at,
 		(SELECT count(*) FROM servers WHERE owner_id = users.id AND deleted_at IS NULL)
 		FROM users WHERE id = $1 AND deleted_at IS NULL`
 	var v UserView
 	switch err := p.db.QueryRowContext(ctx, q, userID).Scan(
 		&v.ID, &v.Username, &v.Email, &v.Role,
-		&v.Disabled, &v.EmailVerified, &v.MustChangePassword,
+		&v.Disabled, &v.EmailVerified,
 		&v.CreatedAt, &v.UpdatedAt, &v.ServerCount); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
@@ -1291,29 +1318,6 @@ func (p *PGRepo) SetUserDisabled(ctx context.Context, userID string, disabled bo
 			`UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`,
 			userID)
 	}
-	return nil
-}
-
-// AdminResetPassword stores a new hash and forces must_change_password so the
-// admin-set password is replaced on first login.
-func (p *PGRepo) AdminResetPassword(ctx context.Context, userID, passwordHash string) error {
-	res, err := p.db.ExecContext(ctx,
-		`UPDATE users SET password_hash = $2, must_change_password = true WHERE id = $1 AND deleted_at IS NULL`,
-		userID, passwordHash)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return ErrNotFound
-	}
-	// Revoke every session so the old password cannot be used via a retained cookie.
-	_, _ = p.db.ExecContext(ctx,
-		`UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`,
-		userID)
 	return nil
 }
 
@@ -1471,6 +1475,199 @@ func (p *PGRepo) LinkAccount(ctx context.Context, userID, mcUUID, authSource str
 		return ErrConflict
 	}
 	return nil
+}
+
+// ---- pre-session email login (spec §B) ----
+
+// UserByEmail resolves a VERIFIED email address to its login projection, or
+// ErrNotFound. Only a proven (email_verified true) address resolves, so a
+// merely-asserted address never reaches a session-mintable identity. The
+// account is passwordless — no password column is read.
+func (p *PGRepo) UserByEmail(ctx context.Context, email string) (*StaffUser, error) {
+	const q = `SELECT id, username, COALESCE(email, ''), role::text, email_verified
+		FROM users WHERE email = $1 AND email_verified = true`
+	var u StaffUser
+	switch err := p.db.QueryRowContext(ctx, q, email).Scan(
+		&u.ID, &u.Username, &u.Email, &u.Role, &u.EmailVerified); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, ErrNotFound
+	case err != nil:
+		return nil, err
+	}
+	return &u, nil
+}
+
+// ConsumeLoginEmailOTP redeems a live code for the PRE-SESSION email login door.
+// Unlike VerifyEmailOTP it has no identity side-effects: it neither writes
+// users.email nor runs the verified-email uniqueness guard — login already
+// resolved the userID via UserByEmail, which requires email_verified, so the
+// address is settled. Zero rows affected (no live code, expired, consumed, or
+// hash mismatch) → ErrNotFound.
+func (p *PGRepo) ConsumeLoginEmailOTP(ctx context.Context, userID, purpose, codeHash string, now time.Time) error {
+	res, err := p.db.ExecContext(ctx,
+		`UPDATE email_otps SET consumed_at = $4
+		 WHERE user_id = $1 AND purpose = $2 AND code_hash = $3
+		   AND consumed_at IS NULL AND expires_at > $4`,
+		userID, purpose, codeHash, now)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ---- op.console staff login: in-game approval state machine (spec §B op-login) ----
+
+// CreateOpLoginRequest records a fresh pending op.console login attempt for a staff
+// account. It writes the SECOND factor only — the email-OTP is minted separately
+// under purpose 'op_login' — so a row here means this staff account is waiting for
+// an in-game admin to vouch. email is a snapshot for the audit trail.
+func (p *PGRepo) CreateOpLoginRequest(ctx context.Context, id, userID, email string, expiresAt time.Time) error {
+	_, err := p.db.ExecContext(ctx,
+		`INSERT INTO op_login_requests (id, user_id, email, expires_at) VALUES ($1, $2, $3, $4)`,
+		id, userID, email, expiresAt)
+	return err
+}
+
+// OpLoginRequestByID loads a request by its handle, or ErrNotFound. The status poll
+// and the finish path both use it; finish additionally checks Status=='approved',
+// !Consumed, and ExpiresAt>now before minting a session. Username is left empty (no
+// join needed here). Status is derived from approved_at: 'approved' once set, else
+// 'pending'.
+func (p *PGRepo) OpLoginRequestByID(ctx context.Context, id string) (*OpLoginRequest, error) {
+	const q = `SELECT id, user_id, email, expires_at, consumed_at, approved_at, approved_by
+		FROM op_login_requests WHERE id = $1`
+	var (
+		r          OpLoginRequest
+		consumedAt sql.NullTime
+		approvedAt sql.NullTime
+		approvedBy sql.NullString
+	)
+	switch err := p.db.QueryRowContext(ctx, q, id).Scan(
+		&r.ID, &r.UserID, &r.Email, &r.ExpiresAt, &consumedAt, &approvedAt, &approvedBy); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, ErrNotFound
+	case err != nil:
+		return nil, err
+	}
+	r.Consumed = consumedAt.Valid
+	if approvedAt.Valid {
+		r.Status = "approved"
+	} else {
+		r.Status = "pending"
+	}
+	return &r, nil
+}
+
+// ListPendingOpLogins returns the live (pending, unconsumed, unexpired at now)
+// requests oldest-first, for the in-game admin's approval prompt. A resolved or
+// expired request drops out of the list, so an admin only ever sees actionable
+// attempts.
+func (p *PGRepo) ListPendingOpLogins(ctx context.Context, now time.Time) ([]OpLoginRequest, error) {
+	const q = `SELECT id, user_id, email, expires_at
+		FROM op_login_requests
+		WHERE consumed_at IS NULL AND approved_at IS NULL AND expires_at > $1
+		ORDER BY created_at`
+	rows, err := p.db.QueryContext(ctx, q, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []OpLoginRequest
+	for rows.Next() {
+		var r OpLoginRequest
+		if err := rows.Scan(&r.ID, &r.UserID, &r.Email, &r.ExpiresAt); err != nil {
+			return nil, err
+		}
+		r.Status = "pending"
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ApproveOpLogin marks a pending request approved by approverUserID (the in-game
+// admin), atomically: it stamps approved_at and approved_by only WHERE the row is
+// still pending, unconsumed, and unexpired at now. Zero rows affected (gone,
+// already resolved, or expired) → ErrNotFound, so a double approval or an
+// approval of a dead request is a no-op the caller can surface.
+func (p *PGRepo) ApproveOpLogin(ctx context.Context, id, approverUserID string, now time.Time) error {
+	res, err := p.db.ExecContext(ctx,
+		`UPDATE op_login_requests SET approved_at = $3, approved_by = $2
+		 WHERE id = $1 AND consumed_at IS NULL AND approved_at IS NULL AND expires_at > $3`,
+		id, approverUserID, now)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ConsumeOpLoginRequest stamps consumed_at on an APPROVED, unconsumed, unexpired
+// request, atomically, so it can be exchanged for a session exactly once. Zero
+// rows affected (pending, already consumed, or expired) → ErrNotFound. This is the
+// finish path's single-use guard; the email-OTP is consumed separately, so a lost
+// race here never silently mints a second session.
+func (p *PGRepo) ConsumeOpLoginRequest(ctx context.Context, id string, now time.Time) error {
+	res, err := p.db.ExecContext(ctx,
+		`UPDATE op_login_requests SET consumed_at = $2
+		 WHERE id = $1 AND consumed_at IS NULL AND expires_at > $2`,
+		id, now)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// ---- setup token redemption (spec §B) ----
+
+// ConsumeSetupToken atomically marks a one-time setup token consumed and returns
+// its user_id, or ErrNotFound when the token is absent, already consumed, or
+// expired. The /setup?token=... web flow redeems it for a lockdown session.
+func (p *PGRepo) ConsumeSetupToken(ctx context.Context, tokenHash string, now time.Time) (string, error) {
+	var userID string
+	switch err := p.db.QueryRowContext(ctx,
+		`UPDATE setup_tokens SET consumed_at = $2
+		 WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > $2
+		 RETURNING user_id`,
+		tokenHash, now).Scan(&userID); {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", ErrNotFound
+	case err != nil:
+		return "", err
+	}
+	return userID, nil
+}
+
+// CreateSetupToken persists a one-time setup token for the first-web-login
+// bootstrap, storing only its hash (the raw value rides in the /setup?token=...
+// URL). `felis setup` mints it after binding the Owner's Minecraft account; it is
+// redeemed exactly once by ConsumeSetupToken. The caller supplies a 256-bit
+// random token, so a token_hash collision is not a case worth special-handling —
+// any insert error (including an unknown user_id) surfaces to the caller.
+func (p *PGRepo) CreateSetupToken(ctx context.Context, tokenHash, userID string, expiresAt time.Time) error {
+	_, err := p.db.ExecContext(ctx,
+		`INSERT INTO setup_tokens (token_hash, user_id, expires_at) VALUES ($1, $2, $3)`,
+		tokenHash, userID, expiresAt)
+	return err
 }
 
 // joinStr joins a slice of strings with ", ".
