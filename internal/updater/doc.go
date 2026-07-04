@@ -29,15 +29,21 @@
 //     routing/parse logic is verified, but that one component stays dark at runtime (its
 //     Latest errors, degrading to "latest unknown") until a real repository is configured.
 //
-//   - NOT YET BUILT, but VERIFIABLE HERE (the next slice): the VersionGatherer's
-//     extraction core — command output (`k3s --version`), image tag
-//     (`rancher/k3s:v1.36.2-k3s1`) or jar filename → Version. That is logic over an
-//     exec/read seam, testable with a fake runner à la internal/reaper's ExecRunner,
-//     and load-bearing: a mis-read current version makes every plan wrong (spurious
-//     applies or missed upgrades). Only the seam's actual I/O is un-verifiable here.
+//   - ALSO BUILT + UNIT-VERIFIED: the VersionGatherer's extraction core and dispatch.
+//     Three pure extractors turn raw system text into a Version — a `--version` banner
+//     (k3s, cloudflared), a container image tag (felis-api), a proxy jar filename
+//     (velocity) — and sysGatherer routes each component to the right one over an
+//     injected seam, all exercised with a fake runner (gatherer_test.go). The
+//     load-bearing case is proven: k3s's registry tag "v1.36.2-k3s1" is repaired to the
+//     "+k3s1" build form the binary reports (a Docker tag cannot hold '+'), so an image
+//     read and a CLI read agree instead of the image masquerading as a prerelease. The
+//     CLI seam (execRunner) is wired for real; only its exec I/O is un-verified here.
 //
-//   - REMAINING INTEGRATION (genuinely I/O-bound — needs a cluster/mailbox to exercise):
-//     the concrete Notifier (SMTP + in-game) and Applier (control-plane image bump,
-//     cloudflared swap), the `felis update` CLI + CronJob entry point, and the runtime
-//     append of the live Pinned Minecraft fleet.
+//   - REMAINING INTEGRATION (genuinely I/O-bound — needs a node/cluster/mailbox): the
+//     two current-version PRODUCING seams the gatherer still lacks — the k8s read of the
+//     control-plane Deployment's image (felis-api) and the off-cluster Velocity jar
+//     inspection, both left nil so those components surface a gather error rather than a
+//     wrong version — plus the concrete Notifier (SMTP + in-game) and Applier
+//     (control-plane image bump, cloudflared swap), the `felis update` CLI + CronJob
+//     entry point, and the runtime append of the live Pinned Minecraft fleet.
 package updater

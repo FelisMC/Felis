@@ -47,8 +47,9 @@ type Spec struct {
 // pin — there is no policy path by which Topology can propose changing it.
 func Topology() []Spec {
 	return []Spec{
-		// Coord "felis/felis" is a placeholder for the operator's own release repo; the
-		// GitHub source (which would consume it) is not yet wired, so it is inert today.
+		// Coord "felis/felis" is a placeholder for the operator's own release repo: the
+		// GitHub source now consumes it, so the routing/parse path is live, but it will
+		// not resolve against real GitHub until the operator's actual repo slug is set.
 		{Name: "felis-api", Policy: updates.PolicyScheduled, Manageable: true, Source: sourceGitHub, Coord: "felis/felis"},
 		{Name: "k3s", Policy: updates.PolicyNotify, Manageable: false, Source: sourceGitHub, Coord: "k3s-io/k3s"},
 		{Name: "cloudflared", Policy: updates.PolicyScheduled, Manageable: true, Source: sourceGitHub, Coord: "cloudflare/cloudflared"},
