@@ -243,6 +243,11 @@ func (a *API) internalAPIRoutes() []apiRoute {
 		// and keyed by the verified UUID (not the scanned code), so it consumes nothing
 		// and is safe to poll repeatedly.
 		{Method: "GET", Pattern: "/api/v1/internal/account/link/status/{mc_uuid}", h: a.handleLinkStatus},
+		// Account migration (spec §B3 inherit), in-game side: /felis migrate puts the
+		// account linked to the running player's verified UUID into migrate mode. Internal
+		// only — the initiator is proven by online-mode auth, and the sensitive proof
+		// (step-up) still happens web-side before anything transfers.
+		{Method: "POST", Pattern: "/api/v1/internal/account/migrate/start", h: a.handleMigrateStart},
 		// Username-collision reclaim (spec §B3): velocity records a Mojang-priority
 		// reclaim (bar the squatter UUID + stash its data for 30 days) and gates the
 		// limbo login by checking whether a connecting UUID was barred. Internal-only —
@@ -365,6 +370,19 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "POST", Pattern: "/api/v1/account/passkey/register/finish", SetupAllowed: true, h: a.handlePasskeyRegisterFinish},
 		{Method: "GET", Pattern: "/api/v1/account/passkey/credentials", SetupAllowed: true, h: a.handlePasskeyList},
 		{Method: "DELETE", Pattern: "/api/v1/account/passkey/credentials/{id}", SetupAllowed: true, h: a.handlePasskeyDelete},
+		// Account migration (spec §B3 inherit), web side. App-tier, principal-scoped: the
+		// SOURCE drives status → step-up confirm (passkey forced when enrolled, else
+		// email-OTP) → issue-code+name-target; the TARGET drives redeem as itself. Not
+		// SetupAllowed — migrating is a normal post-onboarding operation, never part of
+		// lockdown enrollment. The step-up is a FRESH proof, so a stolen session alone
+		// cannot advance a migration.
+		{Method: "GET", Pattern: "/api/v1/account/migrate", h: a.handleMigrateStatus},
+		{Method: "POST", Pattern: "/api/v1/account/migrate/confirm/otp/start", h: a.handleMigrateConfirmOTPStart},
+		{Method: "POST", Pattern: "/api/v1/account/migrate/confirm/otp/verify", h: a.handleMigrateConfirmOTPVerify},
+		{Method: "POST", Pattern: "/api/v1/account/migrate/confirm/passkey/begin", h: a.handleMigrateConfirmPasskeyBegin},
+		{Method: "POST", Pattern: "/api/v1/account/migrate/confirm/passkey/finish", h: a.handleMigrateConfirmPasskeyFinish},
+		{Method: "POST", Pattern: "/api/v1/account/migrate/issue-code", h: a.handleMigrateIssueCode},
+		{Method: "POST", Pattern: "/api/v1/account/migrate/redeem", h: a.handleMigrateRedeem},
 		// Modpack submission (user-directed lane over §16), user side: a user files an upload for review
 		// and lists their own. App-tier — the submitter and the "my uploads" scope are
 		// both taken from the principal, never the body, so an ordinary authenticated

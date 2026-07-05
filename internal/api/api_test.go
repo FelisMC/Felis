@@ -94,6 +94,12 @@ type fakeRepo struct {
 	// pingErr, when non-nil, is returned by Ping to simulate DB liveness check
 	// failures in /readyz tests.
 	pingErr error
+	// account migration (spec §B3 inherit, scenario A) keyed by row id, mirroring
+	// account_migrations. Server ownership for the transfer is read/written on
+	// byName[*].OwnerID (the servers projection), and the source's retirement is
+	// applied to seededUsers, so the fake exercises the same all-or-nothing shape the
+	// PG transaction enforces.
+	migrations map[string]*fakeMigration
 }
 
 // fakePasskeyChallenge mirrors a webauthn_challenges row: its owner and purpose, the
@@ -213,6 +219,7 @@ func newFakeRepo() *fakeRepo {
 
 		discoverableChallenges: map[string]*fakeDiscoverableChallenge{},
 		fakeQuotas:             map[string]*QuotaView{},
+		migrations:             map[string]*fakeMigration{},
 	}
 }
 
@@ -919,6 +926,134 @@ func (f *fakeRepo) SetUserDisabled(_ context.Context, userID string, disabled bo
 		}
 	}
 	return ErrNotFound
+}
+
+// ---- account migration fakes (spec §B3 inherit, scenario A) ----
+
+// fakeMigration mirrors an account_migrations row through its state machine. Zero
+// times mean the corresponding NULL column (not yet confirmed / no code issued).
+type fakeMigration struct {
+	id            string
+	sourceUserID  string
+	targetUserID  string
+	state         string
+	confirmFactor string
+	confirmedAt   time.Time
+	codeHash      string
+	codeExpiresAt time.Time
+	redeemedAt    time.Time
+	createdAt     time.Time
+}
+
+func (m *fakeMigration) view() *MigrationView {
+	v := &MigrationView{
+		ID: m.id, SourceUserID: m.sourceUserID, TargetUserID: m.targetUserID,
+		State: m.state, ConfirmFactor: m.confirmFactor, CreatedAt: m.createdAt,
+	}
+	if !m.confirmedAt.IsZero() {
+		t := m.confirmedAt
+		v.ConfirmedAt = &t
+	}
+	if !m.codeExpiresAt.IsZero() {
+		t := m.codeExpiresAt
+		v.CodeExpiresAt = &t
+	}
+	return v
+}
+
+// userLive mirrors the PG "id = $1 AND deleted_at IS NULL" guard: a seeded, not-yet-
+// retired user is live; an unknown or soft-deleted one is not.
+func (f *fakeRepo) userLive(userID string) bool {
+	for _, su := range f.seededUsers {
+		if su.view.ID == userID {
+			return su.detail.DeletedAt == nil
+		}
+	}
+	return false
+}
+
+func (f *fakeRepo) StartMigration(_ context.Context, id, sourceUserID string, now time.Time) error {
+	if !f.userLive(sourceUserID) {
+		return ErrNotFound
+	}
+	for k, m := range f.migrations { // supersede any prior non-redeemed row for the source
+		if m.sourceUserID == sourceUserID && m.state != "redeemed" {
+			delete(f.migrations, k)
+		}
+	}
+	f.migrations[id] = &fakeMigration{
+		id: id, sourceUserID: sourceUserID, state: "initiated", createdAt: now,
+	}
+	return nil
+}
+
+func (f *fakeRepo) MigrationForSource(_ context.Context, sourceUserID string) (*MigrationView, error) {
+	for _, m := range f.migrations {
+		if m.sourceUserID == sourceUserID && m.state != "redeemed" {
+			return m.view(), nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (f *fakeRepo) ConfirmMigration(_ context.Context, sourceUserID, factor string, now time.Time) error {
+	for _, m := range f.migrations {
+		if m.sourceUserID == sourceUserID && m.state == "initiated" {
+			m.state = "confirmed"
+			m.confirmFactor = factor
+			m.confirmedAt = now
+			return nil
+		}
+	}
+	return ErrConflict
+}
+
+func (f *fakeRepo) IssueMigrationCode(_ context.Context, sourceUserID, targetUserID, codeHash string, expiresAt time.Time) error {
+	for _, m := range f.migrations {
+		if m.sourceUserID == sourceUserID && m.state == "confirmed" {
+			m.state = "code_issued"
+			m.targetUserID = targetUserID
+			m.codeHash = codeHash
+			m.codeExpiresAt = expiresAt
+			return nil
+		}
+	}
+	return ErrConflict
+}
+
+func (f *fakeRepo) RedeemMigration(_ context.Context, targetUserID, codeHash string, now time.Time) (string, []string, error) {
+	var mig *fakeMigration
+	for _, m := range f.migrations {
+		if m.codeHash == codeHash && m.targetUserID == targetUserID &&
+			m.state == "code_issued" && m.codeExpiresAt.After(now) {
+			mig = m
+			break
+		}
+	}
+	if mig == nil {
+		return "", nil, ErrLinkCodeInvalid
+	}
+	// Re-point every server the source owns to the target (byName holds pointers).
+	var moved []string
+	for name, rec := range f.byName {
+		if rec.OwnerID == mig.sourceUserID {
+			rec.OwnerID = targetUserID
+			moved = append(moved, name)
+		}
+	}
+	sort.Strings(moved) // deterministic for assertions
+	// Retire the source: disable + soft-delete.
+	for i, su := range f.seededUsers {
+		if su.view.ID == mig.sourceUserID {
+			f.seededUsers[i].view.Disabled = true
+			f.seededUsers[i].detail.Disabled = true
+			t := now
+			f.seededUsers[i].detail.DeletedAt = &t
+		}
+	}
+	mig.state = "redeemed"
+	mig.redeemedAt = now
+	return mig.sourceUserID, moved, nil
 }
 
 // ---- quota admin fakes ----

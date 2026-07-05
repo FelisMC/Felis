@@ -1635,6 +1635,186 @@ func (p *PGRepo) LinkAccount(ctx context.Context, userID, mcUUID, authSource str
 	return nil
 }
 
+// ---- account migration (spec §B3 inherit, scenario A) ----
+
+// StartMigration puts a live source account into migrate mode. It supersedes any
+// earlier unfinished migration for the source (so re-running /felis migrate restarts
+// cleanly, invalidating a prior outstanding code) and inserts a fresh 'initiated' row,
+// both under one transaction so the partial unique index never sees two live rows.
+func (p *PGRepo) StartMigration(ctx context.Context, id, sourceUserID string, now time.Time) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+
+	// The source must be a live (non-deleted) account; a retired one can never
+	// re-initiate a migration.
+	var live bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL)`,
+		sourceUserID).Scan(&live); err != nil {
+		return err
+	}
+	if !live {
+		return ErrNotFound
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM account_migrations WHERE source_user_id = $1 AND state <> 'redeemed'`,
+		sourceUserID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO account_migrations (id, source_user_id, state, created_at, updated_at)
+		 VALUES ($1, $2, 'initiated', $3, $3)`,
+		id, sourceUserID, now); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// MigrationForSource loads the live (non-redeemed) migration for a source, or
+// ErrNotFound when none is in flight.
+func (p *PGRepo) MigrationForSource(ctx context.Context, sourceUserID string) (*MigrationView, error) {
+	const q = `SELECT id, source_user_id, COALESCE(target_user_id, ''), state,
+		COALESCE(confirm_factor, ''), confirmed_at, code_expires_at, created_at
+		FROM account_migrations
+		WHERE source_user_id = $1 AND state <> 'redeemed'`
+	var v MigrationView
+	switch err := p.db.QueryRowContext(ctx, q, sourceUserID).Scan(
+		&v.ID, &v.SourceUserID, &v.TargetUserID, &v.State,
+		&v.ConfirmFactor, &v.ConfirmedAt, &v.CodeExpiresAt, &v.CreatedAt); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, ErrNotFound
+	case err != nil:
+		return nil, err
+	}
+	return &v, nil
+}
+
+// ConfirmMigration advances 'initiated' → 'confirmed' for the source, stamping the
+// step-up factor + time. It only advances from 'initiated' (0 rows → ErrConflict), so
+// the step-up can never be replayed against a later state.
+func (p *PGRepo) ConfirmMigration(ctx context.Context, sourceUserID, factor string, now time.Time) error {
+	res, err := p.db.ExecContext(ctx,
+		`UPDATE account_migrations
+		 SET state = 'confirmed', confirm_factor = $2, confirmed_at = $3
+		 WHERE source_user_id = $1 AND state = 'initiated'`,
+		sourceUserID, factor, now)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrConflict
+	}
+	return nil
+}
+
+// IssueMigrationCode advances 'confirmed' → 'code_issued', binding the target and
+// storing the one-time code hash + TTL. The caller has already validated the target is
+// a live account other than the source; the target FK is the backstop. Not-in-confirmed
+// → ErrConflict.
+func (p *PGRepo) IssueMigrationCode(ctx context.Context, sourceUserID, targetUserID, codeHash string, expiresAt time.Time) error {
+	res, err := p.db.ExecContext(ctx,
+		`UPDATE account_migrations
+		 SET state = 'code_issued', target_user_id = $2, code_hash = $3, code_expires_at = $4
+		 WHERE source_user_id = $1 AND state = 'confirmed'`,
+		sourceUserID, targetUserID, codeHash, expiresAt)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrConflict
+	}
+	return nil
+}
+
+// RedeemMigration performs the atomic transfer + retirement in one transaction. See
+// the interface doc for the full contract.
+func (p *PGRepo) RedeemMigration(ctx context.Context, targetUserID, codeHash string, now time.Time) (string, []string, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+
+	// Find and lock the pending migration whose named target is exactly this user. A
+	// code whose target is a different user simply does not match — an intercepted
+	// code is useless to a non-target. FOR UPDATE serializes concurrent redeems.
+	var migID, sourceUserID string
+	switch err := tx.QueryRowContext(ctx,
+		`SELECT id, source_user_id FROM account_migrations
+		 WHERE code_hash = $1 AND target_user_id = $2 AND state = 'code_issued'
+		   AND code_expires_at > $3
+		 FOR UPDATE`,
+		codeHash, targetUserID, now).Scan(&migID, &sourceUserID); {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", nil, ErrLinkCodeInvalid
+	case err != nil:
+		return "", nil, err
+	}
+
+	// Re-point every server the source owns to the target, collecting the names for
+	// the audit trail. Server ownership is the only thing that moves.
+	rows, err := tx.QueryContext(ctx,
+		`UPDATE servers SET owner_id = $2, claimed_at = now()
+		 WHERE owner_id = $1 AND deleted_at IS NULL
+		 RETURNING name`,
+		sourceUserID, targetUserID)
+	if err != nil {
+		return "", nil, err
+	}
+	var moved []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			return "", nil, err
+		}
+		moved = append(moved, name)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return "", nil, err
+	}
+	rows.Close()
+
+	// Retire the source: revoke its live sessions and soft-delete it so it can neither
+	// log in nor start another migration (double-spend defense). The servers just moved
+	// away, so there is nothing left to release.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`,
+		sourceUserID); err != nil {
+		return "", nil, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE users SET disabled = true, deleted_at = now() WHERE id = $1 AND deleted_at IS NULL`,
+		sourceUserID); err != nil {
+		return "", nil, err
+	}
+
+	// Mark the migration terminal.
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE account_migrations SET state = 'redeemed', redeemed_at = $2 WHERE id = $1`,
+		migID, now); err != nil {
+		return "", nil, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return "", nil, err
+	}
+	return sourceUserID, moved, nil
+}
+
 // ---- pre-session email login (spec §B) ----
 
 // UserByEmail resolves a VERIFIED email address to its login projection, or

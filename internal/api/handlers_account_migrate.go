@@ -1,0 +1,541 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"strings"
+	"time"
+)
+
+// Account migration (spec §B3 inherit, scenario A). A LIVE old account hands its
+// owned servers to a new account and is retired. The flow, and which side of the
+// house each step lives on:
+//
+//	1. in-game  /felis migrate            → handleMigrateStart (internal face): the
+//	                                         source, known by its verified mc_uuid, enters
+//	                                         migrate mode (state 'initiated').
+//	2. web      step-up confirm           → handleMigrateConfirm{OTP,Passkey}*: the
+//	                                         source proves control with a FRESH factor —
+//	                                         passkey if any is enrolled (forced), else an
+//	                                         email-OTP — advancing to 'confirmed'. Mere
+//	                                         session possession is never enough; a stolen
+//	                                         session cannot read the mailbox nor present the
+//	                                         authenticator.
+//	3. web      issue code + name target  → handleMigrateIssueCode: the source names the
+//	                                         target account by id and mints a one-time code
+//	                                         ('code_issued').
+//	4. web      target redeems code       → handleMigrateRedeem: the target, logged in as
+//	                                         itself, submits the code; ownership of the
+//	                                         source's servers moves to the target and the
+//	                                         source is retired ('redeemed').
+//
+// The code is bound to the named target at issue AND the redeemer must authenticate AS
+// that target, so an intercepted code is useless to anyone else. Only server ownership
+// moves — the mc_uuid link and web credentials (email, passkeys) stay with their
+// accounts; moving credentials would make migrate a credential-theft primitive.
+//
+// CODE-ONLY (Java/Velocity, not represented here): the /felis migrate command that calls
+// handleMigrateStart, and the web forms that drive steps 2–4.
+
+const (
+	// otpPurposeMigrate scopes an email-OTP to the migration step-up, so a
+	// migrate-confirm code never collides with an onboarding or login code for the
+	// same user (see otpPurposeOnboard).
+	otpPurposeMigrate = "migrate_confirm"
+	// passkeyPurposeMigrate scopes a passkey assertion challenge to the migration
+	// step-up, keeping it apart from the login assertion challenge (passkeyPurposeLogin).
+	passkeyPurposeMigrate = "passkey_migrate"
+	// migrateCodeTTL bounds the one-time code the source hands to the target. Short
+	// enough that a leaked code is useless soon, long enough to switch accounts and type.
+	migrateCodeTTL = 10 * time.Minute
+)
+
+// newMigrationID returns an opaque random row id (128 bits, hex) for an
+// account_migrations row, mirroring the other one-time-handle mints.
+func newMigrationID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+// migrateStartRequest is the in-game /felis migrate callback body (internal face): the
+// verified UUID of the player who ran the command. Its linked account becomes the
+// migration source.
+type migrateStartRequest struct {
+	MCUUID string `json:"mc_uuid"`
+}
+
+// handleMigrateStart puts the account linked to a verified in-game UUID into migrate
+// mode (spec §B3, internal face). It is the server side of /felis migrate: velocity has
+// already established the UUID via online-mode auth, so the initiator is trustworthy;
+// the sensitive proof (step-up) still happens on the web before anything transfers. An
+// unlinked UUID has no account to migrate (404); a retired/already-migrated account
+// cannot re-initiate (409).
+func (a *API) handleMigrateStart(w http.ResponseWriter, r *http.Request) {
+	var req migrateStartRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	mcUUID := strings.TrimSpace(req.MCUUID)
+	if mcUUID == "" {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "mc_uuid is required"))
+		return
+	}
+	sourceUserID, err := a.Repo.UserByMCUUID(r.Context(), mcUUID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, r, newError(http.StatusNotFound, "not_linked",
+				"this in-game identity is not linked to a Felis account"))
+			return
+		}
+		writeError(w, r, err)
+		return
+	}
+	id, err := newMigrationID()
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if err := a.Repo.StartMigration(r.Context(), id, sourceUserID, a.now()); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, r, newError(http.StatusConflict, "account_retired",
+				"the linked account can no longer start a migration"))
+			return
+		}
+		writeError(w, r, err)
+		return
+	}
+	// Internal-face event: attribute to the in-game initiator, Source 'internal'.
+	_ = a.Repo.Audit(r.Context(), AuditEntry{
+		Actor:     "mc:" + mcUUID,
+		Source:    "internal",
+		Action:    "account.migrate.start",
+		RequestID: requestIDFromContext(r.Context()),
+	})
+	writeJSON(w, http.StatusCreated, map[string]any{"started": true, "state": "initiated"})
+}
+
+// handleMigrateStatus reports the caller's live migration for the web flow to drive its
+// next step (spec §B3, external app face). No migration in flight → {active:false}.
+func (a *API) handleMigrateStatus(w http.ResponseWriter, r *http.Request) {
+	p := principalFromContext(r.Context())
+	m, err := a.Repo.MigrationForSource(r.Context(), p.UserID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeJSON(w, http.StatusOK, map[string]any{"active": false})
+			return
+		}
+		writeError(w, r, err)
+		return
+	}
+	resp := map[string]any{"active": true, "state": m.State}
+	if m.TargetUserID != "" {
+		resp["target_user_id"] = m.TargetUserID
+	}
+	if m.ConfirmFactor != "" {
+		resp["confirm_factor"] = m.ConfirmFactor
+	}
+	if m.CodeExpiresAt != nil {
+		resp["code_expires_at"] = m.CodeExpiresAt.UTC()
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// requireInitiatedMigration loads the caller's live migration and requires it be in
+// 'initiated' — the only state from which step-up may run. It writes the right error and
+// returns ok=false when the caller should stop, so the confirm handlers stay flat.
+func (a *API) requireInitiatedMigration(w http.ResponseWriter, r *http.Request, userID string) (*MigrationView, bool) {
+	m, err := a.Repo.MigrationForSource(r.Context(), userID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, r, newError(http.StatusNotFound, "no_migration",
+				"no migration is in progress; start one in-game with /felis migrate"))
+			return nil, false
+		}
+		writeError(w, r, err)
+		return nil, false
+	}
+	if m.State != "initiated" {
+		writeError(w, r, newError(http.StatusConflict, "already_confirmed",
+			"this migration has already been confirmed"))
+		return nil, false
+	}
+	return m, true
+}
+
+// userHasPasskey reports whether the account has any passkey enrolled — the predicate
+// that forces the passkey factor for the step-up.
+func (a *API) userHasPasskey(ctx context.Context, userID string) (bool, error) {
+	creds, err := a.Repo.PasskeyCredentialsForUser(ctx, userID)
+	if err != nil {
+		return false, err
+	}
+	return len(creds) > 0, nil
+}
+
+// handleMigrateConfirmOTPStart mints and delivers a fresh email-OTP for the migration
+// step-up (spec §B3, external app face). It is refused when the account has a passkey
+// enrolled — a strong factor must not be downgradable to email for an identity transfer.
+func (a *API) handleMigrateConfirmOTPStart(w http.ResponseWriter, r *http.Request) {
+	p := principalFromContext(r.Context())
+	if _, ok := a.requireInitiatedMigration(w, r, p.UserID); !ok {
+		return
+	}
+	hasPk, err := a.userHasPasskey(r.Context(), p.UserID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if hasPk {
+		writeError(w, r, newError(http.StatusConflict, "passkey_required",
+			"this account has a passkey; confirm the migration with your passkey"))
+		return
+	}
+	if p.Email == "" {
+		writeError(w, r, newError(http.StatusConflict, "no_step_up_factor",
+			"no verified email or passkey on this account to confirm the migration"))
+		return
+	}
+	// Per-recipient cooldown, namespaced apart from the other OTP doors so they never
+	// perturb each other's throttle.
+	emailKey := "migrate:confirm:" + strings.ToLower(p.Email)
+	lim := a.otpLimiter()
+	emailAt, ok := lim.reserve(emailKey, otpResendCooldown)
+	if !ok {
+		writeError(w, r, newError(http.StatusTooManyRequests, "otp_resend_cooldown",
+			"a code was sent recently; wait a moment before requesting another"))
+		return
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			lim.release(emailKey, emailAt)
+		}
+	}()
+	code, err := newEmailOTP()
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	id, err := newOTPID()
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	expiresAt := a.now().Add(otpTTL)
+	if err := a.Repo.CreateEmailOTP(r.Context(), id, p.UserID, p.Email, otpCodeHash(code), otpPurposeMigrate, expiresAt); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if err := a.deliverOTP(r.Context(), p.Email, code); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	committed = true
+	a.audit(r, auditActor(p), "account.migrate.confirm_otp_sent", "")
+	writeJSON(w, http.StatusAccepted, map[string]any{"sent": true, "expires_at": expiresAt.UTC()})
+}
+
+// migrateConfirmOTPVerifyRequest is the OTP step-up verify body: the code from the email.
+type migrateConfirmOTPVerifyRequest struct {
+	Code string `json:"code"`
+}
+
+// handleMigrateConfirmOTPVerify redeems the migration step-up code and, on a match,
+// advances the migration to 'confirmed' (spec §B3, external app face). The code lifecycle
+// is the login-door one (no identity side-effect): the address is already proven.
+func (a *API) handleMigrateConfirmOTPVerify(w http.ResponseWriter, r *http.Request) {
+	p := principalFromContext(r.Context())
+	var req migrateConfirmOTPVerifyRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	code := strings.TrimSpace(req.Code)
+	if code == "" {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "code is required"))
+		return
+	}
+	if _, ok := a.requireInitiatedMigration(w, r, p.UserID); !ok {
+		return
+	}
+	switch err := a.Repo.ConsumeLoginEmailOTP(r.Context(), p.UserID, otpPurposeMigrate, otpCodeHash(code), a.now()); {
+	case errors.Is(err, ErrOTPLocked):
+		writeError(w, r, newError(http.StatusTooManyRequests, "otp_locked",
+			"too many incorrect attempts; request a new code"))
+		return
+	case errors.Is(err, ErrOTPInvalid):
+		writeError(w, r, newError(http.StatusBadRequest, "invalid_code", "email code is invalid or expired"))
+		return
+	case err != nil:
+		writeError(w, r, err)
+		return
+	}
+	if err := a.Repo.ConfirmMigration(r.Context(), p.UserID, "email_otp", a.now()); err != nil {
+		if errors.Is(err, ErrConflict) {
+			writeError(w, r, newError(http.StatusConflict, "already_confirmed",
+				"this migration has already been confirmed"))
+			return
+		}
+		writeError(w, r, err)
+		return
+	}
+	a.audit(r, auditActor(p), "account.migrate.confirmed", "")
+	writeJSON(w, http.StatusOK, map[string]any{"confirmed": true})
+}
+
+// migratePasskeyUser builds the PasskeyUser the assertion ceremony needs for the
+// already-logged-in source (contrast the login door, which resolves it from a typed
+// email). The credential set must be identical between begin and finish.
+func migratePasskeyUser(p *Principal, creds []PasskeyCredential) PasskeyUser {
+	name := p.Email
+	if name == "" {
+		name = p.UserID
+	}
+	return PasskeyUser{ID: p.UserID, Name: name, DisplayName: name, Credentials: creds}
+}
+
+// handleMigrateConfirmPasskeyBegin starts a fresh passkey assertion bound to the
+// migration step-up (spec §B3, external app face). Unlike the login door it needs no
+// email — the caller is already authenticated — so it scopes the challenge to the
+// session principal and purpose passkeyPurposeMigrate.
+func (a *API) handleMigrateConfirmPasskeyBegin(w http.ResponseWriter, r *http.Request) {
+	p := principalFromContext(r.Context())
+	if a.Passkey == nil {
+		writeError(w, r, errPasskeyUnavailable)
+		return
+	}
+	if _, ok := a.requireInitiatedMigration(w, r, p.UserID); !ok {
+		return
+	}
+	creds, err := a.Repo.PasskeyCredentialsForUser(r.Context(), p.UserID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if len(creds) == 0 {
+		writeError(w, r, newError(http.StatusBadRequest, "no_passkey",
+			"no passkey enrolled; confirm the migration with an email code"))
+		return
+	}
+	options, sessionData, err := a.Passkey.BeginLogin(migratePasskeyUser(p, creds))
+	if err != nil {
+		writeError(w, r, newError(http.StatusBadRequest, "passkey_login_failed",
+			"could not start passkey confirmation"))
+		return
+	}
+	id, err := newPasskeyID()
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	expiresAt := a.now().Add(passkeyChallengeTTL)
+	if err := a.Repo.CreatePasskeyChallenge(r.Context(), id, p.UserID, passkeyPurposeMigrate, sessionData, expiresAt); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, options)
+}
+
+// migrateConfirmPasskeyFinishRequest is the assertion the browser produced, captured
+// as raw bytes so the exact response reaches the verifier without re-encoding.
+type migrateConfirmPasskeyFinishRequest struct {
+	Assertion json.RawMessage `json:"assertion"`
+}
+
+// handleMigrateConfirmPasskeyFinish verifies the migration step-up assertion and, on
+// success, advances the migration to 'confirmed' (spec §B3, external app face). It
+// consumes the stashed migrate challenge atomically (a missing/expired one → 400).
+func (a *API) handleMigrateConfirmPasskeyFinish(w http.ResponseWriter, r *http.Request) {
+	p := principalFromContext(r.Context())
+	if a.Passkey == nil {
+		writeError(w, r, errPasskeyUnavailable)
+		return
+	}
+	var req migrateConfirmPasskeyFinishRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if len(req.Assertion) == 0 {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "assertion is required"))
+		return
+	}
+	if _, ok := a.requireInitiatedMigration(w, r, p.UserID); !ok {
+		return
+	}
+	sessionData, err := a.Repo.ConsumePasskeyChallengeByUser(r.Context(), p.UserID, passkeyPurposeMigrate, a.now())
+	if err != nil {
+		if errors.Is(err, ErrPasskeyChallengeInvalid) {
+			writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
+				"passkey confirmation could not be completed; begin again"))
+			return
+		}
+		writeError(w, r, err)
+		return
+	}
+	creds, err := a.Repo.PasskeyCredentialsForUser(r.Context(), p.UserID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	va, err := a.Passkey.FinishLogin(migratePasskeyUser(p, creds), sessionData, bytes.NewReader(req.Assertion))
+	if err != nil {
+		writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
+			"passkey confirmation could not be completed; begin again"))
+		return
+	}
+	// Same clone policy as the login door (applyAssertionCounter): a rolled-back counter
+	// fails closed with the opaque envelope and advances nothing, so the migrate step-up is
+	// never a weaker sibling that would accept an authenticator login refuses. A clean
+	// assertion advances the stored sign-count, keeping the clone signal meaningful for the
+	// next login.
+	if err := a.applyAssertionCounter(r.Context(), va); err != nil {
+		if errors.Is(err, errPasskeyClonedAuthenticator) {
+			a.audit(r, auditActor(p), "auth.passkey_clone_rejected", va.CredentialID)
+			writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
+				"passkey confirmation could not be completed; begin again"))
+			return
+		}
+		writeError(w, r, err)
+		return
+	}
+	if err := a.Repo.ConfirmMigration(r.Context(), p.UserID, "passkey", a.now()); err != nil {
+		if errors.Is(err, ErrConflict) {
+			writeError(w, r, newError(http.StatusConflict, "already_confirmed",
+				"this migration has already been confirmed"))
+			return
+		}
+		writeError(w, r, err)
+		return
+	}
+	a.audit(r, auditActor(p), "account.migrate.confirmed", "")
+	writeJSON(w, http.StatusOK, map[string]any{"confirmed": true})
+}
+
+// migrateIssueCodeRequest is the issue-code body: the id of the new account the source
+// nominates to receive its servers.
+type migrateIssueCodeRequest struct {
+	TargetUserID string `json:"target_user_id"`
+}
+
+// handleMigrateIssueCode binds the named target and mints the one-time migrate code
+// (spec §B3, external app face). Requires the migration to be 'confirmed' (step-up done).
+// The target must be a live account other than the source. The code is returned once,
+// out of band to the target; only its hash is stored.
+func (a *API) handleMigrateIssueCode(w http.ResponseWriter, r *http.Request) {
+	p := principalFromContext(r.Context())
+	var req migrateIssueCodeRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	targetID := strings.TrimSpace(req.TargetUserID)
+	if targetID == "" {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "target_user_id is required"))
+		return
+	}
+	if targetID == p.UserID {
+		writeError(w, r, newError(http.StatusBadRequest, "invalid_target",
+			"the target account must be different from the source"))
+		return
+	}
+	m, err := a.Repo.MigrationForSource(r.Context(), p.UserID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, r, newError(http.StatusNotFound, "no_migration",
+				"no migration is in progress; start one in-game with /felis migrate"))
+			return
+		}
+		writeError(w, r, err)
+		return
+	}
+	if m.State != "confirmed" {
+		writeError(w, r, newError(http.StatusConflict, "not_confirmed",
+			"confirm the migration before issuing a code"))
+		return
+	}
+	// The target must exist and be a live (non-deleted, non-disabled) account. Validate
+	// here so a typo'd id fails with a clear message rather than a bare FK error.
+	target, err := a.Repo.UserDetail(r.Context(), targetID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, r, newError(http.StatusBadRequest, "target_not_found", "no account with that id"))
+			return
+		}
+		writeError(w, r, err)
+		return
+	}
+	if target.DeletedAt != nil || target.Disabled {
+		writeError(w, r, newError(http.StatusBadRequest, "target_unavailable",
+			"the target account is not available"))
+		return
+	}
+	code, err := newLinkCode()
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	expiresAt := a.now().Add(migrateCodeTTL)
+	if err := a.Repo.IssueMigrationCode(r.Context(), p.UserID, targetID, otpCodeHash(code), expiresAt); err != nil {
+		if errors.Is(err, ErrConflict) {
+			writeError(w, r, newError(http.StatusConflict, "not_confirmed",
+				"confirm the migration before issuing a code"))
+			return
+		}
+		writeError(w, r, err)
+		return
+	}
+	a.audit(r, auditActor(p), "account.migrate.code_issued", targetID)
+	writeJSON(w, http.StatusCreated, map[string]any{"code": code, "expires_at": expiresAt.UTC()})
+}
+
+// migrateRedeemRequest is the redeem body: the one-time code the target received.
+type migrateRedeemRequest struct {
+	Code string `json:"code"`
+}
+
+// handleMigrateRedeem spends the migrate code as the named target (spec §B3, external
+// app face). The redeemer must be authenticated as the account the code was bound to;
+// a code whose target is a different account simply does not match (an intercepted code
+// is useless). On success the source's servers are re-pointed to the caller and the
+// source account is retired, atomically.
+func (a *API) handleMigrateRedeem(w http.ResponseWriter, r *http.Request) {
+	p := principalFromContext(r.Context())
+	var req migrateRedeemRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	// Trim + uppercase so a target who typed the code with stray spaces or in lowercase
+	// still matches the minted value (the alphabet is uppercase); then hash — the raw
+	// code is never compared against the database.
+	code := strings.ToUpper(strings.TrimSpace(req.Code))
+	if code == "" {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "code is required"))
+		return
+	}
+	sourceUserID, moved, err := a.Repo.RedeemMigration(r.Context(), p.UserID, otpCodeHash(code), a.now())
+	if err != nil {
+		if errors.Is(err, ErrLinkCodeInvalid) {
+			writeError(w, r, newError(http.StatusBadRequest, "invalid_code", "migrate code is invalid or expired"))
+			return
+		}
+		writeError(w, r, err)
+		return
+	}
+	a.audit(r, auditActor(p), "account.migrate.redeemed", sourceUserID)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"migrated":      true,
+		"servers_moved": len(moved),
+		"servers":       moved,
+	})
+}

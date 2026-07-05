@@ -141,6 +141,22 @@ type OpLoginRequest struct {
 	CreatedAt time.Time
 }
 
+// MigrationView is the live account-migration for a source user (spec §B3 inherit,
+// scenario A): its state-machine position and the fields the web step-up, issue-code,
+// and status paths read. TargetUserID is empty until a code is issued; ConfirmFactor
+// and ConfirmedAt are empty/nil until the source completes step-up; CodeExpiresAt is
+// nil until code_issued.
+type MigrationView struct {
+	ID            string
+	SourceUserID  string
+	TargetUserID  string
+	State         string
+	ConfirmFactor string
+	ConfirmedAt   *time.Time
+	CodeExpiresAt *time.Time
+	CreatedAt     time.Time
+}
+
 // Repo is the business-layer data access the API depends on. It is an interface
 // so handlers are tested against an in-memory fake; the Postgres implementation
 // (pgRepo) is integration-tested only — it requires a live database.
@@ -557,6 +573,43 @@ type Repo interface {
 	// idempotent. authSource records which Yggdrasil established the UUID
 	// (mojang | thirdparty, spec §10 dual-Yggdrasil).
 	LinkAccount(ctx context.Context, userID, mcUUID, authSource string) error
+
+	// ---- account migration (spec §B3 inherit, scenario A) ----
+
+	// StartMigration puts a LIVE source account into migrate mode: it supersedes any
+	// earlier unfinished migration for the source (so re-running /felis migrate
+	// restarts cleanly, invalidating a prior outstanding code) and inserts a fresh row
+	// in state 'initiated'. id is the opaque handle. The source must be a live
+	// (non-deleted) account — ErrNotFound otherwise, so a retired account can never
+	// re-initiate. now stamps the row.
+	StartMigration(ctx context.Context, id, sourceUserID string, now time.Time) error
+	// MigrationForSource loads the live (non-redeemed) migration for a source, or
+	// ErrNotFound when none is in flight. The web status/confirm/issue paths use it to
+	// gate each step on the correct prior state.
+	MigrationForSource(ctx context.Context, sourceUserID string) (*MigrationView, error)
+	// ConfirmMigration records that the source proved control via a FRESH step-up
+	// (factor 'passkey' | 'email_otp'), advancing 'initiated' → 'confirmed'. It only
+	// advances from 'initiated'; any other current state (or no migration) → ErrConflict,
+	// so a confirmed/code_issued/redeemed migration can never be re-confirmed and the
+	// step-up cannot be replayed. now stamps confirmed_at.
+	ConfirmMigration(ctx context.Context, sourceUserID, factor string, now time.Time) error
+	// IssueMigrationCode binds the named target and stores the one-time code hash,
+	// advancing 'confirmed' → 'code_issued'. targetUserID must be a live account other
+	// than the source (validated by the caller before this call); the target FK also
+	// guarantees the row exists. codeHash is the sha-256 of the code; expiresAt is its
+	// TTL. A migration not in 'confirmed' → ErrConflict.
+	IssueMigrationCode(ctx context.Context, sourceUserID, targetUserID, codeHash string, expiresAt time.Time) error
+	// RedeemMigration is the ATOMIC transfer: keyed by (codeHash, targetUserID) it
+	// finds the 'code_issued', unexpired migration whose named target is exactly the
+	// redeeming user, re-points every server owned by the source to the target, retires
+	// the source account (disabled + soft-deleted, its live sessions revoked), and marks
+	// the migration 'redeemed' — all in one transaction. It returns the source user id
+	// and the moved server names for the audit trail. No matching or expired code, or a
+	// code whose named target is a different user → ErrLinkCodeInvalid (an intercepted
+	// code is useless to anyone but the named target). Server ownership is the only thing
+	// moved — the mc_uuid link and web credentials stay with their accounts. now drives
+	// expiry and the terminal timestamps.
+	RedeemMigration(ctx context.Context, targetUserID, codeHash string, now time.Time) (sourceUserID string, movedServers []string, err error)
 }
 
 // ---- user admin types ----

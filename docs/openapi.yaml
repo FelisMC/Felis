@@ -805,6 +805,56 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /api/v1/internal/account/migrate/start:
+    post:
+      tags: [account-internal]
+      operationId: migrateStart
+      summary: Put the account linked to a verified in-game UUID into migrate mode (spec §B3 inherit, in-game side).
+      description: >
+        Internal-only. The in-game /felis migrate command calls this for the running
+        player's verified UUID: it resolves the linked account and opens a fresh
+        migration in the initiated state, superseding any earlier unfinished attempt
+        by the same source. The web side then drives a fresh step-up confirmation.
+        The transfer itself moves server ownership only — never the mc_uuid link nor
+        web credentials — so this endpoint starts a flow, it does not move anything.
+      x-felis-face: [internal]
+      x-felis-tier: service
+      security: [{ serviceToken: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [mc_uuid]
+              properties:
+                mc_uuid: { type: string, format: uuid }
+      responses:
+        '201':
+          description: Migration opened in the initiated state.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [started, state]
+                properties:
+                  started: { type: boolean, const: true }
+                  state: { type: string, const: initiated }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The UUID is not linked to any account (not_linked).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: The source account has already been retired by a completed migration (account_retired).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /api/v1/internal/player/reclaim:
     post:
       tags: [account-internal]
@@ -3263,6 +3313,324 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/account/migrate:
+    get:
+      tags: [account]
+      operationId: migrateStatus
+      summary: Report the caller's active account-migration and where it is in the flow (spec §B3 inherit, web side).
+      description: >
+        Read-only. Returns the live migration whose source is the authenticated
+        principal, if any, so the web onboarding can resume the flow: whether a
+        confirmation step-up is still needed, which factor confirmed it, the named
+        target, and the one-time code's expiry once issued. active:false when the
+        caller has no live migration.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      responses:
+        '200':
+          description: The caller's live migration, or active:false.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [active]
+                properties:
+                  active: { type: boolean }
+                  state:
+                    type: string
+                    enum: [initiated, confirmed, code_issued]
+                    description: Present only when active; a redeemed migration is terminal and not reported here.
+                  target_user_id: { type: string }
+                  confirm_factor:
+                    type: string
+                    enum: [passkey, email_otp]
+                  code_expires_at: { type: string, format: date-time }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/account/migrate/confirm/otp/start:
+    post:
+      tags: [account]
+      operationId: migrateConfirmOtpStart
+      summary: Send a fresh email one-time code to confirm control of the migrating source account (spec §B3 step-up).
+      description: >
+        Opens the email-OTP confirmation factor for the caller's initiated migration.
+        This is a FRESH step-up bound to the migrate purpose, never mere session
+        possession. If the account has ANY passkey enrolled, email-OTP is refused with
+        409 passkey_required — the stronger factor is forced. The code is delivered out
+        of band and never returned; requires a verified email on the account.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      responses:
+        '202':
+          description: Confirmation code minted and dispatched.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sent, expires_at]
+                properties:
+                  sent: { type: boolean, const: true }
+                  expires_at: { type: string, format: date-time }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The caller has no initiated migration to confirm (no_migration).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: >
+            A passkey is enrolled so email-OTP is forbidden (passkey_required); the
+            migration is already confirmed (already_confirmed); or the account has no
+            email step-up factor (no_step_up_factor).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: Resend requested before the cooldown elapsed.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/account/migrate/confirm/otp/verify:
+    post:
+      tags: [account]
+      operationId: migrateConfirmOtpVerify
+      summary: Redeem the email one-time code and confirm the migration (spec §B3 step-up).
+      description: >
+        Consumes the fresh migrate-purpose email code for the caller's initiated
+        migration and advances it to confirmed with confirm_factor email_otp. Too many
+        wrong attempts lock the code (429 otp_locked); an unknown, expired, consumed, or
+        mismatched code is a 400 invalid_code.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        '200':
+          description: Migration confirmed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [confirmed]
+                properties:
+                  confirmed: { type: boolean, const: true }
+        '400':
+          description: Invalid or expired code (invalid_code).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The caller has no initiated migration to confirm (no_migration).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: The migration is already confirmed (already_confirmed).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: The code is locked after too many wrong attempts (otp_locked).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/account/migrate/confirm/passkey/begin:
+    post:
+      tags: [account]
+      operationId: migrateConfirmPasskeyBegin
+      summary: Begin a fresh passkey assertion to confirm control of the migrating source account (spec §B3 step-up).
+      description: >
+        Returns WebAuthn assertion request options for the caller's own enrolled
+        passkeys, bound to a fresh migrate-purpose challenge. This is the forced factor
+        whenever a passkey exists. The finish call proves the assertion and, exactly as
+        the login door does, runs the clone-signal (sign-count) check before confirming.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      responses:
+        '200':
+          description: WebAuthn assertion request options (PublicKeyCredentialRequestOptions) for navigator.credentials.get.
+          content:
+            application/json:
+              schema: { type: object, description: Opaque WebAuthn PublicKeyCredentialRequestOptions. }
+        '400':
+          description: The caller has no enrolled passkey (no_passkey).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The caller has no initiated migration to confirm (no_migration).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/account/migrate/confirm/passkey/finish:
+    post:
+      tags: [account]
+      operationId: migrateConfirmPasskeyFinish
+      summary: Finish the passkey assertion and confirm the migration (spec §B3 step-up).
+      description: >
+        Verifies the WebAuthn assertion against the fresh migrate-purpose challenge and,
+        like the login door, applies the authenticator sign-count clone check: a cloned
+        authenticator is rejected fail-closed (400 passkey_login_invalid) and audited. On
+        success the migration advances to confirmed with confirm_factor passkey.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assertion]
+              properties:
+                assertion:
+                  type: object
+                  description: The navigator.credentials.get() PublicKeyCredential assertion.
+      responses:
+        '200':
+          description: Migration confirmed.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [confirmed]
+                properties:
+                  confirmed: { type: boolean, const: true }
+        '400':
+          description: Assertion invalid, challenge stale, or a cloned authenticator was detected (passkey_login_invalid).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The caller has no initiated migration to confirm (no_migration).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/account/migrate/issue-code:
+    post:
+      tags: [account]
+      operationId: migrateIssueCode
+      summary: Name the target account and mint the one-time migration code (spec §B3 inherit).
+      description: >
+        For a confirmed migration, binds the named target account and mints a single
+        one-time code (only its hash is stored) that the target must redeem while logged
+        in AS that target — an intercepted code is useless to anyone else. The target
+        must exist and be neither disabled nor soft-deleted, and cannot be the source.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target_user_id]
+              properties:
+                target_user_id: { type: string }
+      responses:
+        '201':
+          description: Code minted, bound to the named target.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, expires_at]
+                properties:
+                  code: { type: string }
+                  expires_at: { type: string, format: date-time }
+        '400':
+          description: >
+            The target is the source itself (invalid_target), does not exist
+            (target_not_found), or is disabled/retired (target_unavailable).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: The caller has no migration to issue against (no_migration).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: The migration has not been confirmed by a step-up yet (not_confirmed).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/account/migrate/redeem:
+    post:
+      tags: [account]
+      operationId: migrateRedeem
+      summary: Redeem a migration code as the named target and inherit the source's owned servers (spec §B3 inherit).
+      description: >
+        The authenticated caller — who must be the target named at issue time — spends
+        the one-time code. In a single atomic step the source's owned servers are
+        re-pointed to the caller and the source account is retired (disabled and
+        soft-deleted), which also spends the code so it cannot be replayed. The caller
+        keeps its own in-game identity and credentials; only server ownership moves.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        '200':
+          description: Migration redeemed; owned servers moved to the caller.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [migrated, servers_moved, servers]
+                properties:
+                  migrated: { type: boolean, const: true }
+                  servers_moved: { type: integer, format: int32 }
+                  servers:
+                    type: array
+                    items: { type: string }
+        '400':
+          description: Unknown, expired, or already-spent code, or the caller is not the named target (invalid_code).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   /api/v1/me/submissions:
     post:
