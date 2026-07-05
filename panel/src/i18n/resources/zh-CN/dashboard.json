@@ -39,7 +39,6 @@
   "quick_start_step1": "认领无主服后，系统会自动将您的 Minecraft UUID 添加至准入白名单。",
   "quick_start_step2": "服务器如果长时间处于无人在线空闲状态，平台会自动执行休眠存档以节约资源。",
   "quick_start_step3": "游戏入口统一由 Velocity 网关承载，只需连接您的专用子域名即可。",
-  "voxel_topology_desc": "三维体素网络拓扑图",
   "legend_title": "3D 节点监控图例",
   "legend_running": "运行中",
   "legend_starting": "启动中",

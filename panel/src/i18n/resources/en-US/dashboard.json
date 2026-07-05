@@ -39,7 +39,6 @@
   "quick_start_step1": "Claiming an unowned server automatically adds your Minecraft UUID to the access whitelist.",
   "quick_start_step2": "When a server sits idle with no players online, the platform automatically sleeps it to conserve resources.",
   "quick_start_step3": "All game traffic is routed through the Velocity gateway — simply connect to your dedicated subdomain.",
-  "voxel_topology_desc": "3D Voxel Network Topology",
   "legend_title": "3D Node Monitor Legend",
   "legend_running": "Running",
   "legend_starting": "Starting",

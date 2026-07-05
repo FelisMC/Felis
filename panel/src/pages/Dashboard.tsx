@@ -423,7 +423,6 @@ function FleetView({
         <Card className="lg:col-span-4 flex flex-col overflow-hidden h-full">
           <CardHeader className="space-y-1 pb-4">
             <CardTitle className="text-base">{t("fleet")}</CardTitle>
-            <p className="text-xs text-muted-foreground">{t("voxel_topology_desc")}</p>
           </CardHeader>
           <CardContent className="flex-1 flex flex-col p-0 justify-between">
             <div className="flex-1 min-h-[220px] w-full bg-gradient-to-b from-transparent to-primary/5 border-b relative">
