@@ -111,6 +111,24 @@ export const api = {
   bind: (code: string) =>
     request<BindResult>("POST", "/auth/bind", { code }),
 
+  authEmailStart: (email: string) =>
+    request<{ sent: boolean; expires_at: string }>("POST", "/auth/email/start", { email }),
+
+  authEmailVerify: (email: string, code: string) =>
+    request<{ user_id: string; role: string }>("POST", "/auth/email/verify", { email, code }),
+
+  authPasskeyLoginBegin: (email: string) =>
+    request<any>("POST", "/auth/passkey/login/begin", { email }),
+
+  authPasskeyLoginFinish: (email: string, assertion: any) =>
+    request<any>("POST", "/auth/passkey/login/finish", { email, assertion }),
+
+  authPasskeyDiscoverableBegin: () =>
+    request<any>("POST", "/auth/passkey/login/discoverable/begin", {}),
+
+  authPasskeyDiscoverableFinish: (login_id: string, assertion: any) =>
+    request<any>("POST", "/auth/passkey/login/discoverable/finish", { login_id, assertion }),
+
   // changePassword is callable during the first-login lockdown (the route is
   // AllowDuringPasswordChange): the server re-verifies current_password, rejects an
   // unchanged or weak (8–72 byte) new password, writes the new hash, and revokes
@@ -436,8 +454,19 @@ export function buildLogsStreamURL(apiBase: string, id: string): string {
 
 /** humanizeError turns the stable error code into a user-facing line. */
 export function humanizeError(e: unknown): string {
-  const err = e as Partial<ApiError>;
   const t = i18next.getFixedT(null, "errors");
+
+  if (e && typeof e === "object" && "name" in e) {
+    const name = (e as any).name;
+    if (name === "NotAllowedError") {
+      return t("passkey_not_allowed");
+    }
+    if (name === "AbortError") {
+      return t("passkey_aborted");
+    }
+  }
+
+  const err = e as Partial<ApiError>;
   switch (err.code) {
     // Local-password auth (spec §B1).
     case "local_auth_disabled":

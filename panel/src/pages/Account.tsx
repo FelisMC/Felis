@@ -10,6 +10,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
+import { base64urlToBytes, bytesToBase64url } from "@/lib/utils";
 import {
   Dialog,
   DialogContent,
@@ -157,13 +158,7 @@ export function Account() {
       setRegisterDialogOpen(false);
       setPasskeyNickname("");
     } catch (err: any) {
-      if (err.name === "NotAllowedError") {
-        setPasskeyError("操作已被用户或浏览器取消。");
-      } else if (err.name === "AbortError") {
-        setPasskeyError("注册已被取消。");
-      } else {
-        setPasskeyError(humanizeError(err));
-      }
+      setPasskeyError(humanizeError(err));
     } finally {
       setRegisteringPasskey(false);
       abortControllerRef.current = null;
@@ -565,32 +560,4 @@ function StepBadge({ n }: { n: number }) {
       {n}
     </span>
   );
-}
-
-function base64urlToBytes(str: string): ArrayBuffer {
-  let base64 = str.replace(/-/g, "+").replace(/_/g, "/");
-  const pad = base64.length % 4;
-  if (pad) {
-    base64 += "=".repeat(4 - pad);
-  }
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes.buffer;
-}
-
-function bytesToBase64url(bytes: ArrayBuffer): string {
-  let binary = "";
-  const uint8 = new Uint8Array(bytes);
-  const len = uint8.byteLength;
-  for (let i = 0; i < len; i++) {
-    binary += String.fromCharCode(uint8[i]);
-  }
-  const base64 = btoa(binary);
-  return base64
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
 }

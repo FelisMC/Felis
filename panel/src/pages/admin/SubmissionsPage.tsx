@@ -2,7 +2,6 @@ import { useState, useMemo } from "react";
 import { ClipboardCheck, CheckCircle2, CircleSlash, ChevronDown, ChevronUp, Check, X, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { StatCard } from "@/components/StatCard";
 import { PageHeader } from "@/components/PageHeader";
 import { SubmissionStatusBadge } from "@/components/SubmissionStatusBadge";

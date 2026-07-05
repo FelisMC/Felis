@@ -3,7 +3,6 @@ import { useTranslation } from "react-i18next";
 import {
   Upload,
   Loader2,
-  AlertCircle,
   FileText,
   X,
   ChevronDown,

@@ -667,6 +667,84 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
       });
       return true;
     }
+    case "POST auth/passkey/login/discoverable/begin": {
+      sendJSON(ctx.res, 200, {
+        publicKey: {
+          challenge: "c29tZV9kaXNjb3ZlcmFibGVfY2hhbGxlbmdl",
+          rp: { name: "Felis Dev", id: "dev.felis.localhost" },
+          user: { id: "bW9ja191c2VyX2lk", name: "owner@mock.felis.local", displayName: "owner" },
+          pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+          allowCredentials: [],
+          timeout: 60000,
+        },
+        login_id: "mock_login_id_1234"
+      });
+      return true;
+    }
+    case "POST auth/passkey/login/discoverable/finish": {
+      const body = await readJSON<{ login_id?: string; assertion?: any }>(ctx.req);
+      if (!body.login_id || !body.assertion) {
+        sendError(ctx.res, 400, "bad_request", "login_id and assertion are required");
+        return true;
+      }
+      setSessionCookie(ctx.res, "owner");
+      sendJSON(ctx.res, 200, {
+        user_id: "mock-owner",
+        role: "owner"
+      });
+      return true;
+    }
+    case "POST auth/passkey/login/begin": {
+      const body = await readJSON<{ email?: string }>(ctx.req);
+      if (!body.email || !body.email.includes("@")) {
+        sendError(ctx.res, 400, "bad_request", "email is required");
+        return true;
+      }
+      sendJSON(ctx.res, 200, {
+        challenge: "c29tZV9wYXNza2V5X2NoYWxsZW5nZQ",
+        rp: { name: "Felis Dev", id: "dev.felis.localhost" },
+        user: { id: "bW9ja191c2VyX2lk", name: body.email, displayName: "owner" },
+        pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+        allowCredentials: [{ type: "public-key", id: "cGstMQ" }],
+        timeout: 60000,
+      });
+      return true;
+    }
+    case "POST auth/passkey/login/finish": {
+      const body = await readJSON<{ email?: string; assertion?: any }>(ctx.req);
+      if (!body.email || !body.assertion) {
+        sendError(ctx.res, 400, "bad_request", "email and assertion are required");
+        return true;
+      }
+      setSessionCookie(ctx.res, "owner");
+      sendJSON(ctx.res, 200, {
+        user_id: "mock-owner",
+        role: "owner"
+      });
+      return true;
+    }
+    case "POST auth/email/start": {
+      const body = await readJSON<{ email?: string }>(ctx.req);
+      if (!body.email || !body.email.includes("@")) {
+        sendError(ctx.res, 400, "bad_request", "email is required");
+        return true;
+      }
+      sendJSON(ctx.res, 202, { sent: true, expires_at: new Date(Date.now() + 600000).toISOString() });
+      return true;
+    }
+    case "POST auth/email/verify": {
+      const body = await readJSON<{ email?: string; code?: string }>(ctx.req);
+      if (!body.email || body.code !== "123456") {
+        sendError(ctx.res, 400, "invalid_code", "email code is invalid or expired");
+        return true;
+      }
+      setSessionCookie(ctx.res, "owner");
+      sendJSON(ctx.res, 200, {
+        user_id: "mock-owner",
+        role: "owner"
+      });
+      return true;
+    }
     case "POST auth/logout":
       clearSessionCookie(ctx.res);
       sendJSON(ctx.res, 200, { ok: true });

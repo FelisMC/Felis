@@ -25,5 +25,7 @@
   "passkey_challenge_invalid": "Passkey challenge is invalid or expired, please try again.",
   "invalid_attestation": "Could not verify this Passkey, please try again.",
   "passkey_already_bound": "This Passkey is already bound to another account.",
-  "passkey_unavailable": "Passkey subsystem is not available right now."
+  "passkey_unavailable": "Passkey subsystem is not available right now.",
+  "passkey_not_allowed": "The operation was cancelled by the user or browser.",
+  "passkey_aborted": "Passkey registration was aborted."
 }

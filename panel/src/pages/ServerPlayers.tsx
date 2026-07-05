@@ -2,7 +2,6 @@ import { useParams } from "react-router-dom";
 import { Users } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { BackLink } from "@/components/BackLink";
-import { Button } from "@/components/ui/button";
 import { PhaseBadge } from "@/components/PhaseBadge";
 import { Loading, ErrorState, NotYours, NotRunning } from "@/components/States";
 import { PageHeader } from "@/components/PageHeader";
