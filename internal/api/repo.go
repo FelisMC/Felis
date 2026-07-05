@@ -392,6 +392,13 @@ type Repo interface {
 	// unbinding leaves a re-enrollable credential. Removing zero rows is success, not an
 	// error — an account with no passkeys is the intended post-condition either way.
 	DeleteAllPasskeyCredentialsForUser(ctx context.Context, userID string) error
+	// AdvanceCredentialSignCount records a successful assertion on the passkey identified by
+	// credentialID (base64url): it sets the stored signature counter to newSignCount and stamps
+	// last_used_at. credential_id is UNIQUE, so exactly one row is updated; a missing row (the
+	// credential was unbound mid-ceremony) is a successful no-op, never an error. The login doors
+	// call it only after clone policy allows the assertion, so for a counter-keeping authenticator
+	// the stored counter only ever moves forward — the baseline a later regression is judged against.
+	AdvanceCredentialSignCount(ctx context.Context, credentialID string, newSignCount uint32, usedAt time.Time) error
 
 	// ---- player game-login: username-collision reclaim (spec §B3) ----
 

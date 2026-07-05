@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -154,21 +155,25 @@ type VerifiedCredential struct {
 }
 
 // VerifiedAssertion is the output of a finished LOGIN (assertion) ceremony: which of the
-// user's bound credentials proved itself and the signature counter the authenticator
-// reported. Like VerifiedCredential it carries no secret. SignCount is the raw ceremony
-// fact, NOT a policy verdict: the handler that eventually consumes this holds the
-// previously-stored counter and decides whether a non-increase is a cloned-authenticator
-// signal — the verifier deliberately does not, so clone policy lives in one place with
-// the stored state. SignCount is legitimately 0 for authenticators that keep no counter.
+// user's bound credentials proved itself, the signature counter the authenticator reported,
+// and whether that counter regressed (a possible clone). Like VerifiedCredential it carries
+// no secret. SignCount is a raw ceremony fact, NOT a policy verdict; CloneWarning IS the
+// verifier's regression verdict, but the refuse-vs-allow decision is the handler's. Clone
+// policy therefore lives in one place with the stored counter (applyAssertionCounter, which
+// both login doors call). SignCount is legitimately 0 for authenticators that keep no counter.
 //
-// The login handler below (handlePasskeyLoginFinish) obtains this from FinishLogin but
-// currently checks only that the assertion verified — the SignCount/UserVerified consumer
-// the note above anticipates is still future. It is the stable seam output the production
-// adapter (internal/passkey) produces and its Oracle test asserts on, so handler and
-// adapter agree on shape without either reshaping the other.
+// applyAssertionCounter is that single consumer: it refuses a CloneWarning fail-closed and,
+// on success, advances the stored counter and stamps last_used_at. This is the stable seam
+// output the production adapter (internal/passkey) produces and its Oracle test asserts on,
+// so handler and adapter agree on shape without either reshaping the other.
 type VerifiedAssertion struct {
 	CredentialID string // base64url(raw credential id) — which bound credential signed
 	SignCount    uint32
+	// CloneWarning is go-webauthn's verdict that the signature counter did not advance past
+	// the stored value (WebAuthn §6.1.1 clone detection). It is meaningful only for
+	// counter-keeping authenticators: synced/counter-less keys report SignCount 0 on every
+	// assertion and structurally never raise it. The login handlers refuse it fail-closed.
+	CloneWarning bool
 	// UserVerified records that a PIN/biometric (not mere presence) was performed
 	// during the assertion ceremony. The verifier enforces UV=required at BeginLogin,
 	// so this is always true for a successful assertion; persisting it makes the
@@ -180,6 +185,28 @@ type VerifiedAssertion struct {
 // this api instance, so the begin/finish ceremony routes answer 503 rather than panic.
 var errPasskeyUnavailable = newError(http.StatusServiceUnavailable, "passkey_unavailable",
 	"passkey subsystem is not configured")
+
+// errPasskeyClonedAuthenticator is the internal signal from applyAssertionCounter that a
+// verified assertion carried a clone warning (its signature counter did not advance past the
+// stored value). It never reaches the client verbatim: the login doors map it to the generic
+// passkey_login_invalid envelope — no clone oracle to a prober — and audit it distinctly.
+var errPasskeyClonedAuthenticator = errors.New("passkey assertion rejected: clone warning")
+
+// applyAssertionCounter is the single consumer of a verified assertion's signature-counter
+// facts, shared by the username-first (handlePasskeyLoginFinish) and discoverable
+// (handlePasskeyLoginDiscoverableFinish) login doors so clone policy lives in one place with
+// the stored counter. A CloneWarning fails closed with errPasskeyClonedAuthenticator;
+// otherwise it advances the stored counter to the asserted value and stamps last_used_at.
+// Counter-less/synced authenticators report 0 and never warn, so they pass through and simply
+// re-stamp 0 — the check gates only counter-keeping authenticators, where a rollback is the
+// meaningful clone signal. It runs BEFORE the session is minted, so a clone or a persist
+// failure denies the login rather than leaving an advanced counter with no session.
+func (a *API) applyAssertionCounter(ctx context.Context, va VerifiedAssertion) error {
+	if va.CloneWarning {
+		return errPasskeyClonedAuthenticator
+	}
+	return a.Repo.AdvanceCredentialSignCount(ctx, va.CredentialID, va.SignCount, a.now())
+}
 
 // newPasskeyID returns an opaque random row id (128 bits, hex) for a passkey row.
 func newPasskeyID() (string, error) {
@@ -577,10 +604,23 @@ func (a *API) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 		DisplayName: u.Username,
 		Credentials: creds,
 	}
-	_, err = a.Passkey.FinishLogin(user, sessionData, bytes.NewReader(req.Assertion))
+	va, err := a.Passkey.FinishLogin(user, sessionData, bytes.NewReader(req.Assertion))
 	if err != nil {
 		writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
 			"passkey login could not be completed; begin again"))
+		return
+	}
+	// Clone policy + counter advance, in one place shared with the discoverable door. A
+	// regressed counter is refused with the same opaque envelope (no clone oracle) but audited
+	// distinctly; a successful assertion advances the stored counter and stamps last_used_at.
+	if err := a.applyAssertionCounter(r.Context(), va); err != nil {
+		if errors.Is(err, errPasskeyClonedAuthenticator) {
+			a.audit(r, u.Username, "auth.passkey_clone_rejected", va.CredentialID)
+			writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
+				"passkey login could not be completed; begin again"))
+			return
+		}
+		writeError(w, r, err)
 		return
 	}
 

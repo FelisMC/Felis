@@ -157,7 +157,8 @@ func (a *API) handlePasskeyLoginDiscoverableFinish(w http.ResponseWriter, r *htt
 		// stable username so a nil email never matters.
 		return PasskeyUser{ID: u.ID, Name: u.Username, DisplayName: u.Username, Credentials: creds}, nil
 	}
-	if _, err := a.Passkey.FinishDiscoverableLogin(resolve, sessionData, bytes.NewReader(req.Assertion)); err != nil {
+	va, err := a.Passkey.FinishDiscoverableLogin(resolve, sessionData, bytes.NewReader(req.Assertion))
+	if err != nil {
 		writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
 			"passkey login could not be completed; begin again"))
 		return
@@ -169,6 +170,19 @@ func (a *API) handlePasskeyLoginDiscoverableFinish(w http.ResponseWriter, r *htt
 	if resolved == nil {
 		writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
 			"passkey login could not be completed; begin again"))
+		return
+	}
+	// Same clone policy + counter advance as the username-first door (applyAssertionCounter): a
+	// regressed counter is refused with the identical opaque envelope but audited under the
+	// resolved account; a successful assertion advances the stored counter and stamps last_used_at.
+	if err := a.applyAssertionCounter(r.Context(), va); err != nil {
+		if errors.Is(err, errPasskeyClonedAuthenticator) {
+			a.audit(r, resolved.Username, "auth.passkey_clone_rejected", va.CredentialID)
+			writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
+				"passkey login could not be completed; begin again"))
+			return
+		}
+		writeError(w, r, err)
 		return
 	}
 

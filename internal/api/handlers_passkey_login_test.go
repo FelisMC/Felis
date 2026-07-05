@@ -458,3 +458,39 @@ func TestPasskeyLoginFaceSeparation(t *testing.T) {
 		t.Errorf("finish on internal face: code = %d, want 404", w.Code)
 	}
 }
+
+// TestPasskeyLoginFinishCloneRejected is the username-first mirror of the discoverable door's
+// clone refusal (task #40 item 5). Both doors share applyAssertionCounter, but each WIRES it
+// independently, so this proves the username-first finish also fails closed on a CloneWarning:
+// the same opaque passkey_login_invalid envelope (no clone oracle), no session minted, the stored
+// credential left untouched at its enrollment-time counter, and a distinct auth.passkey_clone_
+// rejected audit under the account. Challenge is planted directly so finish is reachable under
+// the frozen clock without a live begin.
+func TestPasskeyLoginFinishCloneRejected(t *testing.T) {
+	api, repo, v := seedLoginPasskeyAPI(t)
+	v.assertion = VerifiedAssertion{CredentialID: "cred-1", UserVerified: true, SignCount: 3, CloneWarning: true}
+	plantLoginChallenge(repo, "live", frozenNow.Add(passkeyChallengeTTL))
+	eh := api.ExternalHandler()
+
+	w := do(eh, "POST", "/api/v1/auth/passkey/login/finish",
+		`{"email":"player@example.net","assertion":{"id":"cred-1","type":"public-key"}}`, jsonHeader)
+
+	if w.Code != http.StatusBadRequest || decodeErr(t, w) != "passkey_login_invalid" {
+		t.Fatalf("clone finish: code = %d body %s, want 400 passkey_login_invalid (opaque refusal)", w.Code, w.Body.String())
+	}
+	if len(repo.sessions) != 0 {
+		t.Errorf("clone refusal must mint no session, got %d", len(repo.sessions))
+	}
+	if len(w.Result().Cookies()) != 0 {
+		t.Errorf("clone refusal must set no session cookie, got %v", w.Result().Cookies())
+	}
+	if got := repo.passkeyCreds["row1"]; got.SignCount != 0 || got.LastUsedAt != nil {
+		t.Errorf("clone refusal must not advance/stamp the credential, got SignCount=%d LastUsedAt=%v", got.SignCount, got.LastUsedAt)
+	}
+	if n := len(repo.audits); n != 1 || repo.audits[0].Action != "auth.passkey_clone_rejected" {
+		t.Fatalf("want exactly 1 auth.passkey_clone_rejected audit, got %+v", repo.audits)
+	}
+	if repo.audits[0].Actor != "player" {
+		t.Errorf("clone audit actor = %q, want player (the resolved account)", repo.audits[0].Actor)
+	}
+}

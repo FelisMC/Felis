@@ -1150,6 +1150,18 @@ func (p *PGRepo) PasskeyCredentialsForUser(ctx context.Context, userID string) (
 	return out, rows.Err()
 }
 
+// AdvanceCredentialSignCount records a successful assertion on the passkey identified by
+// credentialID: it advances the stored signature counter to newSignCount and stamps
+// last_used_at. credential_id is UNIQUE so exactly one row is touched; a missing row (the
+// credential was unbound mid-ceremony) affects zero rows and is a successful no-op, never an
+// error — the assertion is already cryptographically complete by the time this runs.
+func (p *PGRepo) AdvanceCredentialSignCount(ctx context.Context, credentialID string, newSignCount uint32, usedAt time.Time) error {
+	_, err := p.db.ExecContext(ctx,
+		`UPDATE webauthn_credentials SET sign_count = $2, last_used_at = $3 WHERE credential_id = $1`,
+		credentialID, int64(newSignCount), usedAt)
+	return err
+}
+
 // DeletePasskeyCredential removes the passkey row id, scoped to userID so a caller can
 // only unbind their OWN credential. No matching (user, id) row → ErrNotFound via a zero
 // RowsAffected, so a stale or cross-user id cannot silently no-op as success.

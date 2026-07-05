@@ -317,3 +317,81 @@ func TestPasskeyDiscoverableLoginFaceSeparation(t *testing.T) {
 		t.Errorf("finish on internal face: code = %d, want 404", w.Code)
 	}
 }
+
+// beginDiscoverableLogin runs the from-zero begin and returns the stashed login_id, so the
+// counter/clone tests below need not re-inline the begin ceremony each time.
+func beginDiscoverableLogin(t *testing.T, eh http.Handler) string {
+	t.Helper()
+	w := do(eh, "POST", "/api/v1/auth/passkey/login/discoverable/begin", `{}`, jsonHeader)
+	if w.Code != http.StatusOK {
+		t.Fatalf("begin: code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	loginID, _ := acctBody(t, w)["login_id"].(string)
+	if loginID == "" {
+		t.Fatalf("begin returned empty login_id: %s", w.Body.String())
+	}
+	return loginID
+}
+
+// TestPasskeyDiscoverableLoginAdvancesSignCount proves the success half of task #40 item 5: a
+// verified from-zero assertion advances the stored signature counter to the value the
+// authenticator reported and stamps last_used_at. Without this the stored counter would sit at
+// the enrollment-time 0 forever, leaving the clone check below no moving baseline to judge a
+// later regression against.
+func TestPasskeyDiscoverableLoginAdvancesSignCount(t *testing.T) {
+	api, repo, v := seedDiscoverableLoginAPI(t)
+	// A clean (non-clone) assertion reporting an advanced counter.
+	v.assertion = VerifiedAssertion{CredentialID: "cred-1", UserVerified: true, SignCount: 42}
+	eh := api.ExternalHandler()
+
+	loginID := beginDiscoverableLogin(t, eh)
+	w := do(eh, "POST", "/api/v1/auth/passkey/login/discoverable/finish",
+		`{"login_id":"`+loginID+`","assertion":{"id":"cred-1","type":"public-key"}}`, jsonHeader)
+	if w.Code != http.StatusOK {
+		t.Fatalf("finish: code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	got := repo.passkeyCreds["row1"]
+	if got.SignCount != 42 {
+		t.Errorf("stored SignCount = %d, want 42 (advanced to the asserted counter)", got.SignCount)
+	}
+	if got.LastUsedAt == nil || !got.LastUsedAt.Equal(frozenNow) {
+		t.Errorf("stored LastUsedAt = %v, want %v (stamped on a successful assertion)", got.LastUsedAt, frozenNow)
+	}
+}
+
+// TestPasskeyDiscoverableLoginCloneRejected proves the fail-closed half of task #40 item 5: a
+// verified assertion carrying a CloneWarning (signature-counter regression — a possible cloned
+// authenticator) is refused. The refusal (1) collapses into the same passkey_login_invalid
+// envelope as any other finish failure so a prober gets no clone oracle, (2) mints NO session,
+// (3) does NOT advance or stamp the stored credential, and (4) is audited distinctly for the
+// operator under the resolved account.
+func TestPasskeyDiscoverableLoginCloneRejected(t *testing.T) {
+	api, repo, v := seedDiscoverableLoginAPI(t)
+	v.assertion = VerifiedAssertion{CredentialID: "cred-1", UserVerified: true, SignCount: 3, CloneWarning: true}
+	eh := api.ExternalHandler()
+
+	loginID := beginDiscoverableLogin(t, eh)
+	w := do(eh, "POST", "/api/v1/auth/passkey/login/discoverable/finish",
+		`{"login_id":"`+loginID+`","assertion":{"id":"cred-1","type":"public-key"}}`, jsonHeader)
+
+	if w.Code != http.StatusBadRequest || decodeErr(t, w) != "passkey_login_invalid" {
+		t.Fatalf("clone finish: code = %d body %s, want 400 passkey_login_invalid (opaque refusal)", w.Code, w.Body.String())
+	}
+	if len(repo.sessions) != 0 {
+		t.Errorf("clone refusal must mint no session, got %d", len(repo.sessions))
+	}
+	if len(w.Result().Cookies()) != 0 {
+		t.Errorf("clone refusal must set no session cookie, got %v", w.Result().Cookies())
+	}
+	// The stored credential is untouched: still at enrollment-time counter 0, never stamped.
+	if got := repo.passkeyCreds["row1"]; got.SignCount != 0 || got.LastUsedAt != nil {
+		t.Errorf("clone refusal must not advance/stamp the credential, got SignCount=%d LastUsedAt=%v", got.SignCount, got.LastUsedAt)
+	}
+	// Audited distinctly, under the resolved account, so the operator sees the clone signal.
+	if n := len(repo.audits); n != 1 || repo.audits[0].Action != "auth.passkey_clone_rejected" {
+		t.Fatalf("want exactly 1 auth.passkey_clone_rejected audit, got %+v", repo.audits)
+	}
+	if repo.audits[0].Actor != "player" {
+		t.Errorf("clone audit actor = %q, want player (the resolved account)", repo.audits[0].Actor)
+	}
+}

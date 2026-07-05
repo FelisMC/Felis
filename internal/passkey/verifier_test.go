@@ -480,6 +480,79 @@ func TestDiscoverableLoginUnboundCredentialRejected(t *testing.T) {
 	}
 }
 
+// TestLoginCloneWarningSurfaced proves the adapter SURFACES go-webauthn's clone verdict (task #40
+// item 5) on the username-first door: when the authenticator presents a signature counter at or
+// below the stored value, go-webauthn raises CloneWarning but does NOT itself reject (the counter
+// is advisory; the RP decides). The adapter must carry that verdict out in VerifiedAssertion so
+// the handler can fail closed — without this the handler would have nothing to key clone policy
+// on. Note the assertion still VERIFIES (err is nil): a regressed counter is a policy signal, not
+// a broken signature.
+func TestLoginCloneWarningSurfaced(t *testing.T) {
+	v := newTestVerifier(t)
+	rp := virtualRP()
+	authenticator := virtualwebauthn.NewAuthenticator()
+	cred := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+	stored := enrollCredential(t, v, rp, authenticator, cred)
+
+	// The stored counter is AHEAD of what the authenticator will present: a regression, which is
+	// exactly the cloned-authenticator signal go-webauthn's UpdateCounter raises.
+	stored.SignCount = 100
+	cred.Counter = 50
+
+	options, sessionData, err := v.BeginLogin(testUser(stored))
+	if err != nil {
+		t.Fatalf("BeginLogin: %v", err)
+	}
+	assertionOpts, err := virtualwebauthn.ParseAssertionOptions(string(options))
+	if err != nil {
+		t.Fatalf("ParseAssertionOptions: %v", err)
+	}
+	assertionResponse := virtualwebauthn.CreateAssertionResponse(rp, authenticator, cred, *assertionOpts)
+	va, err := v.FinishLogin(testUser(stored), sessionData, strings.NewReader(assertionResponse))
+	if err != nil {
+		t.Fatalf("FinishLogin: %v (a counter regression must still VERIFY, only flag CloneWarning)", err)
+	}
+	if !va.CloneWarning {
+		t.Fatal("va.CloneWarning = false, want true (presented counter at/below the stored counter is a clone signal)")
+	}
+}
+
+// TestDiscoverableLoginCloneWarningSurfaced is the same clone-verdict proof for the usernameless
+// door (task #40 item 5): a from-zero assertion whose counter regressed must come back VERIFIED
+// but with CloneWarning set, so the discoverable handler refuses it in the one shared place the
+// username-first door uses. Chained onto a real enrollment so the assertion is genuine crypto.
+func TestDiscoverableLoginCloneWarningSurfaced(t *testing.T) {
+	v := newTestVerifier(t)
+	rp := virtualRP()
+	authenticator := virtualwebauthn.NewAuthenticator()
+	cred := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+	stored := enrollCredential(t, v, rp, authenticator, cred)
+
+	authenticator.Options.UserHandle = []byte(testUserID)
+	stored.SignCount = 100
+	cred.Counter = 50
+
+	options, sessionData, err := v.BeginDiscoverableLogin()
+	if err != nil {
+		t.Fatalf("BeginDiscoverableLogin: %v", err)
+	}
+	assertionOpts, err := virtualwebauthn.ParseAssertionOptions(string(options))
+	if err != nil {
+		t.Fatalf("ParseAssertionOptions: %v (options=%s)", err, options)
+	}
+	assertionResponse := virtualwebauthn.CreateAssertionResponse(rp, authenticator, cred, *assertionOpts)
+	resolve := func(userHandle []byte) (api.PasskeyUser, error) {
+		return testUser(stored), nil
+	}
+	va, err := v.FinishDiscoverableLogin(resolve, sessionData, strings.NewReader(assertionResponse))
+	if err != nil {
+		t.Fatalf("FinishDiscoverableLogin: %v (a counter regression must still VERIFY, only flag CloneWarning)", err)
+	}
+	if !va.CloneWarning {
+		t.Fatal("va.CloneWarning = false, want true (presented counter at/below the stored counter is a clone signal)")
+	}
+}
+
 // TestEnrollmentRequestsResidentKey pins the ONLY server-side half of the from-zero enabler a
 // unit test can prove: that enrollment ASKS the browser for a resident (discoverable) key, i.e.
 // the creation options carry authenticatorSelection.residentKey = "preferred". Whether a real

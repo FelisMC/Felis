@@ -460,6 +460,23 @@ func (f *fakeRepo) DeleteAllPasskeyCredentialsForUser(_ context.Context, userID 
 	return nil
 }
 
+// AdvanceCredentialSignCount mirrors PGRepo: find the passkey by its UNIQUE credential_id, set
+// the stored counter to newSignCount, and stamp last_used_at. A credential_id matching no row
+// is a successful no-op (the PG UPDATE touches zero rows), so a test can assert both the
+// advance-on-success and the never-error-on-missing contracts.
+func (f *fakeRepo) AdvanceCredentialSignCount(_ context.Context, credentialID string, newSignCount uint32, usedAt time.Time) error {
+	for id, c := range f.passkeyCreds {
+		if c.CredentialID == credentialID {
+			c.SignCount = newSignCount
+			t := usedAt
+			c.LastUsedAt = &t
+			f.passkeyCreds[id] = c
+			return nil
+		}
+	}
+	return nil
+}
+
 // fakePasskeyVerifier is the hermetic PasskeyVerifier: it performs no real attestation
 // or assertion crypto, so it exercises the enrollment AND login STATE MACHINES (challenge
 // persistence, consume, conflict, audit, session mint) without go-webauthn.

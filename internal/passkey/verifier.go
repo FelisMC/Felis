@@ -192,10 +192,11 @@ func (v *Verifier) BeginLogin(user api.PasskeyUser) (json.RawMessage, []byte, er
 // reported. go-webauthn checks the challenge, RP id, and origin against server-held values,
 // that the asserted credential id is one the user actually holds (it returns
 // protocol.ErrorUnknownCredential otherwise), and the signature against the stored COSE
-// public key. It does NOT decide clone/regression policy here: the returned SignCount is
-// the raw ceremony fact, and the handler — which holds the previously-stored counter —
-// decides whether a non-increase is a cloned-authenticator signal. The verified credential
-// id is returned base64url so the handler can look up the exact row to update.
+// public key, and runs go-webauthn's UpdateCounter so a signature counter that fails to
+// advance past the stored value raises CloneWarning. It does NOT decide clone policy here:
+// the returned SignCount and CloneWarning are raw ceremony facts, and the handler — the one
+// consumer, holding the stored counter — decides (it refuses, fail-closed). The verified
+// credential id is returned base64url so the handler can look up the exact row to update.
 func (v *Verifier) FinishLogin(user api.PasskeyUser, sessionData []byte, assertion io.Reader) (api.VerifiedAssertion, error) {
 	var session webauthn.SessionData
 	if err := json.Unmarshal(sessionData, &session); err != nil {
@@ -212,6 +213,7 @@ func (v *Verifier) FinishLogin(user api.PasskeyUser, sessionData []byte, asserti
 	return api.VerifiedAssertion{
 		CredentialID: base64.RawURLEncoding.EncodeToString(cred.ID),
 		SignCount:    cred.Authenticator.SignCount,
+		CloneWarning: cred.Authenticator.CloneWarning,
 	}, nil
 }
 
@@ -274,6 +276,7 @@ func (v *Verifier) FinishDiscoverableLogin(resolveUser func(userHandle []byte) (
 	return api.VerifiedAssertion{
 		CredentialID: base64.RawURLEncoding.EncodeToString(cred.ID),
 		SignCount:    cred.Authenticator.SignCount,
+		CloneWarning: cred.Authenticator.CloneWarning,
 	}, nil
 }
 
