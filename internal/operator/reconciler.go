@@ -25,9 +25,11 @@ import (
 
 // Requeue cadences for the transient phases.
 const (
-	requeueStarting = 5 * time.Second
-	requeueStopping = 5 * time.Second
-	requeueSecret   = 10 * time.Second
+	requeueStarting            = 5 * time.Second
+	requeueStopping            = 5 * time.Second
+	requeueSecret              = 10 * time.Second
+	defaultTimeoutSeconds      = 300
+	defaultReadinessTimeoutSec = 300
 )
 
 // Reconciler reconciles a MinecraftServer with its managed children.
@@ -102,6 +104,9 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 	// The pod must first pass its tcpSocket readiness (readyReplicas >= 1).
 	if current.Status.ReadyReplicas < 1 {
 		r.markStarting(server, "PodNotReady", "waiting for pod TCP readiness")
+		if r.startupTimedOut(server) {
+			r.markFailed(server, "StartupTimeout", "pod did not become ready within startup timeout")
+		}
 		if err := r.patchStatus(ctx, server); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -123,6 +128,9 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		pc, err := r.Prober.Probe(ctx, rconAddress(server), password)
 		if err != nil {
 			r.markStarting(server, "RconNotReachable", err.Error())
+			if r.readinessTimedOut(server) {
+				r.markFailed(server, "ReadinessTimeout", "RCON probe did not succeed within readiness timeout")
+			}
 			if perr := r.patchStatus(ctx, server); perr != nil {
 				return ctrl.Result{}, perr
 			}
@@ -345,4 +353,26 @@ func (r *Reconciler) setCondition(server *v1alpha1.MinecraftServer, condType str
 		ObservedGeneration: server.Generation,
 		LastTransitionTime: r.now(),
 	})
+}
+
+func (r *Reconciler) startupTimedOut(server *v1alpha1.MinecraftServer) bool {
+	if server.Status.StartRequestedAt == nil {
+		return false
+	}
+	timeout := time.Duration(server.Spec.Startup.TimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = defaultTimeoutSeconds * time.Second
+	}
+	return r.now().Time.Sub(server.Status.StartRequestedAt.Time) >= timeout
+}
+
+func (r *Reconciler) readinessTimedOut(server *v1alpha1.MinecraftServer) bool {
+	if server.Status.StartRequestedAt == nil {
+		return false
+	}
+	timeout := time.Duration(server.Spec.Startup.ReadinessTimeoutSeconds) * time.Second
+	if timeout <= 0 {
+		timeout = defaultReadinessTimeoutSec * time.Second
+	}
+	return r.now().Time.Sub(server.Status.StartRequestedAt.Time) >= timeout
 }

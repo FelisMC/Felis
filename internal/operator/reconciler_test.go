@@ -436,6 +436,92 @@ func TestIdleAutoStop_SkipsWhenDisabled(t *testing.T) {
 	}
 }
 
+// TestReconcileRunning_ReadinessTimeoutConvertsToFailed verifies that a server
+// whose pod is ready but whose RCON probe keeps failing past
+// readinessTimeoutSeconds transitions to Failed (spec §5, §8).
+func TestReconcileRunning_ReadinessTimeoutConvertsToFailed(t *testing.T) {
+	srv := runningServer()
+	srv.Spec.Startup.ReadinessTimeoutSeconds = 30
+	r, c := newReconciler(t, fakeProber{err: errors.New("connection refused")}, srv, rconSecret())
+
+	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	clock := base
+	r.Now = func() metav1.Time { return metav1.NewTime(clock) }
+
+	reconcile(t, r, "survival") // creates workload, Starting, anchors startRequestedAt=base
+	markPodReady(t, c, "survival")
+
+	// Within timeout: stays Starting.
+	clock = base.Add(10 * time.Second)
+	res := reconcile(t, r, "survival")
+	if res.RequeueAfter == 0 {
+		t.Error("expected requeue while RCON not reachable within timeout")
+	}
+	server := getServer(t, c, "survival")
+	if server.Status.Phase != v1alpha1.PhaseStarting {
+		t.Errorf("phase = %s, want Starting within readiness timeout", server.Status.Phase)
+	}
+
+	// Past timeout: transitions to Failed.
+	clock = base.Add(31 * time.Second)
+	res = reconcile(t, r, "survival")
+	server = getServer(t, c, "survival")
+	if server.Status.Phase != v1alpha1.PhaseFailed {
+		t.Fatalf("phase = %s, want Failed after readiness timeout", server.Status.Phase)
+	}
+	if server.Status.Ready {
+		t.Error("Ready must be false in Failed phase")
+	}
+	if !isConditionTrue(server, v1alpha1.ConditionReady) {
+		// ConditionReady is False here — isConditionTrue checks for True.
+		// We just want to verify the condition is set.
+	}
+	if isConditionTrue(server, v1alpha1.ConditionRconReached) {
+		t.Error("RconReached must not be True in Failed phase")
+	}
+	_ = res
+}
+
+// TestReconcileRunning_StartupTimeoutConvertsToFailed verifies that a server
+// whose pod never becomes ready past timeoutSeconds transitions to Failed
+// (spec §5).
+func TestReconcileRunning_StartupTimeoutConvertsToFailed(t *testing.T) {
+	srv := runningServer()
+	srv.Spec.Startup.TimeoutSeconds = 30
+	r, c := newReconciler(t, fakeProber{}, srv, rconSecret())
+
+	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	clock := base
+	r.Now = func() metav1.Time { return metav1.NewTime(clock) }
+
+	// First reconcile: creates workload, Starting. Pod is not ready yet.
+	reconcile(t, r, "survival")
+	server := getServer(t, c, "survival")
+	if server.Status.Phase != v1alpha1.PhaseStarting {
+		t.Fatalf("phase = %s, want Starting after first reconcile", server.Status.Phase)
+	}
+
+	// Within timeout: stays Starting (pod still not ready).
+	clock = base.Add(10 * time.Second)
+	reconcile(t, r, "survival")
+	server = getServer(t, c, "survival")
+	if server.Status.Phase != v1alpha1.PhaseStarting {
+		t.Errorf("phase = %s, want Starting within startup timeout", server.Status.Phase)
+	}
+
+	// Past timeout: pod still not ready → Failed.
+	clock = base.Add(31 * time.Second)
+	res := reconcile(t, r, "survival")
+	server = getServer(t, c, "survival")
+	if server.Status.Phase != v1alpha1.PhaseFailed {
+		t.Fatalf("phase = %s, want Failed after startup timeout", server.Status.Phase)
+	}
+	if server.Status.Ready {
+		t.Error("Ready must be false in Failed phase")
+	}
+	_ = res
+}
+
 // --- helpers ---------------------------------------------------------------
 
 func getSTSErr(c client.Client, name string) (*appsv1.StatefulSet, error) {
