@@ -65,7 +65,7 @@ export function UsersPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader icon={Users} title={t("users_title")} subtitle={t("users_subtitle")} actions={<CreateUserDialog onCreated={(id) => { reload(); navigate(`/admin/users/${id}`); }} />} className="mb-6" />
+      <PageHeader icon={Users} title={t("users_title")} subtitle={t("users_subtitle")} actions={<CreateUserDialog onCreated={(id) => { reload(); navigate(`/admin/users/${id}`); }} />} />
 
       {/* Filters */}
       <Card>

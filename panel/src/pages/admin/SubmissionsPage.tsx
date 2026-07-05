@@ -139,7 +139,7 @@ export function SubmissionsPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader icon={ClipboardCheck} title={t("submissions_title")} subtitle={t("submissions_subtitle")} className="mb-6" />
+      <PageHeader icon={ClipboardCheck} title={t("submissions_title")} subtitle={t("submissions_subtitle")} />
 
       {/* Action Error Alert */}
       {actionError && <MessageLine kind="error" message={actionError} compact />}

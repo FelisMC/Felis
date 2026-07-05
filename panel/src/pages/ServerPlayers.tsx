@@ -71,7 +71,6 @@ export function ServerPlayers() {
       title={data.displayName || data.name}
       subtitle={t("players_title")}
       actions={<PhaseBadge phase={phase} />}
-      className="mb-6"
     />
   );
 

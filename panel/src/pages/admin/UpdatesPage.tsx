@@ -164,7 +164,7 @@ export function UpdatesPage() {
 
   return (
     <div className="space-y-6">
-      <PageHeader icon={Clock} title={t("updates_title")} subtitle={t("updates_subtitle")} className="mb-6" />
+      <PageHeader icon={Clock} title={t("updates_title")} subtitle={t("updates_subtitle")} />
 
       {/* Stats Cards Row */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">

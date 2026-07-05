@@ -61,7 +61,7 @@ export function Dashboard() {
 
   return (
     <>
-      <PageHeader icon={LayoutDashboard} title={t("title")} subtitle={t("subtitle")} className="mb-6" />
+      <PageHeader icon={LayoutDashboard} title={t("title")} subtitle={t("subtitle")} />
 
       {loading && !servers ? (
         <Loading />

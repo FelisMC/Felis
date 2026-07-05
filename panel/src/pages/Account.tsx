@@ -225,7 +225,7 @@ export function Account() {
 
   return (
     <>
-      <PageHeader icon={UserRound} title={t("title")} subtitle={t("subtitle")} className="mb-6" />
+      <PageHeader icon={UserRound} title={t("title")} subtitle={t("subtitle")} />
 
       <Card>
         <CardHeader>
