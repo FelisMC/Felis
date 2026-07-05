@@ -52,8 +52,8 @@ const PHASES: Phase[] = [
   "Running",
   "Starting",
   "Stopping",
-  "Stopped",
   "Failed",
+  "Stopped",
   "Unknown",
 ];
 
