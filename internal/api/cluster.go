@@ -75,6 +75,10 @@ type ServerSpecPatch struct {
 // so handlers are tested against a fake; the controller-runtime implementation
 // (k8sCluster) is integration-tested only — it requires a live cluster.
 type Cluster interface {
+	// Ping verifies the K8s API and CRD informer are healthy — used by /readyz
+	// (spec §7) to confirm the lifecycle store is reachable and synced.
+	Ping(ctx context.Context) error
+
 	// GetServer reads one MinecraftServer's lifecycle view, or ErrNotFound.
 	GetServer(ctx context.Context, name string) (*ServerInfo, error)
 	// GetBySubdomain finds the MinecraftServer whose spec.subdomain matches, or

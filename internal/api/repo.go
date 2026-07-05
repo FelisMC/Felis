@@ -145,6 +145,10 @@ type OpLoginRequest struct {
 // so handlers are tested against an in-memory fake; the Postgres implementation
 // (pgRepo) is integration-tested only — it requires a live database.
 type Repo interface {
+	// Ping probes the database — used by the /readyz endpoint (spec §7) to verify
+	// the DB connection is alive.
+	Ping(ctx context.Context) error
+
 	// ServerBySubdomain resolves a subdomain alias to its server, or ErrNotFound.
 	ServerBySubdomain(ctx context.Context, subdomain string) (*ServerRecord, error)
 	// ServerByName loads a server's business projection, or ErrNotFound.

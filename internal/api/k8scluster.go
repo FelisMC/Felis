@@ -27,6 +27,11 @@ func NewK8sCluster(c client.Client, namespace string) *K8sCluster {
 	return &K8sCluster{c: c, namespace: namespace}
 }
 
+func (k *K8sCluster) Ping(ctx context.Context) error {
+	var list v1alpha1.MinecraftServerList
+	return k.c.List(ctx, &list, client.InNamespace(k.namespace), client.Limit(1))
+}
+
 func (k *K8sCluster) GetServer(ctx context.Context, name string) (*ServerInfo, error) {
 	var ms v1alpha1.MinecraftServer
 	if err := k.c.Get(ctx, types.NamespacedName{Namespace: k.namespace, Name: name}, &ms); err != nil {

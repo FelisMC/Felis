@@ -18,6 +18,8 @@ type PGRepo struct {
 // NewPGRepo wraps an existing pool (from store.PostgresDriver.DB()).
 func NewPGRepo(db *sql.DB) *PGRepo { return &PGRepo{db: db} }
 
+func (p *PGRepo) Ping(ctx context.Context) error { return p.db.PingContext(ctx) }
+
 func (p *PGRepo) ServerBySubdomain(ctx context.Context, subdomain string) (*ServerRecord, error) {
 	const q = `SELECT s.name, sa.subdomain, COALESCE(s.owner_id, ''), COALESCE(s.cached_phase, '')
 		FROM server_aliases sa JOIN servers s ON s.name = sa.server_name

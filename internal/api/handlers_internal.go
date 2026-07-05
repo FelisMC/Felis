@@ -15,13 +15,19 @@ func (a *API) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// handleReadyz is a readiness probe. A full implementation also checks the DB,
-// the K8s API and the CRD informer (spec §7); here it reports the configured
-// dependencies are wired. Dependency pinging lands with the integration layer.
+// handleReadyz is a readiness probe (spec §7). It checks the DB, K8s API and
+// CRD informer before declaring ready — a full round-trip that mirrors what the
+// actual request path depends on.
 func (a *API) handleReadyz(w http.ResponseWriter, r *http.Request) {
-	if a.Repo == nil || a.Cluster == nil {
-		writeError(w, r, newError(http.StatusServiceUnavailable, "not_ready", "dependencies not wired"))
-		return
+	checks := map[string]func(context.Context) error{
+		"db":      a.Repo.Ping,
+		"k8s_api": a.Cluster.Ping,
+	}
+	for name, check := range checks {
+		if err := check(r.Context()); err != nil {
+			writeError(w, r, newError(http.StatusServiceUnavailable, "not_ready", "%s: %v", name, err))
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }

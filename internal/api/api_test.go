@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -90,6 +91,9 @@ type fakeRepo struct {
 	// user admin fakes
 	seededUsers []seededUser
 	fakeQuotas  map[string]*QuotaView
+	// pingErr, when non-nil, is returned by Ping to simulate DB liveness check
+	// failures in /readyz tests.
+	pingErr error
 }
 
 // fakePasskeyChallenge mirrors a webauthn_challenges row: its owner and purpose, the
@@ -646,6 +650,7 @@ func (f *fakeRepo) SeedServer(_ context.Context, name, subdomain string, _, _, _
 	f.aliases[subdomain] = name
 	return nil
 }
+func (f *fakeRepo) Ping(_ context.Context) error { return f.pingErr }
 func (f *fakeRepo) Audit(_ context.Context, e AuditEntry) error {
 	f.audits = append(f.audits, e)
 	return nil
@@ -1164,6 +1169,7 @@ type fakeCluster struct {
 	created   map[string]CreateServerInput // name -> the validated input it was created from
 	patched   map[string]ServerSpecPatch   // name -> the validated spec patch it received
 	createErr error
+	pingErr   error
 }
 
 func newFakeCluster() *fakeCluster {
@@ -1184,6 +1190,7 @@ func (c *fakeCluster) GetBySubdomain(_ context.Context, s string) (*ServerInfo, 
 	return nil, ErrNotFound
 }
 func (c *fakeCluster) ListServers(_ context.Context) ([]ServerInfo, error) { return c.list, nil }
+func (c *fakeCluster) Ping(_ context.Context) error                   { return c.pingErr }
 func (c *fakeCluster) SetDesiredState(_ context.Context, n string, s v1alpha1.DesiredState) error {
 	c.desired[n] = s
 	return nil
@@ -1312,6 +1319,33 @@ func TestHealthzIsUnauthenticated(t *testing.T) {
 	api.Internal = BearerTokenAuth{Token: "s3cr3t"}
 	if w := do(api.InternalHandler(), "GET", "/healthz", "", nil); w.Code != http.StatusOK {
 		t.Fatalf("healthz code = %d, want 200", w.Code)
+	}
+}
+
+// TestReadyzPingsDependencies proves /readyz verifies DB and K8s API liveness
+// before declaring ready, and returns 503 when either is down (spec §7).
+func TestReadyzPingsDependencies(t *testing.T) {
+	repo := newFakeRepo()
+	cl := newFakeCluster()
+	api := newTestAPI(repo, cl)
+	api.Internal = BearerTokenAuth{Token: "s3cr3t"}
+
+	// Both healthy.
+	if w := do(api.InternalHandler(), "GET", "/readyz", "", nil); w.Code != http.StatusOK {
+		t.Fatalf("readyz code = %d, want 200 when both deps are healthy (%s)", w.Code, w.Body.String())
+	}
+
+	// DB down.
+	repo.pingErr = errors.New("connection refused")
+	if w := do(api.InternalHandler(), "GET", "/readyz", "", nil); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz code = %d, want 503 when DB is down (%s)", w.Code, w.Body.String())
+	}
+	repo.pingErr = nil
+
+	// K8s API down.
+	cl.pingErr = errors.New("cannot reach apiserver")
+	if w := do(api.InternalHandler(), "GET", "/readyz", "", nil); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz code = %d, want 503 when K8s API is down (%s)", w.Code, w.Body.String())
 	}
 }
 
