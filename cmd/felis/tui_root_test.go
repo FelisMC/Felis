@@ -35,6 +35,7 @@ func newTestRoot(adminExists bool, mode consoleMode, accessAud string) *rootMode
 		"admin.felis.example.com",
 		"panel.felis.example.com",
 		accessAud,
+		"minecraft",
 		"root",
 		adminExists,
 		mode,

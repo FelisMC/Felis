@@ -146,13 +146,13 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	res, err := runBreakGlassTUI(ctx, repo, cfg.Database.URL, cfg.Server.RootDomain, cfg.Auth.AdminHostname, cfg.Auth.PanelHostname, cfg.Auth.AccessJWTAud, accountableOSUser(), adminExists)
+	res, err := runBreakGlassTUI(ctx, repo, cfg.Database.URL, cfg.Server.RootDomain, cfg.Auth.AdminHostname, cfg.Auth.PanelHostname, cfg.Auth.AccessJWTAud, cfg.K8s.Namespace, accountableOSUser(), adminExists)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis breakGlass: %v\n", err)
 		return 1
 	}
 
-	if !res.provisioned && !res.edgeConfigured {
+	if !res.provisioned && !res.edgeConfigured && !res.halted {
 		fmt.Fprintln(stdout, "felis breakGlass: cancelled — no changes made.")
 		return 0
 	}
@@ -197,6 +197,23 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "  in %s under [auth], set: access_jwt_aud = %q\n", *cfgPath, res.edgeAud)
 		fmt.Fprintln(stdout, "Then start the tunnel:  cloudflared tunnel run")
 		fmt.Fprintln(stdout, "Verify the Access app actually guards the admin face before relying on it.")
+	}
+
+	if res.halted {
+		verb := "is now stopping"
+		if res.haltAlreadyStopped {
+			verb = "was already stopped"
+		}
+		fmt.Fprintf(stdout, "\nfelis breakGlass: server %q %s (namespace %s).\n", res.haltServer, verb, res.haltNamespace)
+		if res.haltSystemServer {
+			// login has no fallback (systemservers.go): stopping it takes the whole proxy
+			// front door down, so the summary says so explicitly rather than burying it.
+			fmt.Fprintf(stdout, "WARNING: %q is a system server — the shared front door is down until it is running again.\n", res.haltServer)
+		}
+		if res.haltAuditWarning != "" {
+			fmt.Fprintf(stdout, "WARNING: the accountability audit row was NOT written: %s\n", res.haltAuditWarning)
+		}
+		fmt.Fprintf(stdout, "Restart it from the panel, or set the MinecraftServer's spec.desiredState back to Running.\n")
 	}
 	return 0
 }
@@ -491,6 +508,14 @@ type breakGlassResult struct {
 	storageMethod storageMethod
 	storageDetail string
 
+	// halt outcome (break-glass "halt a server" op #31)
+	halted             bool
+	haltServer         string
+	haltNamespace      string
+	haltAlreadyStopped bool
+	haltSystemServer   bool
+	haltAuditWarning   string
+
 	// Cloudflare-specific edge detail (set only when connectMethod is Cloudflare)
 	edgeConfigured    bool
 	edgeAud           string
@@ -518,16 +543,16 @@ const (
 	cloudflareAPITokenDocsURL        = "https://developers.cloudflare.com/fundamentals/api/how-to/account-owned-token-template/"
 )
 
-func runBreakGlassTUI(ctx context.Context, s ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, osUser string, adminExists bool) (breakGlassResult, error) {
-	return runConsoleTUI(ctx, s, dbURL, rootDomain, adminHostname, panelHostname, accessAud, osUser, adminExists, consoleModeBreakGlass)
+func runBreakGlassTUI(ctx context.Context, s ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool) (breakGlassResult, error) {
+	return runConsoleTUI(ctx, s, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, consoleModeBreakGlass)
 }
 
-func runSetupTUI(ctx context.Context, s ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, osUser string, adminExists bool) (breakGlassResult, error) {
-	return runConsoleTUI(ctx, s, dbURL, rootDomain, adminHostname, panelHostname, accessAud, osUser, adminExists, consoleModeSetup)
+func runSetupTUI(ctx context.Context, s ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool) (breakGlassResult, error) {
+	return runConsoleTUI(ctx, s, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, consoleModeSetup)
 }
 
-func runConsoleTUI(ctx context.Context, s ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, osUser string, adminExists bool, mode consoleMode) (breakGlassResult, error) {
-	rm := newRootModel(ctx, s, dbURL, rootDomain, adminHostname, panelHostname, accessAud, osUser, adminExists, mode)
+func runConsoleTUI(ctx context.Context, s ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool, mode consoleMode) (breakGlassResult, error) {
+	rm := newRootModel(ctx, s, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, mode)
 	final, err := tea.NewProgram(rm, tea.WithAltScreen()).Run()
 	if err != nil {
 		return breakGlassResult{}, err

@@ -102,7 +102,7 @@ func cmdSetup(args []string, stdout, stderr io.Writer) int {
 	}
 	defer setup.drv.Close()
 
-	res, err := runSetupTUI(ctx, setup.repo, setup.cfg.Database.URL, setup.cfg.Server.RootDomain, setup.cfg.Auth.AdminHostname, setup.cfg.Auth.PanelHostname, setup.cfg.Auth.AccessJWTAud, accountableOSUser(), setup.adminExists)
+	res, err := runSetupTUI(ctx, setup.repo, setup.cfg.Database.URL, setup.cfg.Server.RootDomain, setup.cfg.Auth.AdminHostname, setup.cfg.Auth.PanelHostname, setup.cfg.Auth.AccessJWTAud, setup.cfg.K8s.Namespace, accountableOSUser(), setup.adminExists)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis setup: %v\n", err)
 		return 1

@@ -14,6 +14,7 @@ type bgOperation int
 const (
 	bgProvisionOwner bgOperation = iota
 	bgAddOperator
+	bgHaltServer
 )
 
 // menuChoiceMsg is emitted to the root once the operator picks an operation. The
@@ -50,6 +51,7 @@ func (m *menuModel) build() *huh.Form {
 				// recovery flow, and landing on it keeps that path a single Enter.
 				huh.NewOption("Provision or reset the Owner account", bgProvisionOwner),
 				huh.NewOption("Add an Operator account", bgAddOperator),
+				huh.NewOption("Halt a running server", bgHaltServer),
 			),
 		// A dim footnote spelling out the one behavioural difference that matters:
 		// Owner-reset re-enables local-password login, operator-add never touches the

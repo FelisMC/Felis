@@ -139,10 +139,11 @@ type rootModel struct {
 	adminHost   string
 	panelHost   string
 	accessAud   string
+	namespace   string // minecraft workload namespace (cfg.K8s.Namespace); target of the halt op
 	adminExists bool
 }
 
-func newRootModel(ctx context.Context, store ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, osUser string, adminExists bool, mode consoleMode) *rootModel {
+func newRootModel(ctx context.Context, store ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool, mode consoleMode) *rootModel {
 	rm := &rootModel{
 		ctx:         ctx,
 		reviewing:   -1,
@@ -153,6 +154,7 @@ func newRootModel(ctx context.Context, store ownerStore, dbURL, rootDomain, admi
 		adminHost:   adminHostname,
 		panelHost:   panelHostname,
 		accessAud:   accessAud,
+		namespace:   namespace,
 		adminExists: adminExists,
 		mode:        mode,
 		result: breakGlassResult{
@@ -219,9 +221,32 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.op {
 		case bgAddOperator:
 			return m.adopt(newOperatorModel(m.ctx, m.store, m.osUser))
+		case bgHaltServer:
+			return m.adopt(newHaltModel(m.ctx, m.store, m.namespace, m.osUser))
 		default:
 			return m.adopt(newOwnerModel(m.ctx, m.store, m.osUser, m.adminExists))
 		}
+
+	case haltResultMsg:
+		// Halt is terminal in break-glass: record the durable summary (so cmdBreakGlass
+		// can re-print it past the alt-screen teardown) and quit. A load/perform failure
+		// routes through the root's error path; an empty fleet or cancel leaves halted
+		// false, so the summary reports "no changes made".
+		if msg.err != nil {
+			m.err = msg.err
+			return m, tea.Quit
+		}
+		if msg.done {
+			m.result.halted = true
+			m.result.haltServer = msg.outcome.name
+			m.result.haltNamespace = msg.outcome.namespace
+			m.result.haltAlreadyStopped = msg.outcome.alreadyStopped
+			m.result.haltSystemServer = msg.outcome.system
+			if msg.outcome.auditErr != nil {
+				m.result.haltAuditWarning = msg.outcome.auditErr.Error()
+			}
+		}
+		return m, tea.Quit
 
 	case ownerResultMsg:
 		if msg.err != nil {
