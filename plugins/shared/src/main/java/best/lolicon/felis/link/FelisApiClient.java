@@ -200,6 +200,29 @@ public final class FelisApiClient {
         }
     }
 
+    /**
+     * migrateStart opens an account migration for the player who ran {@code /felis
+     * migrate} in-game (spec §B3 inherit, scenario A). It is the internal face of that
+     * command: Velocity has already established the caller's Mojang-verified UUID, so the
+     * initiator is trustworthy, and this POST puts that UUID's linked account into migrate
+     * mode (state {@code initiated}). Only the migration is opened here — the sensitive
+     * proof (web step-up, naming the receiving account, redeeming a code) happens
+     * afterwards on the console. {@code POST /api/v1/internal/account/migrate/start} with
+     * the verified UUID; expects 201. An unlinked UUID has no account to migrate (404
+     * {@code not_linked}); a retired or already-migrating account cannot re-initiate (409
+     * {@code account_retired}). Both surface as branchable {@link LinkException}s; a 201
+     * that does not affirm {@code started:true} is a contract breach, not a refusal.
+     */
+    public void migrateStart(UUID mcUuid) throws LinkException {
+        Objects.requireNonNull(mcUuid, "mcUuid");
+        String body = "{\"mc_uuid\":\"" + mcUuid + "\"}";
+        Map<?, ?> res = postObject("/api/v1/internal/account/migrate/start", body, 201);
+        Object started = res.get("started");
+        if (!(started instanceof Boolean) || !((Boolean) started)) {
+            throw new LinkException(201, "bad_response", "migrate start returned 201 without started=true");
+        }
+    }
+
     // ---- transport ----
 
     private Map<?, ?> getObject(String path, int expect) throws LinkException {

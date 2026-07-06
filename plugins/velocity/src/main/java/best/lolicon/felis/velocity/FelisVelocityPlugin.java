@@ -268,6 +268,11 @@ public final class FelisVelocityPlugin {
                             doClaim(ctx.getSource());
                             return Command.SINGLE_SUCCESS;
                         }))
+                .then(BrigadierCommand.literalArgumentBuilder("migrate")
+                        .executes(ctx -> {
+                            doMigrate(ctx.getSource());
+                            return Command.SINGLE_SUCCESS;
+                        }))
                 .then(BrigadierCommand.literalArgumentBuilder("web")
                         .executes(ctx -> {
                             sendWebInfo(ctx.getSource());
@@ -353,6 +358,7 @@ public final class FelisVelocityPlugin {
         helpLine(source, "/felis server", "the felis servers this proxy knows");
         helpLine(source, "/felis go <server>", "start a server and move you in when it's ready");
         helpLine(source, "/felis claim", "take ownership of the server you're on");
+        helpLine(source, "/felis migrate", "move your servers to another account");
         helpLine(source, "/felis web", "where the web consoles live");
         helpLine(source, "/felis web op approve <code>", "approve a pending operator sign-in");
     }
@@ -443,6 +449,44 @@ public final class FelisVelocityPlugin {
         });
     }
 
+    // doMigrate opens an account migration for the calling player (spec §B3 inherit): it
+    // hands their owned servers to another account. Identity-bound (acts on the caller's
+    // verified UUID) and out-of-limbo like claim, but server-independent — it touches the
+    // account, not the server the player stands on, so there is no registry/current-server
+    // check. The command only OPENS the migration; the player finishes it on the web
+    // console (prove it's them, name the receiving account, redeem a code), so on success
+    // we point them there.
+    private void doMigrate(CommandSource source) {
+        Player player = requirePlayer(source);
+        if (player == null || !ensureOutOfLimbo(player)) {
+            return;
+        }
+        if (!routingActive) {
+            player.sendMessage(routingDisabled());
+            return;
+        }
+        UUID uuid = player.getUniqueId();
+        String who = player.getUsername();
+        player.sendMessage(Component.text("Starting account migration…", NamedTextColor.GRAY));
+        async(() -> {
+            try {
+                apiClient.migrateStart(uuid);
+                String root = config.rootDomain();
+                player.sendMessage(Component.text(
+                        "Migration started — finish it on the web console:", NamedTextColor.GREEN));
+                player.sendMessage(Component.text(
+                        "  " + (root == null ? "the players' web console" : "https://console." + root),
+                        NamedTextColor.WHITE));
+                player.sendMessage(Component.text(
+                        "You'll confirm it's you, name the account to receive your servers, then get a code.",
+                        NamedTextColor.GRAY));
+                logger.info("Felis: account migration started in-game by {} ({})", who, uuid);
+            } catch (LinkException e) {
+                player.sendMessage(Component.text(migrateError(e), NamedTextColor.RED));
+            }
+        });
+    }
+
     private void sendWebInfo(CommandSource source) {
         if (!gateInfo(source)) {
             return;
@@ -526,6 +570,22 @@ public final class FelisVelocityPlugin {
                 return "Felis is temporarily unavailable — please try again.";
             default:
                 return "Couldn't claim « " + server + " » right now. Please try again.";
+        }
+    }
+
+    // migrateError maps the felis-api migrate-start refusals (spec §B3) to player-safe
+    // text. A 404 means the caller's UUID isn't linked to any account to migrate; a 409
+    // means the linked account can't start one (already migrated, or retired).
+    private static String migrateError(LinkException e) {
+        switch (e.statusCode()) {
+            case 404:
+                return "Link your account on the web console before migrating.";
+            case 409:
+                return "This account can't start a migration (already migrated or retired).";
+            case 0:
+                return "Felis is temporarily unavailable — please try again.";
+            default:
+                return "Couldn't start the migration right now. Please try again.";
         }
     }
 
