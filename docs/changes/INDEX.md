@@ -208,3 +208,4 @@ primary record.
 | c1aa38b | 2026-07-06 | feat(velocity): add /felis migrate to open an account migration (§B3 inherit) |
 | 7a7c0d5 | 2026-07-07 | feat(api): add on-demand world backup endpoint and Job executor (§B4 Sync) |
 | f2fc57c | 2026-07-07 | feat(api): add internal-face break-glass world backup endpoint (§B4 Sync) |
+| 2ba9948 | 2026-07-07 | fix(platform): front the felis-api internal face on its own ClusterIP Service |
