@@ -9,6 +9,7 @@
   - `a531f5e` fix(cfsetup): keep the connector install in the host apply layer only (drop the duplicate `StartConnector`)
   - `2810fe8` fix(cfsetup): repoint a stale DNS record when routing a tunnel hostname
   - `7d3be64` feat(cfsetup): start the tunnel connector as a setup step
+  - `346ec68` refactor(deploy): rework the cloudflare-edge walkthrough — restructured the edge TUI flow and added a tested `cfsetup` integration-runner path (with TUI height-measure/root tests)
   - `e058a64` feat(edge): close the panel NodePort to the public after the tunnel is up — nftables at prerouting `raw` (-300), before kube-proxy's NodePort DNAT, gated on the connector actually serving; loopback accepted first so the connector origin hop is untouched
 - **Tasks:** #37 (fence panel NodePort to public after tunnel)
 

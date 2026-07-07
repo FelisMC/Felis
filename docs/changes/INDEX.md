@@ -45,7 +45,7 @@ commits are the collaborator's UI work and are not given detail docs here.
 | [deploy-bootstrap-installer](2026-06-27-deploy-bootstrap-installer.md) *(backfill)* | `58fa4b0` `94a3b7b` `deaa2f8` `318a724` `e5f1682` `28c3eee` `c14ed17` `d9e866f` `b84debf` | one-line bootstrap installer + demo bring-up |
 | [console-auth-passwordless](2026-06-27-console-auth-passwordless.md) *(backfill)* | `af14f02` `0c1cc59` `3b43f05` `c20b12c` | local-password login → passwordless migration + residue sweep |
 | [felis-cli-break-glass-setup](2026-06-27-felis-cli-break-glass-setup.md) *(backfill)* | `e108a37` `2d0bbb0` `a94b001` `eb5875a` `f5d00f3` `9c46632` `7d91373` | break-glass recovery console + first-run setup + apply/migrate |
-| [cloudflare-tunnel-access-edge](2026-06-27-cloudflare-tunnel-access-edge.md) *(backfill)* | `53a7664` `ba13839` `a531f5e` `2810fe8` `7d3be64` `e058a64` | §14 Tunnel + fail-closed Access edge + NodePort fence |
+| [cloudflare-tunnel-access-edge](2026-06-27-cloudflare-tunnel-access-edge.md) *(backfill)* | `53a7664` `ba13839` `a531f5e` `2810fe8` `7d3be64` `346ec68` `e058a64` | §14 Tunnel + fail-closed Access edge + NodePort fence |
 | [player-onboarding-b2](2026-06-27-player-onboarding-b2.md) *(backfill)* | `dbe34a1` `1f8b9bb` `116595f` `fe2ece0` `55592ed` `6c3999a` `879b177` | §B2 email-OTP, account-link, QR, Bind-Code + OTP throttle |
 | [username-reclaim-b3](2026-06-27-username-reclaim-b3.md) *(backfill)* | `a29571d` `fdb6efb` | §B3 Mojang-priority reclaim + account migration |
 | [felis-metrics](2026-06-30-felis-metrics.md) *(backfill)* | `75642d9` `2a93a9e` `79eae7f` `8ac5e64` | §23 felis_* Prometheus collectors |
