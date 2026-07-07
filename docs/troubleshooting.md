@@ -280,6 +280,17 @@ The internal face (`--internal-addr :8081`, routes under
 `/api/v1/internal/...`) is **never** Zero-Trust; it authenticates a single
 service token via `Authorization: Bearer <token>`, compared in constant time.
 
+In-cluster it is reached through the ClusterIP Service `felis-api-internal` (port
+8081), which is separate from the external NodePort `felis-api` (443) precisely so
+the no-Zero-Trust face is never exposed on a node. On the control-plane node the
+break-glass console reaches it by resolving that Service's ClusterIP and dialing
+`:8081`.
+
+- **Internal calls fail to *connect* (not 401)** → the `felis-api-internal` Service
+  is missing or its selector no longer matches the api pods. `kubectl -n felis get
+  svc felis-api-internal` must show a ClusterIP with 8081; a bare `felis-api` name
+  serves only 443 and every internal call would hang/refuse.
+
 - **All internal calls 401** → the token is unset or wrong. The API reads env
   `FELIS_SERVICE_TOKEN`. If unset, startup logs:
 

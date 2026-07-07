@@ -128,17 +128,28 @@ const (
 	nonRootUID int64 = 1000
 )
 
+// APIInternalServiceName is the ClusterIP Service that fronts the felis-api
+// internal face (8081). It is SEPARATE from the external NodePort Service (SAAPI)
+// on purpose — see apiInternalService. The login pod resolves it by cross-namespace
+// DNS; the on-node break-glass console resolves its ClusterIP and dials it directly.
+const APIInternalServiceName = SAAPI + "-internal"
+
+// APIInternalPort is the felis-api internal-face port, exported for the on-node
+// console which builds http://<clusterIP>:APIInternalPort after a Service lookup.
+const APIInternalPort = apiInternalPort
+
 // InternalAPIBaseURL returns the in-cluster base URL of the felis-api INTERNAL
 // face for a caller in another namespace — specifically the login system server,
 // which dials it with the service token to mint bind codes and poll link status.
-// It single-sources the Service name (SAAPI, in the control namespace) and the
-// internal port with the Deployment/Service above, so a rename or port change here
-// can never drift from what the login pod is told to call. Cross-namespace DNS is
-// always resolvable; reachability additionally depends on there being no fence in
-// the way (today neither the minecraft-ns egress nor the control-ns ingress is
-// policy-locked, so the path is open — see internal/platform/netpol.go).
+// It single-sources the internal Service name (APIInternalServiceName, in the
+// control namespace) and the internal port with the Deployment/Service above, so a
+// rename or port change here can never drift from what the login pod is told to
+// call. Cross-namespace DNS is always resolvable, and apiInternalService actually
+// programs 8081 on that ClusterIP; reachability additionally depends on there being
+// no fence in the way (today neither the minecraft-ns egress nor the control-ns
+// ingress is policy-locked, so the path is open — see internal/platform/netpol.go).
 func InternalAPIBaseURL(controlNamespace string) string {
-	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", SAAPI, controlNamespace, apiInternalPort)
+	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", APIInternalServiceName, controlNamespace, apiInternalPort)
 }
 
 // Workloads renders the running control-plane: the felis-api Deployment, the
@@ -151,6 +162,7 @@ func Workloads(p Params) []Object {
 	objs := []Object{
 		APIDeployment(p),
 		apiService(p),
+		apiInternalService(p),
 		OperatorDeployment(p),
 		registryDeployment(p),
 		registryService(p),
@@ -294,6 +306,35 @@ func apiService(p Params) *corev1.Service {
 				Port:       443,
 				TargetPort: intstr.FromString("https"),
 				NodePort:   p.PanelNodePort,
+				Protocol:   corev1.ProtocolTCP,
+			}},
+		},
+	}
+}
+
+// apiInternalService fronts the felis-api INTERNAL face (service-token, no Zero
+// Trust) on a ClusterIP-only Service, kept SEPARATE from the external NodePort
+// apiService on purpose: a NodePort Service allocates a node port for EVERY declared
+// port with no per-port opt-out, so folding 8081 into apiService would publish the
+// no-Zero-Trust internal face on every node's external IP — a hard red line for a
+// face whose only guard is the bearer service token. A distinct ClusterIP Service
+// exposes 8081 in-cluster only: reachable by the login pod (cross-namespace DNS to
+// APIInternalServiceName) and, on the k3s node, by the break-glass console dialing
+// this Service's ClusterIP. Without it the felis-api DNS name has no 8081 port and
+// every internal-face call silently fails to connect.
+func apiInternalService(p Params) *corev1.Service {
+	p = p.withDefaults()
+	labels := controlPlanePodLabels(ComponentAPI)
+	return &corev1.Service{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
+		ObjectMeta: metav1.ObjectMeta{Name: APIInternalServiceName, Namespace: p.ControlNamespace, Labels: labels},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeClusterIP,
+			Selector: labels,
+			Ports: []corev1.ServicePort{{
+				Name:       "internal",
+				Port:       apiInternalPort,
+				TargetPort: intstr.FromString("internal"),
 				Protocol:   corev1.ProtocolTCP,
 			}},
 		},

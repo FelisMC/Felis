@@ -277,6 +277,38 @@ func TestAPIService_NodePort(t *testing.T) {
 	}
 }
 
+// TestAPIInternalService_ClusterIP pins the separate internal-face Service: it must
+// be ClusterIP (never NodePort — the internal face is service-token-only and must not
+// be published on a node's external IP), expose 8081 -> the api pod's "internal"
+// port, carry NO nodePort, and select the same api pods as the external Service. It
+// is what makes the felis-api DNS name actually answer on 8081 (the login pod path)
+// and gives the on-node console a ClusterIP to dial.
+func TestAPIInternalService_ClusterIP(t *testing.T) {
+	p := testParams()
+	svc := apiInternalService(p)
+	dep := APIDeployment(p)
+
+	if svc.Name != APIInternalServiceName || svc.Namespace != p.ControlNamespace {
+		t.Errorf("internal Service = %s/%s, want %s/%s", svc.Namespace, svc.Name, p.ControlNamespace, APIInternalServiceName)
+	}
+	if svc.Name == SAAPI {
+		t.Errorf("internal Service must not collide with the external Service name %q", SAAPI)
+	}
+	if svc.Spec.Type != corev1.ServiceTypeClusterIP {
+		t.Errorf("internal Service type = %s, want ClusterIP (never expose the no-Zero-Trust face on a node)", svc.Spec.Type)
+	}
+	if !mapSelectorMatches(svc.Spec.Selector, dep.Spec.Template.Labels) {
+		t.Errorf("internal Service selector %v does not select api pod labels %v", svc.Spec.Selector, dep.Spec.Template.Labels)
+	}
+	if len(svc.Spec.Ports) != 1 {
+		t.Fatalf("internal Service ports = %v, want one", svc.Spec.Ports)
+	}
+	port := svc.Spec.Ports[0]
+	if port.Port != apiInternalPort || port.TargetPort.StrVal != "internal" || port.NodePort != 0 {
+		t.Errorf("internal Service port = %#v, want %d -> internal with no nodePort", port, apiInternalPort)
+	}
+}
+
 // TestAPIDeployment_BackupPVC proves the FELIS_BACKUP_PVC env appears only when a
 // backup PVC is named.
 func TestAPIDeployment_BackupPVC(t *testing.T) {
@@ -375,18 +407,26 @@ func TestRegistry_DeploymentServicePVC(t *testing.T) {
 }
 
 // TestWorkloads_BundleContents sanity-checks the slice Workloads returns: the two
-// control-plane Deployments, the api Service, and the registry Deployment/Service/PVC,
-// every one with TypeMeta (so its YAML header renders).
+// control-plane Deployments, the api external+internal Services, and the registry
+// Deployment/Service/PVC, every one with TypeMeta (so its YAML header renders). The
+// internal Service must be present or the login pod's felis-api:8081 path is dead.
 func TestWorkloads_BundleContents(t *testing.T) {
 	objs := Workloads(testParams())
-	if len(objs) != 7 {
-		t.Fatalf("Workloads returned %d objects, want 7", len(objs))
+	if len(objs) != 8 {
+		t.Fatalf("Workloads returned %d objects, want 8", len(objs))
 	}
+	var haveInternalSvc bool
 	for _, o := range objs {
 		gvk := o.GetObjectKind().GroupVersionKind()
 		if gvk.Kind == "" || gvk.Version == "" {
 			t.Errorf("%T missing TypeMeta (kind=%q version=%q)", o, gvk.Kind, gvk.Version)
 		}
+		if svc, ok := o.(*corev1.Service); ok && svc.Name == APIInternalServiceName {
+			haveInternalSvc = true
+		}
+	}
+	if !haveInternalSvc {
+		t.Errorf("Workloads bundle is missing the internal-face Service %q", APIInternalServiceName)
 	}
 }
 

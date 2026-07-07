@@ -131,11 +131,16 @@ set them by hand:
   via a `secretKeyRef`, keyed off the reserved `login` name. Until the token is
   present the plugin fail-safes to readiness-only, so the gate is never broken — it
   simply does not authenticate yet.
+- **Service:** the login pod dials `FELIS_API_BASE_URL`, which resolves to the
+  ClusterIP Service `felis-api-internal` (control namespace) that fronts the api
+  pod's internal port 8081. That Service is deliberately separate from the external
+  NodePort `felis-api` (443) so the no-Zero-Trust internal face is never published on
+  a node's external IP.
 - **NetworkPolicy:** none is required today — neither the minecraft-namespace egress
   nor the control-namespace ingress is policy-locked, so the login pod's call to the
-  API internal port is already reachable. If a future deployment adds a minecraft
-  egress lock or a control-namespace ingress fence, it must also open the
-  login-pod → felis-api internal-port (8081) path.
+  API internal port is reachable. If a future deployment adds a minecraft egress lock
+  or a control-namespace ingress fence, it must also open the login-pod →
+  felis-api-internal (8081) path.
 
 The Velocity default-landing and waiting-park wiring is printed by `felis setup`
 and enforces the invariant: fresh connections hit `login` first; nothing falls
