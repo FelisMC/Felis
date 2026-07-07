@@ -27,6 +27,41 @@ not yet committed.
 |---|---|---|
 | _None._ | | |
 
+## Detail docs
+
+Depth docs for substantial changes, keyed to the commit(s) they cover. The committed
+ledger table below stays a lossless mirror of `git log` (so it can be regenerated); this
+section is where a row's detail doc, when it has one, is found. Most rows — panel/UI,
+docs, chore, style — have no detail doc by convention and are recorded by their table row
+alone. Entries marked *(backfill)* were reconstructed retroactively on 2026-07-07 from git
+history to close the ledger's detail-doc axis for the pre-convention functional commits;
+each carries a backfill note stating it was not independently re-verified. Frontend/`panel`
+commits are the collaborator's UI work and are not given detail docs here.
+
+| Detail doc | Commit(s) | Scope |
+|---|---|---|
+| [foundational-subsystems](2026-06-26-foundational-subsystems.md) *(backfill)* | `7fbebfe` `708cdfc` `43ab921` `78b8cf6` `d39605e` `b508fcc` `47fcd90` `93f143f` | initial import: CRD, core libs, backup, operator, submit, api, platform, plugins |
+| [modpack-submission-lane](2026-06-26-modpack-submission-lane.md) *(backfill)* | `d39605e` `598f3d3` | §8 modpack build/approval pipeline + local/S3 backends |
+| [deploy-bootstrap-installer](2026-06-27-deploy-bootstrap-installer.md) *(backfill)* | `58fa4b0` `94a3b7b` `deaa2f8` `318a724` `e5f1682` `28c3eee` `c14ed17` `d9e866f` `b84debf` | one-line bootstrap installer + demo bring-up |
+| [console-auth-passwordless](2026-06-27-console-auth-passwordless.md) *(backfill)* | `af14f02` `0c1cc59` `3b43f05` `c20b12c` | local-password login → passwordless migration + residue sweep |
+| [felis-cli-break-glass-setup](2026-06-27-felis-cli-break-glass-setup.md) *(backfill)* | `e108a37` `2d0bbb0` `a94b001` `eb5875a` `f5d00f3` `9c46632` `7d91373` | break-glass recovery console + first-run setup + apply/migrate |
+| [cloudflare-tunnel-access-edge](2026-06-27-cloudflare-tunnel-access-edge.md) *(backfill)* | `53a7664` `ba13839` `a531f5e` `2810fe8` `7d3be64` `e058a64` | §14 Tunnel + fail-closed Access edge + NodePort fence |
+| [player-onboarding-b2](2026-06-27-player-onboarding-b2.md) *(backfill)* | `dbe34a1` `1f8b9bb` `116595f` `fe2ece0` `55592ed` `6c3999a` `879b177` | §B2 email-OTP, account-link, QR, Bind-Code + OTP throttle |
+| [username-reclaim-b3](2026-06-27-username-reclaim-b3.md) *(backfill)* | `a29571d` `fdb6efb` | §B3 Mojang-priority reclaim + account migration |
+| [felis-metrics](2026-06-30-felis-metrics.md) *(backfill)* | `75642d9` `2a93a9e` `79eae7f` `8ac5e64` | §23 felis_* Prometheus collectors |
+| [felis-api-hardening](2026-06-30-felis-api-hardening.md) *(backfill)* | `7a51c1d` `164ac44` `c6c0772` `3c1d647` `d6e3189` `8f41a00` `6368ab1` `2a4a81b` `9873904` | audit #1–#3 + robustness fixes |
+| [passkey-enrollment](2026-07-01-passkey-enrollment.md) *(backfill)* | `f2c916d` `742f15f` `0261204` `fce0fce` `7278cd7` `cdbb5ab` `9953275` `20e31fb` `54bc6ef` | WebAuthn enrollment + hardening a–e |
+| [passkey-login](2026-07-01-passkey-login.md) *(backfill)* | `e035142` `ec468ba` `0dbd557` `9e1df12` `4f59d51` `a63f49d` | WebAuthn assertion/discoverable login + UA-guard |
+| [auto-update-subsystem](2026-07-01-auto-update-subsystem.md) *(backfill)* | `c01f133` `3673af6` `7464fa7` `96b3cc9` `7d27640` `7db57b9` | update decision core + sources + gatherer + window API (report-only) |
+| [system-servers-login-limbo-lobby](2026-07-02-system-servers-login-limbo-lobby.md) *(backfill)* | `9bed51b` `9ef817f` `159107b` `dc23cb5` `3fdb3d0` `f554d52` `241fe21` `c7315e4` | always-on login-limbo + lobby auth gate |
+| [operator-idle-quota-readiness](2026-07-05-operator-idle-quota-readiness.md) *(backfill)* | `91bfa27` `e574749` `7f7e459` `7becb38` | idle auto-stop, quotas, timeouts, /readyz |
+| [break-glass-halt](2026-07-05-break-glass-halt.md) | `c2ee21a` | §B4 break-glass halt-a-server op |
+| [felis-migrate-command](2026-07-05-felis-migrate-command.md) | `c1aa38b` | §B3 `/felis migrate` account migration |
+| [on-demand-world-backup](2026-07-07-on-demand-world-backup.md) | `7a7c0d5` | §B4 Sync phase 1 — external backup endpoint + Job |
+| [internal-backup-endpoint](2026-07-07-internal-backup-endpoint.md) | `f2fc57c` | §B4 Sync phase 2a — internal-face backup endpoint |
+| [internal-api-clusterip-service](2026-07-07-internal-api-clusterip-service.md) | `2ba9948` | felis-api internal-face ClusterIP Service |
+| [break-glass-backup-peer](2026-07-07-break-glass-backup-peer.md) | `fc748d3` | §B4 Sync phase 2b — console backup peer |
+
 ## Committed change ledger
 
 Oldest first (project build order). Commit = short SHA on `main`. Frontend/`panel`
@@ -210,3 +245,4 @@ primary record.
 | f2fc57c | 2026-07-07 | feat(api): add internal-face break-glass world backup endpoint (§B4 Sync) |
 | 2ba9948 | 2026-07-07 | fix(platform): front the felis-api internal face on its own ClusterIP Service |
 | fc748d3 | 2026-07-07 | feat(breakglass): add "back up a world now" console peer (§B4 Sync) |
+| 9911b8c | 2026-07-07 | docs(changes): record the break-glass backup console peer (§B4 Sync phase 2b) |
