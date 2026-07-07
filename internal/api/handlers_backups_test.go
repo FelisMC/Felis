@@ -190,6 +190,26 @@ func TestRestoreBackup(t *testing.T) {
 		}
 	})
 
+	t.Run("former owner after release -> 403, no restore", func(t *testing.T) {
+		// Mirror of the guard above, pinning the owner gate rather than the former-owner
+		// gate (handler comment: "must re-claim first"). owner1 took this backup, then
+		// released survival to "newowner". owner1 is still the backup's former_owner — so
+		// the former-owner gate would wave them through — but is no longer the current
+		// owner. Only the owner gate stops them; without it a superseded owner could roll
+		// a live server back onto their old world. (Disable that gate and this is the one
+		// subtest that reddens — the former-owner gate does not backstop this case.)
+		api, repo, _, restorer := mk()
+		repo.byName["survival"].OwnerID = "newowner"
+		api.External = staticExternal{p: owner} // owner1: former_owner, not current owner
+		w := do(api.ExternalHandler(), "POST", path, "", nil)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("code = %d, want 403 (owner gate: former owner is no longer the current owner)", w.Code)
+		}
+		if restorer.calls != 0 {
+			t.Fatal("a released former owner must not restore onto the current owner's server")
+		}
+	})
+
 	t.Run("unknown server -> 404", func(t *testing.T) {
 		api, _, _, _ := mk()
 		api.External = staticExternal{p: owner}
