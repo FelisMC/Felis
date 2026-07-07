@@ -250,3 +250,5 @@ primary record.
 | 5a7cd5a | 2026-07-07 | docs(changes): fold 346ec68 cloudflare-edge walkthrough into its detail doc |
 | 4626ab5 | 2026-07-07 | docs(changes): mutation-audit the ledger's "unit-tested" safety claims |
 | 729bd7b | 2026-07-07 | docs(changes): index the mutation audit and two lagging ledger rows |
+| c67a4d3 | 2026-07-08 | docs(changes): close §B4 with the S3 archive backend deferred by design |
+| 85b8a92 | 2026-07-08 | test(api): pin restore's owner gate against a superseded former owner |
