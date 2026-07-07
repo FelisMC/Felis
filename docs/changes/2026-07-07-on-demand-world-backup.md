@@ -3,7 +3,7 @@
 - **Type:** feature (addition)
 - **Date:** 2026-07-07
 - **Area:** `internal/backupjob` (new pkg), `internal/api`, `cmd/felis`, `docs/openapi.yaml` — Go, oracle-verified
-- **Commit:** `pending`
+- **Commit:** `7a7c0d5`
 - **Task:** #31 Phase B4 break-glass ops — the "Sync" operation, resolved with the user as **immediate/on-demand world backup**. Per the user's "两者都要" decision this is built in two halves: **(this change) the felis-api endpoint that does the real backup-Job orchestration**, and (a follow-up) a break-glass menu peer that calls it while the API is alive.
 
 ## What it does

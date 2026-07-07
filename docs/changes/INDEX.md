@@ -25,7 +25,7 @@ not yet committed.
 
 | Change | Detail doc | Status |
 |---|---|---|
-| On-demand world backup — felis-api `POST /servers/{name}/backup` + backup-Job executor (§B4 "Sync", half 1 of 2) | [2026-07-07-on-demand-world-backup.md](2026-07-07-on-demand-world-backup.md) | oracle-green; commit `pending` |
+| _None._ | | |
 
 ## Committed change ledger
 
@@ -206,3 +206,4 @@ primary record.
 | abad137 | 2026-07-06 | style(panel): unify vertical spacing below PageHeader across pages |
 | c2ee21a | 2026-07-06 | feat(breakglass): add halt-a-server op to the recovery console (§B4) |
 | c1aa38b | 2026-07-06 | feat(velocity): add /felis migrate to open an account migration (§B3 inherit) |
+| 7a7c0d5 | 2026-07-07 | feat(api): add on-demand world backup endpoint and Job executor (§B4 Sync) |
