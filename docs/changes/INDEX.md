@@ -249,3 +249,4 @@ primary record.
 | 096d597 | 2026-07-07 | docs(changes): backfill detail docs for pre-ledger functional commits |
 | 5a7cd5a | 2026-07-07 | docs(changes): fold 346ec68 cloudflare-edge walkthrough into its detail doc |
 | 4626ab5 | 2026-07-07 | docs(changes): mutation-audit the ledger's "unit-tested" safety claims |
+| 729bd7b | 2026-07-07 | docs(changes): index the mutation audit and two lagging ledger rows |
