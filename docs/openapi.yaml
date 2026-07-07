@@ -1034,6 +1034,18 @@ paths:
       security: [{ serviceToken: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: false
+        description: >-
+          Optional accountability hint. The console passes the OS user at the
+          keyboard so the audit row names the operator rather than the generic
+          "break-glass"; absent/blank falls back to "break-glass".
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                os_user: { type: string }
       responses:
         '202':
           description: Backup started.

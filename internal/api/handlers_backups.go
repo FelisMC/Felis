@@ -229,11 +229,31 @@ func (a *API) handleBackupNow(w http.ResponseWriter, r *http.Request) {
 // the requireInternal middleware IS the authorization — the operator already has root
 // on the node. It audits the action to "break-glass" so a console-initiated backup is
 // distinguishable from an owner's self-service one.
+//
+// The console passes the OS user at the keyboard in an optional {"os_user":"..."} body,
+// which becomes the audit actor (parity with the halt peer's accountability). The body
+// is decoded whenever one is present — not gated on Content-Type — so a console that
+// forgets the header still records the operator rather than silently attributing to the
+// generic "break-glass". Absent/blank falls back to "break-glass".
 func (a *API) handleInternalBackup(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := naming.ValidateServerName(name); err != nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
 		return
+	}
+
+	actor := "break-glass"
+	if r.ContentLength != 0 {
+		var body struct {
+			OSUser string `json:"os_user"`
+		}
+		if err := decodeJSON(w, r, &body); err != nil {
+			writeError(w, r, err)
+			return
+		}
+		if u := strings.TrimSpace(body.OSUser); u != "" {
+			actor = u
+		}
 	}
 
 	rec, err := a.Repo.ServerByName(r.Context(), name)
@@ -242,7 +262,7 @@ func (a *API) handleInternalBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.enqueueBackup(w, r, name, rec, "break-glass", "internal")
+	a.enqueueBackup(w, r, name, rec, actor, "internal")
 }
 
 // enqueueBackup is the shared tail of both backup faces: the RWO stopped-gate, the

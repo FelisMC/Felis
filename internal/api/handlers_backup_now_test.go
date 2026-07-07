@@ -216,6 +216,17 @@ func TestInternalBackup(t *testing.T) {
 		}
 	})
 
+	t.Run("os_user body attributes the audit to the operator", func(t *testing.T) {
+		api, repo, _, _ := mk()
+		w := do(api.InternalHandler(), "POST", path, `{"os_user":"alice"}`, jsonHeader)
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("code = %d, want 202 (%s)", w.Code, w.Body.String())
+		}
+		if len(repo.audits) != 1 || repo.audits[0].Actor != "alice" || repo.audits[0].Source != "internal" {
+			t.Fatalf("audit actor should be the os_user, not break-glass: %+v", repo.audits)
+		}
+	})
+
 	t.Run("running server -> 409 not_stopped, no backup", func(t *testing.T) {
 		api, _, cl, backuper := mk()
 		cl.byName["survival"].Ready = true

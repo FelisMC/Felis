@@ -152,7 +152,7 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	if !res.provisioned && !res.edgeConfigured && !res.halted {
+	if !res.provisioned && !res.edgeConfigured && !res.halted && !res.backedUp {
 		fmt.Fprintln(stdout, "felis breakGlass: cancelled — no changes made.")
 		return 0
 	}
@@ -214,6 +214,14 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "WARNING: the accountability audit row was NOT written: %s\n", res.haltAuditWarning)
 		}
 		fmt.Fprintf(stdout, "Restart it from the panel, or set the MinecraftServer's spec.desiredState back to Running.\n")
+	}
+
+	if res.backedUp {
+		// The backup runs through the live felis-api (which audits it), so unlike halt
+		// there is no local audit-warning to surface — a resolve/HTTP failure would have
+		// come back as an error, not a backedUp result.
+		fmt.Fprintf(stdout, "\nfelis breakGlass: backup of %q started (status: %s).\n", res.backupServer, res.backupStatus)
+		fmt.Fprintln(stdout, "A one-shot Job writes the archive asynchronously; it appears in the panel's backups list when finished.")
 	}
 	return 0
 }
@@ -515,6 +523,11 @@ type breakGlassResult struct {
 	haltAlreadyStopped bool
 	haltSystemServer   bool
 	haltAuditWarning   string
+
+	// backup outcome (break-glass "back up a world now / Sync" op #31 §B4)
+	backedUp     bool
+	backupServer string
+	backupStatus string
 
 	// Cloudflare-specific edge detail (set only when connectMethod is Cloudflare)
 	edgeConfigured    bool

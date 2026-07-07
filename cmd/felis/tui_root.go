@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"felis.lolicon.best/internal/cfsetup"
+	"felis.lolicon.best/internal/platform"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -223,6 +224,10 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.adopt(newOperatorModel(m.ctx, m.store, m.osUser))
 		case bgHaltServer:
 			return m.adopt(newHaltModel(m.ctx, m.store, m.namespace, m.osUser))
+		case bgSyncBackup:
+			// The picker lists workload servers (m.namespace); the felis-api-internal
+			// Service + service token the peer dials live in the control namespace.
+			return m.adopt(newBackupModel(m.ctx, m.namespace, platform.DefaultControlNamespace, m.osUser))
 		default:
 			return m.adopt(newOwnerModel(m.ctx, m.store, m.osUser, m.adminExists))
 		}
@@ -245,6 +250,21 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.outcome.auditErr != nil {
 				m.result.haltAuditWarning = msg.outcome.auditErr.Error()
 			}
+		}
+		return m, tea.Quit
+
+	case backupResultMsg:
+		// Sync backup is terminal in break-glass, mirroring halt: record the durable
+		// summary and quit. A resolve/HTTP failure routes through the error path; an
+		// empty fleet or cancel leaves backedUp false.
+		if msg.err != nil {
+			m.err = msg.err
+			return m, tea.Quit
+		}
+		if msg.done {
+			m.result.backedUp = true
+			m.result.backupServer = msg.outcome.name
+			m.result.backupStatus = msg.outcome.status
 		}
 		return m, tea.Quit
 
