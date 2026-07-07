@@ -216,6 +216,41 @@ func (a *API) handleBackupNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.enqueueBackup(w, r, name, rec, p.Email, "external")
+}
+
+// handleInternalBackup is the internal-face backup trigger. The break-glass console
+// (root on the node, holding the service token) POSTs here to snapshot a stopped
+// world while felis-api is alive — it goes through the API rather than direct-to-CRD
+// like halt does, because rendering the backup Job needs deployment coordinates
+// (FELIS_IMAGE, FELIS_BACKUP_PVC) that only felis-api holds.
+//
+// There is no Principal: the service token is a trusted machine caller (auth.go), so
+// the requireInternal middleware IS the authorization — the operator already has root
+// on the node. It audits the action to "break-glass" so a console-initiated backup is
+// distinguishable from an owner's self-service one.
+func (a *API) handleInternalBackup(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if err := naming.ValidateServerName(name); err != nil {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
+		return
+	}
+
+	rec, err := a.Repo.ServerByName(r.Context(), name)
+	if err != nil {
+		a.writeLookupError(w, r, err)
+		return
+	}
+
+	a.enqueueBackup(w, r, name, rec, "break-glass", "internal")
+}
+
+// enqueueBackup is the shared tail of both backup faces: the RWO stopped-gate, the
+// optional-Backuper 503, the async hand-off, and the audit + 202. Both faces validate
+// the name and resolve rec themselves and differ only in how the caller is authorized
+// (Principal vs trusted service token) and the audit actor/source — keeping the
+// security-critical stopped-gate single-sourced so the two faces cannot diverge.
+func (a *API) enqueueBackup(w http.ResponseWriter, r *http.Request, name string, rec *ServerRecord, actor, source string) {
 	// Stopped gate: the world PVC is RWO and held by a running server, so a backup
 	// Job cannot double-mount it (mirrors the restore gate). Ready means it is up;
 	// any desiredState other than Stopped means it owns the RWO volume.
@@ -244,7 +279,10 @@ func (a *API) handleBackupNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.audit(r, p.Email, "backup.create", name)
+	_ = a.Repo.Audit(r.Context(), AuditEntry{
+		Actor: actor, Source: source, Action: "backup.create",
+		ServerName: name, RequestID: requestIDFromContext(r.Context()),
+	})
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"name":   name,
 		"status": "backing_up",

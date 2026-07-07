@@ -1017,6 +1017,54 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /api/v1/internal/servers/{name}/backup:
+    post:
+      tags: [account-internal]
+      operationId: internalBackupNow
+      summary: Break-glass on-demand world backup (service token; server must be stopped).
+      description: >-
+        The break-glass console (root on the node, holding the service token) POSTs
+        here to snapshot a stopped world while the API is alive — it goes through the
+        API rather than direct-to-CRD because rendering the backup Job needs
+        deployment coordinates only felis-api holds. Same RWO stopped-gate and async
+        202 as the external backupNow; there is no Principal (trusted machine caller),
+        and the action is audited to "break-glass".
+      x-felis-face: [internal]
+      x-felis-tier: service
+      security: [{ serviceToken: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '202':
+          description: Backup started.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, status]
+                properties:
+                  name: { type: string }
+                  status: { type: string, const: backing_up }
+        '400':
+          description: Invalid server name (bad_name).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Unknown server.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Server is not stopped (its world PVC is still mounted).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   # ----------------------------------------------------- external: servers ---
   /api/v1/servers/{name}/wake:
     post:

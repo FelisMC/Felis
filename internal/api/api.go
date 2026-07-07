@@ -266,6 +266,11 @@ func (a *API) internalAPIRoutes() []apiRoute {
 		// Principal); the external face carries the start/status/finish the op drives.
 		{Method: "GET", Pattern: "/api/v1/internal/op-login/pending", h: a.handleOpLoginPending},
 		{Method: "POST", Pattern: "/api/v1/internal/op-login/{id}/approve", h: a.handleOpLoginApprove},
+
+		// Break-glass backup (spec §B4 "Sync"): the on-node console POSTs here to
+		// snapshot a stopped world while the API is alive. Service-token auth (no
+		// Principal); the shared enqueueBackup tail enforces the RWO stopped-gate.
+		{Method: "POST", Pattern: "/api/v1/internal/servers/{name}/backup", h: a.handleInternalBackup},
 	}
 }
 
