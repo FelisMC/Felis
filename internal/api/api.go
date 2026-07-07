@@ -58,6 +58,11 @@ type API struct {
 	// authorization paths do not need it (they read the Repo), only the kick-off.
 	Restorer Restorer
 
+	// Backuper starts an on-demand world backup (spec §18/§19 WorldArchiver). Like
+	// Restorer it is optional: when nil the backup route reports 503, so the backup
+	// authorization boundary is exercised before the backup-Job executor is wired.
+	Backuper Backuper
+
 	// Submissions is the user-modpack approval lane (a user-directed extension over
 	// the §16 build subsystem; see internal/submit). It is optional: when
 	// nil the /me/submissions and /submissions routes report 503 rather than 404, so
@@ -346,6 +351,7 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// neither sits behind adminOnly.
 		{Method: "GET", Pattern: "/api/v1/backups", h: a.handleListBackups},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/restore-backup", h: a.handleRestoreBackup},
+		{Method: "POST", Pattern: "/api/v1/servers/{name}/backup", h: a.handleBackupNow},
 		// Account linking (spec §10), web side: /start reports link status (it is the
 		// pointer handleClaim's 412 emits), /verify consumes the in-game code and binds
 		// the account. App-tier, not admin — linking your own account is an ordinary

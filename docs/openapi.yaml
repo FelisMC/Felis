@@ -2584,6 +2584,50 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /api/v1/servers/{name}/backup:
+    post:
+      tags: [backups]
+      operationId: backupNow
+      summary: Back up a server's world on demand (owner-or-admin; server must be stopped).
+      description: >-
+        Snapshots the server's world into the archive store as a first-class
+        world_backups row (reason "manual"), restorable later like an inactivity
+        backup. The world PVC is RWO and held by a running server, so the server must
+        be fully stopped first (409 not_stopped otherwise). The backup runs
+        asynchronously as a Job, so success is 202 (backing_up).
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '202':
+          description: Backup started.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, status]
+                properties:
+                  name: { type: string }
+                  status: { type: string, const: backing_up }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unknown server.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Server is not stopped (its world PVC is still mounted).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   # ------------------------------------------------------ users (admin tier) ----
   /api/v1/users:
     get:

@@ -16,6 +16,7 @@ Commands:
   api               Run the felis-api HTTP server
   reaper            Run the world reaper / backup batch
   restore           Extract a world archive into a world volume (internal Job entrypoint)
+  backup            Archive a world into the backup store and record it (internal Job entrypoint)
   manifests         Render the control-plane RBAC + NetworkPolicy install bundle as YAML
   apply             Create a MinecraftServer CRD (direct K8s write; use -f server.json)
   setup             Run host bootstrap + first-run setup console (TUI; requires root/sudo)
@@ -43,6 +44,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdReaper(rest, stdout, stderr)
 	case "restore":
 		return cmdRestore(rest, stdout, stderr)
+	case "backup":
+		return cmdBackup(rest, stdout, stderr)
 	case "manifests":
 		return cmdManifests(rest, stdout, stderr)
 	case "apply":

@@ -176,3 +176,77 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		"backup_id": backup.ID,
 	})
 }
+
+// handleBackupNow starts an on-demand backup of a server's world (POST
+// /api/v1/servers/{name}/backup; spec §18/§19 WorldArchiver, run on demand). It is
+// the "back up before I touch it" lever the break-glass console and the owner both
+// reach for. Authorization mirrors handleRestoreBackup's front half — the shared
+// "who may act on this server's world" gate — but stops short of restore's backup
+// resolution and former-owner-match, because a backup is initiated by the CURRENT
+// owner and records their ownership; there is no prior owner's data to leak:
+//
+//	① name validation
+//	② ServerByName — an unknown server is 404
+//	③ owner-or-admin, else 403 (an unowned server passes only for admin, so a
+//	   released world can still be snapshotted by an operator before disposal)
+//	④ stopped gate: the world PVC is RWO and held by a running server, so a backup
+//	   Job cannot double-mount it — refuse unless the server is fully stopped. This
+//	   also guarantees a quiescent, non-torn archive.
+//	⑤ hand off to the Backuper. Backup is asynchronous (a backup Job), so success
+//	   means "enqueued" and the handler answers 202.
+//
+// The former owner recorded on the backup is the server's current OwnerID (empty for
+// an unowned server backed up by an admin), so the resulting world_backups row is
+// restorable by that owner exactly like an inactivity backup.
+func (a *API) handleBackupNow(w http.ResponseWriter, r *http.Request) {
+	p := principalFromContext(r.Context())
+	name := r.PathValue("name")
+	if err := naming.ValidateServerName(name); err != nil {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
+		return
+	}
+
+	rec, err := a.Repo.ServerByName(r.Context(), name)
+	if err != nil {
+		a.writeLookupError(w, r, err)
+		return
+	}
+	if !a.isOwnerOrAdmin(p, rec) {
+		writeError(w, r, errForbidden)
+		return
+	}
+
+	// Stopped gate: the world PVC is RWO and held by a running server, so a backup
+	// Job cannot double-mount it (mirrors the restore gate). Ready means it is up;
+	// any desiredState other than Stopped means it owns the RWO volume.
+	info, err := a.Cluster.GetServer(r.Context(), name)
+	if err != nil {
+		a.writeLookupError(w, r, err)
+		return
+	}
+	if info.Ready || info.DesiredState != string(v1alpha1.DesiredStopped) {
+		writeError(w, r, newError(http.StatusConflict, "not_stopped",
+			"stop the server before backing up its world"))
+		return
+	}
+
+	// Backuper is optional: when unwired the endpoint reports 503 rather than
+	// panicking, so the authorization boundary above is exercised even before the
+	// backup-Job executor is wired (see Backuper).
+	if a.Backuper == nil {
+		writeError(w, r, newError(http.StatusServiceUnavailable, "backup_unavailable",
+			"backup subsystem is not configured"))
+		return
+	}
+
+	if err := a.Backuper.Backup(r.Context(), name, rec.OwnerID); err != nil {
+		a.writeLookupError(w, r, err)
+		return
+	}
+
+	a.audit(r, p.Email, "backup.create", name)
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"name":   name,
+		"status": "backing_up",
+	})
+}

@@ -1,0 +1,123 @@
+package main
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"flag"
+	"fmt"
+	"io"
+	"time"
+
+	"felis.lolicon.best/internal/backup"
+	"felis.lolicon.best/internal/config"
+	"felis.lolicon.best/internal/naming"
+	"felis.lolicon.best/internal/reaper"
+	"felis.lolicon.best/internal/store"
+	ctrl "sigs.k8s.io/controller-runtime"
+)
+
+// cmdBackup is the in-Pod entrypoint the on-demand backup Job runs. internal/backupjob
+// renders a Pod whose command is `/usr/local/bin/felis backup`. It tars the mounted
+// world into the archive store AND records the world_backups row, then exits — it is
+// NOT a user-facing command and is never invoked by hand.
+//
+// Unlike `felis restore`, this command DOES hold database credentials (via the mounted
+// config Secret) and calls config.Load: a backup must record its row atomically with
+// the archive, exactly like the reaper — otherwise a completed archive would leak as an
+// orphan file the retention pass never expires. The security review for that departure
+// lives in internal/backupjob/jobspec.go. The world is mounted directly at --worlds-root
+// (single-PVC mount, like restore), so the archiver's resolver returns that root for any
+// PVC; the archive is written into the backup PVC at cfg.Archive.LocalPath.
+func cmdBackup(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfgPath := fs.String("config", "/etc/felis/felis.toml", "path to felis.toml")
+	server := fs.String("server", "", "server name whose world is being backed up")
+	formerOwner := fs.String("former-owner", "", "owner recorded on the backup row (empty for an unowned server)")
+	worldsRoot := fs.String("worlds-root", "/world", "mount path of the world PVC being archived")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *server == "" {
+		fmt.Fprintln(stderr, "felis backup: --server is required")
+		return 2
+	}
+
+	cfg, err := config.Load(*cfgPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis backup: %v\n", err)
+		return 1
+	}
+	if cfg.Archive.Store != "tarLocal" {
+		fmt.Fprintf(stderr, "felis backup: archive store %q is not implemented in this build (only tarLocal)\n", cfg.Archive.Store)
+		return 1
+	}
+	// Reuse the reaper's retention derivation so an on-demand backup expires on the
+	// same clock as an inactivity backup — one retention policy, not two.
+	rcfg, err := reaperConfig(cfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis backup: %v\n", err)
+		return 1
+	}
+
+	// The world PVC is mounted directly at worldsRoot; the resolver returns it for
+	// any target, exactly as in cmdRestore. This is the same TarLocal the reaper
+	// writes archives with.
+	archiver := &backup.TarLocal{
+		BackupRoot: cfg.Archive.LocalPath,
+		Resolve: func(string) (string, error) {
+			return *worldsRoot, nil
+		},
+	}
+
+	ctx := ctrl.SetupSignalHandler()
+
+	ref, size, err := archiver.Archive(ctx, *server, naming.WorldPVCName(*server))
+	if err != nil {
+		fmt.Fprintf(stderr, "felis backup: archive: %v\n", err)
+		return 1
+	}
+
+	drv, err := store.Open(ctx, cfg.Database.URL)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis backup: open database: %v\n", err)
+		return 1
+	}
+	defer drv.Close()
+
+	rec := reaper.BackupRecord{
+		ID:          newBackupID(),
+		ServerName:  *server,
+		FormerOwner: *formerOwner,
+		BackupRef:   string(ref),
+		SizeBytes:   size,
+		Reason:      "manual",
+		ExpiresAt:   time.Now().Add(rcfg.Retention),
+	}
+	if err := reaper.NewPGStore(drv.DB()).InsertBackup(ctx, rec); err != nil {
+		// The archive is written but unrecorded — an orphan the retention pass would
+		// never expire. Delete it so a failed backup leaves no leaked bytes, mirroring
+		// the reaper's archive-then-record atomicity.
+		if delErr := archiver.Delete(ctx, ref); delErr != nil {
+			fmt.Fprintf(stderr, "felis backup: record failed (%v) AND orphan archive %s could not be removed: %v\n", err, ref, delErr)
+			return 1
+		}
+		fmt.Fprintf(stderr, "felis backup: record failed, orphan archive removed: %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintf(stdout, "felis backup: server=%s archived %d bytes to %s (backup %s)\n", *server, size, ref, rec.ID)
+	return 0
+}
+
+// newBackupID mints a world_backups primary key, matching the reaper's "bk-"+hex
+// scheme so a manual and an inactivity backup are indistinguishable downstream.
+func newBackupID() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// crypto/rand failure is fatal and unrecoverable; a time-based fallback would
+		// be a weaker ID for no benefit. ponytail: panic is the honest failure here.
+		panic("felis backup: crypto/rand: " + err.Error())
+	}
+	return "bk-" + hex.EncodeToString(b[:])
+}

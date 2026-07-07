@@ -23,7 +23,9 @@ not yet committed.
 
 ## Pending (built + verified, not yet committed)
 
-_None — the break-glass halt (`c2ee21a`) and `/felis migrate` (`c1aa38b`) landed in the ledger below._
+| Change | Detail doc | Status |
+|---|---|---|
+| On-demand world backup — felis-api `POST /servers/{name}/backup` + backup-Job executor (§B4 "Sync", half 1 of 2) | [2026-07-07-on-demand-world-backup.md](2026-07-07-on-demand-world-backup.md) | oracle-green; commit `pending` |
 
 ## Committed change ledger
 

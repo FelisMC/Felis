@@ -13,6 +13,7 @@ import (
 
 	"felis.lolicon.best/internal/api"
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	"felis.lolicon.best/internal/backupjob"
 	"felis.lolicon.best/internal/build"
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/panel"
@@ -162,6 +163,19 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "felis api: restore executor disabled (needs FELIS_IMAGE and FELIS_BACKUP_PVC) — restore endpoint returns 503")
 	}
 
+	// On-demand backup subsystem (spec §18/§19 WorldArchiver, run on demand). Its
+	// backup Job mirrors the restore Job's weak-SA isolation but additionally mounts
+	// the config Secret so it self-records the world_backups row (see internal/
+	// backupjob). It needs the same deployment-specific values as restore, so it is
+	// wired under the same gate; otherwise the Backuper is left nil and the backup
+	// endpoint honestly returns 503.
+	var backuper api.Backuper
+	if felisImage != "" && backupPVC != "" {
+		backuper = &backupjob.Backuper{Jobs: backupjob.NewK8sJobs(cl), Config: backupConfig(cfg, felisImage, backupPVC)}
+	} else {
+		fmt.Fprintln(stderr, "felis api: backup executor disabled (needs FELIS_IMAGE and FELIS_BACKUP_PVC) — backup endpoint returns 503")
+	}
+
 	// One PGRepo instance backs both the handlers and the session verifier: the
 	// SessionAuth that fronts the external face reads sessions/users/settings from
 	// the same store the auth handlers write to, so a login and the next request
@@ -179,6 +193,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		Internal:    api.BearerTokenAuth{Token: token},
 		Builder:     builder,
 		Restorer:    restorer,
+		Backuper:    backuper,
 		Submissions: submissions,
 		// The external face is fronted by SessionAuth: it prefers a local-password
 		// session cookie and otherwise delegates to the Cloudflare-Access JWT verifier,
@@ -356,6 +371,21 @@ func restoreConfig(cfg *config.Config, image, backupPVC string) restore.Config {
 		BackupPVC:    backupPVC,
 		ArchiveStore: cfg.Archive.Store,
 		BackupRoot:   cfg.Archive.LocalPath,
+	}
+}
+
+// backupConfig builds the on-demand backup executor's config from felis.toml plus
+// the deployment-supplied image and backup PVC. BackupRoot mirrors restoreConfig —
+// it MUST equal [archive] local_path so the recorded ref resolves the same way a
+// later restore Job mounts it. ConfigSecret/ConfigMount are left to backupjob's
+// defaults (the control-plane manifest names), which is the Secret this backup Job
+// mounts to self-record its world_backups row.
+func backupConfig(cfg *config.Config, image, backupPVC string) backupjob.Config {
+	return backupjob.Config{
+		Namespace:  cfg.K8s.Namespace,
+		Image:      image,
+		BackupPVC:  backupPVC,
+		BackupRoot: cfg.Archive.LocalPath,
 	}
 }
 
