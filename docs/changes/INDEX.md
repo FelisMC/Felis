@@ -246,3 +246,6 @@ primary record.
 | 2ba9948 | 2026-07-07 | fix(platform): front the felis-api internal face on its own ClusterIP Service |
 | fc748d3 | 2026-07-07 | feat(breakglass): add "back up a world now" console peer (§B4 Sync) |
 | 9911b8c | 2026-07-07 | docs(changes): record the break-glass backup console peer (§B4 Sync phase 2b) |
+| 096d597 | 2026-07-07 | docs(changes): backfill detail docs for pre-ledger functional commits |
+| 5a7cd5a | 2026-07-07 | docs(changes): fold 346ec68 cloudflare-edge walkthrough into its detail doc |
+| 4626ab5 | 2026-07-07 | docs(changes): mutation-audit the ledger's "unit-tested" safety claims |
