@@ -25,7 +25,7 @@ not yet committed.
 
 | Change | Detail doc | Status |
 |---|---|---|
-| _None._ | | |
+| Adversarial input-validation audit — sink-first negative-path trace; two text→RCON guards mutation-pinned; no gap, no production code change | [adversarial-input-audit](2026-07-08-adversarial-input-audit.md) | `[uncommitted]` (GPG pinentry timeout) — intended: `docs(changes): record the adversarial input-validation audit (sink-first negative-path)` |
 
 ## Detail docs
 
@@ -252,3 +252,4 @@ primary record.
 | 729bd7b | 2026-07-07 | docs(changes): index the mutation audit and two lagging ledger rows |
 | c67a4d3 | 2026-07-08 | docs(changes): close §B4 with the S3 archive backend deferred by design |
 | 85b8a92 | 2026-07-08 | test(api): pin restore's owner gate against a superseded former owner |
+| b7b4a3b | 2026-07-08 | docs(changes): record the round-2 backup/restore mutation audit and index the owner-gate test |
