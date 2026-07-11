@@ -20,6 +20,26 @@ type Config struct {
 	K8s      K8sConfig      `toml:"k8s"`
 	Registry RegistryConfig `toml:"registry"`
 	Archive  ArchiveConfig  `toml:"archive"`
+	// AuthSources is the [[auth_source]] array-of-tables: the third-party Yggdrasil
+	// roots the Felis-nano hasJoined multiplexer federates over, in priority order
+	// (config order = priority, so array-of-tables not a map — a map would lose order
+	// and silently break Mojang-first). Empty = the multiplexer ships off. There is
+	// deliberately NO identity/trusted field here: Mojang is the single code-owned
+	// identity anchor (cmd/felis prepends it) and every configured source is
+	// namespace-rewritten, so no config can mint a source whose self-asserted UUIDs are
+	// trusted verbatim — the impersonation hole that rewrite closes cannot be reopened by
+	// misconfiguration. (An `identity =` key here is an unknown key → Load rejects it.)
+	AuthSources []AuthSourceConfig `toml:"auth_source"`
+}
+
+// AuthSourceConfig is one [[auth_source]] entry: a third-party Yggdrasil root the
+// Felis-nano multiplexer federates over. Tag names the source's per-source UUID
+// namespace (must be unique — two sources sharing a tag would collide onto one identity);
+// URL is the full hasJoined endpoint (scheme-qualified) the query string is appended to.
+// No trusted/identity field, by design — see Config.AuthSources.
+type AuthSourceConfig struct {
+	Tag string `toml:"tag"`
+	URL string `toml:"url"`
 }
 
 // ServerConfig is the [server] table.
@@ -230,6 +250,24 @@ func (c *Config) Validate() error {
 	// fast at load instead, with the contract spelled out.
 	if c.Registry.URL != "" && strings.Contains(c.Registry.URL, "://") {
 		return fmt.Errorf("config: [registry] url %q must be a bare host[:port] with no scheme (e.g. registry.felis.svc:5000); a scheme breaks the user-modpack build lane's derived push target", c.Registry.URL)
+	}
+	// Felis-nano auth sources: each needs a namespace tag and a scheme-qualified hasJoined
+	// URL, and tags must be unique. A blank or duplicate tag collapses two sources into one
+	// UUID namespace (cross-source impersonation — the exact invariant the per-source
+	// rewrite exists to hold); a scheme-less URL makes http.NewRequest fail so the source is
+	// silently dead (never validates any login). Both fail fast at load, not per-login.
+	seenTags := make(map[string]struct{}, len(c.AuthSources))
+	for i, s := range c.AuthSources {
+		if s.Tag == "" {
+			return fmt.Errorf("config: [[auth_source]] #%d has an empty tag; each source's tag is its per-source UUID namespace", i+1)
+		}
+		if _, dup := seenTags[s.Tag]; dup {
+			return fmt.Errorf("config: [[auth_source]] tag %q is used twice — tags are per-source UUID namespaces and must be unique", s.Tag)
+		}
+		seenTags[s.Tag] = struct{}{}
+		if !strings.HasPrefix(s.URL, "http://") && !strings.HasPrefix(s.URL, "https://") {
+			return fmt.Errorf("config: [[auth_source]] %q url %q must be a scheme-qualified http(s):// hasJoined endpoint", s.Tag, s.URL)
+		}
 	}
 	return nil
 }

@@ -199,6 +199,100 @@ url = "`+url+`"
 	}
 }
 
+// TestLoadAuthSourcesPreservesOrder pins the Felis-nano priority contract: the
+// [[auth_source]] array-of-tables decodes in file order (config order = priority), which
+// is why it is an array-of-tables and not a map. A map keyed by tag would load and pass
+// this file yet silently reorder the sources, breaking Mojang-first federation.
+func TestLoadAuthSourcesPreservesOrder(t *testing.T) {
+	cfg, err := config.Load(writeTOML(t, `
+[server]
+root_domain = "mc.example.net"
+[database]
+url = "postgres://felis@db/felis"
+[[auth_source]]
+tag = "littleskin"
+url = "https://littleskin.example.net/api/yggdrasil/sessionserver/session/minecraft/hasJoined"
+[[auth_source]]
+tag = "guild"
+url = "https://guild.example.net/sessionserver/session/minecraft/hasJoined"
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.AuthSources) != 2 {
+		t.Fatalf("auth sources = %d, want 2", len(cfg.AuthSources))
+	}
+	if cfg.AuthSources[0].Tag != "littleskin" || cfg.AuthSources[1].Tag != "guild" {
+		t.Errorf("source order = %q,%q, want littleskin,guild", cfg.AuthSources[0].Tag, cfg.AuthSources[1].Tag)
+	}
+}
+
+// TestLoadRejectsAuthSourceIdentityKey guards the crown-jewel invariant structurally: there
+// is no identity/trusted field on AuthSourceConfig, so an attempt to set one is an unknown
+// key and Load rejects it loudly. A config can therefore never mint a source whose
+// self-asserted UUIDs are trusted verbatim — the impersonation hole stays closed.
+func TestLoadRejectsAuthSourceIdentityKey(t *testing.T) {
+	_, err := config.Load(writeTOML(t, `
+[server]
+root_domain = "mc.example.net"
+[database]
+url = "postgres://felis@db/felis"
+[[auth_source]]
+tag = "evil"
+url = "https://evil.example.net/hasJoined"
+identity = true
+`))
+	if err == nil {
+		t.Fatal("expected error for an identity= key on [[auth_source]]")
+	}
+}
+
+// TestLoadRejectsDuplicateAuthSourceTag pins the namespace-collision guard: two sources
+// sharing a tag would collapse into one per-source UUID namespace, reopening cross-source
+// impersonation. Must be rejected at load.
+func TestLoadRejectsDuplicateAuthSourceTag(t *testing.T) {
+	_, err := config.Load(writeTOML(t, `
+[server]
+root_domain = "mc.example.net"
+[database]
+url = "postgres://felis@db/felis"
+[[auth_source]]
+tag = "dup"
+url = "https://a.example.net/hasJoined"
+[[auth_source]]
+tag = "dup"
+url = "https://b.example.net/hasJoined"
+`))
+	if err == nil {
+		t.Fatal("expected error for duplicate auth_source tag")
+	}
+	if !strings.Contains(err.Error(), "unique") {
+		t.Errorf("error should explain the tags-must-be-unique contract, got: %v", err)
+	}
+}
+
+// TestLoadRejectsSchemelessAuthSourceURL pins the silently-dead-source guard: a URL with no
+// http(s):// scheme makes http.NewRequest fail, so the source never validates any login yet
+// felis-api boots green. Reject at load with the scheme contract spelled out. An empty tag
+// is caught by the same loop.
+func TestLoadRejectsSchemelessAuthSourceURL(t *testing.T) {
+	_, err := config.Load(writeTOML(t, `
+[server]
+root_domain = "mc.example.net"
+[database]
+url = "postgres://felis@db/felis"
+[[auth_source]]
+tag = "bare"
+url = "bare.example.net/hasJoined"
+`))
+	if err == nil {
+		t.Fatal("expected error for schemeless auth_source url")
+	}
+	if !strings.Contains(err.Error(), "scheme") {
+		t.Errorf("error should explain the scheme contract, got: %v", err)
+	}
+}
+
 func TestLoadRejectsUnknownKeys(t *testing.T) {
 	_, err := config.Load(writeTOML(t, `
 [server]

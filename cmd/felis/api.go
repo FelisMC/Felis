@@ -30,6 +30,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// mojangSessionServer is the public Mojang hasJoined endpoint the Felis-nano multiplexer
+// leads with as its code-owned identity anchor (正版优先). A protocol constant, not a
+// deployment domain, so it is hardcoded rather than configured — and it is the ONLY source
+// the code marks Identity (UUIDs trusted verbatim); config can never add another.
+const mojangSessionServer = "https://sessionserver.mojang.com/session/minecraft/hasJoined"
+
 // cmdAPI runs felis-api: two listeners, two middleware chains (spec §7). The
 // internal face (service token) is fully wired. The external face is wired but
 // fails closed until an Access JWKS key function is configured — the verifier's
@@ -215,6 +221,21 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		MaxStreamsPerPrincipal: 16,
 	}
 	fmt.Fprintln(stderr, "felis api: external face fails closed (Access JWKS key function not configured)")
+
+	// Felis-nano: wire the multi-source hasJoined multiplexer only when third-party auth
+	// sources are configured. Mojang leads as the code-owned identity anchor (正版优先);
+	// config can only append namespace-rewritten third-party sources, never a trusted one,
+	// so a misconfig cannot reopen the impersonation hole. No sources = a.AuthSources stays
+	// nil = the endpoint 204s every login (ships off).
+	if len(cfg.AuthSources) > 0 {
+		sources := make([]api.AuthSource, 0, len(cfg.AuthSources)+1)
+		sources = append(sources, api.AuthSource{Tag: "mojang", URL: mojangSessionServer, Identity: true})
+		for _, s := range cfg.AuthSources {
+			sources = append(sources, api.AuthSource{Tag: s.Tag, URL: s.URL})
+		}
+		a.AuthSources = sources
+		fmt.Fprintf(stderr, "felis api: hasJoined multiplexer active — Mojang + %d third-party source(s)\n", len(cfg.AuthSources))
+	}
 
 	// Passkey (WebAuthn) enrollment verifier (spec §14, Phase 6). The relying party is
 	// the panel (app) face: the RP id is the panel hostname and the single permitted
