@@ -115,6 +115,13 @@ type API struct {
 	// positive value. Enforced via streamGate in the two relay handlers.
 	MaxStreamsPerPrincipal int
 
+	// AuthSources is the Felis-nano multi-source hasJoined multiplexer's upstream
+	// Yggdrasil list, in priority order (config order; the Mojang Identity source
+	// first for 正版优先). Nil — the default — makes the session verifier reject every
+	// login (204), so the endpoint ships inert until cmd/felis wires configured
+	// sources. Consumed by handleHasJoined (handlers_hasjoined.go).
+	AuthSources []AuthSource
+
 	// Now is the clock, injectable for tests. Defaults to time.Now.
 	Now func() time.Time
 
@@ -260,6 +267,13 @@ func (a *API) internalAPIRoutes() []apiRoute {
 		// Mojang player (same name, different UUID) always passes.
 		{Method: "POST", Pattern: "/api/v1/internal/player/reclaim", h: a.handleReclaimUsername},
 		{Method: "GET", Pattern: "/api/v1/internal/player/blacklist/{mc_uuid}", h: a.handleCheckBlacklist},
+		// Felis-nano multi-source session verifier (spec §B3 player game-login).
+		// Velocity's authlib is pointed here (-Dmojang.sessionserver or a thin login
+		// hook); it speaks the vanilla sessionserver protocol and carries no token, so
+		// this is Public. It fans hasJoined out to the configured Yggdrasil roots
+		// (Mojang-first) and rewrites third-party UUIDs into a per-source namespace
+		// before returning the canonical profile (handlers_hasjoined.go).
+		{Method: "GET", Pattern: "/session/minecraft/hasJoined", Public: true, h: a.handleHasJoined},
 		// Op-login (passwordless console login): an in-game op requests a login that
 		// the web owner/admin approves, then redeems for a session. Internal face
 		// carries the pending queue and the approve action (service-token auth, no
