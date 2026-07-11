@@ -23,9 +23,7 @@ not yet committed.
 
 ## Pending (built + verified, not yet committed)
 
-| Change | Detail doc | Status |
-|---|---|---|
-| Adversarial input-validation audit — sink-first negative-path trace; two text→RCON guards mutation-pinned; no gap, no production code change | [adversarial-input-audit](2026-07-08-adversarial-input-audit.md) | `[uncommitted]` (GPG pinentry timeout) — intended: `docs(changes): record the adversarial input-validation audit (sink-first negative-path)` |
+_None._
 
 ## Detail docs
 
@@ -61,6 +59,8 @@ commits are the collaborator's UI work and are not given detail docs here.
 | [internal-backup-endpoint](2026-07-07-internal-backup-endpoint.md) | `f2fc57c` | §B4 Sync phase 2a — internal-face backup endpoint |
 | [internal-api-clusterip-service](2026-07-07-internal-api-clusterip-service.md) | `2ba9948` | felis-api internal-face ClusterIP Service |
 | [break-glass-backup-peer](2026-07-07-break-glass-backup-peer.md) | `fc748d3` | §B4 Sync phase 2b — console backup peer |
+| [adversarial-input-audit](2026-07-08-adversarial-input-audit.md) | `667c6d3` | adversarial input-validation audit — sink-first negative-path, two text→RCON guards mutation-pinned, no code change |
+| [felis-nano-hasjoined-resolver](2026-07-12-felis-nano-hasjoined-resolver.md) | `ff550c4` | Felis-nano §B3 — federating hasJoined multiplexer + per-source UUID namespacing |
 
 ## Committed change ledger
 
