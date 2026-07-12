@@ -15,10 +15,20 @@
 # bootstrap in a TUI and then continues to the Owner/edge setup. This script
 # remains usable directly for raw host provisioning.
 #
+# At the start it asks what to install:
+#   [1] Felis       — the full control plane described above.
+#   [2] Felis-nano  — ONLY the Yggdrasil hasJoined multiplexer (`felis nano`) as a
+#                     systemd service: no k3s, no Postgres, no bundle. For a
+#                     third-party server operator who just wants multi-Yggdrasil
+#                     auth federation. Preselect non-interactively with
+#                     FELIS_INSTALL_MODE=nano.
+#
 # The script is idempotent: re-running it converges rather than duplicating, and
 # generated secrets are persisted to /etc/felis/secrets.env so reruns reuse them.
 #
 # Tunables (export before running to override the demo defaults):
+#   FELIS_INSTALL_MODE full|nano — skip the prompt (default: ask on a tty, else full)
+#   FELIS_NANO_LISTEN listen addr for `felis nano` (default: 0.0.0.0:8081; nano mode)
 #   FELIS_REPO_URL    git URL to build from   (raw script mode only)
 #   FELIS_REF         branch/tag/sha          (raw script mode only)
 #   FELIS_IMAGE       local image tag         (default: felis:demo  — never :latest)
@@ -37,6 +47,8 @@ FELIS_REF="${FELIS_REF:-main}"
 FELIS_IMAGE="${FELIS_IMAGE:-felis:demo}"
 FELIS_EGRESS_MODE="${FELIS_EGRESS_MODE:-nodeport}"
 FELIS_PANEL_NODEPORT="${FELIS_PANEL_NODEPORT:-30443}"
+INSTALL_MODE="${FELIS_INSTALL_MODE:-}"
+FELIS_NANO_LISTEN="${FELIS_NANO_LISTEN:-0.0.0.0:8081}"
 PKG_LOCK_TIMEOUT="${PKG_LOCK_TIMEOUT:-${APT_LOCK_TIMEOUT:-900}}"
 APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-$PKG_LOCK_TIMEOUT}"
 
@@ -56,6 +68,7 @@ PANEL_TLS_CERT="${STATE_DIR}/panel-tls.crt"
 PANEL_TLS_KEY="${STATE_DIR}/panel-tls.key"
 SRC_DIR="/opt/felis/src"
 HOST_BIN="/usr/local/bin/felis"
+NANO_SERVICE="/etc/systemd/system/felis-nano.service"
 K3S_BIN_DIR="${K3S_BIN_DIR:-/usr/local/bin}"
 K3S_BIN="${K3S_BIN_DIR}/k3s"
 APT_LOCK_FILES=(
@@ -1038,9 +1051,155 @@ summary() {
   echo
 }
 
+# ---------------------------------------------------------------------------
+# 10. Felis-nano install path — the auth multiplexer only: felis binary + a
+#     minimal [[auth_source]] config + a systemd unit running `felis nano`.
+#     No k3s, no Postgres, no control-plane bundle. Chosen at the top-of-run
+#     prompt (or FELIS_INSTALL_MODE=nano).
+# ---------------------------------------------------------------------------
+prompt_install_mode() {
+  case "$INSTALL_MODE" in
+    full|nano) log "install mode: ${INSTALL_MODE} (from FELIS_INSTALL_MODE)"; return 0 ;;
+    "") ;;
+    *) die "FELIS_INSTALL_MODE must be 'full' or 'nano', got: ${INSTALL_MODE}" ;;
+  esac
+
+  # No override: ask on the controlling terminal. Under `curl | sudo bash` stdin
+  # is the script, so we must read /dev/tty, not stdin. No tty (CI/cloud-init) →
+  # default to a full install.
+  if [ ! -r /dev/tty ]; then
+    INSTALL_MODE="full"
+    log "no terminal for a prompt; defaulting to a full Felis install (set FELIS_INSTALL_MODE=nano to override)"
+    return 0
+  fi
+
+  printf '\n'
+  printf 'What do you want to install on this host?\n'
+  printf '  [1] Felis       — full control plane (k3s + Postgres + panel; orchestrates Minecraft servers)\n'
+  printf '  [2] Felis-nano  — auth multiplexer only (federates Mojang + third-party Yggdrasil; no k3s/DB)\n'
+  local reply
+  while :; do
+    printf 'Choose [1/2] (default 1): '
+    IFS= read -r reply </dev/tty || reply=""
+    case "$reply" in
+      ""|1|full|Felis|felis) INSTALL_MODE="full"; break ;;
+      2|nano|felis-nano|Felis-nano) INSTALL_MODE="nano"; break ;;
+      *) printf 'Please enter 1 or 2.\n' ;;
+    esac
+  done
+  log "install mode: ${INSTALL_MODE}"
+}
+
+acquire_nano_binary() {
+  if bootstrap_from_tui; then
+    install_embedded_binary
+    return 0
+  fi
+  # Raw curl|bash: no binary yet. Build it from source with docker (the full
+  # path's proven build), then reclaim docker's RAM. ponytail: reuses the docker
+  # build rather than shipping a Go≥1.26 toolchain installer; a nano host that must
+  # stay docker-free would need a prebuilt-release download — add when asked.
+  install_docker
+  fetch_source
+  systemctl start docker
+  build_image_from_source
+  verify_image_starts
+  systemctl stop docker docker.socket 2>/dev/null || true
+  ok "felis binary on host at ${HOST_BIN}"
+}
+
+write_nano_config() {
+  local target="${STATE_DIR}/felis.toml"
+  mkdir -p "$STATE_DIR"
+  if [ -e "$target" ]; then
+    ok "config already present at ${target}; leaving it (edit it to add [[auth_source]] roots)"
+    return 0
+  fi
+  cat > "$target" <<'EOF'
+# Felis-nano — Yggdrasil hasJoined multiplexer.
+# Mojang is always the first (identity) source, added in code — do NOT list it here.
+# Add each third-party Yggdrasil root below (priority = order). url is the FULL
+# hasJoined endpoint. After editing:  sudo systemctl restart felis-nano
+#
+# [[auth_source]]
+# tag = "littleskin"
+# url = "https://littleskin.cn/api/yggdrasil/sessionserver/session/minecraft/hasJoined"
+EOF
+  chmod 0644 "$target"
+  ok "wrote nano config template ${target} (edit it to add your Yggdrasil sources)"
+}
+
+configure_nano_firewall() {
+  command -v firewall-cmd >/dev/null 2>&1 || return 0
+  systemctl is-active --quiet firewalld || return 0
+  local port="${FELIS_NANO_LISTEN##*:}"
+  log "opening firewalld port ${port}/tcp for felis-nano"
+  firewall-cmd --permanent --add-port="${port}/tcp"
+  firewall-cmd --reload
+}
+
+install_nano_service() {
+  # DynamicUser: no static account, ephemeral UID. nano writes nothing (logs go to
+  # journald) and only reads the world-readable felis.toml, so strict sandboxing fits.
+  cat > "$NANO_SERVICE" <<EOF
+[Unit]
+Description=Felis-nano Yggdrasil hasJoined multiplexer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${HOST_BIN} nano -config ${STATE_DIR}/felis.toml -listen ${FELIS_NANO_LISTEN}
+Restart=on-failure
+RestartSec=5
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now felis-nano
+  ok "felis-nano.service enabled and started (listen ${FELIS_NANO_LISTEN})"
+}
+
+summary_nano() {
+  local port="${FELIS_NANO_LISTEN##*:}"
+  echo
+  ok "Felis-nano deployed."
+  echo
+  systemctl --no-pager --full status felis-nano 2>/dev/null | head -n 6 || true
+  echo
+  log "hasJoined endpoint: http://${NODE_IP}:${port}/session/minecraft/hasJoined"
+  log "Point Velocity at it — add to the proxy JVM startup flags:"
+  log "    -Dmojang.sessionserver=http://${NODE_IP}:${port}"
+  log "    (Velocity on THIS host? use http://127.0.0.1:${port} instead — no firewall hop)"
+  log "Then edit ${STATE_DIR}/felis.toml to add your [[auth_source]] roots and run:"
+  log "    sudo systemctl restart felis-nano"
+  log "Follow live login traffic with:  sudo journalctl -u felis-nano -f"
+  echo
+}
+
+main_nano() {
+  detect_node_ip
+  install_base
+  acquire_nano_binary
+  write_nano_config
+  install_nano_service
+  configure_nano_firewall
+  summary_nano
+}
+
 main() {
   validate_settings
   detect_os
+  prompt_install_mode
+  if [ "$INSTALL_MODE" = "nano" ]; then
+    main_nano
+    return
+  fi
   pause_package_background_timers
   detect_node_ip
   ensure_swap
