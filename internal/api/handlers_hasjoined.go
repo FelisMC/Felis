@@ -59,6 +59,19 @@ type sessionProfile struct {
 	Properties []json.RawMessage `json:"properties,omitempty"`
 }
 
+// HasJoinedHandler returns an http.Handler serving only the Felis-nano hasJoined
+// multiplexer route (GET /session/minecraft/hasJoined), for a standalone host that
+// federates logins without standing up the full felis-api. sources is the priority list
+// (put the Mojang identity source first for 正版优先); repo backs the reclaim blacklist
+// gate — a stub that never bars is fine for a host without the reclaim DB. The full
+// felis-api mounts the same handler through its internal-face route table instead.
+func HasJoinedHandler(sources []AuthSource, repo Repo) http.Handler {
+	a := &API{AuthSources: sources, Repo: repo}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /session/minecraft/hasJoined", a.handleHasJoined)
+	return mux
+}
+
 // handleHasJoined is the multi-source session verifier (Felis-nano). It is a Public
 // internal-face route: authlib speaks the vanilla sessionserver protocol and sends no
 // service token. A rejected login is 204 No Content — exactly what Mojang returns for an

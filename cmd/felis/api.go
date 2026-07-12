@@ -36,6 +36,20 @@ import (
 // the code marks Identity (UUIDs trusted verbatim); config can never add another.
 const mojangSessionServer = "https://sessionserver.mojang.com/session/minecraft/hasJoined"
 
+// authSourcesFromConfig builds the multiplexer's priority list from the configured
+// [[auth_source]] entries: Mojang leads as the code-owned identity anchor (正版优先, the ONLY
+// Identity source — config can only append namespace-rewritten third-party sources, never a
+// trusted one), then each configured source in file order. Both `felis api` and `felis nano`
+// call it, so the "Mojang is prepended in code" invariant lives in exactly one place.
+func authSourcesFromConfig(configured []config.AuthSourceConfig) []api.AuthSource {
+	sources := make([]api.AuthSource, 0, len(configured)+1)
+	sources = append(sources, api.AuthSource{Tag: "mojang", URL: mojangSessionServer, Identity: true})
+	for _, s := range configured {
+		sources = append(sources, api.AuthSource{Tag: s.Tag, URL: s.URL})
+	}
+	return sources
+}
+
 // cmdAPI runs felis-api: two listeners, two middleware chains (spec §7). The
 // internal face (service token) is fully wired. The external face is wired but
 // fails closed until an Access JWKS key function is configured — the verifier's
@@ -228,12 +242,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// so a misconfig cannot reopen the impersonation hole. No sources = a.AuthSources stays
 	// nil = the endpoint 204s every login (ships off).
 	if len(cfg.AuthSources) > 0 {
-		sources := make([]api.AuthSource, 0, len(cfg.AuthSources)+1)
-		sources = append(sources, api.AuthSource{Tag: "mojang", URL: mojangSessionServer, Identity: true})
-		for _, s := range cfg.AuthSources {
-			sources = append(sources, api.AuthSource{Tag: s.Tag, URL: s.URL})
-		}
-		a.AuthSources = sources
+		a.AuthSources = authSourcesFromConfig(cfg.AuthSources)
 		fmt.Fprintf(stderr, "felis api: hasJoined multiplexer active — Mojang + %d third-party source(s)\n", len(cfg.AuthSources))
 	}
 

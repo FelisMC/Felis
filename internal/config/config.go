@@ -176,23 +176,55 @@ const (
 	defaultUserUploadsContext = "s3://felis-user-uploads"
 )
 
-// Load reads and validates a felis.toml from path.
-func Load(path string) (*Config, error) {
+// decodeConfig reads a felis.toml and rejects unknown keys (typos surface as errors
+// rather than silently ignored config). Both the full Load and the nano-only LoadNano
+// share it, so the unknown-key contract is owned in one place.
+func decodeConfig(path string) (Config, error) {
 	var cfg Config
 	md, err := toml.DecodeFile(path, &cfg)
 	if err != nil {
-		return nil, fmt.Errorf("config: decode %s: %w", path, err)
+		return cfg, fmt.Errorf("config: decode %s: %w", path, err)
 	}
 	if undecoded := md.Undecoded(); len(undecoded) > 0 {
-		// Surface typos rather than silently ignoring unknown keys.
 		keys := make([]string, len(undecoded))
 		for i, k := range undecoded {
 			keys[i] = k.String()
 		}
-		return nil, fmt.Errorf("config: unknown keys in %s: %s", path, strings.Join(keys, ", "))
+		return cfg, fmt.Errorf("config: unknown keys in %s: %s", path, strings.Join(keys, ", "))
+	}
+	return cfg, nil
+}
+
+// Load reads and validates a full felis.toml (the control-plane binaries: api, migrate,
+// reaper).
+func Load(path string) (*Config, error) {
+	cfg, err := decodeConfig(path)
+	if err != nil {
+		return nil, err
 	}
 	cfg.applyDefaults()
 	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+// LoadNano reads a felis.toml for a Felis-nano host — the hasJoined multiplexer only, no
+// control plane. It validates just the [[auth_source]] block and deliberately skips the
+// control-plane requirements (database.url, root_domain, archive store) that a nano host has
+// no Postgres or FQDN for: forcing a fake database.url onto a pure hasJoined federator would
+// be a lie that breaks the moment anything touches it. The auth-source rules (unique tags,
+// scheme-qualified URLs) are the SAME code path Load enforces, so nano cannot reopen the
+// cross-source impersonation hole a full deployment is protected from.
+func LoadNano(path string) (*Config, error) {
+	cfg, err := decodeConfig(path)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Server.Listen == "" {
+		cfg.Server.Listen = defaultListen
+	}
+	if err := cfg.validateAuthSources(); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
@@ -251,11 +283,17 @@ func (c *Config) Validate() error {
 	if c.Registry.URL != "" && strings.Contains(c.Registry.URL, "://") {
 		return fmt.Errorf("config: [registry] url %q must be a bare host[:port] with no scheme (e.g. registry.felis.svc:5000); a scheme breaks the user-modpack build lane's derived push target", c.Registry.URL)
 	}
-	// Felis-nano auth sources: each needs a namespace tag and a scheme-qualified hasJoined
-	// URL, and tags must be unique. A blank or duplicate tag collapses two sources into one
-	// UUID namespace (cross-source impersonation — the exact invariant the per-source
-	// rewrite exists to hold); a scheme-less URL makes http.NewRequest fail so the source is
-	// silently dead (never validates any login). Both fail fast at load, not per-login.
+	return c.validateAuthSources()
+}
+
+// validateAuthSources checks the [[auth_source]] block: each needs a namespace tag and a
+// scheme-qualified hasJoined URL, and tags must be unique. A blank or duplicate tag collapses
+// two sources into one UUID namespace (cross-source impersonation — the exact invariant the
+// per-source rewrite exists to hold); a scheme-less URL makes http.NewRequest fail so the
+// source is silently dead (never validates any login). Both fail fast at load, not per-login.
+// Split out from Validate so the nano-only LoadNano (no control-plane fields) enforces the
+// identical rules — the impersonation guard has one owner, shared by full-api and nano.
+func (c *Config) validateAuthSources() error {
 	seenTags := make(map[string]struct{}, len(c.AuthSources))
 	for i, s := range c.AuthSources {
 		if s.Tag == "" {

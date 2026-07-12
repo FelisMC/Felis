@@ -14,6 +14,7 @@ Commands:
   migrate up        Apply embedded database migrations under an advisory lock
   operator          Run the MinecraftServer controller-manager
   api               Run the felis-api HTTP server
+  nano              Run the Felis-nano hasJoined multiplexer (multi-Yggdrasil, no control plane)
   reaper            Run the world reaper / backup batch
   restore           Extract a world archive into a world volume (internal Job entrypoint)
   backup            Archive a world into the backup store and record it (internal Job entrypoint)
@@ -40,6 +41,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdOperator(rest, stdout, stderr)
 	case "api":
 		return cmdAPI(rest, stdout, stderr)
+	case "nano":
+		return cmdNano(rest, stdout, stderr)
 	case "reaper":
 		return cmdReaper(rest, stdout, stderr)
 	case "restore":

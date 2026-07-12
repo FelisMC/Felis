@@ -293,6 +293,47 @@ url = "bare.example.net/hasJoined"
 	}
 }
 
+// TestLoadNanoAcceptsMinimalConfig is the linchpin of the Felis-nano fold: a nano host has no
+// Postgres and no FQDN, so LoadNano must accept a felis.toml carrying ONLY [[auth_source]] —
+// the control-plane requirements (database.url, root_domain) that full Load enforces are
+// deliberately skipped. It still applies the listen default and hands back the sources.
+func TestLoadNanoAcceptsMinimalConfig(t *testing.T) {
+	cfg, err := config.LoadNano(writeTOML(t, `
+[[auth_source]]
+tag = "littleskin"
+url = "https://littleskin.example.net/api/yggdrasil/sessionserver/session/minecraft/hasJoined"
+`))
+	if err != nil {
+		t.Fatalf("LoadNano minimal: %v", err)
+	}
+	if len(cfg.AuthSources) != 1 || cfg.AuthSources[0].Tag != "littleskin" {
+		t.Fatalf("auth sources = %+v, want one littleskin source", cfg.AuthSources)
+	}
+	if cfg.Server.Listen != "0.0.0.0:8080" {
+		t.Errorf("default listen = %q, want 0.0.0.0:8080", cfg.Server.Listen)
+	}
+}
+
+// TestLoadNanoStillEnforcesAuthSourceRules pins that skipping the control-plane requirements
+// does NOT skip the crown-jewel auth-source guard: a duplicate tag still collapses two sources
+// into one UUID namespace, and LoadNano must reject it exactly as Load does (shared code path).
+func TestLoadNanoStillEnforcesAuthSourceRules(t *testing.T) {
+	_, err := config.LoadNano(writeTOML(t, `
+[[auth_source]]
+tag = "dup"
+url = "https://a.example.net/hasJoined"
+[[auth_source]]
+tag = "dup"
+url = "https://b.example.net/hasJoined"
+`))
+	if err == nil {
+		t.Fatal("expected LoadNano to reject a duplicate auth_source tag")
+	}
+	if !strings.Contains(err.Error(), "unique") {
+		t.Errorf("error should explain the tags-must-be-unique contract, got: %v", err)
+	}
+}
+
 func TestLoadRejectsUnknownKeys(t *testing.T) {
 	_, err := config.Load(writeTOML(t, `
 [server]
