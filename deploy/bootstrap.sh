@@ -28,7 +28,9 @@
 #
 # Tunables (export before running to override the demo defaults):
 #   FELIS_INSTALL_MODE full|nano — skip the prompt (default: ask on a tty, else full)
-#   FELIS_NANO_LISTEN listen addr for `felis nano` (default: 0.0.0.0:8081; nano mode)
+#   FELIS_NANO_LISTEN listen addr for `felis nano` (default: 127.0.0.1:8081 — loopback
+#                     only; set a private-network IP to serve an off-host proxy)
+#   FELIS_GO_VERSION  Go toolchain used to build the nano binary (default: 1.26.4)
 #   FELIS_REPO_URL    git URL to build from   (raw script mode only)
 #   FELIS_REF         branch/tag/sha          (raw script mode only)
 #   FELIS_IMAGE       local image tag         (default: felis:demo  — never :latest)
@@ -48,7 +50,13 @@ FELIS_IMAGE="${FELIS_IMAGE:-felis:demo}"
 FELIS_EGRESS_MODE="${FELIS_EGRESS_MODE:-nodeport}"
 FELIS_PANEL_NODEPORT="${FELIS_PANEL_NODEPORT:-30443}"
 INSTALL_MODE="${FELIS_INSTALL_MODE:-}"
-FELIS_NANO_LISTEN="${FELIS_NANO_LISTEN:-0.0.0.0:8081}"
+# Loopback by default: hasJoined is an unauthenticated endpoint by protocol (authlib
+# sends no token), so a public bind is a free auth relay — anyone can point their own
+# proxy at it and spend YOUR egress IP on Mojang, until Mojang rate-limits you and your
+# own players stop getting in. Same-host Velocity reaches 127.0.0.1 fine; a proxy on
+# another machine must opt in explicitly with FELIS_NANO_LISTEN=<private-ip>:8081.
+FELIS_NANO_LISTEN="${FELIS_NANO_LISTEN:-127.0.0.1:8081}"
+FELIS_GO_VERSION="${FELIS_GO_VERSION:-1.26.4}"
 PKG_LOCK_TIMEOUT="${PKG_LOCK_TIMEOUT:-${APT_LOCK_TIMEOUT:-900}}"
 APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-$PKG_LOCK_TIMEOUT}"
 
@@ -68,6 +76,7 @@ PANEL_TLS_CERT="${STATE_DIR}/panel-tls.crt"
 PANEL_TLS_KEY="${STATE_DIR}/panel-tls.key"
 SRC_DIR="/opt/felis/src"
 HOST_BIN="/usr/local/bin/felis"
+GOROOT_DIR="/usr/local/go"
 NANO_SERVICE="/etc/systemd/system/felis-nano.service"
 K3S_BIN_DIR="${K3S_BIN_DIR:-/usr/local/bin}"
 K3S_BIN="${K3S_BIN_DIR}/k3s"
@@ -407,6 +416,7 @@ install_base() {
 
   pkg_refresh_once
   command -v curl >/dev/null 2>&1 || packages+=(curl)
+  command -v tar >/dev/null 2>&1 || packages+=(tar)
   if ! bootstrap_from_tui && ! command -v git >/dev/null 2>&1; then
     packages+=(git)
   fi
@@ -1090,22 +1100,69 @@ prompt_install_mode() {
   log "install mode: ${INSTALL_MODE}"
 }
 
+install_go_toolchain() {
+  local arch tarball url
+  if [ -x "${GOROOT_DIR}/bin/go" ] && "${GOROOT_DIR}/bin/go" version | grep -q "go${FELIS_GO_VERSION} "; then
+    ok "go ${FELIS_GO_VERSION} already installed at ${GOROOT_DIR}"
+    return 0
+  fi
+
+  case "$(uname -m)" in
+    x86_64|amd64) arch="amd64" ;;
+    aarch64|arm64) arch="arm64" ;;
+    *) die "no Go toolchain build for architecture $(uname -m); set FELIS_GO_VERSION or pre-stage ${GOROOT_DIR}" ;;
+  esac
+
+  tarball="go${FELIS_GO_VERSION}.linux-${arch}.tar.gz"
+  url="https://go.dev/dl/${tarball}"
+  log "installing Go ${FELIS_GO_VERSION} (${arch}) to ${GOROOT_DIR}"
+  curl -fsSL "$url" -o "/tmp/${tarball}" || die "failed to download the Go toolchain: ${url}"
+  rm -rf "$GOROOT_DIR"
+  tar -C "$(dirname "$GOROOT_DIR")" -xzf "/tmp/${tarball}" || die "failed to unpack ${tarball}"
+  rm -f "/tmp/${tarball}"
+  ok "go toolchain at ${GOROOT_DIR}/bin/go"
+}
+
+build_nano_binary() {
+  local staged="${SRC_DIR}/.felis-nano-build"
+
+  log "building felis from source (${SRC_DIR})"
+  ( cd "$SRC_DIR" \
+    && PATH="${GOROOT_DIR}/bin:${PATH}" CGO_ENABLED=0 go build -trimpath -o "$staged" ./cmd/felis ) \
+    || die "go build ./cmd/felis failed"
+
+  # The whole point of this path is the nano subcommand; a binary without it would
+  # only surface as a crash-looping felis-nano.service, so fail loudly here instead.
+  "$staged" -h 2>&1 | grep -qw nano || die "built binary has no 'nano' subcommand"
+
+  # Stage-then-install, never `go build -o ${HOST_BIN}` directly: the Go linker renames
+  # its output out of $TMPDIR, and a same-filesystem rename CARRIES THE SOURCE SELinux
+  # label — the binary lands in /usr/local/bin still labelled user_tmp_t. Root (being
+  # unconfined) can still run it, so it looks fine by hand, but the DynamicUser service
+  # cannot exec it and felis-nano dies with 203/EXEC. Creating the file fresh at the
+  # destination lets the policy's type transition label it bin_t; restorecon is the belt.
+  mkdir -p "$(dirname "$HOST_BIN")"
+  rm -f "$HOST_BIN"
+  install -m 0755 "$staged" "$HOST_BIN"
+  rm -f "$staged"
+  command -v restorecon >/dev/null 2>&1 && restorecon "$HOST_BIN" >/dev/null 2>&1 || true
+
+  ok "felis binary on host at ${HOST_BIN}"
+}
+
 acquire_nano_binary() {
   if bootstrap_from_tui; then
     install_embedded_binary
     return 0
   fi
-  # Raw curl|bash: no binary yet. Build it from source with docker (the full
-  # path's proven build), then reclaim docker's RAM. ponytail: reuses the docker
-  # build rather than shipping a Go≥1.26 toolchain installer; a nano host that must
-  # stay docker-free would need a prebuilt-release download — add when asked.
-  install_docker
+  # Raw curl|bash: no binary yet. Build it straight from source with a pinned Go
+  # toolchain — nano needs one static binary, not an image, so dragging in docker
+  # (as the full control-plane path does) buys nothing and costs a daemon that must
+  # start. It does not start on EL10: the docker-ce el10 rpms install but dockerd
+  # fails, which used to kill the whole nano install at `systemctl enable --now docker`.
   fetch_source
-  systemctl start docker
-  build_image_from_source
-  verify_image_starts
-  systemctl stop docker docker.socket 2>/dev/null || true
-  ok "felis binary on host at ${HOST_BIN}"
+  install_go_toolchain
+  build_nano_binary
 }
 
 write_nano_config() {
@@ -1129,7 +1186,20 @@ EOF
   ok "wrote nano config template ${target} (edit it to add your Yggdrasil sources)"
 }
 
+nano_listen_is_loopback() {
+  case "${FELIS_NANO_LISTEN%:*}" in
+    127.*|localhost|::1|"[::1]") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 configure_nano_firewall() {
+  # A loopback bind is unreachable from off-host by construction, so opening the port
+  # would advertise a hole nothing answers on. Only punch it for a routable bind.
+  if nano_listen_is_loopback; then
+    ok "nano listens on ${FELIS_NANO_LISTEN} (loopback); no firewall port opened"
+    return 0
+  fi
   command -v firewall-cmd >/dev/null 2>&1 || return 0
   systemctl is-active --quiet firewalld || return 0
   local port="${FELIS_NANO_LISTEN##*:}"
@@ -1161,21 +1231,34 @@ ProtectHome=yes
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
-  systemctl enable --now felis-nano
+  systemctl enable felis-nano
+  # restart, not `enable --now`: on a re-run the service is already active and --now would
+  # leave the OLD binary running against the NEW unit. Converge means converge.
+  systemctl restart felis-nano
   ok "felis-nano.service enabled and started (listen ${FELIS_NANO_LISTEN})"
 }
 
 summary_nano() {
-  local port="${FELIS_NANO_LISTEN##*:}"
+  local port="${FELIS_NANO_LISTEN##*:}" host
+  if nano_listen_is_loopback; then host="127.0.0.1"; else host="${NODE_IP}"; fi
   echo
   ok "Felis-nano deployed."
   echo
   systemctl --no-pager --full status felis-nano 2>/dev/null | head -n 6 || true
   echo
-  log "hasJoined endpoint: http://${NODE_IP}:${port}/session/minecraft/hasJoined"
+  log "hasJoined endpoint: http://${host}:${port}/session/minecraft/hasJoined"
   log "Point Velocity at it — add to the proxy JVM startup flags:"
-  log "    -Dmojang.sessionserver=http://${NODE_IP}:${port}"
-  log "    (Velocity on THIS host? use http://127.0.0.1:${port} instead — no firewall hop)"
+  log "    -Dmojang.sessionserver=http://${host}:${port}"
+  log "    (base URL only — authlib appends the path itself)"
+  if nano_listen_is_loopback; then
+    log "Bound to loopback: reachable from Velocity on THIS host, and from nowhere else."
+    log "Proxy on another machine? Re-run with FELIS_NANO_LISTEN=<private-ip>:${port} and"
+    log "allow ${port}/tcp ONLY from that proxy — hasJoined takes no auth token, so an"
+    log "internet-facing one is a free auth relay burning your Mojang egress IP."
+  else
+    log "WARNING: bound to ${FELIS_NANO_LISTEN} — hasJoined takes no auth token, so restrict"
+    log "${port}/tcp to your proxy's source IP or anyone can relay their logins through you."
+  fi
   log "Then edit ${STATE_DIR}/felis.toml to add your [[auth_source]] roots and run:"
   log "    sudo systemctl restart felis-nano"
   log "Follow live login traffic with:  sudo journalctl -u felis-nano -f"

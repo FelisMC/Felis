@@ -5,8 +5,11 @@ package main
 // full Felis control plane (no k3s, no Postgres, no DB). It reads [[auth_source]] from
 // felis.toml, leads with Mojang as the code-owned identity anchor (正版优先), and serves the
 // vanilla sessionserver hasJoined endpoint. Point Velocity at it with
-//   -Dmojang.sessionserver=http://<this-host>:8081/session/minecraft/hasJoined
-// and authlib verifies logins against Mojang plus every configured third-party source.
+//   -Dmojang.sessionserver=http://127.0.0.1:8081
+// — the base URL only: authlib appends /session/minecraft/hasJoined itself. Then it
+// verifies logins against Mojang plus every configured third-party source. Serving a
+// proxy on another host means binding off-loopback with -listen; see the flag below for
+// why that is an explicit opt-in and not the default.
 //
 // This is the no-database delivery of the identical brain `felis api` mounts through its
 // route table (internal/api.HasJoinedHandler). `felis setup --nano` / the bootstrap nano
@@ -35,7 +38,11 @@ func cmdNano(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("nano", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "/etc/felis/felis.toml", "path to felis.toml (reads [[auth_source]])")
-	listen := fs.String("listen", ":8081", "listen address for the hasJoined endpoint")
+	// Loopback default: hasJoined carries no auth token (authlib speaks the vanilla
+	// sessionserver protocol), so a public bind is an open auth relay — anyone can point
+	// their proxy at it and spend this host's egress IP on Mojang. A same-host Velocity
+	// reaches 127.0.0.1; serving an off-host proxy is an explicit -listen opt-in.
+	listen := fs.String("listen", "127.0.0.1:8081", "listen address for the hasJoined endpoint")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
