@@ -45,7 +45,7 @@ func authSourcesFromConfig(configured []config.AuthSourceConfig) []api.AuthSourc
 	sources := make([]api.AuthSource, 0, len(configured)+1)
 	sources = append(sources, api.AuthSource{Tag: "mojang", URL: mojangSessionServer, Identity: true})
 	for _, s := range configured {
-		sources = append(sources, api.AuthSource{Tag: s.Tag, URL: s.URL})
+		sources = append(sources, api.AuthSource{Tag: s.Tag, Prefix: s.Prefix, URL: s.URL})
 	}
 	return sources
 }

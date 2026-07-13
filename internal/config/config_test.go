@@ -211,9 +211,11 @@ root_domain = "mc.example.net"
 url = "postgres://felis@db/felis"
 [[auth_source]]
 tag = "littleskin"
+prefix = "LS"
 url = "https://littleskin.example.net/api/yggdrasil/sessionserver/session/minecraft/hasJoined"
 [[auth_source]]
 tag = "guild"
+prefix = "GD"
 url = "https://guild.example.net/sessionserver/session/minecraft/hasJoined"
 `))
 	if err != nil {
@@ -258,9 +260,11 @@ root_domain = "mc.example.net"
 url = "postgres://felis@db/felis"
 [[auth_source]]
 tag = "dup"
+prefix = "AA"
 url = "https://a.example.net/hasJoined"
 [[auth_source]]
 tag = "dup"
+prefix = "BB"
 url = "https://b.example.net/hasJoined"
 `))
 	if err == nil {
@@ -283,6 +287,7 @@ root_domain = "mc.example.net"
 url = "postgres://felis@db/felis"
 [[auth_source]]
 tag = "bare"
+prefix = "BR"
 url = "bare.example.net/hasJoined"
 `))
 	if err == nil {
@@ -301,6 +306,7 @@ func TestLoadNanoAcceptsMinimalConfig(t *testing.T) {
 	cfg, err := config.LoadNano(writeTOML(t, `
 [[auth_source]]
 tag = "littleskin"
+prefix = "LS"
 url = "https://littleskin.example.net/api/yggdrasil/sessionserver/session/minecraft/hasJoined"
 `))
 	if err != nil {
@@ -321,9 +327,11 @@ func TestLoadNanoStillEnforcesAuthSourceRules(t *testing.T) {
 	_, err := config.LoadNano(writeTOML(t, `
 [[auth_source]]
 tag = "dup"
+prefix = "AA"
 url = "https://a.example.net/hasJoined"
 [[auth_source]]
 tag = "dup"
+prefix = "BB"
 url = "https://b.example.net/hasJoined"
 `))
 	if err == nil {
@@ -331,6 +339,57 @@ url = "https://b.example.net/hasJoined"
 	}
 	if !strings.Contains(err.Error(), "unique") {
 		t.Errorf("error should explain the tags-must-be-unique contract, got: %v", err)
+	}
+}
+
+// TestLoadRejectsBadAuthSourcePrefix pins the rename-prefix contract. The prefix is prepended
+// to a real Minecraft username (LS_steve) when a third-party player is holding a Mojang
+// player's name, so it must exist and must be legal there — a missing or illegal prefix would
+// otherwise only surface as a login the proxy silently refuses, months later, the first time
+// two players collide.
+func TestLoadRejectsBadAuthSourcePrefix(t *testing.T) {
+	for name, prefix := range map[string]string{
+		"missing":    "",
+		"too long":   "TOOLONG",
+		"underscore": "L_",
+		"non-ascii":  "皮肤",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := config.LoadNano(writeTOML(t, `
+[[auth_source]]
+tag = "littleskin"
+prefix = "`+prefix+`"
+url = "https://littleskin.example.net/hasJoined"
+`))
+			if err == nil {
+				t.Fatalf("expected error for prefix %q", prefix)
+			}
+			if !strings.Contains(err.Error(), "prefix") {
+				t.Errorf("error should name the prefix contract, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestLoadRejectsDuplicateAuthSourcePrefix: two sources sharing a prefix rewrite their
+// same-named players onto the SAME in-game name, which is the collision the prefix exists to
+// break. Case-insensitively, because the proxy's player registry folds case.
+func TestLoadRejectsDuplicateAuthSourcePrefix(t *testing.T) {
+	_, err := config.LoadNano(writeTOML(t, `
+[[auth_source]]
+tag = "littleskin"
+prefix = "LS"
+url = "https://a.example.net/hasJoined"
+[[auth_source]]
+tag = "otherskin"
+prefix = "ls"
+url = "https://b.example.net/hasJoined"
+`))
+	if err == nil {
+		t.Fatal("expected LoadNano to reject two sources sharing a prefix (case-insensitively)")
+	}
+	if !strings.Contains(err.Error(), "prefix") {
+		t.Errorf("error should name the prefix contract, got: %v", err)
 	}
 }
 

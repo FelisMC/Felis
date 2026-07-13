@@ -6,6 +6,7 @@ package config
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -36,10 +37,14 @@ type Config struct {
 // Felis-nano multiplexer federates over. Tag names the source's per-source UUID
 // namespace (must be unique — two sources sharing a tag would collide onto one identity);
 // URL is the full hasJoined endpoint (scheme-qualified) the query string is appended to.
+// Prefix is what a player from this source is renamed with when their name belongs to a
+// Mojang player (LS_steve) — player-visible, so it is written out rather than derived from
+// the tag, which cannot know that "littleskin" is meant to read LS.
 // No trusted/identity field, by design — see Config.AuthSources.
 type AuthSourceConfig struct {
-	Tag string `toml:"tag"`
-	URL string `toml:"url"`
+	Tag    string `toml:"tag"`
+	Prefix string `toml:"prefix"`
+	URL    string `toml:"url"`
 }
 
 // ServerConfig is the [server] table.
@@ -286,15 +291,24 @@ func (c *Config) Validate() error {
 	return c.validateAuthSources()
 }
 
-// validateAuthSources checks the [[auth_source]] block: each needs a namespace tag and a
-// scheme-qualified hasJoined URL, and tags must be unique. A blank or duplicate tag collapses
-// two sources into one UUID namespace (cross-source impersonation — the exact invariant the
-// per-source rewrite exists to hold); a scheme-less URL makes http.NewRequest fail so the
-// source is silently dead (never validates any login). Both fail fast at load, not per-login.
-// Split out from Validate so the nano-only LoadNano (no control-plane fields) enforces the
-// identical rules — the impersonation guard has one owner, shared by full-api and nano.
+// authSourcePrefixRe is the shape of a prefix. It is prepended to a real Minecraft
+// username (LS_steve), so it is confined to the username charset and kept short enough to
+// leave a legible name behind after truncation.
+var authSourcePrefixRe = regexp.MustCompile(`^[A-Za-z0-9]{1,4}$`)
+
+// validateAuthSources checks the [[auth_source]] block: each needs a namespace tag, a rename
+// prefix, and a scheme-qualified hasJoined URL, and both tag and prefix must be unique. A
+// blank or duplicate tag collapses two sources into one UUID namespace (cross-source
+// impersonation — the exact invariant the per-source rewrite exists to hold); a duplicate
+// prefix collapses two same-named players from different sources onto one in-game name
+// (they stay distinct identities, but neither can be online while the other is); a
+// scheme-less URL makes http.NewRequest fail so the source is silently dead (never validates
+// any login). All fail fast at load, not per-login. Split out from Validate so the nano-only
+// LoadNano (no control-plane fields) enforces the identical rules — the impersonation guard
+// has one owner, shared by full-api and nano.
 func (c *Config) validateAuthSources() error {
 	seenTags := make(map[string]struct{}, len(c.AuthSources))
+	seenPrefixes := make(map[string]struct{}, len(c.AuthSources))
 	for i, s := range c.AuthSources {
 		if s.Tag == "" {
 			return fmt.Errorf("config: [[auth_source]] #%d has an empty tag; each source's tag is its per-source UUID namespace", i+1)
@@ -303,6 +317,16 @@ func (c *Config) validateAuthSources() error {
 			return fmt.Errorf("config: [[auth_source]] tag %q is used twice — tags are per-source UUID namespaces and must be unique", s.Tag)
 		}
 		seenTags[s.Tag] = struct{}{}
+		if !authSourcePrefixRe.MatchString(s.Prefix) {
+			return fmt.Errorf(`config: [[auth_source]] %q needs prefix = "XX" (1-4 letters or digits, e.g. "LS" for LittleSkin), got %q; a player of this source whose name belongs to a Mojang account is renamed XX_name so the two can be online at once`, s.Tag, s.Prefix)
+		}
+		// Case-insensitively — the proxy's player registry folds case, so LS and ls would
+		// collide there even though they read as two different prefixes here.
+		lower := strings.ToLower(s.Prefix)
+		if _, dup := seenPrefixes[lower]; dup {
+			return fmt.Errorf("config: [[auth_source]] prefix %q is used twice — two sources sharing a prefix rewrite their same-named players onto the same in-game name", s.Prefix)
+		}
+		seenPrefixes[lower] = struct{}{}
 		if !strings.HasPrefix(s.URL, "http://") && !strings.HasPrefix(s.URL, "https://") {
 			return fmt.Errorf("config: [[auth_source]] %q url %q must be a scheme-qualified http(s):// hasJoined endpoint", s.Tag, s.URL)
 		}

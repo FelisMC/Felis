@@ -4,9 +4,13 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -44,9 +48,12 @@ var authHTTPClient = &http.Client{Timeout: 5 * time.Second}
 // AuthSource is one upstream Yggdrasil root in the multiplexer's priority list (config
 // order = priority). URL is the full hasJoined endpoint the query string is appended to.
 // Identity marks the authoritative source (Mojang) whose UUIDs are trusted as-is; every
-// other source is rewritten into felisAuthNS.
+// other source is rewritten into felisAuthNS. Prefix is the in-game rename applied to a
+// player of this source who is holding a Mojang player's name (see prefixedName); it is
+// unused on the identity source, whose players are never renamed.
 type AuthSource struct {
 	Tag      string
+	Prefix   string
 	URL      string
 	Identity bool
 }
@@ -102,7 +109,24 @@ func (a *API) handleHasJoined(w http.ResponseWriter, r *http.Request) {
 		}
 		canonical = id
 	} else {
+		// A third-party source is untrusted input, its name included: nothing stops a
+		// hostile or sloppy root from answering with "§4admin", an empty string, or 200
+		// characters, all of which this handler would otherwise relay straight into the
+		// proxy's player list.
+		if !mcUsernameRe.MatchString(prof.Name) {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		canonical = uuid.NewMD5(felisAuthNS, []byte(src.Tag+":"+prof.ID))
+
+		// Give a Mojang player's name back to the Mojang player. The UUID rewrite above
+		// already keeps the two apart as identities, but the proxy's player registry is
+		// keyed on the NAME (Velocity: "You are already connected to this proxy!"), so
+		// without this they cannot even be online at the same time. Renaming only on an
+		// actual collision leaves the ordinary third-party player's name untouched.
+		if isPremiumName(r.Context(), prof.Name) {
+			prof.Name = prefixedName(src.Prefix, prof.Name)
+		}
 	}
 
 	// Bar gate at the single chokepoint every login crosses, so a reclaimed squatter
@@ -121,6 +145,128 @@ func (a *API) handleHasJoined(w http.ResponseWriter, r *http.Request) {
 	// Emit the canonical UUID undashed — the 32-hex form authlib's GameProfile expects.
 	prof.ID = hex.EncodeToString(canonical[:])
 	writeJSON(w, http.StatusOK, prof)
+}
+
+// mcUsernameRe is Minecraft's username charset — the trust boundary on a third-party
+// source's self-asserted profile name.
+var mcUsernameRe = regexp.MustCompile(`^[A-Za-z0-9_]{3,16}$`)
+
+// mcUsernameMax is the protocol's username length ceiling, which prefixedName must respect.
+const mcUsernameMax = 16
+
+// prefixedName is the squatter rename: ("LS", "steve") → "LS_steve". The base name is
+// TRUNCATED to fit rather than the rename being skipped when it would not fit — skipping is
+// what would silently hand a 14-character premium name back to the squatter.
+//
+// ponytail: two players of one source whose names agree on their first mcUsernameMax-len(prefix)-1
+// characters truncate onto the same in-game name, as does a prefixed name that happens to be
+// a premium name itself. Both cost an "already connected" bounce, not an identity: the UUID
+// rewrite is what keeps players apart, and it does not depend on the name at all. Add a
+// disambiguating suffix only if real players actually collide.
+func prefixedName(prefix, name string) string {
+	p := prefix + "_"
+	if keep := mcUsernameMax - len(p); len(name) > keep {
+		name = name[:keep]
+	}
+	return p + name
+}
+
+// mojangProfileAPI answers the one question that decides a rename: is this username
+// registered to a Mojang account? A var, not a const, so a test can point it at a stub
+// instead of the real Mojang.
+var mojangProfileAPI = "https://api.mojang.com/users/profiles/minecraft/"
+
+// profileHTTPClient is deliberately more impatient than authHTTPClient: the name lookup is a
+// SECOND Mojang round-trip on a third-party login (the identity leg already spent one), and
+// api.mojang.com is exactly what is unreliable from the networks these servers sit on. A
+// slow answer falls back to the cache instead of holding the login open.
+var profileHTTPClient = &http.Client{Timeout: 2 * time.Second}
+
+// A name's premium status changes on human timescales, not per login, so it is cached — but
+// asymmetrically, because the two directions have very different costs. "Taken" is nearly
+// permanent (Mojang does not recycle names), while "free" can stop being true the moment
+// someone buys that name, and a stale "free" is the dangerous one: it leaves a squatter
+// holding a name its real owner has just bought. So a "free" answer is trusted for minutes
+// and a "taken" answer for a day.
+const (
+	premiumTakenTTL = 24 * time.Hour
+	premiumFreeTTL  = 10 * time.Minute
+	premiumCacheMax = 4096
+)
+
+type premiumEntry struct {
+	taken bool
+	at    time.Time
+}
+
+var premiumNames = struct {
+	sync.Mutex
+	m map[string]premiumEntry
+}{m: make(map[string]premiumEntry)}
+
+// isPremiumName reports whether username belongs to a real Mojang account — which is what
+// makes a third-party player holding it a squatter. On a lookup failure it prefers a stale
+// cached answer, and with nothing cached it fails CLOSED (assume premium → rename the
+// third-party player): a Mojang outage must not let a squatter keep a name the real owner is
+// about to log in with. Being wrong that way costs a cosmetic prefix; being wrong the other
+// way bounces the name's actual owner off the proxy.
+func isPremiumName(ctx context.Context, username string) bool {
+	key := strings.ToLower(username)
+
+	premiumNames.Lock()
+	cached, hit := premiumNames.m[key]
+	premiumNames.Unlock()
+	if hit && time.Since(cached.at) < premiumTTL(cached.taken) {
+		return cached.taken
+	}
+
+	taken, err := lookupPremiumName(ctx, username)
+	if err != nil {
+		if hit {
+			return cached.taken
+		}
+		return true
+	}
+
+	premiumNames.Lock()
+	// ponytail: bounded by dropping the whole map rather than evicting LRU — entries are
+	// only minted by players who actually authenticated somewhere, so this is a backstop
+	// against an unbounded map, not a cache policy worth tuning.
+	if len(premiumNames.m) >= premiumCacheMax {
+		clear(premiumNames.m)
+	}
+	premiumNames.m[key] = premiumEntry{taken: taken, at: time.Now()}
+	premiumNames.Unlock()
+	return taken
+}
+
+func premiumTTL(taken bool) time.Duration {
+	if taken {
+		return premiumTakenTTL
+	}
+	return premiumFreeTTL
+}
+
+// lookupPremiumName asks Mojang whether a name is registered: 200 = it is, 404 (204 on the
+// legacy endpoint) = it is free. Anything else is an ERROR, never a "no" — a 429 or a 503
+// must not read as "this name is unowned"; see isPremiumName's fail-closed rule.
+func lookupPremiumName(ctx context.Context, username string) (bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, mojangProfileAPI+url.PathEscape(username), nil)
+	if err != nil {
+		return false, err
+	}
+	resp, err := profileHTTPClient.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+		return true, nil
+	case http.StatusNotFound, http.StatusNoContent:
+		return false, nil
+	}
+	return false, fmt.Errorf("mojang profile api: %s", resp.Status)
 }
 
 // resolveHasJoined queries each configured source in priority order and returns the

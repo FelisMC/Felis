@@ -1178,8 +1178,15 @@ write_nano_config() {
 # Add each third-party Yggdrasil root below (priority = order). url is the FULL
 # hasJoined endpoint. After editing:  sudo systemctl restart felis-nano
 #
+# prefix is required, 1-4 letters/digits, unique per source. A player of this source
+# whose name belongs to a Mojang account joins as PREFIX_name (LS_steve) instead —
+# otherwise the proxy, which keys its player list on the NAME, refuses to have both
+# online at once ("You are already connected to this proxy!"). Everyone else keeps
+# their own name.
+#
 # [[auth_source]]
 # tag = "littleskin"
+# prefix = "LS"
 # url = "https://littleskin.cn/api/yggdrasil/sessionserver/session/minecraft/hasJoined"
 EOF
   chmod 0644 "$target"
