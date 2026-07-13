@@ -5,11 +5,12 @@ package main
 // full Felis control plane (no k3s, no Postgres, no DB). It reads [[auth_source]] from
 // felis.toml, leads with Mojang as the code-owned identity anchor (正版优先), and serves the
 // vanilla sessionserver hasJoined endpoint. Point Velocity at it with
-//   -Dmojang.sessionserver=http://127.0.0.1:8081
-// — the base URL only: authlib appends /session/minecraft/hasJoined itself. Then it
-// verifies logins against Mojang plus every configured third-party source. Serving a
-// proxy on another host means binding off-loopback with -listen; see the flag below for
-// why that is an explicit opt-in and not the default.
+//   -Dmojang.sessionserver=http://127.0.0.1:8081/session/minecraft/hasJoined
+// — Velocity's property takes the FULL endpoint URL, path included (its default is the
+// full https://sessionserver.mojang.com/session/minecraft/hasJoined), and Velocity issues
+// that request itself rather than through authlib. Then it verifies logins against Mojang
+// plus every configured third-party source. Serving a proxy on another host means binding
+// off-loopback with -listen; see the flag below for why that is an explicit opt-in.
 //
 // This is the no-database delivery of the identical brain `felis api` mounts through its
 // route table (internal/api.HasJoinedHandler). `felis setup --nano` / the bootstrap nano

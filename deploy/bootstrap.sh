@@ -1247,9 +1247,10 @@ summary_nano() {
   systemctl --no-pager --full status felis-nano 2>/dev/null | head -n 6 || true
   echo
   log "hasJoined endpoint: http://${host}:${port}/session/minecraft/hasJoined"
-  log "Point Velocity at it — add to the proxy JVM startup flags:"
-  log "    -Dmojang.sessionserver=http://${host}:${port}"
-  log "    (base URL only — authlib appends the path itself)"
+  log "Point Velocity at it — add to the proxy JVM startup flags (between java and -jar):"
+  log "    -Dmojang.sessionserver=http://${host}:${port}/session/minecraft/hasJoined"
+  log "    (the FULL endpoint URL, path included — Velocity's default for this property is"
+  log "     the full https://sessionserver.mojang.com/session/minecraft/hasJoined)"
   if nano_listen_is_loopback; then
     log "Bound to loopback: reachable from Velocity on THIS host, and from nowhere else."
     log "Proxy on another machine? Re-run with FELIS_NANO_LISTEN=<private-ip>:${port} and"
