@@ -548,6 +548,7 @@ func (m *rootModel) showSummary() (tea.Model, tea.Cmd) {
 // operator at the panel without forcing any reconfiguration.
 func (m *rootModel) showStatus() (tea.Model, tea.Cmd) {
 	m.stage = stageSummary
+	m.result.alreadySetUp = true
 	method := connectLocal
 	accessLabel := "configured (manage in panel)"
 	if m.accessAud != "" {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"felis.lolicon.best/internal/api"
@@ -180,6 +181,26 @@ func TestOwnerResultCmdCarriesIsOperator(t *testing.T) {
 	ow.username, ow.mode, ow.accountable = "owner", "recovery", "root"
 	if res := ow.ownerResultCmd()().(ownerResultMsg); res.isOperator {
 		t.Error("owner result.isOperator = true, want false")
+	}
+}
+
+func TestMCBindCarriesAuditWarning(t *testing.T) {
+	m := newMCBindModel(context.Background(), &fakeOwnerStore{}, "op.console.example.com", "root")
+	next, _ := m.Update(mcBindMsg{outcome: breakGlassOutcome{
+		ownerIdentity: "mc-uuid-1",
+		setupTokenURL: "https://op.console.example.com/setup?token=t0ken",
+		auditErr:      errors.New("audit insert failed"),
+	}})
+	bound := next.(*mcBindModel)
+	if !strings.Contains(bound.doneView(), "audit insert failed") {
+		t.Fatalf("done view did not surface audit warning:\n%s", bound.doneView())
+	}
+	res := bound.resultCmd()().(ownerResultMsg)
+	if res.username != "mc-uuid-1" {
+		t.Fatalf("result username = %q, want verified Minecraft UUID", res.username)
+	}
+	if res.auditWarning != "audit insert failed" {
+		t.Fatalf("result audit warning = %q", res.auditWarning)
 	}
 }
 

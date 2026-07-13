@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/naming"
@@ -134,11 +136,12 @@ func TestLoginSystemServerEnv(t *testing.T) {
 	}
 }
 
-// ensureServiceTokenReplica copies the token Secret from the control namespace into
-// the minecraft namespace (create-if-absent), so the operator's secretKeyRef on the
-// login pod resolves. It must not overwrite an existing replica, and must degrade
-// gracefully when the source is missing or the namespaces coincide.
-func TestEnsureServiceTokenReplica(t *testing.T) {
+// ensureSecretReplica copies a Secret from the control namespace into the minecraft
+// namespace (create-if-absent), so the operator's secretKeyRef on the backend pod
+// resolves. It must not overwrite an existing replica, and must degrade gracefully
+// when the source is missing or the namespaces coincide. Exercised here with the
+// service token; setup runs it a second time for the Velocity forwarding secret.
+func TestEnsureSecretReplica(t *testing.T) {
 	scheme := newSystemServerScheme(t)
 	ctx := context.Background()
 
@@ -149,11 +152,15 @@ func TestEnsureServiceTokenReplica(t *testing.T) {
 			Data:       map[string][]byte{naming.ServiceTokenSecretKey: []byte("s3cr3t")},
 		}
 	}
+	replicate := func(cl client.Client, controlNS, mcNS string) systemServerOutcome {
+		return ensureSecretReplica(ctx, cl, controlNS, mcNS,
+			naming.ServiceTokenSecretName, naming.ServiceTokenSecretKey, "service-token")
+	}
 
 	t.Run("replicates when absent", func(t *testing.T) {
 		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(srcSecret()).Build()
-		out := ensureServiceTokenReplica(ctx, cl, "felis", "minecraft")
-		if out.err != nil || !out.created {
+		out := replicate(cl, "felis", "minecraft")
+		if out.err != nil || !out.created || !out.available {
 			t.Fatalf("outcome = %+v, want created", out)
 		}
 		var replica corev1.Secret
@@ -172,8 +179,8 @@ func TestEnsureServiceTokenReplica(t *testing.T) {
 			Data:       map[string][]byte{naming.ServiceTokenSecretKey: []byte("rotated")},
 		}
 		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(srcSecret(), existing).Build()
-		out := ensureServiceTokenReplica(ctx, cl, "felis", "minecraft")
-		if out.created || out.skipped == "" {
+		out := replicate(cl, "felis", "minecraft")
+		if out.created || !out.available || out.skipped == "" {
 			t.Fatalf("outcome = %+v, want skipped (not clobbered)", out)
 		}
 		var replica corev1.Secret
@@ -187,17 +194,141 @@ func TestEnsureServiceTokenReplica(t *testing.T) {
 
 	t.Run("skips when source missing", func(t *testing.T) {
 		cl := fake.NewClientBuilder().WithScheme(scheme).Build()
-		out := ensureServiceTokenReplica(ctx, cl, "felis", "minecraft")
-		if out.err != nil || out.created || out.skipped == "" {
+		out := replicate(cl, "felis", "minecraft")
+		if out.err != nil || out.created || out.available || out.skipped == "" {
 			t.Fatalf("outcome = %+v, want skipped (source absent)", out)
 		}
 	})
 
+	t.Run("rejects a source with an empty required key", func(t *testing.T) {
+		bad := srcSecret()
+		bad.Data[naming.ServiceTokenSecretKey] = nil
+		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(bad).Build()
+		out := replicate(cl, "felis", "minecraft")
+		if out.err != nil || out.created || out.available || !strings.Contains(out.skipped, naming.ServiceTokenSecretKey) {
+			t.Fatalf("outcome = %+v, want unavailable required key", out)
+		}
+	})
+
+	t.Run("rejects an existing replica with an empty required key", func(t *testing.T) {
+		bad := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: naming.ServiceTokenSecretName, Namespace: "minecraft"},
+			Data:       map[string][]byte{},
+		}
+		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(srcSecret(), bad).Build()
+		out := replicate(cl, "felis", "minecraft")
+		if out.err != nil || out.created || out.available || !strings.Contains(out.skipped, naming.ServiceTokenSecretKey) {
+			t.Fatalf("outcome = %+v, want unavailable existing replica", out)
+		}
+	})
+
 	t.Run("no-op when namespaces coincide", func(t *testing.T) {
-		cl := fake.NewClientBuilder().WithScheme(scheme).Build()
-		out := ensureServiceTokenReplica(ctx, cl, "felis", "felis")
-		if out.err != nil || out.created {
+		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(srcSecret()).Build()
+		out := replicate(cl, "felis", "felis")
+		if out.err != nil || out.created || !out.available {
 			t.Fatalf("outcome = %+v, want skipped no-op", out)
+		}
+	})
+
+	t.Run("same namespace still requires source", func(t *testing.T) {
+		cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+		out := replicate(cl, "felis", "felis")
+		if out.err != nil || out.available || out.skipped == "" {
+			t.Fatalf("outcome = %+v, want unavailable source", out)
+		}
+	})
+
+	t.Run("same namespace still requires the key", func(t *testing.T) {
+		bad := srcSecret()
+		bad.Data = nil
+		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(bad).Build()
+		out := replicate(cl, "felis", "felis")
+		if out.err != nil || out.available || !strings.Contains(out.skipped, naming.ServiceTokenSecretKey) {
+			t.Fatalf("outcome = %+v, want unavailable required key", out)
+		}
+	})
+}
+
+func TestRequiredProvisioningError(t *testing.T) {
+	ready := []systemServerOutcome{
+		{name: "service-token (minecraft ns)", available: true},
+		{name: "forwarding-secret (minecraft ns)", available: true},
+		{name: naming.SystemLoginServer, available: true},
+		{name: naming.SystemLobbyServer, skipped: "image not configured"},
+	}
+	if err := requiredProvisioningError(ready); err != nil {
+		t.Fatalf("ready outcomes: %v", err)
+	}
+
+	missing := append([]systemServerOutcome(nil), ready...)
+	missing[1] = systemServerOutcome{name: "forwarding-secret (minecraft ns)", skipped: "source missing"}
+	if err := requiredProvisioningError(missing); err == nil || !strings.Contains(err.Error(), "forwarding-secret") {
+		t.Fatalf("missing forwarding secret = %v, want named error", err)
+	}
+
+	failed := append([]systemServerOutcome(nil), ready...)
+	failed[3] = systemServerOutcome{name: naming.SystemLobbyServer, err: context.DeadlineExceeded}
+	if err := requiredProvisioningError(failed); err == nil || !strings.Contains(err.Error(), naming.SystemLobbyServer) {
+		t.Fatalf("lobby create failure = %v, want immediate named error", err)
+	}
+}
+
+// The Owner binds by joining the game, so setup blocks on the login gate rather
+// than racing it. What matters is that each ending is distinguishable: Ready
+// proceeds, Failed reports the operator's own reason instead of waiting out the
+// clock, and a gate that never appears (no operator reconciling it) times out
+// saying so rather than dropping the operator on a bind screen that cannot work.
+func TestAwaitLoginGateReady(t *testing.T) {
+	scheme := newSystemServerScheme(t)
+	ctx := context.Background()
+
+	gate := func(mut func(*v1alpha1.MinecraftServer)) *v1alpha1.MinecraftServer {
+		ms := &v1alpha1.MinecraftServer{
+			ObjectMeta: metav1.ObjectMeta{Name: naming.SystemLoginServer, Namespace: "minecraft"},
+		}
+		mut(ms)
+		return ms
+	}
+
+	t.Run("returns once the gate is ready", func(t *testing.T) {
+		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gate(func(ms *v1alpha1.MinecraftServer) {
+			ms.Status.Phase = v1alpha1.PhaseRunning
+			ms.Status.Ready = true
+		})).Build()
+		if err := awaitLoginGateReady(ctx, cl, "minecraft", time.Second, 10*time.Millisecond, nil); err != nil {
+			t.Fatalf("await: %v", err)
+		}
+	})
+
+	t.Run("fails fast on Failed, carrying the operator's reason", func(t *testing.T) {
+		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(gate(func(ms *v1alpha1.MinecraftServer) {
+			ms.Status.Phase = v1alpha1.PhaseFailed
+			ms.Status.Conditions = []metav1.Condition{{
+				Type:               v1alpha1.ConditionReady,
+				Status:             metav1.ConditionFalse,
+				Reason:             "StartupTimeout",
+				Message:            "pod never became ready: ImagePullBackOff",
+				LastTransitionTime: metav1.Now(),
+			}}
+		})).Build()
+		start := time.Now()
+		err := awaitLoginGateReady(ctx, cl, "minecraft", time.Minute, 10*time.Millisecond, nil)
+		if err == nil {
+			t.Fatal("await: nil error, want failure")
+		}
+		if !strings.Contains(err.Error(), "ImagePullBackOff") {
+			t.Errorf("error = %q, want the operator's Ready-condition message", err)
+		}
+		if time.Since(start) > 5*time.Second {
+			t.Error("await sat out the full timeout on a settled Failed verdict")
+		}
+	})
+
+	t.Run("times out when nothing ever reconciles the gate", func(t *testing.T) {
+		cl := fake.NewClientBuilder().WithScheme(scheme).Build()
+		err := awaitLoginGateReady(ctx, cl, "minecraft", 30*time.Millisecond, 10*time.Millisecond, nil)
+		if err == nil || !strings.Contains(err.Error(), "timed out") {
+			t.Fatalf("await = %v, want a timeout", err)
 		}
 	})
 }
@@ -229,7 +360,7 @@ func TestEnsureSystemServersIdempotent(t *testing.T) {
 		if o.err != nil {
 			t.Fatalf("%s: unexpected error: %v", o.name, o.err)
 		}
-		if !o.created {
+		if !o.created || !o.available {
 			t.Errorf("%s: created = false on fresh cluster (skipped=%q)", o.name, o.skipped)
 		}
 	}
@@ -242,6 +373,9 @@ func TestEnsureSystemServersIdempotent(t *testing.T) {
 	if login.Spec.DesiredState != v1alpha1.DesiredRunning || !login.Spec.ReaperExempt {
 		t.Errorf("login spec = {desired=%q exempt=%v}, want {Running true}", login.Spec.DesiredState, login.Spec.ReaperExempt)
 	}
+	if got := login.Labels[v1alpha1.LabelSystemRole]; got != naming.SystemLoginServer {
+		t.Errorf("login system-role label = %q, want %q", got, naming.SystemLoginServer)
+	}
 
 	// Re-run: both already exist → skipped, nothing created, no error.
 	second := ensureSystemServers(ctx, cl, "minecraft", "reg/limbo:1", "reg/lobby:1", "http://felis-api.felis.svc.cluster.local:8081", "mc.example.net")
@@ -252,9 +386,36 @@ func TestEnsureSystemServersIdempotent(t *testing.T) {
 		if o.created {
 			t.Errorf("%s: created = true on re-run, want skipped", o.name)
 		}
+		if !o.available {
+			t.Errorf("%s: available = false on re-run", o.name)
+		}
 		if o.skipped == "" {
 			t.Errorf("%s: skipped reason empty on re-run", o.name)
 		}
+	}
+}
+
+func TestEnsureSystemServersRejectsLegacyLoginNameCollision(t *testing.T) {
+	scheme := newSystemServerScheme(t)
+	legacy := &v1alpha1.MinecraftServer{ObjectMeta: metav1.ObjectMeta{
+		Name:      naming.SystemLoginServer,
+		Namespace: "minecraft",
+	}}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(legacy).Build()
+
+	out := ensureSystemServers(
+		context.Background(), cl, "minecraft", "reg/limbo:1", "",
+		"http://felis-api.felis.svc.cluster.local:8081", "mc.example.net",
+	)
+	if len(out) != 2 {
+		t.Fatalf("outcomes = %d, want 2", len(out))
+	}
+	login := out[0]
+	if login.err == nil || !strings.Contains(login.err.Error(), "not marked") {
+		t.Fatalf("login error = %v, want an unmarked-name collision error", login.err)
+	}
+	if login.available || login.created {
+		t.Fatalf("login outcome = %+v, want unavailable and not created", login)
 	}
 }
 

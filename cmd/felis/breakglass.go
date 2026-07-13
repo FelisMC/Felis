@@ -83,14 +83,11 @@ type ownerStore interface {
 	// Operator. The row is role=admin, identical in shape to the Owner — Felis has no
 	// separate operator DB role (migration 0003: staff = role=admin).
 	InsertOperator(ctx context.Context, id, username, email string) error
-	// RedeemLinkCodeForOwner consumes an in-game link code and creates-or-promotes
-	// the bound user to role='admin' (Owner). It is the `felis setup` MC-bind path:
-	// the operator enters limbo, runs /link, types the code here, and the bound
-	// account becomes the passwordless Owner. Unlike RedeemPlayerBindCode it does NOT
-	// refuse staff — setup deliberately elevates the bound account.
-	RedeemLinkCodeForOwner(ctx context.Context, newUserID, code string, now time.Time) (userID, mcUUID, authSource string, err error)
-	// CreateSetupToken mints a one-time setup token for first-web-login bootstrap.
-	CreateSetupToken(ctx context.Context, tokenHash, userID string, expiresAt time.Time) error
+	// CompleteOwnerSetup atomically consumes the in-game link code, creates or
+	// promotes the bound Owner, enables local auth, and stores the one-time setup
+	// token. A failure rolls all four writes back so setup is always retryable.
+	CompleteOwnerSetup(ctx context.Context, newUserID, code string, now time.Time,
+		tokenHash string, tokenExpiresAt time.Time) (userID, mcUUID, authSource string, err error)
 	SetSetting(ctx context.Context, key string, value []byte) error
 	// Audit records the break-glass accountability row.
 	Audit(ctx context.Context, e api.AuditEntry) error
@@ -347,6 +344,7 @@ type breakGlassOp struct {
 // breakGlassOutcome is what performBreakGlass reports back to the TUI.
 type breakGlassOutcome struct {
 	setupTokenURL string // non-empty when setup minted a one-time first-login URL
+	ownerIdentity string // verified Minecraft UUID for the setup Owner-bind path
 	auditErr      error  // non-nil if the accountability row could not be written
 }
 
@@ -387,11 +385,17 @@ func newSetupToken() (raw, hash string, err error) {
 }
 
 // performSetupMCBind is the `felis setup` Owner-establishment path: the operator
-// binds their Minecraft account via an in-game /link code, the bound user is
-// promoted to role='admin' (passwordless Owner), and a one-time setup URL is
-// minted for the first web login where the Owner verifies email / enrolls a
-// passkey. adminHostname is the op.console host the URL points at.
-func performSetupMCBind(ctx context.Context, s ownerStore, code, adminHostname string) (breakGlassOutcome, error) {
+// binds their Minecraft account via a one-time link code the login gate handed
+// them in-game, the bound user is promoted to role='admin' (passwordless Owner),
+// local auth is enabled, and a one-time setup URL is minted for the first web
+// login where the Owner verifies email / enrolls a passkey. adminHostname is the
+// op.console host the URL points at; osUser is recorded as the accountable actor.
+//
+// Local auth is as load-bearing here as it is in break-glass, and for a sharper
+// reason: an MC-bound Owner has no password AND no email, so the setup token is
+// their ONLY door. CompleteOwnerSetup therefore commits the identity bind, auth
+// toggle, and token together; any failed write leaves the link code retryable.
+func performSetupMCBind(ctx context.Context, s ownerStore, code, adminHostname, osUser string) (breakGlassOutcome, error) {
 	code = strings.TrimSpace(strings.ToUpper(code))
 	if code == "" {
 		return breakGlassOutcome{}, errors.New("link code is required")
@@ -400,23 +404,51 @@ func performSetupMCBind(ctx context.Context, s ownerStore, code, adminHostname s
 	if newID == "" {
 		return breakGlassOutcome{}, errors.New("generate owner id: entropy source failed")
 	}
-	userID, _, _, err := s.RedeemLinkCodeForOwner(ctx, newID, code, time.Now())
-	if err != nil {
-		return breakGlassOutcome{}, fmt.Errorf("bind minecraft account: %w", err)
-	}
 	raw, hash, err := newSetupToken()
 	if err != nil {
 		return breakGlassOutcome{}, err
 	}
-	if err := s.CreateSetupToken(ctx, hash, userID, time.Now().Add(setupTokenTTL)); err != nil {
-		return breakGlassOutcome{}, fmt.Errorf("mint setup token: %w", err)
+	now := time.Now()
+	_, mcUUID, authSource, err := s.CompleteOwnerSetup(
+		ctx, newID, code, now, hash, now.Add(setupTokenTTL))
+	if err != nil {
+		return breakGlassOutcome{}, fmt.Errorf("complete owner setup: %w", err)
+	}
+	// The load-bearing writes committed together above. Accountability remains
+	// best-effort: an unhappy audit sink never costs the operator their install.
+	out := breakGlassOutcome{
+		ownerIdentity: mcUUID,
+		auditErr:      auditSetupMCBind(ctx, s, osUser, mcUUID, authSource),
 	}
 	host := strings.TrimSpace(adminHostname)
 	if host == "" {
 		host = "op.console.localhost"
 	}
-	url := "https://" + host + "/setup?token=" + raw
-	return breakGlassOutcome{setupTokenURL: url}, nil
+	out.setupTokenURL = "https://" + host + "/setup?token=" + raw
+	return out, nil
+}
+
+// auditSetupMCBind records who claimed the Owner seat at setup. It carries the
+// Minecraft identity rather than a username because that IS the evidence: the
+// login gate only issues a link code to a player it authenticated, so mc_uuid +
+// auth_source say which account was verified and by whom. Actor is the OS user who
+// ran `felis setup` — honest attribution, not proof (root can edit the row).
+func auditSetupMCBind(ctx context.Context, s ownerStore, osUser, mcUUID, authSource string) error {
+	blob, err := json.Marshal(map[string]any{
+		"mode":        "setup",
+		"os_user":     osUser,
+		"mc_uuid":     mcUUID,
+		"auth_source": authSource,
+	})
+	if err != nil {
+		return err
+	}
+	return s.Audit(ctx, api.AuditEntry{
+		Actor:   osUser,
+		Source:  "setup",
+		Action:  "setup.owner_bind",
+		Payload: blob,
+	})
 }
 
 // auditBreakGlass writes the break-glass accountability row. The actor is the
@@ -494,7 +526,11 @@ func auditAddOperator(ctx context.Context, s ownerStore, op breakGlassOp) error 
 // breakGlassResult is what the TUI hands back to cmdBreakGlass for the durable
 // post-exit summary. provisioned is false on cancel.
 type breakGlassResult struct {
-	provisioned   bool
+	provisioned bool
+	// alreadySetUp marks the re-run landing (the status screen): setup ran, found an
+	// Owner, and deliberately changed nothing. Without it a re-run is indistinguishable
+	// from a cancel and reports itself as one.
+	alreadySetUp  bool
 	isOperator    bool // an Operator was added rather than the Owner provisioned
 	mode          string
 	accountable   string

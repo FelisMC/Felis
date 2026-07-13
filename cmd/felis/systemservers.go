@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/naming"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -121,6 +123,9 @@ func buildSystemServer(in systemServerSpec, namespace string) (*v1alpha1.Minecra
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      in.name,
 			Namespace: namespace,
+			Labels: map[string]string{
+				v1alpha1.LabelSystemRole: in.name,
+			},
 		},
 		Spec: v1alpha1.MinecraftServerSpec{
 			Subdomain:       in.subdomain,
@@ -214,10 +219,11 @@ func buildSystemServerClient() (client.Client, error) {
 // systemServerOutcome records what ensureSystemServers did with one service so
 // setup can report it without the provisioner deciding on the output format.
 type systemServerOutcome struct {
-	name    string
-	created bool   // true = we created it this run
-	skipped string // non-empty = why it was skipped (image unset / already exists)
-	err     error  // non-nil = create failed
+	name      string
+	created   bool   // true = we created it this run
+	available bool   // true = the required object now exists
+	skipped   string // non-empty = why it was skipped (image unset / already exists)
+	err       error  // non-nil = create failed
 }
 
 // ensureSystemServers idempotently creates the login and lobby system services.
@@ -252,11 +258,22 @@ func ensureSystemServers(ctx context.Context, cl client.Client, namespace, login
 			continue
 		}
 		// Create-if-absent: check first so an existing service is reported as a
-		// deliberate skip rather than an AlreadyExists error.
+		// deliberate skip rather than an AlreadyExists error. Never adopt a
+		// legacy user server that happens to occupy a reserved system name.
 		var existing v1alpha1.MinecraftServer
 		getErr := cl.Get(ctx, client.ObjectKeyFromObject(ms), &existing)
 		if getErr == nil {
-			outcomes = append(outcomes, systemServerOutcome{name: p.name, skipped: "already exists"})
+			if existing.Labels[v1alpha1.LabelSystemRole] != p.name {
+				outcomes = append(outcomes, systemServerOutcome{
+					name: p.name,
+					err: fmt.Errorf(
+						"existing MinecraftServer %s/%s is not marked as the Felis %q system role; remove or rename it, then rerun setup",
+						namespace, p.name, p.name,
+					),
+				})
+				continue
+			}
+			outcomes = append(outcomes, systemServerOutcome{name: p.name, available: true, skipped: "already exists"})
 			continue
 		}
 		if !apierrors.IsNotFound(getErr) {
@@ -265,64 +282,199 @@ func ensureSystemServers(ctx context.Context, cl client.Client, namespace, login
 		}
 		if err := cl.Create(ctx, ms); err != nil {
 			if apierrors.IsAlreadyExists(err) {
-				outcomes = append(outcomes, systemServerOutcome{name: p.name, skipped: "already exists"})
+				// Close the Get/Create race without trusting the object that won it.
+				var raced v1alpha1.MinecraftServer
+				if getErr := cl.Get(ctx, client.ObjectKeyFromObject(ms), &raced); getErr != nil {
+					outcomes = append(outcomes, systemServerOutcome{name: p.name, err: getErr})
+					continue
+				}
+				if raced.Labels[v1alpha1.LabelSystemRole] != p.name {
+					outcomes = append(outcomes, systemServerOutcome{
+						name: p.name,
+						err: fmt.Errorf(
+							"concurrent MinecraftServer %s/%s is not marked as the Felis %q system role; refusing to adopt it",
+							namespace, p.name, p.name,
+						),
+					})
+					continue
+				}
+				outcomes = append(outcomes, systemServerOutcome{name: p.name, available: true, skipped: "already exists"})
 				continue
 			}
 			outcomes = append(outcomes, systemServerOutcome{name: p.name, err: err})
 			continue
 		}
-		outcomes = append(outcomes, systemServerOutcome{name: p.name, created: true})
+		outcomes = append(outcomes, systemServerOutcome{name: p.name, created: true, available: true})
 	}
 	return outcomes
 }
 
-// ensureServiceTokenReplica copies the internal-API service-token Secret from the
-// control namespace into the minecraft namespace so the login system server's pod
-// can mount it via secretKeyRef. A secretKeyRef is namespace-local, but the login
-// pod runs in the minecraft namespace while the source Secret lives beside the
-// control plane — so without this replica the operator's injected secretKeyRef
-// would dangle and wedge the login pod in CreateContainerConfigError. It is
-// create-if-absent: an existing replica is left untouched so a hand-rotated token
-// in the minecraft namespace is never clobbered (to rotate, delete the replica and
-// re-run setup). Best-effort like the rest of the provisioner: a missing source or
+// The login gate is a hard prerequisite of the Owner bind, so setup waits for it
+// rather than racing it. The ceiling covers a cold image pull on a fresh node;
+// the poll is fast enough that a warm start feels immediate.
+const (
+	loginGateReadyTimeout = 5 * time.Minute
+	loginGatePollInterval = 3 * time.Second
+)
+
+// awaitLoginGateReady blocks until the login system server reports status.ready.
+//
+// The Owner claims their seat by JOINING the game and running /link, so the gate
+// being up is not a nicety — it is the precondition for the very next thing setup
+// asks of the operator. progress is called on each phase change so the caller can
+// show movement during a cold image pull; it may be nil.
+func awaitLoginGateReady(ctx context.Context, cl client.Client, namespace string, timeout, poll time.Duration, progress func(v1alpha1.Phase)) error {
+	key := client.ObjectKey{Namespace: namespace, Name: naming.SystemLoginServer}
+	deadline := time.Now().Add(timeout)
+	last := v1alpha1.Phase("")
+	for {
+		var ms v1alpha1.MinecraftServer
+		switch err := cl.Get(ctx, key, &ms); {
+		case err == nil:
+			if ms.Status.Ready {
+				return nil
+			}
+			if ms.Status.Phase != last {
+				last = ms.Status.Phase
+				if progress != nil {
+					progress(last)
+				}
+			}
+			// The operator only marks Failed once its OWN startup deadline has already
+			// elapsed, so Failed is a settled verdict rather than a transient — sitting
+			// out the rest of our timeout on top of it would only hide the reason.
+			if ms.Status.Phase == v1alpha1.PhaseFailed {
+				return fmt.Errorf("the login gate failed to start: %s", readyConditionMessage(&ms))
+			}
+		case !apierrors.IsNotFound(err):
+			return err
+		}
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("timed out after %s waiting for the login gate to become ready (last phase: %s)", timeout, phaseOrPending(last))
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(poll):
+		}
+	}
+}
+
+// readyConditionMessage is the operator's own account of why the gate is not
+// ready — far more useful to an operator than "phase: Failed".
+func readyConditionMessage(ms *v1alpha1.MinecraftServer) string {
+	if c := meta.FindStatusCondition(ms.Status.Conditions, v1alpha1.ConditionReady); c != nil && c.Message != "" {
+		return c.Message
+	}
+	return "no Ready condition was reported"
+}
+
+// phaseOrPending names the empty phase, which means the operator has not
+// reconciled the server yet (commonly: the operator itself is not running).
+func phaseOrPending(p v1alpha1.Phase) string {
+	if p == "" {
+		return "not yet reconciled — is the felis operator running?"
+	}
+	return string(p)
+}
+
+// ensureSecretReplica copies one Secret from the control namespace into the minecraft
+// namespace so a backend pod can mount it via secretKeyRef. A secretKeyRef is
+// namespace-local, but the backends run in the minecraft namespace while the sources
+// of truth live beside the control plane — so without this replica the operator's
+// injected secretKeyRef would dangle and wedge the pod in CreateContainerConfigError.
+//
+// Two Secrets need it, for different reasons: the service token (login only — it
+// authenticates the limbo plugin to the felis-api internal face) and the Velocity
+// modern-forwarding secret (every backend — it is how a backend knows a login really
+// came from the proxy, and so that the player's UUID is Mojang-verified rather than
+// offline-derived).
+//
+// It is create-if-absent: an existing replica is left untouched so a hand-rotated
+// value in the minecraft namespace is never clobbered (to rotate, delete the replica
+// and re-run setup). Best-effort like the rest of the provisioner: a missing source or
 // a create failure degrades to a reported outcome, never a hard setup failure. It
 // copies only Type and Data — never labels/annotations/ownerRefs — so the replica
 // carries no accidental GC owner or managed-by lineage.
-func ensureServiceTokenReplica(ctx context.Context, cl client.Client, controlNamespace, minecraftNamespace string) systemServerOutcome {
-	const name = "service-token (minecraft ns)"
-	if controlNamespace == minecraftNamespace {
-		// Same namespace — the operator's secretKeyRef already resolves in place.
-		return systemServerOutcome{name: name, skipped: "control and minecraft namespaces coincide"}
+func ensureSecretReplica(ctx context.Context, cl client.Client, controlNamespace, minecraftNamespace, secretName, secretKey, label string) systemServerOutcome {
+	name := label + " (minecraft ns)"
+	validate := func(secret *corev1.Secret, location, skipped string) systemServerOutcome {
+		if len(secret.Data[secretKey]) == 0 {
+			return systemServerOutcome{name: name, skipped: fmt.Sprintf(
+				"Secret %s/%s has no non-empty %q key", location, secretName, secretKey)}
+		}
+		return systemServerOutcome{name: name, available: true, skipped: skipped}
 	}
-	// Never overwrite an existing replica (it may hold a rotated token).
+	if controlNamespace == minecraftNamespace {
+		// Same namespace needs no replica, but the source still has to exist.
+		var existing corev1.Secret
+		err := cl.Get(ctx, client.ObjectKey{Namespace: minecraftNamespace, Name: secretName}, &existing)
+		if err == nil {
+			return validate(&existing, minecraftNamespace, "control and minecraft namespaces coincide")
+		}
+		if apierrors.IsNotFound(err) {
+			return systemServerOutcome{name: name, skipped: fmt.Sprintf(
+				"source Secret %s/%s not found — provision it (deploy/bootstrap.sh), then re-run setup",
+				controlNamespace, secretName)}
+		}
+		return systemServerOutcome{name: name, err: err}
+	}
+	// Never overwrite an existing replica (it may hold a rotated value).
 	var existing corev1.Secret
-	getErr := cl.Get(ctx, client.ObjectKey{Namespace: minecraftNamespace, Name: naming.ServiceTokenSecretName}, &existing)
+	getErr := cl.Get(ctx, client.ObjectKey{Namespace: minecraftNamespace, Name: secretName}, &existing)
 	if getErr == nil {
-		return systemServerOutcome{name: name, skipped: "already exists"}
+		return validate(&existing, minecraftNamespace, "already exists")
 	}
 	if !apierrors.IsNotFound(getErr) {
 		return systemServerOutcome{name: name, err: getErr}
 	}
 	// Read the source of truth from the control namespace.
 	var src corev1.Secret
-	if err := cl.Get(ctx, client.ObjectKey{Namespace: controlNamespace, Name: naming.ServiceTokenSecretName}, &src); err != nil {
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: controlNamespace, Name: secretName}, &src); err != nil {
 		if apierrors.IsNotFound(err) {
 			return systemServerOutcome{name: name, skipped: fmt.Sprintf(
 				"source Secret %s/%s not found — provision it (deploy/bootstrap.sh), then re-run setup",
-				controlNamespace, naming.ServiceTokenSecretName)}
+				controlNamespace, secretName)}
 		}
 		return systemServerOutcome{name: name, err: err}
 	}
+	if out := validate(&src, controlNamespace, ""); !out.available {
+		return out
+	}
 	replica := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: naming.ServiceTokenSecretName, Namespace: minecraftNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: secretName, Namespace: minecraftNamespace},
 		Type:       src.Type,
 		Data:       src.Data,
 	}
 	if err := cl.Create(ctx, replica); err != nil {
 		if apierrors.IsAlreadyExists(err) {
-			return systemServerOutcome{name: name, skipped: "already exists"}
+			if getErr := cl.Get(ctx, client.ObjectKey{Namespace: minecraftNamespace, Name: secretName}, &existing); getErr != nil {
+				return systemServerOutcome{name: name, err: getErr}
+			}
+			return validate(&existing, minecraftNamespace, "already exists")
 		}
 		return systemServerOutcome{name: name, err: err}
 	}
-	return systemServerOutcome{name: name, created: true}
+	return systemServerOutcome{name: name, created: true, available: true}
+}
+
+func requiredProvisioningError(outcomes []systemServerOutcome) error {
+	required := map[string]struct{}{
+		"service-token (minecraft ns)":     {},
+		"forwarding-secret (minecraft ns)": {},
+		naming.SystemLoginServer:           {},
+	}
+	for _, o := range outcomes {
+		if o.err != nil {
+			return fmt.Errorf("%s: %w", o.name, o.err)
+		}
+		if _, ok := required[o.name]; ok && !o.available {
+			reason := o.skipped
+			if reason == "" {
+				reason = "object was not created"
+			}
+			return fmt.Errorf("%s unavailable: %s", o.name, reason)
+		}
+	}
+	return nil
 }

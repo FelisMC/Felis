@@ -27,7 +27,9 @@ type mcBindModel struct {
 	working string
 
 	linkCode      string
+	ownerIdentity string
 	setupTokenURL string
+	auditWarning  string
 
 	width, height int
 }
@@ -97,7 +99,11 @@ func (m *mcBindModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.failCmd(msg.err)
 		}
 		m.step = mcBindDone
+		m.ownerIdentity = msg.outcome.ownerIdentity
 		m.setupTokenURL = msg.outcome.setupTokenURL
+		if msg.outcome.auditErr != nil {
+			m.auditWarning = msg.outcome.auditErr.Error()
+		}
 		return m, nil
 
 	case spinner.TickMsg:
@@ -150,7 +156,7 @@ func (m *mcBindModel) onFormComplete() (tea.Model, tea.Cmd) {
 	m.working = "Binding Minecraft account…"
 	code := strings.TrimSpace(strings.ToUpper(m.linkCode))
 	return m, tea.Batch(m.sp.Tick, func() tea.Msg {
-		out, err := performSetupMCBind(m.ctx, m.store, code, m.adminHost)
+		out, err := performSetupMCBind(m.ctx, m.store, code, m.adminHost, m.osUser)
 		return mcBindMsg{outcome: out, err: err}
 	})
 }
@@ -162,9 +168,11 @@ func (m *mcBindModel) failCmd(err error) tea.Cmd {
 func (m *mcBindModel) resultCmd() tea.Cmd {
 	return func() tea.Msg {
 		return ownerResultMsg{
+			username:      m.ownerIdentity,
 			setupTokenURL: m.setupTokenURL,
 			mode:          "setup",
 			accountable:   m.osUser,
+			auditWarning:  m.auditWarning,
 		}
 	}
 }
@@ -192,9 +200,18 @@ func (m *mcBindModel) doneView() string {
 	b.WriteString(tuiSuccessBanner("Owner account is ready.") + "\n\n")
 
 	var box strings.Builder
+	if m.ownerIdentity != "" {
+		box.WriteString(tuiLabel.Render("minecraft  ") + m.ownerIdentity + "\n")
+	}
 	if m.setupTokenURL != "" {
+		if box.Len() > 0 {
+			box.WriteString("\n")
+		}
 		box.WriteString(tuiLabel.Render("setup URL  ") + "\n" + tuiPassword.Render(m.setupTokenURL) + "\n\n")
 		box.WriteString(tuiWarn.Render("Open this URL to complete passwordless login setup.\nIt is shown only once."))
+	}
+	if m.auditWarning != "" {
+		box.WriteString("\n\n" + tuiWarn.Render("Audit warning: "+m.auditWarning))
 	}
 	b.WriteString(tuiCardStyle.Render(box.String()) + "\n\n")
 	b.WriteString(tuiAction("enter", "continue"))

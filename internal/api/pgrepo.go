@@ -84,7 +84,9 @@ func (p *PGRepo) VerifyLinkCode(ctx context.Context, userID, code string, now ti
 
 	var mcUUID, authSource string
 	switch err := tx.QueryRowContext(ctx,
-		`SELECT mc_uuid, auth_source FROM account_link_codes WHERE code = $1 AND expires_at > $2`,
+		`SELECT mc_uuid, auth_source FROM account_link_codes
+		 WHERE code = $1 AND expires_at > $2
+		 FOR UPDATE`,
 		code, now).Scan(&mcUUID, &authSource); {
 	case errors.Is(err, sql.ErrNoRows):
 		return "", "", ErrLinkCodeInvalid
@@ -191,8 +193,9 @@ func (p *PGRepo) RedeemPlayerBindCode(ctx context.Context, newUserID, code strin
 	return userID, mcUUID, authSource, nil
 }
 
-// RedeemLinkCodeForOwner consumes an in-game link code and creates-or-promotes the
-// bound account to the passwordless Owner (role='admin'). It is the `felis setup`
+// CompleteOwnerSetup consumes an in-game link code, creates-or-promotes the bound
+// account to the passwordless Owner (role='admin'), enables local auth, and stores
+// the one-time first-login token in one transaction. It is the `felis setup`
 // MC-bind path: the operator enters limbo, runs /link, and types the code here.
 // Unlike RedeemPlayerBindCode — which refuses an already-staff account so a game
 // login can never self-elevate — this DELIBERATELY elevates: an unlinked UUID is
@@ -201,8 +204,10 @@ func (p *PGRepo) RedeemPlayerBindCode(ctx context.Context, newUserID, code strin
 // survive. The elevation is gated by the caller's local-root break-glass
 // authority, not by anything in-band. Returns the Owner's (userID, mcUUID,
 // authSource); an absent or expired code is ErrLinkCodeInvalid and consumes
-// nothing.
-func (p *PGRepo) RedeemLinkCodeForOwner(ctx context.Context, newUserID, code string, now time.Time) (string, string, string, error) {
+// nothing. Any failure in the auth-toggle or token writes rolls the elevation and
+// code consumption back, leaving the operator able to retry setup.
+func (p *PGRepo) CompleteOwnerSetup(ctx context.Context, newUserID, code string, now time.Time,
+	tokenHash string, tokenExpiresAt time.Time) (string, string, string, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return "", "", "", err
@@ -246,6 +251,18 @@ func (p *PGRepo) RedeemLinkCodeForOwner(ctx context.Context, newUserID, code str
 			`UPDATE users SET role = 'admin' WHERE id = $1`, userID); err != nil {
 			return "", "", "", fmt.Errorf("promote owner: %w", err)
 		}
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO platform_settings (key, value) VALUES ($1, $2::jsonb)
+		 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+		LocalAuthEnabledKey, "true"); err != nil {
+		return "", "", "", fmt.Errorf("enable local auth: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO setup_tokens (token_hash, user_id, expires_at) VALUES ($1, $2, $3)`,
+		tokenHash, userID, tokenExpiresAt); err != nil {
+		return "", "", "", fmt.Errorf("mint setup token: %w", err)
 	}
 
 	if _, err := tx.ExecContext(ctx,
@@ -1995,12 +2012,11 @@ func (p *PGRepo) ConsumeSetupToken(ctx context.Context, tokenHash string, now ti
 	return userID, nil
 }
 
-// CreateSetupToken persists a one-time setup token for the first-web-login
-// bootstrap, storing only its hash (the raw value rides in the /setup?token=...
-// URL). `felis setup` mints it after binding the Owner's Minecraft account; it is
-// redeemed exactly once by ConsumeSetupToken. The caller supplies a 256-bit
-// random token, so a token_hash collision is not a case worth special-handling —
-// any insert error (including an unknown user_id) surfaces to the caller.
+// CreateSetupToken persists a one-time first-web-login token, storing only its
+// hash (the raw value rides in the /setup?token=... URL). The setup Owner-bind
+// path uses CompleteOwnerSetup so identity binding, local auth, and this token
+// commit atomically; this lower-level helper remains for callers that already
+// established the user. The token is redeemed exactly once by ConsumeSetupToken.
 func (p *PGRepo) CreateSetupToken(ctx context.Context, tokenHash, userID string, expiresAt time.Time) error {
 	_, err := p.db.ExecContext(ctx,
 		`INSERT INTO setup_tokens (token_hash, user_id, expires_at) VALUES ($1, $2, $3)`,

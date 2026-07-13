@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -27,6 +28,9 @@ func TestSetupConfigPathPrefersGeneratedHostConfig(t *testing.T) {
 }
 
 func TestEnsureDefaultConfigLinkBacksUpStaleDefault(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symbolic links requires an optional Windows privilege")
+	}
 	dir := t.TempDir()
 	target := filepath.Join(dir, "felis.toml")
 	host := filepath.Join(dir, "felis.host.toml")
@@ -61,6 +65,9 @@ func TestEnsureDefaultConfigLinkBacksUpStaleDefault(t *testing.T) {
 }
 
 func TestHostBootstrapReadyRequiresMarkerAndArtifacts(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows files do not expose Unix executable mode bits")
+	}
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "bootstrap.done")
 	hostConfig := filepath.Join(dir, "felis.host.toml")
