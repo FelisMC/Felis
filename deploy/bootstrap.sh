@@ -60,6 +60,29 @@ FELIS_GO_VERSION="${FELIS_GO_VERSION:-1.26.4}"
 PKG_LOCK_TIMEOUT="${PKG_LOCK_TIMEOUT:-${APT_LOCK_TIMEOUT:-900}}"
 APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-$PKG_LOCK_TIMEOUT}"
 
+# --- the game stack: proxy on the host, the two always-on backends in k3s ---
+FELIS_LIMBO_IMAGE="${FELIS_LIMBO_IMAGE:-felis-limbo:demo}"
+FELIS_LOBBY_IMAGE="${FELIS_LOBBY_IMAGE:-felis-lobby:demo}"
+# The Velocity MINOR is pinned, not discovered. PaperMC's Fill v3 groups velocity
+# builds by version group, and "newest across all groups" today means 4.0.0-SNAPSHOT —
+# an UNRELEASED proxy (the 4.0.0 group has zero published builds) that needs a Java 25
+# runtime. Crossing a major is a deliberate code change, so we track the newest BUILD of
+# a pinned minor and let a human move the pin.
+FELIS_VELOCITY_VERSION="${FELIS_VELOCITY_VERSION:-3.5.1}"
+# Temurin 25: Velocity 3.5 needs 21+, and 25 is also what a future Velocity 4 requires,
+# so the runtime does not have to move again when the pin does. Distro JDK packaging is
+# a lottery across four package managers — a tarball is one code path everywhere (same
+# reasoning as install_go_toolchain).
+FELIS_JRE_VERSION="${FELIS_JRE_VERSION:-25}"
+# The port the proxy listens on: the ONLY Minecraft port players ever touch. Backends
+# are ClusterIP-only, verify the modern-forwarding HMAC, and use NetworkPolicy to limit
+# non-node ingress to the declared proxy CIDRs.
+FELIS_GAME_PORT="${FELIS_GAME_PORT:-25565}"
+# Velocity server names — must match internal/naming (SystemLoginServer/SystemLobbyServer);
+# felis-api hands the proxy backends under exactly these names.
+LOGIN_SERVER="login"
+LOBBY_SERVER="lobby"
+
 CONTROL_NS="felis"
 MINECRAFT_NS="minecraft"
 BUILD_NS="felis-build"
@@ -78,6 +101,10 @@ SRC_DIR="/opt/felis/src"
 HOST_BIN="/usr/local/bin/felis"
 GOROOT_DIR="/usr/local/go"
 NANO_SERVICE="/etc/systemd/system/felis-nano.service"
+VELOCITY_DIR="/opt/felis/velocity"
+VELOCITY_USER="felis-velocity"
+VELOCITY_SERVICE="/etc/systemd/system/felis-velocity.service"
+JRE_DIR="/opt/felis/jre"
 K3S_BIN_DIR="${K3S_BIN_DIR:-/usr/local/bin}"
 K3S_BIN="${K3S_BIN_DIR}/k3s"
 APT_LOCK_FILES=(
@@ -163,6 +190,19 @@ trap cleanup EXIT
 
 k3s_cmd() { [ -x "$K3S_BIN" ] || die "k3s binary not found at ${K3S_BIN}"; "$K3S_BIN" "$@"; }
 kube() { k3s_cmd kubectl "$@"; }
+
+# Create or update a single-key Secret without putting the value in kubectl's argv.
+# The temporary file is mode 0600 and is also registered with the EXIT cleanup path.
+apply_literal_secret() {
+  local namespace="$1" name="$2" key="$3" value="$4" tmp
+  tmp="$(umask 077; mktemp)"
+  remember_temp "$tmp"
+  printf '%s' "$value" > "$tmp"
+  kube -n "$namespace" create secret generic "$name" \
+    --from-file="${key}=${tmp}" \
+    --dry-run=client -o yaml | kube apply -f -
+  rm -f "$tmp"
+}
 
 as_postgres() {
   if command -v runuser >/dev/null 2>&1; then
@@ -699,6 +739,335 @@ remove_k3s_image() {
 }
 
 # ---------------------------------------------------------------------------
+# 5b. The game stack: the login limbo + lobby images, and the Velocity proxy.
+#
+#     Without this, `felis setup` asks the Owner to bind by joining Minecraft while
+#     no Minecraft server exists — the whole point of installing is a joinable,
+#     Mojang-authenticating server, so the installer produces one.
+#
+#     The trust chain, end to end:
+#       player --(Mojang auth)--> Velocity --(modern forwarding, HMAC)--> login limbo
+#     Velocity is the ONLY thing that talks to Mojang; the backends run offline-mode and
+#     trust the forwarded profile, which is exactly why the forwarding secret is the
+#     identity boundary. NetworkPolicy narrows reachability but cannot block the node
+#     hosting a pod, so it is defense in depth rather than a substitute for the HMAC.
+# ---------------------------------------------------------------------------
+
+# game_stack_source sets GAME_STACK_DIR to a docker build context holding
+# deploy/{limbo,lobby} and plugins/. The TUI path pipes this script in over stdin and
+# has no checkout on disk, so there the sources come out of the felis binary itself.
+game_stack_source() {
+  if ! bootstrap_from_tui && [ -f "${SRC_DIR}/deploy/limbo/Dockerfile" ]; then
+    GAME_STACK_DIR="$SRC_DIR"
+    ok "game-stack sources: ${SRC_DIR}"
+    return 0
+  fi
+  GAME_STACK_DIR="$(mktemp -d)"
+  remember_temp "$GAME_STACK_DIR"
+  log "unpacking the embedded game-stack sources (no checkout on this host)"
+  "$HOST_BIN" bootstrap-assets game-stack | tar -x -C "$GAME_STACK_DIR" \
+    || die "could not unpack the embedded game-stack sources"
+  [ -f "${GAME_STACK_DIR}/deploy/limbo/Dockerfile" ] \
+    || die "embedded game-stack tar is missing deploy/limbo/Dockerfile"
+  ok "game-stack sources unpacked to ${GAME_STACK_DIR}"
+}
+
+# resolve_game_jars pins Limbo and Paper to the SAME Minecraft version. LOOHP/Limbo
+# speaks exactly one protocol per build, so the login gate dictates the version and Paper
+# follows — a client that can pass the gate must also be able to reach the lobby.
+# MC_VERSION is read off Limbo's CI artifact name (Limbo-<limbo-ver>-<mc-ver>.jar), which
+# is the only place the pairing is published.
+resolve_game_jars() {
+  local ci="https://ci.loohpjames.com/job/Limbo/lastSuccessfulBuild" meta file base rest
+  log "resolving the newest LOOHP/Limbo CI build"
+  # Fetch first, filter second: `curl | grep | head` dies of SIGPIPE under `set -o pipefail`
+  # the moment head closes the pipe early. Same shape everywhere below.
+  meta="$(curl -fsSL "${ci}/api/json")" || die "could not read the LOOHP/Limbo CI build metadata"
+  file="$(printf '%s' "$meta" | grep -o 'Limbo-[0-9A-Za-z._-]*\.jar' || true)"
+  file="${file%%$'\n'*}"
+  [ -n "$file" ] || die "no Limbo jar in the LOOHP/Limbo CI artifact list"
+
+  base="${file%.jar}"          # Limbo-2026.0.2-ALPHA-26.2
+  MC_VERSION="${base##*-}"     # 26.2
+  rest="${base%-*}"            # Limbo-2026.0.2-ALPHA
+  LIMBO_VERSION="${rest#Limbo-}"
+  [ -n "$MC_VERSION" ] && [ -n "$LIMBO_VERSION" ] || die "cannot parse Limbo artifact name: ${file}"
+  LIMBO_JAR_URL="${ci}/artifact/target/${file}"
+  LIMBO_SCHEM_URL="${ci}/artifact/spawn.schem"
+
+  # PaperMC Fill v3. The old api.papermc.io v2 has returned HTTP 410 since 2026-07-01 and
+  # is never coming back; Fill wants a descriptive User-Agent.
+  log "resolving the newest Paper ${MC_VERSION} build"
+  PAPER_JAR_URL="$(papermc_latest_jar paper "$MC_VERSION")" \
+    || die "no Paper build for Minecraft ${MC_VERSION} (the login gate speaks only that protocol)"
+  ok "Limbo ${LIMBO_VERSION} + Paper, both on Minecraft ${MC_VERSION}"
+}
+
+# papermc_latest_jar prints the download URL of the newest build of <project> <version>.
+papermc_latest_jar() {
+  local project="$1" version="$2" json urls url
+  json="$(curl -fsSL -A "felis-bootstrap (+https://github.com/MliroLirrorsIngenuity/Felis)" \
+    "https://fill.papermc.io/v3/projects/${project}/versions/${version}/builds/latest")" || return 1
+  urls="$(printf '%s' "$json" | grep -o 'https://fill-data\.papermc\.io/[^"]*\.jar' || true)"
+  url="${urls%%$'\n'*}"
+  [ -n "$url" ] || return 1
+  printf '%s\n' "$url"
+}
+
+build_game_stack() {
+  systemctl start docker
+  game_stack_source
+  resolve_game_jars
+
+  log "building ${FELIS_LIMBO_IMAGE} (LOOHP/Limbo ${LIMBO_VERSION}, Minecraft ${MC_VERSION})"
+  docker build -f "${GAME_STACK_DIR}/deploy/limbo/Dockerfile" \
+    --build-arg LIMBO_JAR_URL="$LIMBO_JAR_URL" \
+    --build-arg LIMBO_SCHEM_URL="$LIMBO_SCHEM_URL" \
+    --build-arg LIMBO_VERSION="$LIMBO_VERSION" \
+    -t "$FELIS_LIMBO_IMAGE" "$GAME_STACK_DIR"
+
+  log "building ${FELIS_LOBBY_IMAGE} (Paper ${MC_VERSION} + felis-paper /menu)"
+  docker build -f "${GAME_STACK_DIR}/deploy/lobby/Dockerfile" \
+    --build-arg PAPER_JAR_URL="$PAPER_JAR_URL" \
+    -t "$FELIS_LOBBY_IMAGE" "$GAME_STACK_DIR"
+
+  local img
+  for img in "$FELIS_LIMBO_IMAGE" "$FELIS_LOBBY_IMAGE"; do
+    log "importing ${img} into k3s containerd"
+    remove_k3s_image "$img"
+    docker save "$img" | k3s_cmd ctr images import -
+  done
+
+  build_velocity_plugin
+  systemctl stop docker docker.socket 2>/dev/null || true
+  ok "login + lobby images imported; felis-velocity.jar staged"
+}
+
+ensure_velocity_directory() {
+  local path="$1" mode="$2" owner="$3" group="$4"
+  if [ -L "$path" ]; then
+    rm -f -- "$path"
+  elif [ -e "$path" ] && [ ! -d "$path" ]; then
+    die "velocity path exists but is not a directory: ${path}"
+  fi
+  install -d -o "$owner" -g "$group" -m "$mode" "$path"
+}
+
+# Config and executable parents stay root-owned. The proxy can write only runtime
+# output directories, so it cannot replace a future root-written secret/config path
+# with a symlink before a bootstrap re-run.
+prepare_velocity_layout() {
+  id -u "$VELOCITY_USER" >/dev/null 2>&1 \
+    || useradd --system --home-dir "$VELOCITY_DIR" --shell /usr/sbin/nologin "$VELOCITY_USER"
+  ensure_velocity_directory "$VELOCITY_DIR" 0750 root "$VELOCITY_USER"
+  ensure_velocity_directory "${VELOCITY_DIR}/plugins" 0750 root "$VELOCITY_USER"
+  ensure_velocity_directory "${VELOCITY_DIR}/plugins/felis-link" 0750 root "$VELOCITY_USER"
+  ensure_velocity_directory "${VELOCITY_DIR}/logs" 0750 "$VELOCITY_USER" "$VELOCITY_USER"
+  ensure_velocity_directory "${VELOCITY_DIR}/crash-reports" 0750 "$VELOCITY_USER" "$VELOCITY_USER"
+}
+
+atomic_install_file() {
+  local source="$1" target="$2" mode="$3" owner="$4" group="$5"
+  local parent base staged
+  parent="$(dirname "$target")"
+  base="$(basename "$target")"
+  [ -d "$parent" ] && [ ! -L "$parent" ] \
+    || die "refusing to install through a non-directory/symlink parent: ${parent}"
+  if [ -d "$target" ] && [ ! -L "$target" ]; then
+    die "refusing to replace directory with file: ${target}"
+  fi
+  staged="$(mktemp "${parent}/.${base}.XXXXXX")"
+  remember_temp "$staged"
+  install -o "$owner" -g "$group" -m "$mode" "$source" "$staged"
+  mv -fT "$staged" "$target"
+}
+
+# build_velocity_plugin compiles plugins/velocity in the same gradle image the two
+# Dockerfiles use, and drops the jar where Velocity will look for it. Docker is the
+# toolchain here on purpose: the host needs no JDK and no gradle, only a JRE.
+build_velocity_plugin() {
+  log "building felis-velocity.jar (gradle in a container; the host gets no JDK)"
+  prepare_velocity_layout
+  # :z relabels the bind mount for SELinux (Fedora/EL enforce it; elsewhere it is a no-op).
+  docker run --rm \
+    -v "${GAME_STACK_DIR}:/src:z" \
+    -w /src/plugins/velocity \
+    gradle:8.14-jdk21 gradle --no-daemon clean build \
+    || die "felis-velocity plugin build failed"
+  local -a jars=( "${GAME_STACK_DIR}"/plugins/velocity/build/libs/felis-velocity-*.jar )
+  [ "${#jars[@]}" -eq 1 ] && [ -f "${jars[0]}" ] \
+    || die "felis-velocity build must produce exactly one plugin jar"
+  atomic_install_file "${jars[0]}" "${VELOCITY_DIR}/plugins/felis-velocity.jar" 0644 root root
+}
+
+install_jre() {
+  local arch url
+  if [ -x "${JRE_DIR}/bin/java" ]; then
+    ok "JRE already installed at ${JRE_DIR}"
+    return 0
+  fi
+  case "$(uname -m)" in
+    x86_64|amd64) arch="x64" ;;
+    aarch64|arm64) arch="aarch64" ;;
+    *) die "no Temurin JRE build for architecture $(uname -m); pre-stage one at ${JRE_DIR}" ;;
+  esac
+  url="https://api.adoptium.net/v3/binary/latest/${FELIS_JRE_VERSION}/ga/linux/${arch}/jre/hotspot/normal/eclipse"
+
+  log "installing Temurin ${FELIS_JRE_VERSION} JRE (${arch}) to ${JRE_DIR}"
+  local tmp
+  tmp="$(mktemp -d)"
+  remember_temp "$tmp"
+  curl -fsSL "$url" -o "${tmp}/jre.tar.gz" || die "failed to download the Temurin JRE: ${url}"
+  mkdir -p "$JRE_DIR"
+  # The tarball has a single versioned top-level directory (jdk-25+36-jre/); strip it so
+  # the path in the systemd unit never carries a build number.
+  tar -C "$JRE_DIR" --strip-components=1 -xzf "${tmp}/jre.tar.gz" || die "failed to unpack the JRE"
+  [ -x "${JRE_DIR}/bin/java" ] || die "unpacked JRE has no bin/java"
+  ok "JRE at ${JRE_DIR}/bin/java"
+}
+
+install_velocity() {
+  install_jre
+  local url tmp
+  prepare_velocity_layout
+  log "resolving the newest Velocity ${FELIS_VELOCITY_VERSION} build"
+  url="$(papermc_latest_jar velocity "$FELIS_VELOCITY_VERSION")" \
+    || die "no Velocity build for ${FELIS_VELOCITY_VERSION} (override with FELIS_VELOCITY_VERSION)"
+  log "downloading Velocity ${FELIS_VELOCITY_VERSION}"
+  tmp="$(mktemp "${VELOCITY_DIR}/.velocity.jar.XXXXXX")"
+  remember_temp "$tmp"
+  curl -fsSL "$url" -o "$tmp" || die "failed to download Velocity: ${url}"
+  atomic_install_file "$tmp" "${VELOCITY_DIR}/velocity.jar" 0644 root root
+
+  write_velocity_config
+  install_velocity_service
+  configure_velocity_firewall
+}
+
+write_velocity_config() {
+  local api_ip tmp
+  # Cluster DNS does not resolve from the host, but a Service ClusterIP DOES route from
+  # the node (kube-proxy programs the host netns) — the same trick the on-node break-glass
+  # console uses. The internal face is deliberately ClusterIP-only: it is service-token
+  # authenticated and must never be published on a node's external IP.
+  api_ip="$(kube -n "$CONTROL_NS" get svc felis-api-internal -o jsonpath='{.spec.clusterIP}')" \
+    || die "could not resolve the felis-api-internal ClusterIP"
+  [ -n "$api_ip" ] || die "felis-api-internal has no ClusterIP"
+
+  prepare_velocity_layout
+  tmp="$(mktemp -d)"
+  remember_temp "$tmp"
+
+  # The forwarding key. Velocity refuses to start on an empty one ("The forwarding-secret
+  # file must not be empty."), which is the failure mode we want if this ever goes wrong.
+  (umask 077; printf '%s' "$FORWARDING_SECRET" > "${tmp}/forwarding.secret")
+
+  cat > "${tmp}/velocity.toml" <<EOF
+# Generated by deploy/bootstrap.sh — do not edit by hand; rerun the installer.
+config-version = "2.7"
+bind = "0.0.0.0:${FELIS_GAME_PORT}"
+motd = "A Felis server"
+show-max-players = 100
+
+# The crown jewel. THIS is the process that talks to Mojang. Every backend runs
+# offline-mode and trusts the profile forwarded from here, so online-mode = false would
+# not "relax auth" — it would let anyone join as anyone, the Owner's account included.
+online-mode = true
+force-key-authentication = true
+prevent-client-proxy-connections = false
+
+# modern forwarding hands the Mojang-verified profile to the backend under an HMAC keyed
+# by forwarding.secret. The legacy (BungeeCord) mode carries no secret and fails OPEN, so
+# it is not an option at any price. Mode is proxy-wide, hence every backend gets the key.
+player-info-forwarding-mode = "modern"
+forwarding-secret-file = "forwarding.secret"
+
+announce-forge = false
+kick-existing-players = false
+ping-passthrough = "disabled"
+enable-player-address-logging = true
+
+[servers]
+# A dead address on purpose. felis-velocity re-registers "${LOGIN_SERVER}" with the real
+# backend endpoint it reads from felis-api (ServerRegistry) a few seconds after start, and
+# until it does, the proxy must point somewhere that REFUSES rather than somewhere that
+# admits. It cannot simply be omitted: Velocity's config validation rejects a \`try\` entry
+# that is not in [servers] ("Fallback server ... is not registered in your configuration!").
+${LOGIN_SERVER} = "127.0.0.1:1"
+
+# The login gate is the only fallback, and it authenticates. Never add the lobby here:
+# a fallback to "${LOBBY_SERVER}" would route an unauthenticated player straight past the gate.
+try = ["${LOGIN_SERVER}"]
+
+[forced-hosts]
+# Empty on purpose — felis-velocity does host-based routing itself from the subdomains
+# felis-api reports (spec §11), so static entries here would only go stale.
+
+[advanced]
+haproxy-protocol = false
+
+[query]
+enabled = false
+EOF
+
+  (umask 077; cat > "${tmp}/felis-link.properties" <<EOF
+# Generated by deploy/bootstrap.sh — do not edit by hand; rerun the installer.
+api-base-url=http://${api_ip}:8081
+service-token=${SERVICE_TOKEN}
+root-domain=${FELIS_ROOT_DOMAIN}
+login-server=${LOGIN_SERVER}
+lobby-server=${LOBBY_SERVER}
+EOF
+  )
+
+  atomic_install_file "${tmp}/forwarding.secret" "${VELOCITY_DIR}/forwarding.secret" 0640 root "$VELOCITY_USER"
+  atomic_install_file "${tmp}/velocity.toml" "${VELOCITY_DIR}/velocity.toml" 0640 root "$VELOCITY_USER"
+  atomic_install_file "${tmp}/felis-link.properties" \
+    "${VELOCITY_DIR}/plugins/felis-link/felis-link.properties" 0640 root "$VELOCITY_USER"
+  ok "velocity.toml + forwarding secret + felis-link.properties written (${VELOCITY_DIR})"
+}
+
+install_velocity_service() {
+  cat > "$VELOCITY_SERVICE" <<EOF
+[Unit]
+Description=Felis Velocity proxy (Mojang authentication + modern forwarding)
+After=network-online.target k3s.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${VELOCITY_USER}
+Group=${VELOCITY_USER}
+WorkingDirectory=${VELOCITY_DIR}
+ExecStart=${JRE_DIR}/bin/java -Xms512M -Xmx1G -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:+AlwaysPreTouch -jar ${VELOCITY_DIR}/velocity.jar
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=${VELOCITY_DIR}/logs ${VELOCITY_DIR}/crash-reports
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable felis-velocity
+  # restart, not `enable --now`: on a re-run the old proxy is already up and --now would
+  # leave it running against the new config.
+  systemctl restart felis-velocity
+  ok "felis-velocity.service enabled and started (0.0.0.0:${FELIS_GAME_PORT})"
+}
+
+configure_velocity_firewall() {
+  command -v firewall-cmd >/dev/null 2>&1 || return 0
+  systemctl is-active --quiet firewalld || return 0
+  log "opening firewalld port ${FELIS_GAME_PORT}/tcp for the Minecraft proxy"
+  firewall-cmd --permanent --add-port="${FELIS_GAME_PORT}/tcp"
+  firewall-cmd --reload
+}
+
+# ---------------------------------------------------------------------------
 # 6. PostgreSQL on the host. felis-api pods reach it at <node-ip>:5432;
 #    migrations run from the host binary against 127.0.0.1.
 # ---------------------------------------------------------------------------
@@ -833,12 +1202,19 @@ load_or_make_secrets() {
   DB_PASSWORD="${DB_PASSWORD:-$(openssl rand -hex 24)}"
   SERVICE_TOKEN="${SERVICE_TOKEN:-$(openssl rand -hex 32)}"
   SESSION_SECRET="${SESSION_SECRET:-$(openssl rand -hex 32)}"
+  # The Velocity modern-forwarding key. It is what makes a backend's UUID trustworthy:
+  # the proxy does the Mojang handshake and HMACs the resulting profile with this key,
+  # and a backend that cannot verify it would fall back to an offline UUID derived from
+  # the username — i.e. anyone could join as anyone, the Owner included. Same value on
+  # the proxy (forwarding.secret) and in every backend pod (felis-forwarding-secret).
+  FORWARDING_SECRET="${FORWARDING_SECRET:-$(openssl rand -hex 32)}"
   (
     umask 077
     cat > "$SECRETS_ENV" <<EOF
 DB_PASSWORD=${DB_PASSWORD}
 SERVICE_TOKEN=${SERVICE_TOKEN}
 SESSION_SECRET=${SESSION_SECRET}
+FORWARDING_SECRET=${FORWARDING_SECRET}
 EOF
   )
   chmod 0600 "$SECRETS_ENV"
@@ -902,6 +1278,12 @@ url = "postgres://${DB_USER}:${DB_PASSWORD}@${db_host}:5432/${DB_NAME}?sslmode=d
 [k8s]
 namespace = "${MINECRAFT_NS}"
 egress_mode = "${FELIS_EGRESS_MODE}"
+
+[velocity]
+# The two always-on system servers `felis setup` provisions. They are built and imported
+# into k3s by build_game_stack below, so setup never has to be told "build these first".
+login_image = "${FELIS_LIMBO_IMAGE}"
+lobby_image = "${FELIS_LOBBY_IMAGE}"
 
 [registry]
 url = "${REGISTRY_URL}"
@@ -971,13 +1353,17 @@ deploy_bundle() {
     kube create namespace "$ns" --dry-run=client -o yaml | kube apply -f -
   done
 
-  log "provisioning felis-config + felis-service-token + panel TLS secrets (out-of-band, never in the bundle)"
+  log "provisioning felis-config + felis-service-token + felis-forwarding-secret + panel TLS secrets (out-of-band, never in the bundle)"
   kube -n "$CONTROL_NS" create secret generic felis-config \
     --from-file=felis.toml="${STATE_DIR}/felis.pod.toml" \
     --dry-run=client -o yaml | kube apply -f -
-  kube -n "$CONTROL_NS" create secret generic felis-service-token \
-    --from-literal=token="${SERVICE_TOKEN}" \
-    --dry-run=client -o yaml | kube apply -f -
+  apply_literal_secret "$CONTROL_NS" felis-service-token token "$SERVICE_TOKEN"
+  # The forwarding key every backend verifies the proxy's handshake with. `felis setup`
+  # replicates it into the minecraft namespace (ensureSecretReplica) before it creates
+  # the pods that mount it; the operator injects it into EVERY backend, because Velocity's
+  # forwarding mode is one proxy-wide setting — a backend that does not speak it is not
+  # "less secure", it is unjoinable.
+  apply_literal_secret "$CONTROL_NS" felis-forwarding-secret secret "$FORWARDING_SECRET"
   kube -n "$CONTROL_NS" create secret tls felis-api-tls \
     --cert="$PANEL_TLS_CERT" \
     --key="$PANEL_TLS_KEY" \
@@ -1008,6 +1394,22 @@ restart_existing_control_plane() {
   log "restarting existing control-plane deployments to pick up ${FELIS_IMAGE}"
   [ "$had_api" = "1" ] && kube -n "$CONTROL_NS" rollout restart deployment/felis-api
   [ "$had_operator" = "1" ] && kube -n "$CONTROL_NS" rollout restart deployment/felis-operator
+}
+
+# The login/lobby images use local mutable tags. Importing a replacement updates
+# containerd, but an existing StatefulSet template is byte-for-byte unchanged and
+# Kubernetes will not roll it. Recreate only the two always-on system pods so a
+# convergent bootstrap actually starts the images it just imported.
+restart_existing_system_servers() {
+  local name pods
+  for name in "$LOGIN_SERVER" "$LOBBY_SERVER"; do
+    pods="$(kube -n "$MINECRAFT_NS" get pod \
+      -l "felis.lolicon.best/server=${name}" -o name 2>/dev/null || true)"
+    [ -n "$pods" ] || continue
+    log "restarting existing ${name} system server to pick up its imported image"
+    kube -n "$MINECRAFT_NS" delete pod \
+      -l "felis.lolicon.best/server=${name}" --wait=false
+  done
 }
 
 diagnose_rollout() {
@@ -1049,14 +1451,23 @@ summary() {
   echo
   kube -n "$CONTROL_NS" get pods -o wide || true
   echo
+  systemctl --no-pager --full status felis-velocity 2>/dev/null | head -n 4 || true
+  echo
   log "Panel URL: https://${NODE_IP}:${FELIS_PANEL_NODEPORT}"
   log "DNS alias (if your resolver supports it): https://op.console.${FELIS_ROOT_DOMAIN}:${FELIS_PANEL_NODEPORT}"
   log "The local HTTPS certificate is self-signed; your browser may ask for confirmation on first visit."
+  log "Minecraft address: ${NODE_IP}:${FELIS_GAME_PORT} (point mc.${FELIS_ROOT_DOMAIN} here)"
+  log "The proxy authenticates against Mojang and forwards the verified profile to the"
+  log "login gate; the backends are reachable in-cluster only. Follow it with:"
+  log "    sudo journalctl -u felis-velocity -f"
   if [ "${FELIS_BOOTSTRAP_FROM_TUI:-}" = "1" ]; then
     log "Returning to the setup console to create the Owner account and verify panel access."
   else
     log "Next: run  'sudo felis setup'  on this host to create the Owner account."
   fi
+  log "setup provisions the login/lobby servers, then asks the Owner to bind by joining"
+  log "the proxy in Minecraft — that is what makes the Owner's admin identity a real"
+  log "Mojang account rather than a password."
   log "Use 'sudo felis breakGlass' only for emergency local Owner recovery/reset."
   echo
 }
@@ -1306,10 +1717,15 @@ main() {
     fetch_source
   fi
   build_image
+  build_game_stack
   install_postgres
   configure_postgres
   run_migrations
   deploy_bundle
+  restart_existing_system_servers
+  # After deploy_bundle: the proxy dials felis-api's internal ClusterIP, which does not
+  # exist until the bundle is applied.
+  install_velocity
   mark_bootstrap_done
   summary
 }

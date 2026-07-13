@@ -8,18 +8,32 @@ import (
 )
 
 func cmdBootstrapAssets(args []string, stdout, stderr io.Writer) int {
-	if len(args) != 1 || args[0] != "crd" {
-		fmt.Fprintln(stderr, "felis bootstrap-assets: usage: felis bootstrap-assets crd")
+	if len(args) != 1 {
+		fmt.Fprintln(stderr, "felis bootstrap-assets: usage: felis bootstrap-assets crd|game-stack")
 		return 2
 	}
-	crd, err := felis.MinecraftServerCRD()
-	if err != nil {
-		fmt.Fprintf(stderr, "felis bootstrap-assets: %v\n", err)
-		return 1
-	}
-	if _, err := stdout.Write(crd); err != nil {
-		fmt.Fprintf(stderr, "felis bootstrap-assets: write: %v\n", err)
-		return 1
+	switch args[0] {
+	case "crd":
+		crd, err := felis.MinecraftServerCRD()
+		if err != nil {
+			fmt.Fprintf(stderr, "felis bootstrap-assets: %v\n", err)
+			return 1
+		}
+		if _, err := stdout.Write(crd); err != nil {
+			fmt.Fprintf(stderr, "felis bootstrap-assets: write: %v\n", err)
+			return 1
+		}
+	case "game-stack":
+		// A tar on stdout, not a directory on disk: the caller (bootstrap.sh) is the
+		// one that knows where a build context may live, and piping keeps this command
+		// side-effect-free.
+		if err := felis.GameStackTar(stdout); err != nil {
+			fmt.Fprintf(stderr, "felis bootstrap-assets: %v\n", err)
+			return 1
+		}
+	default:
+		fmt.Fprintln(stderr, "felis bootstrap-assets: usage: felis bootstrap-assets crd|game-stack")
+		return 2
 	}
 	return 0
 }
