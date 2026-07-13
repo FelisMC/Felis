@@ -29,10 +29,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * untouched (spec §11 keep-old-on-failure) — a transient control-plane blip must
  * never deregister live backends out from under connected players.
  *
- * <p>Only felis-managed servers live in this registry; servers defined statically
- * in {@code velocity.toml} (notably the lobby) are never added here and so are
- * never deregistered by a refresh. Static server names must therefore not collide
- * with felis server names.
+ * <p>Every API-reported backend, including the system login and lobby, lives in
+ * this registry. The generated {@code velocity.toml} contains a deliberately dead
+ * login placeholder only so Velocity can validate {@code try = ["login"]}; the
+ * first successful refresh replaces that placeholder with the live ClusterIP.
  */
 final class ServerRegistry {
     private static final int DEFAULT_PORT = 25565;
@@ -138,8 +138,9 @@ final class ServerRegistry {
         if (idx > 0 && idx < addr.length() - 1) {
             try {
                 int port = Integer.parseInt(addr.substring(idx + 1));
-                // Unresolved: the backend's DNS (a K8s Service) may not resolve yet
-                // while the server is asleep; Velocity resolves at connect time.
+                // Keep address parsing side-effect-free; Velocity resolves hostnames
+                // at connect time. Bootstrap deployments normally advertise a
+                // host-routable Service ClusterIP here.
                 return InetSocketAddress.createUnresolved(addr.substring(0, idx), port);
             } catch (NumberFormatException ignored) {
                 // not host:port → fall through to the default Minecraft port

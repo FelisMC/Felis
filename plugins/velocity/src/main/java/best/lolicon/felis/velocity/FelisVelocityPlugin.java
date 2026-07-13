@@ -27,7 +27,6 @@ import org.slf4j.Logger;
 
 import java.nio.file.Path;
 import java.time.Duration;
-import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -116,7 +115,8 @@ public final class FelisVelocityPlugin {
 
         this.apiClient = new FelisApiClient(config.linkConfig());
         this.registry = new ServerRegistry(proxy, logger, config.rootDomain());
-        this.router = new WaitingRouter(proxy, logger, apiClient, registry, this, config.lobbyServer());
+        this.router = new WaitingRouter(proxy, logger, apiClient, registry, this,
+                config.loginServer(), config.lobbyServer());
         MotdResponder motd = new MotdResponder(registry);
         proxy.getEventManager().register(this, router);
         proxy.getEventManager().register(this, motd);
@@ -135,12 +135,8 @@ public final class FelisVelocityPlugin {
         repeating(WAIT_POLL, router::tick);
 
         this.routingActive = true;
-        if (config.lobbyServer() == null) {
-            logger.warn("Felis routing active without a lobby-server: a player whose target is asleep will be "
-                    + "asked to reconnect rather than parked. Set 'lobby-server=' to enable the waiting queue.");
-        }
-        logger.info("Felis routing ready: rootDomain={}, lobby={}. /link and /felis registered.",
-                config.rootDomain(), config.lobbyServer() == null ? "<none>" : config.lobbyServer());
+        logger.info("Felis routing ready: rootDomain={}, login={}, lobby={}. /link and /felis registered.",
+                config.rootDomain(), config.loginServer(), config.lobbyServer());
     }
 
     /** async runs a task on Velocity's scheduler so felis-api I/O never blocks the proxy thread. */
@@ -235,11 +231,6 @@ public final class FelisVelocityPlugin {
      *  (slash, dot, whitespace) is refused client-side rather than sent. */
     private static final Pattern OP_LOGIN_CODE = Pattern.compile("^[A-Za-z0-9_-]{1,128}$");
 
-    /** The always-on login limbo (LOOHP/Limbo) — the reserved system name
-     *  {@code naming.SystemLoginServer}, which users can never claim, so gating on the
-     *  server name is stable. */
-    private static final String LOGIN_LIMBO = "login";
-
     private void registerFelisCommand() {
         CommandManager commands = proxy.getCommandManager();
         LiteralCommandNode<CommandSource> node = BrigadierCommand.literalArgumentBuilder("felis")
@@ -316,7 +307,7 @@ public final class FelisVelocityPlugin {
                     "Hold on — finish connecting before using /felis.", NamedTextColor.YELLOW));
             return false;
         }
-        if (LOGIN_LIMBO.equalsIgnoreCase(current.get().getServerInfo().getName())) {
+        if (config.loginServer().equalsIgnoreCase(current.get().getServerInfo().getName())) {
             player.sendMessage(Component.text(
                     "Finish signing in first — /felis isn't available from the login area.",
                     NamedTextColor.YELLOW));
@@ -347,7 +338,8 @@ public final class FelisVelocityPlugin {
             return;
         }
         source.sendMessage(field("root-domain", config.rootDomain()));
-        source.sendMessage(field("lobby", config.lobbyServer() == null ? "<none>" : config.lobbyServer()));
+        source.sendMessage(field("login", config.loginServer()));
+        source.sendMessage(field("lobby", config.lobbyServer()));
         source.sendMessage(field("servers", String.valueOf(registry.all().size())));
         source.sendMessage(Component.text("  /felis help for commands", NamedTextColor.GRAY));
     }
@@ -371,7 +363,9 @@ public final class FelisVelocityPlugin {
             source.sendMessage(Component.text("Felis routing is disabled.", NamedTextColor.YELLOW));
             return;
         }
-        Collection<ServerView> servers = registry.all();
+        List<ServerView> servers = registry.all().stream()
+                .filter(v -> !isSystemServer(v.name()))
+                .toList();
         if (servers.isEmpty()) {
             source.sendMessage(Component.text("No felis servers known yet.", NamedTextColor.GRAY));
             return;
@@ -397,7 +391,7 @@ public final class FelisVelocityPlugin {
         String target = serverArg.trim();
         ServerView match = null;
         for (ServerView v : registry.all()) {
-            if (v.name().equalsIgnoreCase(target)) {
+            if (!isSystemServer(v.name()) && v.name().equalsIgnoreCase(target)) {
                 match = v;
                 break;
             }
@@ -553,6 +547,11 @@ public final class FelisVelocityPlugin {
         return Component.text(
                 "Felis routing is disabled on this proxy" + (onlineMode ? " (no root-domain set)." : " (offline mode)."),
                 NamedTextColor.YELLOW);
+    }
+
+    private boolean isSystemServer(String name) {
+        return config.loginServer().equalsIgnoreCase(name)
+                || config.lobbyServer().equalsIgnoreCase(name);
     }
 
     // claimError maps the felis-api claim refusals (spec §9.3) to player-safe text.

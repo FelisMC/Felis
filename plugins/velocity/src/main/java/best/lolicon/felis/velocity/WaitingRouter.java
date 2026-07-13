@@ -4,9 +4,12 @@ import best.lolicon.felis.link.FelisApiClient;
 import best.lolicon.felis.link.LinkException;
 import best.lolicon.felis.link.ServerView;
 
+import com.velocitypowered.api.event.EventTask;
 import com.velocitypowered.api.event.Subscribe;
+import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.player.PlayerChooseInitialServerEvent;
 import com.velocitypowered.api.event.player.ServerConnectedEvent;
+import com.velocitypowered.api.event.player.ServerPreConnectEvent;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
@@ -26,13 +29,13 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * WaitingRouter implements the §11 domain-autostart routing loop and its waiting
  * queue. It resolves the virtual host a player connected with to a felis server
- * and decides what happens next:
+ * and remembers the requested backend while the player passes the login gate:
  *
  * <pre>
- *   host has no felis subdomain        → leave Velocity's default routing alone
- *   server ready + registered          → set it as the initial server (straight in)
- *   server not ready, lobby configured → park in lobby, wake it, enqueue a transfer
- *   server not ready, no lobby          → refuse cleanly ("reconnect shortly"), wake
+ *   fresh connection                  → login (always; never a user backend)
+ *   login says linked + target ready  → requested backend
+ *   login says linked + target asleep → post-auth lobby, wake, queued transfer
+ *   login requests any other target   → deny (fail closed)
  * </pre>
  *
  * <p>The queue is drained by {@link #tick()}, scheduled by the plugin on the async
@@ -40,11 +43,12 @@ import java.util.concurrent.ConcurrentHashMap;
  * reports ready, transfers everyone waiting on it. A waiter drops out when it times
  * out, when the player leaves the proxy, or on a successful transfer.
  *
- * <p>The wake is gated server-side by autostartPolicy keyed on the player's
- * online-mode UUID: a 403 means this player may not start the server (we tell them
- * and stop), a 429 means a wake is already in flight (we keep waiting). Real joins
- * to a felis backend are reported back so the reaper sees activity and the player
- * is auto-added to the allowlist.
+ * <p>Every transition out of login is checked against felis-api's link status, and
+ * command/menu queue entries are checked the same way. The wake is then gated
+ * server-side by autostartPolicy keyed on the player's online-mode UUID: a 403 means
+ * this player may not start the server (we tell them and stop), a 429 means a wake is
+ * already in flight (we keep waiting). Real user-backend joins are reported back so
+ * the reaper sees activity and the player is auto-added to the allowlist.
  */
 public final class WaitingRouter {
     private static final long WAIT_TIMEOUT_MILLIS = 120_000L;
@@ -54,9 +58,11 @@ public final class WaitingRouter {
     private final FelisApiClient api;
     private final ServerRegistry registry;
     private final FelisVelocityPlugin plugin;
-    private final String lobbyServer; // may be null → no lobby
+    private final String loginServer;
+    private final String lobbyServer;
 
     private final Map<UUID, Waiter> waiting = new ConcurrentHashMap<>();
+    private final Map<UUID, String> pendingTargets = new ConcurrentHashMap<>();
 
     // Notified just before a menu-originated waiter is transferred, so the lobby's
     // felis:control face can tell the player's GUI the backend is ready. Null until
@@ -64,12 +70,13 @@ public final class WaitingRouter {
     private volatile MenuTransferListener menuListener;
 
     WaitingRouter(ProxyServer proxy, Logger log, FelisApiClient api, ServerRegistry registry,
-                  FelisVelocityPlugin plugin, String lobbyServer) {
+                  FelisVelocityPlugin plugin, String loginServer, String lobbyServer) {
         this.proxy = proxy;
         this.log = log;
         this.api = api;
         this.registry = registry;
         this.plugin = plugin;
+        this.loginServer = loginServer;
         this.lobbyServer = lobbyServer;
     }
 
@@ -91,7 +98,7 @@ public final class WaitingRouter {
      * fire {@link MenuTransferListener} on transfer.
      */
     void enqueueFromMenu(Player player, String serverName) {
-        wakeAndWait(player, serverName, true);
+        authorizeAndWait(player, serverName, true);
     }
 
     /**
@@ -104,50 +111,130 @@ public final class WaitingRouter {
      * exactly as the other origins, so this adds a new entry point, not a new authority.
      */
     void enqueueFromCommand(Player player, String serverName) {
-        wakeAndWait(player, serverName, false);
+        authorizeAndWait(player, serverName, false);
     }
 
     @Subscribe
     public void onChooseInitialServer(PlayerChooseInitialServerEvent event) {
         Player player = event.getPlayer();
+        UUID id = player.getUniqueId();
+        pendingTargets.remove(id); // a reconnect must never inherit an earlier host
         Optional<String> host = virtualHost(player);
         if (host.isEmpty()) {
-            return; // direct connect / no SRV host → leave default routing
+            return; // velocity.toml's only fallback is login
         }
         Optional<ServerView> targetOpt = registry.resolveByHost(host.get());
         if (targetOpt.isEmpty()) {
-            return; // host is not a felis subdomain → leave default routing
+            return; // unknown host also falls through to login
         }
         ServerView target = targetOpt.get();
-        Optional<RegisteredServer> backend = registry.registered(target.name());
-        if (target.ready() && backend.isPresent()) {
-            event.setInitialServer(backend.get()); // ready → straight in
+        Optional<RegisteredServer> login = login();
+        if (login.isEmpty()) {
+            event.setInitialServer(null);
+            player.disconnect(Component.text(
+                    "The Felis login gate is unavailable. Please reconnect shortly.",
+                    NamedTextColor.RED));
+            return;
+        }
+        // login.<root-domain> is a valid system hostname, but it is the gate rather
+        // than a post-auth destination. Remembering it would redirect the successful
+        // lobby release straight back into login and loop forever.
+        if (!target.name().equalsIgnoreCase(loginServer)) {
+            pendingTargets.put(id, target.name());
+        }
+        event.setInitialServer(login.get());
+    }
+
+    /**
+     * The login backend requests the configured lobby only after its own link poll
+     * succeeds. Re-check that state on the trusted proxy boundary, then either route
+     * the remembered virtual-host target or admit the player to the post-auth lobby.
+     */
+    @Subscribe
+    public EventTask onServerPreConnect(ServerPreConnectEvent event) {
+        RegisteredServer previous = event.getPreviousServer();
+        if (previous == null || !serverNamed(previous, loginServer)) {
+            return null;
+        }
+
+        Player player = event.getPlayer();
+        event.setResult(ServerPreConnectEvent.ServerResult.denied());
+        if (!serverNamed(event.getOriginalServer(), lobbyServer)) {
+            player.sendMessage(Component.text(
+                    "The login gate may only release players to the lobby.", NamedTextColor.RED));
+            log.warn("Felis: denied login-gate transfer for {} to {}",
+                    player.getUniqueId(), event.getOriginalServer().getServerInfo().getName());
+            return null;
+        }
+
+        return EventTask.async(() -> authorizeLoginRelease(event));
+    }
+
+    private void authorizeLoginRelease(ServerPreConnectEvent event) {
+        Player player = event.getPlayer();
+        UUID id = player.getUniqueId();
+        try {
+            if (!api.linkStatus(id)) {
+                player.sendMessage(Component.text(
+                        "Finish signing in before leaving the login area.", NamedTextColor.YELLOW));
+                return;
+            }
+        } catch (LinkException e) {
+            log.warn("Felis: could not verify login release for {} (status={}): {}",
+                    id, e.statusCode(), e.getMessage());
+            player.sendMessage(Component.text(
+                    "Login verification is temporarily unavailable. Please wait and try again.",
+                    NamedTextColor.RED));
             return;
         }
 
-        Optional<RegisteredServer> lobby = lobby();
-        if (lobby.isEmpty()) {
-            // Nowhere to hold the player while the backend wakes: refuse cleanly so
-            // they reconnect onto a ready server, rather than dropping them onto a
-            // backend that is still starting. Still fire the wake so the reconnect
-            // lands faster.
-            player.disconnect(Component.text(
-                    "« " + target.name() + " » is starting up — please reconnect in a moment.",
-                    NamedTextColor.YELLOW));
-            fireWake(player.getUniqueId(), target.name());
+        String targetName = pendingTargets.get(id);
+        if (targetName == null
+                || targetName.equalsIgnoreCase(loginServer)
+                || targetName.equalsIgnoreCase(lobbyServer)) {
+            event.setResult(ServerPreConnectEvent.ServerResult.allowed(event.getOriginalServer()));
+            pendingTargets.remove(id);
             return;
         }
-        event.setInitialServer(lobby.get()); // park in lobby
-        wakeAndWait(player, target.name(), false);
+
+        ServerView target = registry.view(targetName);
+        if (target == null) {
+            pendingTargets.remove(id, targetName);
+            event.setResult(ServerPreConnectEvent.ServerResult.allowed(event.getOriginalServer()));
+            player.sendMessage(Component.text(
+                    "« " + targetName + " » is no longer available.", NamedTextColor.YELLOW));
+            return;
+        }
+        Optional<RegisteredServer> backend = registry.registered(targetName);
+        if (target.ready() && backend.isPresent()) {
+            // Keep pendingTargets until ServerConnectedEvent confirms the redirect.
+            // If the connect fails, Limbo retries its lobby release and we retry too.
+            event.setResult(ServerPreConnectEvent.ServerResult.allowed(backend.get()));
+            return;
+        }
+
+        pendingTargets.remove(id, targetName);
+        event.setResult(ServerPreConnectEvent.ServerResult.allowed(event.getOriginalServer()));
+        wakeAndWaitLinked(player, targetName, false);
+    }
+
+    @Subscribe
+    public void onDisconnect(DisconnectEvent event) {
+        UUID id = event.getPlayer().getUniqueId();
+        pendingTargets.remove(id);
+        waiting.remove(id);
     }
 
     @Subscribe
     public void onServerConnected(ServerConnectedEvent event) {
         String name = event.getServer().getServerInfo().getName();
-        if (!registry.isManaged(name)) {
-            return; // lobby / static server → not a felis backend, nothing to report
-        }
         UUID id = event.getPlayer().getUniqueId();
+        pendingTargets.remove(id, name);
+        if (!registry.isManaged(name)
+                || name.equalsIgnoreCase(loginServer)
+                || name.equalsIgnoreCase(lobbyServer)) {
+            return; // system/static servers do not affect user-server activity
+        }
         plugin.async(() -> {
             try {
                 api.reportJoin(name, id);
@@ -177,7 +264,7 @@ public final class WaitingRouter {
                 waiting.remove(id);
                 player.sendMessage(Component.text(
                         "« " + w.serverName + " » is taking longer than expected to start. "
-                        + "You can keep waiting in the lobby or try again later.", NamedTextColor.YELLOW));
+                        + "You can try again from the lobby later.", NamedTextColor.YELLOW));
                 continue;
             }
             Boolean ready = readyCache.get(w.serverName);
@@ -196,6 +283,19 @@ public final class WaitingRouter {
             if (backend.isEmpty()) {
                 continue; // ready but not yet registered → next tick
             }
+            try {
+                if (!api.linkStatus(id)) {
+                    waiting.remove(id);
+                    player.sendMessage(Component.text(
+                            "Your account is no longer linked. Reconnect to sign in again.",
+                            NamedTextColor.RED));
+                    continue;
+                }
+            } catch (LinkException ex) {
+                // Fail closed on an ambiguous identity. Keep the waiter so a later
+                // tick can retry the check without losing the requested target.
+                continue;
+            }
             waiting.remove(id);
             player.sendMessage(Component.text(
                     "« " + w.serverName + " » is ready — moving you in…", NamedTextColor.GREEN));
@@ -209,44 +309,55 @@ public final class WaitingRouter {
         }
     }
 
-    private void wakeAndWait(Player player, String serverName, boolean fromMenu) {
+    private void authorizeAndWait(Player player, String serverName, boolean fromMenu) {
         UUID id = player.getUniqueId();
         plugin.async(() -> {
             try {
-                api.wake(serverName, id);
-            } catch (LinkException e) {
-                switch (e.statusCode()) {
-                    case 403:
-                        player.sendMessage(Component.text(
-                                "You're not allowed to start « " + serverName + " ».", NamedTextColor.RED));
-                        return; // policy gate refused → do not enqueue
-                    case 429:
-                        break; // a wake is already in flight → fall through to waiting
-                    default:
-                        log.warn("Felis: wake {} failed (status={}): {}", serverName, e.statusCode(), e.getMessage());
-                        player.sendMessage(Component.text(
-                                "Couldn't start « " + serverName + " » right now. Try again shortly.",
-                                NamedTextColor.RED));
-                        return;
+                if (!api.linkStatus(id)) {
+                    player.sendMessage(Component.text(
+                            "Finish signing in before joining a server.", NamedTextColor.YELLOW));
+                    return;
                 }
+            } catch (LinkException e) {
+                log.warn("Felis: could not verify queue entry for {} (status={}): {}",
+                        id, e.statusCode(), e.getMessage());
+                player.sendMessage(Component.text(
+                        "Login verification is temporarily unavailable. Please try again shortly.",
+                        NamedTextColor.RED));
+                return;
             }
-            player.sendMessage(Component.text(
-                    "Starting « " + serverName + " » — you'll be moved in automatically.",
-                    NamedTextColor.GRAY));
-            waiting.put(id, new Waiter(serverName, System.currentTimeMillis() + WAIT_TIMEOUT_MILLIS, fromMenu));
+            wakeAndWaitLinked(player, serverName, fromMenu);
         });
     }
 
-    private void fireWake(UUID id, String serverName) {
-        plugin.async(() -> {
-            try {
-                api.wake(serverName, id);
-            } catch (LinkException e) {
-                if (e.statusCode() != 429 && e.statusCode() != 403) {
+    // Caller already ran the authoritative link-status check and is off the event
+    // thread. Keep the wake and queue mutation together so every entry has passed
+    // both the account gate and the server-side autostart policy.
+    private void wakeAndWaitLinked(Player player, String serverName, boolean fromMenu) {
+        UUID id = player.getUniqueId();
+        try {
+            api.wake(serverName, id);
+        } catch (LinkException e) {
+            switch (e.statusCode()) {
+                case 403:
+                    player.sendMessage(Component.text(
+                            "You're not allowed to start « " + serverName + " ».", NamedTextColor.RED));
+                    return;
+                case 429:
+                    break; // a wake is already in flight → join the existing wait
+                default:
                     log.warn("Felis: wake {} failed (status={}): {}", serverName, e.statusCode(), e.getMessage());
-                }
+                    player.sendMessage(Component.text(
+                            "Couldn't start « " + serverName + " » right now. Try again shortly.",
+                            NamedTextColor.RED));
+                    return;
             }
-        });
+        }
+        player.sendMessage(Component.text(
+                "Starting « " + serverName + " » — you'll be moved in automatically.",
+                NamedTextColor.GRAY));
+        waiting.put(id, new Waiter(
+                serverName, System.currentTimeMillis() + WAIT_TIMEOUT_MILLIS, fromMenu));
     }
 
     private void transfer(Player player, String serverName, RegisteredServer backend) {
@@ -259,8 +370,12 @@ public final class WaitingRouter {
         });
     }
 
-    private Optional<RegisteredServer> lobby() {
-        return lobbyServer == null ? Optional.empty() : proxy.getServer(lobbyServer);
+    private Optional<RegisteredServer> login() {
+        return proxy.getServer(loginServer);
+    }
+
+    private static boolean serverNamed(RegisteredServer server, String name) {
+        return server.getServerInfo().getName().equalsIgnoreCase(name);
     }
 
     private static Optional<String> virtualHost(Player player) {

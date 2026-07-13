@@ -87,8 +87,8 @@ What it does when routing is active:
 
 | Surface | Behavior |
 | ------- | -------- |
-| Backend registry | Polls `GET /api/v1/servers` every 15 s and reconciles Velocity's dynamic registry. A failed poll **keeps existing registrations** — a control-plane blip never deregisters live backends. Addresses are registered *unresolved* (a sleeping backend's Service DNS may not resolve yet). |
-| Join (`PlayerChooseInitialServerEvent`) | Resolves `subdomain.<root-domain>` → server. **Ready** → send straight in. **Not ready + lobby** → park in the lobby, wake, and transfer when ready. **Not ready + no lobby** → disconnect with a "reconnect shortly" message, still firing the wake so the reconnect lands faster. |
+| Backend registry | Polls `GET /api/v1/servers` every 15 s and reconciles Velocity's dynamic registry. A failed poll **keeps existing registrations** — a control-plane blip never deregisters live backends. The API advertises each backend Service's host-routable ClusterIP, avoiding cluster-DNS names on the host-run proxy. |
+| Join (`PlayerChooseInitialServerEvent`) | Resolves `subdomain.<root-domain>` and remembers the target, but every fresh connection still enters `login`. When the login gate requests its post-auth lobby transfer, Velocity re-checks link status: a ready remembered target is selected immediately; an asleep target is woken and queued from the lobby. |
 | Waiting queue | One scheduled drain every 2 s polls status once per distinct waited-on server; a waiter drops out on transfer, on the player leaving, or after a 120 s timeout. |
 | Wake gate | The wake is `POST /api/v1/internal/servers/{name}/wake` keyed on the player's online-mode UUID. **403** (policy refused) tells the player and stops; **429** (wake already in flight) keeps waiting. |
 | Server-list ping (`ProxyPingEvent`) | Answers from the cached lifecycle view with a phase-aware MOTD (online / starting / sleeping) — **read-only, never wakes** anything. Mirroring each backend's own MOTD by background-pinging ready servers is a later slice. |
@@ -101,7 +101,8 @@ Velocity-only config keys (read from the same `felis-link.properties` / env as
 | Key | Env | Meaning |
 | --- | --- | ------- |
 | `root-domain`  | `FELIS_ROOT_DOMAIN`  | Routing zone, e.g. `mc.example.net`. Unset → routing off. |
-| `lobby-server` | `FELIS_LOBBY_SERVER` | A `velocity.toml` static server to park players in while a backend wakes. Unset → players are asked to reconnect instead. Its name must not collide with a felis server name. |
+| `login-server` | `FELIS_LOGIN_SERVER` | The system auth gate every fresh connection must pass. Defaults to `login`. |
+| `lobby-server` | `FELIS_LOBBY_SERVER` | The distinct post-auth holding server used while a backend wakes. Defaults to `lobby`; it must not equal `login-server`. |
 
 ## Lobby menu (§12)
 

@@ -5,12 +5,34 @@ plugins {
 group = 'best.lolicon.felis'
 version = '0.1.0'
 
-// JDK 17 is the ceiling the whole plugin suite targets (Velocity 3.3.0 is a
-// Java-17 line); we run Gradle on JDK 17 and compile to 17 bytecode rather than
-// provisioning a separate toolchain.
+// The proxy API this jar compiles against. Default = the newest RELEASED velocity-api,
+// which is what deploy/bootstrap.sh installs. velocity-api is compileOnly, so this
+// selects the surface we are CHECKED against, not one that ships in the jar.
+//
+// Do NOT drift this back to a -SNAPSHOT of the 3.x line: 3.3.0-SNAPSHOT (the previous
+// value) froze in 2024 and tops out at MINECRAFT_1_21, so it cannot even name the
+// protocol the rest of the stack speaks.
+def velocityApi = findProperty('velocityApi') ?: '3.5.1'
+
+// 21 is the floor of the proxy we ship against: velocity-api 3.5.1's Gradle module
+// metadata declares `org.gradle.jvm.version = 21`, so 17 does not buy backward reach —
+// it makes resolution fail outright. 21 bytecode also loads on Velocity 4, which runs a
+// newer JVM still, so ONE jar serves both lines.
+//
+// The knob exists only for the Velocity-4 compile check: velocity-api 4.0.0-SNAPSHOT
+// demands `jvm.version = 25`, and Gradle refuses to put a 25 library on a 21 consumer's
+// classpath. To prove these sources also compile against the 4 API (4.0.0 itself is
+// unreleased — zero published builds; only the snapshot exists), build with a JDK 25
+// toolchain and both knobs turned up:
+//
+//   gradle build -PvelocityApi=4.0.0-SNAPSHOT -PjavaTarget=25
+//
+// That build is a CHECK, not an artifact — the jar we deploy is the default 21 one.
+def javaTarget = JavaVersion.toVersion(findProperty('javaTarget') ?: '21')
+
 java {
-    sourceCompatibility = JavaVersion.VERSION_17
-    targetCompatibility = JavaVersion.VERSION_17
+    sourceCompatibility = javaTarget
+    targetCompatibility = javaTarget
 }
 
 repositories {
@@ -24,8 +46,8 @@ repositories {
 dependencies {
     // velocity-api is compile-only (the proxy provides it at runtime); the
     // annotation processor turns @Plugin into the generated velocity-plugin.json.
-    compileOnly 'com.velocitypowered:velocity-api:3.3.0-SNAPSHOT'
-    annotationProcessor 'com.velocitypowered:velocity-api:3.3.0-SNAPSHOT'
+    compileOnly "com.velocitypowered:velocity-api:${velocityApi}"
+    annotationProcessor "com.velocitypowered:velocity-api:${velocityApi}"
 }
 
 // The platform-agnostic link core lives in ../shared and is compiled straight
