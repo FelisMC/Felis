@@ -142,6 +142,6 @@ set them by hand:
   or a control-namespace ingress fence, it must also open the login-pod →
   felis-api-internal (8081) path.
 
-The Velocity default-landing and waiting-park wiring is printed by `felis setup`
-and enforces the invariant: fresh connections hit `login` first; nothing falls
-back to the lobby.
+The Velocity gate/lobby wiring is printed by `felis setup` and enforces the
+invariant: fresh connections hit `login` first, and only an authenticated release
+from that gate can enter the post-auth lobby or a remembered user backend.

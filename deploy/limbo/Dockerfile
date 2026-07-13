@@ -70,8 +70,14 @@ RUN set -eu; \
     mkdir -p /limbo/plugins
 # Drop the login+readiness plugin in beside Limbo.jar.
 COPY --from=plugin /felis-limbo.jar /limbo/plugins/felis-limbo.jar
-# The entrypoint pins the game port to the operator's GamePort before launching Limbo.
+# The entrypoint pins the game port AND enables Velocity modern forwarding — refusing to
+# start without the secret, because a login gate that derives offline UUIDs would let
+# anyone claim any Minecraft identity (the Owner's included).
 COPY deploy/limbo/entrypoint.sh /usr/local/bin/felis-entrypoint.sh
+
+# The operator mounts the world PVC at /data. Runtime state lives there; /limbo
+# remains the immutable image seed copied into the volume by the entrypoint.
+WORKDIR /data
 
 ENV FELIS_HEALTH_PORT=8080
 # FELIS_GAME_PORT is the port the entrypoint pins Limbo to; it MUST equal the operator's
@@ -79,8 +85,8 @@ ENV FELIS_HEALTH_PORT=8080
 # with the operator.
 ENV FELIS_GAME_PORT=25565
 EXPOSE 25565 8080
-# felis-entrypoint.sh pins server-port then execs `java -jar Limbo.jar --nogui` (headless:
-# the pod has no console). Limbo writes the rest of server.properties on first run and
-# loads ./spawn.schem as the spawn world. Invoked via `sh` so no +x bit is needed from the
-# (Windows) build host.
+# felis-entrypoint.sh pins server-port + velocity-modern/forwarding-secrets, then execs
+# `java -jar Limbo.jar --nogui` from /data (headless: the pod has no console). Limbo writes
+# the rest of server.properties on the persistent volume and loads ./spawn.schem as the
+# spawn world. Invoked via `sh` so no +x bit is needed from the (Windows) build host.
 ENTRYPOINT ["/bin/sh", "/usr/local/bin/felis-entrypoint.sh"]

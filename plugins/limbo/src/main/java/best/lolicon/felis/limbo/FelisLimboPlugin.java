@@ -280,7 +280,10 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
         }
         try {
             if (apiClient.linkStatus(id)) {
-                cancelPoll(id);
+                // Keep polling until the player actually leaves this backend. The
+                // proxy independently re-checks link status before releasing the
+                // gate; a transient failure there denies this attempt, so retrying
+                // avoids stranding an authenticated player in limbo.
                 getServer().getScheduler().runTask(this, () -> transferToLobby(id));
             }
         } catch (LinkException e) {
