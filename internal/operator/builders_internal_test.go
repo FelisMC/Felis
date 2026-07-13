@@ -83,6 +83,7 @@ func TestBuildStatefulSetAddsHealthPort(t *testing.T) {
 func TestBuildEnvInjectsServiceTokenForLogin(t *testing.T) {
 	s := &v1alpha1.MinecraftServer{}
 	s.Name = naming.SystemLoginServer
+	s.Labels = map[string]string{v1alpha1.LabelSystemRole: naming.SystemLoginServer}
 	tok := findEnv(buildEnv(s), envServiceToken)
 	if tok == nil {
 		t.Fatalf("%s not injected for the login server", envServiceToken)
@@ -99,15 +100,60 @@ func TestBuildEnvInjectsServiceTokenForLogin(t *testing.T) {
 	}
 }
 
-// A user server (any non-login name) must NOT receive the service token — the
-// reserved-name gate is what stops the internal credential leaking into a player's
-// pod. naming.ValidateServerName forbids users from ever claiming "login".
+// A user server must NOT receive the service token. This includes a legacy,
+// unlabeled server named "login" that predates the reserved-name rule.
 func TestBuildEnvWithholdsServiceTokenFromUserServers(t *testing.T) {
-	for _, name := range []string{"survival", "creative", naming.SystemLobbyServer} {
+	tests := []struct {
+		name   string
+		labels map[string]string
+	}{
+		{name: "survival"},
+		{name: "creative"},
+		{name: naming.SystemLobbyServer, labels: map[string]string{v1alpha1.LabelSystemRole: naming.SystemLobbyServer}},
+		{name: naming.SystemLoginServer},
+		{name: naming.SystemLoginServer, labels: map[string]string{v1alpha1.LabelSystemRole: naming.SystemLobbyServer}},
+	}
+	for _, tt := range tests {
+		s := &v1alpha1.MinecraftServer{}
+		s.Name = tt.name
+		s.Labels = tt.labels
+		if tok := findEnv(buildEnv(s), envServiceToken); tok != nil {
+			t.Errorf("%s labels=%v: service token leaked into a non-system login server", tt.name, tt.labels)
+		}
+	}
+}
+
+// Every backend receives the Velocity modern-forwarding secret — system and user alike.
+// This is the opposite rule from the service token, and deliberately so: Velocity's
+// forwarding mode is proxy-wide, so a backend without the secret cannot verify the
+// signed handshake and rejects every login the proxy sends it. It is also what makes a
+// backend's view of a player's UUID trustworthy (Mojang-verified via the signed payload,
+// not offline-derived from the username) — the premise the Owner bind rests on.
+// Sourced from a Secret, never a literal, and optional so a cluster whose proxy is not
+// in modern mode still schedules its pods.
+func TestBuildEnvInjectsForwardingSecretIntoEveryBackend(t *testing.T) {
+	for _, name := range []string{naming.SystemLoginServer, naming.SystemLobbyServer, "survival"} {
 		s := &v1alpha1.MinecraftServer{}
 		s.Name = name
-		if tok := findEnv(buildEnv(s), envServiceToken); tok != nil {
-			t.Errorf("%s: service token leaked into a non-login server", name)
+		fwd := findEnv(buildEnv(s), envForwardingSecret)
+		if fwd == nil {
+			t.Errorf("%s: %s not injected — the backend would reject every proxied login", name, envForwardingSecret)
+			continue
+		}
+		if fwd.Value != "" {
+			t.Errorf("%s: %s carries a literal value %q — it must be a secretKeyRef", name, envForwardingSecret, fwd.Value)
+			continue
+		}
+		if fwd.ValueFrom == nil || fwd.ValueFrom.SecretKeyRef == nil {
+			t.Errorf("%s: %s must be sourced from a secretKeyRef", name, envForwardingSecret)
+			continue
+		}
+		ref := fwd.ValueFrom.SecretKeyRef
+		if ref.Name != naming.ForwardingSecretName || ref.Key != naming.ForwardingSecretKey {
+			t.Errorf("%s: secretKeyRef = %s/%s, want %s/%s", name, ref.Name, ref.Key, naming.ForwardingSecretName, naming.ForwardingSecretKey)
+		}
+		if ref.Optional == nil || !*ref.Optional {
+			t.Errorf("%s: secretKeyRef must be optional, or a cluster without the Secret wedges every pod in CreateContainerConfigError", name)
 		}
 	}
 }

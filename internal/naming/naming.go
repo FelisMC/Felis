@@ -19,6 +19,7 @@ var (
 // reserved subdomains/server names that users may not claim: proxy/lobby and
 // the platform's own faces.
 var reserved = map[string]struct{}{
+	"login":    {},
 	"lobby":    {},
 	"admin":    {},
 	"panel":    {},
@@ -54,6 +55,31 @@ const (
 const (
 	ServiceTokenSecretName = "felis-service-token"
 	ServiceTokenSecretKey  = "token"
+)
+
+// ForwardingSecretName / ForwardingSecretKey name the Velocity modern player-info
+// forwarding secret — the shared HMAC key the proxy signs each login handshake with
+// and every backend verifies. It is what makes a backend's idea of "who is this
+// player" trustworthy: with modern forwarding on, the UUID arrives inside the signed
+// forwarding payload rather than being derived offline from the username, which is
+// the whole basis of the Owner bind (the Owner IS a Minecraft account, claimed by
+// joining the login gate). Legacy/BungeeCord forwarding carries no secret at all and
+// fails OPEN — anyone who can reach a backend directly can assert any UUID — so Felis
+// mandates modern (spec §20).
+//
+// Unlike the service token this is NOT login-only: Velocity's forwarding mode is a
+// single proxy-wide setting, so once it is "modern" EVERY backend must speak it or it
+// rejects the proxy's logins outright. The secret authenticates the PROXY to the
+// backend; every backend verifies it before accepting the forwarded identity. The
+// NetworkPolicy narrows game-port reachability to declared Velocity CIDRs for non-node
+// traffic, but Kubernetes always permits traffic from a pod's resident node, so the
+// policy is defense in depth and never replaces HMAC verification.
+//
+// Provisioned out-of-band (deploy/bootstrap.sh, the same run that writes Velocity's
+// forwarding.secret) and replicated into the minecraft namespace by `felis setup`.
+const (
+	ForwardingSecretName = "felis-forwarding-secret"
+	ForwardingSecretKey  = "secret"
 )
 
 // ValidateServerName checks the §22 name rule and reservation list.

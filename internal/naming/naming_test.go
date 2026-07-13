@@ -22,6 +22,7 @@ func TestValidateServerName(t *testing.T) {
 		{"has space", false},                         // illegal char
 		{"-leading", false},                          // leading hyphen
 		{"trailing-", false},                         // trailing hyphen
+		{"login", false},                             // reserved system server
 		{"lobby", false},                             // reserved
 		{"admin", false},                             // reserved
 		{"api", false},                               // reserved
@@ -45,9 +46,9 @@ func TestValidateSystemServerName(t *testing.T) {
 		name string
 		ok   bool
 	}{
-		{"login", true},  // reserved, but a legal system service
-		{"lobby", true},  // reserved, but a legal system service
-		{"admin", true},  // reserved names are allowed on this path
+		{"login", true}, // reserved, but a legal system service
+		{"lobby", true}, // reserved, but a legal system service
+		{"admin", true}, // reserved names are allowed on this path
 		{"survival", true},
 		{"ab", false},        // still too short
 		{"Login", false},     // still case-sensitive
@@ -64,13 +65,15 @@ func TestValidateSystemServerName(t *testing.T) {
 		}
 	}
 
-	// The two paths must genuinely differ on reserved names: user path refuses
-	// "lobby", system path accepts it.
-	if naming.ValidateServerName("lobby") == nil {
-		t.Error("ValidateServerName(lobby) accepted; reserved name must be refused for users")
-	}
-	if naming.ValidateSystemServerName("lobby") != nil {
-		t.Error("ValidateSystemServerName(lobby) refused; system path must accept it")
+	// The two paths must genuinely differ on system names: the user path
+	// refuses them while the system path accepts them.
+	for _, name := range []string{"login", "lobby"} {
+		if naming.ValidateServerName(name) == nil {
+			t.Errorf("ValidateServerName(%s) accepted; reserved name must be refused for users", name)
+		}
+		if naming.ValidateSystemServerName(name) != nil {
+			t.Errorf("ValidateSystemServerName(%s) refused; system path must accept it", name)
+		}
 	}
 }
 

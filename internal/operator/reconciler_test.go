@@ -120,6 +120,15 @@ func getSTS(t *testing.T, c client.Client, name string) *appsv1.StatefulSet {
 // markPodReady simulates the kubelet flipping the StatefulSet to ready.
 func markPodReady(t *testing.T, c client.Client, name string) {
 	t.Helper()
+	var svc corev1.Service
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "minecraft", Name: name}, &svc); err != nil {
+		t.Fatalf("get client service: %v", err)
+	}
+	svc.Spec.ClusterIP = "10.43.0.42"
+	svc.Spec.ClusterIPs = []string{"10.43.0.42"}
+	if err := c.Update(context.Background(), &svc); err != nil {
+		t.Fatalf("assign client service ClusterIP: %v", err)
+	}
 	sts := getSTS(t, c, name)
 	sts.Status.Replicas = 1
 	sts.Status.ReadyReplicas = 1
@@ -232,6 +241,9 @@ func TestReconcileRunning_RconProbeGatesReadiness(t *testing.T) {
 	}
 	if server.Status.Endpoint.Mode != v1alpha1.EndpointDirect {
 		t.Errorf("endpoint mode = %s, want direct", server.Status.Endpoint.Mode)
+	}
+	if server.Status.Endpoint.Address != "10.43.0.42:25565" {
+		t.Errorf("endpoint address = %q, want client Service ClusterIP", server.Status.Endpoint.Address)
 	}
 	if !isConditionTrue(server, v1alpha1.ConditionReady) {
 		t.Error("Ready condition should be True")
@@ -621,9 +633,9 @@ func TestReconcileRunning_StartDurationObservedOnce(t *testing.T) {
 	if err := c.Update(context.Background(), stopped); err != nil {
 		t.Fatalf("set desiredState=Stopped: %v", err)
 	}
-	reconcile(t, r, "survival")            // scales spec to 0; pods still terminating
-	markPodTerminated(t, c, "survival")    // pods finish draining
-	reconcile(t, r, "survival")            // reaches Stopped, clears startRequestedAt
+	reconcile(t, r, "survival")         // scales spec to 0; pods still terminating
+	markPodTerminated(t, c, "survival") // pods finish draining
+	reconcile(t, r, "survival")         // reaches Stopped, clears startRequestedAt
 	if s := getServer(t, c, "survival"); s.Status.StartRequestedAt != nil {
 		t.Errorf("startRequestedAt = %v after Stop, want nil so the next start re-anchors", s.Status.StartRequestedAt)
 	}

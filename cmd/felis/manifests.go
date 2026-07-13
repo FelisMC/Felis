@@ -30,9 +30,9 @@ func (m *multiFlag) Set(v string) error {
 // multi-document YAML stream on stdout, ready for `kubectl apply -f -`.
 //
 // It is a pure renderer: it never contacts a cluster and holds no credentials.
-// --velocity-cidr is REQUIRED because the game NetworkPolicy fails closed without
-// it; emitting a bundle whose 25565 ingress admitted no one would silently break
-// the server, so the generator refuses rather than guess.
+// --velocity-cidr records the proxy host addresses allowed by the game NetworkPolicy.
+// Kubernetes permits resident-node traffic regardless, but remote proxy deployments
+// need an explicit CIDR, so the renderer refuses to guess.
 func cmdManifests(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("manifests", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -48,18 +48,18 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 	worldsHostPath := fs.String("worlds-host-path", "", "node directory under which each world PVC is visible as <path>/<pvc>; enables the reaper CronJob (requires --backup-pvc and --archive-local-path)")
 	archiveLocalPath := fs.String("archive-local-path", "", "path the backup PVC is mounted at in the reaper CronJob; MUST equal felis.toml [archive] local_path")
 	var velocityCIDRs multiFlag
-	fs.Var(&velocityCIDRs, "velocity-cidr", "CIDR of an off-cluster Velocity proxy host allowed to reach game port 25565 (repeatable, REQUIRED)")
+	fs.Var(&velocityCIDRs, "velocity-cidr", "CIDR of a Velocity proxy host allowed to reach game port 25565 (repeatable, REQUIRED)")
 	var packageCIDRs multiFlag
 	fs.Var(&packageCIDRs, "package-cidr", "CIDR of a package mirror build Pods may reach (repeatable; default none = no internet egress)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 
-	// --velocity-cidr is mandatory: the game policy is fail-closed, so omitting it
-	// would render a server nobody can reach. Fail loudly at generation time.
+	// Keep proxy placement explicit. This matters for remote proxies and documents
+	// the expected source even when Velocity runs on the resident node.
 	if len(velocityCIDRs) == 0 {
 		fmt.Fprintln(stderr, "felis manifests: at least one --velocity-cidr is required "+
-			"(the game NetworkPolicy fails closed without it; pass the Velocity proxy host CIDR, e.g. --velocity-cidr 10.0.0.5/32)")
+			"(pass the Velocity proxy host CIDR, e.g. --velocity-cidr 10.0.0.5/32)")
 		return 2
 	}
 

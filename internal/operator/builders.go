@@ -18,6 +18,11 @@ import (
 // system server (see buildEnv), sourced from a Secret, never a literal.
 const envServiceToken = "FELIS_SERVICE_TOKEN"
 
+// envForwardingSecret is the environment variable a backend reads the Velocity
+// modern-forwarding secret from. Unlike the service token it goes to EVERY backend
+// (see buildEnv), because Velocity's forwarding mode is proxy-wide.
+const envForwardingSecret = "FELIS_FORWARDING_SECRET"
+
 // Workload constants shared by the builders.
 const (
 	// GamePort is the Minecraft TCP port the proxy and readiness probe target.
@@ -84,11 +89,6 @@ func graceSeconds(server *v1alpha1.MinecraftServer) int64 {
 // rconAddress is the in-cluster RCON endpoint the operator probes for readiness.
 func rconAddress(server *v1alpha1.MinecraftServer) string {
 	return fmt.Sprintf("%s.%s.svc.cluster.local:%d", server.Name, server.Namespace, rconPort(server))
-}
-
-// gameAddress is the in-cluster game endpoint advertised when Running.
-func gameAddress(server *v1alpha1.MinecraftServer) string {
-	return fmt.Sprintf("%s.%s.svc.cluster.local:%d", server.Name, server.Namespace, GamePort)
 }
 
 // preStopScript is the operator-injected graceful-shutdown sequence (spec §7):
@@ -309,12 +309,13 @@ func buildEnv(server *v1alpha1.MinecraftServer) []corev1.EnvVar {
 	// link status), so it — and only it — receives the service token. Injected
 	// from a Secret in this namespace, never inlined into the CRD (the same
 	// discipline as RCON_PASSWORD above; the CRD's EnvVar type has no valueFrom
-	// precisely so a user server cannot mount an arbitrary secret). Keyed off the
-	// reserved "login" name, which naming.ValidateServerName forbids any user
-	// server from claiming — so this can never leak the token into a user's pod.
+	// precisely so a user server cannot mount an arbitrary secret). Require both
+	// the reserved name and the setup-owned system-role label: the label prevents
+	// a legacy user server named "login" from receiving the token after upgrade.
 	// The Secret must exist in this (minecraft) namespace; `felis setup` replicates
 	// it there from the control namespace before creating this server.
-	if server.Name == naming.SystemLoginServer {
+	if server.Name == naming.SystemLoginServer &&
+		server.Labels[v1alpha1.LabelSystemRole] == naming.SystemLoginServer {
 		env = append(env, corev1.EnvVar{
 			Name: envServiceToken,
 			ValueFrom: &corev1.EnvVarSource{
@@ -325,6 +326,30 @@ func buildEnv(server *v1alpha1.MinecraftServer) []corev1.EnvVar {
 			},
 		})
 	}
+	// The Velocity modern-forwarding secret goes to EVERY backend, system and user
+	// alike — not because user servers are trusted, but because Velocity's forwarding
+	// mode is one proxy-wide setting: with it on, a backend that cannot verify the
+	// signed handshake rejects every login the proxy sends it. Withholding the secret
+	// from user servers would not harden them, it would simply make them unjoinable.
+	// It is the backend's proof that a login really came from the proxy (and so that
+	// the player's UUID is Mojang-verified, not offline-derived) — the pod-level fence
+	// against bypassing the proxy is the NetworkPolicy, not this value's secrecy.
+	//
+	// A user server is built from an operator-typed Dockerfile, so Felis cannot make it
+	// consume this; the two images Felis does build (deploy/limbo, deploy/lobby) read it
+	// in their entrypoints and refuse to start without it. Optional so a cluster whose
+	// proxy is not in modern mode — no Secret provisioned — still schedules its pods
+	// instead of wedging them all in CreateContainerConfigError.
+	env = append(env, corev1.EnvVar{
+		Name: envForwardingSecret,
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: naming.ForwardingSecretName},
+				Key:                  naming.ForwardingSecretKey,
+				Optional:             boolPtr(true),
+			},
+		},
+	})
 	return env
 }
 

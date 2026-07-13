@@ -77,12 +77,12 @@ type Params struct {
 	// BuildNamespace is where image-build Jobs run under the weak felis-build SA,
 	// with the egress-locked NetworkPolicy.
 	BuildNamespace string
-	// VelocityCIDRs are the off-cluster Velocity proxy source addresses permitted
-	// to reach server game ports (25565). Velocity runs on a separate macvlan host
-	// (spec §20), NOT a Kubernetes node, so this is an ipBlock allowlist and can
-	// never be a podSelector. It has NO default: an empty list renders a
-	// fail-closed game policy that admits no one (never an accidental allow-all),
-	// and the `felis manifests` generator refuses to emit a bundle without it.
+	// VelocityCIDRs are the Velocity proxy source addresses permitted to reach
+	// server game ports (25565) as ipBlock peers. The bootstrap proxy runs on the
+	// k3s node; other deployments may use a separate host. Kubernetes always permits
+	// resident-node traffic independently of NetworkPolicy, so this list constrains
+	// non-node sources. It has NO default, and the `felis manifests` generator
+	// refuses to emit a bundle without an explicit proxy placement.
 	VelocityCIDRs []string
 	// RegistryNamespace / RegistryPort locate the in-cluster image registry the
 	// build egress policy may reach (spec §16). RegistryNamespace defaults to the

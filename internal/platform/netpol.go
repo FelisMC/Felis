@@ -95,16 +95,15 @@ func allowRConFromControlPlane(p Params) *networkingv1.NetworkPolicy {
 	return np
 }
 
-// allowGameFromVelocity opens 25565 on server pods to the off-cluster Velocity
-// proxy host(s) by ipBlock. Velocity is NOT a K8s pod (spec §20: it runs on a
-// separate macvlan host), so the peer can only be an ipBlock — never a
-// podSelector.
+// allowGameFromVelocity opens 25565 on server pods to Velocity proxy host(s) by
+// ipBlock. The supported proxy runs outside the pod network (on the k3s node or a
+// separate host), so the peer is an ipBlock rather than a podSelector. Kubernetes
+// always permits resident-node traffic; these rules constrain other sources.
 //
-// Fail-closed: with no VelocityCIDRs the policy carries NO ingress rule (deny all
-// game ingress), never an empty-From rule, which K8s would read as allow-all. The
-// `felis manifests` generator additionally refuses an empty velocity list, so the
-// rendered bundle is always either correctly scoped or absent — never accidentally
-// open.
+// With no VelocityCIDRs the policy carries NO ingress rule, never an empty-From
+// rule (which K8s would read as allow-all). That denies non-node game traffic;
+// resident-node traffic remains outside NetworkPolicy's blocking capability. The
+// manifest generator still refuses an empty list so remote proxies fail loudly.
 func allowGameFromVelocity(p Params) *networkingv1.NetworkPolicy {
 	tcp := corev1.ProtocolTCP
 	port := intstr.FromInt32(gamePort)

@@ -79,7 +79,8 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 }
 
 func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.MinecraftServer) (ctrl.Result, error) {
-	if err := r.ensureServices(ctx, server); err != nil {
+	endpointAddress, err := r.ensureServices(ctx, server)
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -107,6 +108,13 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		if r.startupTimedOut(server) {
 			r.markFailed(server, "StartupTimeout", "pod did not become ready within startup timeout")
 		}
+		if err := r.patchStatus(ctx, server); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: requeueStarting}, nil
+	}
+	if endpointAddress == "" {
+		r.markStarting(server, "ServiceAddressPending", "waiting for the client Service ClusterIP")
 		if err := r.patchStatus(ctx, server); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -162,7 +170,7 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		}
 	}
 
-	r.markRunningReady(server, players)
+	r.markRunningReady(server, players, endpointAddress)
 	return ctrl.Result{}, r.patchStatus(ctx, server)
 }
 
@@ -198,16 +206,26 @@ func (r *Reconciler) reconcileStopped(ctx context.Context, server *v1alpha1.Mine
 	return ctrl.Result{}, r.patchStatus(ctx, server)
 }
 
-func (r *Reconciler) ensureServices(ctx context.Context, server *v1alpha1.MinecraftServer) error {
+func (r *Reconciler) ensureServices(ctx context.Context, server *v1alpha1.MinecraftServer) (string, error) {
+	endpointAddress := ""
 	for _, svc := range []*corev1.Service{buildHeadlessService(server), buildClientService(server)} {
 		if err := controllerutil.SetControllerReference(server, svc, r.Scheme); err != nil {
-			return err
+			return "", err
 		}
 		if err := r.applyService(ctx, svc); err != nil {
-			return err
+			return "", err
+		}
+		if svc.Name == server.Name {
+			var current corev1.Service
+			if err := r.Get(ctx, client.ObjectKeyFromObject(svc), &current); err != nil {
+				return "", err
+			}
+			if current.Spec.ClusterIP != "" && current.Spec.ClusterIP != corev1.ClusterIPNone {
+				endpointAddress = fmt.Sprintf("%s:%d", current.Spec.ClusterIP, GamePort)
+			}
 		}
 	}
-	return nil
+	return endpointAddress, nil
 }
 
 func (r *Reconciler) rconPassword(ctx context.Context, server *v1alpha1.MinecraftServer) (string, error) {
@@ -287,7 +305,7 @@ func (r *Reconciler) markStarting(server *v1alpha1.MinecraftServer, reason, msg 
 	r.setCondition(server, v1alpha1.ConditionRconReached, metav1.ConditionFalse, reason, msg)
 }
 
-func (r *Reconciler) markRunningReady(server *v1alpha1.MinecraftServer, players PlayerCount) {
+func (r *Reconciler) markRunningReady(server *v1alpha1.MinecraftServer, players PlayerCount, endpointAddress string) {
 	server.Status.Phase = v1alpha1.PhaseRunning
 	server.Status.Ready = true
 	server.Status.ObservedGeneration = server.Generation
@@ -305,7 +323,7 @@ func (r *Reconciler) markRunningReady(server *v1alpha1.MinecraftServer, players 
 			metrics.StartDurationSeconds.Observe(t.Sub(server.Status.StartRequestedAt.Time).Seconds())
 		}
 	}
-	server.Status.Endpoint = v1alpha1.EndpointStatus{Mode: v1alpha1.EndpointDirect, Address: gameAddress(server)}
+	server.Status.Endpoint = v1alpha1.EndpointStatus{Mode: v1alpha1.EndpointDirect, Address: endpointAddress}
 	server.Status.LiveMotd = server.Spec.Motd.Running
 	r.setCondition(server, v1alpha1.ConditionRconReached, metav1.ConditionTrue, "Probed", "RCON probe succeeded")
 	r.setCondition(server, v1alpha1.ConditionReady, metav1.ConditionTrue, "RconReached", "server is accepting RCON")

@@ -16,6 +16,9 @@ const (
 	LabelManagedBy = GroupName + "/managed-by"
 	// LabelComponent distinguishes the workload role (server, rcon, ...).
 	LabelComponent = GroupName + "/component"
+	// LabelSystemRole identifies setup-owned system servers. Its value is the
+	// reserved role name (for example, "login" or "lobby").
+	LabelSystemRole = GroupName + "/system-role"
 )
 
 // DesiredState is the operator-facing intent toggle (spec §4 spec.desiredState).
@@ -121,7 +124,7 @@ type MinecraftServerSpec struct {
 	// Jar is the server jar path/name inside the image, if the entrypoint
 	// needs it explicitly.
 	Jar string `json:"jar,omitempty"`
-	// JavaMemory is the heap sizing passed as -Xmx/-Xms (e.g. "4G").
+	// JavaMemory is the maximum heap sizing passed as -Xmx (e.g. "4G").
 	JavaMemory string `json:"javaMemory,omitempty"`
 	// JavaFlags are additional JVM flags (e.g. Aikar's flags).
 	JavaFlags []string `json:"javaFlags,omitempty"`
