@@ -56,7 +56,7 @@ func TestBuildSystemServerShape(t *testing.T) {
 // fallback of its own; the lobby falls back to login. Neither may fall back to
 // the lobby — that would route a player past authentication.
 func TestSystemServerFallbackPolicy(t *testing.T) {
-	login, err := loginSystemServer("reg/limbo:1", "minecraft", "http://felis-api.felis.svc.cluster.local:8081", "mc.example.net")
+	login, err := loginSystemServer("reg/limbo:1", "minecraft", "http://felis-api.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net")
 	if err != nil {
 		t.Fatalf("loginSystemServer: %v", err)
 	}
@@ -107,11 +107,12 @@ func TestBuildSystemServerRejectsBadInput(t *testing.T) {
 }
 
 // The login gate needs its deployment config as plain env: the internal API URL,
-// the root domain, and the lobby name — but NEVER the service token (that is
-// injected by the operator via secretKeyRef, never a literal in the CRD).
+// the root domain, the resolved panel host, and the lobby name — but NEVER the
+// service token (that is injected by the operator via secretKeyRef, never a literal
+// in the CRD).
 func TestLoginSystemServerEnv(t *testing.T) {
 	login, err := loginSystemServer("reg/limbo:1", "minecraft",
-		"http://felis-api.felis.svc.cluster.local:8081", "mc.example.net")
+		"http://felis-api.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net")
 	if err != nil {
 		t.Fatalf("loginSystemServer: %v", err)
 	}
@@ -120,9 +121,10 @@ func TestLoginSystemServerEnv(t *testing.T) {
 		got[e.Name] = e.Value
 	}
 	want := map[string]string{
-		"FELIS_API_BASE_URL": "http://felis-api.felis.svc.cluster.local:8081",
-		"FELIS_ROOT_DOMAIN":  "mc.example.net",
-		"FELIS_LOBBY_SERVER": naming.SystemLobbyServer,
+		"FELIS_API_BASE_URL":   "http://felis-api.felis.svc.cluster.local:8081",
+		"FELIS_ROOT_DOMAIN":    "mc.example.net",
+		"FELIS_PANEL_HOSTNAME": "console.mc.example.net",
+		"FELIS_LOBBY_SERVER":   naming.SystemLobbyServer,
 	}
 	for k, v := range want {
 		if got[k] != v {
@@ -352,7 +354,7 @@ func TestEnsureSystemServersIdempotent(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(scheme).Build()
 	ctx := context.Background()
 
-	first := ensureSystemServers(ctx, cl, "minecraft", "reg/limbo:1", "reg/lobby:1", "http://felis-api.felis.svc.cluster.local:8081", "mc.example.net")
+	first := ensureSystemServers(ctx, cl, "minecraft", "reg/limbo:1", "reg/lobby:1", "http://felis-api.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net")
 	if len(first) != 2 {
 		t.Fatalf("first run outcomes = %d, want 2", len(first))
 	}
@@ -378,7 +380,7 @@ func TestEnsureSystemServersIdempotent(t *testing.T) {
 	}
 
 	// Re-run: both already exist → skipped, nothing created, no error.
-	second := ensureSystemServers(ctx, cl, "minecraft", "reg/limbo:1", "reg/lobby:1", "http://felis-api.felis.svc.cluster.local:8081", "mc.example.net")
+	second := ensureSystemServers(ctx, cl, "minecraft", "reg/limbo:1", "reg/lobby:1", "http://felis-api.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net")
 	for _, o := range second {
 		if o.err != nil {
 			t.Fatalf("%s: unexpected error on re-run: %v", o.name, o.err)
@@ -405,7 +407,7 @@ func TestEnsureSystemServersRejectsLegacyLoginNameCollision(t *testing.T) {
 
 	out := ensureSystemServers(
 		context.Background(), cl, "minecraft", "reg/limbo:1", "",
-		"http://felis-api.felis.svc.cluster.local:8081", "mc.example.net",
+		"http://felis-api.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net",
 	)
 	if len(out) != 2 {
 		t.Fatalf("outcomes = %d, want 2", len(out))
@@ -425,7 +427,7 @@ func TestEnsureSystemServersSkipsUnsetImage(t *testing.T) {
 	ctx := context.Background()
 
 	// login image set, lobby image empty → login created, lobby skipped.
-	out := ensureSystemServers(ctx, cl, "minecraft", "reg/limbo:1", "", "http://felis-api.felis.svc.cluster.local:8081", "mc.example.net")
+	out := ensureSystemServers(ctx, cl, "minecraft", "reg/limbo:1", "", "http://felis-api.felis.svc.cluster.local:8081", "mc.example.net", "console.mc.example.net")
 	byName := map[string]systemServerOutcome{}
 	for _, o := range out {
 		byName[o.name] = o

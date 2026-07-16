@@ -185,7 +185,7 @@ func TestOwnerResultCmdCarriesIsOperator(t *testing.T) {
 }
 
 func TestMCBindCarriesAuditWarning(t *testing.T) {
-	m := newMCBindModel(context.Background(), &fakeOwnerStore{}, "op.console.example.com", "root")
+	m := newMCBindModel(context.Background(), &fakeOwnerStore{}, "console.example.com", "root")
 	next, _ := m.Update(mcBindMsg{outcome: breakGlassOutcome{
 		ownerIdentity: "mc-uuid-1",
 		setupTokenURL: "https://op.console.example.com/setup?token=t0ken",

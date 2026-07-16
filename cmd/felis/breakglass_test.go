@@ -650,7 +650,7 @@ func TestPerformSetupMCBind(t *testing.T) {
 
 	t.Run("binds the owner and mints a setup URL whose token hash is what is stored", func(t *testing.T) {
 		f := &fakeOwnerStore{redeemUserID: "usr-owner-1", redeemMCUUID: "mc-uuid-1", redeemAuthSource: "mojang"}
-		out, err := performSetupMCBind(ctx, f, "  abc-123  ", "op.console.example.com", "deploybot")
+		out, err := performSetupMCBind(ctx, f, "  abc-123  ", "console.example.com", "deploybot")
 		if err != nil {
 			t.Fatalf("performSetupMCBind: %v", err)
 		}
@@ -672,7 +672,7 @@ func TestPerformSetupMCBind(t *testing.T) {
 		if out.ownerIdentity != "mc-uuid-1" {
 			t.Errorf("owner identity = %q, want the verified Minecraft UUID", out.ownerIdentity)
 		}
-		const prefix = "https://op.console.example.com/setup?token="
+		const prefix = "https://console.example.com/setup?token="
 		if !strings.HasPrefix(out.setupTokenURL, prefix) {
 			t.Fatalf("setup URL = %q, want prefix %q", out.setupTokenURL, prefix)
 		}
@@ -711,7 +711,7 @@ func TestPerformSetupMCBind(t *testing.T) {
 
 	t.Run("an empty link code mints nothing", func(t *testing.T) {
 		f := &fakeOwnerStore{}
-		if _, err := performSetupMCBind(ctx, f, "   ", "op.console.example.com", "root"); err == nil {
+		if _, err := performSetupMCBind(ctx, f, "   ", "console.example.com", "root"); err == nil {
 			t.Fatal("want error for an empty link code")
 		}
 		if len(f.redeems) != 0 || len(f.tokens) != 0 {
@@ -724,7 +724,7 @@ func TestPerformSetupMCBind(t *testing.T) {
 
 	t.Run("a link-code redemption failure mints no token", func(t *testing.T) {
 		f := &fakeOwnerStore{redeemErr: errors.New("code expired")}
-		if _, err := performSetupMCBind(ctx, f, "abc-123", "op.console.example.com", "root"); err == nil {
+		if _, err := performSetupMCBind(ctx, f, "abc-123", "console.example.com", "root"); err == nil {
 			t.Fatal("want error when the link code cannot be redeemed")
 		}
 		if len(f.tokens) != 0 {
@@ -737,7 +737,7 @@ func TestPerformSetupMCBind(t *testing.T) {
 
 	t.Run("a local-auth failure fails the bind rather than minting an unredeemable URL", func(t *testing.T) {
 		f := &fakeOwnerStore{redeemUserID: "usr-owner-1", setErr: errors.New("db down")}
-		if _, err := performSetupMCBind(ctx, f, "abc-123", "op.console.example.com", "root"); err == nil {
+		if _, err := performSetupMCBind(ctx, f, "abc-123", "console.example.com", "root"); err == nil {
 			t.Fatal("want error when local auth cannot be enabled")
 		}
 		if len(f.redeems) != 0 || len(f.tokens) != 0 {
@@ -747,7 +747,7 @@ func TestPerformSetupMCBind(t *testing.T) {
 
 	t.Run("a token-store failure rolls the bind back", func(t *testing.T) {
 		f := &fakeOwnerStore{redeemUserID: "usr-owner-1", createTokenErr: errors.New("db down")}
-		if _, err := performSetupMCBind(ctx, f, "abc-123", "op.console.example.com", "root"); err == nil {
+		if _, err := performSetupMCBind(ctx, f, "abc-123", "console.example.com", "root"); err == nil {
 			t.Fatal("want error when the setup token cannot be stored")
 		}
 		if len(f.redeems) != 0 {
@@ -763,7 +763,7 @@ func TestPerformSetupMCBind(t *testing.T) {
 
 	t.Run("an audit failure does not cost the operator their install", func(t *testing.T) {
 		f := &fakeOwnerStore{redeemUserID: "usr-owner-1", auditErr: errors.New("audit sink down")}
-		out, err := performSetupMCBind(ctx, f, "abc-123", "op.console.example.com", "root")
+		out, err := performSetupMCBind(ctx, f, "abc-123", "console.example.com", "root")
 		if err != nil {
 			t.Fatalf("an audit failure must not fail the bind: %v", err)
 		}
@@ -778,14 +778,14 @@ func TestPerformSetupMCBind(t *testing.T) {
 		}
 	})
 
-	t.Run("defaults the op.console host when adminHostname is empty", func(t *testing.T) {
+	t.Run("defaults the console host when panelHostname is empty", func(t *testing.T) {
 		f := &fakeOwnerStore{redeemUserID: "usr-owner-1"}
 		out, err := performSetupMCBind(ctx, f, "abc-123", "  ", "root")
 		if err != nil {
 			t.Fatalf("performSetupMCBind: %v", err)
 		}
-		if !strings.HasPrefix(out.setupTokenURL, "https://op.console.localhost/setup?token=") {
-			t.Errorf("setup URL = %q, want the op.console.localhost default host", out.setupTokenURL)
+		if !strings.HasPrefix(out.setupTokenURL, "https://console.localhost/setup?token=") {
+			t.Errorf("setup URL = %q, want the console.localhost default host", out.setupTokenURL)
 		}
 	})
 }

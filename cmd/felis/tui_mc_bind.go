@@ -18,7 +18,7 @@ import (
 type mcBindModel struct {
 	ctx       context.Context
 	store     ownerStore
-	adminHost string
+	panelHost string
 	osUser    string
 
 	step    mcBindStep
@@ -47,14 +47,14 @@ type mcBindMsg struct {
 	err     error
 }
 
-func newMCBindModel(ctx context.Context, store ownerStore, adminHost, osUser string) *mcBindModel {
+func newMCBindModel(ctx context.Context, store ownerStore, panelHost, osUser string) *mcBindModel {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = tuiLabel
 	m := &mcBindModel{
 		ctx:       ctx,
 		store:     store,
-		adminHost: adminHost,
+		panelHost: panelHost,
 		osUser:    osUser,
 		sp:        sp,
 		step:      mcBindForm,
@@ -156,7 +156,7 @@ func (m *mcBindModel) onFormComplete() (tea.Model, tea.Cmd) {
 	m.working = "Binding Minecraft account…"
 	code := strings.TrimSpace(strings.ToUpper(m.linkCode))
 	return m, tea.Batch(m.sp.Tick, func() tea.Msg {
-		out, err := performSetupMCBind(m.ctx, m.store, code, m.adminHost, m.osUser)
+		out, err := performSetupMCBind(m.ctx, m.store, code, m.panelHost, m.osUser)
 		return mcBindMsg{outcome: out, err: err}
 	})
 }

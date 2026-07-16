@@ -239,7 +239,7 @@ func provisionSystemServers(ctx context.Context, cfg *config.Config, out io.Writ
 		ensureSecretReplica(ctx, cl, controlNS, cfg.K8s.Namespace,
 			naming.ForwardingSecretName, naming.ForwardingSecretKey, "forwarding-secret"),
 	}
-	outcomes := ensureSystemServers(ctx, cl, cfg.K8s.Namespace, cfg.Velocity.LoginImage, cfg.Velocity.LobbyImage, apiBaseURL, cfg.Server.RootDomain)
+	outcomes := ensureSystemServers(ctx, cl, cfg.K8s.Namespace, cfg.Velocity.LoginImage, cfg.Velocity.LobbyImage, apiBaseURL, cfg.Server.RootDomain, defaultPanelHostname(cfg.Server.RootDomain, cfg.Auth.PanelHostname))
 	outcomes = append(secretOutcomes, outcomes...)
 	fmt.Fprintln(out, "\nfelis setup: login/lobby system servers (always-on, reaper-exempt):")
 	for _, o := range outcomes {

@@ -211,7 +211,7 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.stage = stageOwner
 		if m.mode == consoleModeSetup {
-			return m.adopt(newMCBindModel(m.ctx, m.store, m.adminHost, m.osUser))
+			return m.adopt(newMCBindModel(m.ctx, m.store, defaultPanelHostname(m.rootDomain, m.panelHost), m.osUser))
 		}
 		return m.adopt(newOwnerModel(m.ctx, m.store, m.osUser, false))
 

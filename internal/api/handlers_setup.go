@@ -11,7 +11,7 @@ import (
 // Setup-token redemption (spec §B setup bootstrap). The `felis setup` MC-bind
 // flow mints a one-time token and prints a URL like:
 //
-//	https://op.console.<root>/setup?token=<raw>
+//	https://console.<root>/setup?token=<raw>
 //
 // The Owner opens that URL in a browser; the SPA reads the token from the query
 // string and POSTs it here. This handler consumes the token (single-use, hashed

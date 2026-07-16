@@ -63,16 +63,17 @@ const felisLimboHealthPort int32 = 8080
 
 // The felis-limbo login plugin reads its deployment configuration from these
 // environment variables (env wins over its felis-link.properties template). The
-// non-secret three are baked into the login pod's Spec.Env here at provision time
+// non-secret four are baked into the login pod's Spec.Env here at provision time
 // (they derive from the deployment: the internal API URL, the root domain, the
-// lobby server name); the service-token secret is injected separately by the
-// operator via secretKeyRef. Without the token the plugin fail-safes to
-// readiness-only, so a login pod that has the URL/domain but not yet the token is
-// safe (it simply does not authenticate) rather than broken.
+// resolved panel host, the lobby server name); the service-token secret is injected
+// separately by the operator via secretKeyRef. Without the token the plugin
+// fail-safes to readiness-only, so a login pod that has the URL/domain but not yet
+// the token is safe (it simply does not authenticate) rather than broken.
 const (
-	envAPIBaseURL  = "FELIS_API_BASE_URL"
-	envRootDomain  = "FELIS_ROOT_DOMAIN"
-	envLobbyServer = "FELIS_LOBBY_SERVER"
+	envAPIBaseURL    = "FELIS_API_BASE_URL"
+	envRootDomain    = "FELIS_ROOT_DOMAIN"
+	envPanelHostname = "FELIS_PANEL_HOSTNAME"
+	envLobbyServer   = "FELIS_LOBBY_SERVER"
 )
 
 // buildSystemServer constructs an always-on, reaper-exempt MinecraftServer from
@@ -153,11 +154,14 @@ func buildSystemServer(in systemServerSpec, namespace string) (*v1alpha1.Minecra
 // only safe fallback, so it carries no fallback of its own: if it is down the
 // proxy refuses the connection rather than routing onward past authentication.
 //
-// apiBaseURL is the felis-api internal face the login plugin authenticates to and
-// rootDomain builds the console URL the plugin links players at; both are baked in
-// as plain env. The service token is NOT passed here — the operator injects it via
-// secretKeyRef so the credential never lands in the CRD.
-func loginSystemServer(image, namespace, apiBaseURL, rootDomain string) (*v1alpha1.MinecraftServer, error) {
+// apiBaseURL is the felis-api internal face the login plugin authenticates to;
+// panelHostname is the resolved console/panel host the plugin links players at (the
+// single source of truth for that host — see defaultPanelHostname), and rootDomain
+// is kept for the plugin's own console.<root> fallback when the panel env is absent
+// (an older operator). All three are baked in as plain env. The service token is NOT
+// passed here — the operator injects it via secretKeyRef so the credential never
+// lands in the CRD.
+func loginSystemServer(image, namespace, apiBaseURL, rootDomain, panelHostname string) (*v1alpha1.MinecraftServer, error) {
 	return buildSystemServer(systemServerSpec{
 		name:           naming.SystemLoginServer,
 		subdomain:      naming.SystemLoginServer,
@@ -170,6 +174,7 @@ func loginSystemServer(image, namespace, apiBaseURL, rootDomain string) (*v1alph
 		env: []v1alpha1.EnvVar{
 			{Name: envAPIBaseURL, Value: apiBaseURL},
 			{Name: envRootDomain, Value: rootDomain},
+			{Name: envPanelHostname, Value: panelHostname},
 			{Name: envLobbyServer, Value: naming.SystemLobbyServer},
 		},
 	}, namespace)
@@ -233,7 +238,7 @@ type systemServerOutcome struct {
 // service is created. It never deletes or overwrites. The caller supplies the
 // K8s client and namespace; this function performs no signal-handler or client
 // setup of its own.
-func ensureSystemServers(ctx context.Context, cl client.Client, namespace, loginImage, lobbyImage, apiBaseURL, rootDomain string) []systemServerOutcome {
+func ensureSystemServers(ctx context.Context, cl client.Client, namespace, loginImage, lobbyImage, apiBaseURL, rootDomain, panelHostname string) []systemServerOutcome {
 	type plan struct {
 		name  string
 		image string
@@ -241,7 +246,7 @@ func ensureSystemServers(ctx context.Context, cl client.Client, namespace, login
 	}
 	plans := []plan{
 		{name: naming.SystemLoginServer, image: loginImage, build: func(image, ns string) (*v1alpha1.MinecraftServer, error) {
-			return loginSystemServer(image, ns, apiBaseURL, rootDomain)
+			return loginSystemServer(image, ns, apiBaseURL, rootDomain, panelHostname)
 		}},
 		{name: naming.SystemLobbyServer, image: lobbyImage, build: lobbySystemServer},
 	}

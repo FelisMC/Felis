@@ -196,14 +196,22 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
             return;
         }
 
+        // The console host the player links at. Prefer the resolved FELIS_PANEL_HOSTNAME
+        // the provisioner bakes in (single source of truth — it honours a custom
+        // panel_hostname); fall back to console.<root> only for an older operator whose
+        // env predates it. With neither set there is no link to build, so login stays off.
+        String panelHost = trimmed(System.getenv("FELIS_PANEL_HOSTNAME"));
         String rootDomain = trimmed(System.getenv("FELIS_ROOT_DOMAIN"));
-        if (rootDomain == null) {
-            LOG.warning("FelisLimbo: FELIS_ROOT_DOMAIN unset — cannot build the console login link");
+        if (panelHost == null && rootDomain != null) {
+            panelHost = "console." + rootDomain;
+        }
+        if (panelHost == null) {
+            LOG.warning("FelisLimbo: neither FELIS_PANEL_HOSTNAME nor FELIS_ROOT_DOMAIN set — cannot build the console login link");
             loginEnabled = false;
             return;
         }
 
-        this.consoleUrl = "https://console." + rootDomain;
+        this.consoleUrl = "https://" + panelHost;
         String lobby = trimmed(System.getenv("FELIS_LOBBY_SERVER"));
         this.lobbyServer = lobby != null ? lobby : "lobby";
         this.timeoutMillis = loginTimeoutSeconds() * 1000L;
@@ -227,6 +235,14 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
         try {
             if (apiClient.isBlacklisted(id)) {
                 disconnectOnMain(id, "该用户名已被回收保护 / This username is under reclaim protection. Contact staff.");
+                return;
+            }
+            // Check registration before minting: an already-linked player needs no
+            // bind code, so send them straight to the lobby instead of flashing a
+            // useless code. Only unlinked players get one. The on-demand /link
+            // command (proxy + lobby) stays the door to a fresh web session.
+            if (apiClient.linkStatus(id)) {
+                getServer().getScheduler().runTask(this, () -> transferToLobby(id));
                 return;
             }
             LinkCode code = linkClient.requestCode(id);

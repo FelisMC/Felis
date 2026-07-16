@@ -388,14 +388,17 @@ func newSetupToken() (raw, hash string, err error) {
 // binds their Minecraft account via a one-time link code the login gate handed
 // them in-game, the bound user is promoted to role='admin' (passwordless Owner),
 // local auth is enabled, and a one-time setup URL is minted for the first web
-// login where the Owner verifies email / enrolls a passkey. adminHostname is the
-// op.console host the URL points at; osUser is recorded as the accountable actor.
+// login where the Owner verifies email / enrolls a passkey. panelHostname is the
+// panel host the URL points at: the wizard enrolls the passkey, and the only wired
+// WebAuthn verifier (cmd/felis/api.go) is scoped to the panel host, so the
+// ceremony's origin MUST be the panel face — op.console has no verifier wired and
+// cannot enroll at all. osUser is recorded as the accountable actor.
 //
 // Local auth is as load-bearing here as it is in break-glass, and for a sharper
 // reason: an MC-bound Owner has no password AND no email, so the setup token is
 // their ONLY door. CompleteOwnerSetup therefore commits the identity bind, auth
 // toggle, and token together; any failed write leaves the link code retryable.
-func performSetupMCBind(ctx context.Context, s ownerStore, code, adminHostname, osUser string) (breakGlassOutcome, error) {
+func performSetupMCBind(ctx context.Context, s ownerStore, code, panelHostname, osUser string) (breakGlassOutcome, error) {
 	code = strings.TrimSpace(strings.ToUpper(code))
 	if code == "" {
 		return breakGlassOutcome{}, errors.New("link code is required")
@@ -420,9 +423,9 @@ func performSetupMCBind(ctx context.Context, s ownerStore, code, adminHostname, 
 		ownerIdentity: mcUUID,
 		auditErr:      auditSetupMCBind(ctx, s, osUser, mcUUID, authSource),
 	}
-	host := strings.TrimSpace(adminHostname)
+	host := strings.TrimSpace(panelHostname)
 	if host == "" {
-		host = "op.console.localhost"
+		host = "console.localhost"
 	}
 	out.setupTokenURL = "https://" + host + "/setup?token=" + raw
 	return out, nil
