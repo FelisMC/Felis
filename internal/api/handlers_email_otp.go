@@ -230,6 +230,42 @@ func (a *API) deliverOTP(ctx context.Context, email, code string) error {
 	return a.Mailer.SendOTP(ctx, email, code)
 }
 
+// setEmailRequest is the record-email body: the address to bind to the caller's
+// account WITHOUT an OTP round-trip.
+type setEmailRequest struct {
+	Email string `json:"email"`
+}
+
+// handleSetEmail records the caller's email without verifying it (SetupAllowed). The
+// setup bootstrap has no SMTP, so the Owner cannot receive an emailed code; the
+// address is stored unverified and a later Settings/SMTP flow proves control of it.
+// This is the setup wizard's Step-1 write. The OTP start/verify pair above is left
+// intact for the Account page and for post-SMTP verification — this door deliberately
+// does NOT touch email_verified.
+func (a *API) handleSetEmail(w http.ResponseWriter, r *http.Request) {
+	p := principalFromContext(r.Context())
+	if err := requireJSONContentType(r); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	var req setEmailRequest
+	if err := decodeJSON(w, r, &req); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	email := strings.TrimSpace(req.Email)
+	if !looksLikeEmail(email) {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "a valid email is required"))
+		return
+	}
+	if err := a.Repo.SetUserEmail(r.Context(), p.UserID, email); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	a.audit(r, auditActor(p), "account.email.set", "")
+	writeJSON(w, http.StatusOK, map[string]any{"email": email})
+}
+
 // auditActor picks the most identifying actor string for a principal: the audited
 // Access email when present, else the stable user id. A player mid-onboarding may
 // not have a verified email yet, so the id keeps the audit row attributable.

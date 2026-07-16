@@ -310,6 +310,13 @@ type Repo interface {
 	// becomes proven, so the write is load-bearing. The pre-session LOGIN door must
 	// NOT use it — see ConsumeLoginEmailOTP.
 	VerifyEmailOTP(ctx context.Context, userID, purpose, codeHash string, now time.Time) (email string, err error)
+	// SetUserEmail records email on the user row WITHOUT proving control of it, and
+	// clears email_verified in the same write (proving nothing, it must never leave a
+	// stale verified flag — see the PGRepo impl). This backs the setup wizard's Step 1:
+	// the bootstrap has no SMTP, so the Owner cannot receive an emailed code, and the
+	// address is stored unverified for a later Settings/SMTP flow to verify. An unknown
+	// userID returns ErrNotFound.
+	SetUserEmail(ctx context.Context, userID, email string) error
 	// ConsumeLoginEmailOTP redeems the newest live code for (userID, purpose) against
 	// codeHash for the PRE-SESSION email LOGIN door, with the SAME code lifecycle as
 	// VerifyEmailOTP (FOR UPDATE, expiry+lockout before hash compare, mismatch charges

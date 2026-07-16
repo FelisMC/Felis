@@ -3317,6 +3317,46 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /api/v1/account/email:
+    post:
+      tags: [account]
+      operationId: setEmail
+      summary: Record the caller's email WITHOUT verifying it (setup bootstrap, spec §B2).
+      description: >
+        Writes the supplied address to the authenticated principal's user row and
+        clears email_verified (already false for a fresh Owner). The setup bootstrap
+        has no SMTP, so the Owner cannot receive an emailed code; a later Settings/SMTP
+        flow proves control of the address via /account/email/verify.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        '200':
+          description: Email recorded (unverified).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [email]
+                properties:
+                  email: { type: string, format: email }
+        '400':
+          description: A valid email is required.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
   /api/v1/account/passkey/register/begin:
     post:
       tags: [account]

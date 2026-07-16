@@ -391,6 +391,10 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// email is an ordinary authenticated operation, scoped to the principal.
 		{Method: "POST", Pattern: "/api/v1/account/email/start", SetupAllowed: true, h: a.handleEmailOTPStart},
 		{Method: "POST", Pattern: "/api/v1/account/email/verify", SetupAllowed: true, h: a.handleEmailOTPVerify},
+		// Record-only email: the setup wizard's Step 1 stores the Owner's address
+		// UNVERIFIED (no SMTP at bootstrap ⇒ no code to mail). email_verified stays
+		// false until a later Settings/SMTP flow proves control via /email/verify above.
+		{Method: "POST", Pattern: "/api/v1/account/email", SetupAllowed: true, h: a.handleSetEmail},
 		// Passkey enrollment (spec §14 WebAuthn / Phase 6 bind), web side: /register/begin
 		// mints a credential-creation challenge for the caller, /register/finish verifies
 		// the authenticator's attestation and binds the passkey, and the credentials
@@ -522,7 +526,7 @@ func (a *API) buildFace(routes []apiRoute, guard func(http.Handler) http.Handler
 		// explicitly opts out. The wrapper is nil-principal safe, so it is inert on
 		// the internal face (service-token callers carry no Principal).
 		if !rt.SetupAllowed {
-			h = a.requireEmailVerified(h)
+			h = a.requireOnboarded(h)
 		}
 		auth.HandleFunc(pattern, h)
 	}
@@ -542,20 +546,31 @@ func (a *API) baseChain(h http.Handler) http.Handler {
 	return withRequestID(withRecover(h))
 }
 
-// requireEmailVerified fences an authenticated route behind the setup-lockdown:
-// a session whose EmailVerified is false (a freshly-onboarded principal that has
-// not yet proved control of its email) is restricted to SetupAllowed routes only.
-// The wrapper is nil-principal safe, so it is inert on the internal face
-// (service-token callers carry no Principal) and on the external face's admin
-// Zero-Trust paths (those carry an IsAdmin/IsOwner principal that has already
-// passed email verification at account creation).
-func (a *API) requireEmailVerified(h http.HandlerFunc) http.HandlerFunc {
+// requireOnboarded fences an authenticated route behind the setup-lockdown: a
+// freshly-onboarded principal that has not finished setup is restricted to
+// SetupAllowed routes only. The lockdown lifts on a durable login credential, NOT
+// on email verification: the bootstrap Owner has no verified email (no SMTP exists
+// at bootstrap) and a passkey is the ONLY credential that logs the Owner in
+// pre-SMTP (email-OTP login refuses admin accounts; op-login needs SMTP + a second
+// admin). So passkey enrollment is what completes setup — and it must, or the
+// unverified Owner could never reach the Settings page to configure SMTP.
+//
+// Only a session principal whose email is still unverified reaches the passkey
+// lookup; after setup that is just the bootstrap Owner, so the extra query is not
+// on any hot path. The wrapper is nil-principal safe, so it is inert on the
+// internal face (service-token callers carry no Principal) and on the external
+// face's admin Zero-Trust paths (those carry an IsAdmin/IsOwner principal that has
+// already passed email verification at account creation).
+func (a *API) requireOnboarded(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p := principalFromContext(r.Context())
 		if p != nil && p.ViaSession && !p.EmailVerified {
-			writeError(w, r, newError(http.StatusForbidden, "setup_required",
-				"email verification is required before this action is available"))
-			return
+			creds, _ := a.Repo.PasskeyCredentialsForUser(r.Context(), p.UserID)
+			if len(creds) == 0 {
+				writeError(w, r, newError(http.StatusForbidden, "setup_required",
+					"passkey enrollment is required before this action is available"))
+				return
+			}
 		}
 		h(w, r)
 	}

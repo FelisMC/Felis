@@ -737,6 +737,29 @@ func (p *PGRepo) VerifyEmailOTP(ctx context.Context, userID, purpose, codeHash s
 	return email, nil
 }
 
+// SetUserEmail records email on the user row WITHOUT verifying it (setup bootstrap
+// has no SMTP — the Owner enters an address a later Settings/SMTP flow will verify).
+// It clears email_verified in the same write: only VerifyEmailOTP ever sets that
+// flag, and it does so only alongside the proven address, so recording a fresh
+// (unproven) address must drop any prior verification rather than leave a stale
+// email_verified=true asserting an address the user never proved. For a fresh Owner
+// the flag is already false, so this is a no-op there.
+func (p *PGRepo) SetUserEmail(ctx context.Context, userID, email string) error {
+	res, err := p.db.ExecContext(ctx,
+		`UPDATE users SET email = $2, email_verified = false WHERE id = $1`, userID, email)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // ---- player game-login: username-collision reclaim (spec §B3) ----
 
 // ReclaimUsername bars the squatter UUID and stashes its data hold in one

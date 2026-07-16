@@ -15,15 +15,17 @@ import { useTier } from "@/lib/tier";
 // `felis setup` MC-bind flow prints https://op.console.<root>/setup?token=<raw> —
 // the Owner is staff, so onboarding lands on the operator console, not the player
 // panel; this page redeems that one-time token (minting a lockdown session), then drives the
-// two remaining steps — verify email, enroll a passkey — before handing off to the
+// two remaining steps — record an email, enroll a passkey — before handing off to the
 // dashboard. It sits OUTSIDE RequireAuth (like /login): the visitor arrives without
 // a session, and the redeem is what creates one.
 //
-// Reload-safe: the token is single-use, so a refresh mid-wizard re-reads progress
-// from /auth/setup/status (the surviving session) rather than dead-ending on a
-// spent token. The two step endpoints and /me are all SetupAllowed, so the lockdown
-// session can complete the wizard; the backend lifts the lockdown once email is
-// verified, and we hand off to / once nothing remains.
+// The email is only RECORDED, not verified: the bootstrap has no SMTP, so there is no
+// code to mail. Passkey is the Owner's only pre-SMTP login credential and is
+// mandatory. Reload-safe: the token is single-use, so a refresh mid-wizard re-reads
+// progress from /auth/setup/status (the surviving session) rather than dead-ending on
+// a spent token. The step endpoints and /me are all SetupAllowed, so the lockdown
+// session can complete the wizard; the backend lifts the lockdown once a passkey is
+// enrolled, and we hand off to / once nothing remains.
 export function Setup() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
@@ -76,8 +78,7 @@ export function Setup() {
   }, []);
 
   // finish re-reads /me (so RequireAuth sees the authenticated session) and hands
-  // off to the dashboard. Idempotent — a completion effect and the skip button can
-  // both reach here.
+  // off to the dashboard. Idempotent — guarded so the completion effect fires once.
   const finish = useCallback(async () => {
     if (finishing.current) return;
     finishing.current = true;
@@ -85,8 +86,7 @@ export function Setup() {
     navigate("/", { replace: true });
   }, [refresh, navigate]);
 
-  // Once nothing remains (email verified AND a passkey exists, or the owner skipped
-  // to a backend-valid state), hand off.
+  // Once nothing remains (email recorded AND a passkey enrolled), hand off.
   useEffect(() => {
     if (state && !state.setup_required) void finish();
   }, [state, finish]);
@@ -135,10 +135,10 @@ export function Setup() {
     <AuthLayout title={t("setup_title")} subtitle={t("setup_welcome", { name: state.username })}>
       <Card>
         <CardContent className="pt-6">
-          {!state.email_verified ? (
-            <EmailStep initialEmail={state.email} onVerified={reload} />
+          {!state.email ? (
+            <EmailStep initialEmail={state.email} onRecorded={reload} />
           ) : !state.has_passkey ? (
-            <PasskeyStep onEnrolled={reload} onSkip={() => void finish()} />
+            <PasskeyStep onEnrolled={reload} />
           ) : (
             <div className="flex items-center justify-center gap-2 py-6 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -151,48 +151,31 @@ export function Setup() {
   );
 }
 
-/** EmailStep is the §B email-OTP step: send a code, then verify it. On success it
- *  calls onVerified (a status re-read) so the wizard advances to the passkey step.
- *  Mirrors the Account page's email card against the same SetupAllowed endpoints. */
+/** EmailStep is the §B setup Step 1: record the Owner's email. The bootstrap has no
+ *  SMTP, so there is no code to send — the address is stored UNVERIFIED (a later
+ *  Settings/SMTP flow verifies it). On success it calls onRecorded (a status re-read)
+ *  so the wizard advances to the passkey step. */
 function EmailStep({
   initialEmail,
-  onVerified,
+  onRecorded,
 }: {
   initialEmail: string | null;
-  onVerified: () => Promise<void>;
+  onRecorded: () => Promise<void>;
 }) {
   const { t } = useTranslation("auth");
   const [email, setEmail] = useState(initialEmail ?? "");
-  const [otp, setOtp] = useState("");
-  const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function send(e: FormEvent) {
+  async function save(e: FormEvent) {
     e.preventDefault();
     const addr = email.trim();
     if (!addr || busy) return;
     setBusy(true);
     setError(null);
     try {
-      await api.emailStart(addr);
-      setSent(true);
-    } catch (err) {
-      setError(humanizeError(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function verify(e: FormEvent) {
-    e.preventDefault();
-    const code = otp.trim();
-    if (!code || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await api.emailVerify(code);
-      await onVerified(); // advances (unmounts this step) — no need to clear busy
+      await api.setEmail(addr);
+      await onRecorded(); // advances (unmounts this step) — no need to clear busy
     } catch (err) {
       setError(humanizeError(err));
       setBusy(false);
@@ -205,96 +188,49 @@ function EmailStep({
         <Mail className="h-4 w-4 text-primary" /> {t("setup_email_step")}
       </div>
       <p className="text-sm text-muted-foreground">{t("setup_email_desc")}</p>
-      {!sent ? (
-        <form onSubmit={send} className="space-y-3">
-          <div className="space-y-2">
-            <Label htmlFor="setup-email">{t("email_address")}</Label>
-            <Input
-              id="setup-email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              autoComplete="email"
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
-              placeholder="you@example.com"
-              disabled={busy}
-              autoFocus
-              aria-invalid={error ? true : undefined}
-            />
-          </div>
-          {error && <p className="text-sm text-destructive">{error}</p>}
-          <Button type="submit" className="w-full" disabled={busy || !email.trim()}>
-            {busy ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                {t("sending_otp")}
-              </>
-            ) : (
-              t("send_otp")
-            )}
-          </Button>
-        </form>
-      ) : (
-        <form onSubmit={verify} className="space-y-3">
-          <p className="text-xs text-emerald-600 dark:text-emerald-400">
-            {t("setup_otp_sent", { email: email.trim() })}
-          </p>
-          <div className="space-y-2">
-            <Label htmlFor="setup-otp">{t("otp_code")}</Label>
-            <Input
-              id="setup-otp"
-              value={otp}
-              onChange={(e) => setOtp(e.target.value)}
-              inputMode="numeric"
-              autoComplete="one-time-code"
-              maxLength={6}
-              className="font-mono text-center tracking-[0.3em]"
-              disabled={busy}
-              autoFocus
-              aria-invalid={error ? true : undefined}
-            />
-          </div>
-          {error && <p className="text-sm text-destructive">{error}</p>}
-          <Button type="submit" className="w-full" disabled={busy || otp.trim().length !== 6}>
-            {busy ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                {t("binding")}
-              </>
-            ) : (
-              t("setup_verify_continue")
-            )}
-          </Button>
-          <button
-            type="button"
-            onClick={() => {
-              setSent(false);
-              setOtp("");
-              setError(null);
-            }}
+      <form onSubmit={save} className="space-y-3">
+        <div className="space-y-2">
+          <Label htmlFor="setup-email">{t("email_address")}</Label>
+          <Input
+            id="setup-email"
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            autoComplete="email"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            placeholder="you@example.com"
             disabled={busy}
-            className="w-full text-center text-xs text-muted-foreground hover:text-primary disabled:opacity-50"
-          >
-            {t("setup_change_email")}
-          </button>
-        </form>
-      )}
+            autoFocus
+            aria-invalid={error ? true : undefined}
+          />
+        </div>
+        {error && <p className="text-sm text-destructive">{error}</p>}
+        <Button type="submit" className="w-full" disabled={busy || !email.trim()}>
+          {busy ? (
+            <>
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              {t("saving")}
+            </>
+          ) : (
+            t("setup_email_save")
+          )}
+        </Button>
+      </form>
     </div>
   );
 }
 
 /** PasskeyStep enrolls the Owner's first passkey against the SetupAllowed register
- *  endpoints — the same ceremony as the Account page. Email is already verified at
- *  this point (backend lockdown lifted), so "skip" is a safe escape if the
- *  authenticator misbehaves: the owner lands in the console and can enroll later. */
+ *  endpoints — the same ceremony as the Account page. Passkey is the Owner's ONLY
+ *  login credential before SMTP exists (email-OTP login refuses admins; op-login
+ *  needs SMTP + a second admin), so it is mandatory: there is no skip, and the
+ *  backend lockdown lifts only once a passkey is enrolled. */
 function PasskeyStep({
   onEnrolled,
-  onSkip,
 }: {
   onEnrolled: () => Promise<void>;
-  onSkip: () => void;
 }) {
   const { t } = useTranslation("auth");
   const [busy, setBusy] = useState(false);
@@ -368,14 +304,6 @@ function PasskeyStep({
           </>
         )}
       </Button>
-      <button
-        type="button"
-        onClick={onSkip}
-        disabled={busy}
-        className="w-full text-center text-xs text-muted-foreground hover:text-primary disabled:opacity-50"
-      >
-        {t("setup_skip")}
-      </button>
     </div>
   );
 }

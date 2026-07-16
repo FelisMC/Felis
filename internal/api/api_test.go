@@ -359,6 +359,16 @@ func (f *fakeRepo) VerifyEmailOTP(_ context.Context, userID, purpose, codeHash s
 	}
 	return live.email, nil
 }
+func (f *fakeRepo) SetUserEmail(_ context.Context, userID, email string) error {
+	for _, u := range f.staff { // record + clear verified (proves nothing) — mirrors PGRepo
+		if u.ID == userID {
+			u.Email = email
+			u.EmailVerified = false
+			return nil
+		}
+	}
+	return ErrNotFound
+}
 
 // CreatePasskeyChallenge / ConsumePasskeyChallengeByUser mirror PGRepo's contract so
 // the hermetic tests exercise the same semantics: a fresh begin supersedes ALL prior

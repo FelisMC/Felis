@@ -351,6 +351,12 @@ export const api = {
   emailVerify: (code: string) =>
     request<{ verified: boolean; email: string }>("POST", "/account/email/verify", { code }),
 
+  // setEmail records the caller's address WITHOUT an OTP round-trip (the setup
+  // wizard's Step 1). The bootstrap has no SMTP, so email_verified stays false; a
+  // later Settings/SMTP flow verifies it via emailStart/emailVerify.
+  setEmail: (email: string) =>
+    request<{ email: string }>("POST", "/account/email", { email }),
+
   passkeyRegisterBegin: () =>
     request<any>("POST", "/account/passkey/register/begin"),
 
