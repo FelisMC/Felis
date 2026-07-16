@@ -94,6 +94,19 @@ async function requestRaw<T>(
   return parsed as T;
 }
 
+// Setup bootstrap (spec §B). The one-time token from `felis setup` is redeemed for
+// a lockdown session; the response (and /setup/status) reports which onboarding
+// steps remain so the Setup wizard can drive email verification + passkey enrollment.
+export interface SetupState {
+  user_id: string;
+  username: string;
+  role: string;
+  email: string | null;
+  email_verified: boolean;
+  has_passkey: boolean;
+  setup_required: boolean;
+}
+
 export const api = {
   // Local-password auth (spec §B1). login sets an HttpOnly session cookie as a
   // side effect — the panel never sees it — and returns only what to route on next
@@ -138,6 +151,15 @@ export const api = {
       current_password,
       new_password,
     }),
+
+  // Setup bootstrap (spec §B). redeem consumes the one-time token from the setup URL
+  // and mints a lockdown session (Public); status re-reads progress for a reload
+  // mid-wizard (SetupAllowed — the surviving session, no token needed).
+  setupRedeem: (token: string) =>
+    request<SetupState>("POST", "/auth/setup/redeem", { token }),
+
+  setupStatus: () =>
+    request<SetupState>("GET", "/auth/setup/status"),
 
   // Identity (spec §7 GET /me) — the tier keystone. is_admin is server-computed
   // (Principal.IsAdmin); the panel reads it but re-deriving admin-ness is the
