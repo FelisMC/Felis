@@ -853,15 +853,17 @@ ensure_velocity_directory() {
   install -d -o "$owner" -g "$group" -m "$mode" "$path"
 }
 
-# Config and executable parents stay root-owned. The proxy can write only runtime
-# output directories, so it cannot replace a future root-written secret/config path
-# with a symlink before a bootstrap re-run.
+# Velocity manages its own working directory: on startup it migrates velocity.toml to
+# the running config-version, extracts localizations, and creates plugins/bStats — all
+# fatal or noisy if it cannot write. So the service owns the tree and velocity.toml. The
+# immutable artifacts (velocity.jar, felis-velocity.jar) and the forwarding secret stay
+# root-owned and read-only to the proxy; ProtectSystem=strict confines writes to VELOCITY_DIR.
 prepare_velocity_layout() {
   id -u "$VELOCITY_USER" >/dev/null 2>&1 \
     || useradd --system --home-dir "$VELOCITY_DIR" --shell /usr/sbin/nologin "$VELOCITY_USER"
-  ensure_velocity_directory "$VELOCITY_DIR" 0750 root "$VELOCITY_USER"
-  ensure_velocity_directory "${VELOCITY_DIR}/plugins" 0750 root "$VELOCITY_USER"
-  ensure_velocity_directory "${VELOCITY_DIR}/plugins/felis-link" 0750 root "$VELOCITY_USER"
+  ensure_velocity_directory "$VELOCITY_DIR" 0750 "$VELOCITY_USER" "$VELOCITY_USER"
+  ensure_velocity_directory "${VELOCITY_DIR}/plugins" 0750 "$VELOCITY_USER" "$VELOCITY_USER"
+  ensure_velocity_directory "${VELOCITY_DIR}/plugins/felis-link" 0750 "$VELOCITY_USER" "$VELOCITY_USER"
   ensure_velocity_directory "${VELOCITY_DIR}/logs" 0750 "$VELOCITY_USER" "$VELOCITY_USER"
   ensure_velocity_directory "${VELOCITY_DIR}/crash-reports" 0750 "$VELOCITY_USER" "$VELOCITY_USER"
 }
@@ -944,15 +946,23 @@ install_velocity() {
   configure_velocity_firewall
 }
 
+# felis_internal_ip echoes the felis-api-internal Service ClusterIP. Cluster DNS does not
+# resolve from the host, but a Service ClusterIP DOES route from the node (kube-proxy programs
+# the host netns) — the same trick the on-node break-glass console uses. The internal face is
+# deliberately ClusterIP-only: it is service-token authenticated and must never be published on
+# a node's external IP. Both the felis-link plugin config and the Velocity sessionserver
+# override (install_velocity_service) point at it, so the lookup lives here once.
+felis_internal_ip() {
+  local ip
+  ip="$(kube -n "$CONTROL_NS" get svc felis-api-internal -o jsonpath='{.spec.clusterIP}')" \
+    || die "could not resolve the felis-api-internal ClusterIP"
+  [ -n "$ip" ] || die "felis-api-internal has no ClusterIP"
+  printf '%s' "$ip"
+}
+
 write_velocity_config() {
   local api_ip tmp
-  # Cluster DNS does not resolve from the host, but a Service ClusterIP DOES route from
-  # the node (kube-proxy programs the host netns) — the same trick the on-node break-glass
-  # console uses. The internal face is deliberately ClusterIP-only: it is service-token
-  # authenticated and must never be published on a node's external IP.
-  api_ip="$(kube -n "$CONTROL_NS" get svc felis-api-internal -o jsonpath='{.spec.clusterIP}')" \
-    || die "could not resolve the felis-api-internal ClusterIP"
-  [ -n "$api_ip" ] || die "felis-api-internal has no ClusterIP"
+  api_ip="$(felis_internal_ip)"
 
   prepare_velocity_layout
   tmp="$(mktemp -d)"
@@ -1021,13 +1031,19 @@ EOF
   )
 
   atomic_install_file "${tmp}/forwarding.secret" "${VELOCITY_DIR}/forwarding.secret" 0640 root "$VELOCITY_USER"
-  atomic_install_file "${tmp}/velocity.toml" "${VELOCITY_DIR}/velocity.toml" 0640 root "$VELOCITY_USER"
+  atomic_install_file "${tmp}/velocity.toml" "${VELOCITY_DIR}/velocity.toml" 0640 "$VELOCITY_USER" "$VELOCITY_USER"
   atomic_install_file "${tmp}/felis-link.properties" \
     "${VELOCITY_DIR}/plugins/felis-link/felis-link.properties" 0640 root "$VELOCITY_USER"
   ok "velocity.toml + forwarding secret + felis-link.properties written (${VELOCITY_DIR})"
 }
 
 install_velocity_service() {
+  local api_ip
+  # Point Velocity's authlib (mojang.sessionserver) at the felis-api hasJoined multiplexer so a
+  # full install federates Mojang + the configured [[auth_source]] set (LittleSkin by default)
+  # out of the box — not just the standalone `felis nano`. felis-api enforces the reclaim
+  # blacklist on this route; a loopback nano would bypass it.
+  api_ip="$(felis_internal_ip)"
   cat > "$VELOCITY_SERVICE" <<EOF
 [Unit]
 Description=Felis Velocity proxy (Mojang authentication + modern forwarding)
@@ -1039,14 +1055,14 @@ Type=simple
 User=${VELOCITY_USER}
 Group=${VELOCITY_USER}
 WorkingDirectory=${VELOCITY_DIR}
-ExecStart=${JRE_DIR}/bin/java -Xms512M -Xmx1G -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:+AlwaysPreTouch -jar ${VELOCITY_DIR}/velocity.jar
+ExecStart=${JRE_DIR}/bin/java -Xms512M -Xmx1G -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:+AlwaysPreTouch -Dmojang.sessionserver=http://${api_ip}:8081/session/minecraft/hasJoined -jar ${VELOCITY_DIR}/velocity.jar
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-ReadWritePaths=${VELOCITY_DIR}/logs ${VELOCITY_DIR}/crash-reports
+ReadWritePaths=${VELOCITY_DIR}
 
 [Install]
 WantedBy=multi-user.target
@@ -1280,7 +1296,7 @@ namespace = "${MINECRAFT_NS}"
 egress_mode = "${FELIS_EGRESS_MODE}"
 
 [velocity]
-# The two always-on system servers `felis setup` provisions. They are built and imported
+# The two always-on system servers that felis setup provisions. They are built and imported
 # into k3s by build_game_stack below, so setup never has to be told "build these first".
 login_image = "${FELIS_LIMBO_IMAGE}"
 lobby_image = "${FELIS_LOBBY_IMAGE}"
@@ -1296,6 +1312,15 @@ local_path = "/var/lib/felis/archives"
 [auth]
 admin_hostname = "op.console.${FELIS_ROOT_DOMAIN}"
 panel_hostname = "console.${FELIS_ROOT_DOMAIN}"
+
+# Third-party Yggdrasil sources federated by the hasJoined multiplexer. Mojang is
+# always the code-owned identity anchor (premium-first), prepended in Go; sources here
+# append as namespace-rewritten guests. Shipping LittleSkin by default lets Mojang and
+# LittleSkin both log in out of the box. Delete this block for a Mojang-only server.
+[[auth_source]]
+tag = "littleskin"
+prefix = "LS"
+url = "https://littleskin.cn/api/yggdrasil/sessionserver/session/minecraft/hasJoined"
 EOF
 }
 
