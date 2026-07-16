@@ -227,8 +227,9 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 			RootDomain:    cfg.Server.RootDomain,
 			AdminHostname: cfg.Auth.AdminHostname,
 		},
-		RootDomain:   cfg.Server.RootDomain,
-		WakeCooldown: 30 * time.Second,
+		RootDomain:    cfg.Server.RootDomain,
+		AdminHostname: cfg.Auth.AdminHostname,
+		WakeCooldown:  30 * time.Second,
 		// Bound concurrent console/build-log SSE streams per principal. Generous enough
 		// for legitimate multi-tab / multi-server watching, while capping how many
 		// upstream follow connections a single caller can tie up if their streams stall.
@@ -246,18 +247,21 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis api: hasJoined multiplexer active — Mojang + %d third-party source(s)\n", len(cfg.AuthSources))
 	}
 
-	// Passkey (WebAuthn) enrollment verifier (spec §14, Phase 6). The relying party is
-	// the panel (app) face: the RP id is the panel hostname and the single permitted
-	// origin is that host over https, so a credential enrolled here is scoped to the
-	// panel. It is wired only when auth.panel_hostname is configured; otherwise a.Passkey
-	// stays nil and the enrollment begin/finish routes honestly return 503 (the
-	// authenticated enrollment boundary is still enforced by the handlers). Scope is
-	// ENROLLMENT only — the login/assertion path is a deferred slice, and credentials
-	// enrolled under this RP id MUST be asserted under the same RP id when that slice
-	// lands. An admin passkey (if ever added) is a SEPARATE relying party on the admin
-	// host and is not wired here.
+	// Passkey (WebAuthn) verifier (spec §14, Phase 6). One relying party spans BOTH
+	// web faces: the RP id is the panel hostname (console.<root>), and because that is
+	// a domain suffix of the operator host (op.console.<root>), a single credential
+	// enrolled once asserts on either face — one binding, usable on the player console
+	// AND the operator console. Both hosts are therefore listed as permitted origins,
+	// while the RP id stays the panel host so the credential's scope is ONE relying
+	// party, not two. Wired only when auth.panel_hostname is configured; otherwise
+	// a.Passkey stays nil and the passkey routes honestly return 503 (the authenticated
+	// enrollment boundary is still enforced by the handlers).
 	if cfg.Auth.PanelHostname != "" {
-		pv, err := passkey.New(cfg.Auth.PanelHostname, "Felis", []string{"https://" + cfg.Auth.PanelHostname})
+		origins := []string{"https://" + cfg.Auth.PanelHostname}
+		if admin := defaultAdminHostname(cfg.Server.RootDomain, cfg.Auth.AdminHostname); admin != "" && admin != cfg.Auth.PanelHostname {
+			origins = append(origins, "https://"+admin)
+		}
+		pv, err := passkey.New(cfg.Auth.PanelHostname, "Felis", origins)
 		if err != nil {
 			fmt.Fprintf(stderr, "felis api: passkey verifier disabled: %v — passkey endpoints return 503\n", err)
 		} else {

@@ -1478,9 +1478,9 @@ summary() {
   echo
   systemctl --no-pager --full status felis-velocity 2>/dev/null | head -n 4 || true
   echo
-  log "Panel URL: https://${NODE_IP}:${FELIS_PANEL_NODEPORT}"
-  log "DNS alias (if your resolver supports it): https://op.console.${FELIS_ROOT_DOMAIN}:${FELIS_PANEL_NODEPORT}"
-  log "The local HTTPS certificate is self-signed; your browser may ask for confirmation on first visit."
+  log "Player panel: https://console.${FELIS_ROOT_DOMAIN} — served on 443 once your edge/Cloudflare Tunnel routes it here."
+  log "Operator console (Op/Admin/Owner): https://op.console.${FELIS_ROOT_DOMAIN} — the Owner runs 'felis setup' and onboards here."
+  log "Before the edge is ready: direct + self-signed at https://${NODE_IP}:${FELIS_PANEL_NODEPORT} (browser will warn on first visit)."
   log "Minecraft address: ${NODE_IP}:${FELIS_GAME_PORT} (point mc.${FELIS_ROOT_DOMAIN} here)"
   log "The proxy authenticates against Mojang and forwards the verified profile to the"
   log "login gate; the backends are reachable in-cluster only. Follow it with:"

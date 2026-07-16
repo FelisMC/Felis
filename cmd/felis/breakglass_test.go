@@ -778,14 +778,16 @@ func TestPerformSetupMCBind(t *testing.T) {
 		}
 	})
 
-	t.Run("defaults the console host when panelHostname is empty", func(t *testing.T) {
+	t.Run("defaults to the op.console host when adminHostname is empty", func(t *testing.T) {
 		f := &fakeOwnerStore{redeemUserID: "usr-owner-1"}
 		out, err := performSetupMCBind(ctx, f, "abc-123", "  ", "root")
 		if err != nil {
 			t.Fatalf("performSetupMCBind: %v", err)
 		}
-		if !strings.HasPrefix(out.setupTokenURL, "https://console.localhost/setup?token=") {
-			t.Errorf("setup URL = %q, want the console.localhost default host", out.setupTokenURL)
+		// The Owner is staff, so onboarding lands on the operator console, not the
+		// player panel — the empty-host fallback must reflect that.
+		if !strings.HasPrefix(out.setupTokenURL, "https://op.console.localhost/setup?token=") {
+			t.Errorf("setup URL = %q, want the op.console.localhost default host", out.setupTokenURL)
 		}
 	})
 }

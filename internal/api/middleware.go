@@ -89,6 +89,18 @@ func (a *API) requireExternal(next http.Handler) http.Handler {
 			writeError(w, r, errUnauthorized)
 			return
 		}
+		// op.console door gate: the operator console is staff-only, so a request that
+		// arrives on the admin host from a non-admin principal is refused HERE, before
+		// any handler. Authentication alone (a player's passkey/email/bind session) is
+		// not access — internal permission is verified on top of it, so possessing a
+		// valid credential never "lets you in" to op.console. On the player console
+		// (console.<root_domain>) hostIsAdminConsole is false, so this is inert; in
+		// production Cloudflare Access already blocks non-staff at the edge and this is
+		// the defense-in-depth backstop for the passwordless (no-Zero-Trust) face.
+		if hostIsAdminConsole(r, a.RootDomain, a.AdminHostname) && !p.IsAdmin() {
+			writeError(w, r, errForbidden)
+			return
+		}
 		ctx := context.WithValue(r.Context(), ctxKeyPrincipal, p)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

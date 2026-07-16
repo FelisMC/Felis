@@ -11,9 +11,10 @@ import (
 // Setup-token redemption (spec §B setup bootstrap). The `felis setup` MC-bind
 // flow mints a one-time token and prints a URL like:
 //
-//	https://console.<root>/setup?token=<raw>
+//	https://op.console.<root>/setup?token=<raw>
 //
-// The Owner opens that URL in a browser; the SPA reads the token from the query
+// The Owner is staff, so onboarding lands on the operator console; the SPA there
+// reads the token from the query
 // string and POSTs it here. This handler consumes the token (single-use, hashed
 // at rest like session cookies), mints a felis_session, and returns the caller's
 // setup state so the frontend can guide email verification + passkey enrollment

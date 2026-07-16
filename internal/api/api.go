@@ -92,6 +92,14 @@ type API struct {
 	// never hardcoded.
 	RootDomain string
 
+	// AdminHostname is the operator console host (op.console.<root_domain>) from
+	// config. requireExternal refuses any non-admin principal that arrives on it,
+	// so op.console is staff-only at the DOOR — not merely per-route — even on the
+	// passwordless demo face where Cloudflare Access is not fronting it. Empty
+	// falls back to op.console.<RootDomain> (see hostIsAdminConsole). On the player
+	// console (console.<root_domain>) the gate is inert.
+	AdminHostname string
+
 	// WakeCooldown throttles repeated wakes per server (spec §9.1: cooldown hangs
 	// on the wake lever). Zero disables throttling.
 	WakeCooldown time.Duration

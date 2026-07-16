@@ -2029,6 +2029,70 @@ func TestAdminBoundary(t *testing.T) {
 	})
 }
 
+// TestOpConsoleDoorGate proves op.console is staff-only at the DOOR: a non-admin
+// principal that reaches the operator host is refused before any handler, even on an
+// app-tier route (/me) that no adminOnly wraps. Authentication is not access on
+// op.console — the "internal permission verification" the model requires on top of
+// Zero-Trust. The gate is scoped to the admin host, so the identical principal is
+// unaffected on the player console.
+func TestOpConsoleDoorGate(t *testing.T) {
+	opHost := "op.console." + testRoot
+	playerHost := "console." + testRoot
+
+	newAPI := func(p *Principal) *API {
+		a := newTestAPI(newFakeRepo(), newFakeCluster())
+		a.AdminHostname = opHost
+		a.External = staticExternal{p: p}
+		return a
+	}
+
+	t.Run("non-admin on op.console refused at the door", func(t *testing.T) {
+		a := newAPI(&Principal{UserID: "u", Role: "user", ViaAdminAccess: false})
+		w := do(a.ExternalHandler(), "GET", "https://"+opHost+"/api/v1/me", "", nil)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("non-admin on op.console: code = %d, want 403 (staff-only door)", w.Code)
+		}
+	})
+	t.Run("same non-admin on the player console passes the door", func(t *testing.T) {
+		a := newAPI(&Principal{UserID: "u", Role: "user", ViaAdminAccess: false})
+		w := do(a.ExternalHandler(), "GET", "https://"+playerHost+"/api/v1/me", "", nil)
+		if w.Code == http.StatusForbidden {
+			t.Fatalf("player console must not be gated by the op.console door, got 403")
+		}
+	})
+	t.Run("admin on op.console reaches the handler", func(t *testing.T) {
+		a := newAPI(&Principal{UserID: "a", Role: "admin", ViaAdminAccess: true})
+		w := do(a.ExternalHandler(), "GET", "https://"+opHost+"/api/v1/me", "", nil)
+		if w.Code == http.StatusForbidden {
+			t.Fatalf("admin must pass the op.console door, got 403")
+		}
+	})
+}
+
+// TestSessionAuthOwnerGetsAdminAccess guards the owner-inclusion fix: a role=owner
+// local session on op.console must carry ViaAdminAccess (and thus IsOwner()). The
+// owner is a superset of admin, so excluding it from the session admin-path — as the
+// code once did (u.Role == "admin" only) — silently made IsOwner() unreachable via a
+// passwordless session, locking the platform owner out of the operator console.
+func TestSessionAuthOwnerGetsAdminAccess(t *testing.T) {
+	repo := newFakeRepo()
+	repo.settings[LocalAuthEnabledKey] = []byte("true")
+	repo.staff["owner"] = &StaffUser{ID: "u1", Email: "owner@" + testRoot, Role: "owner"}
+	token := "session-token"
+	repo.sessions[hashCookie(token)] = &fakeSession{userID: "u1", expiresAt: time.Now().Add(time.Hour)}
+	auth := SessionAuth{Repo: repo, RootDomain: testRoot, AdminHostname: "op.console." + testRoot}
+
+	r := httptest.NewRequest("GET", "https://op.console."+testRoot+"/api/v1/me", nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+	p, err := auth.Authenticate(r)
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if !p.ViaAdminAccess || !p.IsOwner() {
+		t.Fatalf("owner via local session on op.console must carry admin access AND IsOwner, got %+v", p)
+	}
+}
+
 // ---- error envelope ----
 
 func TestErrorEnvelopeHasRequestID(t *testing.T) {
