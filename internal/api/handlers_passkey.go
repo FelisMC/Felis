@@ -225,6 +225,22 @@ func passkeyUserFor(p *Principal, creds []PasskeyCredential) PasskeyUser {
 	return PasskeyUser{ID: p.UserID, Name: label, DisplayName: label, Credentials: creds}
 }
 
+// unwrapPublicKey strips go-webauthn's {"publicKey": {...}} envelope so the register and
+// username-login begin handlers return the FLAT options the panel reads (options.challenge,
+// options.user.id, options.allowCredentials) rather than options.publicKey.challenge — the
+// envelope is what made the panel crash on base64urlToBytes(undefined). Discoverable login
+// keeps the envelope (it reads options.publicKey.*), so it does not call this. A body with
+// no publicKey member is returned unchanged.
+func unwrapPublicKey(options json.RawMessage) json.RawMessage {
+	var env struct {
+		PublicKey json.RawMessage `json:"publicKey"`
+	}
+	if err := json.Unmarshal(options, &env); err != nil || len(env.PublicKey) == 0 {
+		return options
+	}
+	return env.PublicKey
+}
+
 // handlePasskeyRegisterBegin mints a credential-creation challenge for the caller
 // (spec §14, external app face). It loads the passkeys the caller has already bound so
 // the ceremony excludes them (one authenticator binds once), asks the verifier for the
@@ -257,9 +273,9 @@ func (a *API) handlePasskeyRegisterBegin(w http.ResponseWriter, r *http.Request)
 		writeError(w, r, err)
 		return
 	}
-	// The creation options are the WebAuthn {"publicKey": {...}} document the browser
-	// passes straight to navigator.credentials.create(); return them verbatim.
-	writeJSON(w, http.StatusOK, options)
+	// go-webauthn wraps the creation options as {"publicKey": {...}}; the panel's register
+	// flow reads them flat (options.challenge, options.user.id), so strip the envelope.
+	writeJSON(w, http.StatusOK, unwrapPublicKey(options))
 }
 
 // passkeyFinishRequest is the finish body: the human nickname for the new passkey and
@@ -521,7 +537,10 @@ func (a *API) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	committed = true
-	writeJSON(w, http.StatusOK, options)
+	// go-webauthn wraps the assertion options as {"publicKey": {...}}; the panel's
+	// username-login flow reads them flat (options.challenge, options.allowCredentials),
+	// so strip the envelope. (Discoverable login keeps the envelope — see its handler.)
+	writeJSON(w, http.StatusOK, unwrapPublicKey(options))
 }
 
 // passkeyLoginFinishRequest is the finish body: the email (to resolve the account,

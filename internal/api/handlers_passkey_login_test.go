@@ -77,15 +77,15 @@ func TestPasskeyLoginVertical(t *testing.T) {
 	api, repo, v := seedLoginPasskeyAPI(t)
 	eh := api.ExternalHandler()
 
-	// 1) begin: options verbatim, exactly one login-purpose challenge stashed for u1, and
+	// 1) begin: options FLAT (envelope stripped), exactly one login-purpose challenge stashed for u1, and
 	// the account's bound credential handed to the verifier (so the authenticator can be
 	// asked to assert with a known key).
 	w := do(eh, "POST", "/api/v1/auth/passkey/login/begin", `{"email":"player@example.net"}`, jsonHeader)
 	if w.Code != http.StatusOK {
 		t.Fatalf("begin: code = %d, want 200 (%s)", w.Code, w.Body.String())
 	}
-	if b := acctBody(t, w); b["publicKey"] == nil {
-		t.Errorf("begin must return the assertion options verbatim, got %s", w.Body.String())
+	if b := acctBody(t, w); b["challenge"] == nil || b["publicKey"] != nil {
+		t.Errorf("begin must return FLAT assertion options (top-level challenge, no publicKey envelope), got %s", w.Body.String())
 	}
 	if v.lastUser.ID != "u1" {
 		t.Errorf("begin passed user id %q, want u1", v.lastUser.ID)

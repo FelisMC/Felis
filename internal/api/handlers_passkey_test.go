@@ -54,14 +54,14 @@ func TestPasskeyRegisterVertical(t *testing.T) {
 	}
 	eh := newPasskeyAPI(repo, v, user)
 
-	// 1) begin returns the verifier's creation options verbatim and stashes exactly one
-	// challenge bound to the caller.
+	// 1) begin returns the creation options FLAT (envelope stripped for the panel) and
+	// stashes exactly one challenge bound to the caller.
 	w := do(eh, "POST", "/api/v1/account/passkey/register/begin", `{}`, nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("begin: code = %d, want 200 (%s)", w.Code, w.Body.String())
 	}
-	if b := acctBody(t, w); b["publicKey"] == nil {
-		t.Errorf("begin must return the publicKey creation options verbatim, got %s", w.Body.String())
+	if b := acctBody(t, w); b["challenge"] == nil || b["publicKey"] != nil {
+		t.Errorf("begin must return FLAT creation options (top-level challenge, no publicKey envelope), got %s", w.Body.String())
 	}
 	if len(repo.passkeyChallenges) != 1 {
 		t.Fatalf("begin must stash exactly one challenge, got %d", len(repo.passkeyChallenges))
