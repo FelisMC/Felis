@@ -102,19 +102,52 @@ var tunnelIDRE = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4
 // credentials JSON under ~/.cloudflared/<id>.json and prints the id; we parse it
 // out. If the tunnel already exists this returns its id (idempotent re-run).
 func (r *ExecRunner) CreateTunnel(ctx context.Context, name string) (string, string, error) {
+	var id string
 	out, err := r.runCloudflared(ctx, "tunnel", "create", name)
 	if err != nil {
 		// An "already exists" is not fatal — recover the id via `tunnel list`.
-		if id, lerr := r.lookupTunnel(ctx, name); lerr == nil && id != "" {
-			return id, r.credentialsPath(id), nil
+		lid, lerr := r.lookupTunnel(ctx, name)
+		if lerr != nil || lid == "" {
+			return "", "", err
 		}
-		return "", "", err
-	}
-	id := tunnelIDRE.FindString(out)
-	if id == "" {
+		id = lid
+	} else if id = tunnelIDRE.FindString(out); id == "" {
 		return "", "", fmt.Errorf("cfsetup: could not parse tunnel id from cloudflared output: %s", out)
 	}
-	return id, r.credentialsPath(id), nil
+	cred := r.credentialsPath(id)
+	if err := r.ensureCredentials(ctx, id, cred); err != nil {
+		return "", "", err
+	}
+	return id, cred, nil
+}
+
+// ensureCredentials guarantees the tunnel credentials JSON exists at credPath.
+// cloudflared writes that file only at `tunnel create`, so an idempotent re-run
+// against a tunnel that already exists — or a reset+re-bootstrap where the old
+// box's ~/.cloudflared was wiped but the Cloudflare-side tunnel survived — finds
+// no local file, and the connector crash-loops with "Tunnel credentials file
+// doesn't exist". `cloudflared tunnel token --cred-file` re-fetches the token into
+// the file (authenticating with cert.pem, keeping the same id/DNS/Access), healing
+// the re-run. The secret is written to the file, not stdout.
+func (r *ExecRunner) ensureCredentials(ctx context.Context, id, credPath string) error {
+	// ponytail: any existing file counts as healthy; re-fetch only on absence
+	// (the failure actually seen). A truncated/zero-byte file would still
+	// crash-loop — validate the JSON here if that ever shows up.
+	if _, err := os.Stat(credPath); err == nil {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(credPath), 0o700); err != nil {
+		return fmt.Errorf("cfsetup: preparing credentials dir for tunnel %s: %w", id, err)
+	}
+	if _, err := r.runCloudflared(ctx, "tunnel", "token", "--cred-file", credPath, id); err != nil {
+		return fmt.Errorf("cfsetup: tunnel %s credentials file %s is missing and could not be regenerated: %w", id, credPath, err)
+	}
+	// The credentials file is a secret sitting next to cert.pem; don't rely on
+	// cloudflared's umask to keep it owner-only.
+	if err := os.Chmod(credPath, 0o600); err != nil {
+		return fmt.Errorf("cfsetup: securing credentials file %s: %w", credPath, err)
+	}
+	return nil
 }
 
 // lookupTunnel finds an existing tunnel's id by name via `tunnel list`.
