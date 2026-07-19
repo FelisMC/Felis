@@ -1031,6 +1031,8 @@ EOF
 api-base-url=http://${api_ip}:8081
 service-token=${SERVICE_TOKEN}
 root-domain=${FELIS_ROOT_DOMAIN}
+panel-hostname=console.${FELIS_ROOT_DOMAIN}
+admin-hostname=op.console.${FELIS_ROOT_DOMAIN}
 login-server=${LOGIN_SERVER}
 lobby-server=${LOBBY_SERVER}
 EOF

@@ -100,6 +100,12 @@ type API struct {
 	// console (console.<root_domain>) the gate is inert.
 	AdminHostname string
 
+	// PanelHostname is the player console host (console.<root_domain>) from
+	// config. Used to render user-facing panel URLs (the /link code's panel_url
+	// hint); empty falls back to console.<RootDomain> (see panelURL), mirroring
+	// AdminHostname's fallback.
+	PanelHostname string
+
 	// WakeCooldown throttles repeated wakes per server (spec §9.1: cooldown hangs
 	// on the wake lever). Zero disables throttling.
 	WakeCooldown time.Duration
@@ -141,6 +147,21 @@ type API struct {
 
 	streamCapOnce sync.Once
 	streamCap     *streamLimiter
+}
+
+// panelURL returns the public player-console origin ("https://console.<root>"),
+// preferring the configured PanelHostname and falling back to the conventional
+// console.<RootDomain> label — the same convention hostIsAdminConsole applies
+// to the operator host. Empty when neither is configured (a bare test API).
+func (a *API) panelURL() string {
+	host := a.PanelHostname
+	if host == "" && a.RootDomain != "" {
+		host = "console." + a.RootDomain
+	}
+	if host == "" {
+		return ""
+	}
+	return "https://" + host
 }
 
 // now returns the current time using the injected clock.
@@ -237,7 +258,6 @@ func (a *API) internalAPIRoutes() []apiRoute {
 		{Method: "GET", Pattern: "/readyz", Public: true, h: a.handleReadyz},
 
 		{Method: "GET", Pattern: "/api/v1/servers", h: a.handleListServers},
-		{Method: "GET", Pattern: "/api/v1/servers/by-host/{host}", h: a.handleByHost},
 		{Method: "POST", Pattern: "/api/v1/internal/servers/{name}/ready", h: a.handleReady},
 		{Method: "POST", Pattern: "/api/v1/internal/servers/{name}/join-event", h: a.handleJoinEvent},
 		// Domain-autostart (spec §9.1, §14): velocity drives the wake lever and polls
@@ -282,10 +302,11 @@ func (a *API) internalAPIRoutes() []apiRoute {
 		// (Mojang-first) and rewrites third-party UUIDs into a per-source namespace
 		// before returning the canonical profile (handlers_hasjoined.go).
 		{Method: "GET", Pattern: "/session/minecraft/hasJoined", Public: true, h: a.handleHasJoined},
-		// Op-login (passwordless console login): an in-game op requests a login that
-		// the web owner/admin approves, then redeems for a session. Internal face
-		// carries the pending queue and the approve action (service-token auth, no
-		// Principal); the external face carries the start/status/finish the op drives.
+		// Op-login (passwordless op.console login): a staff member starts the login
+		// on the web, and an ONLINE in-game admin vouches for it via velocity's
+		// /felis web op approve. Internal face carries the pending queue and the
+		// approve action (service-token auth, no Principal); the public face carries
+		// the start/status/finish the staff member's browser drives.
 		{Method: "GET", Pattern: "/api/v1/internal/op-login/pending", h: a.handleOpLoginPending},
 		{Method: "POST", Pattern: "/api/v1/internal/op-login/{id}/approve", h: a.handleOpLoginApprove},
 
@@ -362,6 +383,7 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/access/ban", h: a.handleAccessBanList},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/access/permission", h: a.handleAccessPermission},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/access/group", h: a.handleAccessGroup},
+		{Method: "GET", Pattern: "/api/v1/servers/{name}/access/luckperms/{player}", h: a.handleAccessLuckPermsInfo},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/status", h: a.handleStatus},
 		// Identity self-read (spec §14 tiering): the panel reads this once at boot to
 		// learn its own tier and decide which navigation surfaces to render. App-tier —

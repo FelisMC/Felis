@@ -4,7 +4,7 @@ These are the in-cluster and edge plugins for Felis. Every module **except the
 lobby** ships the in-game first leg of the §10 account-link flow: a player who is already online
 (so Mojang has verified their UUID) runs `/link`; the plugin asks felis-api to
 mint a one-time code for that UUID and shows it in chat. The player then enters
-the code on the web panel → **Account** page (the second leg), which binds the
+the code on the web console → **Account** page (the second leg), which binds the
 code to their logged-in account. The web side is already built.
 
 The **Velocity** module additionally carries the §11 domain-autostart routing

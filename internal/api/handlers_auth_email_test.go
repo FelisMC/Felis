@@ -56,7 +56,7 @@ func errEnvelope(t *testing.T, w *httptest.ResponseRecorder) (code, msg string) 
 // TestLoginEmailVertical walks the whole returning-player slice: a typed lowercase
 // address resolves the mixed-case stored account, the code is mailed to the account's
 // STORED casing (the address of record), and redeeming it mints the same host-only
-// felis_session as the password door — single-use, audited on both halves by the
+// felis_session as the other session doors — single-use, audited on both halves by the
 // account's username. The redeem never rewrites users.email (login re-proves an
 // already-verified address via ConsumeLoginEmailOTP), so the stored casing is
 // untouched by definition.
@@ -113,7 +113,7 @@ func TestLoginEmailVertical(t *testing.T) {
 	if vb["user_id"] != "u1" || vb["role"] != "user" {
 		t.Fatalf("verify body = %v, want user_id:u1 role:user", vb)
 	}
-	// The HttpOnly cookie is the whole point — same contract as handleLogin.
+	// The HttpOnly cookie is the whole point — same contract as every session door.
 	cookies := w.Result().Cookies()
 	if len(cookies) != 1 || cookies[0].Name != sessionCookieName || cookies[0].Value == "" {
 		t.Fatalf("want one non-empty %s cookie, got %v", sessionCookieName, cookies)
@@ -208,8 +208,8 @@ func TestLoginEmailStartNeutralOnUnknownAddress(t *testing.T) {
 
 // TestLoginEmailGates covers the shared front doors of both halves: the fail-closed
 // local-auth toggle, the cross-site-forgery Content-Type guard (these are Public,
-// credential-minting routes — same rationale as handleLogin), and the input gates
-// that must reject before any mint or lookup.
+// credential-minting routes — same rationale as handleBindRedeem), and the input
+// gates that must reject before any mint or lookup.
 func TestLoginEmailGates(t *testing.T) {
 	t.Run("local auth disabled -> 403 on both halves", func(t *testing.T) {
 		api := newTestAPI(newFakeRepo(), newFakeCluster()) // no LocalAuthEnabledKey: fails closed

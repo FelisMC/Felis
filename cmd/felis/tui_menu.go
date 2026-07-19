@@ -56,10 +56,10 @@ func (m *menuModel) build() *huh.Form {
 				huh.NewOption("Back up a world now (Sync)", bgSyncBackup),
 			),
 		// A dim footnote spelling out the one behavioural difference that matters:
-		// Owner-reset re-enables local-password login, operator-add never touches the
-		// global auth toggle.
+		// Owner-reset re-enables local session sign-in, operator-add never touches
+		// the global auth toggle.
 		huh.NewNote().Description(
-			"Owner reset re-enables local-password login. Adding an Operator mints an "+
+			"Owner reset re-enables local session sign-in. Adding an Operator mints an "+
 				"additional staff admin and leaves the global auth toggle untouched."),
 	)))
 }

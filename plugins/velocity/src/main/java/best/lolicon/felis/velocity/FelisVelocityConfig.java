@@ -19,7 +19,8 @@ import java.util.Properties;
  * URL + service token (and its first-run template), so {@code /link} keeps working
  * exactly as before; these extra keys are read from the same properties file (or
  * {@code FELIS_ROOT_DOMAIN} / {@code FELIS_LOGIN_SERVER} /
- * {@code FELIS_LOBBY_SERVER}).
+ * {@code FELIS_LOBBY_SERVER} / {@code FELIS_PANEL_HOSTNAME} /
+ * {@code FELIS_ADMIN_HOSTNAME}).
  *
  * <p>The routing extras are optional at load time and the routing layer degrades rather
  * than crashing: a missing {@code root-domain} disables routing (with a clear log
@@ -33,9 +34,13 @@ final class FelisVelocityConfig {
     static final String ENV_ROOT_DOMAIN = "FELIS_ROOT_DOMAIN";
     static final String ENV_LOGIN = "FELIS_LOGIN_SERVER";
     static final String ENV_LOBBY = "FELIS_LOBBY_SERVER";
+    static final String ENV_PANEL_HOSTNAME = "FELIS_PANEL_HOSTNAME";
+    static final String ENV_ADMIN_HOSTNAME = "FELIS_ADMIN_HOSTNAME";
     private static final String KEY_ROOT_DOMAIN = "root-domain";
     private static final String KEY_LOGIN = "login-server";
     private static final String KEY_LOBBY = "lobby-server";
+    private static final String KEY_PANEL_HOSTNAME = "panel-hostname";
+    private static final String KEY_ADMIN_HOSTNAME = "admin-hostname";
     private static final String DEFAULT_LOGIN = "login";
     private static final String DEFAULT_LOBBY = "lobby";
 
@@ -43,13 +48,18 @@ final class FelisVelocityConfig {
     private final String rootDomain;  // null → routing disabled
     private final String loginServer;
     private final String lobbyServer;
+    private final String panelHostname;  // null → fall back to console.<root>
+    private final String adminHostname;  // null → fall back to op.console.<root>
 
     private FelisVelocityConfig(LinkConfig linkConfig, String rootDomain,
-                                String loginServer, String lobbyServer) {
+                                String loginServer, String lobbyServer,
+                                String panelHostname, String adminHostname) {
         this.linkConfig = linkConfig;
         this.rootDomain = rootDomain;
         this.loginServer = loginServer;
         this.lobbyServer = lobbyServer;
+        this.panelHostname = panelHostname;
+        this.adminHostname = adminHostname;
     }
 
     static FelisVelocityConfig load(Path file) throws IOException {
@@ -63,13 +73,17 @@ final class FelisVelocityConfig {
         String root = trimToNull(firstNonBlank(System.getenv(ENV_ROOT_DOMAIN), props.getProperty(KEY_ROOT_DOMAIN)));
         String login = trimToNull(firstNonBlank(System.getenv(ENV_LOGIN), props.getProperty(KEY_LOGIN)));
         String lobby = trimToNull(firstNonBlank(System.getenv(ENV_LOBBY), props.getProperty(KEY_LOBBY)));
+        String panel = trimToNull(firstNonBlank(System.getenv(ENV_PANEL_HOSTNAME), props.getProperty(KEY_PANEL_HOSTNAME)));
+        String admin = trimToNull(firstNonBlank(System.getenv(ENV_ADMIN_HOSTNAME), props.getProperty(KEY_ADMIN_HOSTNAME)));
         login = login == null ? DEFAULT_LOGIN : login;
         lobby = lobby == null ? DEFAULT_LOBBY : lobby;
         if (login.equalsIgnoreCase(lobby)) {
             throw new IOException("login-server and lobby-server must be different");
         }
         return new FelisVelocityConfig(
-                link, root == null ? null : root.toLowerCase(Locale.ROOT), login, lobby);
+                link, root == null ? null : root.toLowerCase(Locale.ROOT), login, lobby,
+                panel == null ? null : panel.toLowerCase(Locale.ROOT),
+                admin == null ? null : admin.toLowerCase(Locale.ROOT));
     }
 
     LinkConfig linkConfig() {
@@ -93,6 +107,28 @@ final class FelisVelocityConfig {
     /** lobbyServer is the post-auth server name waiters are parked in. */
     String lobbyServer() {
         return lobbyServer;
+    }
+
+    /**
+     * panelHostname is the player web-panel host, falling back to
+     * {@code console.<root-domain>}; null when neither is configured.
+     */
+    String panelHostname() {
+        if (panelHostname != null) {
+            return panelHostname;
+        }
+        return rootDomain == null ? null : "console." + rootDomain;
+    }
+
+    /**
+     * adminHostname is the staff op.console host, falling back to
+     * {@code op.console.<root-domain>}; null when neither is configured.
+     */
+    String adminHostname() {
+        if (adminHostname != null) {
+            return adminHostname;
+        }
+        return rootDomain == null ? null : "op.console." + rootDomain;
     }
 
     private static String firstNonBlank(String a, String b) {

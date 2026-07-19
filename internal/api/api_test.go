@@ -52,7 +52,7 @@ type fakeRepo struct {
 	linkAuthSource map[string]string
 	// world backups (spec §7, §22). A nil slice lists empty.
 	backups []fakeBackup
-	// local-password auth (spec §B). staff is keyed by username (the login key);
+	// session auth (spec §B, passwordless). staff is keyed by username (the login key);
 	// sessions by token_hash; settings by key. They mirror the PG contract so the
 	// hermetic tests exercise the same fail-closed semantics the integration impl
 	// honors.
@@ -1596,45 +1596,6 @@ func TestMeIdentity(t *testing.T) {
 		if got["is_admin"] != false {
 			t.Fatalf("is_admin = %v, want false — the admin role alone must not grant admin tier "+
 				"without the admin Access path", got["is_admin"])
-		}
-	})
-}
-
-// ---- by-host ----
-
-func TestByHost(t *testing.T) {
-	cl := newFakeCluster()
-	cl.bySub["survival"] = &ServerInfo{Name: "survival", Subdomain: "survival", Phase: "Running", Ready: true}
-	api := newTestAPI(newFakeRepo(), cl)
-	h := api.InternalHandler()
-	tok := map[string]string{"Authorization": "Bearer "} // okInternal ignores it
-
-	t.Run("foreign domain rejected", func(t *testing.T) {
-		w := do(h, "GET", "/api/v1/servers/by-host/survival.evil.example.org", "", tok)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("code = %d, want 400", w.Code)
-		}
-	})
-	t.Run("multi-label rejected", func(t *testing.T) {
-		w := do(h, "GET", "/api/v1/servers/by-host/a.b."+testRoot, "", tok)
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("code = %d, want 400", w.Code)
-		}
-	})
-	t.Run("unknown server 404", func(t *testing.T) {
-		w := do(h, "GET", "/api/v1/servers/by-host/creative."+testRoot, "", tok)
-		if w.Code != http.StatusNotFound {
-			t.Fatalf("code = %d, want 404", w.Code)
-		}
-	})
-	t.Run("found", func(t *testing.T) {
-		w := do(h, "GET", "/api/v1/servers/by-host/survival."+testRoot, "", tok)
-		if w.Code != http.StatusOK {
-			t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
-		}
-		var info ServerInfo
-		if err := json.Unmarshal(w.Body.Bytes(), &info); err != nil || info.Name != "survival" {
-			t.Fatalf("unexpected body %s err %v", w.Body.String(), err)
 		}
 	})
 }

@@ -437,7 +437,15 @@ func (a *API) handleLinkAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.AuthSource == "" {
-		body.AuthSource = "mojang"
+		// Same version-nibble inference as the mint path (handlers_account.go):
+		// defaulting to mojang here would leave a force-linked thirdparty UUID
+		// outside the reclaim guard.
+		body.AuthSource = deriveAuthSource(body.MCUUID)
+	}
+	if !validAuthSource(body.AuthSource) {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
+			"auth_source must be %q or %q", authSourceMojang, authSourceThirdParty))
+		return
 	}
 
 	if err := a.Repo.LinkAccount(r.Context(), userID, body.MCUUID, body.AuthSource); err != nil {

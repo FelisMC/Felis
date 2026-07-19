@@ -13,10 +13,12 @@ import java.util.Objects;
 public final class LinkCode {
     private final String code;
     private final String expiresAt;
+    private final String panelUrl;
 
-    public LinkCode(String code, String expiresAt) {
+    public LinkCode(String code, String expiresAt, String panelUrl) {
         this.code = Objects.requireNonNull(code, "code");
         this.expiresAt = expiresAt;
+        this.panelUrl = panelUrl;
     }
 
     public String code() {
@@ -26,5 +28,13 @@ public final class LinkCode {
     /** expiresAt is the raw RFC 3339 expiry string, or null if the server omitted it. */
     public String expiresAt() {
         return expiresAt;
+    }
+
+    /**
+     * panelUrl is the ready-to-open web-panel URL the server minted alongside the
+     * code, or null when no panel hostname is configured server-side.
+     */
+    public String panelUrl() {
+        return panelUrl;
     }
 }

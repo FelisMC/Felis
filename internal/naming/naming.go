@@ -23,6 +23,7 @@ var reserved = map[string]struct{}{
 	"lobby":    {},
 	"admin":    {},
 	"panel":    {},
+	"console":  {}, // the player web console (console.<root>); op.console carries a dot and can never collide
 	"api":      {},
 	"felis":    {},
 	"velocity": {},
@@ -110,12 +111,6 @@ func ValidateSystemServerName(name string) error {
 		return fmt.Errorf("naming: system server name %q must not start or end with '-'", name)
 	}
 	return nil
-}
-
-// IsReserved reports whether label is on the reserved list.
-func IsReserved(label string) bool {
-	_, ok := reserved[label]
-	return ok
 }
 
 // worldVolumeName mirrors operator.dataVolumeName: the per-server StatefulSet's

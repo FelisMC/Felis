@@ -7,7 +7,6 @@ import type {
   CreateServerRequest,
   FleetServer,
   Identity,
-  LoginResult,
   Phase,
   ServerInfo,
   WhitelistImage,
@@ -43,7 +42,6 @@ interface MockAccount {
   role: Role;
   email: string;
   linked: boolean;
-  mustChangePassword: boolean;
   emailVerified: boolean;
   disabled?: boolean;
   created_at?: string;
@@ -104,8 +102,8 @@ interface SessionContext extends RequestContext {
 const SESSION_COOKIE = "felis_mock_session";
 const ROOT_DOMAIN = "dev.felis.localhost";
 const API_BASE = "/api/v1";
-const MOCK_PASSWORD = "devpassword";
 const MOCK_LINK_CODE = "LINK1234";
+const MOCK_OTP_CODE = "123456";
 const MC_UUID = "00000000-0000-4000-8000-000000000001";
 const RESET_ROUTE = `${API_BASE}/__mock/reset`;
 
@@ -138,7 +136,7 @@ const LOGIN_HINT_STYLE = `
 const LOGIN_HINT_SCRIPT = `
 (() => {
   const id = "felis-mock-login-hint";
-  const html = '<aside id="' + id + '" aria-label="Mock sign-in credentials"><strong>Mock sign-in</strong><div>Admin: <code>owner</code> / <code>${MOCK_PASSWORD}</code></div><div>User: <code>user</code> / <code>${MOCK_PASSWORD}</code> (not linked)</div><div>User: <code>linked</code> / <code>${MOCK_PASSWORD}</code> (linked)</div><div>First login: <code>setup</code> / <code>${MOCK_PASSWORD}</code></div><div>Link code: <code>${MOCK_LINK_CODE}</code></div></aside>';
+  const html = '<aside id="' + id + '" aria-label="Mock sign-in credentials"><strong>Mock sign-in (passwordless)</strong><div>Email OTP: any email / code <code>${MOCK_OTP_CODE}</code> (signs in as <code>owner</code>, admin)</div><div>Link code: <code>${MOCK_LINK_CODE}</code> (signs in as <code>linked</code>, user)</div><div>Passkey: any assertion is accepted (signs in as <code>owner</code>)</div></aside>';
   const sync = () => {
     const existing = document.getElementById(id);
     if (location.pathname === "/login") {
@@ -198,10 +196,9 @@ function mockBackups(): BackupView[] {
 function initialState(): MockState {
   return {
     accounts: {
-      owner: account("owner", "owner", true, false, false),
-      user: account("user", "user", false, false, false),
-      linked: account("linked", "user", true, false, true),
-      setup: account("setup", "admin", true, true, false),
+      owner: account("owner", "owner", true, false),
+      user: account("user", "user", false, false),
+      linked: account("linked", "user", true, true),
     },
     images: [
       { image_ref: "registry.felis.svc:5000/paper-1.21:demo", enabled: true, source: "demo" },
@@ -214,29 +211,29 @@ function initialState(): MockState {
     ],
     servers: [
       server("survival", "Survival SMP", "Running", "owner", {
-        players: 12,
-        maxPlayers: 20,
+        playersOnline: 12,
+        playersMax: 20,
         autostartPolicy: "public",
       }),
       server("lobby", "Hub Lobby", "Running", "linked", {
-        players: 28,
-        maxPlayers: 60,
+        playersOnline: 28,
+        playersMax: 60,
         autostartPolicy: "public",
       }),
       server("creative", "Creative Lab", "Stopped", "user", {
         autostartPolicy: "public",
-        maxPlayers: 16,
+        playersMax: 16,
       }),
       server("modded", "Modded Testbed", "Starting", "owner", {
         autostartPolicy: "allowlist",
-        maxPlayers: 12,
+        playersMax: 12,
       }),
       server("broken", "Broken Node", "Failed", "user", {
         autostartPolicy: "ownerOnly",
-        maxPlayers: 8,
+        playersMax: 8,
       }),
       server("claim-me", "Claimable Node", "Stopped", null, {
-        maxPlayers: 10,
+        playersMax: 10,
       }),
       ...generatedServers(),
     ],
@@ -259,7 +256,7 @@ function initialState(): MockState {
           "dupe_glitcher", "griefKing", "nukebot", "AFK_farmer", "chat_spammer",
           "xray_cheater", "fly_hacker",
         ],
-        // 12 online, matching the server's players:12 — past the search threshold (>8)
+        // 12 online, matching the server's playersOnline:12 — past the search threshold (>8)
         // and a page (>10) so the roster's filter + paging are both exercisable, with a
         // few non-whitelisted names to try kick / ban on.
         online: [
@@ -398,8 +395,8 @@ function generatedServers(): MockServer[] {
       const max = 10 + ((i * 7) % 50);
       out.push(
         server(`${theme}-${String(n).padStart(2, "0")}`, `${theme} #${n}`, phase, owners[i % owners.length], {
-          players: phase === "Running" ? 1 + ((i * 3) % max) : 0,
-          maxPlayers: max,
+          playersOnline: phase === "Running" ? 1 + ((i * 3) % max) : 0,
+          playersMax: max,
           autostartPolicy: policies[i % policies.length],
         }),
       );
@@ -416,13 +413,10 @@ function mockStartupMessage(): string {
     `  API base: ${API_BASE}`,
     `  Root domain: ${ROOT_DOMAIN}`,
     "",
-    "  Accounts:",
-    `    owner  / ${MOCK_PASSWORD}  admin, linked`,
-    `    user   / ${MOCK_PASSWORD}  user, not linked`,
-    `    linked / ${MOCK_PASSWORD}  user, linked`,
-    `    setup  / ${MOCK_PASSWORD}  admin, first-login password change`,
-    "",
-    `  Link code: ${MOCK_LINK_CODE}`,
+    "  Sign-in (passwordless):",
+    `    Email OTP: any email / code ${MOCK_OTP_CODE}  → owner (admin, linked)`,
+    `    Link code: ${MOCK_LINK_CODE}                  → linked (user, linked)`,
+    "    Passkey:   any assertion accepted     → owner (admin, linked)",
     `  Reset state: curl -X POST http://127.0.0.1:5173${RESET_ROUTE}`,
     "",
   ].join("\n");
@@ -432,14 +426,12 @@ function account(
   id: AccountID,
   role: Role,
   linked: boolean,
-  mustChangePassword: boolean,
   emailVerified: boolean,
 ): MockAccount {
   return {
     id,
     role,
     linked,
-    mustChangePassword,
     emailVerified,
     email: `${id}@mock.felis.local`,
   };
@@ -458,8 +450,8 @@ function server(
     displayName,
     phase,
     desiredState: phase === "Stopped" ? "Stopped" : "Running",
-    players: phase === "Running" ? 1 : 0,
-    maxPlayers: 20,
+    playersOnline: phase === "Running" ? 1 : 0,
+    playersMax: 20,
     autostartPolicy: "ownerOnly",
     owned: false,
     claimable: false,
@@ -515,15 +507,6 @@ function clearSessionCookie(res: ServerResponse): void {
   res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`);
 }
 
-function loginAccount(username: string, state: MockState): string | null {
-  const normalized = username.toLowerCase();
-  const acc = state.accounts[normalized];
-  if (acc && !acc.disabled) {
-    return normalized;
-  }
-  return null;
-}
-
 function identity(accountInfo: MockAccount): Identity {
   return {
     user_id: `mock-${accountInfo.id}`,
@@ -531,7 +514,6 @@ function identity(accountInfo: MockAccount): Identity {
     role: accountInfo.role,
     is_admin: isAdmin(accountInfo.role),
     is_owner: isOwner(accountInfo.role),
-    must_change_password: accountInfo.mustChangePassword,
     email_verified: accountInfo.emailVerified,
   };
 }
@@ -556,8 +538,8 @@ function visibleServers(state: MockState, accountInfo: MockAccount): ServerInfo[
 
 // fleetView projects the internal mock servers into the GET /fleet wire shape
 // (the SysAdmin cockpit's read). It is the mock mirror of the Go fleetServerView:
-// the CRD field names (playersOnline/playersMax, ready, endpoint*) — NOT the
-// me/servers projection's players/maxPlayers — plus the owner joined as the email
+// the CRD field names (playersOnline/playersMax, ready, endpoint*) plus the
+// runtime `ready`/`endpoint*` fields, and the owner joined as the email
 // (COALESCE(email, username) server-side). Endpoint and live player counts are
 // gated on Running, exactly as the real cluster reports them.
 function fleetView(state: MockState): FleetServer[] {
@@ -572,8 +554,8 @@ function fleetView(state: MockState): FleetServer[] {
       autostartPolicy: s.autostartPolicy,
       endpointMode: "domain",
       endpointAddress: ready ? `10.43.0.${10 + i}:25565` : undefined,
-      playersOnline: ready ? s.players ?? 0 : 0,
-      playersMax: s.maxPlayers ?? 0,
+      playersOnline: ready ? s.playersOnline ?? 0 : 0,
+      playersMax: s.playersMax ?? 0,
       owner: s.owner ? state.accounts[s.owner].email : "",
     };
   });
@@ -592,7 +574,7 @@ function projectServer(serverInfo: MockServer, accountInfo: MockAccount): Server
 function setPhase(serverInfo: MockServer, phase: Phase): void {
   serverInfo.phase = phase;
   serverInfo.desiredState = phase === "Stopped" ? "Stopped" : "Running";
-  serverInfo.players = phase === "Running" ? Math.max(serverInfo.players ?? 0, 1) : 0;
+  serverInfo.playersOnline = phase === "Running" ? Math.max(serverInfo.playersOnline ?? 0, 1) : 0;
 }
 
 function policy(value: unknown): AutostartPolicy {
@@ -615,8 +597,8 @@ function createServer(
 
   const created = server(name, req.displayName?.trim() || name, "Stopped", owner, {
     subdomain,
-    players: 0,
-    maxPlayers: 20,
+    playersOnline: 0,
+    playersMax: 20,
     autostartPolicy: policy(req.autostartPolicy),
   });
   state.servers.unshift(created);
@@ -630,23 +612,6 @@ function sendCreateError(res: ServerResponse, code: CreateError): void {
 
 async function handlePublic(ctx: RequestContext): Promise<boolean> {
   switch (route(ctx)) {
-    case "POST auth/login": {
-      const body = await readJSON<{ username?: string; password?: string }>(ctx.req);
-      const accountID = body.username ? loginAccount(body.username.trim(), ctx.state) : null;
-      if (!accountID || body.password !== MOCK_PASSWORD) {
-        sendError(ctx.res, 403, "invalid_credentials", "invalid mock credentials");
-        return true;
-      }
-      const accountInfo = ctx.state.accounts[accountID];
-      setSessionCookie(ctx.res, accountID);
-      const out: LoginResult = {
-        user_id: `mock-${accountInfo.id}`,
-        role: accountInfo.role,
-        must_change_password: accountInfo.mustChangePassword,
-      };
-      sendJSON(ctx.res, 200, out);
-      return true;
-    }
     case "POST auth/bind": {
       const body = await readJSON<{ code?: string }>(ctx.req);
       const code = body.code?.trim().toUpperCase();
@@ -734,7 +699,7 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
     }
     case "POST auth/email/verify": {
       const body = await readJSON<{ email?: string; code?: string }>(ctx.req);
-      if (!body.email || body.code !== "123456") {
+      if (!body.email || body.code !== MOCK_OTP_CODE) {
         sendError(ctx.res, 400, "invalid_code", "email code is invalid or expired");
         return true;
       }
@@ -805,10 +770,6 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       }
       sendJSON(ctx.res, 200, { servers: fleetView(ctx.state) });
       return true;
-    case "POST auth/change-password":
-      ctx.account.mustChangePassword = false;
-      sendJSON(ctx.res, 200, { ok: true });
-      return true;
     case "GET backups":
       // Admin sees every archive; a user only worlds they formerly owned — mirrors
       // AllBackups vs BackupsForUser. The panel filters by server_name client-side.
@@ -838,7 +799,7 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
     }
     case "POST account/email/verify": {
       const body = await readJSON<{ code?: string }>(ctx.req);
-      if (body.code?.trim() !== "123456") {
+      if (body.code?.trim() !== MOCK_OTP_CODE) {
         sendError(ctx.res, 400, "invalid_code", "email code is invalid or expired");
         return true;
       }
@@ -931,7 +892,6 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
         disabled: !!acc.disabled,
         email_verified: acc.emailVerified,
         server_count: serverCount,
-        must_change_password: acc.mustChangePassword,
         created_at: acc.created_at || new Date().toISOString(),
         updated_at: acc.updated_at || new Date().toISOString(),
       } as UserView;
@@ -971,7 +931,6 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
       role: body.role || "user",
       email: body.email || `${username}@example.com`,
       linked: false,
-      mustChangePassword: body.must_change_password ?? false,
       emailVerified: true,
       disabled: false,
       created_at: new Date().toISOString(),
@@ -996,7 +955,6 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
       disabled: false,
       email_verified: true,
       server_count: 0,
-      must_change_password: newAcc.mustChangePassword,
       created_at: newAcc.created_at,
       updated_at: newAcc.updated_at,
     } as UserView);
@@ -1033,7 +991,6 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
         disabled: !!acc.disabled,
         email_verified: acc.emailVerified,
         server_count: serverCount,
-        must_change_password: acc.mustChangePassword,
         created_at: acc.created_at || new Date().toISOString(),
         updated_at: acc.updated_at || new Date().toISOString(),
         linked_accounts,
@@ -1069,7 +1026,6 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
         disabled: !!acc.disabled,
         email_verified: acc.emailVerified,
         server_count: serverCount,
-        must_change_password: acc.mustChangePassword,
         created_at: acc.created_at || new Date().toISOString(),
         updated_at: acc.updated_at,
       } as UserView);
@@ -1116,14 +1072,6 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
       acc.disabled = !!body.disabled;
       acc.updated_at = new Date().toISOString();
       sendJSON(ctx.res, 200, { id: `mock-${acc.id}`, disabled: acc.disabled });
-      return true;
-    }
-
-    // POST /api/v1/users/{id}/reset-password
-    if (is("POST", ctx) && subAction === "reset-password") {
-      acc.mustChangePassword = true;
-      acc.updated_at = new Date().toISOString();
-      sendJSON(ctx.res, 200, { ok: true, email: acc.email || "" });
       return true;
     }
 
@@ -1791,7 +1739,7 @@ function handleAccessMock(ctx: SessionContext, serverInfo: MockServer): boolean 
     return true;
   }
   if (is("GET", ctx) && sub === "players") {
-    const max = serverInfo.maxPlayers ?? 0;
+    const max = serverInfo.playersMax ?? 0;
     sendJSON(ctx.res, 200, {
       name: serverInfo.name,
       online: access.online.length,

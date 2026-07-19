@@ -193,10 +193,12 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
     // errors carry user-safe text (the same {code,message} the external API returns),
     // but a transport failure (statusCode 0) carries internal IO detail — host names,
     // refused ports — that must not reach a player's screen, so it is generalized.
+    // The lobby localizes known codes itself; this fallback message may reach the
+    // screen raw, so it carries both languages in one line (the no-locale pattern).
     private static ControlFrame errorFrame(LinkException e, String server) {
         String code = e.errorCode() != null ? e.errorCode() : "error";
         String message = e.statusCode() == 0
-                ? "felis is temporarily unavailable — please try again."
+                ? "Felis 暂时不可用，请稍后再试 / Felis is temporarily unavailable — please try again."
                 : e.getMessage();
         return ControlFrame.error(code, message, server);
     }

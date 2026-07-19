@@ -28,6 +28,7 @@ import org.slf4j.Logger;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -180,20 +181,34 @@ public final class FelisVelocityPlugin {
     }
 
     private void requestAndReply(Player player) {
-        player.sendMessage(Component.text("Requesting a link code…", NamedTextColor.GRAY));
+        boolean zh = zh(player);
+        player.sendMessage(Component.text(
+                zh ? "正在获取绑定码……" : "Requesting a link code…", NamedTextColor.GRAY));
         async(() -> {
             try {
                 LinkCode code = linkClient.requestCode(player.getUniqueId());
-                player.sendMessage(Component.text("Your link code: ", NamedTextColor.GREEN)
-                        .append(Component.text(code.code(), NamedTextColor.YELLOW)));
                 player.sendMessage(Component.text(
-                        "Enter it on the web panel → Account to finish linking (valid a few minutes).",
-                        NamedTextColor.GRAY));
+                        zh ? "你的绑定码：" : "Your link code: ", NamedTextColor.GREEN)
+                        .append(Component.text(code.code(), NamedTextColor.YELLOW)));
+                String panelUrl = code.panelUrl();
+                if (panelUrl != null) {
+                    player.sendMessage(Component.text(
+                            zh ? "在这里输入它完成绑定（几分钟内有效）："
+                               : "Enter it here to finish linking (valid a few minutes):",
+                            NamedTextColor.GRAY));
+                    player.sendMessage(Component.text("  " + panelUrl, NamedTextColor.WHITE));
+                } else {
+                    player.sendMessage(Component.text(
+                            zh ? "在网页控制台 → 账户 中输入它完成绑定（几分钟内有效）。"
+                               : "Enter it on the web console → Account to finish linking (valid a few minutes).",
+                            NamedTextColor.GRAY));
+                }
             } catch (LinkException e) {
                 logger.warn("link code request failed for {} (status={}, code={}): {}",
                         player.getUniqueId(), e.statusCode(), e.errorCode(), e.getMessage());
                 player.sendMessage(Component.text(
-                        "Couldn't get a link code right now. Please try again in a moment.",
+                        zh ? "现在无法获取绑定码，请稍后再试。"
+                           : "Couldn't get a link code right now. Please try again in a moment.",
                         NamedTextColor.RED));
             }
         });
@@ -210,6 +225,7 @@ public final class FelisVelocityPlugin {
     //   /felis server                 the felis servers this proxy knows
     //   /felis go <server>            wake a server and move me in when it's ready
     //   /felis claim                  take ownership of the server I'm on
+    //   /felis migrate                open a migration of my servers to another account
     //   /felis web                    where the web consoles live
     //   /felis web op approve <code>  vouch for a pending op.console staff login (§B)
     //
@@ -301,15 +317,18 @@ public final class FelisVelocityPlugin {
     // login limbo (or not yet on any backend): they have not passed the front door.
     // Fails closed on an unknown position.
     private boolean ensureOutOfLimbo(Player player) {
+        boolean zh = zh(player);
         Optional<ServerConnection> current = player.getCurrentServer();
         if (current.isEmpty()) {
             player.sendMessage(Component.text(
-                    "Hold on — finish connecting before using /felis.", NamedTextColor.YELLOW));
+                    zh ? "请稍候——完成连接后再使用 /felis。"
+                       : "Hold on — finish connecting before using /felis.", NamedTextColor.YELLOW));
             return false;
         }
         if (config.loginServer().equalsIgnoreCase(current.get().getServerInfo().getName())) {
             player.sendMessage(Component.text(
-                    "Finish signing in first — /felis isn't available from the login area.",
+                    zh ? "请先完成登录——登录区内无法使用 /felis。"
+                       : "Finish signing in first — /felis isn't available from the login area.",
                     NamedTextColor.YELLOW));
             return false;
         }
@@ -328,53 +347,69 @@ public final class FelisVelocityPlugin {
         if (!gateInfo(source)) {
             return;
         }
+        boolean zh = zh(source);
         source.sendMessage(Component.text("Felis proxy", NamedTextColor.AQUA));
         source.sendMessage(field("online-mode", String.valueOf(onlineMode)));
         if (!routingActive) {
             source.sendMessage(Component.text(
-                    "  routing: disabled" + (onlineMode ? " (no root-domain set)" : " (offline mode)"),
+                    zh ? "  routing: 已禁用" + (onlineMode ? "（未设置 root-domain）" : "（离线模式）")
+                       : "  routing: disabled" + (onlineMode ? " (no root-domain set)" : " (offline mode)"),
                     NamedTextColor.YELLOW));
-            source.sendMessage(Component.text("  /felis help for commands", NamedTextColor.GRAY));
+            source.sendMessage(Component.text(
+                    zh ? "  /felis help 查看命令" : "  /felis help for commands", NamedTextColor.GRAY));
             return;
         }
         source.sendMessage(field("root-domain", config.rootDomain()));
         source.sendMessage(field("login", config.loginServer()));
         source.sendMessage(field("lobby", config.lobbyServer()));
         source.sendMessage(field("servers", String.valueOf(registry.all().size())));
-        source.sendMessage(Component.text("  /felis help for commands", NamedTextColor.GRAY));
+        source.sendMessage(Component.text(
+                zh ? "  /felis help 查看命令" : "  /felis help for commands", NamedTextColor.GRAY));
     }
 
     private void sendHelp(CommandSource source) {
-        source.sendMessage(Component.text("Felis commands", NamedTextColor.AQUA));
-        helpLine(source, "/felis", "proxy and routing status");
-        helpLine(source, "/felis server", "the felis servers this proxy knows");
-        helpLine(source, "/felis go <server>", "start a server and move you in when it's ready");
-        helpLine(source, "/felis claim", "take ownership of the server you're on");
-        helpLine(source, "/felis migrate", "move your servers to another account");
-        helpLine(source, "/felis web", "where the web consoles live");
-        helpLine(source, "/felis web op approve <code>", "approve a pending operator sign-in");
+        boolean zh = zh(source);
+        source.sendMessage(Component.text(zh ? "Felis 命令" : "Felis commands", NamedTextColor.AQUA));
+        helpLine(source, "/felis",
+                zh ? "代理与路由状态" : "proxy and routing status");
+        helpLine(source, "/felis server",
+                zh ? "此代理已知的 felis 服务器" : "the felis servers this proxy knows");
+        helpLine(source, "/felis go <server>",
+                zh ? "启动服务器并在就绪后把你传送过去" : "start a server and move you in when it's ready");
+        helpLine(source, "/felis claim",
+                zh ? "认领你所在的服务器" : "take ownership of the server you're on");
+        helpLine(source, "/felis migrate",
+                zh ? "把你的服务器迁移到另一个账户" : "move your servers to another account");
+        helpLine(source, "/felis web",
+                zh ? "网页控制台地址" : "where the web consoles live");
+        helpLine(source, "/felis web op approve <code>",
+                zh ? "批准待处理的管理员登录" : "approve a pending operator sign-in");
     }
 
     private void sendServerList(CommandSource source) {
         if (!gateInfo(source)) {
             return;
         }
+        boolean zh = zh(source);
         if (!routingActive) {
-            source.sendMessage(Component.text("Felis routing is disabled.", NamedTextColor.YELLOW));
+            source.sendMessage(Component.text(
+                    zh ? "Felis 路由已禁用。" : "Felis routing is disabled.", NamedTextColor.YELLOW));
             return;
         }
         List<ServerView> servers = registry.all().stream()
                 .filter(v -> !isSystemServer(v.name()))
                 .toList();
         if (servers.isEmpty()) {
-            source.sendMessage(Component.text("No felis servers known yet.", NamedTextColor.GRAY));
+            source.sendMessage(Component.text(
+                    zh ? "暂无已知的 felis 服务器。" : "No felis servers known yet.", NamedTextColor.GRAY));
             return;
         }
-        source.sendMessage(Component.text("Felis servers:", NamedTextColor.AQUA));
+        source.sendMessage(Component.text(zh ? "Felis 服务器：" : "Felis servers:", NamedTextColor.AQUA));
         for (ServerView v : servers) {
             String phase = v.phase() == null ? "?" : v.phase();
+            String ready = v.ready() ? (zh ? "，就绪" : ", ready") : "";
             source.sendMessage(Component.text("  " + v.name() + " ", NamedTextColor.WHITE)
-                    .append(Component.text("[" + phase + (v.ready() ? ", ready" : "") + "]",
+                    .append(Component.text("[" + phase + ready + "]",
                             v.ready() ? NamedTextColor.GREEN : NamedTextColor.GRAY)));
         }
     }
@@ -384,8 +419,9 @@ public final class FelisVelocityPlugin {
         if (player == null || !ensureOutOfLimbo(player)) {
             return;
         }
+        boolean zh = zh(player);
         if (!routingActive) {
-            player.sendMessage(routingDisabled());
+            player.sendMessage(routingDisabled(zh));
             return;
         }
         String target = serverArg.trim();
@@ -398,12 +434,15 @@ public final class FelisVelocityPlugin {
         }
         if (match == null) {
             player.sendMessage(Component.text(
-                    "No felis server named « " + target + " ». Try /felis server.", NamedTextColor.YELLOW));
+                    zh ? "没有名为「" + target + "」的 felis 服务器。试试 /felis server。"
+                       : "No felis server named « " + target + " ». Try /felis server.", NamedTextColor.YELLOW));
             return;
         }
         Optional<ServerConnection> current = player.getCurrentServer();
         if (current.isPresent() && current.get().getServerInfo().getName().equalsIgnoreCase(match.name())) {
-            player.sendMessage(Component.text("You're already on « " + match.name() + " ».", NamedTextColor.GRAY));
+            player.sendMessage(Component.text(
+                    zh ? "你已经在「" + match.name() + "」上了。"
+                       : "You're already on « " + match.name() + " ».", NamedTextColor.GRAY));
             return;
         }
         // Wake + park + transfer through the shared waiting queue; it reports its own
@@ -416,29 +455,36 @@ public final class FelisVelocityPlugin {
         if (player == null || !ensureOutOfLimbo(player)) {
             return;
         }
+        boolean zh = zh(player);
         if (!routingActive) {
-            player.sendMessage(routingDisabled());
+            player.sendMessage(routingDisabled(zh));
             return;
         }
         Optional<ServerConnection> current = player.getCurrentServer();
         if (current.isEmpty()) {
-            player.sendMessage(Component.text("Join a server before claiming it.", NamedTextColor.YELLOW));
+            player.sendMessage(Component.text(
+                    zh ? "请先加入一个服务器再认领。" : "Join a server before claiming it.",
+                    NamedTextColor.YELLOW));
             return;
         }
         String name = current.get().getServerInfo().getName();
         if (!registry.isManaged(name)) {
             player.sendMessage(Component.text(
-                    "« " + name + " » isn't a claimable felis server.", NamedTextColor.YELLOW));
+                    zh ? "「" + name + "」不是可认领的 felis 服务器。"
+                       : "« " + name + " » isn't a claimable felis server.", NamedTextColor.YELLOW));
             return;
         }
         UUID uuid = player.getUniqueId();
-        player.sendMessage(Component.text("Claiming « " + name + " »…", NamedTextColor.GRAY));
+        player.sendMessage(Component.text(
+                zh ? "正在认领「" + name + "」……" : "Claiming « " + name + " »…", NamedTextColor.GRAY));
         async(() -> {
             try {
                 apiClient.claim(name, uuid);
-                player.sendMessage(Component.text("You now own « " + name + " ».", NamedTextColor.GREEN));
+                player.sendMessage(Component.text(
+                        zh ? "你现在拥有「" + name + "」了。" : "You now own « " + name + " ».",
+                        NamedTextColor.GREEN));
             } catch (LinkException e) {
-                player.sendMessage(Component.text(claimError(e, name), NamedTextColor.RED));
+                player.sendMessage(Component.text(claimError(e, name, zh), NamedTextColor.RED));
             }
         });
     }
@@ -455,28 +501,34 @@ public final class FelisVelocityPlugin {
         if (player == null || !ensureOutOfLimbo(player)) {
             return;
         }
+        boolean zh = zh(player);
         if (!routingActive) {
-            player.sendMessage(routingDisabled());
+            player.sendMessage(routingDisabled(zh));
             return;
         }
         UUID uuid = player.getUniqueId();
         String who = player.getUsername();
-        player.sendMessage(Component.text("Starting account migration…", NamedTextColor.GRAY));
+        player.sendMessage(Component.text(
+                zh ? "正在发起账户迁移……" : "Starting account migration…", NamedTextColor.GRAY));
         async(() -> {
             try {
                 apiClient.migrateStart(uuid);
-                String root = config.rootDomain();
+                String panelHost = config.panelHostname();
                 player.sendMessage(Component.text(
-                        "Migration started — finish it on the web console:", NamedTextColor.GREEN));
+                        zh ? "迁移已发起——请在网页控制台完成："
+                           : "Migration started — finish it on the web console:", NamedTextColor.GREEN));
                 player.sendMessage(Component.text(
-                        "  " + (root == null ? "the players' web console" : "https://console." + root),
+                        "  " + (panelHost == null
+                                ? (zh ? "玩家网页控制台" : "the players' web console")
+                                : "https://" + panelHost + "/account"),
                         NamedTextColor.WHITE));
                 player.sendMessage(Component.text(
-                        "You'll confirm it's you, name the account to receive your servers, then get a code.",
+                        zh ? "你需要确认身份、指定接收服务器的账户，然后获得一个迁移码。"
+                           : "You'll confirm it's you, name the account to receive your servers, then get a code.",
                         NamedTextColor.GRAY));
                 logger.info("Felis: account migration started in-game by {} ({})", who, uuid);
             } catch (LinkException e) {
-                player.sendMessage(Component.text(migrateError(e), NamedTextColor.RED));
+                player.sendMessage(Component.text(migrateError(e, zh), NamedTextColor.RED));
             }
         });
     }
@@ -485,17 +537,26 @@ public final class FelisVelocityPlugin {
         if (!gateInfo(source)) {
             return;
         }
-        String root = config.rootDomain();
-        if (root == null) {
+        boolean zh = zh(source);
+        String panelHost = config.panelHostname();
+        String adminHost = config.adminHostname();
+        if (panelHost == null && adminHost == null) {
             source.sendMessage(Component.text(
-                    "The web console isn't configured on this proxy.", NamedTextColor.YELLOW));
+                    zh ? "此代理未配置网页控制台。"
+                       : "The web console isn't configured on this proxy.", NamedTextColor.YELLOW));
             return;
         }
-        source.sendMessage(Component.text("Felis web consoles", NamedTextColor.AQUA));
-        source.sendMessage(field("players", "https://console." + root));
-        source.sendMessage(field("operators", "https://op.console." + root));
         source.sendMessage(Component.text(
-                "  operators: /felis web op approve <code> vouches for a pending sign-in",
+                zh ? "Felis 网页控制台" : "Felis web consoles", NamedTextColor.AQUA));
+        if (panelHost != null) {
+            source.sendMessage(field(zh ? "玩家" : "players", "https://" + panelHost));
+        }
+        if (adminHost != null) {
+            source.sendMessage(field(zh ? "管理员" : "operators", "https://" + adminHost));
+        }
+        source.sendMessage(Component.text(
+                zh ? "  管理员：/felis web op approve <code> 用于为待处理登录作担保"
+                   : "  operators: /felis web op approve <code> vouches for a pending sign-in",
                 NamedTextColor.GRAY));
     }
 
@@ -503,12 +564,20 @@ public final class FelisVelocityPlugin {
         if (!gateInfo(source)) {
             return;
         }
-        source.sendMessage(Component.text("Operator sign-in", NamedTextColor.AQUA));
+        boolean zh = zh(source);
+        String adminHost = config.adminHostname();
+        String site = adminHost != null ? adminHost : (zh ? "管理员控制台" : "the operator console");
         source.sendMessage(Component.text(
-                "An operator signing in at op.console shows an approval code. Run", NamedTextColor.GRAY));
+                zh ? "管理员登录" : "Operator sign-in", NamedTextColor.AQUA));
+        source.sendMessage(Component.text(
+                zh ? "管理员在 " + site + " 登录时会显示一个批准码。运行"
+                   : "An operator signing in at " + site + " shows an approval code. Run",
+                NamedTextColor.GRAY));
         source.sendMessage(Component.text("  /felis web op approve <code>", NamedTextColor.WHITE));
         source.sendMessage(Component.text(
-                "to vouch for it — you must be an online, linked administrator.", NamedTextColor.GRAY));
+                zh ? "即可为其担保——你必须是已绑定并在线的管理员。"
+                   : "to vouch for it — you must be an online, linked administrator.",
+                NamedTextColor.GRAY));
     }
 
     private void doOpApprove(CommandSource source, String codeArg) {
@@ -516,36 +585,56 @@ public final class FelisVelocityPlugin {
         if (player == null || !ensureOutOfLimbo(player)) {
             return;
         }
+        boolean zh = zh(player);
         if (!routingActive) {
-            player.sendMessage(routingDisabled());
+            player.sendMessage(routingDisabled(zh));
             return;
         }
         String code = codeArg.trim();
         if (!OP_LOGIN_CODE.matcher(code).matches()) {
             player.sendMessage(Component.text(
-                    "That doesn't look like a valid approval code.", NamedTextColor.RED));
+                    zh ? "这不像一个有效的批准码。" : "That doesn't look like a valid approval code.",
+                    NamedTextColor.RED));
             return;
         }
         UUID approver = player.getUniqueId();
         String who = player.getUsername();
-        player.sendMessage(Component.text("Approving operator sign-in…", NamedTextColor.GRAY));
+        player.sendMessage(Component.text(
+                zh ? "正在批准管理员登录……" : "Approving operator sign-in…", NamedTextColor.GRAY));
         async(() -> {
             try {
                 apiClient.opLoginApprove(code, approver);
                 player.sendMessage(Component.text(
-                        "Approved — the operator can finish signing in now.", NamedTextColor.GREEN));
+                        zh ? "已批准——对方现在可以完成登录了。"
+                           : "Approved — the operator can finish signing in now.", NamedTextColor.GREEN));
                 logger.info("Felis: op-login {} approved in-game by {} ({})", code, who, approver);
             } catch (LinkException e) {
-                player.sendMessage(Component.text(opApproveError(e), NamedTextColor.RED));
+                player.sendMessage(Component.text(opApproveError(e, zh), NamedTextColor.RED));
             }
         });
     }
 
     // ---- helpers ----
 
-    private Component routingDisabled() {
+    /**
+     * zh reports whether the caller's client locale is Chinese, so player-facing
+     * text can follow the client language. The console (and any non-player source)
+     * always reads English, and a client that has not yet sent its settings falls
+     * back to English too. Package-private so {@link WaitingRouter} and the other
+     * proxy faces share the one locale rule.
+     */
+    static boolean zh(CommandSource source) {
+        if (!(source instanceof Player)) {
+            return false;
+        }
+        Locale locale = ((Player) source).getPlayerSettings().getLocale();
+        return locale != null && "zh".equalsIgnoreCase(locale.getLanguage());
+    }
+
+    private Component routingDisabled(boolean zh) {
         return Component.text(
-                "Felis routing is disabled on this proxy" + (onlineMode ? " (no root-domain set)." : " (offline mode)."),
+                zh ? "此代理已禁用 Felis 路由" + (onlineMode ? "（未设置 root-domain）。" : "（离线模式）。")
+                   : "Felis routing is disabled on this proxy" + (onlineMode ? " (no root-domain set)." : " (offline mode)."),
                 NamedTextColor.YELLOW);
     }
 
@@ -555,52 +644,66 @@ public final class FelisVelocityPlugin {
     }
 
     // claimError maps the felis-api claim refusals (spec §9.3) to player-safe text.
-    private static String claimError(LinkException e, String server) {
+    private static String claimError(LinkException e, String server, boolean zh) {
         switch (e.statusCode()) {
             case 412:
-                return "Link your account on the web console before claiming a server.";
+                return zh ? "请先在网页控制台绑定账户，再认领服务器。"
+                          : "Link your account on the web console before claiming a server.";
             case 403:
-                return "You've reached your server limit — you can't claim another.";
+                return zh ? "你已达到服务器数量上限——无法再认领。"
+                          : "You've reached your server limit — you can't claim another.";
             case 409:
-                return "« " + server + " » is already owned.";
+                return zh ? "「" + server + "」已有主人。"
+                          : "« " + server + " » is already owned.";
             case 404:
-                return "« " + server + " » is no longer available.";
+                return zh ? "「" + server + "」已不可用。"
+                          : "« " + server + " » is no longer available.";
             case 0:
-                return "Felis is temporarily unavailable — please try again.";
+                return zh ? "Felis 暂时不可用——请稍后再试。"
+                          : "Felis is temporarily unavailable — please try again.";
             default:
-                return "Couldn't claim « " + server + " » right now. Please try again.";
+                return zh ? "现在无法认领「" + server + "」。请稍后再试。"
+                          : "Couldn't claim « " + server + " » right now. Please try again.";
         }
     }
 
     // migrateError maps the felis-api migrate-start refusals (spec §B3) to player-safe
     // text. A 404 means the caller's UUID isn't linked to any account to migrate; a 409
     // means the linked account can't start one (already migrated, or retired).
-    private static String migrateError(LinkException e) {
+    private static String migrateError(LinkException e, boolean zh) {
         switch (e.statusCode()) {
             case 404:
-                return "Link your account on the web console before migrating.";
+                return zh ? "请先在网页控制台绑定账户，再进行迁移。"
+                          : "Link your account on the web console before migrating.";
             case 409:
-                return "This account can't start a migration (already migrated or retired).";
+                return zh ? "此账户无法发起迁移（已迁移或已停用）。"
+                          : "This account can't start a migration (already migrated or retired).";
             case 0:
-                return "Felis is temporarily unavailable — please try again.";
+                return zh ? "Felis 暂时不可用——请稍后再试。"
+                          : "Felis is temporarily unavailable — please try again.";
             default:
-                return "Couldn't start the migration right now. Please try again.";
+                return zh ? "现在无法发起迁移。请稍后再试。"
+                          : "Couldn't start the migration right now. Please try again.";
         }
     }
 
     // opApproveError maps the internal approve refusals to player-safe text. A 403 is
     // the API's own admin re-check (defence in depth over the in-game gate); a 404
     // means no live pending request carries that code.
-    private static String opApproveError(LinkException e) {
+    private static String opApproveError(LinkException e, boolean zh) {
         switch (e.statusCode()) {
             case 403:
-                return "Only a linked administrator may approve an operator sign-in.";
+                return zh ? "只有已绑定的管理员才能批准管理员登录。"
+                          : "Only a linked administrator may approve an operator sign-in.";
             case 404:
-                return "No pending operator sign-in with that code (it may have expired).";
+                return zh ? "没有携带该码的待处理管理员登录（可能已过期）。"
+                          : "No pending operator sign-in with that code (it may have expired).";
             case 0:
-                return "Felis is temporarily unavailable — please try again.";
+                return zh ? "Felis 暂时不可用——请稍后再试。"
+                          : "Felis is temporarily unavailable — please try again.";
             default:
-                return "Couldn't approve that sign-in right now. Please try again.";
+                return zh ? "现在无法批准该登录。请稍后再试。"
+                          : "Couldn't approve that sign-in right now. Please try again.";
         }
     }
 

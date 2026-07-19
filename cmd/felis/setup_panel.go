@@ -32,11 +32,11 @@ func setupPanelNodePort() int {
 	return port
 }
 
-func localPanelURL(rootDomain string) string {
+func localPanelURL(rootDomain, adminHostname string) string {
 	if ip := rootDomainEmbeddedIP(rootDomain); ip != "" {
 		return fmt.Sprintf("https://%s:%d", ip, setupPanelNodePort())
 	}
-	host := defaultAdminHostname(rootDomain, "")
+	host := defaultAdminHostname(rootDomain, adminHostname)
 	if host == "" {
 		return ""
 	}
@@ -61,8 +61,8 @@ func localPanelOrigin() string {
 	return fmt.Sprintf("https://127.0.0.1:%d", setupPanelNodePort())
 }
 
-func checkPanelAccess(rootDomain string) panelAccessResult {
-	base := localPanelURL(rootDomain)
+func checkPanelAccess(rootDomain, adminHostname string) panelAccessResult {
+	base := localPanelURL(rootDomain, adminHostname)
 	if base == "" {
 		return panelAccessResult{err: fmt.Errorf("root domain is empty")}
 	}

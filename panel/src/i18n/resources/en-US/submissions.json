@@ -7,12 +7,9 @@
   "display_name_placeholder": "e.g., Pixelmon Adventure Pack",
   "file_label": "Build Context (.tar.gz)",
   "file_drag_hint": "Drag and drop a .tar.gz file here, or click to browse",
-  "file_selected": "Selected file: {{name}} ({{size}})",
   "submit_btn": "Submit",
   "submitting_create": "Creating submission...",
   "submitting_upload": "Uploading build context...",
-  "submit_success": "Modpack submitted successfully!",
-  "list_card_title": "Submission History",
   "filter_all": "All Statuses",
   "status_pending_review": "Pending Review",
   "status_approved": "Approved",
@@ -21,7 +18,6 @@
   "table_status": "Status",
   "table_created_at": "Submitted At",
   "table_reviewed_by": "Reviewed By",
-  "table_image_ref": "Image Reference",
   "table_reject_reason": "Reject Reason",
   "no_submissions_title": "No Submissions Found",
   "no_submissions_hint": "You haven't submitted any modpacks yet.",
@@ -29,5 +25,9 @@
   "error_file_type": "Please upload a valid .tar.gz file.",
   "error_file_size": "File exceeds the allowed size limit.",
   "error_name_required": "Display name is required.",
-  "error_file_required": "Build context file is required."
+  "error_file_required": "Build context file is required.",
+  "field_context_ref": "Context Reference",
+  "field_image_ref": "Image Reference",
+  "clear_btn": "Clear",
+  "file_hint": "Supports .tar.gz (max 1GB)"
 }

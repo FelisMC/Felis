@@ -14,22 +14,19 @@ import java.util.UUID;
 /**
  * FelisApiClient is the proxy's read/drive client for the felis-api internal face
  * (spec §7, §9). Where {@link LinkClient} mints account-link codes, this client
- * drives domain-autostart routing: it lists the registrable servers, resolves a
- * connecting virtual host to its server, polls a server's lifecycle status, pulls
- * the wake lever, and reports real player joins. It shares the {@link LinkConfig}
+ * drives domain-autostart routing: it lists the registrable servers, polls a
+ * server's lifecycle status, pulls the wake lever, and reports real player
+ * joins. It shares the {@link LinkConfig}
  * (same internal base URL + service token) and the same zero-dependency JDK HTTP
  * stack, so it compiles straight into each loader jar with nothing to shade.
  *
  * <p>Every call authenticates with {@code Authorization: Bearer <serviceToken>}
  * and surfaces a non-success status as a {@link LinkException} carrying the HTTP
- * status, so the proxy can branch on it without parsing human text. The two that
- * matter for routing:
- * <ul>
- *   <li>{@code wake} → 403 means the autostartPolicy gate refused this UUID (do
- *       not enqueue the player); 429 means a wake is already cooling down
- *       ("already waking, keep waiting"), not a failure.</li>
- *   <li>{@code serverByHost} → 404 means the host maps to no server.</li>
- * </ul>
+ * status, so the proxy can branch on it without parsing human text. The one that
+ * matters most for routing: {@code wake} → 403 means the autostartPolicy gate
+ * refused this UUID (do not enqueue the player); 429 means a wake is already
+ * cooling down ("already waking, keep waiting"); 503 means the cluster is at
+ * capacity (tell the player to try later — nothing is coming up).
  */
 public final class FelisApiClient {
     private final LinkConfig config;
@@ -57,16 +54,6 @@ public final class FelisApiClient {
         return out;
     }
 
-    /**
-     * serverByHost resolves {@code subdomain.<root_domain>} to its server view
-     * (GET /servers/by-host/{host}). A 404 surfaces as a LinkException with
-     * statusCode 404 so the caller can distinguish "unknown host" from a transport
-     * fault.
-     */
-    public ServerView serverByHost(String host) throws LinkException {
-        return ServerView.fromJson(getObject("/api/v1/servers/by-host/" + Objects.requireNonNull(host, "host"), 200));
-    }
-
     /** serverStatus reads one server's current lifecycle view (internal status). */
     public ServerView serverStatus(String name) throws LinkException {
         return ServerView.fromJson(getObject("/api/v1/internal/servers/" + Objects.requireNonNull(name, "name") + "/status", 200));
@@ -75,8 +62,9 @@ public final class FelisApiClient {
     /**
      * wake pulls the domain-autostart lever for {@code name} on behalf of the
      * joining player (spec §9.1, §14). The reply (202) carries the current phase
-     * and ready flag so the caller can decide whether to wait. A 403 (policy gate)
-     * or 429 (cooldown) arrives as a LinkException the caller branches on.
+     * and ready flag so the caller can decide whether to wait. A 403 (policy gate),
+     * 429 (cooldown), or 503 {@code at_capacity} (running cap) arrives as a
+     * LinkException the caller branches on.
      */
     public ServerView wake(String name, UUID mcUuid) throws LinkException {
         Objects.requireNonNull(name, "name");
@@ -142,7 +130,7 @@ public final class FelisApiClient {
      * completion leg of the in-game login flow (spec §B3). After the player redeems
      * the Bind Code on {@code console.<root_domain>} the login limbo polls this until
      * it flips true, then admits/transfers the player. {@code GET
-     * /api/v1/internal/account/link/status/{mc_uuid}} → {@code {"linked":bool,...}};
+     * /api/v1/internal/account/link/status/{mc_uuid}} → {@code {"linked":bool}};
      * read-only and keyed by the verified UUID, so it consumes nothing and is safe to
      * poll repeatedly. Anything but {@code linked:true} (including a missing field) is
      * reported as not-yet-linked — the caller keeps waiting rather than admitting on

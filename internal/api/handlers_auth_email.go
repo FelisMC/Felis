@@ -7,11 +7,11 @@ import (
 )
 
 // Pre-session Email-OTP LOGIN (spec §B, console.<root_domain> returning-player door).
-// This is the passwordless counterpart of handleLogin and the returning-player
-// counterpart of handleBindRedeem: an account that already proved control of an
-// email (email_verified, migration 0010) logs back in with a one-time code mailed
-// to that address — no password, no in-game Bind Code. The two halves are Public,
-// pre-session routes: the caller has no principal yet, so identity is resolved from
+// This is the returning-player counterpart of handleBindRedeem: an account that
+// already proved control of an email (email_verified, migration 0010) logs back in
+// with a one-time code mailed to that address — no password exists anywhere in the
+// product, and no in-game Bind Code is needed the second time. The two halves are
+// Public, pre-session routes: the caller has no principal yet, so identity is resolved from
 // the typed email via UserByEmail, exactly as handleBindRedeem resolves it from the
 // code.
 //
@@ -55,9 +55,9 @@ type loginEmailStartRequest struct {
 }
 
 // handleLoginEmailStart mints and mails a login code for a returning account (Public,
-// pre-session). It gates on local sessions being enabled — like handleLogin and
-// handleBindRedeem, minting a code toward a felis_session while SessionAuth would
-// reject that cookie is pointless — reserves the per-recipient cooldown, resolves the
+// pre-session). It gates on local sessions being enabled — like handleBindRedeem
+// and the op-login door, minting a code toward a felis_session while SessionAuth
+// would reject that cookie is pointless — reserves the per-recipient cooldown, resolves the
 // address to an account, and (only if one exists) mints a code under otpPurposeLogin.
 // An address with no verified account yields the SAME 202 as a successful send with
 // no code minted: the response never distinguishes the two, and the reservation is
@@ -164,7 +164,7 @@ type loginEmailVerifyRequest struct {
 
 // handleLoginEmailVerify redeems a login code into a session (Public, pre-session).
 // It resolves the address to an account, verifies the code under otpPurposeLogin, and
-// on success mints the same host-only felis_session as handleLogin. A missing account,
+// on success mints the same host-only felis_session as handleBindRedeem. A missing account,
 // a wrong code, AND an attempt-exhausted (locked) code all return the IDENTICAL 400
 // invalid_code, so a code-less caller cannot tell an unknown address from a bad guess
 // or farm a lockout into an is-this-a-real-account oracle. Staff are refused — but only

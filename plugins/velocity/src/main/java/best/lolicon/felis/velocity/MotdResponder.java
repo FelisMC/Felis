@@ -54,14 +54,16 @@ public final class MotdResponder {
         event.setPing(b.build());
     }
 
+    // The server-list ping carries no client locale, so the MOTD status uses the
+    // both-languages-in-one-line pattern the modded /link clients share.
     private static String statusLine(ServerView v) {
         if (v.ready()) {
-            return "online";
+            return "在线 / online";
         }
         if ("Running".equals(v.desiredState())) {
-            return "starting…";
+            return "启动中… / starting…";
         }
-        return "sleeping — join to wake";
+        return "休眠中，加入即唤醒 / sleeping — join to wake";
     }
 
     private static NamedTextColor statusColor(ServerView v) {

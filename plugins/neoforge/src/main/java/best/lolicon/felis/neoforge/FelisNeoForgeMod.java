@@ -74,7 +74,7 @@ public final class FelisNeoForgeMod {
             try {
                 player = source.getPlayerOrException();
             } catch (CommandSyntaxException e) {
-                source.sendFailure(Component.literal("/link can only be run by a player."));
+                source.sendFailure(Component.literal("/link 只能由玩家执行 / /link can only be run by a player."));
                 return 0;
             }
             requestAndReply(source.getServer(), player);
@@ -84,18 +84,22 @@ public final class FelisNeoForgeMod {
 
     private void requestAndReply(MinecraftServer server, ServerPlayer player) {
         UUID uuid = player.getUUID();
-        player.sendSystemMessage(Component.literal("Requesting a link code…"));
+        player.sendSystemMessage(Component.literal("正在获取绑定码… / Requesting a link code…"));
         io.submit(() -> {
             try {
                 LinkCode code = linkClient.requestCode(uuid);
-                server.execute(() -> player.sendSystemMessage(Component.literal(
-                        "Your link code: " + code.code()
-                        + "  — enter it on the web panel → Account (valid a few minutes).")));
+                server.execute(() -> {
+                    player.sendSystemMessage(Component.literal(
+                            "绑定码 / Link code: " + code.code() + "（几分钟内有效 / valid a few minutes）"));
+                    player.sendSystemMessage(Component.literal(code.panelUrl() != null
+                            ? "在此完成绑定 / Finish linking at: " + code.panelUrl()
+                            : "在网页控制台 → 账户 中输入 / Enter it on the web console → Account."));
+                });
             } catch (LinkException e) {
                 LOGGER.warn("link code request failed for {} (status={}, code={}): {}",
                         uuid, e.statusCode(), e.errorCode(), e.getMessage());
                 server.execute(() -> player.sendSystemMessage(Component.literal(
-                        "Couldn't get a link code right now. Please try again in a moment.")));
+                        "现在无法获取绑定码，请稍后再试 / Couldn't get a link code right now. Please try again in a moment.")));
             }
         });
     }

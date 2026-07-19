@@ -120,10 +120,10 @@ sequenceDiagram
     Game->>Game: read verified online-mode UUID
     Game->>LinkClient: requestCode(mc_uuid)
     LinkClient->>APIInternal: POST /api/v1/internal/account/link/code {mc_uuid}
-    APIInternal->>APIInternal: validate UUID; default auth_source=mojang if absent; generate 8-symbol code
+    APIInternal->>APIInternal: validate UUID; derive auth_source from the UUID version nibble if absent (v3 → thirdparty, else mojang); generate 8-symbol code
     APIInternal->>Repo: CreateLinkCode(code, mc_uuid, auth_source, expires_at)
     Repo-->>APIInternal: inserted account_link_codes row
-    APIInternal-->>LinkClient: 201 {code, expires_at}
+    APIInternal-->>LinkClient: 201 {code, expires_at, panel_url?}
     LinkClient-->>Game: LinkCode
     Game-->>Player: show one-time code in chat
 

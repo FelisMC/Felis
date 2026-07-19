@@ -15,7 +15,8 @@ import (
 // None is privileged: "Local" installs nothing, "Cloudflare Tunnel" is a
 // turnkey integration, and "Reverse proxy" just records hostnames and hands the
 // operator a copy-paste guide. The admin console is gated by the Owner's
-// local-password session regardless; Cloudflare Access is an *additional* layer.
+// local session (passwordless sign-in) regardless; Cloudflare Access is an
+// *additional* layer.
 type connectChooserModel struct {
 	rootDomain string
 	adminHost  string
@@ -46,8 +47,8 @@ func (m *connectChooserModel) build() *huh.Form {
 		// A dim, untitled footnote — deliberately subordinate to the picker above
 		// so the screen reads as a menu, not an info page.
 		huh.NewNote().Description(
-			"⚠  Local / reverse proxy gate the admin console on your Owner password alone. "+
-				"Cloudflare Access adds an edge check in front."),
+			"⚠  Local / reverse proxy gate the admin console on your Owner sign-in alone "+
+				"(passkey / email code). Cloudflare Access adds an edge check in front."),
 	)))
 }
 

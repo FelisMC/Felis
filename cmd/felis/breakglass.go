@@ -26,7 +26,7 @@ import (
 // authority is local root, so it legitimately BYPASSES the web Zero-Trust + Passkey
 // path: critical recovery runs direct-to-Postgres. The thin-thread operation it
 // ships here is the one that bootstraps everything else — provision (or reset) the
-// single Owner account and turn local-password login on — so that even with the web
+// single Owner account and turn local session sign-in on — so that even with the web
 // auth path unconfigured an operator can get into op.console. It is a genuine
 // interactive TUI, NOT a CLI: bare `felis` prints CLI usage, while `felis breakGlass`
 // opens this full-screen console. It refuses to run unless euid is 0 (sudo/root).
@@ -44,7 +44,7 @@ import (
 // When a staff account already exists the console opens on a thin top-level menu
 // (menuModel) so that operations are peers, not tails of one wizard. Two account
 // operations are wired today: (1) provision/reset the Owner — the thin thread above,
-// which also re-enables local-password login — and (2) add an Operator: an
+// which also re-enables local session sign-in — and (2) add an Operator: an
 // insert-only mint of an additional staff admin (provisionOperator) that
 // deliberately never touches the global local_auth toggle. On a fresh machine (no
 // Owner yet) the menu is skipped: bootstrapping the first Owner is the only sensible
@@ -156,7 +156,7 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 
 	// The TUI runs on the alternate screen, which is torn down on exit and takes its
 	// display with it. Re-print a durable summary to the normal screen so the
-	// outcome — and any generated one-time password — survives in scrollback long
+	// outcome — and the one-time setup URL — survives in scrollback long
 	// enough for the operator to log in.
 	if res.provisioned {
 		if res.isOperator {
@@ -164,7 +164,7 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 			// so the summary must not claim it did — only the Owner thread enables login.
 			fmt.Fprintf(stdout, "\nfelis breakGlass: Operator account %q provisioned.\n", res.username)
 		} else {
-			fmt.Fprintf(stdout, "\nfelis breakGlass: Owner account %q provisioned; local-password login is ENABLED.\n", res.username)
+			fmt.Fprintf(stdout, "\nfelis breakGlass: Owner account %q provisioned; local session sign-in is ENABLED.\n", res.username)
 		}
 		fmt.Fprintf(stdout, "Recorded as %q (mode: %s, os user: %s).\n", res.accountable, res.mode, res.osUser)
 		if res.setupTokenURL != "" {
@@ -318,8 +318,9 @@ func provisionOperator(ctx context.Context, s ownerStore, username, email string
 }
 
 // enableLocalAuth flips the runtime local_auth_enabled toggle on
-// direct-to-Postgres. It is a load-bearing write of break-glass: without it
-// handleLogin returns 403 and the freshly provisioned Owner cannot log in, so a
+// direct-to-Postgres. It is a load-bearing write of break-glass: without it every
+// session-minting door (passkey / email-OTP / bind / op-login) returns 403
+// local_auth_disabled and the freshly provisioned Owner cannot log in, so a
 // successful provisionOwner with local auth off is not a usable thin thread.
 func enableLocalAuth(ctx context.Context, s ownerStore) error {
 	// The setting is read back with json.Unmarshal into a bool, so the stored jsonb
@@ -349,7 +350,7 @@ type breakGlassOutcome struct {
 }
 
 // performBreakGlass executes a resolved break-glass operation: provision (or reset)
-// the Owner, enable local-password login, then record a best-effort accountability
+// the Owner, enable local session sign-in, then record a best-effort accountability
 // audit row. The Owner is passwordless — the setup-token flow handles first-login
 // setup. The audit write is best-effort: a logging failure is reported via auditErr
 // but does NOT fail the recovery — break-glass must still work when the audit sink

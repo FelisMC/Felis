@@ -62,56 +62,11 @@ describe("api.me wire shape", () => {
     expect((opts as RequestInit).method).toBe("GET");
     expect((opts as RequestInit).credentials).toBe("include");
   });
-
-  it("surfaces must_change_password from GET /me verbatim", async () => {
-    // handleMe always emits must_change_password; the forced-change gate routes on
-    // it, so the snake_case key must survive the untyped boundary unchanged.
-    const body = {
-      user_id: "u4",
-      email: "o@p.q",
-      role: "admin",
-      is_admin: true,
-      must_change_password: true,
-    };
-    vi.stubGlobal("fetch", fakeFetch(body));
-    const id = await api.me();
-    expect(id.must_change_password).toBe(true);
-  });
 });
 
-describe("local-password auth wire shapes", () => {
+describe("session auth wire shapes", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.unstubAllGlobals());
-
-  it("login POSTs {username, password} and returns must_change_password", async () => {
-    // EXACTLY handlers_auth.go handleLogin's request body and response.
-    const fetchSpy = fakeFetch({
-      user_id: "u1",
-      role: "admin",
-      must_change_password: true,
-    });
-    vi.stubGlobal("fetch", fetchSpy);
-    const res = await api.login("owner", "s3cret");
-    expect(res.must_change_password).toBe(true);
-    expect(res.user_id).toBe("u1");
-
-    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock
-      .calls[0];
-    expect(String(url)).toBe("/auth/login");
-    expect((opts as RequestInit).method).toBe("POST");
-    expect((opts as RequestInit).credentials).toBe("include");
-    // The Go login route now REQUIRES Content-Type: application/json (it 415s any
-    // other type to kill the cross-site form-POST forgery vector). This pins the
-    // panel half of that contract: a refactor that drops the header silently breaks
-    // login, and only this assertion would catch it.
-    expect((opts as RequestInit).headers).toEqual({
-      "Content-Type": "application/json",
-    });
-    expect(JSON.parse((opts as RequestInit).body as string)).toEqual({
-      username: "owner",
-      password: "s3cret",
-    });
-  });
 
   it("logout POSTs to /auth/logout (idempotent {ok:true})", async () => {
     const fetchSpy = fakeFetch({ ok: true });
@@ -150,31 +105,117 @@ describe("local-password auth wire shapes", () => {
     });
   });
 
-  it("changePassword POSTs {current_password, new_password}", async () => {
-    const fetchSpy = fakeFetch({ ok: true });
+  it("maps the auth error codes to stable human copy", async () => {
+    const { humanizeError } = await import("./api");
+    expect(humanizeError({ code: "local_auth_disabled" })).toMatch(/turned off/i);
+    expect(humanizeError({ code: "staff_account" })).toMatch(/operator/i);
+  });
+
+  // Op-login (the staff door): start hands back the approval handle the panel shows
+  // as `/felis web op approve <id>`; status is polled; finish spends the mailed code.
+  // EXACTLY handlers_op_login.go's request/response keys.
+  it("opLoginStart POSTs {email} and surfaces {request_id, expires_at}", async () => {
+    const fetchSpy = fakeFetch({
+      request_id: "req-1",
+      expires_at: "2026-07-19T00:10:00Z",
+    });
     vi.stubGlobal("fetch", fetchSpy);
-    await api.changePassword("old-pw", "brand-new-pw");
+    const res = await api.opLoginStart("ops@example.test");
+    expect(res.request_id).toBe("req-1");
     const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock
       .calls[0];
-    expect(String(url)).toBe("/auth/change-password");
+    expect(String(url)).toBe("/auth/op-login/start");
     expect((opts as RequestInit).method).toBe("POST");
-    // Same JSON content-type contract as login — the change-password route guards on
-    // it too (defense-in-depth), so the panel must keep sending it.
     expect((opts as RequestInit).headers).toEqual({
       "Content-Type": "application/json",
     });
     expect(JSON.parse((opts as RequestInit).body as string)).toEqual({
-      current_password: "old-pw",
-      new_password: "brand-new-pw",
+      email: "ops@example.test",
     });
   });
 
-  it("maps the auth error codes to stable human copy", async () => {
-    const { humanizeError } = await import("./api");
-    expect(humanizeError({ code: "invalid_credentials" })).toMatch(/incorrect/i);
-    expect(humanizeError({ code: "local_auth_disabled" })).toMatch(/turned off/i);
-    expect(humanizeError({ code: "weak_password" })).toMatch(/8 and 72/);
-    expect(humanizeError({ code: "password_unchanged" })).toMatch(/differ/i);
+  it("opLoginStatus GETs /auth/op-login/status/{id} and surfaces approved", async () => {
+    const fetchSpy = fakeFetch({ approved: true });
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await api.opLoginStatus("req-1");
+    expect(res.approved).toBe(true);
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock
+      .calls[0];
+    expect(String(url)).toBe("/auth/op-login/status/req-1");
+    expect((opts as RequestInit).method).toBe("GET");
+  });
+
+  it("opLoginFinish POSTs {request_id, code}", async () => {
+    const fetchSpy = fakeFetch({ user_id: "u9", role: "admin" });
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await api.opLoginFinish("req-1", "123456");
+    expect(res.user_id).toBe("u9");
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock
+      .calls[0];
+    expect(String(url)).toBe("/auth/op-login/finish");
+    expect((opts as RequestInit).method).toBe("POST");
+    expect(JSON.parse((opts as RequestInit).body as string)).toEqual({
+      request_id: "req-1",
+      code: "123456",
+    });
+  });
+});
+
+// Pin the §B3 migration wire shapes (handlers_account_migrate.go). The status union
+// ({active:false} | {active:true, state, ...}) and the issue/redeem bodies cross the
+// untyped fetch().json() boundary, so a key drift leaves the Account migration card
+// inert while typecheck/build stay green.
+describe("account migration wire shapes", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("migrateStatus GETs /account/migrate and surfaces the state-machine fields", async () => {
+    const fetchSpy = fakeFetch({
+      active: true,
+      state: "confirmed",
+      confirm_factor: "email_otp",
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await api.migrateStatus();
+    expect(res.active).toBe(true);
+    expect(res.state).toBe("confirmed");
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock
+      .calls[0];
+    expect(String(url)).toBe("/account/migrate");
+    expect((opts as RequestInit).method).toBe("GET");
+    expect((opts as RequestInit).credentials).toBe("include");
+  });
+
+  it("migrateIssueCode POSTs {target_user_id} and surfaces the one-time code", async () => {
+    const fetchSpy = fakeFetch({
+      code: "MIGR-1234",
+      expires_at: "2026-07-19T00:10:00Z",
+    });
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await api.migrateIssueCode("u2");
+    expect(res.code).toBe("MIGR-1234");
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock
+      .calls[0];
+    expect(String(url)).toBe("/account/migrate/issue-code");
+    expect((opts as RequestInit).method).toBe("POST");
+    expect(JSON.parse((opts as RequestInit).body as string)).toEqual({
+      target_user_id: "u2",
+    });
+  });
+
+  it("migrateRedeem POSTs {code} and surfaces the moved servers", async () => {
+    const fetchSpy = fakeFetch({ migrated: true, servers_moved: 2, servers: ["a", "b"] });
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await api.migrateRedeem("MIGR-1234");
+    expect(res.servers_moved).toBe(2);
+    expect(res.servers).toEqual(["a", "b"]);
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock
+      .calls[0];
+    expect(String(url)).toBe("/account/migrate/redeem");
+    expect((opts as RequestInit).method).toBe("POST");
+    expect(JSON.parse((opts as RequestInit).body as string)).toEqual({
+      code: "MIGR-1234",
+    });
   });
 });
 

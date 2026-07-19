@@ -203,6 +203,22 @@ func (a *API) handleMyServers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	// Player counts are presentational and best-effort, mirroring handleFleet's
+	// owner join: the list exists for ownership/claim state, so a cluster hiccup
+	// must degrade to 0/0 counts, never 500 the whole list. The CRD status is the
+	// only source of live counts (spec §1) — Postgres never stores them.
+	if infos, err := a.Cluster.ListServers(r.Context()); err == nil {
+		byName := make(map[string]ServerInfo, len(infos))
+		for _, s := range infos {
+			byName[s.Name] = s
+		}
+		for i := range servers {
+			if info, ok := byName[servers[i].Name]; ok {
+				servers[i].PlayersOnline = info.PlayersOnline
+				servers[i].PlayersMax = info.PlayersMax
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": servers})
 }
 

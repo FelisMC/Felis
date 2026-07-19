@@ -6,6 +6,10 @@
 export interface RuntimeConfig {
   apiBase: string;
   rootDomain: string;
+  /** Player-console hostname (console.<root>), absent when unconfigured. */
+  panelHostname?: string;
+  /** Operator-console hostname (op.console.<root>), absent when unconfigured. */
+  adminHostname?: string;
 }
 
 const FALLBACK: RuntimeConfig = {
@@ -26,6 +30,8 @@ export async function loadConfig(): Promise<RuntimeConfig> {
     cached = {
       apiBase: raw.apiBase ?? FALLBACK.apiBase,
       rootDomain: raw.rootDomain ?? FALLBACK.rootDomain,
+      panelHostname: raw.panelHostname,
+      adminHostname: raw.adminHostname,
     };
   } catch {
     cached = FALLBACK;

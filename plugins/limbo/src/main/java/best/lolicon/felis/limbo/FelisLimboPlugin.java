@@ -72,7 +72,7 @@ import java.util.logging.Logger;
  * (env wins, else a {@code felis-link.properties} template in the plugin data dir) via
  * the shared {@link LinkConfigLoader}. {@code FELIS_ROOT_DOMAIN} builds the console
  * link; {@code FELIS_LOBBY_SERVER} (default {@code lobby}) is the transfer target;
- * {@code FELIS_LOGIN_TIMEOUT_SECONDS} (default 300) bounds the login window. If the
+ * {@code FELIS_LOGIN_TIMEOUT_SECONDS} (default 600) bounds the login window. If the
  * link config or the root domain is absent the login flow stays OFF and the plugin
  * runs readiness-only — the same "load un-crippled" fail-safe the other Felis plugins
  * use — so a bare image still boots and serves readiness; production must supply the
@@ -88,10 +88,11 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
     private static final int DEFAULT_PORT = 8080;
 
     // Poll cadence and window. 20 ticks ≈ 1s at Limbo's tick rate; polling once a
-    // second is responsive without hammering felis-api. The default window (5 min)
-    // matches the Bind Code TTL — no point holding a player past code expiry.
+    // second is responsive without hammering felis-api. The default window (10 min)
+    // matches the Bind Code TTL (linkCodeTTL in internal/api) — no point holding a
+    // player past code expiry, and no point cutting them off while it is still valid.
     private static final long POLL_PERIOD_TICKS = 20L;
-    private static final long DEFAULT_TIMEOUT_SECONDS = 300L;
+    private static final long DEFAULT_TIMEOUT_SECONDS = 600L;
     private static final long MIN_TIMEOUT_SECONDS = 30L;
     private static final long MAX_TIMEOUT_SECONDS = 3600L;
 
@@ -261,17 +262,21 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
             return; // player left during the async mint
         }
 
+        // Prefer the panel URL the server minted with the code (it is the same
+        // single source of truth felis-api holds); the env-built consoleUrl is the
+        // fallback for an older API that does not emit panel_url yet.
+        String url = code.panelUrl() != null ? code.panelUrl() : consoleUrl;
         try {
-            player.openBook(loginBook(code));
+            player.openBook(loginBook(code, url));
         } catch (RuntimeException e) {
             // A client that refuses the book (rare) still gets the chat instructions
             // below, so a book failure is not fatal to the flow.
             LOG.fine("FelisLimbo: openBook failed for " + id + " — " + e.getMessage());
         }
         player.sendMessage("§e[Felis] 绑定码 / Code: §6" + code.code());
-        player.sendMessage("§e[Felis] 用系统浏览器打开 §b" + consoleUrl
+        player.sendMessage("§e[Felis] 用系统浏览器打开 §b" + url
                 + " §e完成登录（勿用微信/QQ内置浏览器）。");
-        player.sendMessage("§7Open " + consoleUrl + " in your system browser (not WeChat/QQ) to finish.");
+        player.sendMessage("§7Open " + url + " in your system browser (not WeChat/QQ) to finish.");
 
         long deadline = System.currentTimeMillis() + timeoutMillis;
         int taskId = getServer().getScheduler().runTaskTimerAsync(
@@ -341,13 +346,13 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
 
     // ---- rendering / wire ----
 
-    private Book loginBook(LinkCode code) {
+    private Book loginBook(LinkCode code, String url) {
         Component page = Component.text("Felis 登录 / Login\n\n")
                 .append(Component.text("绑定码 / Code:\n"))
                 .append(Component.text(code.code() + "\n\n").color(NamedTextColor.GOLD))
                 .append(Component.text("▶ 点此打开登录页\n▶ Open login page\n")
                         .color(NamedTextColor.AQUA)
-                        .clickEvent(ClickEvent.openUrl(consoleUrl)))
+                        .clickEvent(ClickEvent.openUrl(url)))
                 .append(Component.text("\n在系统浏览器中完成。\nUse your SYSTEM browser —\nnot WeChat / QQ (passkey\nwon't work there).")
                         .color(NamedTextColor.GRAY));
         return Book.book(

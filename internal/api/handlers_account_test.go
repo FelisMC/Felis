@@ -120,6 +120,30 @@ func TestCreateLinkCode(t *testing.T) {
 			}
 		}
 	})
+	t.Run("panel_url points at the web console", func(t *testing.T) {
+		// The mint response carries the redeem address so every plugin renders the
+		// same hostname from one source of truth (derived console.<root> here).
+		w := do(ih, "POST", "/api/v1/internal/account/link/code", `{"mc_uuid":"`+mcUUID+`"}`, nil)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("code = %d, want 201 (%s)", w.Code, w.Body.String())
+		}
+		if got := acctBody(t, w)["panel_url"]; got != "https://console."+testRoot {
+			t.Errorf("panel_url = %v, want https://console.%s", got, testRoot)
+		}
+	})
+	t.Run("omitted auth_source with a v3 UUID derives thirdparty", func(t *testing.T) {
+		// A felis-nano rewrite is a name-based UUIDv3; the version nibble alone must
+		// classify it so no Java plugin has to learn the auth_source field.
+		const v3UUID = "33333333-3333-3333-8333-333333333333"
+		w := do(ih, "POST", "/api/v1/internal/account/link/code", `{"mc_uuid":"`+v3UUID+`"}`, nil)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("code = %d, want 201 (%s)", w.Code, w.Body.String())
+		}
+		code, _ := acctBody(t, w)["code"].(string)
+		if rec := repo.linkCodes[code]; rec.authSource != authSourceThirdParty {
+			t.Errorf("derived authSource = %q, want %q", rec.authSource, authSourceThirdParty)
+		}
+	})
 	t.Run("explicit thirdparty is stored", func(t *testing.T) {
 		body := `{"mc_uuid":"` + mcUUID + `","auth_source":"` + authSourceThirdParty + `"}`
 		w := do(ih, "POST", "/api/v1/internal/account/link/code", body, nil)

@@ -103,7 +103,7 @@ func newOwnerModel(ctx context.Context, store ownerStore, osUser string, adminEx
 // newOperatorModel builds the model for the Add-Operator break-glass operation. It
 // always starts at admin authentication: adding an Operator presupposes an existing
 // admin (that is why the menu only offers it when one exists), so there is no
-// bootstrap branch and the password is always generated. The username is left empty
+// bootstrap branch. The username is left empty
 // on purpose — defaulting it to "owner" (as the Owner flow does) would make the
 // happy path insert a duplicate and hit ErrConflict on every attempt.
 func newOperatorModel(ctx context.Context, store ownerStore, osUser string) *ownerModel {
@@ -285,7 +285,7 @@ func (m *ownerModel) provisionCmd() tea.Cmd {
 	// performAddOperator and performBreakGlass share a signature; the operation
 	// discriminator selects which one runs. The operator path is insert-only and
 	// never flips local auth (see performAddOperator); the Owner path upserts and
-	// enables local-password login.
+	// enables local session sign-in.
 	perform := performBreakGlass
 	if m.operation == bgAddOperator {
 		perform = performAddOperator

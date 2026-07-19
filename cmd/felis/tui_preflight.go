@@ -16,6 +16,7 @@ import (
 type preflightModel struct {
 	dbURL      string
 	rootDomain string
+	adminHost  string
 
 	sp    spinner.Model
 	state pfState
@@ -55,11 +56,11 @@ type pfMigApplyMsg struct {
 
 type pfPanelMsg struct{ err error }
 
-func newPreflightModel(dbURL, rootDomain string) *preflightModel {
+func newPreflightModel(dbURL, rootDomain, adminHostname string) *preflightModel {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = tuiLabel
-	return &preflightModel{dbURL: dbURL, rootDomain: rootDomain, sp: sp, state: pfCheckDB}
+	return &preflightModel{dbURL: dbURL, rootDomain: rootDomain, adminHost: adminHostname, sp: sp, state: pfCheckDB}
 }
 
 func (m *preflightModel) Init() tea.Cmd {
@@ -221,7 +222,7 @@ func (m *preflightModel) applyMigrations() tea.Cmd {
 
 func (m *preflightModel) checkPanel() tea.Cmd {
 	return func() tea.Msg {
-		return pfPanelMsg{err: checkPanelAccess(m.rootDomain).err}
+		return pfPanelMsg{err: checkPanelAccess(m.rootDomain, m.adminHost).err}
 	}
 }
 

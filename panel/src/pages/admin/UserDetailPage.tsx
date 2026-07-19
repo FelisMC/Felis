@@ -7,7 +7,6 @@ import {
   UserRound,
   Mail,
   Calendar,
-  Key,
   Clock,
   Trash2,
   Power,
@@ -151,7 +150,7 @@ function EditProfileCard({ user, onSaved, isSelf }: { user: UserDetail; onSaved:
       onSaved();
     } catch (e: any) {
       if (e && e.code === "already_exists") {
-        setErr(t("users_create_validation_username_taken") || "该用户名已被使用。");
+        setErr(t("users_create_validation_username_taken"));
       } else {
         setErr(humanizeError(e));
       }
@@ -640,7 +639,7 @@ function DangerZone({
   navigate: (path: string) => void;
 }) {
   const { t } = useTranslation("admin");
-  const [dlg, setDlg] = useState<"disable" | "resetPw" | "delete" | null>(null);
+  const [dlg, setDlg] = useState<"disable" | "delete" | null>(null);
 
   return (
     <Card className="border-destructive/30">
@@ -656,18 +655,6 @@ function DangerZone({
           btnLabel={user.disabled ? t("users_danger_enable_btn") : t("users_danger_disable_btn")}
           btnVariant={user.disabled ? "default" : "destructive"}
           onAction={() => setDlg("disable")}
-        />
-
-        {/* Reset password */}
-        <DangerRow
-          icon={Key}
-          title={t("users_danger_reset_pw")}
-          desc={user.email
-            ? t("users_danger_reset_pw_desc_email", { email: user.email })
-            : t("users_danger_reset_pw_desc")}
-          btnLabel={t("users_danger_reset_pw_btn")}
-          btnVariant="destructive"
-          onAction={() => setDlg("resetPw")}
         />
 
         {/* Delete user */}
@@ -722,7 +709,7 @@ function DangerDialogs({
   onChanged,
   navigate,
 }: {
-  dlg: "disable" | "resetPw" | "delete" | null;
+  dlg: "disable" | "delete" | null;
   setDlg: (v: null) => void;
   user: UserDetail;
   onChanged: () => void;
@@ -731,12 +718,10 @@ function DangerDialogs({
   const { t } = useTranslation("admin");
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [ok, setOk] = useState<string | null>(null);
 
   function close() {
     setDlg(null);
     setErr(null);
-    setOk(null);
     setLoading(false);
   }
 
@@ -747,23 +732,6 @@ function DangerDialogs({
       await api.disableUser(user.id, !user.disabled);
       close();
       onChanged();
-    } catch (e) {
-      setErr(humanizeError(e));
-      setLoading(false);
-    }
-  }
-
-  async function handleResetPassword() {
-    setLoading(true);
-    setErr(null);
-    try {
-      const r = await api.resetUserPassword(user.id);
-      if (r.email) {
-        setOk(t("users_pw_reset_ok", { email: r.email }));
-      } else {
-        setOk(t("users_pw_reset_ok_no_email"));
-      }
-      setLoading(false);
     } catch (e) {
       setErr(humanizeError(e));
       setLoading(false);
@@ -798,31 +766,6 @@ function DangerDialogs({
           </DialogHeader>
           {err && <p className="text-sm text-destructive">{err}</p>}
           <ConfirmFooter onCancel={close} onConfirm={handleDisable} loading={loading} cancelLabel={t("common:cancel")} confirmLabel={user.disabled ? t("users_danger_enable_btn") : t("users_danger_disable_btn")} confirmVariant={user.disabled ? "default" : "destructive"} />
-        </DialogContent>
-      </Dialog>
-
-      {/* Reset password dialog */}
-      <Dialog open={dlg === "resetPw"} onOpenChange={(v) => { if (!v) close(); }}>
-        <DialogContent className="sm:max-w-sm">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Key className="h-5 w-5 text-primary" />
-              {t("users_danger_reset_pw_dlg_title")}
-            </DialogTitle>
-            <DialogDescription>
-              {user.email
-                ? t("users_danger_reset_pw_dlg_desc_email", { email: user.email })
-                : t("users_danger_reset_pw_dlg_desc_no_email")}
-            </DialogDescription>
-          </DialogHeader>
-          {err && <p className="text-sm text-destructive">{err}</p>}
-          {ok && (
-            <p className="rounded-md border border-emerald-500/20 bg-emerald-500/10 p-3 text-sm text-emerald-500">
-              <CheckCircle2 className="inline h-4 w-4 mr-1" />
-              {ok}
-            </p>
-          )}
-          <ConfirmFooter onCancel={close} onConfirm={handleResetPassword} loading={loading} disabled={loading || ok !== null} cancelLabel={t("common:cancel")} confirmLabel={t("users_danger_reset_pw_confirm")} />
         </DialogContent>
       </Dialog>
 

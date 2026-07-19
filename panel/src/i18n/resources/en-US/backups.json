@@ -5,8 +5,6 @@
   "not_yours_title": "No permission to access backups",
   "not_yours_body": "Only the owner or an admin can view and restore this server's backups.",
   "latest_title": "Latest backup",
-  "latest_note": "Default restore target. You can also select and restore an older backup from the history below.",
-  "history_title": "Backup history",
   "history_note": "Historical backups can be used for restore before they expire. They are automatically cleaned up when they expire.",
   "reason_inactive": "Idle archive",
   "reason_manual": "Manual backup",
@@ -29,7 +27,6 @@
   "expired_cannot_restore": "This backup has expired and can no longer be restored.",
   "col_created": "Backup Time",
   "col_size": "Size",
-  "col_reason": "Type / Reason",
   "col_expires": "Expires",
   "col_owner": "Former Owner",
   "col_actions": "Actions"

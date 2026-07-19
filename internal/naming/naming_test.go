@@ -26,6 +26,7 @@ func TestValidateServerName(t *testing.T) {
 		{"lobby", false},                             // reserved
 		{"admin", false},                             // reserved
 		{"api", false},                               // reserved
+		{"console", false},                           // reserved web console host
 	}
 	for _, c := range cases {
 		err := naming.ValidateServerName(c.name)

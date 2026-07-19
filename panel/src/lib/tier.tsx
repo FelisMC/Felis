@@ -26,9 +26,8 @@ import { deriveAuth, type AuthState } from "./auth";
 //     simply don't see admin surfaces. (The backend 403s admin data calls
 //     independently, so this is safe.) Only a genuine 401 sets `unauthenticated`.
 //
-//  3. Login-aware: `unauthenticated` (a true 401) routes to /login;
-//     `mustChangePassword` forces the change-password card; `refresh()` re-reads /me
-//     after a login / change / logout so the gate re-evaluates without a reload.
+//  3. Login-aware: `unauthenticated` (a true 401) routes to /login; `refresh()`
+//     re-reads /me after a login / logout so the gate re-evaluates without a reload.
 //
 // Rules 1–2 are UX truth, not a security control — see DESIGN-WEB-3SIDES §1.
 
@@ -47,7 +46,6 @@ const TierContext = createContext<TierState>({
   isAdmin: false,
   isOwner: false,
   unauthenticated: false,
-  mustChangePassword: false,
   refresh: async () => {},
 });
 

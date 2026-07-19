@@ -379,12 +379,12 @@ export function MySubmissionsPage() {
                         <div className="px-10 py-3 bg-muted/20 border-t border-b border-border/40 text-xs text-muted-foreground space-y-2">
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
-                              <p className="font-semibold text-foreground mb-1">构建上下文引用 (Context Ref)</p>
+                              <p className="font-semibold text-foreground mb-1">{t("field_context_ref")}</p>
                               <pre className="font-mono bg-background border rounded p-1.5 truncate select-all">{sub.context_ref}</pre>
                             </div>
                             {sub.image_ref && (
                               <div>
-                                <p className="font-semibold text-foreground mb-1">目标镜像引用 (Image Ref)</p>
+                                <p className="font-semibold text-foreground mb-1">{t("field_image_ref")}</p>
                                 <pre className="font-mono bg-background border rounded p-1.5 truncate select-all">{sub.image_ref}</pre>
                               </div>
                             )}
@@ -510,7 +510,7 @@ export function MySubmissionsPage() {
                         }}
                       >
                         <X className="mr-1 h-3 w-3" />
-                        清除
+                        {t("clear_btn")}
                       </Button>
                     )}
                   </div>
@@ -518,7 +518,7 @@ export function MySubmissionsPage() {
                   <>
                     <Upload className="h-8 w-8 text-muted-foreground/80 mb-2" />
                     <p className="text-xs font-medium text-foreground">{t("file_drag_hint")}</p>
-                    <p className="text-[10px] text-muted-foreground/70 mt-1">支持 .tar.gz 格式 (最大 1GB)</p>
+                    <p className="text-[10px] text-muted-foreground/70 mt-1">{t("file_hint")}</p>
                   </>
                 )}
               </div>

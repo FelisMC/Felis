@@ -123,7 +123,7 @@ func cmdSetup(args []string, stdout, stderr io.Writer) int {
 	}
 	panelURL := res.panelURL
 	if panelURL == "" {
-		panelURL = localPanelURL(setup.cfg.Server.RootDomain)
+		panelURL = localPanelURL(setup.cfg.Server.RootDomain, setup.cfg.Auth.AdminHostname)
 	}
 
 	if !res.provisioned && !res.connectConfigured {

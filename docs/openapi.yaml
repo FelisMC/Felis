@@ -90,12 +90,12 @@ components:
       in: cookie
       name: felis_session
       description: >-
-        Opaque local-password session cookie (external face). Minted by
-        POST /api/v1/auth/login when local auth is enabled, HttpOnly+Secure+
-        SameSite=Lax and host-only, so an op.console session never reaches the
-        player console. Only its sha-256 is persisted. SessionAuth prefers this
-        cookie and otherwise delegates to accessJWT, so the two models coexist on
-        one face.
+        Opaque session cookie (external face). Minted by the passwordless
+        session doors — passkey login, email-OTP, bind code, and op-login
+        finish — HttpOnly+Secure+SameSite=Lax and host-only, so an op.console
+        session never reaches the player console. Only its sha-256 is
+        persisted. SessionAuth prefers this cookie and otherwise delegates to
+        accessJWT, so the two models coexist on one face.
 
   responses:
     NoContent:
@@ -234,7 +234,7 @@ components:
     MyServerView:
       type: object
       description: One row of the caller's server list (internal/api/repo.go MyServerView).
-      required: [name, subdomain, owned, claimable]
+      required: [name, subdomain, owned, claimable, playersOnline, playersMax]
       properties:
         name: { type: string }
         subdomain: { type: string }
@@ -243,6 +243,11 @@ components:
         phase:
           allOf: [{ $ref: '#/components/schemas/Phase' }]
           description: Present only when known.
+        playersOnline:
+          type: integer
+          format: int32
+          description: Best-effort from live CRD status; 0 when the cluster is unreachable.
+        playersMax: { type: integer, format: int32 }
 
     BackupView:
       type: object
@@ -331,32 +336,30 @@ components:
     UserView:
       type: object
       description: One row of the admin user list (internal/api/repo.go UserView).
-      required: [id, username, role, disabled, email_verified, must_change_password, server_count, created_at, updated_at]
+      required: [id, username, role, disabled, email_verified, server_count, created_at, updated_at]
       properties:
         id: { type: string }
         username: { type: string }
         email: { type: string }
-        role: { type: string, enum: [admin, user] }
+        role: { type: string, enum: [owner, admin, user] }
         disabled: { type: boolean }
         email_verified: { type: boolean }
         server_count: { type: integer }
-        must_change_password: { type: boolean }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
     UserDetail:
       type: object
       description: Full admin view of one user (internal/api/repo.go UserDetail).
-      required: [id, username, role, disabled, email_verified, must_change_password, server_count, created_at, updated_at, linked_accounts]
+      required: [id, username, role, disabled, email_verified, server_count, created_at, updated_at, linked_accounts]
       properties:
         id: { type: string }
         username: { type: string }
         email: { type: string }
-        role: { type: string, enum: [admin, user] }
+        role: { type: string, enum: [owner, admin, user] }
         disabled: { type: boolean }
         email_verified: { type: boolean }
         server_count: { type: integer }
-        must_change_password: { type: boolean }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         deleted_at:
@@ -549,27 +552,6 @@ paths:
           $ref: '#/components/responses/Conflict'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
-
-  /api/v1/servers/by-host/{host}:
-    get:
-      tags: [servers-internal]
-      operationId: serverByHost
-      summary: Resolve a server by its connecting hostname (velocity host routing).
-      x-felis-face: [internal]
-      x-felis-tier: service
-      security: [{ serviceToken: [] }]
-      parameters:
-        - { name: host, in: path, required: true, schema: { type: string } }
-      responses:
-        '200':
-          description: The matching server's status projection.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/ServerInfo' }
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
 
   /api/v1/internal/servers/{name}/ready:
     post:
@@ -787,12 +769,13 @@ paths:
                 auth_source:
                   type: string
                   enum: [mojang, thirdparty]
-                  default: mojang
                   description: >
                     Which Yggdrasil authenticated the in-game UUID (spec §10
-                    dual-Yggdrasil). Optional; an omitted value defaults to the
-                    Mojang-priority source. Captured here because only the in-game
-                    side sees the authentication; it is copied onto the link at verify.
+                    dual-Yggdrasil). Optional; when omitted it is derived from the
+                    UUID's version nibble (felis-nano rewrites third-party profiles
+                    to UUIDv3; Mojang profiles are v4), defaulting to mojang.
+                    Captured here because only the in-game side sees the
+                    authentication; it is copied onto the link at verify.
       responses:
         '201':
           description: Code minted.
@@ -804,6 +787,12 @@ paths:
                 properties:
                   code: { type: string }
                   expires_at: { type: string, format: date-time }
+                  panel_url:
+                    type: string
+                    description: >
+                      Where to redeem the code (https://<panel hostname>). Present
+                      only when a panel hostname is configured, so the in-game
+                      message can print a clickable destination.
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -817,10 +806,11 @@ paths:
       description: >
         Internal-only, read-only. After a new player scans the QR-encoded link code
         and the web verify writes the durable account_links row, velocity polls this
-        for the UUID it minted against and admits the player on linked:true, binding
-        the in-game session to user_id. Keyed by the verified UUID (not the scanned
-        code), so it consumes nothing and is safe to poll repeatedly; an unlinked or
-        never-seen UUID returns linked:false, and user_id is present only when linked.
+        for the UUID it minted against and admits the player on linked:true. Keyed by
+        the verified UUID (not the scanned code), so it consumes nothing and is safe
+        to poll repeatedly; an unlinked or never-seen UUID returns linked:false. The
+        response is deliberately just the boolean — the plugin keys everything on the
+        UUID it already holds, so no identity detail crosses back.
       x-felis-face: [internal]
       x-felis-tier: service
       security: [{ serviceToken: [] }]
@@ -828,7 +818,7 @@ paths:
         - { name: mc_uuid, in: path, required: true, schema: { type: string, format: uuid } }
       responses:
         '200':
-          description: Link-completion status; user_id is present only when linked.
+          description: Link-completion status.
           content:
             application/json:
               schema:
@@ -836,7 +826,6 @@ paths:
                 required: [linked]
                 properties:
                   linked: { type: boolean }
-                  user_id: { type: string }
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -970,9 +959,11 @@ paths:
       operationId: opLoginPending
       summary: List live pending op.console login requests, oldest first (spec §B).
       description: >
-        Internal-only. Velocity polls it and pushes waiting requests to online admins,
-        who approve one with /felis web op approve <id>. No pending request is secret
-        to the operator crew.
+        Internal-only. Lists the requests awaiting an in-game vouch. Today no plugin
+        consumes it — the staff member reads the request id off the op.console page
+        and an admin approves it with /felis web op approve <id>; the route exists so
+        velocity can later push the waiting list to online admins. No pending request
+        is secret to the operator crew.
       x-felis-face: [internal]
       x-felis-tier: service
       security: [{ serviceToken: [] }]
@@ -1624,6 +1615,62 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/AccessResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Server not running.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/servers/{name}/access/luckperms/{player}:
+    get:
+      tags: [access]
+      operationId: accessLuckPermsInfo
+      summary: Read a player's LuckPerms groups and permission nodes (spec §7). Owner/admin only.
+      description: >-
+        Translates to "lp user <player> permission info" over RCON and parses the
+        paginated, colour-coded reply (up to 10 pages) into structured entries.
+        Parent groups (granted group.<name> nodes without a world context) are
+        split out from plain permission nodes. The raw concatenated RCON output
+        is echoed back for anything the parser cannot represent.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: player, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Parsed LuckPerms state plus the raw command output.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [player, groups, permissions, output]
+                properties:
+                  player: { type: string }
+                  groups:
+                    type: array
+                    items: { type: string }
+                  permissions:
+                    type: array
+                    items:
+                      type: object
+                      required: [node, value]
+                      properties:
+                        node: { type: string }
+                        value: { type: boolean, description: "false = negated (§c) node" }
+                        world: { type: string, description: "present only for world-scoped nodes" }
+                  output: { type: string }
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -2456,28 +2503,29 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [user_id, email, role, is_admin, must_change_password]
+                required: [user_id, email, role, is_admin, is_owner, email_verified]
                 properties:
                   user_id: { type: string }
                   email: { type: string, format: email }
                   role:
                     type: string
-                    enum: [user, admin]
+                    enum: [user, admin, owner]
                     description: The principal's role, mirroring users.role.
                   is_admin:
                     type: boolean
                     description: >-
-                      True only when role is admin AND the request arrived via the
-                      admin Access path (Principal.IsAdmin()).
-                  must_change_password:
+                      True only when role is admin or owner AND the request arrived
+                      via the admin Access path (Principal.IsAdmin()).
+                  is_owner:
                     type: boolean
                     description: >-
-                      True when a local-password staff account still owes its
-                      first-login password change. Meaningful only on the
-                      local-password path (false on the JWT path). The panel routes
-                      such an account straight to the change-password card. Reachable
-                      while set, alongside change-password and logout, because the
-                      rest of the API is fenced off until the change completes.
+                      True only for the Owner principal on the admin Access path
+                      (Principal.IsOwner()); gates owner-only panel surfaces.
+                  email_verified:
+                    type: boolean
+                    description: >-
+                      Whether the account's email has been verified; the panel
+                      nudges unverified accounts through the email-OTP flow.
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -2771,13 +2819,14 @@ paths:
           application/json:
             schema:
               type: object
-              required: [username, role, password]
+              required: [username, role]
+              description: >-
+                Passwordless: the new account signs in via the session doors
+                (email-OTP / passkey / bind code); no credential is set here.
               properties:
                 username: { type: string }
                 email: { type: string, format: email }
                 role: { type: string, enum: [admin, user] }
-                password: { type: string, format: password }
-                must_change_password: { type: boolean, default: true }
       responses:
         '201':
           description: User created.
@@ -3091,7 +3140,10 @@ paths:
       summary: Force-link a Minecraft UUID to a user, bypassing the code-verification flow (admin only).
       description: >-
         The UUID must not already be bound to a different user (409). Same (user, uuid)
-        pair is idempotent (200). auth_source defaults to "mojang".
+        pair is idempotent (200). When auth_source is omitted it is derived from the
+        UUID's version nibble exactly as on the mint path (v3 → thirdparty, else
+        mojang), so a force-linked thirdparty account keeps its reclaim-guard
+        protection.
       x-felis-face: [external]
       x-felis-tier: owner
       security: [{ accessJWT: [] }]

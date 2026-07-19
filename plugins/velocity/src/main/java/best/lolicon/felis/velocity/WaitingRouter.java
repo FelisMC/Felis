@@ -47,8 +47,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * command/menu queue entries are checked the same way. The wake is then gated
  * server-side by autostartPolicy keyed on the player's online-mode UUID: a 403 means
  * this player may not start the server (we tell them and stop), a 429 means a wake is
- * already in flight (we keep waiting). Real user-backend joins are reported back so
- * the reaper sees activity and the player is auto-added to the allowlist.
+ * already in flight (we keep waiting), and a 503 means the cluster is at capacity
+ * (we tell them to try later — nothing is coming up, so we do not enqueue). Real
+ * user-backend joins are reported back so the reaper sees activity and the player is
+ * auto-added to the allowlist.
  */
 public final class WaitingRouter {
     private static final long WAIT_TIMEOUT_MILLIS = 120_000L;
@@ -132,7 +134,9 @@ public final class WaitingRouter {
         if (login.isEmpty()) {
             event.setInitialServer(null);
             player.disconnect(Component.text(
-                    "The Felis login gate is unavailable. Please reconnect shortly.",
+                    FelisVelocityPlugin.zh(player)
+                            ? "Felis 登录网关不可用，请稍后重连。"
+                            : "The Felis login gate is unavailable. Please reconnect shortly.",
                     NamedTextColor.RED));
             return;
         }
@@ -161,7 +165,10 @@ public final class WaitingRouter {
         event.setResult(ServerPreConnectEvent.ServerResult.denied());
         if (!serverNamed(event.getOriginalServer(), lobbyServer)) {
             player.sendMessage(Component.text(
-                    "The login gate may only release players to the lobby.", NamedTextColor.RED));
+                    FelisVelocityPlugin.zh(player)
+                            ? "登录网关只能把玩家放行到大厅。"
+                            : "The login gate may only release players to the lobby.",
+                    NamedTextColor.RED));
             log.warn("Felis: denied login-gate transfer for {} to {}",
                     player.getUniqueId(), event.getOriginalServer().getServerInfo().getName());
             return null;
@@ -173,17 +180,20 @@ public final class WaitingRouter {
     private void authorizeLoginRelease(ServerPreConnectEvent event) {
         Player player = event.getPlayer();
         UUID id = player.getUniqueId();
+        boolean zh = FelisVelocityPlugin.zh(player);
         try {
             if (!api.linkStatus(id)) {
                 player.sendMessage(Component.text(
-                        "Finish signing in before leaving the login area.", NamedTextColor.YELLOW));
+                        zh ? "请先完成登录，再离开登录区。"
+                           : "Finish signing in before leaving the login area.", NamedTextColor.YELLOW));
                 return;
             }
         } catch (LinkException e) {
             log.warn("Felis: could not verify login release for {} (status={}): {}",
                     id, e.statusCode(), e.getMessage());
             player.sendMessage(Component.text(
-                    "Login verification is temporarily unavailable. Please wait and try again.",
+                    zh ? "登录验证暂时不可用，请稍候重试。"
+                       : "Login verification is temporarily unavailable. Please wait and try again.",
                     NamedTextColor.RED));
             return;
         }
@@ -202,7 +212,8 @@ public final class WaitingRouter {
             pendingTargets.remove(id, targetName);
             event.setResult(ServerPreConnectEvent.ServerResult.allowed(event.getOriginalServer()));
             player.sendMessage(Component.text(
-                    "« " + targetName + " » is no longer available.", NamedTextColor.YELLOW));
+                    zh ? "「" + targetName + "」已不可用。"
+                       : "« " + targetName + " » is no longer available.", NamedTextColor.YELLOW));
             return;
         }
         Optional<RegisteredServer> backend = registry.registered(targetName);
@@ -260,11 +271,13 @@ public final class WaitingRouter {
                 continue;
             }
             Player player = po.get();
+            boolean zh = FelisVelocityPlugin.zh(player);
             if (now > w.deadlineMillis) {
                 waiting.remove(id);
                 player.sendMessage(Component.text(
-                        "« " + w.serverName + " » is taking longer than expected to start. "
-                        + "You can try again from the lobby later.", NamedTextColor.YELLOW));
+                        zh ? "「" + w.serverName + "」启动耗时超出预期。你可以稍后在大厅重试。"
+                           : "« " + w.serverName + " » is taking longer than expected to start. "
+                             + "You can try again from the lobby later.", NamedTextColor.YELLOW));
                 continue;
             }
             Boolean ready = readyCache.get(w.serverName);
@@ -287,7 +300,8 @@ public final class WaitingRouter {
                 if (!api.linkStatus(id)) {
                     waiting.remove(id);
                     player.sendMessage(Component.text(
-                            "Your account is no longer linked. Reconnect to sign in again.",
+                            zh ? "你的账户已不再绑定。请重连以重新登录。"
+                               : "Your account is no longer linked. Reconnect to sign in again.",
                             NamedTextColor.RED));
                     continue;
                 }
@@ -298,7 +312,8 @@ public final class WaitingRouter {
             }
             waiting.remove(id);
             player.sendMessage(Component.text(
-                    "« " + w.serverName + " » is ready — moving you in…", NamedTextColor.GREEN));
+                    zh ? "「" + w.serverName + "」已就绪——正在把你传送过去……"
+                       : "« " + w.serverName + " » is ready — moving you in…", NamedTextColor.GREEN));
             // Tell a menu-driven lobby its tile is live before we pull the player off
             // it; the proxy still performs the actual Connect just below.
             MenuTransferListener listener = menuListener;
@@ -311,18 +326,21 @@ public final class WaitingRouter {
 
     private void authorizeAndWait(Player player, String serverName, boolean fromMenu) {
         UUID id = player.getUniqueId();
+        boolean zh = FelisVelocityPlugin.zh(player);
         plugin.async(() -> {
             try {
                 if (!api.linkStatus(id)) {
                     player.sendMessage(Component.text(
-                            "Finish signing in before joining a server.", NamedTextColor.YELLOW));
+                            zh ? "请先完成登录，再加入服务器。"
+                               : "Finish signing in before joining a server.", NamedTextColor.YELLOW));
                     return;
                 }
             } catch (LinkException e) {
                 log.warn("Felis: could not verify queue entry for {} (status={}): {}",
                         id, e.statusCode(), e.getMessage());
                 player.sendMessage(Component.text(
-                        "Login verification is temporarily unavailable. Please try again shortly.",
+                        zh ? "登录验证暂时不可用，请稍后重试。"
+                           : "Login verification is temporarily unavailable. Please try again shortly.",
                         NamedTextColor.RED));
                 return;
             }
@@ -335,26 +353,44 @@ public final class WaitingRouter {
     // both the account gate and the server-side autostart policy.
     private void wakeAndWaitLinked(Player player, String serverName, boolean fromMenu) {
         UUID id = player.getUniqueId();
+        boolean zh = FelisVelocityPlugin.zh(player);
         try {
             api.wake(serverName, id);
         } catch (LinkException e) {
             switch (e.statusCode()) {
                 case 403:
                     player.sendMessage(Component.text(
-                            "You're not allowed to start « " + serverName + " ».", NamedTextColor.RED));
+                            zh ? "你无权启动「" + serverName + "」。"
+                               : "You're not allowed to start « " + serverName + " ».", NamedTextColor.RED));
                     return;
                 case 429:
                     break; // a wake is already in flight → join the existing wait
+                case 503:
+                    if ("at_capacity".equals(e.errorCode())) {
+                        // at_capacity: nothing is coming up, so enqueueing would only strand
+                        // the player until the timeout. Be honest and let them retry later.
+                        player.sendMessage(Component.text(
+                                zh ? "集群当前已满——「" + serverName + "」暂时无法启动。请稍后再试。"
+                                   : "The cluster is at capacity right now — « " + serverName
+                                     + " » can't start. Please try again later.",
+                                NamedTextColor.YELLOW));
+                        return;
+                    }
+                    // A 503 without the at_capacity code is a plain outage, not a
+                    // capacity verdict — report it like any other failure.
+                    // fall through
                 default:
                     log.warn("Felis: wake {} failed (status={}): {}", serverName, e.statusCode(), e.getMessage());
                     player.sendMessage(Component.text(
-                            "Couldn't start « " + serverName + " » right now. Try again shortly.",
+                            zh ? "现在无法启动「" + serverName + "」。请稍后再试。"
+                               : "Couldn't start « " + serverName + " » right now. Try again shortly.",
                             NamedTextColor.RED));
                     return;
             }
         }
         player.sendMessage(Component.text(
-                "Starting « " + serverName + " » — you'll be moved in automatically.",
+                zh ? "正在启动「" + serverName + "」——就绪后会自动把你传送过去。"
+                   : "Starting « " + serverName + " » — you'll be moved in automatically.",
                 NamedTextColor.GRAY));
         waiting.put(id, new Waiter(
                 serverName, System.currentTimeMillis() + WAIT_TIMEOUT_MILLIS, fromMenu));
@@ -364,7 +400,9 @@ public final class WaitingRouter {
         player.createConnectionRequest(backend).connect().whenComplete((result, err) -> {
             if (err != null || (result != null && !result.isSuccessful())) {
                 player.sendMessage(Component.text(
-                        "Couldn't connect you to « " + serverName + " ». Please try again.",
+                        FelisVelocityPlugin.zh(player)
+                                ? "无法把你连接到「" + serverName + "」。请重试。"
+                                : "Couldn't connect you to « " + serverName + " ». Please try again.",
                         NamedTextColor.RED));
             }
         });

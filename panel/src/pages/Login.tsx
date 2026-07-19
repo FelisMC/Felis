@@ -1,6 +1,6 @@
 import { useState, useEffect, type FormEvent } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
-import { Loader2, KeyRound, Mail, Fingerprint } from "lucide-react";
+import { Loader2, KeyRound, Mail, Fingerprint, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AuthLayout } from "@/components/AuthLayout";
 import { Card, CardContent } from "@/components/ui/card";
@@ -9,29 +9,36 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useTier } from "@/lib/tier";
 import { api, humanizeError } from "@/lib/api";
+import { loadConfig } from "@/lib/config";
 import { base64urlToBytes, bytesToBase64url } from "@/lib/utils";
 
-// Login is the local-password sign-in (spec §B1). It is the ONLY local credential
-// surface — username + password; Passkey/PWA onboarding is Phase B2/C. On success
-// the API sets an HttpOnly session cookie (invisible here); we then refresh the tier
-// context so the gate re-evaluates, and route to the forced change-password card
-// when the account still owes its first-login change, else to the dashboard.
+// Login is the passwordless sign-in (spec §B). Passkey and email-OTP are the
+// primary doors; a first-time player arrives with an in-game Bind Code (/link);
+// staff use the vouched op-login door (email code + in-game approval). No password
+// exists anywhere in the product. On success the API sets an HttpOnly session
+// cookie (invisible here); we then refresh the tier context so the gate
+// re-evaluates and land on the dashboard.
 //
 // Reaching this page already-authenticated (e.g. typing /login while signed in)
-// short-circuits to the right destination rather than showing the form.
+// short-circuits to the dashboard rather than showing the form.
 export function Login() {
-  const { loading, identity, mustChangePassword, refresh } = useTier();
+  const { loading, identity, refresh } = useTier();
   const navigate = useNavigate();
   const { t } = useTranslation("auth");
 
-  const [activeTab, setActiveTab] = useState<"password" | "bind" | "email">("password");
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [bindCode, setBindCode] = useState("");
+  const [activeTab, setActiveTab] = useState<"main" | "bind" | "op">("main");
   const [email, setEmail] = useState("");
   const [otpCode, setOtpCode] = useState("");
   const [otpSent, setOtpSent] = useState(false);
   const [countdown, setCountdown] = useState(0);
+  const [bindCode, setBindCode] = useState("");
+  // Op-login (staff door): start → wait for the in-game vouch → finish with the
+  // mailed code. request_id doubles as the handle an online admin approves.
+  const [opEmail, setOpEmail] = useState("");
+  const [opRequestId, setOpRequestId] = useState<string | null>(null);
+  const [opApproved, setOpApproved] = useState(false);
+  const [opCode, setOpCode] = useState("");
+  const [isOpHost, setIsOpHost] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -43,6 +50,32 @@ export function Login() {
     }, 1000);
     return () => clearTimeout(timer);
   }, [countdown]);
+
+  // Tier-aware copy: on the op.console hostname the staff door is the default tab
+  // (the player doors refuse staff accounts anyway).
+  useEffect(() => {
+    void loadConfig().then((cfg) => {
+      if (cfg.adminHostname && window.location.hostname === cfg.adminHostname) {
+        setIsOpHost(true);
+        setActiveTab("op");
+      }
+    });
+  }, []);
+
+  // Poll the op-login request until an in-game approval lands. Errors are
+  // swallowed on purpose: a transient failure just means we ask again.
+  useEffect(() => {
+    if (!opRequestId || opApproved) return;
+    const timer = setInterval(async () => {
+      try {
+        const s = await api.opLoginStatus(opRequestId);
+        if (s.approved) setOpApproved(true);
+      } catch {
+        // keep polling
+      }
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [opRequestId, opApproved]);
 
   // Don't flash the form while the boot /me is still in flight: a signed-in visitor
   // would briefly see a login form before being redirected away.
@@ -56,25 +89,7 @@ export function Login() {
       </AuthLayout>
     );
   }
-  if (identity && mustChangePassword) return <Navigate to="/change-password" replace />;
   if (identity) return <Navigate to="/" replace />;
-
-  async function handlePasswordSubmit(e: FormEvent) {
-    e.preventDefault();
-    if (!username.trim() || !password || submitting) return;
-    setSubmitting(true);
-    setError(null);
-    try {
-      const res = await api.login(username.trim(), password);
-      // Re-read /me so the context reflects the new session before we leave this
-      // page; the route we land on is gated on that fresh state.
-      await refresh();
-      navigate(res.must_change_password ? "/change-password" : "/", { replace: true });
-    } catch (err) {
-      setError(humanizeError(err));
-      setSubmitting(false);
-    }
-  }
 
   async function handleBindSubmit(e: FormEvent) {
     e.preventDefault();
@@ -127,7 +142,7 @@ export function Login() {
     setSubmitting(true);
     setError(null);
 
-    const identifier = username.trim();
+    const identifier = email.trim();
     try {
       let assertion: any;
       if (!identifier) {
@@ -165,9 +180,9 @@ export function Login() {
 
         await api.authPasskeyDiscoverableFinish(options.login_id, assertion);
       } else {
-        // Username-first (Email-first) passkey login
+        // Email-first passkey login
         if (!identifier.includes("@")) {
-          throw new Error("使用 Passkey 登录请在上方输入框中输入您绑定的邮箱，或留空直接进行免密登录。");
+          throw new Error(t("passkey_email_hint"));
         }
 
         const options = await api.authPasskeyLoginBegin(identifier);
@@ -213,46 +228,135 @@ export function Login() {
     }
   }
 
+  async function handleOpStart(e: FormEvent) {
+    e.preventDefault();
+    if (!opEmail.trim() || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await api.opLoginStart(opEmail.trim());
+      setOpRequestId(res.request_id);
+    } catch (err) {
+      setError(humanizeError(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleOpFinish(e: FormEvent) {
+    e.preventDefault();
+    if (!opRequestId || !opCode.trim() || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.opLoginFinish(opRequestId, opCode.trim());
+      await refresh();
+      navigate("/", { replace: true });
+    } catch (err) {
+      setError(humanizeError(err));
+      setSubmitting(false);
+    }
+  }
+
+  function switchTab(tab: "main" | "bind" | "op") {
+    setError(null);
+    setActiveTab(tab);
+  }
+
   return (
-    <AuthLayout title={t("login_title")} subtitle={t("login_subtitle")}>
+    <AuthLayout
+      title={t("login_title")}
+      subtitle={t(isOpHost ? "login_subtitle_op" : "login_subtitle")}
+    >
       <Card>
         <CardContent className="pt-6">
-          {activeTab === "password" && (
+          {activeTab === "main" && (
             <div className="space-y-4">
-              <form onSubmit={handlePasswordSubmit} className="space-y-4">
+              <form onSubmit={handleEmailSubmit} className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="username">{t("username")}</Label>
-                  <Input
-                    id="username"
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    autoComplete="username"
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    spellCheck={false}
-                    autoFocus
-                    aria-invalid={error ? true : undefined}
-                  />
+                  <Label htmlFor="email">{t("email_address")}</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="email"
+                      type="email"
+                      placeholder={t("email_placeholder")}
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      autoComplete="email webauthn"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      autoFocus
+                      disabled={submitting || otpSent}
+                      aria-invalid={error ? true : undefined}
+                      className="flex-1"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={handleSendOtp}
+                      disabled={submitting || !email.trim() || countdown > 0}
+                      className="shrink-0 font-normal"
+                    >
+                      {submitting && !otpSent ? (
+                        <>
+                          <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                          {t("sending_otp")}
+                        </>
+                      ) : countdown > 0 ? (
+                        `${countdown}${t("resend_in")}`
+                      ) : (
+                        t("send_otp")
+                      )}
+                    </Button>
+                  </div>
+                  {otpSent && (
+                    <p className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1 leading-normal">
+                      {t("otp_sent")}
+                    </p>
+                  )}
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="password">{t("password")}</Label>
-                  <Input
-                    id="password"
-                    type="password"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    autoComplete="current-password"
-                    aria-invalid={error ? true : undefined}
-                  />
-                </div>
+
+                {otpSent && (
+                  <div className="space-y-2">
+                    <Label htmlFor="otpCode">{t("otp_code")}</Label>
+                    <Input
+                      id="otpCode"
+                      placeholder={t("otp_placeholder")}
+                      value={otpCode}
+                      onChange={(e) => setOtpCode(e.target.value)}
+                      autoComplete="one-time-code"
+                      autoCapitalize="none"
+                      autoCorrect="off"
+                      spellCheck={false}
+                      autoFocus
+                      disabled={submitting}
+                      aria-invalid={error ? true : undefined}
+                    />
+                  </div>
+                )}
+
                 {error && <p className="text-sm text-destructive">{error}</p>}
-                <Button
-                  type="submit"
-                  className="w-full"
-                  disabled={submitting || !username.trim() || !password}
-                >
-                  {submitting ? t("signing_in") : t("sign_in")}
-                </Button>
+
+                {otpSent && (
+                  <Button
+                    type="submit"
+                    className="w-full"
+                    disabled={submitting || !otpCode.trim()}
+                  >
+                    {submitting ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        {t("signing_in")}
+                      </>
+                    ) : (
+                      <>
+                        <Mail className="mr-2 h-4 w-4" />
+                        {t("otp_btn")}
+                      </>
+                    )}
+                  </Button>
+                )}
               </form>
 
               <div className="relative my-2">
@@ -281,27 +385,21 @@ export function Login() {
                   type="button"
                   variant="outline"
                   className="w-full justify-center gap-2 font-medium"
-                  onClick={() => {
-                    setError(null);
-                    setActiveTab("email");
-                  }}
+                  onClick={() => switchTab("bind")}
                   disabled={submitting}
                 >
-                  <Mail className="h-4 w-4 text-muted-foreground" />
-                  {t("tab_email_btn")}
+                  <KeyRound className="h-4 w-4 text-muted-foreground" />
+                  {t("tab_bind_btn")}
                 </Button>
                 <Button
                   type="button"
                   variant="outline"
                   className="w-full justify-center gap-2 font-medium"
-                  onClick={() => {
-                    setError(null);
-                    setActiveTab("bind");
-                  }}
+                  onClick={() => switchTab("op")}
                   disabled={submitting}
                 >
-                  <KeyRound className="h-4 w-4 text-muted-foreground" />
-                  {t("tab_bind_btn")}
+                  <ShieldCheck className="h-4 w-4 text-muted-foreground" />
+                  {t("tab_op_btn")}
                 </Button>
               </div>
             </div>
@@ -349,116 +447,141 @@ export function Login() {
               <div className="mt-4 text-center">
                 <button
                   type="button"
-                  onClick={() => {
-                    setError(null);
-                    setActiveTab("password");
-                  }}
+                  onClick={() => switchTab("main")}
                   className="text-xs text-muted-foreground hover:text-primary transition-colors inline-flex items-center gap-1 font-medium"
                 >
                   <span>←</span>
-                  <span>{t("back_to_password")}</span>
+                  <span>{t("back_to_login")}</span>
                 </button>
               </div>
             </form>
           )}
 
-          {activeTab === "email" && (
-            <form onSubmit={handleEmailSubmit} className="space-y-4">
+          {activeTab === "op" && !opRequestId && (
+            <form onSubmit={handleOpStart} className="space-y-4">
               <div className="space-y-2">
-                <Label htmlFor="email">{t("email_address")}</Label>
-                <div className="flex gap-2">
-                  <Input
-                    id="email"
-                    type="email"
-                    placeholder={t("email_placeholder")}
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    autoComplete="email"
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    spellCheck={false}
-                    disabled={submitting || otpSent}
-                    aria-invalid={error ? true : undefined}
-                    className="flex-1"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={handleSendOtp}
-                    disabled={submitting || !email.trim() || countdown > 0}
-                    className="shrink-0 font-normal"
-                  >
-                    {submitting && !otpSent ? (
-                      <>
-                        <Loader2 className="mr-1 h-3 w-3 animate-spin" />
-                        {t("sending_otp")}
-                      </>
-                    ) : countdown > 0 ? (
-                      `${countdown}${t("resend_in")}`
-                    ) : (
-                      t("send_otp")
-                    )}
-                  </Button>
-                </div>
-                {otpSent && (
-                  <p className="text-[11px] text-emerald-600 dark:text-emerald-400 mt-1 leading-normal">
-                    {t("otp_sent")}
-                  </p>
+                <Label htmlFor="opEmail">{t("email_address")}</Label>
+                <Input
+                  id="opEmail"
+                  type="email"
+                  placeholder={t("email_placeholder")}
+                  value={opEmail}
+                  onChange={(e) => setOpEmail(e.target.value)}
+                  autoComplete="email"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  autoFocus
+                  disabled={submitting}
+                  aria-invalid={error ? true : undefined}
+                />
+                <p className="text-[11px] text-muted-foreground/80 mt-1 leading-normal">
+                  {t("op_hint")}
+                </p>
+              </div>
+              {error && <p className="text-sm text-destructive">{error}</p>}
+              <Button
+                type="submit"
+                className="w-full"
+                disabled={submitting || !opEmail.trim()}
+              >
+                {submitting ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    {t("sending_otp")}
+                  </>
+                ) : (
+                  <>
+                    <ShieldCheck className="mr-2 h-4 w-4" />
+                    {t("op_start_btn")}
+                  </>
                 )}
+              </Button>
+
+              <div className="mt-4 text-center">
+                <button
+                  type="button"
+                  onClick={() => switchTab("main")}
+                  className="text-xs text-muted-foreground hover:text-primary transition-colors inline-flex items-center gap-1 font-medium"
+                >
+                  <span>←</span>
+                  <span>{t("back_to_login")}</span>
+                </button>
+              </div>
+            </form>
+          )}
+
+          {activeTab === "op" && opRequestId && (
+            <form onSubmit={handleOpFinish} className="space-y-4">
+              <div className="rounded-md border bg-muted/40 p-3 space-y-2">
+                <p className="text-[11px] text-muted-foreground leading-normal">
+                  {t("op_approve_hint")}
+                </p>
+                <p className="font-mono text-xs break-all select-all">
+                  /felis web op approve {opRequestId}
+                </p>
               </div>
 
-              {otpSent && (
-                <div className="space-y-2">
-                  <Label htmlFor="otpCode">{t("otp_code")}</Label>
-                  <Input
-                    id="otpCode"
-                    placeholder={t("otp_placeholder")}
-                    value={otpCode}
-                    onChange={(e) => setOtpCode(e.target.value)}
-                    autoComplete="one-time-code"
-                    autoCapitalize="none"
-                    autoCorrect="off"
-                    spellCheck={false}
-                    autoFocus
-                    disabled={submitting}
-                    aria-invalid={error ? true : undefined}
-                  />
-                </div>
+              {opApproved ? (
+                <p className="text-[11px] text-emerald-600 dark:text-emerald-400 leading-normal">
+                  {t("op_approved")}
+                </p>
+              ) : (
+                <p className="inline-flex items-center gap-2 text-[11px] text-muted-foreground leading-normal">
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                  {t("op_waiting")}
+                </p>
               )}
+
+              <div className="space-y-2">
+                <Label htmlFor="opCode">{t("otp_code")}</Label>
+                <Input
+                  id="opCode"
+                  placeholder={t("otp_placeholder")}
+                  value={opCode}
+                  onChange={(e) => setOpCode(e.target.value)}
+                  autoComplete="one-time-code"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  disabled={submitting}
+                  aria-invalid={error ? true : undefined}
+                />
+              </div>
 
               {error && <p className="text-sm text-destructive">{error}</p>}
 
-              {otpSent && (
-                <Button
-                  type="submit"
-                  className="w-full"
-                  disabled={submitting || !otpCode.trim()}
-                >
-                  {submitting ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      {t("signing_in")}
-                    </>
-                  ) : (
-                    <>
-                      <Mail className="mr-2 h-4 w-4" />
-                      {t("otp_btn")}
-                    </>
-                  )}
-                </Button>
-              )}
+              <Button
+                type="submit"
+                className="w-full"
+                disabled={submitting || !opCode.trim() || !opApproved}
+              >
+                {submitting ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    {t("signing_in")}
+                  </>
+                ) : (
+                  <>
+                    <ShieldCheck className="mr-2 h-4 w-4" />
+                    {t("otp_btn")}
+                  </>
+                )}
+              </Button>
 
               <div className="mt-4 text-center">
                 <button
                   type="button"
                   onClick={() => {
-                    setError(null);
-                    setActiveTab("password");
+                    setOpRequestId(null);
+                    setOpApproved(false);
+                    setOpCode("");
+                    switchTab("op");
                   }}
                   className="text-xs text-muted-foreground hover:text-primary transition-colors inline-flex items-center gap-1 font-medium"
                 >
                   <span>←</span>
-                  <span>{t("back_to_password")}</span>
+                  <span>{t("op_restart")}</span>
                 </button>
               </div>
             </form>

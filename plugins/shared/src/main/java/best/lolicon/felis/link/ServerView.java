@@ -5,8 +5,7 @@ import java.util.Map;
 /**
  * ServerView is the proxy-side mirror of the felis-api lifecycle view of one
  * MinecraftServer (the {@code ServerInfo} the internal face emits for
- * {@code GET /servers}, {@code GET /servers/by-host/{host}} and the internal
- * status/wake replies). It is an immutable, dependency-free value object so the
+ * {@code GET /servers} and the internal status/wake replies). It is an immutable, dependency-free value object so the
  * shared link core stays zero-dependency and source-shareable across all four
  * loaders.
  *

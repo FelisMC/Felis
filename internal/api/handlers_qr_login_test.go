@@ -12,11 +12,12 @@ func statusPath(mcUUID string) string {
 
 // TestQRLoginCompletionPollVertical walks the QR scan-to-login flow end to end and
 // proves its load-bearing invariant: the internal completion poll reports the link
-// only after the WEB verify writes it, and reports it bound to the exact Principal
-// that verified — never to a UUID the poll itself could name. velocity mints and
-// polls on the internal face (it holds no web Principal); the durable bind is born
-// on the external face from a logged-in user. That split is the whole security
-// model of the scan, so the test drives both faces of one API.
+// only after the WEB verify writes it. velocity mints and polls on the internal
+// face (it holds no web Principal); the durable bind is born on the external face
+// from a logged-in user. That split is the whole security model of the scan, so
+// the test drives both faces of one API. The poll carries ONLY the boolean — the
+// plugin keys everything on the UUID it already holds, so no identity detail
+// (user_id) ever crosses back, in either state.
 func TestQRLoginCompletionPollVertical(t *testing.T) {
 	const mcUUID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 	user := &Principal{UserID: "u-scan", Email: "scan@example.net", Role: "user"}
@@ -54,9 +55,8 @@ func TestQRLoginCompletionPollVertical(t *testing.T) {
 		t.Fatalf("verify: code = %d, want 200 (%s)", w.Code, w.Body.String())
 	}
 
-	// Now the poll flips: velocity sees linked:true and the user_id it must bind the
-	// in-game session to — and that user_id is the verifier's, the only identity the
-	// poll could ever return, since the poll cannot mint a link of its own.
+	// Now the poll flips: velocity sees linked:true and admits the player. The
+	// response stays identity-free — linked is the entire contract.
 	w = do(ih, "GET", statusPath(mcUUID), "", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("post-verify poll: code = %d, want 200 (%s)", w.Code, w.Body.String())
@@ -65,8 +65,8 @@ func TestQRLoginCompletionPollVertical(t *testing.T) {
 	if b["linked"] != true {
 		t.Fatalf("post-verify poll body = %v, want linked:true", b)
 	}
-	if got := b["user_id"]; got != user.UserID {
-		t.Fatalf("post-verify poll user_id = %v, want %q (the verifier's id)", got, user.UserID)
+	if _, ok := b["user_id"]; ok {
+		t.Fatalf("post-verify poll leaked user_id: %v", b)
 	}
 }
 
@@ -101,8 +101,8 @@ func TestQRLoginStatusIdempotent(t *testing.T) {
 			t.Fatalf("poll %d: code = %d, want 200 (%s)", i, w.Code, w.Body.String())
 		}
 		b := acctBody(t, w)
-		if b["linked"] != true || b["user_id"] != "u-held" {
-			t.Fatalf("poll %d body = %v, want linked:true user_id:u-held", i, b)
+		if b["linked"] != true {
+			t.Fatalf("poll %d body = %v, want linked:true", i, b)
 		}
 	}
 	// The read must not have disturbed the durable link.
@@ -112,8 +112,8 @@ func TestQRLoginStatusIdempotent(t *testing.T) {
 }
 
 // TestQRLoginStatusFaceSeparation enforces that the poll is internal-only. It
-// reads who a UUID is linked to — a fact the public web face must not be able to
-// fish out by UUID — so crossing onto the external face must 404, not answer.
+// reads whether a UUID is linked — a fact the public web face must not be able
+// to fish out by UUID — so crossing onto the external face must 404, not answer.
 func TestQRLoginStatusFaceSeparation(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	api := newTestAPI(newFakeRepo(), newFakeCluster())

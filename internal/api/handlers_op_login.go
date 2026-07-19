@@ -10,14 +10,15 @@ import (
 // op.console STAFF login (spec §B op-login): the two-factor door for the most
 // sensitive tier. Unlike the console.<root_domain> player doors (email OTP / bind
 // code), a staff web session is never minted from a single factor. The flow is a
-// three-call state machine over op_login_requests (migration 0012), all Public
+// three-call state machine over op_login_requests (migration 0016), all Public
 // pre-session routes (the caller has no principal yet), plus two internal-face routes
-// velocity drives on behalf of online admins:
+// for the in-game side (approve is driven by velocity's /felis command; pending has
+// no consumer yet — see handleOpLoginPending):
 //
 //	POST /api/v1/auth/op-login/start            (public)   — mint a request + mail an OTP
 //	GET  /api/v1/auth/op-login/status/{id}      (public)   — poll until an admin approves
 //	POST /api/v1/auth/op-login/finish           (public)   — redeem code+approval → session
-//	GET  /api/v1/internal/op-login/pending      (internal) — the online-admin push list
+//	GET  /api/v1/internal/op-login/pending      (internal) — list requests awaiting a vouch
 //	POST /api/v1/internal/op-login/{id}/approve (internal) — an in-game admin vouches
 //
 // The two factors:
@@ -26,9 +27,9 @@ import (
 //     start and redeemed by finish, reusing the email_otps lifecycle (the purpose
 //     column keeps it from ever colliding with a console login_email or onboard code).
 //   - An in-game vouch — an already-trusted admin who is ONLINE approves the pending
-//     request via velocity's /felis command (internal approve). Only a linked
-//     role=admin account may approve; velocity additionally gates the command on
-//     in-game op, so the API check is defence in depth over its own user table.
+//     request via velocity's /felis command (internal approve). The API's own user
+//     table is the sole authority: only a UUID linked to a role=admin account may
+//     approve (velocity's command runs for any player and relies on this check).
 //
 // finish mints the session only when BOTH have landed. Neither factor alone — a mailed
 // code without an approval, or an approval without the code — yields a session.
@@ -317,8 +318,10 @@ func (a *API) handleOpLoginFinish(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleOpLoginPending lists live pending staff login requests, oldest first (internal
-// face). Velocity polls it and pushes the waiting requests to online admins, who
-// approve one with /felis web op approve <id>. Internal-only: velocity holds a service
+// face). Today no plugin consumes it: the approver learns the request id out-of-band
+// (the op.console start screen shows it to the person logging in) and runs
+// /felis web op approve <id>. The route exists so velocity can later push the waiting
+// list to online admins without an API change. Internal-only: velocity holds a service
 // token and no pending request is secret to the operator crew.
 func (a *API) handleOpLoginPending(w http.ResponseWriter, r *http.Request) {
 	reqs, err := a.Repo.ListPendingOpLogins(r.Context(), a.now())
@@ -340,8 +343,8 @@ func (a *API) handleOpLoginPending(w http.ResponseWriter, r *http.Request) {
 
 // opLoginApproveRequest is the internal approve body: the online-mode UUID of the
 // in-game admin running /felis web op approve. The API resolves it to a linked account
-// and refuses unless that account is role=admin — defence in depth over velocity's own
-// in-game op gate, checked against the API's authoritative user table.
+// and refuses unless that account is role=admin — this check against the API's
+// authoritative user table is the only gate; velocity's command itself is unprivileged.
 type opLoginApproveRequest struct {
 	ApproverUUID string `json:"approver_uuid"`
 }

@@ -8,7 +8,6 @@ import { useTier } from "@/lib/tier";
 //
 //   loading            → a full-screen spinner (never flash login during boot /me)
 //   unauthenticated    → /login   (a genuine 401: no/expired session)
-//   mustChangePassword → /change-password   (forced first-login change)
 //   otherwise          → render the app (<Outlet/>)
 //
 // The "otherwise" branch deliberately includes the graded-Zero-Trust degraded case
@@ -16,7 +15,7 @@ import { useTier } from "@/lib/tier";
 // app still renders User-Side, exactly as before local auth existed. Only a true
 // 401 bounces to /login. Every admin route remains independently server-guarded.
 export function RequireAuth() {
-  const { loading, unauthenticated, mustChangePassword } = useTier();
+  const { loading, unauthenticated } = useTier();
   const { t } = useTranslation("common");
 
   if (loading) {
@@ -28,6 +27,5 @@ export function RequireAuth() {
     );
   }
   if (unauthenticated) return <Navigate to="/login" replace />;
-  if (mustChangePassword) return <Navigate to="/change-password" replace />;
   return <Outlet />;
 }

@@ -20,8 +20,8 @@ import (
 //     all collapse to one op_login_invalid envelope; an early-but-correct code is
 //     preserved (approval is read before the code is consumed), and a wrong code costs
 //     an attempt without burning the approval.
-//   - Admin-only approval. Only a linked role=admin UUID may vouch; the check is the
-//     API's own user table, defence in depth over velocity's in-game op gate.
+//   - Admin-only approval. Only a linked role=admin UUID may vouch; the API's own
+//     user table is the sole gate (velocity's command itself is unprivileged).
 
 const opUUID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" // the seeded admin's linked in-game UUID
 

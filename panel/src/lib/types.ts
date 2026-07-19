@@ -25,8 +25,8 @@ export interface ServerInfo {
   displayName?: string;
   phase: Phase;
   desiredState?: "Running" | "Stopped";
-  players?: number;
-  maxPlayers?: number;
+  playersOnline?: number;
+  playersMax?: number;
   autostartPolicy?: AutostartPolicy;
   /** Whether the caller may claim this server (unowned + linked + quota). */
   claimable?: boolean;
@@ -74,7 +74,7 @@ export interface AccessResult {
 }
 
 /** PlayersResult projects GET /servers/{name}/access/players (spec §7 access), the
- *  ONLY source of WHO is online — ServerInfo.players carries the count alone.
+ *  ONLY source of WHO is online — ServerInfo.playersOnline carries the count alone.
  *  `online`/`max` are the tally; `players` is a BEST-EFFORT parse of the vanilla
  *  "list" reply (parseListOutput) and, like the whitelist, can come back empty on a
  *  non-vanilla format while `output` (the raw RCON text, ground truth) still names
@@ -101,10 +101,9 @@ export interface KickResult {
  *  projection plus the owner joined read-only from Postgres for display.
  *
  *  It is a DISTINCT type from ServerInfo, not a reuse: /fleet emits the raw CRD
- *  shape — `playersOnline`/`playersMax` (not players/maxPlayers), plus `ready` and
- *  the `endpoint*` runtime fields — whereas ServerInfo is the /me/servers
- *  projection. Sharing one interface would silently read `undefined` across the
- *  fetch().json() boundary for every renamed field. */
+ *  shape — `ready` and the `endpoint*` runtime fields, with playersOnline/playersMax
+ *  required — whereas ServerInfo is the /me/servers projection with them optional.
+ *  Sharing one interface would blur which fields each face actually guarantees. */
 export interface FleetServer {
   name: string;
   subdomain: string;
@@ -213,22 +212,7 @@ export interface Identity {
   /** Server-computed Principal.IsOwner() — true only for the platform-level
    *  owner account (one above admin). Owners get user management; admins don't. */
   is_owner: boolean;
-  /** Local-password path only: the account owes a forced first-login password
-   *  change. The JWT/Access path always leaves it false. Like `is_admin` it crosses
-   *  the untyped fetch().json() boundary, so consumers MUST compare `=== true` — an
-   *  absent field is `undefined` (correctly "no change owed"), never a thrown access. */
-  must_change_password: boolean;
   email_verified?: boolean;
-}
-
-/** LoginResult mirrors POST /api/v1/auth/login (handlers_auth.go handleLogin). The
- *  session cookie is set as a side effect (HttpOnly, so the panel never sees it);
- *  the body carries only what the panel routes on next — chiefly whether to force the
- *  change-password card before any other surface. */
-export interface LoginResult {
-  user_id: string;
-  role: "user" | "admin" | "owner";
-  must_change_password: boolean;
 }
 
 export interface BindResult {
@@ -288,7 +272,6 @@ export interface UserView {
   disabled: boolean;
   email_verified: boolean;
   server_count: number;
-  must_change_password: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -304,12 +287,12 @@ export interface UserDetail extends UserView {
   linked_accounts: LinkedAccount[];
 }
 
+/** CreateUserRequest mirrors handlers_users.go createUserRequest — passwordless:
+ *  the new account signs in via email-OTP / passkey / bind code, never a password. */
 export interface CreateUserRequest {
   username: string;
   email?: string;
   role: "admin" | "user";
-  password: string;
-  must_change_password: boolean;
 }
 
 export interface PatchUserRequest {

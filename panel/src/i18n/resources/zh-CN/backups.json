@@ -5,8 +5,6 @@
   "not_yours_title": "无权访问备份",
   "not_yours_body": "只有所有者或管理员才能查看并恢复该服务器的备份。",
   "latest_title": "最新备份",
-  "latest_note": "默认的恢复目标。你也可以从下方的历史备份中选择更早的备份进行恢复。",
-  "history_title": "历史备份",
   "history_note": "历史备份在过期前均可用于恢复。到期后系统会自动清理，无需手动删除或管理。",
   "reason_inactive": "闲置自动回收",
   "reason_manual": "手动备份",
@@ -29,7 +27,6 @@
   "expired_cannot_restore": "此备份已过期，无法恢复。",
   "col_created": "创建时间",
   "col_size": "大小",
-  "col_reason": "类型 / 原因",
   "col_expires": "过期时间",
   "col_owner": "原所有者",
   "col_actions": "操作"

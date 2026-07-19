@@ -48,14 +48,13 @@ import java.util.List;
  * {@code ClaimRequest} when it is claimable (ownerless + stopped → "Claim &amp;
  * Start") or a {@code WakeRequest} otherwise (the single frame behind both the "Join"
  * of a running owned server and the "Wake" of a stopped owned one), then closes the
- * menu. A refusal comes back as an {@code Error} frame and is shown to the player —
- * the only place claim/quota/policy failures surface — and readiness arrives as
- * {@code TransferReady} just before the proxy Connects them.
+ * menu. A claim refusal comes back as an {@code Error} frame and is shown to the
+ * player here; wake-path refusals (policy gate, capacity) are chat messages the
+ * proxy's waiting queue sends directly. Readiness arrives as {@code TransferReady}
+ * just before the proxy Connects them.
  */
 public final class FelisPaperPlugin extends JavaPlugin implements Listener, PluginMessageListener {
 
-    private static final Component MENU_TITLE =
-            Component.text("Felis Servers", NamedTextColor.AQUA).decoration(TextDecoration.ITALIC, false);
     private static final int MAX_TILES = 54; // a double chest, the GUI ceiling
 
     /** Server names to show as tiles, in display order; loaded from config. */
@@ -90,19 +89,21 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
     }
 
     private void openMenu(Player player) {
+        boolean zh = zh(player);
         if (servers.isEmpty()) {
             player.sendMessage(Component.text(
-                    "No servers are configured yet — ask an operator to set up felis-paper.",
+                    zh ? "还没有配置任何服务器——请管理员先配置 felis-paper。"
+                       : "No servers are configured yet — ask an operator to set up felis-paper.",
                     NamedTextColor.YELLOW));
             return;
         }
         int shown = Math.min(servers.size(), MAX_TILES);
         List<String> view = new ArrayList<>(servers.subList(0, shown));
         MenuHolder holder = new MenuHolder(view);
-        Inventory inv = Bukkit.createInventory(holder, invSize(shown), MENU_TITLE);
+        Inventory inv = Bukkit.createInventory(holder, invSize(shown), menuTitle(zh));
         holder.setInventory(inv);
         for (int i = 0; i < shown; i++) {
-            inv.setItem(i, loadingTile(view.get(i)));
+            inv.setItem(i, loadingTile(view.get(i), zh));
         }
         player.openInventory(inv);
         // Ask the proxy for live status of every tile; answers repaint them.
@@ -180,7 +181,7 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
             case ControlFrame.ERROR:
                 // The proxy already sanitizes transport faults; this is the only place
                 // a claim/quota/policy refusal becomes visible to the player.
-                player.sendMessage(Component.text("⚠ " + errorText(frame), NamedTextColor.RED));
+                player.sendMessage(Component.text("⚠ " + errorText(frame, zh(player)), NamedTextColor.RED));
                 break;
             case ControlFrame.TRANSFER_READY:
                 // The proxy performs the actual Connect; just make sure a stale menu is
@@ -203,7 +204,7 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
             return; // a server we are not showing
         }
         holder.put(frame.server(), frame);
-        top.setItem(slot, tile(frame));
+        top.setItem(slot, tile(frame, zh(player)));
     }
 
     private void closeIfMenu(Player player) {
@@ -214,21 +215,26 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
 
     // ---- rendering ----
 
-    private ItemStack tile(ControlFrame f) {
+    private static Component menuTitle(boolean zh) {
+        return Component.text(zh ? "Felis 服务器" : "Felis Servers", NamedTextColor.AQUA)
+                .decoration(TextDecoration.ITALIC, false);
+    }
+
+    private ItemStack tile(ControlFrame f, boolean zh) {
         Material material;
         String action;
         NamedTextColor color;
         if (f.claimable()) {
             material = Material.GOLD_BLOCK;
-            action = "Claim & Start";
+            action = zh ? "认领并启动" : "Claim & Start";
             color = NamedTextColor.GOLD;
         } else if (f.ready()) {
             material = Material.LIME_CONCRETE;
-            action = "Join";
+            action = zh ? "加入" : "Join";
             color = NamedTextColor.GREEN;
         } else {
             material = Material.RED_CONCRETE;
-            action = "Wake";
+            action = zh ? "唤醒" : "Wake";
             color = NamedTextColor.RED;
         }
         ItemStack item = new ItemStack(material);
@@ -236,18 +242,18 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
         meta.displayName(Component.text(action + "  ·  " + f.server(), color)
                 .decoration(TextDecoration.ITALIC, false));
         List<Component> lore = new ArrayList<>();
-        lore.add(line("Status", f.phase() == null || f.phase().isEmpty() ? "?" : f.phase()));
-        lore.add(line("Players", f.playersOnline() + "/" + f.playersMax()));
+        lore.add(line(zh ? "状态" : "Status", f.phase() == null || f.phase().isEmpty() ? "?" : f.phase()));
+        lore.add(line(zh ? "在线" : "Players", f.playersOnline() + "/" + f.playersMax()));
         meta.lore(lore);
         item.setItemMeta(meta);
         return item;
     }
 
-    private ItemStack loadingTile(String server) {
+    private ItemStack loadingTile(String server, boolean zh) {
         ItemStack item = new ItemStack(Material.GRAY_STAINED_GLASS_PANE);
         ItemMeta meta = item.getItemMeta();
         meta.displayName(Component.text(server, NamedTextColor.GRAY).decoration(TextDecoration.ITALIC, false));
-        meta.lore(List.of(Component.text("Loading…", NamedTextColor.DARK_GRAY)
+        meta.lore(List.of(Component.text(zh ? "加载中…" : "Loading…", NamedTextColor.DARK_GRAY)
                 .decoration(TextDecoration.ITALIC, false)));
         item.setItemMeta(meta);
         return item;
@@ -259,26 +265,34 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
                 .decoration(TextDecoration.ITALIC, false);
     }
 
-    private static String errorText(ControlFrame f) {
+    private static String errorText(ControlFrame f, boolean zh) {
         String code = f.code();
         if (code != null) {
             switch (code) {
                 case "not_linked":
-                    return "Link your account first — run /link, then finish on the web panel.";
+                    return zh ? "请先绑定账号——运行 /link，然后在网页控制台完成绑定。"
+                              : "Link your account first — run /link, then finish on the web console.";
                 case "quota_exceeded":
-                    return "You've reached your server quota.";
+                    return zh ? "你已达到服务器配额上限。"
+                              : "You've reached your server quota.";
                 case "already_claimed":
-                    return "That server was just claimed by someone else.";
+                    return zh ? "该服务器已被认领。"
+                              : "That server is already claimed.";
                 default:
                     break;
             }
         }
         return f.message() != null && !f.message().isEmpty()
                 ? f.message()
-                : (code != null ? code : "Request failed — please try again.");
+                : (code != null ? code : (zh ? "请求失败，请重试。" : "Request failed — please try again."));
     }
 
     // ---- helpers ----
+
+    /** zh mirrors the Velocity rule: render Chinese when the client locale is zh-*. */
+    private static boolean zh(Player player) {
+        return "zh".equalsIgnoreCase(player.locale().getLanguage());
+    }
 
     private void sendUpstream(Player player, ControlFrame frame) {
         player.sendPluginMessage(this, Control.CHANNEL, Control.encode(frame));

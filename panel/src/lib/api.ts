@@ -12,7 +12,6 @@ import type {
   KickResult,
   LinkResult,
   LinkStatus,
-  LoginResult,
   BindResult,
   PatchUserRequest,
   PlayersResult,
@@ -108,13 +107,10 @@ export interface SetupState {
 }
 
 export const api = {
-  // Local-password auth (spec §B1). login sets an HttpOnly session cookie as a
-  // side effect — the panel never sees it — and returns only what to route on next
-  // (must_change_password forces the change card before any other surface). The
-  // username/password pair is the ONLY local credential; Passkey/PWA are Phase
-  // B2/C. login may 403 `local_auth_disabled` on a Zero-Trust-only deployment.
-  login: (username: string, password: string) =>
-    request<LoginResult>("POST", "/auth/login", { username, password }),
+  // Session doors (spec §B). The product is passwordless: a session is minted only
+  // by passkey, email-OTP, bind code, or the op-login vouch flow below. Every door
+  // sets an HttpOnly cookie as a side effect and may 403 `local_auth_disabled` on a
+  // Zero-Trust-only deployment.
 
   // logout is idempotent server-side (clears the session row + cookie); calling it
   // without a session still resolves 200. After it, refreshing /me yields 401, which
@@ -142,14 +138,21 @@ export const api = {
   authPasskeyDiscoverableFinish: (login_id: string, assertion: any) =>
     request<any>("POST", "/auth/passkey/login/discoverable/finish", { login_id, assertion }),
 
-  // changePassword is callable during the first-login lockdown (the route is
-  // AllowDuringPasswordChange): the server re-verifies current_password, rejects an
-  // unchanged or weak (8–72 byte) new password, writes the new hash, and revokes
-  // every OTHER session. The caller's own session is kept, so no re-login is needed.
-  changePassword: (current_password: string, new_password: string) =>
-    request<{ ok: boolean }>("POST", "/auth/change-password", {
-      current_password,
-      new_password,
+  // Op-login (spec §B): the staff door. start mails an OTP to a staff address and
+  // returns a request handle; an online admin vouches in-game with
+  // `/felis web op approve <request_id>`; the panel polls status until approved,
+  // then finish redeems {request_id, code} into a session. start answers 202 with a
+  // request_id for ANY well-formed address (anti-enumeration), so the UI just waits.
+  opLoginStart: (email: string) =>
+    request<{ request_id: string; expires_at: string }>("POST", "/auth/op-login/start", { email }),
+
+  opLoginStatus: (id: string) =>
+    request<{ approved: boolean }>("GET", `/auth/op-login/status/${encodeURIComponent(id)}`),
+
+  opLoginFinish: (request_id: string, code: string) =>
+    request<{ user_id: string; role: string }>("POST", "/auth/op-login/finish", {
+      request_id,
+      code,
     }),
 
   // Setup bootstrap (spec §B). redeem consumes the one-time token from the setup URL
@@ -369,6 +372,46 @@ export const api = {
   passkeyDelete: (id: string) =>
     request<void>("DELETE", `/account/passkey/credentials/${id}`),
 
+  // Account migration (spec §B3 inherit). Started in-game with /felis migrate; the
+  // web side then drives: status → step-up confirm (passkey when enrolled, email-OTP
+  // otherwise) → issue-code (source names the target account and reads the one-time
+  // code) → redeem (the TARGET account spends the code; the source's servers move to
+  // it and the source is retired).
+  migrateStatus: () =>
+    request<{
+      active: boolean;
+      state?: string;
+      target_user_id?: string;
+      confirm_factor?: string;
+      code_expires_at?: string;
+    }>("GET", "/account/migrate"),
+
+  migrateConfirmOTPStart: () =>
+    request<{ sent: boolean; expires_at: string }>("POST", "/account/migrate/confirm/otp/start"),
+
+  migrateConfirmOTPVerify: (code: string) =>
+    request<{ confirmed: boolean }>("POST", "/account/migrate/confirm/otp/verify", { code }),
+
+  migrateConfirmPasskeyBegin: () =>
+    request<any>("POST", "/account/migrate/confirm/passkey/begin"),
+
+  migrateConfirmPasskeyFinish: (assertion: any) =>
+    request<{ confirmed: boolean }>("POST", "/account/migrate/confirm/passkey/finish", {
+      assertion,
+    }),
+
+  migrateIssueCode: (target_user_id: string) =>
+    request<{ code: string; expires_at: string }>("POST", "/account/migrate/issue-code", {
+      target_user_id,
+    }),
+
+  migrateRedeem: (code: string) =>
+    request<{ migrated: boolean; servers_moved: number; servers: string[] }>(
+      "POST",
+      "/account/migrate/redeem",
+      { code },
+    ),
+
   listSubmissions: () =>
     request<{ submissions: Submission[] }>("GET", "/submissions").then((r) => r.submissions ?? []),
 
@@ -428,9 +471,6 @@ export const api = {
 
   disableUser: (id: string, disabled: boolean) =>
     request<{ id: string; disabled: boolean }>("POST", `/users/${id}/disable`, { disabled }),
-
-  resetUserPassword: (id: string) =>
-    request<{ ok: boolean; email: string }>("POST", `/users/${id}/reset-password`),
 
   getUserQuotas: (id: string) => request<QuotaView>("GET", `/users/${id}/quotas`),
 
@@ -496,15 +536,12 @@ export function humanizeError(e: unknown): string {
 
   const err = e as Partial<ApiError>;
   switch (err.code) {
-    // Local-password auth (spec §B1).
+    // Session doors (spec §B): every passwordless door 403s this when local
+    // sessions are disabled on a Zero-Trust-only deployment.
     case "local_auth_disabled":
       return t("local_auth_disabled");
-    case "invalid_credentials":
-      return t("invalid_credentials");
-    case "weak_password":
-      return t("weak_password");
-    case "password_unchanged":
-      return t("password_unchanged");
+    case "staff_account":
+      return t("staff_account");
     case "not_linked":
       return t("not_linked");
     case "invalid_code":

@@ -227,7 +227,7 @@ func TestBindRedeemExpiredCode(t *testing.T) {
 
 // TestBindRedeemLocalAuthDisabled proves the bootstrap refuses to mint a session that
 // SessionAuth would not honor: with local sessions off it returns 403, never a dead
-// cookie, mirroring handleLogin.
+// cookie, mirroring the email-OTP login door.
 func TestBindRedeemLocalAuthDisabled(t *testing.T) {
 	repo := newFakeRepo() // local_auth_enabled never set → fail closed
 	api := newTestAPI(repo, newFakeCluster())

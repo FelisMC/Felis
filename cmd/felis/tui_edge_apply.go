@@ -72,7 +72,7 @@ func applyCloudflareEdge(ctx context.Context, result *cfsetup.Result, panelHost,
 
 // applyReverseProxy records the operator's chosen public hostnames and rolls the
 // API so the panel serves them. No Access audience is set: the admin console is
-// gated by the Owner's local-password session, and the operator's own reverse
+// gated by the Owner's local session (passwordless sign-in), and the operator's own reverse
 // proxy (Caddy/nginx/Traefik/…) terminates TLS in front of the NodePort origin.
 func applyReverseProxy(ctx context.Context, panelHost, adminHost string) error {
 	if adminHost == "" {

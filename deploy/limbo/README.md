@@ -56,7 +56,7 @@ Configuration (deployment inputs, never compiled in; env wins over a
 | `FELIS_SERVICE_TOKEN`       | internal service token (secret)      | *(required for login)* |
 | `FELIS_ROOT_DOMAIN`         | deployment zone, builds `https://console.<zone>` | *(required for login)* |
 | `FELIS_LOBBY_SERVER`        | Velocity server name to transfer to  | `lobby` |
-| `FELIS_LOGIN_TIMEOUT_SECONDS` | login window (clamped 30–3600)     | `300` |
+| `FELIS_LOGIN_TIMEOUT_SECONDS` | login window (clamped 30–3600)     | `600` |
 | `FELIS_HEALTH_PORT`         | readiness port                        | `8080` |
 
 If the API config **or** the root domain is absent the login flow stays **OFF** and

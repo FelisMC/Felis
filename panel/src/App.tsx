@@ -6,7 +6,6 @@ import { RequireAdmin } from "@/components/RequireAdmin";
 import { RequireAuth } from "@/components/RequireAuth";
 import { RequireOwner } from "@/components/RequireOwner";
 import { Login } from "@/pages/Login";
-import { ChangePassword } from "@/pages/ChangePassword";
 import { Setup } from "@/pages/Setup";
 import { Dashboard } from "@/pages/Dashboard";
 import { ServersPage } from "@/pages/servers/ServersPage";
@@ -35,19 +34,18 @@ export default function App() {
       <TierProvider>
         <BrowserRouter>
         <Routes>
-          {/* Pre-app local-password surfaces (spec §B1). They sit OUTSIDE
+          {/* Pre-app sign-in surface (spec §B, passwordless). It sits OUTSIDE
               RequireAuth — RequireAuth redirects here — and outside AppShell, so
-              they render their own centered chrome with no nav/tier dependency. */}
+              it renders its own centered chrome with no nav/tier dependency. */}
           <Route path="/login" element={<Login />} />
-          <Route path="/change-password" element={<ChangePassword />} />
           {/* Owner first-run onboarding. Like /login it sits OUTSIDE RequireAuth:
               the visitor arrives from the `felis setup` link with no session, and
               redeeming the one-time token is what mints one. */}
           <Route path="/setup" element={<Setup />} />
 
           {/* Everything else requires a session. RequireAuth gates the whole app:
-              no/expired session → /login, forced first-login change →
-              /change-password, transient /me failure → still renders (graded ZT). */}
+              no/expired session → /login, transient /me failure → still renders
+              (graded ZT). */}
           <Route element={<RequireAuth />}>
             <Route element={<AppShell />}>
               {/* User-Side — app-tier */}

@@ -215,12 +215,13 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		Restorer:    restorer,
 		Backuper:    backuper,
 		Submissions: submissions,
-		// The external face is fronted by SessionAuth: it prefers a local-password
-		// session cookie and otherwise delegates to the Cloudflare-Access JWT verifier,
-		// so both auth models coexist on one face. The delegate's Keyfunc is
-		// intentionally nil — the JWT path fails closed until a JWKS-backed key function
-		// is wired (deployment integration point) — while the local-password path is
-		// live the moment `felis breakGlass` flips local_auth_enabled on.
+		// The external face is fronted by SessionAuth: it prefers a local session
+		// cookie (minted by the passwordless doors) and otherwise delegates to the
+		// Cloudflare-Access JWT verifier, so both auth models coexist on one face. The
+		// delegate's Keyfunc is intentionally nil — the JWT path fails closed until a
+		// JWKS-backed key function is wired (deployment integration point) — while the
+		// local session path is live the moment `felis breakGlass` flips
+		// local_auth_enabled on.
 		External: api.SessionAuth{
 			Repo:          repo,
 			Delegate:      api.AccessVerifier{Audience: cfg.Auth.AccessJWTAud},
@@ -229,6 +230,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		},
 		RootDomain:    cfg.Server.RootDomain,
 		AdminHostname: cfg.Auth.AdminHostname,
+		PanelHostname: cfg.Auth.PanelHostname,
 		WakeCooldown:  30 * time.Second,
 		// Bound concurrent console/build-log SSE streams per principal. Generous enough
 		// for legitimate multi-tab / multi-server watching, while capping how many
@@ -271,7 +273,13 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "felis api: passkey verifier disabled (auth.panel_hostname unset) — passkey endpoints return 503")
 	}
 
-	externalHandler := panel.Handler(a.ExternalHandler(), cfg.Server.RootDomain, cfg.Auth.PanelHostname, cfg.Auth.AdminHostname, resolvedVersion())
+	// Derive the console hostnames when felis.toml leaves them unset, exactly as the
+	// setup/breakGlass paths do — otherwise the SPA cannot tell which face it is
+	// serving and falls back to the player console on op.console.<root>.
+	externalHandler := panel.Handler(a.ExternalHandler(), cfg.Server.RootDomain,
+		defaultPanelHostname(cfg.Server.RootDomain, cfg.Auth.PanelHostname),
+		defaultAdminHostname(cfg.Server.RootDomain, cfg.Auth.AdminHostname),
+		resolvedVersion())
 	internalSrv := newAPIServer(*internalAddr, a.InternalHandler())
 	externalSrv := newAPIServer(cfg.Server.Listen, externalHandler)
 

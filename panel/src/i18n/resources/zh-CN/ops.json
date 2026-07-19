@@ -1,11 +1,6 @@
 {
   "title": "系统管理",
   "subtitle": "平台可观测性看板——观察视角，非管理入口。",
-  "cluster_wide_fleet": "全平台服务器",
-  "open_fleet_table": "查看全平台服务器列表 →",
-  "footer_pre": "控制面扩缩、RBAC、Secrets 及集群生命周期属于 ",
-  "footer_kubectl": "kubectl / CRD",
-  "footer_post": " 范畴，无法从此处操作。系统管理面仅提供可观测性——遵循四层职责分离原则（构建 / 运行时 / 运维 / 应用）。",
   "fleet_title": "全平台服务器",
   "fleet_subtitle": "平台所有服务器——运行状态、所有者、在线人数，可直接启停与进入控制台。",
   "fleet_live": "实时刷新",

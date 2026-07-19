@@ -51,6 +51,26 @@ func validAuthSource(s string) bool {
 	return s == authSourceMojang || s == authSourceThirdParty
 }
 
+// deriveAuthSource infers the auth source from the UUID's version nibble when
+// the minting backend omitted auth_source. Felis-nano rewrites every
+// third-party profile to a name-based UUIDv3 under its namespace before it ever
+// reaches the proxy, while Mojang profiles keep their random v4 — so on a
+// nano-fronted deployment the version nibble alone identifies the source, and
+// no Java plugin has to learn the field. Anything unparseable keeps the
+// historical Mojang-priority default.
+func deriveAuthSource(mcUUID string) string {
+	hex := strings.ReplaceAll(mcUUID, "-", "")
+	if len(hex) != 32 {
+		return authSourceMojang
+	}
+	switch hex[12] {
+	case '3':
+		return authSourceThirdParty
+	default:
+		return authSourceMojang
+	}
+}
+
 // newLinkCode returns a cryptographically random, unambiguous link code.
 func newLinkCode() (string, error) {
 	buf := make([]byte, linkCodeLen)
@@ -88,12 +108,13 @@ func (a *API) handleCreateLinkCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "mc_uuid is required"))
 		return
 	}
-	// Default an omitted source to Mojang (spec §10 priority) but reject an
-	// unrecognised one — a typo'd source must not silently land as a stored value
-	// the panel will later mislabel.
+	// Default an omitted source from the UUID's version nibble (v3 = felis-nano
+	// third-party rewrite, v4 = Mojang; see deriveAuthSource) but reject an
+	// unrecognised explicit one — a typo'd source must not silently land as a
+	// stored value the panel will later mislabel.
 	authSource := req.AuthSource
 	if authSource == "" {
-		authSource = authSourceMojang
+		authSource = deriveAuthSource(req.MCUUID)
 	}
 	if !validAuthSource(authSource) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
@@ -110,10 +131,17 @@ func (a *API) handleCreateLinkCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{
+	// panel_url tells the in-game side where the player redeems the code, so
+	// every plugin renders the same address from one source of truth instead of
+	// each baking in its own hostname. Omitted when no hostname is configured.
+	resp := map[string]any{
 		"code":       code,
 		"expires_at": expiresAt.UTC(),
-	})
+	}
+	if u := a.panelURL(); u != "" {
+		resp["panel_url"] = u
+	}
+	writeJSON(w, http.StatusCreated, resp)
 }
 
 // handleLinkStatus reports whether an in-game UUID has finished linking yet — the
@@ -125,8 +153,9 @@ func (a *API) handleCreateLinkCode(w http.ResponseWriter, r *http.Request) {
 //	  as a QR → player scans it on a phone already signed in to console.<root_domain>
 //	  → that web session's verify (handleLinkVerify) writes the durable account_links
 //	  row bound to THAT user → velocity polls HERE for the same UUID it minted against
-//	  → on {linked:true} it admits the player, binding the in-game session to user_id
-//	  with no reconnect — the whole point of scanning over typing.
+//	  → on {linked:true} it admits the player with no reconnect — the whole point of
+//	  scanning over typing. The response is deliberately just the boolean: the plugin
+//	  keys everything on the UUID it already holds, so no identity detail crosses back.
 //
 // The poll is keyed by the verified mc_uuid velocity already holds, not by the
 // scanned code, so it is a pure idempotent read of the durable link (UserByMCUUID):
@@ -147,7 +176,7 @@ func (a *API) handleLinkStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "mc_uuid is required"))
 		return
 	}
-	userID, err := a.Repo.UserByMCUUID(r.Context(), mcUUID)
+	_, err := a.Repo.UserByMCUUID(r.Context(), mcUUID)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		// Not linked yet. For the poller this is simply "keep waiting": velocity
@@ -159,7 +188,7 @@ func (a *API) handleLinkStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"linked": true, "user_id": userID})
+	writeJSON(w, http.StatusOK, map[string]any{"linked": true})
 }
 
 // linkVerifyRequest is the panel verify-code body (spec §10): the logged-in user

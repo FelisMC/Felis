@@ -237,10 +237,10 @@ export function EditServerDialog({
 
           <div className="grid grid-cols-2 gap-4">
             <div className="grid gap-2">
-              <Label htmlFor="es-cpu">CPU 限制</Label>
+              <Label htmlFor="es-cpu">{t("edit_server_cpu")}</Label>
               <Input
                 id="es-cpu"
-                placeholder='例如 1, 2, 500m'
+                placeholder={t("edit_server_cpu_placeholder")}
                 value={form.cpu}
                 onChange={(e) => set("cpu", e.target.value)}
               />

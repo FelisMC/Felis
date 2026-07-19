@@ -40,25 +40,26 @@ const STATUS_BADGE_STYLE: Record<BuildStatus, string> = {
   cancelled: "bg-zinc-500/10 text-zinc-400 border-zinc-500/20",
 };
 
-function formatDuration(createdAt: string, finishedAt?: string, isZh?: boolean): string {
+function formatDuration(
+  createdAt: string,
+  finishedAt: string | undefined,
+  t: (key: string, opts?: Record<string, unknown>) => string
+): string {
   const start = new Date(createdAt).getTime();
   if (!Number.isFinite(start)) return "";
   const end = finishedAt ? new Date(finishedAt).getTime() : Date.now();
   if (!Number.isFinite(end) || end < start) return "";
   const diffSec = Math.round((end - start) / 1000);
   if (diffSec < 60) {
-    return isZh ? `${diffSec}秒` : `${diffSec}s`;
+    return t("build_duration_seconds", { s: diffSec });
   }
-  const m = Math.floor(diffSec / 60);
-  const s = diffSec % 60;
-  return isZh ? `${m}分${s}秒` : `${m}m ${s}s`;
+  return t("build_duration_minutes", { m: Math.floor(diffSec / 60), s: diffSec % 60 });
 }
 
 export function ImageBuildPage() {
   const { t, i18n } = useTranslation("admin");
   const locale = i18n.language;
   const now = Date.now();
-  const isZh = locale.startsWith("zh");
   const config = useConfig();
   const { identity } = useTier();
 
@@ -289,7 +290,7 @@ export function ImageBuildPage() {
             <DialogHeader>
               <DialogTitle>{t("trigger_build_title")}</DialogTitle>
               <DialogDescription>
-                输入镜像构建参数，在隔离命名空间中启动 Kaniko 流水线任务。
+                {t("trigger_build_desc")}
               </DialogDescription>
             </DialogHeader>
             <form onSubmit={handleTrigger} className="space-y-4">
@@ -329,7 +330,7 @@ export function ImageBuildPage() {
                             sub.status === "approved" && "bg-emerald-500/10 text-emerald-500 border-emerald-500/20",
                             sub.status === "rejected" && "bg-rose-500/10 text-rose-500 border-rose-500/20"
                           )}>
-                            {sub.status === "pending_review" ? (isZh ? "待审核" : "Pending") : sub.status === "approved" ? (isZh ? "已同意" : "Approved") : (isZh ? "已驳回" : "Rejected")}
+                            {sub.status === "pending_review" ? t("status_pending_review") : sub.status === "approved" ? t("status_approved") : t("status_rejected")}
                           </span>
                         </SelectItem>
                       ))
@@ -346,7 +347,7 @@ export function ImageBuildPage() {
                   <AlertCircle className="h-4 w-4 shrink-0 mt-0.5 animate-bounce" />
                   <div className="space-y-1">
                     <p className="font-bold text-amber-400">
-                      {t("build_import_submission_warning_title", { status: selectedSub.status === "pending_review" ? (isZh ? "待审核" : "Pending Review") : (isZh ? "已驳回" : "Rejected") })}
+                      {t("build_import_submission_warning_title", { status: selectedSub.status === "pending_review" ? t("status_pending_review") : t("status_rejected") })}
                     </p>
                     <p className="text-[10px] text-muted-foreground leading-normal">
                       {t("build_import_submission_warning_desc")}
@@ -434,7 +435,7 @@ export function ImageBuildPage() {
         <CardContent className="p-0">
           {/* Filters Bar */}
           <div className="p-4 border-b">
-            <SearchInput value={search} onChange={setSearch} placeholder="搜索构建 ID、镜像引用或状态..." />
+            <SearchInput value={search} onChange={setSearch} placeholder={t("builds_search_placeholder")} />
           </div>
 
           {/* List Content */}
@@ -443,8 +444,8 @@ export function ImageBuildPage() {
           ) : filteredBuilds.length === 0 ? (
             <div className="p-4">
               <EmptyState
-                title={search.trim() ? "无匹配构建任务" : t("no_builds_title")}
-                hint={search.trim() ? "尝试更换搜索词" : t("no_builds_hint")}
+                title={search.trim() ? t("search_no_results") : t("no_builds_title")}
+                hint={search.trim() ? t("search_no_results_hint") : t("no_builds_hint")}
               />
             </div>
           ) : (
@@ -479,7 +480,7 @@ export function ImageBuildPage() {
                             <div className="flex flex-col min-w-0">
                               <span 
                                 className="font-mono font-medium text-foreground select-all block max-w-xl truncate" 
-                                title={`镜像引用: ${b.image_ref}${b.base_image ? `\n基础镜像: ${b.base_image}` : ""}${b.context_ref ? `\n构建上下文: ${b.context_ref}` : ""}`}
+                                title={`${t("image_ref_label")}: ${b.image_ref}${b.base_image ? `\n${t("base_image_label")}: ${b.base_image}` : ""}${b.context_ref ? `\n${t("context_ref_label")}: ${b.context_ref}` : ""}`}
                               >
                                 {b.image_ref}
                               </span>
@@ -519,7 +520,7 @@ export function ImageBuildPage() {
 
                           {/* Column 6: Duration */}
                           <td className="px-4 py-3 align-middle text-center font-mono text-muted-foreground whitespace-nowrap">
-                            {formatDuration(b.created_at, b.finished_at, isZh) || "—"}
+                            {formatDuration(b.created_at, b.finished_at, t) || "—"}
                           </td>
 
                           {/* Column 7: Action */}

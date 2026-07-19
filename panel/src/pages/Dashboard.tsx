@@ -52,7 +52,7 @@ export function Dashboard() {
     return {
       total: list.length,
       running: by("Running"),
-      players: list.reduce((n, s) => n + (s.players ?? 0), 0),
+      players: list.reduce((n, s) => n + (s.playersOnline ?? 0), 0),
     };
   }, [servers]);
 
@@ -115,7 +115,7 @@ function FleetView({
       else if (s.phase === "Failed") failed++;
       else unknown++;
 
-      maxPlayers += s.maxPlayers ?? 0;
+      maxPlayers += s.playersMax ?? 0;
     });
 
     return {

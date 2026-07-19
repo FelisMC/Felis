@@ -32,7 +32,7 @@ import (
 // No app-level attempt cap is enforced here (unlike the email-OTP flow, whose 1e6
 // keyspace demanded one): the code's ~1e12 keyspace, single use and short TTL make
 // blind brute force non-viable, and rate-limiting is deferred to the edge exactly as
-// for the public /auth/login. The idempotent returning-player branch (a UUID already
+// for the other public session doors (email-OTP, op-login). The idempotent returning-player branch (a UUID already
 // linked to a role=user player is fetched, not re-created) is a DELIBERATE standing
 // "log in via the game" door, not merely first-time onboarding: control of the
 // in-game identity is the root of trust, so re-minting a code always re-grants a
@@ -62,15 +62,16 @@ type bindRedeemRequest struct {
 
 // handleBindRedeem redeems a Bind Code into a player account + session (Public). It is
 // the account-less player's only door into console.<root_domain>: no prior principal,
-// no Zero Trust in front (unlike op.console). Like handleLogin it is a cookie-minting
-// public route, so it requires local sessions to be enabled and a JSON content type
-// (the cross-site-forgery guard) and mints the same host-only felis_session cookie.
+// no Zero Trust in front (unlike op.console). Like the email-OTP login door it is a
+// cookie-minting public route, so it requires local sessions to be enabled and a JSON
+// content type (the cross-site-forgery guard) and mints the same host-only
+// felis_session cookie.
 // The code is trimmed and uppercased so a player who typed it with stray spaces or in
 // lowercase still matches, mirroring handleLinkVerify.
 func (a *API) handleBindRedeem(w http.ResponseWriter, r *http.Request) {
 	// The minted session is a felis_session cookie, honored only when local sessions
 	// are enabled (SessionAuth). Minting one while they are off would hand back a dead
-	// cookie, so refuse loudly and consistently with handleLogin. This couples the
+	// cookie, so refuse loudly, consistently with the other session doors. This couples the
 	// player bootstrap to the same toggle that gates op.console local login; a future
 	// deployment wanting player cookies without local admin login would decouple them
 	// in SessionAuth — out of scope here (KNOWN coupling).

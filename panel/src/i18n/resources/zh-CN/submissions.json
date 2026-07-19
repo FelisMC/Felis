@@ -7,12 +7,9 @@
   "display_name_placeholder": "例如：Pixelmon 冒险包",
   "file_label": "构建上下文 (.tar.gz)",
   "file_drag_hint": "拖拽 .tar.gz 文件到此处，或点击浏览文件",
-  "file_selected": "已选择文件: {{name}} ({{size}})",
   "submit_btn": "提交",
   "submitting_create": "正在创建提交...",
   "submitting_upload": "正在上传构建上下文...",
-  "submit_success": "模组包提交成功！",
-  "list_card_title": "提交历史",
   "filter_all": "全部状态",
   "status_pending_review": "等待审核",
   "status_approved": "审核通过",
@@ -21,7 +18,6 @@
   "table_status": "状态",
   "table_created_at": "提交时间",
   "table_reviewed_by": "审核人",
-  "table_image_ref": "镜像引用",
   "table_reject_reason": "拒绝原因",
   "no_submissions_title": "暂无提交记录",
   "no_submissions_hint": "您还没有提交过任何模组包。",
@@ -29,5 +25,9 @@
   "error_file_type": "请上传有效的 .tar.gz 压缩文件。",
   "error_file_size": "文件超过了允许的大小限制。",
   "error_name_required": "必须填写显示名称。",
-  "error_file_required": "必须上传构建上下文文件。"
+  "error_file_required": "必须上传构建上下文文件。",
+  "field_context_ref": "构建上下文引用",
+  "field_image_ref": "目标镜像引用",
+  "clear_btn": "清除",
+  "file_hint": "支持 .tar.gz 格式 (最大 1GB)"
 }

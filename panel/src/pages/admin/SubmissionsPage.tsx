@@ -157,7 +157,7 @@ export function SubmissionsPage() {
         <CardContent className="p-0">
           {/* Filters Bar */}
           <div className="flex flex-col sm:flex-row gap-3 p-4 border-b">
-            <SearchInput value={search} onChange={setSearch} placeholder="搜索模组包名称或提交人..." />
+            <SearchInput value={search} onChange={setSearch} placeholder={t("submissions_search_placeholder")} />
             <div className="inline-flex h-9 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground shrink-0 select-none border border-border/40">
               <button
                 type="button"
@@ -230,8 +230,8 @@ export function SubmissionsPage() {
           ) : filteredSubmissions.length === 0 ? (
             <div className="p-4 border-b-0">
               <EmptyState
-                title={search.trim() || statusFilter !== "all" ? "无匹配结果" : t("no_submissions_title")}
-                hint={search.trim() || statusFilter !== "all" ? "尝试更换搜索词或筛选条件" : t("no_submissions_hint")}
+                title={search.trim() || statusFilter !== "all" ? t("search_no_results") : t("no_submissions_title")}
+                hint={search.trim() || statusFilter !== "all" ? t("search_no_results_hint") : t("no_submissions_hint")}
               />
             </div>
           ) : (
@@ -337,12 +337,12 @@ export function SubmissionsPage() {
                         <div className="px-10 py-3 bg-muted/20 border-t border-b border-border/40 text-xs text-muted-foreground space-y-2">
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
-                              <p className="font-semibold text-foreground mb-1">构建上下文引用 (Context Ref)</p>
+                              <p className="font-semibold text-foreground mb-1">{t("context_ref_label")}</p>
                               <pre className="font-mono bg-background border rounded p-1.5 truncate select-all">{sub.context_ref}</pre>
                             </div>
                             {sub.image_ref && (
                               <div>
-                                <p className="font-semibold text-foreground mb-1">目标镜像引用 (Image Ref)</p>
+                                <p className="font-semibold text-foreground mb-1">{t("image_ref_label")}</p>
                                 <pre className="font-mono bg-background border rounded p-1.5 truncate select-all">{sub.image_ref}</pre>
                               </div>
                             )}
@@ -350,7 +350,7 @@ export function SubmissionsPage() {
 
                           {sub.build_id && (
                             <div>
-                              <p className="font-semibold text-foreground">关联构建任务 (Build ID)</p>
+                              <p className="font-semibold text-foreground">{t("table_build_id")}</p>
                               <code className="font-mono bg-background border rounded px-1.5 py-0.5">{sub.build_id}</code>
                             </div>
                           )}

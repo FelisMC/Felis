@@ -96,7 +96,7 @@ func TestProvisionCmdSelectsPathByOperation(t *testing.T) {
 		if msg.err != nil {
 			t.Fatalf("owner provision: %v", msg.err)
 		}
-		// performBreakGlass upserts the single Owner and enables local-password login.
+		// performBreakGlass upserts the single Owner and enables local session sign-in.
 		if len(f.upserts) != 1 || len(f.inserts) != 0 {
 			t.Fatalf("want 1 upsert and 0 inserts (performBreakGlass), got upserts=%d inserts=%d", len(f.upserts), len(f.inserts))
 		}

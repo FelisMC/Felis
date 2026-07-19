@@ -441,7 +441,7 @@ export function ServerLuckPerms() {
                               </Badge>
                             ))
                           ) : (
-                            <p className="text-xs text-muted-foreground/60 italic py-1">No parent groups assigned</p>
+                            <p className="text-xs text-muted-foreground/60 italic py-1">{t("luckperms_no_parent_groups")}</p>
                           )}
                         </div>
 
@@ -550,7 +550,7 @@ export function ServerLuckPerms() {
                                             {p.world}
                                           </Badge>
                                         ) : (
-                                          <span className="text-muted-foreground italic">global</span>
+                                          <span className="text-muted-foreground italic">{t("luckperms_global")}</span>
                                         )}
                                       </td>
                                       <td className="px-4 py-2.5 text-center">
@@ -569,7 +569,7 @@ export function ServerLuckPerms() {
                                 ) : (
                                   <tr>
                                     <td colSpan={4} className="px-4 py-10 text-center text-muted-foreground/60 italic">
-                                      No explicit permission nodes assigned
+                                      {t("luckperms_no_perms")}
                                     </td>
                                   </tr>
                                 )}
@@ -681,7 +681,7 @@ export function ServerLuckPerms() {
                       type="button"
                       onClick={clearHistory}
                       className="text-muted-foreground hover:text-destructive transition-colors focus:outline-none"
-                      title="Clear history"
+                      title={t("luckperms_clear_history")}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -746,7 +746,7 @@ export function ServerLuckPerms() {
                           <details className="group/details">
                             <summary className="cursor-pointer select-none text-[10px] text-muted-foreground/70 hover:text-foreground font-mono transition-colors list-none flex items-center gap-1">
                               <span className="transition-transform group-open/details:rotate-90">▶</span>
-                              RCON Console Output
+                              {t("luckperms_rcon_output")}
                             </summary>
                             <pre className="mt-1.5 p-2 rounded bg-muted/60 border border-border/80 font-mono text-[10px] text-foreground/80 overflow-x-auto whitespace-pre-wrap break-all max-h-24">
                               {h.output}

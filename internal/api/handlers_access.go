@@ -403,6 +403,117 @@ func (a *API) handleAccessGroup(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// lpPermissionView is one parsed LuckPerms permission entry returned by the
+// luckperms read projector. World is surfaced only when the entry carries a
+// world= context (the one context the panel renders); Value comes from the
+// entry's color code (LuckPerms renders granted nodes green, negated red).
+type lpPermissionView struct {
+	Node  string `json:"node"`
+	Value bool   `json:"value"`
+	World string `json:"world,omitempty"`
+}
+
+// maxLPInfoPages bounds how many "permission info" pages the read projector
+// chases per request. LuckPerms paginates its reply, so one command shows only
+// the first page; we follow the header's page count up to this cap.
+// ponytail: 10 pages ≈ 150 entries — raise if a real user outgrows it.
+const maxLPInfoPages = 10
+
+// handleAccessLuckPermsInfo is the read projector for a player's LuckPerms
+// state: it runs "lp user <player> permission info" over the same owner-gated
+// RCON spine as every access mutation and returns a best-effort parse — parent
+// groups split out from plain permission nodes — PLUS the raw reply, like the
+// whitelist/players/banlist reads. Page 1 goes through issueAccessCommand (the
+// gate); further pages are fetched best-effort directly, so a mid-fetch failure
+// keeps what was already read instead of erroring a half-served response.
+// No audit (a read).
+func (a *API) handleAccessLuckPermsInfo(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	player := r.PathValue("player")
+	if !mcNameRe.MatchString(player) {
+		writeError(w, r, errInvalidPlayer)
+		return
+	}
+
+	out, ok := a.issueAccessCommand(w, r, name, "lp user "+player+" permission info")
+	if !ok {
+		return
+	}
+	raw := out
+	entries, pages := parseLuckPermsInfo(out)
+	for page := 2; page <= pages && page <= maxLPInfoPages; page++ {
+		more, err := a.Console.RunCommand(r.Context(), name,
+			fmt.Sprintf("lp user %s permission info %d", player, page))
+		if err != nil {
+			break // best-effort: keep the pages we have
+		}
+		raw += "\n" + more
+		e, _ := parseLuckPermsInfo(more)
+		entries = append(entries, e...)
+	}
+
+	// Split parent groups ("group.<name>", granted, no context) from plain
+	// permission nodes. A negated or world-scoped group.* entry stays in
+	// permissions — folding it into groups would lose the negation/scope.
+	groups := []string{}
+	permissions := []lpPermissionView{}
+	for _, e := range entries {
+		if g, isGroup := strings.CutPrefix(e.Node, "group."); isGroup && e.Value && e.World == "" && lpCtxRe.MatchString(g) {
+			groups = append(groups, g)
+			continue
+		}
+		permissions = append(permissions, e)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"player": player, "groups": groups, "permissions": permissions, "output": raw,
+	})
+}
+
+var (
+	// lpEntryRe matches one "permission info" entry: the "> " marker, then any
+	// legacy color codes, then the node (lpNodeRe's charset). Anchoring on the
+	// marker rather than lines follows banEntryRe's rationale: RCON concatenates
+	// multi-message replies with a server-dependent separator, so a line split is
+	// unreliable. Group 1 keeps the color codes so the entry's value survives the
+	// later color strip (§a = granted, §c = negated).
+	lpEntryRe = regexp.MustCompile(`>\s*((?:§[0-9a-fk-or])*)([A-Za-z0-9_.*-]{1,64})`)
+	// lpPageRe reads the pagination header ("page 1 of 3") AFTER color stripping.
+	lpPageRe = regexp.MustCompile(`page\s+(\d+)\s+of\s+(\d+)`)
+	// lpColorRe strips legacy §-color codes.
+	lpColorRe = regexp.MustCompile(`§[0-9a-fk-or]`)
+	// lpWorldRe reads a world= context from an entry's color-stripped tail.
+	lpWorldRe = regexp.MustCompile(`world=([A-Za-z0-9_-]{1,48})`)
+)
+
+// parseLuckPermsInfo extracts permission entries and the total page count from
+// one "lp user <player> permission info" reply. Best-effort and
+// LuckPerms-specific (INTEGRATION-ONLY against a real server) — the caller
+// always returns the raw reply alongside, so an unrecognised format loses
+// nothing. An entry's value defaults to granted when no color code precedes the
+// node (a color-stripping RCON transport); pages is 0 when no header parses.
+func parseLuckPermsInfo(out string) (entries []lpPermissionView, pages int) {
+	matches := lpEntryRe.FindAllStringSubmatchIndex(out, -1)
+	for i, m := range matches {
+		colors := out[m[2]:m[3]]
+		node := out[m[4]:m[5]]
+		// The entry's tail (up to the next marker) carries its contexts.
+		tailEnd := len(out)
+		if i+1 < len(matches) {
+			tailEnd = matches[i+1][0]
+		}
+		tail := lpColorRe.ReplaceAllString(out[m[5]:tailEnd], "")
+		e := lpPermissionView{Node: node, Value: !strings.Contains(colors, "§c")}
+		if wm := lpWorldRe.FindStringSubmatch(tail); wm != nil {
+			e.World = wm[1]
+		}
+		entries = append(entries, e)
+	}
+	if pm := lpPageRe.FindStringSubmatch(lpColorRe.ReplaceAllString(out, "")); pm != nil {
+		pages, _ = strconv.Atoi(pm[2])
+	}
+	return entries, pages
+}
+
 // parseWhitelistOutput extracts player names from vanilla's "whitelist list"
 // reply, whose format is "There are N whitelisted player(s): a, b, c" (and "There
 // are no whitelisted players" / a trailing colon for the empty case). The parse

@@ -1,11 +1,6 @@
 {
   "title": "SysAdmin",
   "subtitle": "Platform observability cockpit — a window, not a lever.",
-  "cluster_wide_fleet": "Cluster-wide fleet",
-  "open_fleet_table": "Open fleet table →",
-  "footer_pre": "Control-plane scaling, RBAC, Secrets and cluster lifecycle are ",
-  "footer_kubectl": "kubectl / CRD operations",
-  "footer_post": " and are not reachable from here. SysAdmin-Side is observability only — the four-power separation (build / runtime / operator / app) is preserved.",
   "fleet_title": "Fleet",
   "fleet_subtitle": "Every server on the platform — phase, owner, players online; start, stop and open a console inline.",
   "fleet_live": "Live",

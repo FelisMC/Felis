@@ -140,7 +140,7 @@ export function ImageAdmin() {
             <DialogHeader>
               <DialogTitle>{t("add_image_title")}</DialogTitle>
               <DialogDescription>
-                将外部 Docker 镜像引用录入白名单，供后续创建服务器使用。
+                {t("add_image_desc")}
               </DialogDescription>
             </DialogHeader>
             <form onSubmit={handleAdd} className="space-y-4">
@@ -184,7 +184,7 @@ export function ImageAdmin() {
         <CardContent className="p-0">
           {/* Filters Bar */}
           <div className="flex flex-col sm:flex-row gap-3 p-4 border-b">
-            <SearchInput value={search} onChange={setSearch} placeholder="搜索镜像名称或来源..." />
+            <SearchInput value={search} onChange={setSearch} placeholder={t("images_search_placeholder")} />
             <div className="inline-flex h-9 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground shrink-0 select-none border border-border/40">
               <button
                 type="button"
@@ -242,8 +242,8 @@ export function ImageAdmin() {
           ) : filteredImages.length === 0 ? (
             <div className="p-4 border-b-0">
               <EmptyState
-                title={search.trim() || statusFilter !== "all" ? "无匹配结果" : t("no_images_title")}
-                hint={search.trim() || statusFilter !== "all" ? "尝试更换搜索词或筛选条件" : t("no_images_hint")}
+                title={search.trim() || statusFilter !== "all" ? t("search_no_results") : t("no_images_title")}
+                hint={search.trim() || statusFilter !== "all" ? t("search_no_results_hint") : t("no_images_hint")}
               />
             </div>
           ) : (

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"strings"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/naming"
@@ -41,25 +40,6 @@ func (a *API) handleListServers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": servers})
-}
-
-// handleByHost resolves host=subdomain.{root_domain} to its server (spec §7
-// GET /servers/by-host/{host}). The host is validated against the configured
-// root domain — the only place the deployment zone enters the lookup.
-func (a *API) handleByHost(w http.ResponseWriter, r *http.Request) {
-	host := strings.ToLower(r.PathValue("host"))
-	if err := naming.ValidateHostname(host, a.RootDomain); err != nil {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_host", "invalid host: %v", err))
-		return
-	}
-	subdomain := strings.TrimSuffix(host, "."+a.RootDomain)
-
-	info, err := a.Cluster.GetBySubdomain(r.Context(), subdomain)
-	if err != nil {
-		a.writeLookupError(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, info)
 }
 
 // handleReady accepts a backend's push that a server is up (spec §7
@@ -159,8 +139,9 @@ func (a *API) handleInternalWake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Global running-server cap (spec §9.1), shared with the external wake. velocity
-	// treats 503 at_capacity as "cluster full, hold the player", distinct from the
-	// 429 cooldown's "already waking, keep waiting".
+	// treats 503 at_capacity as "cluster full, tell the player to try later" and does
+	// NOT enqueue them (nothing is coming up, so waiting would only strand them),
+	// distinct from the 429 cooldown's "already waking, keep waiting".
 	ok, err := a.withinRunningCap(r.Context(), info)
 	if err != nil {
 		writeError(w, r, err)
@@ -278,7 +259,7 @@ func (a *API) handleInternalClaim(w http.ResponseWriter, r *http.Request) {
 // the lobby GUI needs to render one server tile, composed from the lifecycle view
 // (phase/ready/players from the CRD status) and the business ownership row
 // (claimable = nobody owns it yet). It is the only internal response carrying
-// claimable, so it has its own shape — the §11 list/by-host/status views never
+// claimable, so it has its own shape — the §11 list/status views never
 // expose ownership, and folding owner data into ServerInfo would force the
 // lifecycle layer to consult Postgres.
 //

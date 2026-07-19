@@ -22,7 +22,8 @@ import java.util.UUID;
  *   <li>header {@code Authorization: Bearer <serviceToken>} (constant-time
  *       compared server-side; an empty token fails closed)</li>
  *   <li>request body {@code {"mc_uuid":"<uuid>"}}</li>
- *   <li>success: HTTP 201 with {@code {"code","expires_at"}}</li>
+ *   <li>success: HTTP 201 with {@code {"code","expires_at","panel_url"?}}
+ *       ({@code panel_url} present only when a panel hostname is configured)</li>
  *   <li>failure: the {@code {"error":{"code","message"}}} envelope</li>
  * </ul>
  *
@@ -94,7 +95,11 @@ public final class LinkClient {
                     "success body missing 'code'");
         }
         Object exp = obj.get("expires_at");
-        return new LinkCode((String) code, exp instanceof String ? (String) exp : null);
+        Object panelUrl = obj.get("panel_url");
+        return new LinkCode((String) code,
+                exp instanceof String ? (String) exp : null,
+                panelUrl instanceof String && !((String) panelUrl).isEmpty()
+                        ? (String) panelUrl : null);
     }
 
     private LinkException parseError(int status, String text) {

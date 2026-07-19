@@ -18,13 +18,18 @@ type ServerRecord struct {
 }
 
 // MyServerView is a row of GET /api/v1/me/servers: a server the caller owns,
-// may auto-start, or may claim.
+// may auto-start, or may claim. PlayersOnline/PlayersMax are NOT stored in
+// Postgres — handleMyServers joins them best-effort from the CRD status
+// (Cluster.ListServers) at read time, so a cluster hiccup renders 0/0, never
+// a 500.
 type MyServerView struct {
-	Name      string `json:"name"`
-	Subdomain string `json:"subdomain"`
-	Owned     bool   `json:"owned"`
-	Claimable bool   `json:"claimable"`
-	Phase     string `json:"phase,omitempty"`
+	Name          string `json:"name"`
+	Subdomain     string `json:"subdomain"`
+	Owned         bool   `json:"owned"`
+	Claimable     bool   `json:"claimable"`
+	Phase         string `json:"phase,omitempty"`
+	PlayersOnline int32  `json:"playersOnline"`
+	PlayersMax    int32  `json:"playersMax"`
 }
 
 // AuditEntry is one row written to audit_logs (spec §6). The actor is the Access
@@ -197,8 +202,8 @@ type Repo interface {
 	//
 	//   - code missing/expired → ErrLinkCodeInvalid (does not consume it);
 	//   - the uuid is not yet linked → create a role='user' player row with id
-	//     newUserID (NULL password_hash, username derived from the uuid so it is unique
-	//     and deterministic), write the account_links binding, consume the code, and
+	//     newUserID (username derived from the uuid so it is unique and
+	//     deterministic), write the account_links binding, consume the code, and
 	//     return newUserID;
 	//   - the uuid is already linked to a role='user' player → return THAT user
 	//     (idempotent "log in via the game"), consuming the code;
@@ -456,9 +461,9 @@ type Repo interface {
 	// Mojang-priority reclaim must never bar them. The predicate is exactly three
 	// conjuncts: the UUID is linked (account_links), that link authenticated via
 	// 'thirdparty' (auth_source), and the linked user is an admin (role='admin').
-	// It deliberately does NOT require a local password hash: an Operator who signs
-	// in through SSO (Cloudflare Access, IdP-agnostic per §14) carries role='admin'
-	// with no password_hash, and must be protected all the same — a password hash is
+	// It deliberately does NOT ask HOW the staff account signs in: an Operator may
+	// authenticate via SSO (Cloudflare Access, IdP-agnostic per §14) or any local
+	// passwordless door, and must be protected all the same — the sign-in method is
 	// orthogonal to both "is staff" and "logs in via the Login Server". An unlinked
 	// UUID, a Mojang-sourced link, or a non-admin link all yield false, so the
 	// exception never broadens to ordinary thirdparty players (Mojang priority still

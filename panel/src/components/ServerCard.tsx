@@ -65,7 +65,7 @@ export function ServerCard({ server, cfg, onChanged }: Props) {
         <div className="flex items-center gap-1.5 shrink-0 mr-1">
           <span>
             {running
-              ? `${server.players ?? 0}${server.maxPlayers ? `/${server.maxPlayers}` : ""}`
+              ? `${server.playersOnline ?? 0}${server.playersMax ? `/${server.playersMax}` : ""}`
               : "—"}
           </span>
           <Users className="h-3.5 w-3.5" />

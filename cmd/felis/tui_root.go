@@ -179,7 +179,7 @@ func newRootModel(ctx context.Context, store ownerStore, dbURL, rootDomain, admi
 		}
 	} else {
 		rm.stage = stagePreflight
-		rm.screen = newPreflightModel(dbURL, rootDomain)
+		rm.screen = newPreflightModel(dbURL, rootDomain, adminHostname)
 	}
 	return rm
 }
@@ -524,7 +524,7 @@ func (m *rootModel) applyConnectResult(msg connectResultMsg) {
 		m.result.connectConfigured = true
 		m.result.reverseProxyGuide = msg.guide
 	}
-	m.result.panelURL = panelURLFor(msg.method, msg.panelHostname, m.rootDomain)
+	m.result.panelURL = panelURLFor(msg.method, msg.panelHostname, m.rootDomain, m.adminHost)
 }
 
 func (m *rootModel) showSummary() (tea.Model, tea.Cmd) {
@@ -555,7 +555,7 @@ func (m *rootModel) showStatus() (tea.Model, tea.Cmd) {
 		method = connectCloudflare
 		accessLabel = connectMethodLabel(connectCloudflare)
 	}
-	m.result.panelURL = panelURLFor(method, m.panelHost, m.rootDomain)
+	m.result.panelURL = panelURLFor(method, m.panelHost, m.rootDomain, m.adminHost)
 	return m.adopt(&summaryModel{
 		panelURL:     m.result.panelURL,
 		accessLabel:  accessLabel,
@@ -564,9 +564,9 @@ func (m *rootModel) showStatus() (tea.Model, tea.Cmd) {
 	})
 }
 
-func panelURLFor(method connectMethod, panelHostname, rootDomain string) string {
+func panelURLFor(method connectMethod, panelHostname, rootDomain, adminHostname string) string {
 	if method != connectLocal && panelHostname != "" {
 		return "https://" + panelHostname
 	}
-	return localPanelURL(rootDomain)
+	return localPanelURL(rootDomain, adminHostname)
 }

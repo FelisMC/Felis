@@ -2,8 +2,8 @@ import { describe, it, expect } from "vitest";
 import { deriveAuth, isUnauthorized } from "./auth";
 import type { Identity } from "./types";
 
-// deriveAuth is the load-bearing auth decision: it decides who is bounced to /login,
-// who is forced through the change-password card, and — critically — who is KEPT in
+// deriveAuth is the load-bearing auth decision: it decides who is bounced to /login
+// and — critically — who is KEPT in
 // the app despite a /me failure. The one distinction that must never blur is a true
 // 401 (no session → login) versus any other failure (transient → stay functional),
 // because mistaking the latter for the former would log out a healthy Zero-Trust
@@ -14,7 +14,6 @@ const admin: Identity = {
   email: "a@b.c",
   role: "admin",
   is_admin: true,
-  must_change_password: false,
   is_owner: false,
 };
 
@@ -41,7 +40,6 @@ describe("deriveAuth", () => {
     expect(s.loading).toBe(true);
     expect(s.unauthenticated).toBe(false);
     expect(s.isAdmin).toBe(false);
-    expect(s.mustChangePassword).toBe(false);
   });
 
   it("a settled 401 with no identity is unauthenticated (→ /login)", () => {
@@ -61,21 +59,13 @@ describe("deriveAuth", () => {
     const s = deriveAuth(admin, null, false);
     expect(s.unauthenticated).toBe(false);
     expect(s.isAdmin).toBe(true);
-    expect(s.mustChangePassword).toBe(false);
   });
 
-  it("surfaces must_change_password from the identity", () => {
-    const s = deriveAuth({ ...admin, must_change_password: true }, null, false);
-    expect(s.mustChangePassword).toBe(true);
-    expect(s.unauthenticated).toBe(false);
-  });
-
-  it("fails closed on a malformed identity missing is_admin / must_change_password", () => {
+  it("fails closed on a malformed identity missing is_admin", () => {
     // Mirrors the wire-shape trap: absent fields are undefined, not thrown access.
     const partial = { user_id: "u", email: "e", role: "user" } as unknown as Identity;
     const s = deriveAuth(partial, null, false);
     expect(s.isAdmin).toBe(false);
-    expect(s.mustChangePassword).toBe(false);
     expect(s.unauthenticated).toBe(false);
   });
 });

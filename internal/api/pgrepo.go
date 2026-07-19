@@ -818,10 +818,11 @@ func (p *PGRepo) IsUsernameBlacklisted(ctx context.Context, mcUUID string) (bool
 // who authenticates through the third-party Yggdrasil — the admin-on-Yggdrasil reclaim
 // exception (spec §B3). The EXISTS joins account_links to users on exactly three
 // conjuncts: the UUID is linked, that link authenticated via 'thirdparty', and the
-// linked user is an admin. It intentionally does not test password_hash: an Operator
-// who signs in via SSO (Cloudflare Access, §14) carries role='admin' with a NULL hash
-// and must be protected just the same — the hash is orthogonal to "is staff" and "logs
-// in via the Login Server". Keyed by UUID, the only identity velocity holds.
+// linked user is an admin. It intentionally does not test HOW the account signs in:
+// an Operator may authenticate via SSO (Cloudflare Access, §14) or any local
+// passwordless door and must be protected just the same — the sign-in method is
+// orthogonal to "is staff" and "logs in via the Login Server". Keyed by UUID, the
+// only identity velocity holds.
 func (p *PGRepo) IsProtectedAdminLink(ctx context.Context, mcUUID string) (bool, error) {
 	var ok bool
 	err := p.db.QueryRowContext(ctx,
