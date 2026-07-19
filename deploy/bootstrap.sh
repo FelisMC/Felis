@@ -782,7 +782,8 @@ resolve_game_jars() {
   log "resolving the newest LOOHP/Limbo CI build"
   # Fetch first, filter second: `curl | grep | head` dies of SIGPIPE under `set -o pipefail`
   # the moment head closes the pipe early. Same shape everywhere below.
-  meta="$(curl -fsSL "${ci}/api/json")" || die "could not read the LOOHP/Limbo CI build metadata"
+  meta="$(curl -fsSL --retry 5 --retry-delay 2 "${ci}/api/json")" \
+    || die "could not read the LOOHP/Limbo CI build metadata"
   file="$(printf '%s' "$meta" | grep -o 'Limbo-[0-9A-Za-z._-]*\.jar' || true)"
   file="${file%%$'\n'*}"
   [ -n "$file" ] || die "no Limbo jar in the LOOHP/Limbo CI artifact list"
@@ -799,14 +800,19 @@ resolve_game_jars() {
   # is never coming back; Fill wants a descriptive User-Agent.
   log "resolving the newest Paper ${MC_VERSION} build"
   PAPER_JAR_URL="$(papermc_latest_jar paper "$MC_VERSION")" \
-    || die "no Paper build for Minecraft ${MC_VERSION} (the login gate speaks only that protocol)"
+    || die "could not resolve a Paper build for Minecraft ${MC_VERSION} (the login gate pins this protocol; the build likely exists — Fill upstream is down or flapping)"
   ok "Limbo ${LIMBO_VERSION} + Paper, both on Minecraft ${MC_VERSION}"
 }
 
 # papermc_latest_jar prints the download URL of the newest build of <project> <version>.
+# --retry rides out Fill's transient gateway errors (502/503/504 are in curl's retry
+# set): a single blip must not abort the whole bootstrap claiming the build is missing.
+# Plain --retry only, deliberately: --retry-connrefused needs curl 7.52+, which the yum
+# (el7) path does not have, and it would only add ECONNREFUSED to an already-covered set.
 papermc_latest_jar() {
   local project="$1" version="$2" json urls url
-  json="$(curl -fsSL -A "felis-bootstrap (+https://github.com/MliroLirrorsIngenuity/Felis)" \
+  json="$(curl -fsSL --retry 5 --retry-delay 2 \
+    -A "felis-bootstrap (+https://github.com/MliroLirrorsIngenuity/Felis)" \
     "https://fill.papermc.io/v3/projects/${project}/versions/${version}/builds/latest")" || return 1
   urls="$(printf '%s' "$json" | grep -o 'https://fill-data\.papermc\.io/[^"]*\.jar' || true)"
   url="${urls%%$'\n'*}"
