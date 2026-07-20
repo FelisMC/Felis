@@ -262,15 +262,14 @@ func renderApplyGuidance(res updater.Result, selected map[string]bool, force boo
 	// rebuilds the image and rolls the deployment from the SAME binary -- a run that looks
 	// like a successful update and leaves the version unchanged.
 	//
-	// The installer is the only thing that moves felis-api, but it is NOT an updater and
-	// must not be recommended as one without this warning. detect_node_ip re-derives
-	// FELIS_ROOT_DOMAIN on every run and defaults it to <node-ip>.nip.io -- nothing reads
-	// the domain back out of the felis.toml a previous run wrote. A bare re-run therefore
-	// rewrites root-domain/panel-hostname/admin-hostname to nip.io names while
-	// ensure_panel_tls_cert, which is write-once, keeps serving the old ones: the console
-	// stops matching its own certificate. There is no re-domain flow to recover with.
+	// The installer is the only thing that moves felis-api. It is safe to point at now
+	// that detect_node_ip reuses the installed root domain, so what is left to warn about
+	// is the channel: FELIS_VERSION_BOOTSTRAP is not persisted anywhere and defaults to
+	// release, so a bare re-run on a host tracking main quietly moves it onto releases.
+	// That is a channel change, not a broken install, which is why it is one clause and
+	// not a paragraph.
 	if offeredFelisAPI {
-		b.WriteString("\nfelis-api (panel, plugins) is the exception: setup re-images it from the felis binary\nalready on this host, so it cannot install a NEWER felis-api. Only re-running the\nbootstrap installer does that, and it is a full install run, not an update: give it the\nSAME environment as the original install, FELIS_ROOT_DOMAIN above all. It defaults to\n<node-ip>.nip.io, and a bare re-run re-domains this install while the write-once panel\ncertificate keeps the old hostnames.\n")
+		b.WriteString("\nfelis-api (panel, plugins) is the exception: setup re-images it from the felis binary\nalready on this host, so it cannot install a NEWER felis-api. Re-run the bootstrap\ninstaller for that -- it keeps this install's root domain. It does default to the\nrelease channel, so pass FELIS_VERSION_BOOTSTRAP=dev if this host tracks main.\n")
 	}
 	return b.String()
 }

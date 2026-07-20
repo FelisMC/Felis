@@ -148,13 +148,12 @@ func TestApplyGuidanceScopesTheFelisAPICaveat(t *testing.T) {
 	if !strings.Contains(api, caveat) {
 		t.Fatalf("--panel resolves to felis-api and must carry the caveat:\n%s", api)
 	}
-	// Naming the installer without naming this is worse than saying nothing: the README
-	// invocation carries no environment, detect_node_ip then defaults FELIS_ROOT_DOMAIN
-	// to <node-ip>.nip.io, and the operator re-domains a live install by following our
-	// own advice. Nothing reads the previous domain back, and the write-once panel cert
-	// keeps the old hostnames, so there is no recovery path either.
-	if !strings.Contains(api, "FELIS_ROOT_DOMAIN") {
-		t.Fatalf("pointing at the installer without the re-domain warning is a footgun:\n%s", api)
+	// Naming the installer obliges us to name what a bare re-run still changes. The domain
+	// is handled -- detect_node_ip reuses the installed one -- but the channel is not
+	// persisted at all and defaults to release, so a host tracking main gets moved onto
+	// releases by following this advice.
+	if !strings.Contains(api, "FELIS_VERSION_BOOTSTRAP=dev") {
+		t.Fatalf("pointing at the installer without the channel caveat misleads a dev host:\n%s", api)
 	}
 
 	vel := renderApplyGuidance(

@@ -432,12 +432,45 @@ detect_os() {
   log "host: ${PRETTY_NAME:-$OS_ID $OS_VERSION}  (package manager: ${PKG})"
 }
 
+# persisted_root_domain echoes the root_domain an earlier run wrote, or nothing. The
+# generated toml is the only durable record of it: nothing else on the host stores the
+# domain, and it is written on every successful install.
+persisted_root_domain() {
+  local f="${STATE_DIR}/felis.host.toml"
+  [ -r "$f" ] || return 0
+  awk -F'"' '/^[[:space:]]*root_domain[[:space:]]*=/ { print $2; exit }' "$f"
+}
+
 detect_node_ip() {
   NODE_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
   [ -n "${NODE_IP:-}" ] || NODE_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
   [ -n "${NODE_IP:-}" ] || die "could not determine this host's primary IPv4 address"
-  FELIS_ROOT_DOMAIN="${FELIS_ROOT_DOMAIN:-${NODE_IP}.nip.io}"
-  log "node IP: ${NODE_IP}   root domain: ${FELIS_ROOT_DOMAIN}"
+
+  # Precedence: an explicit FELIS_ROOT_DOMAIN, then whatever the last run persisted, then
+  # the nip.io default. The middle step is what makes a re-run idempotent. Without it this
+  # installer re-derived the domain from scratch every time and defaulted to nip.io, so
+  # re-running it on a live install -- the only way to move felis-api to a newer release,
+  # and what `felis update` points operators at -- rewrote root_domain, panel_hostname and
+  # admin_hostname to nip.io names. ensure_panel_tls_cert is write-once and kept serving a
+  # certificate for the OLD hostnames, so the console stopped matching its own cert, with
+  # no re-domain flow to recover through. Secrets never had this problem:
+  # load_or_make_secrets has always sourced secrets.env before generating anything.
+  local persisted
+  persisted="$(persisted_root_domain)"
+  if [ -n "${FELIS_ROOT_DOMAIN:-}" ] && [ -n "$persisted" ] && [ "$FELIS_ROOT_DOMAIN" != "$persisted" ]; then
+    # Deliberate re-domain. Allowed -- there is no other route to it -- but it is not a
+    # thing this script finishes: the panel certificate, the two secrets, the velocity
+    # config and the login CR all still carry the old name.
+    warn "FELIS_ROOT_DOMAIN (${FELIS_ROOT_DOMAIN}) differs from the installed ${persisted}."
+    warn "This re-domains the install. The write-once panel certificate is NOT reissued and"
+    warn "will keep the old hostnames; the proxy and login config need the same treatment."
+  fi
+  FELIS_ROOT_DOMAIN="${FELIS_ROOT_DOMAIN:-${persisted:-${NODE_IP}.nip.io}}"
+  if [ -n "$persisted" ] && [ "$FELIS_ROOT_DOMAIN" = "$persisted" ]; then
+    log "node IP: ${NODE_IP}   root domain: ${FELIS_ROOT_DOMAIN} (reusing the installed domain)"
+  else
+    log "node IP: ${NODE_IP}   root domain: ${FELIS_ROOT_DOMAIN}"
+  fi
 }
 
 pkg_install() {
