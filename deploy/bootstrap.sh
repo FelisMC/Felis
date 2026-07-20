@@ -1425,8 +1425,12 @@ restart_existing_control_plane() {
   [ "$had_api$had_operator" != "00" ] || return 0
 
   log "restarting existing control-plane deployments to pick up ${FELIS_IMAGE}"
-  [ "$had_api" = "1" ] && kube -n "$CONTROL_NS" rollout restart deployment/felis-api
-  [ "$had_operator" = "1" ] && kube -n "$CONTROL_NS" rollout restart deployment/felis-operator
+  # `if`, not `[ test ] && cmd`: as the LAST command of the function the and-list returns 1
+  # when the test is false, which becomes the function's exit status and kills the whole
+  # install under `set -Eeuo pipefail` — right after the bundle is applied and before the
+  # rollout wait. Fires on any host carrying felis-api without felis-operator.
+  if [ "$had_api" = "1" ]; then kube -n "$CONTROL_NS" rollout restart deployment/felis-api; fi
+  if [ "$had_operator" = "1" ]; then kube -n "$CONTROL_NS" rollout restart deployment/felis-operator; fi
 }
 
 # The login/lobby images use local mutable tags. Importing a replacement updates
