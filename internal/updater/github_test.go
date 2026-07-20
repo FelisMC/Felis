@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -138,5 +139,65 @@ func TestGitHubFailsClosedOnUnparseableTag(t *testing.T) {
 
 	if v, err := newTestGitHub(srv).latestStable(context.Background(), "acme/rolling"); err == nil {
 		t.Fatalf("want error on an unparseable tag, got %q", v.String())
+	}
+}
+
+// TestGitHubSendsTokenOnlyWhenSet proves the credential reaches the wire as a Bearer
+// header when present, and that an empty token sends NO Authorization header at all —
+// the public repos (k3s, cloudflared) must keep working with no credential configured.
+func TestGitHubSendsTokenOnlyWhenSet(t *testing.T) {
+	for _, tc := range []struct {
+		name, token, wantAuth string
+	}{
+		{"a token is sent as a Bearer credential", "ghp_secret", "Bearer ghp_secret"},
+		{"no token sends no Authorization header", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotAuth string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotAuth = r.Header.Get("Authorization")
+				_, _ = w.Write([]byte(`{"tag_name":"v1.2.3","prerelease":false,"draft":false}`))
+			}))
+			defer srv.Close()
+
+			g := newTestGitHub(srv)
+			g.token = tc.token
+			if _, err := g.latestStable(context.Background(), "acme/private"); err != nil {
+				t.Fatalf("latestStable: %v", err)
+			}
+			if gotAuth != tc.wantAuth {
+				t.Errorf("Authorization = %q, want %q", gotAuth, tc.wantAuth)
+			}
+		})
+	}
+}
+
+// TestGitHubNamesTheTokenOnAnUnauthenticated404 pins the diagnostic that makes a private
+// repo debuggable. GitHub hides a repo the caller cannot see behind 404 rather than 401,
+// so this status is genuinely ambiguous; the error must name BOTH causes and the env var
+// that fixes the actionable one. With a token already set that hint would be wrong, so it
+// must not appear.
+func TestGitHubNamesTheTokenOnAnUnauthenticated404(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	g := newTestGitHub(srv)
+	_, err := g.latestStable(context.Background(), "acme/private")
+	if err == nil {
+		t.Fatal("want an error on 404")
+	}
+	if !strings.Contains(err.Error(), tokenEnv) {
+		t.Errorf("unauthenticated 404 must name %s so an operator knows the fix; got: %v", tokenEnv, err)
+	}
+
+	g.token = "ghp_secret"
+	_, err = g.latestStable(context.Background(), "acme/private")
+	if err == nil {
+		t.Fatal("want an error on 404")
+	}
+	if strings.Contains(err.Error(), tokenEnv) {
+		t.Errorf("a 404 WITH a token set must not blame the missing token; got: %v", err)
 	}
 }

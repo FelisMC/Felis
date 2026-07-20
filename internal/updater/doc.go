@@ -25,9 +25,11 @@
 //     differ and the code reflects it: GitHub ENFORCES a UA (a bare request is 403'd,
 //     verified 2026-07-05) so Felis's UA is load-bearing there; PaperMC does NOT
 //     enforce (a bare request got HTTP 200 on 2026-07-04) so its UA is only etiquette.
-//     Also: felis-api's topology coord "felis/felis" is a PLACEHOLDER slug — the GitHub
-//     routing/parse logic is verified, but that one component stays dark at runtime (its
-//     Latest errors, degrading to "latest unknown") until a real repository is configured.
+//     Also: felis-api's topology coord is now the real repository slug, not a placeholder,
+//     so that component resolves at runtime like the others — but only with a credential.
+//     The repo is private, so an unauthenticated poll gets GitHub's 404-for-hidden-repo and
+//     degrades to "latest unknown"; FELIS_GITHUB_TOKEN is what lights it up. k3s and
+//     cloudflared are public and need none.
 //
 //   - ALSO BUILT + UNIT-VERIFIED: the VersionGatherer's extraction core and dispatch.
 //     Three pure extractors turn raw system text into a Version — a `--version` banner

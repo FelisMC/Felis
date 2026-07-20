@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"felis.lolicon.best/internal/updates"
@@ -37,14 +38,32 @@ const githubBaseURL = "https://api.github.com"
 type github struct {
 	baseURL   string // e.g. "https://api.github.com"
 	userAgent string // MUST be non-empty — GitHub 403s a UA-less request
-	hc        *http.Client
+	// token is an optional credential. Empty means unauthenticated, which is the right
+	// posture for the public repos Felis tracks (k3s, cloudflared) and is what the
+	// 60-req/h note above is about. It is load-bearing only for felis-api's own repo
+	// while that repo is private, where its absence does not look like an auth failure:
+	// GitHub answers 404 — not 401 or 403 — for a private repo the caller cannot see, so
+	// "no token" is indistinguishable from "no release published yet" by status alone.
+	// latestStable says both in the error rather than making an operator guess.
+	//
+	// It is read from the environment and never compiled in. A constant would be
+	// committed to the very repository it protects, ship inside every felis binary where
+	// strings(1) recovers it, reach every node the image is imported onto, and need a
+	// rebuild and a redeploy to rotate.
+	token string
+	hc    *http.Client
 }
+
+// tokenEnv names the environment variable holding the GitHub credential. deploy/bootstrap.sh
+// reads the same variable to clone a private repo, so an operator sets one value once.
+const tokenEnv = "FELIS_GITHUB_TOKEN"
 
 // newGitHub builds a source pointed at the live GitHub REST API with sane defaults.
 func newGitHub() github {
 	return github{
 		baseURL:   githubBaseURL,
 		userAgent: defaultUserAgent,
+		token:     os.Getenv(tokenEnv),
 		hc:        &http.Client{Timeout: 15 * time.Second},
 	}
 }
@@ -83,6 +102,9 @@ func (g github) latestStable(ctx context.Context, repo string) (updates.Version,
 	}
 	req.Header.Set("User-Agent", ua)
 	req.Header.Set("Accept", "application/vnd.github+json")
+	if g.token != "" {
+		req.Header.Set("Authorization", "Bearer "+g.token)
+	}
 
 	resp, err := g.hc.Do(req)
 	if err != nil {
@@ -90,6 +112,15 @@ func (g github) latestStable(ctx context.Context, repo string) (updates.Version,
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		// 404 is the ambiguous one: GitHub hides a private repo behind it rather than
+		// answering 401/403, so an unauthenticated miss and a repo with no stable release
+		// are the same status. Name both causes, and name the fix for the one an operator
+		// can act on.
+		if resp.StatusCode == http.StatusNotFound && g.token == "" {
+			return updates.Version{}, fmt.Errorf(
+				"github: %s releases/latest returned HTTP 404 — either it has no published stable release, or it is private and %s is unset",
+				repo, tokenEnv)
+		}
 		return updates.Version{}, fmt.Errorf("github: %s releases/latest returned HTTP %d", repo, resp.StatusCode)
 	}
 

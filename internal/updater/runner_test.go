@@ -141,12 +141,12 @@ func TestRunnerWithRoutingSource(t *testing.T) {
 	}))
 	defer paperSrv.Close()
 
-	// GitHub fixtures keyed by repo (felis-api's coord is a placeholder slug). The
-	// handler also mirrors GitHub's real gate: a UA-less request is refused.
+	// GitHub fixtures keyed by repo. The handler also mirrors GitHub's real gate: a
+	// UA-less request is refused.
 	ghBodies := map[string]string{
-		"/repos/felis/felis/releases/latest":           `{"tag_name":"1.5.0","prerelease":false,"draft":false}`,
-		"/repos/k3s-io/k3s/releases/latest":            k3sLatestFixture,
-		"/repos/cloudflare/cloudflared/releases/latest": cloudflaredLatestFixture,
+		"/repos/MliroLirrorsIngenuity/Felis/releases/latest": `{"tag_name":"1.5.0","prerelease":false,"draft":false}`,
+		"/repos/k3s-io/k3s/releases/latest":                  k3sLatestFixture,
+		"/repos/cloudflare/cloudflared/releases/latest":      cloudflaredLatestFixture,
 	}
 	ghSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("User-Agent") == "" {

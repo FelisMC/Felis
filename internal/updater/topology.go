@@ -47,10 +47,12 @@ type Spec struct {
 // pin — there is no policy path by which Topology can propose changing it.
 func Topology() []Spec {
 	return []Spec{
-		// Coord "felis/felis" is a placeholder for the operator's own release repo: the
-		// GitHub source now consumes it, so the routing/parse path is live, but it will
-		// not resolve against real GitHub until the operator's actual repo slug is set.
-		{Name: "felis-api", Policy: updates.PolicyScheduled, Manageable: true, Source: sourceGitHub, Coord: "felis/felis"},
+		// Felis's own release repo, and the same slug deploy/bootstrap.sh clones from
+		// (FELIS_REPO_URL). It is PRIVATE today, which is why the github source carries an
+		// optional token: unauthenticated, this coord answers 404 — the status GitHub uses
+		// to hide a repo's existence — and felis-api is the one tracked component where
+		// that happens. k3s and cloudflared are public and need no credential.
+		{Name: "felis-api", Policy: updates.PolicyScheduled, Manageable: true, Source: sourceGitHub, Coord: "MliroLirrorsIngenuity/Felis"},
 		{Name: "k3s", Policy: updates.PolicyNotify, Manageable: false, Source: sourceGitHub, Coord: "k3s-io/k3s"},
 		{Name: "cloudflared", Policy: updates.PolicyScheduled, Manageable: true, Source: sourceGitHub, Coord: "cloudflare/cloudflared"},
 		{Name: "velocity", Policy: updates.PolicyNotify, Manageable: false, Source: sourcePaperMC, Coord: "velocity"},

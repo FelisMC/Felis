@@ -11,7 +11,7 @@ import (
 // allowed to auto-apply.
 func TestTopologyEncodesPolicies(t *testing.T) {
 	want := map[string]Spec{
-		"felis-api":   {Name: "felis-api", Policy: updates.PolicyScheduled, Manageable: true, Source: sourceGitHub, Coord: "felis/felis"},
+		"felis-api":   {Name: "felis-api", Policy: updates.PolicyScheduled, Manageable: true, Source: sourceGitHub, Coord: "MliroLirrorsIngenuity/Felis"},
 		"k3s":         {Name: "k3s", Policy: updates.PolicyNotify, Manageable: false, Source: sourceGitHub, Coord: "k3s-io/k3s"},
 		"cloudflared": {Name: "cloudflared", Policy: updates.PolicyScheduled, Manageable: true, Source: sourceGitHub, Coord: "cloudflare/cloudflared"},
 		"velocity":    {Name: "velocity", Policy: updates.PolicyNotify, Manageable: false, Source: sourcePaperMC, Coord: "velocity"},
