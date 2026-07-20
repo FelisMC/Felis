@@ -128,12 +128,24 @@ func (s *PGStore) ListUnfinishedBuilds(ctx context.Context) ([]Build, error) {
 // AdmitBuiltImage upserts the whitelist row on scan-gate success. ON CONFLICT
 // re-enables and re-stamps a previously-removed or superseded ref, so a rebuild
 // of the same tag re-admits it (spec §16).
+//
+// source is the ONE column the conflict path does not overwrite unconditionally:
+// a 'recommended' row is platform curation (0018), while every other field here
+// describes the build that just succeeded and must win. Rebuilding a curated tag
+// is the expected way to patch it, and that rebuild arrives through this exact
+// path — so a blind `SET source = 'built'` would silently demote the curation on
+// the first rebuild, with nothing in the request saying so. Preserving it keeps
+// the marker a deliberate admin decision: DELETE /images is the way to clear it,
+// not a build completing. Only 'recommended' is sticky; an 'external' row still
+// becomes 'built', because a real build genuinely supersedes a hand-pushed ref.
 func (s *PGStore) AdmitBuiltImage(ctx context.Context, img Image) error {
 	const q = `INSERT INTO image_whitelist
 		(image_ref, source, build_id, added_by, enabled, added_at)
 		VALUES ($1, 'built', NULLIF($2, ''), $3, true, $4)
 		ON CONFLICT (image_ref) DO UPDATE
-		SET source = 'built', build_id = EXCLUDED.build_id, added_by = EXCLUDED.added_by,
+		SET source = CASE WHEN image_whitelist.source = 'recommended'
+			THEN 'recommended' ELSE 'built' END,
+			build_id = EXCLUDED.build_id, added_by = EXCLUDED.added_by,
 			enabled = true, added_at = EXCLUDED.added_at`
 	_, err := s.db.ExecContext(ctx, q, img.ImageRef, img.BuildID, img.AddedBy, img.AddedAt)
 	return err
@@ -163,6 +175,19 @@ func (s *PGStore) ListImages(ctx context.Context) ([]Image, error) {
 	return out, rows.Err()
 }
 
+// AddExternalImage upserts a hand-pushed ref. Unlike AdmitBuiltImage this path
+// does NOT preserve a 'recommended' source, and the asymmetry is deliberate: an
+// admin POSTing this exact ref is an explicit, named re-admission, not a build
+// completing behind their back, so demoting the curated row is the outcome they
+// asked for. It also keeps the 201 body honest — AddExternalImage returns the
+// Image it constructed (source=external) without re-reading the row, so a sticky
+// source here would report a value the database does not hold.
+//
+// Note that the demote branch is unreachable for the ONLY recommended row Felis
+// currently seeds: the caller validates with ValidateImageRef first, which refuses
+// a bare local containerd tag, and 0018's felis-lobby:demo is exactly that. The
+// branch is written for the host-qualified recommendations this list grows into,
+// not for today's single seed.
 func (s *PGStore) AddExternalImage(ctx context.Context, img Image) error {
 	const q = `INSERT INTO image_whitelist
 		(image_ref, source, added_by, enabled, added_at)

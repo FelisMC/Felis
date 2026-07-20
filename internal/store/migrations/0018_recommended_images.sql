@@ -1,0 +1,62 @@
+-- Recommended images: platform-curated entries the create-server form can offer
+-- ahead of the rest of the whitelist. image_whitelist.source is plain text, not
+-- an enum, so this needs no schema change — 'recommended' simply joins 'built'
+-- and 'external' as a third provenance (see internal/build.SourceRecommended).
+-- The marker is presentation only: admission still turns solely on enabled, so a
+-- recommended row is gated by exactly the same rule as every other row.
+--
+-- WHY THIS SEEDS ONE IMAGE AND NOT SEVERAL. The obvious version of this feature
+-- — recommend a handful of popular Minecraft images from Docker Hub — ships a
+-- trap. Velocity runs modern forwarding, which is a proxy-WIDE setting: with it
+-- on, a backend that cannot verify the signed handshake rejects every login the
+-- proxy forwards. The operator injects FELIS_FORWARDING_SECRET into every
+-- backend pod (operator.buildEnv) but cannot make an image consume it, and an
+-- image built from an operator-typed Dockerfile does not. So an arbitrary public
+-- image passes admission, builds, schedules, and reports Ready — and then is
+-- UNJOINABLE, failing at the last step with nothing in the server's status
+-- explaining why. Recommending that is worse than recommending nothing.
+--
+-- Grep for FELIS_FORWARDING_SECRET: exactly two images read it in their
+-- entrypoints, deploy/limbo and deploy/lobby, and both refuse to start without
+-- it. Those two are the entire joinable set. Of them:
+--
+--   * limbo is the login gate — a system server pinned to the reserved name
+--     "login" plus the setup-owned system-role label, and the only workload that
+--     receives FELIS_SERVICE_TOKEN. It has no world and no gameplay; it exists to
+--     hold a player at the bind screen. Recommending it as a base for a user's
+--     own server would be nonsense.
+--   * lobby is Paper plus the felis-paper /menu plugin: a real, joinable,
+--     playable server and a sound starting point for a user's own.
+--
+-- That leaves exactly one defensible recommendation. Seeding a second entry
+-- would mean padding the list with an image that cannot carry a player, so this
+-- migration ships the honest set of one. The list grows when Felis ships another
+-- forwarding-aware image, not before.
+--
+-- REF CAVEAT: felis-lobby:demo is the bootstrap default (FELIS_LOBBY_IMAGE in
+-- deploy/bootstrap.sh and deploy/demo-up.sh), built locally and imported into
+-- k3s containerd. An install that overrode that variable runs a different ref,
+-- and this row will point at an image its cluster does not have. That failure is
+-- deliberately the loud kind — the pod ImagePullBackOffs immediately and is
+-- visible in server status, rather than starting and silently refusing joins —
+-- and an admin clears it with DELETE /images?ref=felis-lobby:demo, which is
+-- unvalidated and always works. Re-adding the real ref is NOT symmetric: POST
+-- /images runs ValidateImageRef, which requires a host-qualified reference
+-- (splitRegistryHost wants a first segment carrying '.' or ':'), so it accepts
+-- registry.example:5000/lobby:v2 but REFUSES a bare local containerd tag like
+-- my-lobby:v2 — the very shape bootstrap builds. An override that lives only in
+-- the node's image store therefore has no API path back in and must be seeded the
+-- same way this row was, in SQL. That asymmetry is why this seed is SQL and not a
+-- POST. The seed cannot do better on its own: the correct value is operator
+-- configuration ([velocity] lobby_image), which is not readable from SQL.
+--
+-- added_by records provenance rather than a person: no human admitted this row,
+-- the platform did, and the audit trail should say so instead of attributing it
+-- to whoever happened to run the migration.
+--
+-- Idempotent by ON CONFLICT DO NOTHING: migrations may re-run, and an admin who
+-- deliberately disabled or re-pointed this row must not have that decision
+-- silently undone on the next apply.
+INSERT INTO image_whitelist (image_ref, source, added_by, enabled)
+VALUES ('felis-lobby:demo', 'recommended', 'felis-platform', true)
+ON CONFLICT (image_ref) DO NOTHING;

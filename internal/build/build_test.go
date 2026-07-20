@@ -529,3 +529,35 @@ func TestImageAdmitted(t *testing.T) {
 		}
 	}
 }
+
+// A 'recommended' row (0018) is curation, not capability: it must be admitted by
+// exactly the rule that governs every other source, and it must not become a way
+// to bypass the disable switch. Both halves are pinned here because the failure
+// modes are silent and opposite — make admission source-aware in one direction
+// and the curated images quietly vanish from the create-server form; in the
+// other, a disabled recommendation stays creatable after an admin pulled it.
+func TestRecommendedImageAdmittedLikeAnyOtherSource(t *testing.T) {
+	b, st, _ := newBuilder()
+	st.images["felis-lobby:demo"] = Image{
+		ImageRef: "felis-lobby:demo", Source: SourceRecommended, Enabled: true,
+	}
+	st.images["felis-lobby:pulled"] = Image{
+		ImageRef: "felis-lobby:pulled", Source: SourceRecommended, Enabled: false,
+	}
+
+	admitted, err := b.ImageAdmitted(context.Background(), "felis-lobby:demo")
+	if err != nil {
+		t.Fatalf("ImageAdmitted: %v", err)
+	}
+	if !admitted {
+		t.Error("an enabled recommended image must be admitted; curation must not cost admission")
+	}
+
+	admitted, err = b.ImageAdmitted(context.Background(), "felis-lobby:pulled")
+	if err != nil {
+		t.Fatalf("ImageAdmitted: %v", err)
+	}
+	if admitted {
+		t.Error("a disabled recommended image must not be admitted; curation is not a disable bypass")
+	}
+}

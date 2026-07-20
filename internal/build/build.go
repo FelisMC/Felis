@@ -78,10 +78,28 @@ const (
 	JobFailed
 )
 
-// image admission sources (spec §6 image_whitelist.source).
+// image admission sources (spec §6 image_whitelist.source). The column is plain
+// text, not an enum, so a curated value costs no schema change.
 const (
 	SourceBuilt    = "built"
 	SourceExternal = "external"
+	// SourceRecommended marks a platform-curated whitelist entry: an image Felis
+	// itself ships and vouches for, which the create-server form may surface ahead
+	// of the rest. It is a PRESENTATION marker only — admission still turns solely
+	// on enabled (see ImageAdmitted), so a recommended row is admitted by exactly
+	// the same rule as any other and carries no extra privilege.
+	//
+	// The bar for this marker is joinability, not popularity. Velocity runs
+	// proxy-wide modern forwarding, so a backend that cannot verify the signed
+	// handshake rejects every login the proxy sends it; only an image whose
+	// entrypoint consumes FELIS_FORWARDING_SECRET is actually reachable by a
+	// player (see operator.buildEnv, which injects it into every backend but
+	// cannot make an operator-typed Dockerfile read it). Recommending an arbitrary
+	// public Minecraft image would therefore ship a trap: it builds, schedules,
+	// and goes Ready, then refuses every join. Only the images Felis builds from
+	// deploy/ clear that bar — see 0018_recommended_images.sql for which, and why
+	// the honest set is one image rather than several.
+	SourceRecommended = "recommended"
 )
 
 // ErrNotFound is returned when a build id / image ref does not exist.
