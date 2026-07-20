@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -455,6 +456,42 @@ func TestEmailOTPStartFailedDeliveryReleasesCooldown(t *testing.T) {
 	}
 	if mailer.calls != 2 {
 		t.Errorf("mailer calls = %d, want 2 (one failed, one delivered)", mailer.calls)
+	}
+}
+
+// leakyMailer fails with the shape a real relay error carries: the SMTP account
+// and the relay's numeric refusal are both in the text.
+type leakyMailer struct{}
+
+func (leakyMailer) SendOTP(_ context.Context, _, _ string) error {
+	return errors.New("smtp: auth as ops@example.net: 535 5.7.8 bad credentials")
+}
+
+// TestEmailOTPStartRelayRefusalIsNotInternalError pins both halves of the
+// delivery-failure contract. A relay that refuses the message is not a bug in
+// Felis, so it must not answer "internal error" — that reads as a broken panel
+// and sends the operator hunting through handler code instead of their [smtp]
+// block. And the relay's own text must not ride along on the wire: it names the
+// SMTP account, while this route is reachable by any signed-in player.
+func TestEmailOTPStartRelayRefusalIsNotInternalError(t *testing.T) {
+	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
+	api := newTestAPI(newFakeRepo(), newFakeCluster())
+	api.External = staticExternal{p: user}
+	api.Mailer = leakyMailer{}
+	eh := api.ExternalHandler()
+
+	w := do(eh, "POST", "/api/v1/account/email/start", `{"email":"player@example.net"}`, nil)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("code = %d, want 502 (a relay refusal is not an internal error) (%s)", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "mail_undeliverable") {
+		t.Errorf("want a distinct machine code the panel can explain, got: %s", body)
+	}
+	for _, leak := range []string{"ops@example.net", "535", "bad credentials"} {
+		if strings.Contains(body, leak) {
+			t.Errorf("relay text %q leaked to an unprivileged caller: %s", leak, body)
+		}
 	}
 }
 

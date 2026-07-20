@@ -227,7 +227,21 @@ func (a *API) deliverOTP(ctx context.Context, email, code string) error {
 		log.Printf("email-otp: no Mailer configured; code for %s is %s (KNOWN-LIMITATION: demo has no SMTP)", email, code)
 		return nil
 	}
-	return a.Mailer.SendOTP(ctx, email, code)
+	if err := a.Mailer.SendOTP(ctx, email, code); err != nil {
+		// Mapped here rather than at each of the four call sites, so every door that
+		// mails a code answers the same way. A relay refusal is neither the caller's
+		// fault nor a bug in Felis, and a bare 500 says neither — it reads as "the
+		// panel is broken" and sends the operator hunting through handler code
+		// instead of their [smtp] block.
+		//
+		// The relay's own text stays in the log: it can name the SMTP account and the
+		// sending identity ("smtp: auth as ops@example.net: 535 …"), and these routes
+		// are reachable by any signed-in player.
+		log.Printf("api: OTP delivery failed (request_id=%s): %v", requestIDFromContext(ctx), err)
+		return newError(http.StatusBadGateway, "mail_undeliverable",
+			"the mail relay refused this message; ask the server operator to check the SMTP settings")
+	}
+	return nil
 }
 
 // setEmailRequest is the record-email body: the address to bind to the caller's

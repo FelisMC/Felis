@@ -89,7 +89,7 @@ func (m *smtpModel) build() *huh.Form {
 	return m.sized(newFelisForm(huh.NewGroup(
 		huh.NewNote().
 			Title("Email (SMTP)").
-			Description("The relay Felis mails one-time codes through — email verification, email login and operator sign-in all need it. The password goes into a Kubernetes Secret; only the other fields are written to felis.toml."),
+			Description("The relay Felis mails one-time codes through — email verification, email login and operator sign-in all need it. The password goes into a Kubernetes Secret; only the other fields are written to felis.toml. Saving sends one self-test message to the From address: nothing is written unless it is delivered."),
 		huh.NewInput().
 			Title("SMTP host").
 			Description("Your provider's relay, e.g. smtp.gmail.com or smtp.mailgun.org.").
@@ -102,7 +102,7 @@ func (m *smtpModel) build() *huh.Form {
 			Validate(validateSMTPPort),
 		huh.NewInput().
 			Title("From address").
-			Description("The sender codes are mailed as, e.g. felis@your-domain.").
+			Description("The sender codes are mailed as, e.g. felis@your-domain. It must be an address this account is allowed to send as — providers reject a From on a domain you have not verified with them, and they usually do it only after the message body, not when you connect.").
 			Value(&m.in.from).
 			Validate(validateSMTPFrom),
 		huh.NewInput().
@@ -225,11 +225,14 @@ func (m *smtpModel) normalizeInputs() {
 func (m *smtpModel) View() string {
 	switch m.step {
 	case esWorking:
-		return "  " + m.sp.View() + " " + tuiHint.Render("Verifying the relay, saving email settings and rolling the API…") + "\n"
+		return "  " + m.sp.View() + " " + tuiHint.Render("Delivering a self-test message, saving email settings and rolling the API…") + "\n"
 	case esDone:
 		var b strings.Builder
 		b.WriteString(tuiSuccessBanner("Email configured — codes are now mailed.") + "\n\n")
 		b.WriteString(tuiInfo("Relay → "+smtpDetail(m.in)) + "\n")
+		// Named because it is checkable: the operator can open that inbox and see the
+		// proof, rather than taking "configured" on faith.
+		b.WriteString(tuiHint.Render("A self-test message was delivered to "+m.in.from+".") + "\n")
 		b.WriteString("\n" + tuiAction("enter", "continue"))
 		return b.String()
 	case esError:
@@ -290,9 +293,18 @@ func currentSMTPInputs() smtpInputs {
 }
 
 // applySMTPConfig proves the relay works, then persists it and rolls felis-api:
-// Ping (connect/STARTTLS/AUTH, no mail sent) → [smtp] into both config files →
-// the felis-smtp Secret → the config Secret → rollout. A failed Ping leaves the
-// install untouched, so a typo dies at the keyboard, not at a player's OTP.
+// Ping (a full transaction — connect/STARTTLS/AUTH/MAIL FROM/RCPT/DATA, which
+// delivers one self-test message to the From address) → [smtp] into both config
+// files → the felis-smtp Secret → the config Secret → rollout. A failed Ping
+// leaves the install untouched, so a bad relay dies at the keyboard, not at a
+// player's OTP.
+//
+// Ping really sends, because a cheaper probe cannot answer the question this
+// screen exists to answer. Relays that validate sender identity — Fastmail, and
+// it is not alone — return an unconditional 250 to MAIL FROM and only refuse at
+// end-of-DATA. The earlier connect/AUTH/NOOP check therefore accepted a From on
+// a domain the account could not send as, wrote the config, and left every OTP
+// failing afterwards with this screen reporting success.
 func applySMTPConfig(ctx context.Context, in smtpInputs) error {
 	port, err := strconv.Atoi(in.port)
 	if err != nil {

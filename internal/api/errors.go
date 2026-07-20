@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 )
 
@@ -103,9 +104,18 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 // writeError renders err as the standard error envelope. Non-apiError values
 // collapse to a 500 so driver/internal details never reach the client.
+//
+// That collapse is deliberately lossy on the wire and deliberately NOT lossy in
+// the log. Everything the client is denied — the driver message, the wrapped
+// chain, the handler that produced it — is written to stderr first, keyed by the
+// same request_id the caller is shown. Without that line an operator holding a
+// "internal error" has nothing to grep for, and diagnosis degrades into guessing
+// against a live install; it cost a full debugging session to learn that once.
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	var ae *apiError
 	if !errors.As(err, &ae) {
+		log.Printf("api: %s %s: unmapped error (request_id=%s): %v",
+			r.Method, r.URL.Path, requestIDFromContext(r.Context()), err)
 		ae = newError(http.StatusInternalServerError, "internal", "internal error")
 	}
 	body := map[string]any{

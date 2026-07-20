@@ -47,39 +47,67 @@ func (s *SMTP) SendOTP(ctx context.Context, email, code string) error {
 		return err
 	}
 	defer c.Close()
-	if err := c.Mail(s.From); err != nil {
-		return fmt.Errorf("smtp: MAIL FROM %s: %w", s.From, err)
-	}
-	if err := c.Rcpt(email); err != nil {
-		return fmt.Errorf("smtp: RCPT TO: %w", err)
-	}
-	w, err := c.Data()
-	if err != nil {
-		return fmt.Errorf("smtp: DATA: %w", err)
-	}
-	if _, err := w.Write(message(s.From, email, code, time.Now())); err != nil {
-		return fmt.Errorf("smtp: write message: %w", err)
-	}
-	if err := w.Close(); err != nil {
-		return fmt.Errorf("smtp: deliver: %w", err)
+	if err := s.deliver(c, email, message(s.From, email, code, time.Now())); err != nil {
+		return err
 	}
 	return c.Quit()
 }
 
-// Ping proves the configured relay is reachable and the credentials work
-// WITHOUT sending any mail: connect, (STARTTLS,) AUTH, NOOP, QUIT. The setup
-// wizard runs it before writing anything, so a typo fails at the keyboard
-// instead of at the first code a player is waiting on.
+// Ping proves the configured relay will actually ACCEPT mail from this sender,
+// by running a complete transaction — connect, (STARTTLS,) AUTH, MAIL FROM,
+// RCPT TO, DATA — and delivering a short self-test message to From itself. The
+// setup wizard runs it before writing anything, so a bad relay fails at the
+// keyboard instead of at the first code a player is waiting on.
+//
+// It really does send that one message, and it has to: a probe that stops at
+// NOOP (or even at MAIL FROM) proves nothing about deliverability, because
+// relays which validate sender identity answer MAIL FROM with an unconditional
+// 250 and defer the verdict to end-of-DATA. Fastmail does exactly that, and a
+// NOOP-only Ping green-lit a From on a domain the account could not send as —
+// every OTP after it died at w.Close() with the wizard reporting success.
+//
+// Addressing the self-test to From cannot cause a false negative: this is an
+// authenticated submission relay, whose job is to accept RCPT for any
+// destination, so the recipient is never what a refusal is about — while the
+// sender identity, which is, still gets checked. It also puts the proof
+// somewhere the operator can go look at it.
 func (s *SMTP) Ping(ctx context.Context) error {
 	c, err := s.connect(ctx)
 	if err != nil {
 		return err
 	}
 	defer c.Close()
-	if err := c.Noop(); err != nil {
-		return fmt.Errorf("smtp: noop: %w", err)
+	if err := s.deliver(c, s.From, selfTest(s.From, time.Now())); err != nil {
+		return err
 	}
 	return c.Quit()
+}
+
+// deliver runs one MAIL FROM → RCPT TO → DATA transaction on an established
+// client. SendOTP and Ping share it so the wizard's check exercises the exact
+// path a player's code takes — a check that skips a step is a check that can
+// pass while the real send fails.
+func (s *SMTP) deliver(c *smtp.Client, to string, msg []byte) error {
+	if err := c.Mail(s.From); err != nil {
+		return fmt.Errorf("smtp: MAIL FROM %s: %w", s.From, err)
+	}
+	if err := c.Rcpt(to); err != nil {
+		return fmt.Errorf("smtp: RCPT TO: %w", err)
+	}
+	w, err := c.Data()
+	if err != nil {
+		return fmt.Errorf("smtp: DATA: %w", err)
+	}
+	if _, err := w.Write(msg); err != nil {
+		return fmt.Errorf("smtp: write message: %w", err)
+	}
+	// End-of-DATA is where a relay renders its real verdict on the sender, so
+	// this error names From: "550 …" here almost always means the account is
+	// not allowed to send as that address.
+	if err := w.Close(); err != nil {
+		return fmt.Errorf("smtp: relay refused mail from %s: %w", s.From, err)
+	}
+	return nil
 }
 
 // connect dials the relay, upgrades to TLS per the port's posture, and
@@ -130,23 +158,44 @@ func (s *SMTP) connect(ctx context.Context) (*smtp.Client, error) {
 	return c, nil
 }
 
-// message renders the one mail shape Felis sends: RFC 5322 headers (CRLF, the
-// subject Q-encoded for its non-ASCII half) over a short bilingual plain-text
-// body carrying the code. Split out from SendOTP so the shape is testable
-// without a relay.
-func message(from, to, code string, now time.Time) []byte {
+// headers renders the RFC 5322 header block every Felis message shares: CRLF
+// throughout, the subject Q-encoded because both subjects carry non-ASCII, and
+// the blank line that ends the block.
+func headers(from, to, subject string, now time.Time) string {
 	var b strings.Builder
 	b.WriteString("From: " + from + "\r\n")
 	b.WriteString("To: " + to + "\r\n")
-	b.WriteString("Subject: " + mime.QEncoding.Encode("utf-8", "Felis 验证码 · verification code") + "\r\n")
+	b.WriteString("Subject: " + mime.QEncoding.Encode("utf-8", subject) + "\r\n")
 	b.WriteString("Date: " + now.Format(time.RFC1123Z) + "\r\n")
 	b.WriteString("MIME-Version: 1.0\r\n")
 	b.WriteString("Content-Type: text/plain; charset=utf-8\r\n")
 	b.WriteString("\r\n")
+	return b.String()
+}
+
+// message renders the one mail players receive: a short bilingual plain-text
+// body carrying the code. Split out from SendOTP so the shape is testable
+// without a relay.
+func message(from, to, code string, now time.Time) []byte {
+	var b strings.Builder
+	b.WriteString(headers(from, to, "Felis 验证码 · verification code", now))
 	b.WriteString("Your Felis verification code / Felis 验证码:\r\n")
 	b.WriteString("\r\n")
 	b.WriteString("    " + code + "\r\n")
 	b.WriteString("\r\n")
 	b.WriteString("If you didn't request this, ignore this message. / 若非本人操作，请忽略此邮件。\r\n")
+	return []byte(b.String())
+}
+
+// selfTest renders the message Ping delivers to the sender itself. It carries
+// no code and says why it arrived, so an operator who finds it in the inbox
+// reads it as the wizard's proof of delivery rather than a stray OTP.
+func selfTest(from string, now time.Time) []byte {
+	var b strings.Builder
+	b.WriteString(headers(from, from, "Felis SMTP 自检 · relay self-test", now))
+	b.WriteString("Felis accepted this relay because it accepted this message.\r\n")
+	b.WriteString("Felis 已确认该邮件中继可用：本邮件即为投递证明。\r\n")
+	b.WriteString("\r\n")
+	b.WriteString("Sent by `felis setup` when the SMTP relay was configured. / 由 `felis setup` 配置 SMTP 时发出。\r\n")
 	return []byte(b.String())
 }
