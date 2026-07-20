@@ -476,3 +476,108 @@ func TestSystemServerRconPolicy(t *testing.T) {
 		t.Fatalf("lobby rcon port = %d, want 0 (operator default)", lobby.Spec.Rcon.Port)
 	}
 }
+
+// A root-domain change leaves the login gate handing every joining player a console
+// link built from the old domain — the one screen an unauthenticated player is
+// guaranteed to see. setup is the only thing that ever rewrites that env, and it is
+// create-if-absent, so before this it could not. The interesting half of the test is
+// the second one: converging config must not become a licence to clobber the operator
+// edits create-if-absent exists to protect.
+func TestEnsureSystemServersRefreshesDerivedEnv(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+
+	// The login gate as a pre-re-domain install left it, plus one env nobody but a
+	// human would have added and a memory bump off the built-in default.
+	stale := func() *v1alpha1.MinecraftServer {
+		ms, err := loginSystemServer("felis-limbo:demo", "minecraft",
+			"http://old.internal:8081", "159.223.32.51.nip.io", "console.159.223.32.51.nip.io")
+		if err != nil {
+			t.Fatalf("build stale login server: %v", err)
+		}
+		ms.Spec.Env = append(ms.Spec.Env, v1alpha1.EnvVar{Name: "OPERATOR_TUNING", Value: "keep-me"})
+		ms.Spec.JavaMemory = "768Mi"
+		return ms
+	}
+
+	run := func(cl client.Client) []systemServerOutcome {
+		return ensureSystemServers(ctx, cl, "minecraft", "felis-limbo:demo", "felis-lobby:demo",
+			"http://felis-api-internal.felis.svc.cluster.local:8081",
+			"mc.flyemoji.network", "console.mc.flyemoji.network")
+	}
+
+	envOf := func(t *testing.T, cl client.Client) map[string]string {
+		t.Helper()
+		var ms v1alpha1.MinecraftServer
+		if err := cl.Get(ctx, client.ObjectKey{Namespace: "minecraft", Name: naming.SystemLoginServer}, &ms); err != nil {
+			t.Fatalf("get login server: %v", err)
+		}
+		got := make(map[string]string, len(ms.Spec.Env))
+		for _, e := range ms.Spec.Env {
+			got[e.Name] = e.Value
+		}
+		return got
+	}
+
+	t.Run("converges the console hostnames after a re-domain", func(t *testing.T) {
+		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(stale()).Build()
+		for _, out := range run(cl) {
+			if out.err != nil {
+				t.Fatalf("%s: %v", out.name, out.err)
+			}
+			if out.name == naming.SystemLoginServer && !strings.Contains(out.skipped, "refreshed") {
+				t.Errorf("login outcome = %+v, want the refresh reported so setup's output "+
+					"does not read as if nothing happened", out)
+			}
+		}
+		env := envOf(t, cl)
+		if env[envPanelHostname] != "console.mc.flyemoji.network" {
+			t.Errorf("%s = %q — players are still being sent to the old console",
+				envPanelHostname, env[envPanelHostname])
+		}
+		if env[envRootDomain] != "mc.flyemoji.network" {
+			t.Errorf("%s = %q, want the new root domain", envRootDomain, env[envRootDomain])
+		}
+	})
+
+	t.Run("leaves operator edits alone", func(t *testing.T) {
+		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(stale()).Build()
+		run(cl)
+
+		env := envOf(t, cl)
+		if env["OPERATOR_TUNING"] != "keep-me" {
+			t.Error("an env var the operator added by hand was dropped; create-if-absent " +
+				"exists so hand edits survive a re-run, and only config-derived names are ours")
+		}
+		var ms v1alpha1.MinecraftServer
+		if err := cl.Get(ctx, client.ObjectKey{Namespace: "minecraft", Name: naming.SystemLoginServer}, &ms); err != nil {
+			t.Fatalf("get login server: %v", err)
+		}
+		if ms.Spec.JavaMemory != "768Mi" {
+			t.Errorf("javaMemory = %q, want 768Mi — only env is converged, never the "+
+				"rest of the spec", ms.Spec.JavaMemory)
+		}
+	})
+
+	t.Run("reports no refresh when config already matches", func(t *testing.T) {
+		fresh, err := loginSystemServer("felis-limbo:demo", "minecraft",
+			"http://felis-api-internal.felis.svc.cluster.local:8081",
+			"mc.flyemoji.network", "console.mc.flyemoji.network")
+		if err != nil {
+			t.Fatalf("build fresh login server: %v", err)
+		}
+		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(fresh).Build()
+		for _, out := range run(cl) {
+			if out.name == naming.SystemLoginServer && strings.Contains(out.skipped, "refreshed") {
+				t.Errorf("outcome = %+v — an unchanged install must not claim it rewrote "+
+					"anything, or every setup run looks like a re-domain", out)
+			}
+		}
+	})
+}

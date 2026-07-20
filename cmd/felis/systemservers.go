@@ -308,7 +308,16 @@ func ensureSystemServers(ctx context.Context, cl client.Client, namespace, login
 				})
 				continue
 			}
-			outcomes = append(outcomes, systemServerOutcome{name: p.name, available: true, skipped: "already exists"})
+			refreshed, err := refreshDerivedEnv(ctx, cl, &existing, ms)
+			if err != nil {
+				outcomes = append(outcomes, systemServerOutcome{name: p.name, err: err})
+				continue
+			}
+			skipped := "already exists"
+			if refreshed {
+				skipped = "already exists; refreshed the console hostnames it points players at"
+			}
+			outcomes = append(outcomes, systemServerOutcome{name: p.name, available: true, skipped: skipped})
 			continue
 		}
 		if !apierrors.IsNotFound(getErr) {
@@ -342,6 +351,55 @@ func ensureSystemServers(ctx context.Context, cl client.Client, namespace, login
 		outcomes = append(outcomes, systemServerOutcome{name: p.name, created: true, available: true})
 	}
 	return outcomes
+}
+
+// derivedSystemEnv are the system-server env vars whose values setup computes from
+// config rather than inventing. They are the exception to create-if-absent, and the
+// exception is narrow on purpose.
+//
+// Everything else on an existing system service is left alone so an operator's edits
+// survive a re-run — but these are not the operator's to own, they are a copy of
+// config that goes stale the moment config changes. That is not hypothetical: after
+// a root-domain change the login gate keeps handing every joining player a console
+// link built from the OLD domain, which is the one screen an unauthenticated player
+// is guaranteed to see. Nothing else in the install rewrites them, so a re-run of
+// setup is the only chance they get to catch up.
+var derivedSystemEnv = map[string]bool{
+	envAPIBaseURL:    true,
+	envRootDomain:    true,
+	envPanelHostname: true,
+}
+
+// refreshDerivedEnv converges the config-derived env of an existing system server
+// onto what setup just computed, and reports whether anything actually changed.
+//
+// It only ever overwrites a name that is already present with a different value, and
+// only for the names above: env the operator added by hand is untouched, and a name
+// missing from the live object is left missing rather than added back, since a
+// deliberate removal is indistinguishable from drift and re-adding it would fight the
+// operator every run.
+func refreshDerivedEnv(ctx context.Context, cl client.Client, existing, desired *v1alpha1.MinecraftServer) (bool, error) {
+	want := make(map[string]string, len(derivedSystemEnv))
+	for _, e := range desired.Spec.Env {
+		if derivedSystemEnv[e.Name] {
+			want[e.Name] = e.Value
+		}
+	}
+
+	changed := false
+	for i, e := range existing.Spec.Env {
+		if v, ok := want[e.Name]; ok && v != e.Value {
+			existing.Spec.Env[i].Value = v
+			changed = true
+		}
+	}
+	if !changed {
+		return false, nil
+	}
+	if err := cl.Update(ctx, existing); err != nil {
+		return false, fmt.Errorf("refresh %s env: %w", existing.Name, err)
+	}
+	return true, nil
 }
 
 // The login gate is a hard prerequisite of the Owner bind, so setup waits for it
