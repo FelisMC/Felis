@@ -260,10 +260,17 @@ func renderApplyGuidance(res updater.Result, selected map[string]bool, force boo
 	// on every run. But setup hands deploy/bootstrap.sh the binary it is itself running
 	// (FELIS_BOOTSTRAP_BINARY), and that arm skips the release lookup entirely, so it
 	// rebuilds the image and rolls the deployment from the SAME binary -- a run that looks
-	// like a successful update and leaves the version unchanged. Only the installer, which
-	// resolves and downloads a release, actually moves felis-api.
+	// like a successful update and leaves the version unchanged.
+	//
+	// The installer is the only thing that moves felis-api, but it is NOT an updater and
+	// must not be recommended as one without this warning. detect_node_ip re-derives
+	// FELIS_ROOT_DOMAIN on every run and defaults it to <node-ip>.nip.io -- nothing reads
+	// the domain back out of the felis.toml a previous run wrote. A bare re-run therefore
+	// rewrites root-domain/panel-hostname/admin-hostname to nip.io names while
+	// ensure_panel_tls_cert, which is write-once, keeps serving the old ones: the console
+	// stops matching its own certificate. There is no re-domain flow to recover with.
 	if offeredFelisAPI {
-		b.WriteString("\nfelis-api (panel, plugins) is the exception: setup re-images it from the felis binary\nalready on this host, so it cannot install a NEWER felis-api. To move to a newer\nrelease, re-run the bootstrap installer (see README).\n")
+		b.WriteString("\nfelis-api (panel, plugins) is the exception: setup re-images it from the felis binary\nalready on this host, so it cannot install a NEWER felis-api. Only re-running the\nbootstrap installer does that, and it is a full install run, not an update: give it the\nSAME environment as the original install, FELIS_ROOT_DOMAIN above all. It defaults to\n<node-ip>.nip.io, and a bare re-run re-domains this install while the write-once panel\ncertificate keeps the old hostnames.\n")
 	}
 	return b.String()
 }
