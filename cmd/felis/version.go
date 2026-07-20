@@ -9,13 +9,21 @@ import (
 
 // version is the build stamp injected at link time via
 //
-//	-ldflags "-X main.version=<git describe>"
+//	-ldflags "-X main.version=v1.2.3"        (release channel: the tag verbatim)
+//	-ldflags "-X main.version=v1.2.3+g1a2b3c4" (dev channel: tag + build metadata)
 //
-// deploy/bootstrap.sh computes it from the checked-out source with
-// `git describe --tags --always --dirty`: the release channel builds the newest
-// vX.Y.Z tag (a clean name like v1.0.0-earlyAccess), the dev channel builds main
-// HEAD (a tag+distance+gSHA string). It stays "dev" for an un-stamped local
+// deploy/bootstrap.sh computes it per install channel (FELIS_VERSION_BOOTSTRAP):
+// the release channel stamps the resolved tag verbatim (v1.2.3), the dev channel
+// stamps "<latest-tag>+g<short-sha>". It stays "dev" for an un-stamped local
 // `go build`, where ReadBuildInfo below still surfaces the vcs revision.
+//
+// NOT `git describe`, for two reasons that both bite. Its "<tag>-<n>-g<sha>" form
+// puts the distance in the PRERELEASE field, which sorts BELOW the bare tag, so a
+// dev build ahead of v1.2.3 would compare as older than v1.2.3 and `felis update`
+// would propose "upgrading" onto the release it already contains — hence "+", which
+// is build metadata and ignored for ordering. And bootstrap's primary clone is
+// --depth 1, which carries no tags, so describe would fall back to a bare SHA that
+// updates.Parse rejects outright.
 var version = "dev"
 
 // cmdVersion prints the build stamp. It takes no flags and never touches the

@@ -57,3 +57,32 @@ func TestHandlerServesPanelAndConfig(t *testing.T) {
 		t.Fatalf("api status = %d", w.Code)
 	}
 }
+
+// TestParseBuildVersionSplitsBothStampForms pins the two shapes a felis binary can
+// carry. The "+g<sha>" form is what deploy/bootstrap.sh's dev channel links in, and
+// it is the one that regressed: before it was parsed, a dev build fell through to the
+// default case and the badge rendered the whole stamp as the release with no commit.
+func TestParseBuildVersionSplitsBothStampForms(t *testing.T) {
+	for _, tc := range []struct {
+		raw     string
+		release string
+		commit  string
+		dev     bool
+	}{
+		{"v1.2.3+g1a2b3c4", "v1.2.3", "1a2b3c4", true},
+		{"v1.0.0-earlyAccess+g1a2b3c4", "v1.0.0-earlyAccess", "1a2b3c4", true},
+		{"v1.0.0-earlyAccess-3-g1a2b3c4", "v1.0.0-earlyAccess", "1a2b3c4", true},
+		{"v1.2.3", "v1.2.3", "", false},
+		{"v1.0.0-earlyAccess", "v1.0.0-earlyAccess", "", false},
+		{"v1.2.3+g1a2b3c4-dirty", "v1.2.3", "1a2b3c4", true},
+		{"dev", "dev", "", true},
+	} {
+		t.Run(tc.raw, func(t *testing.T) {
+			got := parseBuildVersion(tc.raw)
+			if got.Release != tc.release || got.Commit != tc.commit || got.Dev != tc.dev {
+				t.Errorf("parseBuildVersion(%q) = {Release:%q Commit:%q Dev:%v}, want {Release:%q Commit:%q Dev:%v}",
+					tc.raw, got.Release, got.Commit, got.Dev, tc.release, tc.commit, tc.dev)
+			}
+		})
+	}
+}

@@ -1,0 +1,96 @@
+# Publishes a Felis release when a vX.Y.Z tag is pushed.
+#
+# Two things depend on this job. /repos/{repo}/releases/latest must ANSWER — that endpoint is
+# what `felis update` polls (internal/updater/github.go) and what deploy/bootstrap.sh's default
+# "release" channel resolves its ref from. And the binaries below are what that channel then
+# INSTALLS: bootstrap downloads felis-linux-<arch> instead of compiling on the target host, so
+# these are the shipped artifact, not a convenience.
+#
+# The asset NAME is a contract with deploy/bootstrap.sh (download_release_binary builds
+# "felis-linux-${arch}"). It is deliberately a plain literal on both sides: a GitHub Actions
+# YAML and a go:embed'ed shell script have no honest way to share a constant, and the failure
+# mode is benign — bootstrap warns and falls back to a source build of the same tag.
+#
+# The binary is built through the repo Dockerfile rather than a plain `go build`.
+# internal/panel/static holds a tracked PLACEHOLDER index.html so the //go:embed
+# compiles in a checkout without node; a direct `go build` therefore succeeds and
+# quietly ships a release whose panel is that placeholder. The Dockerfile runs the npm
+# build first, and is the same recipe bootstrap uses, so there is one way to build felis
+# rather than two that can drift.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # gh release create/upload
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # A tag that ships red is worse than a tag that fails to ship.
+      - run: go vet ./...
+      - run: go test ./...
+
+      # Both architectures, because bootstrap's default release channel DOWNLOADS these
+      # rather than compiling on the target host — an arm64 host with no asset silently
+      # falls back to a slow source build. Neither stage is emulated: the Dockerfile pins
+      # both build stages to $BUILDPLATFORM and the Go stage cross-compiles via TARGETARCH,
+      # so the second architecture costs about a minute.
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build the stamped binaries
+        run: |
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            --build-arg FELIS_VERSION="${GITHUB_REF_NAME}" \
+            --output type=local,dest=out .
+          mv out/linux_amd64/usr/local/bin/felis ./felis-linux-amd64
+          mv out/linux_arm64/usr/local/bin/felis ./felis-linux-arm64
+          chmod +x ./felis-linux-amd64 ./felis-linux-arm64
+
+      # The stamp is the whole point and it fails silently: an unstamped binary reports
+      # "dev", which `felis update` refuses to compare, disabling update reporting for
+      # every install built from it. Assert it end to end instead of trusting the ARG
+      # reached the linker.
+      - name: Verify the version stamp
+        run: |
+          got="$(./felis-linux-amd64 version | head -1)"
+          echo "reported: ${got}"
+          [ "$got" = "felis ${GITHUB_REF_NAME}" ] \
+            || { echo "expected 'felis ${GITHUB_REF_NAME}' — the -X main.version stamp did not reach the binary"; exit 1; }
+          # The arm64 binary is checked by ELF machine type, NOT by running it. Runners have
+          # binfmt/QEMU registered, so `./felis-linux-arm64 version` would happily succeed on
+          # an amd64 binary misnamed arm64 — which is exactly the failure the Dockerfile's
+          # ${TARGETARCH:-$(go env GOARCH)} fallback produces if buildx did not take. Both
+          # binaries come out of one RUN with one -ldflags string, so the stamp is checked once.
+          file ./felis-linux-arm64
+          file ./felis-linux-arm64 | grep -q 'ARM aarch64' \
+            || { echo "felis-linux-arm64 is not an arm64 ELF — TARGETARCH did not reach the go build"; exit 1; }
+
+      # --verify-tag refuses to invent a release for a tag that is not pushed. The upload
+      # fallback makes a re-run converge rather than failing on an existing release.
+      #
+      # The prerelease flag has to be passed explicitly: the trigger glob is v*, so v1.2.3-rc1
+      # lands here too, and gh does not read semver out of the tag name. Published as a full
+      # release an RC becomes /releases/latest — the single endpoint bootstrap's default
+      # channel installs from and `felis update` polls — so every fresh install would get the
+      # RC binary and every deployed felis-api would error on the felis component until a
+      # stable tag was cut. Flagged, GitHub keeps latest pointing at the last stable release.
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=""
+          case "$GITHUB_REF_NAME" in *-*) flags="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes $flags \
+              ./felis-linux-amd64 ./felis-linux-arm64 \
+            || gh release upload "$GITHUB_REF_NAME" \
+                 ./felis-linux-amd64 ./felis-linux-arm64 --clobber

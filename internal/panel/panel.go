@@ -26,13 +26,13 @@ type runtimeConfig struct {
 }
 
 // buildInfo is the resolved build stamp the panel renders in its version badge.
-// It is derived once, server-side, from the binary's `main.version` (a
-// `git describe --tags --always --dirty` string) so the panel needs no brittle
+// It is derived once, server-side, from the binary's `main.version` — the stamp
+// deploy/bootstrap.sh links in per install channel — so the panel needs no brittle
 // string parsing — it just renders `Release`, appending `+Commit` when `Dev`.
 type buildInfo struct {
-	// Version is the raw resolved stamp (e.g. "v1.0.0-earlyAccess-3-g1a2b3c4").
+	// Version is the raw resolved stamp (e.g. "v1.0.0-earlyAccess+g1a2b3c4").
 	Version string `json:"version"`
-	// Release is the "big version" — the newest tag with any git-describe suffix
+	// Release is the "big version" — the newest tag with any commit suffix
 	// stripped (e.g. "v1.0.0-earlyAccess"). It is what the release channel shows.
 	Release string `json:"release"`
 	// Commit is the short commit the dev channel was built from (e.g. "1a2b3c4"),
@@ -43,11 +43,20 @@ type buildInfo struct {
 	Dev bool `json:"dev"`
 }
 
+// devSuffix matches the trailing "+g<sha>" that deploy/bootstrap.sh's dev channel
+// appends to the newest tag — the shape a dev build actually carries. The "+" is
+// deliberate and load-bearing: it is semver BUILD METADATA, ignored for ordering,
+// so a dev build ahead of v1.2.3 still compares as newer than v1.2.3. The
+// git-describe form below puts that distance in the PRERELEASE field instead,
+// which sorts BELOW the bare tag.
+var devSuffix = regexp.MustCompile(`\+g([0-9a-f]+)$`)
+
 // describeSuffix matches the trailing "-<commits>-g<sha>" that `git describe`
-// appends to the newest tag once HEAD is past it — the shape the dev channel
-// (main HEAD) produces. The release channel builds the exact tag, so its stamp
-// carries no such suffix. Match is anchored at end so a tag whose prerelease part
-// itself contains hyphens (v1.0.0-earlyAccess) keeps that part in Release.
+// appends to the newest tag once HEAD is past it. bootstrap.sh no longer produces
+// this form, but a hand-rolled `go build -ldflags "-X main.version=$(git describe)"`
+// still does, and parsing it costs one case. Match is anchored at end so a tag whose
+// prerelease part itself contains hyphens (v1.0.0-earlyAccess) keeps that part in
+// Release.
 var describeSuffix = regexp.MustCompile(`-([0-9]+)-g([0-9a-f]+)$`)
 
 // releaseTag matches a clean released semantic-version tag (vMAJOR.MINOR.PATCH
@@ -55,11 +64,11 @@ var describeSuffix = regexp.MustCompile(`-([0-9]+)-g([0-9a-f]+)$`)
 // permissive on the prerelease so tags like v1.0.0-earlyAccess qualify.
 var releaseTag = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$`)
 
-// parseBuildVersion splits a `git describe` build stamp into the fields the panel
-// version badge renders. Cases: a dev stamp "<tag>-N-gSHA" → Release=<tag>,
-// Commit=SHA, Dev=true; a clean release tag "vX.Y.Z[-pre]" → Release=tag, Dev=false;
-// anything else ("dev", "unknown", a bare short SHA, a dirty tree) → best-effort
-// Release with Dev=true.
+// parseBuildVersion splits a build stamp into the fields the panel version badge
+// renders. Cases: a dev stamp "<tag>+gSHA" (or the git-describe "<tag>-N-gSHA") →
+// Release=<tag>, Commit=SHA, Dev=true; a clean release tag "vX.Y.Z[-pre]" →
+// Release=tag, Dev=false; anything else ("dev", "unknown", a bare short SHA, a
+// dirty tree) → best-effort Release with Dev=true.
 func parseBuildVersion(raw string) buildInfo {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -70,6 +79,11 @@ func parseBuildVersion(raw string) buildInfo {
 	dirty := core != raw
 
 	switch {
+	case devSuffix.MatchString(core):
+		m := devSuffix.FindStringSubmatch(core)
+		bi.Release = core[:len(core)-len(m[0])]
+		bi.Commit = m[1]
+		bi.Dev = true
 	case describeSuffix.MatchString(core):
 		m := describeSuffix.FindStringSubmatch(core)
 		bi.Release = core[:len(core)-len(m[0])]

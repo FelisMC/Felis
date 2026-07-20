@@ -15,14 +15,20 @@
 # deploy/bootstrap.sh also extracts this same binary onto the host (docker cp)
 # so `felis migrate up` and the `felis setup` TUI run with the identical build.
 
-FROM node:22-bookworm AS panel
+# Both BUILD stages are pinned to the BUILDPLATFORM so a multi-platform buildx run never
+# emulates them: the panel's output is plain JS and identical on every architecture, and the
+# Go stage cross-compiles natively via TARGETARCH below. Under QEMU an `npm ci` alone costs
+# minutes. The FINAL stage is deliberately NOT pinned — it must stay on the target platform
+# or the published arm64 image would carry amd64 layers. It contains only COPY, which
+# BuildKit performs itself, so it needs no QEMU either; adding a RUN there would.
+FROM --platform=$BUILDPLATFORM node:22-bookworm AS panel
 WORKDIR /panel
 COPY panel/package*.json ./
 RUN npm ci
 COPY panel/ ./
 RUN npm run build
 
-FROM golang:1.26 AS build
+FROM --platform=$BUILDPLATFORM golang:1.26 AS build
 WORKDIR /src
 ARG TARGETOS=linux
 ARG TARGETARCH
@@ -31,8 +37,23 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 COPY --from=panel /panel/dist ./internal/panel/static
+# Declared HERE, not beside TARGETOS above: changing it invalidates every layer that
+# follows, and the go mod download layer must survive a version bump.
+#
+# The stamp is what makes `felis version` and `felis update` mean anything — unstamped,
+# main.version stays "dev" and the updater refuses to compare rather than treating it as
+# 0.0.0. deploy/bootstrap.sh computes the value per channel; see the FELIS_VERSION_BOOTSTRAP
+# block there for why the dev channel uses "+" build metadata and not `git describe`.
+#
+# The ${TARGETARCH:-...} fallback is a trap now that this stage is pinned to BUILDPLATFORM:
+# `go env GOARCH` reports the BUILDER's architecture, so an empty TARGETARCH (a legacy
+# `docker build`, or a setup-buildx step that quietly did not take) produces a working amd64
+# binary that gets published under the arm64 name. .github/workflows/release.yml asserts the
+# ELF machine type with file(1) for exactly this reason — an exec-based check cannot catch it,
+# because CI runners have binfmt/QEMU registered and will happily run the wrong one.
+ARG FELIS_VERSION=dev
 RUN CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="${TARGETARCH:-$(go env GOARCH)}" \
-    go build -trimpath -ldflags="-s -w" -o /out/felis ./cmd/felis
+    go build -trimpath -ldflags="-s -w -X main.version=${FELIS_VERSION}" -o /out/felis ./cmd/felis
 
 FROM gcr.io/distroless/static-debian12:nonroot
 ENV PATH=/usr/local/bin:/usr/bin:/bin

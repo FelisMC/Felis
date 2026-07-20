@@ -32,7 +32,15 @@
 #                     only; set a private-network IP to serve an off-host proxy)
 #   FELIS_GO_VERSION  Go toolchain used to build the nano binary (default: 1.26.4)
 #   FELIS_REPO_URL    git URL to build from   (raw script mode only)
-#   FELIS_REF         branch/tag/sha          (raw script mode only)
+#   FELIS_VERSION_BOOTSTRAP release|dev — which version to install (default: release).
+#                     release DOWNLOADS the prebuilt felis binary published for the newest
+#                     tag (panel included — it is go:embed'ed into that same binary) and
+#                     builds only a thin image around it; dev clones and compiles. If the
+#                     asset is missing or this architecture has none, release warns and falls
+#                     back to compiling the SAME tag. The game stack is always built here.
+#   FELIS_GITHUB_TOKEN GitHub token; REQUIRED while the repo is private
+#   FELIS_REF         branch/tag/sha — pins the build, overrides the channel, and forces a
+#                     source build (naming a ref asks for that tree, not a published asset)
 #   FELIS_IMAGE       local image tag         (default: felis:demo  — never :latest)
 #   FELIS_ROOT_DOMAIN deployment root domain  (default: <node-ip>.nip.io)
 #   FELIS_PANEL_NODEPORT local HTTPS panel/API NodePort (default: 30443)
@@ -45,7 +53,38 @@ set -Eeuo pipefail
 # Configuration & constants
 # ---------------------------------------------------------------------------
 FELIS_REPO_URL="${FELIS_REPO_URL:-https://github.com/MliroLirrorsIngenuity/Felis.git}"
-FELIS_REF="${FELIS_REF:-main}"
+# Which version to install. "release" builds the newest published GitHub release;
+# "dev" builds the tip of main. Release is the default because an installer that
+# tracks a moving branch by default hands every new host a different, untested
+# commit — the version an operator reports in a bug is then meaningless.
+FELIS_VERSION_BOOTSTRAP="${FELIS_VERSION_BOOTSTRAP:-release}"
+# Empty by default and resolved from the channel below. Setting it explicitly pins the
+# build to that ref and skips resolution entirely: naming a ref IS asking for a
+# development build, so it takes the dev-FORM stamp regardless of the channel. Skipping
+# resolution also skips the tag lookup, so the base stays v0.0.0 and the stamp is
+# v0.0.0+g<sha> rather than <latest-tag>+g<sha> — deliberate, so pinning a ref costs no
+# network call the operator did not ask for.
+FELIS_REF="${FELIS_REF:-}"
+# Recorded HERE because resolve_install_ref overwrites FELIS_REF on both channels — after it
+# runs, "did the operator pin a ref?" is unanswerable. Naming a ref asks for THAT tree to be
+# built, so it takes the source path even on the release channel.
+FELIS_REF_PINNED=""
+if [ -n "$FELIS_REF" ]; then FELIS_REF_PINNED=1; fi
+# Set once a prebuilt felis binary is installed at HOST_BIN, by either the TUI hand-off or a
+# release download. It is what the image build, the CRD apply and the game stack key off:
+# all three only need "is there a binary and no checkout", never "which route got us here".
+HAVE_PREBUILT_BINARY=""
+# Optional GitHub credential, needed while this repository is private: GitHub answers
+# 404 (not 403) for a repo the caller cannot see, so without it both the release lookup
+# and the clone fail as "not found". Exported because git's credential helper below runs
+# as a child process and reads it from the environment — which is also why it is never
+# interpolated into the clone URL. A token in the URL is written verbatim into
+# .git/config and survives the install; an environment variable does not.
+FELIS_GITHUB_TOKEN="${FELIS_GITHUB_TOKEN:-}"
+export FELIS_GITHUB_TOKEN
+# Set by resolve_install_ref/stamp_version and linked into the binary as main.version.
+FELIS_VERSION=""
+FELIS_VERSION_BASE=""
 FELIS_IMAGE="${FELIS_IMAGE:-felis:demo}"
 FELIS_EGRESS_MODE="${FELIS_EGRESS_MODE:-nodeport}"
 FELIS_PANEL_NODEPORT="${FELIS_PANEL_NODEPORT:-30443}"
@@ -640,22 +679,308 @@ install_k3s() {
 # ---------------------------------------------------------------------------
 # 5. Source/binary + image build + containerd import
 # ---------------------------------------------------------------------------
+# repo_slug prints the "owner/name" of FELIS_REPO_URL, for the REST API.
+repo_slug() {
+  printf '%s\n' "$FELIS_REPO_URL" | sed -e 's#^.*github\.com[:/]##' -e 's#\.git$##'
+}
+
+# github_api GETs a REST path and prints the body.
+#
+# The token goes in through `curl --config -` rather than `-H "Authorization: ..."`
+# because argv is world-readable via /proc while this runs. Same reason git_auth uses a
+# credential helper instead of a URL: a bootstrap that leaks its own credential to any
+# local user has not really installed anything privately.
+github_api() {
+  local url="https://api.github.com/$1"
+  local ua="felis-bootstrap (+${FELIS_REPO_URL})"
+  if [ -n "$FELIS_GITHUB_TOKEN" ]; then
+    printf 'header = "Authorization: Bearer %s"\n' "$FELIS_GITHUB_TOKEN" \
+      | curl -fsSL --retry 5 --retry-delay 2 --config - \
+          -A "$ua" -H "Accept: application/vnd.github+json" "$url"
+  else
+    curl -fsSL --retry 5 --retry-delay 2 \
+      -A "$ua" -H "Accept: application/vnd.github+json" "$url"
+  fi
+}
+
+# github_latest_tag prints the tag of the newest published stable release, or fails.
+# Same endpoint internal/updater/github.go polls, so `felis update` and the installer
+# can never disagree about what "latest" means.
+github_latest_tag() {
+  local json tag
+  # Fetch first, filter second — the SIGPIPE reason documented on resolve_game_jars.
+  json="$(github_api "repos/$(repo_slug)/releases/latest")" || return 1
+  tag="$(printf '%s' "$json" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' || true)"
+  tag="${tag%%$'\n'*}"
+  tag="${tag#*:}"        #  "v1.2.3"
+  tag="${tag#*\"}"       # v1.2.3"
+  tag="${tag%\"}"        # v1.2.3
+  [ -n "$tag" ] || return 1
+  printf '%s\n' "$tag"
+}
+
+# felis_asset_arch prints the release-asset suffix for this host, or fails. Unlike the
+# cloudflared/JRE/Go mappers just below, this one does NOT die on an unmapped architecture:
+# those have no local alternative, whereas a missing prebuilt binary only means we compile
+# the same tag on this host — slower, byte-for-byte the same result.
+felis_asset_arch() {
+  case "$(uname -m)" in
+    x86_64|amd64) printf 'amd64\n' ;;
+    aarch64|arm64) printf 'arm64\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+# github_asset_id prints the numeric id of the asset named $2 on release tag $1.
+#
+# Two details here are load-bearing and both are wrong in the obvious version. The newline
+# flatten comes FIRST: api.github.com pretty-prints, so "name" and "url" land on different
+# lines and splitting on "{" alone matches nothing at all. And the id is read out of the
+# asset's own url, never from a bare "id" key — the payload carries a release id, an author
+# id, one id per asset AND one per nested uploader, so matching "id" silently resolves the
+# wrong file. Anchoring on the CLOSING quote keeps felis-linux-amd64 from also matching a
+# sibling like felis-linux-amd64.sha256.
+#
+# The segment this greps ends at the nested "uploader" object, which is fine because "url"
+# precedes it. Anything published after uploader (size, digest, browser_download_url) is NOT
+# reachable this way — fetch releases/assets/<id> with the JSON Accept if that is ever needed.
+github_asset_id() {
+  local tag="$1" name="$2" json id
+  # Fetch first, filter second — the SIGPIPE reason documented on resolve_game_jars.
+  json="$(github_api "repos/$(repo_slug)/releases/tags/${tag}")" || return 1
+  id="$(printf '%s' "$json" | tr -d '\n' | tr '{' '\n' \
+    | grep "\"name\":[[:space:]]*\"${name}\"" \
+    | grep -o 'releases/assets/[0-9]\{1,\}' | head -1)" || true
+  id="${id##*/}"
+  [ -n "$id" ] || return 1
+  printf '%s\n' "$id"
+}
+
+# download_release_asset fetches ONE asset of a published release into $3.
+#
+# It RETURNS non-zero rather than dying: every caller falls back to building the same tag
+# from source, so a tag whose release workflow has not finished uploading yet — a real window,
+# since that job runs vet, tests and a full image build first — still installs.
+#
+# This cannot ride the github_api helper above. That helper sends
+# Accept: application/vnd.github+json, and with it this endpoint returns the asset's METADATA
+# as JSON under HTTP 200: a "successful" download of a text blob that passes every check and
+# only surfaces much later, inside docker build, as an exec format error.
+#
+# Plain -L, never --location-trusted. GitHub 302s to a DIFFERENT host whose signed URL carries
+# its own credentials in the query string; curl drops Authorization across that hop, and the
+# drop is REQUIRED — forwarding the token makes the storage backend reject the request with
+# 400 while leaking the credential to a third host for nothing.
+#
+# -f is not cosmetic: without it curl writes GitHub's error JSON into the output file and
+# still exits 0.
+download_release_asset() {
+  local tag="$1" name="$2" dest="$3" id ua url rc=0
+  ua="felis-bootstrap (+${FELIS_REPO_URL})"
+  id="$(github_asset_id "$tag" "$name")" || return 1
+  url="https://api.github.com/repos/$(repo_slug)/releases/assets/${id}"
+  log "downloading ${name} from release ${tag}"
+  if [ -n "$FELIS_GITHUB_TOKEN" ]; then
+    printf 'header = "Authorization: Bearer %s"\n' "$FELIS_GITHUB_TOKEN" \
+      | curl -fsSL --retry 5 --retry-delay 2 --config - \
+          -A "$ua" -H "Accept: application/octet-stream" -o "$dest" "$url" || rc=$?
+  else
+    curl -fsSL --retry 5 --retry-delay 2 \
+      -A "$ua" -H "Accept: application/octet-stream" -o "$dest" "$url" || rc=$?
+  fi
+  # curl -f leaves a PARTIAL file behind when a transfer dies mid-stream, so a failed
+  # download must not hand the caller something it could mistake for a complete one.
+  if [ "$rc" -ne 0 ] || [ ! -s "$dest" ]; then
+    rm -f "$dest"
+    return 1
+  fi
+}
+
+# use_release_binary reports whether this run should install a prebuilt binary instead of
+# compiling one. Only the plain release channel qualifies: FELIS_SKIP_FETCH means "build
+# exactly what I staged" and a pinned FELIS_REF means "build that tree", both of which are
+# explicit requests for a source build, and the dev channel has no release to download.
+use_release_binary() {
+  [ -z "${FELIS_SKIP_FETCH:-}" ] || return 1
+  [ -z "$FELIS_REF_PINNED" ] || return 1
+  [ "$FELIS_VERSION_BOOTSTRAP" = "release" ]
+}
+
+# download_release_binary installs the prebuilt felis binary for $FELIS_REF onto the host.
+# It returns non-zero to ask the caller to build that same tag from source instead; it never
+# dies, because no reachable failure here is worth aborting an install over.
+#
+# One asset covers the panel too: internal/panel/panel.go go:embeds internal/panel/static, and
+# release.yml builds through the repo Dockerfile so that tree holds the real npm output rather
+# than the tracked placeholder. There is nothing else to fetch.
+download_release_binary() {
+  local arch asset tmp got
+  if ! arch="$(felis_asset_arch)"; then
+    warn "no prebuilt felis binary for architecture $(uname -m); building ${FELIS_REF} from source on this host instead"
+    return 1
+  fi
+  asset="felis-linux-${arch}"
+
+  # Convergence check, and the cheapest one available: no API call, no download, and it asks
+  # the exact question that matters. Reruns are the common case for this installer.
+  if [ -x "$HOST_BIN" ] && [ "$("$HOST_BIN" version 2>/dev/null | head -n 1)" = "felis ${FELIS_REF}" ]; then
+    HAVE_PREBUILT_BINARY=1
+    ok "host binary is already ${FELIS_REF}; skipping the download"
+    return 0
+  fi
+
+  # Staged next to HOST_BIN rather than in TMPDIR, because the validation below EXECUTES it
+  # and /tmp is mounted noexec on CIS-hardened images. There the exec dies 126, the check
+  # reads it as a bad asset, and every such host silently falls back to the full on-host
+  # compile this path exists to avoid. /usr/local/bin has to be exec for felis to run at
+  # all, so validating there tests the binary instead of the mount — and it keeps the
+  # private-repo artifact out of a world-readable 1777 directory on the way in.
+  mkdir -p "$(dirname "$HOST_BIN")"
+  tmp="$(mktemp "$(dirname "$HOST_BIN")/.felis-download.XXXXXX")"
+  remember_temp "$tmp"
+  if ! download_release_asset "$FELIS_REF" "$asset" "$tmp"; then
+    rm -f "$tmp"
+    # Deliberately NOT "set FELIS_VERSION_BOOTSTRAP=dev": that channel builds main, a
+    # different commit than the tag the operator asked for. Falling back keeps the tag and
+    # changes only how it is obtained, so no operator action is needed at all.
+    warn "release ${FELIS_REF} publishes no usable ${asset}; building ${FELIS_REF} from source on this host instead"
+    return 1
+  fi
+  chmod 0755 "$tmp"
+
+  # Run it once. This single exec subsumes three checks that would otherwise each need their
+  # own code: a truncated download segfaults (curl reports success for an EOF-delimited body,
+  # so nothing earlier catches it), a wrong-architecture asset fails to exec, and an unstamped
+  # or mis-stamped build reports the wrong string here — rather than silently disabling
+  # `felis update` for the entire life of the install.
+  got="$("$tmp" version 2>/dev/null | head -n 1 || true)"
+  if [ "$got" != "felis ${FELIS_REF}" ]; then
+    rm -f "$tmp"
+    warn "downloaded ${asset} reports '${got:-nothing}' rather than 'felis ${FELIS_REF}'; building ${FELIS_REF} from source on this host instead"
+    return 1
+  fi
+
+  # install(1) onto a freshly created destination, matching install_embedded_binary. A rename
+  # would carry the source SELinux label instead of type-transitioning to bin_t — see
+  # build_nano_binary for the 203/EXEC this shape avoids. Same-directory staging does not
+  # change that: install(1) still creates the destination and copies.
+  rm -f "$HOST_BIN"
+  install -m 0755 "$tmp" "$HOST_BIN"
+  rm -f "$tmp"
+  command -v restorecon >/dev/null 2>&1 && restorecon "$HOST_BIN" >/dev/null 2>&1 || true
+
+  HAVE_PREBUILT_BINARY=1
+  ok "installed ${asset} ${FELIS_REF} at ${HOST_BIN}"
+}
+
+# git_auth runs git with the token supplied by an inline credential helper. The helper
+# is a shell snippet that READS the exported variable when git asks; the token is never
+# in argv and never reaches .git/config, so it does not outlive the process.
+#
+# The EMPTY credential.helper in front is load-bearing, not a typo. credential.helper is a
+# MULTI-valued config: a bare `-c credential.helper=...` APPENDS to whatever the host has
+# configured, it does not replace it. On a host with `credential.helper=store` git then runs
+# both — ours answers the prompt, and store writes the token to ~/.git-credentials on the
+# approve that follows a successful auth, so it outlives the install after all. An empty
+# value is git's documented list reset. Verified on Fedora: with store configured the single
+# -c form persists the token to disk, the reset form writes nothing.
+git_auth() {
+  if [ -n "$FELIS_GITHUB_TOKEN" ]; then
+    git -c 'credential.helper=' \
+        -c 'credential.helper=!f() { printf "username=x-access-token\npassword=%s\n" "$FELIS_GITHUB_TOKEN"; }; f' "$@"
+  else
+    git "$@"
+  fi
+}
+
+# resolve_install_ref decides WHICH commit to build and, on the release channel, what to
+# stamp it as. Runs before fetch_source because it chooses that fetch's ref.
+resolve_install_ref() {
+  # Idempotent: main calls it early to fail fast on a missing token, and fetch_source
+  # calls it again because the nano path reaches fetch_source by its own route.
+  [ -n "${REF_RESOLVED:-}" ] && return 0
+  REF_RESOLVED=1
+  if [ -n "$FELIS_REF" ]; then
+    ok "building the pinned ref ${FELIS_REF}"
+    return 0
+  fi
+  case "$FELIS_VERSION_BOOTSTRAP" in
+    release)
+      log "resolving the newest published Felis release"
+      FELIS_REF="$(github_latest_tag)" || die "could not resolve the newest Felis release.
+  If the repository is private, set FELIS_GITHUB_TOKEN to a token with read access to it.
+  If no release has been published yet, set FELIS_VERSION_BOOTSTRAP=dev to build main instead."
+      # A release IS its tag, so the stamp is final here and stamp_version leaves it be.
+      FELIS_VERSION="$FELIS_REF"
+      ok "release channel: ${FELIS_REF}"
+      ;;
+    dev)
+      FELIS_REF="main"
+      # Best effort: the tag only names what this build is AHEAD of, and a repo with no
+      # release yet is exactly when someone reaches for the dev channel. v0.0.0 keeps the
+      # stamp parseable so `felis update` still compares rather than refusing.
+      FELIS_VERSION_BASE="$(github_latest_tag 2>/dev/null || true)"
+      [ -n "$FELIS_VERSION_BASE" ] || FELIS_VERSION_BASE="v0.0.0"
+      ok "dev channel: main (ahead of ${FELIS_VERSION_BASE})"
+      ;;
+    *)
+      die "FELIS_VERSION_BOOTSTRAP must be 'release' or 'dev', got '${FELIS_VERSION_BOOTSTRAP}'"
+      ;;
+  esac
+}
+
+# stamp_version finalises the dev/pinned stamp once a checkout exists to read the SHA
+# from. Release builds are already stamped and return untouched.
+#
+# The form is "<tag>+g<sha>", NOT `git describe`'s "<tag>-<n>-g<sha>", and the difference
+# is load-bearing. updates.Parse reads a "-" tail as a PRERELEASE, which sorts BELOW the
+# plain tag: a dev build 14 commits past v1.2.3 would compare as older than v1.2.3, and
+# `felis update` would propose "upgrading" onto the release it already contains. After
+# "+" the tail is build metadata, ignored for ordering, so the build reads as current
+# against v1.2.3 and as behind against v1.3.0 — both correct.
+#
+# `git describe` is also unreliable here: the primary clone is --depth 1 and carries no
+# tags, so describe falls back to a bare SHA, which updates.Parse rejects outright (it
+# fails closed on a non-numeric core). fetch_source does retry with a full clone when the
+# shallow one fails, which WOULD carry tags — that is exactly the point: the stamp must not
+# depend on which arm happened to win. rev-parse needs no history at all.
+stamp_version() {
+  local sha
+  [ -n "$FELIS_VERSION" ] && return 0
+  sha="$(git -C "$SRC_DIR" rev-parse --short HEAD 2>/dev/null || true)"
+  [ -n "$sha" ] || sha="unknown"
+  [ -n "$FELIS_VERSION_BASE" ] || FELIS_VERSION_BASE="v0.0.0"
+  FELIS_VERSION="${FELIS_VERSION_BASE}+g${sha}"
+  ok "build stamp: ${FELIS_VERSION}"
+}
+
 fetch_source() {
   if [ -n "${FELIS_SKIP_FETCH:-}" ]; then
     [ -d "$SRC_DIR" ] || die "FELIS_SKIP_FETCH set but ${SRC_DIR} does not exist"
     ok "skipping fetch; using pre-staged source at ${SRC_DIR}"
+    # Whatever is staged is what gets built, so the channel has no say here and no
+    # release lookup is made. stamp_version reads the staged checkout's own SHA.
+    stamp_version
     return 0
   fi
+  resolve_install_ref
   if [ -d "${SRC_DIR}/.git" ]; then
     log "updating source in ${SRC_DIR}"
-    git -C "$SRC_DIR" fetch --depth 1 origin "$FELIS_REF"
+    git_auth -C "$SRC_DIR" fetch --depth 1 origin "$FELIS_REF"
     git -C "$SRC_DIR" checkout -f FETCH_HEAD
   else
     log "cloning ${FELIS_REPO_URL} (${FELIS_REF})"
     mkdir -p "$(dirname "$SRC_DIR")"
-    git clone --depth 1 --branch "$FELIS_REF" "$FELIS_REPO_URL" "$SRC_DIR" 2>/dev/null \
-      || git clone "$FELIS_REPO_URL" "$SRC_DIR"
+    # The fallback checks the ref out explicitly. It used to be a bare full clone, which
+    # silently landed on the default branch: harmless when FELIS_REF was always "main",
+    # but the release channel now asks for a tag, and a build stamped v1.2.3 that
+    # actually contains main is worse than a failed install.
+    git_auth clone --depth 1 --branch "$FELIS_REF" "$FELIS_REPO_URL" "$SRC_DIR" 2>/dev/null \
+      || { git_auth clone "$FELIS_REPO_URL" "$SRC_DIR" \
+           && git_auth -C "$SRC_DIR" checkout -f "$FELIS_REF"; } \
+      || die "could not check out ${FELIS_REF} from ${FELIS_REPO_URL}"
   fi
+  stamp_version
   ok "source ready at ${SRC_DIR}"
 }
 
@@ -672,6 +997,7 @@ install_embedded_binary() {
   else
     ok "host binary already installed at ${HOST_BIN}"
   fi
+  HAVE_PREBUILT_BINARY=1
 }
 
 build_image_from_binary() {
@@ -699,8 +1025,12 @@ verify_image_starts() {
 }
 
 build_image_from_source() {
-  log "building ${FELIS_IMAGE} (this compiles the Go binary; first run is slow)"
-  docker build -t "$FELIS_IMAGE" "$SRC_DIR"
+  log "building ${FELIS_IMAGE} ${FELIS_VERSION:+(${FELIS_VERSION}) }(this compiles the Go binary; first run is slow)"
+  # Without the stamp main.version stays "dev", and `felis update` refuses to compare a
+  # "dev" build against upstream rather than treating it as 0.0.0. So an unstamped image
+  # is not a cosmetic problem: it silently disables update reporting for the install.
+  docker build -t "$FELIS_IMAGE" \
+    --build-arg FELIS_VERSION="${FELIS_VERSION:-dev}" "$SRC_DIR"
 
   log "extracting the felis binary onto the host (${HOST_BIN})"
   local cid
@@ -713,7 +1043,10 @@ build_image_from_source() {
 
 build_image() {
   systemctl start docker
-  if bootstrap_from_tui; then
+  # Keyed on the binary, not on the route that produced it: the TUI hand-off and a release
+  # download both land on exactly the same state (a felis binary at HOST_BIN, no checkout),
+  # and a release download that fell back to source has cleared this so the source build runs.
+  if [ -n "$HAVE_PREBUILT_BINARY" ]; then
     build_image_from_binary
   else
     build_image_from_source
@@ -756,8 +1089,15 @@ remove_k3s_image() {
 # game_stack_source sets GAME_STACK_DIR to a docker build context holding
 # deploy/{limbo,lobby} and plugins/. The TUI path pipes this script in over stdin and
 # has no checkout on disk, so there the sources come out of the felis binary itself.
+#
+# Keyed on HAVE_PREBUILT_BINARY, the same flag build_image uses, because the question is
+# identical: a prebuilt binary means fetch_source never ran, so SRC_DIR is whatever an
+# EARLIER install left behind. Trusting it there would build felis-paper and the Velocity
+# plugin from the old commit while the control plane is the freshly downloaded release —
+# a silent version skew across the plugin/API boundary. The embedded tar always matches
+# the binary it came out of, so it is the correct source on every prebuilt path.
 game_stack_source() {
-  if ! bootstrap_from_tui && [ -f "${SRC_DIR}/deploy/limbo/Dockerfile" ]; then
+  if [ -z "$HAVE_PREBUILT_BINARY" ] && [ -f "${SRC_DIR}/deploy/limbo/Dockerfile" ]; then
     GAME_STACK_DIR="$SRC_DIR"
     ok "game-stack sources: ${SRC_DIR}"
     return 0
@@ -1373,12 +1713,11 @@ deploy_bundle() {
   kube -n "$CONTROL_NS" get deployment felis-api >/dev/null 2>&1 && had_api=1
   kube -n "$CONTROL_NS" get deployment felis-operator >/dev/null 2>&1 && had_operator=1
 
+  # Always the embedded copy. It is byte-identical to deploy/crd/ (bootstrap_asset.go embeds
+  # that very file), it needs no checkout — which the release-download path does not have —
+  # and one source beats a branch whose two arms have to be kept in agreement by hand.
   log "applying MinecraftServer CRD"
-  if bootstrap_from_tui; then
-    "$HOST_BIN" bootstrap-assets crd | kube apply -f -
-  else
-    kube apply -f "${SRC_DIR}/deploy/crd/"
-  fi
+  "$HOST_BIN" bootstrap-assets crd | kube apply -f -
 
   log "ensuring namespaces"
   local ns
@@ -1574,9 +1913,12 @@ install_go_toolchain() {
 build_nano_binary() {
   local staged="${SRC_DIR}/.felis-nano-build"
 
-  log "building felis from source (${SRC_DIR})"
+  log "building felis from source (${SRC_DIR})${FELIS_VERSION:+ — ${FELIS_VERSION}}"
+  # Stamped for the same reason the image build is: a nano host runs `felis version` and
+  # `felis update` too, and this path used to pass no ldflags at all.
   ( cd "$SRC_DIR" \
-    && PATH="${GOROOT_DIR}/bin:${PATH}" CGO_ENABLED=0 go build -trimpath -o "$staged" ./cmd/felis ) \
+    && PATH="${GOROOT_DIR}/bin:${PATH}" CGO_ENABLED=0 go build -trimpath \
+        -ldflags "-X main.version=${FELIS_VERSION:-dev}" -o "$staged" ./cmd/felis ) \
     || die "go build ./cmd/felis failed"
 
   # The whole point of this path is the nano subcommand; a binary without it would
@@ -1603,7 +1945,16 @@ acquire_nano_binary() {
     install_embedded_binary
     return 0
   fi
-  # Raw curl|bash: no binary yet. Build it straight from source with a pinned Go
+  # The release channel takes the same prebuilt binary the control plane does. This is the
+  # biggest win on this path: a host that only wants the auth multiplexer stops needing a Go
+  # toolchain and a checkout at all.
+  if use_release_binary; then
+    resolve_install_ref
+    if download_release_binary; then
+      return 0
+    fi
+  fi
+  # Raw curl|bash with no usable release: build it straight from source with a pinned Go
   # toolchain — nano needs one static binary, not an image, so dragging in docker
   # (as the full control-plane path does) buys nothing and costs a daemon that must
   # start. It does not start on EL10: the docker-ce el10 rpms install but dockerd
@@ -1743,13 +2094,28 @@ main() {
   detect_node_ip
   ensure_swap
   install_base
+  # Right after install_base because it is the first point curl exists, and well before
+  # docker and k3s: a missing FELIS_GITHUB_TOKEN or an unpublished release should cost
+  # the operator seconds, not a k3s install they then have to unwind. This is purely
+  # fail-fast — fetch_source resolves again itself — so it must skip on exactly the paths
+  # that never consume the result, or it invents a network dependency and a version they
+  # do not have: the TUI rebuilds the binary it is already running, and FELIS_SKIP_FETCH
+  # builds whatever is staged, which stamp_version reads the SHA off. Resolving anyway
+  # would set FELIS_VERSION to the newest tag and stamp a staged tree as that release.
+  bootstrap_from_tui || [ -n "${FELIS_SKIP_FETCH:-}" ] || resolve_install_ref
   install_cloudflared
   load_or_make_secrets
   ensure_panel_tls_cert
   install_docker
   install_k3s
+  # Three ways to end up with a felis binary, in preference order. The release download is
+  # the only one that skips compiling: it is the CI artifact for this exact tag, panel
+  # included. Both other arms leave HAVE_PREBUILT_BINARY unset where a source build is what
+  # actually happens, which is what routes build_image below.
   if bootstrap_from_tui; then
     install_embedded_binary
+  elif use_release_binary && download_release_binary; then
+    :
   else
     fetch_source
   fi

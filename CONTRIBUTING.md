@@ -186,10 +186,42 @@ Useful overrides:
 
 ```bash
 export FELIS_REPO_URL=<your fork url>
-export FELIS_REF=<your branch>
+export FELIS_REF=<your branch>          # pins the build; overrides the channel below
 export FELIS_IMAGE=felis:dev
 export FELIS_ROOT_DOMAIN=<node-ip>.nip.io
 ```
+
+By default the installer builds the newest **published GitHub release**. While this
+repository is private that lookup — and the clone itself — needs a token, and building
+the development tip needs an opt-in:
+
+```bash
+export FELIS_GITHUB_TOKEN=<token with read access to the repo>
+export FELIS_VERSION_BOOTSTRAP=dev      # build main instead of the newest release
+```
+
+`dev` is also the escape hatch before the first `vX.Y.Z` tag exists: with no published
+release the default channel has nothing to resolve and stops with that instruction.
+
+The two channels differ in more than the version they pick. `release` **downloads** the
+`felis-linux-<arch>` binary that CI published for that tag and builds only a thin image
+around it, so the host needs neither a Go toolchain nor a checkout — the panel rides along
+inside that same binary (`internal/panel` embeds it). `dev` clones and compiles. Either way
+the Minecraft game stack (limbo, lobby, the Velocity plugin) is always built locally.
+
+The download is best-effort by design: if the tag's assets are not uploaded yet — the release
+workflow runs vet, tests and a full image build first — or this architecture has no published
+asset, the installer warns and compiles **the same tag** from source. It never silently
+switches you to a different commit. Setting `FELIS_REF` also forces the source path, since
+naming a ref asks for that tree rather than a published artifact.
+
+The channel decides the version stamp linked into the binary (`felis version`), which is
+what `felis update` compares against upstream — release builds stamp the tag, dev builds
+stamp `<latest-tag>+g<short-sha>`, and a pinned `FELIS_REF` stamps `v0.0.0+g<short-sha>`
+because skipping channel resolution also skips the tag lookup. An unstamped build reports
+`dev` and update reporting
+is disabled for it, so build through `bootstrap.sh` (or the Dockerfile's `FELIS_VERSION`
+build arg) rather than a bare `go build` when testing that path.
 
 The setup flow wraps the host bootstrap, then continues to Owner account setup
 and optional Cloudflare edge setup in the same command. The raw
