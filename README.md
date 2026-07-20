@@ -34,6 +34,23 @@ curl -fsSL https://raw.githubusercontent.com/MliroLirrorsIngenuity/Felis/main/de
 
 脚本将自动安装 K3s、部署控制平面并启动设置向导。完成后浏览器访问已配置的域名进入控制面板即可使用。
 
+> **本仓库当前为私有**，上面这条会返回 404。请改用带凭据的形式；安装器自身也需要同一个 token
+> 去解析并下载 release，所以用 `sudo -E` 把它带进去：
+>
+> ```bash
+> export FELIS_GITHUB_TOKEN=<对本仓库有读权限的 token>
+> printf 'header = "Authorization: Bearer %s"\n' "$FELIS_GITHUB_TOKEN" \
+>   | curl -fsSL --config - -H "Accept: application/vnd.github.raw" \
+>       https://api.github.com/repos/MliroLirrorsIngenuity/Felis/contents/deploy/bootstrap.sh \
+>   | sudo -E bash
+> ```
+>
+> token 经 stdin 交给 `curl --config -`，不放在命令行上：argv 在 `/proc` 下对本机任意用户可读，
+> 而这正是安装器内部 `github_api` 采用同一写法的原因。
+
+重跑这条命令也是把 felis-api 升到新版本的方式（`felis setup` 做不到，它用的是本机已有的二进制）。
+重跑会沿用已安装的根域名，但**不会**沿用通道：若本机跟随 main，需一并 `export FELIS_VERSION_BOOTSTRAP=dev`。
+
 ## 从源码构建
 
 本项目基于 Go 和 Node.js 开发：
