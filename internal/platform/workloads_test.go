@@ -230,22 +230,23 @@ func TestAPIDeployment_UploadsStorage(t *testing.T) {
 		t.Errorf("uploads mount = %#v, want read-write at %s", m, UploadsLocalPath)
 	}
 
-	// S3 backend: both credential env vars come from the Secret (never literals) and
-	// are OPTIONAL, so a local install with no such Secret still starts.
-	for _, ev := range []struct{ name, key string }{
-		{UploadsS3AccessKeyEnv, UploadsS3SecretAccessKey},
-		{UploadsS3SecretKeyEnv, UploadsS3SecretSecretKey},
+	// Credential env vars (S3 backend + SMTP relay) come from their Secrets (never
+	// literals) and are OPTIONAL, so an install without them still starts.
+	for _, ev := range []struct{ name, secret, key string }{
+		{UploadsS3AccessKeyEnv, UploadsS3SecretName, UploadsS3SecretAccessKey},
+		{UploadsS3SecretKeyEnv, UploadsS3SecretName, UploadsS3SecretSecretKey},
+		{SMTPPasswordEnv, SMTPSecretName, SMTPSecretPasswordKey},
 	} {
 		e := envVar(c.Env, ev.name)
 		if e == nil || e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil {
 			t.Fatalf("%s must be sourced from a secretKeyRef", ev.name)
 		}
 		ref := e.ValueFrom.SecretKeyRef
-		if ref.Name != UploadsS3SecretName || ref.Key != ev.key {
-			t.Errorf("%s ref = %s/%s, want %s/%s", ev.name, ref.Name, ref.Key, UploadsS3SecretName, ev.key)
+		if ref.Name != ev.secret || ref.Key != ev.key {
+			t.Errorf("%s ref = %s/%s, want %s/%s", ev.name, ref.Name, ref.Key, ev.secret, ev.key)
 		}
 		if ref.Optional == nil || !*ref.Optional {
-			t.Errorf("%s secretKeyRef must be optional (a local install has no such Secret)", ev.name)
+			t.Errorf("%s secretKeyRef must be optional (an install without it has no such Secret)", ev.name)
 		}
 		if e.Value != "" {
 			t.Errorf("%s must not carry a literal value", ev.name)

@@ -313,6 +313,18 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.stage = stageStorage
 		return m.adopt(newStorageChooserModel(m.rootDomain, method, prefill))
 
+	case reconfigureSMTPMsg:
+		// Configuring email after install: the wizard rail deliberately has no SMTP
+		// step (first-run is mail-less by design), so this is always a summary/status
+		// detour and returns there when done.
+		return m.adopt(newSMTPModel(currentSMTPInputs()))
+
+	case smtpResultMsg:
+		if m.result.alreadySetUp {
+			return m.showStatus()
+		}
+		return m.showSummary()
+
 	case goBackMsg:
 		m.stage = stageConnect
 		return m.adopt(newConnectChooserModel(m.rootDomain, m.adminHost, m.panelHost))

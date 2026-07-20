@@ -21,6 +21,7 @@ type Config struct {
 	K8s      K8sConfig      `toml:"k8s"`
 	Registry RegistryConfig `toml:"registry"`
 	Archive  ArchiveConfig  `toml:"archive"`
+	SMTP     SMTPConfig     `toml:"smtp"`
 	// AuthSources is the [[auth_source]] array-of-tables: the third-party Yggdrasil
 	// roots the Felis-nano hasJoined multiplexer federates over, in priority order
 	// (config order = priority, so array-of-tables not a map — a map would lose order
@@ -45,6 +46,26 @@ type AuthSourceConfig struct {
 	Tag    string `toml:"tag"`
 	Prefix string `toml:"prefix"`
 	URL    string `toml:"url"`
+}
+
+// SMTPConfig is the [smtp] table: the outbound mail relay felis-api delivers
+// email one-time codes through (onboarding, email login, op-login). It is
+// OPTIONAL — an empty host means "no mailer", and felis-api falls back to
+// logging each code server-side (the pre-SMTP bootstrap posture). Only the
+// coordinates live here; the password follows the tree's credential rule
+// (ArchiveS3Config, RegistryS3Config): PasswordRef NAMES the environment
+// variable felis-api reads it from — the secret itself is never written into
+// felis.toml. The setup wizard's "configure email" step creates the felis-smtp
+// Secret the deployment injects that variable from.
+type SMTPConfig struct {
+	Host string `toml:"host"`
+	// Port defaults to 587 (STARTTLS submission). 465 selects implicit TLS.
+	Port int `toml:"port"`
+	// From is the envelope/header sender address the codes are mailed as.
+	From string `toml:"from"`
+	// Username is the AUTH identity; empty means the relay needs no AUTH.
+	Username    string `toml:"username"`
+	PasswordRef string `toml:"password_ref"`
 }
 
 // ServerConfig is the [server] table.
@@ -179,6 +200,9 @@ const (
 	// so this base only has to be a sensible, parseable prefix (see the §16 build
 	// subsystem and the internal/submit package doc for the lane's provenance).
 	defaultUserUploadsContext = "s3://felis-user-uploads"
+	// defaultSMTPPort is the STARTTLS submission port; applied only when [smtp]
+	// host is set (a portless [smtp] block with no host stays fully zero).
+	defaultSMTPPort = 587
 )
 
 // decodeConfig reads a felis.toml and rejects unknown keys (typos surface as errors
@@ -251,6 +275,9 @@ func (c *Config) applyDefaults() {
 	if c.Registry.UserUploadsContext == "" {
 		c.Registry.UserUploadsContext = defaultUserUploadsContext
 	}
+	if c.SMTP.Host != "" && c.SMTP.Port == 0 {
+		c.SMTP.Port = defaultSMTPPort
+	}
 }
 
 // Validate enforces the mandatory fields (spec §24: database.url is 强制) and
@@ -287,6 +314,17 @@ func (c *Config) Validate() error {
 	// fast at load instead, with the contract spelled out.
 	if c.Registry.URL != "" && strings.Contains(c.Registry.URL, "://") {
 		return fmt.Errorf("config: [registry] url %q must be a bare host[:port] with no scheme (e.g. registry.felis.svc:5000); a scheme breaks the user-modpack build lane's derived push target", c.Registry.URL)
+	}
+	// [smtp] is optional as a whole, but once a host is named the block must be
+	// deliverable: a From address (relays reject MAIL FROM:<>) and a sane port.
+	// Fail at load, not at the first OTP a player is waiting on.
+	if c.SMTP.Host != "" {
+		if !strings.Contains(c.SMTP.From, "@") {
+			return fmt.Errorf("config: [smtp] from %q must be the sender email address codes are mailed as", c.SMTP.From)
+		}
+		if c.SMTP.Port < 1 || c.SMTP.Port > 65535 {
+			return fmt.Errorf("config: [smtp] port %d must be 1-65535 (587 STARTTLS, 465 implicit TLS)", c.SMTP.Port)
+		}
 	}
 	return c.validateAuthSources()
 }

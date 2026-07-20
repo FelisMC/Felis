@@ -16,6 +16,7 @@ import (
 	"felis.lolicon.best/internal/backupjob"
 	"felis.lolicon.best/internal/build"
 	"felis.lolicon.best/internal/config"
+	"felis.lolicon.best/internal/mail"
 	"felis.lolicon.best/internal/panel"
 	"felis.lolicon.best/internal/passkey"
 	"felis.lolicon.best/internal/platform"
@@ -109,6 +110,31 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	token := os.Getenv("FELIS_SERVICE_TOKEN")
 	if token == "" {
 		fmt.Fprintln(stderr, "felis api: warning: FELIS_SERVICE_TOKEN unset — internal face will reject all callers")
+	}
+
+	// Email one-time codes go through the [smtp] relay when one is configured; the
+	// password is read from the env var password_ref names (default SMTPPasswordEnv,
+	// injected from the felis-smtp Secret). No [smtp] host ⇒ mailer stays nil and
+	// deliverOTP logs each code server-side (the pre-SMTP bootstrap posture).
+	var mailer api.OTPMailer
+	if cfg.SMTP.Host != "" {
+		passRef := cfg.SMTP.PasswordRef
+		if passRef == "" {
+			passRef = platform.SMTPPasswordEnv
+		}
+		password := os.Getenv(passRef)
+		if cfg.SMTP.Username != "" && password == "" {
+			fmt.Fprintf(stderr, "felis api: warning: [smtp] username is set but credentials env %s is empty — OTP sends will fail AUTH\n", passRef)
+		}
+		mailer = &mail.SMTP{
+			Host:     cfg.SMTP.Host,
+			Port:     cfg.SMTP.Port,
+			From:     cfg.SMTP.From,
+			Username: cfg.SMTP.Username,
+			Password: password,
+		}
+	} else {
+		fmt.Fprintln(stderr, "felis api: [smtp] not configured — email one-time codes are logged, not mailed")
 	}
 
 	// Build subsystem (spec §16): the weak-SA build Job runs in the configured
@@ -215,6 +241,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		Restorer:    restorer,
 		Backuper:    backuper,
 		Submissions: submissions,
+		Mailer:      mailer,
 		// The external face is fronted by SessionAuth: it prefers a local session
 		// cookie (minted by the passwordless doors) and otherwise delegates to the
 		// Cloudflare-Access JWT verifier, so both auth models coexist on one face. The

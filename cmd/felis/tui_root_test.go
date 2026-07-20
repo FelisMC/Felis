@@ -223,6 +223,32 @@ func TestRootReconfigureStorageReEntersChooser(t *testing.T) {
 	}
 }
 
+// TestRootReconfigureSMTP locks the post-install "configure email" path: from
+// the re-run status screen it opens the SMTP form, and finishing it lands back
+// on the status screen (not the first-run summary, which would drop the
+// alreadySetUp framing).
+func TestRootReconfigureSMTP(t *testing.T) {
+	m := newTestRoot(true, consoleModeSetup, "")
+	m = drive(t, m, preflightDoneMsg{})
+	if _, ok := m.screen.(*summaryModel); !ok {
+		t.Fatalf("re-run after preflight, screen = %T, want *summaryModel", m.screen)
+	}
+
+	m = drive(t, m, reconfigureSMTPMsg{})
+	if _, ok := m.screen.(*smtpModel); !ok {
+		t.Fatalf("reconfigure-smtp screen = %T, want *smtpModel", m.screen)
+	}
+
+	m = drive(t, m, smtpResultMsg{configured: true, detail: "smtp.example.net:587  ·  from felis@example.net"})
+	sum, ok := m.screen.(*summaryModel)
+	if !ok {
+		t.Fatalf("after reconfigure-smtp, screen = %T, want *summaryModel", m.screen)
+	}
+	if !sum.alreadySetUp {
+		t.Fatalf("after reconfigure-smtp, summary should still be the alreadySetUp status screen")
+	}
+}
+
 func TestRootRerunLandsOnStatus(t *testing.T) {
 	// adminExists at start of a setup run = re-run: preflight should skip straight
 	// to the "manage in panel" status screen, never touching owner/connect.

@@ -35,6 +35,8 @@ func (m *summaryModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg { return reconfigureConnectMsg{} }
 		case "s", "S":
 			return m, func() tea.Msg { return reconfigureStorageMsg{} }
+		case "e", "E":
+			return m, func() tea.Msg { return reconfigureSMTPMsg{} }
 		case "ctrl+c", "esc", "enter", "q":
 			return m, tea.Quit
 		}
@@ -78,6 +80,6 @@ func (m *summaryModel) View() string {
 		b.WriteString(tuiHint.Render("  The local certificate is self-signed; your browser may warn on first visit.") + "\n")
 	}
 
-	b.WriteString("\n" + tuiAction("c", "change connection", "s", "change storage", "enter/esc", "exit"))
+	b.WriteString("\n" + tuiAction("c", "change connection", "s", "change storage", "e", "configure email", "enter/esc", "exit"))
 	return b.String()
 }

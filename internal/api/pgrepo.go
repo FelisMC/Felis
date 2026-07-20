@@ -1863,8 +1863,10 @@ func (p *PGRepo) RedeemMigration(ctx context.Context, targetUserID, codeHash str
 // merely-asserted address never reaches a session-mintable identity. The
 // account is passwordless — no password column is read.
 func (p *PGRepo) UserByEmail(ctx context.Context, email string) (*StaffUser, error) {
+	// lower() on both sides honors the interface's case-insensitivity contract
+	// and matches the users_verified_email_unique index (lower(email)).
 	const q = `SELECT id, username, COALESCE(email, ''), role::text, email_verified
-		FROM users WHERE email = $1 AND email_verified = true`
+		FROM users WHERE lower(email) = lower($1) AND email_verified = true`
 	var u StaffUser
 	switch err := p.db.QueryRowContext(ctx, q, email).Scan(
 		&u.ID, &u.Username, &u.Email, &u.Role, &u.EmailVerified); {

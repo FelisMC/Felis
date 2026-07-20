@@ -103,6 +103,17 @@ const (
 	UploadsS3AccessKeyEnv = "FELIS_UPLOADS_S3_ACCESS_KEY"
 	UploadsS3SecretKeyEnv = "FELIS_UPLOADS_S3_SECRET_KEY"
 
+	// SMTPSecretName is the out-of-band Secret carrying the [smtp] relay password.
+	// Same red line as the S3 credentials: the setup wizard's "configure email"
+	// step creates it, felis-api reads it via SMTPPasswordEnv (optionally — a
+	// mailer-less install has no such Secret and still starts, falling back to
+	// logging codes), and it is never rendered into the bundle.
+	SMTPSecretName        = "felis-smtp"
+	SMTPSecretPasswordKey = "password"
+	// SMTPPasswordEnv is the env var felis-api reads the relay password from;
+	// [smtp] password_ref defaults to this name.
+	SMTPPasswordEnv = "FELIS_SMTP_PASSWORD"
+
 	// worldsMountPath is where the reaper CronJob mounts the worlds-root (read-only).
 	// It is the default of `felis reaper --worlds-root`; the resolver then reads each
 	// world at <worldsMountPath>/<pvc>. Single-sourced with cmd/felis/reaper.go.
@@ -233,6 +244,11 @@ func APIDeployment(p Params) *appsv1.Deployment {
 		}}},
 		corev1.EnvVar{Name: UploadsS3SecretKeyEnv, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{Name: UploadsS3SecretName}, Key: UploadsS3SecretSecretKey, Optional: optional,
+		}}},
+		// The [smtp] relay password, same optional-Secret pattern: absent until the
+		// setup wizard's "configure email" step creates felis-smtp.
+		corev1.EnvVar{Name: SMTPPasswordEnv, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: SMTPSecretName}, Key: SMTPSecretPasswordKey, Optional: optional,
 		}}},
 	)
 

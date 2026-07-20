@@ -405,3 +405,53 @@ url = "postgres://felis@db/felis"
 		t.Fatal("expected error for unknown key")
 	}
 }
+
+// TestLoadSMTPDefaultsPort pins the [smtp] contract: a host with no port gets the
+// 587 STARTTLS default, and an absent [smtp] block stays fully zero (no mailer).
+func TestLoadSMTPDefaultsPort(t *testing.T) {
+	cfg, err := config.Load(writeTOML(t, `
+[server]
+root_domain = "mc.example.net"
+[database]
+url = "postgres://felis@db/felis"
+[smtp]
+host = "smtp.example.net"
+from = "felis@example.net"
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.SMTP.Port != 587 {
+		t.Errorf("smtp port = %d, want the 587 default", cfg.SMTP.Port)
+	}
+
+	cfg, err = config.Load(writeTOML(t, `
+[server]
+root_domain = "mc.example.net"
+[database]
+url = "postgres://felis@db/felis"
+`))
+	if err != nil {
+		t.Fatalf("Load without [smtp]: %v", err)
+	}
+	if cfg.SMTP.Host != "" || cfg.SMTP.Port != 0 {
+		t.Errorf("absent [smtp] must stay zero, got %+v", cfg.SMTP)
+	}
+}
+
+// TestLoadRejectsSMTPWithoutFrom guards the deliverability rule: naming a relay
+// host commits the block to being sendable, so a missing/invalid From fails at
+// load rather than at the first OTP a player is waiting on.
+func TestLoadRejectsSMTPWithoutFrom(t *testing.T) {
+	_, err := config.Load(writeTOML(t, `
+[server]
+root_domain = "mc.example.net"
+[database]
+url = "postgres://felis@db/felis"
+[smtp]
+host = "smtp.example.net"
+`))
+	if err == nil {
+		t.Fatal("expected error when [smtp] host is set without a from address")
+	}
+}
