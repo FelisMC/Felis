@@ -1,4 +1,4 @@
-# Felis lobby image: Paper + the felis-paper /menu plugin.
+# Felis lobby image: Paper + the felis-paper /menu plugin + LuckPerms.
 #
 # CODE-ONLY in this repo — not built by the Go CI. It packages the always-on
 # "lobby" hub the setup provisioner points [velocity] lobby_image at. The lobby is
@@ -9,6 +9,8 @@
 # Fill v3 API — api.papermc.io v2 has returned HTTP 410 since 2026-07-01):
 #   docker build -f deploy/lobby/Dockerfile \
 #     --build-arg PAPER_JAR_URL=https://fill-data.papermc.io/v1/objects/<sha>/paper-26.2-<build>.jar \
+#     --build-arg LUCKPERMS_JAR_URL="$(curl -fsSL https://metadata.luckperms.net/data/all \
+#       | grep -o 'https://download.luckperms.net/[^"]*/bukkit/loader/[^"]*\.jar')" \
 #     -t felis-lobby:demo .
 #   docker save felis-lobby:demo | sudo k3s ctr images import -
 #   # felis.toml → [velocity] lobby_image = "felis-lobby:demo"
@@ -40,15 +42,27 @@ RUN cd plugins/paper \
 # also runs the plugin's Java-21 bytecode, so only the runtime moves.
 FROM eclipse-temurin:25-jre
 ARG PAPER_JAR_URL
+# LuckPerms is required, not optional: the panel's whole permission surface
+# (internal/api/handlers_access.go) issues `lp user ...` over RCON, so a lobby built
+# without it answers every grant with "Unknown command" — a failure the operator only
+# discovers in production, because the server itself starts and runs perfectly well.
+# Failing the build is the cheap place to notice. Resolved by URL rather than pinned
+# here for the same reason PAPER_JAR_URL is: bootstrap.sh asks upstream for the current
+# build, so this file does not go stale on every LuckPerms release.
+ARG LUCKPERMS_JAR_URL
 WORKDIR /paper
 RUN set -eu; \
     if [ -z "${PAPER_JAR_URL:-}" ]; then \
       echo "ERROR: --build-arg PAPER_JAR_URL=<paper jar> is required" >&2; exit 1; \
     fi; \
+    if [ -z "${LUCKPERMS_JAR_URL:-}" ]; then \
+      echo "ERROR: --build-arg LUCKPERMS_JAR_URL=<luckperms bukkit jar> is required" >&2; exit 1; \
+    fi; \
     apt-get update && apt-get install -y --no-install-recommends curl ca-certificates; \
-    curl -fSL "$PAPER_JAR_URL" -o /paper/paper.jar; \
-    apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*; \
     mkdir -p /paper/plugins; \
+    curl -fSL "$PAPER_JAR_URL" -o /paper/paper.jar; \
+    curl -fSL "$LUCKPERMS_JAR_URL" -o /paper/plugins/LuckPerms.jar; \
+    apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*; \
     echo "eula=true" > /paper/eula.txt
 COPY --from=plugin /felis-paper.jar /paper/plugins/felis-paper.jar
 # The entrypoint writes the Velocity modern-forwarding config (and REFUSES to start

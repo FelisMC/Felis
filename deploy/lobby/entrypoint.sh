@@ -43,6 +43,10 @@ fi
 mkdir -p "$DATA_DIR/plugins"
 cp -f "$RUNTIME_DIR/paper.jar" "$DATA_DIR/paper.jar"
 cp -f "$RUNTIME_DIR/plugins/felis-paper.jar" "$DATA_DIR/plugins/felis-paper.jar"
+# Only the jar is refreshed — LuckPerms keeps its H2 database and config under
+# $DATA_DIR/plugins/LuckPerms/, which is exactly the state the PVC exists to preserve.
+# Every grant the panel has ever issued lives there, so this must never be a wipe.
+cp -f "$RUNTIME_DIR/plugins/LuckPerms.jar" "$DATA_DIR/plugins/LuckPerms.jar"
 printf 'eula=true\n' > "$DATA_DIR/eula.txt"
 cd "$DATA_DIR"
 

@@ -1181,7 +1181,31 @@ resolve_game_jars() {
   log "resolving the newest Paper ${MC_VERSION} build"
   PAPER_JAR_URL="$(papermc_latest_jar paper "$MC_VERSION")" \
     || die "could not resolve a Paper build for Minecraft ${MC_VERSION} (the login gate pins this protocol; the build likely exists — Fill upstream is down or flapping)"
-  ok "Limbo ${LIMBO_VERSION} + Paper, both on Minecraft ${MC_VERSION}"
+  # LuckPerms is not version-matched to MC_VERSION the way Paper is: it ships one
+  # current Bukkit build that supports the whole supported Minecraft range, so there is
+  # no per-version endpoint to ask.
+  log "resolving the newest LuckPerms build"
+  LUCKPERMS_JAR_URL="$(luckperms_latest_jar)" \
+    || die "could not resolve a LuckPerms build (metadata.luckperms.net is down or flapping); the lobby needs it for the panel's permission controls"
+  ok "Limbo ${LIMBO_VERSION} + Paper, both on Minecraft ${MC_VERSION}; LuckPerms resolved"
+}
+
+# luckperms_latest_jar prints the download URL of the current LuckPerms Bukkit build.
+# Bukkit, not bukkit-legacy: legacy targets Minecraft 1.8-1.12, and Paper 26.2 is far
+# past that. The same fetch-then-grep shape (and --retry rationale) as
+# papermc_latest_jar; the metadata endpoint hands back every platform's URL at once, so
+# the grep has to pin the /bukkit/ path segment or it would just as happily return the
+# Fabric or Velocity jar, neither of which Paper can load.
+luckperms_latest_jar() {
+  local json url
+  json="$(curl -fsSL --retry 5 --retry-delay 2 \
+    -A "felis-bootstrap (+https://github.com/MliroLirrorsIngenuity/Felis)" \
+    "https://metadata.luckperms.net/data/all")" || return 1
+  url="$(printf '%s' "$json" \
+    | grep -o 'https://download\.luckperms\.net/[0-9]\{1,\}/bukkit/loader/[^"]*\.jar' || true)"
+  url="${url%%$'\n'*}"
+  [ -n "$url" ] || return 1
+  printf '%s\n' "$url"
 }
 
 # papermc_latest_jar prints the download URL of the newest build of <project> <version>.
@@ -1212,9 +1236,10 @@ build_game_stack() {
     --build-arg LIMBO_VERSION="$LIMBO_VERSION" \
     -t "$FELIS_LIMBO_IMAGE" "$GAME_STACK_DIR"
 
-  log "building ${FELIS_LOBBY_IMAGE} (Paper ${MC_VERSION} + felis-paper /menu)"
+  log "building ${FELIS_LOBBY_IMAGE} (Paper ${MC_VERSION} + felis-paper /menu + LuckPerms)"
   docker build -f "${GAME_STACK_DIR}/deploy/lobby/Dockerfile" \
     --build-arg PAPER_JAR_URL="$PAPER_JAR_URL" \
+    --build-arg LUCKPERMS_JAR_URL="$LUCKPERMS_JAR_URL" \
     -t "$FELIS_LOBBY_IMAGE" "$GAME_STACK_DIR"
 
   local img
