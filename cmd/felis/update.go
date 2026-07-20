@@ -219,6 +219,7 @@ func renderApplyGuidance(res updater.Result, selected map[string]bool, force boo
 
 	var b strings.Builder
 	var offeredCommand bool
+	var offeredFelisAPI bool
 	for _, t := range updateTargets {
 		if !selected[t.selector] {
 			continue
@@ -247,11 +248,22 @@ func renderApplyGuidance(res updater.Result, selected map[string]bool, force boo
 		}
 		fmt.Fprintf(&b, "  run: %s\n", t.command)
 		offeredCommand = true
+		offeredFelisAPI = offeredFelisAPI || t.component == "felis-api"
 	}
 	// Only explain the command when one was actually offered; a --mc-only run has
 	// nothing to run and the trailer would be a non-sequitur.
 	if offeredCommand {
 		b.WriteString("\nfelis setup is idempotent and re-runs the installer that owns these components;\nit does not reinstall what is already current. Restart game servers afterwards.\n")
+	}
+	// Scoped to felis-api because it is the only component setup cannot move forward.
+	// velocity is fine: install_velocity re-resolves the newest build of the pinned minor
+	// on every run. But setup hands deploy/bootstrap.sh the binary it is itself running
+	// (FELIS_BOOTSTRAP_BINARY), and that arm skips the release lookup entirely, so it
+	// rebuilds the image and rolls the deployment from the SAME binary -- a run that looks
+	// like a successful update and leaves the version unchanged. Only the installer, which
+	// resolves and downloads a release, actually moves felis-api.
+	if offeredFelisAPI {
+		b.WriteString("\nfelis-api (panel, plugins) is the exception: setup re-images it from the felis binary\nalready on this host, so it cannot install a NEWER felis-api. To move to a newer\nrelease, re-run the bootstrap installer (see README).\n")
 	}
 	return b.String()
 }

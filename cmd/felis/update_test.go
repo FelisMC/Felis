@@ -132,3 +132,36 @@ func TestUpdateTargetsMatchTopology(t *testing.T) {
 		}
 	}
 }
+
+// `sudo felis setup` is the right answer for velocity and the wrong one for felis-api,
+// so the caveat has to be scoped rather than appended to every run. setup hands
+// bootstrap the binary it is already running, and that arm skips the release lookup:
+// the run rebuilds the image and rolls the deployment off the SAME binary, which looks
+// like a successful update and changes nothing. install_velocity, by contrast, really
+// does re-resolve the newest build on every run.
+func TestApplyGuidanceScopesTheFelisAPICaveat(t *testing.T) {
+	const caveat = "cannot install a NEWER felis-api"
+
+	api := renderApplyGuidance(
+		planResult([]updates.Action{{Component: "felis-api", Kind: updates.ActionNotify, LatestKnown: true}}),
+		map[string]bool{"panel": true}, false)
+	if !strings.Contains(api, caveat) {
+		t.Fatalf("--panel resolves to felis-api and must carry the caveat:\n%s", api)
+	}
+
+	vel := renderApplyGuidance(
+		planResult([]updates.Action{{Component: "velocity", Kind: updates.ActionNotify, LatestKnown: true}}),
+		map[string]bool{"velocity": true}, false)
+	if strings.Contains(vel, caveat) {
+		t.Fatalf("velocity IS fixed by setup; the caveat would misdirect the operator:\n%s", vel)
+	}
+	if !strings.Contains(vel, "felis setup is idempotent") {
+		t.Fatalf("velocity still wants the ordinary trailer:\n%s", vel)
+	}
+
+	// --mc offers no command at all, so neither trailer belongs.
+	mc := renderApplyGuidance(planResult(nil), map[string]bool{"mc": true}, true)
+	if strings.Contains(mc, caveat) {
+		t.Fatalf("--mc offers no command; the caveat is a non-sequitur:\n%s", mc)
+	}
+}
