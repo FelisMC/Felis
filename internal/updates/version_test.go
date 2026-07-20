@@ -17,6 +17,7 @@ func TestParseTolerant(t *testing.T) {
 		{"1.2.3-rc.1", 1, 2, 3, "rc.1"},               // prerelease
 		{"v3.3.0-SNAPSHOT", 3, 3, 0, "SNAPSHOT"},      // velocity-style
 		{"1.2.3-rc.1+build.9", 1, 2, 3, "rc.1"},       // prerelease AND build
+		{"v0.0.0+g1a2b3c4", 0, 0, 0, ""},              // stamp of a build pinned to a ref with no tag behind it
 		{"v2", 2, 0, 0, ""},                           // missing minor/patch fill 0
 		{"2.0", 2, 0, 0, ""},                          // missing patch fills 0
 		{"  v1.2.3  ", 1, 2, 3, ""},                   // surrounding whitespace
@@ -64,6 +65,18 @@ func TestCompareAndAfter(t *testing.T) {
 		{"1.2.3-alpha", "1.2.3-beta", -1},   // alphanumeric lexical
 		{"1.2.3-rc.1", "1.2.3-rc.1.1", -1},  // longer identifier set is higher
 		{"1.2.3-1", "1.2.3-alpha", -1},      // numeric identifier sorts below alphanumeric
+
+		// A dev build's own stamp, "<tag>+g<sha>", against the tag it is built past.
+		// It must read EQUAL, never newer: deploy/bootstrap.sh's dev channel stamps the
+		// binary this way, so if metadata counted for ordering every dev install would
+		// report an upgrade onto a release it already contains. The "+" spelling exists
+		// precisely to buy this, and the mixed case -- metadata on one side only -- is
+		// the one the k3s pair above does not exercise. The last pair carries the
+		// metadata after a prerelease tail, the order a real earlyAccess build stamps.
+		{"v1.2.3+g1a2b3c4", "v1.2.3", 0},
+		{"v1.2.3", "v1.2.3+g1a2b3c4", 0},
+		{"v1.2.3+g1a2b3c4", "v1.2.4", -1},
+		{"v1.0.0-earlyAccess+g1a2b3c4", "v1.0.0-earlyAccess", 0},
 	}
 	for _, c := range cases {
 		va, err := Parse(c.a)
