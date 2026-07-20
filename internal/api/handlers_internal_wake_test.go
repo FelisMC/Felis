@@ -100,6 +100,30 @@ func TestInternalWakeAutostartGate(t *testing.T) {
 		}
 	})
 
+	t.Run("ownerOnly: a linked admin wakes someone else's server without claiming", func(t *testing.T) {
+		api, cl := newInternalWakeAPI("ownerOnly")
+		repo := api.Repo.(*fakeRepo)
+		repo.byName["survival"] = &ServerRecord{Name: "survival", OwnerID: "owner1"}
+		repo.links[wakeUUID] = "a1"
+		repo.staff["op"] = &StaffUser{ID: "a1", Username: "op", Role: "admin"}
+		if w := internalWake(api, body); w.Code != http.StatusAccepted {
+			t.Fatalf("admin: code = %d body %s", w.Code, w.Body.String())
+		}
+		if cl.desired["survival"] != v1alpha1.DesiredRunning {
+			t.Fatalf("desiredState = %q, want Running", cl.desired["survival"])
+		}
+	})
+
+	t.Run("allowlist: a linked admin bypasses the list", func(t *testing.T) {
+		api, _ := newInternalWakeAPI("allowlist")
+		repo := api.Repo.(*fakeRepo)
+		repo.links[wakeUUID] = "a1"
+		repo.staff["op"] = &StaffUser{ID: "a1", Username: "op", Role: "owner"} // owner ⊇ admin
+		if w := internalWake(api, body); w.Code != http.StatusAccepted {
+			t.Fatalf("staff off-list: code = %d body %s", w.Code, w.Body.String())
+		}
+	})
+
 	t.Run("allowlist: only a listed UUID wakes", func(t *testing.T) {
 		api, _ := newInternalWakeAPI("allowlist")
 		repo := api.Repo.(*fakeRepo)

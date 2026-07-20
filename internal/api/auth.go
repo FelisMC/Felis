@@ -40,12 +40,20 @@ type Principal struct {
 	ViaSession bool
 }
 
+// staffRole reports whether a stored user role carries staff standing: admin,
+// or owner (the superset of admin, see IsAdmin). This is the single place the
+// role set is spelled out — every staff gate (web IsAdmin, session grading,
+// the in-game op-login approve and admin wake) routes through it.
+func staffRole(role string) bool {
+	return role == "admin" || role == "owner"
+}
+
 // IsAdmin reports whether the principal may perform admin-tier operations.
 // Both the role claim and the admin Access path are required: a role=admin
 // session arriving on panel.* must not bypass the Zero-Trust boundary.
 // An owner implicitly passes this check (the owner role is a superset of admin).
 func (p *Principal) IsAdmin() bool {
-	return p != nil && (p.Role == "admin" || p.Role == "owner") && p.ViaAdminAccess
+	return p != nil && staffRole(p.Role) && p.ViaAdminAccess
 }
 
 // IsOwner reports whether the principal holds the platform-level owner role

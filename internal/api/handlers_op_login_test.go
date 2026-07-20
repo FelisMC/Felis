@@ -329,9 +329,10 @@ func TestOpLoginFinishUniform(t *testing.T) {
 	})
 }
 
-// TestOpLoginApproveGate pins the in-game approval gate: only a linked role=admin UUID
-// may vouch (all refusals share one 403 not_admin), a missing/no-longer-pending request
-// is 404, and a bare request without an approver UUID is 400.
+// TestOpLoginApproveGate pins the in-game approval gate: only a linked staff UUID
+// (role admin or owner) may vouch (all refusals share one 403 not_admin), a
+// missing/no-longer-pending request is 404, and a bare request without an
+// approver UUID is 400.
 func TestOpLoginApproveGate(t *testing.T) {
 	plantPending := func(repo *fakeRepo) string {
 		repo.opLogins["r1"] = &fakeOpLogin{
@@ -359,6 +360,18 @@ func TestOpLoginApproveGate(t *testing.T) {
 		repo.links["bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"] = "u9"
 		if w := approveOp(api.InternalHandler(), id, "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"); w.Code != http.StatusForbidden || decodeErr(t, w) != "not_admin" {
 			t.Fatalf("non-admin approver: code = %d body %s, want 403 not_admin", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("a linked owner-role approver vouches too", func(t *testing.T) {
+		// The owner role is a superset of admin (auth.go staffRole), so a manually
+		// promoted Owner (migration 0011) must pass the in-game approve gate.
+		api, repo, _ := seedOpLoginAPI(t)
+		repo.staff["boss"] = &StaffUser{ID: "b1", Username: "boss", Role: "owner"}
+		repo.links["cccccccc-cccc-cccc-cccc-cccccccccccc"] = "b1"
+		id := plantPending(repo)
+		if w := approveOp(api.InternalHandler(), id, "cccccccc-cccc-cccc-cccc-cccccccccccc"); w.Code != http.StatusOK {
+			t.Fatalf("owner-role approver: code = %d body %s, want 200", w.Code, w.Body.String())
 		}
 	})
 

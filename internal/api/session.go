@@ -159,7 +159,7 @@ func (s SessionAuth) Authenticate(r *http.Request) (*Principal, error) {
 		UserID:         u.ID,
 		Email:          u.Email,
 		Role:           u.Role,
-		ViaAdminAccess: (u.Role == "admin" || u.Role == "owner") && hostIsAdminConsole(r, s.RootDomain, s.AdminHostname),
+		ViaAdminAccess: staffRole(u.Role) && hostIsAdminConsole(r, s.RootDomain, s.AdminHostname),
 		EmailVerified:  u.EmailVerified,
 		ViaSession:     true,
 	}, nil

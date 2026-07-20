@@ -367,10 +367,10 @@ func (a *API) handleOpLoginApprove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "approver_uuid is required"))
 		return
 	}
-	// Resolve the in-game approver to a linked account and require admin. An unlinked
-	// UUID or a non-admin player may never vouch for an op.console login. All three
-	// refusals share one response so a caller cannot tell "not linked" from "linked but
-	// not staff".
+	// Resolve the in-game approver to a linked account and require a staff role
+	// (admin, or the owner superset). An unlinked UUID or a non-staff player may
+	// never vouch for an op.console login. All three refusals share one response so
+	// a caller cannot tell "not linked" from "linked but not staff".
 	notAdmin := newError(http.StatusForbidden, "not_admin", "only a linked administrator may approve an operator login")
 	approverID, err := a.Repo.UserByMCUUID(r.Context(), approverUUID)
 	switch {
@@ -390,7 +390,7 @@ func (a *API) handleOpLoginApprove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	if approver.Role != "admin" {
+	if !staffRole(approver.Role) {
 		writeError(w, r, notAdmin)
 		return
 	}

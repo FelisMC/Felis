@@ -302,29 +302,38 @@ func (a *API) handleInternalMenuStatus(w http.ResponseWriter, r *http.Request) {
 // authorizeWakeByUUID is the internal-face counterpart of authorizeWake (spec
 // §9.4): it applies the autostartPolicy gate for a wake driven by velocity, where
 // the joining player is known only by their verified online-mode UUID rather than
-// a web Principal. There is no admin tier on this path — a raw UUID carries no
-// panel role — but the owner bypass still applies, mirroring the external gate:
-// the owner waking their own server by domain passes under any policy. An unlinked
-// UUID (no account_links row) cannot establish ownership and falls through to the
-// policy gate, so ownerOnly/unset fails safe exactly as on the web face.
+// a web Principal. The admin tier rides the same trust anchor as the op-login
+// approve — online-mode auth plus the account link plus the stored staff role —
+// so a linked administrator wakes ANY node without claiming it, mirroring the
+// external gate's IsAdmin bypass. The owner bypass applies as before, and an
+// unlinked UUID (no account_links row) carries no standing at all and falls
+// through to the policy gate, so ownerOnly/unset fails safe exactly as on the
+// web face.
 func (a *API) authorizeWakeByUUID(ctx context.Context, mcUUID string, info *ServerInfo, rec *ServerRecord) error {
 	// public needs no identity at all — skip the account_links resolution.
 	if info.AutostartPolicy == string(v1alpha1.AutostartPublic) {
 		return nil
 	}
-	// Owner bypass: resolve the UUID to its linked user and compare to the owner.
-	// A missing link is not an error here — it just means "not the owner".
-	if rec != nil && rec.OwnerID != "" {
-		switch userID, err := a.Repo.UserByMCUUID(ctx, mcUUID); {
+	// Resolve the UUID to its linked user once; staff role or ownership grants
+	// the bypass. A missing link is not an error here — it just means "no
+	// standing", and a link pointing at a vanished user reads the same way.
+	switch userID, err := a.Repo.UserByMCUUID(ctx, mcUUID); {
+	case err == nil:
+		switch u, err := a.Repo.UserByID(ctx, userID); {
 		case err == nil:
-			if userID == rec.OwnerID {
+			if staffRole(u.Role) {
 				return nil
 			}
-		case errors.Is(err, ErrNotFound):
-			// unlinked UUID → fall through to the policy gate
-		default:
+		case !errors.Is(err, ErrNotFound):
 			return err
 		}
+		if rec != nil && rec.OwnerID != "" && userID == rec.OwnerID {
+			return nil
+		}
+	case errors.Is(err, ErrNotFound):
+		// unlinked UUID → fall through to the policy gate
+	default:
+		return err
 	}
 	switch info.AutostartPolicy {
 	case string(v1alpha1.AutostartAllowlist):
