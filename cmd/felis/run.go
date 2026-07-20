@@ -21,10 +21,38 @@ Commands:
   manifests         Render the control-plane RBAC + NetworkPolicy install bundle as YAML
   apply             Create a MinecraftServer CRD (direct K8s write; use -f server.json)
   setup             Run host bootstrap + first-run setup console (TUI; requires root/sudo)
+  version           Print the build stamp of this binary
+  update            Report which platform components have updates available
   breakGlass        Open the local break-glass emergency console (TUI; requires root/sudo)
 
 Run "felis <command> -h" for command-specific flags.
 `
+
+// commands is the dispatch table. It is a map rather than a switch so the router's
+// contents are DATA a test can compare against the usage text above: `version`
+// shipped once as an implemented-but-unreachable command (cmdVersion existed with
+// nothing routing to it), and a switch offers no way to notice that. Adding an entry
+// here without documenting it in usage — or vice versa — now fails a test instead of
+// shipping.
+//
+// The help aliases are deliberately NOT entries: they print usage rather than run a
+// subcommand, and listing them would make the table disagree with the command list.
+var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
+	"migrate":          cmdMigrate,
+	"operator":         cmdOperator,
+	"api":              cmdAPI,
+	"nano":             cmdNano,
+	"reaper":           cmdReaper,
+	"restore":          cmdRestore,
+	"backup":           cmdBackup,
+	"manifests":        cmdManifests,
+	"apply":            cmdApply,
+	"setup":            cmdSetup,
+	"breakGlass":       cmdBreakGlass,
+	"bootstrap-assets": cmdBootstrapAssets,
+	"version":          cmdVersion,
+	"update":           cmdUpdate,
+}
 
 // run dispatches a subcommand. It is separate from main so the router is
 // testable without spawning a process.
@@ -35,35 +63,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
-	case "migrate":
-		return cmdMigrate(rest, stdout, stderr)
-	case "operator":
-		return cmdOperator(rest, stdout, stderr)
-	case "api":
-		return cmdAPI(rest, stdout, stderr)
-	case "nano":
-		return cmdNano(rest, stdout, stderr)
-	case "reaper":
-		return cmdReaper(rest, stdout, stderr)
-	case "restore":
-		return cmdRestore(rest, stdout, stderr)
-	case "backup":
-		return cmdBackup(rest, stdout, stderr)
-	case "manifests":
-		return cmdManifests(rest, stdout, stderr)
-	case "apply":
-		return cmdApply(rest, stdout, stderr)
-	case "setup":
-		return cmdSetup(rest, stdout, stderr)
-	case "breakGlass":
-		return cmdBreakGlass(rest, stdout, stderr)
-	case "bootstrap-assets":
-		return cmdBootstrapAssets(rest, stdout, stderr)
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, usage)
 		return 0
-	default:
-		fmt.Fprintf(stderr, "felis: unknown command %q\n\n%s", cmd, usage)
-		return 2
 	}
+	if fn, ok := commands[cmd]; ok {
+		return fn(rest, stdout, stderr)
+	}
+	fmt.Fprintf(stderr, "felis: unknown command %q\n\n%s", cmd, usage)
+	return 2
 }

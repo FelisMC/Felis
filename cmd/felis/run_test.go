@@ -37,6 +37,57 @@ func TestRunUnknownCommand(t *testing.T) {
 	}
 }
 
+// undocumentedCommands are routable on purpose but kept out of the usage text: they
+// are called by deploy/bootstrap.sh, not by a human at a prompt. Listing them here is
+// what makes their absence from usage a deliberate decision rather than an oversight.
+var undocumentedCommands = map[string]bool{"bootstrap-assets": true}
+
+// The usage text and the dispatch table must describe the same set of commands.
+//
+// This exists because the failure it catches already happened: `version` shipped
+// implemented but unreachable — cmdVersion existed with nothing routing to it and no
+// usage line — so `felis version` fell through to "unknown command", and no test
+// noticed. Comparing the two lists is only possible because the router is a map; a
+// switch cannot be enumerated.
+//
+// It compares names WITHOUT invoking anything. Running each command to see whether it
+// is routed would start servers, dial clusters, and (for `update`) hit the network —
+// a slow, flaky test of the wrong thing.
+func TestUsageAndDispatchTableAgree(t *testing.T) {
+	documented := map[string]bool{}
+	var inCommands bool
+	for line := range strings.SplitSeq(usage, "\n") {
+		// Only the block under "Commands:" lists commands. The "Usage:" block above it
+		// has the same two-space indent but its entry is the "felis <command> [flags]"
+		// synopsis, which is not a subcommand.
+		if strings.HasPrefix(line, "Commands:") {
+			inCommands = true
+			continue
+		}
+		if !inCommands {
+			continue
+		}
+		// Command lines are the "  <name>  <description>" entries; the two-space indent
+		// distinguishes them from wrapped continuation lines.
+		if !strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "   ") {
+			continue
+		}
+		name, _, ok := strings.Cut(strings.TrimSpace(line), " ")
+		if !ok || name == "" {
+			continue
+		}
+		documented[name] = true
+		if _, routed := commands[name]; !routed {
+			t.Errorf("usage advertises %q but the dispatch table has no entry for it", name)
+		}
+	}
+	for name := range commands {
+		if !documented[name] && !undocumentedCommands[name] {
+			t.Errorf("%q is routable but undocumented; add it to usage, or to undocumentedCommands if it is an internal entrypoint", name)
+		}
+	}
+}
+
 func TestRunApplyRequiresFileFlag(t *testing.T) {
 	// Without -f the command must fail with usage (2), not try to contact a
 	// cluster. It can't return 0 because no CRD was created, and it can't return 1
