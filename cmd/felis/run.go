@@ -18,6 +18,7 @@ Commands:
   reaper            Run the world reaper / backup batch
   restore           Extract a world archive into a world volume (internal Job entrypoint)
   backup            Archive a world into the backup store and record it (internal Job entrypoint)
+  files             List/read/write one file in a stopped server's world (internal Job entrypoint)
   manifests         Render the control-plane RBAC + NetworkPolicy install bundle as YAML
   apply             Create a MinecraftServer CRD (direct K8s write; use -f server.json)
   setup             Run host bootstrap + first-run setup console (TUI; requires root/sudo)
@@ -45,6 +46,7 @@ var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"reaper":           cmdReaper,
 	"restore":          cmdRestore,
 	"backup":           cmdBackup,
+	"files":            cmdFiles,
 	"manifests":        cmdManifests,
 	"apply":            cmdApply,
 	"setup":            cmdSetup,

@@ -63,6 +63,14 @@ type API struct {
 	// authorization boundary is exercised before the backup-Job executor is wired.
 	Backuper Backuper
 
+	// Files is the server file editor (list / read / write a file in a stopped
+	// server's world volume — the "one wrong line in server.properties" repair).
+	// Like Restorer and Backuper it is optional: when nil the file routes report
+	// 503, so the owner-or-admin and stopped gates are exercised before the
+	// file-Job executor is wired. Unlike them its calls are synchronous, because
+	// the caller wants the listing or the bytes back, not a 202.
+	Files FileEditor
+
 	// Submissions is the user-modpack approval lane (a user-directed extension over
 	// the §16 build subsystem; see internal/submit). It is optional: when
 	// nil the /me/submissions and /submissions routes report 503 rather than 404, so
@@ -401,6 +409,24 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "GET", Pattern: "/api/v1/backups", h: a.handleListBackups},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/restore-backup", h: a.handleRestoreBackup},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/backup", h: a.handleBackupNow},
+		// Server file editor: list / read / write a file in a STOPPED server's world
+		// volume (handlers_files.go). App-tier, exactly like the backup pair above and
+		// for the same reason — every route gates on owner-or-admin inside the handler,
+		// so an owner repairs their own broken server without an admin's Zero-Trust
+		// path. The path travels as ?path= rather than a segment because a file path
+		// contains '/' (the same reason DELETE /images takes ?ref=). {name}/files is
+		// the directory face; {name}/file is the single-file face.
+		//
+		// "Config editor" undersells the surface, so be precise about what app-tier
+		// now reaches: the mount is the server's WHOLE working directory, not a
+		// config subtree, so a write can place a loadable plugin jar (a deliberate
+		// capability — see the op list in fileedit/exec.go) and a read can pull any
+		// file in it. Exactly one path is denied, config/paper-global.yml, because it
+		// holds the cluster-wide forwarding secret and is therefore the one thing in
+		// the mount that is not the caller's own data (fileedit.secretConfigPath).
+		{Method: "GET", Pattern: "/api/v1/servers/{name}/files", h: a.handleListFiles},
+		{Method: "GET", Pattern: "/api/v1/servers/{name}/file", h: a.handleReadFile},
+		{Method: "PUT", Pattern: "/api/v1/servers/{name}/file", h: a.handleWriteFile},
 		// Account linking (spec §10), web side: /start reports link status (it is the
 		// pointer handleClaim's 412 emits), /verify consumes the in-game code and binds
 		// the account. App-tier, not admin — linking your own account is an ordinary

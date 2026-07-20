@@ -2771,6 +2771,215 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  # ------------------------------------------------- server file editor (app) ---
+  /api/v1/servers/{name}/files:
+    get:
+      tags: [files]
+      operationId: listServerFiles
+      summary: List a directory in a server's world volume (owner-or-admin; server must be stopped).
+      description: >-
+        Lists one directory inside the server's world volume — the repair lever for a
+        server that will not boot because a config file is wrong. The world PVC is RWO
+        and held by a running server, so the server must be fully stopped first (409
+        not_stopped otherwise). The listing runs as a one-shot Job whose output is read
+        back through pods/log, so the call is synchronous but takes seconds rather than
+        milliseconds. Paths are resolved inside the world root by os.Root, so "..", an
+        absolute path, and a symlink leaving the root are all refused with 400 bad_path.
+        Listings are capped; truncated reports that the cap was hit.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - name: path
+          in: query
+          required: false
+          description: Directory to list, relative to the world root. Empty lists the root itself.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Directory listing.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [path, entries, truncated]
+                properties:
+                  path: { type: string }
+                  truncated: { type: boolean, description: The listing hit the entry cap and is incomplete. }
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, size, is_dir, mod_time]
+                      properties:
+                        name: { type: string }
+                        size: { type: integer, format: int64 }
+                        is_dir: { type: boolean }
+                        mod_time: { type: string, format: date-time }
+        '400':
+          description: Invalid server name, or a path that escapes the world root.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unknown server, or no such directory.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Server is not stopped (its world PVC is still mounted).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          description: The file Job did not finish in time; retry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/servers/{name}/file:
+    get:
+      tags: [files]
+      operationId: readServerFile
+      summary: Read a file from a server's world volume (owner-or-admin; server must be stopped).
+      description: >-
+        Returns one file's bytes, base64-encoded, from inside the server's world
+        volume. Same stopped-gate and os.Root containment as the directory listing.
+        Reads are capped at 1 MiB; a larger file is 413 rather than a truncated read,
+        because a config editor that silently returned half a file would let a
+        subsequent save destroy the other half.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - name: path
+          in: query
+          required: true
+          description: File to read, relative to the world root.
+          schema: { type: string }
+      responses:
+        '200':
+          description: File contents.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [path, content]
+                properties:
+                  path: { type: string }
+                  content: { type: string, format: byte, description: Base64-encoded file bytes. }
+        '400':
+          description: Missing path, invalid server name, or a path that escapes the world root.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unknown server, or no such file.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Server is not stopped (its world PVC is still mounted).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '413':
+          description: The file is larger than the editor reads.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          description: The file Job did not finish in time; retry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    put:
+      tags: [files]
+      operationId: writeServerFile
+      summary: Write a file in a server's world volume (owner-or-admin; server must be stopped).
+      description: >-
+        Replaces a file's contents, creating the file if absent but never creating its
+        parent directories. Content is base64 so arbitrary bytes (CRLF endings, a BOM)
+        survive intact. Writes are capped at 256 KiB — the Job spec carries the content,
+        and etcd bounds the object — so a larger body is 413. Same stopped-gate and
+        os.Root containment as the read; a write through a symlink leaving the world
+        root is refused. Audited as file.write.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - name: path
+          in: query
+          required: true
+          description: File to write, relative to the world root.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content]
+              properties:
+                content: { type: string, format: byte, description: Base64-encoded file bytes. }
+      responses:
+        '200':
+          description: File written.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [path, status]
+                properties:
+                  path: { type: string }
+                  status: { type: string, const: written }
+        '400':
+          description: Missing path, malformed body, invalid server name, or a path that escapes the world root.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unknown server, or the parent directory does not exist.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Server is not stopped (its world PVC is still mounted).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '413':
+          description: The content is larger than the editor writes.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          description: The file Job did not finish in time; retry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   # ------------------------------------------------------ users (admin tier) ----
   /api/v1/users:
     get:

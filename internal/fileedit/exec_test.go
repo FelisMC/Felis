@@ -1,0 +1,357 @@
+package fileedit
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// worldRoot builds a throwaway world directory with a couple of files and returns
+// its path, plus the path of a sibling directory OUTSIDE it holding a secret. The
+// sibling stands in for /etc — anything the editor must never reach — so an escape
+// that succeeds is observable as the secret's contents coming back, not merely as
+// a missing error.
+func worldRoot(t *testing.T) (root, outside string) {
+	t.Helper()
+	base := t.TempDir()
+	root = filepath.Join(base, "world")
+	outside = filepath.Join(base, "outside")
+	for _, d := range []string{root, outside, filepath.Join(root, "config")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+	write := func(p, content string) {
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", p, err)
+		}
+	}
+	write(filepath.Join(root, "server.properties"), "motd=hello\n")
+	write(filepath.Join(root, "config", "paper.yml"), "verbose: false\n")
+	write(filepath.Join(outside, "secret.txt"), "TOP-SECRET")
+	return root, outside
+}
+
+// TestExecuteContainment is the security test of this package. The world directory
+// holds attacker-influenced content (players and plugins create files in it), so
+// each vector below is a path a caller could genuinely supply to try to leave the
+// world mount. Every one MUST be refused — a refusal is CodeBadPath (or, where the
+// kernel resolves it to nothing at all, CodeNotFound), never a successful read.
+//
+// The assertion is deliberately doubled: the Result must carry a failure Code AND
+// the secret's contents must not appear in it. Checking only the code would pass a
+// hypothetical future regression that returned a code alongside populated content.
+func TestExecuteContainment(t *testing.T) {
+	root, outside := worldRoot(t)
+
+	// A symlink INSIDE the world pointing OUTSIDE it — the vector a string-prefix
+	// check cannot stop and the reason this package uses os.Root. The link is a
+	// perfectly ordinary file to a prefix test ("world/escape-link" is under
+	// "world/"), yet opening it lands on the secret.
+	if err := os.Symlink(outside, filepath.Join(root, "escape-link")); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+	// A symlink pointing at an absolute path outside the root, planted at the exact
+	// name a caller would then "read" — the write-through-a-planted-symlink shape.
+	if err := os.Symlink(filepath.Join(outside, "secret.txt"), filepath.Join(root, "planted.txt")); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	vectors := []struct {
+		name string
+		path string
+	}{
+		{"parent traversal", "../outside/secret.txt"},
+		{"nested parent traversal", "config/../../outside/secret.txt"},
+		{"absolute path", filepath.Join(outside, "secret.txt")},
+		{"absolute path to etc", "/etc/passwd"},
+		{"symlinked directory", "escape-link/secret.txt"},
+		{"symlinked file", "planted.txt"},
+		{"traversal past the filesystem root", "../../../../../../etc/passwd"},
+	}
+
+	for _, v := range vectors {
+		t.Run("read "+v.name, func(t *testing.T) {
+			res, err := Execute(root, OpRead, v.path, nil)
+			if err != nil {
+				t.Fatalf("Execute returned an infrastructure error, want a contained refusal: %v", err)
+			}
+			if res.Code == "" {
+				t.Fatalf("path %q was ALLOWED (content=%q) — containment breached", v.path, res.Content)
+			}
+			if bytes.Contains(res.Content, []byte("TOP-SECRET")) {
+				t.Fatalf("path %q leaked out-of-root content despite code %q", v.path, res.Code)
+			}
+		})
+	}
+
+	// The write side must be contained by the same invariant: a planted symlink
+	// must not become a write into the file it points at.
+	t.Run("write through a planted symlink is refused", func(t *testing.T) {
+		res, err := Execute(root, OpWrite, "planted.txt", []byte("pwned"))
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Code == "" {
+			t.Fatal("write through a symlink leaving the root was ALLOWED")
+		}
+		b, err := os.ReadFile(filepath.Join(outside, "secret.txt"))
+		if err != nil {
+			t.Fatalf("read secret: %v", err)
+		}
+		if string(b) != "TOP-SECRET" {
+			t.Fatalf("out-of-root file was MODIFIED through the symlink: %q", b)
+		}
+	})
+
+	t.Run("write escaping by traversal is refused", func(t *testing.T) {
+		res, err := Execute(root, OpWrite, "../outside/new.txt", []byte("pwned"))
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Code == "" {
+			t.Fatal("write via ../ was ALLOWED")
+		}
+		if _, err := os.Stat(filepath.Join(outside, "new.txt")); err == nil {
+			t.Fatal("a file was created outside the world root")
+		}
+	})
+
+	t.Run("list escaping by traversal is refused", func(t *testing.T) {
+		res, err := Execute(root, OpList, "../outside", nil)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Code == "" {
+			t.Fatalf("listing outside the root was ALLOWED: %+v", res.Entries)
+		}
+	})
+}
+
+// TestExecuteHappyPath proves the three ops actually work inside the root, so the
+// containment test above cannot be trivially satisfied by a function that refuses
+// everything.
+func TestExecuteHappyPath(t *testing.T) {
+	root, _ := worldRoot(t)
+
+	t.Run("list the world root", func(t *testing.T) {
+		res, err := Execute(root, OpList, "", nil)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Code != "" {
+			t.Fatalf("unexpected failure %s: %s", res.Code, res.Error)
+		}
+		got := map[string]Entry{}
+		for _, e := range res.Entries {
+			got[e.Name] = e
+		}
+		if _, ok := got["server.properties"]; !ok {
+			t.Fatalf("server.properties missing from listing: %+v", res.Entries)
+		}
+		if e, ok := got["config"]; !ok || !e.IsDir {
+			t.Fatalf("config should be listed as a directory: %+v", got["config"])
+		}
+		if e := got["server.properties"]; e.Size != int64(len("motd=hello\n")) {
+			t.Fatalf("size = %d, want %d", e.Size, len("motd=hello\n"))
+		}
+	})
+
+	t.Run("list a subdirectory", func(t *testing.T) {
+		res, err := Execute(root, OpList, "config", nil)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Code != "" || len(res.Entries) != 1 || res.Entries[0].Name != "paper.yml" {
+			t.Fatalf("unexpected listing: %+v (code %q)", res.Entries, res.Code)
+		}
+	})
+
+	t.Run("read a file", func(t *testing.T) {
+		res, err := Execute(root, OpRead, "server.properties", nil)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Code != "" || string(res.Content) != "motd=hello\n" {
+			t.Fatalf("content = %q, code = %q", res.Content, res.Code)
+		}
+	})
+
+	t.Run("write replaces content, then reads back", func(t *testing.T) {
+		if res, err := Execute(root, OpWrite, "server.properties", []byte("motd=changed\n")); err != nil || res.Code != "" {
+			t.Fatalf("write failed: %v / %+v", err, res)
+		}
+		b, err := os.ReadFile(filepath.Join(root, "server.properties"))
+		if err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		if string(b) != "motd=changed\n" {
+			t.Fatalf("on-disk content = %q, want the written bytes", b)
+		}
+	})
+
+	t.Run("write creates a new file but not parent directories", func(t *testing.T) {
+		if res, err := Execute(root, OpWrite, "ops.json", []byte("[]")); err != nil || res.Code != "" {
+			t.Fatalf("creating a new file should succeed: %v / %+v", err, res)
+		}
+		res, err := Execute(root, OpWrite, "nope/deep.txt", []byte("x"))
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Code == "" {
+			t.Fatal("writing into a non-existent directory should fail, not mkdir it")
+		}
+	})
+
+	t.Run("missing file reads as not_found", func(t *testing.T) {
+		res, err := Execute(root, OpRead, "absent.txt", nil)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Code != CodeNotFound {
+			t.Fatalf("code = %q, want %q", res.Code, CodeNotFound)
+		}
+	})
+
+	t.Run("reading a directory is bad_path, not a garbled read", func(t *testing.T) {
+		res, err := Execute(root, OpRead, "config", nil)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Code != CodeBadPath {
+			t.Fatalf("code = %q, want %q", res.Code, CodeBadPath)
+		}
+	})
+
+	t.Run("oversized write is refused", func(t *testing.T) {
+		res, err := Execute(root, OpWrite, "big.txt", make([]byte, MaxWriteBytes+1))
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Code != CodeTooLarge {
+			t.Fatalf("code = %q, want %q", res.Code, CodeTooLarge)
+		}
+	})
+
+	t.Run("oversized read is refused before buffering", func(t *testing.T) {
+		if err := os.WriteFile(filepath.Join(root, "huge.bin"), make([]byte, MaxReadBytes+1), 0o644); err != nil {
+			t.Fatalf("write huge: %v", err)
+		}
+		res, err := Execute(root, OpRead, "huge.bin", nil)
+		if err != nil {
+			t.Fatalf("Execute: %v", err)
+		}
+		if res.Code != CodeTooLarge {
+			t.Fatalf("code = %q, want %q", res.Code, CodeTooLarge)
+		}
+	})
+}
+
+// TestReadIsBinarySafe proves the []byte/base64 round-trip preserves bytes that a
+// string round-trip would destroy. A config file with a stray non-UTF-8 byte must
+// come back byte-identical, or "read, edit one line, write" would silently corrupt
+// the rest of the file.
+func TestReadIsBinarySafe(t *testing.T) {
+	root, _ := worldRoot(t)
+	raw := []byte{0xff, 0xfe, 'o', 'k', 0x00, 0x80}
+	if err := os.WriteFile(filepath.Join(root, "raw.bin"), raw, 0o644); err != nil {
+		t.Fatalf("write raw: %v", err)
+	}
+
+	res, err := Execute(root, OpRead, "raw.bin", nil)
+	if err != nil || res.Code != "" {
+		t.Fatalf("read failed: %v / %+v", err, res)
+	}
+
+	// Round-trip through the wire encoding, which is how felis-api actually receives it.
+	var buf bytes.Buffer
+	if err := Print(&buf, res); err != nil {
+		t.Fatalf("Print: %v", err)
+	}
+	line := strings.TrimPrefix(strings.TrimSpace(buf.String()), ResultPrefix)
+	var back Result
+	if err := json.Unmarshal([]byte(line), &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !bytes.Equal(back.Content, raw) {
+		t.Fatalf("content = % x, want % x", back.Content, raw)
+	}
+}
+
+// TestPrintIsOneMarkedLine pins the transport contract: felis-api finds the payload
+// by scanning merged stdout+stderr for ResultPrefix, so the payload must be exactly
+// one line and must carry the marker. An indented encoder would break the reader.
+func TestPrintIsOneMarkedLine(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Print(&buf, Result{Entries: []Entry{{Name: "a"}, {Name: "b"}}}); err != nil {
+		t.Fatalf("Print: %v", err)
+	}
+	out := buf.String()
+	if !strings.HasPrefix(out, ResultPrefix) {
+		t.Fatalf("output lacks the marker: %q", out)
+	}
+	if n := strings.Count(strings.TrimSuffix(out, "\n"), "\n"); n != 0 {
+		t.Fatalf("payload spans %d extra lines; it must be exactly one", n)
+	}
+}
+
+// TestReadRefusesTheForwardingSecret pins the one path denial in this package. The
+// value in config/paper-global.yml is the SAME on every backend in the cluster, so
+// a read here is not a caller reading their own data — it is the Velocity handshake
+// key for everyone else's servers.
+//
+// The equivalent-spelling cases are the substance of this test. A bare string
+// compare against the constant would pass the first case and wave through all the
+// rest, which is exactly the bug this guards; each alternative below names the same
+// file to the kernel, so each must be refused identically.
+func TestReadRefusesTheForwardingSecret(t *testing.T) {
+	root, _ := worldRoot(t)
+	const secret = "secret: aVeryRealForwardingKey"
+	if err := os.WriteFile(filepath.Join(root, "config", "paper-global.yml"),
+		[]byte(secret), 0o644); err != nil {
+		t.Fatalf("seed paper-global.yml: %v", err)
+	}
+
+	for _, spelling := range []string{
+		"config/paper-global.yml",
+		"./config/paper-global.yml",
+		"config//paper-global.yml",
+		"config/../config/paper-global.yml",
+		"config/./paper-global.yml",
+	} {
+		res, err := Execute(root, OpRead, spelling, nil)
+		if err != nil {
+			t.Fatalf("%s: Execute: %v", spelling, err)
+		}
+		if res.Code != CodeBadPath {
+			t.Errorf("%s: code = %q, want %q — an equivalent spelling must not bypass the denial",
+				spelling, res.Code, CodeBadPath)
+		}
+		if strings.Contains(string(res.Content), "aVeryRealForwardingKey") {
+			t.Errorf("%s: the forwarding secret leaked into the result", spelling)
+		}
+	}
+
+	// The denial is READ-only and exact: a neighbouring file in the same directory
+	// stays readable, or the guard would have broken ordinary config repair.
+	res, err := Execute(root, OpRead, "config/paper.yml", nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Code != "" {
+		t.Errorf("config/paper.yml: code = %q, want success — the denial must not widen", res.Code)
+	}
+
+	// Writing it is still allowed: it leaks nothing, and the lobby entrypoint
+	// rewrites the file whole on every boot regardless.
+	res, err = Execute(root, OpWrite, "config/paper-global.yml", []byte("proxies: {}\n"))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Code != "" {
+		t.Errorf("write code = %q, want success — only the read is denied", res.Code)
+	}
+}

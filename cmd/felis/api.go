@@ -16,6 +16,7 @@ import (
 	"felis.lolicon.best/internal/backupjob"
 	"felis.lolicon.best/internal/build"
 	"felis.lolicon.best/internal/config"
+	"felis.lolicon.best/internal/fileedit"
 	"felis.lolicon.best/internal/mail"
 	"felis.lolicon.best/internal/panel"
 	"felis.lolicon.best/internal/passkey"
@@ -222,6 +223,24 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "felis api: backup executor disabled (needs FELIS_IMAGE and FELIS_BACKUP_PVC) — backup endpoint returns 503")
 	}
 
+	// Server file editor: a weak-SA Job mounts ONLY the target world PVC and runs
+	// `felis files`, printing its result for felis-api to read back through
+	// pods/log (see internal/fileedit). It needs FELIS_IMAGE but — unlike restore
+	// and backup — no backup PVC, since it never touches the archive store, so it
+	// is wired on the image alone; otherwise the editor is left nil and the file
+	// endpoints honestly return 503. It takes the typed clientset rather than the
+	// controller-runtime client because the log subresource lives only on the typed
+	// CoreV1 client, and one client covers its Job create, Pod list, and log read.
+	var files api.FileEditor
+	if felisImage != "" {
+		files = &fileedit.Editor{
+			Runner: fileedit.NewK8sRunner(clientset),
+			Config: fileEditConfig(cfg, felisImage),
+		}
+	} else {
+		fmt.Fprintln(stderr, "felis api: file editor disabled (needs FELIS_IMAGE) — file endpoints return 503")
+	}
+
 	// One PGRepo instance backs both the handlers and the session verifier: the
 	// SessionAuth that fronts the external face reads sessions/users/settings from
 	// the same store the auth handlers write to, so a login and the next request
@@ -240,6 +259,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		Builder:     builder,
 		Restorer:    restorer,
 		Backuper:    backuper,
+		Files:       files,
 		Submissions: submissions,
 		Mailer:      mailer,
 		// The external face is fronted by SessionAuth: it prefers a local session
@@ -455,6 +475,19 @@ func backupConfig(cfg *config.Config, image, backupPVC string) backupjob.Config 
 		Image:      image,
 		BackupPVC:  backupPVC,
 		BackupRoot: cfg.Archive.LocalPath,
+	}
+}
+
+// fileEditConfig builds the file editor's config from felis.toml plus the
+// deployment-supplied image. It is the shortest of the three: the editor mounts
+// only the world PVC, so it needs no archive coordinates at all, and everything
+// else — the weak SA, the "/data" world root that makes paths match what the
+// minecraft server itself sees, the runtime identity, and the size/time ceilings —
+// falls back to the fileedit package's hardened defaults.
+func fileEditConfig(cfg *config.Config, image string) fileedit.Config {
+	return fileedit.Config{
+		Namespace: cfg.K8s.Namespace,
+		Image:     image,
 	}
 }
 
