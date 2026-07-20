@@ -1005,8 +1005,15 @@ build_image_from_binary() {
   tmp="$(mktemp -d)"
   remember_temp "$tmp"
   cp "$HOST_BIN" "${tmp}/felis"
+  # static-debian12, matching the repo Dockerfile's final stage. Every binary that can reach
+  # HOST_BIN traces back to that Dockerfile's CGO_ENABLED=0 build: the downloaded CI asset,
+  # the binary the TUI is already running, and the one build_image_from_source docker-cp's
+  # out of the image it just built. None of them link glibc, so the larger base-debian12
+  # bought nothing and only widened the runtime surface. It mattered little while this was
+  # the rare fallback; now that the release channel downloads a binary and wraps it here,
+  # this is the image most installs actually run, and it should be the one CI publishes.
   cat > "${tmp}/Dockerfile" <<'EOF'
-FROM gcr.io/distroless/base-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot
 ENV PATH=/usr/local/bin:/usr/bin:/bin
 COPY felis /usr/local/bin/felis
 USER 65532:65532
