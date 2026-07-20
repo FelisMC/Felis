@@ -48,11 +48,36 @@ type systemServerSpec struct {
 	storage        string // world PVC size
 	fallbackServer string // "" = none (refuse when down); never the lobby
 	healthHTTPPort int32  // > 0 → gate readiness on an HTTP health endpoint
+	// rcon opts a system service into the RCON write channel. It is per-service and
+	// NOT a default, because enabling it on a backend that runs no RCON listener is
+	// actively destructive rather than merely useless: the operator gates readiness
+	// on the probe, so the server would never leave Starting and would eventually be
+	// marked Failed. The login limbo is exactly that case (LOOHP/Limbo has no RCON),
+	// and it is the front door — taking it down locks everyone out.
+	rcon bool
 	// env are extra plain (non-secret) environment variables baked into the pod.
 	// System-service configuration derived from the deployment (the internal API
 	// URL, root domain, lobby name) rides here; secrets never do — the service
 	// token is injected by the operator via secretKeyRef, not as a literal value.
 	env []v1alpha1.EnvVar
+}
+
+// systemRcon renders the RCON block for a system service. The secret name comes
+// from naming.RconSecretName — the same convention felis-api writes for user
+// servers and the operator provisions against — so a system service is not a
+// second, parallel way of doing this. Port is left 0 so the operator's default is
+// the only place the number lives.
+func systemRcon(in systemServerSpec) v1alpha1.RconSpec {
+	if !in.rcon {
+		return v1alpha1.RconSpec{Enabled: false}
+	}
+	return v1alpha1.RconSpec{
+		Enabled: true,
+		SecretRef: v1alpha1.SecretKeyRef{
+			Name: naming.RconSecretName(in.name),
+			Key:  naming.RconSecretKey,
+		},
+	}
 }
 
 // felisLimboHealthPort is the port the felis-limbo readiness plugin serves its
@@ -82,8 +107,10 @@ const (
 //   - permits reserved names (login/lobby) via ValidateSystemServerName,
 //   - sets DesiredState=Running (the service is up the moment it exists),
 //   - sets ReaperExempt=true and AutostartPolicy=public,
-//   - leaves RCON disabled (LOOHP/Limbo has none; readiness is gated on pod
-//     TCP/HTTP health, not an RCON probe — see the operator reconciler).
+//   - enables RCON only where the image actually serves it (in.rcon): the lobby
+//     is Paper and needs the write channel like any user server, while the login
+//     limbo has no RCON listener at all and gates readiness on pod TCP/HTTP
+//     health instead — see the operator reconciler.
 func buildSystemServer(in systemServerSpec, namespace string) (*v1alpha1.MinecraftServer, error) {
 	if err := naming.ValidateSystemServerName(in.name); err != nil {
 		return nil, fmt.Errorf("invalid name: %w", err)
@@ -141,7 +168,7 @@ func buildSystemServer(in systemServerSpec, namespace string) (*v1alpha1.Minecra
 			// forwarding), backends run offline-mode; the proxy is the one place
 			// online-mode is true (spec §8, §11).
 			OnlineMode: false,
-			Rcon:       v1alpha1.RconSpec{Enabled: false},
+			Rcon:       systemRcon(in),
 			Storage:    v1alpha1.StorageSpec{Size: storageQ.String()},
 			Resources:  corev1.ResourceRequirements{Limits: limits, Requests: requests},
 			Startup:    v1alpha1.StartupSpec{HealthHTTPPort: in.healthHTTPPort},
@@ -192,6 +219,9 @@ func lobbySystemServer(image, namespace string) (*v1alpha1.MinecraftServer, erro
 		memory:         "1Gi",
 		storage:        "2Gi",
 		fallbackServer: naming.SystemLoginServer,
+		// Paper serves RCON, and the lobby is administered through the panel like any
+		// other server — online players, console, permissions all ride this channel.
+		rcon: true,
 	}, namespace)
 }
 

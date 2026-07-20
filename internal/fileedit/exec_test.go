@@ -355,3 +355,51 @@ func TestReadRefusesTheForwardingSecret(t *testing.T) {
 		t.Errorf("write code = %q, want success — only the read is denied", res.Code)
 	}
 }
+
+// TestReadRedactsRconPassword pins spec §286 (RCON 密码绝不下发前端) on the one
+// path that could leak it: server.properties is the file owners edit most, so it
+// is readable — but the RCON password in it is the control plane's command
+// credential for that server, and the editor must not hand it back.
+func TestReadRedactsRconPassword(t *testing.T) {
+	root := t.TempDir()
+	props := "motd=hello\nrcon.password=hunter2\nrcon.port=25575\nenable-rcon=true\n"
+	if err := os.WriteFile(filepath.Join(root, "server.properties"), []byte(props), 0o644); err != nil {
+		t.Fatalf("write server.properties: %v", err)
+	}
+	// A same-named file in a subdirectory must NOT be treated as the real one: the
+	// redaction keys off the cleaned path, and a plugin is free to keep its own
+	// server.properties anywhere in the volume.
+	if err := os.MkdirAll(filepath.Join(root, "plugins"), 0o755); err != nil {
+		t.Fatalf("mkdir plugins: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "plugins", "server.properties"), []byte("rcon.password=notmine\n"), 0o644); err != nil {
+		t.Fatalf("write nested server.properties: %v", err)
+	}
+
+	res, err := Execute(root, OpRead, "server.properties", nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	got := string(res.Content)
+	if strings.Contains(got, "hunter2") {
+		t.Fatalf("read returned the RCON password (spec §286):\n%s", got)
+	}
+	if !strings.Contains(got, redactedValue) {
+		t.Fatalf("read did not mark the password as withheld:\n%s", got)
+	}
+	// Redaction must not cost the owner the rest of the file — that is the whole
+	// reason this is a value redaction and not a whole-file denial.
+	for _, keep := range []string{"motd=hello", "rcon.port=25575", "enable-rcon=true"} {
+		if !strings.Contains(got, keep) {
+			t.Fatalf("redaction dropped %q from the file:\n%s", keep, got)
+		}
+	}
+
+	nested, err := Execute(root, OpRead, "plugins/server.properties", nil)
+	if err != nil {
+		t.Fatalf("Execute nested: %v", err)
+	}
+	if !strings.Contains(string(nested.Content), "notmine") {
+		t.Fatalf("a nested server.properties was redacted; only the world root's is the real one:\n%s", nested.Content)
+	}
+}

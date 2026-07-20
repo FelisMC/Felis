@@ -127,6 +127,21 @@ func WorldPVCName(server string) string {
 	return worldVolumeName + "-" + server + "-0"
 }
 
+// RconSecretKey is the key holding the password inside a server's RCON Secret.
+const RconSecretKey = "password"
+
+// RconSecretName returns the per-server RCON password Secret name. Like
+// WorldPVCName this convention is shared rather than duplicated: felis-api writes
+// it into spec.rcon.secretRef when creating a server, `felis setup` writes the
+// same for the system lobby, and the operator both provisions the Secret under
+// that name and reads it back for the readiness probe. One password per server,
+// never a shared one — the console grants whoever holds it full command authority
+// over that server, so a single cluster-wide value would make every owner an
+// operator of everyone else's world.
+func RconSecretName(server string) string {
+	return server + "-rcon"
+}
+
 // Hostname composes subdomain.rootDomain after validating the subdomain.
 func Hostname(subdomain, rootDomain string) (string, error) {
 	if err := ValidateServerName(subdomain); err != nil {

@@ -136,7 +136,13 @@ func OperatorRole(p Params) *rbacv1.Role {
 		rule([]string{groupFelis}, []string{"minecraftservers/status"}, []string{"update"}),
 		rule([]string{groupApps}, []string{"statefulsets"}, []string{"get", "list", "watch", "create", "update"}),
 		rule([]string{groupCore}, []string{"services"}, []string{"get", "list", "watch", "create", "update"}),
-		rule([]string{groupCore}, []string{"secrets"}, []string{"get", "list", "watch"}),
+		// create is here for the per-server RCON password Secret the operator
+		// provisions on first reconcile (internal/operator.ensureRconSecret). It is a
+		// smaller grant than it looks: this identity already holds get/list/watch on
+		// every Secret in this namespace, so being able to add one grants no read it
+		// did not already have. No update/delete — the password is written once and
+		// removed by garbage collection through its controller reference.
+		rule([]string{groupCore}, []string{"secrets"}, []string{"get", "list", "watch", "create"}),
 	})
 }
 

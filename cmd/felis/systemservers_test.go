@@ -439,3 +439,40 @@ func TestEnsureSystemServersSkipsUnsetImage(t *testing.T) {
 		t.Errorf("lobby: skipped = %q, want %q", byName[naming.SystemLobbyServer].skipped, "image not configured")
 	}
 }
+
+// TestSystemServerRconPolicy pins which system service gets the RCON write
+// channel. This is not a preference: the operator gates readiness on the RCON
+// probe, so enabling it on a backend that serves no RCON listener would hold that
+// server in Starting until it was marked Failed. The login limbo is exactly that
+// backend (LOOHP/Limbo has no RCON) AND it is the front door, so getting this
+// backwards locks every player out of the deployment.
+func TestSystemServerRconPolicy(t *testing.T) {
+	login, err := loginSystemServer("reg/limbo:1", "minecraft", "http://api:8081", "mc.example.net", "console.mc.example.net")
+	if err != nil {
+		t.Fatalf("loginSystemServer: %v", err)
+	}
+	if login.Spec.Rcon.Enabled {
+		t.Fatal("the login limbo must not enable RCON: it serves no RCON listener, so the " +
+			"operator's readiness probe would never succeed and the login gate would be marked Failed")
+	}
+
+	lobby, err := lobbySystemServer("reg/lobby:1", "minecraft")
+	if err != nil {
+		t.Fatalf("lobbySystemServer: %v", err)
+	}
+	if !lobby.Spec.Rcon.Enabled {
+		t.Fatal("the lobby runs Paper and is administered through the panel; without RCON its " +
+			"console, online-player list and permission changes are all unavailable")
+	}
+	if got, want := lobby.Spec.Rcon.SecretRef.Name, naming.RconSecretName("lobby"); got != want {
+		t.Fatalf("lobby rcon secret = %q, want %q — the operator provisions against this name", got, want)
+	}
+	if got, want := lobby.Spec.Rcon.SecretRef.Key, naming.RconSecretKey; got != want {
+		t.Fatalf("lobby rcon secret key = %q, want %q", got, want)
+	}
+	// Port stays unset so the operator's DefaultRconPort is the only place the
+	// number is written down.
+	if lobby.Spec.Rcon.Port != 0 {
+		t.Fatalf("lobby rcon port = %d, want 0 (operator default)", lobby.Spec.Rcon.Port)
+	}
+}

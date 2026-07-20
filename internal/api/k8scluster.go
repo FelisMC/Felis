@@ -96,6 +96,24 @@ func (k *K8sCluster) CreateServer(ctx context.Context, in CreateServerInput) err
 			FallbackServer:  naming.SystemLoginServer,
 			Storage:         v1alpha1.StorageSpec{Size: in.StorageSize},
 			Resources:       in.Resources,
+			// RCON is what makes a server manageable at all: the operator gates
+			// phase=Running on the probe and samples the player tally from it (spec
+			// §5), and every write — console commands, the LuckPerms grants behind the
+			// permissions UI — travels over it (spec §8 写=RCON). Leaving it unset
+			// produced a server that looked Running, reported nobody online, and
+			// answered the console with 503; enabling it here is the fix for all
+			// three. Port stays 0 so the operator applies its own default rather than
+			// this package pinning a second copy of it. The password is not set (and
+			// felis-api could not set it — it holds secrets:get, not create): the
+			// operator mints it into this Secret on first reconcile, and felis-api
+			// only ever reads it back at command time.
+			Rcon: v1alpha1.RconSpec{
+				Enabled: true,
+				SecretRef: v1alpha1.SecretKeyRef{
+					Name: naming.RconSecretName(in.Name),
+					Key:  naming.RconSecretKey,
+				},
+			},
 		},
 	}
 	if err := k.c.Create(ctx, ms); err != nil {

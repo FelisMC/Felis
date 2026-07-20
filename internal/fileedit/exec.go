@@ -1,6 +1,7 @@
 package fileedit
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -265,7 +266,50 @@ func read(r *os.Root, name string) Result {
 	if err != nil {
 		return failure(err, name)
 	}
-	return Result{Content: b}
+	return Result{Content: redactSecretProps(name, b)}
+}
+
+// propsPath is the server's main config file, and rconPasswordKey the one line in
+// it the editor must not hand back (spec §286: RCON 密码绝不下发前端).
+const (
+	propsPath       = "server.properties"
+	rconPasswordKey = "rcon.password"
+	// redactedValue is deliberately not empty: a blank value would read as "RCON has
+	// no password", which is a very different and much more alarming claim than "you
+	// are not being shown it".
+	redactedValue = "<redacted by felis>"
+)
+
+// redactSecretProps blanks the RCON password when server.properties is read.
+//
+// Unlike secretConfigPath this is a value redaction rather than a whole-file
+// denial, because the file is not platform material that merely happens to sit in
+// the volume — it is the single most-edited config a server owner has (MOTD,
+// view-distance, difficulty, gamemode), and refusing it outright would cost real
+// repair to hide one line. The password is also per-server and garbage-collected
+// with it, so unlike the cluster-wide forwarding secret it leaks nothing about
+// anyone else's server; it is withheld because §286 draws the line at the frontend
+// regardless of blast radius, and because the console already gives an owner every
+// capability the password would.
+//
+// The write path is left alone on purpose, mirroring the reasoning at
+// secretConfigPath: felis-lobby's entrypoint rewrites all three rcon keys from the
+// injected Secret on every boot, so saving the placeholder back cannot lock the
+// control plane out — the next restart restores the real value. That is what makes
+// redaction safe here; without the boot-time rewrite this would be a footgun.
+func redactSecretProps(name string, content []byte) []byte {
+	if path.Clean(name) != propsPath {
+		return content
+	}
+	lines := bytes.Split(content, []byte("\n"))
+	for i, line := range lines {
+		// TrimSpace before matching: a properties key may be indented, and the
+		// trailing \r of a CRLF file would otherwise ride along into the value.
+		if bytes.HasPrefix(bytes.TrimSpace(line), []byte(rconPasswordKey+"=")) {
+			lines[i] = []byte(rconPasswordKey + "=" + redactedValue)
+		}
+	}
+	return bytes.Join(lines, []byte("\n"))
 }
 
 // write replaces a file's contents. It truncates rather than appends, and it does

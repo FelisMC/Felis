@@ -6,6 +6,8 @@ package operator
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"time"
 
@@ -84,6 +86,18 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		return ctrl.Result{}, err
 	}
 
+	// Before the StatefulSet, not after: buildEnv wires RCON_PASSWORD as a
+	// secretKeyRef, so a pod created ahead of its Secret never starts — it sits in
+	// CreateContainerConfigError, which reads like a broken image rather than a
+	// missing key.
+	if err := r.ensureRconSecret(ctx, server); err != nil {
+		r.markStarting(server, "RconSecretUnavailable", err.Error())
+		if perr := r.patchStatus(ctx, server); perr != nil {
+			return ctrl.Result{}, perr
+		}
+		return ctrl.Result{RequeueAfter: requeueSecret}, nil
+	}
+
 	desired, err := buildStatefulSet(server, 1)
 	if err != nil {
 		// A malformed spec (e.g. bad storage quantity) is terminal until edited.
@@ -151,7 +165,10 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 	// player tally is zero, track the empty duration and auto-stop when the
 	// configured timeout expires. The existing RCON probe already supplies
 	// the player count — no extra network cost.
-	if server.Spec.Idle.AutoStopEnabled && server.Spec.Idle.EmptySecondsBeforeStop > 0 {
+	// Rcon.Enabled is part of the condition because `players` is only a real tally
+	// when the probe above ran: with RCON off it keeps its zero value, which this
+	// branch would read as "empty" and use to stop a server full of people.
+	if server.Spec.Rcon.Enabled && server.Spec.Idle.AutoStopEnabled && server.Spec.Idle.EmptySecondsBeforeStop > 0 {
 		if players.Online == 0 {
 			if server.Status.EmptySince == nil {
 				t := r.now()
@@ -226,6 +243,84 @@ func (r *Reconciler) ensureServices(ctx context.Context, server *v1alpha1.Minecr
 		}
 	}
 	return endpointAddress, nil
+}
+
+// ensureRconSecret creates the per-server RCON password Secret named by
+// spec.rcon.secretRef the first time a server with RCON enabled reconciles, and
+// leaves it alone afterwards. Provisioning lives here rather than in felis-api's
+// CreateServer for three reasons: it is declarative (a server whose Secret was
+// deleted heals on the next pass instead of staying permanently unreachable), the
+// controller reference makes Kubernetes garbage-collect the Secret with the server
+// so no delete path has to remember it, and it backfills — a server created before
+// RCON existed only needs spec.rcon filled in, and the password appears without
+// anyone handling it. felis-api never mints the password and never needs to: it
+// reads the Secret at command time (internal/api/console.go rconPassword).
+//
+// The password is 32 hex chars from crypto/rand. It is generated once and never
+// rotated here: rewriting it would leave the running server authenticating with
+// the old value until its pod restarts, so rotation belongs to an explicit
+// operation, not to a reconcile that runs every few seconds.
+func (r *Reconciler) ensureRconSecret(ctx context.Context, server *v1alpha1.MinecraftServer) error {
+	if !server.Spec.Rcon.Enabled {
+		return nil
+	}
+	ref := server.Spec.Rcon.SecretRef
+	if ref.Name == "" || ref.Key == "" {
+		return fmt.Errorf("rcon.secretRef.name and .key are required when rcon is enabled")
+	}
+	var existing corev1.Secret
+	err := r.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: ref.Name}, &existing)
+	if err == nil {
+		if _, ok := existing.Data[ref.Key]; ok {
+			return nil
+		}
+		return fmt.Errorf("secret %s exists but has no key %q", ref.Name, ref.Key)
+	}
+	if !apierrors.IsNotFound(err) {
+		return err
+	}
+
+	password, err := randomRconPassword()
+	if err != nil {
+		return err
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      ref.Name,
+			Namespace: server.Namespace,
+			Labels:    map[string]string{v1alpha1.LabelServer: server.Name},
+		},
+		Type: corev1.SecretTypeOpaque,
+		// Data, not StringData: StringData is a write-only convenience the API server
+		// folds into Data, so anything reading the object back — including this
+		// package's own tests — would see an empty value. Encoding here keeps the
+		// object self-consistent the moment it is built.
+		Data: map[string][]byte{ref.Key: []byte(password)},
+	}
+	if err := controllerutil.SetControllerReference(server, secret, r.Scheme); err != nil {
+		return err
+	}
+	if err := r.Create(ctx, secret); err != nil {
+		// Another reconcile (or a racing replica) won: that Secret is as good as
+		// this one, so treat the collision as success rather than thrashing.
+		if apierrors.IsAlreadyExists(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// randomRconPassword returns 16 crypto/rand bytes as hex. Hex, not base64: the
+// value is written verbatim into server.properties, whose parser treats the line
+// as raw text to end-of-line, and hex avoids every character (=, :, \, whitespace)
+// that a properties file or a shell round-trip could interpret.
+func randomRconPassword() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("generate rcon password: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
 func (r *Reconciler) rconPassword(ctx context.Context, server *v1alpha1.MinecraftServer) (string, error) {

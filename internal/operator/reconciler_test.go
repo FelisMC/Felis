@@ -640,3 +640,73 @@ func TestReconcileRunning_StartDurationObservedOnce(t *testing.T) {
 		t.Errorf("startRequestedAt = %v after Stop, want nil so the next start re-anchors", s.Status.StartRequestedAt)
 	}
 }
+
+// A server whose RCON Secret does not exist yet is the normal case on first
+// reconcile — felis-api writes spec.rcon.secretRef but holds secrets:get, not
+// create, so the name it points at is a promise the operator has to keep. Before
+// this the server sat in Starting/RconSecretUnavailable forever.
+func TestReconcileProvisionsMissingRconSecret(t *testing.T) {
+	r, c := newReconciler(t, fakeProber{}, runningServer())
+	reconcile(t, r, "survival")
+
+	var secret corev1.Secret
+	if err := c.Get(context.Background(),
+		types.NamespacedName{Namespace: "minecraft", Name: "survival-rcon"}, &secret); err != nil {
+		t.Fatalf("expected the operator to create the rcon Secret: %v", err)
+	}
+	pw := string(secret.Data["password"])
+	if pw == "" {
+		t.Fatal("rcon Secret was created with an empty password")
+	}
+	// 16 random bytes as hex. An assertion on the shape, not the value: a password
+	// short enough to guess is the failure this is guarding, and it cannot be
+	// checked by comparing against a fixture.
+	if len(pw) != 32 {
+		t.Fatalf("password = %d chars, want 32 hex chars", len(pw))
+	}
+	if strings.Trim(pw, "0123456789abcdef") != "" {
+		t.Fatalf("password %q is not hex; it is written verbatim into server.properties", pw)
+	}
+	// The controller reference is what makes Kubernetes delete the Secret with the
+	// server. Without it every deleted server leaves its password behind.
+	if len(secret.OwnerReferences) != 1 || secret.OwnerReferences[0].Name != "survival" {
+		t.Fatalf("owner references = %+v, want one referring to the server", secret.OwnerReferences)
+	}
+}
+
+// Reconcile runs every few seconds; regenerating the password on each pass would
+// leave the running server authenticating with a value the control plane no longer
+// has, breaking the console until the pod happened to restart.
+func TestReconcileKeepsAnExistingRconPassword(t *testing.T) {
+	r, c := newReconciler(t, fakeProber{}, runningServer(), rconSecret())
+	reconcile(t, r, "survival")
+	reconcile(t, r, "survival")
+
+	var secret corev1.Secret
+	if err := c.Get(context.Background(),
+		types.NamespacedName{Namespace: "minecraft", Name: "survival-rcon"}, &secret); err != nil {
+		t.Fatalf("get rcon secret: %v", err)
+	}
+	if got := string(secret.Data["password"]); got != "hunter2" {
+		t.Fatalf("password = %q, want the original %q — the operator rotated it", got, "hunter2")
+	}
+}
+
+// The idle auto-stop reads Status.Players, which is only sampled by the RCON
+// probe. With RCON off the tally stays at its zero value, and a bare
+// "players == 0" test would read that as an empty server and stop one full of
+// people.
+func TestIdleAutoStopIsInertWithoutRcon(t *testing.T) {
+	server := runningServer()
+	server.Spec.Rcon = v1alpha1.RconSpec{Enabled: false}
+	server.Spec.Idle = v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: 1}
+
+	r, c := newReconciler(t, fakeProber{}, server)
+	reconcile(t, r, "survival")
+	reconcile(t, r, "survival")
+
+	if got := getServer(t, c, "survival").Spec.DesiredState; got != v1alpha1.DesiredRunning {
+		t.Fatalf("desiredState = %q, want %q — idle auto-stop fired on an unprobed player count",
+			got, v1alpha1.DesiredRunning)
+	}
+}

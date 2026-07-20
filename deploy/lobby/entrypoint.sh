@@ -58,6 +58,33 @@ set_prop() {
 set_prop server-port "$PORT"
 set_prop online-mode false
 
+# RCON is the control plane's write channel (spec §8 写=RCON): the operator probes it
+# for readiness and the player tally, and felis-api runs console/permission commands over
+# it. Paper only reads these three keys from server.properties, so the operator's injected
+# RCON_PASSWORD has to be written here to take effect — env alone does nothing.
+#
+# Rewritten on EVERY boot from the Secret, deliberately. That makes the value in the world
+# volume derived state rather than the source of truth: an owner who edits (or clobbers)
+# these lines through the panel's file editor cannot lock the control plane out of their
+# own server, because the next restart restores the real password. The editor is also kept
+# from reading the password back out — see internal/fileedit/exec.go (spec §286: RCON
+# 密码绝不下发前端).
+#
+# No password, no RCON: an empty enable-rcon=true would let anything that reaches the port
+# in unauthenticated. Unlike the forwarding secret this is not fatal — a server without the
+# write channel still serves players — so it warns and starts rather than refusing.
+if [ -n "${RCON_PASSWORD:-}" ]; then
+  set_prop enable-rcon true
+  set_prop rcon.port "${RCON_PORT:-25575}"
+  set_prop rcon.password "$RCON_PASSWORD"
+  echo "felis-lobby: rcon enabled on port ${RCON_PORT:-25575}"
+else
+  set_prop enable-rcon false
+  echo "felis-lobby: WARNING — RCON_PASSWORD is empty, so the console, the online-player" >&2
+  echo "  list and permission changes will be unavailable for this server. The operator" >&2
+  echo "  injects it from the <server>-rcon Secret when spec.rcon.enabled is true." >&2
+fi
+
 # ponytail: rewritten whole, not merged. Paper loads this file and fills every key it does
 # not find with the default, then writes the full tree back — so a proxies-only file is a
 # complete, stable input, and the lobby's other globals are simply always the defaults.
