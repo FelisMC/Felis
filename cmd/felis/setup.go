@@ -26,15 +26,6 @@ const hostBootstrapKubeconfigPath = "/etc/rancher/k3s/k3s.yaml"
 
 var errHostBootstrapCancelled = errors.New("host bootstrap cancelled")
 
-// channelName maps the --dev flag to the release channel deploy/bootstrap.sh
-// understands. Release is the default so a bare `felis setup` is production.
-func channelName(dev bool) string {
-	if dev {
-		return "dev"
-	}
-	return "release"
-}
-
 // cmdSetup is the normal first-run operator console. It is intentionally separate
 // from breakGlass: setup creates the initial Owner and optional web edge; breakGlass
 // is reserved for emergency local recovery/reset.
@@ -42,19 +33,25 @@ func cmdSetup(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", defaultSetupConfigPath, "path to felis.toml")
-	dev := fs.Bool("dev", false, "install the dev channel (felis:dev, main HEAD) instead of the default release channel (felis:release, newest tag)")
+	dev := fs.Bool("dev", false, "rejected: the install channel is chosen by the bootstrap installer, not by setup")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
 		return 2
 	}
-	// The channel governs which image tag/source ref the host bootstrap builds.
-	// runBootstrap forwards the whole environment, so exporting it here is enough
-	// to reach deploy/bootstrap.sh without threading a parameter through the TUI.
-	if err := os.Setenv("FELIS_CHANNEL", channelName(*dev)); err != nil {
-		fmt.Fprintf(stderr, "felis setup: %v\n", err)
-		return 1
+	// setup cannot honour a channel, so it refuses rather than silently installing the
+	// other one. It used to export FELIS_CHANNEL here, which nothing has ever read --
+	// deploy/bootstrap.sh reads FELIS_VERSION_BOOTSTRAP -- so --dev was a silent no-op
+	// that installed release. Renaming the variable would not fix it: on this path
+	// bootstrap takes the bootstrap_from_tui arm, which re-images the host from the
+	// binary setup is already running, and every reader of FELIS_VERSION_BOOTSTRAP
+	// (use_release_binary, resolve_install_ref) is unreachable from there. Choosing a
+	// channel means re-running the installer, which is what this points the operator at.
+	if *dev {
+		fmt.Fprintln(stderr, "felis setup: --dev is not supported here; setup re-images this host from the felis binary it is already running.")
+		fmt.Fprintln(stderr, "To install a different channel, re-run the bootstrap installer with FELIS_VERSION_BOOTSTRAP=dev (see CONTRIBUTING.md).")
+		return 2
 	}
 	configFlagSet := false
 	fs.Visit(func(f *flag.Flag) {

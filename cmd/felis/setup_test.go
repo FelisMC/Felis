@@ -93,3 +93,29 @@ func TestHostBootstrapReadyRequiresMarkerAndArtifacts(t *testing.T) {
 		t.Fatal("bootstrap should be ready when marker and host artifacts exist")
 	}
 }
+
+// --dev used to export FELIS_CHANNEL, which nothing reads, so `felis setup --dev`
+// silently installed the RELEASE channel: the one outcome the operator did not ask
+// for. Renaming the variable to the one bootstrap does read (FELIS_VERSION_BOOTSTRAP)
+// would not have helped -- setup takes bootstrap's bootstrap_from_tui arm, where every
+// reader of it is unreachable -- so the flag refuses instead of guessing. It has to
+// refuse BEFORE the root check, or the message an unprivileged operator sees is about
+// sudo rather than about the channel.
+func TestSetupDevFlagRefusesInsteadOfSilentlyInstallingRelease(t *testing.T) {
+	var stdout, stderr strings.Builder
+
+	if code := cmdSetup([]string{"--dev"}, &stdout, &stderr); code != 2 {
+		t.Fatalf("want exit 2 for an unsupported channel flag, got %d (stderr: %s)", code, stderr.String())
+	}
+	msg := stderr.String()
+	if !strings.Contains(msg, "FELIS_VERSION_BOOTSTRAP=dev") {
+		t.Errorf("the refusal must name the mechanism that actually works:\n%s", msg)
+	}
+	if strings.Contains(msg, "must run as root") {
+		t.Errorf("the channel refusal must precede the root check:\n%s", msg)
+	}
+	// The dead variable is gone; setting it again would re-create a knob nothing reads.
+	if _, ok := os.LookupEnv("FELIS_CHANNEL"); ok {
+		t.Errorf("FELIS_CHANNEL has no reader anywhere and must not be exported")
+	}
+}
