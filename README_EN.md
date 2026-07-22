@@ -53,12 +53,13 @@ docker build -t felis:custom .
 
 ## License
 
-The source code is released under the MIT License.
+The source code is released under [AGPL-3.0-only](LICENSE).
 
 ### License Notes
 
-1. **Attribution**: Any distribution of this project or derivative works must include the original copyright notice and license statement.
-2. **Disclaimer**: This project is provided "as is", without warranty of any kind.
+1. **Derivative works are AGPL too**: Any distribution of this project or of software derived from it must be released under AGPL-3.0 and must include the original copyright notice and license statement.
+2. **Running it as a network service also triggers the source obligation** (AGPL section 13): if you host a modified Felis for other people to use, you must offer those users the complete source of your modified version — even if you never distribute a binary. This is the one substantive difference between AGPL and GPL, and since Felis is a hosting platform reached over a network, it will essentially always apply.
+3. **Disclaimer**: This project is provided "as is", without warranty of any kind.
 
 ## Acknowledgements
 
