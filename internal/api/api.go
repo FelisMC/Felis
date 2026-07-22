@@ -624,6 +624,18 @@ func (a *API) requireOnboarded(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// setupRequired reports whether the caller still owes the forced-onboarding step,
+// for the SPA to poll. It MUST stay in lockstep with requireOnboarded's unlock
+// condition above: the lockdown lifts on a verified email OR an enrolled passkey.
+// Keying on email PRESENCE instead of a passkey would trap a console-tier player —
+// they join through the bind-code door with no email by design (no SMTP) and can
+// only ever complete setup by enrolling a passkey, so any email term loops them
+// forever. Passkey alone is the durable gate; email verification is a later,
+// SMTP-dependent step.
+func setupRequired(emailVerified, hasPasskey bool) bool {
+	return !emailVerified && !hasPasskey
+}
+
 // ---- request context plumbing ----
 
 type ctxKey int

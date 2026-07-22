@@ -104,11 +104,8 @@ func (a *API) handleSetupRedeem(w http.ResponseWriter, r *http.Request) {
 		"email":          u.Email,
 		"email_verified": u.EmailVerified,
 		"has_passkey":    hasPasskey,
-		// Setup completes on email recorded + passkey enrolled. NOT email_verified:
-		// the bootstrap has no SMTP, so the Owner's address is stored unverified and a
-		// later Settings/SMTP flow verifies it. Passkey is the Owner's only pre-SMTP
-		// login credential, so it — not email verification — is the durable gate.
-		"setup_required": u.Email == "" || !hasPasskey,
+		// setup_required MUST mirror requireOnboarded's unlock (api.go:615); see setupRequired.
+		"setup_required": setupRequired(u.EmailVerified, hasPasskey),
 	})
 }
 
@@ -135,10 +132,7 @@ func (a *API) handleSetupStatus(w http.ResponseWriter, r *http.Request) {
 		"email":          u.Email,
 		"email_verified": u.EmailVerified,
 		"has_passkey":    hasPasskey,
-		// Setup completes on email recorded + passkey enrolled. NOT email_verified:
-		// the bootstrap has no SMTP, so the Owner's address is stored unverified and a
-		// later Settings/SMTP flow verifies it. Passkey is the Owner's only pre-SMTP
-		// login credential, so it — not email verification — is the durable gate.
-		"setup_required": u.Email == "" || !hasPasskey,
+		// setup_required MUST mirror requireOnboarded's unlock (api.go:615); see setupRequired.
+		"setup_required": setupRequired(u.EmailVerified, hasPasskey),
 	})
 }

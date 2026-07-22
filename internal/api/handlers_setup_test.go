@@ -95,6 +95,48 @@ func TestSetEmailClearsVerified(t *testing.T) {
 	}
 }
 
+// TestSetupCompletesForNoEmailPlayer pins the console-tier player fix: a bind-code
+// player joins with NO email (by design — no SMTP) and completes forced onboarding by
+// enrolling a passkey alone. setup_required MUST then report false, in lockstep with
+// requireOnboarded lifting (api.go:615). The OLD predicate (email == "" || !hasPasskey)
+// trapped exactly this state — email is empty forever, so it looped the player.
+func TestSetupCompletesForNoEmailPlayer(t *testing.T) {
+	repo := newFakeRepo()
+	// A console-tier player: role=user, no email ever, no passkey.
+	repo.staff["p"] = &StaffUser{ID: "p1", Username: "player", Role: "user"}
+
+	api := newTestAPI(repo, newFakeCluster())
+	api.External = staticExternal{p: &Principal{UserID: "p1", Role: "user", ViaSession: true}}
+	h := api.ExternalHandler()
+
+	status := func(t *testing.T) map[string]any {
+		t.Helper()
+		w := do(h, "GET", "/api/v1/auth/setup/status", "", nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status code = %d, want 200 (%s)", w.Code, w.Body.String())
+		}
+		var got map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatalf("status body not JSON: %v", err)
+		}
+		return got
+	}
+
+	// No email, no passkey → forced onboarding still owed.
+	if s := status(t); s["setup_required"] != true || s["email"] != "" {
+		t.Fatalf("fresh player status = %v, want setup_required=true email=\"\"", s)
+	}
+
+	// Enroll a passkey — the ONLY step a no-email player can complete.
+	repo.passkeyCreds["pk1"] = PasskeyCredential{ID: "pk1", UserID: "p1", CredentialID: "cred1"}
+
+	// Setup is now COMPLETE even though email stays empty. The OLD predicate returned
+	// true here (email == "") and looped the player forever.
+	if s := status(t); s["setup_required"] != false || s["has_passkey"] != true || s["email"] != "" {
+		t.Fatalf("post-passkey player status = %v, want setup_required=false has_passkey=true email=\"\"", s)
+	}
+}
+
 // errCode returns the error.code of a JSON error body, or "" if body is not one (a
 // non-failing decodeErr for cases where the response may be a success).
 func errCode(body []byte) string {
