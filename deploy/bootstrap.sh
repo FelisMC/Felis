@@ -108,6 +108,20 @@ FELIS_LOBBY_IMAGE="${FELIS_LOBBY_IMAGE:-felis-lobby:demo}"
 # runtime. Crossing a major is a deliberate code change, so we track the newest BUILD of
 # a pinned minor and let a human move the pin.
 FELIS_VELOCITY_VERSION="${FELIS_VELOCITY_VERSION:-3.5.1}"
+# Path to a Felis-Legacy Velocity fork build, installed as the proxy in place of the
+# stock download. Unset — the default — changes nothing.
+#
+# Stock Velocity will not offer the login-plugin-message exchange below 1.13, so a 1.8
+# client reaching a modern-forwarding backend today is a side effect of Via replacing
+# the channel initializers before that check runs. It works, and nobody designed it.
+# The fork registers the login packets on 1.7.2 and drops the gate, which makes the
+# same outcome deliberate.
+#
+# Opt-in because it is unmeasured where it counts: FL-008's probe runs offline-mode
+# against a stub, and this jar would carry every real Mojang session on the server.
+# The build lives in Felis-Legacy and is not byte-reproducible, so there is no digest
+# to pin here — the jar is trusted because that probe certified the build.
+FELIS_VELOCITY_FORK_JAR="${FELIS_VELOCITY_FORK_JAR:-}"
 # Temurin 25: Velocity 3.5 needs 21+, and 25 is also what a future Velocity 4 requires,
 # so the runtime does not have to move again when the pin does. Distro JDK packaging is
 # a lottery across four package managers — a tarball is one code path everywhere (same
@@ -1403,14 +1417,21 @@ install_velocity() {
   install_jre
   local url tmp
   prepare_velocity_layout
-  log "resolving the newest Velocity ${FELIS_VELOCITY_VERSION} build"
-  url="$(papermc_latest_jar velocity "$FELIS_VELOCITY_VERSION")" \
-    || die "no Velocity build for ${FELIS_VELOCITY_VERSION} (override with FELIS_VELOCITY_VERSION)"
-  log "downloading Velocity ${FELIS_VELOCITY_VERSION}"
-  tmp="$(mktemp "${VELOCITY_DIR}/.velocity.jar.XXXXXX")"
-  remember_temp "$tmp"
-  curl -fsSL "$url" -o "$tmp" || die "failed to download Velocity: ${url}"
-  atomic_install_file "$tmp" "${VELOCITY_DIR}/velocity.jar" 0644 root root
+  if [ -n "$FELIS_VELOCITY_FORK_JAR" ]; then
+    [ -f "$FELIS_VELOCITY_FORK_JAR" ] \
+      || die "FELIS_VELOCITY_FORK_JAR is not a readable file: ${FELIS_VELOCITY_FORK_JAR}"
+    log "installing the Felis-Legacy Velocity fork from ${FELIS_VELOCITY_FORK_JAR}"
+    atomic_install_file "$FELIS_VELOCITY_FORK_JAR" "${VELOCITY_DIR}/velocity.jar" 0644 root root
+  else
+    log "resolving the newest Velocity ${FELIS_VELOCITY_VERSION} build"
+    url="$(papermc_latest_jar velocity "$FELIS_VELOCITY_VERSION")" \
+      || die "no Velocity build for ${FELIS_VELOCITY_VERSION} (override with FELIS_VELOCITY_VERSION)"
+    log "downloading Velocity ${FELIS_VELOCITY_VERSION}"
+    tmp="$(mktemp "${VELOCITY_DIR}/.velocity.jar.XXXXXX")"
+    remember_temp "$tmp"
+    curl -fsSL "$url" -o "$tmp" || die "failed to download Velocity: ${url}"
+    atomic_install_file "$tmp" "${VELOCITY_DIR}/velocity.jar" 0644 root root
+  fi
 
   install_via_plugins
   write_velocity_config
