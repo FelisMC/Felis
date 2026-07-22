@@ -1334,6 +1334,13 @@ build_velocity_plugin() {
 # Pinned by hash and not by "latest" on purpose. These three jars sit in front of every packet
 # on the proxy, and they are the exact bytes FL-007 measured — a moving tag would quietly make
 # this an unmeasured configuration. Bumping a version means bumping its checksum here.
+#
+# The three versions are a set, not three independent pins. ViaRewind is the component that
+# carries 1.8/1.7 support, and 4.1.2 against ViaVersion/ViaBackwards 5.11.0 fails to load
+# Protocol1_9To1_8 — the single protocol every 1.8 client needs — with "Invalid version: 1"
+# at proxy startup. 4.1.3 is the release that adds 5.11.0 compatibility; a two-arm run of the
+# same proxy image logs that error three times on 4.1.2 and not at all on 4.1.3. Read the
+# ViaRewind release notes before moving ViaVersion or ViaBackwards.
 install_via_plugins() {
   prepare_velocity_layout
   local name version want target url tmp have
@@ -1361,7 +1368,7 @@ install_via_plugins() {
   done <<'EOF'
 ViaVersion 5.11.0 18d19e90fc9467d68128c076630ae8700449c901402a3ef421837ce006bc8cae
 ViaBackwards 5.11.0 b21983d561e3f92df257683f0133ab6c68ec68175e8acfd82c6231723bf83587
-ViaRewind 4.1.2 88f413eb1a5c302cf0fdd32bf11051bbb65485cbf6012921dbcfedab3772f341
+ViaRewind 4.1.3 2d5970d22b4711c9ab2800932326c7b08acdace25ed7c6bbb8f6ea81054962b4
 EOF
   ok "Via staged; clients from 1.8 up can join under modern forwarding"
 }
