@@ -100,7 +100,7 @@ public final class WaitingRouter {
      * fire {@link MenuTransferListener} on transfer.
      */
     void enqueueFromMenu(Player player, String serverName) {
-        authorizeAndWait(player, serverName, true);
+        authorizeAndWait(player, serverName, true, false);
     }
 
     /**
@@ -113,7 +113,38 @@ public final class WaitingRouter {
      * exactly as the other origins, so this adds a new entry point, not a new authority.
      */
     void enqueueFromCommand(Player player, String serverName) {
-        authorizeAndWait(player, serverName, false);
+        authorizeAndWait(player, serverName, false, false);
+    }
+
+    /**
+     * enqueueFromInvite is {@link #enqueueFromCommand} for an accepted invite, differing in
+     * one thing: a server that is ALREADY RUNNING is joined directly instead of woken.
+     *
+     * <p>An invite can only name the server its sender is standing on, so the target is
+     * running by construction — and a running felis server is already reachable by any
+     * linked player through {@code <name>.<root-domain>}, which
+     * {@link #onServerPreConnect} admits on the link check alone: no wake, no
+     * autostartPolicy consultation. Routing an accept through {@link #wakeAndWaitLinked}
+     * instead asks the API to wake a server that needs no waking, and autostartPolicy
+     * defaults to ownerOnly, so the API answers 403 and the invitee is turned away from a
+     * place they could have walked into unaided — the green button does nothing for
+     * exactly the people you would invite.
+     *
+     * <p>Joining a live backend therefore grants no authority the invitee did not already
+     * have. WAKING a stopped one still does, which is why the not-ready case falls through
+     * to the policy-gated path unchanged: only the owner may start a stopped ownerOnly
+     * server, invite or no invite.
+     *
+     * <p>It does leave a mark, though, and one that outlives the invite: landing here fires
+     * {@link #onServerConnected}, whose join-event appends the player to the server's
+     * allowlist. On an autostartPolicy=allowlist server that row is the wake permission, so
+     * an accepted invite ends in the invitee being able to start the server later. That is
+     * the same row they would have earned by walking in unaided — the invite shortened the
+     * walk, it did not widen the door — but it is a consequence the INVITER is warned about
+     * up front (FelisVelocityPlugin#accessNotice), because they are the one causing it.
+     */
+    void enqueueFromInvite(Player player, String serverName) {
+        authorizeAndWait(player, serverName, false, true);
     }
 
     @Subscribe
@@ -324,7 +355,8 @@ public final class WaitingRouter {
         }
     }
 
-    private void authorizeAndWait(Player player, String serverName, boolean fromMenu) {
+    private void authorizeAndWait(Player player, String serverName, boolean fromMenu,
+                                  boolean joinIfReady) {
         UUID id = player.getUniqueId();
         boolean zh = FelisVelocityPlugin.zh(player);
         plugin.async(() -> {
@@ -343,6 +375,17 @@ public final class WaitingRouter {
                            : "Login verification is temporarily unavailable. Please try again shortly.",
                         NamedTextColor.RED));
                 return;
+            }
+            // Same ready-or-wake split as the host path above, for the one caller whose
+            // target is running by construction. See enqueueFromInvite for why joining a
+            // live backend is not an escalation and waking a stopped one still is.
+            if (joinIfReady) {
+                ServerView view = registry.view(serverName);
+                Optional<RegisteredServer> backend = registry.registered(serverName);
+                if (view != null && view.ready() && backend.isPresent()) {
+                    transfer(player, serverName, backend.get());
+                    return;
+                }
             }
             wakeAndWaitLinked(player, serverName, fromMenu);
         });
