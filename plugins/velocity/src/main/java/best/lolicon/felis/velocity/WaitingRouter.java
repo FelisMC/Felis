@@ -359,6 +359,21 @@ public final class WaitingRouter {
                                   boolean joinIfReady) {
         UUID id = player.getUniqueId();
         boolean zh = FelisVelocityPlugin.zh(player);
+        // Asking for the server you are standing on is a no-op, and it has to be caught
+        // here rather than at each entry point: the menu tile, /felis go and an accepted
+        // invite all funnel through this method. Without the guard the request runs the
+        // whole wake-and-queue path and ends in a Connect to the current server, which
+        // Velocity answers ALREADY_CONNECTED — the player sees a failure for something
+        // that was never a real move. Cheapest for the lobby, where the tile for the
+        // lobby itself sits in front of every player who is already in it.
+        if (player.getCurrentServer()
+                .map(sc -> sc.getServerInfo().getName().equalsIgnoreCase(serverName))
+                .orElse(false)) {
+            player.sendMessage(Component.text(
+                    zh ? "你已经在「" + serverName + "」了。"
+                       : "You're already on « " + serverName + " ».", NamedTextColor.YELLOW));
+            return;
+        }
         plugin.async(() -> {
             try {
                 if (!api.linkStatus(id)) {
