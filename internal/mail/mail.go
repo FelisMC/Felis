@@ -66,11 +66,20 @@ func (s *SMTP) SendOTP(ctx context.Context, email, code string) error {
 // NOOP-only Ping green-lit a From on a domain the account could not send as —
 // every OTP after it died at w.Close() with the wizard reporting success.
 //
-// Addressing the self-test to From cannot cause a false negative: this is an
-// authenticated submission relay, whose job is to accept RCPT for any
-// destination, so the recipient is never what a refusal is about — while the
-// sender identity, which is, still gets checked. It also puts the proof
-// somewhere the operator can go look at it.
+// What it does NOT prove is that the relay will let this From reach anyone
+// else. The self-test is addressed to From, which is a mailbox inside the
+// relay account, and a relay that gates sender identity at end-of-DATA gates
+// it on the way OUT: Fastmail answers 250 for noreply@a.example → the
+// account's own mailbox and 551 5.7.1 "Not authorised to send from this
+// header address" for that same From → any external recipient. Only the
+// account's exact authorized identity passes the second one — another
+// local-part on the same domain is refused too. So a green Ping means
+// connect/TLS/AUTH/message-shape are good; the operator still has to have
+// authorized From as a sending identity with their provider, and the first
+// player OTP is what proves they did. Addressing the self-test elsewhere
+// would not fix this — the only mailbox an operator can check is usually
+// inside the account as well — so the honest move is to say so here rather
+// than to buy false confidence with a bigger probe.
 func (s *SMTP) Ping(ctx context.Context) error {
 	c, err := s.connect(ctx)
 	if err != nil {
