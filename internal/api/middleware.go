@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"log"
 	"net/http"
+	"runtime/debug"
 )
 
 // withRequestID assigns a request id (honoring a WELL-FORMED inbound X-Request-Id)
@@ -57,10 +59,18 @@ func validRequestID(id string) bool {
 
 // withRecover turns a panicking handler into a 500 envelope instead of a
 // dropped connection.
+//
+// The client gets an opaque "internal error", but the panic value and stack are
+// logged FIRST, keyed by the same request_id — the same contract writeError keeps
+// for unmapped errors (see errors.go). Without it a recovered panic is an
+// untraceable 500: an operator holding "internal error" has nothing to grep for,
+// and diagnosis degrades into guessing against a live install.
 func withRecover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
+				log.Printf("api: %s %s: panic (request_id=%s): %v\n%s",
+					r.Method, r.URL.Path, requestIDFromContext(r.Context()), rec, debug.Stack())
 				writeError(w, r, newError(http.StatusInternalServerError, "panic", "internal error"))
 			}
 		}()

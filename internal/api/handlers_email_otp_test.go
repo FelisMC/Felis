@@ -1,8 +1,10 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -104,6 +106,36 @@ func TestEmailOTPVertical(t *testing.T) {
 	// 3) the code is single-use: re-submitting the consumed code now fails.
 	if w := do(eh, "POST", "/api/v1/account/email/verify", `{"code":"`+code+`"}`, nil); w.Code != http.StatusBadRequest || decodeErr(t, w) != "invalid_code" {
 		t.Fatalf("replay of consumed code: code = %d body %s, want 400 invalid_code", w.Code, w.Body.String())
+	}
+}
+
+// TestWithRecoverLogsPanicStack pins the observability contract: a recovered panic
+// must still leave the client an opaque 500 "panic", but the panic value, a stack,
+// and the request path MUST be logged first — otherwise a 500 like the email-OTP
+// report is untraceable (an operator has nothing to grep for). Regression guard for
+// the silent recover that cost a live debugging session.
+func TestWithRecoverLogsPanicStack(t *testing.T) {
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(old)
+
+	h := withRequestID(withRecover(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("boom-xyz")
+	})))
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("POST", "/api/v1/account/email/start", nil))
+
+	if w.Code != http.StatusInternalServerError || errCode(w.Body.Bytes()) != "panic" {
+		t.Fatalf("recovered response = %d %q, want 500 panic (%s)", w.Code, errCode(w.Body.Bytes()), w.Body.String())
+	}
+	logged := buf.String()
+	// The panic value, a real stack (debug.Stack always opens with "goroutine"), and
+	// the path — the three things a grep needs to find and place the fault.
+	for _, want := range []string{"boom-xyz", "goroutine", "/api/v1/account/email/start"} {
+		if !strings.Contains(logged, want) {
+			t.Fatalf("panic log missing %q; got:\n%s", want, logged)
+		}
 	}
 }
 
