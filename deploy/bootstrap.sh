@@ -1313,6 +1313,59 @@ build_velocity_plugin() {
   atomic_install_file "${jars[0]}" "${VELOCITY_DIR}/plugins/felis-velocity.jar" 0644 root root
 }
 
+# install_via_plugins stages ViaVersion + ViaBackwards + ViaRewind so players on clients
+# older than the proxy can still join.
+#
+# Modern forwarding nominally refuses anything below 1.13: HandshakeSessionHandler#handleLogin
+# reads the handshake protocol version and disconnects with
+# velocity.error.modern-forwarding-needs-new-client. That gate stops firing once Via is
+# present — it logs "Replacing channel initializers" during startup, so the version reaching
+# the check is plausibly already the rewritten one. The 1.13 floor is a property of the
+# UNASSISTED proxy pipeline, not of the forwarding protocol, so nothing here changes
+# player-info-forwarding-mode and no backend is patched or downgraded.
+#
+# Measured end to end rather than assumed (Felis-Legacy FL-007, cell modern-via121): a
+# protocol-47 client joined a stock Paper 1.21.11 backend through a modern-forwarding proxy.
+# The proof is the join itself, not the log line — that backend ran velocity.enabled=true with
+# a shared secret, and Paper in that state rejects any login not carrying forwarding data
+# signed with a matching HMAC. Only protocol 47 was measured; the rest of Via's 1.7-1.12 range
+# is its own documented support.
+#
+# Pinned by hash and not by "latest" on purpose. These three jars sit in front of every packet
+# on the proxy, and they are the exact bytes FL-007 measured — a moving tag would quietly make
+# this an unmeasured configuration. Bumping a version means bumping its checksum here.
+install_via_plugins() {
+  prepare_velocity_layout
+  local name version want target url tmp have
+  while read -r name version want; do
+    [ -n "$name" ] || continue
+    target="${VELOCITY_DIR}/plugins/${name}.jar"
+    # Hash stdin, never the path: sha256sum escapes its output line when the filename
+    # carries a backslash or a newline, and a leading "\" on the digest silently fails
+    # every comparison below.
+    have=""
+    [ -f "$target" ] && have="$(sha256sum <"$target" | cut -d' ' -f1)"
+    if [ "$have" = "$want" ]; then
+      ok "${name} ${version} already staged"
+      continue
+    fi
+    url="https://github.com/ViaVersion/${name}/releases/download/${version}/${name}-${version}.jar"
+    log "downloading ${name} ${version}"
+    tmp="$(mktemp "${VELOCITY_DIR}/.${name}.jar.XXXXXX")"
+    remember_temp "$tmp"
+    curl -fsSL "$url" -o "$tmp" || die "failed to download ${name} ${version}: ${url}"
+    have="$(sha256sum <"$tmp" | cut -d' ' -f1)"
+    [ "$have" = "$want" ] \
+      || die "${name} ${version} checksum mismatch: got ${have}, expected ${want}"
+    atomic_install_file "$tmp" "$target" 0644 root root
+  done <<'EOF'
+ViaVersion 5.11.0 18d19e90fc9467d68128c076630ae8700449c901402a3ef421837ce006bc8cae
+ViaBackwards 5.11.0 b21983d561e3f92df257683f0133ab6c68ec68175e8acfd82c6231723bf83587
+ViaRewind 4.1.2 88f413eb1a5c302cf0fdd32bf11051bbb65485cbf6012921dbcfedab3772f341
+EOF
+  ok "Via staged; clients from 1.8 up can join under modern forwarding"
+}
+
 install_jre() {
   local arch url
   if [ -x "${JRE_DIR}/bin/java" ]; then
@@ -1352,6 +1405,7 @@ install_velocity() {
   curl -fsSL "$url" -o "$tmp" || die "failed to download Velocity: ${url}"
   atomic_install_file "$tmp" "${VELOCITY_DIR}/velocity.jar" 0644 root root
 
+  install_via_plugins
   write_velocity_config
   install_velocity_service
   configure_velocity_firewall
