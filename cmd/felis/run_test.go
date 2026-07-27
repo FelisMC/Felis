@@ -40,7 +40,7 @@ func TestRunUnknownCommand(t *testing.T) {
 // undocumentedCommands are routable on purpose but kept out of the usage text: they
 // are called by deploy/bootstrap.sh, not by a human at a prompt. Listing them here is
 // what makes their absence from usage a deliberate decision rather than an oversight.
-var undocumentedCommands = map[string]bool{"bootstrap-assets": true}
+var undocumentedCommands = map[string]bool{"bootstrap-assets": true, "init-forwarding": true}
 
 // The usage text and the dispatch table must describe the same set of commands.
 //

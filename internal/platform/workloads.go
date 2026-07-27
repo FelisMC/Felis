@@ -375,6 +375,12 @@ func OperatorDeployment(p Params) *appsv1.Deployment {
 			"--namespace", p.MinecraftNamespace,
 			"--metrics-bind-address", fmt.Sprintf(":%d", operatorMetricsPort),
 		},
+		// FELIS_IMAGE names this same image so the operator can run it as the
+		// forwarding-config initContainer it injects into user servers (it must
+		// name an image to run, and its own is the one image guaranteed present).
+		Env: []corev1.EnvVar{
+			{Name: "FELIS_IMAGE", Value: p.FelisImage},
+		},
 		Ports: []corev1.ContainerPort{
 			{Name: "metrics", ContainerPort: operatorMetricsPort, Protocol: corev1.ProtocolTCP},
 		},

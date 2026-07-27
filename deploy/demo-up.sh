@@ -50,6 +50,8 @@ if [ -f "$IMG_DIR/felis-limbo.tar" ] && [ -f "$IMG_DIR/felis-lobby.tar" ]; then
   log "importing prebuilt image tars from $IMG_DIR"
   "$K3S" ctr images import "$IMG_DIR/felis-limbo.tar"
   "$K3S" ctr images import "$IMG_DIR/felis-lobby.tar"
+  # Optional: the plain-Paper recommended base, if a tar was staged for it.
+  [ -f "$IMG_DIR/felis-paper.tar" ] && "$K3S" ctr images import "$IMG_DIR/felis-paper.tar"
 else
   log "no prebuilt tars in $IMG_DIR — building on this host with docker"
   command -v docker >/dev/null 2>&1 || die "docker not found; cannot build images"
@@ -76,6 +78,14 @@ else
     --build-arg PAPER_JAR_URL="$PAPER_JAR_URL" \
     -t "$LOBBY_IMAGE" "$SRC_DIR"
   docker save "$LOBBY_IMAGE" | "$K3S" ctr images import -
+
+  # Plain Paper recommended base — same PAPER_JAR_URL, no plugins, no secret gate.
+  : "${PAPER_IMAGE:=felis-paper:demo}"
+  log "building $PAPER_IMAGE (plain Paper $PAPER_MC_VERSION, forwarding via the operator initContainer)"
+  docker build -f "$SRC_DIR/deploy/paper/Dockerfile" \
+    --build-arg PAPER_JAR_URL="$PAPER_JAR_URL" \
+    -t "$PAPER_IMAGE" "$SRC_DIR"
+  docker save "$PAPER_IMAGE" | "$K3S" ctr images import -
 fi
 
 # 3. wire the images into the config `felis setup` reads ------------------------

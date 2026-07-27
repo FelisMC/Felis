@@ -40,6 +40,11 @@ const (
 	dataVolumeName = "world"
 	dataMountPath  = "/data"
 
+	// felisBinaryPath is where the felis image installs its binary; the
+	// forwarding-config initContainer invokes it by absolute path (matches
+	// platform.felisBinaryPath — the same image, the same install location).
+	felisBinaryPath = "/usr/local/bin/felis"
+
 	// ManagedByValue / ComponentValue are the values of the LabelManagedBy /
 	// LabelComponent labels stamped on every per-server pod (see labelsFor). They
 	// are exported because the platform package's minecraft-namespace
@@ -184,7 +189,7 @@ func readinessProbe(server *v1alpha1.MinecraftServer) *corev1.Probe {
 // buildStatefulSet renders the workload for replicas in {0,1}. It is where
 // graceful shutdown is injected: the pod gets terminationGracePeriodSeconds and
 // (when enabled) a preStop RCON save+stop hook.
-func buildStatefulSet(server *v1alpha1.MinecraftServer, replicas int32) (*appsv1.StatefulSet, error) {
+func buildStatefulSet(server *v1alpha1.MinecraftServer, replicas int32, felisImage string) (*appsv1.StatefulSet, error) {
 	storageSize := server.Spec.Storage.Size
 	if storageSize == "" {
 		storageSize = defaultStorageSize
@@ -235,6 +240,15 @@ func buildStatefulSet(server *v1alpha1.MinecraftServer, replicas int32) (*appsv1
 		}
 	}
 
+	// An arbitrary user Paper image does not consume FELIS_FORWARDING_SECRET, so the
+	// operator writes the forwarding config into the world volume for it via an
+	// initContainer. System servers (login/lobby) are Felis-built and handle it in
+	// their own entrypoints, and without a felis image name there is nothing to run.
+	var initContainers []corev1.Container
+	if felisImage != "" && server.Labels[v1alpha1.LabelSystemRole] == "" {
+		initContainers = append(initContainers, forwardingInitContainer(felisImage))
+	}
+
 	grace := graceSeconds(server)
 	pvc := corev1.PersistentVolumeClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: dataVolumeName},
@@ -263,6 +277,7 @@ func buildStatefulSet(server *v1alpha1.MinecraftServer, replicas int32) (*appsv1
 				ObjectMeta: metav1.ObjectMeta{Labels: labelsFor(server)},
 				Spec: corev1.PodSpec{
 					TerminationGracePeriodSeconds: &grace,
+					InitContainers:                initContainers,
 					Containers:                    []corev1.Container{container},
 					// A Minecraft server runs untrusted user worlds and plugins and
 					// has no business calling the K8s API, so its pod must NOT carry the
@@ -335,12 +350,22 @@ func buildEnv(server *v1alpha1.MinecraftServer) []corev1.EnvVar {
 	// the player's UUID is Mojang-verified, not offline-derived) — the pod-level fence
 	// against bypassing the proxy is the NetworkPolicy, not this value's secrecy.
 	//
-	// A user server is built from an operator-typed Dockerfile, so Felis cannot make it
-	// consume this; the two images Felis does build (deploy/limbo, deploy/lobby) read it
-	// in their entrypoints and refuse to start without it. Optional so a cluster whose
-	// proxy is not in modern mode — no Secret provisioned — still schedules its pods
-	// instead of wedging them all in CreateContainerConfigError.
-	env = append(env, corev1.EnvVar{
+	// The Felis-built images (deploy/limbo, deploy/lobby) read this in their
+	// entrypoints. An arbitrary user Paper image does NOT — so the operator also runs
+	// a forwarding-config initContainer (see forwardingInitContainer) that writes the
+	// Velocity block into the shared world volume before the server starts, making a
+	// stock Paper image joinable without modifying it.
+	env = append(env, forwardingSecretEnvVar())
+	return env
+}
+
+// forwardingSecretEnvVar sources FELIS_FORWARDING_SECRET from the Secret the setup
+// provisioner replicas into this namespace. Optional so a cluster whose proxy is
+// not in modern mode — no Secret provisioned — still schedules its pods instead of
+// wedging them all in CreateContainerConfigError; the init and lobby/limbo
+// entrypoints treat an empty value as "not in modern mode" and leave config alone.
+func forwardingSecretEnvVar() corev1.EnvVar {
+	return corev1.EnvVar{
 		Name: envForwardingSecret,
 		ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
@@ -349,11 +374,42 @@ func buildEnv(server *v1alpha1.MinecraftServer) []corev1.EnvVar {
 				Optional:             boolPtr(true),
 			},
 		},
-	})
-	return env
+	}
+}
+
+// forwardingInitContainer writes Velocity modern-forwarding config into the shared
+// world volume before the server container starts, so an arbitrary Paper image Felis
+// did NOT build becomes joinable behind the proxy without being modified. It runs the
+// felis image's `init-forwarding` subcommand, which merges the proxies.velocity block
+// into config/paper-global.yml and forces online-mode=false in server.properties.
+//
+// It runs as root: the world volume's ownership is set by the storage provisioner and
+// the main container runs as the user image's own UID, so root is the only UID that
+// can reliably write these files and leave them rewritable by that main container.
+// This is a bounded privilege — the init exits before the server container starts, and
+// the server container keeps whatever (non-root) UID its image declares.
+//
+// Only user servers get it: the Felis-built system images (login limbo, lobby) already
+// consume the secret in their own entrypoints, and the login limbo is not Paper at all.
+func forwardingInitContainer(felisImage string) corev1.Container {
+	return corev1.Container{
+		Name:    "init-forwarding",
+		Image:   felisImage,
+		Command: []string{felisBinaryPath, "init-forwarding"},
+		Env:     []corev1.EnvVar{forwardingSecretEnvVar()},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: dataVolumeName, MountPath: dataMountPath},
+		},
+		SecurityContext: &corev1.SecurityContext{
+			RunAsUser:    int64Ptr(0),
+			RunAsNonRoot: boolPtr(false),
+		},
+	}
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+func int64Ptr(i int64) *int64 { return &i }
 
 func joinFlags(flags []string) string {
 	out := ""

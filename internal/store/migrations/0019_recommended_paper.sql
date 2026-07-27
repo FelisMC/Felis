@@ -1,0 +1,49 @@
+-- Recommended image: felis-paper — a plain Paper base for a user's OWN server.
+--
+-- SUPERSEDES the "exactly one defensible recommendation" rationale of
+-- 0018_recommended_images.sql. That migration was correct WHEN WRITTEN: the only
+-- joinable backends were the two images that consume FELIS_FORWARDING_SECRET in their
+-- own entrypoints (deploy/limbo, deploy/lobby). Velocity modern forwarding is
+-- proxy-WIDE, so a backend that cannot verify the signed handshake rejects every login
+-- the proxy forwards; an arbitrary Paper image, which does not consume the secret,
+-- passed admission and reported Ready but was UNJOINABLE. Of the two self-configuring
+-- images only the lobby was a sensible base for a user's own server, leaving exactly one.
+--
+-- THAT PREMISE NO LONGER HOLDS. The operator now injects a root `felis init-forwarding`
+-- initContainer into every USER server (internal/operator/builders.go: buildStatefulSet
+-- gates it on the ABSENCE of the system-role label). It writes config/paper-global.yml +
+-- server.properties online-mode=false onto the /data PVC before the main container starts,
+-- configuring forwarding for ANY Paper-family image EXTERNALLY — the image needs no
+-- forwarding logic of its own. The joinable set is therefore no longer "the images that
+-- self-configure forwarding"; it is every Paper-family user image the platform runs. The
+-- honest recommended list can now grow, and this is the first entry it grows by.
+--
+-- felis-paper (deploy/paper) is the platform's plain-Paper expression of that base:
+--   * no felis-paper /menu plugin — the lobby carries it to TRANSFER a joining player
+--     away, which is exactly wrong for a server the player means to stay and play on;
+--   * no forwarding-secret gate — a user's own world is not identity-critical, so it
+--     boots even before forwarding is provisioned (the login gate and lobby refuse to,
+--     deliberately, because THEY authenticate the Owner);
+--   * a correctly-escaped RCON control channel, so the console, the online-player list
+--     and permission commands work out of the box (the operator injects RCON_PASSWORD
+--     into every server whose spec.rcon is enabled).
+-- It is a better "your own server" base than felis-lobby, which 0018 recommended only
+-- because it was then the sole joinable option. 0018's row is left in place: an admin who
+-- kept it can keep it; this migration only ADDS the better default beside it.
+--
+-- REF CAVEAT (identical mechanism to 0018): felis-paper:demo is the bootstrap default
+-- (FELIS_PAPER_IMAGE in deploy/bootstrap.sh and deploy/demo-up.sh), built locally and
+-- imported into k3s containerd. An install that overrode that variable — or whose bootstrap
+-- predates this image — will not have the ref, and the pod ImagePullBackOffs visibly in
+-- server status (the loud failure, not a silent refuse-to-join). An admin clears it with
+-- DELETE /images?ref=felis-paper:demo, which is unvalidated and always works. Re-adding a
+-- bare local containerd tag has no API path back in — POST /images runs ValidateImageRef,
+-- which requires a host-qualified reference — so, like 0018, this seed is SQL and not a
+-- POST. See 0018 for the full asymmetry.
+--
+-- Idempotent by ON CONFLICT DO NOTHING: migrations may re-run, and an admin who
+-- deliberately disabled or re-pointed this row must not have that decision silently undone.
+-- added_by records platform provenance: no human admitted this row, the platform did.
+INSERT INTO image_whitelist (image_ref, source, added_by, enabled)
+VALUES ('felis-paper:demo', 'recommended', 'felis-platform', true)
+ON CONFLICT (image_ref) DO NOTHING;

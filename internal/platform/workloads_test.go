@@ -343,9 +343,16 @@ func TestOperatorDeployment_Wiring(t *testing.T) {
 			t.Errorf("operator must mount NO Secret volume, found %q", v.Name)
 		}
 	}
-	// And it must hold no credential env at all.
-	if len(c.Env) != 0 {
-		t.Errorf("operator must carry no env (flags-only), got %v", c.Env)
+	// It carries exactly one plain env — FELIS_IMAGE, for the forwarding-config
+	// initContainer it injects into user servers — and NO credential env: nothing
+	// sourced from a Secret (valueFrom), since it holds no DB URL or token.
+	for _, e := range c.Env {
+		if e.ValueFrom != nil {
+			t.Errorf("operator must carry no credential env, found %q with valueFrom", e.Name)
+		}
+	}
+	if len(c.Env) != 1 || c.Env[0].Name != "FELIS_IMAGE" || c.Env[0].Value != p.FelisImage {
+		t.Errorf("operator env = %v, want exactly FELIS_IMAGE=%q", c.Env, p.FelisImage)
 	}
 }
 

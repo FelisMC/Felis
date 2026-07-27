@@ -64,6 +64,40 @@ func TestLobbyLuckPermsWiringIsConsistent(t *testing.T) {
 	}
 }
 
+// A 1.8 client joining a protocol-47 backend dies on the first chunk unless ViaVersion's
+// serverside block-connection tracking is off: under modern forwarding the Velocity injector
+// reports 1.13 as the lowest supported protocol, ConnectionData.init() returns early on that,
+// and the 1.12.2->1.13 chunk rewrite then dereferences the provider init() never built.
+//
+// ViaVersion ships the option ON, so this is a correction bootstrap has to make rather than a
+// default it can inherit — and nothing else in the install would notice it missing. The failure
+// surfaces only when a legacy player joins, on a host that installed cleanly.
+func TestBootstrapPinsViaBlockConnectionsOff(t *testing.T) {
+	// go:embed takes the working tree verbatim, and this repository pins no eol attribute, so
+	// a Windows checkout embeds CRLF. Only the assertion spanning a line break below cares.
+	script := strings.ReplaceAll(BootstrapScript(), "\r\n", "\n")
+
+	const key = "serverside-blockconnections"
+	if !strings.Contains(script, key+": false") {
+		t.Errorf("bootstrap.sh never writes %s: false; a fresh install inherits ViaVersion's "+
+			"default of true and NPEs the first 1.8 player to receive a chunk", key)
+	}
+
+	// Writing the value is only half of it: the file has to be the one ViaVersion reads.
+	// Via names its data directory after the plugin in lowercase.
+	if !strings.Contains(script, "plugins/viaversion") {
+		t.Error("bootstrap.sh does not target plugins/viaversion, so whatever it writes is " +
+			"not the config ViaVersion loads")
+	}
+
+	// Via staging and this correction have to stay welded together. If the call is dropped,
+	// every branch above still exists and still looks right in review.
+	if !strings.Contains(script, "pin_via_block_connections\n  ok \"Via staged") {
+		t.Error("install_via_plugins no longer calls pin_via_block_connections; the jars would " +
+			"be staged with the option left at its default")
+	}
+}
+
 func readGameStackFile(t *testing.T, name string) string {
 	t.Helper()
 	b, err := gameStackAssets.ReadFile(name)

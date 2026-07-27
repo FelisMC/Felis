@@ -52,6 +52,7 @@ var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"setup":            cmdSetup,
 	"breakGlass":       cmdBreakGlass,
 	"bootstrap-assets": cmdBootstrapAssets,
+	"init-forwarding":  cmdInitForwarding,
 	"version":          cmdVersion,
 	"update":           cmdUpdate,
 }

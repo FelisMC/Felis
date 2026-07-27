@@ -56,13 +56,76 @@ func TestReadinessProbeHTTPCustomPath(t *testing.T) {
 	}
 }
 
+// A user server (no system-role label) gets the forwarding-config initContainer,
+// running the felis image as root and mounting the world volume. A system server
+// and a build with no felis image name get none.
+func TestBuildStatefulSetForwardingInitContainer(t *testing.T) {
+	user := &v1alpha1.MinecraftServer{}
+	user.Spec.Storage.Size = "1Gi"
+
+	sts, err := buildStatefulSet(user, 1, "felis:demo")
+	if err != nil {
+		t.Fatalf("buildStatefulSet: %v", err)
+	}
+	inits := sts.Spec.Template.Spec.InitContainers
+	if len(inits) != 1 {
+		t.Fatalf("want 1 initContainer, got %d", len(inits))
+	}
+	ic := inits[0]
+	if ic.Image != "felis:demo" {
+		t.Errorf("init image = %q, want felis:demo", ic.Image)
+	}
+	if ic.SecurityContext == nil || ic.SecurityContext.RunAsUser == nil || *ic.SecurityContext.RunAsUser != 0 {
+		t.Errorf("init must run as root, got %+v", ic.SecurityContext)
+	}
+	mounted := false
+	for _, vm := range ic.VolumeMounts {
+		if vm.Name == dataVolumeName && vm.MountPath == dataMountPath {
+			mounted = true
+		}
+	}
+	if !mounted {
+		t.Errorf("init must mount the world volume at %s, got %+v", dataMountPath, ic.VolumeMounts)
+	}
+	// The whole point of the initContainer is to write the forwarding config, which it
+	// cannot do without the secret: a missing Env here makes `init-forwarding` no-op and
+	// the server Ready-but-unjoinable — the exact silent failure the feature removes.
+	// Same secretKeyRef rule as the main container (optional so a non-modern proxy still
+	// schedules), so assert it, not just the image/root/mount above.
+	fwd := findEnv(ic.Env, envForwardingSecret)
+	if fwd == nil {
+		t.Fatalf("init must carry %s or it writes no forwarding config", envForwardingSecret)
+	}
+	if fwd.ValueFrom == nil || fwd.ValueFrom.SecretKeyRef == nil {
+		t.Fatalf("%s on init must be a secretKeyRef, got %+v", envForwardingSecret, fwd)
+	}
+	if ref := fwd.ValueFrom.SecretKeyRef; ref.Name != naming.ForwardingSecretName || ref.Key != naming.ForwardingSecretKey {
+		t.Errorf("init %s secretKeyRef = %s/%s, want %s/%s", envForwardingSecret, ref.Name, ref.Key, naming.ForwardingSecretName, naming.ForwardingSecretKey)
+	}
+
+	// No felis image name → nothing to run.
+	noImg, _ := buildStatefulSet(user, 1, "")
+	if len(noImg.Spec.Template.Spec.InitContainers) != 0 {
+		t.Error("no felis image must yield no initContainer")
+	}
+
+	// System server handles forwarding in its own entrypoint.
+	sys := &v1alpha1.MinecraftServer{}
+	sys.Spec.Storage.Size = "1Gi"
+	sys.Labels = map[string]string{v1alpha1.LabelSystemRole: "lobby"}
+	sysSts, _ := buildStatefulSet(sys, 1, "felis:demo")
+	if len(sysSts.Spec.Template.Spec.InitContainers) != 0 {
+		t.Error("system server must get no forwarding initContainer")
+	}
+}
+
 // A server with a health port also exposes it as a named container port so the
 // kubelet can reach it.
 func TestBuildStatefulSetAddsHealthPort(t *testing.T) {
 	s := &v1alpha1.MinecraftServer{}
 	s.Spec.Storage.Size = "1Gi"
 	s.Spec.Startup.HealthHTTPPort = 8080
-	sts, err := buildStatefulSet(s, 1)
+	sts, err := buildStatefulSet(s, 1, "")
 	if err != nil {
 		t.Fatalf("buildStatefulSet: %v", err)
 	}

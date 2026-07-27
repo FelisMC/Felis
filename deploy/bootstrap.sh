@@ -102,6 +102,10 @@ APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-$PKG_LOCK_TIMEOUT}"
 # --- the game stack: proxy on the host, the two always-on backends in k3s ---
 FELIS_LIMBO_IMAGE="${FELIS_LIMBO_IMAGE:-felis-limbo:demo}"
 FELIS_LOBBY_IMAGE="${FELIS_LOBBY_IMAGE:-felis-lobby:demo}"
+# Plain Paper base recommended for a user's own server (deploy/paper). Not a system
+# server — forwarding is applied by the operator's init-forwarding initContainer, so it
+# needs no secret. Seeded recommended in 0019_recommended_paper.sql.
+FELIS_PAPER_IMAGE="${FELIS_PAPER_IMAGE:-felis-paper:demo}"
 # The Velocity MINOR is pinned, not discovered. PaperMC's Fill v3 groups velocity
 # builds by version group, and "newest across all groups" today means 4.0.0-SNAPSHOT —
 # an UNRELEASED proxy (the 4.0.0 group has zero published builds) that needs a Java 25
@@ -1256,8 +1260,15 @@ build_game_stack() {
     --build-arg LUCKPERMS_JAR_URL="$LUCKPERMS_JAR_URL" \
     -t "$FELIS_LOBBY_IMAGE" "$GAME_STACK_DIR"
 
+  # Plain Paper, same MC_VERSION and PAPER_JAR_URL (no new dependency). Forwarding is the
+  # operator initContainer's job, so this image carries no /menu plugin and no secret gate.
+  log "building ${FELIS_PAPER_IMAGE} (plain Paper ${MC_VERSION}, forwarding via the operator initContainer)"
+  docker build -f "${GAME_STACK_DIR}/deploy/paper/Dockerfile" \
+    --build-arg PAPER_JAR_URL="$PAPER_JAR_URL" \
+    -t "$FELIS_PAPER_IMAGE" "$GAME_STACK_DIR"
+
   local img
-  for img in "$FELIS_LIMBO_IMAGE" "$FELIS_LOBBY_IMAGE"; do
+  for img in "$FELIS_LIMBO_IMAGE" "$FELIS_LOBBY_IMAGE" "$FELIS_PAPER_IMAGE"; do
     log "importing ${img} into k3s containerd"
     remove_k3s_image "$img"
     docker save "$img" | k3s_cmd ctr images import -
@@ -1384,7 +1395,43 @@ ViaVersion 5.11.0 18d19e90fc9467d68128c076630ae8700449c901402a3ef421837ce006bc8c
 ViaBackwards 5.11.0 b21983d561e3f92df257683f0133ab6c68ec68175e8acfd82c6231723bf83587
 ViaRewind 4.1.3 2d5970d22b4711c9ab2800932326c7b08acdace25ed7c6bbb8f6ea81054962b4
 EOF
+  pin_via_block_connections
   ok "Via staged; clients from 1.8 up can join under modern forwarding"
+}
+
+# pin_via_block_connections turns ViaVersion's serverside block-connection tracking off.
+#
+# ConnectionData.init() only builds its block-connection provider when Via's lowest supported
+# protocol is below 1.13. Under modern forwarding the Velocity injector reports 393 (1.13), so
+# init() returns early, blockConnectionProvider stays null, and the first 1.12.2->1.13 chunk
+# rewrite dereferences it. A 1.8 client on a protocol-47 backend takes an NPE on the first chunk
+# it is sent and never finishes joining. Every call site in protocols/v1_12_2to1_13 is behind
+# isServersideBlockConnections(), so switching the option off skips all of them. The cost is
+# cosmetic and pre-1.13 only: fences and glass panes stop being drawn connected.
+#
+# ViaVersion's default is true, so a fresh install ships that NPE unless it is corrected here.
+# Seeding a file with this one key is enough: Config#loadConfig parses the bundled
+# assets/viaversion/config.yml as the base map and merges the on-disk file over it, so every
+# other option still comes from the shipped default and stays current across version bumps.
+#
+# Do not read the absence of "Loading block connection mappings" from the log as proof this
+# worked. init() gates on the protocol version as well, and under modern forwarding that half
+# fails on its own — the line is missing either way. The config value is the only evidence.
+pin_via_block_connections() {
+  local dir="${VELOCITY_DIR}/plugins/viaversion" config tmp
+  config="${dir}/config.yml"
+  ensure_velocity_directory "$dir" 0750 "$VELOCITY_USER" "$VELOCITY_USER"
+  tmp="$(mktemp "${VELOCITY_DIR}/.viaversion-config.XXXXXX")"
+  remember_temp "$tmp"
+  if [ ! -f "$config" ]; then
+    printf 'serverside-blockconnections: false\n' > "$tmp"
+  elif grep -qE '^serverside-blockconnections:' "$config"; then
+    sed -E 's/^serverside-blockconnections:.*/serverside-blockconnections: false/' "$config" > "$tmp"
+  else
+    { cat "$config"; printf 'serverside-blockconnections: false\n'; } > "$tmp"
+  fi
+  # Via rewrites this file itself on every load, so the proxy user has to own it.
+  atomic_install_file "$tmp" "$config" 0640 "$VELOCITY_USER" "$VELOCITY_USER"
 }
 
 install_jre() {
@@ -1539,6 +1586,14 @@ install_velocity_service() {
   # out of the box — not just the standalone `felis nano`. felis-api enforces the reclaim
   # blacklist on this route; a loopback nano would bypass it.
   api_ip="$(felis_internal_ip)"
+  # Servers that receive their forwarded identity through the handshake address (BungeeCord/legacy
+  # style) instead of the proxy-wide modern+secret forwarding. A protocol-47 (1.8.x) backend sits
+  # behind ViaVersion, which strips modern forwarding's login-plugin-message when it down-translates
+  # the proxy->backend pipeline to protocol 47; only the handshake field survives Via. The Felis
+  # fork reads this list from -Dfelis.legacy-forwarding.servers and forwards those servers legacy;
+  # every other backend keeps modern+secret untouched. v1 hardcodes the one legacy backend; the
+  # upgrade path is to have the operator render this list from the MinecraftServer CRs.
+  local legacy_forwarding_servers="legacy18"
   cat > "$VELOCITY_SERVICE" <<EOF
 [Unit]
 Description=Felis Velocity proxy (Mojang authentication + modern forwarding)
@@ -1550,7 +1605,7 @@ Type=simple
 User=${VELOCITY_USER}
 Group=${VELOCITY_USER}
 WorkingDirectory=${VELOCITY_DIR}
-ExecStart=${JRE_DIR}/bin/java -Xms512M -Xmx1G -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:+AlwaysPreTouch -Dmojang.sessionserver=http://${api_ip}:8081/session/minecraft/hasJoined -jar ${VELOCITY_DIR}/velocity.jar
+ExecStart=${JRE_DIR}/bin/java -Xms512M -Xmx1G -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:+AlwaysPreTouch -Dmojang.sessionserver=http://${api_ip}:8081/session/minecraft/hasJoined -Dfelis.legacy-forwarding.servers=${legacy_forwarding_servers} -jar ${VELOCITY_DIR}/velocity.jar
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=yes

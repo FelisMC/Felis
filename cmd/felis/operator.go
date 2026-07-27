@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	felismetrics "felis.lolicon.best/internal/metrics"
@@ -73,6 +74,10 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
 		Prober: operator.RconProber{},
+		// The operator's own image, for the forwarding-config initContainer it
+		// injects into user servers. The Deployment passes it as FELIS_IMAGE (see
+		// platform.OperatorDeployment); absent, that injection is simply skipped.
+		FelisImage: os.Getenv("FELIS_IMAGE"),
 	}
 	if err := r.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(stderr, "felis operator: setup controller: %v\n", err)

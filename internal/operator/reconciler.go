@@ -40,6 +40,10 @@ type Reconciler struct {
 	Scheme *runtime.Scheme
 	// Prober gates readiness on RCON reachability.
 	Prober Prober
+	// FelisImage is this operator's own image, used for the forwarding-config
+	// initContainer injected into user servers. Empty (an operator Deployment
+	// without FELIS_IMAGE) disables that injection rather than failing.
+	FelisImage string
 	// Now is injectable for deterministic timestamps in tests; defaults to
 	// metav1.Now.
 	Now func() metav1.Time
@@ -98,7 +102,7 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		return ctrl.Result{RequeueAfter: requeueSecret}, nil
 	}
 
-	desired, err := buildStatefulSet(server, 1)
+	desired, err := buildStatefulSet(server, 1, r.FelisImage)
 	if err != nil {
 		// A malformed spec (e.g. bad storage quantity) is terminal until edited.
 		r.markFailed(server, "InvalidSpec", err.Error())

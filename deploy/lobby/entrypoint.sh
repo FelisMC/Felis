@@ -53,7 +53,11 @@ cd "$DATA_DIR"
 # set_prop KEY VALUE — replace the key's line in server.properties, or append it if absent.
 set_prop() {
   if [ -f "$PROPS" ] && grep -q "^$1=" "$PROPS"; then
-    sed -i "s|^$1=.*|$1=$2|" "$PROPS"
+    # The RCON password is operator-provisioned arbitrary bytes: a '|', '\' or '&' would
+    # otherwise corrupt this bare sed s||| and silently break the key. Same escaping as
+    # deploy/limbo — without it an unlucky password kills the console/permission channel.
+    esc=$(printf '%s' "$2" | sed 's/[|\\&]/\\&/g')
+    sed -i "s|^$1=.*|$1=${esc}|" "$PROPS"
   else
     printf '%s=%s\n' "$1" "$2" >> "$PROPS"
   fi
