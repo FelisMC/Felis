@@ -73,9 +73,15 @@ func TestLobbyLuckPermsWiringIsConsistent(t *testing.T) {
 // default it can inherit — and nothing else in the install would notice it missing. The failure
 // surfaces only when a legacy player joins, on a host that installed cleanly.
 func TestBootstrapPinsViaBlockConnectionsOff(t *testing.T) {
-	// go:embed takes the working tree verbatim, and this repository pins no eol attribute, so
-	// a Windows checkout embeds CRLF. Only the assertion spanning a line break below cares.
-	script := strings.ReplaceAll(BootstrapScript(), "\r\n", "\n")
+	// go:embed takes the working tree verbatim, so the eol attribute is what keeps a Windows
+	// checkout from compiling CRs into the installer. Assert it rather than normalizing them
+	// away: the only assertion that would otherwise notice is the one spanning a line break
+	// below, and it would report a missing pin instead of the line endings.
+	script := BootstrapScript()
+	if strings.Contains(script, "\r\n") {
+		t.Fatal("embedded bootstrap.sh has CRLF line endings; .gitattributes pins *.sh to LF " +
+			"and this script is piped into `bash -s` on a Linux host")
+	}
 
 	const key = "serverside-blockconnections"
 	if !strings.Contains(script, key+": false") {

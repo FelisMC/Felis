@@ -1,0 +1,8 @@
+# Everything in this repository is consumed on Linux: deploy/bootstrap.sh is embedded
+# verbatim by bootstrap_asset.go and piped into `bash -s`, the Dockerfiles and entrypoints
+# are read inside the images, and the operator ships YAML. Without eol=lf a Windows
+# checkout under core.autocrlf=true hands all of them CRs.
+* text=auto eol=lf
+
+# The gradle wrappers' Windows launchers are the one thing that wants CRLF.
+*.bat text eol=crlf
