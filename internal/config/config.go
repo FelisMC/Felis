@@ -118,9 +118,12 @@ type RegistryConfig struct {
 	// modpack's Kaniko build context is pinned. It belongs to the §16 build
 	// subsystem's input domain (the build-context store), introduced by the
 	// user-directed modpack approval lane (see internal/submit package doc). The
-	// lane derives {UserUploadsContext}/{submissionID}/context.tar.gz; the upload
-	// transport that places the blob there is a separate, deferred integration
-	// (INTEGRATION-ONLY). It is kept distinct from [archive] on purpose — a world
+	// lane derives {UserUploadsContext}/{submissionID}/context.tar.gz; both transports
+	// that place the blob there now ship (submit.LocalContextStore for a local path,
+	// submit.S3ContextStore for an s3:// base, selected in cmd/felis by the shape of
+	// this value). What stays deferred is the far end — Kaniko reading that context
+	// from inside the build Pod (INTEGRATION-ONLY, see submit/blobstore.go). It is
+	// kept distinct from [archive] on purpose — a world
 	// archive (§19 WorldArchiver) and a build context (§16) are different artifacts
 	// with different lifecycles, so the two must not share a store binding.
 	UserUploadsContext string `toml:"user_uploads_context"`

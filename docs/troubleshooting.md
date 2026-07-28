@@ -20,8 +20,8 @@ graded for how far the in-repo Go test suite proves the behaviour:
   containerd, Postgres, or the network, not by Felis Go code; you will see it in
   `kubectl describe` / pod logs, never in `MinecraftServer.status`.
 - **[INERT]** — the configuration field exists in the CRD but no controller
-  reads it. Tuning it does nothing. These are the highest-value traps and are
-  collected in §10.
+  reads it. Tuning it does nothing. §12 lists the one field this still applies
+  to, alongside the fields that *are* read and the condition each depends on.
 
 The operator never invents the parent domain; routing identity is
 `spec.subdomain` under the deployment zone. Examples below use
@@ -32,14 +32,21 @@ concrete host.
 
 ## 1. Server is stuck in `Starting` and never becomes `Running`
 
-`MinecraftServer.status.phase` stays `Starting`. The single most important fact:
-**the operator has no start timeout.** A start that never succeeds loops in
-`Starting`, requeued every 5s, **forever** — it is never auto-escalated to
-`Failed`. [GO-TESTED: `TestReconcileRunning_RconProbeFailureStaysStarting`
-asserts the phase stays `Starting`.] Do **not** reach for
-`spec.startup.timeoutSeconds` / `spec.startup.readinessTimeoutSeconds` — both are
-[INERT] (§10). A hung start must be diagnosed from pod state, not from
-`MinecraftServer.status`.
+`MinecraftServer.status.phase` stays `Starting`. A start that never succeeds is
+requeued every 5s until one of the two startup budgets expires, then escalated
+to `Failed` — `StartupTimeout` if the pod never passed TCP readiness,
+`ReadinessTimeout` if the RCON probe never succeeded. Both default to **300s**
+when `spec.startup.timeoutSeconds` / `spec.startup.readinessTimeoutSeconds` are
+unset or `0`, and both are measured from `status.startRequestedAt`.
+[GO-TESTED: `TestReconcileRunning_StartupTimeoutConvertsToFailed`,
+`TestReconcileRunning_ReadinessTimeoutConvertsToFailed`.]
+
+So `Starting` seen *once* is normal and
+`TestReconcileRunning_RconProbeFailureStaysStarting` asserts exactly that — a
+single failed probe must not flap the phase. `Starting` seen for longer than the
+budget means the reconcile loop is not running at all; check the operator's own
+logs before tuning anything. Either way the underlying cause is diagnosed from
+pod state, not from `MinecraftServer.status`.
 
 First, read the condition reason:
 
@@ -111,8 +118,10 @@ message is the verbatim dial error:
   port yet, RCON is disabled in `server.properties`, or `spec.rcon.port`
   (default 25575) is wrong. [INTEGRATION-ONLY for the live handshake.]
 
-The per-probe timeout is a fixed 5s in code — it is **not** derived from
-`spec.startup.readinessTimeoutSeconds` ([INERT]).
+The per-probe timeout is a fixed 5s in code (`prober.go:45`, shortened further if
+the reconcile context has a nearer deadline). It is **not** derived from
+`spec.startup.readinessTimeoutSeconds`, which is the deadline for the whole
+start, not for one probe — see §12.
 
 ---
 
@@ -463,14 +472,35 @@ store paths are [INTEGRATION-ONLY].
 
 ## 11. Idle auto-stop never fires; player count always shows 0
 
-**Idle auto-stop is entirely unimplemented in the operator.** `spec.idle.*`
-([INERT], §12) is read by no controller, and no idle controller is registered.
-An empty `Running` server stays `Running`.
+Both are implemented, and both hang off the same switch: **`spec.rcon.enabled`**.
+Check it first.
 
-Relatedly, `status.players.online` is **permanently 0**: the only writer of
-`status.players` zeroes it on stop, and the RCON prober only dials + closes — it
-never runs `list`. Any panel reading `status.players.online` will always show
-empty. Do not build alerting on it, and do not expect "empty server" automation.
+```sh
+kubectl get minecraftserver <name> -o jsonpath='{.spec.rcon.enabled}'
+```
+
+The player tally is a by-product of the RCON readiness probe — `prober.go:63`
+runs `list` on the same connection that just authenticated, and `parseListReply`
+extracts the tally from `There are (\d+) of a max of (\d+) players online`. With
+RCON disabled the probe never runs, `players` keeps its zero value, and
+`markRunningReady` (`reconciler.go:413`) writes that zero into
+`status.players.online`. So a permanent 0 means "never sampled", not "nobody
+online".
+
+Idle auto-stop (`reconciler.go:175`) reads that same tally, which is why it
+carries the RCON condition explicitly:
+
+```go
+if server.Spec.Rcon.Enabled && server.Spec.Idle.AutoStopEnabled && server.Spec.Idle.EmptySecondsBeforeStop > 0 {
+```
+
+The comment above it says why: with RCON off the zero tally "would read as
+'empty' and use to stop a server full of people". So the guard is deliberate —
+enabling `spec.idle.*` without RCON is a no-op by design, not a missing feature.
+
+Both fields set and still nothing happens? Then the probe is failing rather than
+disabled: the server would be stuck in `Starting` with `RconNotReachable`
+(`reconciler.go:156`), which is §1's symptom, not this one.
 
 Note the reaper's `last_active_at` (§10) is a *different* subsystem (Postgres
 business layer, bumped by join events) — it keeps worlds alive against the
@@ -478,22 +508,21 @@ reaper, but it does **not** auto-stop empty running servers.
 
 ---
 
-## 12. Inert configuration fields (highest-value traps)
+## 12. A configuration field seems to be ignored
 
-These CRD fields exist and validate, but **no controller reads them.** Setting
-them has **no effect**. Verified by grep: each appears only in the type
-definition and its deepcopy, never in a controller.
+Every field below is read by a controller. What varies is the condition that
+decides whether setting it does anything.
 
 | Field | What you might expect | Reality |
 |---|---|---|
-| `spec.startup.timeoutSeconds` | Start budget before `Failed` | **[INERT]** — no Starting→Failed timeout exists; a hung start loops forever (§1) |
-| `spec.startup.readinessTimeoutSeconds` | First-probe budget | **[INERT]** — probe timeout is a fixed 5s in code |
-| `spec.idle.autoStopEnabled` | Auto-stop empty servers | **[INERT]** — idle auto-stop unimplemented (§11) |
-| `spec.idle.emptySecondsBeforeStop` | Empty grace period | **[INERT]** |
-| `spec.storage.retainOnDelete` | Keep/drop PVC on delete | **[INERT]** — world PVCs **always** survive server deletion; only the reaper ever deletes a world PVC (§13) |
+| `spec.startup.timeoutSeconds` | Start budget before `Failed` | Read by `startupTimedOut` (`reconciler.go:479`), called at `:126`. `0` or unset falls back to **300s**, then `markFailed("StartupTimeout")` |
+| `spec.startup.readinessTimeoutSeconds` | First-probe budget | Read by `readinessTimedOut` (`reconciler.go:490`), called at `:157`. `0` or unset falls back to **300s**, then `markFailed("ReadinessTimeout")`. Not to be confused with the prober's own 5s dial timeout (`prober.go:45`) |
+| `spec.idle.autoStopEnabled` | Auto-stop empty servers | Read at `reconciler.go:175` — but gated on `spec.rcon.enabled`, since the player tally comes from the RCON probe (§11) |
+| `spec.idle.emptySecondsBeforeStop` | Empty grace period | Same branch. Must be `> 0`; the guard treats `0` as "off", not "stop immediately" |
 
-If a runbook tells someone to "tune `startup.timeoutSeconds`" for a hung start,
-it is wrong — use `kubectl describe pod` (§1a) instead.
+Both startup budgets are measured from the same `status.startRequestedAt`, so
+`readinessTimeoutSeconds` is not a budget *after* pod readiness — it is a
+deadline for the whole start, applied on the RCON-probe branch.
 
 ---
 
@@ -503,15 +532,28 @@ This is expected. The world PVC is a StatefulSet `VolumeClaimTemplate`. There is
 **no `persistentVolumeClaimRetentionPolicy` and no finalizer** anywhere in the
 operator. Deleting the `MinecraftServer` garbage-collects the StatefulSet, but
 StatefulSet deletion does **not** cascade to its template PVCs, and nothing else
-cleans them up. So the world PVC **always survives** server deletion, regardless
-of `spec.storage.retainOnDelete` ([INERT], §12). The **only** code that deletes a
-world PVC is the reaper, and only after a verified backup (§10). To reclaim a
-world PVC manually:
+cleans them up. So the world PVC **always survives** server deletion. The
+**only** code that deletes a world PVC is the reaper, and only after a verified
+backup (§10). To reclaim a world PVC manually:
 
 ```
 kubectl get pvc -l app.kubernetes.io/name=<name>
 kubectl delete pvc <pvc>      # irreversible — the world is gone
 ```
+
+`spec.storage.retainOnDelete` sat in the CRD and reached no controller. Spec
+v4.1 §5 asks for it — 「删除:finalizer 清 Service/STS/ConfigMap,PVC 按
+`retainOnDelete`」 — and neither half was ever built: there is no finalizer, and
+nothing read the field. It was removed rather than implemented, which is a
+deliberate departure from that line, recorded here because the spec is a frozen
+document and still says otherwise.
+
+The reasoning is that implementing it buys a second path that deletes a world —
+one that skips the reaper's verified-backup check — in order to restore a
+finalizer whose other listed duties (Service, StatefulSet, ConfigMap)
+ownerReference GC already performs. A CR still carrying the field keeps working:
+the API server prunes the unknown key on its next write, and nothing above
+changes, because retention was never conditional in the first place.
 
 ---
 

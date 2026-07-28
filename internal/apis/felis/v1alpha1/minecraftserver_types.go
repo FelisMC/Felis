@@ -192,8 +192,6 @@ type StorageSpec struct {
 	Size string `json:"size,omitempty"`
 	// StorageClassName selects the StorageClass; empty uses the default.
 	StorageClassName string `json:"storageClassName,omitempty"`
-	// RetainOnDelete keeps the PVC when the MinecraftServer is deleted.
-	RetainOnDelete bool `json:"retainOnDelete,omitempty"`
 }
 
 // LifecycleSpec tunes graceful shutdown (spec §7). The operator injects a

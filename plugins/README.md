@@ -1,11 +1,15 @@
 # Felis server-side plugins
 
-These are the in-cluster and edge plugins for Felis. Every module **except the
-lobby** ships the in-game first leg of the §10 account-link flow: a player who is already online
+These are the in-cluster and edge plugins for Felis. The Velocity proxy and the three loader
+mods ship the in-game first leg of the §10 account-link flow: a player who is already online
 (so Mojang has verified their UUID) runs `/link`; the plugin asks felis-api to
 mint a one-time code for that UUID and shows it in chat. The player then enters
 the code on the web console → **Account** page (the second leg), which binds the
 code to their logged-in account. The web side is already built.
+
+The **limbo** module reaches the same felis-api endpoint without a command: it is the login
+gate, so it mints the code on join for anyone not yet linked and holds them until they redeem
+it. The **paper** lobby ships neither — see below.
 
 The **Velocity** module additionally carries the §11 domain-autostart routing
 loop — recognizing each server's subdomain, registering backends dynamically,
@@ -19,14 +23,22 @@ The **Paper** module is different in kind: it is the §12 lobby UI face. It ship
 to Velocity, which is the only side that ever talks to felis-api. See
 **[Lobby menu](#lobby-menu-§12)** below.
 
-| Module             | Platform                    | Target                              | Jar                          |
-| ------------------ | --------------------------- | ----------------------------------- | ---------------------------- |
-| `velocity/`        | Velocity proxy plugin       | velocity-api 3.3.0-SNAPSHOT         | `felis-velocity-0.2.0.jar`   |
-| `fabric/`          | Fabric server mod           | MC 1.20.1 / fabric-loader 0.16.x    | `felis-fabric-0.1.0.jar`     |
-| `forge/`           | Forge server mod            | MC 1.20.1 / Forge 47.3.0            | `felis-forge-0.1.0.jar`      |
-| `neoforge/`        | NeoForge server mod         | MC 1.20.4 / NeoForge 20.4.251       | `felis-neoforge-0.1.0.jar`   |
-| `paper/`           | Paper server plugin (lobby) | paper-api 1.21.4-R0.1-SNAPSHOT      | `felis-paper-0.1.0.jar`      |
-| `shared/`          | *(not built on its own)*    | —                                   | source compiled into each    |
+| Module             | Platform                    | Target                              | Jar                          | Built by the installer |
+| ------------------ | --------------------------- | ----------------------------------- | ---------------------------- | ---------------------- |
+| `velocity/`        | Velocity proxy plugin       | velocity-api 3.3.0-SNAPSHOT         | `felis-velocity-0.1.0.jar`   | yes                    |
+| `limbo/`           | LOOHP/Limbo plugin (login)  | Limbo API / Java 17 bytecode        | `felis-limbo-0.1.0.jar`      | yes                    |
+| `paper/`           | Paper server plugin (lobby) | paper-api 1.21.4-R0.1-SNAPSHOT      | `felis-paper-0.1.0.jar`      | yes                    |
+| `fabric/`          | Fabric server mod           | MC 1.20.1 / fabric-loader 0.16.x    | `felis-fabric-0.1.0.jar`     | no                     |
+| `forge/`           | Forge server mod            | MC 1.20.1 / Forge 47.3.0            | `felis-forge-0.1.0.jar`      | no                     |
+| `neoforge/`        | NeoForge server mod         | MC 1.20.4 / NeoForge 20.4.251       | `felis-neoforge-0.1.0.jar`   | no                     |
+| `shared/`          | *(not built on its own)*    | —                                   | source compiled into each    | source only            |
+
+"Built by the installer" is what `deploy/bootstrap.sh` produces, and it is the same set
+`bootstrap_asset.go` embeds into the felis binary for the TUI install path, which has no source
+checkout to build from. **The three loader mods are not in that set** — a finished install has
+no `felis-fabric`/`felis-forge`/`felis-neoforge` jar anywhere. They build from this checkout with
+the commands under [Building](#building) and are deployed by hand; the account-link flow they
+carry works, but nothing installs them for you.
 
 ## Architecture
 
@@ -176,6 +188,7 @@ preference):
 | Module      | Gradle      | Why                                                              |
 | ----------- | ----------- | --------------------------------------------------------------- |
 | `velocity`  | 9.5.1 (system) | plain `java` plugin — no loader Gradle plugin                |
+| `limbo`     | 9.5.1 (system), **JDK 21 toolchain** | plain `java` plugin; current LOOHP/Limbo releases ship class-file major 65, so the compiler JDK must be ≥ 21 to read them. It emits `release 17` bytecode, so the jar still loads on any Limbo running Java 17+ |
 | `fabric`    | 8.8 (wrapper)  | loom 1.7.4 uses `Problems.forNamespace`, removed in Gradle 9 |
 | `forge`     | 8.8 (wrapper)  | ForgeGradle 6 is Gradle-8-only                               |
 | `neoforge`  | 8.14 (wrapper) | NeoGradle 7.1.38 requires Gradle API ≥ 8.14                  |
@@ -185,18 +198,20 @@ preference):
 # Velocity — system Gradle is fine
 gradle -p plugins/velocity build
 
-# Paper — system Gradle too, but it compiles on a Java-21 toolchain (see table)
+# Paper and limbo — system Gradle too, but both compile on a Java-21 toolchain (see table)
 gradle -p plugins/paper build
+gradle -p plugins/limbo build
 
-# Fabric / Forge / NeoForge — use the per-module wrapper
+# Fabric / Forge / NeoForge — use the per-module wrapper. Nothing installs these; the jar you
+# want is the one this produces.
 plugins/fabric/gradlew   -p plugins/fabric   build
 plugins/forge/gradlew    -p plugins/forge    build
 plugins/neoforge/gradlew -p plugins/neoforge build
 ```
 
-Requires JDK 17 — **except `paper`, which needs a Java-21 toolchain available to
-Gradle** (paper-api 1.21.4 is a Java-21 artifact; the rest of the suite is Java
-17). The first build of each mod downloads and remaps/decompiles Minecraft, so it
+Requires JDK 17 — **except `paper` and `limbo`, which need a Java-21 toolchain available to
+Gradle** (paper-api 1.21.4 is a Java-21 artifact and the Limbo API is compiled to major 65; the
+rest of the suite is Java 17). The first build of each mod downloads and remaps/decompiles Minecraft, so it
 takes a few minutes; subsequent builds are fast. Jars land in each module's
 `build/libs/`.
 
