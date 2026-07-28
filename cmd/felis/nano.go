@@ -13,8 +13,16 @@ package main
 // off-loopback with -listen; see the flag below for why that is an explicit opt-in.
 //
 // This is the no-database delivery of the identical brain `felis api` mounts through its
-// route table (internal/api.HasJoinedHandler). `felis setup --nano` / the bootstrap nano
-// choice install this as the runtime service; here it just serves.
+// route table (internal/api.HasJoinedHandler). The bootstrap installer's nano choice — its
+// `[2] Felis-nano` prompt, or FELIS_INSTALL_MODE=nano — installs this as the
+// felis-nano.service unit; here it just serves.
+//
+// There is deliberately no `felis setup --nano`. setup re-images the host through the full
+// bootstrap TUI and carries no install-mode parameter anywhere (nothing in Go reads or sets
+// FELIS_INSTALL_MODE), so such a flag would either re-run the installer — which is what
+// pointing at the installer already does — or tear a full install down into a nano one,
+// which is an uninstall, not a flag. This is the same reasoning that makes setup's --dev
+// refuse and name the installer rather than pretend to choose a channel.
 
 import (
 	"context"
