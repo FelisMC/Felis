@@ -41,11 +41,15 @@
 //     read and a CLI read agree instead of the image masquerading as a prerelease. The
 //     CLI seam (execRunner) is wired for real; only its exec I/O is un-verified here.
 //
-//   - REMAINING INTEGRATION (genuinely I/O-bound — needs a node/cluster/mailbox): the
-//     two current-version PRODUCING seams the gatherer still lacks — the k8s read of the
-//     control-plane Deployment's image (felis-api) and the off-cluster Velocity jar
-//     inspection, both left nil so those components surface a gather error rather than a
-//     wrong version — plus the concrete Notifier (SMTP + in-game) and Applier
-//     (control-plane image bump, cloudflared swap), the `felis update` CLI + CronJob
-//     entry point, and the runtime append of the live Pinned Minecraft fleet.
+//   - REMAINING INTEGRATION (genuinely I/O-bound — needs a cluster/mailbox): the two
+//     current-version PRODUCING seams NewSysGatherer still leaves nil — the k8s read of
+//     the control-plane Deployment's image (felis-api) and the Velocity jar inspection —
+//     so an IN-CLUSTER caller surfaces a gather error rather than a wrong version. The
+//     ON-HOST caller has both: NewHostGatherer (gatherer_host.go) answers felis-api from
+//     the running binary's build stamp and Velocity from the installed jar's manifest,
+//     and that is what the built `felis update` CLI runs on. Still absent: the concrete
+//     Notifier (SMTP + in-game) and Applier (control-plane image bump, cloudflared swap)
+//     — the CLI passes nil for both on purpose, so it reports and never applies — the
+//     in-cluster CronJob entry point, and the runtime append of the live Pinned
+//     Minecraft fleet.
 package updater
