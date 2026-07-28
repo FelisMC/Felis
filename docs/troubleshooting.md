@@ -510,9 +510,8 @@ reaper, but it does **not** auto-stop empty running servers.
 
 ## 12. A configuration field seems to be ignored
 
-One CRD field exists and validates but is read by no controller; the rest of
-this table records fields that *are* read, together with the condition that
-decides whether setting them does anything.
+Every field below is read by a controller. What varies is the condition that
+decides whether setting it does anything.
 
 | Field | What you might expect | Reality |
 |---|---|---|
@@ -520,7 +519,6 @@ decides whether setting them does anything.
 | `spec.startup.readinessTimeoutSeconds` | First-probe budget | Read by `readinessTimedOut` (`reconciler.go:490`), called at `:157`. `0` or unset falls back to **300s**, then `markFailed("ReadinessTimeout")`. Not to be confused with the prober's own 5s dial timeout (`prober.go:45`) |
 | `spec.idle.autoStopEnabled` | Auto-stop empty servers | Read at `reconciler.go:175` — but gated on `spec.rcon.enabled`, since the player tally comes from the RCON probe (§11) |
 | `spec.idle.emptySecondsBeforeStop` | Empty grace period | Same branch. Must be `> 0`; the guard treats `0` as "off", not "stop immediately" |
-| `spec.storage.retainOnDelete` | Keep/drop PVC on delete | **[INERT]** — world PVCs **always** survive server deletion; only the reaper ever deletes a world PVC (§13) |
 
 Both startup budgets are measured from the same `status.startRequestedAt`, so
 `readinessTimeoutSeconds` is not a budget *after* pod readiness — it is a
@@ -534,15 +532,28 @@ This is expected. The world PVC is a StatefulSet `VolumeClaimTemplate`. There is
 **no `persistentVolumeClaimRetentionPolicy` and no finalizer** anywhere in the
 operator. Deleting the `MinecraftServer` garbage-collects the StatefulSet, but
 StatefulSet deletion does **not** cascade to its template PVCs, and nothing else
-cleans them up. So the world PVC **always survives** server deletion, regardless
-of `spec.storage.retainOnDelete` ([INERT], §12). The **only** code that deletes a
-world PVC is the reaper, and only after a verified backup (§10). To reclaim a
-world PVC manually:
+cleans them up. So the world PVC **always survives** server deletion. The
+**only** code that deletes a world PVC is the reaper, and only after a verified
+backup (§10). To reclaim a world PVC manually:
 
 ```
 kubectl get pvc -l app.kubernetes.io/name=<name>
 kubectl delete pvc <pvc>      # irreversible — the world is gone
 ```
+
+`spec.storage.retainOnDelete` sat in the CRD and reached no controller. Spec
+v4.1 §5 asks for it — 「删除:finalizer 清 Service/STS/ConfigMap,PVC 按
+`retainOnDelete`」 — and neither half was ever built: there is no finalizer, and
+nothing read the field. It was removed rather than implemented, which is a
+deliberate departure from that line, recorded here because the spec is a frozen
+document and still says otherwise.
+
+The reasoning is that implementing it buys a second path that deletes a world —
+one that skips the reaper's verified-backup check — in order to restore a
+finalizer whose other listed duties (Service, StatefulSet, ConfigMap)
+ownerReference GC already performs. A CR still carrying the field keeps working:
+the API server prunes the unknown key on its next write, and nothing above
+changes, because retention was never conditional in the first place.
 
 ---
 

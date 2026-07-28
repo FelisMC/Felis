@@ -269,10 +269,6 @@ spec:
               storage:
                 description: Storage configures the world PVC.
                 properties:
-                  retainOnDelete:
-                    description: RetainOnDelete keeps the PVC when the MinecraftServer
-                      is deleted.
-                    type: boolean
                   size:
                     description: Size is the requested PVC capacity (e.g. "10Gi").
                     type: string
