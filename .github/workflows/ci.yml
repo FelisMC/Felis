@@ -36,6 +36,29 @@ jobs:
       - run: go vet ./...
       - run: go test ./...
 
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # bootstrap.sh is the only thing that ever runs on a fresh host, and nothing here can
+      # run it — it wants root, a package manager and k3s. Syntax plus the extracted-block
+      # checks in bootstrap_test.sh is the coverage that is reachable without a machine.
+      # Each file is parsed by the interpreter its own shebang names. A blanket `sh -n` is
+      # wrong and not obviously so: on a developer machine `sh` is usually bash and passes
+      # everything, while the runner's `sh` is dash and rejects bootstrap.sh at the first of
+      # its arrays. Honouring the shebang is what makes local and CI agree.
+      - name: Check shell syntax
+        run: |
+          for f in $(git ls-files '*.sh'); do
+            case "$(head -1 "$f")" in
+              *bash) bash -n "$f" || exit 1 ;;
+              *) sh -n "$f" || exit 1 ;;
+            esac
+          done
+
+      - run: sh deploy/bootstrap_test.sh
+
   panel:
     runs-on: ubuntu-latest
     steps:

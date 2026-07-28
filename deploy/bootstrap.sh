@@ -34,6 +34,10 @@
 #                     through the handshake address instead of modern forwarding
 #                     (default: legacy18). Read once at Velocity start, so changing it
 #                     means re-running this script and restarting the proxy.
+#   FELIS_VELOCITY_FORK_JAR path to a Felis-Legacy Velocity fork build to install as the
+#                     proxy instead of the stock download (default: unset, stock).
+#   FELIS_VELOCITY_FORK_JAR_SHA256 expected sha256 of that jar. REQUIRED whenever the jar
+#                     above is set; the install refuses on a mismatch.
 #   FELIS_GO_VERSION  Go toolchain used to build the nano binary (default: 1.26.4)
 #   FELIS_REPO_URL    git URL to build from   (raw script mode only)
 #   FELIS_VERSION_BOOTSTRAP release|dev — which version to install (default: release).
@@ -132,9 +136,20 @@ FELIS_VELOCITY_VERSION="${FELIS_VELOCITY_VERSION:-3.5.1}"
 #
 # Opt-in because it is unmeasured where it counts: FL-008's probe runs offline-mode
 # against a stub, and this jar would carry every real Mojang session on the server.
-# The build lives in Felis-Legacy and is not byte-reproducible, so there is no digest
-# to pin here — the jar is trusted because that probe certified the build.
 FELIS_VELOCITY_FORK_JAR="${FELIS_VELOCITY_FORK_JAR:-}"
+# Expected sha256 of that jar, REQUIRED whenever it is set. Case and internal spaces are
+# ignored, so whatever sha256sum, Get-FileHash or certutil printed can be pasted as-is.
+# No digest is hardcoded here:
+# the build lives in Felis-Legacy and has never been reproduced on a second machine, so
+# any constant this script carried would pin one machine's output rather than the fork.
+#
+# So this is not a supply-chain signature and does not pretend to be one — an operator
+# who can write the jar can write this value too. What it does buy: a path is not an
+# identity, and every re-run of this script re-checks it. A truncated copy, a stale build
+# left at the same path, or the two-patch jar where the three-patch one was meant all
+# change the digest and stop the install. Naming the digest once is what turns "whatever
+# is at that path today" into one specific build.
+FELIS_VELOCITY_FORK_JAR_SHA256="${FELIS_VELOCITY_FORK_JAR_SHA256:-}"
 # Temurin 25: Velocity 3.5 needs 21+, and 25 is also what a future Velocity 4 requires,
 # so the runtime does not have to move again when the pin does. Distro JDK packaging is
 # a lottery across four package managers — a tarball is one code path everywhere (same
@@ -1471,12 +1486,31 @@ install_jre() {
 
 install_velocity() {
   install_jre
-  local url tmp
+  local url tmp have want
   prepare_velocity_layout
   if [ -n "$FELIS_VELOCITY_FORK_JAR" ]; then
     [ -f "$FELIS_VELOCITY_FORK_JAR" ] \
       || die "FELIS_VELOCITY_FORK_JAR is not a readable file: ${FELIS_VELOCITY_FORK_JAR}"
-    log "installing the Felis-Legacy Velocity fork from ${FELIS_VELOCITY_FORK_JAR}"
+    # Hash stdin, never the path — same reason as install_via_plugins: sha256sum escapes its
+    # output line for a filename carrying a backslash or a newline, and the leading "\" that
+    # adds would fail every comparison below.
+    have="$(sha256sum <"$FELIS_VELOCITY_FORK_JAR" | cut -d' ' -f1)"
+    # Refuse rather than warn. This jar is the proxy every player connects through, and a
+    # warning in an install log is not a gate. The digest is printed so the first run after
+    # a deliberate rebuild is one copy-paste, not an investigation.
+    [ -n "$FELIS_VELOCITY_FORK_JAR_SHA256" ] || die \
+      "FELIS_VELOCITY_FORK_JAR_SHA256 is required whenever FELIS_VELOCITY_FORK_JAR is set.
+   The jar at that path hashes to ${have}.
+   Check that against the build you meant to install, then re-run with
+   FELIS_VELOCITY_FORK_JAR_SHA256=${have}"
+    # Normalise the operator's digest before comparing. sha256sum prints lowercase, but the
+    # build host is often Windows, where Get-FileHash prints uppercase and certutil has
+    # shipped both with and without spaces between the bytes. All three name the same jar,
+    # so comparing raw would refuse two of the three spellings and word it as tampering.
+    want="$(printf '%s' "$FELIS_VELOCITY_FORK_JAR_SHA256" | tr -d '[:space:]' | tr 'A-Z' 'a-z')"
+    [ "$have" = "$want" ] || die \
+      "FELIS_VELOCITY_FORK_JAR checksum mismatch: got ${have}, expected ${want}"
+    log "installing the Felis-Legacy Velocity fork from ${FELIS_VELOCITY_FORK_JAR} (sha256 ${have})"
     atomic_install_file "$FELIS_VELOCITY_FORK_JAR" "${VELOCITY_DIR}/velocity.jar" 0644 root root
   else
     log "resolving the newest Velocity ${FELIS_VELOCITY_VERSION} build"
