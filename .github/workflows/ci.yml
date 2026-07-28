@@ -1,0 +1,68 @@
+# Runs the checks on every push and pull request.
+#
+# release.yml already runs `go vet` and `go test`, but only once a vX.Y.Z tag exists — by then
+# a red change is on the release path and the only remedy is a new tag. This is the same gate
+# moved to where it can still stop something, plus the panel suite, which nothing ran at all:
+# the release goes through the Dockerfile, and the Dockerfile runs `npm run build`, never
+# `npm test`.
+#
+# Tags are excluded from the push trigger. A vX.Y.Z push fires release.yml, which repeats the
+# Go job itself; running both would spend a private repository's Actions minutes twice for one
+# answer.
+name: ci
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - run: go vet ./...
+      - run: go test ./...
+
+  panel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Dockerfile's `FROM node:<major>` is the only place the panel's Node version is
+      # declared — there is no .nvmrc and no engines field. Reading it here rather than
+      # repeating the number keeps CI testing the version a release is actually built on;
+      # a second copy would drift silently the first time the image is bumped.
+      - name: Read the panel's Node version from the Dockerfile
+        id: node
+        run: |
+          version="$(sed -n 's/^FROM.*node:\([0-9][0-9]*\)-.*/\1/p' Dockerfile | head -1)"
+          [ -n "$version" ] || { echo "Dockerfile has no 'FROM ... node:<major>' line"; exit 1; }
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.node.outputs.version }}
+          cache: npm
+          cache-dependency-path: panel/package-lock.json
+
+      - run: npm ci
+        working-directory: panel
+
+      - run: npm test
+        working-directory: panel
+
+      - run: npm run typecheck
+        working-directory: panel
