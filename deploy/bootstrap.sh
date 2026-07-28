@@ -30,6 +30,10 @@
 #   FELIS_INSTALL_MODE full|nano — skip the prompt (default: ask on a tty, else full)
 #   FELIS_NANO_LISTEN listen addr for `felis nano` (default: 127.0.0.1:8081 — loopback
 #                     only; set a private-network IP to serve an off-host proxy)
+#   FELIS_LEGACY_FORWARDING_SERVERS comma-separated backends that receive their identity
+#                     through the handshake address instead of modern forwarding
+#                     (default: legacy18). Read once at Velocity start, so changing it
+#                     means re-running this script and restarting the proxy.
 #   FELIS_GO_VERSION  Go toolchain used to build the nano binary (default: 1.26.4)
 #   FELIS_REPO_URL    git URL to build from   (raw script mode only)
 #   FELIS_VERSION_BOOTSTRAP release|dev — which version to install (default: release).
@@ -95,6 +99,11 @@ INSTALL_MODE="${FELIS_INSTALL_MODE:-}"
 # own players stop getting in. Same-host Velocity reaches 127.0.0.1 fine; a proxy on
 # another machine must opt in explicitly with FELIS_NANO_LISTEN=<private-ip>:8081.
 FELIS_NANO_LISTEN="${FELIS_NANO_LISTEN:-127.0.0.1:8081}"
+# Backends that take their forwarded identity through the handshake address instead of
+# proxy-wide modern forwarding. See write_velocity_service for why a protocol-47 backend
+# needs this. Overridable because adding a second 1.8 backend otherwise means editing this
+# script; it is still a restart-time list, not one that follows the CRs.
+FELIS_LEGACY_FORWARDING_SERVERS="${FELIS_LEGACY_FORWARDING_SERVERS:-legacy18}"
 FELIS_GO_VERSION="${FELIS_GO_VERSION:-1.26.4}"
 PKG_LOCK_TIMEOUT="${PKG_LOCK_TIMEOUT:-${APT_LOCK_TIMEOUT:-900}}"
 APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-$PKG_LOCK_TIMEOUT}"
@@ -1591,9 +1600,20 @@ install_velocity_service() {
   # behind ViaVersion, which strips modern forwarding's login-plugin-message when it down-translates
   # the proxy->backend pipeline to protocol 47; only the handshake field survives Via. The Felis
   # fork reads this list from -Dfelis.legacy-forwarding.servers and forwards those servers legacy;
-  # every other backend keeps modern+secret untouched. v1 hardcodes the one legacy backend; the
-  # upgrade path is to have the operator render this list from the MinecraftServer CRs.
-  local legacy_forwarding_servers="legacy18"
+  # every other backend keeps modern+secret untouched.
+  #
+  # The list is a JVM system property, so it is fixed for the life of the proxy process and a
+  # change needs a Velocity restart. FELIS_LEGACY_FORWARDING_SERVERS makes that reachable
+  # without editing this script, which is as far as a startup property can go. Having it follow
+  # the MinecraftServer CRs instead is a larger change: the forwarding decision lives in the
+  # fork's patch to Velocity core, not in the Felis plugin, so core would need to read state the
+  # plugin owns and refreshes.
+  #
+  # The -D below is double-quoted in ExecStart on purpose. The fork trims each element, so it
+  # accepts "legacy18, legacy112", but systemd splits ExecStart on whitespace before java ever
+  # sees it -- unquoted, that spelling would hand java a stray "legacy112" argument and the unit
+  # would not start. Quoting keeps the whole property one argv item.
+  local legacy_forwarding_servers="${FELIS_LEGACY_FORWARDING_SERVERS}"
   cat > "$VELOCITY_SERVICE" <<EOF
 [Unit]
 Description=Felis Velocity proxy (Mojang authentication + modern forwarding)
@@ -1605,7 +1625,7 @@ Type=simple
 User=${VELOCITY_USER}
 Group=${VELOCITY_USER}
 WorkingDirectory=${VELOCITY_DIR}
-ExecStart=${JRE_DIR}/bin/java -Xms512M -Xmx1G -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:+AlwaysPreTouch -Dmojang.sessionserver=http://${api_ip}:8081/session/minecraft/hasJoined -Dfelis.legacy-forwarding.servers=${legacy_forwarding_servers} -jar ${VELOCITY_DIR}/velocity.jar
+ExecStart=${JRE_DIR}/bin/java -Xms512M -Xmx1G -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:+AlwaysPreTouch -Dmojang.sessionserver=http://${api_ip}:8081/session/minecraft/hasJoined "-Dfelis.legacy-forwarding.servers=${legacy_forwarding_servers}" -jar ${VELOCITY_DIR}/velocity.jar
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=yes
