@@ -1,6 +1,8 @@
 package felis
 
 import (
+	"io/fs"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -101,6 +103,74 @@ func TestBootstrapPinsViaBlockConnectionsOff(t *testing.T) {
 	if !strings.Contains(script, "pin_via_block_connections\n  ok \"Via staged") {
 		t.Error("install_via_plugins no longer calls pin_via_block_connections; the jars would " +
 			"be staged with the option left at its default")
+	}
+}
+
+// The embed list and the images bootstrap.sh builds are two lists nobody reconciles.
+// deploy/paper shipped an image build without ever being added to gameStackAssets, and
+// nothing said so: a checkout on disk satisfies the build either way, and the tar is
+// only the build context on the path that has no checkout — `curl | bash`, where the
+// third `docker build -f` then names a file that was never unpacked. So derive the
+// inputs from the script and from each Dockerfile's own COPY lines instead of restating
+// them here; a fourth image inherits the check for free.
+func TestGameStackTarCarriesEveryBuildInput(t *testing.T) {
+	// Matches the path only when GAME_STACK_DIR is followed by one, which skips the
+	// build-context arguments (`"$GAME_STACK_DIR"`, `"${GAME_STACK_DIR}:/src:z"`) and
+	// the glob for gradle's output, none of which are inputs this tar has to carry.
+	found := regexp.MustCompile(`\$\{GAME_STACK_DIR\}/(\S+?)"`).FindAllStringSubmatch(BootstrapScript(), -1)
+	var paths []string
+	seen := map[string]bool{}
+	for _, m := range found {
+		if !seen[m[1]] {
+			seen[m[1]] = true
+			paths = append(paths, m[1])
+		}
+	}
+	// Guards the regex itself: a rewrite of how bootstrap.sh spells the build context
+	// would otherwise turn this test into an unconditional pass. It has to come before
+	// the loop — a missing file in there is fatal, and a floor placed after it would
+	// never be reached to say that the regex, not the tar, is what went wrong.
+	if len(paths) < 3 {
+		t.Fatalf("only %d game-stack path(s) resolved out of bootstrap.sh; the limbo, "+
+			"lobby and paper Dockerfiles are all built from ${GAME_STACK_DIR}", len(paths))
+	}
+	for _, path := range paths {
+		requireEmbedded(t, path)
+		// A Dockerfile that arrives without the files it COPYs fails just as late and
+		// just as far from here; the deploy/paper gap was missing its entrypoint too.
+		for _, src := range copySources(t, path) {
+			requireEmbedded(t, src)
+		}
+	}
+}
+
+// copySources lists the build-context paths a Dockerfile COPYs in, skipping the
+// --from=<stage> copies, whose sources are produced by an earlier stage rather than
+// unpacked from the tar.
+func copySources(t *testing.T, dockerfile string) []string {
+	t.Helper()
+	var out []string
+	// Continuations are joined first: a COPY split across lines would otherwise be two
+	// fragments, neither of them starting with COPY followed by a source, and its
+	// source would slip past unchecked.
+	body := strings.ReplaceAll(readGameStackFile(t, dockerfile), "\\\n", " ")
+	for line := range strings.SplitSeq(body, "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 || f[0] != "COPY" || strings.HasPrefix(f[1], "--") {
+			continue
+		}
+		out = append(out, strings.TrimSuffix(f[1], "/"))
+	}
+	return out
+}
+
+// fs.Stat rather than ReadFile: half of these are directories (`COPY plugins/shared/`),
+// and embed.FS answers for those too.
+func requireEmbedded(t *testing.T, path string) {
+	t.Helper()
+	if _, err := fs.Stat(gameStackAssets, path); err != nil {
+		t.Errorf("%s is a game-stack build input but is not in gameStackAssets; an "+
+			"install with no source checkout dies on it: %v", path, err)
 	}
 }
 

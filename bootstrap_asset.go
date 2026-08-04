@@ -13,8 +13,8 @@ var bootstrapScript string
 //go:embed deploy/crd/*.yaml
 var bootstrapAssets embed.FS
 
-// gameStackAssets carries everything deploy/bootstrap.sh needs to build the two
-// always-on game images (login limbo + lobby) and the Velocity plugin, for the TUI
+// gameStackAssets carries everything deploy/bootstrap.sh needs to build the three
+// game images (login limbo, lobby, plain Paper) and the Velocity plugin, for the TUI
 // install path — which pipes the embedded bootstrap.sh into bash and therefore has
 // NO source checkout on disk to build from.
 //
@@ -26,6 +26,7 @@ var bootstrapAssets embed.FS
 //
 //go:embed deploy/limbo/Dockerfile deploy/limbo/entrypoint.sh
 //go:embed deploy/lobby/Dockerfile deploy/lobby/entrypoint.sh
+//go:embed deploy/paper/Dockerfile deploy/paper/entrypoint.sh
 //go:embed plugins/limbo/build.gradle plugins/limbo/settings.gradle plugins/limbo/src
 //go:embed plugins/paper/build.gradle plugins/paper/settings.gradle plugins/paper/src
 //go:embed plugins/velocity/build.gradle plugins/velocity/settings.gradle plugins/velocity/src
@@ -46,9 +47,9 @@ func GameStackTar(w io.Writer) error {
 		if err != nil {
 			return err
 		}
-		// Mode 0644 for everything: entrypoint.sh is invoked as `sh <file>` by both
-		// Dockerfiles precisely because the +x bit does not survive a Windows checkout,
-		// so nothing here needs to be executable.
+		// Mode 0644 for everything: entrypoint.sh is invoked as `sh <file>` by all
+		// three Dockerfiles precisely because the +x bit does not survive a Windows
+		// checkout, so nothing here needs to be executable.
 		if err := tw.WriteHeader(&tar.Header{
 			Name:     path,
 			Mode:     0o644,
