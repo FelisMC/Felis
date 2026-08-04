@@ -66,6 +66,37 @@ func TestLobbyLuckPermsWiringIsConsistent(t *testing.T) {
 	}
 }
 
+// The Paper jar digest rides the same cross-file contract as LuckPerms above: bootstrap.sh
+// resolves "url sha256" out of Fill's content-addressed download URL and passes the digest
+// as a build-arg the Dockerfile must require and verify. docker only WARNS about an unknown
+// --build-arg, so a renamed arg would surface as a required-arg failure on a real host
+// mid-install — this test is the only compile step the pairing gets.
+//
+// Both images pull the same jar from the same URL, so both have to check it: a gate on one
+// of them leaves the other booting on whatever bytes happened to arrive.
+func TestPaperJarDigestWiringIsConsistent(t *testing.T) {
+	const arg = "PAPER_JAR_SHA256"
+	if n := strings.Count(BootstrapScript(), "--build-arg "+arg+"="); n < 2 {
+		t.Errorf("bootstrap.sh passes --build-arg %s %d time(s); the lobby and the "+
+			"plain-Paper build each need it", arg, n)
+	}
+	for _, name := range []string{"deploy/lobby/Dockerfile", "deploy/paper/Dockerfile"} {
+		dockerfile := readGameStackFile(t, name)
+		if !strings.Contains(dockerfile, "ARG "+arg) {
+			t.Errorf("%s declares no ARG %s", name, arg)
+		}
+		if !strings.Contains(dockerfile, `if [ -z "${PAPER_JAR_SHA256:-}" ]`) {
+			t.Errorf("%s does not fail the build when %s is unset", name, arg)
+		}
+		// Requiring the arg is not the same as spending it, and which file gets hashed
+		// matters as much as the command: a `sha256sum -c` over some other download
+		// would satisfy a bare substring check while paper.jar still arrives unchecked.
+		if !strings.Contains(dockerfile, `echo "$PAPER_JAR_SHA256  /paper/paper.jar" | sha256sum -c`) {
+			t.Errorf("%s never verifies /paper/paper.jar against %s", name, arg)
+		}
+	}
+}
+
 // A 1.8 client joining a protocol-47 backend dies on the first chunk unless ViaVersion's
 // serverside block-connection tracking is off: under modern forwarding the Velocity injector
 // reports 1.13 as the lowest supported protocol, ConnectionData.init() returns early on that,

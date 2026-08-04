@@ -29,6 +29,7 @@ this at every layer:
 ```
 docker build -f deploy/lobby/Dockerfile \
   --build-arg PAPER_JAR_URL=https://<mirror>/paper-1.21.x-<build>.jar \
+  --build-arg PAPER_JAR_SHA256=<sha256 of that jar> \
   -t felis-lobby:demo .
 docker save felis-lobby:demo | sudo k3s ctr images import -
 # felis.toml → [velocity] lobby_image = "felis-lobby:demo"

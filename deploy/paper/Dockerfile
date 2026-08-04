@@ -18,6 +18,7 @@
 # API — the SAME url the lobby build resolves, so this reuses it and adds no new dependency):
 #   docker build -f deploy/paper/Dockerfile \
 #     --build-arg PAPER_JAR_URL=https://fill-data.papermc.io/v1/objects/<sha>/paper-<ver>-<build>.jar \
+#     --build-arg PAPER_JAR_SHA256=<that same sha — the objects/ path segment> \
 #     -t felis-paper:demo .
 #   docker save felis-paper:demo | sudo k3s ctr images import -
 #   # felis.toml → recommended via 0019_recommended_paper.sql (no [velocity] key points here)
@@ -30,13 +31,21 @@
 # to boot on anything older.
 FROM eclipse-temurin:25-jre
 ARG PAPER_JAR_URL
+# Required alongside the URL: Fill's URLs are content-addressed, but nothing enforces
+# that shape at build time. Checking the digest after the download turns a truncated or
+# tampered fetch into a failed build instead of a server booted on the wrong bytes.
+ARG PAPER_JAR_SHA256
 RUN set -eu; \
     if [ -z "${PAPER_JAR_URL:-}" ]; then \
       echo "ERROR: --build-arg PAPER_JAR_URL=<paper jar> is required" >&2; exit 1; \
     fi; \
+    if [ -z "${PAPER_JAR_SHA256:-}" ]; then \
+      echo "ERROR: --build-arg PAPER_JAR_SHA256=<paper jar sha256> is required" >&2; exit 1; \
+    fi; \
     apt-get update && apt-get install -y --no-install-recommends curl ca-certificates; \
     mkdir -p /paper; \
     curl -fSL "$PAPER_JAR_URL" -o /paper/paper.jar; \
+    echo "$PAPER_JAR_SHA256  /paper/paper.jar" | sha256sum -c; \
     apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*
 COPY deploy/paper/entrypoint.sh /usr/local/bin/felis-entrypoint.sh
 

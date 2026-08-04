@@ -61,6 +61,77 @@ expect "an uppercase digest is the same digest" "LOG: installing the Felis-Legac
 out="$(run_gate "$(printf '%s' "$want" | sed 's/../& /g')")"
 expect "a space-separated digest is the same digest" "LOG: installing the Felis-Legacy Velocity fork" "$out"
 
+# --- papermc_latest_jar answers "url sha256" from one response --------------------------
+# Fill's download URLs are content-addressed (/v1/objects/<sha256>/<name>.jar), and the
+# resolver's contract is to hand both halves back from the same grep — or refuse a URL
+# that carries no digest, rather than wave the download through unchecked. Run under
+# bash, not sh: bootstrap.sh is bash and the function uses $'\n'.
+
+fn="$(awk '/^papermc_latest_jar\(\)/,/^}/' "$BS")"
+[ -n "$fn" ] || { echo "FAIL: no papermc_latest_jar in $BS"; exit 1; }
+[ "$(printf '%s\n' "$fn" | wc -l)" -lt 30 ] \
+  || { echo "FAIL: the extracted papermc_latest_jar is not just the function -- did its closing brace move?"; exit 1; }
+
+rsha=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+run_resolver() { # canned-fill-response
+  CANNED="$1" bash -c '
+    curl() { printf "%s" "$CANNED"; }
+    '"$fn"'
+    if out="$(papermc_latest_jar velocity 3.5.1)"; then
+      printf "RESOLVED %s\n" "$out"
+    else
+      printf "REFUSED\n"
+    fi
+  '
+}
+
+out="$(run_resolver "{\"url\":\"https://fill-data.papermc.io/v1/objects/${rsha}/velocity-3.5.1-615.jar\"}")"
+expect "the resolver pairs the url with its own digest" \
+  "RESOLVED https://fill-data.papermc.io/v1/objects/${rsha}/velocity-3.5.1-615.jar ${rsha}" "$out"
+
+out="$(run_resolver '{"url":"https://fill-data.papermc.io/mirror/velocity-3.5.1-615.jar"}')"
+expect "a URL that carries no digest is refused" "REFUSED" "$out"
+
+# --- the resolved-Velocity digest gate --------------------------------------------------
+# The download must hash to what the content-addressed URL promised, BEFORE
+# atomic_install_file — the same refusal the Via plugins and the fork jar already get.
+
+# The end pattern spells ${VELOCITY_DIR} with dots: escaped braces are literal in gawk
+# and mawk but undefined in POSIX awk, and CI's awk is whatever ubuntu ships.
+vblock="$(awk '/log "resolving the newest Velocity/,/atomic_install_file "\$tmp" "\$.VELOCITY_DIR.\/velocity\.jar"/' "$BS")"
+[ -n "$vblock" ] || { echo "FAIL: no resolved-Velocity install block found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$vblock" | wc -l)" -lt 30 ] \
+  || { echo "FAIL: the extracted block is not the velocity install -- did its last line move?"; exit 1; }
+
+vdir="$(mktemp -d)"
+trap 'rm -f "$jar"; rm -rf "$vdir"' EXIT
+vwant="$(printf 'stand-in velocity build\n' | sha256sum | cut -d' ' -f1)"
+
+run_velocity_install() { # digest-the-resolver-reports
+  WANT="$1" VELOCITY_DIR="$vdir" FELIS_VELOCITY_VERSION=3.5.1 bash -c '
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    log() { printf "LOG: %s\n" "$*"; }
+    remember_temp() { :; }
+    papermc_latest_jar() {
+      printf "%s %s\n" "https://fill-data.papermc.io/v1/objects/${WANT}/velocity-3.5.1-615.jar" "$WANT"
+    }
+    curl() { while [ "$#" -gt 1 ] && [ "$1" != "-o" ]; do shift; done; printf "stand-in velocity build\n" > "$2"; }
+    atomic_install_file() { printf "INSTALL: %s\n" "$2"; }
+    '"$vblock"
+}
+
+out="$(run_velocity_install deadbeef)"
+expect "a download that does not hash to the promised digest is refused" \
+  "DIE: Velocity 3.5.1 checksum mismatch: got ${vwant}, expected deadbeef" "$out"
+case "$out" in
+  *INSTALL:*) echo "FAIL a refused download must not reach atomic_install_file"; fails=$((fails + 1)) ;;
+  *) echo "PASS a refused download is not installed" ;;
+esac
+
+out="$(run_velocity_install "$vwant")"
+expect "the matching download installs" "INSTALL: ${vdir}/velocity.jar" "$out"
+
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"

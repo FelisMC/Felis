@@ -13,7 +13,8 @@
 #   1. Prebuilt tars at deploy/images/felis-limbo.tar + felis-lobby.tar (imported as-is).
 #   2. Otherwise built on this host with docker, resolving the LOOHP/Limbo CI jar and
 #      the latest stable Paper jar automatically. Override any of:
-#        LIMBO_JAR_URL LIMBO_SCHEM_URL LIMBO_VERSION PAPER_JAR_URL PAPER_MC_VERSION
+#        LIMBO_JAR_URL LIMBO_SCHEM_URL LIMBO_VERSION PAPER_JAR_URL PAPER_JAR_SHA256
+#        PAPER_MC_VERSION
 #
 # Toggles: SKIP_BOOTSTRAP=1 (base already up), SKIP_SETUP=1 (stop before the TUI).
 set -Eeuo pipefail
@@ -73,9 +74,24 @@ else
   : "${PAPER_MC_VERSION:=1.21.8}"
   : "${PAPER_JAR_URL:=$(curl -fsSL --max-time 30 "https://fill.papermc.io/v3/projects/paper/versions/${PAPER_MC_VERSION}/builds/latest" | grep -oE 'https://fill-data\.papermc\.io/[^"]+\.jar' | head -1)}"
   [ -n "$PAPER_JAR_URL" ] || die "could not resolve the Paper jar; set PAPER_JAR_URL"
+  # Both Dockerfiles require the jar's digest. The fill-data URL is content-addressed
+  # (the objects/ path segment IS the sha256), so it is derived rather than asked for;
+  # a mirror override carries no such segment and must bring its own digest.
+  if [ -z "${PAPER_JAR_SHA256:-}" ]; then
+    sha="${PAPER_JAR_URL#*/objects/}"
+    sha="${sha%%/*}"
+    case "$sha" in
+      *[!0-9a-f]*|"") sha="" ;;
+    esac
+    if [ "${#sha}" -ne 64 ]; then
+      die "cannot derive the Paper jar sha256 from PAPER_JAR_URL (not a content-addressed fill-data URL); set PAPER_JAR_SHA256"
+    fi
+    PAPER_JAR_SHA256="$sha"
+  fi
   log "building $LOBBY_IMAGE (Paper $PAPER_MC_VERSION)"
   docker build -f "$SRC_DIR/deploy/lobby/Dockerfile" \
     --build-arg PAPER_JAR_URL="$PAPER_JAR_URL" \
+    --build-arg PAPER_JAR_SHA256="$PAPER_JAR_SHA256" \
     -t "$LOBBY_IMAGE" "$SRC_DIR"
   docker save "$LOBBY_IMAGE" | "$K3S" ctr images import -
 
@@ -84,6 +100,7 @@ else
   log "building $PAPER_IMAGE (plain Paper $PAPER_MC_VERSION, forwarding via the operator initContainer)"
   docker build -f "$SRC_DIR/deploy/paper/Dockerfile" \
     --build-arg PAPER_JAR_URL="$PAPER_JAR_URL" \
+    --build-arg PAPER_JAR_SHA256="$PAPER_JAR_SHA256" \
     -t "$PAPER_IMAGE" "$SRC_DIR"
   docker save "$PAPER_IMAGE" | "$K3S" ctr images import -
 fi

@@ -1200,7 +1200,7 @@ game_stack_source() {
 # MC_VERSION is read off Limbo's CI artifact name (Limbo-<limbo-ver>-<mc-ver>.jar), which
 # is the only place the pairing is published.
 resolve_game_jars() {
-  local ci="https://ci.loohpjames.com/job/Limbo/lastSuccessfulBuild" meta file base rest
+  local ci="https://ci.loohpjames.com/job/Limbo/lastSuccessfulBuild" meta file base rest paper
   log "resolving the newest LOOHP/Limbo CI build"
   # Fetch first, filter second: `curl | grep | head` dies of SIGPIPE under `set -o pipefail`
   # the moment head closes the pipe early. Same shape everywhere below.
@@ -1221,8 +1221,10 @@ resolve_game_jars() {
   # PaperMC Fill v3. The old api.papermc.io v2 has returned HTTP 410 since 2026-07-01 and
   # is never coming back; Fill wants a descriptive User-Agent.
   log "resolving the newest Paper ${MC_VERSION} build"
-  PAPER_JAR_URL="$(papermc_latest_jar paper "$MC_VERSION")" \
-    || die "could not resolve a Paper build for Minecraft ${MC_VERSION} (the login gate pins this protocol; the build likely exists — Fill upstream is down or flapping)"
+  paper="$(papermc_latest_jar paper "$MC_VERSION")" \
+    || die "could not resolve a Paper build for Minecraft ${MC_VERSION} (the login gate pins this protocol; the build likely exists — Fill upstream is down, flapping, or no longer content-addressed)"
+  PAPER_JAR_URL="${paper% *}"
+  PAPER_JAR_SHA256="${paper##* }"
   # LuckPerms is not version-matched to MC_VERSION the way Paper is: it ships one
   # current Bukkit build that supports the whole supported Minecraft range, so there is
   # no per-version endpoint to ask.
@@ -1250,20 +1252,29 @@ luckperms_latest_jar() {
   printf '%s\n' "$url"
 }
 
-# papermc_latest_jar prints the download URL of the newest build of <project> <version>.
+# papermc_latest_jar prints "<url> <sha256>" for the newest build of <project> <version>.
 # --retry rides out Fill's transient gateway errors (502/503/504 are in curl's retry
 # set): a single blip must not abort the whole bootstrap claiming the build is missing.
 # Plain --retry only, deliberately: --retry-connrefused needs curl 7.52+, which the yum
 # (el7) path does not have, and it would only add ECONNREFUSED to an already-covered set.
+# The digest is not fished out of the JSON separately: Fill's download URLs are
+# content-addressed (/v1/objects/<sha256>/<name>.jar), so the path segment names the
+# bytes the URL serves and both halves come from the same grep of the same response. A
+# URL without that shape fails the resolve rather than waving the download through
+# unchecked.
 papermc_latest_jar() {
-  local project="$1" version="$2" json urls url
+  local project="$1" version="$2" json urls url sha
   json="$(curl -fsSL --retry 5 --retry-delay 2 \
     -A "felis-bootstrap (+https://github.com/MliroLirrorsIngenuity/Felis)" \
     "https://fill.papermc.io/v3/projects/${project}/versions/${version}/builds/latest")" || return 1
   urls="$(printf '%s' "$json" | grep -o 'https://fill-data\.papermc\.io/[^"]*\.jar' || true)"
   url="${urls%%$'\n'*}"
   [ -n "$url" ] || return 1
-  printf '%s\n' "$url"
+  sha="${url#*/objects/}"
+  sha="${sha%%/*}"
+  case "$sha" in *[!0-9a-f]*|"") return 1 ;; esac
+  [ "${#sha}" -eq 64 ] || return 1
+  printf '%s %s\n' "$url" "$sha"
 }
 
 build_game_stack() {
@@ -1281,6 +1292,7 @@ build_game_stack() {
   log "building ${FELIS_LOBBY_IMAGE} (Paper ${MC_VERSION} + felis-paper /menu + LuckPerms)"
   docker build -f "${GAME_STACK_DIR}/deploy/lobby/Dockerfile" \
     --build-arg PAPER_JAR_URL="$PAPER_JAR_URL" \
+    --build-arg PAPER_JAR_SHA256="$PAPER_JAR_SHA256" \
     --build-arg LUCKPERMS_JAR_URL="$LUCKPERMS_JAR_URL" \
     -t "$FELIS_LOBBY_IMAGE" "$GAME_STACK_DIR"
 
@@ -1289,6 +1301,7 @@ build_game_stack() {
   log "building ${FELIS_PAPER_IMAGE} (plain Paper ${MC_VERSION}, forwarding via the operator initContainer)"
   docker build -f "${GAME_STACK_DIR}/deploy/paper/Dockerfile" \
     --build-arg PAPER_JAR_URL="$PAPER_JAR_URL" \
+    --build-arg PAPER_JAR_SHA256="$PAPER_JAR_SHA256" \
     -t "$FELIS_PAPER_IMAGE" "$GAME_STACK_DIR"
 
   local img
@@ -1486,7 +1499,7 @@ install_jre() {
 
 install_velocity() {
   install_jre
-  local url tmp have want
+  local url tmp have want resolved
   prepare_velocity_layout
   if [ -n "$FELIS_VELOCITY_FORK_JAR" ]; then
     [ -f "$FELIS_VELOCITY_FORK_JAR" ] \
@@ -1514,12 +1527,20 @@ install_velocity() {
     atomic_install_file "$FELIS_VELOCITY_FORK_JAR" "${VELOCITY_DIR}/velocity.jar" 0644 root root
   else
     log "resolving the newest Velocity ${FELIS_VELOCITY_VERSION} build"
-    url="$(papermc_latest_jar velocity "$FELIS_VELOCITY_VERSION")" \
+    resolved="$(papermc_latest_jar velocity "$FELIS_VELOCITY_VERSION")" \
       || die "no Velocity build for ${FELIS_VELOCITY_VERSION} (override with FELIS_VELOCITY_VERSION)"
+    url="${resolved% *}"
+    want="${resolved##* }"
     log "downloading Velocity ${FELIS_VELOCITY_VERSION}"
     tmp="$(mktemp "${VELOCITY_DIR}/.velocity.jar.XXXXXX")"
     remember_temp "$tmp"
     curl -fsSL "$url" -o "$tmp" || die "failed to download Velocity: ${url}"
+    # The same gate the Via plugins and the fork jar pass: this jar is the proxy every
+    # player connects through, and Fill already promised its digest in the URL — a
+    # truncated or tampered download becomes a refusal here, not a proxy that won't boot.
+    have="$(sha256sum <"$tmp" | cut -d' ' -f1)"
+    [ "$have" = "$want" ] \
+      || die "Velocity ${FELIS_VELOCITY_VERSION} checksum mismatch: got ${have}, expected ${want}"
     atomic_install_file "$tmp" "${VELOCITY_DIR}/velocity.jar" 0644 root root
   fi
 
