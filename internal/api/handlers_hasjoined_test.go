@@ -134,6 +134,12 @@ func TestHasJoined(t *testing.T) {
 		if got != want {
 			t.Fatalf("rewrite = %q, want deterministic UUIDv3 %q", got, want)
 		}
+		// Also pinned as literals: every third-party player's UUID, and every ban and account
+		// link keyed on one, depends on these exact bytes, and a change to the namespace seed
+		// moves both sides of the derived comparison above at once.
+		if ns := felisAuthNS.String(); ns != "07228eae-77f6-500e-9dc0-436afbc87c27" || got != "b63bcc1c611432eeb7b3af3a15012e48" {
+			t.Fatalf("namespace %s / rewrite %s changed; every existing third-party player would get a new UUID", ns, got)
+		}
 	})
 
 	// Mojang is priority-first: when both would validate the same name, Mojang wins.
