@@ -206,6 +206,38 @@ else
   echo "SKIP directory modes: this filesystem ignores chmod"
 fi
 
+# --- install_nano_service reports a unit that dies at once ------------------------------
+# A config the new binary rejects leaves the unit in auto-restart; the install must say so
+# instead of printing "started" over a proxy whose every login now fails.
+
+iblock="$(awk '/^install_nano_service\(\) \{/,/^}/' "$BS")"
+[ -n "$iblock" ] || { echo "FAIL: no install_nano_service found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$iblock" | wc -l)" -lt 50 ] \
+  || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
+
+run_nano_service() { # exit status systemctl is-active reports
+  ACTIVE="$1" NANO_SERVICE="$sdir/felis-nano.service" HOST_BIN=/usr/local/bin/felis \
+    STATE_DIR=/etc/felis FELIS_NANO_LISTEN=127.0.0.1:25580 bash -c '
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    ok() { printf "OK: %s\n" "$*"; }
+    sleep() { :; }
+    systemctl() { if [ "$1" = is-active ]; then return "$ACTIVE"; fi; }
+    journalctl() { printf "JOURNAL: config: needs prefix\n"; }
+    '"$iblock"'
+    install_nano_service'
+}
+
+out="$(run_nano_service 3)"
+expect "a unit that dies at once fails the install" "DIE: felis-nano did not stay up" "$out"
+expect "the failure shows the unit's own log" "JOURNAL: config: needs prefix" "$out"
+case "$out" in
+  *"OK: felis-nano.service"*) echo "FAIL a dead unit must not be reported as started"; fails=$((fails + 1)) ;;
+  *) echo "PASS a dead unit is not reported as started" ;;
+esac
+
+out="$(run_nano_service 0)"
+expect "a unit that stays up is reported as started" "OK: felis-nano.service enabled and started" "$out"
+
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"

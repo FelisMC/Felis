@@ -2379,6 +2379,13 @@ EOF
   # restart, not `enable --now`: on a re-run the service is already active and --now would
   # leave the OLD binary running against the NEW unit. Converge means converge.
   systemctl restart felis-nano
+  # restart returns as soon as the process is forked. A config the new binary rejects, or a
+  # file it cannot open, only shows once it has exited and the unit sits in auto-restart.
+  sleep 2
+  if ! systemctl is-active --quiet felis-nano; then
+    journalctl -u felis-nano -n 20 --no-pager || true
+    die "felis-nano did not stay up; its last log lines are above"
+  fi
   ok "felis-nano.service enabled and started (listen ${FELIS_NANO_LISTEN})"
 }
 
