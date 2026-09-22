@@ -66,11 +66,14 @@ type AuthSource struct {
 }
 
 // sessionProfile is the Mojang hasJoined contract. properties is relayed verbatim
-// (json.RawMessage) so a source's signed textures survive the multiplexer untouched.
+// (json.RawMessage) so a source's signed textures survive the multiplexer untouched, and
+// it is always emitted as an array: Velocity's GameProfile parser throws on a missing or
+// null properties key, while a Yggdrasil root may legitimately send [] or omit it for a
+// player with no skin.
 type sessionProfile struct {
 	ID         string            `json:"id"`
 	Name       string            `json:"name"`
-	Properties []json.RawMessage `json:"properties,omitempty"`
+	Properties []json.RawMessage `json:"properties"`
 }
 
 // HasJoinedHandler returns an http.Handler serving only the Felis-nano hasJoined
@@ -151,6 +154,9 @@ func (a *API) handleHasJoined(w http.ResponseWriter, r *http.Request) {
 
 	// Emit the canonical UUID undashed — the 32-hex form authlib's GameProfile expects.
 	prof.ID = hex.EncodeToString(canonical[:])
+	if prof.Properties == nil {
+		prof.Properties = []json.RawMessage{} // a nil slice would marshal as null
+	}
 	writeJSON(w, http.StatusOK, prof)
 }
 

@@ -189,6 +189,33 @@ func TestHasJoined(t *testing.T) {
 		}
 	})
 
+	// A skinless player's profile may come back with properties [], null or absent. The
+	// relay must still send an array: Velocity's GameProfile parser throws on a missing or
+	// null key and the login hangs, where the same answer sent straight to Velocity works.
+	t.Run("properties always emitted as an array", func(t *testing.T) {
+		for _, upstream := range []string{
+			`{"id":"` + notchMojangID + `","name":"Notch","properties":[]}`,
+			`{"id":"` + notchMojangID + `","name":"Notch","properties":null}`,
+			`{"id":"` + notchMojangID + `","name":"Notch"}`,
+		} {
+			src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(upstream))
+			}))
+			api := newTestAPI(newFakeRepo(), newFakeCluster())
+			api.AuthSources = []AuthSource{{Tag: "mojang", URL: src.URL, Identity: true}}
+
+			w := getHasJoined(api.InternalHandler(), "Notch", "abc")
+			src.Close()
+			var body map[string]json.RawMessage
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || w.Code != http.StatusOK {
+				t.Fatalf("upstream %s: code = %d body = %q", upstream, w.Code, w.Body.String())
+			}
+			if got := string(body["properties"]); got != "[]" {
+				t.Errorf("upstream %s: properties = %q, want []", upstream, got)
+			}
+		}
+	})
+
 	// A root that answers with a redirect is skipped, not followed: following it lets that
 	// root aim this host at arbitrary URLs, including its own hasJoined route, which re-enters
 	// the scan and multiplies the upstream traffic one login causes.
