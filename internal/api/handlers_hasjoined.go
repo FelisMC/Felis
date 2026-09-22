@@ -230,7 +230,7 @@ var mojangProfileAPI = "https://api.mojang.com/users/profiles/minecraft/"
 // profileHTTPClient is deliberately more impatient than authHTTPClient: the name lookup is a
 // SECOND Mojang round-trip on a third-party login (the identity leg already spent one), and
 // api.mojang.com is exactly what is unreliable from the networks these servers sit on. A
-// slow answer falls back to the cache instead of holding the login open.
+// slow answer counts as taken instead of holding the login open.
 var profileHTTPClient = &http.Client{Timeout: 2 * time.Second, Transport: upstreamTransport}
 
 // A name's premium status changes on human timescales, not per login, so it is cached — but
@@ -256,11 +256,11 @@ var premiumNames = struct {
 }{m: make(map[string]premiumEntry)}
 
 // isPremiumName reports whether username belongs to a real Mojang account — which is what
-// makes a third-party player holding it a squatter. On a lookup failure it prefers a stale
-// cached answer, and with nothing cached it fails CLOSED (assume premium → rename the
-// third-party player): a Mojang outage must not let a squatter keep a name the real owner is
-// about to log in with. Being wrong that way costs a cosmetic prefix; being wrong the other
-// way bounces the name's actual owner off the proxy.
+// makes a third-party player holding it a squatter. A lookup failure fails CLOSED (assume
+// premium → rename the third-party player), even over an expired "free": the name may have
+// been bought since, and a Mojang outage must not let a squatter keep it. Being wrong that
+// way costs a cosmetic prefix; being wrong the other way bounces the name's actual owner off
+// the proxy.
 func isPremiumName(ctx context.Context, username string) bool {
 	key := strings.ToLower(username)
 
@@ -273,9 +273,6 @@ func isPremiumName(ctx context.Context, username string) bool {
 
 	taken, err := lookupPremiumName(ctx, username)
 	if err != nil {
-		if hit {
-			return cached.taken
-		}
 		return true
 	}
 

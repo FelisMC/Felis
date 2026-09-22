@@ -478,6 +478,16 @@ func TestPremiumNameCache(t *testing.T) {
 		}
 	})
 
+	// The name may have been bought since it was last seen free, and its new owner is who a
+	// stale "free" would lock out for as long as the lookups keep failing.
+	t.Run("an expired free answer does not outlive an outage", func(t *testing.T) {
+		profileAPIAnswering(t, http.StatusTooManyRequests)
+		seedPremium("Steve0", false, premiumFreeTTL+time.Minute)
+		if !isPremiumName(ctx, "Steve0") {
+			t.Fatal("stale free answer trusted during an outage; a squatter keeps a just-bought name")
+		}
+	})
+
 	t.Run("the cache is cleared rather than grown past its bound", func(t *testing.T) {
 		profileAPIAnswering(t, http.StatusNotFound)
 		for i := range premiumCacheMax {
