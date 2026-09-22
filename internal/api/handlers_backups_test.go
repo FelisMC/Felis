@@ -269,6 +269,21 @@ func TestRestoreBackup(t *testing.T) {
 		}
 	})
 
+	t.Run("no world volume -> 409 no_world_volume, no restore", func(t *testing.T) {
+		// Restoring into a missing world PVC would leave the Job Pending on the
+		// missing claim — a 202 "restoring" that never writes anything.
+		api, _, cl, restorer := mk()
+		cl.noWorld["survival"] = true
+		api.External = staticExternal{p: owner}
+		w := do(api.ExternalHandler(), "POST", path, "", nil)
+		if w.Code != http.StatusConflict || decodeErr(t, w) != "no_world_volume" {
+			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
+		}
+		if restorer.calls != 0 {
+			t.Fatal("a world-less server must not reach the restorer")
+		}
+	})
+
 	t.Run("nil Restorer -> 503 restore_unavailable", func(t *testing.T) {
 		api, _, _, _ := mk()
 		api.Restorer = nil

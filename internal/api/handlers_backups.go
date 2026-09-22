@@ -9,6 +9,16 @@ import (
 	"felis.lolicon.best/internal/naming"
 )
 
+// errNoWorldVolume is the shared 409 for backup and restore when the server's
+// world PVC does not exist: the Job would only hang Pending on the missing
+// claim — invisible to the caller and to the backups list — so the handlers
+// refuse up front. Starting the server once (which creates the claim via the
+// StatefulSet volumeClaimTemplate) unlocks both ops.
+func errNoWorldVolume() error {
+	return newError(http.StatusConflict, "no_world_volume",
+		"this server has no world volume yet — start it once to create it, then retry")
+}
+
 // handleListBackups lists the world backups visible to the caller (spec §7 GET
 // /api/v1/backups; world_backups in §22). It is app-tier: an admin sees every
 // present backup; a regular user sees only the backups of worlds they formerly
@@ -154,6 +164,19 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// World-volume gate: the restore Job mounts the world PVC read-write to unpack
+	// the archive into it, so a missing claim means a Pod stuck Pending — a 202
+	// "restoring" with nothing ever written. Same refusal as the backup face
+	// (shared errNoWorldVolume): the operator starts the server once to create the
+	// claim, then restores into it.
+	if exists, err := a.Cluster.WorldVolumeExists(r.Context(), name); err != nil {
+		writeError(w, r, err)
+		return
+	} else if !exists {
+		writeError(w, r, errNoWorldVolume())
+		return
+	}
+
 	// Restorer is optional: when unwired the endpoint reports 503 rather than
 	// panicking, so the authorization boundary above is exercised even before the
 	// restore-Job executor is wired (see Restorer).
@@ -282,6 +305,18 @@ func (a *API) enqueueBackup(w http.ResponseWriter, r *http.Request, name string,
 	if info.Ready || info.DesiredState != string(v1alpha1.DesiredStopped) {
 		writeError(w, r, newError(http.StatusConflict, "not_stopped",
 			"stop the server before backing up its world"))
+		return
+	}
+
+	// World-volume gate: the Job mounts the world PVC by claim name, and a missing
+	// claim would leave its Pod Pending — a 202 "backing_up" with nothing ever
+	// recorded anywhere. A never-started or already-reaped server is refused with
+	// the same specificity as the stopped gate.
+	if exists, err := a.Cluster.WorldVolumeExists(r.Context(), name); err != nil {
+		writeError(w, r, err)
+		return
+	} else if !exists {
+		writeError(w, r, errNoWorldVolume())
 		return
 	}
 

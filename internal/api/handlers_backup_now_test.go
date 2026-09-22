@@ -134,6 +134,22 @@ func TestBackupNow(t *testing.T) {
 		}
 	})
 
+	t.Run("no world volume -> 409 no_world_volume, no backup", func(t *testing.T) {
+		// A never-started (or reaped) server has no world PVC: the Job would hang
+		// Pending on the missing claim with nothing recorded, so the gate must
+		// refuse before the backuper is reached.
+		api, _, cl, backuper := mk()
+		cl.noWorld["survival"] = true
+		api.External = staticExternal{p: owner}
+		w := do(api.ExternalHandler(), "POST", path, "", nil)
+		if w.Code != http.StatusConflict || decodeErr(t, w) != "no_world_volume" {
+			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
+		}
+		if backuper.calls != 0 {
+			t.Fatal("a world-less server must not reach the backuper")
+		}
+	})
+
 	t.Run("nil Backuper -> 503 backup_unavailable", func(t *testing.T) {
 		api, _, _, _ := mk()
 		api.Backuper = nil
@@ -237,6 +253,20 @@ func TestInternalBackup(t *testing.T) {
 		}
 		if backuper.calls != 0 {
 			t.Fatal("a running server holds the RWO world PVC — backup must be refused")
+		}
+	})
+
+	t.Run("no world volume -> 409 no_world_volume, no backup", func(t *testing.T) {
+		// The break-glass face shares enqueueBackup, so the world-volume gate must
+		// hold here too — this is the face the TUI's Sync picker drives.
+		api, _, cl, backuper := mk()
+		cl.noWorld["survival"] = true
+		w := do(api.InternalHandler(), "POST", path, "", jsonHeader)
+		if w.Code != http.StatusConflict || decodeErr(t, w) != "no_world_volume" {
+			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
+		}
+		if backuper.calls != 0 {
+			t.Fatal("a world-less server must not reach the backuper")
 		}
 	})
 

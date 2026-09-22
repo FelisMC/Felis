@@ -1451,6 +1451,7 @@ type fakeCluster struct {
 	desired   map[string]v1alpha1.DesiredState
 	created   map[string]CreateServerInput // name -> the validated input it was created from
 	patched   map[string]ServerSpecPatch   // name -> the validated spec patch it received
+	noWorld   map[string]bool              // server names modeled WITHOUT a world volume (never started / reaped)
 	createErr error
 	pingErr   error
 }
@@ -1458,7 +1459,7 @@ type fakeCluster struct {
 func newFakeCluster() *fakeCluster {
 	return &fakeCluster{byName: map[string]*ServerInfo{}, bySub: map[string]*ServerInfo{},
 		desired: map[string]v1alpha1.DesiredState{}, created: map[string]CreateServerInput{},
-		patched: map[string]ServerSpecPatch{}}
+		patched: map[string]ServerSpecPatch{}, noWorld: map[string]bool{}}
 }
 func (c *fakeCluster) GetServer(_ context.Context, n string) (*ServerInfo, error) {
 	if s, ok := c.byName[n]; ok {
@@ -1474,6 +1475,13 @@ func (c *fakeCluster) GetBySubdomain(_ context.Context, s string) (*ServerInfo, 
 }
 func (c *fakeCluster) ListServers(_ context.Context) ([]ServerInfo, error) { return c.list, nil }
 func (c *fakeCluster) Ping(_ context.Context) error                        { return c.pingErr }
+
+// WorldVolumeExists models the world PVC: present unless the test named the
+// server in noWorld (never started / already reaped).
+func (c *fakeCluster) WorldVolumeExists(_ context.Context, n string) (bool, error) {
+	return !c.noWorld[n], nil
+}
+
 func (c *fakeCluster) SetDesiredState(_ context.Context, n string, s v1alpha1.DesiredState) error {
 	c.desired[n] = s
 	return nil

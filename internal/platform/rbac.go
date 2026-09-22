@@ -84,8 +84,11 @@ func ControlPlaneRBAC(p Params) RBAC {
 // FINISHED Job whose name still blocks a retry can be replaced), and stream the
 // live console for the read side (internal/api.logstream — pods:list to find
 // the server's running pod, then pods/log:get to follow it; spec §8 读=pods/log
-// follow). felis-api uses a DIRECT client, so it needs no list/watch beyond the
-// explicit List calls.
+// follow). It also Gets the world PVC before backup/restore
+// (internal/api.k8scluster.WorldVolumeExists) so a never-started or reaped
+// world is refused up front instead of leaving a Job Pending on a missing
+// claim. felis-api uses a DIRECT client, so it needs no list/watch beyond the
+// explicit List calls — and the PVC grant is get-only, mirroring that.
 //
 // The read-side grant is deliberately minimal: pods:list + pods/log:get, NOT
 // pods:get — the streamer lists pods by the server label then reads the chosen
@@ -97,6 +100,9 @@ func APIMinecraftRole(p Params) *rbacv1.Role {
 	return role(p.MinecraftNamespace, "felis-api", ComponentAPI, []rbacv1.PolicyRule{
 		rule([]string{groupFelis}, []string{"minecraftservers"}, []string{"get", "list", "create", "patch"}),
 		rule([]string{groupCore}, []string{"secrets"}, []string{"get"}),
+		// get-only: WorldVolumeExists does a single direct Get of the world PVC;
+		// nothing in felis-api lists or deletes PVCs.
+		rule([]string{groupCore}, []string{"persistentvolumeclaims"}, []string{"get"}),
 		// list backs GET /servers/{name}/jobs — the async status outlet reads the
 		// backup/restore Jobs back by the server label (read-only).
 		rule([]string{groupBatch}, []string{"jobs"}, []string{"create", "get", "delete", "list"}),

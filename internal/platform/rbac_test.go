@@ -121,6 +121,14 @@ func TestAPIRole_MinecraftPowersExact(t *testing.T) {
 	if !hasRule(mc, groupCore, "secrets", "get") {
 		t.Error("felis-api must read RCON secrets (secrets:get) for console writes")
 	}
+	// WorldVolumeExists (backup/restore pre-gate) does a single direct PVC Get;
+	// nothing in felis-api lists or deletes claims.
+	if !hasRule(mc, groupCore, "persistentvolumeclaims", "get") {
+		t.Error("felis-api must get the world PVC (persistentvolumeclaims:get) for the backup/restore world-volume gate")
+	}
+	if hasRule(mc, groupCore, "persistentvolumeclaims", "list") || hasRule(mc, groupCore, "persistentvolumeclaims", "delete") {
+		t.Error("felis-api must NOT list or delete PVCs (the gate is a single direct Get)")
+	}
 	// Read-side console (spec §8 读=pods/log follow): list pods to find the
 	// running pod, then read its log subresource — and nothing wider.
 	if !hasRule(mc, groupCore, "pods", "list") {

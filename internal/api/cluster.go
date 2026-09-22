@@ -81,6 +81,12 @@ type Cluster interface {
 
 	// GetServer reads one MinecraftServer's lifecycle view, or ErrNotFound.
 	GetServer(ctx context.Context, name string) (*ServerInfo, error)
+	// WorldVolumeExists reports whether the server's world PVC exists in the
+	// server namespace. A server that never started — or whose world the
+	// retention reaper already archived and deleted — has no claim, and a
+	// backup/restore Job would hang Pending on the missing volume with nothing
+	// ever recorded, so both handlers refuse those up front.
+	WorldVolumeExists(ctx context.Context, name string) (bool, error)
 	// GetBySubdomain finds the MinecraftServer whose spec.subdomain matches, or
 	// ErrNotFound.
 	GetBySubdomain(ctx context.Context, subdomain string) (*ServerInfo, error)

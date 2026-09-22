@@ -43,6 +43,22 @@ func (k *K8sCluster) GetServer(ctx context.Context, name string) (*ServerInfo, e
 	return serverInfo(&ms), nil
 }
 
+// WorldVolumeExists reads the world PVC the operator's StatefulSet
+// volumeClaimTemplate creates (naming.WorldPVCName — the same name the backup
+// and restore Jobs mount), so existence here is exactly existence at Job mount
+// time. NotFound is (false, nil): the caller refuses with a specific 409.
+func (k *K8sCluster) WorldVolumeExists(ctx context.Context, name string) (bool, error) {
+	var pvc corev1.PersistentVolumeClaim
+	err := k.c.Get(ctx, types.NamespacedName{Namespace: k.namespace, Name: naming.WorldPVCName(name)}, &pvc)
+	if apierrors.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (k *K8sCluster) GetBySubdomain(ctx context.Context, subdomain string) (*ServerInfo, error) {
 	var list v1alpha1.MinecraftServerList
 	if err := k.c.List(ctx, &list, client.InNamespace(k.namespace)); err != nil {
