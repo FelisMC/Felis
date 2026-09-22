@@ -43,6 +43,10 @@ type nanoStubRepo struct{ api.Repo }
 
 func (nanoStubRepo) IsUsernameBlacklisted(context.Context, string) (bool, error) { return false, nil }
 
+// nanoLogURIMax is room for a real hasJoined query (a 16-character name, a 41-character
+// serverId, an address) several times over.
+const nanoLogURIMax = 256
+
 func cmdNano(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("nano", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -62,23 +66,34 @@ func cmdNano(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	handler := api.HasJoinedHandler(authSourcesFromConfig(cfg.AuthSources), nanoStubRepo{})
 	fmt.Fprintf(stderr, "felis nano: hasJoined multiplexer on %s — Mojang + %d third-party source(s)\n", *listen, len(cfg.AuthSources))
 	for i, s := range cfg.AuthSources {
 		fmt.Fprintf(stderr, "  [%d] %s -> %s\n", i+1, s.Tag, s.URL)
 	}
 
-	// Log each request so a live login attempt is visible while testing against a real
-	// Velocity — "is authlib even reaching me?" is the first question during verification.
-	logged := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(stderr, "felis nano: %s %s\n", r.Method, r.RequestURI)
-		handler.ServeHTTP(w, r)
-	})
-
-	srv := newAPIServer(*listen, logged)
+	srv := newAPIServer(*listen, nanoHandler(cfg.AuthSources, stderr))
 	if err := srv.ListenAndServe(); err != nil {
 		fmt.Fprintln(stderr, "felis nano:", err)
 		return 1
 	}
 	return 0
+}
+
+// nanoHandler is what felis nano serves: the shared hasJoined handler, Mojang first, behind
+// a request log.
+func nanoHandler(sources []config.AuthSourceConfig, stderr io.Writer) http.Handler {
+	handler := api.HasJoinedHandler(authSourcesFromConfig(sources), nanoStubRepo{})
+	// Log each request so a live login attempt is visible while testing against a real
+	// Velocity — "is Velocity even reaching me?" is the first question during verification.
+	// The URI is the caller's text: quoted so a control or bidi character cannot rewrite the
+	// line and invalid UTF-8 cannot turn the journal entry into a blob, and capped so one
+	// request cannot write a megabyte of log.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		uri := r.RequestURI
+		if len(uri) > nanoLogURIMax {
+			uri = uri[:nanoLogURIMax] + "..."
+		}
+		fmt.Fprintf(stderr, "felis nano: %s %q\n", r.Method, uri)
+		handler.ServeHTTP(w, r)
+	})
 }
