@@ -2194,6 +2194,14 @@ summary() {
 #     prompt (or FELIS_INSTALL_MODE=nano).
 # ---------------------------------------------------------------------------
 prompt_install_mode() {
+  # felis setup carries on to the Owner and edge setup, which needs the control plane, so
+  # a nano install under it could only end in a setup error.
+  if bootstrap_from_tui; then
+    [ "$INSTALL_MODE" != nano ] || die "felis setup installs the full control plane; for Felis-nano run deploy/bootstrap.sh with FELIS_INSTALL_MODE=nano"
+    INSTALL_MODE="full"
+    log "install mode: full (felis setup)"
+    return 0
+  fi
   case "$INSTALL_MODE" in
     full|nano) log "install mode: ${INSTALL_MODE} (from FELIS_INSTALL_MODE)"; return 0 ;;
     "") ;;
@@ -2285,10 +2293,6 @@ build_nano_binary() {
 }
 
 acquire_nano_binary() {
-  if bootstrap_from_tui; then
-    install_embedded_binary
-    return 0
-  fi
   # The release channel takes the same prebuilt binary the control plane does. This is the
   # biggest win on this path: a host that only wants the auth multiplexer stops needing a Go
   # toolchain and a checkout at all.

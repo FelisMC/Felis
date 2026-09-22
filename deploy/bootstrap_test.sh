@@ -280,6 +280,10 @@ pblock="$(awk '/^prompt_install_mode\(\) \{/,/^}/' "$BS")"
 [ -n "$pblock" ] || { echo "FAIL: no prompt_install_mode found in $BS"; exit 1; }
 [ "$(printf '%s\n' "$pblock" | wc -l)" -lt 60 ] \
   || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
+tblock="$(awk '/^bootstrap_from_tui\(\) \{/,/^}/' "$BS")"
+[ -n "$tblock" ] || { echo "FAIL: no bootstrap_from_tui found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$tblock" | wc -l)" -lt 5 ] \
+  || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
 
 # Only the no-terminal path can run unattended, and with a terminal attached the prompt
 # would sit waiting on it. setsid drops the controlling terminal, as cloud-init and CI have.
@@ -288,10 +292,12 @@ if (: </dev/tty) 2>/dev/null; then
   if command -v setsid >/dev/null 2>&1; then notty=setsid; else notty=skip; fi
 fi
 
-run_mode() { # unit-path done-marker-path [FELIS_INSTALL_MODE]
-  INSTALL_MODE="${3:-}" NANO_SERVICE="$1" BOOTSTRAP_DONE="$2" $notty bash -c '
+run_mode() { # unit-path done-marker-path [FELIS_INSTALL_MODE [FELIS_BOOTSTRAP_FROM_TUI]]
+  INSTALL_MODE="${3:-}" FELIS_BOOTSTRAP_FROM_TUI="${4:-}" NANO_SERVICE="$1" BOOTSTRAP_DONE="$2" \
+    $notty bash -c '
     die() { printf "DIE: %s\n" "$*"; exit 1; }
     log() { printf "LOG: %s\n" "$*"; }
+    '"$tblock"'
     '"$pblock"'
     prompt_install_mode </dev/null
     printf "MODE: %s\n" "$INSTALL_MODE"' 2>&1
@@ -307,6 +313,12 @@ else
     "$(run_mode "$sdir/felis-nano.service" "$sdir/bootstrap.done")"
   expect "a fresh host defaults to full" "MODE: full" \
     "$(run_mode "$sdir/absent.service" "$sdir/absent.done")"
+  # felis setup goes on to need the control plane, so under it nano is refused, and the
+  # nano-only default above must not apply either.
+  expect "felis setup refuses FELIS_INSTALL_MODE=nano" "DIE: felis setup installs the full control plane" \
+    "$(run_mode "$sdir/absent.service" "$sdir/absent.done" nano 1)"
+  expect "felis setup installs full on a nano-only host" "MODE: full" \
+    "$(run_mode "$sdir/felis-nano.service" "$sdir/absent.done" "" 1)"
 fi
 
 # ---------------------------------------------------------------------------------------
