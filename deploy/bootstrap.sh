@@ -63,6 +63,15 @@
 #   FELIS_ROOT_DOMAIN deployment root domain  (default: <node-ip>.nip.io)
 #   FELIS_PANEL_NODEPORT local HTTPS panel/API NodePort (default: 30443)
 #   FELIS_EGRESS_MODE loadbalancer|nodeport   (default: nodeport — no MetalLB on a demo box)
+#   FELIS_BACKUP_PVC  world-archive PVC the installer renders and felis-api hands to its
+#                     backup/restore Jobs (default: felis-backups; empty string disables
+#                     backups — the endpoints answer 503)
+#   FELIS_ARCHIVE_LOCAL_PATH path that PVC is mounted at inside those Jobs; written into
+#                     felis.toml [archive] local_path (default: /var/lib/felis/archives)
+#   FELIS_WORLDS_HOST_PATH node directory holding the world volumes (on the k3s this
+#                     installer provisions: /var/lib/rancher/k3s/storage). Setting it
+#                     enables the daily retention reaper, which archives and then deletes
+#                     worlds idle beyond the retention window (default: unset = no reaper)
 #   PKG_LOCK_TIMEOUT seconds to wait for package-manager locks (default: 900)
 #   APT_LOCK_TIMEOUT legacy alias for PKG_LOCK_TIMEOUT
 set -Eeuo pipefail
@@ -106,6 +115,18 @@ FELIS_VERSION_BASE=""
 FELIS_IMAGE="${FELIS_IMAGE:-felis:demo}"
 FELIS_EGRESS_MODE="${FELIS_EGRESS_MODE:-nodeport}"
 FELIS_PANEL_NODEPORT="${FELIS_PANEL_NODEPORT:-30443}"
+# World-archive storage. The installer renders this PVC (minecraft namespace) and felis-api
+# advertises it to its backup/restore Jobs; emptying it disables backups (503). The archive
+# path is written into felis.toml so the Jobs' mount and [archive] local_path agree by
+# construction — a mismatch would leave tarLocal's absolute archive refs unresolvable.
+FELIS_BACKUP_PVC="${FELIS_BACKUP_PVC:-felis-backups}"
+FELIS_ARCHIVE_LOCAL_PATH="${FELIS_ARCHIVE_LOCAL_PATH:-/var/lib/felis/archives}"
+# Retention is opt-in because it DELETES worlds (after a verified archive): point this at the
+# node directory the world volumes live under. On the k3s this installer provisions that is
+# /var/lib/rancher/k3s/storage — the reaper resolves each PVC's local-path directory exactly
+# from its volumeName. Left unset, no reaper CronJob renders and archives accumulate until
+# the backup PVC fills (then backups fail loudly; nothing is deleted).
+FELIS_WORLDS_HOST_PATH="${FELIS_WORLDS_HOST_PATH:-}"
 INSTALL_MODE="${FELIS_INSTALL_MODE:-}"
 # Loopback by default: hasJoined is an unauthenticated endpoint by protocol (Velocity
 # sends no token), so a public bind is a free auth relay — anyone can point their own
@@ -2047,7 +2068,7 @@ build_namespace = "${BUILD_NS}"
 
 [archive]
 store = "tarLocal"
-local_path = "/var/lib/felis/archives"
+local_path = "${FELIS_ARCHIVE_LOCAL_PATH}"
 
 [auth]
 admin_hostname = "op.console.${FELIS_ROOT_DOMAIN}"
@@ -2137,11 +2158,26 @@ deploy_bundle() {
     --dry-run=client -o yaml | kube apply -f -
 
   log "rendering + applying the control-plane bundle"
-  "$HOST_BIN" manifests \
-    --felis-image "$FELIS_IMAGE" \
-    --panel-node-port "$FELIS_PANEL_NODEPORT" \
-    --velocity-cidr "${NODE_IP}/32" \
-    | kube apply -f -
+  local -a manifest_args=(
+    --felis-image "$FELIS_IMAGE"
+    --panel-node-port "$FELIS_PANEL_NODEPORT"
+    --velocity-cidr "${NODE_IP}/32"
+  )
+  # Backups are on by default (the renderer's own default names felis-backups); an emptied
+  # FELIS_BACKUP_PVC asks for the no-backup shape explicitly, and a custom name must be
+  # passed through or the api would advertise a PVC the bundle never created.
+  if [ -n "$FELIS_BACKUP_PVC" ]; then
+    manifest_args+=(--backup-pvc "$FELIS_BACKUP_PVC")
+  else
+    manifest_args+=(--backup-pvc=)
+  fi
+  # Retention renders only when the operator names where the worlds live; the archive path
+  # always travels with it because it must equal the [archive] local_path written above.
+  if [ -n "$FELIS_WORLDS_HOST_PATH" ]; then
+    log "retention enabled: the daily reaper will read worlds from ${FELIS_WORLDS_HOST_PATH}"
+    manifest_args+=(--worlds-host-path "$FELIS_WORLDS_HOST_PATH" --archive-local-path "$FELIS_ARCHIVE_LOCAL_PATH")
+  fi
+  "$HOST_BIN" manifests "${manifest_args[@]}" | kube apply -f -
   restart_existing_control_plane "$had_api" "$had_operator"
 
   log "waiting for control-plane rollouts"

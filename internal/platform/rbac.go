@@ -162,6 +162,11 @@ func OperatorRole(p Params) *rbacv1.Role {
 // minecraftservers but cannot create them, and holds no power over StatefulSets,
 // Services, or Secrets — those belong to the operator and api.
 //
+// persistentvolumeclaims also carries get: resolving where a world lives
+// (cmd/felis/reaper.resolveWorldDir) reads the PVC's volumeName to derive the
+// stock local-path directory name. get is strictly weaker than the delete the
+// same rule already grants, so it widens nothing.
+//
 // Note no identity anywhere holds minecraftservers:delete. That is intentional, not
 // a missing grant: reaping releases a server by flipping desiredState=Stopped and
 // reclaiming the world PVC (k8scluster.go does "nothing else"), leaving the CR in
@@ -172,7 +177,7 @@ func ReaperRole(p Params) *rbacv1.Role {
 	p = p.withDefaults()
 	return role(p.MinecraftNamespace, "felis-reaper", ComponentReaper, []rbacv1.PolicyRule{
 		rule([]string{groupFelis}, []string{"minecraftservers"}, []string{"get", "patch"}),
-		rule([]string{groupCore}, []string{"persistentvolumeclaims"}, []string{"delete"}),
+		rule([]string{groupCore}, []string{"persistentvolumeclaims"}, []string{"get", "delete"}),
 	})
 }
 

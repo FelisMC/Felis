@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/reaper"
 	"felis.lolicon.best/internal/store"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -30,7 +33,7 @@ func cmdReaper(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("reaper", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "/etc/felis/felis.toml", "path to felis.toml")
-	worldsRoot := fs.String("worlds-root", "/worlds", "mount root under which world PVCs are visible (tarLocal: <root>/<pvc>)")
+	worldsRoot := fs.String("worlds-root", "/worlds", "mount root under which world PVCs are visible (tarLocal: <root>/<pvc>, else the stock local-path <root>/<pv-name>_<ns>_<pvc-name>)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -47,20 +50,7 @@ func cmdReaper(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	archiver, err := buildArchiver(cfg, *worldsRoot)
-	if err != nil {
-		fmt.Fprintf(stderr, "felis reaper: %v\n", err)
-		return 1
-	}
-
 	ctx := ctrl.SetupSignalHandler()
-
-	drv, err := store.Open(ctx, cfg.Database.URL)
-	if err != nil {
-		fmt.Fprintf(stderr, "felis reaper: open database: %v\n", err)
-		return 1
-	}
-	defer drv.Close()
 
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -70,6 +60,19 @@ func cmdReaper(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis reaper: build k8s client: %v\n", err)
 		return 1
 	}
+
+	archiver, err := buildArchiver(ctx, cfg, *worldsRoot, cl)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis reaper: %v\n", err)
+		return 1
+	}
+
+	drv, err := store.Open(ctx, cfg.Database.URL)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis reaper: open database: %v\n", err)
+		return 1
+	}
+	defer drv.Close()
 
 	r := &reaper.Reaper{
 		Cfg:      rcfg,
@@ -122,19 +125,54 @@ func reaperConfig(cfg *config.Config) (reaper.Config, error) {
 }
 
 // buildArchiver constructs the WorldArchiver. Only tarLocal is implemented in
-// this build; the resolver maps each world PVC to <worldsRoot>/<pvc>, the mount
-// convention the reaper Job is deployed with.
-func buildArchiver(cfg *config.Config, worldsRoot string) (backup.WorldArchiver, error) {
+// this build; the resolver maps each world PVC to its directory under worldsRoot
+// (resolveWorldDir).
+func buildArchiver(ctx context.Context, cfg *config.Config, worldsRoot string, cl client.Client) (backup.WorldArchiver, error) {
 	switch cfg.Archive.Store {
 	case "tarLocal":
 		return &backup.TarLocal{
 			BackupRoot: cfg.Archive.LocalPath,
-			Resolve: func(pvc string) (string, error) {
-				return filepath.Join(worldsRoot, pvc), nil
-			},
+			Resolve:    resolveWorldDir(ctx, cl, cfg.K8s.Namespace, worldsRoot),
 		}, nil
 	default:
 		return nil, fmt.Errorf("[archive] store %q is not implemented in this build (only tarLocal)", cfg.Archive.Store)
+	}
+}
+
+// resolveWorldDir maps a world PVC to its directory under worldsRoot, supporting
+// the two layouts a Felis host actually has:
+//
+//  1. <root>/<pvc> — the reaper's documented arrangement (worlds exposed by PVC
+//     name, e.g. via mounting each volume or a crafted storage class).
+//  2. <root>/<pv-name>_<namespace>_<pvc-name> — what a stock k3s install gets:
+//     local-path-provisioner stores every volume under its storage root as that
+//     exact directory name. Without this arm, retention on a default install could
+//     only ever fail to find a world (a no-op reaper, or worse an operator
+//     arranging paths by hand).
+//
+// The second path is derived EXACTLY from the live PVC's spec.volumeName, never
+// from a glob: a leftover directory of an old, deleted PV must never be mistaken
+// for the world the PVC currently binds, because the reaper archives the resolved
+// directory and then deletes that PVC — archiving stale bytes and deleting the
+// real world would be data loss. When neither path exists the first is returned,
+// so the archive walk fails loudly against the documented path.
+func resolveWorldDir(ctx context.Context, cl client.Client, namespace, worldsRoot string) backup.PVCResolver {
+	return func(pvc string) (string, error) {
+		direct := filepath.Join(worldsRoot, pvc)
+		if _, err := os.Stat(direct); err == nil {
+			return direct, nil
+		}
+		var claim corev1.PersistentVolumeClaim
+		if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: pvc}, &claim); err != nil {
+			return "", fmt.Errorf("resolve world PVC %s: %w", pvc, err)
+		}
+		if pv := claim.Spec.VolumeName; pv != "" {
+			volDir := filepath.Join(worldsRoot, fmt.Sprintf("%s_%s_%s", pv, claim.Namespace, claim.Name))
+			if _, err := os.Stat(volDir); err == nil {
+				return volDir, nil
+			}
+		}
+		return direct, nil
 	}
 }
 

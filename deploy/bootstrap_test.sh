@@ -574,6 +574,45 @@ mkdir -p "$sdir/src/.git"
 expect "a failed fetch into an existing checkout names the token" "set FELIS_GITHUB_TOKEN" \
   "$(run_fetch "$sdir/src")"
 
+# --- default install keeps backups, and retention envs reach the renderer ----------------
+# A default install must render the world-archive PVC (without one, backup/restore answer an
+# honest 503), and FELIS_WORLDS_HOST_PATH must turn into the reaper's two flags or an
+# operator's retention enablement silently renders no CronJob. Extracted, not retyped.
+
+mblock="$(awk '/^  local -a manifest_args=\(/,/kube apply -f -/' "$BS")"
+[ -n "$mblock" ] || { echo "FAIL: no manifest_args block found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$mblock" | wc -l)" -lt 30 ] \
+  || { echo "FAIL: the extracted block is not the manifest_args block -- did it move?"; exit 1; }
+
+run_bundle_flags() { # backup-pvc worlds-host-path
+  FELIS_IMAGE=reg/felis:test FELIS_PANEL_NODEPORT=30443 NODE_IP=10.0.0.5 \
+  FELIS_BACKUP_PVC="$1" FELIS_WORLDS_HOST_PATH="$2" FELIS_ARCHIVE_LOCAL_PATH=/var/lib/felis/archives \
+  HOST_BIN=myManifests bash -c '
+    log() { :; }
+    kube() { cat; }
+    myManifests() { printf "%s\n" "$@"; }
+    run_bundle() {
+    '"$mblock"'
+    }
+    run_bundle'
+}
+
+out="$(run_bundle_flags felis-backups '')"
+expect "a default install asks the renderer for the archive PVC" "--backup-pvc
+felis-backups" "$out"
+case "$out" in
+  *--worlds-host-path*) echo "FAIL: no reaper flags may render without FELIS_WORLDS_HOST_PATH"; fails=$((fails + 1)) ;;
+esac
+
+out="$(run_bundle_flags '' '')"
+expect "an emptied FELIS_BACKUP_PVC is the explicit no-backup shape" "--backup-pvc=" "$out"
+
+out="$(run_bundle_flags felis-backups /var/lib/rancher/k3s/storage)"
+expect "enabling retention passes the worlds root" "--worlds-host-path
+/var/lib/rancher/k3s/storage" "$out"
+expect "enabling retention passes the archive mount that must match felis.toml" "--archive-local-path
+/var/lib/felis/archives" "$out"
+
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"

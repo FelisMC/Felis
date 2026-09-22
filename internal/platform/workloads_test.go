@@ -321,6 +321,45 @@ func TestAPIDeployment_BackupPVC(t *testing.T) {
 	}
 }
 
+// TestBackupPVC_RendersWithTheStore proves the world-archive PVC is part of the
+// bundle exactly when a backup PVC is named, and that it lands in the Minecraft
+// namespace where every pod mounting it runs (the backup/restore Jobs and the
+// reaper CronJob) — the one property that made the reaper's first placement
+// unschedulable. Without a name the bundle must NOT create one: the api env is
+// gated on the same value, so the endpoints answer 503 instead of pointing a Job
+// at a claim nobody provisioned.
+func TestBackupPVC_RendersWithTheStore(t *testing.T) {
+	p := testParams()
+	p.BackupPVC = "felis-backups"
+	var got *corev1.PersistentVolumeClaim
+	for _, o := range Workloads(p) {
+		if pvc, ok := o.(*corev1.PersistentVolumeClaim); ok && pvc.Name == "felis-backups" {
+			got = pvc
+		}
+	}
+	if got == nil {
+		t.Fatalf("Workloads() must render PVC %q when BackupPVC is set", p.BackupPVC)
+	}
+	if got.Namespace != p.MinecraftNamespace {
+		t.Errorf("backup PVC namespace = %q, want %q (Pod↔PVC mounts are same-namespace only)", got.Namespace, p.MinecraftNamespace)
+	}
+	if len(got.Spec.AccessModes) != 1 || got.Spec.AccessModes[0] != corev1.ReadWriteOnce {
+		t.Errorf("backup PVC access modes = %v, want [ReadWriteOnce]", got.Spec.AccessModes)
+	}
+	if q := got.Spec.Resources.Requests.Storage(); q == nil || q.String() != backupStorageSize {
+		t.Errorf("backup PVC storage = %v, want %s", q, backupStorageSize)
+	}
+	if got.Spec.StorageClassName != nil {
+		t.Errorf("backup PVC pins storageClassName %q; the cluster default is the only safe binding", *got.Spec.StorageClassName)
+	}
+
+	for _, o := range Workloads(testParams()) {
+		if pvc, ok := o.(*corev1.PersistentVolumeClaim); ok && pvc.Name == "felis-backups" {
+			t.Error("no backup PVC may render when none is named")
+		}
+	}
+}
+
 // TestOperatorDeployment_Wiring pins the operator entrypoint, its namespace split,
 // and its deliberately smaller surface (NO config Secret — it holds no DB URL).
 func TestOperatorDeployment_Wiring(t *testing.T) {

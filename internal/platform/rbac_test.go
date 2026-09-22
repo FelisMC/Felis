@@ -183,8 +183,8 @@ func TestOperatorRole_ScopeExact(t *testing.T) {
 func TestReaperRole_ScopeExact(t *testing.T) {
 	rp := roleByName(t, ControlPlaneRBAC(reaperParams()).Roles, "felis-reaper")
 
-	if !hasRule(rp, groupCore, "persistentvolumeclaims", "delete") {
-		t.Error("reaper must delete PVCs (world reclamation)")
+	if !hasRule(rp, groupCore, "persistentvolumeclaims", "delete") || !hasRule(rp, groupCore, "persistentvolumeclaims", "get") {
+		t.Error("reaper must get (resolve the volume) and delete (reclaim) PVCs")
 	}
 	if !hasRule(rp, groupFelis, "minecraftservers", "patch") || !hasRule(rp, groupFelis, "minecraftservers", "get") {
 		t.Error("reaper must get+patch minecraftservers (to Stop them)")

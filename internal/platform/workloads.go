@@ -32,12 +32,14 @@ import (
 // read-only — is the only one coherent with the operator's per-server
 // ReadWriteOnce world PVCs (a shared RWX worlds mount would contradict them), so
 // that is what renders; when the trio is absent no CronJob is emitted, which is
-// the fail-safe choice for a workload that deletes PVCs. SHAPE-ASSERTED and
-// runtime-unverified: the rendered CronJob is the correct K8s object, but whether
-// the tar finds a world under <WorldsHostPath>/<pvc> on a given cluster depends on
-// how that node's storage is arranged (stock local-path-provisioner uses
-// PV-name paths, not <root>/<pvc>) and is not provable without a cluster — see the
-// WorldsHostPath field doc. No nodeSelector is set: the single-node starter pins
+// the fail-safe choice for a workload that deletes PVCs. The reaper resolver
+// (cmd/felis/reaper.resolveWorldDir) finds worlds either as <WorldsHostPath>/<pvc>
+// or in the stock local-path layout k3s writes under its storage root
+// (<pv-name>_<ns>_<pvc-name>, read from the live PVC), so pointing
+// --worlds-host-path at /var/lib/rancher/k3s/storage works on a default install —
+// see the WorldsHostPath field doc. Whether the tar finds a world still depends on
+// the hosting node, and is not provable without a cluster. No nodeSelector is set:
+// the single-node starter pins
 // the worlds to one node implicitly; a multi-node deployment MUST add one (or the
 // CronJob could schedule on a node where the hostPath is empty) — a hazard left on
 // record here until multi-node retention is built.
@@ -86,6 +88,13 @@ const (
 	// local-storage install (no such Secret) still starts.
 	uploadsPVCName     = "felis-uploads"
 	uploadsStorageSize = "5Gi"
+	// backupStorageSize is the world-archive store's default capacity. It is a
+	// starter-sized floor (registry 10Gi, uploads 5Gi sit beside it): archives are
+	// compressed worlds and a fresh one is ~200MB, so this holds many while leaving
+	// the growth knob (resize the PVC / move to a snapshot backend, spec §19) to the
+	// operator. There is no storageClassName: the cluster default is the only safe
+	// binding, exactly like registryPVC.
+	backupStorageSize = "10Gi"
 	// UploadsLocalPath is the in-pod mount of the uploads PVC; a local
 	// user_uploads_context points here so the derived context ref and the on-disk
 	// write location agree. Exported so the setup wizard stamps it into felis.toml.
@@ -165,9 +174,10 @@ func InternalAPIBaseURL(controlNamespace string) string {
 
 // Workloads renders the running control-plane: the felis-api Deployment, the
 // felis-operator Deployment, and the in-cluster registry (Deployment + Service +
-// PVC), plus the reaper CronJob when reaperEnabled(p). FelisImage is required —
-// `felis manifests` enforces it (fail-loud), so a rendered bundle always names a
-// concrete image.
+// PVC), the world-archive PVC when p.BackupPVC names it (it backs the
+// backup/restore Jobs and the reaper), plus the reaper CronJob when
+// reaperEnabled(p). FelisImage is required — `felis manifests` enforces it
+// (fail-loud), so a rendered bundle always names a concrete image.
 func Workloads(p Params) []Object {
 	p = p.withDefaults()
 	objs := []Object{
@@ -179,6 +189,9 @@ func Workloads(p Params) []Object {
 		registryService(p),
 		registryPVC(p),
 		uploadsPVC(p),
+	}
+	if p.BackupPVC != "" {
+		objs = append(objs, backupPVC(p))
 	}
 	if reaperEnabled(p) {
 		objs = append(objs, reaperCronJob(p))
@@ -651,6 +664,30 @@ func uploadsPVC(p Params) *corev1.PersistentVolumeClaim {
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			Resources: corev1.VolumeResourceRequirements{
 				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(uploadsStorageSize)},
+			},
+		},
+	}
+}
+
+// backupPVC renders the world-archive store (spec §18/§19): the PVC the backup
+// and restore Jobs mount read-write, and the one the reaper CronJob writes
+// archives into. It renders ONLY when p.BackupPVC names it, so the same value
+// gates the PVC and the FELIS_BACKUP_PVC env on the felis-api Deployment — with
+// no name there is no PVC, no env, and the backup/restore endpoints keep
+// answering an honest 503 rather than enqueuing a Job that cannot mount its
+// backup. It lives in the Minecraft namespace because every pod that mounts it
+// runs there (a Pod can only mount PVCs from its own namespace; the reaper
+// CronJob is rendered there for the same reason). No storageClassName: binding
+// the cluster default is the only safe default.
+func backupPVC(p Params) *corev1.PersistentVolumeClaim {
+	p = p.withDefaults()
+	return &corev1.PersistentVolumeClaim{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"},
+		ObjectMeta: metav1.ObjectMeta{Name: p.BackupPVC, Namespace: p.MinecraftNamespace, Labels: controlPlanePodLabels(ComponentAPI)},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(backupStorageSize)},
 			},
 		},
 	}

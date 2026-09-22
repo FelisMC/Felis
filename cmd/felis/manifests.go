@@ -26,8 +26,10 @@ func (m *multiFlag) Set(v string) error {
 // felis-reaper identity only when the retention reaper is enabled, gated with
 // its CronJob), the weak build/restore Job SAs, the build/minecraft
 // NetworkPolicies, and the running control-plane workloads (felis-api/operator
-// Deployments + the in-cluster registry Deployment/Service/PVC) — as a single
-// multi-document YAML stream on stdout, ready for `kubectl apply -f -`.
+// Deployments + the in-cluster registry Deployment/Service/PVC + the
+// world-archive PVC that backs backup/restore, unless --backup-pvc is emptied)
+// — as a single multi-document YAML stream on stdout, ready for
+// `kubectl apply -f -`.
 //
 // It is a pure renderer: it never contacts a cluster and holds no credentials.
 // --velocity-cidr records the proxy host addresses allowed by the game NetworkPolicy.
@@ -44,8 +46,8 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 	panelNodePort := fs.Int("panel-node-port", int(platform.DefaultPanelNodePort), "NodePort that exposes the built-in HTTPS panel/API origin")
 	felisImage := fs.String("felis-image", "", "container image the felis-api/operator Deployments run, also passed through as FELIS_IMAGE (REQUIRED)")
 	registryImage := fs.String("registry-image", "", "in-cluster registry image (default: registry:2)")
-	backupPVC := fs.String("backup-pvc", "", "name of the backup PVC advertised to the restore executor via FELIS_BACKUP_PVC (default none = restore endpoint returns 503)")
-	worldsHostPath := fs.String("worlds-host-path", "", "node directory under which each world PVC is visible as <path>/<pvc>; enables the reaper CronJob (requires --backup-pvc and --archive-local-path)")
+	backupPVC := fs.String("backup-pvc", "felis-backups", "name of the world-archive PVC this bundle renders in the Minecraft namespace and advertises to the backup/restore executors via FELIS_BACKUP_PVC (default: felis-backups; pass an empty value to render none, leaving backup/restore answering 503)")
+	worldsHostPath := fs.String("worlds-host-path", "", "node directory the reaper reads worlds from: each world PVC resolves as <path>/<pvc>, or as the stock local-path directory <path>/<pv-name>_<ns>_<pvc-name> (k3s storage root: /var/lib/rancher/k3s/storage); enables the reaper CronJob (requires --archive-local-path and a non-empty --backup-pvc)")
 	archiveLocalPath := fs.String("archive-local-path", "", "path the backup PVC is mounted at in the reaper CronJob; MUST equal felis.toml [archive] local_path")
 	var velocityCIDRs multiFlag
 	fs.Var(&velocityCIDRs, "velocity-cidr", "CIDR of a Velocity proxy host allowed to reach game port 25565 (repeatable, REQUIRED)")
@@ -82,17 +84,20 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	// Retention/reaper rendering is opt-in and needs all three storage coordinates
-	// together: where worlds live (to read+archive them), the backup PVC (to write
-	// archives into), and the path it is mounted at (which MUST equal felis.toml
-	// [archive] local_path so tarLocal's absolute archive refs resolve). A partial
-	// configuration is almost certainly an operator mistake, so fail loud rather than
-	// silently drop retention. Asking for it without the other two is rejected; an
-	// empty trio renders the bundle WITHOUT the reaper and says so.
+	// Retention/reaper rendering is opt-in and needs a storage topology together:
+	// where worlds live (to read+archive them), a backup PVC (to write archives
+	// into — rendered from --backup-pvc), and the path it is mounted at (which MUST
+	// equal felis.toml [archive] local_path so tarLocal's absolute archive refs
+	// resolve). A partial configuration is almost certainly an operator mistake, so
+	// fail loud rather than silently drop retention or render a reaper with nowhere
+	// to write. The backup PVC itself defaults to felis-backups (it is what makes a
+	// default install's backup endpoint work at all); retention additionally needs
+	// --worlds-host-path.
 	if *worldsHostPath != "" {
 		if *backupPVC == "" || *archiveLocalPath == "" {
 			fmt.Fprintln(stderr, "felis manifests: --worlds-host-path enables the reaper CronJob and requires "+
-				"--backup-pvc and --archive-local-path too (--archive-local-path must equal felis.toml [archive] local_path)")
+				"--archive-local-path (must equal felis.toml [archive] local_path) and a non-empty --backup-pvc "+
+				"(the archive store; default felis-backups)")
 			return 2
 		}
 		// The reaper WILL render. Two deployment preconditions this generator cannot
@@ -102,15 +107,16 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 		// flag/field docs, but nobody deploying from stdout reads those.)
 		fmt.Fprintf(stderr, "felis manifests: note: rendering the retention reaper CronJob (worlds hostPath %q). "+
 			"Two preconditions are NOT verified here:\n"+
-			"  - each world PVC must be visible at %s/<pvc> on the node: a stock local-path-provisioner lays "+
-			"volumes under PV-name paths (.../pvc-<uuid>_<ns>_<pvc>/), so unless the worlds StorageClass is "+
-			"arranged to expose <path>/<pvc>, the reaper tars an empty directory;\n"+
+			"  - the node's world volumes must actually live below %s: the reaper resolves a world as "+
+			"%s/<pvc>, then as the stock local-path directory <path>/<pv-name>_<ns>_<pvc-name> (what k3s "+
+			"writes under /var/lib/rancher/k3s/storage). Any other provisioner needs its volumes exposed as "+
+			"<path>/<pvc>, or each candidate's archive fails and the world is preserved;\n"+
 			"  - the CronJob sets NO nodeSelector: a single-node starter pins it to the worlds implicitly, but "+
 			"on a multi-node cluster you MUST add a nodeSelector for the node holding the worlds, or the reaper "+
-			"may schedule where the hostPath is empty.\n", *worldsHostPath, *worldsHostPath)
+			"may schedule where the hostPath is empty.\n", *worldsHostPath, *worldsHostPath, *worldsHostPath)
 	} else {
 		fmt.Fprintln(stderr, "felis manifests: note: retention reaper CronJob not rendered "+
-			"(pass --worlds-host-path, --backup-pvc and --archive-local-path to enable it)")
+			"(pass --worlds-host-path and --archive-local-path — the archive PVC defaults to felis-backups — to enable it)")
 	}
 
 	out, err := platform.RenderYAML(platform.Params{

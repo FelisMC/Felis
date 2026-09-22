@@ -107,14 +107,16 @@ type Params struct {
 	FelisImage string
 	// RegistryImage is the in-cluster registry image. Defaults to registry:2.
 	RegistryImage string
-	// BackupPVC is the name of the backup PersistentVolumeClaim the felis-api pod
-	// advertises to its restore executor via FELIS_BACKUP_PVC. It is OPTIONAL: with
-	// no backup PVC the restore endpoint degrades to 503 (cmd/felis/api.go), so the
-	// env var is rendered only when this is set. It must name the same PVC that the
-	// felis.toml archive.local_path is the mount path for, but that agreement lives
-	// in the out-of-band config Secret and cannot be enforced by the manifest. The
-	// reaper CronJob (when rendered) mounts this same PVC read-write to write
-	// archives into it — see WorldsHostPath / ArchiveLocalPath.
+	// BackupPVC is the name of the world-archive PersistentVolumeClaim. The bundle
+	// RENDERS this PVC (backupPVC in workloads.go, Minecraft namespace — where every
+	// pod that mounts it runs) and felis-api advertises the name to its backup/restore
+	// executors via FELIS_BACKUP_PVC. An empty name renders neither: no PVC, no env,
+	// and the backup/restore endpoints degrade to 503 (cmd/felis/api.go) rather than
+	// enqueuing a Job that cannot mount its backup. The PVC name itself carries no
+	// path meaning; the in-pod mount path is felis.toml's [archive] local_path (the
+	// Jobs mount the PVC there, and tarLocal writes archive refs as absolute paths
+	// under it). The reaper CronJob (when rendered) mounts this same PVC read-write
+	// to write archives into it — see WorldsHostPath / ArchiveLocalPath.
 	BackupPVC string
 	// WorldsHostPath is the node directory under which each server's world PVC is
 	// visible as <WorldsHostPath>/<pvc> — the on-disk root the reaper CronJob mounts
@@ -128,12 +130,18 @@ type Params struct {
 	// a later storage evolution. Setting it REQUIRES BackupPVC and ArchiveLocalPath
 	// too — `felis manifests` enforces the trio (fail-loud).
 	//
-	// SHAPE-ASSERTED, runtime-unverified, and ARRANGEMENT-DEPENDENT: the reaper's
-	// resolver looks for <root>/<pvc>. Stock local-path-provisioner lays volumes out
-	// under PV-name paths (…/pvc-<uuid>_<ns>_<pvc>/), NOT <root>/<pvc>, so this mount
-	// only finds worlds if the operator/storage is deliberately arranged to expose
-	// them as <root>/<pvc>. The rendered CronJob is the correct K8s object; whether
-	// the tar finds a world on a given cluster is not provable without one.
+	// ARRANGEMENT: the reaper's resolver (cmd/felis/reaper.resolveWorldDir) looks
+	// for <root>/<pvc> first and then for the stock local-path-provisioner layout
+	// <root>/<pv-name>_<ns>_<pvc-name> — the exact directory name k3s uses under
+	// its storage root (/var/lib/rancher/k3s/storage), derived from the live PVC's
+	// spec.volumeName. So pointing this at the k3s storage root is the supported
+	// way to enable retention on a stock install; other provisioners work if they
+	// expose volumes as <root>/<pvc> or are read through the same PVC. On a
+	// multi-node cluster every node HAS the root directory, but a world's directory
+	// only exists on the node holding its volume: the CronJob schedules anywhere,
+	// so a world found nowhere on that node fails the archive and is preserved.
+	// The rendered CronJob is the correct K8s object; the actual tar depends on the
+	// hosting node, which is not provable without a cluster.
 	WorldsHostPath string
 	// ArchiveLocalPath is the path the backup PVC is mounted at inside the reaper
 	// CronJob's pod, and MUST equal felis.toml's [archive] local_path. tarLocal writes
