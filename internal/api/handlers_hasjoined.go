@@ -44,13 +44,24 @@ var felisAuthNS = uuid.NewSHA1(uuid.NameSpaceURL, []byte("nano.felis.lolicon.bes
 // One shared client, sequential priority scan — a third-party login costs one
 // wasted Mojang round-trip; add parallel fan-out only if login latency bites.
 var authHTTPClient = &http.Client{
-	Timeout: 5 * time.Second,
+	Timeout:   5 * time.Second,
+	Transport: upstreamTransport,
 	// A redirect is not a hasJoined answer. Following one would let a configured root point
 	// this host at any URL it can reach — this listener included, where each hop re-runs the
 	// whole source scan inside the same login's timeout. The 3xx is returned as-is and the
 	// resolver skips that source like any other non-200.
 	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 }
+
+// upstreamTransport caps response headers, which the 64 KiB body limit does not cover. The
+// default allows 1 MiB, so a root that sends that much and then stalls the body pins a few
+// MiB per in-flight login for the whole timeout, and enough parallel logins OOM the host
+// for every source. Real roots answer in well under 1 KiB of headers.
+var upstreamTransport = func() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxResponseHeaderBytes = 16 << 10
+	return t
+}()
 
 // AuthSource is one upstream Yggdrasil root in the multiplexer's priority list (config
 // order = priority). URL is the full hasJoined endpoint the query string is appended to.
@@ -193,7 +204,7 @@ var mojangProfileAPI = "https://api.mojang.com/users/profiles/minecraft/"
 // SECOND Mojang round-trip on a third-party login (the identity leg already spent one), and
 // api.mojang.com is exactly what is unreliable from the networks these servers sit on. A
 // slow answer falls back to the cache instead of holding the login open.
-var profileHTTPClient = &http.Client{Timeout: 2 * time.Second}
+var profileHTTPClient = &http.Client{Timeout: 2 * time.Second, Transport: upstreamTransport}
 
 // A name's premium status changes on human timescales, not per login, so it is cached — but
 // asymmetrically, because the two directions have very different costs. "Taken" is nearly

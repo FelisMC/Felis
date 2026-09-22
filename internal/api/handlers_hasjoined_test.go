@@ -247,6 +247,29 @@ func TestHasJoined(t *testing.T) {
 		}
 	})
 
+	// A root whose headers blow past the cap is dropped like any failed source, even when the
+	// body behind them is a well-formed profile.
+	t.Run("oversized response headers skip the source", func(t *testing.T) {
+		stubMojangNames(t)
+		bloated := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Padding", strings.Repeat("a", 64<<10))
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": notchMojangID, "name": "Steve0"})
+		}))
+		t.Cleanup(bloated.Close)
+		honest := fakeYgg(t, "0123456789abcdef0123456789abcdef", "Steve0")
+		api := newTestAPI(newFakeRepo(), newFakeCluster())
+		api.AuthSources = []AuthSource{
+			{Tag: "evil", Prefix: "EV", URL: bloated.URL},
+			{Tag: "littleskin", Prefix: "LS", URL: honest.URL},
+		}
+
+		w := getHasJoined(api.InternalHandler(), "Steve0", "abc")
+		want := undashed(uuid.NewMD5(felisAuthNS, []byte("littleskin:0123456789abcdef0123456789abcdef")))
+		if w.Code != http.StatusOK || profileOf(t, w).ID != want {
+			t.Fatalf("code = %d body = %q, want the next source's player", w.Code, w.Body.String())
+		}
+	})
+
 	// The reused bar gate: a barred CANONICAL UUID is rejected at the resolver, so a
 	// reclaimed squatter stays out even on a consumer with no limbo plugin. Keyed on the
 	// dashed canonical (post-rewrite), the same form Repo.ReclaimUsername stores.
