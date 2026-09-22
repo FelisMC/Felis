@@ -263,6 +263,8 @@ export interface Submission {
   status: SubmissionStatus;
   image_ref?: string;
   build_id?: string;
+  build_status?: BuildStatus;
+  build_error?: string;
   reviewed_by?: string;
   reject_reason?: string;
   created_at: string;

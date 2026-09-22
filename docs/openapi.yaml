@@ -337,6 +337,19 @@ components:
         build_id:
           type: string
           description: image_builds.id, set only after the build hand-off succeeds.
+        build_status:
+          type: string
+          enum: [pending, building, succeeded, failed, cancelled]
+          description: >-
+            The linked build's outcome, attached by the LIST routes
+            (/me/submissions, /submissions) — for a submitter this is the only
+            visible outlet for a failed build. Omitted until a build is linked
+            and its row is readable.
+        build_error:
+          type: string
+          description: >-
+            The build's recorded failure text (e.g. a CRITICAL CVE scan
+            failure), attached alongside build_status.
         reviewed_by: { type: string }
         reject_reason: { type: string }
         created_at: { type: string, format: date-time }
@@ -4231,13 +4244,16 @@ paths:
     get:
       tags: [submissions]
       operationId: mySubmissions
-      summary: List the caller's own modpack submissions (user-directed lane over §16).
+      summary: List the caller's own modpack submissions with each linked build's outcome (user-directed lane over §16).
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ accessJWT: [] }]
       responses:
         '200':
-          description: The caller's submissions, newest first.
+          description: >-
+            The caller's submissions, newest first; rows with a linked build
+            additionally carry build_status/build_error so the submitter can see
+            whether their build succeeded or failed (and why).
           content:
             application/json:
               schema:

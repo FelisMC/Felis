@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"felis.lolicon.best/internal/build"
 	"felis.lolicon.best/internal/submit"
 )
 
@@ -270,6 +271,68 @@ func TestMySubmissionsScopesToPrincipal(t *testing.T) {
 	}
 }
 
+// The "my uploads" list carries the linked build's outcome — for a submitter it
+// is the only visible outlet for a failed build (the /images/build routes are
+// admin-tier). A row with no linked build gains no build fields.
+func TestMySubmissionsCarriesBuildOutcome(t *testing.T) {
+	fs := &fakeSubmissions{byResult: []submit.Submission{
+		{ID: "sub-1", SubmittedBy: "user-7", Status: submit.StatusApproved, BuildID: "bld-9"},
+		{ID: "sub-2", SubmittedBy: "user-7", Status: submit.StatusPendingReview},
+	}}
+	api := appSubAPI(fs)
+	api.Builder = &fakeBuilder{getBuilds: map[string]*build.Build{
+		"bld-9": {ID: "bld-9", Status: build.StatusFailed, Error: "build job failed or scan found a CRITICAL CVE"},
+	}}
+	w := do(api.ExternalHandler(), "GET", "/api/v1/me/submissions", "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	var got struct {
+		Submissions []struct {
+			ID          string `json:"id"`
+			BuildStatus string `json:"build_status"`
+			BuildError  string `json:"build_error"`
+		} `json:"submissions"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body not JSON: %v", err)
+	}
+	if len(got.Submissions) != 2 {
+		t.Fatalf("submissions = %d, want 2", len(got.Submissions))
+	}
+	if got.Submissions[0].BuildStatus != "failed" || got.Submissions[0].BuildError == "" {
+		t.Errorf("sub-1 outcome = %+v, want failed with the error text", got.Submissions[0])
+	}
+	if got.Submissions[1].BuildStatus != "" || got.Submissions[1].BuildError != "" {
+		t.Errorf("sub-2 outcome = %+v, want no build fields without a linked build", got.Submissions[1])
+	}
+}
+
+// A linked build whose row is gone renders as "no outcome" rather than failing
+// the whole list; any other lookup failure must surface, never be swallowed.
+func TestMySubmissionsBuildLookupSemantics(t *testing.T) {
+	// Missing row (ErrNotFound): 200 with no build fields.
+	fs := &fakeSubmissions{byResult: []submit.Submission{{ID: "sub-1", BuildID: "bld-gone"}}}
+	api := appSubAPI(fs)
+	api.Builder = &fakeBuilder{}
+	w := do(api.ExternalHandler(), "GET", "/api/v1/me/submissions", "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("missing build row: code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "build_status") {
+		t.Errorf("missing build row: body carries build fields: %s", w.Body.String())
+	}
+
+	// Store fault: the failure is reported, not hidden behind a 200.
+	fs = &fakeSubmissions{byResult: []submit.Submission{{ID: "sub-1", BuildID: "bld-1"}}}
+	api = appSubAPI(fs)
+	api.Builder = &fakeBuilder{getErr: errors.New("db down")}
+	w = do(api.ExternalHandler(), "GET", "/api/v1/me/submissions", "", nil)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("store fault: code = %d, want 500 (%s)", w.Code, w.Body.String())
+	}
+}
+
 // Every /submissions route is admin-tier: a plain user is rejected before the
 // handler runs.
 func TestSubmissionAdminRoutesAreAdminOnly(t *testing.T) {
@@ -294,9 +357,12 @@ func TestSubmissionAdminRoutesAreAdminOnly(t *testing.T) {
 func TestListSubmissionsAdmin(t *testing.T) {
 	fs := &fakeSubmissions{listed: []submit.Submission{
 		{ID: "sub-1", SubmittedBy: "user-7", Status: submit.StatusPendingReview},
-		{ID: "sub-2", SubmittedBy: "user-9", Status: submit.StatusApproved},
+		{ID: "sub-2", SubmittedBy: "user-9", Status: submit.StatusApproved, BuildID: "bld-2"},
 	}}
 	api := adminSubAPI(fs)
+	api.Builder = &fakeBuilder{getBuilds: map[string]*build.Build{
+		"bld-2": {ID: "bld-2", Status: build.StatusSucceeded},
+	}}
 	w := do(api.ExternalHandler(), "GET", "/api/v1/submissions", "", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
@@ -307,6 +373,10 @@ func TestListSubmissionsAdmin(t *testing.T) {
 	}
 	if len(got["submissions"]) != 2 {
 		t.Fatalf("submissions = %d, want 2", len(got["submissions"]))
+	}
+	// The admin queue carries the same build outcome enrichment.
+	if !strings.Contains(w.Body.String(), `"build_status":"succeeded"`) {
+		t.Errorf("admin queue lacks the linked build outcome: %s", w.Body.String())
 	}
 }
 

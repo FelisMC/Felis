@@ -20,6 +20,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
@@ -37,9 +38,28 @@ import { SubmissionStatusBadge } from "@/components/SubmissionStatusBadge";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { formatRelative, formatAbsolute } from "@/lib/format";
-import type { Submission, SubmissionStatus } from "@/lib/types";
+import type { BuildStatus, Submission, SubmissionStatus } from "@/lib/types";
 
 const PAGE_SIZE = 10;
+
+// The linked build's outcome as shown in a row's expanded details. Colors mirror
+// the admin build page; the labels are player-facing, so they come from this
+// page's namespace instead of the raw status string.
+const BUILD_STATUS_STYLE: Record<BuildStatus, string> = {
+  pending: "bg-amber-500/10 text-amber-500 border-amber-500/20 animate-pulse",
+  building: "bg-blue-500/10 text-blue-500 border-blue-500/20 animate-pulse",
+  succeeded: "bg-emerald-500/10 text-emerald-500 border-emerald-500/20",
+  failed: "bg-rose-500/10 text-rose-500 border-rose-500/20",
+  cancelled: "bg-zinc-500/10 text-zinc-400 border-zinc-500/20",
+};
+
+const BUILD_STATUS_I18N: Record<BuildStatus, string> = {
+  pending: "build_status_pending",
+  building: "build_status_building",
+  succeeded: "build_status_succeeded",
+  failed: "build_status_failed",
+  cancelled: "build_status_cancelled",
+};
 
 function formatBytes(bytes: number, decimals = 2) {
   if (bytes === 0) return "0 Bytes";
@@ -407,6 +427,32 @@ export function MySubmissionsPage() {
                                 <div className="text-rose-500 font-medium">
                                   <span className="font-semibold text-foreground mr-1.5">{t("table_reject_reason")}:</span>
                                   {sub.reject_reason}
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Linked build outcome — a submitter's only view of a
+                              failed build (the build pages are admin-tier). */}
+                          {sub.build_id && sub.build_status && (
+                            <div className="pt-1 border-t border-border/20 mt-2 flex flex-col gap-1.5">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-semibold text-foreground">{t("table_build_status")}:</span>
+                                <Badge
+                                  variant="outline"
+                                  className={cn(
+                                    "font-medium select-none pointer-events-none",
+                                    BUILD_STATUS_STYLE[sub.build_status],
+                                  )}
+                                >
+                                  {t(BUILD_STATUS_I18N[sub.build_status])}
+                                </Badge>
+                                <code className="font-mono text-[10px] text-muted-foreground/75">{sub.build_id}</code>
+                              </div>
+                              {sub.build_status === "failed" && sub.build_error && (
+                                <div className="text-rose-500 font-medium break-all whitespace-pre-wrap">
+                                  <span className="font-semibold text-foreground mr-1.5">{t("table_build_error")}:</span>
+                                  {sub.build_error}
                                 </div>
                               )}
                             </div>

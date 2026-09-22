@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 
+	"felis.lolicon.best/internal/build"
 	"felis.lolicon.best/internal/submit"
 )
 
@@ -118,7 +119,9 @@ func (a *API) handleUploadSubmissionContext(w http.ResponseWriter, r *http.Reque
 
 // handleMySubmissions lists the caller's own submissions (app-tier). It scopes
 // strictly to the principal's id; there is no parameter that could widen the
-// query to another user's uploads.
+// query to another user's uploads. Each row is enriched with its linked build's
+// outcome — this list is the only player-visible outlet for a build result, so
+// a failed build is not invisible to the person who submitted it.
 func (a *API) handleMySubmissions(w http.ResponseWriter, r *http.Request) {
 	if a.Submissions == nil {
 		writeError(w, r, errSubmissionsUnavailable)
@@ -130,12 +133,18 @@ func (a *API) handleMySubmissions(w http.ResponseWriter, r *http.Request) {
 		writeSubmitError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"submissions": subs})
+	views, err := a.submissionViews(r.Context(), subs)
+	if err != nil {
+		writeSubmitError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"submissions": views})
 }
 
 // handleListSubmissions is the admin review queue: every submission across all
 // users, newest first (admin-tier — it reads other users' uploads, so it gates
-// on the admin Zero-Trust path via adminOnly).
+// on the admin Zero-Trust path via adminOnly). Rows carry the same build
+// outcome enrichment as /me/submissions.
 func (a *API) handleListSubmissions(w http.ResponseWriter, r *http.Request) {
 	if a.Submissions == nil {
 		writeError(w, r, errSubmissionsUnavailable)
@@ -146,7 +155,49 @@ func (a *API) handleListSubmissions(w http.ResponseWriter, r *http.Request) {
 		writeSubmitError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"submissions": subs})
+	views, err := a.submissionViews(r.Context(), subs)
+	if err != nil {
+		writeSubmitError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"submissions": views})
+}
+
+// submissionView is one submission row enriched with its linked build's
+// outcome. The row itself is embedded unchanged, so the wire shape only gains
+// the two optional fields; they appear solely once a build has been linked
+// (BuildID set) and its record is still readable.
+type submissionView struct {
+	submit.Submission
+	BuildStatus string `json:"build_status,omitempty"`
+	BuildError  string `json:"build_error,omitempty"`
+}
+
+// submissionViews enriches each submission with its linked build's status via a
+// read-only Builder.Get — deliberately never Sync, because the 15s reconcile
+// loop owns state advance and rendering a list must not touch the cluster. A
+// submission with no linked build (never approved, or approved before the
+// hand-off could record the id), no Builder wired, or a build row that is gone
+// (ErrNotFound) renders without the extra fields; any other store failure is
+// returned so the handler reports it rather than silently dropping the outcome.
+func (a *API) submissionViews(ctx context.Context, subs []submit.Submission) ([]submissionView, error) {
+	views := make([]submissionView, len(subs))
+	for i, s := range subs {
+		views[i] = submissionView{Submission: s}
+		if a.Builder == nil || s.BuildID == "" {
+			continue
+		}
+		bld, err := a.Builder.Get(ctx, s.BuildID)
+		if errors.Is(err, build.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		views[i].BuildStatus = string(bld.Status)
+		views[i].BuildError = bld.Error
+	}
+	return views, nil
 }
 
 // handleApproveSubmission is the admin approve gate (admin-tier). The reviewer is

@@ -16,6 +16,8 @@ import (
 type fakeBuilder struct {
 	submitted   *build.Request
 	submitErr   error
+	getBuilds   map[string]*build.Build
+	getErr      error
 	syncErr     error
 	cancelErr   error
 	addedRef    string
@@ -38,6 +40,17 @@ func (f *fakeBuilder) Submit(_ context.Context, req build.Request) (*build.Build
 	f.submitted = &cp
 	return &build.Build{ID: "bld-1", ImageRef: req.ImageRef, Status: build.StatusBuilding,
 		RequestedBy: req.RequestedBy}, nil
+}
+
+func (f *fakeBuilder) Get(_ context.Context, id string) (*build.Build, error) {
+	f.lastBuildID = id
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	if b, ok := f.getBuilds[id]; ok {
+		return b, nil
+	}
+	return nil, build.ErrNotFound
 }
 
 func (f *fakeBuilder) Sync(_ context.Context, id string) (*build.Build, error) {
