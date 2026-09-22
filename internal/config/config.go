@@ -364,6 +364,12 @@ func (c *Config) validateAuthSources() error {
 		if strings.Contains(s.Tag, ":") {
 			return fmt.Errorf("config: [[auth_source]] tag %q contains ':'; the tag and a player's native id are joined with ':' to derive their UUID, so a ':' in a tag would let another source mint this source's players", s.Tag)
 		}
+		// Mojang is the built-in first source. A listed "mojang" is never it: it is asked again,
+		// after Mojang, on every login that reaches it, and nano's startup list then reads as if
+		// Mojang had been pointed at that url.
+		if strings.EqualFold(s.Tag, "mojang") {
+			return fmt.Errorf("config: [[auth_source]] tag %q is reserved: Mojang is built in as the first source and must not be listed", s.Tag)
+		}
 		if _, dup := seenTags[s.Tag]; dup {
 			return fmt.Errorf("config: [[auth_source]] tag %q is used twice — tags are per-source UUID namespaces and must be unique", s.Tag)
 		}

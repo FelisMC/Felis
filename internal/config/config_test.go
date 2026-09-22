@@ -308,6 +308,17 @@ url = "postgres://felis@db/felis"
 	}
 }
 
+// TestLoadRejectsMojangAuthSourceTag: Mojang is prepended in code, so a listed "mojang" is a
+// second, different source that only looks like a Mojang override.
+func TestLoadRejectsMojangAuthSourceTag(t *testing.T) {
+	for _, tag := range []string{"mojang", "Mojang"} {
+		_, err := config.LoadNano(writeTOML(t, "[[auth_source]]\ntag = \""+tag+"\"\nprefix = \"MJ\"\nurl = \"https://sessionserver.mojang.com/session/minecraft/hasJoined\"\n"))
+		if err == nil || !strings.Contains(err.Error(), "built in") {
+			t.Errorf("tag %q: err = %v, want a refusal saying Mojang is built in", tag, err)
+		}
+	}
+}
+
 // TestLoadRejectsSchemelessAuthSourceURL pins the silently-dead-source guard: a URL with no
 // http(s):// scheme makes http.NewRequest fail, so the source never validates any login yet
 // felis-api boots green. Reject at load with the scheme contract spelled out. An empty tag
