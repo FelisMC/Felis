@@ -127,6 +127,26 @@ func TestPatchServerMemoryOverride(t *testing.T) {
 	}
 }
 
+// TestPatchServerPreservesStorageCache pins the storage dimension of the quota
+// aggregate: a resources patch cannot change storage, so the cached storage
+// must survive it — passing 0 would silently zero the owner's aggregate (the
+// cached columns are QuotaCheck's only input) from that patch onward.
+func TestPatchServerPreservesStorageCache(t *testing.T) {
+	api, repo, _, _ := newPatchAPI()
+	repo.byName["survival"].OwnerID = "u1"
+	repo.quota["u1"] = true
+	repo.serverResources["survival"] = ResourceSpec{StorageMB: 10240}
+
+	w := patchSurvival(api, `{"memory":"2Gi","resources":{"memory":"4Gi","cpu":"2"}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	got := repo.resourceUpdates["survival"]
+	if got.CPUMilli != 2000 || got.MemoryMB != 4096 || got.StorageMB != 10240 {
+		t.Fatalf("resource cache = %+v, want cpu 2000 / mem 4096 / storage preserved 10240", got)
+	}
+}
+
 // TestPatchServerRejections is the validation matrix: each malformed request is
 // rejected with the right status and stable error code, and (critically) NOTHING
 // reaches the cluster on a rejection — the analog of create's "no CRD written".

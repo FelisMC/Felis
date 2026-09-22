@@ -231,7 +231,11 @@ type Repo interface {
 	QuotaCheck(ctx context.Context, userID string, excludeName string, incoming ResourceSpec) (bool, error)
 	// ClaimServer atomically sets owner_id where it is currently NULL and returns
 	// whether a row changed. false means the server was already claimed (spec §9.3:
-	// 0 rows → 409).
+	// 0 rows → 409). The claim runs in one transaction that re-checks the four quota
+	// dimensions under pg_advisory_xact_lock(hashtext(user_id)), so it is the
+	// authoritative gate: a claim that would exceed a cap → ErrQuotaExceeded (403),
+	// and two concurrent claims by one user cannot both pass (audit #4).
+	// QuotaCheck remains the advisory pre-check for the handler's fast-path 403.
 	ClaimServer(ctx context.Context, name, userID string) (bool, error)
 	// UserInAllowlist reports whether the user's linked UUID is on the server
 	// allowlist (spec §9.4).

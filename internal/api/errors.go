@@ -15,6 +15,13 @@ var (
 	ErrNotFound = errors.New("not found")
 	// ErrConflict means an atomic precondition failed (e.g. claim lost the race).
 	ErrConflict = errors.New("conflict")
+	// ErrQuotaExceeded means an ownership write would push the user over a quota
+	// cap (spec §9.3). ClaimServer — the atomic gate — returns it when a claim
+	// passes the handler's advisory pre-check but loses the serialized re-check
+	// (two concurrent claims by one user); handlers map it to a 403
+	// quota_exceeded, the same answer the pre-check gives, so the CONCURRENT case
+	// and the SEQUENTIAL case are indistinguishable to the caller.
+	ErrQuotaExceeded = errors.New("server quota exhausted")
 	// ErrLinkCodeInvalid means an account-link code is unknown or expired (spec
 	// §10). It is a client error (the verify endpoint exists; the code is bad), so
 	// handlers map it to 400, not 404.

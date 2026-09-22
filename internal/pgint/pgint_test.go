@@ -25,6 +25,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -324,6 +325,87 @@ func TestConsumeLoginEmailOTPContract(t *testing.T) {
 }
 
 // ---- user admin (spec §7) -------------------------------------------------------
+
+// The claim gate must hold under concurrency (audit #4): two simultaneous claims
+// by one user for two different ownerless servers must not both pass a
+// max_servers=1 cap. ClaimServer now owns the gate (advisory lock + four-dimension
+// re-check in the same transaction as the ownership write), so this drives real
+// goroutines against real Postgres.
+func TestClaimServerQuotaAtomicGate(t *testing.T) {
+	ctx := context.Background()
+	u := newUser(t, "user", "quota")
+	one := 1
+	if _, err := repo.SetQuotas(ctx, u.ID, api.QuotaInput{MaxServers: &one}, "pgint"); err != nil {
+		t.Fatalf("SetQuotas: %v", err)
+	}
+	seed := func(name string) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO servers (name, cached_cpu_milli, cached_memory_mb, cached_storage_mb) VALUES ($1, 100, 128, 1)`,
+			name); err != nil {
+			t.Fatalf("seed server %s: %v", name, err)
+		}
+	}
+	s1, s2 := "qa-"+suffix(t), "qb-"+suffix(t)
+	seed(s1)
+	seed(s2)
+
+	var wg sync.WaitGroup
+	results := make([]error, 2)
+	claimed := make([]bool, 2)
+	for i, name := range []string{s1, s2} {
+		wg.Add(1)
+		go func(i int, name string) {
+			defer wg.Done()
+			claimed[i], results[i] = repo.ClaimServer(ctx, name, u.ID)
+		}(i, name)
+	}
+	wg.Wait()
+
+	var wins, gated, other int
+	for i := range results {
+		switch {
+		case results[i] == nil && claimed[i]:
+			wins++
+		case errors.Is(results[i], api.ErrQuotaExceeded):
+			gated++
+		default:
+			other++
+			t.Logf("unexpected outcome %d: claimed=%v err=%v", i, claimed[i], results[i])
+		}
+	}
+	if wins != 1 || gated != 1 || other != 0 {
+		t.Fatalf("concurrent claims: wins=%d gated=%d other=%d, want 1/1/0", wins, gated, other)
+	}
+	var owned int
+	if err := db.QueryRow(`SELECT count(*) FROM servers WHERE owner_id = $1 AND deleted_at IS NULL`, u.ID).Scan(&owned); err != nil {
+		t.Fatalf("count owned: %v", err)
+	}
+	if owned != 1 {
+		t.Fatalf("owned servers = %d, want exactly 1 (no over-provision)", owned)
+	}
+
+	// Sequential, the gate answers identically: a third claim meets the same 403.
+	s3 := "qc-" + suffix(t)
+	seed(s3)
+	if _, err := repo.ClaimServer(ctx, s3, u.ID); !errors.Is(err, api.ErrQuotaExceeded) {
+		t.Fatalf("third claim = %v, want ErrQuotaExceeded", err)
+	}
+
+	// No quota row → unlimited: a fresh user claims both remaining ownerless rows.
+	otherUser := newUser(t, "user", "quota-free")
+	var free1 string
+	if err := db.QueryRow(
+		`SELECT name FROM servers WHERE name IN ($1, $2) AND owner_id IS NULL ORDER BY name LIMIT 1`,
+		s1, s2).Scan(&free1); err != nil {
+		t.Fatalf("find the race's unclaimed row: %v", err)
+	}
+	for _, name := range []string{free1, s3} {
+		if ok, err := repo.ClaimServer(ctx, name, otherUser.ID); err != nil || !ok {
+			t.Fatalf("quota-free claim %s = (%v, %v), want (true, nil)", name, ok, err)
+		}
+	}
+}
 
 // An admin email edit must not carry a verification over to an address nobody
 // proved: the verified flag is exactly what the pre-session login resolves on

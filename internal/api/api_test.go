@@ -38,8 +38,16 @@ type fakeRepo struct {
 	owners    map[string]string
 	ownersErr error
 	claimOK   map[string]bool // name -> claim succeeds; absent name -> ErrNotFound
-	audits    []AuditEntry
-	joins     []string
+	// claimQuotaRefuse simulates ClaimServer's atomic quota gate (audit #4)
+	// refusing a name whose advisory pre-check already passed.
+	claimQuotaRefuse map[string]bool
+	// serverResources / resourceUpdates mirror the cached resource columns:
+	// ServerResources is what the resize path reads (to preserve storage), and
+	// UpdateServerResources records the write for assertions.
+	serverResources map[string]ResourceSpec
+	resourceUpdates map[string]ResourceSpec
+	audits          []AuditEntry
+	joins           []string
 	// create-server seeding (spec §15)
 	seeded  map[string]bool   // name -> servers row exists
 	aliases map[string]string // subdomain -> bound server name
@@ -206,8 +214,9 @@ func newFakeRepo() *fakeRepo {
 		allowlist: map[string]map[string]bool{}, allowUUID: map[string]map[string]bool{},
 		mine:    map[string][]MyServerView{},
 		owners:  map[string]string{},
-		claimOK: map[string]bool{},
-		seeded:  map[string]bool{}, aliases: map[string]string{},
+		claimOK: map[string]bool{}, claimQuotaRefuse: map[string]bool{},
+		serverResources: map[string]ResourceSpec{}, resourceUpdates: map[string]ResourceSpec{},
+		seeded: map[string]bool{}, aliases: map[string]string{},
 		linkCodes: map[string]fakeLinkCode{}, links: map[string]string{},
 		linkAuthSource:    map[string]string{},
 		staff:             map[string]*StaffUser{},
@@ -249,10 +258,13 @@ func (f *fakeRepo) QuotaCheck(_ context.Context, userID string, _ string, _ Reso
 	return f.QuotaAvailable(context.TODO(), userID)
 }
 
-func (f *fakeRepo) UpdateServerResources(_ context.Context, _ string, _, _, _ int) error { return nil }
+func (f *fakeRepo) UpdateServerResources(_ context.Context, name string, cpu, mem, stor int) error {
+	f.resourceUpdates[name] = ResourceSpec{CPUMilli: cpu, MemoryMB: mem, StorageMB: stor}
+	return nil
+}
 
-func (f *fakeRepo) ServerResources(_ context.Context, _ string) (ResourceSpec, error) {
-	return ResourceSpec{}, nil
+func (f *fakeRepo) ServerResources(_ context.Context, name string) (ResourceSpec, error) {
+	return f.serverResources[name], nil
 }
 func (f *fakeRepo) CreateLinkCode(_ context.Context, code, mcUUID, authSource string, expiresAt time.Time) error {
 	f.linkCodes[code] = fakeLinkCode{mcUUID: mcUUID, authSource: authSource, expiresAt: expiresAt}
@@ -648,6 +660,9 @@ func (f *fakeRepo) ClaimServer(_ context.Context, n, u string) (bool, error) {
 	ok, present := f.claimOK[n]
 	if !present {
 		return false, ErrNotFound
+	}
+	if ok && f.claimQuotaRefuse[n] {
+		return false, ErrQuotaExceeded // mirrors the atomic gate losing the race
 	}
 	return ok, nil
 }
@@ -1781,6 +1796,21 @@ func TestClaimStateMachine(t *testing.T) {
 		w := do(api.ExternalHandler(), "POST", "/api/v1/servers/survival/claim", "", nil)
 		if w.Code != http.StatusForbidden || decodeErr(t, w) != "quota_exceeded" {
 			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
+		}
+	})
+	t.Run("atomic gate refusal -> 403 quota_exceeded", func(t *testing.T) {
+		// The advisory pre-check passed, but ClaimServer's serialized re-check
+		// (audit #4) refuses: the caller must see the same 403, not a 500.
+		repo := newFakeRepo()
+		repo.linked["u1"] = true
+		repo.quota["u1"] = true
+		repo.claimOK["survival"] = true
+		repo.claimQuotaRefuse["survival"] = true
+		api := newTestAPI(repo, newFakeCluster())
+		api.External = staticExternal{p: user}
+		w := do(api.ExternalHandler(), "POST", "/api/v1/servers/survival/claim", "", nil)
+		if w.Code != http.StatusForbidden || decodeErr(t, w) != "quota_exceeded" {
+			t.Fatalf("code = %d body %s, want 403 quota_exceeded", w.Code, w.Body.String())
 		}
 	})
 	t.Run("already claimed -> 409", func(t *testing.T) {

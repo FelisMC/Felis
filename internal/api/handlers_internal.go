@@ -240,6 +240,12 @@ func (a *API) handleInternalClaim(w http.ResponseWriter, r *http.Request) {
 	// 412 above; a lost race (0 rows) is 409.
 	claimed, err := a.Repo.ClaimServer(r.Context(), name, userID)
 	if err != nil {
+		// Same atomic quota gate as the external face (audit #4): the concurrent
+		// loser gets the sequential 403, never an over-provisioned tenant.
+		if errors.Is(err, ErrQuotaExceeded) {
+			writeError(w, r, newError(http.StatusForbidden, "quota_exceeded", "server quota exhausted"))
+			return
+		}
 		a.writeLookupError(w, r, err)
 		return
 	}

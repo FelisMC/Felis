@@ -293,22 +293,10 @@ func (p *PGRepo) CompleteOwnerSetup(ctx context.Context, newUserID, code string,
 
 // QuotaAvailable treats a missing quota row or a NULL max_servers as unlimited;
 // otherwise it compares the live owned-server count against the cap (spec §9.3).
-//
-// KNOWN-LIMITATION (audit #4, quota TOCTOU): this check and ClaimServer are two
-// separate statements, not one transaction, so the count read here is not serialized
-// against a concurrent claim's UPDATE. Two claims by the same user for two DIFFERENT
-// ownerless servers can both read count < max_servers (under READ COMMITTED neither
-// sees the other's uncommitted UPDATE) and both succeed, leaving the user one server
-// over quota. Severity is low: it over-provisions the quota by a small margin under a
-// deliberate concurrent burst — it is NOT an authorization, ownership, or isolation
-// break (each server is still claimed atomically via UPDATE ... WHERE owner_id IS
-// NULL, so two users never share one server). Closing it needs Postgres transaction
-// semantics: wrap the count and a conditional UPDATE (gated on count < max_servers) in
-// one tx under pg_advisory_xact_lock(hashtext(user_id)) — or SERIALIZABLE with a retry
-// loop — folding the gate out of the two handlers (handleClaim and the internal UUID
-// claim) into a single repo method. That is INTEGRATION-dependent: it is verifiable
-// only against a real Postgres, not the hermetic fakeRepo suite, so it is documented
-// here rather than patched blind.
+// It is the single-dimension convenience read; handlers use the four-dimension
+// QuotaCheck. The former audit-#4 TOCTOU (check and claim in separate statements)
+// is closed inside ClaimServer, which re-runs the four-dimension gate under a
+// per-user advisory lock in the SAME transaction as the ownership write.
 func (p *PGRepo) QuotaAvailable(ctx context.Context, userID string) (bool, error) {
 	var maxServers sql.NullInt64
 	switch err := p.db.QueryRowContext(ctx,
@@ -334,8 +322,11 @@ func (p *PGRepo) QuotaAvailable(ctx context.Context, userID string) (bool, error
 // cached resources should be excluded ("" for a fresh claim where the row
 // doesn't exist yet). Four dimensions are checked: server count, CPU millicores,
 // memory MB, and storage MB. A NULL or missing quota row/column means unlimited
-// for that dimension. Like QuotaAvailable, the count check and the write are not
-// serialized — see the QuotaAvailable TOCTOU docstring.
+// for that dimension. As a standalone read it is advisory — it backs the
+// handler's fast-path 403 — while the AUTHORITATIVE gate for claims is the one
+// ClaimServer re-runs atomically; the resize path (server PATCH) keeps this
+// advisory shape because its write goes through the Kubernetes API, not this
+// transaction.
 func (p *PGRepo) QuotaCheck(ctx context.Context, userID string, excludeName string, incoming ResourceSpec) (bool, error) {
 	var maxServers, maxCPU, maxMem, maxStor sql.NullInt64
 	switch err := p.db.QueryRowContext(ctx,
@@ -348,8 +339,7 @@ func (p *PGRepo) QuotaCheck(ctx context.Context, userID string, excludeName stri
 		return false, err
 	}
 
-	var count int64
-	var cpuSum, memSum, storSum sql.NullInt64
+	var count, cpuSum, memSum, storSum int64
 	switch err := p.db.QueryRowContext(ctx,
 		`SELECT COUNT(*), COALESCE(SUM(cached_cpu_milli), 0), COALESCE(SUM(cached_memory_mb), 0), COALESCE(SUM(cached_storage_mb), 0)
 		 FROM servers WHERE owner_id = $1 AND deleted_at IS NULL AND name != $2`,
@@ -358,19 +348,7 @@ func (p *PGRepo) QuotaCheck(ctx context.Context, userID string, excludeName stri
 		return false, err
 	}
 
-	if maxServers.Valid && count >= maxServers.Int64 {
-		return false, nil
-	}
-	if maxCPU.Valid && cpuSum.Int64+int64(incoming.CPUMilli) > maxCPU.Int64 {
-		return false, nil
-	}
-	if maxMem.Valid && memSum.Int64+int64(incoming.MemoryMB) > maxMem.Int64 {
-		return false, nil
-	}
-	if maxStor.Valid && storSum.Int64+int64(incoming.StorageMB) > maxStor.Int64*1024 {
-		return false, nil
-	}
-	return true, nil
+	return quotaAllows(maxServers, maxCPU, maxMem, maxStor, count, cpuSum, memSum, storSum, incoming), nil
 }
 
 // UpdateServerResources updates the resource cache for a server after a spec
@@ -399,17 +377,67 @@ func (p *PGRepo) ServerResources(ctx context.Context, name string) (ResourceSpec
 
 // ClaimServer performs the atomic ownership transfer (spec §9.3). A missing
 // server is ErrNotFound; an existing-but-owned server yields claimed=false so the
-// handler can answer 409.
+// handler can answer 409; a claim that would push the user over any of the four
+// quota caps yields ErrQuotaExceeded (the handler's pre-check is a fast path,
+// this gate is the authoritative one). The whole decision — quota read,
+// per-owner aggregate, and the ownership UPDATE — runs in ONE transaction under
+// pg_advisory_xact_lock(hashtext(user_id)), so two concurrent claims by the same
+// user for two DIFFERENT ownerless servers serialize instead of both passing the
+// gate (audit #4); the row is additionally taken FOR UPDATE so concurrent claims
+// of the SAME server still resolve to exactly one winner.
 func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string) (bool, error) {
-	var exists bool
-	if err := p.db.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM servers WHERE name = $1 AND deleted_at IS NULL)`, name).Scan(&exists); err != nil {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
 		return false, err
 	}
-	if !exists {
-		return false, ErrNotFound
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+
+	// Serialize this user's claim lane: the aggregate read below and the
+	// ownership write must observe one consistent quota state. A hashtext
+	// collision across users merely serializes unrelated claims — never waives a
+	// cap.
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, userID); err != nil {
+		return false, err
 	}
-	res, err := p.db.ExecContext(ctx,
+
+	var owned sql.NullString
+	var cpu, mem, stor int
+	switch err := tx.QueryRowContext(ctx,
+		`SELECT owner_id, cached_cpu_milli, cached_memory_mb, cached_storage_mb
+		 FROM servers WHERE name = $1 AND deleted_at IS NULL FOR UPDATE`,
+		name).Scan(&owned, &cpu, &mem, &stor); {
+	case errors.Is(err, sql.ErrNoRows):
+		return false, ErrNotFound
+	case err != nil:
+		return false, err
+	}
+	if owned.Valid {
+		return false, nil // already claimed → 409 at the handler
+	}
+
+	// The four-dimension gate, re-run inside the transaction. A missing quota
+	// row leaves every NullInt64 invalid → quotaAllows treats each dimension as
+	// unlimited, matching QuotaCheck.
+	var maxServers, maxCPU, maxMem, maxStor sql.NullInt64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT max_servers, max_cpu_milli, max_memory_mb, max_storage_gb
+		 FROM quotas WHERE user_id = $1`, userID).Scan(
+		&maxServers, &maxCPU, &maxMem, &maxStor); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
+	var count, cpuSum, memSum, storSum int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*), COALESCE(SUM(cached_cpu_milli), 0), COALESCE(SUM(cached_memory_mb), 0), COALESCE(SUM(cached_storage_mb), 0)
+		 FROM servers WHERE owner_id = $1 AND deleted_at IS NULL AND name != $2`,
+		userID, name).Scan(&count, &cpuSum, &memSum, &storSum); err != nil {
+		return false, err
+	}
+	if !quotaAllows(maxServers, maxCPU, maxMem, maxStor, count, cpuSum, memSum, storSum,
+		ResourceSpec{CPUMilli: cpu, MemoryMB: mem, StorageMB: stor}) {
+		return false, ErrQuotaExceeded
+	}
+
+	res, err := tx.ExecContext(ctx,
 		`UPDATE servers SET owner_id = $2, claimed_at = now() WHERE name = $1 AND owner_id IS NULL AND deleted_at IS NULL`,
 		name, userID)
 	if err != nil {
@@ -419,7 +447,35 @@ func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string) (bool, er
 	if err != nil {
 		return false, err
 	}
-	return n == 1, nil
+	if n != 1 {
+		return false, nil
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// quotaAllows applies the four spec §9.3 caps to one per-owner aggregate plus
+// the incoming spec. Shared by QuotaCheck (the advisory pre-check) and
+// ClaimServer (the atomic gate) so the two can never drift. An invalid (NULL or
+// missing) cap means unlimited for that dimension; storage is compared in MB
+// against max_storage_gb × 1024.
+func quotaAllows(maxServers, maxCPU, maxMem, maxStor sql.NullInt64,
+	count, cpuSum, memSum, storSum int64, incoming ResourceSpec) bool {
+	if maxServers.Valid && count >= maxServers.Int64 {
+		return false
+	}
+	if maxCPU.Valid && cpuSum+int64(incoming.CPUMilli) > maxCPU.Int64 {
+		return false
+	}
+	if maxMem.Valid && memSum+int64(incoming.MemoryMB) > maxMem.Int64 {
+		return false
+	}
+	if maxStor.Valid && storSum+int64(incoming.StorageMB) > maxStor.Int64*1024 {
+		return false
+	}
+	return true
 }
 
 func (p *PGRepo) UserInAllowlist(ctx context.Context, name, userID string) (bool, error) {

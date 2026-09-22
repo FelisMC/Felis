@@ -142,6 +142,13 @@ func (a *API) handleClaim(w http.ResponseWriter, r *http.Request) {
 	// ③ atomic claim
 	claimed, err := a.Repo.ClaimServer(r.Context(), name, p.UserID)
 	if err != nil {
+		// The atomic gate re-checks quota under the per-user lock (audit #4): a
+		// concurrent claim that spent the last slot surfaces here, with the same
+		// 403 the pre-check gives sequentially.
+		if errors.Is(err, ErrQuotaExceeded) {
+			writeError(w, r, newError(http.StatusForbidden, "quota_exceeded", "server quota exhausted"))
+			return
+		}
 		a.writeLookupError(w, r, err)
 		return
 	}
@@ -759,7 +766,19 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 			a.writeLookupError(w, r, err)
 			return
 		}
-		_ = a.Repo.UpdateServerResources(r.Context(), name, newCPU, newMemMB, 0)
+		// A resource patch cannot change storage, so its cached contribution must
+		// be preserved: passing 0 would silently zero the storage dimension of the
+		// owner's four-cap aggregate (the cached columns are its only input).
+		storMB := 0
+		if rec != nil {
+			cur, err := a.Repo.ServerResources(r.Context(), name)
+			if err != nil {
+				writeError(w, r, err)
+				return
+			}
+			storMB = cur.StorageMB
+		}
+		_ = a.Repo.UpdateServerResources(r.Context(), name, newCPU, newMemMB, storMB)
 	} else {
 		if err := a.Cluster.PatchServerSpec(r.Context(), name, patch); err != nil {
 			a.writeLookupError(w, r, err)
