@@ -338,13 +338,32 @@ func TestHasJoined(t *testing.T) {
 		}
 	})
 
-	// Missing query fields → 204 without touching any source.
-	t.Run("missing username -> 204", func(t *testing.T) {
+	// A missing or oversized field is answered 204 before any source sees it. The source
+	// here validates anything it is asked, so only a request that never reaches it is a 204.
+	t.Run("missing or oversized query field -> 204 without asking a source", func(t *testing.T) {
+		var hits atomic.Int32
+		src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hits.Add(1)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": notchMojangID, "name": "Notch"})
+		}))
+		t.Cleanup(src.Close)
 		api := newTestAPI(newFakeRepo(), newFakeCluster())
-		api.AuthSources = []AuthSource{{Tag: "mojang", URL: "http://127.0.0.1:0", Identity: true}}
-		w := do(api.InternalHandler(), "GET", "/session/minecraft/hasJoined?serverId=abc", "", nil)
-		if w.Code != http.StatusNoContent {
-			t.Fatalf("code = %d, want 204", w.Code)
+		api.AuthSources = []AuthSource{{Tag: "mojang", URL: src.URL, Identity: true}}
+		long := strings.Repeat("a", maxHasJoinedParam+1)
+		for _, query := range []string{
+			"serverId=abc",
+			"username=Notch",
+			"username=" + long + "&serverId=abc",
+			"username=Notch&serverId=" + long,
+			"username=Notch&serverId=abc&ip=" + long,
+		} {
+			w := do(api.InternalHandler(), "GET", "/session/minecraft/hasJoined?"+query, "", nil)
+			if w.Code != http.StatusNoContent || hits.Load() != 0 {
+				t.Fatalf("%.40s: code = %d, source asked %d times; want 204 and 0", query, w.Code, hits.Load())
+			}
+		}
+		if w := getHasJoined(api.InternalHandler(), "Notch", "abc"); w.Code != http.StatusOK {
+			t.Fatalf("a well-formed login: code = %d, want 200 (the source is live)", w.Code)
 		}
 	})
 }

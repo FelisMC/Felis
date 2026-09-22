@@ -116,13 +116,14 @@ func (a *API) handleHasJoined(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.URL.Query()
-	username, serverID := q.Get("username"), q.Get("serverId")
-	if username == "" || serverID == "" {
+	username, serverID, ip := q.Get("username"), q.Get("serverId"), q.Get("ip")
+	if username == "" || serverID == "" ||
+		len(username) > maxHasJoinedParam || len(serverID) > maxHasJoinedParam || len(ip) > maxHasJoinedParam {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
-	prof, src, failed := a.resolveHasJoined(r.Context(), username, serverID, q.Get("ip"))
+	prof, src, failed := a.resolveHasJoined(r.Context(), username, serverID, ip)
 	if prof == nil {
 		// With a source down, "nobody knows this player" is not established: its player may
 		// be the one logging in. 503 makes Velocity report the auth servers as down and log
@@ -187,6 +188,11 @@ func (a *API) handleHasJoined(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, prof)
 }
+
+// maxHasJoinedParam bounds each query value before it is forwarded to every source. What
+// Velocity sends fits with room to spare: a login name of at most 16 characters, a signed
+// SHA-1 hex serverId of at most 41, a textual IP address. Only a direct caller sends more.
+const maxHasJoinedParam = 64
 
 // mcUsernameRe is Minecraft's username charset — the trust boundary on a third-party
 // source's self-asserted profile name.
