@@ -729,6 +729,19 @@ func TestReaperCronJob_Shape(t *testing.T) {
 		t.Errorf("reaper image = %q, want FelisImage %q", c.Image, p.FelisImage)
 	}
 
+	// The relay password for pre-reap warning emails: same optional Secret as
+	// felis-api, resolved against the minecraft-ns mirror. Optional so an install
+	// without SMTP still starts (the reaper then logs suppressed warnings).
+	smtpEnv := envVar(c.Env, SMTPPasswordEnv)
+	if smtpEnv == nil || smtpEnv.ValueFrom == nil || smtpEnv.ValueFrom.SecretKeyRef == nil {
+		t.Fatalf("reaper must wire %s from a secretKeyRef", SMTPPasswordEnv)
+	}
+	if ref := smtpEnv.ValueFrom.SecretKeyRef; ref.Name != SMTPSecretName || ref.Key != SMTPSecretPasswordKey {
+		t.Errorf("reaper %s ref = %s/%s, want %s/%s", SMTPPasswordEnv, ref.Name, ref.Key, SMTPSecretName, SMTPSecretPasswordKey)
+	} else if ref.Optional == nil || !*ref.Optional {
+		t.Errorf("reaper %s secretKeyRef must be optional", SMTPPasswordEnv)
+	}
+
 	// config: Secret, mounted read-only (it carries the DB URL).
 	cfgVol := volumeByName(ps.Volumes, configVolume)
 	if cfgVol == nil || cfgVol.Secret == nil || cfgVol.Secret.SecretName != configSecretName {

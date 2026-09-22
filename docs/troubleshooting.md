@@ -504,6 +504,29 @@ So a missing backup never results in a deleted world. [GO-TESTED:
 - CRD missing → logs `reaper: CRD missing, skipping`, skipped.
 - Idle `≤ 15d` → not yet eligible.
 
+### Pre-reap warnings (the `warn_before` offsets)
+
+An OWNED server inside a warning window gets an email notice (`3d`/`1d` before
+the deadline, `warn_before` from `[archive]`) to the owner's **verified** email —
+the same `[smtp]` relay felis-api uses. The `warned_3d_at` / `warned_1d_at`
+stamps record a **delivered** notice:
+
+- No `[smtp]` configured (or owner has no verified address): the run logs
+  `reaper: warning suppressed — no warner wired` / a delivery error and does
+  NOT stamp. Nothing is falsely recorded as sent, and the day SMTP is
+  configured the pending warning can still go out.
+- Delivery failure (relay down): logged and retried on the next daily run —
+  bounded by the warning window, since the reap removes the candidate anyway.
+- `warned=` in the run output counts DELIVERED notices, not attempts.
+
+The reaper runs in the minecraft namespace and reads the **mirrors** of
+`felis-smtp` and `felis-config` there (a `secretKeyRef` is namespace-local). The
+installed `felis setup`'s "configure email" screen refreshes both mirrors when it
+applies, so configuring SMTP after install is enough; a manual edit of the
+control-namespace Secret alone is not. [GO-TESTED: the delivered/retried/
+suppressed matrix in `internal/reaper`; live-drilled end to end against a local
+SMTP sink.]
+
 ### Genuine false-delete risk vectors
 
 - **Stale `last_active_at`.** The keep-alive is `RecordJoin`, called from the

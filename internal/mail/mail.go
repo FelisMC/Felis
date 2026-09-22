@@ -1,8 +1,9 @@
 // Package mail is the SMTP implementation of the api.OTPMailer seam: it
 // delivers the email one-time codes the passwordless doors mint (onboarding,
 // email login, op-login) through the relay configured in felis.toml [smtp].
-// It is deliberately tiny — one message shape, stdlib net/smtp — because the
-// only mail Felis ever sends is a six-digit code.
+// It is deliberately tiny — two message shapes, stdlib net/smtp — because the
+// only mail Felis ever sends is a six-digit code plus the reaper's pre-deletion
+// notice (SendNotice).
 //
 // TLS posture: port 465 dials implicit TLS; any other port dials plaintext and
 // upgrades via STARTTLS when the relay advertises it. AUTH is attempted only
@@ -48,6 +49,23 @@ func (s *SMTP) SendOTP(ctx context.Context, email, code string) error {
 	}
 	defer c.Close()
 	if err := s.deliver(c, email, message(s.From, email, code, time.Now())); err != nil {
+		return err
+	}
+	return c.Quit()
+}
+
+// SendNotice mails one operator-composed notice to email — the reaper's
+// pre-deletion warning is its only caller. Subject and body are the caller's;
+// the body is CRLF-normalized so a multi-line string renders as one text/plain
+// message. Delivery errors surface exactly like SendOTP's, so the caller can
+// retry on its own cadence.
+func (s *SMTP) SendNotice(ctx context.Context, email, subject, body string) error {
+	c, err := s.connect(ctx)
+	if err != nil {
+		return err
+	}
+	defer c.Close()
+	if err := s.deliver(c, email, notice(s.From, email, subject, body, time.Now())); err != nil {
 		return err
 	}
 	return c.Quit()
@@ -207,4 +225,15 @@ func selfTest(from string, now time.Time) []byte {
 	b.WriteString("\r\n")
 	b.WriteString("Sent by `felis setup` when the SMTP relay was configured. / 由 `felis setup` 配置 SMTP 时发出。\r\n")
 	return []byte(b.String())
+}
+
+// notice renders an operator notice: the shared header block plus the caller's
+// body, CRLF-normalized so every line obeys RFC 5322 regardless of which line
+// endings the caller's format string produced.
+func notice(from, to, subject, body string, now time.Time) []byte {
+	body = strings.ReplaceAll(strings.ReplaceAll(body, "\r\n", "\n"), "\n", "\r\n")
+	if !strings.HasSuffix(body, "\r\n") {
+		body += "\r\n"
+	}
+	return []byte(headers(from, to, subject, now) + body)
 }

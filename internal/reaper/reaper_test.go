@@ -472,6 +472,8 @@ func TestWarningsDerivedFromNonDefaultDeadline(t *testing.T) {
 		// past 7d but unowned -> never warned (red line ⑤)
 		Candidate{Name: "e", OwnerID: "", LastActiveAt: idleBy(8 * Day)},
 	)
+	rw := &recordingWarner{}
+	r.Warner = rw
 
 	sum := mustRun(t, r)
 	if sum.WorldsReaped != 0 {
@@ -479,6 +481,9 @@ func TestWarningsDerivedFromNonDefaultDeadline(t *testing.T) {
 	}
 	if sum.Warned != 2 {
 		t.Fatalf("Warned = %d, want 2 (a:3d, b:1d)", sum.Warned)
+	}
+	if len(rw.sent) != 2 {
+		t.Fatalf("deliveries = %d, want 2 (a:3d, b:1d)", len(rw.sent))
 	}
 	if cl.deletePVCCalls != 0 {
 		t.Fatalf("a warning path deleted a PVC")
@@ -494,20 +499,48 @@ func TestWarningsDerivedFromNonDefaultDeadline(t *testing.T) {
 	}
 }
 
-// Red line ⑤ (best-effort): a Warner delivery error does not abort the run, and
-// the warned_* stamp still advances (a real join, not a failed warn, is what
-// resets the clock).
-func TestWarningBestEffortOnDeliveryFailure(t *testing.T) {
+// Red line ⑤ (best-effort) with delivery honesty: a Warner failure does not
+// abort the run, and it does NOT stamp — the stamp records a DELIVERED notice,
+// so the next daily run retries (the warning window bounds the retries, and the
+// reap clears the candidate either way).
+func TestWarningDeliveryRetriedAfterFailure(t *testing.T) {
 	r, st, _, _ := newReaper(DefaultConfig(),
 		Candidate{Name: "h", OwnerID: "u-h", LastActiveAt: idleBy(13 * Day)})
 	r.Warner = failWarner{}
 
 	sum := mustRun(t, r)
-	if sum.Warned != 1 {
-		t.Fatalf("Warned = %d, want 1 despite delivery failure", sum.Warned)
+	if sum.Warned != 0 {
+		t.Fatalf("Warned = %d, want 0 (nothing was delivered)", sum.Warned)
+	}
+	if !st.byName["h"].Warned3dAt.IsZero() {
+		t.Fatal("a failed delivery must not stamp warned_3d_at")
+	}
+
+	// Next run with a working channel: the SAME warning goes out and stamps.
+	rw := &recordingWarner{}
+	r.Warner = rw
+	sum = mustRun(t, r)
+	if sum.Warned != 1 || len(rw.sent) != 1 {
+		t.Fatalf("retry: Warned=%d sent=%d, want 1/1", sum.Warned, len(rw.sent))
 	}
 	if st.byName["h"].Warned3dAt.IsZero() {
-		t.Fatalf("warned_3d_at not stamped after best-effort warn")
+		t.Fatal("a delivered warning must stamp warned_3d_at")
+	}
+}
+
+// A nil Warner suppresses the warning WITHOUT stamping it: nothing was sent, so
+// nothing is recorded as sent — and the day a channel is wired, the owner can
+// still be warned.
+func TestWarningSuppressedWithoutWarner(t *testing.T) {
+	r, st, _, _ := newReaper(DefaultConfig(),
+		Candidate{Name: "n", OwnerID: "u-n", LastActiveAt: idleBy(13 * Day)})
+
+	sum := mustRun(t, r)
+	if sum.Warned != 0 {
+		t.Fatalf("Warned = %d, want 0 with no warner wired", sum.Warned)
+	}
+	if !st.byName["n"].Warned3dAt.IsZero() || !st.byName["n"].Warned1dAt.IsZero() {
+		t.Fatal("a suppressed warning must not stamp either tier")
 	}
 }
 
@@ -515,6 +548,15 @@ type failWarner struct{}
 
 func (failWarner) Warn(context.Context, string, string, string) error {
 	return errors.New("smtp unavailable")
+}
+
+// recordingWarner captures deliveries so the threshold tests exercise the real
+// deliver-then-stamp path.
+type recordingWarner struct{ sent []string }
+
+func (w *recordingWarner) Warn(_ context.Context, ownerID, server, remaining string) error {
+	w.sent = append(w.sent, ownerID+"/"+server+"/"+remaining)
+	return nil
 }
 
 // §26 capacity: when the store is over its cap, the oldest backup is evicted

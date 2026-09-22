@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -338,17 +339,23 @@ func applySMTPConfig(ctx context.Context, in smtpInputs) error {
 	if err := applyFelisConfigSecret(ctx); err != nil {
 		return err
 	}
+	// Refresh the workload-namespace copies too (the reaper's warning path): the
+	// OTP path is already live in the control namespace, so a replica miss is
+	// reported but not fatal.
+	if err := replicateSMTPToWorkloadNamespace(ctx, in.password); err != nil {
+		fmt.Fprintf(os.Stderr, "felis setup: warning: email is configured, but refreshing the workload copies failed (pre-reap warning emails may stay suppressed): %v\n", err)
+	}
 	if err := kubectl(ctx, "-n", "felis", "rollout", "restart", "deployment/felis-api"); err != nil {
 		return err
 	}
 	return kubectl(ctx, "-n", "felis", "rollout", "status", "deployment/felis-api", "--timeout=180s")
 }
 
-// applySMTPSecret creates (or replaces) the felis-smtp Secret the felis-api
-// Deployment injects the relay password from. Rendered in-process and piped to
-// `kubectl apply` — the password is never a command-line arg, so it never
-// appears in the host process table.
-func applySMTPSecret(ctx context.Context, password string) error {
+// smtpSecretManifest renders the felis-smtp Secret (in the control namespace,
+// via the caller's apply) the felis-api Deployment injects the relay password
+// from. Rendered in-process and piped to `kubectl apply` — the password is
+// never a command-line arg, so it never appears in the host process table.
+func smtpSecretManifest(password string) ([]byte, error) {
 	secret := &corev1.Secret{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
 		ObjectMeta: metav1.ObjectMeta{Name: platform.SMTPSecretName, Namespace: "felis"},
@@ -359,7 +366,53 @@ func applySMTPSecret(ctx context.Context, password string) error {
 	}
 	manifest, err := yaml.Marshal(secret)
 	if err != nil {
-		return fmt.Errorf("render smtp secret: %w", err)
+		return nil, fmt.Errorf("render smtp secret: %w", err)
+	}
+	return manifest, nil
+}
+
+func applySMTPSecret(ctx context.Context, password string) error {
+	manifest, err := smtpSecretManifest(password)
+	if err != nil {
+		return err
 	}
 	return kubectlWithInput(ctx, manifest, "apply", "-f", "-")
+}
+
+// replicateSMTPToWorkloadNamespace refreshes the workload-namespace (minecraft)
+// copies of felis-smtp and felis-config after email is reconfigured. The
+// reaper's CronJob runs there and resolves both by local reference — a
+// secretKeyRef is namespace-local, and `felis setup` creates the felis-config
+// replica create-if-absent, so without this refresh a later SMTP change would
+// never reach the pre-reap warning emails. Deliberately OVERWRITES both: these
+// are mirrors of the control-namespace sources, and a stale mirror is exactly
+// the failure this closes.
+func replicateSMTPToWorkloadNamespace(ctx context.Context, password string) error {
+	cfg, err := config.Load(hostSetupConfigPath)
+	if err != nil {
+		return err
+	}
+	ns := cfg.K8s.Namespace
+	if ns == "" || ns == "felis" {
+		return nil
+	}
+	smtpManifest, err := smtpSecretManifest(password)
+	if err != nil {
+		return err
+	}
+	if err := kubectlWithInput(ctx, smtpManifest, "-n", ns, "apply", "-f", "-"); err != nil {
+		return fmt.Errorf("replicate %s to %s: %w", platform.SMTPSecretName, ns, err)
+	}
+	manifest, err := kubectlOutput(ctx,
+		"-n", ns, "create", "secret", "generic", "felis-config",
+		"--from-file=felis.toml="+podSetupConfigPath,
+		"--dry-run=client", "-o", "yaml",
+	)
+	if err != nil {
+		return fmt.Errorf("render felis-config for %s: %w", ns, err)
+	}
+	if err := kubectlWithInput(ctx, manifest, "-n", ns, "apply", "-f", "-"); err != nil {
+		return fmt.Errorf("replicate felis-config to %s: %w", ns, err)
+	}
+	return nil
 }

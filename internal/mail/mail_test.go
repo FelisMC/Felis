@@ -58,6 +58,33 @@ func TestSelfTestCarriesNoCode(t *testing.T) {
 	}
 }
 
+// TestNoticeShape pins the second message shape — the reaper's pre-deletion
+// warning: CRLF throughout even when the caller's body used bare LFs, a
+// Q-encoded subject when it carries non-ASCII, and the caller's text rendered
+// verbatim between the header block and the wire.
+func TestNoticeShape(t *testing.T) {
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	msg := string(notice("felis@example.net", "player@example.org",
+		"Felis: 服务器 survival 将回收", "line one\nline two\n", now))
+
+	if strings.Contains(strings.ReplaceAll(msg, "\r\n", ""), "\n") {
+		t.Error("notice contains a bare LF; every line must end CRLF")
+	}
+	headers, body, ok := strings.Cut(msg, "\r\n\r\n")
+	if !ok {
+		t.Fatal("notice has no blank line between headers and body")
+	}
+	if !strings.Contains(headers, "To: player@example.org") {
+		t.Errorf("headers missing To:\n%s", headers)
+	}
+	if !strings.Contains(headers, "Subject: =?utf-8?") {
+		t.Errorf("non-ASCII subject must be Q-encoded:\n%s", headers)
+	}
+	if !strings.Contains(body, "line one\r\nline two\r\n") {
+		t.Errorf("body must be CRLF-normalized verbatim text:\n%q", body)
+	}
+}
+
 // fakeRelay speaks just enough SMTP for net/smtp, answering 250 to MAIL FROM
 // and RCPT TO but dataVerdict at end-of-DATA. That split is the entire point:
 // relays which validate sender identity (Fastmail among them) accept MAIL FROM

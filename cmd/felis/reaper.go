@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -14,6 +16,8 @@ import (
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/backup"
 	"felis.lolicon.best/internal/config"
+	"felis.lolicon.best/internal/mail"
+	"felis.lolicon.best/internal/platform"
 	"felis.lolicon.best/internal/reaper"
 	"felis.lolicon.best/internal/store"
 	corev1 "k8s.io/api/core/v1"
@@ -81,6 +85,47 @@ func cmdReaper(args []string, stdout, stderr io.Writer) int {
 		Archiver: archiver,
 	}
 
+	// Pre-reap warnings go out by email when [smtp] is configured (the same
+	// relay and password_ref convention felis-api uses); without it the channel
+	// stays nil and the reaper logs each suppressed warning instead of stamping
+	// it, so a later SMTP setup still gets to warn. The owner must have a
+	// VERIFIED address — that flag is what proves the mailbox.
+	if cfg.SMTP.Host != "" {
+		passRef := cfg.SMTP.PasswordRef
+		if passRef == "" {
+			passRef = platform.SMTPPasswordEnv
+		}
+		password := os.Getenv(passRef)
+		if cfg.SMTP.Username != "" && password == "" {
+			fmt.Fprintf(stderr, "felis reaper: warning: [smtp] username is set but credentials env %s is empty — warning emails will fail AUTH\n", passRef)
+		}
+		db := drv.DB()
+		r.Warner = &mailWarner{
+			lookupEmail: func(ctx context.Context, ownerID string) (string, error) {
+				var email string
+				switch err := db.QueryRowContext(ctx,
+					`SELECT email FROM users
+					 WHERE id = $1 AND email_verified = true AND COALESCE(email, '') <> ''`,
+					ownerID).Scan(&email); {
+				case errors.Is(err, sql.ErrNoRows):
+					return "", fmt.Errorf("owner %s has no verified email", ownerID)
+				case err != nil:
+					return "", err
+				}
+				return email, nil
+			},
+			notifier: &mail.SMTP{
+				Host:     cfg.SMTP.Host,
+				Port:     cfg.SMTP.Port,
+				From:     cfg.SMTP.From,
+				Username: cfg.SMTP.Username,
+				Password: password,
+			},
+		}
+	} else {
+		fmt.Fprintln(stderr, "felis reaper: [smtp] not configured — pre-reap warnings are logged and NOT marked sent")
+	}
+
 	sum, err := r.RunOnce(ctx)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis reaper: %v\n", err)
@@ -89,6 +134,38 @@ func cmdReaper(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "felis reaper: evaluated=%d reaped=%d warned=%d skipped=%d evicted=%d expired=%d\n",
 		sum.Evaluated, sum.WorldsReaped, sum.Warned, sum.Skipped, sum.EvictedEarly, sum.BackupsExpired)
 	return 0
+}
+
+// mailWarner delivers a pre-reap notice to the owner's verified email — the
+// only channel this build can reach. Unowned owners and owners who never proved
+// a mailbox yield an error; the reaper retries such notices on its next run and
+// never lets them block the reap (red line ⑤).
+type mailWarner struct {
+	lookupEmail func(ctx context.Context, ownerID string) (string, error)
+	notifier    noticeNotifier
+}
+
+// noticeNotifier is the slice of mail.SMTP the warner needs (injected in tests).
+type noticeNotifier interface {
+	SendNotice(ctx context.Context, email, subject, body string) error
+}
+
+func (w *mailWarner) Warn(ctx context.Context, ownerID, server, remaining string) error {
+	email, err := w.lookupEmail(ctx, ownerID)
+	if err != nil {
+		return fmt.Errorf("resolve owner email: %w", err)
+	}
+	subject := fmt.Sprintf("Felis: 服务器 %s 将在 %s 后回收 · server reaped in %s", server, remaining, remaining)
+	body := fmt.Sprintf(
+		"Felis 世界回收提醒 / world-reaper notice\r\n"+
+			"\r\n"+
+			"服务器 / Server: %s\r\n"+
+			"距回收 / Time left: %s\r\n"+
+			"\r\n"+
+			"闲置的服务器会先自动备份，再释放世界；有人加入游戏即可重置倒计时。\r\n"+
+			"Idle servers are backed up and then released; any join resets the countdown.\r\n",
+		server, remaining)
+	return w.notifier.SendNotice(ctx, email, subject, body)
 }
 
 // reaperConfig derives the reaper's retention windows from felis.toml. The 15d

@@ -246,6 +246,13 @@ func provisionSystemServers(ctx context.Context, cfg *config.Config, out io.Writ
 			naming.ForwardingSecretName, naming.ForwardingSecretKey, "forwarding-secret", "minecraft ns"),
 		ensureSecretReplica(ctx, cl, controlNS, cfg.K8s.Namespace,
 			"felis-config", "felis.toml", "config", "minecraft ns"),
+		// The reaper's pre-reap warning emails authenticate with the same relay
+		// password felis-api uses; the reaper pod runs in the minecraft namespace,
+		// where a secretKeyRef resolves only against a local mirror. Skipped while
+		// the relay is not configured yet — the "configure email" screen refreshes
+		// both mirrors when it applies.
+		ensureSecretReplica(ctx, cl, controlNS, cfg.K8s.Namespace,
+			"felis-smtp", "password", "smtp", "minecraft ns"),
 		// The build namespace needs the same token: the build Job's fetch
 		// initContainer reads the submission context from the internal face. Best
 		// effort — a deployment that only installs the control plane simply never

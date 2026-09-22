@@ -478,11 +478,12 @@ func phaseOrPending(p v1alpha1.Phase) string {
 // beside the control plane — so without this replica the secretKeyRef would dangle and
 // wedge the pod in CreateContainerConfigError.
 //
-// Two Secrets need it, for different reasons: the service token (the login limbo and
-// the build Pod's context fetch — both authenticate to the felis-api internal face)
-// and the Velocity modern-forwarding secret (every backend — it is how a backend knows
+// Three Secrets need it, for different reasons: the service token (the login limbo and
+// the build Pod's context fetch — both authenticate to the felis-api internal face),
+// the Velocity modern-forwarding secret (every backend — it is how a backend knows
 // a login really came from the proxy, and so that the player's UUID is Mojang-verified
-// rather than offline-derived).
+// rather than offline-derived), and the SMTP relay password (the reaper's pre-reap
+// warning emails; the felis-config mirror is what carries [smtp] into its pod).
 //
 // It is create-if-absent: an existing replica is left untouched so a hand-rotated
 // value in the workload namespace is never clobbered (to rotate, delete the replica

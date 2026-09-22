@@ -203,7 +203,10 @@ type Cluster interface {
 }
 
 // Warner delivers an impending-reap notice. It is optional and best-effort: a
-// nil Warner or a delivery error never blocks a reap (red line ⑤).
+// nil Warner or a delivery error never blocks a reap (red line ⑤). Warn returns
+// nil only when the notice was handed to the delivery channel; an error (or a
+// nil Warner) leaves warned_* unstamped, so the next daily run retries instead
+// of silently burning the owner's only warning.
 type Warner interface {
 	Warn(ctx context.Context, ownerID, server, remaining string) error
 }
@@ -433,9 +436,11 @@ func (r *Reaper) ensureCapacity(ctx context.Context, now time.Time, sum *Summary
 
 // maybeWarn sends at most one impending-reap notice per run, honoring §18's
 // elif precedence (earliest unsent warning first). Unowned servers are never
-// warned but are still reaped at the deadline (red line ⑤). A warner delivery
-// failure is logged but the warned_* stamp still advances so the notice is not
-// retried forever; a real join (RecordJoin) is what clears the stamps.
+// warned but are still reaped at the deadline (red line ⑤). The warned_* stamp
+// records a DELIVERED notice: a nil Warner or a delivery error is logged and
+// leaves the stamp untouched, so the next run retries — bounded by the warning
+// window, since the reap itself removes the candidate. A real join (RecordJoin)
+// clears the stamps when a player renews.
 func (r *Reaper) maybeWarn(ctx context.Context, now time.Time, idle time.Duration, offs []time.Duration, c Candidate, sum *Summary) {
 	if c.OwnerID == "" {
 		return
@@ -449,10 +454,21 @@ func (r *Reaper) maybeWarn(ctx context.Context, now time.Time, idle time.Duratio
 		if !c.warnedAt(tier).IsZero() {
 			continue // already sent this tier
 		}
-		if r.Warner != nil {
-			if err := r.Warner.Warn(ctx, c.OwnerID, c.Name, formatRemaining(offs[i])); err != nil {
-				r.log().Warn("reaper: warn delivery failed (best-effort)", "server", c.Name, "err", err)
-			}
+		if r.Warner == nil {
+			// No delivery channel is wired at all. Do not stamp: an operator who
+			// wires one later must still be able to warn, and a stamp here would
+			// have recorded a notice nobody received. Logged every run so silence
+			// is never mistaken for delivery.
+			r.log().Warn("reaper: warning suppressed — no warner wired",
+				"server", c.Name, "owner", c.OwnerID, "remaining", formatRemaining(offs[i]))
+			return
+		}
+		if err := r.Warner.Warn(ctx, c.OwnerID, c.Name, formatRemaining(offs[i])); err != nil {
+			// Best-effort: the reap still proceeds on schedule, but the stamp
+			// stays empty so the next daily run retries the delivery instead of
+			// permanently suppressing the owner's only notice.
+			r.log().Warn("reaper: warn delivery failed; will retry next run", "server", c.Name, "err", err)
+			return
 		}
 		if err := r.Store.MarkWarned(ctx, c.Name, tier, now); err != nil {
 			r.log().Error("reaper: mark warned failed", "server", c.Name, "err", err)

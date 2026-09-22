@@ -536,6 +536,20 @@ func reaperCronJob(p Params) *batchv1.CronJob {
 			"--config", configFilePath,
 			"--worlds-root", worldsMountPath,
 		},
+		// The [smtp] relay password for pre-reap warning emails — same optional
+		// Secret felis-api reads. Namespace caveat: a secretKeyRef is
+		// namespace-local, so this resolves against the minecraft-ns felis-smtp
+		// mirror that the "configure email" screen refreshes (the felis-config
+		// mirror it also refreshes is what puts [smtp] in this pod's config).
+		// Absent Secret ⇒ empty env ⇒ the reaper logs suppressed warnings
+		// instead of stamping them (never a failed pod).
+		Env: []corev1.EnvVar{
+			{Name: SMTPPasswordEnv, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: SMTPSecretName},
+				Key:                  SMTPSecretPasswordKey,
+				Optional:             boolPtr(true),
+			}}},
+		},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: configVolume, MountPath: configMountPath, ReadOnly: true},
 			{Name: worldsVolume, MountPath: worldsMountPath, ReadOnly: true},

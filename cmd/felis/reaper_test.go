@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -74,4 +75,49 @@ func TestResolveWorldDir(t *testing.T) {
 			t.Fatalf("err = %v, want a resolve-world-PVC error", err)
 		}
 	})
+}
+
+// The pre-reap warner resolves the owner's VERIFIED email and hands the notice
+// to the mailer. Every failure (no verified address, relay refusal) returns an
+// error so the reaper retries on its next run instead of stamping a notice
+// nobody received.
+func TestMailWarner(t *testing.T) {
+	lookup := func(email string, err error) func(context.Context, string) (string, error) {
+		return func(context.Context, string) (string, error) { return email, err }
+	}
+
+	n := &captureNotifier{}
+	w := &mailWarner{lookupEmail: lookup("owner@example.net", nil), notifier: n}
+	if err := w.Warn(context.Background(), "u1", "survival", "3d"); err != nil {
+		t.Fatalf("Warn: %v", err)
+	}
+	if n.email != "owner@example.net" || !strings.Contains(n.subject, "survival") || !strings.Contains(n.subject, "3d") {
+		t.Fatalf("notice envelope = (%q, %q)", n.email, n.subject)
+	}
+	if !strings.Contains(n.body, "survival") || !strings.Contains(n.body, "3d") {
+		t.Fatalf("body missing server/remaining:\n%s", n.body)
+	}
+
+	w = &mailWarner{lookupEmail: lookup("", errors.New("owner u2 has no verified email")), notifier: n}
+	if err := w.Warn(context.Background(), "u2", "survival", "3d"); err == nil || !strings.Contains(err.Error(), "verified email") {
+		t.Fatalf("unverified owner = %v, want the lookup error surfaced", err)
+	}
+
+	w = &mailWarner{lookupEmail: lookup("owner@example.net", nil), notifier: &captureNotifier{err: errors.New("relay down")}}
+	if err := w.Warn(context.Background(), "u1", "survival", "3d"); err == nil || !strings.Contains(err.Error(), "relay down") {
+		t.Fatalf("relay failure = %v, want it surfaced", err)
+	}
+}
+
+type captureNotifier struct {
+	email, subject, body string
+	err                  error
+}
+
+func (n *captureNotifier) SendNotice(_ context.Context, email, subject, body string) error {
+	if n.err != nil {
+		return n.err
+	}
+	n.email, n.subject, n.body = email, subject, body
+	return nil
 }
