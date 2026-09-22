@@ -347,6 +347,14 @@ spec:
                   - type
                   type: object
                 type: array
+              emptySince:
+                description: |-
+                  EmptySince is when the operator first observed 0 online players during
+                  a Running phase (spec §8 idle auto-stop). It is reset when a player joins
+                  or the server stops, so the empty-duration counter starts fresh each time
+                  the server becomes unoccupied.
+                format: date-time
+                type: string
               endpoint:
                 description: Endpoint is where the proxy should route traffic.
                 properties:
