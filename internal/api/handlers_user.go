@@ -52,7 +52,7 @@ func (a *API) handleWake(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ok {
 		writeError(w, r, newError(http.StatusServiceUnavailable, "at_capacity",
-			"the cluster is at its running-server cap (spec §9.1); retry once a server stops"))
+			"the cluster is at its running-server cap; retry once a server stops"))
 		return
 	}
 
@@ -526,7 +526,7 @@ func resolveResources(memory string, rr *resourceRequest) (string, corev1.Resour
 	memLim, ok := limits[corev1.ResourceMemory]
 	if !ok || memLim.IsZero() {
 		return "", corev1.ResourceRequirements{}, newError(http.StatusInternalServerError, "internal",
-			"refusing to create a server without a memory ceiling (§22)")
+			"refusing to create a server without a memory ceiling")
 	}
 
 	return deriveJavaHeap(memLim), corev1.ResourceRequirements{Limits: limits, Requests: requests}, nil

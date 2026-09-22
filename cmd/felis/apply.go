@@ -220,7 +220,7 @@ func buildMinecraftServerFromApplyRequest(req applyRequest, namespace string) (*
 	}
 	memLim, ok := limits[corev1.ResourceMemory]
 	if !ok || memLim.IsZero() {
-		return nil, fmt.Errorf("internal error: refusing to create a server without a memory ceiling (§22)")
+		return nil, fmt.Errorf("internal error: refusing to create a server without a memory ceiling")
 	}
 
 	// ---- storage ----

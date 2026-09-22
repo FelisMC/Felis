@@ -300,7 +300,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("config: [archive] store %q is not one of tarLocal|tarS3|volumeSnapshot|longhorn", c.Archive.Store)
 	}
 	if _, ok := implementedArchiveStores[c.Archive.Store]; !ok {
-		return fmt.Errorf("config: [archive] store %q is recognized by §19 but not implemented in this build — only tarLocal is supported; set store = \"tarLocal\"", c.Archive.Store)
+		return fmt.Errorf("config: [archive] store %q is not implemented in this build — only tarLocal is supported; set store = \"tarLocal\"", c.Archive.Store)
 	}
 	switch c.K8s.EgressMode {
 	case "loadbalancer", "nodeport":

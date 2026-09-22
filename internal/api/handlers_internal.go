@@ -149,7 +149,7 @@ func (a *API) handleInternalWake(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ok {
 		writeError(w, r, newError(http.StatusServiceUnavailable, "at_capacity",
-			"the cluster is at its running-server cap (spec §9.1); retry once a server stops"))
+			"the cluster is at its running-server cap; retry once a server stops"))
 		return
 	}
 
