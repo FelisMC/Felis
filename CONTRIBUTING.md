@@ -67,6 +67,20 @@ go test ./internal/api
 go test ./cmd/felis
 ```
 
+The hermetic suites run against in-memory fakes; the business stores' SQL is
+verified separately against a real Postgres, on a throwaway database whose name
+must contain `pgint` (the harness drops and recreates its schema and replays the
+embedded migrations):
+
+```bash
+FELIS_TEST_PG_URL='postgres://felis:***@127.0.0.1:5432/felis_pgint?sslmode=disable' \
+  go test -tags pgint ./internal/pgint/ -v
+```
+
+Run it after touching anything under `internal/api/pgrepo.go`, `internal/submit`,
+or `internal/build` that speaks SQL: the fakes encode the contract, and this
+suite exists to catch the drift between the fakes and the real queries.
+
 Build the CLI:
 
 ```bash
