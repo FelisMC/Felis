@@ -497,7 +497,7 @@ func TestEnsureSystemServersRefreshesDerivedEnv(t *testing.T) {
 	// human would have added and a memory bump off the built-in default.
 	stale := func() *v1alpha1.MinecraftServer {
 		ms, err := loginSystemServer("felis-limbo:demo", "minecraft",
-			"http://old.internal:8081", "159.223.32.51.nip.io", "console.159.223.32.51.nip.io")
+			"http://old.internal:8081", "203.0.113.10.nip.io", "console.203.0.113.10.nip.io")
 		if err != nil {
 			t.Fatalf("build stale login server: %v", err)
 		}
@@ -509,7 +509,7 @@ func TestEnsureSystemServersRefreshesDerivedEnv(t *testing.T) {
 	run := func(cl client.Client) []systemServerOutcome {
 		return ensureSystemServers(ctx, cl, "minecraft", "felis-limbo:demo", "felis-lobby:demo",
 			"http://felis-api-internal.felis.svc.cluster.local:8081",
-			"mc.flyemoji.network", "console.mc.flyemoji.network")
+			"mc.example.net", "console.mc.example.net")
 	}
 
 	envOf := func(t *testing.T, cl client.Client) map[string]string {
@@ -537,11 +537,11 @@ func TestEnsureSystemServersRefreshesDerivedEnv(t *testing.T) {
 			}
 		}
 		env := envOf(t, cl)
-		if env[envPanelHostname] != "console.mc.flyemoji.network" {
+		if env[envPanelHostname] != "console.mc.example.net" {
 			t.Errorf("%s = %q — players are still being sent to the old console",
 				envPanelHostname, env[envPanelHostname])
 		}
-		if env[envRootDomain] != "mc.flyemoji.network" {
+		if env[envRootDomain] != "mc.example.net" {
 			t.Errorf("%s = %q, want the new root domain", envRootDomain, env[envRootDomain])
 		}
 	})
@@ -568,7 +568,7 @@ func TestEnsureSystemServersRefreshesDerivedEnv(t *testing.T) {
 	t.Run("reports no refresh when config already matches", func(t *testing.T) {
 		fresh, err := loginSystemServer("felis-limbo:demo", "minecraft",
 			"http://felis-api-internal.felis.svc.cluster.local:8081",
-			"mc.flyemoji.network", "console.mc.flyemoji.network")
+			"mc.example.net", "console.mc.example.net")
 		if err != nil {
 			t.Fatalf("build fresh login server: %v", err)
 		}

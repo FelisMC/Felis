@@ -40,16 +40,16 @@ func TestSetupNoSMTPFlow(t *testing.T) {
 	}
 
 	// 2. Record the email — NO OTP. The row is written but email_verified stays false.
-	w := do(h, "POST", "/api/v1/account/email", `{"email":"me@flyemoji.moe"}`, jsonHeader)
+	w := do(h, "POST", "/api/v1/account/email", `{"email":"owner@example.net"}`, jsonHeader)
 	if w.Code != http.StatusOK {
 		t.Fatalf("set-email code = %d, want 200 (%s)", w.Code, w.Body.String())
 	}
-	if u := repo.staff["owner"]; u.Email != "me@flyemoji.moe" || u.EmailVerified {
+	if u := repo.staff["owner"]; u.Email != "owner@example.net" || u.EmailVerified {
 		t.Fatalf("after record: email=%q verified=%v, want the address recorded and UNVERIFIED", u.Email, u.EmailVerified)
 	}
 
 	// 3. Email recorded but no passkey → STILL required (email verification is not the gate).
-	if s := status(t); s["setup_required"] != true || s["email"] != "me@flyemoji.moe" {
+	if s := status(t); s["setup_required"] != true || s["email"] != "owner@example.net" {
 		t.Fatalf("email-only status = %v, want setup_required=true (passkey still missing)", s)
 	}
 
