@@ -74,9 +74,14 @@ or a real upstream account to run it against — not an implementation.
   drives the whole flow through a fake.
 - `internal/api/console.go:39`, `internal/api/logstream.go:236`,
   `internal/api/logstream.go:306`, `internal/fileedit/k8sjobs.go:45` — each needs a
-  live cluster (RCON, `pods/log` follow, a Job).
+  live cluster (RCON, `pods/log` follow, a Job). **Verified live 2026-09-22/23
+  (auditfix7–25):** the RCON command spine (wake → probe → `command`/access
+  mutations/stop), the log SSE stream, and the fileedit Job have each run
+  end-to-end on the drill cluster.
 - `internal/api/handlers_access.go:170,490` — parsing real vanilla and LuckPerms
-  command output.
+  command output. **Verified live 2026-09-23:** players / whitelist / banlist
+  parses matched a live Paper server's replies (LuckPerms not installed → the raw
+  reply falls through as documented; the input guards held on four negative cases).
 
 ## Deliberately accepted, not scheduled to close
 
