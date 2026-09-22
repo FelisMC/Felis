@@ -34,7 +34,9 @@ type Object interface {
 // Deployments and the in-cluster registry (Deployment + Service + PVC), which
 // make the SAs and NetworkPolicy peers refer to something real, plus the
 // world-archive PVC that backs backup/restore when a backup PVC is named (see
-// workloads.go).
+// workloads.go). Workloads also carries the one cluster-scoped object, the
+// felis-control-plane PriorityClass (node-pressure eviction shield — a
+// PriorityClass is not namespaced by design); everything else is namespaced.
 // The reaper CronJob is also part of Workloads, rendered only when the retention
 // storage topology is supplied (WorldsHostPath + BackupPVC + ArchiveLocalPath —
 // workloads.go documents the gate and the shape-asserted hostPath caveat). The

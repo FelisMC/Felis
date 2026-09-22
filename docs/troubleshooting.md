@@ -577,6 +577,43 @@ changes, because retention was never conditional in the first place.
 
 ---
 
+## 13b. Node runs out of disk: what survives, and how to recover
+
+A full disk is the one failure this platform cannot ride out by itself, because
+the images exist only in the node's containerd (air-gapped by design), so a
+GC'd image has no pull source.
+
+Eviction ordering. Kubelet's node-pressure eviction removes pods in ascending
+priority. Every control-plane pod (api, operator, reaper, registry) carries the
+bundle's `felis-control-plane` PriorityClass (value 1,000,000,
+`preemptionPolicy: Never`), while game-server pods run at the default 0 — so a
+burst of running servers is evicted first and the control plane keeps serving
+status/console until pressure is genuinely extreme. The class never *preempts*:
+a scheduling decision will not kill a running game server to restart the api.
+
+Symptoms of the image-GC stage: pods stuck `ImagePullBackOff`/`ErrImagePull`
+with `kubectl describe pod` showing a pull attempt for a tag that plainly
+exists (`k3s ctr images ls` will show it missing — the kubelet GC removed it
+under imagefs pressure).
+
+Recovery:
+
+1. Free disk on the node (`df -h /var/lib/rancher`, the biggest consumers are
+   `k3s ctr images ls -q` and the world/backup PVCs under
+   `/var/lib/rancher/k3s/storage`).
+2. Re-import the images by re-running the installer (it rebuilds imports from
+   the local Docker store, which the kubelet GC does not touch):
+   `curl -fsSL <installer URL> | sudo bash` (or `sudo felis setup`), then
+   `kubectl -n felis rollout status deploy/felis-api`.
+3. Delete now-unschedulable stuck pods so they retry with the re-imported image.
+
+If the API itself is down and you only need the images back without a full
+installer run: `docker save felis:<tag> | k3s ctr images import -` restores one
+image from the Docker store (that store is deliberately a second copy; treat it
+as the recovery path, not as free space).
+
+---
+
 ## 14. Metrics for diagnosis (spec §23)
 
 All four mandated metrics have real producers; scrape them when triaging:

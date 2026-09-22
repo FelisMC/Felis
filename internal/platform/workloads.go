@@ -7,6 +7,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	schedulingv1 "k8s.io/api/scheduling/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -176,11 +177,14 @@ func InternalAPIBaseURL(controlNamespace string) string {
 // felis-operator Deployment, and the in-cluster registry (Deployment + Service +
 // PVC), the world-archive PVC when p.BackupPVC names it (it backs the
 // backup/restore Jobs and the reaper), plus the reaper CronJob when
-// reaperEnabled(p). FelisImage is required — `felis manifests` enforces it
-// (fail-loud), so a rendered bundle always names a concrete image.
+// reaperEnabled(p). Every pod template carries the felis-control-plane
+// PriorityClass (controlPlanePriorityClass below), the node-pressure eviction
+// shield. FelisImage is required — `felis manifests` enforces it (fail-loud), so
+// a rendered bundle always names a concrete image.
 func Workloads(p Params) []Object {
 	p = p.withDefaults()
 	objs := []Object{
+		controlPlanePriorityClass(),
 		APIDeployment(p),
 		apiService(p),
 		apiInternalService(p),
@@ -197,6 +201,37 @@ func Workloads(p Params) []Object {
 		objs = append(objs, reaperCronJob(p))
 	}
 	return objs
+}
+
+// controlPlanePriorityName is the PriorityClass every control-plane workload runs
+// under (api, operator, reaper, registry). Node-pressure eviction (a full disk
+// being the realistic case on a game box) removes pods in ASCENDING priority, and
+// a classless pod is priority 0 — the same as the game servers, which are exactly
+// the pods a burst of joins has just filled the node with. A full disk then takes
+// the api/operator down too, and recovery needs a human: with no reachable
+// registry on an air-gapped box the images are gone, so the fix is a re-run of the
+// installer to re-import them. The class is an eviction shield, not a preemption
+// lever: PreemptionPolicy=Never, so a busy node never loses a running game server
+// merely to schedule the api. Value 1,000,000 sits above every game pod (0) and
+// far below the kubelet's system-reserved classes (2,000,000,000).
+const (
+	controlPlanePriorityName         = "felis-control-plane"
+	controlPlanePriorityValue  int32 = 1_000_000
+	controlPlanePriorityReason       = "Felis control plane (api/operator/reaper/registry) survives node-pressure eviction before game servers"
+)
+
+// controlPlanePriorityClass renders the cluster-scoped PriorityClass the
+// control-plane pod templates reference (the ONE cluster-scoped object in the
+// bundle; a PriorityClass is not namespaced by design).
+func controlPlanePriorityClass() *schedulingv1.PriorityClass {
+	never := corev1.PreemptNever
+	return &schedulingv1.PriorityClass{
+		TypeMeta:         metav1.TypeMeta{APIVersion: "scheduling.k8s.io/v1", Kind: "PriorityClass"},
+		ObjectMeta:       metav1.ObjectMeta{Name: controlPlanePriorityName},
+		Value:            controlPlanePriorityValue,
+		PreemptionPolicy: &never,
+		Description:      controlPlanePriorityReason,
+	}
 }
 
 // reaperEnabled reports whether the retention CronJob should render. It needs all
@@ -509,6 +544,7 @@ func reaperCronJob(p Params) *batchv1.CronJob {
 						ObjectMeta: metav1.ObjectMeta{Labels: labels},
 						Spec: corev1.PodSpec{
 							ServiceAccountName: SAReaper,
+							PriorityClassName:  controlPlanePriorityName,
 							RestartPolicy:      corev1.RestartPolicyNever,
 							SecurityContext:    hardenedPodSecurityContext(),
 							Containers:         []corev1.Container{container},
@@ -544,6 +580,7 @@ func controlPlaneDeployment(p Params, sa string, container corev1.Container, vol
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: sa,
+					PriorityClassName:  controlPlanePriorityName,
 					SecurityContext:    hardenedPodSecurityContext(),
 					Containers:         []corev1.Container{container},
 					Volumes:            volumes,
@@ -591,6 +628,7 @@ func registryDeployment(p Params) *appsv1.Deployment {
 				ObjectMeta: metav1.ObjectMeta{Labels: labels},
 				Spec: corev1.PodSpec{
 					AutomountServiceAccountToken: boolPtr(false),
+					PriorityClassName:            controlPlanePriorityName,
 					SecurityContext:              hardenedPodSecurityContext(),
 					Containers:                   []corev1.Container{container},
 					Volumes: []corev1.Volume{

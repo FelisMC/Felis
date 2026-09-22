@@ -6,6 +6,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	schedulingv1 "k8s.io/api/scheduling/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 )
@@ -459,8 +460,8 @@ func TestRegistry_DeploymentServicePVC(t *testing.T) {
 // internal Service must be present or the login pod's felis-api:8081 path is dead.
 func TestWorkloads_BundleContents(t *testing.T) {
 	objs := Workloads(testParams())
-	if len(objs) != 8 {
-		t.Fatalf("Workloads returned %d objects, want 8", len(objs))
+	if len(objs) != 9 {
+		t.Fatalf("Workloads returned %d objects, want 9", len(objs))
 	}
 	var haveInternalSvc bool
 	for _, o := range objs {
@@ -474,6 +475,59 @@ func TestWorkloads_BundleContents(t *testing.T) {
 	}
 	if !haveInternalSvc {
 		t.Errorf("Workloads bundle is missing the internal-face Service %q", APIInternalServiceName)
+	}
+}
+
+// TestControlPlanePriorityClass pins the node-pressure eviction shield: every
+// control-plane pod template (api/operator/reaper/registry) references the one
+// PriorityClass, which outranks the default-0 game pods by eviction order while
+// never preempting them, and is the bundle's only cluster-scoped object. Without
+// this, a full disk evicts the api alongside the game pods and (no reachable
+// registry on an air-gapped box) recovery needs a human re-importing images.
+func TestControlPlanePriorityClass(t *testing.T) {
+	objs := Workloads(reaperParams()) // include the reaper CronJob's pod template
+
+	var class *schedulingv1.PriorityClass
+	clusterScoped := 0
+	deployments, cronJobs := 0, 0
+	for _, o := range objs {
+		if o.GetNamespace() == "" {
+			clusterScoped++
+		}
+		switch v := o.(type) {
+		case *schedulingv1.PriorityClass:
+			class = v
+		case *appsv1.Deployment:
+			deployments++
+			if v.Spec.Template.Spec.PriorityClassName != controlPlanePriorityName {
+				t.Errorf("deployment %s pod priority = %q, want %q", v.Name, v.Spec.Template.Spec.PriorityClassName, controlPlanePriorityName)
+			}
+		case *batchv1.CronJob:
+			cronJobs++
+			if v.Spec.JobTemplate.Spec.Template.Spec.PriorityClassName != controlPlanePriorityName {
+				t.Errorf("CronJob %s pod priority = %q, want %q", v.Name, v.Spec.JobTemplate.Spec.Template.Spec.PriorityClassName, controlPlanePriorityName)
+			}
+		}
+	}
+	if class == nil {
+		t.Fatal("Workloads must render the control-plane PriorityClass")
+	}
+	if class.Name != controlPlanePriorityName || class.Value != controlPlanePriorityValue {
+		t.Errorf("class = %s/%d, want %s/%d", class.Name, class.Value, controlPlanePriorityName, controlPlanePriorityValue)
+	}
+	if class.PreemptionPolicy == nil || *class.PreemptionPolicy != corev1.PreemptNever {
+		t.Errorf("class preemptionPolicy = %v, want Never (an eviction shield, never a lever against running game servers)", class.PreemptionPolicy)
+	}
+	if clusterScoped != 1 {
+		t.Errorf("bundle has %d cluster-scoped objects, want exactly the PriorityClass", clusterScoped)
+	}
+	if deployments != 3 || cronJobs != 1 {
+		t.Errorf("scanned %d deployments / %d cronjobs, want 3 / 1 — a pod template escaped the class check", deployments, cronJobs)
+	}
+	// The class must outrank the default game-pod priority (0); equality would make
+	// the eviction order nondeterministic between the api and a full game server.
+	if controlPlanePriorityValue <= 0 {
+		t.Errorf("control-plane priority %d must exceed the default 0 game-pod priority", controlPlanePriorityValue)
 	}
 }
 
