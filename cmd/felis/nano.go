@@ -48,6 +48,12 @@ type nanoStubRepo struct{ api.Repo }
 
 func (nanoStubRepo) IsUsernameBlacklisted(context.Context, string) (bool, error) { return false, nil }
 
+// nanoDefaultListen is loopback because hasJoined carries no auth token (Velocity speaks the
+// vanilla sessionserver protocol), so a public bind is an open auth relay: anyone can point
+// their proxy at it and spend this host's egress IP on Mojang. A same-host Velocity reaches
+// 127.0.0.1; serving an off-host proxy is an explicit -listen opt-in.
+const nanoDefaultListen = "127.0.0.1:8081"
+
 // nanoLogURIMax is room for a real hasJoined query (a 16-character name, a 41-character
 // serverId, an address) several times over.
 const nanoLogURIMax = 256
@@ -56,11 +62,7 @@ func cmdNano(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("nano", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "/etc/felis/felis.toml", "path to felis.toml (reads [[auth_source]])")
-	// Loopback default: hasJoined carries no auth token (authlib speaks the vanilla
-	// sessionserver protocol), so a public bind is an open auth relay — anyone can point
-	// their proxy at it and spend this host's egress IP on Mojang. A same-host Velocity
-	// reaches 127.0.0.1; serving an off-host proxy is an explicit -listen opt-in.
-	listen := fs.String("listen", "127.0.0.1:8081", "listen address for the hasJoined endpoint")
+	listen := fs.String("listen", nanoDefaultListen, "listen address for the hasJoined endpoint")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

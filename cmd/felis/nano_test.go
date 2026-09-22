@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"felis.lolicon.best/internal/api"
 )
 
 // [server] listen in a nano config reads like the bind address but is not one; nano must
@@ -82,6 +84,33 @@ func TestNanoDrainsInFlightLoginOnShutdown(t *testing.T) {
 	}
 	if rc := <-done; rc != 0 {
 		t.Fatalf("serveNano = %d after a clean drain, want 0", rc)
+	}
+}
+
+// The nano delivery path: the shared handler behind nano's stub store must admit a login its
+// source validated. nanoStubRepo implements only the bar-list lookup, so a new store call in
+// handleHasJoined would reach its nil embedded Repo and panic here, while the full-api tests,
+// which use a complete fake store, stay green.
+func TestNanoAdmitsAValidatedLogin(t *testing.T) {
+	const id = "069a79f444e94726a5befca90e38aaf5"
+	ygg := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"id":"`+id+`","name":"Notch"}`)
+	}))
+	defer ygg.Close()
+	h := api.HasJoinedHandler([]api.AuthSource{{Tag: "mojang", URL: ygg.URL, Identity: true}}, nanoStubRepo{})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/session/minecraft/hasJoined?username=Notch&serverId=abc", nil))
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), id) {
+		t.Fatalf("code = %d body = %q, want the validated profile", w.Code, w.Body.String())
+	}
+}
+
+// An unauthenticated relay on a public address spends this host's Mojang rate limit for
+// anyone who finds it, so the default bind has to stay loopback.
+func TestNanoListensOnLoopbackByDefault(t *testing.T) {
+	host, _, err := net.SplitHostPort(nanoDefaultListen)
+	if ip := net.ParseIP(host); err != nil || ip == nil || !ip.IsLoopback() {
+		t.Fatalf("default -listen %q is not a loopback address", nanoDefaultListen)
 	}
 }
 
