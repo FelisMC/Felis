@@ -185,9 +185,14 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 				server.Status.EmptySince = &t
 			} else if r.now().Time.Sub(server.Status.EmptySince.Time).Seconds() >=
 				float64(server.Spec.Idle.EmptySecondsBeforeStop) {
+				// Merge patch, not Update: an unrelated reconcile writes status
+				// concurrently, and shipping the whole object back risks
+				// clobbering it (the reaper's Stop uses the same pattern for
+				// the same reason). EmptySince is deliberately left for
+				// markStopped to clear once the scale-down completes.
+				patch := client.MergeFrom(server.DeepCopy())
 				server.Spec.DesiredState = v1alpha1.DesiredStopped
-				server.Status.EmptySince = nil
-				if err := r.Update(ctx, server); err != nil {
+				if err := r.Patch(ctx, server, patch); err != nil {
 					return ctrl.Result{}, err
 				}
 				return ctrl.Result{}, nil

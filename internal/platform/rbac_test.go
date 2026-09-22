@@ -149,6 +149,11 @@ func TestOperatorRole_ScopeExact(t *testing.T) {
 			t.Errorf("operator must have minecraftservers:%s (cached client)", v)
 		}
 	}
+	// Idle auto-stop patches spec.desiredState=Stopped (spec §8). Found live:
+	// without this grant the auto-stop fails closed with a 403.
+	if !hasRule(op, groupFelis, "minecraftservers", "patch") {
+		t.Error("operator must have minecraftservers:patch (idle auto-stop writes spec.desiredState)")
+	}
 	for _, v := range []string{"get", "list", "watch", "create", "update"} {
 		if !hasRule(op, "apps", "statefulsets", v) {
 			t.Errorf("operator must have statefulsets:%s", v)

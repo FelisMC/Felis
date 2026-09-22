@@ -136,12 +136,15 @@ func APIBuildRole(p Params) *rbacv1.Role {
 // the manager's cache is namespace-scoped (see cmd/felis/operator.go), so a
 // namespaced Role is sufficient. The operator owns StatefulSets and Services
 // (Get/Create/Update — never patch or delete), writes only minecraftservers
-// status (Status().Update — `update` only), and reads RCON Secrets. It never
-// touches pods, PVCs, Events, or finalizers, so none appear here.
+// status (Status().Update — `update` only) and patches spec.desiredState to
+// Stopped for idle auto-stop (spec §8 — the one spec field it may write, using
+// the same merge patch as the reaper's Stop: without the grant the auto-stop
+// call fails closed with a 403), and reads RCON Secrets. It never touches pods,
+// PVCs, Events, or finalizers, so none appear here.
 func OperatorRole(p Params) *rbacv1.Role {
 	p = p.withDefaults()
 	return role(p.MinecraftNamespace, "felis-operator", ComponentOperator, []rbacv1.PolicyRule{
-		rule([]string{groupFelis}, []string{"minecraftservers"}, []string{"get", "list", "watch"}),
+		rule([]string{groupFelis}, []string{"minecraftservers"}, []string{"get", "list", "watch", "patch"}),
 		rule([]string{groupFelis}, []string{"minecraftservers/status"}, []string{"update"}),
 		rule([]string{groupApps}, []string{"statefulsets"}, []string{"get", "list", "watch", "create", "update"}),
 		rule([]string{groupCore}, []string{"services"}, []string{"get", "list", "watch", "create", "update"}),
