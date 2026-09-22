@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -73,6 +74,13 @@ func fakeYgg(t *testing.T, id, name string) *httptest.Server {
 	}))
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// blacklistDownRepo is a store whose bar list cannot be read.
+type blacklistDownRepo struct{ *fakeRepo }
+
+func (blacklistDownRepo) IsUsernameBlacklisted(context.Context, string) (bool, error) {
+	return false, errors.New("bar list unreachable")
 }
 
 func getHasJoined(h http.Handler, username, serverID string) *httptest.ResponseRecorder {
@@ -320,6 +328,45 @@ func TestHasJoined(t *testing.T) {
 
 		if w := getHasJoined(api.InternalHandler(), "Notch", "abc"); w.Code != http.StatusNoContent {
 			t.Fatalf("barred login: code = %d, want 204", w.Code)
+		}
+	})
+
+	// With the bar list unreadable, nobody can say the player is not barred; the login must
+	// not go through. (Velocity reports the 500 as the auth servers being down.)
+	t.Run("bar list lookup error -> not admitted", func(t *testing.T) {
+		mojang := fakeYgg(t, notchMojangID, "Notch")
+		api := newTestAPI(blacklistDownRepo{newFakeRepo()}, newFakeCluster())
+		api.AuthSources = []AuthSource{{Tag: "mojang", URL: mojang.URL, Identity: true}}
+		if w := getHasJoined(api.InternalHandler(), "Notch", "abc"); w.Code == http.StatusOK {
+			t.Fatalf("admitted with the bar list unreadable (%q)", w.Body.String())
+		}
+	})
+
+	// Mojang is trusted for its UUIDs, which is exactly why one that does not parse must not
+	// be emitted as some default: every such login would share the nil UUID.
+	t.Run("identity source with an unparseable id -> 204", func(t *testing.T) {
+		mojang := fakeYgg(t, "not-a-uuid", "Notch")
+		api := newTestAPI(newFakeRepo(), newFakeCluster())
+		api.AuthSources = []AuthSource{{Tag: "mojang", URL: mojang.URL, Identity: true}}
+		if w := getHasJoined(api.InternalHandler(), "Notch", "abc"); w.Code != http.StatusNoContent {
+			t.Fatalf("code = %d, want 204 (%q)", w.Code, w.Body.String())
+		}
+	})
+
+	// The player's address is what lets a source refuse a session relayed from another IP
+	// (prevent-proxy-connections); it has to reach the source unchanged.
+	t.Run("ip is forwarded to the source", func(t *testing.T) {
+		got := make(chan string, 1)
+		src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			got <- r.URL.Query().Get("ip")
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		t.Cleanup(src.Close)
+		api := newTestAPI(newFakeRepo(), newFakeCluster())
+		api.AuthSources = []AuthSource{{Tag: "mojang", URL: src.URL, Identity: true}}
+		do(api.InternalHandler(), "GET", "/session/minecraft/hasJoined?username=Notch&serverId=abc&ip=203.0.113.9", "", nil)
+		if ip := <-got; ip != "203.0.113.9" {
+			t.Fatalf("source saw ip %q, want 203.0.113.9", ip)
 		}
 	})
 
