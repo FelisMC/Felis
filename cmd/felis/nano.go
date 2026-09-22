@@ -29,7 +29,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"felis.lolicon.best/internal/api"
 	"felis.lolicon.best/internal/config"
@@ -71,12 +76,39 @@ func cmdNano(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "  [%d] %s -> %s\n", i+1, s.Tag, s.URL)
 	}
 
-	srv := newAPIServer(*listen, nanoHandler(cfg.AuthSources, stderr))
-	if err := srv.ListenAndServe(); err != nil {
+	ln, err := net.Listen("tcp", *listen)
+	if err != nil {
 		fmt.Fprintln(stderr, "felis nano:", err)
 		return 1
 	}
-	return 0
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return serveNano(ctx, newAPIServer(*listen, nanoHandler(cfg.AuthSources, stderr)), ln, stderr)
+}
+
+// nanoDrainTimeout outlasts the source scan of any realistic list (each source is given
+// five seconds) and stays well inside systemd's default 90-second stop timeout.
+const nanoDrainTimeout = 30 * time.Second
+
+// serveNano serves until ctx ends, then drains. A restart, the documented way to pick up a
+// config edit, sends SIGTERM; without the drain a login already waiting on an upstream has
+// its connection reset, and Velocity tells that player the auth servers are down.
+func serveNano(ctx context.Context, srv *http.Server, ln net.Listener, stderr io.Writer) int {
+	errc := make(chan error, 1)
+	go func() { errc <- srv.Serve(ln) }()
+	select {
+	case err := <-errc:
+		fmt.Fprintln(stderr, "felis nano:", err)
+		return 1
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), nanoDrainTimeout)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			fmt.Fprintln(stderr, "felis nano: shutdown:", err)
+			return 1
+		}
+		return 0
+	}
 }
 
 // nanoHandler is what felis nano serves: the shared hasJoined handler, Mojang first, behind
