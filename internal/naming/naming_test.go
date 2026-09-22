@@ -42,6 +42,21 @@ func TestValidateServerName(t *testing.T) {
 // ValidateSystemServerName keeps the format rule but drops the reservation
 // check, so the platform can provision the reserved system names (login, lobby)
 // that ValidateServerName correctly refuses to hand to users.
+func TestIsSystemServer(t *testing.T) {
+	// Exactly the platform's two system services answer true; a user server that
+	// merely sounds systemic does not.
+	for _, name := range []string{"login", "lobby"} {
+		if !naming.IsSystemServer(name) {
+			t.Errorf("IsSystemServer(%q) = false, want true", name)
+		}
+	}
+	for _, name := range []string{"survival", "admin", "login2", "", "lobby-"} {
+		if naming.IsSystemServer(name) {
+			t.Errorf("IsSystemServer(%q) = true, want false", name)
+		}
+	}
+}
+
 func TestValidateSystemServerName(t *testing.T) {
 	cases := []struct {
 		name string

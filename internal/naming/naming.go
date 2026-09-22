@@ -46,6 +46,15 @@ const (
 	SystemLobbyServer = "lobby"
 )
 
+// IsSystemServer reports whether name is one of the platform-provisioned system
+// services above. They carry reserved names on purpose, and the API's per-server
+// routes reject those names outright (ValidateServerName) — so a caller that only
+// DISPLAYS fleet rows uses this to mark them as not user-manageable instead of
+// offering actions (claim/wake/stop/console) that would answer 400.
+func IsSystemServer(name string) bool {
+	return name == SystemLoginServer || name == SystemLobbyServer
+}
+
 // ServiceTokenSecretName / ServiceTokenSecretKey name the internal-API bearer
 // credential Secret (spec §7). They are one source of truth shared across
 // subsystems: the platform renderer wires this Secret into the felis-api

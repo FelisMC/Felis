@@ -82,6 +82,7 @@ interface UnifiedServer {
   endpointAddress?: string | null;
   claimable?: boolean;
   owned?: boolean;
+  system?: boolean;
 }
 
 export function ServersPage() {
@@ -126,6 +127,7 @@ export function ServersPage() {
         endpointAddress: s.endpointAddress,
         claimable: !s.owner,
         owned: s.owner === identity?.email,
+        system: s.system,
       }));
     } else {
       return (data as ServerInfo[]).map((s) => ({
@@ -443,7 +445,11 @@ function ServerRow({
         </td>
         {isAdmin && (
           <td className="px-4 py-3 align-middle text-left">
-            {server.owner ? (
+            {server.system ? (
+              <span className="text-xs text-muted-foreground/70" title={ts("system_service_hint")}>
+                {ts("system_service")}
+              </span>
+            ) : server.owner ? (
               <span className="inline-flex max-w-[16rem] items-center gap-1.5 truncate">
                 <UserRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <span className="truncate" title={server.owner}>
@@ -486,7 +492,13 @@ function ServerRow({
         </td>
         <td className="px-4 py-3 align-middle">
           <div className="flex items-center justify-end gap-2">
-            {server.claimable && !server.owned ? (
+            {server.system ? (
+              // A system service carries a reserved name that every per-server route
+              // rejects, so offer no actions — just the honest label.
+              <span className="text-xs text-muted-foreground/70" title={ts("system_service_hint")}>
+                {ts("system_service")}
+              </span>
+            ) : server.claimable && !server.owned ? (
               <>
                 <Button
                   size="sm"

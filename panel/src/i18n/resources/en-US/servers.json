@@ -51,6 +51,8 @@
   "backups_link_desc": "View and restore world backups for this server.",
   "files_link_title": "Server files",
   "files_link_desc": "Browse and repair files in the world volume.",
+  "system_service": "System service",
+  "system_service_hint": "Provisioned and managed by the platform (felis systemservers); it accepts no user operations.",
   "players_back_to_console": "Back to console",
   "players_not_yours_title": "Not your server",
   "players_not_yours_body": "Only the owner or an admin can manage this server's players.",

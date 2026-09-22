@@ -1809,6 +1809,44 @@ func TestFleetAdminRead(t *testing.T) {
 		}
 	})
 
+	t.Run("system services are marked read-only", func(t *testing.T) {
+		// The login gate and the lobby carry reserved names, so every per-server
+		// route rejects them; the fleet row must say "system" so the cockpit
+		// renders them without actions that would 400.
+		sysCl := newFakeCluster()
+		sysCl.list = []ServerInfo{
+			{Name: "login", Phase: "Running", Ready: true},
+			{Name: "lobby", Phase: "Running", Ready: true},
+			{Name: "survival", Phase: "Stopped"},
+		}
+		api := newTestAPI(newFakeRepo(), sysCl)
+		api.External = staticExternal{p: &Principal{UserID: "a1", Email: "a1@example.net",
+			Role: "admin", ViaAdminAccess: true}}
+		w := do(api.ExternalHandler(), "GET", "/api/v1/fleet", "", nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
+		}
+		var got struct {
+			Servers []struct {
+				Name   string `json:"name"`
+				System bool   `json:"system"`
+			} `json:"servers"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatalf("body not JSON: %v", err)
+		}
+		byName := map[string]bool{}
+		for _, r := range got.Servers {
+			byName[r.Name] = r.System
+		}
+		if !byName["login"] || !byName["lobby"] {
+			t.Errorf("system flags = %+v, want login+lobby marked", byName)
+		}
+		if byName["survival"] {
+			t.Errorf("survival marked system; only platform services are")
+		}
+	})
+
 	t.Run("owner merges for claimed, absent for unclaimed", func(t *testing.T) {
 		repo := newFakeRepo()
 		// Only "survival" is claimed; "creative"/"skyblock" stay unowned.

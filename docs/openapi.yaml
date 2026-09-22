@@ -2731,6 +2731,13 @@ paths:
                                 The owner's display identity (email, or username when
                                 the address is absent). Absent for an unclaimed server
                                 or when the best-effort owner lookup failed.
+                            system:
+                              type: boolean
+                              description: >-
+                                True for a platform-provisioned system service (the login
+                                gate, the lobby). Their reserved names are rejected by
+                                every per-server route, so the cockpit renders them
+                                read-only instead of offering actions that would 400.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':

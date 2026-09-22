@@ -119,6 +119,10 @@ export interface FleetServer {
    *  Empty/absent for an unclaimed server or when the best-effort owner lookup
    *  failed — the cockpit renders that as "unclaimed". */
   owner?: string;
+  /** True for a platform-provisioned system service (the login gate, the lobby).
+   *  Their reserved names are rejected by every per-server route, so the cockpit
+   *  renders them read-only instead of offering actions that would 400. */
+  system?: boolean;
 }
 
 /** BackupView is one row of GET /api/v1/backups (spec §7 backups). A backup is

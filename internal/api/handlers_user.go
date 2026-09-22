@@ -259,7 +259,8 @@ func (a *API) handleFleet(w http.ResponseWriter, r *http.Request) {
 	owners, _ := a.Repo.ServerOwners(r.Context())
 	views := make([]fleetServerView, len(servers))
 	for i, s := range servers {
-		views[i] = fleetServerView{ServerInfo: s, Owner: owners[s.Name]}
+		views[i] = fleetServerView{ServerInfo: s, Owner: owners[s.Name],
+			System: naming.IsSystemServer(s.Name)}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": views})
 }
@@ -267,13 +268,18 @@ func (a *API) handleFleet(w http.ResponseWriter, r *http.Request) {
 // fleetServerView is one row of the SysAdmin cockpit's fleet read: the CRD
 // lifecycle view (ServerInfo, §1 authority) with the owner's display identity
 // joined alongside. The embed keeps every lifecycle field flat in the JSON so the
-// shape is a strict superset of ServerInfo; Owner is the only addition.
+// shape is a strict superset of ServerInfo.
 type fleetServerView struct {
 	ServerInfo
 	// Owner is the claiming user's display identity (email, or username when the
 	// address is absent), or "" when the server is unclaimed or the best-effort
 	// owner lookup failed — the cockpit renders "" as "unclaimed".
 	Owner string `json:"owner,omitempty"`
+	// System marks a platform-provisioned system service (the login gate and the
+	// lobby, naming.IsSystemServer). Their names are reserved, so every per-server
+	// API route rejects them — the cockpit must render them read-only rather than
+	// offer claim/wake/stop/console actions that would answer 400.
+	System bool `json:"system,omitempty"`
 }
 
 // createServerRequest is the structured §15 create-server form. This is the
