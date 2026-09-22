@@ -96,13 +96,12 @@ func profileOf(t *testing.T, w *httptest.ResponseRecorder) sessionProfile {
 	return p
 }
 
-// undashed is the 32-hex form the resolver must emit (authlib's GameProfile format).
+// undashed is the 32-hex form the resolver must emit (Velocity's GameProfile format).
 func undashed(u uuid.UUID) string { return hex.EncodeToString(u[:]) }
 
 const notchMojangID = "069a79f444e94726a5befca90e38aaf5" // a real Mojang-space UUID, undashed
 
 func TestHasJoined(t *testing.T) {
-	// A trusted (Mojang) source passes its UUID through byte-for-byte.
 	t.Run("mojang identity passthrough", func(t *testing.T) {
 		mojang := fakeYgg(t, notchMojangID, "Notch")
 		api := newTestAPI(newFakeRepo(), newFakeCluster())
@@ -152,7 +151,6 @@ func TestHasJoined(t *testing.T) {
 		}
 	})
 
-	// Mojang is priority-first: when both would validate the same name, Mojang wins.
 	t.Run("mojang priority wins over thirdparty", func(t *testing.T) {
 		stubMojangNames(t, "Notch")
 		mojang := fakeYgg(t, notchMojangID, "Notch")
@@ -174,8 +172,6 @@ func TestHasJoined(t *testing.T) {
 		}
 	})
 
-	// Mojang doesn't know the player (204) → fall through to the third-party source,
-	// whose profile is returned rewritten.
 	t.Run("fallthrough to thirdparty when mojang 204s", func(t *testing.T) {
 		stubMojangNames(t)
 		mojang := fakeYgg(t, "", "") // 204: not my player
@@ -195,7 +191,6 @@ func TestHasJoined(t *testing.T) {
 		}
 	})
 
-	// No source validates → 204 (authlib maps this to a verify failure).
 	t.Run("no source validates -> 204", func(t *testing.T) {
 		a := fakeYgg(t, "", "")
 		b := fakeYgg(t, "", "")

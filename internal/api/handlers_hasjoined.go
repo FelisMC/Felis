@@ -17,14 +17,14 @@ import (
 	"github.com/google/uuid"
 )
 
-// Felis-nano: the multi-source hasJoined multiplexer (spec §B3 player game-login).
+// Felis-nano: the multi-source hasJoined multiplexer behind player game-login.
 //
-// Velocity's session verifier (authlib) is pointed here — via -Dmojang.sessionserver
-// on Felis-managed proxies, or a thin login-pipeline hook on third-party servers. On
-// login Velocity computes the serverId hash and GETs hasJoined; this endpoint fans that
-// query out to the configured Yggdrasil roots in priority order (Mojang first, 正版优先)
-// and returns the first source that validates. Each upstream Yggdrasil runs its own
-// serverId-hash check — the multiplexer only relays, it computes no hashes.
+// Velocity is pointed here with -Dmojang.sessionserver and issues the request itself, not
+// through authlib. On login it computes the serverId hash and GETs hasJoined; this
+// endpoint fans that query out to the configured Yggdrasil roots in priority order
+// (Mojang first, 正版优先) and returns the first source that validates. Each upstream
+// Yggdrasil runs its own serverId-hash check — the multiplexer only relays, it computes
+// no hashes.
 //
 // The one non-negotiable transform: a non-identity (third-party) source's UUID is
 // self-asserted, so its profile is rewritten into a per-source namespace
@@ -34,6 +34,10 @@ import (
 // preimage resistance means no third-party source can mint a Mojang-space UUID, and the
 // per-tag namespace means two sources cannot collide onto one identity. Every downstream
 // key (account_links, username_blacklist, owner checks) then sees one canonical UUID.
+//
+// One consequence a backend operator meets: a chat-session key a third-party source signed
+// over its native UUID cannot verify against the canonical one, even on a backend that
+// trusts that source's key. Such players' chat can only be accepted unsigned.
 
 // felisAuthNS is the fixed UUIDv3 namespace every third-party profile is rewritten
 // under (see the rewrite rationale above). Derived from the project name, not a magic
@@ -102,9 +106,9 @@ func HasJoinedHandler(sources []AuthSource, repo Repo) http.Handler {
 }
 
 // handleHasJoined is the multi-source session verifier (Felis-nano). It is a Public
-// internal-face route: authlib speaks the vanilla sessionserver protocol and sends no
+// internal-face route: Velocity speaks the vanilla sessionserver protocol and sends no
 // service token. A rejected login is 204 No Content — exactly what Mojang returns for an
-// invalid session, which authlib maps to "failed to verify username".
+// invalid session, which Velocity answers with its online-mode-only kick.
 func (a *API) handleHasJoined(w http.ResponseWriter, r *http.Request) {
 	// Velocity sends no body. When a request declares one anyway, net/http tries to drain it
 	// before writing any answer, so one that never arrives holds the connection with no
@@ -181,7 +185,7 @@ func (a *API) handleHasJoined(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Emit the canonical UUID undashed — the 32-hex form authlib's GameProfile expects.
+	// Emit the canonical UUID undashed — the 32-hex form Velocity's GameProfile expects.
 	prof.ID = hex.EncodeToString(canonical[:])
 	if prof.Properties == nil {
 		prof.Properties = []json.RawMessage{} // a nil slice would marshal as null
@@ -230,11 +234,11 @@ var mojangProfileAPI = "https://api.mojang.com/users/profiles/minecraft/"
 var profileHTTPClient = &http.Client{Timeout: 2 * time.Second, Transport: upstreamTransport}
 
 // A name's premium status changes on human timescales, not per login, so it is cached — but
-// asymmetrically, because the two directions have very different costs. "Taken" is nearly
-// permanent (Mojang does not recycle names), while "free" can stop being true the moment
-// someone buys that name, and a stale "free" is the dangerous one: it leaves a squatter
-// holding a name its real owner has just bought. So a "free" answer is trusted for minutes
-// and a "taken" answer for a day.
+// asymmetrically, because the two directions have very different costs. "Taken" changes
+// only when its owner renames away, and a stale "taken" costs a third-party player nothing
+// but a prefix. "Free" can stop being true the moment someone buys that name, and a stale
+// "free" is the dangerous one: it leaves a squatter holding a name its real owner has just
+// bought. So a "free" answer is trusted for minutes and a "taken" answer for a day.
 const (
 	premiumTakenTTL = 24 * time.Hour
 	premiumFreeTTL  = 10 * time.Minute
@@ -276,9 +280,10 @@ func isPremiumName(ctx context.Context, username string) bool {
 	}
 
 	premiumNames.Lock()
-	// Bounded by dropping the whole map rather than evicting LRU — entries are
-	// only minted by players who actually authenticated somewhere, so this is a backstop
-	// against an unbounded map, not a cache policy worth tuning.
+	// Bounded by dropping the whole map rather than evicting LRU. Any third-party source that
+	// validates a login mints an entry, so a hostile one can force clears; that costs repeat
+	// lookups, or a fail-closed prefix while Mojang is unreachable, never an identity. This
+	// is a backstop against an unbounded map, not a cache policy worth tuning.
 	if len(premiumNames.m) >= premiumCacheMax {
 		clear(premiumNames.m)
 	}

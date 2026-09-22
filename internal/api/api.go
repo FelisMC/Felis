@@ -303,12 +303,12 @@ func (a *API) internalAPIRoutes() []apiRoute {
 		// Mojang player (same name, different UUID) always passes.
 		{Method: "POST", Pattern: "/api/v1/internal/player/reclaim", h: a.handleReclaimUsername},
 		{Method: "GET", Pattern: "/api/v1/internal/player/blacklist/{mc_uuid}", h: a.handleCheckBlacklist},
-		// Felis-nano multi-source session verifier (spec §B3 player game-login).
-		// Velocity's authlib is pointed here (-Dmojang.sessionserver or a thin login
-		// hook); it speaks the vanilla sessionserver protocol and carries no token, so
-		// this is Public. It fans hasJoined out to the configured Yggdrasil roots
-		// (Mojang-first) and rewrites third-party UUIDs into a per-source namespace
-		// before returning the canonical profile (handlers_hasjoined.go).
+		// Felis-nano multi-source session verifier, behind player game-login. Velocity is
+		// pointed here with -Dmojang.sessionserver and issues the request itself; it speaks
+		// the vanilla sessionserver protocol and carries no token, so this is Public. It
+		// fans hasJoined out to the configured Yggdrasil roots (Mojang-first) and rewrites
+		// third-party UUIDs into a per-source namespace before returning the canonical
+		// profile (handlers_hasjoined.go).
 		{Method: "GET", Pattern: "/session/minecraft/hasJoined", Public: true, h: a.handleHasJoined},
 		// Op-login (passwordless op.console login): a staff member starts the login
 		// on the web, and an ONLINE in-game admin vouches for it via velocity's

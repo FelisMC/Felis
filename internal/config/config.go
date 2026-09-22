@@ -26,7 +26,7 @@ type Config struct {
 	// AuthSources is the [[auth_source]] array-of-tables: the third-party Yggdrasil
 	// roots the Felis-nano hasJoined multiplexer federates over, in priority order
 	// (config order = priority, so array-of-tables not a map — a map would lose order
-	// and silently break Mojang-first). Empty = the multiplexer ships off. There is
+	// and silently break Mojang-first). Empty = Mojang is the only source. There is
 	// deliberately NO identity/trusted field here: Mojang is the single code-owned
 	// identity anchor (cmd/felis prepends it) and every configured source is
 	// namespace-rewritten, so no config can mint a source whose self-asserted UUIDs are
