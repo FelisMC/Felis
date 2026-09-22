@@ -1,14 +1,18 @@
 package api
 
 import (
+	"bufio"
 	"encoding/hex"
 	"encoding/json"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -308,6 +312,29 @@ func TestHasJoined(t *testing.T) {
 
 		if w := getHasJoined(api.InternalHandler(), "Notch", "abc"); w.Code != http.StatusNoContent {
 			t.Fatalf("barred login: code = %d, want 204", w.Code)
+		}
+	})
+
+	// A GET that declares a body it never sends must still be answered and lose its
+	// connection; otherwise each such socket stays open for as long as the client likes.
+	t.Run("request declaring a body is refused and closed", func(t *testing.T) {
+		api := newTestAPI(newFakeRepo(), newFakeCluster())
+		srv := httptest.NewServer(api.InternalHandler())
+		t.Cleanup(srv.Close)
+		conn, err := net.Dial("tcp", srv.Listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		_, _ = io.WriteString(conn, "GET /session/minecraft/hasJoined?username=a&serverId=b HTTP/1.1\r\nHost: x\r\nContent-Length: 1000\r\n\r\n")
+		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+		if err != nil {
+			t.Fatalf("no answer while the declared body never arrives: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest || !resp.Close {
+			t.Fatalf("code = %d close = %v, want 400 with Connection: close", resp.StatusCode, resp.Close)
 		}
 	})
 

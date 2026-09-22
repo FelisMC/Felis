@@ -106,6 +106,15 @@ func HasJoinedHandler(sources []AuthSource, repo Repo) http.Handler {
 // service token. A rejected login is 204 No Content — exactly what Mojang returns for an
 // invalid session, which authlib maps to "failed to verify username".
 func (a *API) handleHasJoined(w http.ResponseWriter, r *http.Request) {
+	// Velocity sends no body. When a request declares one anyway, net/http tries to drain it
+	// before writing any answer, so one that never arrives holds the connection with no
+	// timeout: ReadHeaderTimeout stopped at the headers. Marking the reply as the last one on
+	// this connection skips the drain.
+	if r.ContentLength != 0 {
+		w.Header().Set("Connection", "close")
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
 	q := r.URL.Query()
 	username, serverID := q.Get("username"), q.Get("serverId")
 	if username == "" || serverID == "" {
