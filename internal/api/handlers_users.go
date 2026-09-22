@@ -88,11 +88,7 @@ func (a *API) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, err := a.Repo.CreateUser(r.Context(), CreateUserInput{
-		Username: body.Username,
-		Email:    body.Email,
-		Role:     body.Role,
-	}, p.Email)
+	u, err := a.Repo.CreateUser(r.Context(), CreateUserInput(body), p.Email)
 	if err != nil {
 		if errors.Is(err, ErrConflict) {
 			writeError(w, r, newError(http.StatusConflict, "already_exists",
@@ -156,11 +152,7 @@ func (a *API) handlePatchUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	u, err := a.Repo.UpdateUser(r.Context(), id, UpdateUserInput{
-		Username: body.Username,
-		Email:    body.Email,
-		Role:     body.Role,
-	}, p.Email)
+	u, err := a.Repo.UpdateUser(r.Context(), id, UpdateUserInput(body), p.Email)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeError(w, r, newError(http.StatusNotFound, "not_found", "user not found"))
