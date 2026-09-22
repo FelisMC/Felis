@@ -2811,6 +2811,56 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  # -------------------------------------------------- async job status (app) ---
+  /api/v1/servers/{name}/jobs:
+    get:
+      tags: [backups]
+      operationId: listServerJobs
+      summary: Latest async world operations (backup/restore) for a server (owner-or-admin).
+      description: >-
+        Backup and restore run as cluster Jobs, so a 202 that later failed left
+        its only trace in the Job object. This route projects the newest such
+        Jobs, newest first, so failures are observable without kubectl. State is
+        "running" | "succeeded" | "failed".
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The server's newest backup/restore jobs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [server, jobs]
+                properties:
+                  server: { type: string }
+                  jobs:
+                    type: array
+                    items:
+                      type: object
+                      required: [name, kind, state]
+                      properties:
+                        name: { type: string }
+                        kind: { type: string, enum: [backup, restore] }
+                        state: { type: string, enum: [running, succeeded, failed] }
+                        message: { type: string }
+                        started_at: { type: string, format: date-time }
+                        finished_at: { type: string, format: date-time }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unknown server.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   # ------------------------------------------------- server file editor (app) ---
   /api/v1/servers/{name}/files:
     get:

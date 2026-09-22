@@ -63,6 +63,11 @@ type API struct {
 	// authorization boundary is exercised before the backup-Job executor is wired.
 	Backuper Backuper
 
+	// JobStatus reads the latest backup/restore Job outcomes for GET
+	// /servers/{name}/jobs — the status outlet for async failures (the enqueue
+	// endpoints only answer 202). Optional: nil → that route reports 503.
+	JobStatus JobStatusReader
+
 	// Files is the server file editor (list / read / write a file in a stopped
 	// server's world volume — the "one wrong line in server.properties" repair).
 	// Like Restorer and Backuper it is optional: when nil the file routes report
@@ -407,6 +412,7 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// owned), and restore is gated by owner-or-admin PLUS a former-owner match, so
 		// neither sits behind adminOnly.
 		{Method: "GET", Pattern: "/api/v1/backups", h: a.handleListBackups},
+		{Method: "GET", Pattern: "/api/v1/servers/{name}/jobs", h: a.handleServerJobs},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/restore-backup", h: a.handleRestoreBackup},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/backup", h: a.handleBackupNow},
 		// Server file editor: list / read / write a file in a STOPPED server's world

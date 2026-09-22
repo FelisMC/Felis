@@ -259,6 +259,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		Builder:     builder,
 		Restorer:    restorer,
 		Backuper:    backuper,
+		JobStatus:   api.NewK8sJobStatus(cl, cfg.K8s.Namespace),
 		Files:       files,
 		Submissions: submissions,
 		Mailer:      mailer,
