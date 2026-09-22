@@ -83,8 +83,11 @@ or a real upstream account to run it against — not an implementation.
 These are decisions, not backlog. Each names the condition under which it would be
 worth revisiting.
 
-- `internal/api/pgrepo.go:281` — the quota check and `ClaimServer` are two statements
-  (audit #4 TOCTOU). Closeable only against a real Postgres.
+- ~~`internal/api/pgrepo.go:281` — the quota check and `ClaimServer` are two statements
+  (audit #4 TOCTOU). Closeable only against a real Postgres.~~ **Closed** — the gate
+  moved inside `ClaimServer` (advisory lock + re-check + UPDATE in one transaction),
+  red-then-green in the pgint suite, which is exactly the real-Postgres harness this
+  line was waiting for.
 - `internal/api/api.go:671` — `cooldownLimiter` is process-local, so across N api
   replicas a caller could draw up to N OTP codes per window. The intra-replica burst
   is closed; cross-replica bounding needs a shared store, out of scope for a
