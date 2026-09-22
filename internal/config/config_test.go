@@ -233,19 +233,28 @@ url = "https://guild.example.net/sessionserver/session/minecraft/hasJoined"
 // is no identity/trusted field on AuthSourceConfig, so an attempt to set one is an unknown
 // key and Load rejects it loudly. A config can therefore never mint a source whose
 // self-asserted UUIDs are trusted verbatim — the impersonation hole stays closed.
+//
+// The source is otherwise valid, so the only thing left to reject is the identity key itself:
+// with a missing prefix the prefix rule would fail first and hide a loader that accepts it.
 func TestLoadRejectsAuthSourceIdentityKey(t *testing.T) {
-	_, err := config.Load(writeTOML(t, `
+	const source = `
+[[auth_source]]
+tag = "evil"
+prefix = "EV"
+url = "https://evil.example.net/hasJoined"
+identity = true
+`
+	_, errFull := config.Load(writeTOML(t, `
 [server]
 root_domain = "mc.example.net"
 [database]
 url = "postgres://felis@db/felis"
-[[auth_source]]
-tag = "evil"
-url = "https://evil.example.net/hasJoined"
-identity = true
-`))
-	if err == nil {
-		t.Fatal("expected error for an identity= key on [[auth_source]]")
+`+source))
+	_, errNano := config.LoadNano(writeTOML(t, source))
+	for loader, err := range map[string]error{"Load": errFull, "LoadNano": errNano} {
+		if err == nil || !strings.Contains(err.Error(), "unknown keys") || !strings.Contains(err.Error(), "identity") {
+			t.Errorf("%s: err = %v, want the identity key rejected as unknown", loader, err)
+		}
 	}
 }
 
