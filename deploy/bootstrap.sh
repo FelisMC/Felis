@@ -104,7 +104,7 @@ FELIS_IMAGE="${FELIS_IMAGE:-felis:demo}"
 FELIS_EGRESS_MODE="${FELIS_EGRESS_MODE:-nodeport}"
 FELIS_PANEL_NODEPORT="${FELIS_PANEL_NODEPORT:-30443}"
 INSTALL_MODE="${FELIS_INSTALL_MODE:-}"
-# Loopback by default: hasJoined is an unauthenticated endpoint by protocol (authlib
+# Loopback by default: hasJoined is an unauthenticated endpoint by protocol (Velocity
 # sends no token), so a public bind is a free auth relay — anyone can point their own
 # proxy at it and spend YOUR egress IP on Mojang, until Mojang rate-limits you and your
 # own players stop getting in. Same-host Velocity reaches 127.0.0.1 fine; a proxy on
@@ -1679,7 +1679,7 @@ EOF
 
 install_velocity_service() {
   local api_ip
-  # Point Velocity's authlib (mojang.sessionserver) at the felis-api hasJoined multiplexer so a
+  # Point Velocity (-Dmojang.sessionserver) at the felis-api hasJoined multiplexer so a
   # full install federates Mojang + the configured [[auth_source]] set (LittleSkin by default)
   # out of the box — not just the standalone `felis nano`. felis-api enforces the reclaim
   # blacklist on this route; a loopback nano would bypass it.
