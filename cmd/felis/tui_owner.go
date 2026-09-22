@@ -420,7 +420,11 @@ func (m *ownerModel) doneView() string {
 	var box strings.Builder
 	box.WriteString(tuiLabel.Render("username  ") + m.username + "\n")
 	if m.setupTokenURL != "" {
-		box.WriteString("\n" + tuiLabel.Render("setup URL  ") + "\n" + tuiPassword.Render(m.setupTokenURL) + "\n\n")
+		box.WriteString("\n" + tuiLabel.Render("setup URL  ") + "\n")
+		for _, line := range wrapDisplayURL(m.setupTokenURL, 70) {
+			box.WriteString(tuiPassword.Render(line) + "\n")
+		}
+		box.WriteString("\n")
 		box.WriteString(tuiWarn.Render("Open this URL to complete passwordless login setup. It is shown only once."))
 	}
 	if m.auditWarning != "" {

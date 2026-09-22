@@ -207,7 +207,11 @@ func (m *mcBindModel) doneView() string {
 		if box.Len() > 0 {
 			box.WriteString("\n")
 		}
-		box.WriteString(tuiLabel.Render("setup URL  ") + "\n" + tuiPassword.Render(m.setupTokenURL) + "\n\n")
+		box.WriteString(tuiLabel.Render("setup URL  ") + "\n")
+		for _, line := range wrapDisplayURL(m.setupTokenURL, 70) {
+			box.WriteString(tuiPassword.Render(line) + "\n")
+		}
+		box.WriteString("\n")
 		box.WriteString(tuiWarn.Render("Open this URL to complete passwordless login setup.\nIt is shown only once."))
 	}
 	if m.auditWarning != "" {

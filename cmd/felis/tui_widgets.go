@@ -29,6 +29,33 @@ func tuiSeparator() string {
 	return tuiHint.Render(strings.Repeat("─", 70))
 }
 
+// wrapDisplayURL breaks a long URL into lines no wider than width so the TUI
+// renderer never truncates it on a narrow terminal — the one-time setup URL
+// carries a 43-char token and overruns 80 columns. It prefers breaking right
+// after a '=' or '/' inside the window (the token then lands on its own line)
+// and hard-wraps only when no boundary is available. Lines concatenate back to
+// the original string.
+func wrapDisplayURL(u string, width int) []string {
+	if width <= 0 {
+		width = 70
+	}
+	var lines []string
+	for len(u) > width {
+		cut := width
+		if i := strings.LastIndexByte(u[:width], '='); i >= 0 && i >= width/2 {
+			cut = i + 1
+		} else if i := strings.LastIndexByte(u[:width], '/'); i >= 0 && i >= width/2 {
+			cut = i + 1
+		}
+		lines = append(lines, u[:cut])
+		u = u[cut:]
+	}
+	if u != "" {
+		lines = append(lines, u)
+	}
+	return lines
+}
+
 // tuiStepRail renders a breadcrumb of wizard stages. Steps before `current`
 // render as done, `current` is highlighted, and later steps are dimmed.
 func tuiStepRail(steps []string, current int) string {
