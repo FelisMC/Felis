@@ -1,0 +1,23 @@
+{
+  "title": "服务器文件",
+  "back_to_console": "返回控制台",
+  "root": "世界根目录",
+  "up": "上级目录",
+  "refresh": "刷新",
+  "col_name": "名称",
+  "col_size": "大小",
+  "col_modified": "修改时间",
+  "empty_dir_title": "此目录为空",
+  "empty_dir_hint": "这里还没有写入任何内容。",
+  "list_truncated": "列表已按服务器安全上限截断。",
+  "stopped_required_title": "服务器正在运行",
+  "stopped_required_body": "只有在服务器完全停止后才能浏览或编辑文件——世界卷被运行中的服务器独占挂载。请先停止服务器。",
+  "stop_server": "停止服务器",
+  "not_yours_title": "这不是你的服务器",
+  "not_yours_body": "只有服务器所有者或管理员才能编辑其文件。",
+  "binary_hint": "二进制文件——以只读方式打开；通过编辑器保存非文本字节可能损坏该文件。",
+  "saved": "已保存 {{path}}",
+  "saving": "保存中…",
+  "save": "保存",
+  "too_large": "超出编辑器 {{limit}} 上限。"
+}

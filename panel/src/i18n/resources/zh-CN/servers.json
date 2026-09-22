@@ -49,6 +49,8 @@
   "luckperms_link_desc": "管理玩家用户组与细粒度权限节点。",
   "backups_link_title": "备份与恢复",
   "backups_link_desc": "查看并恢复该服务器的世界备份。",
+  "files_link_title": "服务器文件",
+  "files_link_desc": "浏览并修复世界卷中的文件。",
   "players_back_to_console": "返回控制台",
   "players_not_yours_title": "这不是你的服务器",
   "players_not_yours_body": "只有所有者或管理员才能管理此服务器的玩家。",

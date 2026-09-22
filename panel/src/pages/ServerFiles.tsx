@@ -1,0 +1,448 @@
+import { useCallback, useEffect, useState } from "react";
+import { useParams } from "react-router-dom";
+import {
+  ArrowUp,
+  ChevronRight,
+  FileText,
+  Folder,
+  FolderOpen,
+  Loader2,
+  RefreshCw,
+  Save,
+  Square,
+} from "lucide-react";
+import { useTranslation } from "react-i18next";
+import { BackLink } from "@/components/BackLink";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { MessageLine } from "@/components/MessageLine";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { PhaseBadge } from "@/components/PhaseBadge";
+import { Loading, ErrorState, NotYours, EmptyState } from "@/components/States";
+import { PageHeader } from "@/components/PageHeader";
+import { api, humanizeError } from "@/lib/api";
+import { useAsync } from "@/lib/hooks";
+import { useTier } from "@/lib/tier";
+import { formatBytes, formatRelative } from "@/lib/format";
+import type { ServerFileEntry } from "@/lib/types";
+import { cn } from "@/lib/utils";
+
+/** The write ceiling, mirrored from fileedit.MaxWriteBytes (server truth). Reads
+ *  are capped at 1 MiB server-side; a larger file is refused there with 413, so
+ *  this only gates the save button to keep the common case honest up front. */
+const MAX_WRITE_BYTES = 256 * 1024;
+
+/** The []byte wire codec: Go's encoding/json renders []byte as base64, so the
+ *  editor must speak it explicitly in both directions. Chunked so a ~256 KiB
+ *  file never trips the argument-length ceiling of String.fromCharCode. */
+function bytesToBase64(bytes: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(bin);
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/** decodeText returns the file's text, or null when the bytes are not valid
+ *  UTF-8 or contain NUL. Such files open read-only: a textarea round-trip would
+ *  silently corrupt them, and this editor exists to REPAIR configs, never to
+ *  damage data it does not understand. */
+function decodeText(bytes: Uint8Array): string | null {
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return text.includes("\u0000") ? null : text;
+  } catch {
+    return null;
+  }
+}
+
+function joinPath(dir: string, name: string): string {
+  return dir === "" ? name : `${dir}/${name}`;
+}
+
+function parentOf(dir: string): string {
+  const i = dir.lastIndexOf("/");
+  return i === -1 ? "" : dir.slice(0, i);
+}
+
+/** ServerFiles is the world-volume file editor (the "one wrong line in
+ *  server.properties" repair). Every call is owner-or-admin gated and refused
+ *  with 409 not_stopped unless the server is fully stopped (the world volume is
+ *  RWO), so the page gates up front instead of letting each call fail. */
+export function ServerFiles() {
+  const { name = "" } = useParams();
+  const { t, i18n } = useTranslation("files");
+  const locale = i18n.language;
+  const { isAdmin, loading: tierLoading } = useTier();
+
+  const statusQ = useAsync(() => api.status(name), [name]);
+  const mineQ = useAsync(
+    () => (isAdmin ? Promise.resolve([]) : api.myServers()),
+    [isAdmin, name],
+  );
+  const ownershipPending = tierLoading || (!isAdmin && mineQ.data === null && !mineQ.error);
+  const owned = isAdmin || (mineQ.data ?? []).some((s) => s.name === name && s.owned === true);
+  const stopped = statusQ.data?.phase === "Stopped";
+
+  const [dir, setDir] = useState("");
+  const [entries, setEntries] = useState<ServerFileEntry[] | null>(null);
+  const [truncated, setTruncated] = useState(false);
+  const [listErr, setListErr] = useState<unknown>(null);
+  const [listLoading, setListLoading] = useState(false);
+  const [msg, setMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+
+  const load = useCallback(
+    async (p: string) => {
+      setListLoading(true);
+      setListErr(null);
+      try {
+        const r = await api.listServerFiles(name, p);
+        setEntries(r.entries ?? []);
+        setTruncated(r.truncated === true);
+        setDir(p);
+      } catch (e) {
+        setEntries(null);
+        setListErr(e);
+      } finally {
+        setListLoading(false);
+      }
+    },
+    [name],
+  );
+
+  // Load (and reload after a stop) only once the viewer is resolved as owner and
+  // the server is fully stopped — both are hard server-side gates of every call.
+  useEffect(() => {
+    if (owned && stopped) void load(dir);
+  }, [owned, stopped, load]);
+
+  // While the server is not stopped, poll the phase so the first successful
+  // stop flips the page from the notice to the listing without a manual reload.
+  useEffect(() => {
+    if (stopped) return;
+    const id = setInterval(() => statusQ.reload(), 4000);
+    return () => clearInterval(id);
+  }, [stopped, statusQ.reload]);
+
+  // Editor state. `editable` false marks a binary file (rendered read-only).
+  const [open, setOpen] = useState<{
+    path: string;
+    text: string;
+    original: string;
+    editable: boolean;
+  } | null>(null);
+  const [opening, setOpening] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [stopping, setStopping] = useState(false);
+
+  async function openFile(entry: ServerFileEntry) {
+    const p = joinPath(dir, entry.name);
+    setOpening(p);
+    setMsg(null);
+    try {
+      const r = await api.readServerFile(name, p);
+      const text = decodeText(base64ToBytes(r.content ?? ""));
+      setOpen({
+        path: p,
+        text: text ?? "",
+        original: text ?? "",
+        editable: text !== null,
+      });
+    } catch (e) {
+      setMsg({ kind: "error", text: humanizeError(e) });
+    } finally {
+      setOpening(null);
+    }
+  }
+
+  async function handleSave() {
+    if (!open || saving) return;
+    setSaving(true);
+    setMsg(null);
+    try {
+      await api.writeServerFile(
+        name,
+        open.path,
+        bytesToBase64(new TextEncoder().encode(open.text)),
+      );
+      setMsg({ kind: "success", text: t("saved", { path: open.path }) });
+      setOpen(null);
+      void load(dir);
+    } catch (e) {
+      setMsg({ kind: "error", text: humanizeError(e) });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleStop() {
+    if (stopping) return;
+    setStopping(true);
+    setMsg(null);
+    try {
+      await api.stop(name);
+      statusQ.reload();
+    } catch (e) {
+      setMsg({ kind: "error", text: humanizeError(e) });
+    } finally {
+      setStopping(false);
+    }
+  }
+
+  const back = <BackLink to={`/servers/${name}`} label={t("back_to_console")} />;
+  if (statusQ.loading && !statusQ.data) {
+    return (
+      <>
+        {back}
+        <Loading />
+      </>
+    );
+  }
+  if (statusQ.error) {
+    return (
+      <>
+        {back}
+        <ErrorState error={statusQ.error} onRetry={statusQ.reload} />
+      </>
+    );
+  }
+  if (!statusQ.data) return back;
+
+  const now = Date.now();
+  const segments = dir === "" ? [] : dir.split("/");
+  const dirty = open !== null && open.text !== open.original;
+  const dirtyBytes = open ? new TextEncoder().encode(open.text).length : 0;
+  const tooLarge = dirtyBytes > MAX_WRITE_BYTES;
+
+  const header = (
+    <PageHeader
+      icon={FolderOpen}
+      title={statusQ.data.displayName || statusQ.data.name}
+      subtitle={t("title")}
+      actions={<PhaseBadge phase={statusQ.data.phase} />}
+      className="mb-6"
+    />
+  );
+
+  return (
+    <>
+      {back}
+      {header}
+      {ownershipPending ? (
+        <Loading />
+      ) : mineQ.error ? (
+        <ErrorState error={mineQ.error} onRetry={mineQ.reload} />
+      ) : !owned ? (
+        <NotYours title={t("not_yours_title")} body={t("not_yours_body")} />
+      ) : (
+        <div className="space-y-4">
+          {msg && <MessageLine kind={msg.kind} message={msg.text} />}
+          {!stopped ? (
+            <Card>
+              <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
+                <Square className="h-7 w-7 text-muted-foreground/70" />
+                <div>
+                  <p className="font-medium">{t("stopped_required_title")}</p>
+                  <p className="mx-auto mt-1 max-w-md text-sm text-muted-foreground">
+                    {t("stopped_required_body")}
+                  </p>
+                </div>
+                <Button size="sm" onClick={handleStop} disabled={stopping}>
+                  {stopping ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Square className="h-4 w-4" />
+                  )}
+                  {t("stop_server")}
+                </Button>
+              </CardContent>
+            </Card>
+          ) : listLoading && entries === null ? (
+            <Loading />
+          ) : listErr ? (
+            <ErrorState error={listErr} onRetry={() => load(dir)} />
+          ) : (
+            <Card className="overflow-hidden">
+              <CardContent className="p-0">
+                {/* Location bar: parent button + clickable breadcrumbs + refresh */}
+                <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void load(parentOf(dir))}
+                    disabled={dir === "" || listLoading}
+                  >
+                    <ArrowUp className="h-4 w-4" />
+                    {t("up")}
+                  </Button>
+                  <nav className="flex flex-wrap items-center gap-1 text-sm">
+                    <button
+                      type="button"
+                      onClick={() => void load("")}
+                      className={cn(
+                        "rounded px-1.5 py-0.5 hover:bg-muted",
+                        dir === "" ? "font-medium text-foreground" : "text-muted-foreground",
+                      )}
+                    >
+                      {t("root")}
+                    </button>
+                    {segments.map((seg, i) => {
+                      const target = segments.slice(0, i + 1).join("/");
+                      const last = i === segments.length - 1;
+                      return (
+                        <span key={target} className="flex items-center gap-1">
+                          <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/60" />
+                          <button
+                            type="button"
+                            onClick={() => void load(target)}
+                            className={cn(
+                              "rounded px-1.5 py-0.5 font-mono text-xs hover:bg-muted",
+                              last ? "font-medium text-foreground" : "text-muted-foreground",
+                            )}
+                          >
+                            {seg}
+                          </button>
+                        </span>
+                      );
+                    })}
+                  </nav>
+                  <div className="ml-auto">
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => void load(dir)}
+                      disabled={listLoading}
+                      title={t("refresh")}
+                    >
+                      <RefreshCw className={cn("h-4 w-4", listLoading && "animate-spin")} />
+                    </Button>
+                  </div>
+                </div>
+
+                {entries && entries.length === 0 ? (
+                  <div className="p-4">
+                    <EmptyState title={t("empty_dir_title")} hint={t("empty_dir_hint")} />
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full border-collapse text-sm">
+                      <thead>
+                        <tr className="border-b border-border bg-muted/40 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
+                          <th className="px-4 py-2.5 font-medium">{t("col_name")}</th>
+                          <th className="px-4 py-2.5 font-medium">{t("col_size")}</th>
+                          <th className="px-4 py-2.5 font-medium">{t("col_modified")}</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border">
+                        {(entries ?? []).map((e) => (
+                          <tr
+                            key={e.name}
+                            onClick={() => (e.is_dir ? void load(joinPath(dir, e.name)) : void openFile(e))}
+                            className="cursor-pointer transition-colors hover:bg-muted/30"
+                          >
+                            <td className="px-4 py-3">
+                              <span className="flex items-center gap-2 min-w-0">
+                                {e.is_dir ? (
+                                  <Folder className="h-4 w-4 shrink-0 text-primary" />
+                                ) : (
+                                  <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                )}
+                                <span className="truncate font-mono text-xs">{e.name}</span>
+                                {opening === joinPath(dir, e.name) && (
+                                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+                                )}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
+                              {e.is_dir ? "—" : formatBytes(e.size)}
+                            </td>
+                            <td
+                              className="px-4 py-3 whitespace-nowrap text-xs text-muted-foreground"
+                              title={e.mod_time}
+                            >
+                              {e.mod_time ? formatRelative(e.mod_time, now, locale) : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {truncated && (
+                  <p className="border-t border-border px-4 py-2 text-xs text-amber-500">
+                    {t("list_truncated")}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          )}
+        </div>
+      )}
+
+      {/* File editor dialog */}
+      <Dialog open={open !== null} onOpenChange={(v) => !v && !saving && setOpen(null)}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="break-all font-mono text-sm">
+              {open?.path}
+            </DialogTitle>
+            {open && !open.editable && (
+              <p className="text-xs text-muted-foreground">{t("binary_hint")}</p>
+            )}
+          </DialogHeader>
+          {open && (
+            <>
+              <textarea
+                value={open.text}
+                onChange={(e) => setOpen({ ...open, text: e.target.value })}
+                readOnly={!open.editable}
+                spellCheck={false}
+                className="h-[50vh] w-full resize-none rounded-md border border-input bg-background p-3 font-mono text-xs leading-relaxed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              />
+              <DialogFooter className="items-center gap-2 sm:justify-between">
+                <span className={cn("text-xs", tooLarge ? "text-destructive" : "text-muted-foreground")}>
+                  {tooLarge
+                    ? t("too_large", { limit: formatBytes(MAX_WRITE_BYTES) })
+                    : formatBytes(dirtyBytes)}
+                </span>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={() => setOpen(null)}
+                    disabled={saving}
+                  >
+                    {t("common:cancel")}
+                  </Button>
+                  <Button
+                    onClick={handleSave}
+                    disabled={saving || !open.editable || !dirty || tooLarge}
+                  >
+                    {saving ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Save className="h-4 w-4" />
+                    )}
+                    {saving ? t("saving") : t("save")}
+                  </Button>
+                </div>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}

@@ -49,6 +49,8 @@
   "luckperms_link_desc": "Manage player groups and fine-grained permission nodes.",
   "backups_link_title": "Backups & restore",
   "backups_link_desc": "View and restore world backups for this server.",
+  "files_link_title": "Server files",
+  "files_link_desc": "Browse and repair files in the world volume.",
   "players_back_to_console": "Back to console",
   "players_not_yours_title": "Not your server",
   "players_not_yours_body": "Only the owner or an admin can manage this server's players.",

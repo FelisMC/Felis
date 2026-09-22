@@ -1,0 +1,23 @@
+{
+  "title": "Server Files",
+  "back_to_console": "Back to console",
+  "root": "World root",
+  "up": "Up",
+  "refresh": "Refresh",
+  "col_name": "Name",
+  "col_size": "Size",
+  "col_modified": "Modified",
+  "empty_dir_title": "This folder is empty",
+  "empty_dir_hint": "Nothing has been written here yet.",
+  "list_truncated": "The listing was truncated at the server's safety limit.",
+  "stopped_required_title": "The server is running",
+  "stopped_required_body": "Files can only be browsed or edited while the server is fully stopped — the world volume is single-attached to the running server. Stop it to continue.",
+  "stop_server": "Stop server",
+  "not_yours_title": "Not your server",
+  "not_yours_body": "Only the owner or an admin can edit this server's files.",
+  "binary_hint": "Binary file — opened read-only; saving non-text bytes through an editor could corrupt it.",
+  "saved": "Saved {{path}}",
+  "saving": "Saving…",
+  "save": "Save",
+  "too_large": "Exceeds the {{limit}} editor limit."
+}

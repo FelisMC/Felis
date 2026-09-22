@@ -236,6 +236,15 @@ export interface BindResult {
 
 export type BuildStatus = "pending" | "building" | "succeeded" | "failed" | "cancelled";
 
+/** ServerFileEntry mirrors fileedit.Entry — one row of a world-directory listing
+ *  (GET /servers/{name}/files). */
+export interface ServerFileEntry {
+  name: string;
+  size: number;
+  is_dir: boolean;
+  mod_time: string;
+}
+
 /** Build mirrors an image_builds row (spec §6, §16). */
 export interface Build {
   id: string;

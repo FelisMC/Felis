@@ -17,6 +17,7 @@ import type {
   PlayersResult,
   QuotaInput,
   QuotaView,
+  ServerFileEntry,
   ServerJob,
   ServerInfo,
   SessionView,
@@ -358,6 +359,37 @@ export const api = {
       "GET",
       `/servers/${name}/jobs`,
     ).then((r) => r.jobs ?? []),
+
+  // Server file editor (spec §7). All three routes are owner-or-admin gated and
+  // refuse with 409 not_stopped unless the server is fully stopped (the world
+  // volume is RWO), so callers gate on phase === "Stopped". The path travels as a
+  // query parameter — a file path contains "/" and never round-trips through a
+  // path segment. Content is []byte on the wire, which Go's encoding/json renders
+  // as base64, so it is binary-safe in both directions.
+  listServerFiles: (name: string, path: string) =>
+    request<{ path: string; entries: ServerFileEntry[]; truncated: boolean }>(
+      "GET",
+      `/servers/${name}/files?path=${encodeURIComponent(path)}`,
+    ),
+
+  // readServerFile returns one file's bytes (base64). A file over the read
+  // ceiling is a 413, never a silent truncation, because a later save of a
+  // truncated body would destroy the rest of the file.
+  readServerFile: (name: string, path: string) =>
+    request<{ path: string; content: string }>(
+      "GET",
+      `/servers/${name}/file?path=${encodeURIComponent(path)}`,
+    ),
+
+  // writeServerFile replaces a file's contents (creating it if absent). Sending
+  // an explicit "" is a deliberate truncate; the wire field is required, but that
+  // is enforced by the caller (this method always sends one).
+  writeServerFile: (name: string, path: string, content: string) =>
+    request<{ path: string; status: string }>(
+      "PUT",
+      `/servers/${name}/file?path=${encodeURIComponent(path)}`,
+      { content },
+    ),
 
   // Account linking (spec §10). Both are POST: start reports status from the
   // session principal (no body, side-effect-free), verify consumes a code the

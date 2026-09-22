@@ -582,6 +582,46 @@ describe("image whitelist and builds wire shapes", () => {
     });
   });
 
+  describe("server file editor wire shape", () => {
+    it("listServerFiles GETs /servers/{name}/files with the path as a query parameter", async () => {
+      const entries = [
+        { name: "world", size: 0, is_dir: true, mod_time: "2026-07-03T12:00:00Z" },
+        { name: "server.properties", size: 580, is_dir: false, mod_time: "2026-07-03T12:00:00Z" },
+      ];
+      const fetchSpy = fakeFetch({ path: "config", entries, truncated: false });
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.listServerFiles("survival", "config/old stuff");
+      expect(res.entries).toHaveLength(2);
+      expect(res.entries[1].is_dir).toBe(false);
+      const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      // "/" and " " must survive the query encoding — the path is a query value,
+      // never a path segment.
+      expect(String(url)).toBe("/servers/survival/files?path=config%2Fold%20stuff");
+      expect((opts as RequestInit).method).toBe("GET");
+    });
+
+    it("readServerFile GETs /servers/{name}/file and passes base64 through", async () => {
+      const fetchSpy = fakeFetch({ path: "world/level.dat", content: "AAEC" });
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.readServerFile("survival", "world/level.dat");
+      expect(res.content).toBe("AAEC");
+      const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toBe("/servers/survival/file?path=world%2Flevel.dat");
+      expect((opts as RequestInit).method).toBe("GET");
+    });
+
+    it("writeServerFile PUTs {content} — an explicit \"\" is a deliberate truncate, not an omitted field", async () => {
+      const fetchSpy = fakeFetch({ path: "a.txt", status: "written" });
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.writeServerFile("survival", "a.txt", "");
+      expect(res.status).toBe("written");
+      const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toBe("/servers/survival/file?path=a.txt");
+      expect((opts as RequestInit).method).toBe("PUT");
+      expect((opts as RequestInit).body).toBe(JSON.stringify({ content: "" }));
+    });
+  });
+
   describe("user passkey unbind wire shape", () => {
     it("unbindUserPasskeys DELETEs /users/{id}/passkeys", async () => {
       const fetchSpy = fakeFetch({ ok: true });

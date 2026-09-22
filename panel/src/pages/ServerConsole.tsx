@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useLayoutEffect, type KeyboardEvent } from "react";
 import { Link, useParams } from "react-router-dom";
-import { Terminal, Moon, Shield, ShieldAlert, HelpCircle, Loader2, Users, Archive, ChevronRight, type LucideIcon } from "lucide-react";
+import { Terminal, Moon, Shield, ShieldAlert, HelpCircle, Loader2, Users, Archive, FolderOpen, ChevronRight, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -313,6 +313,21 @@ export function ServerConsole() {
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium">{t("backups_link_title")}</p>
                   <p className="text-sm text-muted-foreground">{t("backups_link_desc")}</p>
+                </div>
+                <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+              </Link>
+
+              {/* File editor — its own subpage. Files are only reachable while the server
+                  is stopped (the world volume is RWO), so the page itself owns that gate
+                  and offers the stop action; the doorway shows at every phase. */}
+              <Link
+                to={`/servers/${name}/files`}
+                className="group flex items-center gap-3 rounded-lg border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent"
+              >
+                <FolderOpen className="h-5 w-5 shrink-0 text-primary" />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium">{t("files_link_title")}</p>
+                  <p className="text-sm text-muted-foreground">{t("files_link_desc")}</p>
                 </div>
                 <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
               </Link>
