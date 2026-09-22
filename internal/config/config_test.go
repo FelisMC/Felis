@@ -385,6 +385,30 @@ func TestLoadRejectsUnqueryableAuthSourceURL(t *testing.T) {
 	}
 }
 
+// A source reached over plaintext can be answered by anyone on the path, who can then log in
+// as any player of that source. Only a same-host or private-network root may skip TLS, and
+// that is decided on the literal host, since nothing is resolved at load time.
+func TestLoadRejectsPlaintextPublicAuthSource(t *testing.T) {
+	load := func(u string) error {
+		_, err := config.LoadNano(writeTOML(t, "[[auth_source]]\ntag = \"a\"\nprefix = \"AA\"\nurl = \""+u+"\"\n"))
+		return err
+	}
+	for _, host := range []string{"ygg.example.net", "203.0.113.9", "ygg.lan", "172.32.0.1", "169.254.1.1", "0.0.0.0", "[2001:db8::1]"} {
+		u := "http://" + host + "/hasJoined"
+		if err := load(u); err == nil || !strings.Contains(err.Error(), "https://") {
+			t.Errorf("url %q: err = %v, want a refusal that asks for https://", u, err)
+		}
+		if err := load("https://" + host + "/hasJoined"); err != nil {
+			t.Errorf("the same host over https must load: %v", err)
+		}
+	}
+	for _, host := range []string{"localhost", "LOCALHOST:8080", "127.0.0.1:8080", "127.1.2.3", "[::1]:8080", "10.0.0.5", "172.16.3.4", "192.168.1.2", "[fd00::1]"} {
+		if err := load("http://" + host + "/hasJoined"); err != nil {
+			t.Errorf("a plaintext root on %s must load: %v", host, err)
+		}
+	}
+}
+
 // TestLoadNanoAcceptsMinimalConfig is the linchpin of the Felis-nano fold: a nano host has no
 // Postgres and no FQDN, so LoadNano must accept a felis.toml carrying ONLY [[auth_source]] —
 // the control-plane requirements (database.url, root_domain) that full Load enforces are

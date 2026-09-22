@@ -6,6 +6,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"net/url"
 	"regexp"
 	"strings"
@@ -414,6 +415,18 @@ func hasJoinedURLProblem(u string) string {
 		return "has no host"
 	case strings.ContainsAny(u, "?#"):
 		return "must not carry a query or fragment; the username and serverId parameters are appended to it"
+	case p.Scheme == "http" && !plaintextHostOK(p.Hostname()):
+		return "sends logins in plaintext to a public host, where anyone on the path can answer as any player of this source; use https://, or http:// only for localhost or a loopback or private IP address"
 	}
 	return ""
+}
+
+// plaintextHostOK is decided on the literal host because nothing is resolved at load time,
+// so a LAN root named by hostname needs its IP address or https.
+func plaintextHostOK(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && (ip.IsLoopback() || ip.IsPrivate())
 }
