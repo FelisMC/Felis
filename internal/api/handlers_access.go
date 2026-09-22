@@ -416,7 +416,7 @@ type lpPermissionView struct {
 // maxLPInfoPages bounds how many "permission info" pages the read projector
 // chases per request. LuckPerms paginates its reply, so one command shows only
 // the first page; we follow the header's page count up to this cap.
-// ponytail: 10 pages ≈ 150 entries — raise if a real user outgrows it.
+// 10 pages ≈ 150 entries — raise if a real user outgrows it.
 const maxLPInfoPages = 10
 
 // handleAccessLuckPermsInfo is the read projector for a player's LuckPerms

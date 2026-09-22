@@ -56,7 +56,7 @@ final class InviteBook {
      * cooldownRemaining is how long the sender must still wait, in millis, or 0 when they
      * may send now.
      *
-     * <p>ponytail: one global stamp per sender, so inviting Alex also holds off inviting
+     * <p>One global stamp per sender, so inviting Alex also holds off inviting
      * Steve. That is the shape that actually stops the spam — a per-(sender, invitee) key
      * would let one sender paper every player on the proxy at once, which is the thing
      * being rate-limited. Key it per pair only if a real group of players complains.

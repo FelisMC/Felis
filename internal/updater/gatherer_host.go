@@ -114,7 +114,7 @@ func velocityJarVersion(path string) (updates.Version, error) {
 
 // manifestAttr returns one attribute value from a jar's META-INF/MANIFEST.MF.
 //
-// ponytail: this does not implement the JAR spec's 72-byte line folding (a wrapped
+// This does not implement the JAR spec's 72-byte line folding (a wrapped
 // value continues on the next line after a single leading space). Version values are
 // far short of the wrap point, so folding cannot bite here; if this ever reads a long
 // attribute, join continuation lines before splitting on ':'.

@@ -130,7 +130,7 @@ func (r *ExecRunner) CreateTunnel(ctx context.Context, name string) (string, str
 // the file (authenticating with cert.pem, keeping the same id/DNS/Access), healing
 // the re-run. The secret is written to the file, not stdout.
 func (r *ExecRunner) ensureCredentials(ctx context.Context, id, credPath string) error {
-	// ponytail: any existing file counts as healthy; re-fetch only on absence
+	// Any existing file counts as healthy; re-fetch only on absence
 	// (the failure actually seen). A truncated/zero-byte file would still
 	// crash-loop — validate the JSON here if that ever shows up.
 	if _, err := os.Stat(credPath); err == nil {

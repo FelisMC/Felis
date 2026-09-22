@@ -116,7 +116,7 @@ func newBackupID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		// crypto/rand failure is fatal and unrecoverable; a time-based fallback would
-		// be a weaker ID for no benefit. ponytail: panic is the honest failure here.
+		// be a weaker ID for no benefit. A panic is the honest failure here.
 		panic("felis backup: crypto/rand: " + err.Error())
 	}
 	return "bk-" + hex.EncodeToString(b[:])

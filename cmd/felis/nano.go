@@ -37,7 +37,7 @@ import (
 
 // nanoStubRepo satisfies api.Repo but implements only the one method handleHasJoined calls.
 // The reclaim username blacklist is a felis-api/DB concern; a nano host has no Postgres, so
-// nothing is barred here. ponytail: a real blacklist would need the very DB nano exists to
+// nothing is barred here. A real blacklist would need the very DB nano exists to
 // avoid — YAGNI until a nano host grows a reclaim store.
 type nanoStubRepo struct{ api.Repo }
 

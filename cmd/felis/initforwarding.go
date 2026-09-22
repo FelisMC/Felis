@@ -26,7 +26,7 @@ const defaultForwardingDataDir = "/data"
 // volume of unknown ownership; 0666/0777 then let a non-root Paper rewrite the
 // same files on boot.
 //
-// ponytail: relies on the initContainer running as root to write into a volume of
+// This relies on the initContainer running as root to write into a volume of
 // unknown ownership; that is how the operator schedules it. If that ever changes,
 // give the server pod an fsGroup so the shared volume is group-writable instead.
 const (

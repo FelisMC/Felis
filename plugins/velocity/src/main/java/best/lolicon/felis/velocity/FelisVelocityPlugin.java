@@ -691,7 +691,7 @@ public final class FelisVelocityPlugin {
                                             StringArgumentType.getString(ctx, "server"));
                                     return Command.SINGLE_SUCCESS;
                                 })))
-                // ponytail: Brigadier matches literals before arguments, so a player
+                // Brigadier matches literals before arguments, so a player
                 // actually named "accept"/"deny" cannot be invited by name. They can
                 // still reach the server with /felis go, and renaming the subcommands
                 // would break the click handlers for a case worth less than that.
@@ -868,7 +868,7 @@ public final class FelisVelocityPlugin {
                     NamedTextColor.YELLOW));
             return;
         }
-        // ponytail: peek-then-take is not atomic — an invite landing in that window is
+        // Peek-then-take is not atomic — an invite landing in that window is
         // taken instead of the one just validated. "Newest wins" is already the rule the
         // book enforces, so the outcome is one this player would have got anyway; make it
         // a computeIfPresent if invites ever arrive fast enough for anyone to notice.
@@ -899,7 +899,7 @@ public final class FelisVelocityPlugin {
     // notifyInviter closes the loop for whoever sent the invite; without it they wait on a
     // prompt they can never see the answer to. Silently skipped if they left in the meantime.
     //
-    // ponytail: ACCEPTED means the transfer was handed to the waiting queue, which is as far
+    // ACCEPTED means the transfer was handed to the waiting queue, which is as far
     // as this can see synchronously — a wake that fails later is reported to the guest only.
     private void notifyInviter(InviteBook.Invite invite, String who, Answer answer) {
         proxy.getPlayer(invite.from()).ifPresent(p -> {

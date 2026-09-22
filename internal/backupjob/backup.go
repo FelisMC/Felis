@@ -180,7 +180,7 @@ type Backuper struct {
 // just-finished Job still inside its TTL window. ErrAlreadyExists is kept only as a
 // defensive no-op against the astronomically unlikely suffix collision.
 //
-// ponytail: unique names mean two truly simultaneous taps can schedule two backup
+// Unique names mean two truly simultaneous taps can schedule two backup
 // Pods; both mount the world PVC read-only so neither corrupts anything, and if they
 // land on different nodes the RWO attach fails one cleanly. Add single-flight-on-
 // running only if a real double-tap storm ever shows up.
@@ -200,7 +200,7 @@ func (b *Backuper) Backup(ctx context.Context, serverName, formerOwner string) e
 func jobNameSuffix() string {
 	var b [4]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		// ponytail: crypto/rand only fails if the OS RNG is gone — unrecoverable.
+		// crypto/rand only fails if the OS RNG is gone — unrecoverable.
 		panic("backupjob: crypto/rand: " + err.Error())
 	}
 	return hex.EncodeToString(b[:])

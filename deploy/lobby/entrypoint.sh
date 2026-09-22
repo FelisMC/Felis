@@ -93,7 +93,7 @@ else
   echo "  injects it from the <server>-rcon Secret when spec.rcon.enabled is true." >&2
 fi
 
-# ponytail: rewritten whole, not merged. Paper loads this file and fills every key it does
+# Rewritten whole, not merged. Paper loads this file and fills every key it does
 # not find with the default, then writes the full tree back — so a proxies-only file is a
 # complete, stable input, and the lobby's other globals are simply always the defaults.
 # That is true of a system server Felis owns end to end; if admins are ever allowed to tune

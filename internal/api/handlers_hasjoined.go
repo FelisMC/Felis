@@ -41,7 +41,7 @@ var felisAuthNS = uuid.NewSHA1(uuid.NameSpaceURL, []byte("nano.felis.lolicon.bes
 
 // authHTTPClient calls the upstream Yggdrasil roots. The timeout bounds one login
 // against a hung source; the resolver moves on to the next source on any failure.
-// ponytail: one shared client, sequential priority scan — a third-party login costs one
+// One shared client, sequential priority scan — a third-party login costs one
 // wasted Mojang round-trip; add parallel fan-out only if login latency bites.
 var authHTTPClient = &http.Client{
 	Timeout: 5 * time.Second,
@@ -171,7 +171,7 @@ const mcUsernameMax = 16
 // TRUNCATED to fit rather than the rename being skipped when it would not fit — skipping is
 // what would silently hand a 14-character premium name back to the squatter.
 //
-// ponytail: two players of one source whose names agree on their first mcUsernameMax-len(prefix)-1
+// Two players of one source whose names agree on their first mcUsernameMax-len(prefix)-1
 // characters truncate onto the same in-game name, as does a prefixed name that happens to be
 // a premium name itself. Both cost an "already connected" bounce, not an identity: the UUID
 // rewrite is what keeps players apart, and it does not depend on the name at all. Add a
@@ -242,7 +242,7 @@ func isPremiumName(ctx context.Context, username string) bool {
 	}
 
 	premiumNames.Lock()
-	// ponytail: bounded by dropping the whole map rather than evicting LRU — entries are
+	// Bounded by dropping the whole map rather than evicting LRU — entries are
 	// only minted by players who actually authenticated somewhere, so this is a backstop
 	// against an unbounded map, not a cache policy worth tuning.
 	if len(premiumNames.m) >= premiumCacheMax {

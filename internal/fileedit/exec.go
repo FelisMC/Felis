@@ -220,7 +220,7 @@ func list(r *os.Root, path string) Result {
 // denied; a write is left alone because writing the file leaks nothing and is
 // equally futile.
 //
-// ponytail: an exact match on one cleaned path, not a pattern. This is the whole
+// An exact match on one cleaned path, not a pattern. This is the whole
 // known exposure — grep FELIS_FORWARDING_SECRET across deploy/ — and if another
 // image ever persists a platform secret into the mount, add its path here rather
 // than inventing a matcher.
