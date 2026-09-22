@@ -143,6 +143,15 @@ type Params struct {
 	// The rendered CronJob is the correct K8s object; the actual tar depends on the
 	// hosting node, which is not provable without a cluster.
 	WorldsHostPath string
+	// ReaperNode, when non-empty, pins the rendered reaper CronJob's pod to one node
+	// via nodeSelector kubernetes.io/hostname — the multi-node answer to "the
+	// hostPath root exists on every node but a world's directory lives on exactly
+	// one". On a multi-node cluster the operator passes the node that holds the
+	// world volumes (for the local-path starter: the node whose
+	// /var/lib/rancher/k3s/storage carries them); leaving it empty keeps the
+	// single-node behaviour (no selector). It is reaper-only and only meaningful
+	// with WorldsHostPath set.
+	ReaperNode string
 	// ArchiveLocalPath is the path the backup PVC is mounted at inside the reaper
 	// CronJob's pod, and MUST equal felis.toml's [archive] local_path. tarLocal writes
 	// archive refs as absolute paths under [archive] local_path (internal/backup), and

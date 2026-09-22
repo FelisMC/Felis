@@ -181,3 +181,41 @@ func TestManifestsRendersReaper(t *testing.T) {
 		}
 	}
 }
+
+// TestManifestsReaperNodePin: --reaper-node pins the rendered CronJob's pod via
+// kubernetes.io/hostname and replaces the "no nodeSelector" hazard note with the
+// pin confirmation; using it without the worlds root is a fail-loud 2.
+func TestManifestsReaperNodePin(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	code := run([]string{
+		"manifests",
+		"--felis-image", "registry.felis.svc:5000/felis:v1",
+		"--velocity-cidr", "10.0.0.5/32",
+		"--worlds-host-path", "/var/lib/felis/worlds",
+		"--archive-local-path", "/backups",
+		"--reaper-node", "node-a",
+	}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, errBuf.String())
+	}
+	for _, want := range []string{
+		"kubernetes.io/hostname: node-a",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("pinned render missing %q", want)
+		}
+	}
+	if !strings.Contains(errBuf.String(), "node-a") {
+		t.Errorf("stderr must confirm the pin, got %q", errBuf.String())
+	}
+
+	var out2, err2 bytes.Buffer
+	if code := run([]string{
+		"manifests",
+		"--felis-image", "registry.felis.svc:5000/felis:v1",
+		"--velocity-cidr", "10.0.0.5/32",
+		"--reaper-node", "node-a",
+	}, &out2, &err2); code != 2 {
+		t.Errorf("--reaper-node without --worlds-host-path: exit = %d, want 2", code)
+	}
+}

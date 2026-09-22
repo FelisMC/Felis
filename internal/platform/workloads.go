@@ -38,11 +38,11 @@ import (
 // (<pv-name>_<ns>_<pvc-name>, read from the live PVC), so pointing
 // --worlds-host-path at /var/lib/rancher/k3s/storage works on a default install —
 // see the WorldsHostPath field doc. Whether the tar finds a world still depends on
-// the hosting node, and is not provable without a cluster. No nodeSelector is set:
-// the single-node starter pins
-// the worlds to one node implicitly; a multi-node deployment MUST add one (or the
-// CronJob could schedule on a node where the hostPath is empty) — a hazard left on
-// record here until multi-node retention is built.
+// the hosting node, and is not provable without a cluster. No nodeSelector is set
+// unless ReaperNode names one: the single-node starter pins the worlds to one node
+// implicitly, while a multi-node deployment passes --reaper-node (rendered as a
+// kubernetes.io/hostname selector) or the CronJob could schedule on a node where
+// the hostPath is empty.
 const (
 	// configSecretName / serviceTokenSecretName are referenced BY NAME and NEVER
 	// rendered into the bundle: felis.toml carries the database URL (a credential)
@@ -605,19 +605,31 @@ func reaperCronJob(p Params) *batchv1.CronJob {
 					ActiveDeadlineSeconds: int64Ptr(reaperActiveDeadlineSeconds),
 					Template: corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{Labels: labels},
-						Spec: corev1.PodSpec{
-							ServiceAccountName: SAReaper,
-							PriorityClassName:  controlPlanePriorityName,
-							RestartPolicy:      corev1.RestartPolicyNever,
-							SecurityContext:    reaperPodSecurityContext(),
-							Containers:         []corev1.Container{container},
-							Volumes:            volumes,
-						},
+						Spec:       reaperPodSpec(p, container, volumes),
 					},
 				},
 			},
 		},
 	}
+}
+
+// reaperPodSpec is the reaper Job's pod template. It lives apart from the CronJob
+// literal only so the optional node pin is one visible branch: with ReaperNode
+// set the pod carries a kubernetes.io/hostname selector, keeping the reaper on
+// the node that actually holds the worlds hostPath on a multi-node cluster.
+func reaperPodSpec(p Params, container corev1.Container, volumes []corev1.Volume) corev1.PodSpec {
+	spec := corev1.PodSpec{
+		ServiceAccountName: SAReaper,
+		PriorityClassName:  controlPlanePriorityName,
+		RestartPolicy:      corev1.RestartPolicyNever,
+		SecurityContext:    reaperPodSecurityContext(),
+		Containers:         []corev1.Container{container},
+		Volumes:            volumes,
+	}
+	if p.ReaperNode != "" {
+		spec.NodeSelector = map[string]string{"kubernetes.io/hostname": p.ReaperNode}
+	}
+	return spec
 }
 
 // controlPlaneDeployment assembles a single-replica control-plane Deployment. The

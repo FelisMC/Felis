@@ -49,6 +49,7 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 	backupPVC := fs.String("backup-pvc", "felis-backups", "name of the world-archive PVC this bundle renders in the Minecraft namespace and advertises to the backup/restore executors via FELIS_BACKUP_PVC (default: felis-backups; pass an empty value to render none, leaving backup/restore answering 503)")
 	worldsHostPath := fs.String("worlds-host-path", "", "node directory the reaper reads worlds from: each world PVC resolves as <path>/<pvc>, or as the stock local-path directory <path>/<pv-name>_<ns>_<pvc-name> (k3s storage root: /var/lib/rancher/k3s/storage); enables the reaper CronJob (requires --archive-local-path and a non-empty --backup-pvc)")
 	archiveLocalPath := fs.String("archive-local-path", "", "path the backup PVC is mounted at in the reaper CronJob; MUST equal felis.toml [archive] local_path")
+	reaperNode := fs.String("reaper-node", "", "node that holds --worlds-host-path: pins the reaper CronJob's pod there via nodeSelector kubernetes.io/hostname (multi-node clusters need this, or the reaper may schedule where the hostPath is empty)")
 	var velocityCIDRs multiFlag
 	fs.Var(&velocityCIDRs, "velocity-cidr", "CIDR of a Velocity proxy host allowed to reach game port 25565 (repeatable, REQUIRED)")
 	var packageCIDRs multiFlag
@@ -83,6 +84,14 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis manifests: --panel-node-port must be in Kubernetes NodePort range 30000-32767 (got %d)\n", *panelNodePort)
 		return 2
 	}
+	// The node pin exists only for the reaper's hostPath: naming a node without the
+	// worlds root would be silently dropped (no CronJob renders), so fail loud like
+	// the storage-trio check below.
+	if *reaperNode != "" && *worldsHostPath == "" {
+		fmt.Fprintln(stderr, "felis manifests: --reaper-node requires --worlds-host-path "+
+			"(it pins the reaper CronJob, which renders only with the retention storage trio)")
+		return 2
+	}
 
 	// Retention/reaper rendering is opt-in and needs a storage topology together:
 	// where worlds live (to read+archive them), a backup PVC (to write archives
@@ -100,24 +109,25 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 				"(the archive store; default felis-backups)")
 			return 2
 		}
-		// The reaper WILL render. Three deployment preconditions this generator cannot
-		// check would silently turn retention into a no-op (or a permission-denied
-		// loop) if unmet — surface them as loudly as the fail-closed cases above, so
-		// an operator is never left with a reaper that reaps nothing. (All three are
-		// also in the WorldsHostPath flag/field docs, but nobody deploying from stdout
-		// reads those.)
+		// The reaper WILL render. Two deployment facts this generator cannot check
+		// would silently turn retention into a no-op if unmet — surface them as
+		// loudly as the fail-closed cases above, so an operator is never left with a
+		// reaper that reaps nothing. (Both are also in the WorldsHostPath flag/field
+		// docs, but nobody deploying from stdout reads those.)
+		pin := "the CronJob sets NO nodeSelector: a single-node starter pins it to the worlds implicitly, but on a " +
+			"multi-node cluster you MUST pass --reaper-node <name> (or add a nodeSelector) for the node holding the " +
+			"worlds, or the reaper may schedule where the hostPath is empty"
+		if *reaperNode != "" {
+			pin = fmt.Sprintf("the CronJob is pinned to node %q via kubernetes.io/hostname — keep this pointed at the "+
+				"node that actually holds the world volumes", *reaperNode)
+		}
 		fmt.Fprintf(stderr, "felis manifests: note: rendering the retention reaper CronJob (worlds hostPath %q). "+
-			"Three preconditions are NOT verified here:\n"+
+			"These points are NOT verified here:\n"+
 			"  - the node's world volumes must actually live below %s: the reaper resolves a world as "+
 			"%s/<pvc>, then as the stock local-path directory <path>/<pv-name>_<ns>_<pvc-name> (what k3s "+
 			"writes under /var/lib/rancher/k3s/storage). Any other provisioner needs its volumes exposed as "+
 			"<path>/<pvc>, or each candidate's archive fails and the world is preserved;\n"+
-			"  - the reaper pod runs as uid 1000 and must be able to traverse %s (k3s ships its storage root "+
-			"0700 root:root — the installer grants `setfacl -m u:1000:x` or o+x; a manual install must do the "+
-			"same or every archive fails with permission denied and the world is preserved);\n"+
-			"  - the CronJob sets NO nodeSelector: a single-node starter pins it to the worlds implicitly, but "+
-			"on a multi-node cluster you MUST add a nodeSelector for the node holding the worlds, or the reaper "+
-			"may schedule where the hostPath is empty.\n", *worldsHostPath, *worldsHostPath, *worldsHostPath, *worldsHostPath)
+			"  - %s.\n", *worldsHostPath, *worldsHostPath, *worldsHostPath, pin)
 	} else {
 		fmt.Fprintln(stderr, "felis manifests: note: retention reaper CronJob not rendered "+
 			"(pass --worlds-host-path and --archive-local-path — the archive PVC defaults to felis-backups — to enable it)")
@@ -134,6 +144,7 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 		RegistryImage:      *registryImage,
 		BackupPVC:          *backupPVC,
 		WorldsHostPath:     *worldsHostPath,
+		ReaperNode:         *reaperNode,
 		ArchiveLocalPath:   *archiveLocalPath,
 		VelocityCIDRs:      []string(velocityCIDRs),
 		PackageSourceCIDRs: []string(packageCIDRs),

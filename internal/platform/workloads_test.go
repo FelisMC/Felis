@@ -648,6 +648,22 @@ func TestReaperCronJob_Gating(t *testing.T) {
 	}
 }
 
+// TestReaperCronJob_NodePin proves the optional multi-node pin: no selector by
+// default (the single-node starter), and exactly the kubernetes.io/hostname
+// selector when ReaperNode names the node holding the worlds hostPath.
+func TestReaperCronJob_NodePin(t *testing.T) {
+	ps, _ := cronPodSpec(t, reaperCronJob(reaperParams()))
+	if ps.NodeSelector != nil {
+		t.Errorf("NodeSelector = %v, want none without ReaperNode", ps.NodeSelector)
+	}
+	p := reaperParams()
+	p.ReaperNode = "node-a"
+	ps, _ = cronPodSpec(t, reaperCronJob(p))
+	if got := ps.NodeSelector["kubernetes.io/hostname"]; got != "node-a" {
+		t.Errorf("nodeSelector = %v, want kubernetes.io/hostname=node-a", ps.NodeSelector)
+	}
+}
+
 // TestReaperCronJob_Shape pins the rendered CronJob: its scheduling guards, its
 // run-as identity (felis-reaper WITH an auto-mounted token, because it legitimately
 // calls the K8s API — unlike the weak Job/registry pods), the hardening, the
