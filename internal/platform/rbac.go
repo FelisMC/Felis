@@ -53,7 +53,9 @@ func ControlPlaneRBAC(p Params) RBAC {
 		},
 		// Each binding lives in the Role's namespace and names the subject SA in the
 		// control namespace (a RoleBinding may reference an SA from another namespace;
-		// its roleRef must be a Role in the binding's own namespace).
+		// its roleRef must be a Role in the binding's own namespace). The reaper
+		// binding below is the one exception: its CronJob runs in the Minecraft
+		// namespace, so both the SA and the subject live there.
 		RoleBindings: []*rbacv1.RoleBinding{
 			bindRole(p.MinecraftNamespace, "felis-api", p.ControlNamespace, SAAPI, ComponentAPI),
 			bindRole(p.BuildNamespace, "felis-api-builds", p.ControlNamespace, SAAPI, ComponentAPI),
@@ -62,11 +64,14 @@ func ControlPlaneRBAC(p Params) RBAC {
 	}
 	// The destructive fourth power is conditional on its consumer (see the doc above).
 	if reaperEnabled(p) {
+		// SAReaper lives in — and its binding subject resolves in — the MINECRAFT
+		// namespace, because the reaper CronJob runs there (its backup PVC is there;
+		// a Pod can only mount a PVC and use a ServiceAccount from its own namespace).
 		rbac.ServiceAccounts = append(rbac.ServiceAccounts,
-			controlPlaneServiceAccount(p.ControlNamespace, SAReaper, ComponentReaper))
+			controlPlaneServiceAccount(p.MinecraftNamespace, SAReaper, ComponentReaper))
 		rbac.Roles = append(rbac.Roles, ReaperRole(p))
 		rbac.RoleBindings = append(rbac.RoleBindings,
-			bindRole(p.MinecraftNamespace, "felis-reaper", p.ControlNamespace, SAReaper, ComponentReaper))
+			bindRole(p.MinecraftNamespace, "felis-reaper", p.MinecraftNamespace, SAReaper, ComponentReaper))
 	}
 	return rbac
 }
