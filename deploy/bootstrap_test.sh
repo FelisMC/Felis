@@ -335,6 +335,23 @@ for v in 0.0.0.0:8081 '[::]:8081' :8081; do
     "$(run_summary "$v")"
 done
 
+# Loopback is what keeps the firewall shut, and hasJoined takes no token: a default that
+# does not classify as loopback turns every fresh nano host into a public auth relay.
+run_loopback() { # listen
+  FELIS_NANO_LISTEN="$1" bash -c "$kblock"'
+    if nano_listen_is_loopback; then echo LOOPBACK; else echo ROUTABLE; fi'
+}
+
+for v in 127.0.0.1:8081 127.0.0.5:8081 localhost:8081 '[::1]:8081'; do
+  expect "$v is loopback" LOOPBACK "$(run_loopback "$v")"
+done
+for v in 0.0.0.0:8081 10.0.0.5:8081 '[::]:8081'; do
+  expect "$v is not loopback" ROUTABLE "$(run_loopback "$v")"
+done
+ndefault="$(run_listen '' "$sdir/absent.service")"
+ndefault="${ndefault#LISTEN: }"
+expect "the default listen address (${ndefault:-empty}) is loopback" LOOPBACK "$(run_loopback "$ndefault")"
+
 pblock="$(awk '/^prompt_install_mode\(\) \{/,/^}/' "$BS")"
 [ -n "$pblock" ] || { echo "FAIL: no prompt_install_mode found in $BS"; exit 1; }
 [ "$(printf '%s\n' "$pblock" | wc -l)" -lt 60 ] \
