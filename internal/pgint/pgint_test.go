@@ -439,6 +439,48 @@ func TestUserAdminEmailEditClearsVerification(t *testing.T) {
 	assertEmailProven(t, u.ID, next, false)
 }
 
+// The user-scoped admin sub-resources must refuse an id that has no live users
+// row with ErrNotFound (→ the API's 404). The quota upsert and the account-link
+// insert touch user_id foreign keys, so before the requireLiveUser guard the
+// live drill returned a 500 on both (audit #30); the quotas read answered a
+// zero-value "unlimited" view for an id that never existed.
+func TestAdminSubresourcesRequireLiveUser(t *testing.T) {
+	ctx := context.Background()
+	ghost := "usr-ghost-" + suffix(t)
+
+	if _, err := repo.GetQuotas(ctx, ghost); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("GetQuotas(ghost) = %v, want ErrNotFound", err)
+	}
+	three := 3
+	if _, err := repo.SetQuotas(ctx, ghost, api.QuotaInput{MaxServers: &three}, "pgint"); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("SetQuotas(ghost) = %v, want ErrNotFound", err)
+	}
+	if err := repo.LinkAccount(ctx, ghost, testUUID(t), "mojang"); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("LinkAccount(ghost) = %v, want ErrNotFound", err)
+	}
+
+	// Control: the same calls land for a live user.
+	u := newUser(t, "user", "subres")
+	if _, err := repo.SetQuotas(ctx, u.ID, api.QuotaInput{MaxServers: &three}, "pgint"); err != nil {
+		t.Fatalf("SetQuotas(live): %v", err)
+	}
+	got, err := repo.GetQuotas(ctx, u.ID)
+	if err != nil || got.MaxServers == nil || *got.MaxServers != 3 {
+		t.Fatalf("GetQuotas(live) = %+v, %v; want max_servers=3", got, err)
+	}
+	if err := repo.LinkAccount(ctx, u.ID, testUUID(t), "mojang"); err != nil {
+		t.Fatalf("LinkAccount(live): %v", err)
+	}
+
+	// A soft-deleted user is no longer a live target either.
+	if err := repo.DeleteUser(ctx, u.ID, "pgint"); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+	if _, err := repo.SetQuotas(ctx, u.ID, api.QuotaInput{MaxServers: &three}, "pgint"); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("SetQuotas(deleted) = %v, want ErrNotFound", err)
+	}
+}
+
 // The owner tier the panel gates on must actually be WRITTEN: until this
 // contract had a test, every provisioning path wrote 'admin', so the whole
 // owner surface (user administration) was unreachable in a fresh install.

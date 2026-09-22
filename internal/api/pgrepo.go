@@ -1632,8 +1632,13 @@ func (p *PGRepo) SetUserDisabled(ctx context.Context, userID string, disabled bo
 // ---- quota admin ----
 
 // GetQuotas returns the quotas row for a user, or a zero-value view when no
-// row exists (meaning unlimited).
+// row exists (meaning unlimited). An unknown or soft-deleted user id is
+// ErrNotFound, never a zero-value "unlimited" answer — the admin sub-resource
+// routes all 404 on a user that has no live row.
 func (p *PGRepo) GetQuotas(ctx context.Context, userID string) (*QuotaView, error) {
+	if err := p.requireLiveUser(ctx, userID); err != nil {
+		return nil, err
+	}
 	const q = `SELECT user_id, max_servers, max_cpu_milli, max_memory_mb, max_storage_gb
 		FROM quotas WHERE user_id = $1`
 	v := QuotaView{UserID: userID}
@@ -1647,9 +1652,29 @@ func (p *PGRepo) GetQuotas(ctx context.Context, userID string) (*QuotaView, erro
 	return &v, nil
 }
 
+// requireLiveUser gates the user-scoped admin sub-resources (quotas, account
+// links) on a live users row. Without it a write would hit the user_id foreign
+// key and surface as an opaque 500, and the read would answer as if a
+// never-existed id did; every admin route answers ErrNotFound → 404 instead.
+func (p *PGRepo) requireLiveUser(ctx context.Context, userID string) error {
+	var ok bool
+	if err := p.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL)`,
+		userID).Scan(&ok); err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // SetQuotas upserts a quotas row. Nil fields are left unchanged; a non-nil
 // zero-value field clears the cap.
 func (p *PGRepo) SetQuotas(ctx context.Context, userID string, qi QuotaInput, setBy string) (*QuotaView, error) {
+	if err := p.requireLiveUser(ctx, userID); err != nil {
+		return nil, err
+	}
 	type col struct {
 		name  string
 		value *int
@@ -1754,6 +1779,9 @@ func (p *PGRepo) UnlinkAccount(ctx context.Context, userID, mcUUID string) error
 // NOTHING on the UNIQUE(mc_uuid) constraint, plus an idempotency check via
 // EXISTS).
 func (p *PGRepo) LinkAccount(ctx context.Context, userID, mcUUID, authSource string) error {
+	if err := p.requireLiveUser(ctx, userID); err != nil {
+		return err
+	}
 	// Check idempotency first: already linked to this user → success.
 	var exists bool
 	if err := p.db.QueryRowContext(ctx,

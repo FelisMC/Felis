@@ -281,6 +281,10 @@ func (a *API) handleGetQuotas(w http.ResponseWriter, r *http.Request) {
 	}
 	v, err := a.Repo.GetQuotas(r.Context(), id)
 	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, r, newError(http.StatusNotFound, "not_found", "user not found"))
+			return
+		}
 		writeError(w, r, err)
 		return
 	}
@@ -475,6 +479,10 @@ func (a *API) handleLinkAccount(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, ErrConflict) {
 			writeError(w, r, newError(http.StatusConflict, "already_linked",
 				"this UUID is already linked to a different user"))
+			return
+		}
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, r, newError(http.StatusNotFound, "not_found", "user not found"))
 			return
 		}
 		writeError(w, r, err)

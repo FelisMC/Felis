@@ -51,3 +51,49 @@ func TestOwnerAccountProtectedFromPanelMutations(t *testing.T) {
 		}
 	})
 }
+
+// The user-scoped admin sub-resources (quotas, account links) must answer 404
+// for an unknown user id. Before the requireLiveUser guard the quota upsert and
+// the link insert reached the users(id) foreign key and surfaced as an opaque
+// 500 (found live against the drill cluster, audit #30), and the quotas read
+// answered a zero-value "unlimited" view as if the id existed.
+func TestAdminSubresourcesRequireLiveUser(t *testing.T) {
+	owner := &Principal{UserID: "usr-root", Role: "owner", ViaAdminAccess: true}
+	repo := newFakeRepo()
+	repo.seedUser(UserView{ID: "usr-root", Username: "root", Role: "owner"})
+	repo.seedUser(UserView{ID: "u2", Username: "alice", Role: "user"})
+	api := newTestAPI(repo, newFakeCluster())
+	api.External = staticExternal{p: owner}
+	eh := api.ExternalHandler()
+
+	t.Run("quotas read of an unknown user", func(t *testing.T) {
+		w := do(eh, "GET", "/api/v1/users/usr-nope/quotas", "", nil)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("code = %d body %s, want 404", w.Code, w.Body.String())
+		}
+	})
+	t.Run("quotas write of an unknown user", func(t *testing.T) {
+		w := do(eh, "PUT", "/api/v1/users/usr-nope/quotas", `{"max_servers":1}`, jsonHeader)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("code = %d body %s, want 404", w.Code, w.Body.String())
+		}
+	})
+	t.Run("account link of an unknown user", func(t *testing.T) {
+		w := do(eh, "POST", "/api/v1/users/usr-nope/links",
+			`{"mc_uuid":"22222222-3333-4444-5555-666666666666"}`, jsonHeader)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("code = %d body %s, want 404", w.Code, w.Body.String())
+		}
+	})
+	t.Run("control: a live user still accepts both writes", func(t *testing.T) {
+		w := do(eh, "PUT", "/api/v1/users/u2/quotas", `{"max_servers":2}`, jsonHeader)
+		if w.Code != http.StatusOK {
+			t.Fatalf("set quotas: code = %d body %s, want 200", w.Code, w.Body.String())
+		}
+		w = do(eh, "POST", "/api/v1/users/u2/links",
+			`{"mc_uuid":"22222222-3333-4444-5555-666666666677"}`, jsonHeader)
+		if w.Code != http.StatusOK {
+			t.Fatalf("link: code = %d body %s, want 200", w.Code, w.Body.String())
+		}
+	})
+}

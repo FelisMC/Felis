@@ -1106,7 +1106,22 @@ func (f *fakeRepo) RedeemMigration(_ context.Context, targetUserID, codeHash str
 
 // ---- quota admin fakes ----
 
+// liveUserExists mirrors PGRepo.requireLiveUser: the admin quota/link fakes
+// only act on a live seeded row, so a unit test can drive the unknown-user 404
+// the real FK would otherwise turn into a 500.
+func (f *fakeRepo) liveUserExists(id string) bool {
+	for _, su := range f.seededUsers {
+		if su.view.ID == id && su.detail.DeletedAt == nil {
+			return true
+		}
+	}
+	return false
+}
+
 func (f *fakeRepo) GetQuotas(_ context.Context, userID string) (*QuotaView, error) {
+	if !f.liveUserExists(userID) {
+		return nil, ErrNotFound
+	}
 	v := &QuotaView{UserID: userID}
 	if f.fakeQuotas == nil {
 		return v, nil
@@ -1121,6 +1136,9 @@ func (f *fakeRepo) GetQuotas(_ context.Context, userID string) (*QuotaView, erro
 }
 
 func (f *fakeRepo) SetQuotas(_ context.Context, userID string, qi QuotaInput, _ string) (*QuotaView, error) {
+	if !f.liveUserExists(userID) {
+		return nil, ErrNotFound
+	}
 	if f.fakeQuotas == nil {
 		f.fakeQuotas = map[string]*QuotaView{}
 	}
@@ -1173,6 +1191,9 @@ func (f *fakeRepo) UnlinkAccount(_ context.Context, userID, mcUUID string) error
 }
 
 func (f *fakeRepo) LinkAccount(_ context.Context, userID, mcUUID, authSource string) error {
+	if !f.liveUserExists(userID) {
+		return ErrNotFound
+	}
 	if existing, ok := f.links[mcUUID]; ok && existing != userID {
 		return ErrConflict
 	}
