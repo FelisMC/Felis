@@ -354,6 +354,13 @@ func (f *fakeRepo) VerifyEmailOTP(_ context.Context, userID, purpose, codeHash s
 		live.attempts++ // a typo costs an attempt but does not consume the code
 		return "", ErrOTPInvalid
 	}
+	// A DIFFERENT verified holder of the same address → ErrEmailTaken, code left
+	// live — mirrors PGRepo's guard + the users_verified_email_unique index.
+	for _, u := range f.staff {
+		if u.ID != userID && u.EmailVerified && strings.EqualFold(u.Email, live.email) {
+			return "", ErrEmailTaken
+		}
+	}
 	live.consumed = true
 	for _, u := range f.staff { // flip the user row verified (UPDATE users ...)
 		if u.ID == userID {

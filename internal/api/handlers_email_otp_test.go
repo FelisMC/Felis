@@ -339,6 +339,20 @@ func TestEmailOTPVerifyRejections(t *testing.T) {
 			t.Fatalf("code = %d body %s, want 429 otp_locked", w.Code, w.Body.String())
 		}
 	})
+	t.Run("address proven elsewhere -> 409 email_taken, not consumed", func(t *testing.T) {
+		repo := newFakeRepo()
+		live(repo, "tk", otpCodeHash("123456"), time.Unix(1_700_000_600, 0), 0)
+		// Another account already proved the same address: login resolves accounts
+		// BY verified email, so the second proof must be refused.
+		repo.staff["other"] = &StaffUser{ID: "u2", Email: "player@example.net", EmailVerified: true}
+		w := do(mk(repo), "POST", "/api/v1/account/email/verify", `{"code":"123456"}`, nil)
+		if w.Code != http.StatusConflict || decodeErr(t, w) != "email_taken" {
+			t.Fatalf("code = %d body %s, want 409 email_taken", w.Code, w.Body.String())
+		}
+		if repo.otps["tk"].consumed {
+			t.Error("a taken address must not consume the code")
+		}
+	})
 }
 
 // TestEmailOTPBruteForceLockout drives the lockout end-to-end through the handler:

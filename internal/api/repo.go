@@ -309,7 +309,10 @@ type Repo interface {
 	// mismatch increments attempts and returns ErrOTPInvalid WITHOUT consuming the
 	// code (so a typo does not burn it). On a match the code is consumed and the
 	// user row is flipped to email=<the proven address>, email_verified=true; the
-	// proven email is returned. now is the API clock so expiry is testable.
+	// proven email is returned — unless a DIFFERENT account has already proven the
+	// same address, which is ErrEmailTaken with the code left unconsumed (the
+	// address, not the code, is the problem). now is the API clock so expiry is
+	// testable.
 	//
 	// This is the ONBOARDING primitive: verifying the code is the moment the address
 	// becomes proven, so the write is load-bearing. The pre-session LOGIN door must
@@ -490,7 +493,7 @@ type Repo interface {
 	// (email_verified true), so a merely-asserted or unverified address never
 	// resolves to a session-mintable identity — an attacker cannot claim someone
 	// else's login by typing their email. Matching is on lower(email) to align with
-	// the users_verified_email_unique partial index (migration 0010), which
+	// the users_verified_email_unique partial index (migration 0020), which
 	// guarantees at most one verified row per normalized address, so the result is
 	// unambiguous. A player (role='user') row resolves too — email-first login is
 	// passwordless and role-agnostic here; the door that consumes this result decides

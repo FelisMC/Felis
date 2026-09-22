@@ -695,7 +695,9 @@ func (p *PGRepo) CreateEmailOTP(ctx context.Context, id, userID, email, codeHash
 // never silently accepted, and a hash mismatch costs an attempt (UPDATE attempts+1)
 // without consuming the code — a typo must not burn a still-valid code. On a match
 // the code is consumed and the user row is flipped verified, returning the proven
-// address. ErrOTPInvalid / ErrOTPLocked are the only domain errors.
+// address — unless a DIFFERENT account already proved the same address, which is
+// ErrEmailTaken with the code left unconsumed (the address, not the guess, is the
+// problem). ErrOTPInvalid / ErrOTPLocked / ErrEmailTaken are the only domain errors.
 func (p *PGRepo) VerifyEmailOTP(ctx context.Context, userID, purpose, codeHash string, now time.Time) (string, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -738,12 +740,35 @@ func (p *PGRepo) VerifyEmailOTP(ctx context.Context, userID, purpose, codeHash s
 		return "", ErrOTPInvalid
 	}
 
+	// A DIFFERENT account may not also prove this address: the pre-session login
+	// door resolves accounts BY verified email (UserByEmail), so a second verified
+	// holder would make the identity ambiguous. The code is NOT consumed and no
+	// attempt is charged — the address, not the guess, is the problem. The check is
+	// the application-level counterpart of the users_verified_email_unique index
+	// (migration 0020), which catches a cross-user race that passes this SELECT.
+	var taken bool
+	if err := tx.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM users
+		 WHERE lower(email) = lower($1) AND email_verified = true AND id <> $2)`,
+		email, userID).Scan(&taken); err != nil {
+		return "", fmt.Errorf("check verified-email uniqueness: %w", err)
+	}
+	if taken {
+		return "", ErrEmailTaken
+	}
+
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE email_otps SET consumed_at = $2 WHERE id = $1`, id, now); err != nil {
 		return "", fmt.Errorf("consume otp: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE users SET email = $2, email_verified = true WHERE id = $1`, userID, email); err != nil {
+		// Lost the race the guarded SELECT above cannot serialise: the index rejects
+		// the second write, and it reads as the same answer the sequential path gives.
+		// The rollback undoes the OTP consumption with it, so the code stays live.
+		if isUniqueViolation(err) {
+			return "", ErrEmailTaken
+		}
 		return "", fmt.Errorf("mark email verified: %w", err)
 	}
 	if err := tx.Commit(); err != nil {

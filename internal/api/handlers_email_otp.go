@@ -187,9 +187,11 @@ type emailOTPVerifyRequest struct {
 
 // handleEmailOTPVerify redeems a code for the caller (spec §B2, external app face).
 // Outcomes mirror the link-verify shape: an invalid/expired/mismatched code → 400
-// invalid_code, a locked code (too many wrong guesses) → 429 otp_locked, and on
-// success the user's email is written and email_verified flips true. The verified
-// address is echoed so the panel can render it.
+// invalid_code, a locked code (too many wrong guesses) → 429 otp_locked, an address
+// another account already proved → 409 email_taken (the code stays live — the
+// address, not the code, is the problem), and on success the user's email is
+// written and email_verified flips true. The verified address is echoed so the
+// panel can render it.
 func (a *API) handleEmailOTPVerify(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	var req emailOTPVerifyRequest
@@ -210,6 +212,10 @@ func (a *API) handleEmailOTPVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, ErrOTPInvalid):
 		writeError(w, r, newError(http.StatusBadRequest, "invalid_code", "email code is invalid or expired"))
+		return
+	case errors.Is(err, ErrEmailTaken):
+		writeError(w, r, newError(http.StatusConflict, "email_taken",
+			"that email is already verified on another account; sign in with it or use another address"))
 		return
 	case err != nil:
 		writeError(w, r, err)

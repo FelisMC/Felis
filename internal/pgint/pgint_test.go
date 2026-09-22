@@ -231,6 +231,48 @@ func TestOnboardingEmailOTPContract(t *testing.T) {
 	assertConsumed(t, u.ID, purpose, false)
 }
 
+// The verified-email uniqueness guard: two accounts cannot prove the same
+// address (the login door resolves accounts BY verified email, so a duplicate
+// would make identity ambiguous). This is the guard ConsumeLoginEmailOTP
+// deliberately skips.
+func TestOnboardingEmailOTPRejectsTakenEmail(t *testing.T) {
+	ctx := context.Background()
+	a, b := newUser(t, "user", "take-a"), newUser(t, "user", "take-b")
+	addr := "shared-" + suffix(t) + "@example.net"
+	now := mustNow()
+	purpose := "onboard_email"
+
+	if err := repo.CreateEmailOTP(ctx, "tka-"+suffix(t), a.ID, addr, "h-a", purpose, now.Add(5*time.Minute)); err != nil {
+		t.Fatalf("CreateEmailOTP(a): %v", err)
+	}
+	if _, err := repo.VerifyEmailOTP(ctx, a.ID, purpose, "h-a", now); err != nil {
+		t.Fatalf("verify a: %v", err)
+	}
+	if err := repo.CreateEmailOTP(ctx, "tkb-"+suffix(t), b.ID, addr, "h-b", purpose, now.Add(5*time.Minute)); err != nil {
+		t.Fatalf("CreateEmailOTP(b): %v", err)
+	}
+	if _, err := repo.VerifyEmailOTP(ctx, b.ID, purpose, "h-b", now); !errors.Is(err, api.ErrEmailTaken) {
+		t.Fatalf("second account proving a taken email = %v, want ErrEmailTaken", err)
+	}
+	// The address, not the code, was the problem: b's code stays live.
+	assertConsumed(t, b.ID, purpose, false)
+	// The invariant is also enforced by the database, not only the app guard: a
+	// direct write that bypasses VerifyEmailOTP still loses (uppercased to prove
+	// the index keys on lower(email)).
+	if _, err := db.ExecContext(ctx,
+		`UPDATE users SET email = $2, email_verified = true WHERE id = $1`, b.ID, strings.ToUpper(addr)); err == nil {
+		t.Fatal("a direct duplicate verified-email write succeeded; users_verified_email_unique is missing")
+	}
+	// And the refusal does not wedge b: its OWN address still verifies fine.
+	own := "own-" + suffix(t) + "@example.net"
+	if err := repo.CreateEmailOTP(ctx, "tkb2-"+suffix(t), b.ID, own, "h-b2", purpose, now.Add(5*time.Minute)); err != nil {
+		t.Fatalf("CreateEmailOTP(b, own): %v", err)
+	}
+	if _, err := repo.VerifyEmailOTP(ctx, b.ID, purpose, "h-b2", now); err != nil {
+		t.Fatalf("b must still be able to prove its own address: %v", err)
+	}
+}
+
 // ---- email OTP: pre-session login primitive (regression: the #16 drift) --------
 
 func TestConsumeLoginEmailOTPContract(t *testing.T) {

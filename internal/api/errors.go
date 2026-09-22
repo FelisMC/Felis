@@ -51,7 +51,8 @@ var (
 	// the handler answers 403 (wrong door) rather than 409 (already linked).
 	ErrPlayerBindForbidden = errors.New("bind code belongs to a staff account")
 	// ErrEmailTaken means a verified email would collide with another account's
-	// already-verified address (spec §B email-first login foundation, migration 0010).
+	// already-verified address (spec §B email-first login foundation; the
+	// users_verified_email_unique index ships in migration 0020).
 	// VerifyEmailOTP returns it — WITHOUT consuming the code, since the address, not
 	// the code, is the problem — when a DIFFERENT user has already proven the same
 	// address case-insensitively. It is the clean, application-level counterpart of
