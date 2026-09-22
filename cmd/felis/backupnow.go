@@ -86,23 +86,31 @@ func requestBackup(ctx context.Context, hc *http.Client, baseURL, token, name, o
 
 // backupErrorFromResponse turns a non-202 into a human message. The well-known codes get
 // an operator-facing explanation; anything else falls back to the API's
-// {"error":{message}} body, then the bare status code.
+// {"error":{code,message}} body, then the bare status code.
 func backupErrorFromResponse(resp *http.Response) error {
-	switch resp.StatusCode {
-	case http.StatusConflict: // not_stopped
-		return fmt.Errorf("the server must be stopped before its world can be backed up — halt it first")
-	case http.StatusServiceUnavailable: // backup_unavailable
-		return fmt.Errorf("the backup subsystem is not configured on felis-api (FELIS_IMAGE / FELIS_BACKUP_PVC unset)")
-	case http.StatusNotFound:
-		return fmt.Errorf("no such server")
-	}
 	var e struct {
 		Error struct {
+			Code    string `json:"code"`
 			Message string `json:"message"`
 		} `json:"error"`
 	}
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
 	_ = json.Unmarshal(raw, &e)
+
+	switch resp.StatusCode {
+	case http.StatusConflict:
+		// Two refusals share 409: the stopped gate and the missing-world-volume
+		// gate. The body's code distinguishes them; a code-less body reads as the
+		// stopped gate (the only 409 before the volume gate existed), and any other
+		// coded 409 falls through to the API's own operator text.
+		if e.Error.Code == "" || e.Error.Code == "not_stopped" {
+			return fmt.Errorf("the server must be stopped before its world can be backed up — halt it first")
+		}
+	case http.StatusServiceUnavailable: // backup_unavailable
+		return fmt.Errorf("the backup subsystem is not configured on felis-api (FELIS_IMAGE / FELIS_BACKUP_PVC unset)")
+	case http.StatusNotFound:
+		return fmt.Errorf("no such server")
+	}
 	if e.Error.Message != "" {
 		return fmt.Errorf("felis-api: %s", e.Error.Message)
 	}
@@ -119,4 +127,20 @@ func performBackupNow(ctx context.Context, cl client.Client, controlNamespace, n
 	}
 	hc := &http.Client{Timeout: 10 * time.Second}
 	return requestBackup(ctx, hc, baseURL, token, name, osUser)
+}
+
+// backupPickable narrows the backup picker to servers the backup API can accept.
+// System servers (login/lobby) are excluded: they have no row in the servers
+// table and carry reserved names, so every attempt dies in name validation —
+// offering them would be a dead pick. The halt picker keeps them on purpose
+// (break-glass retains full power over system servers); only the API-backed
+// backup op cannot reach them.
+func backupPickable(servers []haltableServer) []haltableServer {
+	out := make([]haltableServer, 0, len(servers))
+	for _, s := range servers {
+		if !s.system {
+			out = append(out, s)
+		}
+	}
+	return out
 }

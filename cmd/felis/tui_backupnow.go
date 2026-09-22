@@ -86,7 +86,7 @@ func (m *backupModel) loadCmd() tea.Cmd {
 		if err != nil {
 			return backupListMsg{err: fmt.Errorf("list servers: %w", err)}
 		}
-		return backupListMsg{cl: cl, servers: servers}
+		return backupListMsg{cl: cl, servers: backupPickable(servers)}
 	}
 }
 

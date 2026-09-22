@@ -114,16 +114,23 @@ func TestRequestBackup(t *testing.T) {
 	cases := []struct {
 		name   string
 		code   int
+		body   string // optional JSON error body
 		expect string
 	}{
-		{"409 not_stopped", http.StatusConflict, "must be stopped"},
-		{"503 backup_unavailable", http.StatusServiceUnavailable, "not configured"},
-		{"404 not found", http.StatusNotFound, "no such server"},
+		{"409 not_stopped", http.StatusConflict, "", "must be stopped"},
+		{"409 no_world_volume surfaces the API's own text", http.StatusConflict,
+			`{"error":{"code":"no_world_volume","message":"this server has no world volume yet — start it once to create it, then retry"}}`,
+			"no world volume yet"},
+		{"503 backup_unavailable", http.StatusServiceUnavailable, "", "not configured"},
+		{"404 not found", http.StatusNotFound, "", "no such server"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(tc.code)
+				if tc.body != "" {
+					_, _ = io.WriteString(w, tc.body)
+				}
 			}))
 			defer srv.Close()
 			_, err := requestBackup(context.Background(), hc, srv.URL, "tok", "survival", "alice")
@@ -141,4 +148,26 @@ func TestRequestBackup(t *testing.T) {
 			t.Fatalf("err = %v, want an 'unreachable' transport error", err)
 		}
 	})
+}
+
+// The Sync picker must not offer system servers: the backup API validates names
+// and resolves a servers-table row, so a lobby/login pick can only die in
+// validation — a dead choice in an emergency console.
+func TestBackupPickable(t *testing.T) {
+	got := backupPickable([]haltableServer{
+		{name: "lobby", phase: "Running", system: true},
+		{name: "login", phase: "Running", system: true},
+		{name: "test-one", phase: "Stopped"},
+	})
+	if len(got) != 1 || got[0].name != "test-one" || got[0].system {
+		t.Fatalf("backupPickable = %+v, want only the user server", got)
+	}
+
+	// Survivors keep their input order (the picker's cursor math depends on it).
+	got = backupPickable([]haltableServer{
+		{name: "alpha"}, {name: "login", system: true}, {name: "beta"},
+	})
+	if len(got) != 2 || got[0].name != "alpha" || got[1].name != "beta" {
+		t.Fatalf("backupPickable order = %+v, want [alpha beta]", got)
+	}
 }
