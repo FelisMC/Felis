@@ -308,6 +308,17 @@ url = "postgres://felis@db/felis"
 	}
 }
 
+// TestLoadRejectsPaddedAuthSourceTag: whitespace around a tag cannot be seen in the file but
+// is part of the namespace every player UUID of the source is hashed from.
+func TestLoadRejectsPaddedAuthSourceTag(t *testing.T) {
+	for _, tag := range []string{"littleskin ", " littleskin", "littleskin\t"} {
+		_, err := config.LoadNano(writeTOML(t, "[[auth_source]]\ntag = \""+tag+"\"\nprefix = \"LS\"\nurl = \"https://a.example.net/hasJoined\"\n"))
+		if err == nil || !strings.Contains(err.Error(), "whitespace") {
+			t.Errorf("tag %q: err = %v, want a whitespace refusal", tag, err)
+		}
+	}
+}
+
 // TestLoadRejectsMojangAuthSourceTag: Mojang is prepended in code, so a listed "mojang" is a
 // second, different source that only looks like a Mojang override.
 func TestLoadRejectsMojangAuthSourceTag(t *testing.T) {

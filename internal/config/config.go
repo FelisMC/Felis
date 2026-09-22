@@ -37,8 +37,11 @@ type Config struct {
 
 // AuthSourceConfig is one [[auth_source]] entry: a third-party Yggdrasil root the
 // Felis-nano multiplexer federates over. Tag names the source's per-source UUID
-// namespace (must be unique — two sources sharing a tag would collide onto one identity);
-// URL is the full hasJoined endpoint (scheme-qualified) the query string is appended to.
+// namespace (must be unique — two sources sharing a tag would collide onto one identity).
+// It is permanent: every player UUID of the source is hashed from it byte for byte, so
+// changing it, even its case, gives all of them new UUIDs and orphans their playerdata,
+// account links and bans. URL is the full hasJoined endpoint (scheme-qualified) the query
+// string is appended to.
 // Prefix is what a player from this source is renamed with when their name belongs to a
 // Mojang player (LS_steve) — player-visible, so it is written out rather than derived from
 // the tag, which cannot know that "littleskin" is meant to read LS.
@@ -359,10 +362,15 @@ func (c *Config) validateAuthSources() error {
 		// A player's UUID is derived from tag+":"+nativeID, and the native id is whatever the
 		// source says it is. With a ':' allowed in tags, "guild" answering id "eu:X" hashes
 		// exactly like "guild:eu" answering "X", so one source could mint another's players.
-		// Colon-free tags make the join unambiguous; nothing else about the tag is restricted,
-		// because renaming an existing tag would move every one of its players to a new UUID.
+		// Colon-free tags make the join unambiguous. The charset is otherwise left open, because
+		// renaming an existing tag would move every one of its players to a new UUID.
 		if strings.Contains(s.Tag, ":") {
 			return fmt.Errorf("config: [[auth_source]] tag %q contains ':'; the tag and a player's native id are joined with ':' to derive their UUID, so a ':' in a tag would let another source mint this source's players", s.Tag)
+		}
+		// Refused for the same permanence: a stray space is invisible in the file yet is a
+		// different namespace, and so a different UUID for every player of the source.
+		if strings.TrimSpace(s.Tag) != s.Tag {
+			return fmt.Errorf("config: [[auth_source]] tag %q has leading or trailing whitespace; the tag is hashed into every player UUID of the source, so an invisible edit to it would give all of them new ones", s.Tag)
 		}
 		// Mojang is the built-in first source. A listed "mojang" is never it: it is asked again,
 		// after Mojang, on every login that reaches it, and nano's startup list then reads as if
