@@ -1878,29 +1878,61 @@ func (p *PGRepo) UserByEmail(ctx context.Context, email string) (*StaffUser, err
 	return &u, nil
 }
 
-// ConsumeLoginEmailOTP redeems a live code for the PRE-SESSION email login door.
-// Unlike VerifyEmailOTP it has no identity side-effects: it neither writes
-// users.email nor runs the verified-email uniqueness guard — login already
-// resolved the userID via UserByEmail, which requires email_verified, so the
-// address is settled. Zero rows affected (no live code, expired, consumed, or
-// hash mismatch) → ErrNotFound.
+// ConsumeLoginEmailOTP redeems the live code for the PRE-SESSION email login door
+// with the SAME lifecycle as VerifyEmailOTP (FOR UPDATE, expiry + attempt cap
+// before the hash compare, a mismatch charges one attempt without consuming) but
+// with NO identity side-effects: it neither writes users.email nor runs the
+// verified-email uniqueness guard — login already resolved the userID via
+// UserByEmail, which requires email_verified, so the address is settled. Errors
+// are exactly ErrOTPInvalid / ErrOTPLocked (ErrEmailTaken is structurally
+// impossible here).
 func (p *PGRepo) ConsumeLoginEmailOTP(ctx context.Context, userID, purpose, codeHash string, now time.Time) error {
-	res, err := p.db.ExecContext(ctx,
-		`UPDATE email_otps SET consumed_at = $4
-		 WHERE user_id = $1 AND purpose = $2 AND code_hash = $3
-		   AND consumed_at IS NULL AND expires_at > $4`,
-		userID, purpose, codeHash, now)
+	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+
+	var (
+		id         string
+		storedHash string
+		attempts   int
+		expiresAt  time.Time
+	)
+	switch err := tx.QueryRowContext(ctx,
+		`SELECT id, code_hash, attempts, expires_at FROM email_otps
+		 WHERE user_id = $1 AND purpose = $2 AND consumed_at IS NULL
+		 ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+		userID, purpose).Scan(&id, &storedHash, &attempts, &expiresAt); {
+	case errors.Is(err, sql.ErrNoRows):
+		// Nothing live: never minted, already consumed, or superseded.
+		return ErrOTPInvalid
+	case err != nil:
 		return err
 	}
-	if n == 0 {
-		return ErrNotFound
+
+	if !expiresAt.After(now) {
+		return ErrOTPInvalid
 	}
-	return nil
+	if attempts >= otpMaxAttempts {
+		return ErrOTPLocked
+	}
+	if storedHash != codeHash {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE email_otps SET attempts = attempts + 1 WHERE id = $1`, id); err != nil {
+			return fmt.Errorf("record otp attempt: %w", err)
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		return ErrOTPInvalid
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE email_otps SET consumed_at = $2 WHERE id = $1`, id, now); err != nil {
+		return fmt.Errorf("consume otp: %w", err)
+	}
+	return tx.Commit()
 }
 
 // ---- op.console staff login: in-game approval state machine (spec §B op-login) ----
