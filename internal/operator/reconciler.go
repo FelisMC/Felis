@@ -7,6 +7,7 @@ package operator
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"time"
@@ -40,6 +41,21 @@ const (
 	defaultReadinessTimeoutSec = 300
 )
 
+// RconSecretAnnotation stamps the pod template with a fingerprint of the
+// current RCON password. If the Secret is ever lost (its deletion destroys the
+// password) and re-provisioned, the fingerprint changes and the StatefulSet
+// rolls the pod onto the new password. Without it the running pod keeps
+// authenticating with the old value while the operator probes with the new
+// one, and the RCON gate fails until someone restarts the pod by hand.
+const RconSecretAnnotation = "felis.lolicon.best/rcon-secret"
+
+// rconStamp fingerprints an RCON password for RconSecretAnnotation. 64 bits of
+// SHA-256: enough to never confuse two passwords, short enough to read.
+func rconStamp(password []byte) string {
+	sum := sha256.Sum256(password)
+	return hex.EncodeToString(sum[:8])
+}
+
 // Reconciler reconciles a MinecraftServer with its managed children.
 type Reconciler struct {
 	client.Client
@@ -69,6 +85,10 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&v1alpha1.MinecraftServer{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
+		// Owns the Secrets too: the per-server RCON password is managed here,
+		// and a watch is what lets a deleted Secret be noticed at all (a quiet
+		// Running server otherwise produces no events).
+		Owns(&corev1.Secret{}).
 		Complete(r)
 }
 
@@ -100,7 +120,8 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 	// secretKeyRef, so a pod created ahead of its Secret never starts — it sits in
 	// CreateContainerConfigError, which reads like a broken image rather than a
 	// missing key.
-	if err := r.ensureRconSecret(ctx, server); err != nil {
+	passwordStamp, err := r.ensureRconSecret(ctx, server)
+	if err != nil {
 		r.markStarting(server, "RconSecretUnavailable", err.Error())
 		if perr := r.patchStatus(ctx, server); perr != nil {
 			return ctrl.Result{}, perr
@@ -113,6 +134,12 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		// A malformed spec (e.g. bad storage quantity) is terminal until edited.
 		r.markFailed(server, "InvalidSpec", err.Error())
 		return ctrl.Result{}, r.patchStatus(ctx, server)
+	}
+	if passwordStamp != "" {
+		if desired.Spec.Template.Annotations == nil {
+			desired.Spec.Template.Annotations = map[string]string{}
+		}
+		desired.Spec.Template.Annotations[RconSecretAnnotation] = passwordStamp
 	}
 	if err := controllerutil.SetControllerReference(server, desired, r.Scheme); err != nil {
 		return ctrl.Result{}, err
@@ -281,41 +308,44 @@ func (r *Reconciler) ensureServices(ctx context.Context, server *v1alpha1.Minecr
 // ensureRconSecret creates the per-server RCON password Secret named by
 // spec.rcon.secretRef the first time a server with RCON enabled reconciles, and
 // leaves it alone afterwards. Provisioning lives here rather than in felis-api's
-// CreateServer for three reasons: it is declarative (a server whose Secret was
-// deleted heals on the next pass instead of staying permanently unreachable), the
-// controller reference makes Kubernetes garbage-collect the Secret with the server
-// so no delete path has to remember it, and it backfills — a server created before
-// RCON existed only needs spec.rcon filled in, and the password appears without
-// anyone handling it. felis-api never mints the password and never needs to: it
-// reads the Secret at command time (internal/api/console.go rconPassword).
+// CreateServer for three reasons: it is declarative (a deleted Secret is
+// re-minted on the next pass), the controller reference makes Kubernetes
+// garbage-collect the Secret with the server so no delete path has to remember
+// it, and it backfills — a server created before RCON existed only needs
+// spec.rcon filled in, and the password appears without anyone handling it.
+// felis-api never mints the password and never needs to: it reads the Secret at
+// command time (internal/api/console.go rconPassword).
 //
 // The password is 32 hex chars from crypto/rand. It is generated once and never
 // rotated here: rewriting it would leave the running server authenticating with
 // the old value until its pod restarts, so rotation belongs to an explicit
-// operation, not to a reconcile that runs every few seconds.
-func (r *Reconciler) ensureRconSecret(ctx context.Context, server *v1alpha1.MinecraftServer) error {
+// operation, not to a reconcile that runs every few seconds. Re-creation after
+// a deletion is the one case where a fresh password must reach the pod — the
+// caller stamps the returned fingerprint onto the pod template, so the
+// StatefulSet rolls exactly when the password underneath it changes.
+func (r *Reconciler) ensureRconSecret(ctx context.Context, server *v1alpha1.MinecraftServer) (string, error) {
 	if !server.Spec.Rcon.Enabled {
-		return nil
+		return "", nil
 	}
 	ref := server.Spec.Rcon.SecretRef
 	if ref.Name == "" || ref.Key == "" {
-		return fmt.Errorf("rcon.secretRef.name and .key are required when rcon is enabled")
+		return "", fmt.Errorf("rcon.secretRef.name and .key are required when rcon is enabled")
 	}
 	var existing corev1.Secret
 	err := r.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: ref.Name}, &existing)
 	if err == nil {
-		if _, ok := existing.Data[ref.Key]; ok {
-			return nil
+		if b, ok := existing.Data[ref.Key]; ok {
+			return rconStamp(b), nil
 		}
-		return fmt.Errorf("secret %s exists but has no key %q", ref.Name, ref.Key)
+		return "", fmt.Errorf("secret %s exists but has no key %q", ref.Name, ref.Key)
 	}
 	if !apierrors.IsNotFound(err) {
-		return err
+		return "", err
 	}
 
 	password, err := randomRconPassword()
 	if err != nil {
-		return err
+		return "", err
 	}
 	secret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
@@ -331,17 +361,24 @@ func (r *Reconciler) ensureRconSecret(ctx context.Context, server *v1alpha1.Mine
 		Data: map[string][]byte{ref.Key: []byte(password)},
 	}
 	if err := controllerutil.SetControllerReference(server, secret, r.Scheme); err != nil {
-		return err
+		return "", err
 	}
 	if err := r.Create(ctx, secret); err != nil {
 		// Another reconcile (or a racing replica) won: that Secret is as good as
-		// this one, so treat the collision as success rather than thrashing.
+		// this one, but the stamp must match what the next pass will read, so
+		// fetch the winner — a stale cache here just requeues (the caller's
+		// RconSecretUnavailable path retries in 10s) instead of stamping a
+		// value that would flip on the next reconcile and roll the pod twice.
 		if apierrors.IsAlreadyExists(err) {
-			return nil
+			var winner corev1.Secret
+			if gerr := r.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: ref.Name}, &winner); gerr != nil {
+				return "", gerr
+			}
+			return rconStamp(winner.Data[ref.Key]), nil
 		}
-		return err
+		return "", err
 	}
-	return nil
+	return rconStamp([]byte(password)), nil
 }
 
 // randomRconPassword returns 16 crypto/rand bytes as hex. Hex, not base64: the

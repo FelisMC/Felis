@@ -487,6 +487,69 @@ func TestNoIdleRequeueWhenDisabled(t *testing.T) {
 	}
 }
 
+// TestRconStamp_StableAcrossReconciles pins that the pod template stamp does
+// not drift while the Secret is untouched — a drifting value would roll the
+// pod on every reconcile.
+func TestRconStamp_StableAcrossReconciles(t *testing.T) {
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20}}, runningServer(), rconSecret())
+
+	reconcile(t, r, "survival")
+	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival")
+
+	first := stsTemplateStamp(t, c, "survival")
+	if first == "" {
+		t.Fatal("pod template must carry the RCON secret stamp")
+	}
+	reconcile(t, r, "survival")
+	if second := stsTemplateStamp(t, c, "survival"); second != first {
+		t.Fatalf("stamp drifted from %q to %q across reconciles", first, second)
+	}
+}
+
+// TestRconSecretRecreation_RollsTemplate is the regression for the live lockup:
+// deleting the Secret re-mints a different password, and the pod must be
+// rolled onto it — otherwise the old pod keeps authenticating with the lost
+// password and the RCON gate fails forever.
+func TestRconSecretRecreation_RollsTemplate(t *testing.T) {
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20}}, runningServer(), rconSecret())
+
+	reconcile(t, r, "survival")
+	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival")
+	before := stsTemplateStamp(t, c, "survival")
+	if before == "" {
+		t.Fatal("pod template must carry the RCON secret stamp")
+	}
+
+	var sec corev1.Secret
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "minecraft", Name: "survival-rcon"}, &sec); err != nil {
+		t.Fatalf("get secret: %v", err)
+	}
+	if err := c.Delete(context.Background(), &sec); err != nil {
+		t.Fatalf("delete secret: %v", err)
+	}
+
+	reconcile(t, r, "survival")
+
+	after := stsTemplateStamp(t, c, "survival")
+	if after == "" {
+		t.Fatal("pod template must carry the RCON secret stamp after re-creation")
+	}
+	if after == before {
+		t.Fatalf("stamp %q unchanged after the Secret was re-created — the pod would keep the lost password", before)
+	}
+}
+
+func stsTemplateStamp(t *testing.T, c client.Client, name string) string {
+	t.Helper()
+	var sts appsv1.StatefulSet
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "minecraft", Name: name}, &sts); err != nil {
+		t.Fatalf("get sts: %v", err)
+	}
+	return sts.Spec.Template.Annotations[operator.RconSecretAnnotation]
+}
+
 // TestIdleAutoStop_SkipsWhenDisabled verifies that a Running empty server does
 // NOT get an EmptySince timestamp when AutoStopEnabled is false.
 func TestIdleAutoStop_SkipsWhenDisabled(t *testing.T) {
