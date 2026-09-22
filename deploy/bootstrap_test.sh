@@ -132,6 +132,53 @@ esac
 out="$(run_velocity_install "$vwant")"
 expect "the matching download installs" "INSTALL: ${vdir}/velocity.jar" "$out"
 
+# --- [[auth_source]] carry-forward -----------------------------------------------------
+# write_felis_toml regenerates felis.toml wholesale on every run; this is what keeps the
+# operator's Yggdrasil roots from being reset to the shipped default.
+
+ablock="$(awk '/^persisted_auth_source_blocks\(\) \{/,/^}/' "$BS")"
+[ -n "$ablock" ] || { echo "FAIL: no persisted_auth_source_blocks found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$ablock" | wc -l)" -lt 20 ] \
+  || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
+
+sdir="$(mktemp -d)"
+trap 'rm -f "$jar"; rm -rf "$vdir" "$sdir"' EXIT
+
+run_carry() {
+  STATE_DIR="$sdir" bash -c "$ablock"'
+    persisted_auth_source_blocks'
+}
+
+out="$(run_carry)"
+expect "a first install gets the LittleSkin default" 'tag = "littleskin"' "$out"
+
+printf '%s\n' '[server]' 'listen = "0.0.0.0:8080"' '' '[[auth_source]]' 'tag = "guild"' \
+  'prefix = "GD"' 'url = "https://guild.example/hasJoined"' '' '[smtp]' 'host = "mail.example"' \
+  > "$sdir/felis.host.toml"
+out="$(run_carry)"
+expect "an operator's root is carried forward" 'tag = "guild"' "$out"
+case "$out" in
+  *littleskin*|*"[smtp]"*) echo "FAIL the carried list must be exactly the operator's tables:"; echo "$out"; fails=$((fails + 1)) ;;
+  *) echo "PASS the carried list stops at the next section and adds no default" ;;
+esac
+
+printf '%s\n' '[server]' 'listen = "0.0.0.0:8080"' > "$sdir/felis.host.toml"
+out="$(run_carry)"
+if [ -z "$out" ]; then
+  echo "PASS a config with no sources stays Mojang-only"
+else
+  echo "FAIL a config with no sources must not get the default back:"; echo "$out"; fails=$((fails + 1))
+fi
+
+# The felis setup TUI re-encodes the whole file, which indents keys under each table.
+rm -f "$sdir/felis.host.toml"
+printf '%s\n' '[[auth_source]]' '  tag = "littleskin"' '  prefix = "LS"' '  url = "https://a.example"' \
+  '' '[[auth_source]]' '  tag = "guild"' '  prefix = "GD"' '  url = "https://b.example"' \
+  > "$sdir/felis.pod.toml"
+out="$(run_carry)"
+expect "both encoder-written tables are carried (first)" '  tag = "littleskin"' "$out"
+expect "both encoder-written tables are carried (second)" '  tag = "guild"' "$out"
+
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"
