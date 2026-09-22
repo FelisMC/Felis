@@ -2300,7 +2300,11 @@ acquire_nano_binary() {
 
 write_nano_config() {
   local target="${STATE_DIR}/felis.toml"
-  mkdir -p "$STATE_DIR"
+  # The unit is a DynamicUser, so it can read felis.toml only if it can search this
+  # directory. The mode is explicit because a hardened root umask (027) would leave it 0750.
+  # An existing directory keeps its mode: the full install locks it to 0700 for its secrets,
+  # and install_nano_service reports that lockout rather than this widening it.
+  [ -d "$STATE_DIR" ] || mkdir -p -m 0755 "$STATE_DIR"
   if [ -e "$target" ]; then
     ok "config already present at ${target}; leaving it (edit it to add [[auth_source]] roots)"
     return 0

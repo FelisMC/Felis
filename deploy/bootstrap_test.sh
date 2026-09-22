@@ -179,6 +179,33 @@ out="$(run_carry)"
 expect "both encoder-written tables are carried (first)" '  tag = "littleskin"' "$out"
 expect "both encoder-written tables are carried (second)" '  tag = "guild"' "$out"
 
+# --- write_nano_config leaves the unit able to read its config ---------------------------
+# felis-nano runs as a DynamicUser, so the directory must be searchable by others under a
+# hardened umask too -- but an existing one, which the full install locks to 0700 for its
+# secrets, must not be widened.
+
+wblock="$(awk '/^write_nano_config\(\) \{/,/^}/' "$BS")"
+[ -n "$wblock" ] || { echo "FAIL: no write_nano_config found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$wblock" | wc -l)" -lt 40 ] \
+  || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
+
+run_nano_config() { # state-dir
+  STATE_DIR="$1" bash -c 'umask 027
+    ok() { printf "OK: %s\n" "$*"; }
+    '"$wblock"'
+    write_nano_config'
+}
+
+mkdir "$sdir/probe" && chmod 0700 "$sdir/probe"
+if [ "$(stat -c %a "$sdir/probe")" = 700 ]; then
+  run_nano_config "$sdir/nano" >/dev/null
+  expect "a fresh config dir is searchable under umask 027" 755 "$(stat -c %a "$sdir/nano")"
+  run_nano_config "$sdir/probe" >/dev/null
+  expect "an existing 0700 dir is not widened" 700 "$(stat -c %a "$sdir/probe")"
+else
+  echo "SKIP directory modes: this filesystem ignores chmod"
+fi
+
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"
