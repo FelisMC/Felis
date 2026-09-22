@@ -571,12 +571,10 @@ type breakGlassResult struct {
 	backupStatus string
 
 	// Cloudflare-specific edge detail (set only when connectMethod is Cloudflare)
-	edgeConfigured    bool
-	edgeAud           string
-	edgeRoutedHosts   []string
-	edgeConfigPath    string
-	edgePanelHostname string
-	edgeAdminHostname string
+	edgeConfigured  bool
+	edgeAud         string
+	edgeRoutedHosts []string
+	edgeConfigPath  string
 }
 
 type consoleMode string

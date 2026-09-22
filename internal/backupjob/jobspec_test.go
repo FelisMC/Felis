@@ -181,8 +181,8 @@ func TestBackupJobArgsCarryServerAndOwner(t *testing.T) {
 
 func TestBackupJobRejectsMissingInputs(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		mut   func(*JobParams)
+		name string
+		mut  func(*JobParams)
 	}{
 		{"no image", func(p *JobParams) { p.Image = "" }},
 		{"no world pvc", func(p *JobParams) { p.WorldPVC = "" }},

@@ -51,7 +51,7 @@ func resolveInternalAPI(ctx context.Context, cl client.Client, controlNamespace 
 	}
 	token = string(sec.Data[naming.ServiceTokenSecretKey])
 	if token == "" {
-		return "", "", fmt.Errorf("Secret %s has no %s key", naming.ServiceTokenSecretName, naming.ServiceTokenSecretKey)
+		return "", "", fmt.Errorf("secret %s has no %s key", naming.ServiceTokenSecretName, naming.ServiceTokenSecretKey)
 	}
 
 	return fmt.Sprintf("http://%s:%d", ip, platform.APIInternalPort), token, nil

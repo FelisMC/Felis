@@ -705,8 +705,8 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 	// base ceiling to widen (this endpoint does not read the current spec back), so
 	// it is rejected rather than guessed.
 	var (
-		newResources   corev1.ResourceRequirements
-		resUpdated     bool
+		newResources corev1.ResourceRequirements
+		resUpdated   bool
 	)
 	if body.Memory != nil {
 		javaMemory, resources, err := resolveResources(*body.Memory, body.Resources)

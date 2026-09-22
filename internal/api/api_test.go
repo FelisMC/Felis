@@ -242,7 +242,7 @@ func (f *fakeRepo) QuotaCheck(_ context.Context, userID string, _ string, _ Reso
 	// For hermetic tests, QuotaCheck delegates to the same QuotaAvailable
 	// store — tests that care about per-dimension checks should use
 	// fakeQuotas with direct inspection.
-	return f.QuotaAvailable(nil, userID)
+	return f.QuotaAvailable(context.TODO(), userID)
 }
 
 func (f *fakeRepo) UpdateServerResources(_ context.Context, _ string, _, _, _ int) error { return nil }
@@ -1335,7 +1335,7 @@ func (c *fakeCluster) GetBySubdomain(_ context.Context, s string) (*ServerInfo, 
 	return nil, ErrNotFound
 }
 func (c *fakeCluster) ListServers(_ context.Context) ([]ServerInfo, error) { return c.list, nil }
-func (c *fakeCluster) Ping(_ context.Context) error                   { return c.pingErr }
+func (c *fakeCluster) Ping(_ context.Context) error                        { return c.pingErr }
 func (c *fakeCluster) SetDesiredState(_ context.Context, n string, s v1alpha1.DesiredState) error {
 	c.desired[n] = s
 	return nil

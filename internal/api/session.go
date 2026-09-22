@@ -7,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -185,7 +184,3 @@ func localAuthEnabled(ctx context.Context, repo Repo) bool {
 
 // ensure SessionAuth satisfies ExternalAuth at compile time.
 var _ ExternalAuth = SessionAuth{}
-
-// errIsNotFound is a small helper so handlers can branch on the repo's sentinel
-// without importing errors at every call site.
-func errIsNotFound(err error) bool { return errors.Is(err, ErrNotFound) }

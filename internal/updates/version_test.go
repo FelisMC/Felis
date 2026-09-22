@@ -9,18 +9,18 @@ func TestParseTolerant(t *testing.T) {
 		pre                 string
 	}{
 		{"1.2.3", 1, 2, 3, ""},
-		{"v1.2.3", 1, 2, 3, ""},                       // leading v
-		{"V1.2.3", 1, 2, 3, ""},                       // leading V
-		{"v1.30.2+k3s1", 1, 30, 2, ""},                // k3s build suffix ignored
-		{"1.30.2+k3s1", 1, 30, 2, ""},                 // build suffix, no v
-		{"2024.2.1", 2024, 2, 1, ""},                  // cloudflared calendar version
-		{"1.2.3-rc.1", 1, 2, 3, "rc.1"},               // prerelease
-		{"v3.3.0-SNAPSHOT", 3, 3, 0, "SNAPSHOT"},      // velocity-style
-		{"1.2.3-rc.1+build.9", 1, 2, 3, "rc.1"},       // prerelease AND build
-		{"v0.0.0+g1a2b3c4", 0, 0, 0, ""},              // stamp of a build pinned to a ref with no tag behind it
-		{"v2", 2, 0, 0, ""},                           // missing minor/patch fill 0
-		{"2.0", 2, 0, 0, ""},                          // missing patch fills 0
-		{"  v1.2.3  ", 1, 2, 3, ""},                   // surrounding whitespace
+		{"v1.2.3", 1, 2, 3, ""},                  // leading v
+		{"V1.2.3", 1, 2, 3, ""},                  // leading V
+		{"v1.30.2+k3s1", 1, 30, 2, ""},           // k3s build suffix ignored
+		{"1.30.2+k3s1", 1, 30, 2, ""},            // build suffix, no v
+		{"2024.2.1", 2024, 2, 1, ""},             // cloudflared calendar version
+		{"1.2.3-rc.1", 1, 2, 3, "rc.1"},          // prerelease
+		{"v3.3.0-SNAPSHOT", 3, 3, 0, "SNAPSHOT"}, // velocity-style
+		{"1.2.3-rc.1+build.9", 1, 2, 3, "rc.1"},  // prerelease AND build
+		{"v0.0.0+g1a2b3c4", 0, 0, 0, ""},         // stamp of a build pinned to a ref with no tag behind it
+		{"v2", 2, 0, 0, ""},                      // missing minor/patch fill 0
+		{"2.0", 2, 0, 0, ""},                     // missing patch fills 0
+		{"  v1.2.3  ", 1, 2, 3, ""},              // surrounding whitespace
 	}
 	for _, c := range cases {
 		v, err := Parse(c.in)

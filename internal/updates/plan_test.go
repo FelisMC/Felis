@@ -51,7 +51,7 @@ func TestWindowContains(t *testing.T) {
 // The load-bearing invariants live here. Each row is a single component evaluated
 // against a latest map, at a fixed `now`, asserting the Kind the plan must yield.
 func TestPlanUpdatesInvariants(t *testing.T) {
-	now := time.Date(2026, 7, 1, 3, 30, 0, 0, time.UTC)     // inside the window below
+	now := time.Date(2026, 7, 1, 3, 30, 0, 0, time.UTC) // inside the window below
 	openWin := Window{
 		Start: time.Date(2026, 7, 1, 3, 0, 0, 0, time.UTC),
 		End:   time.Date(2026, 7, 1, 4, 0, 0, 0, time.UTC),
@@ -62,10 +62,10 @@ func TestPlanUpdatesInvariants(t *testing.T) {
 	}
 
 	cases := []struct {
-		name    string
-		comp    Component
-		latest  string // "" ⇒ absent from the map (unknown latest)
-		want    ActionKind
+		name   string
+		comp   Component
+		latest string // "" ⇒ absent from the map (unknown latest)
+		want   ActionKind
 	}{
 		{
 			name:   "pinned is never touched even with a newer stable upstream",
@@ -162,11 +162,11 @@ func TestPlanUpdatesPreservesOrderAndPending(t *testing.T) {
 		End:   time.Date(2026, 7, 1, 4, 0, 0, 0, time.UTC),
 	}
 	comps := []Component{
-		{Name: "felis-api", Current: mustV(t, "1.4.0"), Policy: PolicyScheduled, Manageable: true, Window: win},   // apply
-		{Name: "k3s", Current: mustV(t, "v1.30.2+k3s1"), Policy: PolicyNotify, Manageable: true},                  // notify
-		{Name: "cloudflared", Current: mustV(t, "2024.2.1"), Policy: PolicyScheduled, Manageable: true},           // no window ⇒ notify
-		{Name: "velocity", Current: mustV(t, "3.3.0"), Policy: PolicyScheduled, Manageable: false},                // off-cluster ⇒ notify
-		{Name: "mc-survival", Current: mustV(t, "1.20.1"), Policy: PolicyPinned},                                  // pinned
+		{Name: "felis-api", Current: mustV(t, "1.4.0"), Policy: PolicyScheduled, Manageable: true, Window: win}, // apply
+		{Name: "k3s", Current: mustV(t, "v1.30.2+k3s1"), Policy: PolicyNotify, Manageable: true},                // notify
+		{Name: "cloudflared", Current: mustV(t, "2024.2.1"), Policy: PolicyScheduled, Manageable: true},         // no window ⇒ notify
+		{Name: "velocity", Current: mustV(t, "3.3.0"), Policy: PolicyScheduled, Manageable: false},              // off-cluster ⇒ notify
+		{Name: "mc-survival", Current: mustV(t, "1.20.1"), Policy: PolicyPinned},                                // pinned
 	}
 	latest := map[string]Version{
 		"felis-api":   mustV(t, "1.5.0"),

@@ -674,10 +674,9 @@ func principalFromContext(ctx context.Context) *Principal {
 // #35); cross-replica bounding would need a shared store (out of scope for the
 // single-replica demo).
 type cooldownLimiter struct {
-	mu     sync.Mutex
-	now    func() time.Time
-	last   map[string]time.Time
-	window time.Duration
+	mu   sync.Mutex
+	now  func() time.Time
+	last map[string]time.Time
 }
 
 // allowed reports whether name may wake now WITHOUT recording the attempt. A

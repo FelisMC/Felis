@@ -46,10 +46,10 @@ func ghFixtureServer(body string) *httptest.Server {
 // while the numeric core is what comparison uses.
 func TestGitHubLatestStableParsesRealTags(t *testing.T) {
 	cases := []struct {
-		name           string
-		repo           string
-		body           string
-		wantMajMinPat  [3]int
+		name            string
+		repo            string
+		body            string
+		wantMajMinPat   [3]int
 		wantRawInReport string
 	}{
 		{"cloudflared CalVer", "cloudflare/cloudflared", cloudflaredLatestFixture, [3]int{2026, 6, 1}, "2026.6.1"},

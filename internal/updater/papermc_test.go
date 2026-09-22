@@ -17,6 +17,7 @@ import (
 //   - the "versions" object groups the ENTIRE 3.x line under a single key "3.0.0"
 //     (not per-minor keys), so a parser that trusted the group key to bound the
 //     versions inside it would be wrong — proof the key-agnostic flatten is required.
+//
 // (The v2 API this replaces now returns HTTP 410.)
 const velocityV3Fixture = `{
   "project": {"id": "velocity", "name": "Velocity"},

@@ -47,11 +47,11 @@ const (
 	// and the service token is a credential, so writing either into a checked-in
 	// manifest is a hard red line. The deployment provisions both Secrets
 	// out-of-band before applying these workloads.
-	configSecretName       = "felis-config"
-	configSecretKey        = "felis.toml"
-	configMountPath        = "/etc/felis"
-	configFilePath         = "/etc/felis/felis.toml"
-	felisBinaryPath        = "/usr/local/bin/felis"
+	configSecretName = "felis-config"
+	configSecretKey  = "felis.toml"
+	configMountPath  = "/etc/felis"
+	configFilePath   = "/etc/felis/felis.toml"
+	felisBinaryPath  = "/usr/local/bin/felis"
 	// Single-sourced with the operator, which injects the same Secret into the
 	// login system server's pod (see internal/naming).
 	serviceTokenSecretName = naming.ServiceTokenSecretName

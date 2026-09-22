@@ -1401,7 +1401,7 @@ func (p *PGRepo) UpdateUser(ctx context.Context, userID string, patch UpdateUser
 	argn++
 	args = append(args, userID)
 
-	q := `UPDATE users SET ` + fmt.Sprintf("%s", sets[0])
+	q := "UPDATE users SET " + sets[0]
 	for _, s := range sets[1:] {
 		q += ", " + s
 	}

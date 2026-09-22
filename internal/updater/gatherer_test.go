@@ -37,10 +37,10 @@ const (
 
 func TestVersionFromCLI(t *testing.T) {
 	cases := []struct {
-		name    string
-		raw     string
+		name     string
+		raw      string
 		wantCore [3]int
-		wantStr string
+		wantStr  string
 	}{
 		{"k3s keeps +build stable", k3sVersionBanner, [3]int{1, 36, 2}, "v1.36.2+k3s1"},
 		{"cloudflared calver", cloudflaredVersionBanner, [3]int{2026, 6, 1}, "2026.6.1"},
