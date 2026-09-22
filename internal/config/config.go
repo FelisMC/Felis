@@ -257,9 +257,6 @@ func LoadNano(path string) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	if cfg.Server.Listen == "" {
-		cfg.Server.Listen = defaultListen
-	}
 	if err := cfg.validateAuthSources(); err != nil {
 		return nil, err
 	}

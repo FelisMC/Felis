@@ -70,6 +70,11 @@ func cmdNano(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "felis nano:", err)
 		return 1
 	}
+	// [server] listen belongs to felis api. Someone moving nano off loopback naturally reaches
+	// for it, and without this line would get connection refused with no hint why.
+	if cfg.Server.Listen != "" {
+		fmt.Fprintf(stderr, "felis nano: [server] listen = %q is ignored; nano binds -listen (%s), which the installer sets from FELIS_NANO_LISTEN\n", cfg.Server.Listen, *listen)
+	}
 
 	fmt.Fprintf(stderr, "felis nano: hasJoined multiplexer on %s — Mojang + %d third-party source(s)\n", *listen, len(cfg.AuthSources))
 	for i, s := range cfg.AuthSources {

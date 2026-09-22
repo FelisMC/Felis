@@ -7,12 +7,40 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 )
+
+// [server] listen in a nano config reads like the bind address but is not one; nano must
+// say so. The -listen value cannot be bound, so cmdNano returns right after loading.
+func TestNanoWarnsThatServerListenIsIgnored(t *testing.T) {
+	cfg := filepath.Join(t.TempDir(), "felis.toml")
+	if err := os.WriteFile(cfg, []byte("[server]\nlisten = \"0.0.0.0:9999\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	if rc := cmdNano([]string{"-config", cfg, "-listen", "127.0.0.1:-1"}, io.Discard, &stderr); rc != 1 {
+		t.Fatalf("cmdNano = %d, want 1 from the unbindable -listen", rc)
+	}
+	if !strings.Contains(stderr.String(), `listen = "0.0.0.0:9999" is ignored`) {
+		t.Fatalf("stderr %q should say the configured listen is ignored", stderr.String())
+	}
+
+	// With no [server] table at all there is nothing to warn about.
+	if err := os.WriteFile(cfg, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stderr.Reset()
+	_ = cmdNano([]string{"-config", cfg, "-listen", "127.0.0.1:-1"}, io.Discard, &stderr)
+	if strings.Contains(stderr.String(), "is ignored") {
+		t.Fatalf("stderr %q warns about a listen the operator never set", stderr.String())
+	}
+}
 
 // A stop signal that lands while a login is waiting on an upstream must let that login
 // finish: the request is answered, and serveNano returns only afterwards.

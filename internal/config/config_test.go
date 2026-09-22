@@ -379,7 +379,7 @@ func TestLoadRejectsUnqueryableAuthSourceURL(t *testing.T) {
 // TestLoadNanoAcceptsMinimalConfig is the linchpin of the Felis-nano fold: a nano host has no
 // Postgres and no FQDN, so LoadNano must accept a felis.toml carrying ONLY [[auth_source]] —
 // the control-plane requirements (database.url, root_domain) that full Load enforces are
-// deliberately skipped. It still applies the listen default and hands back the sources.
+// deliberately skipped. It hands back the sources.
 func TestLoadNanoAcceptsMinimalConfig(t *testing.T) {
 	cfg, err := config.LoadNano(writeTOML(t, `
 [[auth_source]]
@@ -392,9 +392,6 @@ url = "https://littleskin.example.net/api/yggdrasil/sessionserver/session/minecr
 	}
 	if len(cfg.AuthSources) != 1 || cfg.AuthSources[0].Tag != "littleskin" {
 		t.Fatalf("auth sources = %+v, want one littleskin source", cfg.AuthSources)
-	}
-	if cfg.Server.Listen != "0.0.0.0:8080" {
-		t.Errorf("default listen = %q, want 0.0.0.0:8080", cfg.Server.Listen)
 	}
 }
 
