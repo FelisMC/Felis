@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   Archive,
@@ -8,12 +8,14 @@ import {
   Loader2,
   RotateCcw,
   UserMinus,
+  XCircle,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { BackLink } from "@/components/BackLink";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ConfirmFooter } from "@/components/ConfirmFooter";
+import { MessageLine } from "@/components/MessageLine";
 import {
   Dialog,
   DialogContent,
@@ -134,6 +136,37 @@ function BackupRow({
   );
 }
 
+/** JobStateBadge renders one async Job's state (backup/restore Job history). The
+ *  state vocabulary is the API's ("running" | "succeeded" | "failed"); anything
+ *  unknown is shown verbatim rather than hidden. */
+function JobStateBadge({ state }: { state: string }) {
+  const { t } = useTranslation("backups");
+  if (state === "running") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-md bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-500 ring-1 ring-inset ring-sky-500/20">
+        <Loader2 className="h-3 w-3 animate-spin" />
+        {t("job_running")}
+      </span>
+    );
+  }
+  if (state === "succeeded") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-500 ring-1 ring-inset ring-emerald-500/20">
+        <CheckCircle2 className="h-3 w-3" />
+        {t("job_succeeded")}
+      </span>
+    );
+  }
+  if (state === "failed") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-md bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive ring-1 ring-inset ring-destructive/20">
+        <XCircle className="h-3 w-3" />
+        {t("job_failed")}
+      </span>
+    );
+  }
+  return <span className="text-[10px] font-medium text-muted-foreground">{state}</span>;
+}
 
 
 /** RestoreControls is the restore ACTION, living only on the latest backup card.
@@ -339,6 +372,50 @@ export function ServerBackups() {
   );
   const backupsQ = useAsync(() => api.listBackups(), []);
 
+  // Ownership resolves from /me/servers for a non-admin (status carries no `owned`).
+  // While it is pending show the header with a spinner rather than flashing the list
+  // at someone who may not own it; if that read itself failed, break to a retry so a
+  // real owner never fails closed to NotYours on a transient blip.
+  const ownershipPending = tierLoading || (!isAdmin && mineQ.data === null && !mineQ.error);
+  const owned = isAdmin || (mineQ.data ?? []).some((s) => s.name === name && s.owned === true);
+
+  // The async world-operation history (the backup/restore Jobs behind every 202).
+  // Read only once the viewer is resolved as owner-or-admin (the route 403s
+  // otherwise); while anything is still running it re-reads on an interval so the
+  // enqueue converges to succeeded/failed here instead of only in kubectl.
+  const jobsQ = useAsync(
+    () => (owned ? api.serverJobs(name) : Promise.resolve([])),
+    [name, owned],
+  );
+  useEffect(() => {
+    if (!(jobsQ.data ?? []).some((j) => j.state === "running")) return;
+    const id = setInterval(jobsQ.reload, 5000);
+    return () => clearInterval(id);
+  }, [jobsQ.data, jobsQ.reload]);
+
+  const [backingUp, setBackingUp] = useState(false);
+  const [backupMsg, setBackupMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
+
+  // Manual backup (POST /backup): the backend enforces the stopped gate, so the
+  // button only enables on Stopped and a raced 409 is surfaced in its own words.
+  async function handleBackupNow() {
+    if (backingUp) return;
+    setBackingUp(true);
+    setBackupMsg(null);
+    try {
+      await api.backupNow(name);
+      setBackupMsg({ kind: "success", text: t("backup_started") });
+      jobsQ.reload();
+    } catch (e: any) {
+      setBackupMsg({
+        kind: "error",
+        text: e && e.code === "not_stopped" ? t("backup_requires_stopped") : humanizeError(e),
+      });
+    } finally {
+      setBackingUp(false);
+    }
+  }
+
   const back = (
     <BackLink to={`/servers/${name}`} label={t("back_to_console")} />
   );
@@ -361,13 +438,6 @@ export function ServerBackups() {
   }
   if (!statusQ.data) return back;
 
-  // Ownership resolves from /me/servers for a non-admin (status carries no `owned`).
-  // While it is pending show the header with a spinner rather than flashing the list
-  // at someone who may not own it; if that read itself failed, break to a retry so a
-  // real owner never fails closed to NotYours on a transient blip.
-  const ownershipPending = tierLoading || (!isAdmin && mineQ.data === null && !mineQ.error);
-  const owned = isAdmin || (mineQ.data ?? []).some((s) => s.name === name && s.owned === true);
-
   const now = Date.now();
   const locale = i18n.language;
   // The global list, narrowed to this server. Already created_at-descending from the
@@ -381,7 +451,29 @@ export function ServerBackups() {
       icon={Archive}
       title={statusQ.data.displayName || statusQ.data.name}
       subtitle={t("title")}
-      actions={<PhaseBadge phase={statusQ.data.phase} />}
+      actions={
+        <div className="flex items-center gap-2">
+          {owned && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={handleBackupNow}
+              disabled={backingUp || statusQ.data.phase !== "Stopped"}
+              title={
+                statusQ.data.phase !== "Stopped" ? t("backup_requires_stopped") : undefined
+              }
+            >
+              {backingUp ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Archive className="h-4 w-4" />
+              )}
+              {backingUp ? t("backup_in_progress") : t("backup_now")}
+            </Button>
+          )}
+          <PhaseBadge phase={statusQ.data.phase} />
+        </div>
+      }
       className="mb-6"
     />
   );
@@ -398,6 +490,7 @@ export function ServerBackups() {
         <NotYours title={t("not_yours_title")} body={t("not_yours_body")} />
       ) : (
         <div className="space-y-4">
+          {backupMsg && <MessageLine kind={backupMsg.kind} message={backupMsg.text} />}
           <p className="text-sm text-muted-foreground">{t("subtitle")}</p>
           {backupsQ.loading && !backupsQ.data ? (
             <Loading />
@@ -429,7 +522,10 @@ export function ServerBackups() {
                           locale={locale}
                           showOwner={isAdmin}
                           serverName={name}
-                          onReloadStatus={statusQ.reload}
+                          onReloadStatus={() => {
+                            statusQ.reload();
+                            jobsQ.reload();
+                          }}
                         />
                       ))}
                     </tbody>
@@ -443,6 +539,67 @@ export function ServerBackups() {
                 </CardContent>
               </Card>
             </>
+          )}
+
+          {/* Async world-operation history: every backup/restore 202 lands here, so a
+              Job that later failed stays visible (with its message) without kubectl. */}
+          {jobsQ.error ? (
+            <ErrorState error={jobsQ.error} onRetry={jobsQ.reload} />
+          ) : (
+            <Card className="overflow-hidden">
+              <CardContent className="p-4">
+                <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                  <Clock className="h-3.5 w-3.5" />
+                  {t("jobs_title")}
+                </div>
+                {(jobsQ.data ?? []).length === 0 ? (
+                  <p className="mt-2 text-xs text-muted-foreground">{t("jobs_empty")}</p>
+                ) : (
+                  <ul className="mt-2 divide-y divide-border">
+                    {(jobsQ.data ?? []).map((j) => {
+                      const at = j.started_at || j.finished_at;
+                      return (
+                        <li key={j.name} className="flex items-start justify-between gap-3 py-2.5">
+                          <div className="flex min-w-0 items-center gap-2">
+                            {j.kind === "restore" ? (
+                              <RotateCcw className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
+                            ) : (
+                              <Archive className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
+                            )}
+                            <span className="text-sm">
+                              {j.kind === "restore"
+                                ? t("job_restore")
+                                : j.kind === "backup"
+                                ? t("job_backup")
+                                : j.kind}
+                            </span>
+                            {at && (
+                              <span
+                                className="text-xs text-muted-foreground"
+                                title={formatAbsolute(at, locale)}
+                              >
+                                {formatRelative(at, now, locale)}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex min-w-0 flex-col items-end gap-0.5">
+                            <JobStateBadge state={j.state} />
+                            {j.state === "failed" && j.message && (
+                              <span
+                                className="max-w-[22rem] truncate text-xs text-destructive"
+                                title={j.message}
+                              >
+                                {j.message}
+                              </span>
+                            )}
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </CardContent>
+            </Card>
           )}
         </div>
       )}

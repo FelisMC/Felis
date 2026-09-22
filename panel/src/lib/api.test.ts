@@ -549,4 +549,36 @@ describe("image whitelist and builds wire shapes", () => {
       expect(JSON.parse((opts as RequestInit).body as string)).toEqual(win);
     });
   });
+
+  describe("backup now and server jobs wire shapes", () => {
+    it("backupNow POSTs to /servers/{name}/backup with no body and parses the 202", async () => {
+      const fetchSpy = fakeFetch({ name: "survival", status: "backing_up" }, { status: 202 });
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.backupNow("survival");
+      expect(res.status).toBe("backing_up");
+      const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toBe("/servers/survival/backup");
+      expect((opts as RequestInit).method).toBe("POST");
+      expect((opts as RequestInit).body).toBeUndefined();
+    });
+
+    it("serverJobs GETs /servers/{name}/jobs and unwraps the jobs array", async () => {
+      const job = {
+        name: "felis-backup-survival-123",
+        kind: "backup",
+        state: "failed",
+        message: "pod terminated",
+        started_at: "2026-07-03T12:00:00Z",
+      };
+      const fetchSpy = fakeFetch({ server: "survival", jobs: [job] });
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.serverJobs("survival");
+      expect(res).toHaveLength(1);
+      expect(res[0].state).toBe("failed");
+      expect(res[0].message).toBe("pod terminated");
+      const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toBe("/servers/survival/jobs");
+      expect((opts as RequestInit).method).toBe("GET");
+    });
+  });
 });

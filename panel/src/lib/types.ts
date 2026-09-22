@@ -146,6 +146,18 @@ export interface BackupView {
   expires_at: string;
 }
 
+/** ServerJob is one row of GET /api/v1/servers/{name}/jobs — the observable
+ *  outcome of an async backup/restore Job. The API only enqueues Jobs, so this
+ *  projection is how a 202 that later failed becomes visible in the panel. */
+export interface ServerJob {
+  name: string;
+  kind: string; // "backup" | "restore"
+  state: string; // "running" | "succeeded" | "failed"
+  message?: string;
+  started_at?: string;
+  finished_at?: string;
+}
+
 /** WhitelistImage is one row of GET /images (the create-form dropdown source). */
 export interface WhitelistImage {
   image_ref: string;

@@ -17,6 +17,7 @@ import type {
   PlayersResult,
   QuotaInput,
   QuotaView,
+  ServerJob,
   ServerInfo,
   SessionView,
   UserDetail,
@@ -338,6 +339,25 @@ export const api = {
       `/servers/${name}/restore-backup`,
       backupId ? { backup_id: backupId } : undefined,
     ),
+
+  // backupNow enqueues a manual backup (spec §7 POST backup). Preconditions are
+  // enforced server-side and surfaced as codes: owner-or-admin (403) and the
+  // server MUST be fully stopped (409 not_stopped — the world volume is RWO), so
+  // callers gate the action on phase === "Stopped". The reply is 202
+  // {name, status:"backing_up"}: the Job is enqueued, not done — watch
+  // serverJobs for the outcome.
+  backupNow: (name: string) =>
+    request<{ name: string; status: string }>("POST", `/servers/${name}/backup`),
+
+  // serverJobs lists the newest backup/restore Jobs of one server, newest first
+  // (GET /servers/{name}/jobs). Owner-or-admin gated server-side; a Job's
+  // failure text rides `message`. The backend answers 503 until the job-status
+  // reader is wired, so callers should tolerate that error.
+  serverJobs: (name: string) =>
+    request<{ server: string; jobs: ServerJob[] }>(
+      "GET",
+      `/servers/${name}/jobs`,
+    ).then((r) => r.jobs ?? []),
 
   // Account linking (spec §10). Both are POST: start reports status from the
   // session principal (no body, side-effect-free), verify consumes a code the
