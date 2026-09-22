@@ -251,6 +251,64 @@ esac
 out="$(run_nano_service 0)"
 expect "a unit that stays up is reported as started" "OK: felis-nano.service enabled and started" "$out"
 
+# --- a re-run on a nano host keeps what that host is --------------------------------------
+# Re-running the installer is how a nano host updates. It must not move the endpoint an
+# off-host proxy points at, nor default a nano-only host to the full control plane. The unit
+# read back here is the one install_nano_service wrote above.
+
+rblock="$(awk '/^resolve_nano_listen\(\) \{/,/^}/' "$BS")"
+[ -n "$rblock" ] || { echo "FAIL: no resolve_nano_listen found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$rblock" | wc -l)" -lt 20 ] \
+  || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
+
+run_listen() { # env-value unit-path
+  FELIS_NANO_LISTEN="$1" NANO_SERVICE="$2" bash -c "$rblock"'
+    resolve_nano_listen
+    printf "LISTEN: %s\n" "$FELIS_NANO_LISTEN"'
+}
+
+expect "a re-run keeps the unit's listen address" "LISTEN: 127.0.0.1:25580" \
+  "$(run_listen '' "$sdir/felis-nano.service")"
+expect "the operator's address beats the unit's" "LISTEN: 10.0.0.5:8081" \
+  "$(run_listen 10.0.0.5:8081 "$sdir/felis-nano.service")"
+expect "a first install listens on loopback" "LISTEN: 127.0.0.1:8081" \
+  "$(run_listen '' "$sdir/absent.service")"
+expect "a first install takes the operator's address" "LISTEN: 10.0.0.5:8081" \
+  "$(run_listen 10.0.0.5:8081 "$sdir/absent.service")"
+
+pblock="$(awk '/^prompt_install_mode\(\) \{/,/^}/' "$BS")"
+[ -n "$pblock" ] || { echo "FAIL: no prompt_install_mode found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$pblock" | wc -l)" -lt 60 ] \
+  || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
+
+# Only the no-terminal path can run unattended, and with a terminal attached the prompt
+# would sit waiting on it. setsid drops the controlling terminal, as cloud-init and CI have.
+notty=""
+if (: </dev/tty) 2>/dev/null; then
+  if command -v setsid >/dev/null 2>&1; then notty=setsid; else notty=skip; fi
+fi
+
+run_mode() { # unit-path done-marker-path [FELIS_INSTALL_MODE]
+  INSTALL_MODE="${3:-}" NANO_SERVICE="$1" BOOTSTRAP_DONE="$2" $notty bash -c '
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    log() { printf "LOG: %s\n" "$*"; }
+    '"$pblock"'
+    prompt_install_mode </dev/null
+    printf "MODE: %s\n" "$INSTALL_MODE"' 2>&1
+}
+
+if [ "$notty" = skip ]; then
+  echo "SKIP install-mode default: a terminal is attached and there is no setsid to drop it"
+else
+  : > "$sdir/bootstrap.done"
+  expect "a nano-only host re-runs as nano" "MODE: nano" \
+    "$(run_mode "$sdir/felis-nano.service" "$sdir/absent.done")"
+  expect "a host with the full install re-runs as full" "MODE: full" \
+    "$(run_mode "$sdir/felis-nano.service" "$sdir/bootstrap.done")"
+  expect "a fresh host defaults to full" "MODE: full" \
+    "$(run_mode "$sdir/absent.service" "$sdir/absent.done")"
+fi
+
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"

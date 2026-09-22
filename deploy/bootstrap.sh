@@ -27,9 +27,11 @@
 # generated secrets are persisted to /etc/felis/secrets.env so reruns reuse them.
 #
 # Tunables (export before running to override the demo defaults):
-#   FELIS_INSTALL_MODE full|nano — skip the prompt (default: ask on a tty, else full)
-#   FELIS_NANO_LISTEN listen addr for `felis nano` (default: 127.0.0.1:8081 — loopback
-#                     only; set a private-network IP to serve an off-host proxy)
+#   FELIS_INSTALL_MODE full|nano — skip the prompt (default: ask on a tty, else full; nano
+#                     instead on a host that runs felis-nano and no full install)
+#   FELIS_NANO_LISTEN listen addr for `felis nano` (default: the address an installed
+#                     felis-nano already uses, else 127.0.0.1:8081 — loopback only; set a
+#                     private-network IP to serve an off-host proxy)
 #   FELIS_LEGACY_FORWARDING_SERVERS comma-separated backends that receive their identity
 #                     through the handshake address instead of modern forwarding
 #                     (default: legacy18). Read once at Velocity start, so changing it
@@ -102,7 +104,9 @@ INSTALL_MODE="${FELIS_INSTALL_MODE:-}"
 # proxy at it and spend YOUR egress IP on Mojang, until Mojang rate-limits you and your
 # own players stop getting in. Same-host Velocity reaches 127.0.0.1 fine; a proxy on
 # another machine must opt in explicitly with FELIS_NANO_LISTEN=<private-ip>:8081.
-FELIS_NANO_LISTEN="${FELIS_NANO_LISTEN:-127.0.0.1:8081}"
+# Left empty here: resolve_nano_listen applies that default only after an existing unit's
+# address has had its say.
+FELIS_NANO_LISTEN="${FELIS_NANO_LISTEN:-}"
 # Backends that take their forwarded identity through the handshake address instead of
 # proxy-wide modern forwarding. See write_velocity_service for why a protocol-47 backend
 # needs this. Overridable because adding a second 1.8 backend otherwise means editing this
@@ -2196,12 +2200,17 @@ prompt_install_mode() {
     *) die "FELIS_INSTALL_MODE must be 'full' or 'nano', got: ${INSTALL_MODE}" ;;
   esac
 
+  # A felis-nano unit with no full install beside it makes this re-run a nano update;
+  # defaulting to full there would put k3s and Postgres on a host that asked for neither.
+  local def=full n=1 reply
+  if [ -e "$NANO_SERVICE" ] && [ ! -e "$BOOTSTRAP_DONE" ]; then def=nano n=2; fi
+
   # No override: ask on the controlling terminal. Under `curl | sudo bash` stdin
   # is the script, so we must read /dev/tty, not stdin. No tty (CI/cloud-init) →
-  # default to a full install.
+  # take the default.
   if [ ! -r /dev/tty ]; then
-    INSTALL_MODE="full"
-    log "no terminal for a prompt; defaulting to a full Felis install (set FELIS_INSTALL_MODE=nano to override)"
+    INSTALL_MODE="$def"
+    log "no terminal for a prompt; defaulting to a ${def} install (set FELIS_INSTALL_MODE=full or nano to override)"
     return 0
   fi
 
@@ -2209,12 +2218,12 @@ prompt_install_mode() {
   printf 'What do you want to install on this host?\n'
   printf '  [1] Felis       — full control plane (k3s + Postgres + panel; orchestrates Minecraft servers)\n'
   printf '  [2] Felis-nano  — auth multiplexer only (federates Mojang + third-party Yggdrasil; no k3s/DB)\n'
-  local reply
   while :; do
-    printf 'Choose [1/2] (default 1): '
+    printf 'Choose [1/2] (default %s): ' "$n"
     IFS= read -r reply </dev/tty || reply=""
     case "$reply" in
-      ""|1|full|Felis|felis) INSTALL_MODE="full"; break ;;
+      "") INSTALL_MODE="$def"; break ;;
+      1|full|Felis|felis) INSTALL_MODE="full"; break ;;
       2|nano|felis-nano|Felis-nano) INSTALL_MODE="nano"; break ;;
       *) printf 'Please enter 1 or 2.\n' ;;
     esac
@@ -2331,6 +2340,17 @@ EOF
   ok "wrote nano config template ${target} (edit it to add your Yggdrasil sources)"
 }
 
+# resolve_nano_listen settles FELIS_NANO_LISTEN: the operator's value, else the address the
+# installed felis-nano unit listens on, else loopback. Re-running this script is how a nano
+# host updates, and without the middle step that re-run moved an off-host proxy's endpoint
+# back to 127.0.0.1, so every login through it failed.
+resolve_nano_listen() {
+  if [ -z "$FELIS_NANO_LISTEN" ] && [ -r "$NANO_SERVICE" ]; then
+    FELIS_NANO_LISTEN="$(sed -n 's/^ExecStart=.* -listen \([^ ]*\).*$/\1/p' "$NANO_SERVICE")"
+  fi
+  FELIS_NANO_LISTEN="${FELIS_NANO_LISTEN:-127.0.0.1:8081}"
+}
+
 nano_listen_is_loopback() {
   case "${FELIS_NANO_LISTEN%:*}" in
     127.*|localhost|::1|"[::1]") return 0 ;;
@@ -2429,6 +2449,7 @@ main_nano() {
 }
 
 main() {
+  resolve_nano_listen
   validate_settings
   detect_os
   prompt_install_mode
