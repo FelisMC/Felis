@@ -24,10 +24,10 @@ func NewK8sJobs(c client.Client) *K8sJobs {
 	return &K8sJobs{c: c}
 }
 
-// CreateBackupJob renders and applies the backup Job. Its name is a deterministic
-// function of the server (BackupJobName), so a concurrent backup of the same server
-// collides on Create; that collision is mapped to ErrAlreadyExists, which the
-// Backuper treats as success (idempotent enqueue).
+// CreateBackupJob renders and applies the backup Job. Its name carries a fresh
+// random suffix (see Backuper.Backup), so a repeated backup never collides with a
+// just-finished Job inside its TTL window; ErrAlreadyExists survives only as the
+// defensive no-op for the astronomically unlikely suffix collision.
 func (k *K8sJobs) CreateBackupJob(ctx context.Context, p JobParams) error {
 	job, err := BackupJob(p)
 	if err != nil {
