@@ -275,6 +275,39 @@ url = "https://b.example.net/hasJoined"
 	}
 }
 
+// TestLoadRejectsColonInAuthSourceTag pins the separator guard. The UUID of a third-party
+// player is derived from tag+":"+nativeID, and the native id is chosen by the source, so with
+// "guild" and "guild:eu" both configured the "guild" root could answer id "eu:X" and receive
+// the UUID of "guild:eu"'s player X. Both loaders share the check, so both are exercised.
+func TestLoadRejectsColonInAuthSourceTag(t *testing.T) {
+	const sources = `
+[[auth_source]]
+tag = "guild"
+prefix = "GD"
+url = "https://a.example.net/hasJoined"
+[[auth_source]]
+tag = "guild:eu"
+prefix = "GE"
+url = "https://b.example.net/hasJoined"
+`
+	_, errFull := config.Load(writeTOML(t, `
+[server]
+root_domain = "mc.example.net"
+[database]
+url = "postgres://felis@db/felis"
+`+sources))
+	_, errNano := config.LoadNano(writeTOML(t, sources))
+	for loader, err := range map[string]error{"Load": errFull, "LoadNano": errNano} {
+		if err == nil {
+			t.Errorf("%s accepted a tag containing ':'", loader)
+			continue
+		}
+		if !strings.Contains(err.Error(), `"guild:eu"`) || !strings.Contains(err.Error(), "':'") {
+			t.Errorf("%s: error should name the tag and the ':' rule, got: %v", loader, err)
+		}
+	}
+}
+
 // TestLoadRejectsSchemelessAuthSourceURL pins the silently-dead-source guard: a URL with no
 // http(s):// scheme makes http.NewRequest fail, so the source never validates any login yet
 // felis-api boots green. Reject at load with the scheme contract spelled out. An empty tag

@@ -339,9 +339,10 @@ var authSourcePrefixRe = regexp.MustCompile(`^[A-Za-z0-9]{1,4}$`)
 
 // validateAuthSources checks the [[auth_source]] block: each needs a namespace tag, a rename
 // prefix, and a scheme-qualified hasJoined URL, and both tag and prefix must be unique. A
-// blank or duplicate tag collapses two sources into one UUID namespace (cross-source
-// impersonation — the exact invariant the per-source rewrite exists to hold); a duplicate
-// prefix collapses two same-named players from different sources onto one in-game name
+// blank, duplicate or colon-bearing tag collapses two sources into one UUID namespace
+// (cross-source impersonation — the exact invariant the per-source rewrite exists to
+// hold); a duplicate prefix collapses two same-named players from different sources onto
+// one in-game name
 // (they stay distinct identities, but neither can be online while the other is); a
 // scheme-less URL makes http.NewRequest fail so the source is silently dead (never validates
 // any login). All fail fast at load, not per-login. Split out from Validate so the nano-only
@@ -353,6 +354,14 @@ func (c *Config) validateAuthSources() error {
 	for i, s := range c.AuthSources {
 		if s.Tag == "" {
 			return fmt.Errorf("config: [[auth_source]] #%d has an empty tag; each source's tag is its per-source UUID namespace", i+1)
+		}
+		// A player's UUID is derived from tag+":"+nativeID, and the native id is whatever the
+		// source says it is. With a ':' allowed in tags, "guild" answering id "eu:X" hashes
+		// exactly like "guild:eu" answering "X", so one source could mint another's players.
+		// Colon-free tags make the join unambiguous; nothing else about the tag is restricted,
+		// because renaming an existing tag would move every one of its players to a new UUID.
+		if strings.Contains(s.Tag, ":") {
+			return fmt.Errorf("config: [[auth_source]] tag %q contains ':'; the tag and a player's native id are joined with ':' to derive their UUID, so a ':' in a tag would let another source mint this source's players", s.Tag)
 		}
 		if _, dup := seenTags[s.Tag]; dup {
 			return fmt.Errorf("config: [[auth_source]] tag %q is used twice — tags are per-source UUID namespaces and must be unique", s.Tag)
