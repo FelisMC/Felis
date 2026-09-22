@@ -179,6 +179,19 @@ out="$(run_carry)"
 expect "both encoder-written tables are carried (first)" '  tag = "littleskin"' "$out"
 expect "both encoder-written tables are carried (second)" '  tag = "guild"' "$out"
 
+# TOML allows spaces inside the brackets and a quoted key. Each is still the operator's table.
+for hdr in '[[ auth_source ]]' '[["auth_source"]]' "[['auth_source']]"; do
+  printf '%s\n' "$hdr" 'tag = "guild"' 'prefix = "GD"' 'url = "https://b.example"' '' \
+    '[smtp]' 'host = "mail.example"' > "$sdir/felis.host.toml"
+  out="$(run_carry)"
+  expect "a $hdr header is carried" "$hdr" "$out"
+  expect "a $hdr table keeps its keys" 'tag = "guild"' "$out"
+  case "$out" in
+    *"[smtp]"*) echo "FAIL a $hdr table must stop at the next section:"; echo "$out"; fails=$((fails + 1)) ;;
+    *) echo "PASS a $hdr table stops at the next section" ;;
+  esac
+done
+
 # --- write_nano_config leaves the unit able to read its config ---------------------------
 # felis-nano runs as a DynamicUser, so the directory must be searchable by others under a
 # hardened umask too -- but an existing one, which the full install locks to 0700 for its

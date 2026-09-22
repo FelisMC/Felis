@@ -1947,8 +1947,9 @@ persisted_auth_source_blocks() {
   for f in "${STATE_DIR}/felis.host.toml" "${STATE_DIR}/felis.pod.toml"; do
     [ -r "$f" ] || continue
     # Every [[auth_source]] table, up to (not including) the next other section header.
-    awk '/^[[:space:]]*\[\[auth_source\]\]/ { f=1 }
-         f && /^[[:space:]]*\[/ && !/^[[:space:]]*\[\[auth_source\]\]/ { f=0 }
+    # TOML also accepts [[ auth_source ]] and a quoted key; a header this does not
+    # recognise would silently drop that table.
+    awk '/^[[:space:]]*\[/ { f = /^[[:space:]]*\[\[[[:space:]]*["\047]?auth_source["\047]?[[:space:]]*\]\]/ }
          f { print }' "$f"
     return 0
   done
