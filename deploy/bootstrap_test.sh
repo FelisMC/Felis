@@ -295,6 +295,39 @@ for v in '[::1]:8081' 0.0.0.0:8081 127.0.0.1:8081; do
   expect "listen address $v is accepted" VALID "$(check_listen "$v")"
 done
 
+# The summary hands the operator the URL to paste into the proxy's JVM flags, so it must
+# name the address nano actually binds, and the node's only for a wildcard bind.
+sblock="$(awk '/^summary_nano\(\) \{/,/^}/' "$BS")"
+[ -n "$sblock" ] || { echo "FAIL: no summary_nano found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$sblock" | wc -l)" -lt 40 ] \
+  || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
+kblock="$(awk '/^nano_listen_is_loopback\(\) \{/,/^}/' "$BS")"
+[ -n "$kblock" ] || { echo "FAIL: no nano_listen_is_loopback found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$kblock" | wc -l)" -lt 10 ] \
+  || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
+
+run_summary() { # listen
+  FELIS_NANO_LISTEN="$1" NODE_IP=203.0.113.9 STATE_DIR=/etc/felis bash -c '
+    ok() { printf "OK: %s\n" "$*"; }
+    log() { printf "LOG: %s\n" "$*"; }
+    systemctl() { :; }
+    '"$kblock"'
+    '"$sblock"'
+    summary_nano'
+}
+
+expect "a private bind is the address printed" "http://10.0.0.5:8081/session/minecraft/hasJoined" \
+  "$(run_summary 10.0.0.5:8081)"
+expect "an IPv6 loopback bind is printed as bound" "http://[::1]:8081/session/minecraft/hasJoined" \
+  "$(run_summary '[::1]:8081')"
+out="$(run_summary 127.0.0.1:8081)"
+expect "a loopback bind is printed as bound" "http://127.0.0.1:8081/session/minecraft/hasJoined" "$out"
+expect "a loopback bind keeps its loopback note" "Bound to loopback" "$out"
+for v in 0.0.0.0:8081 '[::]:8081' :8081; do
+  expect "a wildcard $v bind prints the node's address" "http://203.0.113.9:8081/session/minecraft/hasJoined" \
+    "$(run_summary "$v")"
+done
+
 pblock="$(awk '/^prompt_install_mode\(\) \{/,/^}/' "$BS")"
 [ -n "$pblock" ] || { echo "FAIL: no prompt_install_mode found in $BS"; exit 1; }
 [ "$(printf '%s\n' "$pblock" | wc -l)" -lt 60 ] \

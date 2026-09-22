@@ -2428,8 +2428,9 @@ EOF
 }
 
 summary_nano() {
-  local port="${FELIS_NANO_LISTEN##*:}" host
-  if nano_listen_is_loopback; then host="127.0.0.1"; else host="${NODE_IP}"; fi
+  local port="${FELIS_NANO_LISTEN##*:}" host="${FELIS_NANO_LISTEN%:*}"
+  # A wildcard bind names no address a proxy could dial; the node's own is the useful one.
+  case "$host" in ""|0.0.0.0|"[::]") host="${NODE_IP}" ;; esac
   echo
   ok "Felis-nano deployed."
   echo
