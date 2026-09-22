@@ -1981,12 +1981,14 @@ func (p *PGRepo) OpLoginRequestByID(ctx context.Context, id string) (*OpLoginReq
 // ListPendingOpLogins returns the live (pending, unconsumed, unexpired at now)
 // requests oldest-first, for the in-game admin's approval prompt. A resolved or
 // expired request drops out of the list, so an admin only ever sees actionable
-// attempts.
+// attempts. The username is joined because the approval prompt names the staff
+// account; created_at orders the list and lets the prompt show how long a request
+// has been waiting.
 func (p *PGRepo) ListPendingOpLogins(ctx context.Context, now time.Time) ([]OpLoginRequest, error) {
-	const q = `SELECT id, user_id, email, expires_at
-		FROM op_login_requests
-		WHERE consumed_at IS NULL AND approved_at IS NULL AND expires_at > $1
-		ORDER BY created_at`
+	const q = `SELECT r.id, r.user_id, u.username, r.email, r.expires_at, r.created_at
+		FROM op_login_requests r JOIN users u ON u.id = r.user_id
+		WHERE r.consumed_at IS NULL AND r.approved_at IS NULL AND r.expires_at > $1
+		ORDER BY r.created_at`
 	rows, err := p.db.QueryContext(ctx, q, now)
 	if err != nil {
 		return nil, err
@@ -1995,7 +1997,7 @@ func (p *PGRepo) ListPendingOpLogins(ctx context.Context, now time.Time) ([]OpLo
 	var out []OpLoginRequest
 	for rows.Next() {
 		var r OpLoginRequest
-		if err := rows.Scan(&r.ID, &r.UserID, &r.Email, &r.ExpiresAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.UserID, &r.Username, &r.Email, &r.ExpiresAt, &r.CreatedAt); err != nil {
 			return nil, err
 		}
 		r.Status = "pending"
