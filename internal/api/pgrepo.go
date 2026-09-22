@@ -159,9 +159,10 @@ func (p *PGRepo) RedeemPlayerBindCode(ctx context.Context, newUserID, code strin
 	// together), where both transactions reach the inserts before either commits.
 
 	// Create-or-fetch keyed on the verified UUID. An already-linked role='user' player
-	// is fetched (idempotent "log in via the game"); a role='admin' STAFF account is
-	// refused (op.console only) BEFORE any consume, so the code survives; an unlinked
-	// UUID births a fresh role='user' player with a uuid-derived unique username.
+	// is fetched (idempotent "log in via the game"); any STAFF account (admin or
+	// owner, i.e. role != 'user') is refused (op.console only) BEFORE any consume, so
+	// the code survives; an unlinked UUID births a fresh role='user' player with a
+	// uuid-derived unique username.
 	userID := newUserID
 	var existingRole string
 	switch err := tx.QueryRowContext(ctx,
@@ -209,7 +210,7 @@ func (p *PGRepo) RedeemPlayerBindCode(ctx context.Context, newUserID, code strin
 }
 
 // CompleteOwnerSetup consumes an in-game link code, creates-or-promotes the bound
-// account to the passwordless Owner (role='admin'), enables local auth, and stores
+// account to the passwordless Owner (role='owner'), enables local auth, and stores
 // the one-time first-login token in one transaction. It is the `felis setup`
 // MC-bind path: the operator enters limbo, runs /link, and types the code here.
 // Unlike RedeemPlayerBindCode — which refuses an already-staff account so a game
@@ -240,16 +241,16 @@ func (p *PGRepo) CompleteOwnerSetup(ctx context.Context, newUserID, code string,
 	}
 
 	// Create-or-promote keyed on the verified UUID. An unlinked UUID births a fresh
-	// staff row (role='admin') with a uuid-derived username; an already-linked
-	// account is promoted to role='admin' in place (idempotent when it is already
-	// staff), keeping its id and username. Setup elevates on purpose, so there is no
-	// staff refusal here — that guard belongs to the player path only.
+	// staff row (role='owner') with a uuid-derived username; an already-linked
+	// account is promoted to role='owner' in place (idempotent when it already is),
+	// keeping its id and username. Setup elevates on purpose, so there is no staff
+	// refusal here — that guard belongs to the player path only.
 	userID := newUserID
 	switch err := tx.QueryRowContext(ctx,
 		`SELECT user_id FROM account_links WHERE mc_uuid = $1`, mcUUID).Scan(&userID); {
 	case errors.Is(err, sql.ErrNoRows):
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO users (id, username, role) VALUES ($1, $2, 'admin')`,
+			`INSERT INTO users (id, username, role) VALUES ($1, $2, 'owner')`,
 			newUserID, mcUUID); err != nil {
 			return "", "", "", fmt.Errorf("create owner: %w", err)
 		}
@@ -263,7 +264,7 @@ func (p *PGRepo) CompleteOwnerSetup(ctx context.Context, newUserID, code string,
 		return "", "", "", err
 	default:
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE users SET role = 'admin' WHERE id = $1`, userID); err != nil {
+			`UPDATE users SET role = 'owner' WHERE id = $1`, userID); err != nil {
 			return "", "", "", fmt.Errorf("promote owner: %w", err)
 		}
 	}
@@ -858,17 +859,17 @@ func (p *PGRepo) IsUsernameBlacklisted(ctx context.Context, mcUUID string) (bool
 // who authenticates through the third-party Yggdrasil — the admin-on-Yggdrasil reclaim
 // exception (spec §B3). The EXISTS joins account_links to users on exactly three
 // conjuncts: the UUID is linked, that link authenticated via 'thirdparty', and the
-// linked user is an admin. It intentionally does not test HOW the account signs in:
-// an Operator may authenticate via SSO (Cloudflare Access, §14) or any local
-// passwordless door and must be protected just the same — the sign-in method is
-// orthogonal to "is staff" and "logs in via the Login Server". Keyed by UUID, the
-// only identity velocity holds.
+// linked user is staff (admin OR owner — the Owner is the one identity that must never
+// be displaced). It intentionally does not test HOW the account signs in: staff may
+// authenticate via SSO (Cloudflare Access, §14) or any local passwordless door and
+// must be protected just the same — the sign-in method is orthogonal to "is staff"
+// and "logs in via the Login Server". Keyed by UUID, the only identity velocity holds.
 func (p *PGRepo) IsProtectedAdminLink(ctx context.Context, mcUUID string) (bool, error) {
 	var ok bool
 	err := p.db.QueryRowContext(ctx,
 		`SELECT EXISTS(
 			SELECT 1 FROM account_links al JOIN users u ON u.id = al.user_id
-			WHERE al.mc_uuid = $1 AND al.auth_source = 'thirdparty' AND u.role = 'admin')`,
+			WHERE al.mc_uuid = $1 AND al.auth_source = 'thirdparty' AND u.role IN ('admin', 'owner'))`,
 		mcUUID).Scan(&ok)
 	return ok, err
 }
@@ -892,13 +893,13 @@ func (p *PGRepo) UserByUsername(ctx context.Context, username string) (*StaffUse
 	return &u, nil
 }
 
-// AdminExists reports whether any admin account already exists. It is the
+// AdminExists reports whether any staff account (admin or owner) already exists. It is the
 // break-glass console's bootstrap-vs-recovery switch: false means the typed
 // credential mints the first Owner (no prior identity to verify against), true
-// means the operator must identify against an existing admin for accountability.
+// means the operator must identify against an existing staff account for accountability.
 // It is not on the Repo interface because only the break-glass CLI consults it.
 func (p *PGRepo) AdminExists(ctx context.Context) (bool, error) {
-	const q = `SELECT 1 FROM users WHERE role = 'admin' LIMIT 1`
+	const q = `SELECT 1 FROM users WHERE role IN ('admin', 'owner') LIMIT 1`
 	var one int
 	switch err := p.db.QueryRowContext(ctx, q).Scan(&one); {
 	case errors.Is(err, sql.ErrNoRows):
@@ -926,15 +927,19 @@ func (p *PGRepo) UserByID(ctx context.Context, id string) (*StaffUser, error) {
 }
 
 // UpsertOwner creates or resets the Owner account direct-to-Postgres (the
-// break-glass first-run / recovery path). role is forced to 'admin' — the
-// platform-level identity. On a username conflict the email is overwritten
-// while the existing id is preserved, so live sessions referencing it survive
-// a reset. The account is passwordless by design. The empty email is stored
-// as NULL (users.email is nullable).
+// break-glass first-run / recovery path). role is forced to 'owner' — the
+// platform-level identity above admin (migration 0011); every owner-tier route
+// and the panel's owner surfaces gate on exactly this role, so writing a plain
+// 'admin' here would silently strand them. On a username conflict the email is
+// overwritten while the existing id is preserved, so live sessions referencing
+// it survive a reset — and the role is re-asserted, which is also the documented
+// promotion path for a pre-0011 install whose Owner row is still 'admin'. The
+// account is passwordless by design. The empty email is stored as NULL
+// (users.email is nullable).
 func (p *PGRepo) UpsertOwner(ctx context.Context, id, username, email string) error {
 	_, err := p.db.ExecContext(ctx,
-		`INSERT INTO users (id, username, email, role) VALUES ($1, $2, NULLIF($3, ''), 'admin')
-		 ON CONFLICT (username) DO UPDATE SET email = EXCLUDED.email`,
+		`INSERT INTO users (id, username, email, role) VALUES ($1, $2, NULLIF($3, ''), 'owner')
+		 ON CONFLICT (username) DO UPDATE SET email = EXCLUDED.email, role = 'owner'`,
 		id, username, email)
 	return err
 }

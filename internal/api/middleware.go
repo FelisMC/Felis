@@ -124,7 +124,8 @@ func (a *API) requireExternal(next http.Handler) http.Handler {
 
 // adminOnly gates an external-face handler on the admin Zero-Trust path. The
 // Access middleware has already authenticated; this enforces that admin-tier
-// operations both carry role=admin AND arrived via admin.* (spec §14).
+// operations both carry a staff role (admin or owner) AND arrived via admin.*
+// (spec §14).
 func (a *API) adminOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if p := principalFromContext(r.Context()); !p.IsAdmin() {

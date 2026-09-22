@@ -630,15 +630,15 @@ func (f *fakeRepo) IsUsernameBlacklisted(_ context.Context, mcUUID string) (bool
 }
 
 // IsProtectedAdminLink mirrors PGRepo's JOIN of account_links to users: linked,
-// auth_source 'thirdparty', and the linked user an admin — no password-hash test, so
-// an SSO Operator (role='admin', with no password) is protected like any other.
+// auth_source 'thirdparty', and the linked user staff (admin OR owner) — no
+// password-hash test, so an SSO Operator or the Owner is protected like any other.
 func (f *fakeRepo) IsProtectedAdminLink(_ context.Context, mcUUID string) (bool, error) {
 	userID, ok := f.links[mcUUID]
 	if !ok || f.linkAuthSource[mcUUID] != authSourceThirdParty {
 		return false, nil
 	}
 	for _, u := range f.staff {
-		if u.ID == userID && u.Role == "admin" {
+		if u.ID == userID && staffRole(u.Role) {
 			return true, nil
 		}
 	}

@@ -38,11 +38,11 @@ import (
 // in-game identity is the root of trust, so re-minting a code always re-grants a
 // session even after email/passkey are bound. "登录并非强制，但没登录什么都干不了".
 //
-// op.console stays behind Zero Trust. A code whose UUID belongs to STAFF (role=admin)
-// is refused here (ErrPlayerBindForbidden → 403), so the public bootstrap provably
-// never mints a session for an admin identity — the sole tier it yields is a role=user
-// player session, host-only to console.<root_domain> (never sent to op.console) and
-// carrying ViaAdminAccess=false. "op.console 必须得 Auth".
+// op.console stays behind Zero Trust. A code whose UUID belongs to STAFF (admin or
+// owner) is refused here (ErrPlayerBindForbidden → 403), so the public bootstrap
+// provably never mints a session for a staff identity — the sole tier it yields is a
+// role=user player session, host-only to console.<root_domain> (never sent to
+// op.console) and carrying ViaAdminAccess=false. "op.console 必须得 Auth".
 
 // newUserID returns an opaque random user id (128 bits, hex), matching the shape of
 // the ids break-glass mints for staff rows.

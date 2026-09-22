@@ -140,6 +140,18 @@ func (a *API) handlePatchUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Owner protection (migration 0011): the owner row is the one identity the
+	// panel may never demote — only the local break-glass console resets it.
+	// Username/email edits on it stay allowed. A failed detail read falls through;
+	// UpdateUser then answers the real 404.
+	if body.Role != nil && *body.Role != "owner" {
+		if d, err := a.Repo.UserDetail(r.Context(), id); err == nil && d.Role == "owner" {
+			writeError(w, r, newError(http.StatusForbidden, "forbidden",
+				"the owner account's role cannot be changed from the panel"))
+			return
+		}
+	}
+
 	if body.Username != nil {
 		if err := validateUsername(*body.Username); err != nil {
 			writeError(w, r, err)
@@ -186,6 +198,14 @@ func (a *API) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Same owner protection as the role guard above: only break-glass retires the
+	// owner identity. A failed detail read falls through to the real 404.
+	if d, err := a.Repo.UserDetail(r.Context(), id); err == nil && d.Role == "owner" {
+		writeError(w, r, newError(http.StatusForbidden, "forbidden",
+			"the owner account cannot be deleted from the panel"))
+		return
+	}
+
 	if err := a.Repo.DeleteUser(r.Context(), id, p.Email); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeError(w, r, newError(http.StatusNotFound, "not_found", "user not found"))
@@ -220,6 +240,17 @@ func (a *API) handleDisableUser(w http.ResponseWriter, r *http.Request) {
 	if err := decodeJSON(w, r, &body); err != nil {
 		writeError(w, r, err)
 		return
+	}
+
+	// Owner protection (migration 0011): disabling locks the owner out and revokes
+	// its sessions — effectively a demotion, so the panel refuses it; only
+	// break-glass touches the owner identity. Re-enabling stays allowed.
+	if body.Disabled {
+		if d, err := a.Repo.UserDetail(r.Context(), id); err == nil && d.Role == "owner" {
+			writeError(w, r, newError(http.StatusForbidden, "forbidden",
+				"the owner account cannot be disabled from the panel"))
+			return
+		}
 	}
 
 	if err := a.Repo.SetUserDisabled(r.Context(), id, body.Disabled); err != nil {

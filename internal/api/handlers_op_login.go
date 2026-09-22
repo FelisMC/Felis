@@ -28,7 +28,7 @@ import (
 //     column keeps it from ever colliding with a console login_email or onboard code).
 //   - An in-game vouch — an already-trusted admin who is ONLINE approves the pending
 //     request via velocity's /felis command (internal approve). The API's own user
-//     table is the sole authority: only a UUID linked to a role=admin account may
+//     table is the sole authority: only a UUID linked to a staff account may
 //     approve (velocity's command runs for any player and relies on this check).
 //
 // finish mints the session only when BOTH have landed. Neither factor alone — a mailed
@@ -137,9 +137,10 @@ func (a *API) handleOpLoginStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	// op.console is the STAFF door: a non-admin who typed their address here (they belong
+	// op.console is the STAFF door: a player who typed their address here (they belong
 	// on console.<root_domain>) gets the neutral response, never a request or a code.
-	if u.Role != "admin" {
+	// Staff means admin OR owner — the Owner is the primary op.console user.
+	if !staffRole(u.Role) {
 		neutral()
 		return
 	}
@@ -290,15 +291,15 @@ func (a *API) handleOpLoginFinish(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	// Load the staff account for the session + response. Re-assert admin as defence in
-	// depth: only admins ever get a request minted, but the session must never be issued
-	// to a non-admin identity even if the row were somehow otherwise.
+	// Load the staff account for the session + response. Re-assert staff as defence in
+	// depth: only staff ever get a request minted, but the session must never be issued
+	// to a non-staff identity even if the row were somehow otherwise.
 	u, err := a.Repo.UserByID(r.Context(), loginReq.UserID)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	if u.Role != "admin" {
+	if !staffRole(u.Role) {
 		writeError(w, r, newError(http.StatusForbidden, "staff_account", "that account is not an operator"))
 		return
 	}
@@ -343,7 +344,7 @@ func (a *API) handleOpLoginPending(w http.ResponseWriter, r *http.Request) {
 
 // opLoginApproveRequest is the internal approve body: the online-mode UUID of the
 // in-game admin running /felis web op approve. The API resolves it to a linked account
-// and refuses unless that account is role=admin — this check against the API's
+// and refuses unless that account is staff (admin or owner) — this check against the API's
 // authoritative user table is the only gate; velocity's command itself is unprivileged.
 type opLoginApproveRequest struct {
 	ApproverUUID string `json:"approver_uuid"`
@@ -351,10 +352,10 @@ type opLoginApproveRequest struct {
 
 // handleOpLoginApprove records an in-game admin's vouch for a pending staff login
 // (internal face), supplying the second factor. It resolves the approver UUID to a
-// linked role=admin account (else 403), then flips the request approved. A missing or
-// no-longer-pending request is 404. Self-approval is allowed: a staff member online as
-// their own admin identity supplies a genuine second factor (in-game session control)
-// distinct from the mailbox factor.
+// linked staff account (admin or owner; else 403), then flips the request approved.
+// A missing or no-longer-pending request is 404. Self-approval is allowed: a staff
+// member online as their own admin identity supplies a genuine second factor
+// (in-game session control) distinct from the mailbox factor.
 func (a *API) handleOpLoginApprove(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req opLoginApproveRequest

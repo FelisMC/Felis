@@ -264,6 +264,16 @@ func TestAuthenticateAdmin(t *testing.T) {
 		}
 	})
 
+	t.Run("the owner role attributes like an admin", func(t *testing.T) {
+		owner := mkAdmin("root")
+		owner.Role = "owner" // the platform owner is staff too (migration 0011)
+		f := &fakeOwnerStore{users: map[string]*api.StaffUser{"root": owner}}
+		matched, ok, err := authenticateAdmin(ctx, f, "root")
+		if err != nil || !ok || matched != "root" {
+			t.Fatalf("authenticateAdmin(owner) = (%q, %v, %v), want (root, true, nil)", matched, ok, err)
+		}
+	})
+
 	t.Run("an unknown user is a non-match, not an error", func(t *testing.T) {
 		f := &fakeOwnerStore{}
 		_, ok, err := authenticateAdmin(ctx, f, "nobody")

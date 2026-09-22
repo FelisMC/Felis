@@ -17,13 +17,13 @@ type Principal struct {
 	UserID string
 	// Email is the audited actor identity (spec §14: audit actor = Access email).
 	Email string
-	// Role is "admin" or "user" (mirrors users.role).
+	// Role is "owner", "admin", or "user" (mirrors users.role).
 	Role string
 	// ViaAdminAccess is true only when the request arrived through an admin-graded
 	// path: the admin.* Zero-Trust hostname (Cloudflare Access, the remote face) OR
 	// a local session presented on the op.console host (SessionAuth, the
 	// passwordless face). Admin-tier operations require it in addition to
-	// Role=="admin" (spec §14: ZT is graded by operation). A role=admin session
+	// a staff role (spec §14: ZT is graded by operation). A staff session
 	// arriving on the player console (console.*) never sets it.
 	ViaAdminAccess bool
 	// EmailVerified mirrors users.email_verified. The lockdown middleware gates
@@ -49,7 +49,7 @@ func staffRole(role string) bool {
 }
 
 // IsAdmin reports whether the principal may perform admin-tier operations.
-// Both the role claim and the admin Access path are required: a role=admin
+// Both the role claim and the admin Access path are required: a staff
 // session arriving on panel.* must not bypass the Zero-Trust boundary.
 // An owner implicitly passes this check (the owner role is a superset of admin).
 func (p *Principal) IsAdmin() bool {

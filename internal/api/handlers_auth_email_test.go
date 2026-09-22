@@ -510,12 +510,20 @@ func TestLoginEmailPurposeSeparation(t *testing.T) {
 // a wrong code for a staff address answers the same invalid_code as for anyone, and
 // the 403 costs the valid code (verify-then-refuse), so it cannot be farmed as an
 // is-this-address-staff oracle.
+// Staff means admin AND owner (migration 0011): both must be refused at the
+// player door, after the code proves mailbox control.
 func TestLoginEmailVerifyRefusesStaff(t *testing.T) {
+	for _, role := range []string{"admin", "owner"} {
+		t.Run(role, func(t *testing.T) { verifyStaffRefusedAtPlayerDoor(t, role) })
+	}
+}
+
+func verifyStaffRefusedAtPlayerDoor(t *testing.T, role string) {
 	repo := newFakeRepo()
 	repo.settings[LocalAuthEnabledKey] = []byte("true")
 	repo.staff["owner"] = &StaffUser{
 		ID: "a1", Username: "owner", Email: "boss@example.net",
-		Role: "admin", EmailVerified: true,
+		Role: role, EmailVerified: true,
 	}
 	mailer := &captureMailer{}
 	api := newTestAPI(repo, newFakeCluster())

@@ -44,11 +44,11 @@ var (
 	// consumed, or expired) — so handlers map it to 400, not 404.
 	ErrPasskeyChallengeInvalid = errors.New("passkey challenge invalid or expired")
 	// ErrPlayerBindForbidden means a public Bind-Code redemption resolved to a STAFF
-	// account (role=admin), which the player-console bootstrap refuses (console-tier
-	// access model). Operators authenticate at op.console behind Zero Trust, never via
-	// the account-less console.<root_domain> door, so the public bootstrap provably
-	// never mints a session for an admin identity. It is distinct from ErrConflict so
-	// the handler answers 403 (wrong door) rather than 409 (already linked).
+	// account (admin or owner), which the player-console bootstrap refuses
+	// (console-tier access model). Staff authenticate at op.console behind Zero Trust,
+	// never via the account-less console.<root_domain> door, so the public bootstrap
+	// provably never mints a session for a staff identity. It is distinct from
+	// ErrConflict so the handler answers 403 (wrong door) rather than 409.
 	ErrPlayerBindForbidden = errors.New("bind code belongs to a staff account")
 	// ErrEmailTaken means a verified email would collide with another account's
 	// already-verified address (spec §B email-first login foundation; the

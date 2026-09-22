@@ -241,7 +241,9 @@ func (a *API) handleLoginEmailVerify(w http.ResponseWriter, r *http.Request) {
 	// Code redeemed. Refuse staff here — never before the verify — so op.console keeps
 	// its Zero-Trust + in-game-approval gates and this public door provably yields only
 	// a role=user player session (mirrors handleBindRedeem's refuse-staff contract).
-	if u.Role == "admin" {
+	// Staff means anything above role=user: an admin OR the role=owner identity. The
+	// player door must yield only player sessions.
+	if u.Role != "user" {
 		writeError(w, r, newError(http.StatusForbidden, "staff_account",
 			"that account is staff; sign in at the operator console"))
 		return

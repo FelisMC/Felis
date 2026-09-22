@@ -170,6 +170,44 @@ func TestOpLoginVertical(t *testing.T) {
 	}
 }
 
+// TestOpLoginOwnerAdmitted pins that the staff door admits the Owner (role=owner),
+// not just plain admins: the Owner is the primary op.console identity, so a
+// role check of "admin only" would strand it outside its own console.
+func TestOpLoginOwnerAdmitted(t *testing.T) {
+	repo := newFakeRepo()
+	repo.settings[LocalAuthEnabledKey] = []byte("true")
+	repo.staff["owner"] = &StaffUser{
+		ID: "o1", Username: "owner", Email: "owner@example.net",
+		Role: "owner", EmailVerified: true,
+	}
+	repo.links[opUUID] = "o1"
+	mailer := &captureMailer{}
+	api := newTestAPI(repo, newFakeCluster())
+	api.Mailer = mailer
+	eh := api.ExternalHandler()
+	ih := api.InternalHandler()
+
+	w := startOp(eh, "owner@example.net")
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("owner start: code = %d, want 202 (%s)", w.Code, w.Body.String())
+	}
+	reqID, _ := acctBody(t, w)["request_id"].(string)
+	if reqID == "" || mailer.calls != 1 || len(repo.opLogins) != 1 {
+		t.Fatalf("owner start must mint a request + mail a code: req=%q mails=%d rows=%d",
+			reqID, mailer.calls, len(repo.opLogins))
+	}
+	if w := approveOp(ih, reqID, opUUID); w.Code != http.StatusOK {
+		t.Fatalf("approve: code = %d (%s)", w.Code, w.Body.String())
+	}
+	w = finishOp(eh, reqID, mailer.code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("owner finish: code = %d body %s, want 200", w.Code, w.Body.String())
+	}
+	if vb := acctBody(t, w); vb["role"] != "owner" {
+		t.Fatalf("finish role = %v, want owner", vb["role"])
+	}
+}
+
 // TestOpLoginStartNeutral pins the start-side anti-enumeration contract: op.console is
 // the STAFF door, so a non-admin account AND an unknown address both get a 202 carrying
 // a request_id + expires_at, mint/mail nothing, and still burn the per-recipient

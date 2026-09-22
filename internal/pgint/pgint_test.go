@@ -357,6 +357,110 @@ func TestUserAdminEmailEditClearsVerification(t *testing.T) {
 	assertEmailProven(t, u.ID, next, false)
 }
 
+// The owner tier the panel gates on must actually be WRITTEN: until this
+// contract had a test, every provisioning path wrote 'admin', so the whole
+// owner surface (user administration) was unreachable in a fresh install.
+func TestOwnerProvisioningWritesOwnerRole(t *testing.T) {
+	ctx := context.Background()
+	name := "owner-" + suffix(t)
+	id := "usr-" + suffix(t)
+	if err := repo.UpsertOwner(ctx, id, name, "owner-"+suffix(t)+"@example.net"); err != nil {
+		t.Fatalf("UpsertOwner: %v", err)
+	}
+	if role := userRole(t, id); role != "owner" {
+		t.Fatalf("UpsertOwner role = %q, want owner", role)
+	}
+	// Re-running the break-glass path resets (email) and PROMOTES (role) in
+	// place — the documented upgrade for a pre-0011 'admin' Owner row.
+	if err := repo.UpsertOwner(ctx, "usr-other-"+suffix(t), name, "reset@example.net"); err != nil {
+		t.Fatalf("UpsertOwner (reset): %v", err)
+	}
+	var gotID, email, role string
+	if err := db.QueryRow(`SELECT id, COALESCE(email, ''), role::text FROM users WHERE username = $1`, name).
+		Scan(&gotID, &email, &role); err != nil {
+		t.Fatalf("read owner row: %v", err)
+	}
+	if gotID != id || email != "reset@example.net" || role != "owner" {
+		t.Fatalf("reset row = (%s, %s, %s), want id preserved + email reset + owner", gotID, email, role)
+	}
+	if ok, err := repo.AdminExists(ctx); err != nil || !ok {
+		t.Fatalf("AdminExists = (%v, %v), want true (the owner counts as staff)", ok, err)
+	}
+	// Operators stay plain admins: the owner tier stays singular.
+	opID := "usr-op-" + suffix(t)
+	if err := repo.InsertOperator(ctx, opID, "op-"+suffix(t), ""); err != nil {
+		t.Fatalf("InsertOperator: %v", err)
+	}
+	if role := userRole(t, opID); role != "admin" {
+		t.Fatalf("InsertOperator role = %q, want admin", role)
+	}
+}
+
+// The setup wizard's MC-bind path establishes THE Owner, so it writes the same
+// role as break-glass rather than a plain admin.
+func TestCompleteOwnerSetupWritesOwnerRole(t *testing.T) {
+	ctx := context.Background()
+	now := mustNow()
+	mc := testUUID(t)
+	code := "osc-" + suffix(t)
+	if err := repo.CreateLinkCode(ctx, code, mc, "mojang", now.Add(10*time.Minute)); err != nil {
+		t.Fatalf("CreateLinkCode: %v", err)
+	}
+	newID := "usr-setup-" + suffix(t)
+	userID, gotUUID, src, err := repo.CompleteOwnerSetup(ctx, newID, code, now,
+		"tok-"+suffix(t), now.Add(time.Hour))
+	if err != nil || userID != newID || gotUUID != mc || src != "mojang" {
+		t.Fatalf("CompleteOwnerSetup = (%s, %s, %s, %v), want (%s, %s, mojang, nil)",
+			userID, gotUUID, src, err, newID, mc)
+	}
+	if role := userRole(t, newID); role != "owner" {
+		t.Fatalf("CompleteOwnerSetup role = %q, want owner", role)
+	}
+}
+
+// IsProtectedAdminLink is one of the staff predicates the owner role must flow
+// through: the Owner logging in via the third-party Yggdrasil must never be
+// barred by a Mojang-priority reclaim, exactly like an Operator.
+func TestIsProtectedAdminLinkStaffRoles(t *testing.T) {
+	ctx := context.Background()
+	now := mustNow()
+	link := func(userID, source string) string {
+		t.Helper()
+		mc := testUUID(t)
+		code := "pro-" + suffix(t)
+		if err := repo.CreateLinkCode(ctx, code, mc, source, now.Add(10*time.Minute)); err != nil {
+			t.Fatalf("CreateLinkCode(%s): %v", source, err)
+		}
+		if _, _, err := repo.VerifyLinkCode(ctx, userID, code, now); err != nil {
+			t.Fatalf("VerifyLinkCode(%s): %v", source, err)
+		}
+		return mc
+	}
+
+	ownerID := "usr-" + suffix(t)
+	if err := repo.UpsertOwner(ctx, ownerID, "prot-owner-"+suffix(t), ""); err != nil {
+		t.Fatalf("UpsertOwner: %v", err)
+	}
+	admin := newUser(t, "admin", "prot-admin")
+	player := newUser(t, "user", "prot-player")
+
+	for _, tc := range []struct {
+		name string
+		mc   string
+		want bool
+	}{
+		{"owner via thirdparty", link(ownerID, "thirdparty"), true},
+		{"admin via thirdparty", link(admin.ID, "thirdparty"), true},
+		{"player via thirdparty", link(player.ID, "thirdparty"), false},
+		{"admin via mojang", link(admin.ID, "mojang"), false},
+	} {
+		got, err := repo.IsProtectedAdminLink(ctx, tc.mc)
+		if err != nil || got != tc.want {
+			t.Fatalf("%s = (%v, %v), want %v", tc.name, got, err, tc.want)
+		}
+	}
+}
+
 // ---- op.console staff login state machine --------------------------------------
 
 func TestOpLoginStateMachine(t *testing.T) {
@@ -739,6 +843,15 @@ func assertEmailProven(t *testing.T, userID, wantEmail string, wantVerified bool
 	if email != wantEmail || verified != wantVerified {
 		t.Fatalf("user email = (%q, %v), want (%q, %v)", email, verified, wantEmail, wantVerified)
 	}
+}
+
+func userRole(t *testing.T, userID string) string {
+	t.Helper()
+	var role string
+	if err := db.QueryRow(`SELECT role::text FROM users WHERE id = $1`, userID).Scan(&role); err != nil {
+		t.Fatalf("read user role: %v", err)
+	}
+	return role
 }
 
 func assertLinkAuthSource(t *testing.T, userID, mcUUID, want string) {

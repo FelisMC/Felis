@@ -77,10 +77,10 @@ type BackupRecord struct {
 }
 
 // StaffUser is the login-side projection of a users row (spec §B passwordless
-// auth). Owner/Operator are role=admin rows, minted by `felis setup` (MC link)
-// and recovered by `felis breakGlass` (email OTP); players are role=user rows.
-// There is no password column — staff authenticate via email-OTP / passkey +
-// in-game approve, never a password.
+// auth). The Owner is the role=owner row, minted by `felis setup` (MC link) and
+// recovered by `felis breakGlass` (email OTP); Operators are role=admin;
+// players are role=user. There is no password column — staff authenticate via
+// email-OTP / passkey + in-game approve, never a password.
 type StaffUser struct {
 	ID       string
 	Username string
@@ -207,9 +207,10 @@ type Repo interface {
 	//     return newUserID;
 	//   - the uuid is already linked to a role='user' player → return THAT user
 	//     (idempotent "log in via the game"), consuming the code;
-	//   - the uuid is linked to a role='admin' STAFF account → ErrPlayerBindForbidden
-	//     WITHOUT consuming the code (operators use op.console behind Zero Trust; the
-	//     public bootstrap never mints a session for an admin identity).
+	//   - the uuid is linked to a STAFF account (role != 'user', i.e. admin or owner)
+	//     → ErrPlayerBindForbidden WITHOUT consuming the code (staff use op.console
+	//     behind Zero Trust; the public bootstrap never mints a session for a staff
+	//     identity).
 	//
 	// Safe as an unauthenticated entrypoint because a Bind Code is minted internal-face
 	// only (CreateLinkCode), against an online-mode-verified UUID, short-TTL and
@@ -463,12 +464,13 @@ type Repo interface {
 	// is staff logging in via the Login Server, not a Mojang squatter, so a
 	// Mojang-priority reclaim must never bar them. The predicate is exactly three
 	// conjuncts: the UUID is linked (account_links), that link authenticated via
-	// 'thirdparty' (auth_source), and the linked user is an admin (role='admin').
+	// 'thirdparty' (auth_source), and the linked user is staff — admin or owner
+	// (migration 0011), the Owner being the identity most in need of the exception.
 	// It deliberately does NOT ask HOW the staff account signs in: an Operator may
 	// authenticate via SSO (Cloudflare Access, IdP-agnostic per §14) or any local
 	// passwordless door, and must be protected all the same — the sign-in method is
 	// orthogonal to both "is staff" and "logs in via the Login Server". An unlinked
-	// UUID, a Mojang-sourced link, or a non-admin link all yield false, so the
+	// UUID, a Mojang-sourced link, or a player link all yield false, so the
 	// exception never broadens to ordinary thirdparty players (Mojang priority still
 	// displaces them) nor to Mojang-authenticated identities (who have no Login-Server
 	// name to protect). Keyed by UUID — the only identity velocity knows.
@@ -501,8 +503,10 @@ type Repo interface {
 	UserByEmail(ctx context.Context, email string) (*StaffUser, error)
 	// UpsertOwner creates or resets the single Owner account direct-to-Postgres
 	// (the `felis setup` / `felis breakGlass` recovery path). role is forced to
-	// 'admin'; on a username conflict the existing row's email is overwritten so
-	// a reset is idempotent. The account is passwordless by design.
+	// 'owner' (migration 0011 — the tier every user-admin route gates on); on a
+	// username conflict the existing row's email is overwritten and the role
+	// re-asserted, so a reset is idempotent and a pre-0011 'admin' Owner row is
+	// promoted. The account is passwordless by design.
 	UpsertOwner(ctx context.Context, id, username, email string) error
 	// CreateSession records a minted session: the sha-256 of the opaque cookie
 	// value, its owner, and its expiry (spec §B sessions). Only the hash is stored,

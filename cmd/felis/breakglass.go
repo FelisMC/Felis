@@ -80,8 +80,9 @@ type ownerStore interface {
 	// InsertOperator mints a NEW Operator staff account. Unlike UpsertOwner it is
 	// insert-only: a username already taken is a conflict (api.ErrConflict), never a
 	// silent reset, so adding an Operator can never clobber the Owner or an existing
-	// Operator. The row is role=admin, identical in shape to the Owner — Felis has no
-	// separate operator DB role (migration 0003: staff = role=admin).
+	// Operator. The row is role=admin — an Operator is staff BELOW the single
+	// role=owner identity (migration 0011 adds that role); the two are the only
+	// staff roles.
 	InsertOperator(ctx context.Context, id, username, email string) error
 	// CompleteOwnerSetup atomically consumes the in-game link code, creates or
 	// promotes the bound Owner, enables local auth, and stores the one-time setup
@@ -266,14 +267,16 @@ func authenticateAdmin(ctx context.Context, s ownerStore, username string) (matc
 	if err != nil {
 		return "", false, err
 	}
-	if u.Role != "admin" {
+	// Staff means admin OR owner: recovery attribution must accept the Owner (the
+	// primary break-glass identity), not just plain admins.
+	if u.Role != "admin" && u.Role != "owner" {
 		return "", false, nil
 	}
 	return u.Username, true, nil
 }
 
 // provisionOwner mints or resets the single Owner account direct-to-Postgres,
-// passwordless. The account is role=admin with no password — the Owner completes
+// passwordless. The account is role=owner with no password — the Owner completes
 // passwordless login setup via the web setup-token flow after `felis setup`.
 func provisionOwner(ctx context.Context, s ownerStore, username, email string) error {
 	username = strings.TrimSpace(username)
@@ -290,13 +293,13 @@ func provisionOwner(ctx context.Context, s ownerStore, username, email string) e
 	return nil
 }
 
-// provisionOperator mints a NEW Operator staff account direct-to-Postgres. Like the
-// Owner it is role=admin and passwordless — Felis has no separate operator DB role,
-// so an Operator is simply an additional staff admin (migration 0003). UNLIKE
-// provisionOwner, which upserts the single Owner and resets it on a username
-// conflict, this is insert-only: a username already taken returns api.ErrConflict
-// rather than overwriting a live account, so adding an Operator can never silently
-// clobber the Owner's or another Operator's account.
+// provisionOperator mints a NEW Operator staff account direct-to-Postgres. It is
+// role=admin and passwordless — an additional staff admin below the single
+// role=owner identity (migrations 0003 + 0011). UNLIKE provisionOwner, which
+// upserts the single Owner and resets it on a username conflict, this is
+// insert-only: a username already taken returns api.ErrConflict rather than
+// overwriting a live account, so adding an Operator can never silently clobber
+// the Owner's or another Operator's account.
 func provisionOperator(ctx context.Context, s ownerStore, username, email string) error {
 	username = strings.TrimSpace(username)
 	if username == "" {
@@ -387,7 +390,7 @@ func newSetupToken() (raw, hash string, err error) {
 
 // performSetupMCBind is the `felis setup` Owner-establishment path: the operator
 // binds their Minecraft account via a one-time link code the login gate handed
-// them in-game, the bound user is promoted to role='admin' (passwordless Owner),
+// them in-game, the bound user is promoted to role='owner' (passwordless Owner),
 // local auth is enabled, and a one-time setup URL is minted for the first web
 // login where the Owner verifies email / enrolls a passkey. adminHostname is the
 // operator-console host the URL points at (op.console.<root>): the Owner is staff,
