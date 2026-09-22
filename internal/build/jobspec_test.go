@@ -105,6 +105,43 @@ func TestBuildJobContainersAreHardened(t *testing.T) {
 	}
 }
 
+// The limits are caps, but the requests must be a schedulable floor: reserving the
+// full 2 CPU / 4Gi on a starter node (4 vCPU / 5.5 GiB, where the api, operator,
+// registry, Postgres and the game pods live too) leaves no room for the Pod —
+// proven live: FailedScheduling/Insufficient memory, build stuck Pending forever.
+func TestBuildJobRequestsAreASchedulableFloor(t *testing.T) {
+	job, err := BuildJob(sampleJobParams())
+	if err != nil {
+		t.Fatalf("BuildJob: %v", err)
+	}
+	all := append([]corev1.Container{}, job.Spec.Template.Spec.InitContainers...)
+	all = append(all, job.Spec.Template.Spec.Containers...)
+	for _, c := range all {
+		reqMem, limMem := c.Resources.Requests.Memory(), c.Resources.Limits.Memory()
+		reqCPU, limCPU := c.Resources.Requests.Cpu(), c.Resources.Limits.Cpu()
+		if reqMem.Cmp(*limMem) >= 0 || reqCPU.Cmp(*limCPU) >= 0 {
+			t.Errorf("container %q requests must be below its limits (req %s/%s, lim %s/%s)",
+				c.Name, reqCPU, reqMem, limCPU, limMem)
+		}
+		if reqMem.IsZero() || reqCPU.IsZero() {
+			t.Errorf("container %q must still ask for a non-zero floor", c.Name)
+		}
+	}
+	// A tiny operator-set cap must be honoured: the request never exceeds it.
+	p := sampleJobParams()
+	p.CPULimit, p.MemLimit = "100m", "128Mi"
+	job, err = BuildJob(p)
+	if err != nil {
+		t.Fatalf("BuildJob(tiny): %v", err)
+	}
+	for _, c := range job.Spec.Template.Spec.InitContainers {
+		if c.Resources.Requests.Memory().Cmp(*c.Resources.Limits.Memory()) > 0 ||
+			c.Resources.Requests.Cpu().Cmp(*c.Resources.Limits.Cpu()) > 0 {
+			t.Errorf("container %q request exceeds a configured cap", c.Name)
+		}
+	}
+}
+
 // kaniko builds and pushes to the request's exact target; trivy gates admission
 // with --exit-code 1 --severity CRITICAL on that same ref.
 func TestBuildJobKanikoPushesAndTrivyGates(t *testing.T) {
@@ -140,6 +177,30 @@ func TestBuildJobKanikoPushesAndTrivyGates(t *testing.T) {
 	}
 	if !hasArg(trivy.Args, p.ImageRef) {
 		t.Errorf("trivy must scan the pushed ref %q, args=%v", p.ImageRef, trivy.Args)
+	}
+	// No DB repository configured: Trivy keeps its own default.
+	if hasArg(trivy.Args, "--db-repository") {
+		t.Errorf("unset TrivyDBRepository must not render --db-repository, args=%v", trivy.Args)
+	}
+}
+
+// A configured DB repository (the internal mirror) must reach Trivy as
+// --db-repository: without it the scan tries the internet, which the build egress
+// lock denies, and every build fails closed at the scan gate.
+func TestBuildJobTrivyDBRepositoryOverride(t *testing.T) {
+	p := sampleJobParams()
+	p.TrivyDBRepository = "registry.felis.svc:5000/mirror/trivy-db:2"
+	job, err := BuildJob(p)
+	if err != nil {
+		t.Fatalf("BuildJob: %v", err)
+	}
+	trivy := job.Spec.Template.Spec.Containers[0]
+	if !argPairPresent(trivy.Args, "--db-repository", p.TrivyDBRepository) {
+		t.Errorf("trivy args = %v, want --db-repository %s", trivy.Args, p.TrivyDBRepository)
+	}
+	// The scanned image ref must stay the last argument.
+	if last := trivy.Args[len(trivy.Args)-1]; last != p.ImageRef {
+		t.Errorf("image ref must remain the last argument, args=%v", trivy.Args)
 	}
 }
 
@@ -227,6 +288,15 @@ func TestBuildJobFetchesHTTPContext(t *testing.T) {
 	}
 	if len(kaniko.Env) != 0 {
 		t.Errorf("kaniko must carry no env (especially no token), got %v", kaniko.Env)
+	}
+	// The fetch container extracts as root — the uid Kaniko runs as — because
+	// Kaniko re-copies the Dockerfile and chowns it to the source owner, which no
+	// other uid can satisfy under this pod's dropped capabilities.
+	if fetch.SecurityContext == nil || fetch.SecurityContext.RunAsUser == nil || *fetch.SecurityContext.RunAsUser != 0 {
+		t.Error("fetch container must extract as root so Kaniko can inherit the context ownership")
+	}
+	if fetch.SecurityContext != nil && (fetch.SecurityContext.Privileged == nil || *fetch.SecurityContext.Privileged) {
+		t.Error("fetch container must still be unprivileged")
 	}
 	if !hasArg(kaniko.Args, "--context="+contextMountPath) {
 		t.Errorf("kaniko context = %v, want the fetched local dir %s", kaniko.Args, contextMountPath)

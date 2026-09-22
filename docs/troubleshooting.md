@@ -408,14 +408,33 @@ url = "registry.felis.svc:5000"
 build_namespace = "felis-build"
 kaniko_image = "registry.felis.svc:5000/mirror/kaniko:v1.23.2"
 trivy_image  = "registry.felis.svc:5000/mirror/trivy:0.58.1"
+trivy_db_repository = "registry.felis.svc:5000/mirror/trivy-db:2"
 build_cpu_limit = "2"
 build_mem_limit = "4Gi"
 ```
 
 then restart `felis-api` (it renders the Job from this config). Unset fields keep
-the defaults. Note the user-modpack context topologies are a separate,
-still-open seam (see `docs/deferred-seams.md`); this section only makes the
-executors reachable.
+the defaults.
+
+`trivy_db_repository` is not optional on an egress-locked box. Trivy fetches its
+vulnerability DB from `mirror.gcr.io`/`ghcr.io` unless told otherwise, and the
+build egress policy denies those hosts — so the scan step fails closed
+(`failed to download vulnerability DB`) and NO build ever completes, even though
+Kaniko pushed the image. Mirror the DB into the internal registry once:
+
+```
+# On a host with internet + docker access to the cluster's registry
+# (add its address to the daemon's insecure-registries first; the registry
+# serves plain HTTP):
+#   docker pull mirror.gcr.io/aquasec/trivy-db:2
+#   docker tag  mirror.gcr.io/aquasec/trivy-db:2 <registry-addr>:5000/mirror/trivy-db:2
+#   docker push <registry-addr>:5000/mirror/trivy-db:2
+```
+
+The Job's Trivy container already runs with `--insecure`, so the internal
+registry's plain HTTP works for the DB pull exactly as it does for the scanned
+image. Re-mirror the tag periodically (Trivy refreshes the DB several times a
+day upstream; a stale mirror only means stale CVE data, never a failed gate).
 
 ---
 

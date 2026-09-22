@@ -132,6 +132,18 @@ type RegistryConfig struct {
 	TrivyImage    string `toml:"trivy_image"`
 	BuildCPULimit string `toml:"build_cpu_limit"`
 	BuildMemLimit string `toml:"build_mem_limit"`
+	// TrivyDBRepository points Trivy at an OCI repository holding the
+	// vulnerability DB (--db-repository). Trivy's default fetches from
+	// mirror.gcr.io/ghcr.io, which the build egress lock denies — so on a
+	// default install the scan step fails closed and no build ever completes.
+	// The supported shape is an internal mirror: copy
+	// mirror.gcr.io/aquasec/trivy-db:2 into this cluster's registry (recipe in
+	// docs/troubleshooting.md §8) and set this to
+	// registry.<ns>.svc:5000/mirror/trivy-db:2. The scan runs with --insecure,
+	// so the plain-HTTP internal registry works. Empty keeps Trivy's own
+	// default (only usable on an install that deliberately opens internet
+	// egress to the DB hosts).
+	TrivyDBRepository string `toml:"trivy_db_repository"`
 	// UserUploadsContext is the object-store base under which a user-submitted
 	// modpack's Kaniko build context is pinned. It belongs to the §16 build
 	// subsystem's input domain (the build-context store), introduced by the
@@ -139,8 +151,9 @@ type RegistryConfig struct {
 	// lane derives {UserUploadsContext}/{submissionID}/context.tar.gz; both transports
 	// that place the blob there now ship (submit.LocalContextStore for a local path,
 	// submit.S3ContextStore for an s3:// base, selected in cmd/felis by the shape of
-	// this value). What stays deferred is the far end — Kaniko reading that context
-	// from inside the build Pod (INTEGRATION-ONLY, see submit/blobstore.go). It is
+	// this value), and so does the read end: the build Pod's fetch initContainer
+	// streams the blob back over the API's internal face, so this value just names
+	// where the API stores it, not where Kaniko must reach. It is
 	// kept distinct from [archive] on purpose — a world
 	// archive (§19 WorldArchiver) and a build context (§16) are different artifacts
 	// with different lifecycles, so the two must not share a store binding.
@@ -217,9 +230,10 @@ const (
 	defaultStore      = "tarLocal"
 	// defaultUserUploadsContext is a non-empty, platform-namespaced placeholder so
 	// the modpack approval lane's derived context ref is well-formed even before a
-	// deployment points it at a real object store. The blob transport is deferred,
-	// so this base only has to be a sensible, parseable prefix (see the §16 build
-	// subsystem and the internal/submit package doc for the lane's provenance).
+	// deployment points it at a real object store. It is only a parseable prefix —
+	// an s3:// base with no credentials leaves the upload transport unwired, and
+	// the endpoint answers an honest 503 (see the §16 build subsystem and the
+	// internal/submit package doc for the lane's provenance).
 	defaultUserUploadsContext = "s3://felis-user-uploads"
 	// defaultSMTPPort is the STARTTLS submission port; applied only when [smtp]
 	// host is set (a portless [smtp] block with no host stays fully zero).

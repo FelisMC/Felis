@@ -55,9 +55,12 @@ A grep across `*.md` and `*.go` returns both sets; only the Go ones are seams.
   filesystem view or object-store credentials. Kaniko/Trivy images are
   external-only by default; `[registry] kaniko_image / trivy_image /
   build_cpu_limit / build_mem_limit` override them for mirrored or air-gapped
-  installs, and Trivy's vulnerability DB download needs the same treatment (a
-  `package_source_cidrs` allowance or an internal `TRIVY_DB_REPOSITORY` mirror) or
-  the scan step fails closed on an egress-locked install.
+  installs. Trivy's vulnerability DB is the same story, and now has its own knob:
+  `[registry] trivy_db_repository` points `--db-repository` at an internal mirror
+  (recipe in docs/troubleshooting.md §8e). Left unset on an egress-locked box the
+  scan step fails closed — Kaniko pushes, Trivy exits on the DB download — which
+  is the correct fail direction but leaves the build unfinished, so the mirror is
+  part of a production build install.
 
 ## Built; only its I/O is unverifiable from this repo
 

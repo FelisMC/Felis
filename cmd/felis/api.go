@@ -421,6 +421,9 @@ func buildConfig(cfg *config.Config) build.Config {
 		TrivyImage:  cfg.Registry.TrivyImage,
 		CPULimit:    cfg.Registry.BuildCPULimit,
 		MemLimit:    cfg.Registry.BuildMemLimit,
+		// Empty keeps Trivy's own default; an install with builds points this at
+		// the internal DB mirror (see config.RegistryConfig.TrivyDBRepository).
+		TrivyDBRepository: cfg.Registry.TrivyDBRepository,
 	}
 }
 

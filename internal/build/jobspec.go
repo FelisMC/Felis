@@ -63,12 +63,16 @@ type JobParams struct {
 	RegistryURL    string
 	// FelisImage runs the context-fetch initContainer (the felis binary's
 	// fetch-context entrypoint). Required when ContextRef is an http(s) URL.
-	FelisImage  string
-	KanikoImage string
-	TrivyImage  string
-	Deadline    time.Duration
-	CPULimit    string
-	MemLimit    string
+	FelisImage string
+	// TrivyDBRepository overrides Trivy's vulnerability-DB source (the
+	// --db-repository flag). Empty keeps Trivy's own default; see
+	// build.Config.TrivyDBRepository for why an in-cluster install sets it.
+	TrivyDBRepository string
+	KanikoImage       string
+	TrivyImage        string
+	Deadline          time.Duration
+	CPULimit          string
+	MemLimit          string
 }
 
 // BuildJobName is the deterministic Job name for a build id.
@@ -134,6 +138,19 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 			return nil, fmt.Errorf("build: context ref %q needs FelisImage for the fetch initContainer", p.ContextRef)
 		}
 		contextPath = contextMountPath
+		// The fetch container runs as root while Kaniko keeps the image default
+		// (also root): Kaniko re-copies the Dockerfile out of the context and
+		// chowns/chmods it to the SOURCE file's owner, which fails for any other
+		// owner without CAP_CHOWN/CAP_FOWNER — capabilities this pod deliberately
+		// drops (the live drill hit exactly this: "copying dockerfile: chown
+		// /kaniko/Dockerfile: operation not permitted" with the distroless uid
+		// 65532). Extracting as root, the uid Kaniko itself runs as, keeps the
+		// context owned by the only user that can satisfy that copy. The pod is
+		// root by necessity regardless: Kaniko unpacks base-image layers into its
+		// own filesystem.
+		fetchSec := sec.DeepCopy()
+		fetchSec.RunAsUser = int64Ptr(0)
+		fetchSec.RunAsGroup = int64Ptr(0)
 		fetch := corev1.Container{
 			Name:  ContainerFetch,
 			Image: p.FelisImage,
@@ -155,8 +172,8 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 				}},
 			}},
 			VolumeMounts:    []corev1.VolumeMount{{Name: contextVolume, MountPath: contextMountPath}},
-			Resources:       corev1.ResourceRequirements{Limits: limits, Requests: limits},
-			SecurityContext: sec,
+			Resources:       corev1.ResourceRequirements{Limits: limits, Requests: buildRequests(limits)},
+			SecurityContext: fetchSec,
 		}
 		initContainers = append(initContainers, fetch)
 		kanikoMounts = []corev1.VolumeMount{{Name: contextVolume, MountPath: contextMountPath, ReadOnly: true}}
@@ -185,23 +202,32 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 			"--skip-tls-verify",
 		},
 		VolumeMounts:    kanikoMounts,
-		Resources:       corev1.ResourceRequirements{Limits: limits, Requests: limits},
+		Resources:       corev1.ResourceRequirements{Limits: limits, Requests: buildRequests(limits)},
 		SecurityContext: sec,
 	}
 	initContainers = append(initContainers, kaniko)
 
+	trivyArgs := []string{
+		"image",
+		"--exit-code", "1",
+		"--severity", "CRITICAL",
+		"--no-progress",
+		"--insecure",
+	}
+	// The DB source is configurable because the default (mirror.gcr.io/ghcr.io)
+	// is exactly what the build egress lock denies: an install that never mirrors
+	// the DB cannot complete a scan, and the gate fails closed on purpose. The
+	// supported shape is the internal registry (`--insecure` above already covers
+	// its plain HTTP).
+	if p.TrivyDBRepository != "" {
+		trivyArgs = append(trivyArgs, "--db-repository", p.TrivyDBRepository)
+	}
+	trivyArgs = append(trivyArgs, p.ImageRef)
 	trivy := corev1.Container{
-		Name:  ContainerTrivy,
-		Image: p.TrivyImage,
-		Args: []string{
-			"image",
-			"--exit-code", "1",
-			"--severity", "CRITICAL",
-			"--no-progress",
-			"--insecure",
-			p.ImageRef,
-		},
-		Resources:       corev1.ResourceRequirements{Limits: limits, Requests: limits},
+		Name:            ContainerTrivy,
+		Image:           p.TrivyImage,
+		Args:            trivyArgs,
+		Resources:       corev1.ResourceRequirements{Limits: limits, Requests: buildRequests(limits)},
 		SecurityContext: sec,
 	}
 
@@ -389,6 +415,28 @@ func resourceLimits(cpu, mem string) (corev1.ResourceList, error) {
 		corev1.ResourceCPU:    cpuQty,
 		corev1.ResourceMemory: memQty,
 	}, nil
+}
+
+// buildRequests is the scheduler floor a build container asks for while its
+// configured limit stays the safety cap. Reserving the full cap as a request is
+// what once made a default install on the platform's starter node (4 vCPU /
+// 5.5 GiB) unable to schedule ANY build — caught by the live end-to-end drill, not
+// by any unit test. A build is best-effort batch work: it may be throttled or
+// evicted under contention, which fails the Job loudly, and the caps still stop a
+// runaway build from exhausting the node.
+func buildRequests(limits corev1.ResourceList) corev1.ResourceList {
+	req := corev1.ResourceList{}
+	for res, floor := range map[corev1.ResourceName]resource.Quantity{
+		corev1.ResourceCPU:    resource.MustParse("250m"),
+		corev1.ResourceMemory: resource.MustParse("512Mi"),
+	} {
+		limit, ok := limits[res]
+		if ok && limit.Cmp(floor) < 0 {
+			floor = limit // never ask for more than the cap
+		}
+		req[res] = floor
+	}
+	return req
 }
 
 func boolPtr(b bool) *bool    { return &b }
