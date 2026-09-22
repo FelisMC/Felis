@@ -426,6 +426,49 @@ gtmp="$(printf '%s\n' "$out" | sed -n 's/^TEMP: //p')"
 expect "the Go download is staged in a directory the cleanup removes" \
   "CURL: ${gtmp:-<none>}/go1.26.4.linux-amd64.tar.gz" "$out"
 
+# --- a private repo without a token fails with the hint instead of prompting -------------
+# git asks for credentials on /dev/tty, where a piped install would sit waiting. Every
+# network git call goes through git_auth, so the switch belongs there.
+
+gablock="$(awk '/^git_auth\(\) \{/,/^}/' "$BS")"
+[ -n "$gablock" ] || { echo "FAIL: no git_auth found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$gablock" | wc -l)" -lt 15 ] \
+  || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
+
+run_git_auth() { # token
+  FELIS_GITHUB_TOKEN="$1" bash -c '
+    unset GIT_TERMINAL_PROMPT # whatever runs this harness may have set it already
+    git() { printf "GIT: prompt=%s\n" "${GIT_TERMINAL_PROMPT:-<unset>}"; }
+    '"$gablock"'
+    git_auth clone https://example.invalid/felis.git'
+}
+
+expect "git never prompts without a token" "GIT: prompt=0" "$(run_git_auth '')"
+expect "git never prompts with a token" "GIT: prompt=0" "$(run_git_auth ghp_example)"
+
+fblock="$(awk '/^fetch_source\(\) \{/,/^}/' "$BS")"
+[ -n "$fblock" ] || { echo "FAIL: no fetch_source found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$fblock" | wc -l)" -lt 40 ] \
+  || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
+
+run_fetch() { # src-dir
+  SRC_DIR="$1" FELIS_REF=main FELIS_REPO_URL=https://example.invalid/felis.git bash -c '
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    log() { :; }
+    ok() { :; }
+    resolve_install_ref() { :; }
+    stamp_version() { :; }
+    git_auth() { return 128; }
+    git() { :; }
+    '"$fblock"'
+    fetch_source'
+}
+
+expect "a failed clone names the token" "set FELIS_GITHUB_TOKEN" "$(run_fetch "$sdir/src")"
+mkdir -p "$sdir/src/.git"
+expect "a failed fetch into an existing checkout names the token" "set FELIS_GITHUB_TOKEN" \
+  "$(run_fetch "$sdir/src")"
+
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"

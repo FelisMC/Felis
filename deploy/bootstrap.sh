@@ -988,12 +988,16 @@ download_release_binary() {
 # approve that follows a successful auth, so it outlives the install after all. An empty
 # value is git's documented list reset. Verified on Fedora: with store configured the single
 # -c form persists the token to disk, the reset form writes nothing.
+#
+# GIT_TERMINAL_PROMPT=0 on both arms: GitHub answers a private repo with no or a bad token
+# by asking for credentials, and git would put that prompt on /dev/tty, where a piped
+# install sits waiting instead of failing with the FELIS_GITHUB_TOKEN hint.
 git_auth() {
   if [ -n "$FELIS_GITHUB_TOKEN" ]; then
-    git -c 'credential.helper=' \
+    GIT_TERMINAL_PROMPT=0 git -c 'credential.helper=' \
         -c 'credential.helper=!f() { printf "username=x-access-token\npassword=%s\n" "$FELIS_GITHUB_TOKEN"; }; f' "$@"
   else
-    git "$@"
+    GIT_TERMINAL_PROMPT=0 git "$@"
   fi
 }
 
@@ -1070,7 +1074,8 @@ fetch_source() {
   resolve_install_ref
   if [ -d "${SRC_DIR}/.git" ]; then
     log "updating source in ${SRC_DIR}"
-    git_auth -C "$SRC_DIR" fetch --depth 1 origin "$FELIS_REF"
+    git_auth -C "$SRC_DIR" fetch --depth 1 origin "$FELIS_REF" \
+      || die "could not fetch ${FELIS_REF} from ${FELIS_REPO_URL}; if the repository is private, set FELIS_GITHUB_TOKEN to a token with read access to it"
     git -C "$SRC_DIR" checkout -f FETCH_HEAD
   else
     log "cloning ${FELIS_REPO_URL} (${FELIS_REF})"
@@ -1082,7 +1087,7 @@ fetch_source() {
     git_auth clone --depth 1 --branch "$FELIS_REF" "$FELIS_REPO_URL" "$SRC_DIR" 2>/dev/null \
       || { git_auth clone "$FELIS_REPO_URL" "$SRC_DIR" \
            && git_auth -C "$SRC_DIR" checkout -f "$FELIS_REF"; } \
-      || die "could not check out ${FELIS_REF} from ${FELIS_REPO_URL}"
+      || die "could not check out ${FELIS_REF} from ${FELIS_REPO_URL}; if the repository is private, set FELIS_GITHUB_TOKEN to a token with read access to it"
   fi
   stamp_version
   ok "source ready at ${SRC_DIR}"
