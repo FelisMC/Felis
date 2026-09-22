@@ -2,8 +2,10 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -370,6 +372,81 @@ func TestHasJoined(t *testing.T) {
 		}
 		if w := getHasJoined(api.InternalHandler(), "Notch", "abc"); w.Code != http.StatusOK {
 			t.Fatalf("a well-formed login: code = %d, want 200 (the source is live)", w.Code)
+		}
+	})
+}
+
+// profileAPIAnswering stands in for api.mojang.com answering every lookup with status and
+// counts how often it is asked. 200 means taken, 404 free, anything else is an outage.
+func profileAPIAnswering(t *testing.T, status int) *atomic.Int32 {
+	t.Helper()
+	var n atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n.Add(1)
+		w.WriteHeader(status)
+	}))
+	t.Cleanup(srv.Close)
+	setProfileAPI(t, srv.URL+"/")
+	return &n
+}
+
+func seedPremium(name string, taken bool, age time.Duration) {
+	premiumNames.Lock()
+	premiumNames.m[strings.ToLower(name)] = premiumEntry{taken: taken, at: time.Now().Add(-age)}
+	premiumNames.Unlock()
+}
+
+// The premium-name cache decides on each third-party login whether the player keeps their
+// name. Each case pins one rule that an innocent-looking edit would break unnoticed.
+func TestPremiumNameCache(t *testing.T) {
+	ctx := context.Background()
+
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusServiceUnavailable} {
+		t.Run(fmt.Sprintf("mojang %d is an outage, not a free name", status), func(t *testing.T) {
+			profileAPIAnswering(t, status)
+			if !isPremiumName(ctx, "Notch") {
+				t.Fatal("name treated as free; a squatter would keep it through the outage")
+			}
+		})
+	}
+
+	t.Run("a free answer is asked again once it expires", func(t *testing.T) {
+		n := profileAPIAnswering(t, http.StatusNotFound)
+		seedPremium("Steve0", false, premiumFreeTTL+time.Minute)
+		isPremiumName(ctx, "Steve0")
+		if n.Load() != 1 {
+			t.Fatalf("expired free answer: %d lookups, want 1", n.Load())
+		}
+	})
+
+	t.Run("answers within their TTL come from the cache", func(t *testing.T) {
+		n := profileAPIAnswering(t, http.StatusNotFound)
+		seedPremium("Steve0", false, premiumFreeTTL-time.Minute)
+		seedPremium("Notch", true, premiumTakenTTL-time.Hour)
+		if isPremiumName(ctx, "Steve0") || !isPremiumName(ctx, "Notch") || n.Load() != 0 {
+			t.Fatalf("cached answers not served as cached (%d lookups)", n.Load())
+		}
+	})
+
+	t.Run("an expired taken answer outlives an outage", func(t *testing.T) {
+		profileAPIAnswering(t, http.StatusServiceUnavailable)
+		seedPremium("Notch", true, 2*premiumTakenTTL)
+		if !isPremiumName(ctx, "Notch") {
+			t.Fatal("known premium name treated as free during an outage")
+		}
+	})
+
+	t.Run("the cache is cleared rather than grown past its bound", func(t *testing.T) {
+		profileAPIAnswering(t, http.StatusNotFound)
+		for i := range premiumCacheMax {
+			seedPremium(fmt.Sprintf("n%d", i), false, 0)
+		}
+		isPremiumName(ctx, "Steve0")
+		premiumNames.Lock()
+		size := len(premiumNames.m)
+		premiumNames.Unlock()
+		if size != 1 {
+			t.Fatalf("cache holds %d entries after passing its bound, want 1", size)
 		}
 	})
 }
