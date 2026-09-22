@@ -16,6 +16,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
@@ -27,6 +28,11 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 	fs := flag.NewFlagSet("operator", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	metricsAddr := fs.String("metrics-bind-address", ":8080", "address the metric endpoint binds to")
+	// healthAddr serves the manager's health endpoints (/healthz, /readyz) that the
+	// Deployment's probes dial. Without it the operator pod would carry no probe at
+	// all, and a wedged manager would keep its endpoint forever. It must differ from
+	// metricsAddr: the metrics server owns :8080.
+	healthAddr := fs.String("health-probe-bind-address", ":8081", "address the health probe endpoint binds to")
 	// namespace MUST equal the [k8s] namespace felis-api is configured with, and
 	// the deployment manifests (felis manifests) render both from one value. It
 	// scopes the manager's cache (informers) to a single namespace so the operator
@@ -51,8 +57,9 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 	ctrl.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:  scheme,
-		Metrics: metricsserver.Options{BindAddress: *metricsAddr},
+		Scheme:                 scheme,
+		Metrics:                metricsserver.Options{BindAddress: *metricsAddr},
+		HealthProbeBindAddress: *healthAddr,
 		// Scope every informer to the single watched namespace. Without this the
 		// cached client (mgr.GetClient) would LIST/WATCH cluster-wide, which a
 		// namespaced Role cannot grant — the operator would fail closed at runtime
@@ -67,6 +74,20 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintf(stderr, "felis operator: watching namespace %q\n", *namespace)
+
+	// Register the two probe endpoints. controller-runtime only mounts /healthz and
+	// /readyz once at least one check is registered, so a bare listener would 404.
+	// The checks are the canonical always-pass ping: the probes' contract is "the
+	// manager process is up and serving", and a dependency hiccup (e.g. an API blip)
+	// must not restart the operator.
+	if err := mgr.AddHealthzCheck("ping", healthz.Ping); err != nil {
+		fmt.Fprintf(stderr, "felis operator: register healthz check: %v\n", err)
+		return 1
+	}
+	if err := mgr.AddReadyzCheck("ping", healthz.Ping); err != nil {
+		fmt.Fprintf(stderr, "felis operator: register readyz check: %v\n", err)
+		return 1
+	}
 
 	// Publish the named felis_* metrics (spec §23) on the endpoint the manager
 	// already serves (metricsAddr). controller-runtime's metrics server exposes

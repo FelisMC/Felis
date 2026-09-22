@@ -66,8 +66,13 @@ const (
 	apiInternalPort     int32 = 8081
 	apiHTTPSPort        int32 = 8443
 	operatorMetricsPort int32 = 8080
-	apiTLSSecretName          = "felis-api-tls"
-	apiTLSMountPath           = "/etc/felis/tls"
+	// operatorHealthPort must match cmd/felis/operator.go's
+	// --health-probe-bind-address default (and the arg rendered below): it is the
+	// only listener the operator Deployment's probes can dial — :8080 is the
+	// metrics server, which serves no health endpoints.
+	operatorHealthPort int32 = 8081
+	apiTLSSecretName         = "felis-api-tls"
+	apiTLSMountPath          = "/etc/felis/tls"
 
 	registryName        = "registry"
 	registryDataPath    = "/var/lib/registry"
@@ -319,6 +324,30 @@ func APIDeployment(p Params) *appsv1.Deployment {
 			// LocalContextStore can persist a submitted context.
 			{Name: uploadsVolume, MountPath: UploadsLocalPath},
 		},
+		// Probes dial the INTERNAL face (8081), the only listener carrying both
+		// /healthz and /readyz (the external face deliberately serves liveness
+		// only), and the face kubelet can reach without any Zero Trust hop.
+		// Readiness = /readyz (DB + K8s API round-trip): a not-ready answer only
+		// pulls the pod out of Service endpoints. Liveness = the cheap /healthz —
+		// pointing it at /readyz would restart the api on every DB blip.
+		ReadinessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+				Path: "/readyz", Port: intstr.FromInt32(apiInternalPort),
+			}},
+			InitialDelaySeconds: 5,
+			PeriodSeconds:       10,
+			TimeoutSeconds:      3,
+			FailureThreshold:    3,
+		},
+		LivenessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+				Path: "/healthz", Port: intstr.FromInt32(apiInternalPort),
+			}},
+			InitialDelaySeconds: 10,
+			PeriodSeconds:       10,
+			TimeoutSeconds:      3,
+			FailureThreshold:    3,
+		},
 		Resources:       controlPlaneResources(),
 		SecurityContext: hardenedContainerSecurityContext(),
 	}
@@ -415,6 +444,7 @@ func OperatorDeployment(p Params) *appsv1.Deployment {
 		Args: []string{
 			"--namespace", p.MinecraftNamespace,
 			"--metrics-bind-address", fmt.Sprintf(":%d", operatorMetricsPort),
+			"--health-probe-bind-address", fmt.Sprintf(":%d", operatorHealthPort),
 		},
 		// FELIS_IMAGE names this same image so the operator can run it as the
 		// forwarding-config initContainer it injects into user servers (it must
@@ -424,9 +454,31 @@ func OperatorDeployment(p Params) *appsv1.Deployment {
 		},
 		Ports: []corev1.ContainerPort{
 			{Name: "metrics", ContainerPort: operatorMetricsPort, Protocol: corev1.ProtocolTCP},
+			{Name: "health", ContainerPort: operatorHealthPort, Protocol: corev1.ProtocolTCP},
 		},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: tmpVolume, MountPath: "/tmp"},
+		},
+		// controller-runtime serves /healthz and /readyz on the health listener
+		// (both registered as always-pass pings in cmd/felis/operator.go): the
+		// probe's contract is "the manager process is up", not a dependency check.
+		ReadinessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+				Path: "/readyz", Port: intstr.FromInt32(operatorHealthPort),
+			}},
+			InitialDelaySeconds: 5,
+			PeriodSeconds:       10,
+			TimeoutSeconds:      3,
+			FailureThreshold:    3,
+		},
+		LivenessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+				Path: "/healthz", Port: intstr.FromInt32(operatorHealthPort),
+			}},
+			InitialDelaySeconds: 10,
+			PeriodSeconds:       10,
+			TimeoutSeconds:      3,
+			FailureThreshold:    3,
 		},
 		Resources:       controlPlaneResources(),
 		SecurityContext: hardenedContainerSecurityContext(),
@@ -605,6 +657,28 @@ func registryDeployment(p Params) *appsv1.Deployment {
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: registryVolume, MountPath: registryDataPath},
 			{Name: tmpVolume, MountPath: "/tmp"},
+		},
+		// Distribution serves GET /v2/ (200 = app + storage healthy) for any
+		// client, so both probes reuse it: without them a registry whose storage
+		// backend broke would stay "Running" and every build push would fail with
+		// nothing red in the Deployment status.
+		ReadinessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+				Path: "/v2/", Port: intstr.FromString(registryName),
+			}},
+			InitialDelaySeconds: 5,
+			PeriodSeconds:       10,
+			TimeoutSeconds:      3,
+			FailureThreshold:    3,
+		},
+		LivenessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
+				Path: "/v2/", Port: intstr.FromString(registryName),
+			}},
+			InitialDelaySeconds: 10,
+			PeriodSeconds:       10,
+			TimeoutSeconds:      3,
+			FailureThreshold:    3,
 		},
 		Resources:       controlPlaneResources(),
 		SecurityContext: hardenedContainerSecurityContext(),

@@ -1,6 +1,7 @@
 package platform
 
 import (
+	"fmt"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -8,6 +9,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
 // podSpec returns the single container and the pod template of a Deployment,
@@ -373,6 +375,9 @@ func TestOperatorDeployment_Wiring(t *testing.T) {
 	if !contains(c.Args, "--namespace") || !contains(c.Args, p.MinecraftNamespace) {
 		t.Errorf("operator must watch --namespace %s, got %v", p.MinecraftNamespace, c.Args)
 	}
+	if !contains(c.Args, "--health-probe-bind-address") || !contains(c.Args, fmt.Sprintf(":%d", operatorHealthPort)) {
+		t.Errorf("operator must bind the health probe listener on :%d, got %v", operatorHealthPort, c.Args)
+	}
 	if c.Image != p.FelisImage {
 		t.Errorf("operator image = %q, want FelisImage %q", c.Image, p.FelisImage)
 	}
@@ -450,6 +455,64 @@ func TestRegistry_DeploymentServicePVC(t *testing.T) {
 	}
 	if pvc.Spec.Resources.Requests.Storage().IsZero() {
 		t.Error("registry PVC must request a non-zero storage size")
+	}
+}
+
+// TestWorkloads_DeploymentsCarryProbes pins probes on ALL three rendered
+// Deployments (api, operator, registry): an unprobed control plane cannot be
+// told apart from a wedged one, and every probe must target a port the container
+// actually declares — a probe pointed at a dead port would leave the pod
+// NotReady forever and surface only as a mysteriously empty Service.
+func TestWorkloads_DeploymentsCarryProbes(t *testing.T) {
+	p := testParams().withDefaults()
+	cases := []struct {
+		dep                 *appsv1.Deployment
+		readyPath, livePath string
+		port                int32
+	}{
+		{APIDeployment(p), "/readyz", "/healthz", apiInternalPort},
+		{OperatorDeployment(p), "/readyz", "/healthz", operatorHealthPort},
+		{registryDeployment(p), "/v2/", "/v2/", p.RegistryPort},
+	}
+	// resolve maps a probe target (by number or container-port name) to the
+	// declared container port it denotes.
+	resolve := func(port intstr.IntOrString, ports []corev1.ContainerPort) (int32, bool) {
+		if port.IntValue() != 0 {
+			return int32(port.IntValue()), true
+		}
+		for _, cp := range ports {
+			if cp.Name == port.StrVal {
+				return cp.ContainerPort, true
+			}
+		}
+		return 0, false
+	}
+	for _, tc := range cases {
+		_, c := podSpec(t, tc.dep)
+		if c.ReadinessProbe == nil || c.ReadinessProbe.HTTPGet == nil {
+			t.Fatalf("%s: readiness probe missing or not an HTTP GET", tc.dep.Name)
+		}
+		if c.LivenessProbe == nil || c.LivenessProbe.HTTPGet == nil {
+			t.Fatalf("%s: liveness probe missing or not an HTTP GET", tc.dep.Name)
+		}
+		for _, probe := range []struct {
+			kind string
+			p    *corev1.Probe
+			path string
+		}{
+			{"readiness", c.ReadinessProbe, tc.readyPath},
+			{"liveness", c.LivenessProbe, tc.livePath},
+		} {
+			if got := probe.p.HTTPGet.Path; got != probe.path {
+				t.Errorf("%s: %s probe path = %q, want %q", tc.dep.Name, probe.kind, got, probe.path)
+			}
+			got, ok := resolve(probe.p.HTTPGet.Port, c.Ports)
+			if !ok {
+				t.Errorf("%s: %s probe targets %v, which the container does not declare", tc.dep.Name, probe.kind, probe.p.HTTPGet.Port)
+			} else if got != tc.port {
+				t.Errorf("%s: %s probe port = %d, want %d", tc.dep.Name, probe.kind, got, tc.port)
+			}
+		}
 	}
 }
 
