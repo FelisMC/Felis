@@ -532,6 +532,20 @@ func TestDeadAccountsAreLockedOutInPG(t *testing.T) {
 	if err := repo.LinkAccount(ctx, u.ID, mc, "mojang"); err != nil {
 		t.Fatalf("LinkAccount: %v", err)
 	}
+	// A disabled account's intact link carries no in-game standing (the doors read
+	// it like an unlinked UUID), and resolves again once re-enabled.
+	if err := repo.SetUserDisabled(ctx, u.ID, true); err != nil {
+		t.Fatalf("disable with link: %v", err)
+	}
+	if _, err := repo.UserByMCUUID(ctx, mc); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("UserByMCUUID(disabled) = %v, want ErrNotFound", err)
+	}
+	if err := repo.SetUserDisabled(ctx, u.ID, false); err != nil {
+		t.Fatalf("re-enable with link: %v", err)
+	}
+	if id, err := repo.UserByMCUUID(ctx, mc); err != nil || id != u.ID {
+		t.Fatalf("UserByMCUUID(re-enabled) = %q, %v; want %q", id, err, u.ID)
+	}
 	if _, err := db.ExecContext(ctx,
 		`INSERT INTO webauthn_credentials (id, user_id, credential_id, public_key) VALUES ($1,$2,$3,'pk')`,
 		"cred-"+suffix(t), u.ID, "cid-"+suffix(t)); err != nil {
@@ -561,6 +575,65 @@ func TestDeadAccountsAreLockedOutInPG(t *testing.T) {
 		if n != 0 {
 			t.Errorf("DeleteUser left %d rows matching %q; the closed account must keep no asset", n, q)
 		}
+	}
+}
+
+// VerifyLinkCode's takeover rule: a fresh in-game code (proof the caller holds the
+// UUID) lets a live account take over a link whose account was SOFT-DELETED — the
+// migrated-source case, whose retire keeps the link but kills the account — while a
+// merely DISABLED holder keeps its identity (takeover there would bypass the
+// lockout) and the refused code survives.
+func TestVerifyLinkCodeTakesOverDeletedLink(t *testing.T) {
+	ctx := context.Background()
+	now := mustNow()
+
+	// The retired source: linked, then retired the way RedeemMigration retires one.
+	src := newUser(t, "user", "retire-src")
+	mc := testUUID(t)
+	if err := repo.LinkAccount(ctx, src.ID, mc, "mojang"); err != nil {
+		t.Fatalf("LinkAccount(src): %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`UPDATE users SET disabled = true, deleted_at = now() WHERE id = $1`, src.ID); err != nil {
+		t.Fatalf("retire src: %v", err)
+	}
+
+	taker := newUser(t, "user", "taker")
+	code := "tk-" + suffix(t)
+	if err := repo.CreateLinkCode(ctx, code, mc, "mojang", now.Add(5*time.Minute)); err != nil {
+		t.Fatalf("CreateLinkCode: %v", err)
+	}
+	if _, _, err := repo.VerifyLinkCode(ctx, taker.ID, code, now); err != nil {
+		t.Fatalf("takeover verify: %v", err)
+	}
+	if id, err := repo.UserByMCUUID(ctx, mc); err != nil || id != taker.ID {
+		t.Fatalf("after takeover UserByMCUUID = %q, %v; want %q", id, err, taker.ID)
+	}
+
+	// A disabled (not deleted) holder keeps the identity; the conflict arm must not
+	// consume the code and must leave the link where it was.
+	locked := newUser(t, "user", "locked")
+	mc2 := testUUID(t)
+	if err := repo.LinkAccount(ctx, locked.ID, mc2, "mojang"); err != nil {
+		t.Fatalf("LinkAccount(locked): %v", err)
+	}
+	if err := repo.SetUserDisabled(ctx, locked.ID, true); err != nil {
+		t.Fatalf("disable locked: %v", err)
+	}
+	code2 := "lk-" + suffix(t)
+	if err := repo.CreateLinkCode(ctx, code2, mc2, "mojang", now.Add(5*time.Minute)); err != nil {
+		t.Fatalf("CreateLinkCode(code2): %v", err)
+	}
+	if _, _, err := repo.VerifyLinkCode(ctx, taker.ID, code2, now); !errors.Is(err, api.ErrConflict) {
+		t.Fatalf("takeover of a disabled holder = %v, want ErrConflict", err)
+	}
+	var stillLinked string
+	if err := db.QueryRowContext(ctx, `SELECT user_id FROM account_links WHERE mc_uuid = $1`, mc2).Scan(&stillLinked); err != nil || stillLinked != locked.ID {
+		t.Fatalf("disabled holder's link moved to %q, %v; want %q", stillLinked, err, locked.ID)
+	}
+	var codeRows int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM account_link_codes WHERE code = $1`, code2).Scan(&codeRows); err != nil || codeRows != 1 {
+		t.Fatalf("refused code rows = %d, %v; want 1 (not consumed)", codeRows, err)
 	}
 }
 

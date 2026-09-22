@@ -94,8 +94,13 @@ func (p *PGRepo) VerifyLinkCode(ctx context.Context, userID, code string, now ti
 		return "", "", err
 	}
 
-	// If this UUID is already linked, only the same user may re-verify (idempotent);
-	// a different user is a conflict and must not consume the code.
+	// If this UUID is already linked, only the same user may re-verify (idempotent).
+	// A different LIVE user is a conflict and must not consume the code. A link whose
+	// account was soft-deleted is the exception: the identity is unclaimed (the
+	// account is gone; e.g. a migrated source, whose retire keeps the link but is
+	// otherwise dead), and the fresh in-game code proves the caller still holds this
+	// UUID, so the live caller takes the link over. Disabled-but-not-deleted stays a
+	// conflict — taking over a locked account's identity would bypass the lockout.
 	var existingUser string
 	switch err := tx.QueryRowContext(ctx,
 		`SELECT user_id FROM account_links WHERE mc_uuid = $1`, mcUUID).Scan(&existingUser); {
@@ -105,7 +110,21 @@ func (p *PGRepo) VerifyLinkCode(ctx context.Context, userID, code string, now ti
 		return "", "", err
 	default:
 		if existingUser != userID {
-			return "", "", ErrConflict
+			var linkedDeleted bool
+			if err := tx.QueryRowContext(ctx,
+				`SELECT deleted_at IS NOT NULL FROM users WHERE id = $1`,
+				existingUser).Scan(&linkedDeleted); err != nil {
+				return "", "", err
+			}
+			if !linkedDeleted {
+				return "", "", ErrConflict
+			}
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE account_links SET user_id = $1, auth_source = $2, verified_at = now()
+				  WHERE mc_uuid = $3`,
+				userID, authSource, mcUUID); err != nil {
+				return "", "", fmt.Errorf("take over retired link: %w", err)
+			}
 		}
 	}
 
@@ -513,11 +532,16 @@ func (p *PGRepo) UUIDInAllowlist(ctx context.Context, name, mcUUID string) (bool
 }
 
 // UserByMCUUID resolves a verified in-game UUID to its linked user_id (spec §10
-// account_links), or ErrNotFound when the UUID is not linked to any account.
+// account_links), or ErrNotFound when the UUID is not linked to any account. A
+// link whose account is dead reads the same as no link at all (audit #33), so the
+// in-game doors never act as a retired identity.
 func (p *PGRepo) UserByMCUUID(ctx context.Context, mcUUID string) (string, error) {
 	var userID string
 	switch err := p.db.QueryRowContext(ctx,
-		`SELECT user_id FROM account_links WHERE mc_uuid = $1`, mcUUID).Scan(&userID); {
+		`SELECT al.user_id FROM account_links al
+		   JOIN users u ON u.id = al.user_id
+		  WHERE al.mc_uuid = $1 AND u.disabled = false AND u.deleted_at IS NULL`,
+		mcUUID).Scan(&userID); {
 	case errors.Is(err, sql.ErrNoRows):
 		return "", ErrNotFound
 	case err != nil:

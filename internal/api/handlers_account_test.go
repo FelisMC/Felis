@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -249,6 +251,58 @@ func TestLinkVerifyIdempotent(t *testing.T) {
 	}
 	if repo.links[mcUUID] != "u1" {
 		t.Errorf("links[%s] = %q, want u1", mcUUID, repo.links[mcUUID])
+	}
+}
+
+// A link whose account was SOFT-DELETED is unclaimed: a fresh in-game code lets a
+// live account take it over (the migrated-source path — retire keeps the link but
+// kills the account), while a merely disabled holder keeps its identity so the
+// lockout cannot be re-linked away, and neither dead link has in-game standing
+// (UserByMCUUID reads it exactly like an unlinked UUID). Audit #33's in-game half.
+func TestLinkVerifyTakesOverDeletedLinkOnly(t *testing.T) {
+	ctx := context.Background()
+	const mcGone = "55555555-5555-5555-5555-555555555555"
+	const mcLocked = "66666666-6666-6666-6666-666666666666"
+	user := &Principal{UserID: "u-take", Email: "take@example.net", Role: "user"}
+	repo := newFakeRepo()
+	repo.seedUser(UserView{ID: "u-gone", Username: "gone", Email: "gone@example.net", Role: "user"})
+	repo.seedUser(UserView{ID: "u-locked", Username: "locked", Email: "locked@example.net", Role: "user"})
+	if err := repo.DeleteUser(ctx, "u-gone", "test"); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+	repo.links[mcGone] = "u-gone" // a retired source's link outlives the account
+
+	if _, err := repo.UserByMCUUID(ctx, mcGone); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UserByMCUUID(deleted link) = %v, want ErrNotFound (no in-game standing)", err)
+	}
+
+	repo.linkCodes["TAKEOVER"] = fakeLinkCode{mcUUID: mcGone, expiresAt: time.Unix(1_700_000_600, 0)}
+	api := newTestAPI(repo, newFakeCluster())
+	api.External = staticExternal{p: user}
+	if w := do(api.ExternalHandler(), "POST", "/api/v1/account/link/verify", `{"code":"TAKEOVER"}`, nil); w.Code != http.StatusOK {
+		t.Fatalf("takeover verify: code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	if repo.links[mcGone] != "u-take" {
+		t.Errorf("links[%s] = %q after takeover, want u-take", mcGone, repo.links[mcGone])
+	}
+
+	// A disabled (not deleted) holder keeps the identity: 409, code survives, link unmoved.
+	if err := repo.SetUserDisabled(ctx, "u-locked", true); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	repo.links[mcLocked] = "u-locked"
+	repo.linkCodes["LOCKED12"] = fakeLinkCode{mcUUID: mcLocked, expiresAt: time.Unix(1_700_000_600, 0)}
+	if _, err := repo.UserByMCUUID(ctx, mcLocked); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("UserByMCUUID(disabled link) = %v, want ErrNotFound", err)
+	}
+	if w := do(api.ExternalHandler(), "POST", "/api/v1/account/link/verify", `{"code":"LOCKED12"}`, nil); w.Code != http.StatusConflict {
+		t.Fatalf("takeover of a disabled holder: code = %d, want 409 (%s)", w.Code, w.Body.String())
+	}
+	if repo.links[mcLocked] != "u-locked" {
+		t.Errorf("disabled holder's link moved to %q", repo.links[mcLocked])
+	}
+	if _, ok := repo.linkCodes["LOCKED12"]; !ok {
+		t.Error("refused verify consumed the code")
 	}
 }
 

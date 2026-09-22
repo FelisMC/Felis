@@ -287,7 +287,13 @@ func (f *fakeRepo) VerifyLinkCode(_ context.Context, userID, code string, now ti
 		return "", "", ErrLinkCodeInvalid
 	}
 	if existing, ok := f.links[rec.mcUUID]; ok && existing != userID {
-		return "", "", ErrConflict // do not consume another user's pending code
+		// A soft-deleted link's identity is unclaimed: the fresh in-game code lets a
+		// live caller take it over (mirrors PGRepo). Disabled-but-not-deleted stays a
+		// conflict — takeover there would bypass the lockout. Neither arm consumes
+		// the code.
+		if !f.seededDeleted(existing) {
+			return "", "", ErrConflict
+		}
 	}
 	f.links[rec.mcUUID] = userID
 	f.linkAuthSource[rec.mcUUID] = rec.authSource // copy/refresh, mirrors DO UPDATE
@@ -626,7 +632,7 @@ func (f *fakeRepo) UUIDInAllowlist(_ context.Context, n, uuid string) (bool, err
 	return f.allowUUID[n][uuid], nil
 }
 func (f *fakeRepo) UserByMCUUID(_ context.Context, uuid string) (string, error) {
-	if u, ok := f.links[uuid]; ok {
+	if u, ok := f.links[uuid]; ok && !f.seededDead(u) {
 		return u, nil
 	}
 	return "", ErrNotFound
@@ -1172,6 +1178,20 @@ func (f *fakeRepo) seededDead(id string) bool {
 	for _, su := range f.seededUsers {
 		if su.view.ID == id {
 			return su.view.Disabled || su.detail.DeletedAt != nil
+		}
+	}
+	return false
+}
+
+// seededDeleted is the narrower liveness query: soft-deleted only (a disabled
+// account still holds its identity, mirroring VerifyLinkCode's takeover rule).
+func (f *fakeRepo) seededDeleted(id string) bool {
+	if f.deletedIDs[id] {
+		return true
+	}
+	for _, su := range f.seededUsers {
+		if su.view.ID == id {
+			return su.detail.DeletedAt != nil
 		}
 	}
 	return false

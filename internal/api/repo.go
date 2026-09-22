@@ -251,6 +251,10 @@ type Repo interface {
 	// (spec §10 account_links), or ErrNotFound when the UUID is not linked. The
 	// internal-face wake uses it to apply the owner bypass for a player known only
 	// by UUID; an unlinked UUID simply falls through to the autostartPolicy gate.
+	// Only a LIVE account resolves (audit #33): a link whose account is disabled or
+	// soft-deleted carries no standing on the in-game doors — claim, menu, wake
+	// authorization, op-login vouch and the QR link-status poll all read a dead
+	// account exactly like an unlinked UUID, never as a retired identity.
 	UserByMCUUID(ctx context.Context, mcUUID string) (userID string, err error)
 	// RecordJoin updates last_active_at, clears reaper warnings, and auto-appends
 	// the UUID to the allowlist (spec §7 join-event, §9.4).
