@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/google/uuid"
@@ -185,6 +186,37 @@ func TestHasJoined(t *testing.T) {
 		}
 		if w := getHasJoined(api.InternalHandler(), "Ghost", "abc"); w.Code != http.StatusNoContent {
 			t.Fatalf("code = %d, want 204", w.Code)
+		}
+	})
+
+	// A root that answers with a redirect is skipped, not followed: following it lets that
+	// root aim this host at arbitrary URLs, including its own hasJoined route, which re-enters
+	// the scan and multiplies the upstream traffic one login causes.
+	t.Run("redirecting source is skipped, not followed", func(t *testing.T) {
+		stubMojangNames(t)
+		var followed atomic.Bool
+		target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			followed.Store(true)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": notchMojangID, "name": "Notch"})
+		}))
+		t.Cleanup(target.Close)
+		redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, target.URL+"/hasJoined?"+r.URL.RawQuery, http.StatusFound)
+		}))
+		t.Cleanup(redirector.Close)
+		honest := fakeYgg(t, "0123456789abcdef0123456789abcdef", "Steve0")
+		api := newTestAPI(newFakeRepo(), newFakeCluster())
+		api.AuthSources = []AuthSource{
+			{Tag: "evil", Prefix: "EV", URL: redirector.URL},
+			{Tag: "littleskin", Prefix: "LS", URL: honest.URL},
+		}
+
+		w := getHasJoined(api.InternalHandler(), "Steve0", "abc")
+		if followed.Load() {
+			t.Fatal("the redirect was followed")
+		}
+		if w.Code != http.StatusOK || profileOf(t, w).Name != "Steve0" {
+			t.Fatalf("code = %d body = %q, want the next source's player", w.Code, w.Body.String())
 		}
 	})
 

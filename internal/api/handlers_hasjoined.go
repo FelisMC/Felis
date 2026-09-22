@@ -43,7 +43,14 @@ var felisAuthNS = uuid.NewSHA1(uuid.NameSpaceURL, []byte("nano.felis.lolicon.bes
 // against a hung source; the resolver moves on to the next source on any failure.
 // ponytail: one shared client, sequential priority scan — a third-party login costs one
 // wasted Mojang round-trip; add parallel fan-out only if login latency bites.
-var authHTTPClient = &http.Client{Timeout: 5 * time.Second}
+var authHTTPClient = &http.Client{
+	Timeout: 5 * time.Second,
+	// A redirect is not a hasJoined answer. Following one would let a configured root point
+	// this host at any URL it can reach — this listener included, where each hop re-runs the
+	// whole source scan inside the same login's timeout. The 3xx is returned as-is and the
+	// resolver skips that source like any other non-200.
+	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+}
 
 // AuthSource is one upstream Yggdrasil root in the multiplexer's priority list (config
 // order = priority). URL is the full hasJoined endpoint the query string is appended to.
