@@ -600,6 +600,32 @@ Both fields set and still nothing happens? Then the probe is failing rather than
 disabled: the server would be stuck in `Starting` with `RconNotReachable`
 (`reconciler.go:156`), which is §1's symptom, not this one.
 
+This path used to fail even with everything configured correctly, through three
+stacked defects proven and fixed on a live cluster (auditfix21/22): the
+`emptySince` stamp was pruned by a missing CRD status field, a quiescent empty
+server produced no watch events to re-check the timer, and the Role lacked the
+`minecraftservers:patch` grant the stop write needs. If auto-stop ever looks
+dead again, check these three in order (each is now pinned by a test):
+
+```sh
+# ① The stamp must persist — should print a timestamp, not an empty string,
+#    a few seconds after a server goes Ready with zero players.
+kubectl get minecraftserver <name> -o jsonpath='{.status.emptySince}'
+
+# ② The operator must be able to write spec.desiredState (403 in the operator
+#    log = missing patch grant on Role felis-operator).
+kubectl auth can-i patch minecraftservers -n <ns> --as=system:serviceaccount:<ctl-ns>:felis-operator
+
+# ③ A wake-up must be scheduled: while empty, expect whatever you set
+#    as emptySecondsBeforeStop to elapse and the box to flip to Stopped without
+#    any external action.
+```
+
+While players are online the operator re-probes on a 30s cadence so it notices
+the moment the last one leaves; while empty it schedules a wake-up exactly at
+the deadline. Quiet operator logs on an idle server are normal — the action is
+the scheduled wake-up, not a stream of reconciles.
+
 Note the reaper's `last_active_at` (§10) is a *different* subsystem (Postgres
 business layer, bumped by join events) — it keeps worlds alive against the
 reaper, but it does **not** auto-stop empty running servers.
