@@ -473,8 +473,15 @@ else
 fi
 
 # --- install_go_toolchain checks the tarball before it replaces anything ----------------
-# The tarball is unpacked into /usr/local and run as root, so a download that does not hash
-# to the pin is refused -- and refused before the working toolchain is removed.
+# The tarball is unpacked and run as root, so a download that does not hash to the pin is
+# refused -- and refused before the working toolchain is removed.
+
+# The function replaces whatever version sits at GOROOT_DIR, so that has to be a directory
+# Felis owns, never an operator's /usr/local/go.
+case "$(grep '^GOROOT_DIR=' "$BS")" in
+  'GOROOT_DIR="/opt/felis/'*) echo "PASS the Go toolchain lives under /opt/felis" ;;
+  *) echo "FAIL the Go toolchain must live under /opt/felis, got: $(grep '^GOROOT_DIR=' "$BS")"; fails=$((fails + 1)) ;;
+esac
 
 gblock="$(awk '/^install_go_toolchain\(\) \{/,/^}/' "$BS")"
 [ -n "$gblock" ] || { echo "FAIL: no install_go_toolchain found in $BS"; exit 1; }

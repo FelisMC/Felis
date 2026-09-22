@@ -200,7 +200,9 @@ PANEL_TLS_CERT="${STATE_DIR}/panel-tls.crt"
 PANEL_TLS_KEY="${STATE_DIR}/panel-tls.key"
 SRC_DIR="/opt/felis/src"
 HOST_BIN="/usr/local/bin/felis"
-GOROOT_DIR="/usr/local/go"
+# Felis's own build toolchain, not /usr/local/go: install_go_toolchain replaces whatever
+# version sits here, and an operator's Go at the conventional path is not ours to swap.
+GOROOT_DIR="/opt/felis/go"
 NANO_SERVICE="/etc/systemd/system/felis-nano.service"
 VELOCITY_DIR="/opt/felis/velocity"
 VELOCITY_USER="felis-velocity"
@@ -2321,6 +2323,7 @@ install_go_toolchain() {
   have="$(sha256sum <"${tmp}/${tarball}" | cut -d' ' -f1)"
   [ "$have" = "$want" ] || die "Go ${FELIS_GO_VERSION} (${arch}) checksum mismatch: got ${have}, expected ${want}"
   rm -rf "$GOROOT_DIR"
+  mkdir -p "$(dirname "$GOROOT_DIR")"
   tar -C "$(dirname "$GOROOT_DIR")" -xzf "${tmp}/${tarball}" || die "failed to unpack ${tarball}"
   ok "go toolchain at ${GOROOT_DIR}/bin/go"
 }
