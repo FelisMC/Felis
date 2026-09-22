@@ -27,7 +27,12 @@ import (
 
 // Requeue cadences for the transient phases.
 const (
-	requeueStarting            = 5 * time.Second
+	// requeueStarting is the cadence of the RCON readiness re-probe while a server
+	// is Starting. It bounds the window where the container is Ready but the API
+	// still answers 409 not_running: at 5s the observed lag after container-ready
+	// was 6~10s; 2s keeps wake-to-usable snappy without hammering a booting Java
+	// process (the probe only runs on this cadence while the server is unreachable).
+	requeueStarting            = 2 * time.Second
 	requeueStopping            = 5 * time.Second
 	requeueSecret              = 10 * time.Second
 	defaultTimeoutSeconds      = 300
