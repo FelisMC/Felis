@@ -4,11 +4,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	felismetrics "felis.lolicon.best/internal/metrics"
 	"felis.lolicon.best/internal/operator"
+	"github.com/go-logr/logr"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -41,6 +43,12 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 	scheme := runtime.NewScheme()
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(v1alpha1.AddToScheme(scheme))
+
+	// controller-runtime logs through its own logr sink; without one, its first
+	// reconcile prints "log.SetLogger(...) was never called" ATTACHED TO A FULL
+	// GOROUTINE STACK — pure noise, not signal. Route it to slog's default handler
+	// so its messages appear as ordinary stderr lines.
+	ctrl.SetLogger(logr.FromSlogHandler(slog.Default().Handler()))
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:  scheme,
