@@ -35,6 +35,7 @@ const (
 	requeueStarting            = 2 * time.Second
 	requeueStopping            = 5 * time.Second
 	requeueSecret              = 10 * time.Second
+	requeueIdleProbe           = 30 * time.Second
 	defaultTimeoutSeconds      = 300
 	defaultReadinessTimeoutSec = 300
 )
@@ -197,7 +198,25 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 	}
 
 	r.markRunningReady(server, players, endpointAddress)
-	return ctrl.Result{}, r.patchStatus(ctx, server)
+	if err := r.patchStatus(ctx, server); err != nil {
+		return ctrl.Result{}, err
+	}
+	// Idle auto-stop has no natural wake-up: player joins/leaves never touch
+	// this CRD and RCON is only probed here, so without a requeue the
+	// empty-duration counter would be stamped once and then never revisited
+	// (observed live: the stamp sat unexamined for minutes). Wake at the exact
+	// deadline while the tally says empty, or on a slow cadence while players
+	// are online, to notice the moment the last one leaves.
+	if server.Spec.Rcon.Enabled && server.Spec.Idle.AutoStopEnabled && server.Spec.Idle.EmptySecondsBeforeStop > 0 {
+		if server.Status.EmptySince != nil {
+			deadline := server.Status.EmptySince.Time.Add(time.Duration(server.Spec.Idle.EmptySecondsBeforeStop) * time.Second)
+			if wait := deadline.Sub(r.now().Time); wait > 0 {
+				return ctrl.Result{RequeueAfter: wait}, nil
+			}
+		}
+		return ctrl.Result{RequeueAfter: requeueIdleProbe}, nil
+	}
+	return ctrl.Result{}, nil
 }
 
 func (r *Reconciler) reconcileStopped(ctx context.Context, server *v1alpha1.MinecraftServer) (ctrl.Result, error) {

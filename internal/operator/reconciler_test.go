@@ -427,6 +427,66 @@ func TestIdleAutoStop_ResetsWhenPlayerJoins(t *testing.T) {
 	}
 }
 
+// TestIdleAutoStop_RequeuesUntilDeadline pins the self-driving requeue: an
+// empty Running server must wake the controller at the auto-stop deadline with
+// no external event to lean on. Live, the EmptySince stamp sat unexamined for
+// minutes because nothing re-triggered the reconcile loop — this test fails if
+// the requeue is ever dropped again.
+func TestIdleAutoStop_RequeuesUntilDeadline(t *testing.T) {
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20}}, runningServer(), rconSecret())
+	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	r.Now = func() metav1.Time { return metav1.NewTime(base) }
+
+	s := getServer(t, c, "survival")
+	s.Spec.Idle = v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: 30}
+	if err := c.Update(context.Background(), s); err != nil {
+		t.Fatalf("enable idle: %v", err)
+	}
+
+	reconcile(t, r, "survival")
+	markPodReady(t, c, "survival")
+	res := reconcile(t, r, "survival")
+
+	if res.RequeueAfter != 30*time.Second {
+		t.Fatalf("RequeueAfter = %v, want exactly 30s (wake at the auto-stop deadline)", res.RequeueAfter)
+	}
+}
+
+// TestIdleAutoStop_RequeuesWhileOccupied verifies the slow probe cadence that
+// notices the last player leaving: with players online there is no deadline to
+// aim at, but the tally must still be re-sampled.
+func TestIdleAutoStop_RequeuesWhileOccupied(t *testing.T) {
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 3, Max: 20}}, runningServer(), rconSecret())
+
+	s := getServer(t, c, "survival")
+	s.Spec.Idle = v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: 900}
+	if err := c.Update(context.Background(), s); err != nil {
+		t.Fatalf("enable idle: %v", err)
+	}
+
+	reconcile(t, r, "survival")
+	markPodReady(t, c, "survival")
+	res := reconcile(t, r, "survival")
+
+	if res.RequeueAfter <= 0 {
+		t.Fatalf("RequeueAfter = %v, want a positive probe cadence while occupied", res.RequeueAfter)
+	}
+}
+
+// TestNoIdleRequeueWhenDisabled guards against a blanket requeue: servers
+// without idle auto-stop keep the old quiescent behaviour.
+func TestNoIdleRequeueWhenDisabled(t *testing.T) {
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20}}, runningServer(), rconSecret())
+
+	reconcile(t, r, "survival")
+	markPodReady(t, c, "survival")
+	res := reconcile(t, r, "survival")
+
+	if res.RequeueAfter != 0 {
+		t.Fatalf("RequeueAfter = %v, want 0 when idle auto-stop is disabled", res.RequeueAfter)
+	}
+}
+
 // TestIdleAutoStop_SkipsWhenDisabled verifies that a Running empty server does
 // NOT get an EmptySince timestamp when AutoStopEnabled is false.
 func TestIdleAutoStop_SkipsWhenDisabled(t *testing.T) {
