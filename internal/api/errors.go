@@ -89,8 +89,13 @@ func newError(status int, code, format string, a ...any) *apiError {
 // Common errors reused across handlers.
 var (
 	errUnauthorized = newError(http.StatusUnauthorized, "unauthorized", "authentication required")
-	errForbidden    = newError(http.StatusForbidden, "forbidden", "not permitted")
-	errBadRequest   = newError(http.StatusBadRequest, "bad_request", "invalid request")
+	// errAuthUnavailable answers when the session store itself is unreachable
+	// (Postgres down): an outage is not a credential verdict, so the caller gets
+	// 503 "retry" instead of a 401 that reads as "log in again".
+	errAuthUnavailable = newError(http.StatusServiceUnavailable, "auth_unavailable",
+		"authentication is temporarily unavailable; retry shortly")
+	errForbidden  = newError(http.StatusForbidden, "forbidden", "not permitted")
+	errBadRequest = newError(http.StatusBadRequest, "bad_request", "invalid request")
 )
 
 // writeJSON writes v as an indented JSON body with the given status.

@@ -59,6 +59,10 @@ type fakeRepo struct {
 	staff    map[string]*StaffUser   // username -> staff login row
 	sessions map[string]*fakeSession // token_hash -> session
 	settings map[string][]byte       // key -> jsonb value
+	// failSessionUser / failGetSetting force those reads to fail with a generic
+	// (non-ErrNotFound) error, simulating a store outage for the 503 auth path.
+	failSessionUser error
+	failGetSetting  error
 	// player email OTPs (spec §B2). Keyed by row id; the verify path scans for the
 	// newest live (user, purpose) just as the PG query does.
 	otps map[string]*fakeEmailOTP
@@ -768,6 +772,9 @@ func (f *fakeRepo) CreateSession(_ context.Context, tokenHash, userID string, ex
 	return nil
 }
 func (f *fakeRepo) SessionUser(_ context.Context, tokenHash string, now time.Time) (*SessionedUser, error) {
+	if f.failSessionUser != nil {
+		return nil, f.failSessionUser
+	}
 	s, ok := f.sessions[tokenHash]
 	if !ok || s.revoked || !s.expiresAt.After(now) {
 		return nil, ErrNotFound
@@ -788,6 +795,9 @@ func (f *fakeRepo) RevokeSession(_ context.Context, tokenHash string) error {
 	return nil
 }
 func (f *fakeRepo) GetSetting(_ context.Context, key string) ([]byte, error) {
+	if f.failGetSetting != nil {
+		return nil, f.failGetSetting
+	}
 	if v, ok := f.settings[key]; ok {
 		return v, nil
 	}
@@ -2194,4 +2204,39 @@ func TestAccessVerifier(t *testing.T) {
 			t.Fatal("expected missing-expiry rejection")
 		}
 	})
+}
+
+// TestSessionAuthOutageIs503Not401: a session-store outage must surface as 503
+// auth_unavailable, not a 401 that reads as "please log in again". Both failure
+// points are covered — the local_auth_enabled read and the session row read —
+// plus the regression that a genuinely missing session still answers 401.
+func TestSessionAuthOutageIs503Not401(t *testing.T) {
+	apiWith := func(repo *fakeRepo) *API {
+		a := newTestAPI(repo, newFakeCluster())
+		a.External = SessionAuth{Repo: repo, RootDomain: testRoot, AdminHostname: "op.console." + testRoot}
+		return a
+	}
+	cookie := map[string]string{"Cookie": sessionCookieName + "=any"}
+	outage := errors.New("dial tcp 10.0.0.5:5432: connect: connection refused")
+
+	repo := newFakeRepo()
+	repo.settings[LocalAuthEnabledKey] = []byte("true")
+	repo.failGetSetting = outage
+	if w := do(apiWith(repo).ExternalHandler(), "GET", "/api/v1/me", "", cookie); w.Code != http.StatusServiceUnavailable || decodeErr(t, w) != "auth_unavailable" {
+		t.Fatalf("settings read outage = %d body %s, want 503 auth_unavailable", w.Code, w.Body.String())
+	}
+
+	repo = newFakeRepo()
+	repo.settings[LocalAuthEnabledKey] = []byte("true")
+	repo.failSessionUser = outage
+	if w := do(apiWith(repo).ExternalHandler(), "GET", "/api/v1/me", "", cookie); w.Code != http.StatusServiceUnavailable || decodeErr(t, w) != "auth_unavailable" {
+		t.Fatalf("session read outage = %d body %s, want 503 auth_unavailable", w.Code, w.Body.String())
+	}
+
+	// Regression: fail-closed auth (missing/invalid session) stays a 401.
+	repo = newFakeRepo()
+	repo.settings[LocalAuthEnabledKey] = []byte("true")
+	if w := do(apiWith(repo).ExternalHandler(), "GET", "/api/v1/me", "", cookie); w.Code != http.StatusUnauthorized || decodeErr(t, w) != "unauthorized" {
+		t.Fatalf("missing session = %d body %s, want 401 unauthorized", w.Code, w.Body.String())
+	}
 }

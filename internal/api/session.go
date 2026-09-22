@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -145,14 +146,24 @@ func (s SessionAuth) Authenticate(r *http.Request) (*Principal, error) {
 	}
 
 	ctx := r.Context()
-	if !localAuthEnabled(ctx, s.Repo) {
+	enabled, err := localAuthEnabledStatus(ctx, s.Repo)
+	if err != nil {
+		// The session store is unreachable: this is an outage, not a verdict on
+		// the caller's credentials, so the middleware answers 503 rather than a
+		// misleading "please log in".
+		return nil, fmt.Errorf("%w: %v", errAuthBackend, err)
+	}
+	if !enabled {
 		// A cookie was presented but local auth is off: reject, never fall through.
 		return nil, fmt.Errorf("local auth disabled")
 	}
 
 	u, err := s.Repo.SessionUser(ctx, hashCookie(cookie.Value), s.now())
-	if err != nil {
+	switch {
+	case errors.Is(err, ErrNotFound):
 		return nil, fmt.Errorf("invalid session: %w", err)
+	case err != nil:
+		return nil, fmt.Errorf("%w: %v", errAuthBackend, err)
 	}
 	return &Principal{
 		UserID:         u.ID,
@@ -164,6 +175,11 @@ func (s SessionAuth) Authenticate(r *http.Request) (*Principal, error) {
 	}, nil
 }
 
+// errAuthBackend marks an authentication failure caused by the session store
+// being unreachable (e.g. Postgres down) rather than by a missing or invalid
+// credential. Middleware maps it to 503 so an outage is not misreported as 401.
+var errAuthBackend = errors.New("auth backend unavailable")
+
 // localAuthEnabled reports whether the runtime local_auth_enabled toggle is true.
 // A missing setting, a read error, or a non-true value all read as disabled — the
 // gate fails closed so local sessions are honored, and new ones minted, only on an
@@ -171,15 +187,28 @@ func (s SessionAuth) Authenticate(r *http.Request) (*Principal, error) {
 // (minting one) consult it, so the two never disagree about whether local auth is
 // live.
 func localAuthEnabled(ctx context.Context, repo Repo) bool {
+	enabled, _ := localAuthEnabledStatus(ctx, repo)
+	return enabled
+}
+
+// localAuthEnabledStatus is localAuthEnabled with the outage case kept apart: a
+// MISSING setting (ErrNotFound — never enabled) reads as (false, nil), while a
+// store read failure reads as (false, err) so SessionAuth can tell "local auth
+// is off" (401) from "the database is down" (503). An unreadable value still
+// fails closed as disabled — it is a config fault, not an outage.
+func localAuthEnabledStatus(ctx context.Context, repo Repo) (bool, error) {
 	raw, err := repo.GetSetting(ctx, LocalAuthEnabledKey)
-	if err != nil {
-		return false // ErrNotFound (never enabled) or a transient read error → closed
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return false, nil
+	case err != nil:
+		return false, err
 	}
 	var enabled bool
 	if err := json.Unmarshal(raw, &enabled); err != nil {
-		return false
+		return false, nil
 	}
-	return enabled
+	return enabled, nil
 }
 
 // ensure SessionAuth satisfies ExternalAuth at compile time.

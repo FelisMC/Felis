@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"log"
 	"net/http"
 	"runtime/debug"
@@ -95,6 +96,11 @@ func (a *API) requireInternal(next http.Handler) http.Handler {
 func (a *API) requireExternal(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, err := a.External.Authenticate(r)
+		if errors.Is(err, errAuthBackend) {
+			// Session store unreachable — an outage, not a missing credential.
+			writeError(w, r, errAuthUnavailable)
+			return
+		}
 		if err != nil || p == nil {
 			writeError(w, r, errUnauthorized)
 			return
