@@ -74,11 +74,13 @@ func ControlPlaneRBAC(p Params) RBAC {
 // APIMinecraftRole grants felis-api exactly what it does in the minecraft
 // namespace: drive MinecraftServer specs (internal/api.k8scluster — get/list/
 // create/patch, never status), read RCON passwords for console writes
-// (internal/api.console — secrets:get), create the restore Job
-// (internal/restore — jobs:create), and stream the live console for the read
-// side (internal/api.logstream — pods:list to find the server's running pod,
-// then pods/log:get to follow it; spec §8 读=pods/log follow). felis-api uses a
-// DIRECT client, so it needs no list/watch beyond the explicit List calls.
+// (internal/api.console — secrets:get), manage the restore Job under its
+// deterministic name (internal/restore — jobs:create, plus get/delete so a
+// FINISHED Job whose name still blocks a retry can be replaced), and stream the
+// live console for the read side (internal/api.logstream — pods:list to find
+// the server's running pod, then pods/log:get to follow it; spec §8 读=pods/log
+// follow). felis-api uses a DIRECT client, so it needs no list/watch beyond the
+// explicit List calls.
 //
 // The read-side grant is deliberately minimal: pods:list + pods/log:get, NOT
 // pods:get — the streamer lists pods by the server label then reads the chosen
@@ -90,7 +92,7 @@ func APIMinecraftRole(p Params) *rbacv1.Role {
 	return role(p.MinecraftNamespace, "felis-api", ComponentAPI, []rbacv1.PolicyRule{
 		rule([]string{groupFelis}, []string{"minecraftservers"}, []string{"get", "list", "create", "patch"}),
 		rule([]string{groupCore}, []string{"secrets"}, []string{"get"}),
-		rule([]string{groupBatch}, []string{"jobs"}, []string{"create"}),
+		rule([]string{groupBatch}, []string{"jobs"}, []string{"create", "get", "delete"}),
 		// Read-side console (spec §8 读=pods/log follow): list pods to find the
 		// server's running pod, then read its log subresource. Two separate rules so
 		// the verbs stay tight — list on pods, get on pods/log, and nothing else.

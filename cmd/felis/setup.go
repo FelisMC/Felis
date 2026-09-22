@@ -225,16 +225,21 @@ func provisionSystemServers(ctx context.Context, cfg *config.Config, out io.Writ
 	// renamed it must replicate the Secret by hand.
 	controlNS := platform.DefaultControlNamespace
 	apiBaseURL := platform.InternalAPIBaseURL(controlNS)
-	// Both Secrets must land in the minecraft namespace before the pods that mount
-	// them are created: the service token (login authenticates to felis-api with it)
-	// and the Velocity forwarding secret (every backend verifies the proxy's signed
-	// handshake with it — without it the login gate would derive an OFFLINE UUID and
-	// the Owner would bind the wrong Minecraft identity).
+	// These Secrets must land in the minecraft namespace before the pods that
+	// mount them are created: the service token (login authenticates to felis-api
+	// with it), the Velocity forwarding secret (every backend verifies the proxy's
+	// signed handshake with it — without it the login gate would derive an OFFLINE
+	// UUID and the Owner would bind the wrong Minecraft identity), and felis-config
+	// (the on-demand BACKUP Job runs in the minecraft namespace and mounts it to
+	// self-record its world_backups row; without the replica the Job's volume
+	// mount fails and every backup request strands in the cluster).
 	secretOutcomes := []systemServerOutcome{
 		ensureSecretReplica(ctx, cl, controlNS, cfg.K8s.Namespace,
 			naming.ServiceTokenSecretName, naming.ServiceTokenSecretKey, "service-token"),
 		ensureSecretReplica(ctx, cl, controlNS, cfg.K8s.Namespace,
 			naming.ForwardingSecretName, naming.ForwardingSecretKey, "forwarding-secret"),
+		ensureSecretReplica(ctx, cl, controlNS, cfg.K8s.Namespace,
+			"felis-config", "felis.toml", "config"),
 	}
 	outcomes := ensureSystemServers(ctx, cl, cfg.K8s.Namespace, cfg.Velocity.LoginImage, cfg.Velocity.LobbyImage, apiBaseURL, cfg.Server.RootDomain, defaultPanelHostname(cfg.Server.RootDomain, cfg.Auth.PanelHostname))
 	outcomes = append(secretOutcomes, outcomes...)

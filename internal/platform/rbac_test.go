@@ -73,8 +73,10 @@ func TestAPIRole_CreatesJobsInBothNamespaces(t *testing.T) {
 	if mc.Namespace != "minecraft" {
 		t.Errorf("felis-api minecraft Role namespace = %q, want minecraft", mc.Namespace)
 	}
-	if !hasRule(mc, "batch", "jobs", "create") {
-		t.Error("felis-api (minecraft) must have batch/jobs:create for the restore Job")
+	for _, v := range []string{"create", "get", "delete"} {
+		if !hasRule(mc, "batch", "jobs", v) {
+			t.Errorf("felis-api (minecraft) must have batch/jobs:%s for the restore-Job lifecycle", v)
+		}
 	}
 
 	build := roleByName(t, rbac.Roles, "felis-api-builds")

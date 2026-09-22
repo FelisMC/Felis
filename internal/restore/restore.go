@@ -170,9 +170,8 @@ type Restorer struct {
 // serverName's world PVC. It returns once the Job is created — the extraction
 // runs in the Pod — so the handler's 202 ("restoring") is honest.
 //
-// It is idempotent: if a restore Job for this server already exists (a restore
-// is already in flight, or a just-finished one has not yet hit its TTL), the
-// duplicate enqueue is treated as success rather than surfaced as an error.
+// It is idempotent: a duplicate enqueue while a restore Job for this server is
+// still running is treated as success rather than surfaced as an error.
 //
 // The coalescing key is the Job name (RestoreJobName), which depends only on the
 // server, NOT on backupRef — so a second request that arrives while one is in
@@ -180,10 +179,13 @@ type Restorer struct {
 // differ the second is silently dropped (the in-flight restore wins). That is
 // acceptable here: restore runs only for a Stopped server (handler gate ⑥) and
 // the handler always passes the latest backup, which for a stopped server does
-// not change, so concurrent requests carry the same ref in practice. A caller
-// that genuinely needs a different archive can re-request after the Job clears
-// its TTL. This keeps the handler's 202 honest without it having to map "already
-// in progress" onto a 500.
+// not change, so concurrent requests carry the same ref in practice.
+//
+// A FINISHED Job — succeeded or failed — does not absorb the next request: its
+// deterministic name is replaced so the retry enqueues for real (see
+// K8sJobs.CreateRestoreJob). Distinguishing in-flight from finished is what
+// keeps the handler's 202 honest in both directions — not a 500 for a genuine
+// duplicate, and not a false "restoring" for a retry after a failure.
 func (r *Restorer) Restore(ctx context.Context, serverName, backupRef string) error {
 	if err := r.Jobs.CreateRestoreJob(ctx, r.jobParams(serverName, backupRef)); err != nil {
 		if errors.Is(err, ErrAlreadyExists) {
