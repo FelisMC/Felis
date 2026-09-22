@@ -225,16 +225,51 @@ func (r *ExecRunner) CreateAccessApplication(ctx context.Context, app AccessAppl
 	return resp.Result.ID, resp.Result.AUD, nil
 }
 
-// CreateAccessPolicy POSTs the policy onto the Access app.
+// CreateAccessPolicy makes the Access app carry exactly the recommended policy.
+// It upserts by name instead of POST-then-swallow: when a policy of this name
+// already exists — a re-run, or a previous hand-made setup — the swallow looked
+// idempotent but left the OLD rule set in place. If that old policy is broader
+// than the fail-closed one just built (a changed identity, a hand-made
+// allow-everyone rule), op.console ends up guarded by something weaker while
+// Setup reports success. So: find it and PUT our body over it; POST only when
+// absent (a POST that races into "already exists" falls back to the PUT).
 func (r *ExecRunner) CreateAccessPolicy(ctx context.Context, appID string, policy AccessPolicy) error {
+	pid, err := r.lookupAccessPolicy(ctx, appID, policy.Name)
+	if err != nil {
+		return err
+	}
+	if pid != "" {
+		return r.apiPut(ctx, fmt.Sprintf("/accounts/%s/access/apps/%s/policies/%s", r.AccountID, appID, pid), policy, nil)
+	}
 	if err := r.apiPost(ctx, fmt.Sprintf("/accounts/%s/access/apps/%s/policies", r.AccountID, appID), policy, nil); err != nil {
-		// If policy already exists, treat it as idempotent success
-		if strings.Contains(err.Error(), "policy_already_exists") || strings.Contains(err.Error(), "11015") || strings.Contains(err.Error(), "already_exists") {
-			return nil
+		if strings.Contains(err.Error(), "already_exists") || strings.Contains(err.Error(), "11015") {
+			if pid, lerr := r.lookupAccessPolicy(ctx, appID, policy.Name); lerr == nil && pid != "" {
+				return r.apiPut(ctx, fmt.Sprintf("/accounts/%s/access/apps/%s/policies/%s", r.AccountID, appID, pid), policy, nil)
+			}
 		}
 		return err
 	}
 	return nil
+}
+
+// lookupAccessPolicy finds the id of the policy named name on an Access app,
+// returning "" when absent.
+func (r *ExecRunner) lookupAccessPolicy(ctx context.Context, appID, name string) (string, error) {
+	var resp struct {
+		Result []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"result"`
+	}
+	if err := r.apiGet(ctx, fmt.Sprintf("/accounts/%s/access/apps/%s/policies?per_page=100", r.AccountID, appID), &resp); err != nil {
+		return "", err
+	}
+	for _, p := range resp.Result {
+		if p.Name == name {
+			return p.ID, nil
+		}
+	}
+	return "", nil
 }
 
 // runCloudflared executes the cloudflared binary with the given args, returning
@@ -255,15 +290,23 @@ func (r *ExecRunner) runCloudflared(ctx context.Context, args ...string) (string
 	return buf.String(), nil
 }
 
-// apiPost sends an authenticated JSON POST to the Cloudflare API and, on a
-// non-2xx or success:false body, returns the error. out, when non-nil, receives
-// the decoded response.
+// apiPost and apiPut send an authenticated JSON write to the Cloudflare API and,
+// on a non-2xx or success:false body, return the error. out, when non-nil,
+// receives the decoded response.
 func (r *ExecRunner) apiPost(ctx context.Context, path string, body, out any) error {
+	return r.apiWrite(ctx, http.MethodPost, path, body, out)
+}
+
+func (r *ExecRunner) apiPut(ctx context.Context, path string, body, out any) error {
+	return r.apiWrite(ctx, http.MethodPut, path, body, out)
+}
+
+func (r *ExecRunner) apiWrite(ctx context.Context, method, path string, body, out any) error {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.apiBase()+path, bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, method, r.apiBase()+path, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
