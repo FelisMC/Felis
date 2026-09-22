@@ -331,6 +331,29 @@ url = "bare.example.net/hasJoined"
 	}
 }
 
+// TestLoadRejectsUnqueryableAuthSourceURL covers the URL shapes that carry a scheme yet can
+// never be queried: the resolver appends the query string to the URL verbatim, so each of
+// these would load green and leave a source that silently validates nobody.
+func TestLoadRejectsUnqueryableAuthSourceURL(t *testing.T) {
+	for _, u := range []string{
+		"ftp://a.example.net/hasJoined",
+		"https://",
+		"https://a.example.net/hasJoined?token=x",
+		"https://a.example.net/hasJoined?",
+		"https://a.example.net/hasJoined#x",
+		"https://a.example.net/hasJoined ",
+		"https://a.example.net:bad/hasJoined",
+	} {
+		_, err := config.LoadNano(writeTOML(t, "[[auth_source]]\ntag = \"a\"\nprefix = \"AA\"\nurl = \""+u+"\"\n"))
+		if err == nil {
+			t.Errorf("url %q loaded; it can never be queried", u)
+		}
+	}
+	if _, err := config.LoadNano(writeTOML(t, "[[auth_source]]\ntag = \"a\"\nprefix = \"AA\"\nurl = \"http://127.0.0.1:8080/hasJoined\"\n")); err != nil {
+		t.Errorf("a plain loopback endpoint must load: %v", err)
+	}
+}
+
 // TestLoadNanoAcceptsMinimalConfig is the linchpin of the Felis-nano fold: a nano host has no
 // Postgres and no FQDN, so LoadNano must accept a felis.toml carrying ONLY [[auth_source]] —
 // the control-plane requirements (database.url, root_domain) that full Load enforces are

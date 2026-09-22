@@ -6,6 +6,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -343,9 +344,9 @@ var authSourcePrefixRe = regexp.MustCompile(`^[A-Za-z0-9]{1,4}$`)
 // (cross-source impersonation — the exact invariant the per-source rewrite exists to
 // hold); a duplicate prefix collapses two same-named players from different sources onto
 // one in-game name
-// (they stay distinct identities, but neither can be online while the other is); a
-// scheme-less URL makes http.NewRequest fail so the source is silently dead (never validates
-// any login). All fail fast at load, not per-login. Split out from Validate so the nano-only
+// (they stay distinct identities, but neither can be online while the other is); a URL
+// the resolver cannot query leaves the source silently dead (never validates any login).
+// All fail fast at load, not per-login. Split out from Validate so the nano-only
 // LoadNano (no control-plane fields) enforces the identical rules — the impersonation guard
 // has one owner, shared by full-api and nano.
 func (c *Config) validateAuthSources() error {
@@ -377,9 +378,31 @@ func (c *Config) validateAuthSources() error {
 			return fmt.Errorf("config: [[auth_source]] prefix %q is used twice — two sources sharing a prefix rewrite their same-named players onto the same in-game name", s.Prefix)
 		}
 		seenPrefixes[lower] = struct{}{}
-		if !strings.HasPrefix(s.URL, "http://") && !strings.HasPrefix(s.URL, "https://") {
-			return fmt.Errorf("config: [[auth_source]] %q url %q must be a scheme-qualified http(s):// hasJoined endpoint", s.Tag, s.URL)
+		if problem := hasJoinedURLProblem(s.URL); problem != "" {
+			return fmt.Errorf("config: [[auth_source]] %q url %q %s", s.Tag, s.URL, problem)
 		}
 	}
 	return nil
+}
+
+// hasJoinedURLProblem says why u cannot be queried as a hasJoined endpoint, or "" if it
+// can. The resolver appends "?username=…&serverId=…" to it as a string, so a query or
+// fragment already in it swallows those parameters, and a URL the client cannot send only
+// fails one login at a time, with the source looking like it knows nobody.
+func hasJoinedURLProblem(u string) string {
+	if strings.TrimSpace(u) != u {
+		return "has leading or trailing whitespace"
+	}
+	p, err := url.Parse(u)
+	switch {
+	case err != nil:
+		return "does not parse: " + err.Error()
+	case p.Scheme != "http" && p.Scheme != "https":
+		return "must be a scheme-qualified http(s):// hasJoined endpoint"
+	case p.Host == "":
+		return "has no host"
+	case strings.ContainsAny(u, "?#"):
+		return "must not carry a query or fragment; the username and serverId parameters are appended to it"
+	}
+	return ""
 }
