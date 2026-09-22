@@ -100,20 +100,24 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 				"(the archive store; default felis-backups)")
 			return 2
 		}
-		// The reaper WILL render. Two deployment preconditions this generator cannot
-		// check would SILENTLY turn retention into a no-op if unmet — surface them as
-		// loudly as the fail-closed cases above, so an operator is never left with a
-		// reaper that reaps an empty directory. (Both are also in the WorldsHostPath
-		// flag/field docs, but nobody deploying from stdout reads those.)
+		// The reaper WILL render. Three deployment preconditions this generator cannot
+		// check would silently turn retention into a no-op (or a permission-denied
+		// loop) if unmet — surface them as loudly as the fail-closed cases above, so
+		// an operator is never left with a reaper that reaps nothing. (All three are
+		// also in the WorldsHostPath flag/field docs, but nobody deploying from stdout
+		// reads those.)
 		fmt.Fprintf(stderr, "felis manifests: note: rendering the retention reaper CronJob (worlds hostPath %q). "+
-			"Two preconditions are NOT verified here:\n"+
+			"Three preconditions are NOT verified here:\n"+
 			"  - the node's world volumes must actually live below %s: the reaper resolves a world as "+
 			"%s/<pvc>, then as the stock local-path directory <path>/<pv-name>_<ns>_<pvc-name> (what k3s "+
 			"writes under /var/lib/rancher/k3s/storage). Any other provisioner needs its volumes exposed as "+
 			"<path>/<pvc>, or each candidate's archive fails and the world is preserved;\n"+
+			"  - the reaper pod runs as uid 1000 and must be able to traverse %s (k3s ships its storage root "+
+			"0700 root:root — the installer grants `setfacl -m u:1000:x` or o+x; a manual install must do the "+
+			"same or every archive fails with permission denied and the world is preserved);\n"+
 			"  - the CronJob sets NO nodeSelector: a single-node starter pins it to the worlds implicitly, but "+
 			"on a multi-node cluster you MUST add a nodeSelector for the node holding the worlds, or the reaper "+
-			"may schedule where the hostPath is empty.\n", *worldsHostPath, *worldsHostPath, *worldsHostPath)
+			"may schedule where the hostPath is empty.\n", *worldsHostPath, *worldsHostPath, *worldsHostPath, *worldsHostPath)
 	} else {
 		fmt.Fprintln(stderr, "felis manifests: note: retention reaper CronJob not rendered "+
 			"(pass --worlds-host-path and --archive-local-path — the archive PVC defaults to felis-backups — to enable it)")

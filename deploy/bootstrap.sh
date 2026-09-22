@@ -71,7 +71,9 @@
 #   FELIS_WORLDS_HOST_PATH node directory holding the world volumes (on the k3s this
 #                     installer provisions: /var/lib/rancher/k3s/storage). Setting it
 #                     enables the daily retention reaper, which archives and then deletes
-#                     worlds idle beyond the retention window (default: unset = no reaper)
+#                     worlds idle beyond the retention window, and grants the reaper's
+#                     uid (1000) traverse access to that root — k3s ships it 0700
+#                     root:root (default: unset = no reaper)
 #   PKG_LOCK_TIMEOUT seconds to wait for package-manager locks (default: 900)
 #   APT_LOCK_TIMEOUT legacy alias for PKG_LOCK_TIMEOUT
 set -Eeuo pipefail
@@ -2175,6 +2177,20 @@ deploy_bundle() {
   # always travels with it because it must equal the [archive] local_path written above.
   if [ -n "$FELIS_WORLDS_HOST_PATH" ]; then
     log "retention enabled: the daily reaper will read worlds from ${FELIS_WORLDS_HOST_PATH}"
+    # The reaper pod runs as the tree's non-root uid (1000, platform.workloads.nonRootUID)
+    # and must traverse into the per-volume directories under this root. k3s's own storage
+    # root ships 0700 root:root, so grant traverse — an ACL entry when the host has setfacl,
+    # otherwise the equivalent o+x. Traverse only: no listing either way, and the per-volume
+    # directories themselves are world-accessible (local-path creates them 0777).
+    if [ -d "$FELIS_WORLDS_HOST_PATH" ]; then
+      if command -v setfacl >/dev/null 2>&1; then
+        setfacl -m u:1000:x "$FELIS_WORLDS_HOST_PATH" || chmod o+x "$FELIS_WORLDS_HOST_PATH"
+      else
+        chmod o+x "$FELIS_WORLDS_HOST_PATH"
+      fi
+    else
+      warn "worlds root ${FELIS_WORLDS_HOST_PATH} does not exist yet; the reaper CronJob cannot start until it does (hostPath type Directory)"
+    fi
     manifest_args+=(--worlds-host-path "$FELIS_WORLDS_HOST_PATH" --archive-local-path "$FELIS_ARCHIVE_LOCAL_PATH")
   fi
   "$HOST_BIN" manifests "${manifest_args[@]}" | kube apply -f -

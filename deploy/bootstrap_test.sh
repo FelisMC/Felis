@@ -579,9 +579,9 @@ expect "a failed fetch into an existing checkout names the token" "set FELIS_GIT
 # honest 503), and FELIS_WORLDS_HOST_PATH must turn into the reaper's two flags or an
 # operator's retention enablement silently renders no CronJob. Extracted, not retyped.
 
-mblock="$(awk '/^  local -a manifest_args=\(/,/kube apply -f -/' "$BS")"
+mblock="$(awk '/^  log "rendering \+ applying the control-plane bundle"/,/kube apply -f -/' "$BS")"
 [ -n "$mblock" ] || { echo "FAIL: no manifest_args block found in $BS"; exit 1; }
-[ "$(printf '%s\n' "$mblock" | wc -l)" -lt 30 ] \
+[ "$(printf '%s\n' "$mblock" | wc -l)" -lt 40 ] \
   || { echo "FAIL: the extracted block is not the manifest_args block -- did it move?"; exit 1; }
 
 run_bundle_flags() { # backup-pvc worlds-host-path
@@ -589,8 +589,10 @@ run_bundle_flags() { # backup-pvc worlds-host-path
   FELIS_BACKUP_PVC="$1" FELIS_WORLDS_HOST_PATH="$2" FELIS_ARCHIVE_LOCAL_PATH=/var/lib/felis/archives \
   HOST_BIN=myManifests bash -c '
     log() { :; }
+    warn() { printf "WARN: %s\n" "$*"; }
     kube() { cat; }
     myManifests() { printf "%s\n" "$@"; }
+    setfacl() { printf "SETFACL %s\n" "$*"; }
     run_bundle() {
     '"$mblock"'
     }
@@ -612,6 +614,13 @@ expect "enabling retention passes the worlds root" "--worlds-host-path
 /var/lib/rancher/k3s/storage" "$out"
 expect "enabling retention passes the archive mount that must match felis.toml" "--archive-local-path
 /var/lib/felis/archives" "$out"
+expect "a missing worlds root is warned about, not silently skipped" "WARN: worlds root /var/lib/rancher/k3s/storage does not exist yet" "$out"
+
+# The reaper pod is non-root (uid 1000) and k3s ships the storage root 0700 root:root, so
+# the installer must grant traverse or every archive dies with permission denied.
+wdir="$(mktemp -d)"
+out="$(run_bundle_flags felis-backups "$wdir")"
+expect "enabling retention grants the reaper uid traverse on the worlds root" "SETFACL -m u:1000:x $wdir" "$out"
 
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then

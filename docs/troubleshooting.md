@@ -468,6 +468,26 @@ Only `TarLocal` (tar+gzip) archiving is implemented; VolumeSnapshot/Longhorn
 backends return `not implemented in this build`. The live PVC delete / Postgres
 store paths are [INTEGRATION-ONLY].
 
+### Where worlds are read from (hostPath resolution)
+
+The CronJob mounts `--worlds-host-path` read-only at `/worlds`; the resolver
+runs `cmd/felis/reaper.resolveWorldDir`: it looks for `<root>/<pvc>`, then for
+the stock local-path directory `<root>/<pv-name>_<ns>_<pvc-name>` derived from
+the live PVC's `spec.volumeName` (never a glob — a leftover directory of a
+deleted PV must not stand in for the world the PVC currently binds). Pointing
+the flag at k3s's storage root (`/var/lib/rancher/k3s/storage`) is therefore the
+supported way to enable retention on a stock install. Two deployment facts the
+resolver cannot fix:
+
+- **Permissions.** The reaper pod runs as uid 1000, while k3s creates its
+  storage root `0700 root:root`. Without traverse (`setfacl -m u:1000:x`, or
+  `chmod o+x`; the installer applies this when `FELIS_WORLDS_HOST_PATH` is set)
+  every walk fails `permission denied` / `lstat …: permission denied` and the
+  world is **preserved**, never reaped — a silent no-op with ERROR logs.
+- **Node placement.** Multi-node clusters: the world's directory exists only on
+  the node holding its volume, and the CronJob sets no `nodeSelector`, so add
+  one (single-node starters are pinned implicitly).
+
 ---
 
 ## 11. Idle auto-stop never fires; player count always shows 0
