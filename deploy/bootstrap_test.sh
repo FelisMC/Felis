@@ -194,16 +194,16 @@ done
 
 # --- write_nano_config leaves the unit able to read its config ---------------------------
 # felis-nano runs as a DynamicUser, so the directory must be searchable by others under a
-# hardened umask too -- but an existing one, which the full install locks to 0700 for its
-# secrets, must not be widened.
+# hardened umask too, including one an older installer left at 0750 -- but the full
+# install's, locked to 0700 for its secrets, must not be widened.
 
 wblock="$(awk '/^write_nano_config\(\) \{/,/^}/' "$BS")"
 [ -n "$wblock" ] || { echo "FAIL: no write_nano_config found in $BS"; exit 1; }
-[ "$(printf '%s\n' "$wblock" | wc -l)" -lt 40 ] \
+[ "$(printf '%s\n' "$wblock" | wc -l)" -lt 50 ] \
   || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
 
 run_nano_config() { # state-dir
-  STATE_DIR="$1" bash -c 'umask 027
+  STATE_DIR="$1" SECRETS_ENV="$1/secrets.env" BOOTSTRAP_DONE="$1/bootstrap.done" bash -c 'umask 027
     ok() { printf "OK: %s\n" "$*"; }
     '"$wblock"'
     write_nano_config'
@@ -213,8 +213,15 @@ mkdir "$sdir/probe" && chmod 0700 "$sdir/probe"
 if [ "$(stat -c %a "$sdir/probe")" = 700 ]; then
   run_nano_config "$sdir/nano" >/dev/null
   expect "a fresh config dir is searchable under umask 027" 755 "$(stat -c %a "$sdir/nano")"
+  mkdir "$sdir/old" && chmod 0750 "$sdir/old"
+  run_nano_config "$sdir/old" >/dev/null
+  expect "a nano-only 0750 dir is opened up" 755 "$(stat -c %a "$sdir/old")"
+  : > "$sdir/probe/secrets.env"
   run_nano_config "$sdir/probe" >/dev/null
-  expect "an existing 0700 dir is not widened" 700 "$(stat -c %a "$sdir/probe")"
+  expect "a dir holding the full install's secrets is not widened" 700 "$(stat -c %a "$sdir/probe")"
+  mkdir "$sdir/done" && chmod 0700 "$sdir/done" && : > "$sdir/done/bootstrap.done"
+  run_nano_config "$sdir/done" >/dev/null
+  expect "a dir marked as a full install is not widened" 700 "$(stat -c %a "$sdir/done")"
 else
   echo "SKIP directory modes: this filesystem ignores chmod"
 fi
