@@ -61,7 +61,11 @@ export function ImageBuildPage() {
   const locale = i18n.language;
   const now = Date.now();
   const config = useConfig();
-  const { identity } = useTier();
+  // The owner tier comes from the server-side /me verdict (TierProvider), never
+  // from guessing at the address: the old mock-era email heuristic misread the
+  // real owner (felis-owner@example.com) as non-owner while treating any
+  // "owner@…" address as one.
+  const { isOwner } = useTier();
 
   // Form & Dialog State
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -75,12 +79,6 @@ export function ImageBuildPage() {
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [loadingSubmissions, setLoadingSubmissions] = useState(false);
   const [selectedSub, setSelectedSub] = useState<Submission | null>(null);
-
-  const isOwner = useMemo(() => {
-    if (!identity?.email) return false;
-    const emailLower = identity.email.toLowerCase();
-    return emailLower === "owner@mock.felis.local" || emailLower.startsWith("owner@");
-  }, [identity]);
 
   const visibleSubmissions = useMemo(() => {
     if (isOwner) {
@@ -137,12 +135,6 @@ export function ImageBuildPage() {
       const stored = localStorage.getItem(LOCAL_STORAGE_KEY);
       if (stored) {
         setBuildIds(JSON.parse(stored));
-      } else {
-        // Seed default IDs so mock builds are loaded on first visit.
-        // In production, querying these will 404 and safely show the empty state.
-        const defaultIds = ["bld-1", "bld-2"];
-        localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(defaultIds));
-        setBuildIds(defaultIds);
       }
     } catch {
       setLoadingBuilds(false);
