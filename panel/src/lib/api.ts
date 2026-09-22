@@ -506,6 +506,13 @@ export const api = {
   revokeUserSession: (id: string, hash: string) =>
     request<{ ok: boolean }>("DELETE", `/users/${id}/sessions/${encodeURIComponent(hash)}`),
 
+  // unbindUserPasskeys severs EVERY passkey the user holds (owner-tier account
+  // remediation for a lost or compromised authenticator). It is deliberately not
+  // a lockout — the account keeps its other doors (email OTP, in-game op-login
+  // re-enrollment). Unbinding an account that holds no passkeys is a 200 no-op.
+  unbindUserPasskeys: (id: string) =>
+    request<{ ok: boolean }>("DELETE", `/users/${id}/passkeys`),
+
   linkAccount: (id: string, mcUuid: string, authSource?: string) =>
     request<{ ok: boolean; mc_uuid: string; auth_source: string }>(
       "POST",

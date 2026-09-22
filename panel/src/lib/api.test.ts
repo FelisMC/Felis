@@ -581,4 +581,16 @@ describe("image whitelist and builds wire shapes", () => {
       expect((opts as RequestInit).method).toBe("GET");
     });
   });
+
+  describe("user passkey unbind wire shape", () => {
+    it("unbindUserPasskeys DELETEs /users/{id}/passkeys", async () => {
+      const fetchSpy = fakeFetch({ ok: true });
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.unbindUserPasskeys("u1");
+      expect(res.ok).toBe(true);
+      const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toBe("/users/u1/passkeys");
+      expect((opts as RequestInit).method).toBe("DELETE");
+    });
+  });
 });

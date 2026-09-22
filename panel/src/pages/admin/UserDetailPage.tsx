@@ -19,6 +19,7 @@ import {
   Link,
   X,
   AlertTriangle,
+  Fingerprint,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -639,7 +640,7 @@ function DangerZone({
   navigate: (path: string) => void;
 }) {
   const { t } = useTranslation("admin");
-  const [dlg, setDlg] = useState<"disable" | "delete" | null>(null);
+  const [dlg, setDlg] = useState<"disable" | "delete" | "passkeys" | null>(null);
 
   return (
     <Card className="border-destructive/30">
@@ -665,6 +666,16 @@ function DangerZone({
           btnLabel={t("users_danger_delete_btn")}
           btnVariant="destructive"
           onAction={() => setDlg("delete")}
+        />
+
+        {/* Unbind passkeys — credential remediation, not a lockout */}
+        <DangerRow
+          icon={Fingerprint}
+          title={t("users_danger_passkeys")}
+          desc={t("users_danger_passkeys_desc")}
+          btnLabel={t("users_danger_passkeys_btn")}
+          btnVariant="outline"
+          onAction={() => setDlg("passkeys")}
         />
 
         <DangerDialogs dlg={dlg} setDlg={setDlg} user={user} onChanged={onChanged} navigate={navigate} />
@@ -709,7 +720,7 @@ function DangerDialogs({
   onChanged,
   navigate,
 }: {
-  dlg: "disable" | "delete" | null;
+  dlg: "disable" | "delete" | "passkeys" | null;
   setDlg: (v: null) => void;
   user: UserDetail;
   onChanged: () => void;
@@ -750,6 +761,19 @@ function DangerDialogs({
     }
   }
 
+  async function handleUnbindPasskeys() {
+    setLoading(true);
+    setErr(null);
+    try {
+      await api.unbindUserPasskeys(user.id);
+      close();
+      onChanged();
+    } catch (e) {
+      setErr(humanizeError(e));
+      setLoading(false);
+    }
+  }
+
   return (
     <>
       {/* Disable / Enable dialog */}
@@ -783,6 +807,23 @@ function DangerDialogs({
           </DialogHeader>
           {err && <p className="text-sm text-destructive">{err}</p>}
           <ConfirmFooter onCancel={close} onConfirm={handleDelete} loading={loading} cancelLabel={t("common:cancel")} confirmLabel={t("users_danger_delete_yes")} />
+        </DialogContent>
+      </Dialog>
+
+      {/* Unbind passkeys dialog */}
+      <Dialog open={dlg === "passkeys"} onOpenChange={(v) => { if (!v) close(); }}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-destructive">
+              <AlertTriangle className="h-5 w-5" />
+              {t("users_danger_passkeys_dlg_title")}
+            </DialogTitle>
+            <DialogDescription>
+              {t("users_danger_passkeys_dlg_desc")}
+            </DialogDescription>
+          </DialogHeader>
+          {err && <p className="text-sm text-destructive">{err}</p>}
+          <ConfirmFooter onCancel={close} onConfirm={handleUnbindPasskeys} loading={loading} cancelLabel={t("common:cancel")} confirmLabel={t("users_danger_passkeys_yes")} />
         </DialogContent>
       </Dialog>
     </>
