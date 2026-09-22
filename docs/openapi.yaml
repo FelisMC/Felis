@@ -460,20 +460,21 @@ paths:
       operationId: hasJoined
       summary: Multi-source session verifier (Felis-nano hasJoined multiplexer).
       description: >-
-        Velocity's authlib is pointed here via -Dmojang.sessionserver or a thin login
-        hook. Unauthenticated — the vanilla sessionserver protocol carries no token. The
-        query is fanned out to the configured Yggdrasil roots in priority order (the
-        Mojang identity source first); the first source to validate the serverId hash
-        wins. A non-identity source's self-asserted UUID is rewritten into a per-source
-        namespace (UUIDv3) before return, so it can never land in Mojang's UUID space.
-        A rejected or barred login is 204, which authlib maps to a verify failure.
+        Velocity is pointed here with -Dmojang.sessionserver and sends the request itself.
+        Unauthenticated — the vanilla sessionserver protocol carries no token. The query
+        is fanned out to the configured Yggdrasil roots in priority order (the Mojang
+        identity source first); the first source to validate the serverId hash wins. A
+        non-identity source's self-asserted UUID is rewritten into a per-source namespace
+        (UUIDv3) before return, so it can never land in Mojang's UUID space. A rejected
+        or barred login is 204, which Velocity answers with its online-mode-only kick.
+        Any other non-200 status makes Velocity report the auth servers as down.
       x-felis-face: [internal]
       x-felis-tier: public
       security: []
       parameters:
-        - { name: username, in: query, required: true, schema: { type: string } }
-        - { name: serverId, in: query, required: true, schema: { type: string } }
-        - { name: ip, in: query, required: false, schema: { type: string } }
+        - { name: username, in: query, required: true, schema: { type: string, maxLength: 64 } }
+        - { name: serverId, in: query, required: true, schema: { type: string, maxLength: 64 } }
+        - { name: ip, in: query, required: false, schema: { type: string, maxLength: 64 } }
       responses:
         '200':
           description: A source validated the session; the canonical game profile.
@@ -484,10 +485,33 @@ paths:
                 required: [id, name]
                 properties:
                   id: { type: string, description: Canonical UUID, undashed 32-hex. }
-                  name: { type: string }
+                  name:
+                    type: string
+                    description: >-
+                      The name the source returned. A third-party player whose name is
+                      registered to a Mojang account gets it back as PREFIX_name, cut to
+                      16 characters.
                   properties: { type: array, items: { type: object } }
         '204':
-          description: No source validated the session, or the resolved UUID is barred.
+          description: >-
+            Not admitted, with no source asked when username or serverId is missing or a
+            parameter is over 64 bytes. Otherwise no source validated the session, the
+            canonical UUID is barred, a third-party source returned a name that is not a
+            legal Minecraft username, or the identity source returned an unparseable id.
+        '400':
+          description: >-
+            The request declared a body. No body is sent back, and the connection is
+            closed.
+        '500':
+          description: The bar-list lookup failed, so the login is not admitted.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: >-
+            No source validated the session and at least one source failed (transport
+            error, redirect, unexpected status, or a 200 without a usable profile). Its
+            player may be the one logging in, so this is not answered as a 204. No body.
 
   # -------------------------------------------------- internal: servers ------
   /api/v1/servers:
