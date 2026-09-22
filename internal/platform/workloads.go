@@ -7,7 +7,6 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	schedulingv1 "k8s.io/api/scheduling/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -177,14 +176,13 @@ func InternalAPIBaseURL(controlNamespace string) string {
 // felis-operator Deployment, and the in-cluster registry (Deployment + Service +
 // PVC), the world-archive PVC when p.BackupPVC names it (it backs the
 // backup/restore Jobs and the reaper), plus the reaper CronJob when
-// reaperEnabled(p). Every pod template carries the felis-control-plane
-// PriorityClass (controlPlanePriorityClass below), the node-pressure eviction
-// shield. FelisImage is required — `felis manifests` enforces it (fail-loud), so
-// a rendered bundle always names a concrete image.
+// reaperEnabled(p). Every pod template carries the built-in
+// system-cluster-critical PriorityClass (controlPlanePriorityName), the
+// node-pressure eviction shield. FelisImage is required — `felis manifests`
+// enforces it (fail-loud), so a rendered bundle always names a concrete image.
 func Workloads(p Params) []Object {
 	p = p.withDefaults()
 	objs := []Object{
-		controlPlanePriorityClass(),
 		APIDeployment(p),
 		apiService(p),
 		apiInternalService(p),
@@ -204,35 +202,30 @@ func Workloads(p Params) []Object {
 }
 
 // controlPlanePriorityName is the PriorityClass every control-plane workload runs
-// under (api, operator, reaper, registry). Node-pressure eviction (a full disk
-// being the realistic case on a game box) removes pods in ASCENDING priority, and
-// a classless pod is priority 0 — the same as the game servers, which are exactly
-// the pods a burst of joins has just filled the node with. A full disk then takes
-// the api/operator down too, and recovery needs a human: with no reachable
-// registry on an air-gapped box the images are gone, so the fix is a re-run of the
-// installer to re-import them. The class is an eviction shield, not a preemption
-// lever: PreemptionPolicy=Never, so a busy node never loses a running game server
-// merely to schedule the api. Value 1,000,000 sits above every game pod (0) and
-// far below the kubelet's system-reserved classes (2,000,000,000).
-const (
-	controlPlanePriorityName         = "felis-control-plane"
-	controlPlanePriorityValue  int32 = 1_000_000
-	controlPlanePriorityReason       = "Felis control plane (api/operator/reaper/registry) survives node-pressure eviction before game servers"
-)
-
-// controlPlanePriorityClass renders the cluster-scoped PriorityClass the
-// control-plane pod templates reference (the ONE cluster-scoped object in the
-// bundle; a PriorityClass is not namespaced by design).
-func controlPlanePriorityClass() *schedulingv1.PriorityClass {
-	never := corev1.PreemptNever
-	return &schedulingv1.PriorityClass{
-		TypeMeta:         metav1.TypeMeta{APIVersion: "scheduling.k8s.io/v1", Kind: "PriorityClass"},
-		ObjectMeta:       metav1.ObjectMeta{Name: controlPlanePriorityName},
-		Value:            controlPlanePriorityValue,
-		PreemptionPolicy: &never,
-		Description:      controlPlanePriorityReason,
-	}
-}
+// under (api, operator, reaper, registry): the BUILT-IN system-cluster-critical,
+// not a class we render. Two live findings force it:
+//
+//   - ordering alone is not enough. With the disk at k3s's eviction threshold
+//     (nodefs.available<5%) a drill watched the kubelet evict the game pods first
+//     — and then the api, operator and registry too, because evicting them was
+//     never what would reclaim the disk. The images live only in the node's
+//     containerd (air-gapped), so once their pods were gone the kubelet GC'd them
+//     and recovery degenerated into ImagePullBackOff plus a manual re-import.
+//   - a class we render cannot reach the critical threshold: user-defined
+//     PriorityClasses are capped at 1e9, while kubelet's
+//     `IsCriticalPodBasedOnPriority` — and with it the eviction manager's
+//     "cannot evict a critical pod" refusal — needs ≥ 2e9. Only the built-in
+//     classes carry those values.
+//
+// system-cluster-critical keeps the panel/console alive through a full-disk
+// incident (which is what lets an operator see it and act) and makes the control
+// plane schedule before game pods after a reboot. Its preemptionPolicy is
+// PreemptLowerPriority (built-in classes fix it; the API rejects a per-pod
+// override), so a control-plane pod that cannot fit MAY preempt a game pod:
+// accepted deliberately — the management plane must be placeable, and the
+// alternative is an unreachable box. Game pods stay at the default 0 and are
+// still the first casualties of node pressure.
+const controlPlanePriorityName = "system-cluster-critical"
 
 // reaperEnabled reports whether the retention CronJob should render. It needs all
 // three storage coordinates: WorldsHostPath (where worlds live, mounted to read

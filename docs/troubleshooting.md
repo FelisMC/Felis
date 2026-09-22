@@ -583,13 +583,31 @@ A full disk is the one failure this platform cannot ride out by itself, because
 the images exist only in the node's containerd (air-gapped by design), so a
 GC'd image has no pull source.
 
-Eviction ordering. Kubelet's node-pressure eviction removes pods in ascending
-priority. Every control-plane pod (api, operator, reaper, registry) carries the
-bundle's `felis-control-plane` PriorityClass (value 1,000,000,
-`preemptionPolicy: Never`), while game-server pods run at the default 0 — so a
-burst of running servers is evicted first and the control plane keeps serving
-status/console until pressure is genuinely extreme. The class never *preempts*:
-a scheduling decision will not kill a running game server to restart the api.
+Eviction. Every control-plane pod (api, operator, reaper, registry) runs under
+the BUILT-IN `system-cluster-critical` PriorityClass (value 2e9). Kubelet's
+node-pressure eviction refuses to touch those pods — the log shows
+*"Eviction manager: cannot evict a critical pod"* for each of them — while
+game-server pods at the default priority 0 are evicted first. A drill that filled
+the disk to 1.7G free saw exactly this: login/lobby evicted, the whole control
+plane still Running (before the fix the same drill evicted the api, operator and
+registry too, and the image-GC stage below followed). User-defined
+PriorityClasses cannot substitute: the API caps them at 1e9, below kubelet's
+critical threshold. The built-in class allows preemption (its policy is fixed),
+so a control-plane pod that cannot fit may preempt a game pod — deliberate: the
+management plane must be placeable.
+
+The pressure condition clears slowly. After you free space, the node can stay
+`DiskPressure:True` for up to ~5 minutes (`--eviction-pressure-transition-period`
+defaults to 5m, to stop the condition flapping); pods that need scheduling wait
+for it. This is the bulk of the "recovery takes minutes" observation, not a
+stuck node.
+
+But the *game* images can still be GC'd. If game pods were evicted, the kubelet
+may garbage-collect their images (unused > 2 minutes under imagefs pressure), and
+those pods then sit in `ImagePullBackOff` after recovery — re-import as above
+(`docker save felis-limbo:demo felis-lobby:demo | k3s ctr images import -`, then
+delete the stuck pods). Verified: both system servers returned to Running in
+~25s after the import.
 
 Symptoms of the image-GC stage: pods stuck `ImagePullBackOff`/`ErrImagePull`
 with `kubectl describe pod` showing a pull attempt for a tag that plainly
