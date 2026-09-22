@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -112,8 +113,15 @@ func (a *API) handleHasJoined(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prof, src := a.resolveHasJoined(r.Context(), username, serverID, q.Get("ip"))
+	prof, src, failed := a.resolveHasJoined(r.Context(), username, serverID, q.Get("ip"))
 	if prof == nil {
+		// With a source down, "nobody knows this player" is not established: its player may
+		// be the one logging in. 503 makes Velocity report the auth servers as down and log
+		// the status, where a 204 would tell that player their account is offline-mode.
+		if failed {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -294,9 +302,11 @@ func lookupPremiumName(ctx context.Context, username string) (bool, error) {
 }
 
 // resolveHasJoined queries each configured source in priority order and returns the
-// first that validates the session (200 with a profile). A source that is down, answers
-// non-200 (204 = "not my player"), or returns garbage is skipped.
-func (a *API) resolveHasJoined(ctx context.Context, username, serverID, ip string) (*sessionProfile, AuthSource) {
+// first that validates the session (200 with a profile). 204 is "not my player". Any other
+// outcome (unreachable, another status, a body that is not a profile) skips the source too,
+// but is logged with its tag and reported as failed: otherwise a dead or mistyped source
+// looks exactly like a player it does not know, and nobody finds out.
+func (a *API) resolveHasJoined(ctx context.Context, username, serverID, ip string) (prof *sessionProfile, src AuthSource, failed bool) {
 	for _, src := range a.AuthSources {
 		u := src.URL + "?username=" + url.QueryEscape(username) + "&serverId=" + url.QueryEscape(serverID)
 		if ip != "" {
@@ -304,23 +314,38 @@ func (a *API) resolveHasJoined(ctx context.Context, username, serverID, ip strin
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 		if err != nil {
+			log.Printf("hasJoined: source %q: %v", src.Tag, err)
+			failed = true
 			continue
 		}
 		resp, err := authHTTPClient.Do(req)
 		if err != nil {
+			log.Printf("hasJoined: source %q: %v", src.Tag, err)
+			failed = true
 			continue
 		}
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
+			switch {
+			case resp.StatusCode == http.StatusNoContent:
+			case resp.StatusCode >= 300 && resp.StatusCode < 400:
+				log.Printf("hasJoined: source %q answered %s with Location %q; redirects are not followed, so set its url to the final endpoint", src.Tag, resp.Status, resp.Header.Get("Location"))
+				failed = true
+			default:
+				log.Printf("hasJoined: source %q answered %s", src.Tag, resp.Status)
+				failed = true
+			}
 			continue
 		}
-		var prof sessionProfile
-		err = json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&prof)
+		var p sessionProfile
+		err = json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&p)
 		resp.Body.Close()
-		if err != nil || prof.ID == "" {
+		if err != nil || p.ID == "" {
+			log.Printf("hasJoined: source %q answered 200 without a usable profile (err=%v)", src.Tag, err)
+			failed = true
 			continue
 		}
-		return &prof, src
+		return &p, src, failed
 	}
-	return nil, AuthSource{}
+	return nil, AuthSource{}, failed
 }

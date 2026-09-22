@@ -189,6 +189,30 @@ func TestHasJoined(t *testing.T) {
 		}
 	})
 
+	// A source that could not answer has not said no. With nobody validating, the login is
+	// an outage whether that source errored, redirected or was unreachable.
+	t.Run("failing source and no validator -> 503", func(t *testing.T) {
+		down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}))
+		t.Cleanup(down.Close)
+		redirector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "https://elsewhere.example/hasJoined", http.StatusMovedPermanently)
+		}))
+		t.Cleanup(redirector.Close)
+		nobody := fakeYgg(t, "", "")
+		for _, failing := range []string{down.URL, redirector.URL, "http://127.0.0.1:1"} {
+			api := newTestAPI(newFakeRepo(), newFakeCluster())
+			api.AuthSources = []AuthSource{
+				{Tag: "mojang", URL: nobody.URL, Identity: true},
+				{Tag: "littleskin", Prefix: "LS", URL: failing},
+			}
+			if w := getHasJoined(api.InternalHandler(), "Ghost", "abc"); w.Code != http.StatusServiceUnavailable {
+				t.Fatalf("source %s: code = %d, want 503", failing, w.Code)
+			}
+		}
+	})
+
 	// A skinless player's profile may come back with properties [], null or absent. The
 	// relay must still send an array: Velocity's GameProfile parser throws on a missing or
 	// null key and the login hangs, where the same answer sent straight to Velocity works.
