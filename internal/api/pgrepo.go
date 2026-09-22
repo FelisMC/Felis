@@ -146,13 +146,17 @@ func (p *PGRepo) RedeemPlayerBindCode(ctx context.Context, newUserID, code strin
 
 	var mcUUID, authSource string
 	switch err := tx.QueryRowContext(ctx,
-		`SELECT mc_uuid, auth_source FROM account_link_codes WHERE code = $1 AND expires_at > $2`,
+		`SELECT mc_uuid, auth_source FROM account_link_codes WHERE code = $1 AND expires_at > $2
+		 FOR UPDATE`,
 		code, now).Scan(&mcUUID, &authSource); {
 	case errors.Is(err, sql.ErrNoRows):
 		return "", "", "", ErrLinkCodeInvalid
 	case err != nil:
 		return "", "", "", err
 	}
+	// The lock above serialises redeemers of ONE code; the ON CONFLICT arms below
+	// cover the rarer cross-code race (two live codes for the same UUID redeemed
+	// together), where both transactions reach the inserts before either commits.
 
 	// Create-or-fetch keyed on the verified UUID. An already-linked role='user' player
 	// is fetched (idempotent "log in via the game"); a role='admin' STAFF account is
@@ -165,16 +169,27 @@ func (p *PGRepo) RedeemPlayerBindCode(ctx context.Context, newUserID, code strin
 		mcUUID).Scan(&userID, &existingRole); {
 	case errors.Is(err, sql.ErrNoRows):
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO users (id, username, role) VALUES ($1, $2, 'user')`,
+			`INSERT INTO users (id, username, role) VALUES ($1, $2, 'user')
+			 ON CONFLICT (username) DO NOTHING`,
 			newUserID, mcUUID); err != nil {
 			return "", "", "", fmt.Errorf("create player: %w", err)
 		}
+		// Re-read by username so a cross-code race converges on the winner's row
+		// (our id was discarded by DO NOTHING) instead of a bare 500.
+		var role string
+		if err := tx.QueryRowContext(ctx,
+			`SELECT id, role::text FROM users WHERE username = $1`, mcUUID).Scan(&userID, &role); err != nil {
+			return "", "", "", fmt.Errorf("create player: %w", err)
+		}
+		if role != "user" {
+			return "", "", "", ErrPlayerBindForbidden
+		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO account_links (user_id, mc_uuid, auth_source) VALUES ($1, $2, $3)`,
-			newUserID, mcUUID, authSource); err != nil {
+			`INSERT INTO account_links (user_id, mc_uuid, auth_source) VALUES ($1, $2, $3)
+			 ON CONFLICT (mc_uuid) DO NOTHING`,
+			userID, mcUUID, authSource); err != nil {
 			return "", "", "", fmt.Errorf("write account link: %w", err)
 		}
-		userID = newUserID
 	case err != nil:
 		return "", "", "", err
 	default:
