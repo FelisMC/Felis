@@ -373,6 +373,58 @@ else
     "$(run_mode "$sdir/felis-nano.service" "$sdir/absent.done" "" 1)"
 fi
 
+# --- install_go_toolchain checks the tarball before it replaces anything ----------------
+# The tarball is unpacked into /usr/local and run as root, so a download that does not hash
+# to the pin is refused -- and refused before the working toolchain is removed.
+
+gblock="$(awk '/^install_go_toolchain\(\) \{/,/^}/' "$BS")"
+[ -n "$gblock" ] || { echo "FAIL: no install_go_toolchain found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$gblock" | wc -l)" -lt 50 ] \
+  || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
+
+gsum="$(printf 'stand-in go toolchain\n' | sha256sum | cut -d' ' -f1)"
+groot="$sdir/go"
+
+run_go() { # FELIS_GO_VERSION pinned-amd64-digest [FELIS_GO_SHA256]
+  FELIS_GO_VERSION="$1" GO_PINNED_VERSION=1.26.4 GO_PINNED_SHA256_AMD64="$2" \
+    GO_PINNED_SHA256_ARM64=unused FELIS_GO_SHA256="${3:-}" GOROOT_DIR="$groot" TMPDIR="$sdir" bash -c '
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    log() { printf "LOG: %s\n" "$*"; }
+    ok() { printf "OK: %s\n" "$*"; }
+    remember_temp() { printf "TEMP: %s\n" "$1"; }
+    uname() { echo x86_64; }
+    curl() { while [ "$#" -gt 1 ] && [ "$1" != "-o" ]; do shift; done
+      printf "stand-in go toolchain\n" > "$2"; printf "CURL: %s\n" "$2"; }
+    tar() { printf "TAR: %s\n" "$*"; }
+    '"$gblock"'
+    install_go_toolchain'
+}
+
+mkdir -p "$groot" && : > "$groot/KEEP"
+out="$(run_go 1.26.4 deadbeef)"
+expect "a Go download that does not match the pin is refused" \
+  "DIE: Go 1.26.4 (amd64) checksum mismatch: got ${gsum}, expected deadbeef" "$out"
+case "$out" in
+  *TAR:*) echo "FAIL a refused Go download must not be unpacked"; fails=$((fails + 1)) ;;
+  *) echo "PASS a refused Go download is not unpacked" ;;
+esac
+if [ -e "$groot/KEEP" ]; then
+  echo "PASS a refused Go download leaves the old toolchain in place"
+else
+  echo "FAIL a refused Go download must not remove the old toolchain"; fails=$((fails + 1))
+fi
+
+expect "an unpinned FELIS_GO_VERSION without a digest is refused" "DIE: no pinned sha256 for Go 1.99.0" \
+  "$(run_go 1.99.0 "$gsum")"
+expect "an unpinned FELIS_GO_VERSION installs with its own FELIS_GO_SHA256" "TAR: " \
+  "$(run_go 1.99.0 deadbeef "$gsum")"
+
+out="$(run_go 1.26.4 "$gsum")"
+expect "a Go download matching the pin is unpacked" "TAR: " "$out"
+gtmp="$(printf '%s\n' "$out" | sed -n 's/^TEMP: //p')"
+expect "the Go download is staged in a directory the cleanup removes" \
+  "CURL: ${gtmp:-<none>}/go1.26.4.linux-amd64.tar.gz" "$out"
+
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"

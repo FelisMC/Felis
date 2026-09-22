@@ -41,6 +41,8 @@
 #   FELIS_VELOCITY_FORK_JAR_SHA256 expected sha256 of that jar. REQUIRED whenever the jar
 #                     above is set; the install refuses on a mismatch.
 #   FELIS_GO_VERSION  Go toolchain used to build the nano binary (default: 1.26.4)
+#   FELIS_GO_SHA256   sha256 of that version's linux tarball for this host's architecture.
+#                     REQUIRED for a non-default FELIS_GO_VERSION; the default's is pinned.
 #   FELIS_REPO_URL    git URL to build from   (raw script mode only)
 #   FELIS_VERSION_BOOTSTRAP release|dev — which version to install (default: release).
 #                     release DOWNLOADS the prebuilt felis binary published for the newest
@@ -112,7 +114,14 @@ FELIS_NANO_LISTEN="${FELIS_NANO_LISTEN:-}"
 # needs this. Overridable because adding a second 1.8 backend otherwise means editing this
 # script; it is still a restart-time list, not one that follows the CRs.
 FELIS_LEGACY_FORWARDING_SERVERS="${FELIS_LEGACY_FORWARDING_SERVERS:-legacy18}"
-FELIS_GO_VERSION="${FELIS_GO_VERSION:-1.26.4}"
+# The Go tarball is unpacked and run as root, so the default version is pinned by the sha256
+# go.dev/dl publishes for each architecture install_go_toolchain handles. Move all three
+# together; any other FELIS_GO_VERSION has to bring its own FELIS_GO_SHA256.
+GO_PINNED_VERSION="1.26.4"
+GO_PINNED_SHA256_AMD64="1153d3d50e0ac764b447adfe05c2bcf08e889d42a02e0fe0259bd47f6733ad7f"
+GO_PINNED_SHA256_ARM64="ef758ae7c6cf9267c9c0ef080b8965f453d89ab2d25d9eb22de4405925238768"
+FELIS_GO_VERSION="${FELIS_GO_VERSION:-$GO_PINNED_VERSION}"
+FELIS_GO_SHA256="${FELIS_GO_SHA256:-}"
 PKG_LOCK_TIMEOUT="${PKG_LOCK_TIMEOUT:-${APT_LOCK_TIMEOUT:-900}}"
 APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-$PKG_LOCK_TIMEOUT}"
 
@@ -2253,25 +2262,33 @@ prompt_install_mode() {
 }
 
 install_go_toolchain() {
-  local arch tarball url
+  local arch tarball url tmp want have
   if [ -x "${GOROOT_DIR}/bin/go" ] && "${GOROOT_DIR}/bin/go" version | grep -q "go${FELIS_GO_VERSION} "; then
     ok "go ${FELIS_GO_VERSION} already installed at ${GOROOT_DIR}"
     return 0
   fi
 
   case "$(uname -m)" in
-    x86_64|amd64) arch="amd64" ;;
-    aarch64|arm64) arch="arm64" ;;
+    x86_64|amd64) arch="amd64"; want="$GO_PINNED_SHA256_AMD64" ;;
+    aarch64|arm64) arch="arm64"; want="$GO_PINNED_SHA256_ARM64" ;;
     *) die "no Go toolchain build for architecture $(uname -m); set FELIS_GO_VERSION or pre-stage ${GOROOT_DIR}" ;;
   esac
+  [ "$FELIS_GO_VERSION" = "$GO_PINNED_VERSION" ] || want="$FELIS_GO_SHA256"
+  [ -n "$want" ] || die "no pinned sha256 for Go ${FELIS_GO_VERSION}; set FELIS_GO_SHA256 to the linux-${arch} digest https://go.dev/dl/ lists for it, or pre-stage ${GOROOT_DIR}"
 
   tarball="go${FELIS_GO_VERSION}.linux-${arch}.tar.gz"
   url="https://go.dev/dl/${tarball}"
   log "installing Go ${FELIS_GO_VERSION} (${arch}) to ${GOROOT_DIR}"
-  curl -fsSL "$url" -o "/tmp/${tarball}" || die "failed to download the Go toolchain: ${url}"
+  # A private directory, not a fixed /tmp name another local user could have planted first.
+  tmp="$(mktemp -d)"
+  remember_temp "$tmp"
+  curl -fsSL "$url" -o "${tmp}/${tarball}" || die "failed to download the Go toolchain: ${url}"
+  # Checked before the old toolchain is removed, so a refusal leaves the host as it was.
+  # Hash stdin, never the path — same reason as install_via_plugins.
+  have="$(sha256sum <"${tmp}/${tarball}" | cut -d' ' -f1)"
+  [ "$have" = "$want" ] || die "Go ${FELIS_GO_VERSION} (${arch}) checksum mismatch: got ${have}, expected ${want}"
   rm -rf "$GOROOT_DIR"
-  tar -C "$(dirname "$GOROOT_DIR")" -xzf "/tmp/${tarball}" || die "failed to unpack ${tarball}"
-  rm -f "/tmp/${tarball}"
+  tar -C "$(dirname "$GOROOT_DIR")" -xzf "${tmp}/${tarball}" || die "failed to unpack ${tarball}"
   ok "go toolchain at ${GOROOT_DIR}/bin/go"
 }
 
