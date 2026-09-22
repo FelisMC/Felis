@@ -481,6 +481,89 @@ func TestAdminSubresourcesRequireLiveUser(t *testing.T) {
 	}
 }
 
+// A disabled or soft-deleted account must be dead in the real database: login
+// resolution (UserByEmail) refuses it, session validation (SessionUser) refuses
+// even a freshly inserted session, and DeleteUser severs the account's passkeys
+// and Minecraft links so the closed account keeps neither a standing credential
+// nor the UNIQUE(mc_uuid) claim. Live audit #33: a deleted user re-logged-in via
+// the email door and held a working session.
+func TestDeadAccountsAreLockedOutInPG(t *testing.T) {
+	ctx := context.Background()
+	u := newUser(t, "user", "dead")
+	addr := "dead-" + suffix(t) + "@example.net"
+	now := mustNow()
+
+	if err := repo.CreateEmailOTP(ctx, "de-"+suffix(t), u.ID, addr, "h", "onboard_email", now.Add(5*time.Minute)); err != nil {
+		t.Fatalf("CreateEmailOTP: %v", err)
+	}
+	if _, err := repo.VerifyEmailOTP(ctx, u.ID, "onboard_email", "h", now); err != nil {
+		t.Fatalf("VerifyEmailOTP: %v", err)
+	}
+
+	// Alive: the login door resolves the account and a session validates.
+	if _, err := repo.UserByEmail(ctx, addr); err != nil {
+		t.Fatalf("alive UserByEmail: %v", err)
+	}
+	hash := "h-" + suffix(t)
+	if err := repo.CreateSession(ctx, hash, u.ID, now.Add(time.Hour)); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if _, err := repo.SessionUser(ctx, hash, now); err != nil {
+		t.Fatalf("alive SessionUser: %v", err)
+	}
+
+	// Disabled: invisible to the door, session stops authenticating.
+	if err := repo.SetUserDisabled(ctx, u.ID, true); err != nil {
+		t.Fatalf("SetUserDisabled: %v", err)
+	}
+	if _, err := repo.UserByEmail(ctx, addr); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("disabled UserByEmail = %v, want ErrNotFound", err)
+	}
+	if _, err := repo.SessionUser(ctx, hash, now); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("disabled SessionUser = %v, want ErrNotFound", err)
+	}
+	if err := repo.SetUserDisabled(ctx, u.ID, false); err != nil {
+		t.Fatalf("re-enable: %v", err)
+	}
+
+	// Deleted: same refusals, a fresh session cannot authenticate, and the
+	// identity assets are gone from the tables.
+	mc := testUUID(t)
+	if err := repo.LinkAccount(ctx, u.ID, mc, "mojang"); err != nil {
+		t.Fatalf("LinkAccount: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO webauthn_credentials (id, user_id, credential_id, public_key) VALUES ($1,$2,$3,'pk')`,
+		"cred-"+suffix(t), u.ID, "cid-"+suffix(t)); err != nil {
+		t.Fatalf("seed passkey: %v", err)
+	}
+	if err := repo.DeleteUser(ctx, u.ID, "pgint"); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+	if _, err := repo.UserByEmail(ctx, addr); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("deleted UserByEmail = %v, want ErrNotFound", err)
+	}
+	hash2 := "h2-" + suffix(t)
+	if err := repo.CreateSession(ctx, hash2, u.ID, now.Add(time.Hour)); err != nil {
+		t.Fatalf("CreateSession (deleted): %v", err)
+	}
+	if _, err := repo.SessionUser(ctx, hash2, now); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("deleted SessionUser = %v, want ErrNotFound", err)
+	}
+	for _, q := range []string{
+		`SELECT count(*) FROM account_links WHERE user_id = $1`,
+		`SELECT count(*) FROM webauthn_credentials WHERE user_id = $1`,
+	} {
+		var n int
+		if err := db.QueryRowContext(ctx, q, u.ID).Scan(&n); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		if n != 0 {
+			t.Errorf("DeleteUser left %d rows matching %q; the closed account must keep no asset", n, q)
+		}
+	}
+}
+
 // The owner tier the panel gates on must actually be WRITTEN: until this
 // contract had a test, every provisioning path wrote 'admin', so the whole
 // owner surface (user administration) was unreachable in a fresh install.

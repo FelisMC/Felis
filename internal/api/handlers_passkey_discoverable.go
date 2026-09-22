@@ -148,6 +148,13 @@ func (a *API) handlePasskeyLoginDiscoverableFinish(w http.ResponseWriter, r *htt
 		if err != nil {
 			return PasskeyUser{}, err
 		}
+		// A disabled or soft-deleted account must not complete a login even when it
+		// still holds a credential (UserByID is an unfiltered lookup shared with admin
+		// reads, so the liveness check lives here, at the door). Fail closed with the
+		// same opaque outcome as an unknown handle (audit #33).
+		if d, err := a.Repo.UserDetail(r.Context(), u.ID); err != nil || d.Disabled || d.DeletedAt != nil {
+			return PasskeyUser{}, ErrNotFound
+		}
 		creds, err := a.Repo.PasskeyCredentialsForUser(r.Context(), u.ID)
 		if err != nil {
 			return PasskeyUser{}, err

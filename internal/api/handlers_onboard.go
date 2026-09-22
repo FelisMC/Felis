@@ -109,6 +109,14 @@ func (a *API) handleBindRedeem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, newError(http.StatusForbidden, "staff_account",
 			"that Minecraft account belongs to staff; sign in at the operator console"))
 		return
+	case errors.Is(err, ErrPlayerAccountRetired):
+		// The linked Felis account is disabled or soft-deleted: the door refuses to
+		// reuse it, because minting a session here would resurrect the account the
+		// owner just retired (audit #33). The code survives, so re-enabling the
+		// account and retrying within its TTL still works.
+		writeError(w, r, newError(http.StatusForbidden, "account_retired",
+			"this Minecraft account's Felis account is disabled or deleted; contact the operator"))
+		return
 	case err != nil:
 		writeError(w, r, err)
 		return

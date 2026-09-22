@@ -161,13 +161,17 @@ func (p *PGRepo) RedeemPlayerBindCode(ctx context.Context, newUserID, code strin
 	// Create-or-fetch keyed on the verified UUID. An already-linked role='user' player
 	// is fetched (idempotent "log in via the game"); any STAFF account (admin or
 	// owner, i.e. role != 'user') is refused (op.console only) BEFORE any consume, so
-	// the code survives; an unlinked UUID births a fresh role='user' player with a
-	// uuid-derived unique username.
+	// the code survives; a DISABLED or soft-deleted account is refused the same way
+	// (audit #33 — a dead account must not resurrect through the bind door); an
+	// unlinked UUID births a fresh role='user' player with a uuid-derived unique
+	// username.
 	userID := newUserID
 	var existingRole string
+	var disabled, deleted bool
 	switch err := tx.QueryRowContext(ctx,
-		`SELECT u.id, u.role::text FROM account_links al JOIN users u ON u.id = al.user_id WHERE al.mc_uuid = $1`,
-		mcUUID).Scan(&userID, &existingRole); {
+		`SELECT u.id, u.role::text, u.disabled, u.deleted_at IS NOT NULL
+		   FROM account_links al JOIN users u ON u.id = al.user_id WHERE al.mc_uuid = $1`,
+		mcUUID).Scan(&userID, &existingRole, &disabled, &deleted); {
 	case errors.Is(err, sql.ErrNoRows):
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO users (id, username, role) VALUES ($1, $2, 'user')
@@ -176,14 +180,20 @@ func (p *PGRepo) RedeemPlayerBindCode(ctx context.Context, newUserID, code strin
 			return "", "", "", fmt.Errorf("create player: %w", err)
 		}
 		// Re-read by username so a cross-code race converges on the winner's row
-		// (our id was discarded by DO NOTHING) instead of a bare 500.
+		// (our id was discarded by DO NOTHING) instead of a bare 500 — and so a
+		// deleted row squatting on the username is refused rather than reused.
 		var role string
+		var dis, del bool
 		if err := tx.QueryRowContext(ctx,
-			`SELECT id, role::text FROM users WHERE username = $1`, mcUUID).Scan(&userID, &role); err != nil {
+			`SELECT id, role::text, disabled, deleted_at IS NOT NULL FROM users WHERE username = $1`,
+			mcUUID).Scan(&userID, &role, &dis, &del); err != nil {
 			return "", "", "", fmt.Errorf("create player: %w", err)
 		}
 		if role != "user" {
 			return "", "", "", ErrPlayerBindForbidden
+		}
+		if dis || del {
+			return "", "", "", ErrPlayerAccountRetired
 		}
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO account_links (user_id, mc_uuid, auth_source) VALUES ($1, $2, $3)
@@ -196,6 +206,9 @@ func (p *PGRepo) RedeemPlayerBindCode(ctx context.Context, newUserID, code strin
 	default:
 		if existingRole != "user" {
 			return "", "", "", ErrPlayerBindForbidden // staff must use op.console
+		}
+		if disabled || deleted {
+			return "", "", "", ErrPlayerAccountRetired
 		}
 	}
 
@@ -1025,9 +1038,14 @@ func (p *PGRepo) CreateSession(ctx context.Context, tokenHash, userID string, ex
 // SessionUser resolves a live (unrevoked, unexpired at now) session hash to its
 // user, or ErrNotFound.
 func (p *PGRepo) SessionUser(ctx context.Context, tokenHash string, now time.Time) (*SessionedUser, error) {
+	// The disabled/deleted filter is the belt to the doors' braces: even a session
+	// minted for an account that was alive a moment ago stops authenticating the
+	// instant the account is disabled or soft-deleted, so every authenticated route
+	// is fail-closed regardless of which door minted the cookie (audit #33).
 	const q = `SELECT u.id, COALESCE(u.email, ''), u.role::text, COALESCE(u.email_verified, false)
 		FROM sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > $2`
+		WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > $2
+		  AND u.disabled = false AND u.deleted_at IS NULL`
 	var u SessionedUser
 	switch err := p.db.QueryRowContext(ctx, q, tokenHash, now).Scan(
 		&u.ID, &u.Email, &u.Role, &u.EmailVerified); {
@@ -1557,8 +1575,11 @@ func (p *PGRepo) userView(ctx context.Context, userID string) (*UserView, error)
 }
 
 // DeleteUser soft-deletes a user in one transaction: sets deleted_at, revokes
-// every live session, and releases every owned server. The row is preserved so
-// audit_logs.actor references survive.
+// every live session, releases every owned server, and severs the account's
+// identity assets (passkey credentials, Minecraft links) so a closed account
+// cannot keep a login credential or pin an in-game identity via
+// UNIQUE(mc_uuid)(audit #33). The user row is preserved so audit_logs.actor
+// references survive.
 func (p *PGRepo) DeleteUser(ctx context.Context, userID, _ string) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1588,6 +1609,18 @@ func (p *PGRepo) DeleteUser(ctx context.Context, userID, _ string) error {
 	if _, err := tx.ExecContext(ctx,
 		`UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`,
 		userID); err != nil {
+		return err
+	}
+
+	// Sever the login credentials and in-game bindings: a passkey is a standing
+	// login foothold and occupies credential_id UNIQUE, and an account_links row
+	// would keep the Minecraft UUID claimed forever, blocking any future binding.
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM webauthn_credentials WHERE user_id = $1`, userID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM account_links WHERE user_id = $1`, userID); err != nil {
 		return err
 	}
 
@@ -2002,8 +2035,13 @@ func (p *PGRepo) RedeemMigration(ctx context.Context, targetUserID, codeHash str
 func (p *PGRepo) UserByEmail(ctx context.Context, email string) (*StaffUser, error) {
 	// lower() on both sides honors the interface's case-insensitivity contract
 	// and matches the users_verified_email_unique index (lower(email)).
+	// Disabled and soft-deleted accounts are invisible here on purpose: every caller
+	// is a pre-session LOGIN door (console email/passkey, op-login, /auth/options),
+	// and a dead account must not be able to mint a session again — deletion and the
+	// disable lockout would otherwise be bypassable by simply logging in (audit #33).
 	const q = `SELECT id, username, COALESCE(email, ''), role::text, email_verified
-		FROM users WHERE lower(email) = lower($1) AND email_verified = true`
+		FROM users WHERE lower(email) = lower($1) AND email_verified = true
+		  AND disabled = false AND deleted_at IS NULL`
 	var u StaffUser
 	switch err := p.db.QueryRowContext(ctx, q, email).Scan(
 		&u.ID, &u.Username, &u.Email, &u.Role, &u.EmailVerified); {

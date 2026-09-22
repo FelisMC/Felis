@@ -103,6 +103,10 @@ type fakeRepo struct {
 	// user admin fakes
 	seededUsers []seededUser
 	fakeQuotas  map[string]*QuotaView
+	// deletedIDs remembers soft-deleted user ids: DeleteUser drops the row from
+	// seededUsers (so listings hide it, mirroring the WHERE deleted_at IS NULL
+	// query), and this set keeps the account dead for the liveness guards.
+	deletedIDs map[string]bool
 	// pingErr, when non-nil, is returned by Ping to simulate DB liveness check
 	// failures in /readyz tests.
 	pingErr error
@@ -233,6 +237,7 @@ func newFakeRepo() *fakeRepo {
 		discoverableChallenges: map[string]*fakeDiscoverableChallenge{},
 		fakeQuotas:             map[string]*QuotaView{},
 		migrations:             map[string]*fakeMigration{},
+		deletedIDs:             map[string]bool{},
 	}
 }
 
@@ -314,6 +319,9 @@ func (f *fakeRepo) RedeemPlayerBindCode(_ context.Context, newUserID, code strin
 			if u.ID == existing && u.Role != "user" {
 				return "", "", "", ErrPlayerBindForbidden // staff must use op.console; do not consume
 			}
+		}
+		if f.seededDead(existing) {
+			return "", "", "", ErrPlayerAccountRetired // dead account; do not consume
 		}
 		delete(f.linkCodes, code)
 		return existing, rec.mcUUID, rec.authSource, nil
@@ -803,6 +811,9 @@ func (f *fakeRepo) SessionUser(_ context.Context, tokenHash string, now time.Tim
 	}
 	for _, u := range f.staff {
 		if u.ID == s.userID {
+			if f.seededDead(u.ID) {
+				return nil, ErrNotFound
+			}
 			return &SessionedUser{
 				ID: u.ID, Email: u.Email, Role: u.Role,
 			}, nil
@@ -895,9 +906,27 @@ func (f *fakeRepo) ListUsers(_ context.Context, opts ListUsersOpts) ([]UserView,
 }
 
 func (f *fakeRepo) UserDetail(_ context.Context, userID string) (*UserDetail, error) {
+	deletedAt := time.Unix(1_700_000_000, 0)
 	for _, su := range f.seededUsers {
 		if su.view.ID == userID {
 			return &su.detail, nil
+		}
+	}
+	// Legacy fixtures seeded only into f.staff are live accounts (nothing marked
+	// them disabled or deleted), so detail reads must resolve them too — the
+	// liveness guards (discoverable login, owner protection) treat "unknown" as a
+	// fault, and these fixtures are known.
+	for _, u := range f.staff {
+		if u.ID == userID {
+			if f.deletedIDs[userID] {
+				// A soft-deleted account still HAS a detail row; it is flagged, not gone.
+				return &UserDetail{UserView: UserView{
+					ID: u.ID, Username: u.Username, Role: u.Role, Disabled: true,
+				}, DeletedAt: &deletedAt}, nil
+			}
+			return &UserDetail{UserView: UserView{
+				ID: u.ID, Username: u.Username, Email: u.Email, Role: u.Role,
+			}}, nil
 		}
 	}
 	return nil, ErrNotFound
@@ -959,6 +988,20 @@ func (f *fakeRepo) DeleteUser(_ context.Context, userID, _ string) error {
 	for i, su := range f.seededUsers {
 		if su.view.ID == userID {
 			f.seededUsers = append(f.seededUsers[:i], f.seededUsers[i+1:]...)
+			f.deletedIDs[userID] = true
+			// Mirror PGRepo: deletion severs the account's identity assets so the
+			// closed account keeps neither a login credential nor a MC-UUID claim.
+			for uuid, uid := range f.links {
+				if uid == userID {
+					delete(f.links, uuid)
+					delete(f.linkAuthSource, uuid)
+				}
+			}
+			for cid, cred := range f.passkeyCreds {
+				if cred.UserID == userID {
+					delete(f.passkeyCreds, cid)
+				}
+			}
 			return nil
 		}
 	}
@@ -1118,6 +1161,22 @@ func (f *fakeRepo) liveUserExists(id string) bool {
 	return false
 }
 
+// seededDead mirrors PGRepo's liveness filters (audit #33): a seeded user that was
+// disabled or soft-deleted is dead for the login doors and session validation. A
+// fixture that was never seeded (legacy tests put it straight into f.staff) is
+// treated as live, matching the fakes' pre-existing behavior.
+func (f *fakeRepo) seededDead(id string) bool {
+	if f.deletedIDs[id] {
+		return true
+	}
+	for _, su := range f.seededUsers {
+		if su.view.ID == id {
+			return su.view.Disabled || su.detail.DeletedAt != nil
+		}
+	}
+	return false
+}
+
 func (f *fakeRepo) GetQuotas(_ context.Context, userID string) (*QuotaView, error) {
 	if !f.liveUserExists(userID) {
 		return nil, ErrNotFound
@@ -1212,7 +1271,7 @@ func (f *fakeRepo) LinkAccount(_ context.Context, userID, mcUUID, authSource str
 // is indistinguishable from no account: both yield ErrNotFound.
 func (f *fakeRepo) UserByEmail(_ context.Context, email string) (*StaffUser, error) {
 	for _, u := range f.staff {
-		if u.EmailVerified && strings.EqualFold(u.Email, email) {
+		if u.EmailVerified && strings.EqualFold(u.Email, email) && !f.seededDead(u.ID) {
 			su := *u
 			return &su, nil
 		}

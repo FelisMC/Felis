@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -616,5 +618,96 @@ func TestLoginEmailStartFailedDeliveryReleasesCooldown(t *testing.T) {
 	}
 	if mailer.calls != 2 {
 		t.Errorf("mailer calls = %d, want 2 (one failed, one delivered)", mailer.calls)
+	}
+}
+
+// A disabled or soft-deleted account is DEAD at every door: the pre-session
+// resolvers refuse it (uniformly, so the door stays no-oracle), a session that
+// was live a moment ago stops authenticating, DeleteUser severs the account's
+// passkeys and Minecraft links, and the bind door refuses to reuse the retired
+// identity instead of minting a session for it. Audit #33 found the opposite
+// live: a deleted user re-logged-in through the email door and GET /me answered
+// 200 — deletion and the disable lockout were both bypassable by logging in again.
+func TestDeadAccountsCannotLogInOrKeepSessions(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1_700_000_000, 0)
+
+	repo := newFakeRepo()
+	repo.settings[LocalAuthEnabledKey] = []byte("true")
+	repo.seedUser(UserView{ID: "u-dead", Username: "dead", Email: "dead@example.net", Role: "user"})
+	repo.staff["dead"].EmailVerified = true
+	mailer := &captureMailer{}
+	api := newTestAPI(repo, newFakeCluster())
+	api.Mailer = mailer
+	eh := api.ExternalHandler()
+
+	// Control: alive — the door resolves the account and mails a real code, and a
+	// session minted for it authenticates.
+	if w := do(eh, "POST", "/api/v1/auth/email/start", `{"email":"dead@example.net"}`, jsonHeader); w.Code != http.StatusAccepted {
+		t.Fatalf("alive start: code = %d, want 202 (%s)", w.Code, w.Body.String())
+	}
+	if mailer.calls != 1 {
+		t.Fatalf("alive start mailed %d codes, want 1", mailer.calls)
+	}
+	repo.sessions["h-live"] = &fakeSession{userID: "u-dead", expiresAt: now.Add(time.Hour)}
+	if _, err := repo.SessionUser(ctx, "h-live", now); err != nil {
+		t.Fatalf("live SessionUser: %v", err)
+	}
+
+	// Disabled: the start is neutral (no mail), verify refuses, session dies.
+	if err := repo.SetUserDisabled(ctx, "u-dead", true); err != nil {
+		t.Fatalf("disable: %v", err)
+	}
+	// The alive start's reservation must not mask the neutral branch: clear the
+	// throttle's window (test-only; the limiter itself is rebuilt lazily once).
+	lim := api.otpLimiter()
+	lim.mu.Lock()
+	lim.last = map[string]time.Time{}
+	lim.mu.Unlock()
+	if w := do(eh, "POST", "/api/v1/auth/email/start", `{"email":"dead@example.net"}`, jsonHeader); w.Code != http.StatusAccepted {
+		t.Fatalf("disabled start: code = %d, want 202 neutral (%s)", w.Code, w.Body.String())
+	}
+	if mailer.calls != 1 {
+		t.Fatalf("disabled start mailed a code (%d calls) — a dead account must resolve to nothing", mailer.calls)
+	}
+	if w := do(eh, "POST", "/api/v1/auth/email/verify", `{"email":"dead@example.net","code":"000000"}`, jsonHeader); w.Code != http.StatusBadRequest || decodeErr(t, w) != "invalid_code" {
+		t.Fatalf("disabled verify: code = %d body %s, want 400 invalid_code", w.Code, w.Body.String())
+	}
+	if _, err := repo.SessionUser(ctx, "h-live", now); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("disabled SessionUser = %v, want ErrNotFound", err)
+	}
+
+	// Deleted: same refusals; assets severed (links released, passkeys dropped).
+	if err := repo.SetUserDisabled(ctx, "u-dead", false); err != nil {
+		t.Fatalf("re-enable: %v", err)
+	}
+	uuid := "11111111-2222-3333-4444-555555555555"
+	repo.links[uuid] = "u-dead"
+	repo.passkeyCreds["pk-1"] = PasskeyCredential{ID: "pk-1", UserID: "u-dead", CredentialID: "cred-1"}
+	if err := repo.DeleteUser(ctx, "u-dead", "test"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if w := do(eh, "POST", "/api/v1/auth/email/verify", `{"email":"dead@example.net","code":"000000"}`, jsonHeader); w.Code != http.StatusBadRequest || decodeErr(t, w) != "invalid_code" {
+		t.Fatalf("deleted verify: code = %d body %s, want 400 invalid_code", w.Code, w.Body.String())
+	}
+	if _, err := repo.SessionUser(ctx, "h-live", now); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("deleted SessionUser = %v, want ErrNotFound", err)
+	}
+	if _, ok := repo.links[uuid]; ok {
+		t.Error("DeleteUser left the Minecraft link: the UUID stays claimed forever")
+	}
+	if _, ok := repo.passkeyCreds["pk-1"]; ok {
+		t.Error("DeleteUser left the passkey: a login credential outlives the account")
+	}
+
+	// The bind door refuses to reuse the retired identity (a stale link that
+	// predates the fix, or a username squatted by the deleted row).
+	repo.links[uuid] = "u-dead"
+	repo.linkCodes["CODE1234"] = fakeLinkCode{mcUUID: uuid, authSource: "mojang", expiresAt: now.Add(time.Hour)}
+	if _, _, _, err := repo.RedeemPlayerBindCode(ctx, "u-new", "CODE1234", now); !errors.Is(err, ErrPlayerAccountRetired) {
+		t.Fatalf("bind redeem onto a deleted account = %v, want ErrPlayerAccountRetired", err)
+	}
+	if _, ok := repo.linkCodes["CODE1234"]; !ok {
+		t.Error("refused redeem consumed the code; re-enabling the account must stay retryable within TTL")
 	}
 }

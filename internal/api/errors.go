@@ -57,6 +57,13 @@ var (
 	// provably never mints a session for a staff identity. It is distinct from
 	// ErrConflict so the handler answers 403 (wrong door) rather than 409.
 	ErrPlayerBindForbidden = errors.New("bind code belongs to a staff account")
+	// ErrPlayerAccountRetired means a Bind-Code redemption resolved to an account the
+	// platform has closed: an owner soft-deleted it, or it is disabled (locked out).
+	// Reusing the row would mint a fresh session for a dead account — the same
+	// resurrection the login doors refuse by resolving only live accounts — so the
+	// redeemer gets an explicit 403 instead. The code is NOT consumed, so re-enabling
+	// the account and retrying still works within the code's TTL.
+	ErrPlayerAccountRetired = errors.New("player account is retired or disabled")
 	// ErrEmailTaken means a verified email would collide with another account's
 	// already-verified address (spec §B email-first login foundation; the
 	// users_verified_email_unique index ships in migration 0020).
