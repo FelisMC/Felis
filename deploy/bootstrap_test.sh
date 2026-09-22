@@ -313,8 +313,8 @@ kblock="$(awk '/^nano_listen_is_loopback\(\) \{/,/^}/' "$BS")"
 [ "$(printf '%s\n' "$kblock" | wc -l)" -lt 10 ] \
   || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
 
-run_summary() { # listen
-  FELIS_NANO_LISTEN="$1" NODE_IP=203.0.113.9 STATE_DIR=/etc/felis bash -c '
+run_summary() { # listen [proxy-cidr]
+  FELIS_NANO_LISTEN="$1" FELIS_NANO_PROXY_CIDR="${2:-}" NODE_IP=203.0.113.9 STATE_DIR=/etc/felis bash -c '
     ok() { printf "OK: %s\n" "$*"; }
     log() { printf "LOG: %s\n" "$*"; }
     systemctl() { :; }
@@ -351,6 +351,80 @@ done
 ndefault="$(run_listen '' "$sdir/absent.service")"
 ndefault="${ndefault#LISTEN: }"
 expect "the default listen address (${ndefault:-empty}) is loopback" LOOPBACK "$(run_loopback "$ndefault")"
+
+# --- firewalld admits the proxy alone ---------------------------------------------------
+# hasJoined takes no token, so a routable bind is opened only to FELIS_NANO_PROXY_CIDR, never
+# to every source, and a re-run closes the port an earlier installer opened to everyone.
+
+cblock="$(awk '/^validate_cidr\(\) \{/,/^}/' "$BS")"
+[ -n "$cblock" ] || { echo "FAIL: no validate_cidr found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$cblock" | wc -l)" -lt 15 ] \
+  || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
+
+check_cidr() { # value
+  bash -c 'die() { printf "DIE: %s\n" "$*"; exit 1; }
+    '"$cblock"'
+    validate_cidr FELIS_NANO_PROXY_CIDR "$1" && echo VALID' _ "$1" 2>&1
+}
+
+for v in 10.0.0.7 10.0.0.7/ /32 10.0.0.0/8/9 10.0.0.7/x '10.0.0.7/32 port' '10.0.0.7/32"'; do
+  expect "proxy CIDR <$v> is refused" "DIE: FELIS_NANO_PROXY_CIDR" "$(check_cidr "$v")"
+done
+for v in '' 10.0.0.7/32 192.168.0.0/24 fd00::7/128; do
+  expect "proxy CIDR <$v> is accepted" VALID "$(check_cidr "$v")"
+done
+
+fblock="$(awk '/^configure_nano_firewall\(\) \{/,/^}/' "$BS")"
+[ -n "$fblock" ] || { echo "FAIL: no configure_nano_firewall found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$fblock" | wc -l)" -lt 40 ] \
+  || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
+
+run_fw() { # listen proxy-cidr port-already-open(0|1)
+  FELIS_NANO_LISTEN="$1" FELIS_NANO_PROXY_CIDR="$2" OPEN="$3" bash -c '
+    ok() { printf "OK: %s\n" "$*"; }
+    log() { printf "LOG: %s\n" "$*"; }
+    warn() { printf "WARN: %s\n" "$*"; }
+    systemctl() { return 0; }
+    firewall-cmd() {
+      case "$*" in *--query-port=*) [ "$OPEN" = 1 ]; return ;; esac
+      printf "FW: %s\n" "$*"
+    }
+    '"$kblock"'
+    '"$fblock"'
+    configure_nano_firewall' 2>&1
+}
+
+no_blanket_port() { # label output
+  case "$2" in
+    *--add-port*) echo "FAIL $1: the port was opened to every source:"; echo "$2"; fails=$((fails + 1)) ;;
+    *) echo "PASS $1" ;;
+  esac
+}
+
+out="$(run_fw 0.0.0.0:8081 10.0.0.7/32 0)"
+expect "a proxy CIDR opens the port to that source alone" \
+  'FW: --permanent --add-rich-rule=rule family="ipv4" source address="10.0.0.7/32" port port="8081" protocol="tcp" accept' "$out"
+no_blanket_port "a proxy CIDR never opens the port to every source" "$out"
+expect "an IPv6 proxy CIDR gets an ipv6 rule" 'rule family="ipv6" source address="fd00::7/128"' \
+  "$(run_fw '[::]:8081' fd00::7/128 0)"
+out="$(run_fw 0.0.0.0:8081 '' 0)"
+expect "no proxy CIDR says the port stays closed" "WARN: no FELIS_NANO_PROXY_CIDR" "$out"
+no_blanket_port "no proxy CIDR opens nothing" "$out"
+case "$out" in
+  *--add-rich-rule*) echo "FAIL no proxy CIDR must add no rule:"; echo "$out"; fails=$((fails + 1)) ;;
+  *) echo "PASS no proxy CIDR adds no rule" ;;
+esac
+expect "a re-run closes the port an earlier install opened to everyone" "FW: --permanent --remove-port=8081/tcp" \
+  "$(run_fw 0.0.0.0:8081 10.0.0.7/32 1)"
+case "$(run_fw 127.0.0.1:8081 10.0.0.7/32 1)" in
+  *FW:*) echo "FAIL a loopback bind must leave firewalld alone"; fails=$((fails + 1)) ;;
+  *) echo "PASS a loopback bind leaves firewalld alone" ;;
+esac
+
+expect "a routable bind with no proxy CIDR is warned about" "WARNING: bound to 10.0.0.5:8081 with no FELIS_NANO_PROXY_CIDR" \
+  "$(run_summary 10.0.0.5:8081)"
+expect "a routable bind with a proxy CIDR names it" "admits 8081/tcp only from" \
+  "$(run_summary 10.0.0.5:8081 10.0.0.7/32)"
 
 pblock="$(awk '/^prompt_install_mode\(\) \{/,/^}/' "$BS")"
 [ -n "$pblock" ] || { echo "FAIL: no prompt_install_mode found in $BS"; exit 1; }

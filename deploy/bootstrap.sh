@@ -35,6 +35,9 @@
 #   FELIS_NANO_LISTEN listen addr for `felis nano` (default: the address an installed
 #                     felis-nano already uses, else 127.0.0.1:8081 — loopback only; set a
 #                     private-network IP to serve an off-host proxy)
+#   FELIS_NANO_PROXY_CIDR the proxy allowed to reach a non-loopback nano bind, as an address
+#                     with a prefix length (for example 10.0.0.7/32). firewalld opens the
+#                     port to that source only; unset, it opens nothing
 #   FELIS_LEGACY_FORWARDING_SERVERS comma-separated backends that receive their identity
 #                     through the handshake address instead of modern forwarding
 #                     (default: legacy18). Read once at Velocity start, so changing it
@@ -112,6 +115,7 @@ INSTALL_MODE="${FELIS_INSTALL_MODE:-}"
 # Left empty here: resolve_nano_listen applies that default only after an existing unit's
 # address has had its say.
 FELIS_NANO_LISTEN="${FELIS_NANO_LISTEN:-}"
+FELIS_NANO_PROXY_CIDR="${FELIS_NANO_PROXY_CIDR:-}"
 # Backends that take their forwarded identity through the handshake address instead of
 # proxy-wide modern forwarding. See write_velocity_service for why a protocol-47 backend
 # needs this. Overridable because adding a second 1.8 backend otherwise means editing this
@@ -465,11 +469,23 @@ validate_listen() {
   esac
 }
 
+# The value lands inside a firewalld rich rule, so anything but address characters and one
+# prefix length is refused here rather than handed to firewall-cmd.
+validate_cidr() {
+  case "$2" in
+    "") return 0 ;;
+    *[!0-9A-Fa-f.:/]*|*/*/*|*/|/*) ;;
+    */[0-9]*) return 0 ;;
+  esac
+  die "$1 must be an address with a prefix length (for example 10.0.0.7/32 or fd00::7/128), got: $2"
+}
+
 validate_settings() {
   validate_timeout PKG_LOCK_TIMEOUT "$PKG_LOCK_TIMEOUT"
   validate_timeout APT_LOCK_TIMEOUT "$APT_LOCK_TIMEOUT"
   validate_nodeport FELIS_PANEL_NODEPORT "$FELIS_PANEL_NODEPORT"
   validate_listen FELIS_NANO_LISTEN "$FELIS_NANO_LISTEN"
+  validate_cidr FELIS_NANO_PROXY_CIDR "$FELIS_NANO_PROXY_CIDR"
 }
 
 # ---------------------------------------------------------------------------
@@ -2428,9 +2444,21 @@ configure_nano_firewall() {
   fi
   command -v firewall-cmd >/dev/null 2>&1 || return 0
   systemctl is-active --quiet firewalld || return 0
-  local port="${FELIS_NANO_LISTEN##*:}"
-  log "opening firewalld port ${port}/tcp for felis-nano"
-  firewall-cmd --permanent --add-port="${port}/tcp"
+  local port="${FELIS_NANO_LISTEN##*:}" family=ipv4
+  # hasJoined takes no token, so the port is opened to the proxy alone. Earlier installers
+  # opened it to every source, and a re-run must not leave that behind. A rule for a previous
+  # FELIS_NANO_PROXY_CIDR is not tracked; it stays until removed by hand.
+  if firewall-cmd --permanent --query-port="${port}/tcp" >/dev/null 2>&1; then
+    log "closing firewalld port ${port}/tcp, which an earlier install opened to every source"
+    firewall-cmd --permanent --remove-port="${port}/tcp"
+  fi
+  if [ -n "$FELIS_NANO_PROXY_CIDR" ]; then
+    case "$FELIS_NANO_PROXY_CIDR" in *:*) family=ipv6 ;; esac
+    log "opening firewalld port ${port}/tcp to ${FELIS_NANO_PROXY_CIDR} only"
+    firewall-cmd --permanent --add-rich-rule="rule family=\"${family}\" source address=\"${FELIS_NANO_PROXY_CIDR}\" port port=\"${port}\" protocol=\"tcp\" accept"
+  else
+    warn "no FELIS_NANO_PROXY_CIDR, so firewalld keeps ${port}/tcp closed; the summary shows how to admit your proxy"
+  fi
   firewall-cmd --reload
 }
 
@@ -2489,12 +2517,17 @@ summary_nano() {
     log "Bound to loopback: reachable from Velocity on THIS host, and from nowhere else."
     log "Proxy on another machine? Re-run with the address on the sudo line (sudo drops"
     log "exported variables):"
-    log "    curl -fsSL <raw-url>/deploy/bootstrap.sh | sudo FELIS_NANO_LISTEN=<private-ip>:${port} bash"
-    log "and allow ${port}/tcp ONLY from that proxy — hasJoined takes no auth token, so an"
-    log "internet-facing one is a free auth relay burning your Mojang egress IP."
+    log "    curl -fsSL <raw-url>/deploy/bootstrap.sh | sudo FELIS_NANO_LISTEN=<private-ip>:${port} FELIS_NANO_PROXY_CIDR=<proxy-ip>/32 bash"
+    log "firewalld then admits ${port}/tcp ONLY from that proxy — hasJoined takes no auth token,"
+    log "so an internet-facing one is a free auth relay burning your Mojang egress IP."
+  elif [ -n "$FELIS_NANO_PROXY_CIDR" ]; then
+    log "Bound to ${FELIS_NANO_LISTEN}. firewalld, where it runs, admits ${port}/tcp only from"
+    log "${FELIS_NANO_PROXY_CIDR}; any other firewall in front of this host must do the same."
   else
-    log "WARNING: bound to ${FELIS_NANO_LISTEN} — hasJoined takes no auth token, so restrict"
-    log "${port}/tcp to your proxy's source IP or anyone can relay their logins through you."
+    log "WARNING: bound to ${FELIS_NANO_LISTEN} with no FELIS_NANO_PROXY_CIDR. hasJoined takes no auth"
+    log "token, so admit ${port}/tcp from your proxy alone, or anyone can relay their logins"
+    log "through you. firewalld, where it runs, keeps the port closed until you add:"
+    log "    firewall-cmd --permanent --add-rich-rule='rule family=\"ipv4\" source address=\"<proxy-ip>/32\" port port=\"${port}\" protocol=\"tcp\" accept' && firewall-cmd --reload"
   fi
   log "Then edit ${STATE_DIR}/felis.toml to add your [[auth_source]] roots and run:"
   log "    sudo systemctl restart felis-nano"
