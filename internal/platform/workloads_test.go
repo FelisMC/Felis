@@ -519,8 +519,11 @@ func TestReaperCronJob_Shape(t *testing.T) {
 	if cj.Name != SAReaper {
 		t.Errorf("CronJob name = %q, want %q", cj.Name, SAReaper)
 	}
-	if cj.Namespace != p.ControlNamespace {
-		t.Errorf("CronJob namespace = %q, want control ns %q", cj.Namespace, p.ControlNamespace)
+	// The CronJob must sit where its PVC lives: a Pod cannot mount a PVC across
+	// namespaces, and the backup PVC is provisioned in the Minecraft namespace.
+	// (Rendered under ControlNamespace it failed to schedule on a live cluster.)
+	if cj.Namespace != p.MinecraftNamespace {
+		t.Errorf("CronJob namespace = %q, want minecraft ns %q (its backup PVC's namespace)", cj.Namespace, p.MinecraftNamespace)
 	}
 
 	spec := cj.Spec

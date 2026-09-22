@@ -472,8 +472,15 @@ func reaperCronJob(p Params) *batchv1.CronJob {
 	}
 
 	return &batchv1.CronJob{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "batch/v1", Kind: "CronJob"},
-		ObjectMeta: metav1.ObjectMeta{Name: SAReaper, Namespace: p.ControlNamespace, Labels: labels},
+		TypeMeta: metav1.TypeMeta{APIVersion: "batch/v1", Kind: "CronJob"},
+		// The CronJob lives in the MINECRAFT namespace: a Pod can only mount PVCs
+		// from its own namespace and the backup PVC is provisioned there alongside
+		// the backup Jobs. Placed under ControlNamespace it could never schedule
+		// (FailedScheduling: persistentvolumeclaim not found) in any stock install;
+		// the reaper Role/RoleBinding were already minecraft-scoped for the same
+		// reason, and the minecraft felis-config replica (felis setup) supplies the
+		// config mount.
+		ObjectMeta: metav1.ObjectMeta{Name: SAReaper, Namespace: p.MinecraftNamespace, Labels: labels},
 		Spec: batchv1.CronJobSpec{
 			Schedule:                   reaperSchedule,
 			ConcurrencyPolicy:          batchv1.ForbidConcurrent,

@@ -66,9 +66,11 @@ const (
 // Params parameterises the install bundle. Namespaces and the registry location
 // have safe defaults; VelocityCIDRs has none — see the field comment.
 type Params struct {
-	// ControlNamespace is where felis-api/operator/reaper run. Their SAs live here
-	// and the RoleBindings' subjects reference them here, even though the Roles
-	// they bind to live in the minecraft (and build) namespaces.
+	// ControlNamespace is where felis-api/operator run. All three SAs live here and
+	// the RoleBindings' subjects reference them here, even though the Roles they bind
+	// to live in the minecraft (and build) namespaces. The reaper CronJob alone runs
+	// in the Minecraft namespace, because a Pod can only mount PVCs from its own
+	// namespace and its backup PVC is provisioned there.
 	ControlNamespace string
 	// MinecraftNamespace is where MinecraftServer workloads, their RCON Secrets,
 	// and their world PVCs live. All three identities' minecraft-scoped Roles, and
