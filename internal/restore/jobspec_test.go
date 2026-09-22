@@ -23,9 +23,9 @@ func sampleJobParams() JobParams {
 		Deadline:         30 * time.Minute,
 		CPULimit:         "1",
 		MemLimit:         "1Gi",
-		RunAsUser:        1000,
-		RunAsGroup:       1000,
-		FSGroup:          1000,
+		RunAsUser:        0,
+		RunAsGroup:       0,
+		FSGroup:          0,
 		TTLAfterFinished: 10 * time.Minute,
 	}
 }
@@ -161,19 +161,24 @@ func TestRestoreJobIsBoundedOneShotAndSelfCleaning(t *testing.T) {
 	}
 }
 
-// The container must be non-root, non-privileged, escalation-proof, read-only
-// root, drop ALL caps, and carry resource limits.
+// The Pod runs as root (the world volume belongs to the game image's UID — see
+// restore.Config.RunAsUser), and the container stays non-privileged,
+// escalation-proof, read-only root, ALL caps dropped except DAC_OVERRIDE, with
+// resource limits.
 func TestRestoreJobContainerIsHardened(t *testing.T) {
 	job, err := RestoreJob(sampleJobParams())
 	if err != nil {
 		t.Fatalf("RestoreJob: %v", err)
 	}
 	pod := job.Spec.Template.Spec
-	if pod.SecurityContext == nil || pod.SecurityContext.RunAsNonRoot == nil || !*pod.SecurityContext.RunAsNonRoot {
-		t.Error("pod must set runAsNonRoot=true")
+	if pod.SecurityContext == nil || pod.SecurityContext.RunAsNonRoot == nil || *pod.SecurityContext.RunAsNonRoot {
+		t.Error("pod must NOT require non-root: root is the owner-matching default for game-image worlds")
 	}
-	if pod.SecurityContext == nil || pod.SecurityContext.FSGroup == nil || *pod.SecurityContext.FSGroup != 1000 {
-		t.Error("pod must set an fsGroup so restored files are group-owned by the server identity")
+	if pod.SecurityContext == nil || pod.SecurityContext.RunAsUser == nil || *pod.SecurityContext.RunAsUser != 0 {
+		t.Error("pod must run as uid 0 by default")
+	}
+	if pod.SecurityContext == nil || pod.SecurityContext.FSGroup != nil {
+		t.Error("fsGroup must stay unset when zero (a root executor must not chgrp the world volume)")
 	}
 	c := singleContainer(t, job)
 	sc := c.SecurityContext
@@ -191,6 +196,9 @@ func TestRestoreJobContainerIsHardened(t *testing.T) {
 	}
 	if sc.Capabilities == nil || len(sc.Capabilities.Drop) == 0 || string(sc.Capabilities.Drop[0]) != "ALL" {
 		t.Errorf("container must drop ALL capabilities, got %v", sc.Capabilities)
+	}
+	if len(sc.Capabilities.Add) != 1 || sc.Capabilities.Add[0] != "DAC_OVERRIDE" {
+		t.Errorf("container must add exactly DAC_OVERRIDE, got %v", sc.Capabilities.Add)
 	}
 	if c.Resources.Limits.Cpu().IsZero() || c.Resources.Limits.Memory().IsZero() {
 		t.Error("container must carry CPU+memory limits")

@@ -704,15 +704,24 @@ func TestReaperCronJob_Shape(t *testing.T) {
 		t.Errorf("reaper pod must auto-mount its SA token (got AutomountServiceAccountToken=%v); it needs the API", *ps.AutomountServiceAccountToken)
 	}
 
-	// Hardening mirrors the other control-plane pods.
-	if ps.SecurityContext == nil || ps.SecurityContext.RunAsNonRoot == nil || !*ps.SecurityContext.RunAsNonRoot {
-		t.Error("reaper pod must set runAsNonRoot=true")
+	// The reaper is the one world-touching workload, so its identity is ROOT, not
+	// the control-plane's non-root uid: the worlds it archives and deletes are
+	// written by the game image's own UID (root for the images we ship), including
+	// Paper's mode-0600 files. DAC_OVERRIDE covers images with another UID.
+	if ps.SecurityContext == nil || ps.SecurityContext.RunAsNonRoot == nil || *ps.SecurityContext.RunAsNonRoot {
+		t.Error("reaper pod must NOT require non-root: root is the owner-matching identity for game-image worlds")
+	}
+	if ps.SecurityContext == nil || ps.SecurityContext.RunAsUser == nil || *ps.SecurityContext.RunAsUser != 0 {
+		t.Error("reaper pod must run as uid 0")
 	}
 	if c.SecurityContext == nil || c.SecurityContext.ReadOnlyRootFilesystem == nil || !*c.SecurityContext.ReadOnlyRootFilesystem {
 		t.Error("reaper container must set readOnlyRootFilesystem=true")
 	}
 	if c.SecurityContext == nil || c.SecurityContext.Capabilities == nil || len(c.SecurityContext.Capabilities.Drop) == 0 || c.SecurityContext.Capabilities.Drop[0] != "ALL" {
 		t.Error("reaper container must drop ALL capabilities")
+	}
+	if c.SecurityContext == nil || c.SecurityContext.Capabilities == nil || len(c.SecurityContext.Capabilities.Add) != 1 || c.SecurityContext.Capabilities.Add[0] != "DAC_OVERRIDE" {
+		t.Error("reaper container must add exactly DAC_OVERRIDE")
 	}
 
 	// Entrypoint: `/usr/local/bin/felis reaper --config <cfg> --worlds-root /worlds`.

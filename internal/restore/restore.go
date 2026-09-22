@@ -86,11 +86,13 @@ type Config struct {
 	// CPULimit / MemLimit cap the restore container.
 	CPULimit string
 	MemLimit string
-	// RunAsUser / RunAsGroup / FSGroup are the Pod's runtime identity. FSGroup in
-	// particular MUST match the operator StatefulSet's runtime group so the files
-	// the restore Pod writes are readable by the minecraft server that later
-	// mounts the same world PVC. The default matches the conventional minecraft
-	// container uid; a deployment that runs minecraft as another id overrides it.
+	// RunAsUser / RunAsGroup / FSGroup are the Pod's runtime identity. They default
+	// to ROOT (0:0) for the same reason the operator's forwarding-init runs as
+	// root: the world volume is written by the game image's own UID (root for the
+	// images we ship), and Paper saves mode-0600 files a non-root writer/reader
+	// cannot replace (a uid-1000 restore cannot overwrite level.dat). DAC_OVERRIDE
+	// on the container covers images whose UID is neither root nor ours; FSGroup
+	// is omitted when zero.
 	RunAsUser  int64
 	RunAsGroup int64
 	FSGroup    int64
@@ -112,7 +114,6 @@ const (
 	defaultDeadline       = 30 * time.Minute
 	defaultCPULimit       = "1"
 	defaultMemLimit       = "1Gi"
-	defaultRunAsID        = int64(1000)
 	defaultTTL            = 10 * time.Minute
 )
 
@@ -142,15 +143,6 @@ func (c Config) withDefaults() Config {
 	}
 	if c.MemLimit == "" {
 		c.MemLimit = defaultMemLimit
-	}
-	if c.RunAsUser == 0 {
-		c.RunAsUser = defaultRunAsID
-	}
-	if c.RunAsGroup == 0 {
-		c.RunAsGroup = defaultRunAsID
-	}
-	if c.FSGroup == 0 {
-		c.FSGroup = defaultRunAsID
 	}
 	if c.TTLAfterFinished <= 0 {
 		c.TTLAfterFinished = defaultTTL

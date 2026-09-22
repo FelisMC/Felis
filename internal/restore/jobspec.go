@@ -125,7 +125,14 @@ func RestoreJob(p JobParams) (*batchv1.Job, error) {
 			Privileged:               boolPtr(false),
 			AllowPrivilegeEscalation: boolPtr(false),
 			ReadOnlyRootFilesystem:   boolPtr(true),
-			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+			// Root + DAC_OVERRIDE (see restore.Config.RunAsUser): the world is
+			// owned by the game image's UID and Paper's files are mode 0600, so
+			// the restore must bypass file modes to overwrite what the server
+			// wrote — otherwise level.dat is un-restorable.
+			Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{"ALL"},
+				Add:  []corev1.Capability{"DAC_OVERRIDE"},
+			},
 		},
 	}
 
@@ -148,13 +155,8 @@ func RestoreJob(p JobParams) (*batchv1.Job, error) {
 					RestartPolicy:                corev1.RestartPolicyNever,
 					ServiceAccountName:           p.ServiceAccount,
 					AutomountServiceAccountToken: boolPtr(false),
-					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot: boolPtr(true),
-						RunAsUser:    int64Ptr(p.RunAsUser),
-						RunAsGroup:   int64Ptr(p.RunAsGroup),
-						FSGroup:      int64Ptr(p.FSGroup),
-					},
-					Containers: []corev1.Container{container},
+					SecurityContext:              restorePodSecurityContext(p),
+					Containers:                   []corev1.Container{container},
 					Volumes: []corev1.Volume{
 						{
 							Name: worldVolume,
@@ -221,6 +223,22 @@ func resourceLimits(cpu, mem string) (corev1.ResourceList, error) {
 	}, nil
 }
 
-func boolPtr(b bool) *bool    { return &b }
+func boolPtr(b bool) *bool { return &b }
+
+// restorePodSecurityContext pins the Pod identity. Root by default — the world
+// volume is owned by the game image's UID and Paper writes mode-0600 files, so a
+// fixed non-root executor could neither read nor replace them. FSGroup is only
+// rendered when configured: a root executor must not chgrp the world volume.
+func restorePodSecurityContext(p JobParams) *corev1.PodSecurityContext {
+	sc := &corev1.PodSecurityContext{
+		RunAsNonRoot: boolPtr(false),
+		RunAsUser:    int64Ptr(p.RunAsUser),
+		RunAsGroup:   int64Ptr(p.RunAsGroup),
+	}
+	if p.FSGroup > 0 {
+		sc.FSGroup = int64Ptr(p.FSGroup)
+	}
+	return sc
+}
 func int32Ptr(i int32) *int32 { return &i }
 func int64Ptr(i int64) *int64 { return &i }

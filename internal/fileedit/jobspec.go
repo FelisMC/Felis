@@ -165,7 +165,13 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 			Privileged:               boolPtr(false),
 			AllowPrivilegeEscalation: boolPtr(false),
 			ReadOnlyRootFilesystem:   boolPtr(true),
-			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+			// Root + DAC_OVERRIDE (see Config.RunAsUser): the file the editor is
+			// asked to touch may be a mode-0600 file the game wrote as its own
+			// (image) UID — level.dat — which a fixed non-root uid cannot open.
+			Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{"ALL"},
+				Add:  []corev1.Capability{"DAC_OVERRIDE"},
+			},
 		},
 	}
 
@@ -199,13 +205,8 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 					RestartPolicy:                corev1.RestartPolicyNever,
 					ServiceAccountName:           p.ServiceAccount,
 					AutomountServiceAccountToken: boolPtr(false),
-					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot: boolPtr(true),
-						RunAsUser:    int64Ptr(p.RunAsUser),
-						RunAsGroup:   int64Ptr(p.RunAsGroup),
-						FSGroup:      int64Ptr(p.FSGroup),
-					},
-					Containers: []corev1.Container{container},
+					SecurityContext:              filesPodSecurityContext(p),
+					Containers:                   []corev1.Container{container},
 					Volumes: []corev1.Volume{{
 						Name: worldVolume,
 						VolumeSource: corev1.VolumeSource{
@@ -247,3 +248,19 @@ func resourceLimits(cpu, mem string) (corev1.ResourceList, error) {
 func boolPtr(b bool) *bool    { return &b }
 func int32Ptr(i int32) *int32 { return &i }
 func int64Ptr(i int64) *int64 { return &i }
+
+// filesPodSecurityContext pins the Pod identity. Root by default: the world
+// volume belongs to the game image's UID (root for the images we ship) and its
+// mode-0600 files (level.dat) are otherwise unreadable/unwritable. FSGroup is
+// only rendered when configured so a root executor never chgrps the volume.
+func filesPodSecurityContext(p JobParams) *corev1.PodSecurityContext {
+	sc := &corev1.PodSecurityContext{
+		RunAsNonRoot: boolPtr(false),
+		RunAsUser:    int64Ptr(p.RunAsUser),
+		RunAsGroup:   int64Ptr(p.RunAsGroup),
+	}
+	if p.FSGroup > 0 {
+		sc.FSGroup = int64Ptr(p.FSGroup)
+	}
+	return sc
+}

@@ -112,9 +112,12 @@ type Config struct {
 	// CPULimit / MemLimit cap the container.
 	CPULimit string
 	MemLimit string
-	// RunAsUser / RunAsGroup / FSGroup are the Pod's runtime identity. FSGroup MUST
-	// match the operator StatefulSet's runtime group, or a file this Pod writes
-	// would be unreadable by the minecraft server that later mounts the same PVC.
+	// RunAsUser / RunAsGroup / FSGroup are the Pod's runtime identity. They default
+	// to ROOT (0:0): the world volume is written by the game image's own UID (root
+	// for the images we ship), and Paper saves mode-0600 files a non-root editor
+	// can neither read nor rewrite (level.dat). DAC_OVERRIDE on the container
+	// covers images whose UID is neither root nor ours; FSGroup is omitted when
+	// zero.
 	RunAsUser  int64
 	RunAsGroup int64
 	FSGroup    int64
@@ -136,7 +139,6 @@ const (
 	defaultTimeout        = 90 * time.Second
 	defaultCPULimit       = "500m"
 	defaultMemLimit       = "256Mi"
-	defaultRunAsID        = int64(1000)
 	defaultTTL            = 2 * time.Minute
 )
 
@@ -163,15 +165,6 @@ func (c Config) withDefaults() Config {
 	}
 	if c.MemLimit == "" {
 		c.MemLimit = defaultMemLimit
-	}
-	if c.RunAsUser == 0 {
-		c.RunAsUser = defaultRunAsID
-	}
-	if c.RunAsGroup == 0 {
-		c.RunAsGroup = defaultRunAsID
-	}
-	if c.FSGroup == 0 {
-		c.FSGroup = defaultRunAsID
 	}
 	if c.TTLAfterFinished <= 0 {
 		c.TTLAfterFinished = defaultTTL

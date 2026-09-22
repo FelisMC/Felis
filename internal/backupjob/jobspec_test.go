@@ -23,9 +23,9 @@ func sampleJobParams() JobParams {
 		Deadline:         30 * time.Minute,
 		CPULimit:         "1",
 		MemLimit:         "1Gi",
-		RunAsUser:        1000,
-		RunAsGroup:       1000,
-		FSGroup:          1000,
+		RunAsUser:        0,
+		RunAsGroup:       0,
+		FSGroup:          0,
 		TTLAfterFinished: 10 * time.Minute,
 	}
 }
@@ -109,12 +109,29 @@ func TestBackupJobMountsTwoPVCsPlusConfigSecretOnly(t *testing.T) {
 	}
 }
 
-// The backup container is hardened exactly like the restore/build Job containers:
-// no privilege, no escalation, read-only root fs, drop ALL capabilities.
+// The backup container is hardened like the restore/build Job containers: no
+// privilege, no escalation, read-only root fs, ALL capabilities dropped — plus
+// DAC_OVERRIDE, because the Pod runs as root and the world may have been written
+// by a game image with a different UID (verified live: a uid-1000 executor cannot
+// read Paper's mode-0600 level.dat).
 func TestBackupJobContainerIsHardened(t *testing.T) {
 	job, err := BackupJob(sampleJobParams())
 	if err != nil {
 		t.Fatalf("BackupJob: %v", err)
+	}
+	pod := job.Spec.Template.Spec
+	if pod.SecurityContext == nil {
+		t.Fatal("pod SecurityContext is nil")
+	}
+	if pod.SecurityContext.RunAsNonRoot == nil || *pod.SecurityContext.RunAsNonRoot {
+		t.Error("pod must NOT require non-root: root is the owner-matching default for game-image worlds")
+	}
+	if pod.SecurityContext.RunAsUser == nil || *pod.SecurityContext.RunAsUser != 0 ||
+		pod.SecurityContext.RunAsGroup == nil || *pod.SecurityContext.RunAsGroup != 0 {
+		t.Errorf("pod must run as 0:0 by default, got %+v", pod.SecurityContext)
+	}
+	if pod.SecurityContext.FSGroup != nil {
+		t.Error("fsGroup must stay unset when zero (a root executor must not chgrp the world volume)")
 	}
 	sc := job.Spec.Template.Spec.Containers[0].SecurityContext
 	if sc == nil {
@@ -131,6 +148,9 @@ func TestBackupJobContainerIsHardened(t *testing.T) {
 	}
 	if sc.Capabilities == nil || len(sc.Capabilities.Drop) != 1 || sc.Capabilities.Drop[0] != "ALL" {
 		t.Error("capabilities must drop ALL")
+	}
+	if len(sc.Capabilities.Add) != 1 || sc.Capabilities.Add[0] != "DAC_OVERRIDE" {
+		t.Errorf("capabilities must add exactly DAC_OVERRIDE, got %v", sc.Capabilities.Add)
 	}
 }
 

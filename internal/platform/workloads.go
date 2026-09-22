@@ -557,7 +557,7 @@ func reaperCronJob(p Params) *batchv1.CronJob {
 			{Name: tmpVolume, MountPath: "/tmp"},
 		},
 		Resources:       controlPlaneResources(),
-		SecurityContext: hardenedContainerSecurityContext(),
+		SecurityContext: reaperContainerSecurityContext(),
 	}
 
 	volumes := []corev1.Volume{
@@ -609,7 +609,7 @@ func reaperCronJob(p Params) *batchv1.CronJob {
 							ServiceAccountName: SAReaper,
 							PriorityClassName:  controlPlanePriorityName,
 							RestartPolicy:      corev1.RestartPolicyNever,
-							SecurityContext:    hardenedPodSecurityContext(),
+							SecurityContext:    reaperPodSecurityContext(),
 							Containers:         []corev1.Container{container},
 							Volumes:            volumes,
 						},
@@ -842,9 +842,11 @@ func controlPlaneResources() corev1.ResourceRequirements {
 	}
 }
 
-// hardenedPodSecurityContext is the pod-level hardening shared by every workload
-// here: run as a fixed non-root uid/gid with a matching fsGroup (so the registry
-// can write its group-owned PVC) and the RuntimeDefault seccomp profile.
+// hardenedPodSecurityContext is the pod-level hardening shared by the
+// control-plane workloads (api, operator, registry — the world-touching reaper
+// uses reaperPodSecurityContext instead): run as a fixed non-root uid/gid with a
+// matching fsGroup (so the registry can write its group-owned PVC) and the
+// RuntimeDefault seccomp profile.
 //
 // SHAPE-ASSERTED, runtime-unverified: this asserts the images can run as
 // nonRootUID. The felis image is built to; registry:2 (CNCF Distribution) can,
@@ -858,6 +860,36 @@ func hardenedPodSecurityContext() *corev1.PodSecurityContext {
 		FSGroup:        int64Ptr(nonRootUID),
 		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 	}
+}
+
+// reaperPodSecurityContext is the reaper's Pod identity: ROOT, deliberately NOT
+// the control-plane's non-root uid. Its HostPath mount IS the live storage root,
+// and the world directories beneath it (and the files inside them) are written
+// by the game image's own UID — root for every Paper image we ship — with
+// Paper's mode-0600 saves (level.dat) included. Only an owner-matching uid (or
+// DAC override, granted on the container below) can archive and delete those
+// worlds; the uid-1000 convention failed them with `permission denied`
+// (verified live). Same rationale as the operator's forwarding-init container.
+func reaperPodSecurityContext() *corev1.PodSecurityContext {
+	return &corev1.PodSecurityContext{
+		RunAsNonRoot:   boolPtr(false),
+		RunAsUser:      int64Ptr(0),
+		RunAsGroup:     int64Ptr(0),
+		SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+	}
+}
+
+// reaperContainerSecurityContext is hardenedContainerSecurityContext plus
+// DAC_OVERRIDE: with root's caps dropped, root can read only files it owns, and
+// a world may have been written by a game image whose UID is neither root nor
+// ours. DAC_OVERRIDE restores exactly the file-mode bypass the archive needs.
+func reaperContainerSecurityContext() *corev1.SecurityContext {
+	sc := hardenedContainerSecurityContext()
+	sc.Capabilities = &corev1.Capabilities{
+		Drop: []corev1.Capability{"ALL"},
+		Add:  []corev1.Capability{"DAC_OVERRIDE"},
+	}
+	return sc
 }
 
 // hardenedContainerSecurityContext mirrors the build/restore Job containers: no

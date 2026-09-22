@@ -557,11 +557,17 @@ the flag at k3s's storage root (`/var/lib/rancher/k3s/storage`) is therefore the
 supported way to enable retention on a stock install. Two deployment facts the
 resolver cannot fix:
 
-- **Permissions.** The reaper pod runs as uid 1000, while k3s creates its
-  storage root `0700 root:root`. Without traverse (`setfacl -m u:1000:x`, or
-  `chmod o+x`; the installer applies this when `FELIS_WORLDS_HOST_PATH` is set)
-  every walk fails `permission denied` / `lstat …: permission denied` and the
-  world is **preserved**, never reaped — a silent no-op with ERROR logs.
+- **Permissions.** The reaper Pod runs as **root** and carries `DAC_OVERRIDE`:
+  worlds are written by the game image's own UID (root for every Paper image we
+  ship), and Paper saves `level.dat` mode-0600, so any fixed non-root identity
+  (the previous uid-1000 convention, and the ACL setup that went with it) could
+  neither walk the tree nor read the files — every archive failed
+  `open …/level.dat: permission denied` and the same defect failed on-demand
+  backups/restores. Root is the same identity the game container itself runs as
+  (see the operator's forwarding-init note); `DAC_OVERRIDE` extends the archive
+  to game images with a different UID. If a world is still **preserved** while a
+  reap was expected, it is now a different cause: check the run's ERROR logs for
+  the resolver's `lstat` messages before suspecting permissions.
 - **Node placement.** Multi-node clusters: the world's directory exists only on
   the node holding its volume, and the CronJob sets no `nodeSelector`, so add
   one (single-node starters are pinned implicitly).

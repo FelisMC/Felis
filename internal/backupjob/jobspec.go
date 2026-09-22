@@ -148,7 +148,14 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 			Privileged:               boolPtr(false),
 			AllowPrivilegeEscalation: boolPtr(false),
 			ReadOnlyRootFilesystem:   boolPtr(true),
-			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+			// DAC_OVERRIDE is granted on top of dropping ALL: the pod runs as root,
+			// but the world may have been written by a game image whose UID is
+			// neither root nor ours, and Paper's own files are mode 0600. It is the
+			// minimal extra power that makes the archive read every world shape.
+			Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{"ALL"},
+				Add:  []corev1.Capability{"DAC_OVERRIDE"},
+			},
 		},
 	}
 
@@ -175,13 +182,12 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 					RestartPolicy:                corev1.RestartPolicyNever,
 					ServiceAccountName:           p.ServiceAccount,
 					AutomountServiceAccountToken: boolPtr(false),
-					SecurityContext: &corev1.PodSecurityContext{
-						RunAsNonRoot: boolPtr(true),
-						RunAsUser:    int64Ptr(p.RunAsUser),
-						RunAsGroup:   int64Ptr(p.RunAsGroup),
-						FSGroup:      int64Ptr(p.FSGroup),
-					},
-					Containers: []corev1.Container{container},
+					// Root by default (see Config.RunAsUser): the world volume's
+					// owner is the game image's UID, so only an owner-matching or
+					// DAC-overriding uid can read it. FSGroup is omitted when unset
+					// so a root pod never triggers a volume chgrp.
+					SecurityContext: backupPodSecurityContext(p),
+					Containers:      []corev1.Container{container},
 					Volumes: []corev1.Volume{
 						{
 							Name: worldVolume,
@@ -240,3 +246,20 @@ func resourceLimits(cpu, mem string) (corev1.ResourceList, error) {
 func boolPtr(b bool) *bool    { return &b }
 func int32Ptr(i int32) *int32 { return &i }
 func int64Ptr(i int64) *int64 { return &i }
+
+// backupPodSecurityContext pins the Pod identity. RunAsNonRoot is false because
+// the default identity is root: worlds are owned by the game image's UID (root
+// for the images we ship), and Paper writes mode-0600 files a non-root reader
+// cannot open. FSGroup stays unset unless configured — a root executor must not
+// needlessly chgrp the world volume.
+func backupPodSecurityContext(p JobParams) *corev1.PodSecurityContext {
+	sc := &corev1.PodSecurityContext{
+		RunAsNonRoot: boolPtr(false),
+		RunAsUser:    int64Ptr(p.RunAsUser),
+		RunAsGroup:   int64Ptr(p.RunAsGroup),
+	}
+	if p.FSGroup > 0 {
+		sc.FSGroup = int64Ptr(p.FSGroup)
+	}
+	return sc
+}

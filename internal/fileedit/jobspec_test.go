@@ -23,9 +23,9 @@ func testParams(op string) JobParams {
 		Deadline:         2 * time.Minute,
 		CPULimit:         "500m",
 		MemLimit:         "256Mi",
-		RunAsUser:        1000,
-		RunAsGroup:       1000,
-		FSGroup:          1000,
+		RunAsUser:        0,
+		RunAsGroup:       0,
+		FSGroup:          0,
 		TTLAfterFinished: 2 * time.Minute,
 	}
 }
@@ -64,17 +64,19 @@ func TestFilesJobIsolation(t *testing.T) {
 		}
 	})
 
-	t.Run("runs non-root with the operator's runtime identity", func(t *testing.T) {
+	t.Run("runs as root, the owner-matching identity for game-image worlds", func(t *testing.T) {
 		sc := spec.SecurityContext
-		if sc == nil || sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot {
-			t.Fatal("RunAsNonRoot must be true")
+		if sc == nil || sc.RunAsNonRoot == nil || *sc.RunAsNonRoot {
+			t.Fatal("RunAsNonRoot must be false: root is the owner-matching default for game-image worlds")
 		}
-		// FSGroup must match the minecraft server's group or a file this Pod writes
-		// would be unreadable by the server that later mounts the same volume.
-		if sc.RunAsUser == nil || *sc.RunAsUser != 1000 ||
-			sc.RunAsGroup == nil || *sc.RunAsGroup != 1000 ||
-			sc.FSGroup == nil || *sc.FSGroup != 1000 {
-			t.Fatalf("uid/gid/fsGroup must all be 1000, got %+v", sc)
+		// Root because the world volume belongs to the game image's UID and Paper
+		// saves mode-0600 files a fixed non-root editor cannot open.
+		if sc.RunAsUser == nil || *sc.RunAsUser != 0 ||
+			sc.RunAsGroup == nil || *sc.RunAsGroup != 0 {
+			t.Fatalf("uid/gid must be 0:0 by default, got %+v", sc)
+		}
+		if sc.FSGroup != nil {
+			t.Fatalf("fsGroup must stay unset when zero, got %+v", sc.FSGroup)
 		}
 	})
 
@@ -97,6 +99,9 @@ func TestFilesJobIsolation(t *testing.T) {
 		}
 		if sc.Capabilities == nil || len(sc.Capabilities.Drop) != 1 || sc.Capabilities.Drop[0] != "ALL" {
 			t.Fatalf("capabilities must drop ALL, got %+v", sc.Capabilities)
+		}
+		if len(sc.Capabilities.Add) != 1 || sc.Capabilities.Add[0] != "DAC_OVERRIDE" {
+			t.Fatalf("capabilities must add exactly DAC_OVERRIDE, got %+v", sc.Capabilities.Add)
 		}
 	})
 
