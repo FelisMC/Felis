@@ -1,12 +1,84 @@
 package restore
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
+
+func testScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	if err := batchv1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	return scheme
+}
+
+func testParams() JobParams {
+	return JobParams{
+		Server:    "survival",
+		WorldPVC:  "world-survival-0",
+		BackupPVC: "felis-backups",
+		Namespace: "minecraft",
+		Image:     "felis:test",
+		BackupRef: "/backups/x.tar.gz",
+	}
+}
+
+// A finished Job still holding the deterministic name must be replaced, not
+// treated as an in-flight coalesce — otherwise the retry after a failed restore
+// is answered 202 while nothing runs (found by an E2E audit).
+func TestCreateRestoreJobReplacesFinishedJob(t *testing.T) {
+	finished := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "restore-survival", Namespace: "minecraft"},
+		Status: batchv1.JobStatus{
+			Failed:     1,
+			Conditions: []batchv1.JobCondition{{Type: batchv1.JobFailed, Status: "True"}},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(finished).Build()
+
+	if err := NewK8sJobs(c).CreateRestoreJob(context.Background(), testParams()); err != nil {
+		t.Fatalf("CreateRestoreJob: %v", err)
+	}
+	var got batchv1.Job
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "minecraft", Name: "restore-survival"}, &got); err != nil {
+		t.Fatalf("replacement job missing: %v", err)
+	}
+	if restoreJobFinished(&got) {
+		t.Errorf("replacement job is already finished: %+v", got.Status)
+	}
+}
+
+// An in-flight Job keeps the idempotent coalesce: a duplicate enqueue during a
+// running restore is absorbed, and the running Job is left untouched.
+func TestCreateRestoreJobCoalescesInFlightJob(t *testing.T) {
+	inFlight := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "restore-survival", Namespace: "minecraft"},
+		Status:     batchv1.JobStatus{Active: 1},
+	}
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(inFlight).Build()
+
+	err := NewK8sJobs(c).CreateRestoreJob(context.Background(), testParams())
+	if !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("CreateRestoreJob = %v, want ErrAlreadyExists", err)
+	}
+	var got batchv1.Job
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "minecraft", Name: "restore-survival"}, &got); err != nil {
+		t.Fatalf("in-flight job should stay: %v", err)
+	}
+	if got.Status.Active != 1 {
+		t.Errorf("in-flight job was disturbed: %+v", got.Status)
+	}
+}
 
 // restoreJobFinished decides whether a name collision is a genuine in-flight
 // coalesce (ErrAlreadyExists) or a finished Job whose deterministic name must be

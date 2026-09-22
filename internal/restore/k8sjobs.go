@@ -2,6 +2,8 @@ package restore
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -71,7 +73,42 @@ func (k *K8sJobs) CreateRestoreJob(ctx context.Context, p JobParams) error {
 	if deleteErr := k.c.Delete(ctx, &existing); deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
 		return deleteErr
 	}
+	// The API server keeps the object until its job-tracking finalizer has run,
+	// so an immediate re-Create would collide again and swallow the retry a second
+	// time (found live: the E2E retry still answered 202 while nothing ran). Wait
+	// for the name to actually free, bounded, then replace.
+	if err := k.waitForNameRelease(ctx, job.Namespace, job.Name); err != nil {
+		return err
+	}
 	return k.recreate(ctx, job)
+}
+
+// waitForNameRelease polls until the named Job is gone or the wait budget is
+// spent. The job controller releases the tracking finalizer within a second or
+// two of the delete, so this normally returns on the first or second probe; the
+// bound exists so a stuck finalizer surfaces as an error ("retry shortly")
+// instead of another silent success.
+func (k *K8sJobs) waitForNameRelease(ctx context.Context, namespace, name string) error {
+	const (
+		probeInterval = 500 * time.Millisecond
+		maxProbes     = 20
+	)
+	for probe := 0; probe < maxProbes; probe++ {
+		var probeJob batchv1.Job
+		err := k.c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &probeJob)
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(probeInterval):
+		}
+	}
+	return fmt.Errorf("restore: job %s/%s is still terminating after deletion; retry shortly", namespace, name)
 }
 
 // recreate retries Create once after a finished Job released the name. A
