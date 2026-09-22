@@ -139,9 +139,9 @@ type API struct {
 
 	// AuthSources is the Felis-nano multi-source hasJoined multiplexer's upstream
 	// Yggdrasil list, in priority order (config order; the Mojang Identity source
-	// first for 正版优先). Nil — the default — makes the session verifier reject every
-	// login (204), so the endpoint ships inert until cmd/felis wires configured
-	// sources. Consumed by handleHasJoined (handlers_hasjoined.go).
+	// first for 正版优先). Nil makes the session verifier reject every login (204);
+	// cmd/felis always wires at least the Mojang source through authSourcesFromConfig.
+	// Consumed by handleHasJoined (handlers_hasjoined.go).
 	AuthSources []AuthSource
 
 	// Now is the clock, injectable for tests. Defaults to time.Now.

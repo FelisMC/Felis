@@ -286,15 +286,14 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stderr, "felis api: external face fails closed (Access JWKS key function not configured)")
 
-	// Felis-nano: wire the multi-source hasJoined multiplexer only when third-party auth
-	// sources are configured. Mojang leads as the code-owned identity anchor (正版优先);
-	// config can only append namespace-rewritten third-party sources, never a trusted one,
-	// so a misconfig cannot reopen the impersonation hole. No sources = a.AuthSources stays
-	// nil = the endpoint 204s every login (ships off).
-	if len(cfg.AuthSources) > 0 {
-		a.AuthSources = authSourcesFromConfig(cfg.AuthSources)
-		fmt.Fprintf(stderr, "felis api: hasJoined multiplexer active — Mojang + %d third-party source(s)\n", len(cfg.AuthSources))
-	}
+	// Felis-nano: the multi-source hasJoined multiplexer. Mojang leads as the code-owned
+	// identity anchor (正版优先); config can only append namespace-rewritten third-party
+	// sources, never a trusted one, so a misconfig cannot reopen the impersonation hole.
+	// Wired unconditionally: the installer points Velocity at this route whether or not any
+	// [[auth_source]] is configured, so an empty list has to mean a Mojang-only relay, the
+	// same as under `felis nano`. A nil list would 204 every login, premium ones included.
+	a.AuthSources = authSourcesFromConfig(cfg.AuthSources)
+	fmt.Fprintf(stderr, "felis api: hasJoined multiplexer active — Mojang + %d third-party source(s)\n", len(cfg.AuthSources))
 
 	// Passkey (WebAuthn) verifier (spec §14, Phase 6). One relying party spans BOTH
 	// web faces: the RP id is the panel hostname (console.<root>), and because that is
