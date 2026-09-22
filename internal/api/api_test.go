@@ -921,6 +921,12 @@ func (f *fakeRepo) UpdateUser(_ context.Context, userID string, patch UpdateUser
 			f.seededUsers[i].detail.Username = *patch.Username
 		}
 		if patch.Email != nil {
+			// Changing the address voids the proof of it, exactly like PGRepo:
+			// only VerifyEmailOTP may assert a verified address.
+			if *patch.Email != f.seededUsers[i].view.Email {
+				f.seededUsers[i].view.EmailVerified = false
+				f.seededUsers[i].detail.EmailVerified = false
+			}
 			f.seededUsers[i].view.Email = *patch.Email
 			f.seededUsers[i].detail.Email = *patch.Email
 		}

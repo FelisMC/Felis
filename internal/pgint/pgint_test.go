@@ -323,6 +323,40 @@ func TestConsumeLoginEmailOTPContract(t *testing.T) {
 	}
 }
 
+// ---- user admin (spec §7) -------------------------------------------------------
+
+// An admin email edit must not carry a verification over to an address nobody
+// proved: the verified flag is exactly what the pre-session login resolves on
+// (UserByEmail), and only VerifyEmailOTP may assert it — the same rationale as
+// SetUserEmail. A no-op edit that passes the same value keeps the proof.
+func TestUserAdminEmailEditClearsVerification(t *testing.T) {
+	ctx := context.Background()
+	u := newUser(t, "user", "admin-edit")
+	purpose := "onboard_email"
+	addr := "edit-" + suffix(t) + "@example.net"
+	now := mustNow()
+
+	if err := repo.CreateEmailOTP(ctx, "ae-"+suffix(t), u.ID, addr, "h", purpose, now.Add(5*time.Minute)); err != nil {
+		t.Fatalf("CreateEmailOTP: %v", err)
+	}
+	if _, err := repo.VerifyEmailOTP(ctx, u.ID, purpose, "h", now); err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	assertEmailProven(t, u.ID, addr, true)
+
+	same := addr
+	if _, err := repo.UpdateUser(ctx, u.ID, api.UpdateUserInput{Email: &same}, "pgint"); err != nil {
+		t.Fatalf("UpdateUser (same email): %v", err)
+	}
+	assertEmailProven(t, u.ID, addr, true)
+
+	next := "edit2-" + suffix(t) + "@example.net"
+	if _, err := repo.UpdateUser(ctx, u.ID, api.UpdateUserInput{Email: &next}, "pgint"); err != nil {
+		t.Fatalf("UpdateUser (new email): %v", err)
+	}
+	assertEmailProven(t, u.ID, next, false)
+}
+
 // ---- op.console staff login state machine --------------------------------------
 
 func TestOpLoginStateMachine(t *testing.T) {

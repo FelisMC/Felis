@@ -1422,7 +1422,15 @@ func (p *PGRepo) UpdateUser(ctx context.Context, userID string, patch UpdateUser
 	}
 	if patch.Email != nil {
 		argn++
-		sets = append(sets, fmt.Sprintf("email = NULLIF($%d, '')", argn))
+		// Changing the address voids any proof of it: only VerifyEmailOTP may assert
+		// a verified address (mirrors SetUserEmail's rationale — a fresh, unproven
+		// value must not keep a stale verified flag that would let the pre-session
+		// email login resolve the account). A no-op edit that passes the same value
+		// keeps the flag; the second expression reads the OLD row, so comparing
+		// there is exact.
+		sets = append(sets,
+			fmt.Sprintf("email = NULLIF($%d, '')", argn),
+			fmt.Sprintf("email_verified = (email_verified AND email IS NOT DISTINCT FROM NULLIF($%d, ''))", argn))
 		args = append(args, *patch.Email)
 	}
 	if patch.Role != nil {
