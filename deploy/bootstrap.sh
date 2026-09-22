@@ -26,7 +26,10 @@
 # The script is idempotent: re-running it converges rather than duplicating, and
 # generated secrets are persisted to /etc/felis/secrets.env so reruns reuse them.
 #
-# Tunables (export before running to override the demo defaults):
+# Tunables override the demo defaults. sudo resets the environment, so a variable exported
+# before `curl ... | sudo bash` never arrives. Name it on the sudo line, or keep it with -E:
+#   curl -fsSL <raw-url>/deploy/bootstrap.sh | sudo FELIS_INSTALL_MODE=nano FELIS_NANO_LISTEN=10.0.0.5:8081 bash
+#   export FELIS_INSTALL_MODE=nano; curl -fsSL <raw-url>/deploy/bootstrap.sh | sudo -E bash
 #   FELIS_INSTALL_MODE full|nano — skip the prompt (default: ask on a tty, else full; nano
 #                     instead on a host that runs felis-nano and no full install)
 #   FELIS_NANO_LISTEN listen addr for `felis nano` (default: the address an installed
@@ -2460,8 +2463,10 @@ summary_nano() {
   log "     the full https://sessionserver.mojang.com/session/minecraft/hasJoined)"
   if nano_listen_is_loopback; then
     log "Bound to loopback: reachable from Velocity on THIS host, and from nowhere else."
-    log "Proxy on another machine? Re-run with FELIS_NANO_LISTEN=<private-ip>:${port} and"
-    log "allow ${port}/tcp ONLY from that proxy — hasJoined takes no auth token, so an"
+    log "Proxy on another machine? Re-run with the address on the sudo line (sudo drops"
+    log "exported variables):"
+    log "    curl -fsSL <raw-url>/deploy/bootstrap.sh | sudo FELIS_NANO_LISTEN=<private-ip>:${port} bash"
+    log "and allow ${port}/tcp ONLY from that proxy — hasJoined takes no auth token, so an"
     log "internet-facing one is a free auth relay burning your Mojang egress IP."
   else
     log "WARNING: bound to ${FELIS_NANO_LISTEN} — hasJoined takes no auth token, so restrict"
