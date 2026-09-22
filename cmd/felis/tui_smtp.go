@@ -351,14 +351,18 @@ func applySMTPConfig(ctx context.Context, in smtpInputs) error {
 	return kubectl(ctx, "-n", "felis", "rollout", "status", "deployment/felis-api", "--timeout=180s")
 }
 
-// smtpSecretManifest renders the felis-smtp Secret (in the control namespace,
-// via the caller's apply) the felis-api Deployment injects the relay password
-// from. Rendered in-process and piped to `kubectl apply` — the password is
-// never a command-line arg, so it never appears in the host process table.
-func smtpSecretManifest(password string) ([]byte, error) {
+// smtpSecretManifest renders the felis-smtp Secret for the given namespace, the
+// one the receiving Deployment/CronJob resolves its secretKeyRef against (felis
+// for felis-api, the workload namespace for the reaper's mirror). The namespace
+// must be IN the manifest: kubectl rejects a manifest whose namespace conflicts
+// with -n, so leaving the control namespace hardcoded made every workload-ns
+// replica fail before it started. Rendered in-process and piped to
+// `kubectl apply` — the password is never a command-line arg, so it never
+// appears in the host process table.
+func smtpSecretManifest(password, namespace string) ([]byte, error) {
 	secret := &corev1.Secret{
 		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
-		ObjectMeta: metav1.ObjectMeta{Name: platform.SMTPSecretName, Namespace: "felis"},
+		ObjectMeta: metav1.ObjectMeta{Name: platform.SMTPSecretName, Namespace: namespace},
 		Type:       corev1.SecretTypeOpaque,
 		StringData: map[string]string{
 			platform.SMTPSecretPasswordKey: password,
@@ -372,7 +376,7 @@ func smtpSecretManifest(password string) ([]byte, error) {
 }
 
 func applySMTPSecret(ctx context.Context, password string) error {
-	manifest, err := smtpSecretManifest(password)
+	manifest, err := smtpSecretManifest(password, "felis")
 	if err != nil {
 		return err
 	}
@@ -396,7 +400,7 @@ func replicateSMTPToWorkloadNamespace(ctx context.Context, password string) erro
 	if ns == "" || ns == "felis" {
 		return nil
 	}
-	smtpManifest, err := smtpSecretManifest(password)
+	smtpManifest, err := smtpSecretManifest(password, ns)
 	if err != nil {
 		return err
 	}
