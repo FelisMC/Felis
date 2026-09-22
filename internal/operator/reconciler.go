@@ -488,10 +488,19 @@ func (r *Reconciler) markRunningReady(server *v1alpha1.MinecraftServer, players 
 			metrics.StartDurationSeconds.Observe(t.Sub(server.Status.StartRequestedAt.Time).Seconds())
 		}
 	}
+	// The start attempt is over the moment it succeeds: clear the anchor so a
+	// later pod blip runs on a fresh startup budget instead of inheriting a
+	// stale one. Found live: a server that had already recovered was marked
+	// StartupTimeout minutes later because the old anchor was still ticking
+	// underneath, and the Failed condition outlived the recovery.
+	server.Status.StartRequestedAt = nil
 	server.Status.Endpoint = v1alpha1.EndpointStatus{Mode: v1alpha1.EndpointDirect, Address: endpointAddress}
 	server.Status.LiveMotd = server.Spec.Motd.Running
 	r.setCondition(server, v1alpha1.ConditionRconReached, metav1.ConditionTrue, "Probed", "RCON probe succeeded")
 	r.setCondition(server, v1alpha1.ConditionReady, metav1.ConditionTrue, "RconReached", "server is accepting RCON")
+	// markFailed flips Provisioned to False; a recovered server must flip it
+	// back, or every consumer of the conditions sees a permanent failure flag.
+	r.setCondition(server, v1alpha1.ConditionProvisioned, metav1.ConditionTrue, "Provisioned", "server is provisioned and accepting RCON")
 }
 
 func (r *Reconciler) markStopping(server *v1alpha1.MinecraftServer) {

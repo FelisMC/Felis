@@ -657,6 +657,69 @@ func TestReconcileRunning_StartupTimeoutConvertsToFailed(t *testing.T) {
 	_ = res
 }
 
+// TestReconcileRunning_ReadyClearsStartAnchor pins the recovery hygiene: once a
+// server is Ready the start anchor must clear, so a later pod blip can never
+// inherit the stale anchor and be judged StartupTimeout (found live: the
+// operator marked an already-recovered server Failed minutes after recovery).
+func TestReconcileRunning_ReadyClearsStartAnchor(t *testing.T) {
+	r, c := newReconciler(t, fakeProber{}, runningServer(), rconSecret())
+	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	clock := base
+	r.Now = func() metav1.Time { return metav1.NewTime(clock) }
+
+	reconcile(t, r, "survival") // Starting: anchors startRequestedAt
+	if s := getServer(t, c, "survival"); s.Status.StartRequestedAt == nil {
+		t.Fatal("StartRequestedAt should anchor on the first Starting pass")
+	}
+
+	clock = base.Add(10 * time.Second)
+	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival") // Running
+
+	s := getServer(t, c, "survival")
+	if s.Status.Phase != v1alpha1.PhaseRunning {
+		t.Fatalf("phase = %s, want Running", s.Status.Phase)
+	}
+	if s.Status.StartRequestedAt != nil {
+		t.Fatalf("StartRequestedAt = %v after Ready, want nil", s.Status.StartRequestedAt)
+	}
+}
+
+// TestReconcileRunning_ProvisionedRecovers: markFailed flips Provisioned to
+// False, and a recovered server must flip it back — a permanent False misleads
+// every consumer of the conditions (kubectl waits, monitoring) forever.
+func TestReconcileRunning_ProvisionedRecovers(t *testing.T) {
+	srv := runningServer()
+	srv.Spec.Startup.TimeoutSeconds = 30
+	r, c := newReconciler(t, fakeProber{}, srv, rconSecret())
+	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	clock := base
+	r.Now = func() metav1.Time { return metav1.NewTime(clock) }
+
+	reconcile(t, r, "survival") // Starting
+	clock = base.Add(31 * time.Second)
+	reconcile(t, r, "survival") // past timeout → Failed
+
+	s := getServer(t, c, "survival")
+	if s.Status.Phase != v1alpha1.PhaseFailed {
+		t.Fatalf("phase = %s, want Failed", s.Status.Phase)
+	}
+	if isConditionTrue(s, v1alpha1.ConditionProvisioned) {
+		t.Fatal("Provisioned must be False after Failed")
+	}
+
+	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival") // recovers to Running
+
+	s = getServer(t, c, "survival")
+	if s.Status.Phase != v1alpha1.PhaseRunning {
+		t.Fatalf("phase = %s, want Running after recovery", s.Status.Phase)
+	}
+	if !isConditionTrue(s, v1alpha1.ConditionProvisioned) {
+		t.Fatal("Provisioned must flip back to True after recovery")
+	}
+}
+
 // --- helpers ---------------------------------------------------------------
 
 func getSTSErr(c client.Client, name string) (*appsv1.StatefulSet, error) {
