@@ -363,8 +363,9 @@ else
     "$(run_mode "$sdir/felis-nano.service" "$sdir/absent.done")"
   expect "a host with the full install re-runs as full" "MODE: full" \
     "$(run_mode "$sdir/felis-nano.service" "$sdir/bootstrap.done")"
-  expect "a fresh host defaults to full" "MODE: full" \
-    "$(run_mode "$sdir/absent.service" "$sdir/absent.done")"
+  out="$(run_mode "$sdir/absent.service" "$sdir/absent.done")"
+  expect "a fresh host defaults to full" "MODE: full" "$out"
+  expect "no controlling terminal takes the no-prompt path" "LOG: no terminal for a prompt" "$out"
   # felis setup goes on to need the control plane, so under it nano is refused, and the
   # nano-only default above must not apply either.
   expect "felis setup refuses FELIS_INSTALL_MODE=nano" "DIE: felis setup installs the full control plane" \

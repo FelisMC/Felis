@@ -2240,8 +2240,9 @@ prompt_install_mode() {
 
   # No override: ask on the controlling terminal. Under `curl | sudo bash` stdin
   # is the script, so we must read /dev/tty, not stdin. No tty (CI/cloud-init) →
-  # take the default.
-  if [ ! -r /dev/tty ]; then
+  # take the default. Open it to find out: /dev/tty is mode 0666 on every Linux host, so
+  # `-r` passes even when there is no controlling terminal and only the open fails.
+  if ! (: </dev/tty) 2>/dev/null; then
     INSTALL_MODE="$def"
     log "no terminal for a prompt; defaulting to a ${def} install (set FELIS_INSTALL_MODE=full or nano to override)"
     return 0
