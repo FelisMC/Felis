@@ -276,6 +276,25 @@ expect "a first install listens on loopback" "LISTEN: 127.0.0.1:8081" \
 expect "a first install takes the operator's address" "LISTEN: 10.0.0.5:8081" \
   "$(run_listen 10.0.0.5:8081 "$sdir/absent.service")"
 
+# Whatever the address came from, it reaches the firewall, the summary and the unit as-is.
+lblock="$(awk '/^validate_listen\(\) \{/,/^}/' "$BS")"
+[ -n "$lblock" ] || { echo "FAIL: no validate_listen found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$lblock" | wc -l)" -lt 20 ] \
+  || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
+
+check_listen() { # value
+  bash -c 'die() { printf "DIE: %s\n" "$*"; exit 1; }
+    '"$lblock"'
+    validate_listen FELIS_NANO_LISTEN "$1" && echo VALID' _ "$1" 2>&1
+}
+
+for v in 8081 127.0.0.1 127.0.0.1:0 127.0.0.1:65536 127.0.0.1:x; do
+  expect "listen address $v is refused" "DIE: FELIS_NANO_LISTEN" "$(check_listen "$v")"
+done
+for v in '[::1]:8081' 0.0.0.0:8081 127.0.0.1:8081; do
+  expect "listen address $v is accepted" VALID "$(check_listen "$v")"
+done
+
 pblock="$(awk '/^prompt_install_mode\(\) \{/,/^}/' "$BS")"
 [ -n "$pblock" ] || { echo "FAIL: no prompt_install_mode found in $BS"; exit 1; }
 [ "$(printf '%s\n' "$pblock" | wc -l)" -lt 60 ] \

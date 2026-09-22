@@ -437,10 +437,23 @@ validate_nodeport() {
   fi
 }
 
+# A value without a usable port would reach the firewall and the summary as-is: 8081 opens
+# port 8081 while nano binds nothing, 127.0.0.1 prints http://127.0.0.1:127.0.0.1/..., and
+# the unit crash-loops either way.
+validate_listen() {
+  local name="$1" value="$2" port="${2##*:}"
+  case "$value" in *:*) ;; *) port="" ;; esac
+  case "$port" in
+    ''|*[!0-9]*) die "${name} must be host:port (for example 127.0.0.1:8081), got: ${value}" ;;
+  esac
+  [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die "${name} port must be 1-65535, got: ${value}"
+}
+
 validate_settings() {
   validate_timeout PKG_LOCK_TIMEOUT "$PKG_LOCK_TIMEOUT"
   validate_timeout APT_LOCK_TIMEOUT "$APT_LOCK_TIMEOUT"
   validate_nodeport FELIS_PANEL_NODEPORT "$FELIS_PANEL_NODEPORT"
+  validate_listen FELIS_NANO_LISTEN "$FELIS_NANO_LISTEN"
 }
 
 # ---------------------------------------------------------------------------
