@@ -453,12 +453,16 @@ validate_nodeport() {
 # port 8081 while nano binds nothing, 127.0.0.1 prints http://127.0.0.1:127.0.0.1/..., and
 # the unit crash-loops either way.
 validate_listen() {
-  local name="$1" value="$2" port="${2##*:}"
+  local name="$1" value="$2" port="${2##*:}" host="${2%:*}"
   case "$value" in *:*) ;; *) port="" ;; esac
   case "$port" in
     ''|*[!0-9]*) die "${name} must be host:port (for example 127.0.0.1:8081), got: ${value}" ;;
   esac
   [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || die "${name} port must be 1-65535, got: ${value}"
+  # Go takes a colon in the host only inside brackets; ::1:8081 would crash-loop the unit.
+  case "$host" in
+    *:*) case "$host" in "["*"]") ;; *) die "${name} needs an IPv6 host in brackets (for example [::1]:8081), got: ${value}" ;; esac ;;
+  esac
 }
 
 validate_settings() {
@@ -2410,7 +2414,7 @@ resolve_nano_listen() {
 
 nano_listen_is_loopback() {
   case "${FELIS_NANO_LISTEN%:*}" in
-    127.*|localhost|::1|"[::1]") return 0 ;;
+    127.*|localhost|"[::1]") return 0 ;;
     *) return 1 ;;
   esac
 }

@@ -295,10 +295,10 @@ check_listen() { # value
     validate_listen FELIS_NANO_LISTEN "$1" && echo VALID' _ "$1" 2>&1
 }
 
-for v in 8081 127.0.0.1 127.0.0.1:0 127.0.0.1:65536 127.0.0.1:x; do
+for v in 8081 127.0.0.1 127.0.0.1:0 127.0.0.1:65536 127.0.0.1:x ::1:8081; do
   expect "listen address $v is refused" "DIE: FELIS_NANO_LISTEN" "$(check_listen "$v")"
 done
-for v in '[::1]:8081' 0.0.0.0:8081 127.0.0.1:8081; do
+for v in '[::1]:8081' '[::]:8081' :8081 0.0.0.0:8081 127.0.0.1:8081; do
   expect "listen address $v is accepted" VALID "$(check_listen "$v")"
 done
 
