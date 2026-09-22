@@ -76,6 +76,12 @@ type ownerStore interface {
 	AdminExists(ctx context.Context) (bool, error)
 	// UserByUsername loads a staff login projection.
 	UserByUsername(ctx context.Context, username string) (*api.StaffUser, error)
+	// OwnerUsername names the single active Owner seat, or "" when none exists.
+	// provisionOwner refuses to re-target anything but this username: with the
+	// seat occupied, a fresh name would mint a second owner row (UpsertOwner's
+	// insert arm) while the existing — possibly compromised — seat stays live,
+	// and no supported path can delete an owner row afterwards.
+	OwnerUsername(ctx context.Context) (string, error)
 	UpsertOwner(ctx context.Context, id, username, email string) error
 	// InsertOperator mints a NEW Operator staff account. Unlike UpsertOwner it is
 	// insert-only: a username already taken is a conflict (api.ErrConflict), never a
@@ -278,10 +284,19 @@ func authenticateAdmin(ctx context.Context, s ownerStore, username string) (matc
 // provisionOwner mints or resets the single Owner account direct-to-Postgres,
 // passwordless. The account is role=owner with no password — the Owner completes
 // passwordless login setup via the web setup-token flow after `felis setup`.
+// With a seat already occupied the reset must name that seat (ownerSeatTakenError
+// otherwise): the upsert's insert arm would silently mint a SECOND owner, and
+// every owner row is undeletable through the panel, so the tier could never
+// converge back to one.
 func provisionOwner(ctx context.Context, s ownerStore, username, email string) error {
 	username = strings.TrimSpace(username)
 	if username == "" {
 		return errors.New("owner username is required")
+	}
+	if seat, err := s.OwnerUsername(ctx); err != nil {
+		return fmt.Errorf("check the owner seat: %w", err)
+	} else if seat != "" && seat != username {
+		return &ownerSeatTakenError{seat: seat}
 	}
 	id := newOwnerID()
 	if id == "" {
@@ -292,6 +307,19 @@ func provisionOwner(ctx context.Context, s ownerStore, username, email string) e
 	}
 	return nil
 }
+
+// ownerSeatTakenError refuses an Owner reset that names anything but the
+// occupied seat, naming it so the operator can retype. Is reports
+// api.ErrConflict so the TUI's recoverable-error branch (shared with the
+// operator path's taken-name clash) routes back to the form instead of ending
+// the console.
+type ownerSeatTakenError struct{ seat string }
+
+func (e *ownerSeatTakenError) Error() string {
+	return fmt.Sprintf("an Owner already exists as %q — enter that username to reset the Owner", e.seat)
+}
+
+func (e *ownerSeatTakenError) Is(target error) bool { return target == api.ErrConflict }
 
 // provisionOperator mints a NEW Operator staff account direct-to-Postgres. It is
 // role=admin and passwordless — an additional staff admin below the single

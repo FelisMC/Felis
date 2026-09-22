@@ -174,12 +174,13 @@ func (m *ownerModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case owProvisionMsg:
 		if msg.err != nil {
-			// A taken Operator username is the expected, recoverable outcome of the
-			// insert-only operator path (refusing the clash is the whole reason it is
-			// insert-only, not an upsert). Route back to the form with a note so the
-			// operator can pick another name, rather than tearing down the console —
-			// any other error is a genuine fault and still ends the session.
-			if m.operation == bgAddOperator && errors.Is(msg.err, api.ErrConflict) {
+			// api.ErrConflict marks the two recoverable refusals: a taken Operator
+			// username (insert-only clash) and an Owner reset naming anything but the
+			// occupied seat (ownerSeatTakenError Is ErrConflict). Route back to the
+			// form with a note so the operator can retype, rather than tearing down
+			// the console — any other error is a genuine fault and still ends the
+			// session.
+			if errors.Is(msg.err, api.ErrConflict) {
 				m.provisionErr = msg.err
 				m.step = owProvision
 				m.form = m.sized(m.buildProvisionForm())
@@ -364,9 +365,15 @@ func (m *ownerModel) buildProvisionForm() *huh.Form {
 		}
 	}
 	if m.provisionErr != nil {
-		// The only error routed back to this form is a username clash on the insert-only
-		// operator path; show a concrete prompt to choose another name.
-		desc = "That username is already taken — choose a different one.\n\n" + desc
+		// Recoverable refusals routed back here: the seat refusal already names the
+		// username to enter, so show it verbatim; the operator-name clash gets the
+		// generic retry prompt.
+		note := "That username is already taken — choose a different one."
+		var seatErr *ownerSeatTakenError
+		if errors.As(m.provisionErr, &seatErr) {
+			note = seatErr.Error()
+		}
+		desc = note + "\n\n" + desc
 	}
 
 	fields := []huh.Field{

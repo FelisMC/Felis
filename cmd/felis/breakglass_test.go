@@ -19,14 +19,15 @@ import (
 // terminal. The design is passwordless: accounts carry no credential, and the
 // Owner completes first-login through the setup-token web flow.
 type fakeOwnerStore struct {
-	upserts  []upsertCall
-	inserts  []upsertCall
-	settings map[string][]byte
-	audits   []api.AuditEntry
-	tokens   []setupTokenCall
-	redeems  []redeemCall
-	users    map[string]*api.StaffUser // keyed by username
-	admins   bool                      // AdminExists answer
+	upserts   []upsertCall
+	inserts   []upsertCall
+	settings  map[string][]byte
+	audits    []api.AuditEntry
+	tokens    []setupTokenCall
+	redeems   []redeemCall
+	users     map[string]*api.StaffUser // keyed by username
+	admins    bool                      // AdminExists answer
+	ownerSeat string                    // OwnerUsername answer: the occupied seat, "" when none
 
 	// CompleteOwnerSetup's success result. redeemUserID defaults to the fresh id
 	// the caller passes (the unlinked-UUID case) when left empty.
@@ -40,6 +41,7 @@ type fakeOwnerStore struct {
 	auditErr       error
 	userErr        error // non-not-found error from UserByUsername
 	adminErr       error
+	seatErr        error
 	redeemErr      error
 	createTokenErr error
 }
@@ -78,6 +80,15 @@ func (f *fakeOwnerStore) UserByUsername(_ context.Context, username string) (*ap
 		return u, nil
 	}
 	return nil, api.ErrNotFound
+}
+
+// OwnerUsername reports the single active Owner seat. Tests set ownerSeat; the
+// zero value models a fresh install where bootstrap is free to mint.
+func (f *fakeOwnerStore) OwnerUsername(_ context.Context) (string, error) {
+	if f.seatErr != nil {
+		return "", f.seatErr
+	}
+	return f.ownerSeat, nil
 }
 
 func (f *fakeOwnerStore) UpsertOwner(_ context.Context, id, username, email string) error {
@@ -198,6 +209,34 @@ func TestProvisionOwner(t *testing.T) {
 		}
 		if len(f.upserts) != 0 {
 			t.Errorf("want no upsert on validation failure, got %d", len(f.upserts))
+		}
+	})
+
+	t.Run("an occupied seat refuses any other username", func(t *testing.T) {
+		// The seat is the single owner row: upserting a fresh name would take the
+		// insert arm and mint a SECOND owner, while the existing seat — possibly the
+		// compromised account this reset was meant to replace — stays live, and no
+		// supported path can delete an owner row.
+		f := &fakeOwnerStore{ownerSeat: "seat-holder"}
+		err := provisionOwner(ctx, f, "someone-else", "")
+		if !errors.Is(err, api.ErrConflict) {
+			t.Fatalf("error = %v, want it to wrap api.ErrConflict so the TUI routes back to the form", err)
+		}
+		if !strings.Contains(err.Error(), `"seat-holder"`) {
+			t.Errorf("error = %q, want it to name the occupied seat", err)
+		}
+		if len(f.upserts) != 0 {
+			t.Errorf("want no write against an occupied seat, got %d", len(f.upserts))
+		}
+	})
+
+	t.Run("the occupied seat's own username still resets", func(t *testing.T) {
+		f := &fakeOwnerStore{ownerSeat: "seat-holder"}
+		if err := provisionOwner(ctx, f, "seat-holder", "new@example.net"); err != nil {
+			t.Fatalf("provisionOwner(reset): %v", err)
+		}
+		if len(f.upserts) != 1 || f.upserts[0].username != "seat-holder" || f.upserts[0].email != "new@example.net" {
+			t.Fatalf("want 1 reset upsert for the seat, got %+v", f.upserts)
 		}
 	})
 

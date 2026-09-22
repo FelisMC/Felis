@@ -151,19 +151,46 @@ func TestOwnerModelProvisionErrorRouting(t *testing.T) {
 		}
 	})
 
-	t.Run("a conflict on the Owner path is not a retry", func(t *testing.T) {
-		// Defensive: the Owner upserts and so never conflicts, but were one ever to
-		// surface it must end the session rather than loop the form — only the
-		// insert-only operator path is retryable.
+	t.Run("the Owner seat refusal returns to the form naming the seat", func(t *testing.T) {
+		// Upserting a fresh username while a seat is occupied would mint a second
+		// owner, so provisionOwner refuses with ownerSeatTakenError (Is
+		// api.ErrConflict) and the console must route back for a retype — the same
+		// recoverable contract as the operator clash, and the only Owner-path
+		// conflict there is.
 		m := newOwnerModel(ctx, &fakeOwnerStore{}, "root", true)
+		seatErr := &ownerSeatTakenError{seat: "seat-holder"}
 
-		next, cmd := m.Update(owProvisionMsg{err: conflict})
+		next, cmd := m.Update(owProvisionMsg{err: seatErr})
+		om := next.(*ownerModel)
+		if om.step != owProvision {
+			t.Fatalf("step = %v, want owProvision — the seat refusal is recoverable", om.step)
+		}
+		if om.provisionErr == nil || !errors.Is(om.provisionErr, api.ErrConflict) || !strings.Contains(om.provisionErr.Error(), "seat-holder") {
+			t.Errorf("provisionErr = %v, want the seat refusal naming the seat", om.provisionErr)
+		}
+		// Feed the rebuilt form's init message back through so its view renders;
+		// then the note must carry the seat name (the operator's retype cue).
+		if cmd != nil {
+			if msg := cmd(); msg != nil {
+				if n2, _ := om.Update(msg); n2 != nil {
+					om = n2.(*ownerModel)
+				}
+			}
+		}
+		if view := om.form.View(); !strings.Contains(view, "seat-holder") {
+			t.Errorf("the provision form must surface the seat refusal:\n%s", view)
+		}
+	})
+
+	t.Run("a generic Owner-path fault still tears the console down", func(t *testing.T) {
+		m := newOwnerModel(ctx, &fakeOwnerStore{}, "root", true)
+		next, cmd := m.Update(owProvisionMsg{err: errors.New("boom")})
 		om := next.(*ownerModel)
 		if om.provisionErr != nil {
-			t.Error("the Owner path recorded a retryable conflict; only the operator path retries")
+			t.Error("a generic fault must not be treated as a retryable refusal")
 		}
 		if res, ok := cmd().(ownerResultMsg); !ok || res.err == nil {
-			t.Error("an Owner-path conflict should tear down via an error result")
+			t.Error("a generic Owner-path fault should tear down via an error result")
 		}
 	})
 }

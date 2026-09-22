@@ -666,13 +666,36 @@ func TestOwnerProvisioningWritesOwnerRole(t *testing.T) {
 	if ok, err := repo.AdminExists(ctx); err != nil || !ok {
 		t.Fatalf("AdminExists = (%v, %v), want true (the owner counts as staff)", ok, err)
 	}
+	// OwnerUsername names the seat the console guard protects. The shared test
+	// database may hold owner rows from earlier tests, so assert the returned name
+	// IS an active owner rather than one specific row.
+	seat, err := repo.OwnerUsername(ctx)
+	if err != nil {
+		t.Fatalf("OwnerUsername: %v", err)
+	}
+	if seat == "" {
+		t.Fatal("OwnerUsername = empty, want an active owner seat")
+	}
+	var active int
+	if err := db.QueryRowContext(ctx,
+		`SELECT count(*) FROM users WHERE username = $1 AND role = 'owner' AND deleted_at IS NULL`, seat).
+		Scan(&active); err != nil || active != 1 {
+		t.Fatalf("OwnerUsername returned %q, not an active owner row (count=%d err=%v)", seat, active, err)
+	}
 	// Operators stay plain admins: the owner tier stays singular.
 	opID := "usr-op-" + suffix(t)
-	if err := repo.InsertOperator(ctx, opID, "op-"+suffix(t), ""); err != nil {
+	opName := "op-" + suffix(t)
+	if err := repo.InsertOperator(ctx, opID, opName, ""); err != nil {
 		t.Fatalf("InsertOperator: %v", err)
 	}
 	if role := userRole(t, opID); role != "admin" {
 		t.Fatalf("InsertOperator role = %q, want admin", role)
+	}
+	// A taken username must surface as api.ErrConflict: the console routes its
+	// rename prompt off that sentinel (the cmd fake encoded the contract; PGRepo
+	// returned the raw driver error until this arm was mapped).
+	if err := repo.InsertOperator(ctx, "usr-op2-"+suffix(t), opName, ""); !errors.Is(err, api.ErrConflict) {
+		t.Fatalf("InsertOperator on a taken username = %v, want ErrConflict", err)
 	}
 }
 

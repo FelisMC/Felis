@@ -1037,16 +1037,38 @@ func (p *PGRepo) UpsertOwner(ctx context.Context, id, username, email string) er
 	return err
 }
 
+// OwnerUsername names the single active Owner seat, or "" when no owner exists.
+// It backs the console's single-seat guard: once a seat is occupied only that
+// username may be re-targeted (see cmd/felis provisionOwner), because a fresh
+// name would take the upsert's insert arm and mint a SECOND owner row that no
+// supported path can remove (the panel protects every owner row).
+func (p *PGRepo) OwnerUsername(ctx context.Context) (string, error) {
+	var name string
+	switch err := p.db.QueryRowContext(ctx,
+		`SELECT username FROM users WHERE role = 'owner' AND deleted_at IS NULL ORDER BY created_at LIMIT 1`).Scan(&name); {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", nil
+	case err != nil:
+		return "", err
+	default:
+		return name, nil
+	}
+}
+
 // InsertOperator mints a NEW Operator (additional staff admin) account
 // direct-to-Postgres. role is forced to 'admin'. UNLIKE UpsertOwner this is
-// insert-only: a username conflict is left untouched and surfaces as a driver
-// error, so adding an Operator can never silently reset the Owner's or another
+// insert-only: a username conflict leaves the existing row untouched and
+// surfaces as ErrConflict — the console routes a rename off that sentinel — so
+// adding an Operator can never silently reset the Owner's or another
 // Operator's row. The account is passwordless by design. The empty email is
 // stored as NULL.
 func (p *PGRepo) InsertOperator(ctx context.Context, id, username, email string) error {
 	_, err := p.db.ExecContext(ctx,
 		`INSERT INTO users (id, username, email, role) VALUES ($1, $2, NULLIF($3, ''), 'admin')`,
 		id, username, email)
+	if err != nil && isUniqueViolation(err) {
+		return ErrConflict
+	}
 	return err
 }
 
