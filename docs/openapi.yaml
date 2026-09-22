@@ -2771,11 +2771,12 @@ paths:
     post:
       tags: [backups]
       operationId: backupNow
-      summary: Back up a server's world on demand (owner-or-admin; server must be stopped).
+      summary: Back up a server's data volume on demand (owner-or-admin; server must be stopped).
       description: >-
-        Snapshots the server's world into the archive store as a first-class
-        world_backups row (reason "manual"), restorable later like an inactivity
-        backup. The world PVC is RWO and held by a running server, so the server must
+        Snapshots the server's whole data volume (worlds, config, plugins/mods,
+        jars, libraries — not just world folders) into the archive store as a
+        first-class world_backups row (reason "manual"), restorable later like an
+        inactivity backup. A restore replaces the volume with the archive. The world PVC is RWO and held by a running server, so the server must
         be fully stopped first (409 not_stopped otherwise). The backup runs
         asynchronously as a Job, so success is 202 (backing_up).
       x-felis-face: [external]

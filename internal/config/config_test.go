@@ -47,6 +47,10 @@ metallb_pool = "192.0.2.200-250"
 [registry]
 url = "registry.felis.svc:5000"
 build_namespace = "felis-build"
+kaniko_image = "registry.felis.svc:5000/mirror/kaniko:v1.23.2"
+trivy_image = "registry.felis.svc:5000/mirror/trivy:0.58.1"
+build_cpu_limit = "1"
+build_mem_limit = "2Gi"
 
 [archive]
 store = "tarLocal"
@@ -83,6 +87,13 @@ func TestLoadValid(t *testing.T) {
 	}
 	if cfg.Archive.S3.Bucket != "felis-backups" {
 		t.Errorf("s3 bucket = %q", cfg.Archive.S3.Bucket)
+	}
+	if cfg.Registry.KanikoImage != "registry.felis.svc:5000/mirror/kaniko:v1.23.2" ||
+		cfg.Registry.TrivyImage != "registry.felis.svc:5000/mirror/trivy:0.58.1" {
+		t.Errorf("build image overrides = %q / %q", cfg.Registry.KanikoImage, cfg.Registry.TrivyImage)
+	}
+	if cfg.Registry.BuildCPULimit != "1" || cfg.Registry.BuildMemLimit != "2Gi" {
+		t.Errorf("build resource overrides = %q / %q", cfg.Registry.BuildCPULimit, cfg.Registry.BuildMemLimit)
 	}
 }
 

@@ -17,7 +17,7 @@ Table of Contents
 
 - **Wake on Join**: Servers start automatically when a player connects, and stop when idle — like hibernate for your server.
 - **Web Dashboard**: Monitor server status, online players, and resource usage from your browser, with backup and restore management.
-- **Backup & Restore**: One-click world snapshots into the cluster's archive store, with rollback from any backup point — enabled by default (the installer renders the archive PVC and its path).
+- **Backup & Restore**: One-click snapshots of a server's whole data volume (worlds, config, plugins/mods — the entire /data volume) into the cluster's archive store, with rollback from any backup point — enabled by default (the installer renders the archive PVC and its path).
 - **World Reaper** (opt in): Worlds idle for more than 15 days are automatically backed up and removed to free disk space. Enable it by setting `FELIS_WORLDS_HOST_PATH` at install time (on k3s: `/var/lib/rancher/k3s/storage`); without it, no world is ever deleted.
 - **Multi-core Support**: Compatible with Paper, Fabric, Forge, and NeoForge, federated behind a Velocity proxy.
 - **Modpack Submission**: Players submit custom modpacks; admin approval triggers automatic build and deployment.

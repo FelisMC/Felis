@@ -119,6 +119,19 @@ type K8sConfig struct {
 type RegistryConfig struct {
 	URL            string `toml:"url"`
 	BuildNamespace string `toml:"build_namespace"`
+	// KanikoImage / TrivyImage / BuildCPULimit / BuildMemLimit override the
+	// build subsystem's compiled-in defaults (gcr.io/kaniko-project/executor and
+	// aquasec/trivy, 2 CPU / 4Gi per build container). The defaults assume the
+	// build namespace can reach those registries; on an air-gapped or mirrored
+	// install there IS no such reach (the build egress policy allows only DNS,
+	// the internal registry and explicit package mirrors), so the operator must
+	// point these at whatever their box can actually pull — typically images
+	// imported into the node's containerd alongside the felis image. Empty keeps
+	// the default.
+	KanikoImage   string `toml:"kaniko_image"`
+	TrivyImage    string `toml:"trivy_image"`
+	BuildCPULimit string `toml:"build_cpu_limit"`
+	BuildMemLimit string `toml:"build_mem_limit"`
 	// UserUploadsContext is the object-store base under which a user-submitted
 	// modpack's Kaniko build context is pinned. It belongs to the §16 build
 	// subsystem's input domain (the build-context store), introduced by the

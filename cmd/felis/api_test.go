@@ -44,6 +44,32 @@ func TestAuthSourcesFromConfig(t *testing.T) {
 	}
 }
 
+// TestBuildConfig_ProjectsOverrides pins the [registry] overrides reaching the
+// build subsystem: unset fields must stay EMPTY (the build package's compiled-in
+// defaults apply there, not here), and set fields must pass through verbatim —
+// an air-gapped install points these at its imported mirrors.
+func TestBuildConfig_ProjectsOverrides(t *testing.T) {
+	empty := buildConfig(&config.Config{})
+	if empty.KanikoImage != "" || empty.TrivyImage != "" || empty.CPULimit != "" || empty.MemLimit != "" {
+		t.Errorf("empty registry config must project empty overrides (defaults live in internal/build), got %+v", empty)
+	}
+	full := buildConfig(&config.Config{Registry: config.RegistryConfig{
+		URL:            "registry.felis.svc:5000",
+		BuildNamespace: "felis-build",
+		KanikoImage:    "reg/kaniko:v1",
+		TrivyImage:     "reg/trivy:v1",
+		BuildCPULimit:  "1",
+		BuildMemLimit:  "2Gi",
+	}})
+	if full.KanikoImage != "reg/kaniko:v1" || full.TrivyImage != "reg/trivy:v1" ||
+		full.CPULimit != "1" || full.MemLimit != "2Gi" {
+		t.Errorf("registry overrides did not reach build.Config: %+v", full)
+	}
+	if full.Namespace != "felis-build" || full.RegistryURL != "registry.felis.svc:5000" {
+		t.Errorf("namespace/registry url must keep projecting: %+v", full)
+	}
+}
+
 // TestNewAPIServerSetsHardenedTimeouts pins the gosec-G112 hardening on every
 // felis-api listener: the shared factory must bound the header and idle phases
 // (Slowloris + idle-connection exhaustion) while leaving WriteTimeout UNSET, because

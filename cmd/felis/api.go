@@ -402,6 +402,14 @@ func buildConfig(cfg *config.Config) build.Config {
 	return build.Config{
 		Namespace:   cfg.Registry.BuildNamespace,
 		RegistryURL: cfg.Registry.URL,
+		// Empty overrides fall back to the build package's defaults, so an
+		// install that has not imported kaniko/trivy keeps the compiled-in refs
+		// (and fails loudly on pull rather than silently building with the wrong
+		// image).
+		KanikoImage: cfg.Registry.KanikoImage,
+		TrivyImage:  cfg.Registry.TrivyImage,
+		CPULimit:    cfg.Registry.BuildCPULimit,
+		MemLimit:    cfg.Registry.BuildMemLimit,
 	}
 }
 

@@ -391,6 +391,32 @@ Inspect:
 kubectl logs -n felis-build job/<build-job>
 ```
 
+### 8e. Build Pods never start: executor images and air-gapped installs
+
+The build Job runs Kaniko and Trivy from external registries by default
+(`gcr.io/kaniko-project/executor:latest`, `aquasec/trivy:latest`). On a box whose
+build namespace cannot reach those registries (the egress policy allows only
+DNS, the internal registry and `--package-cidr` mirrors — and an air-gapped box
+has no route at all), the Pods sit in `ImagePullBackOff`/`ErrImagePull` and the
+build stays `building` until its deadline. Point the overrides at images the box
+CAN pull — typically imports into the node's containerd, pushed through the
+internal registry — in `felis.toml`:
+
+```toml
+[registry]
+url = "registry.felis.svc:5000"
+build_namespace = "felis-build"
+kaniko_image = "registry.felis.svc:5000/mirror/kaniko:v1.23.2"
+trivy_image  = "registry.felis.svc:5000/mirror/trivy:0.58.1"
+build_cpu_limit = "2"
+build_mem_limit = "4Gi"
+```
+
+then restart `felis-api` (it renders the Job from this config). Unset fields keep
+the defaults. Note the user-modpack context topologies are a separate,
+still-open seam (see `docs/deferred-seams.md`); this section only makes the
+executors reachable.
+
 ---
 
 ## 9. Registry push/pull failures (spec §15)
@@ -425,6 +451,16 @@ The reaper is a **run-once daily CronJob batch**, not an operator controller. It
 reaps a world only when `now - last_active_at > 15d` (`inactive_15d`); the 15-day
 deadline is **hard-fixed in code** (only `warn_before` / `retention` /
 `max_local_bytes` are configurable from `felis.toml [archive]`).
+
+### What a "backup" contains
+
+A backup tars the server's ENTIRE data volume — the same volume the server mounts
+at `/data`: world folders, `server.properties`, plugins/mods, configs, jars,
+libraries, logs and cache, not just the `world/` directory. A restore replaces the
+volume's contents with the archive (files added since the backup are pruned), so a
+restore also rolls config/plugin changes back. Sizes are dominated by
+libraries/cache on stock Paper servers (~170MB for a fresh instance before any
+world growth) — do not size the archive PVC as if only world data were stored.
 
 ### The backup-before-delete invariant
 
@@ -583,8 +619,8 @@ A full disk is the one failure this platform cannot ride out by itself, because
 the images exist only in the node's containerd (air-gapped by design), so a
 GC'd image has no pull source.
 
-Eviction. Every control-plane pod (api, operator, reaper, registry) runs under
-the BUILT-IN `system-cluster-critical` PriorityClass (value 2e9). Kubelet's
+**Eviction.** Every control-plane pod (api, operator, reaper, registry) runs
+under the BUILT-IN `system-cluster-critical` PriorityClass (value 2e9). Kubelet's
 node-pressure eviction refuses to touch those pods — the log shows
 *"Eviction manager: cannot evict a critical pod"* for each of them — while
 game-server pods at the default priority 0 are evicted first. A drill that filled
@@ -596,39 +632,32 @@ critical threshold. The built-in class allows preemption (its policy is fixed),
 so a control-plane pod that cannot fit may preempt a game pod — deliberate: the
 management plane must be placeable.
 
-The pressure condition clears slowly. After you free space, the node can stay
-`DiskPressure:True` for up to ~5 minutes (`--eviction-pressure-transition-period`
-defaults to 5m, to stop the condition flapping); pods that need scheduling wait
-for it. This is the bulk of the "recovery takes minutes" observation, not a
-stuck node.
+**The pressure condition clears slowly.** After you free space, the node can stay
+`DiskPressure:True` for up to ~5 minutes
+(`--eviction-pressure-transition-period` defaults to 5m, to stop the condition
+flapping); pods that need scheduling wait for it. This is the bulk of the
+"recovery takes minutes" observation, not a stuck node.
 
-But the *game* images can still be GC'd. If game pods were evicted, the kubelet
-may garbage-collect their images (unused > 2 minutes under imagefs pressure), and
-those pods then sit in `ImagePullBackOff` after recovery — re-import as above
-(`docker save felis-limbo:demo felis-lobby:demo | k3s ctr images import -`, then
-delete the stuck pods). Verified: both system servers returned to Running in
-~25s after the import.
+**The images may be gone.** If pods were evicted, the kubelet can garbage-collect
+their images (unused > 2 minutes under imagefs pressure). Those pods then sit in
+`ImagePullBackOff`/`ErrImagePull` for a tag that plainly exists —
+`k3s ctr images ls` shows it missing. Recovery:
 
-Symptoms of the image-GC stage: pods stuck `ImagePullBackOff`/`ErrImagePull`
-with `kubectl describe pod` showing a pull attempt for a tag that plainly
-exists (`k3s ctr images ls` will show it missing — the kubelet GC removed it
-under imagefs pressure).
-
-Recovery:
-
-1. Free disk on the node (`df -h /var/lib/rancher`, the biggest consumers are
+1. Free disk on the node (`df -h /var/lib/rancher`; the biggest consumers are
    `k3s ctr images ls -q` and the world/backup PVCs under
    `/var/lib/rancher/k3s/storage`).
-2. Re-import the images by re-running the installer (it rebuilds imports from
+2. Re-import the images by re-running the installer (it rebuilds/re-imports from
    the local Docker store, which the kubelet GC does not touch):
    `curl -fsSL <installer URL> | sudo bash` (or `sudo felis setup`), then
    `kubectl -n felis rollout status deploy/felis-api`.
-3. Delete now-unschedulable stuck pods so they retry with the re-imported image.
+3. Delete the stuck pods so they retry against the re-imported image.
 
-If the API itself is down and you only need the images back without a full
-installer run: `docker save felis:<tag> | k3s ctr images import -` restores one
-image from the Docker store (that store is deliberately a second copy; treat it
-as the recovery path, not as free space).
+For a single image without a full installer run:
+`docker save felis:<tag> | k3s ctr images import -` — the Docker store is
+deliberately a second copy; treat it as the recovery path, not as free space.
+Verified end to end in the drill: `docker save felis-limbo:demo
+felis-lobby:demo | k3s ctr images import -` plus pod deletion had both system
+servers Running ~25s later.
 
 ---
 
@@ -648,6 +677,32 @@ All four mandated metrics have real producers; scrape them when triaging:
 
 ---
 
+## 15. Control-plane upgrades, and rolling back a bad one
+
+There is no in-place updater: an upgrade is re-running the installer
+(`curl -fsSL <installer URL> | sudo bash`, or `sudo felis setup`), which
+rebuilds/re-imports the image and re-applies the bundle. Two properties of the
+control plane matter when you do:
+
+- Both Deployments use strategy **Recreate** (single replica, no leader election:
+  two overlapping instances would fight over the same cluster). An upgrade takes
+  the panel/API down for the rollout window — seconds normally, longer if the new
+  image still has to be imported.
+- If the new pod cannot start (bad tag, missing image), the installer's rollout
+  wait fails after 180s and prints `kubectl describe` diagnostics: you see
+  `ErrImagePull`/`ImagePullBackOff` there instead of a silent hang.
+
+Roll back with:
+
+```
+kubectl -n felis rollout undo deploy/felis-api
+kubectl -n felis rollout status deploy/felis-api
+```
+
+(the same for `felis-operator` and `registry`). `rollout undo` returns to the
+previous ReplicaSet, whose image is normally still on the node; if it was GC'd
+(§13b), re-import it first.
+
 ## Quick reference: symptom → section
 
 | Symptom | Section |
@@ -663,10 +718,12 @@ All four mandated metrics have real producers; scrape them when triaging:
 | Local password login rejected | §5c |
 | Internal callers 401 (service token) | §6 |
 | Link/claim 400/409/412/403/404 | §7 |
-| Build push 400 / SA denied / egress hang / Failed | §8 |
+| Build push 400 / SA denied / egress hang / Failed / executor ImagePullBackOff | §8, §8e |
 | Registry push/pull unreachable | §9 |
 | World deleted unexpectedly / backup skipped | §10 |
 | Idle auto-stop not firing; player count 0 | §11 |
 | A config field seems ignored | §12 |
 | PVC left behind after delete | §13 |
+| Node out of disk; pods evicted / ImagePullBackOff | §13b |
 | Which metric to scrape | §14 |
+| Upgrade / roll back a bad control-plane image | §15 |

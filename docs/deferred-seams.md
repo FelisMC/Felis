@@ -44,7 +44,19 @@ A grep across `*.md` and `*.go` returns both sets; only the Go ones are seams.
   apply is under way.
 - `internal/submit/blobstore.go:40` — the uploads PVC is mounted into felis-api but
   not into the Kaniko build Pod, so a submitted context is durable at the derived
-  location without yet being readable by the build that consumes it.
+  location without yet being readable by the build that consumes it. Audited
+  2026-09-22: this is not a missing volume line — a PVC cannot cross namespaces
+  (uploads live in the control namespace; build Pods run in `felis-build`), so the
+  fix is a transport, not a mount. The `s3://` lane does not close it either: the
+  build Job carries no AWS credentials (no env, and the weak SA's token is
+  deliberately unmounted, so no IAM either). Options on the table: (a) object
+  storage with credentials plumbed into the build Pod as a per-build Secret plus an
+  egress allowance; (b) a context-handoff PVC/Job pair in `felis-build` fed from
+  the API side; (c) a node-local path both sides mount (single-node only, and it
+  hands an arbitrary Dockerfile a filesystem view — needs its own security review).
+  Kaniko/Trivy images are external-only by default; `[registry] kaniko_image /
+  trivy_image / build_cpu_limit / build_mem_limit` now override them for mirrored
+  or air-gapped installs.
 
 ## Built; only its I/O is unverifiable from this repo
 
