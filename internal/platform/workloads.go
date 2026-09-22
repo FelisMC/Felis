@@ -274,6 +274,10 @@ func APIDeployment(p Params) *appsv1.Deployment {
 			},
 		},
 		{Name: "FELIS_IMAGE", Value: p.FelisImage},
+		// The api's own internal-face base URL, so it derives the submission
+		// context URLs that build Pods fetch through it. Same value the login gate
+		// is handed; one address for one face.
+		{Name: naming.EnvAPIBaseURL, Value: InternalAPIBaseURL(p.ControlNamespace)},
 	}
 	if p.BackupPVC != "" {
 		env = append(env, corev1.EnvVar{Name: "FELIS_BACKUP_PVC", Value: p.BackupPVC})

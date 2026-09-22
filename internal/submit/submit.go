@@ -37,7 +37,8 @@
 //     chosen ref would let an untrusted origin point the build at an arbitrary
 //     source. By deriving it from the submission id the user selects nothing
 //     that reaches the executor — only the modpack blob behind the pinned,
-//     id-namespaced location (uploaded by a separate, deferred transport).
+//     id-namespaced location (uploaded through the Blobs transport, and served
+//     back to the build Pod over the service-token-gated internal face).
 //
 // Source of truth. submissions is a NEW Postgres business-truth domain, added to
 // §1 invariant 2's enumeration (owner/claim/accounts/audit/quota/images/builds/
@@ -91,6 +92,10 @@ var (
 	// an honest 503, never a 500, exactly as the restore executor does when its
 	// integration is not wired.
 	ErrUploadsUnavailable = errors.New("submit: context upload transport not configured")
+	// ErrBlobNotFound reports that a submission has no stored context blob (or it
+	// was never uploaded). The internal context-fetch route maps it to 404, the
+	// same distinction Exists draws for Approve.
+	ErrBlobNotFound = errors.New("submit: context blob not found")
 )
 
 // invalidf wraps ErrInvalid so every malformed-request case maps to one 400.
@@ -176,11 +181,12 @@ type Builds interface {
 
 // Blobs is the build-context blob transport the lane depends on to place a
 // submitter's uploaded modpack at the platform-derived, id-namespaced location
-// deriveContextRef points Kaniko at. It is the piece the package doc calls a
-// "separate, deferred transport": creation only derives and records the ref, and
-// the bytes behind it arrive through Put here. It is an interface so the Manager
-// is unit-tested against an in-memory fake; the production implementation is the
-// filesystem-backed LocalContextStore.
+// deriveContextRef points Kaniko at. Creation only derives and records the ref;
+// the bytes behind it arrive through Put here, and the build Pod reads them back
+// through Open (the manager exposes it as OpenContext, which the API's internal
+// context route serves). It is an interface so the Manager is unit-tested against
+// an in-memory fake; the production implementations are LocalContextStore
+// (filesystem) and S3ContextStore (object store).
 //
 // Both methods key off the submission id, never a caller-supplied path, so the
 // write target is as platform-pinned as the derived ref itself. Put stores (and
@@ -190,6 +196,11 @@ type Builds interface {
 type Blobs interface {
 	Put(ctx context.Context, id string, r io.Reader) (int64, error)
 	Exists(ctx context.Context, id string) (bool, error)
+	// Open returns the stored blob's bytes for the internal context-fetch route
+	// the build Pod's initContainer dials (cmd/felis fetch-context). It returns an
+	// error wrapping ErrBlobNotFound when no blob exists, so the route can answer
+	// 404 without leaking which ids do exist.
+	Open(ctx context.Context, id string) (io.ReadCloser, error)
 }
 
 // Manager orchestrates the approval lane. It holds no mutable state; the clock
@@ -210,6 +221,15 @@ type Manager struct {
 	// "s3://felis-user-uploads" (an object store) or a local uploads PVC path. The
 	// derived context ref is {ContextStore}/{id}/context.tar.gz.
 	ContextStore string
+	// ContextBaseURL, when set, is the platform's internal-face base URL
+	// (platform.InternalAPIBaseURL). It makes the derived context ref an HTTP URL
+	// on that face — {ContextBaseURL}/api/v1/internal/submissions/{id}/context —
+	// instead of a filesystem/object-store location: the build Pod cannot mount
+	// the uploads PVC (builds run in another namespace) and carries no object-store
+	// credentials, so the API streams the blob it stored at ContextStore over the
+	// service-token-gated internal face. Empty keeps the legacy ref shape for a
+	// deployment that predates the transport.
+	ContextBaseURL string
 	// Blobs is the upload transport that persists the modpack behind the derived
 	// context ref. When nil (a store with no implemented transport, e.g. an
 	// object-store base with no client), UploadContext returns ErrUploadsUnavailable
@@ -269,7 +289,21 @@ func (m *Manager) deriveImageRef(id string) string {
 // selects nothing that reaches Kaniko's --context argument; only the blob behind
 // this pinned, id-namespaced location (placed by the upload transport) varies.
 func (m *Manager) deriveContextRef(id string) string {
+	if m.ContextBaseURL != "" {
+		return fmt.Sprintf("%s/api/v1/internal/submissions/%s/context", strings.TrimRight(m.ContextBaseURL, "/"), id)
+	}
 	return fmt.Sprintf("%s/%s/%s", strings.TrimRight(m.ContextStore, "/"), id, contextBlobName)
+}
+
+// OpenContext returns the stored build context for id — the read path behind the
+// internal context-fetch route. It requires the upload transport (Blobs): with no
+// transport there is no blob to read, so it reports ErrUploadsUnavailable, the
+// same honest 503 the upload endpoint gives.
+func (m *Manager) OpenContext(ctx context.Context, id string) (io.ReadCloser, error) {
+	if m.Blobs == nil {
+		return nil, ErrUploadsUnavailable
+	}
+	return m.Blobs.Open(ctx, id)
 }
 
 // auditDockerfile is the audit-archive Dockerfile recorded on the build row. It

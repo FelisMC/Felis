@@ -14,11 +14,30 @@ import (
 )
 
 // s3Client is the minimal object-store surface S3ContextStore needs. *minio.Client
-// satisfies it, and a fake satisfies it in tests — so the store's key derivation
-// and not-found handling are unit-verifiable without a live bucket.
+// satisfies it through minioStoreClient, and a fake satisfies it in tests — so the
+// store's key derivation and not-found handling are unit-verifiable without a live
+// bucket.
 type s3Client interface {
 	PutObject(ctx context.Context, bucket, object string, reader io.Reader, size int64, opts minio.PutObjectOptions) (minio.UploadInfo, error)
 	StatObject(ctx context.Context, bucket, object string, opts minio.StatObjectOptions) (minio.ObjectInfo, error)
+	GetObject(ctx context.Context, bucket, object string, opts minio.GetObjectOptions) (s3Object, error)
+}
+
+// s3Object is the handle GetObject yields: a stream whose Stat performs the HEAD
+// eagerly, so a missing object surfaces before the first byte is read.
+type s3Object interface {
+	io.ReadCloser
+	Stat() (minio.ObjectInfo, error)
+}
+
+// minioStoreClient adapts *minio.Client to s3Client. The adapter exists because a
+// method's return type cannot be narrowed by an interface: GetObject on the real
+// client returns a concrete *minio.Object, which does not satisfy a method declared
+// to return s3Object.
+type minioStoreClient struct{ *minio.Client }
+
+func (m minioStoreClient) GetObject(ctx context.Context, bucket, object string, opts minio.GetObjectOptions) (s3Object, error) {
+	return m.Client.GetObject(ctx, bucket, object, opts)
 }
 
 // S3ContextStore is the object-store-backed build-context blob store: it writes
@@ -27,16 +46,17 @@ type s3Client interface {
 // selected by cmd/felis when user_uploads_context is an s3:// base.
 //
 // The bucket + key prefix are parsed from that same base (parseS3Base), so an
-// object written here lands at exactly s3://{bucket}/{prefix}/{id}/context.tar.gz —
-// the ref deriveContextRef records and Kaniko's native s3:// --context reads.
+// object written here lands at exactly s3://{bucket}/{prefix}/{id}/context.tar.gz.
 // Credentials are static V4 keys resolved by cmd/felis from the environment (the
 // setup wizard injects them into felis-api from the felis-uploads-s3 Secret); they
 // never touch felis.toml.
 //
-// Kaniko reading the S3 context at build time needs its own credentials + egress
-// on the sandboxed build Job — a separate deployment integration, exactly like the
-// LocalContextStore PVC mount. This transport only makes the upload durable at the
-// derived location.
+// The sandboxed build Job never needs S3 credentials of its own: the api reads the
+// object back here (Open) and streams it over the internal face, which is the
+// transport every in-cluster build uses (Manager.ContextBaseURL). Only a
+// deployment that leaves ContextBaseURL empty would fall back to Kaniko reading
+// s3:// natively — and such a deployment would still need to hand the build Pod
+// credentials + egress itself.
 type S3ContextStore struct {
 	client s3Client
 	bucket string
@@ -79,7 +99,7 @@ func NewS3ContextStore(cfg S3StoreConfig) (*S3ContextStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("submit: s3 client: %w", err)
 	}
-	return &S3ContextStore{client: client, bucket: bucket, prefix: prefix}, nil
+	return &S3ContextStore{client: minioStoreClient{client}, bucket: bucket, prefix: prefix}, nil
 }
 
 // CheckS3Access verifies the S3 coordinates before they are committed to config:
@@ -165,6 +185,35 @@ func (s *S3ContextStore) Exists(ctx context.Context, id string) (bool, error) {
 		return false, fmt.Errorf("submit: stat context blob: %w", err)
 	}
 	return true, nil
+}
+
+// Open returns the stored context blob for id — the read side of the transport the
+// build Pod's fetch initContainer uses. minio's GetObject returns only once the
+// server answered with an object (it surfaces NoSuchKey up front), so a missing
+// object maps to ErrBlobNotFound right here and the route answers 404.
+func (s *S3ContextStore) Open(ctx context.Context, id string) (io.ReadCloser, error) {
+	key, err := s.keyFor(id)
+	if err != nil {
+		return nil, err
+	}
+	obj, err := s.client.GetObject(ctx, s.bucket, key, minio.GetObjectOptions{})
+	if err != nil {
+		if isS3NotFound(err) {
+			return nil, fmt.Errorf("%w: %v", ErrBlobNotFound, err)
+		}
+		return nil, fmt.Errorf("submit: open context blob: %w", err)
+	}
+	// minio.Object is lazy: the first Read triggers the GET and is where a missing
+	// key actually surfaces, so stat it once here to translate that case eagerly
+	// (the caller can then trust the io.ReadCloser belongs to a real object).
+	if _, err := obj.Stat(); err != nil {
+		_ = obj.Close()
+		if isS3NotFound(err) {
+			return nil, fmt.Errorf("%w: %v", ErrBlobNotFound, err)
+		}
+		return nil, fmt.Errorf("submit: open context blob: %w", err)
+	}
+	return obj, nil
 }
 
 // isS3NotFound recognizes the "object is absent" outcome across S3

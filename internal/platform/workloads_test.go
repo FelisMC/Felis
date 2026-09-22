@@ -179,6 +179,11 @@ func TestAPIDeployment_Wiring(t *testing.T) {
 	if v := envValue(c.Env, "FELIS_IMAGE"); v != p.FelisImage {
 		t.Errorf("FELIS_IMAGE = %q, want %q", v, p.FelisImage)
 	}
+	// The internal-face base URL the api derives submission context-fetch URLs
+	// from — the same address the login gate is handed.
+	if v := envValue(c.Env, "FELIS_API_BASE_URL"); v != InternalAPIBaseURL(p.ControlNamespace) {
+		t.Errorf("FELIS_API_BASE_URL = %q, want %q", v, InternalAPIBaseURL(p.ControlNamespace))
+	}
 	// FELIS_SERVICE_TOKEN must come from a Secret, never a literal value.
 	tok := envVar(c.Env, "FELIS_SERVICE_TOKEN")
 	if tok == nil || tok.ValueFrom == nil || tok.ValueFrom.SecretKeyRef == nil {

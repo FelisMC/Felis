@@ -233,13 +233,25 @@ func provisionSystemServers(ctx context.Context, cfg *config.Config, out io.Writ
 	// (the on-demand BACKUP Job runs in the minecraft namespace and mounts it to
 	// self-record its world_backups row; without the replica the Job's volume
 	// mount fails and every backup request strands in the cluster).
+	// An empty build_namespace means the build system's compiled-in default; the
+	// replica must target the namespace the Jobs actually run in.
+	buildNS := cfg.Registry.BuildNamespace
+	if buildNS == "" {
+		buildNS = platform.DefaultBuildNamespace
+	}
 	secretOutcomes := []systemServerOutcome{
 		ensureSecretReplica(ctx, cl, controlNS, cfg.K8s.Namespace,
-			naming.ServiceTokenSecretName, naming.ServiceTokenSecretKey, "service-token"),
+			naming.ServiceTokenSecretName, naming.ServiceTokenSecretKey, "service-token", "minecraft ns"),
 		ensureSecretReplica(ctx, cl, controlNS, cfg.K8s.Namespace,
-			naming.ForwardingSecretName, naming.ForwardingSecretKey, "forwarding-secret"),
+			naming.ForwardingSecretName, naming.ForwardingSecretKey, "forwarding-secret", "minecraft ns"),
 		ensureSecretReplica(ctx, cl, controlNS, cfg.K8s.Namespace,
-			"felis-config", "felis.toml", "config"),
+			"felis-config", "felis.toml", "config", "minecraft ns"),
+		// The build namespace needs the same token: the build Job's fetch
+		// initContainer reads the submission context from the internal face. Best
+		// effort — a deployment that only installs the control plane simply never
+		// builds a user submission.
+		ensureSecretReplica(ctx, cl, controlNS, buildNS,
+			naming.ServiceTokenSecretName, naming.ServiceTokenSecretKey, "service-token", "felis-build ns"),
 	}
 	outcomes := ensureSystemServers(ctx, cl, cfg.K8s.Namespace, cfg.Velocity.LoginImage, cfg.Velocity.LobbyImage, apiBaseURL, cfg.Server.RootDomain, defaultPanelHostname(cfg.Server.RootDomain, cfg.Auth.PanelHostname))
 	outcomes = append(secretOutcomes, outcomes...)

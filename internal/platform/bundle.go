@@ -78,9 +78,12 @@ func Objects(p Params) []Object {
 
 	// Build-namespace egress lock (reused from internal/build; TypeMeta stamped).
 	buildNP := build.BuildNetworkPolicy(build.NetPolParams{
-		Namespace:          p.BuildNamespace,
-		RegistryNamespace:  p.RegistryNamespace,
-		RegistryPort:       p.RegistryPort,
+		Namespace:         p.BuildNamespace,
+		RegistryNamespace: p.RegistryNamespace,
+		RegistryPort:      p.RegistryPort,
+		ControlNamespace:  p.ControlNamespace,
+		// The internal face's port, single-sourced with the api Deployment below.
+		APIPort:            apiInternalPort,
 		PackageSourceCIDRs: p.PackageSourceCIDRs,
 	})
 	buildNP.TypeMeta = metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"}

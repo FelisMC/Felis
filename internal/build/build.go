@@ -215,6 +215,11 @@ type Config struct {
 	// RegistryURL is the internal registry the build pushes to and Trivy scans
 	// (spec §17). Image refs are validated to be under it.
 	RegistryURL string
+	// FelisImage is the platform image whose `fetch-context` entrypoint streams a
+	// submission's context from the internal face into the build Pod. Required
+	// only when a build's ContextRef is an http(s) URL (the submit lane's derived
+	// shape); an install that never builds user submissions can leave it empty.
+	FelisImage string
 	// KanikoImage / TrivyImage are the executor images.
 	KanikoImage string
 	TrivyImage  string
@@ -355,6 +360,7 @@ func (b *Builder) jobParams(bld *Build, cfg Config) JobParams {
 		Namespace:      cfg.Namespace,
 		ServiceAccount: cfg.ServiceAccount,
 		RegistryURL:    cfg.RegistryURL,
+		FelisImage:     cfg.FelisImage,
 		KanikoImage:    cfg.KanikoImage,
 		TrivyImage:     cfg.TrivyImage,
 		Deadline:       cfg.Deadline,

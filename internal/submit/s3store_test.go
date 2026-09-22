@@ -45,6 +45,41 @@ func (f *fakeS3) StatObject(_ context.Context, bucket, object string, _ minio.St
 	return minio.ObjectInfo{}, minio.ErrorResponse{Code: "NoSuchKey", StatusCode: http.StatusNotFound}
 }
 
+// fakeS3Object is the object handle fakeS3.GetObject yields: Stat mirrors
+// StatObject's not-found behaviour, Read serves the stored bytes.
+type fakeS3Object struct {
+	data []byte
+	err  error
+}
+
+func (o *fakeS3Object) Read(p []byte) (int, error) {
+	if o.err != nil {
+		return 0, o.err
+	}
+	if len(o.data) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, o.data)
+	o.data = o.data[n:]
+	return n, nil
+}
+
+func (o *fakeS3Object) Close() error { return nil }
+
+func (o *fakeS3Object) Stat() (minio.ObjectInfo, error) {
+	if o.err != nil {
+		return minio.ObjectInfo{}, o.err
+	}
+	return minio.ObjectInfo{Size: int64(len(o.data))}, nil
+}
+
+func (f *fakeS3) GetObject(_ context.Context, bucket, object string, _ minio.GetObjectOptions) (s3Object, error) {
+	if data, ok := f.objects[bucket+"/"+object]; ok {
+		return &fakeS3Object{data: append([]byte(nil), data...)}, nil
+	}
+	return &fakeS3Object{err: minio.ErrorResponse{Code: "NoSuchKey", StatusCode: http.StatusNotFound}}, nil
+}
+
 func TestCheckBucketAccess(t *testing.T) {
 	ctx := context.Background()
 
@@ -104,6 +139,34 @@ func TestS3ContextStorePutAndExists(t *testing.T) {
 	}
 	if ok, err := s.Exists(ctx, "sub-abc"); err != nil || !ok {
 		t.Fatalf("Exists after Put = (%v, %v), want (true, nil)", ok, err)
+	}
+}
+
+// Open serves the stored object's bytes and maps a missing key to ErrBlobNotFound
+// (the internal fetch route's 404), eagerly — before the caller reads a byte.
+func TestS3ContextStoreOpen(t *testing.T) {
+	fake := &fakeS3{}
+	s := &S3ContextStore{client: fake, bucket: "felis-uploads", prefix: "builds"}
+	ctx := context.Background()
+
+	if _, err := s.Open(ctx, "sub-gone"); !errors.Is(err, ErrBlobNotFound) {
+		t.Fatalf("Open of a missing object = %v, want ErrBlobNotFound", err)
+	}
+	payload := "\x1f\x8b\x08\x00the modpack context"
+	if _, err := s.Put(ctx, "sub-abc", strings.NewReader(payload)); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	rc, err := s.Open(ctx, "sub-abc")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer rc.Close()
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != payload {
+		t.Fatalf("Open served %q, want %q", got, payload)
 	}
 }
 

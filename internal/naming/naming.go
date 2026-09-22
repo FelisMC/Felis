@@ -56,6 +56,10 @@ const (
 const (
 	ServiceTokenSecretName = "felis-service-token"
 	ServiceTokenSecretKey  = "token"
+	// EnvAPIBaseURL carries the internal-face base URL (platform.InternalAPIBaseURL)
+	// into a pod: the login gate dials it, and the api reads it to derive the build
+	// contexts' fetch URLs, so both sides name the same address for the same face.
+	EnvAPIBaseURL = "FELIS_API_BASE_URL"
 )
 
 // ForwardingSecretName / ForwardingSecretKey name the Velocity modern player-info

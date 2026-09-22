@@ -18,6 +18,7 @@ import (
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/fileedit"
 	"felis.lolicon.best/internal/mail"
+	"felis.lolicon.best/internal/naming"
 	"felis.lolicon.best/internal/panel"
 	"felis.lolicon.best/internal/passkey"
 	"felis.lolicon.best/internal/platform"
@@ -142,10 +143,14 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// build namespace and pushes to the internal registry. The build Pod never
 	// holds DB credentials — felis-api owns the PG store and admits scanned
 	// images, so the Builder is constructed here with both bindings.
+	buildCfg := buildConfig(cfg)
+	// The fetch initContainer runs THIS image's fetch-context entrypoint, so the
+	// build config carries the api's own image (the platform sets FELIS_IMAGE).
+	buildCfg.FelisImage = os.Getenv("FELIS_IMAGE")
 	builder := &build.Builder{
 		Store:  build.NewPGStore(drv.DB()),
-		Jobs:   build.NewK8sJobs(cl, buildConfig(cfg)),
-		Config: buildConfig(cfg),
+		Jobs:   build.NewK8sJobs(cl, buildCfg),
+		Config: buildCfg,
 	}
 
 	// User-modpack approval lane (user-directed extension over §16; see
@@ -159,14 +164,19 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// The blob upload transport is selected by the shape of user_uploads_context —
 	// the two backends the setup wizard chooses between. A local path wires
 	// LocalContextStore (the mounted uploads PVC); an s3:// base wires
-	// S3ContextStore when its credentials resolve. Either way the store's target is
-	// derived from the SAME config field the context ref uses, so the blob lands
-	// exactly where Kaniko's --context points. Anything else — or an s3:// base with
-	// no credentials configured — leaves Blobs nil so POST
+	// S3ContextStore when its credentials resolve. Anything else — or an s3:// base
+	// with no credentials configured — leaves Blobs nil so POST
 	// /me/submissions/{id}/context returns 503, honest like the restore executor
-	// when its PVC is not supplied. (Letting the sandboxed Kaniko build Pod READ the
-	// context — PVC mount for local, creds+egress for S3 — is a separate deployment
-	// integration.)
+	// when its PVC is not supplied.
+	//
+	// Reading the blob back is the API's job, not Kaniko's: the build Pod runs in
+	// another namespace and can neither mount the uploads PVC (a PVC does not cross
+	// namespaces) nor hold object-store credentials, so ContextBaseURL makes the
+	// derived context ref an internal-face URL that the build Job's fetch
+	// initContainer streams (cmd/felis fetch-context). The platform renders this
+	// address into the api Deployment (felis API base URL env); the fallback keeps
+	// a hand-rolled deployment working under the platform's default control
+	// namespace.
 	contextBase := cfg.Registry.UserUploadsContext
 	var blobs submit.Blobs
 	switch {
@@ -186,11 +196,12 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis api: user-uploads context %q is neither a local path nor an s3:// base — modpack upload transport disabled (POST /api/v1/me/submissions/{id}/context returns 503)\n", contextBase)
 	}
 	submissions := &submit.Manager{
-		Store:        submit.NewPGStore(drv.DB()),
-		Builds:       builder,
-		Registry:     cfg.Registry.URL,
-		ContextStore: contextBase,
-		Blobs:        blobs,
+		Store:          submit.NewPGStore(drv.DB()),
+		Builds:         builder,
+		Registry:       cfg.Registry.URL,
+		ContextStore:   contextBase,
+		ContextBaseURL: internalAPIBaseURL(),
+		Blobs:          blobs,
 	}
 
 	// Restore subsystem (spec §7): the weak-SA restore Job mounts the target
@@ -411,6 +422,17 @@ func buildConfig(cfg *config.Config) build.Config {
 		CPULimit:    cfg.Registry.BuildCPULimit,
 		MemLimit:    cfg.Registry.BuildMemLimit,
 	}
+}
+
+// internalAPIBaseURL resolves the platform's internal-face base URL: the address
+// the platform rendered into this pod (felis API base URL env), or — for a
+// hand-rolled deployment that set none — the platform default control namespace,
+// the same fallback setup.go uses to hand the login gate its address.
+func internalAPIBaseURL() string {
+	if base := os.Getenv(naming.EnvAPIBaseURL); base != "" {
+		return base
+	}
+	return platform.InternalAPIBaseURL(platform.DefaultControlNamespace)
 }
 
 // uploadsSchemeRE matches a leading URL scheme like "s3://" or "gs://".

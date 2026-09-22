@@ -607,6 +607,34 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /api/v1/internal/submissions/{id}/context:
+    get:
+      tags: [submissions-internal]
+      operationId: internalSubmissionContext
+      summary: Stream a submission's stored build-context tarball to the build Pod.
+      description: >-
+        The build Job's fetch initContainer cannot mount the control-plane uploads
+        PVC (a PVC does not cross namespaces) and holds no object-store
+        credentials, so the API that stored the blob streams it here. Served on
+        the internal face (service token, no Zero Trust).
+      x-felis-face: [internal]
+      x-felis-tier: service
+      security: [{ serviceToken: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The stored gzip tarball, verbatim.
+          content:
+            application/gzip:
+              schema: { type: string, format: binary }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   /api/v1/internal/servers/{name}/join-event:
     post:
       tags: [servers-internal]

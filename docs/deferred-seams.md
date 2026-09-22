@@ -42,21 +42,22 @@ A grep across `*.md` and `*.go` returns both sets; only the Go ones are seams.
   does not exist. `felis update` runs with a zero window, under which every
   `Scheduled` component degrades to a notify, so no path can currently claim an
   apply is under way.
-- `internal/submit/blobstore.go:40` — the uploads PVC is mounted into felis-api but
-  not into the Kaniko build Pod, so a submitted context is durable at the derived
-  location without yet being readable by the build that consumes it. Audited
-  2026-09-22: this is not a missing volume line — a PVC cannot cross namespaces
-  (uploads live in the control namespace; build Pods run in `felis-build`), so the
-  fix is a transport, not a mount. The `s3://` lane does not close it either: the
-  build Job carries no AWS credentials (no env, and the weak SA's token is
-  deliberately unmounted, so no IAM either). Options on the table: (a) object
-  storage with credentials plumbed into the build Pod as a per-build Secret plus an
-  egress allowance; (b) a context-handoff PVC/Job pair in `felis-build` fed from
-  the API side; (c) a node-local path both sides mount (single-node only, and it
-  hands an arbitrary Dockerfile a filesystem view — needs its own security review).
-  Kaniko/Trivy images are external-only by default; `[registry] kaniko_image /
-  trivy_image / build_cpu_limit / build_mem_limit` now override them for mirrored
-  or air-gapped installs.
+- `internal/submit/blobstore.go` — CLOSED 2026-09-22. The uploads PVC still cannot
+  cross namespaces, so the transport went through the API instead of a mount: the
+  derived context ref is now the internal-face URL
+  (`/api/v1/internal/submissions/{id}/context`, service-token gated), the build
+  Job's `context-fetch` initContainer streams it with `felis fetch-context` and
+  extracts under a zip-slip guard into a size-limited emptyDir, and Kaniko builds
+  `--context=/context`. The token reaches the build namespace through the same
+  Secret-replica mechanism the login gate uses (bootstrap + `felis setup`), and the
+  build egress lock allows exactly the control namespace on the internal port.
+  Uniform for local and s3:// stores — neither hands the sandboxed build Pod a
+  filesystem view or object-store credentials. Kaniko/Trivy images are
+  external-only by default; `[registry] kaniko_image / trivy_image /
+  build_cpu_limit / build_mem_limit` override them for mirrored or air-gapped
+  installs, and Trivy's vulnerability DB download needs the same treatment (a
+  `package_source_cidrs` allowance or an internal `TRIVY_DB_REPOSITORY` mirror) or
+  the scan step fails closed on an egress-locked install.
 
 ## Built; only its I/O is unverifiable from this repo
 

@@ -2,8 +2,10 @@ package build
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
+	"felis.lolicon.best/internal/naming"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -32,7 +34,22 @@ const (
 const (
 	ContainerKaniko = "kaniko"
 	ContainerTrivy  = "trivy"
+	// ContainerFetch is the initContainer that pulls a submission's build context
+	// from the felis-api internal face and extracts it into the shared emptyDir.
+	// It exists only for an http(s) ContextRef (see BuildJob); a ref Kaniko can
+	// read natively (s3://) or a pre-mounted path renders no such container.
+	ContainerFetch = "context-fetch"
+
+	// contextVolume/contextMountPath carry a fetched build context: the fetch
+	// initContainer writes the extracted tree there, Kaniko reads it read-only.
+	contextVolume    = "context"
+	contextMountPath = "/context"
 )
+
+// contextSizeLimit bounds the extracted (attacker-controlled) context tree so a
+// tarball bomb wedges the build pod instead of the node's disk. The compressed
+// upload is capped at 1 GiB by the submit lane; 4 GiB leaves expansion room.
+var contextSizeLimit = resource.MustParse("4Gi")
 
 // JobParams are the rendered inputs to a build Job. They are derived from a
 // Build + Config by the Builder; jobspec is a pure function of them so the
@@ -44,11 +61,14 @@ type JobParams struct {
 	Namespace      string
 	ServiceAccount string
 	RegistryURL    string
-	KanikoImage    string
-	TrivyImage     string
-	Deadline       time.Duration
-	CPULimit       string
-	MemLimit       string
+	// FelisImage runs the context-fetch initContainer (the felis binary's
+	// fetch-context entrypoint). Required when ContextRef is an http(s) URL.
+	FelisImage  string
+	KanikoImage string
+	TrivyImage  string
+	Deadline    time.Duration
+	CPULimit    string
+	MemLimit    string
 }
 
 // BuildJobName is the deterministic Job name for a build id.
@@ -100,21 +120,75 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 	}
 
+	// The context Kaniko reads. An http(s) ref (the submit lane's derived ref: the
+	// API streams the blob on its internal face, because the build Pod can neither
+	// mount the control-plane uploads PVC across namespaces nor hold object-store
+	// credentials) is first fetched into a shared emptyDir; a ref Kaniko can read
+	// in place (s3://, or a path an installer pre-mounted) passes through untouched.
+	contextPath := p.ContextRef
+	initContainers := []corev1.Container{}
+	var kanikoMounts []corev1.VolumeMount
+	var podVolumes []corev1.Volume
+	if isHTTPContextRef(p.ContextRef) {
+		if p.FelisImage == "" {
+			return nil, fmt.Errorf("build: context ref %q needs FelisImage for the fetch initContainer", p.ContextRef)
+		}
+		contextPath = contextMountPath
+		fetch := corev1.Container{
+			Name:  ContainerFetch,
+			Image: p.FelisImage,
+			Args: []string{
+				"fetch-context",
+				"--url=" + p.ContextRef,
+				"--out=" + contextMountPath,
+			},
+			// The internal face is service-token gated, and the token is read from a
+			// Secret the installer materializes in THIS namespace (secretKeyRef is
+			// namespace-local). It is mounted into this initContainer only: the Kaniko
+			// container executes the untrusted Dockerfile and must never hold it, and
+			// pod containers share neither environment nor PID namespace.
+			Env: []corev1.EnvVar{{
+				Name: "FELIS_SERVICE_TOKEN",
+				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: naming.ServiceTokenSecretName},
+					Key:                  naming.ServiceTokenSecretKey,
+				}},
+			}},
+			VolumeMounts:    []corev1.VolumeMount{{Name: contextVolume, MountPath: contextMountPath}},
+			Resources:       corev1.ResourceRequirements{Limits: limits, Requests: limits},
+			SecurityContext: sec,
+		}
+		initContainers = append(initContainers, fetch)
+		kanikoMounts = []corev1.VolumeMount{{Name: contextVolume, MountPath: contextMountPath, ReadOnly: true}}
+		podVolumes = []corev1.Volume{{
+			Name: contextVolume,
+			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
+				// The extracted tree is attacker-controlled; bound it so a tarball
+				// bomb wedges THIS pod (admitted failure) instead of filling the
+				// node's disk. The compressed upload is capped at 1 GiB by the
+				// submit lane, and 4 GiB leaves room for a typical expansion.
+				SizeLimit: sizeLimitPtr(),
+			}},
+		}}
+	}
+
 	kaniko := corev1.Container{
 		Name:  ContainerKaniko,
 		Image: p.KanikoImage,
 		Args: []string{
 			"--dockerfile=Dockerfile",
-			"--context=" + p.ContextRef,
+			"--context=" + contextPath,
 			"--destination=" + p.ImageRef,
 			// The internal registry is in-cluster only and may serve plain HTTP;
 			// it is never a public ingress (spec §17).
 			"--insecure",
 			"--skip-tls-verify",
 		},
+		VolumeMounts:    kanikoMounts,
 		Resources:       corev1.ResourceRequirements{Limits: limits, Requests: limits},
 		SecurityContext: sec,
 	}
+	initContainers = append(initContainers, kaniko)
 
 	trivy := corev1.Container{
 		Name:  ContainerTrivy,
@@ -147,8 +221,9 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 					RestartPolicy:                corev1.RestartPolicyNever,
 					ServiceAccountName:           p.ServiceAccount,
 					AutomountServiceAccountToken: boolPtr(false),
-					InitContainers:               []corev1.Container{kaniko},
+					InitContainers:               initContainers,
 					Containers:                   []corev1.Container{trivy},
+					Volumes:                      podVolumes,
 				},
 			},
 		},
@@ -156,11 +231,24 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 	return job, nil
 }
 
+// isHTTPContextRef reports whether ref is an http(s) URL — the shape the submit
+// lane derives when the API is the blob transport — i.e. a context only the
+// fetch initContainer can turn into a local path for Kaniko.
+func isHTTPContextRef(ref string) bool {
+	return strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://")
+}
+
 // NetPolParams parameterises the build-namespace egress lock.
 type NetPolParams struct {
 	Namespace         string
 	RegistryNamespace string
 	RegistryPort      int32
+	// ControlNamespace and APIPort are where the felis-api internal face lives:
+	// the fetch initContainer's only egress besides DNS and the registry. Both
+	// defaults (felis, 8081) match platform.DefaultControlNamespace and the
+	// internal listener, so an unset Params is still the safe shape.
+	ControlNamespace string
+	APIPort          int32
 	// PackageSourceCIDRs is an optional, explicit allowlist of external package
 	// mirrors (spec §16: egress 仅 registry + 包源). Empty means the most
 	// locked-down default — no internet egress at all (默认拒外网).
@@ -177,10 +265,19 @@ func BuildNetworkPolicy(p NetPolParams) *networkingv1.NetworkPolicy {
 	if port == 0 {
 		port = 5000
 	}
+	controlNS := p.ControlNamespace
+	if controlNS == "" {
+		controlNS = "felis"
+	}
+	apiPort := p.APIPort
+	if apiPort == 0 {
+		apiPort = 8081
+	}
 	dnsUDP := corev1.ProtocolUDP
 	dnsTCP := corev1.ProtocolTCP
 	dns53 := intstr.FromInt32(53)
 	regPort := intstr.FromInt32(port)
+	ctxPort := intstr.FromInt32(apiPort)
 
 	egress := []networkingv1.NetworkPolicyEgressRule{
 		// DNS resolution: port-restricted to 53, so this is not an open-internet
@@ -201,6 +298,21 @@ func BuildNetworkPolicy(p NetPolParams) *networkingv1.NetworkPolicy {
 			}},
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &dnsTCP, Port: &regPort},
+			},
+		},
+		// felis-api's internal face, where the fetch initContainer streams the
+		// submission's build context from. Without this rule the build Pod could
+		// not read the context and every user build would fail in its first init
+		// step — the default-deny here is exactly why the transport had to be
+		// planned, not assumed.
+		{
+			To: []networkingv1.NetworkPolicyPeer{{
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"kubernetes.io/metadata.name": controlNS},
+				},
+			}},
+			Ports: []networkingv1.NetworkPolicyPort{
+				{Protocol: &dnsTCP, Port: &ctxPort},
 			},
 		},
 	}
@@ -281,4 +393,12 @@ func resourceLimits(cpu, mem string) (corev1.ResourceList, error) {
 
 func boolPtr(b bool) *bool    { return &b }
 func int32Ptr(i int32) *int32 { return &i }
+
+// sizeLimitPtr returns a copy of contextSizeLimit for a VolumeSource (the API
+// object only ever gets serialized, but a shared pointer across rendered Jobs
+// invites accidental aliasing).
+func sizeLimitPtr() *resource.Quantity {
+	q := contextSizeLimit
+	return &q
+}
 func int64Ptr(i int64) *int64 { return &i }

@@ -1,8 +1,10 @@
 package submit
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -48,6 +50,14 @@ func (f *fakeBlobs) Exists(_ context.Context, id string) (bool, error) {
 	}
 	_, ok := f.stored[id]
 	return ok, nil
+}
+
+func (f *fakeBlobs) Open(_ context.Context, id string) (io.ReadCloser, error) {
+	b, ok := f.stored[id]
+	if !ok {
+		return nil, fmt.Errorf("%w: no blob for %s", ErrBlobNotFound, id)
+	}
+	return io.NopCloser(bytes.NewReader(b)), nil
 }
 
 // testNow is the frozen clock for hermetic assertions.
@@ -214,6 +224,52 @@ func TestCreatePendingDoesNotBuild(t *testing.T) {
 	}
 	if _, ok := st.subs["sub-1"]; !ok {
 		t.Fatal("submission not persisted")
+	}
+}
+
+// With a ContextBaseURL the derived ref is the internal-face URL the build Pod's
+// fetch initContainer dials — not a filesystem path it could never read across
+// namespaces. OpenContext then serves whatever the Blobs transport stored.
+func TestContextRefIsFetchURLAndOpenContextServesIt(t *testing.T) {
+	m, _, _ := newManager()
+	m.ContextBaseURL = "http://felis-api-internal.felis.svc.cluster.local:8081/"
+	m.Blobs = newFakeBlobs()
+	ctx := context.Background()
+
+	sub, err := m.Create(ctx, CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	want := "http://felis-api-internal.felis.svc.cluster.local:8081/api/v1/internal/submissions/sub-1/context"
+	if sub.ContextRef != want {
+		t.Fatalf("context_ref = %q, want the internal fetch URL %q", sub.ContextRef, want)
+	}
+
+	// Before any upload the read path reports not-found (the route's 404).
+	if _, err := m.OpenContext(ctx, sub.ID); !errors.Is(err, ErrBlobNotFound) {
+		t.Fatalf("OpenContext before upload = %v, want ErrBlobNotFound", err)
+	}
+	payload := "\x1f\x8b\x08\x00payload"
+	if _, err := m.UploadContext(ctx, sub.ID, "user-1", strings.NewReader(payload)); err != nil {
+		t.Fatalf("UploadContext: %v", err)
+	}
+	rc, err := m.OpenContext(ctx, sub.ID)
+	if err != nil {
+		t.Fatalf("OpenContext: %v", err)
+	}
+	defer rc.Close()
+	got, _ := io.ReadAll(rc)
+	if string(got) != payload {
+		t.Fatalf("OpenContext served %q, want %q", got, payload)
+	}
+}
+
+// No upload transport ⇒ no readable blob: the route reports the same 503 the
+// upload endpoint does, rather than a misleading 404.
+func TestOpenContextWithoutTransportIsUnavailable(t *testing.T) {
+	m, _, _ := newManager()
+	if _, err := m.OpenContext(context.Background(), "sub-1"); !errors.Is(err, ErrUploadsUnavailable) {
+		t.Fatalf("OpenContext with nil Blobs = %v, want ErrUploadsUnavailable", err)
 	}
 }
 

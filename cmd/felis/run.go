@@ -19,6 +19,7 @@ Commands:
   restore           Extract a world archive into a world volume (internal Job entrypoint)
   backup            Archive a world into the backup store and record it (internal Job entrypoint)
   files             List/read/write one file in a stopped server's world (internal Job entrypoint)
+  fetch-context     Fetch and extract a submission's build context (internal Job entrypoint)
   manifests         Render the control-plane RBAC + NetworkPolicy install bundle as YAML
   apply             Create a MinecraftServer CRD (direct K8s write; use -f server.json)
   setup             Run host bootstrap + first-run setup console (TUI; requires root/sudo)
@@ -47,6 +48,7 @@ var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"restore":          cmdRestore,
 	"backup":           cmdBackup,
 	"files":            cmdFiles,
+	"fetch-context":    cmdFetchContext,
 	"manifests":        cmdManifests,
 	"apply":            cmdApply,
 	"setup":            cmdSetup,

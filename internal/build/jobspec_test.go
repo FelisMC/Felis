@@ -177,6 +177,132 @@ func TestBuildNetworkPolicyIsDefaultDeny(t *testing.T) {
 	if !egressAllowsPort(np, 53) {
 		t.Error("egress must allow DNS (port 53)")
 	}
+	// The context fetch: build Pods stream submissions from the control
+	// namespace's internal face (defaults: felis + 8081).
+	if !egressAllowsNamespace(np, "felis") {
+		t.Error("egress must allow the control namespace (context fetch)")
+	}
+	if !egressAllowsPort(np, 8081) {
+		t.Error("egress must allow the internal face's port (8081)")
+	}
+}
+
+// An http(s) context ref — the submit lane's derived shape — must render the
+// fetch initContainer ahead of Kaniko, with the service token mounted ONLY into
+// that container, and hand Kaniko the extracted local directory.
+func TestBuildJobFetchesHTTPContext(t *testing.T) {
+	p := sampleJobParams()
+	p.ContextRef = "http://felis-api-internal.felis.svc.cluster.local:8081/api/v1/internal/submissions/sub-abc/context"
+	p.FelisImage = "felis:test"
+	job, err := BuildJob(p)
+	if err != nil {
+		t.Fatalf("BuildJob: %v", err)
+	}
+	inits := job.Spec.Template.Spec.InitContainers
+	if len(inits) != 2 || inits[0].Name != ContainerFetch || inits[1].Name != ContainerKaniko {
+		t.Fatalf("initContainers = %v, want [%s %s]", initNames(inits), ContainerFetch, ContainerKaniko)
+	}
+	fetch, kaniko := inits[0], inits[1]
+	if fetch.Image != p.FelisImage {
+		t.Errorf("fetch image = %q, want the platform image %q", fetch.Image, p.FelisImage)
+	}
+	if !hasArg(fetch.Args, "fetch-context") || !hasArg(fetch.Args, "--url="+p.ContextRef) ||
+		!hasArg(fetch.Args, "--out="+contextMountPath) {
+		t.Errorf("fetch args = %v, want fetch-context --url=%s --out=%s", fetch.Args, p.ContextRef, contextMountPath)
+	}
+	// The token comes from the namespace-local Secret and is mounted into the
+	// fetch container only — never into Kaniko, which executes the untrusted
+	// Dockerfile.
+	var fetchToken *corev1.EnvVar
+	for i := range fetch.Env {
+		if fetch.Env[i].Name == "FELIS_SERVICE_TOKEN" {
+			fetchToken = &fetch.Env[i]
+		}
+	}
+	if fetchToken == nil || fetchToken.ValueFrom == nil || fetchToken.ValueFrom.SecretKeyRef == nil {
+		t.Fatalf("fetch container must read FELIS_SERVICE_TOKEN from a secretKeyRef, got %#v", fetchToken)
+	}
+	if fetchToken.Value != "" {
+		t.Error("fetch container must not carry a literal token")
+	}
+	if len(kaniko.Env) != 0 {
+		t.Errorf("kaniko must carry no env (especially no token), got %v", kaniko.Env)
+	}
+	if !hasArg(kaniko.Args, "--context="+contextMountPath) {
+		t.Errorf("kaniko context = %v, want the fetched local dir %s", kaniko.Args, contextMountPath)
+	}
+	// The shared emptyDir must exist, be bounded, and be read-only to Kaniko.
+	var ctxVol *corev1.Volume
+	for i := range job.Spec.Template.Spec.Volumes {
+		if job.Spec.Template.Spec.Volumes[i].Name == contextVolume {
+			ctxVol = &job.Spec.Template.Spec.Volumes[i]
+		}
+	}
+	if ctxVol == nil || ctxVol.EmptyDir == nil || ctxVol.EmptyDir.SizeLimit == nil {
+		t.Fatalf("context volume must be a size-limited emptyDir, got %#v", ctxVol)
+	}
+	mountedRO := false
+	for _, m := range kaniko.VolumeMounts {
+		if m.Name == contextVolume && m.MountPath == contextMountPath && m.ReadOnly {
+			mountedRO = true
+		}
+	}
+	if !mountedRO {
+		t.Errorf("kaniko must mount the context read-only at %s, got %v", contextMountPath, kaniko.VolumeMounts)
+	}
+}
+
+// Without the platform image the fetch initContainer cannot run, so rendering an
+// http(s) context must fail loudly at Job-creation time, not with an ImagePull
+// error at 3am.
+func TestBuildJobHTTPContextNeedsFelisImage(t *testing.T) {
+	p := sampleJobParams()
+	p.ContextRef = "https://example.invalid/sub-abc/context"
+	if _, err := BuildJob(p); err == nil {
+		t.Fatal("http(s) context without FelisImage must fail to render")
+	}
+}
+
+// A ref Kaniko reads natively (or an installer pre-mounted) must NOT grow the
+// fetch initContainer: the transport is for http(s) only.
+func TestBuildJobNativeContextNeedsNoFetch(t *testing.T) {
+	p := sampleJobParams()
+	p.ContextRef = "s3://bucket/prefix/context.tar.gz"
+	job, err := BuildJob(p)
+	if err != nil {
+		t.Fatalf("BuildJob: %v", err)
+	}
+	if len(job.Spec.Template.Spec.InitContainers) != 1 || job.Spec.Template.Spec.InitContainers[0].Name != ContainerKaniko {
+		t.Errorf("a native ref must render just kaniko, got %v", initNames(job.Spec.Template.Spec.InitContainers))
+	}
+	if len(job.Spec.Template.Spec.Volumes) != 0 {
+		t.Errorf("a native ref must render no context volume, got %v", job.Spec.Template.Spec.Volumes)
+	}
+}
+
+func initNames(cs []corev1.Container) []string {
+	names := make([]string, 0, len(cs))
+	for _, c := range cs {
+		names = append(names, c.Name)
+	}
+	return names
+}
+
+// An explicit control namespace/port override must reach the egress rule (a
+// renamed control namespace otherwise silently blocks every context fetch).
+func TestBuildNetworkPolicyHonoursControlNamespaceOverride(t *testing.T) {
+	np := BuildNetworkPolicy(NetPolParams{
+		Namespace:         "felis-build",
+		RegistryNamespace: "felis-system",
+		ControlNamespace:  "control-plane",
+		APIPort:           9081,
+	})
+	if !egressAllowsNamespace(np, "control-plane") {
+		t.Error("egress must allow the overridden control namespace")
+	}
+	if !egressAllowsPort(np, 9081) {
+		t.Error("egress must allow the overridden api port")
+	}
 }
 
 // With no package-source CIDRs configured, there must be zero IPBlock egress —

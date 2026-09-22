@@ -2148,6 +2148,10 @@ deploy_bundle() {
     --from-file=felis.toml="${STATE_DIR}/felis.pod.toml" \
     --dry-run=client -o yaml | kube apply -f -
   apply_literal_secret "$CONTROL_NS" felis-service-token token "$SERVICE_TOKEN"
+  # The build namespace needs the same token: the build Job's fetch initContainer
+  # streams a submission's build context from the felis-api internal face, and a
+  # secretKeyRef is namespace-local (a PVC cannot carry it across either).
+  apply_literal_secret "$BUILD_NS" felis-service-token token "$SERVICE_TOKEN"
   # The forwarding key every backend verifies the proxy's handshake with. `felis setup`
   # replicates it into the minecraft namespace (ensureSecretReplica) before it creates
   # the pods that mount it; the operator injects it into EVERY backend, because Velocity's

@@ -95,7 +95,7 @@ const felisLimboHealthPort int32 = 8080
 // fail-safes to readiness-only, so a login pod that has the URL/domain but not yet
 // the token is safe (it simply does not authenticate) rather than broken.
 const (
-	envAPIBaseURL    = "FELIS_API_BASE_URL"
+	envAPIBaseURL    = naming.EnvAPIBaseURL
 	envRootDomain    = "FELIS_ROOT_DOMAIN"
 	envPanelHostname = "FELIS_PANEL_HOSTNAME"
 	envLobbyServer   = "FELIS_LOBBY_SERVER"
@@ -471,26 +471,27 @@ func phaseOrPending(p v1alpha1.Phase) string {
 	return string(p)
 }
 
-// ensureSecretReplica copies one Secret from the control namespace into the minecraft
-// namespace so a backend pod can mount it via secretKeyRef. A secretKeyRef is
-// namespace-local, but the backends run in the minecraft namespace while the sources
-// of truth live beside the control plane — so without this replica the operator's
-// injected secretKeyRef would dangle and wedge the pod in CreateContainerConfigError.
+// ensureSecretReplica copies one Secret from the control namespace into a workload
+// namespace (minecraft — or the build namespace, whose fetch initContainer reads the
+// context from the felis-api internal face with the same token) so a pod can mount it
+// via secretKeyRef. A secretKeyRef is namespace-local, but those workloads do not run
+// beside the control plane — so without this replica the secretKeyRef would dangle and
+// wedge the pod in CreateContainerConfigError.
 //
-// Two Secrets need it, for different reasons: the service token (login only — it
-// authenticates the limbo plugin to the felis-api internal face) and the Velocity
-// modern-forwarding secret (every backend — it is how a backend knows a login really
-// came from the proxy, and so that the player's UUID is Mojang-verified rather than
-// offline-derived).
+// Two Secrets need it, for different reasons: the service token (the login limbo and
+// the build Pod's context fetch — both authenticate to the felis-api internal face)
+// and the Velocity modern-forwarding secret (every backend — it is how a backend knows
+// a login really came from the proxy, and so that the player's UUID is Mojang-verified
+// rather than offline-derived).
 //
 // It is create-if-absent: an existing replica is left untouched so a hand-rotated
-// value in the minecraft namespace is never clobbered (to rotate, delete the replica
+// value in the workload namespace is never clobbered (to rotate, delete the replica
 // and re-run setup). Best-effort like the rest of the provisioner: a missing source or
 // a create failure degrades to a reported outcome, never a hard setup failure. It
 // copies only Type and Data — never labels/annotations/ownerRefs — so the replica
 // carries no accidental GC owner or managed-by lineage.
-func ensureSecretReplica(ctx context.Context, cl client.Client, controlNamespace, minecraftNamespace, secretName, secretKey, label string) systemServerOutcome {
-	name := label + " (minecraft ns)"
+func ensureSecretReplica(ctx context.Context, cl client.Client, controlNamespace, minecraftNamespace, secretName, secretKey, label, where string) systemServerOutcome {
+	name := label + " (" + where + ")"
 	validate := func(secret *corev1.Secret, location, skipped string) systemServerOutcome {
 		if len(secret.Data[secretKey]) == 0 {
 			return systemServerOutcome{name: name, skipped: fmt.Sprintf(

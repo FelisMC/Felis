@@ -2,6 +2,8 @@ package submit
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,6 +53,39 @@ func TestLocalContextStorePutAndExists(t *testing.T) {
 			names = append(names, e.Name())
 		}
 		t.Fatalf("dir entries = %v, want only %q (no temp files)", names, contextBlobName)
+	}
+}
+
+// Open is the internal context-fetch route's read path: it serves exactly the
+// stored bytes, and a missing blob is ErrBlobNotFound (404), never a bare os error.
+func TestLocalContextStoreOpen(t *testing.T) {
+	base := t.TempDir()
+	s := &LocalContextStore{Base: base}
+	ctx := context.Background()
+
+	if _, err := s.Open(ctx, "sub-gone"); !errors.Is(err, ErrBlobNotFound) {
+		t.Fatalf("Open of a missing blob = %v, want ErrBlobNotFound", err)
+	}
+
+	payload := "\x1f\x8b\x08\x00the modpack context"
+	if _, err := s.Put(ctx, "sub-abc", strings.NewReader(payload)); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	rc, err := s.Open(ctx, "sub-abc")
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer rc.Close()
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != payload {
+		t.Fatalf("Open served %q, want %q", got, payload)
+	}
+	// The same path guard as Put: an id that could escape Base is refused.
+	if _, err := s.Open(ctx, "../etc/passwd"); err == nil {
+		t.Fatal("Open must reject an unsafe id")
 	}
 }
 

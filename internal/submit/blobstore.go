@@ -111,5 +111,23 @@ func (s *LocalContextStore) Exists(_ context.Context, id string) (bool, error) {
 	}
 }
 
+// Open returns the stored context blob for id — the read side of the transport the
+// build Pod's fetch initContainer uses. A missing blob is ErrBlobNotFound (404 on
+// the route), never a bare os error, so the API keeps its status mapping.
+func (s *LocalContextStore) Open(_ context.Context, id string) (io.ReadCloser, error) {
+	dir, err := s.dir(id)
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.Open(filepath.Join(dir, contextBlobName))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("%w: %v", ErrBlobNotFound, err)
+		}
+		return nil, fmt.Errorf("submit: open context blob: %w", err)
+	}
+	return f, nil
+}
+
 // Compile-time proof that the filesystem store satisfies the Blobs transport.
 var _ Blobs = (*LocalContextStore)(nil)

@@ -271,6 +271,9 @@ func (a *API) internalAPIRoutes() []apiRoute {
 		{Method: "GET", Pattern: "/readyz", Public: true, h: a.handleReadyz},
 
 		{Method: "GET", Pattern: "/api/v1/servers", h: a.handleListServers},
+		// The build Pod's context-fetch initContainer streams a submission's stored
+		// modpack through this route (build namespace cannot mount the uploads PVC).
+		{Method: "GET", Pattern: "/api/v1/internal/submissions/{id}/context", h: a.handleInternalSubmissionContext},
 		{Method: "POST", Pattern: "/api/v1/internal/servers/{name}/ready", h: a.handleReady},
 		{Method: "POST", Pattern: "/api/v1/internal/servers/{name}/join-event", h: a.handleJoinEvent},
 		// Domain-autostart (spec §9.1, §14): velocity drives the wake lever and polls

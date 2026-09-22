@@ -42,6 +42,11 @@ type SubmissionService interface {
 	// Reject is the admin's other verdict: pending_review -> rejected with a
 	// required reason; it starts no build.
 	Reject(ctx context.Context, id, reviewedBy, reason string) (*submit.Submission, error)
+	// OpenContext returns the stored build-context blob for the internal
+	// context-fetch route: the build Pod's initContainer cannot mount the uploads
+	// PVC across namespaces and holds no object-store credentials, so it streams
+	// the blob from the API over the service-token-gated internal face instead.
+	OpenContext(ctx context.Context, id string) (io.ReadCloser, error)
 }
 
 // createSubmissionRequest is the POST /me/submissions body. The user
@@ -211,11 +216,40 @@ func writeSubmitError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, submit.ErrAlreadyReviewed):
 		writeError(w, r, newError(http.StatusConflict, "already_reviewed",
 			"submission has already been reviewed"))
+	case errors.Is(err, submit.ErrBlobNotFound):
+		writeError(w, r, newError(http.StatusNotFound, "not_found", "no context uploaded for this submission"))
 	case errors.Is(err, submit.ErrUploadsUnavailable):
 		writeError(w, r, newError(http.StatusServiceUnavailable, "uploads_unavailable",
 			"modpack upload transport is not configured"))
 	default:
 		writeError(w, r, err)
+	}
+}
+
+// handleInternalSubmissionContext streams a submission's stored build-context
+// tarball to the build Pod's `felis fetch-context` initContainer. It lives on the
+// internal face (service-token, no Zero Trust) because its only caller is
+// in-cluster infrastructure: the build Job runs in the build namespace, where it
+// can neither mount the uploads PVC nor hold object-store credentials, so the API
+// — which wrote the blob — is the transport. The blob is served verbatim; the
+// fetcher extracts it under a zip-slip guard, and Kaniko treats the result as
+// hostile regardless (spec §16).
+func (a *API) handleInternalSubmissionContext(w http.ResponseWriter, r *http.Request) {
+	if a.Submissions == nil {
+		writeError(w, r, errSubmissionsUnavailable)
+		return
+	}
+	rc, err := a.Submissions.OpenContext(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeSubmitError(w, r, err)
+		return
+	}
+	defer rc.Close()
+	w.Header().Set("Content-Type", "application/gzip")
+	if _, err := io.Copy(w, rc); err != nil {
+		// The status is already committed; the client sees a truncated stream and
+		// the fetch fails on size/extract, so there is nothing left to write here.
+		return
 	}
 }
 

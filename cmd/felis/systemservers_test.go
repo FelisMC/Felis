@@ -156,7 +156,7 @@ func TestEnsureSecretReplica(t *testing.T) {
 	}
 	replicate := func(cl client.Client, controlNS, mcNS string) systemServerOutcome {
 		return ensureSecretReplica(ctx, cl, controlNS, mcNS,
-			naming.ServiceTokenSecretName, naming.ServiceTokenSecretKey, "service-token")
+			naming.ServiceTokenSecretName, naming.ServiceTokenSecretKey, "service-token", "minecraft ns")
 	}
 
 	t.Run("replicates when absent", func(t *testing.T) {

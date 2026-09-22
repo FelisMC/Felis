@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 
 	"felis.lolicon.best/internal/submit"
@@ -35,6 +36,9 @@ type fakeSubmissions struct {
 	rejectedBy string
 	rejectReas string
 	rejectErr  error
+	openedID   string
+	openBody   string
+	openErr    error
 }
 
 func (f *fakeSubmissions) Create(_ context.Context, req submit.CreateRequest) (*submit.Submission, error) {
@@ -80,6 +84,16 @@ func (f *fakeSubmissions) Reject(_ context.Context, id, reviewedBy, reason strin
 		return nil, f.rejectErr
 	}
 	return &submit.Submission{ID: id, Status: submit.StatusRejected, ReviewedBy: reviewedBy, RejectReason: reason}, nil
+}
+
+// openErr injects the OpenContext outcome; the body recorder lets the internal
+// route test assert byte-exact streaming and the 404 mapping.
+func (f *fakeSubmissions) OpenContext(_ context.Context, id string) (io.ReadCloser, error) {
+	f.openedID = id
+	if f.openErr != nil {
+		return nil, f.openErr
+	}
+	return io.NopCloser(strings.NewReader(f.openBody)), nil
 }
 
 // appSubAPI wires a submissions service behind an ordinary user principal (the
@@ -395,4 +409,47 @@ func TestSubmissionRoutesWithoutServiceAre503(t *testing.T) {
 	if w := do(adm.ExternalHandler(), "GET", "/api/v1/submissions", "", nil); w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("admin route: code = %d, want 503", w.Code)
 	}
+}
+
+// The internal context route is the build Pod's only read path to a submission's
+// blob: it streams the bytes verbatim, and its error mapping distinguishes a
+// missing blob (404) from an unwired transport (503).
+func TestInternalSubmissionContextRoute(t *testing.T) {
+	newAPI := func(s SubmissionService) *API {
+		api := newTestAPI(newFakeRepo(), newFakeCluster())
+		api.Submissions = s
+		return api
+	}
+
+	t.Run("streams the blob", func(t *testing.T) {
+		fs := &fakeSubmissions{openBody: "\x1f\x8b\x08\x00blob"}
+		w := do(newAPI(fs).InternalHandler(), "GET", "/api/v1/internal/submissions/sub-7/context", "", nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
+		}
+		if w.Body.String() != fs.openBody {
+			t.Fatalf("body = %q, want the stored blob %q", w.Body.String(), fs.openBody)
+		}
+		if fs.openedID != "sub-7" {
+			t.Fatalf("opened id = %q, want the path id", fs.openedID)
+		}
+		if ct := w.Header().Get("Content-Type"); ct != "application/gzip" {
+			t.Fatalf("content-type = %q, want application/gzip", ct)
+		}
+	})
+
+	t.Run("missing blob is 404", func(t *testing.T) {
+		fs := &fakeSubmissions{openErr: fmt.Errorf("%w: gone", submit.ErrBlobNotFound)}
+		w := do(newAPI(fs).InternalHandler(), "GET", "/api/v1/internal/submissions/sub-7/context", "", nil)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("code = %d, want 404", w.Code)
+		}
+	})
+
+	t.Run("unwired transport is 503", func(t *testing.T) {
+		w := do(newAPI(nil).InternalHandler(), "GET", "/api/v1/internal/submissions/sub-7/context", "", nil)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("code = %d, want 503", w.Code)
+		}
+	})
 }
