@@ -2037,6 +2037,10 @@ ${smtp_block}
 # append as namespace-rewritten guests. A fresh install federates LittleSkin. Edit the
 # list in ${STATE_DIR}/felis.host.toml and rerun the installer; re-runs keep it as it
 # is, and with no [[auth_source]] at all the server is Mojang-only.
+# Order is trust: the first source that answers 200 wins, so list the most trusted roots
+# first, and remove a compromised root rather than just moving it down.
+# A tag is permanent: it is hashed into every player UUID of its source, so changing it
+# (even its case) gives all of them new UUIDs and orphans their data, links and bans.
 ${auth_source_blocks}
 EOF
 }
@@ -2367,6 +2371,11 @@ write_nano_config() {
 # Mojang is always the first (identity) source, added in code — do NOT list it here.
 # Add each third-party Yggdrasil root below (priority = order). url is the FULL
 # hasJoined endpoint. After editing:  sudo systemctl restart felis-nano
+#
+# Order is trust: the first source that answers 200 wins, so list the most trusted roots
+# first, and remove a compromised root rather than just moving it down.
+# tag is permanent: it is hashed into every player UUID of its source, so changing it
+# (even its case) gives all of them new UUIDs and orphans their data, links and bans.
 #
 # prefix is required, 1-4 letters/digits, unique per source. A player of this source
 # whose name belongs to a Mojang account joins as PREFIX_name (LS_steve) instead —
