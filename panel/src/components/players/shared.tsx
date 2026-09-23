@@ -22,6 +22,14 @@ export const MC_NAME = /^[A-Za-z0-9_]{1,16}$/;
 
 export type Feedback = { kind: "ok" | "err"; msg: string } | null;
 
+/** rconReply decides what a mutation reports: the server's own reply, verbatim,
+ *  whenever it says anything — the reply is ground truth and names refusals too
+ *  ("That player does not exist"), so a canned confirmation must never speak over
+ *  it. The localized fallback only covers a silent server. */
+export function rconReply(output: string | undefined, fallback: string): string {
+  return (output ?? "").trim() || fallback;
+}
+
 /** FeedbackLine is the shared inline result line for a player action: emerald on
  *  success, destructive on failure. There is no toast library — every section
  *  reports here, in place, right under the control that fired. */

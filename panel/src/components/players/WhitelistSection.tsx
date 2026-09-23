@@ -12,6 +12,7 @@ import {
   MC_NAME,
   PagerFooter,
   PlayerField,
+  rconReply,
   SearchBox,
   usePagedNames,
   type Feedback,
@@ -56,8 +57,11 @@ export function WhitelistSection({ name, defaultOpen = false }: { name: string; 
     setFb(null);
     setAdding(true);
     try {
-      await api.accessWhitelist(name, "add", player);
-      setFb({ kind: "ok", msg: t("access_whitelist_added", { player }) });
+      const res = await api.accessWhitelist(name, "add", player);
+      setFb({
+        kind: "ok",
+        msg: rconReply(res.output, t("access_whitelist_added", { player })),
+      });
       setValue("");
       setTouched(false);
       reload();
@@ -73,8 +77,11 @@ export function WhitelistSection({ name, defaultOpen = false }: { name: string; 
       setFb(null);
       setRemoving(p);
       try {
-        await api.accessWhitelist(name, "remove", p);
-        setFb({ kind: "ok", msg: t("access_whitelist_removed", { player: p }) });
+        const res = await api.accessWhitelist(name, "remove", p);
+        setFb({
+          kind: "ok",
+          msg: rconReply(res.output, t("access_whitelist_removed", { player: p })),
+        });
         reload();
       } catch (e) {
         setFb({ kind: "err", msg: humanizeError(e) });

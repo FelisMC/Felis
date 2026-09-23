@@ -12,6 +12,7 @@ import {
   MC_NAME,
   PagerFooter,
   PlayerField,
+  rconReply,
   SearchBox,
   usePagedNames,
   type Feedback,
@@ -68,8 +69,8 @@ export function BansSection({ name }: { name: string }) {
     setFb(null);
     setBanning(true);
     try {
-      await api.accessBan(name, "ban", player);
-      setFb({ kind: "ok", msg: t("access_banned", { player }) });
+      const res = await api.accessBan(name, "ban", player);
+      setFb({ kind: "ok", msg: rconReply(res.output, t("access_banned", { player })) });
       setValue("");
       setTouched(false);
       setArmed(false);
@@ -86,8 +87,8 @@ export function BansSection({ name }: { name: string }) {
       setFb(null);
       setPardoning(p);
       try {
-        await api.accessBan(name, "pardon", p);
-        setFb({ kind: "ok", msg: t("access_pardoned", { player: p }) });
+        const res = await api.accessBan(name, "pardon", p);
+        setFb({ kind: "ok", msg: rconReply(res.output, t("access_pardoned", { player: p })) });
         reload();
       } catch (e) {
         setFb({ kind: "err", msg: humanizeError(e) });

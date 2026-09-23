@@ -9,6 +9,7 @@ import {
   CollapsibleSection,
   FeedbackLine,
   PagerFooter,
+  rconReply,
   SearchBox,
   usePagedNames,
   type Feedback,
@@ -52,11 +53,16 @@ export function OnlineSection({ name, defaultOpen = true }: { name: string; defa
       setFb(null);
       setPending({ player: playerName, action });
       try {
-        if (action === "kick") await api.accessKick(name, playerName);
-        else await api.accessBan(name, "ban", playerName);
+        const res =
+          action === "kick"
+            ? await api.accessKick(name, playerName)
+            : await api.accessBan(name, "ban", playerName);
         setFb({
           kind: "ok",
-          msg: t(action === "kick" ? "access_kicked" : "access_banned", { player: playerName }),
+          msg: rconReply(
+            res.output,
+            t(action === "kick" ? "access_kicked" : "access_banned", { player: playerName }),
+          ),
         });
         reload(); // the player just left — refresh so the roster reflects it
       } catch (e) {
