@@ -5,7 +5,7 @@
   "name": "Felis Link",
   "description": "In-game /link command: mints a one-time account-link code from felis-api.",
   "authors": ["Felis"],
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "environment": "server",
   "entrypoints": {
     "server": ["best.lolicon.felis.fabric.FelisFabricMod"]
