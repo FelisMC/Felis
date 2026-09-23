@@ -84,7 +84,7 @@ set -Eeuo pipefail
 # ---------------------------------------------------------------------------
 # Configuration & constants
 # ---------------------------------------------------------------------------
-FELIS_REPO_URL="${FELIS_REPO_URL:-https://github.com/MliroLirrorsIngenuity/Felis.git}"
+FELIS_REPO_URL="${FELIS_REPO_URL:-https://github.com/FelisMC/Felis.git}"
 # Which version to install. "release" builds the newest published GitHub release;
 # "dev" builds the tip of main. Release is the default because an installer that
 # tracks a moving branch by default hands every new host a different, untested
@@ -1430,7 +1430,7 @@ resolve_game_jars() {
 luckperms_latest_jar() {
   local json url
   json="$(curl -fsSL --retry 5 --retry-delay 2 \
-    -A "felis-bootstrap (+https://github.com/MliroLirrorsIngenuity/Felis)" \
+    -A "felis-bootstrap (+https://github.com/FelisMC/Felis)" \
     "https://metadata.luckperms.net/data/all")" || return 1
   url="$(printf '%s' "$json" \
     | grep -o 'https://download\.luckperms\.net/[0-9]\{1,\}/bukkit/loader/[^"]*\.jar' || true)"
@@ -1452,7 +1452,7 @@ luckperms_latest_jar() {
 papermc_latest_jar() {
   local project="$1" version="$2" json urls url sha
   json="$(curl -fsSL --retry 5 --retry-delay 2 \
-    -A "felis-bootstrap (+https://github.com/MliroLirrorsIngenuity/Felis)" \
+    -A "felis-bootstrap (+https://github.com/FelisMC/Felis)" \
     "https://fill.papermc.io/v3/projects/${project}/versions/${version}/builds/latest")" || return 1
   urls="$(printf '%s' "$json" | grep -o 'https://fill-data\.papermc\.io/[^"]*\.jar' || true)"
   url="${urls%%$'\n'*}"

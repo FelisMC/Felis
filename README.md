@@ -29,7 +29,7 @@ A Kubernetes-driven Minecraft server hosting platform — one command to deploy,
 在准备好的 Linux 主机上执行：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MliroLirrorsIngenuity/Felis/main/deploy/bootstrap.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap.sh | sudo bash
 ```
 
 脚本将自动安装 K3s、部署控制平面并启动设置向导。完成后浏览器访问已配置的域名进入控制面板即可使用。
@@ -41,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/MliroLirrorsIngenuity/Felis/main/de
 > export FELIS_GITHUB_TOKEN=<对本仓库有读权限的 token>
 > printf 'header = "Authorization: Bearer %s"\n' "$FELIS_GITHUB_TOKEN" \
 >   | curl -fsSL --config - -H "Accept: application/vnd.github.raw" \
->       https://api.github.com/repos/MliroLirrorsIngenuity/Felis/contents/deploy/bootstrap.sh \
+>       https://api.github.com/repos/FelisMC/Felis/contents/deploy/bootstrap.sh \
 >   | sudo -E bash
 > ```
 >

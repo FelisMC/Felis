@@ -29,7 +29,7 @@ Table of Contents
 On a prepared Linux host, run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/MliroLirrorsIngenuity/Felis/main/deploy/bootstrap.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap.sh | sudo bash
 ```
 
 The script installs K3s, deploys the control plane, and launches a setup wizard. Once done, open your browser at the configured domain.

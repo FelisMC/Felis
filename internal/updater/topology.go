@@ -52,7 +52,7 @@ func Topology() []Spec {
 		// optional token: unauthenticated, this coord answers 404 — the status GitHub uses
 		// to hide a repo's existence — and felis-api is the one tracked component where
 		// that happens. k3s and cloudflared are public and need no credential.
-		{Name: "felis-api", Policy: updates.PolicyScheduled, Manageable: true, Source: sourceGitHub, Coord: "MliroLirrorsIngenuity/Felis"},
+		{Name: "felis-api", Policy: updates.PolicyScheduled, Manageable: true, Source: sourceGitHub, Coord: "FelisMC/Felis"},
 		{Name: "k3s", Policy: updates.PolicyNotify, Manageable: false, Source: sourceGitHub, Coord: "k3s-io/k3s"},
 		{Name: "cloudflared", Policy: updates.PolicyScheduled, Manageable: true, Source: sourceGitHub, Coord: "cloudflare/cloudflared"},
 		{Name: "velocity", Policy: updates.PolicyNotify, Manageable: false, Source: sourcePaperMC, Coord: "velocity"},
