@@ -413,8 +413,21 @@ build_cpu_limit = "2"
 build_mem_limit = "4Gi"
 ```
 
-then restart `felis-api` (it renders the Job from this config). Unset fields keep
-the defaults.
+Put them in **both** `/etc/felis/felis.host.toml` (host-side CLI) and
+`/etc/felis/felis.pod.toml` (the file rendered into the API's `felis-config`
+Secret — the two differ only in the database URL; the setup screens re-render
+the Secret from the pod file, so edits made only through `kubectl` on the live
+Secret are lost at the next reconfigure). A Deployment restart alone is NOT
+enough — the API Pod mounts the Secret, never the host file. Re-render the
+Secret from the pod file, then roll `felis-api`:
+
+```sh
+kubectl -n felis create secret generic felis-config \
+  --from-file=felis.toml=/etc/felis/felis.pod.toml --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n felis rollout restart deployment/felis-api
+```
+
+Unset fields keep the defaults.
 
 `trivy_db_repository` is not optional on an egress-locked box. Trivy fetches its
 vulnerability DB from `mirror.gcr.io`/`ghcr.io` unless told otherwise, and the
