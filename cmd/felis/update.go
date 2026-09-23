@@ -24,8 +24,9 @@ const updateTimeout = 60 * time.Second
 // The apply side is deliberately NOT implemented in this command. Every component
 // here is installed by deploy/bootstrap.sh, which is idempotent, already handles the
 // parts that are easy to get wrong (Velocity's pinned MINOR, the atomic jar install,
-// the k3s image re-import that a byte-identical StatefulSet template will not
-// trigger on its own), and is the path that gets exercised on every install. A
+// the image re-import + registry push that a byte-identical StatefulSet template
+// will not trigger on its own), and is the path that gets exercised on every
+// install. A
 // second installer living in this file would duplicate that policy, could drift from
 // it silently, and would be reachable only on a live node where a mistake takes the
 // proxy or the control plane down. So `felis update` reports, and hands the operator
@@ -62,7 +63,7 @@ var updateTargets = []updateTarget{
 	{
 		selector:  "plugins",
 		component: "felis-api",
-		note:      "felis-velocity.jar is a host-file swap, but felis-paper.jar and felis-limbo.jar are baked into the lobby/limbo images and need a rebuild + k3s image re-import",
+		note:      "felis-velocity.jar is a host-file swap, but felis-paper.jar and felis-limbo.jar are baked into the lobby/limbo images and need a rebuild + re-mirror into the in-cluster registry (the installer re-run does both)",
 		command:   "sudo felis setup",
 	},
 	{
