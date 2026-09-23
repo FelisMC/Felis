@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { ClipboardCheck, CheckCircle2, CircleSlash, ChevronDown, ChevronUp, Check, X, Loader2 } from "lucide-react";
+import { ClipboardCheck, CheckCircle2, CircleSlash, ChevronDown, ChevronUp, Check, X, Loader2, Download } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatCard } from "@/components/StatCard";
@@ -44,6 +44,7 @@ export function SubmissionsPage() {
   // Pending actions (for button spinners)
   const [busyId, setBusyId] = useState<string | null>(null);
   const [busyType, setBusyType] = useState<"approve" | "reject" | null>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
 
   // Search & Filtering State
   const [search, setSearch] = useState("");
@@ -136,6 +137,20 @@ export function SubmissionsPage() {
       setBusyType(null);
     }
   }
+
+  // The reviewer downloads the uploaded context before approving: the executed
+  // Dockerfile lives inside it, so this is the only way to see the recipe.
+  const handleDownloadContext = async (sub: Submission) => {
+    setActionError(null);
+    setDownloadingId(sub.id);
+    try {
+      await api.downloadSubmissionContext(sub.id);
+    } catch (err) {
+      setActionError(humanizeError(err));
+    } finally {
+      setDownloadingId(null);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -338,7 +353,24 @@ export function SubmissionsPage() {
                           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div>
                               <p className="font-semibold text-foreground mb-1">{t("context_ref_label")}</p>
-                              <pre className="font-mono bg-background border rounded p-1.5 truncate select-all">{sub.context_ref}</pre>
+                              <div className="flex items-center gap-2">
+                                <pre className="font-mono bg-background border rounded p-1.5 truncate select-all flex-1 min-w-0">{sub.context_ref}</pre>
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="h-7 shrink-0 px-2 text-[10px]"
+                                  onClick={() => handleDownloadContext(sub)}
+                                  disabled={!!downloadingId}
+                                  title={t("download_context_hint")}
+                                >
+                                  {downloadingId === sub.id ? (
+                                    <Loader2 className="h-3 w-3 animate-spin" />
+                                  ) : (
+                                    <Download className="h-3 w-3" />
+                                  )}
+                                  <span className="ml-1">{t("download_context_btn")}</span>
+                                </Button>
+                              </div>
                             </div>
                             {sub.image_ref && (
                               <div>

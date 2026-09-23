@@ -342,6 +342,7 @@ func TestSubmissionAdminRoutesAreAdminOnly(t *testing.T) {
 		{"GET", "/api/v1/submissions", ""},
 		{"POST", "/api/v1/submissions/sub-1/approve", ""},
 		{"POST", "/api/v1/submissions/sub-1/reject", `{"reason":"no"}`},
+		{"GET", "/api/v1/submissions/sub-1/context", ""},
 	}
 	for _, c := range cases {
 		api := adminSubAPI(&fakeSubmissions{})
@@ -518,6 +519,49 @@ func TestInternalSubmissionContextRoute(t *testing.T) {
 
 	t.Run("unwired transport is 503", func(t *testing.T) {
 		w := do(newAPI(nil).InternalHandler(), "GET", "/api/v1/internal/submissions/sub-7/context", "", nil)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("code = %d, want 503", w.Code)
+		}
+	})
+}
+
+// The admin context route is the reviewer's read path to the blob they are
+// approving: an admin streams the stored bytes with a download disposition,
+// and the error mapping matches the internal route (404 missing, 503 unwired).
+// The admin-only gate itself is pinned by TestSubmissionAdminRoutesAreAdminOnly.
+func TestAdminSubmissionContextRoute(t *testing.T) {
+	t.Run("streams the blob with a download disposition", func(t *testing.T) {
+		fs := &fakeSubmissions{openBody: "\x1f\x8b\x08\x00blob"}
+		w := do(adminSubAPI(fs).ExternalHandler(), "GET", "/api/v1/submissions/sub-7/context", "", nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
+		}
+		if w.Body.String() != fs.openBody {
+			t.Fatalf("body = %q, want the stored blob %q", w.Body.String(), fs.openBody)
+		}
+		if fs.openedID != "sub-7" {
+			t.Fatalf("opened id = %q, want the path id", fs.openedID)
+		}
+		if ct := w.Header().Get("Content-Type"); ct != "application/gzip" {
+			t.Fatalf("content-type = %q, want application/gzip", ct)
+		}
+		if cd := w.Header().Get("Content-Disposition"); cd != `attachment; filename="context.tar.gz"` {
+			t.Fatalf("content-disposition = %q", cd)
+		}
+	})
+
+	t.Run("missing blob is 404", func(t *testing.T) {
+		fs := &fakeSubmissions{openErr: fmt.Errorf("%w: gone", submit.ErrBlobNotFound)}
+		w := do(adminSubAPI(fs).ExternalHandler(), "GET", "/api/v1/submissions/sub-7/context", "", nil)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("code = %d, want 404", w.Code)
+		}
+	})
+
+	t.Run("unwired transport is 503", func(t *testing.T) {
+		api := adminSubAPI(nil)
+		api.Submissions = nil
+		w := do(api.ExternalHandler(), "GET", "/api/v1/submissions/sub-7/context", "", nil)
 		if w.Code != http.StatusServiceUnavailable {
 			t.Fatalf("code = %d, want 503", w.Code)
 		}

@@ -4407,10 +4407,24 @@ paths:
               type: object
               required: [image_ref, dockerfile, context_ref]
               properties:
-                image_ref: { type: string }
-                dockerfile: { type: string }
-                context_ref: { type: string }
-                base_image: { type: string }
+                image_ref:
+                  type: string
+                  description: Push target under the internal registry (e.g. registry.felis.svc:5000/foo:1.0).
+                dockerfile:
+                  type: string
+                  description: >-
+                    Audit archive of the recipe, recorded on the build row and shown in the
+                    panel — the executed Dockerfile is the file named `Dockerfile` at the
+                    root of the context tarball (Kaniko runs --dockerfile=Dockerfile), so
+                    this field is never executed.
+                context_ref:
+                  type: string
+                  description: >-
+                    Location of the uploaded gzip build context; its root must contain the
+                    Dockerfile that gets executed.
+                base_image:
+                  type: string
+                  description: Resolved FROM, recorded for audit only — not a build gate.
       responses:
         '202':
           description: Build accepted.
@@ -4641,6 +4655,39 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/submissions/{id}/context:
+    get:
+      tags: [submissions]
+      operationId: downloadSubmissionContext
+      summary: Download a submission's uploaded build context (admin; user-directed lane over §16).
+      description: >-
+        The reviewer's read path to the artifact they are about to approve: the
+        executed Dockerfile lives inside this tarball (Kaniko runs the context's
+        root `Dockerfile`), so without it the human gate would be blind. Streams
+        the stored context.tar.gz verbatim with an attachment disposition — the
+        same bytes the build Pod fetches over the internal face. 404 when the
+        submission is unknown or has no uploaded context; 503 when the
+        deployment's context store has no implemented transport.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The stored build context (gzip tarball), served as an attachment.
+          content:
+            application/gzip:
+              schema: { type: string, format: binary }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 

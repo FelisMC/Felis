@@ -473,6 +473,40 @@ export const api = {
   rejectSubmission: (id: string, reason: string) =>
     request<Submission>("POST", `/submissions/${id}/reject`, { reason }),
 
+  // The reviewer's read path to the uploaded build context: the executed
+  // Dockerfile lives inside the tarball, so approving without this would be
+  // blind. The body is the attacker-supplied archive — download it, never
+  // render it — which the API's attachment disposition enforces.
+  downloadSubmissionContext: async (id: string): Promise<void> => {
+    const { apiBase } = await loadConfig();
+    const res = await fetch(`${apiBase}/submissions/${id}/context`, {
+      method: "GET",
+      credentials: "include",
+    });
+    if (!res.ok) {
+      let code = "error";
+      let message = res.statusText;
+      try {
+        const parsed = JSON.parse(await res.text()) as unknown;
+        if (isApiError(parsed)) {
+          code = parsed.error.code;
+          message = parsed.error.message;
+        }
+      } catch {
+        /* non-JSON error body (e.g. an ingress page): keep the status line */
+      }
+      const err: ApiError = { status: res.status, code, message };
+      throw err;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${id}-context.tar.gz`;
+    link.click();
+    URL.revokeObjectURL(url);
+  },
+
   listMySubmissions: () =>
     request<{ submissions: Submission[] }>("GET", "/me/submissions").then((r) => r.submissions ?? []),
 

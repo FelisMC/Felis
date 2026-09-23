@@ -521,6 +521,9 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "GET", Pattern: "/api/v1/submissions", Admin: true, h: a.handleListSubmissions},
 		{Method: "POST", Pattern: "/api/v1/submissions/{id}/approve", Admin: true, h: a.handleApproveSubmission},
 		{Method: "POST", Pattern: "/api/v1/submissions/{id}/reject", Admin: true, h: a.handleRejectSubmission},
+		// The reviewer's read path to the uploaded blob: the executed Dockerfile
+		// lives inside it, so approval would otherwise be blind.
+		{Method: "GET", Pattern: "/api/v1/submissions/{id}/context", Admin: true, h: a.handleAdminSubmissionContext},
 		// Auto-update maintenance window (spec §B; decision core internal/updates).
 		// Admin-tier: it governs whether Felis may apply an update to itself, so setting
 		// it requires the admin Zero-Trust path, not a mere session. API+persistence

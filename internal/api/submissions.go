@@ -286,15 +286,52 @@ func writeSubmitError(w http.ResponseWriter, r *http.Request, err error) {
 // fetcher extracts it under a zip-slip guard, and Kaniko treats the result as
 // hostile regardless (spec §16).
 func (a *API) handleInternalSubmissionContext(w http.ResponseWriter, r *http.Request) {
+	rc, ok := a.openSubmissionContext(w, r)
+	if !ok {
+		return
+	}
+	streamSubmissionContext(w, rc)
+}
+
+// handleAdminSubmissionContext streams a submission's stored build-context
+// tarball to a reviewing admin (admin-tier). Review is only a real gate if the
+// reviewer can inspect what they approve: the executed Dockerfile lives INSIDE
+// this tarball (build/jobspec.go pins --dockerfile=Dockerfile), so without this
+// route the human gate could not see the recipe at all. The bytes are the same
+// ones the build Pod fetches over the internal face; the attachment disposition
+// makes the browser download the attacker-supplied archive, never render it.
+func (a *API) handleAdminSubmissionContext(w http.ResponseWriter, r *http.Request) {
+	rc, ok := a.openSubmissionContext(w, r)
+	if !ok {
+		return
+	}
+	w.Header().Set("Content-Disposition", `attachment; filename="context.tar.gz"`)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	a.audit(r, principalFromContext(r.Context()).Email, "submission.context.download", r.PathValue("id"))
+	streamSubmissionContext(w, rc)
+}
+
+// openSubmissionContext resolves the build-context blob named in the request
+// path, mapping the submit-layer errors onto the shared submission statuses (a
+// missing blob is 404, an unwired transport 503). On failure the error response
+// is already written and the caller must return.
+func (a *API) openSubmissionContext(w http.ResponseWriter, r *http.Request) (io.ReadCloser, bool) {
 	if a.Submissions == nil {
 		writeError(w, r, errSubmissionsUnavailable)
-		return
+		return nil, false
 	}
 	rc, err := a.Submissions.OpenContext(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeSubmitError(w, r, err)
-		return
+		return nil, false
 	}
+	return rc, true
+}
+
+// streamSubmissionContext copies the blob to w verbatim and closes it. The
+// caller must have set every header already: the copy commits the response, so
+// a failure mid-stream can only truncate it.
+func streamSubmissionContext(w http.ResponseWriter, rc io.ReadCloser) {
 	defer rc.Close()
 	w.Header().Set("Content-Type", "application/gzip")
 	if _, err := io.Copy(w, rc); err != nil {
