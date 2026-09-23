@@ -43,6 +43,18 @@ type updateTarget struct {
 	command string
 }
 
+// installerRerun is the tested apply path for every planner-backed selector: re-run the
+// installer. It is idempotent, and it is the only path that fetches a newer version --
+// `felis setup` skips its host-bootstrap phase on a completed install (all four install
+// markers already exist), so there it opens the config console and moves no component,
+// and even on the bootstrap path it re-images felis-api from the binary setup is already
+// running (FELIS_BOOTSTRAP_BINARY), which looks like an update and changes nothing.
+//
+// The URL is the same one-liner both READMEs hand out. While the repo is private it
+// answers 404 (raw.githubusercontent.com hides private repos), which is why the trailer
+// below points at the README's token'd form for that case.
+const installerRerun = "curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap.sh | sudo bash"
+
 // updateTargets is the selector table. panel and plugins both resolve to felis-api
 // because they are not separately versioned: the panel is compiled into the felis
 // binary with //go:embed, and the plugin jars are built from this same repo in the
@@ -52,19 +64,19 @@ var updateTargets = []updateTarget{
 		selector:  "panel",
 		component: "felis-api",
 		note:      "the panel is embedded in the felis binary (//go:embed), so updating it means rebuilding the felis image and rolling felis-api",
-		command:   "sudo felis setup",
+		command:   installerRerun,
 	},
 	{
 		selector:  "velocity",
 		component: "velocity",
 		note:      "re-runs install_velocity: newest BUILD of the pinned minor (FELIS_VELOCITY_VERSION), atomic jar install, then restarts felis-velocity",
-		command:   "sudo felis setup",
+		command:   installerRerun,
 	},
 	{
 		selector:  "plugins",
 		component: "felis-api",
 		note:      "felis-velocity.jar is a host-file swap, but felis-paper.jar and felis-limbo.jar are baked into the lobby/limbo images and need a rebuild + re-mirror into the in-cluster registry (the installer re-run does both)",
-		command:   "sudo felis setup",
+		command:   installerRerun,
 	},
 	{
 		selector:  "mc",
@@ -220,7 +232,6 @@ func renderApplyGuidance(res updater.Result, selected map[string]bool, force boo
 
 	var b strings.Builder
 	var offeredCommand bool
-	var offeredFelisAPI bool
 	for _, t := range updateTargets {
 		if !selected[t.selector] {
 			continue
@@ -249,28 +260,20 @@ func renderApplyGuidance(res updater.Result, selected map[string]bool, force boo
 		}
 		fmt.Fprintf(&b, "  run: %s\n", t.command)
 		offeredCommand = true
-		offeredFelisAPI = offeredFelisAPI || t.component == "felis-api"
 	}
 	// Only explain the command when one was actually offered; a --mc-only run has
 	// nothing to run and the trailer would be a non-sequitur.
-	if offeredCommand {
-		b.WriteString("\nfelis setup is idempotent and re-runs the installer that owns these components;\nit does not reinstall what is already current. Restart game servers afterwards.\n")
-	}
-	// Scoped to felis-api because it is the only component setup cannot move forward.
-	// velocity is fine: install_velocity re-resolves the newest build of the pinned minor
-	// on every run. But setup hands deploy/bootstrap.sh the binary it is itself running
-	// (FELIS_BOOTSTRAP_BINARY), and that arm skips the release lookup entirely, so it
-	// rebuilds the image and rolls the deployment from the SAME binary -- a run that looks
-	// like a successful update and leaves the version unchanged.
 	//
-	// The installer is the only thing that moves felis-api. It is safe to point at now
-	// that detect_node_ip reuses the installed root domain, so what is left to warn about
-	// is the channel: FELIS_VERSION_BOOTSTRAP is not persisted anywhere and defaults to
-	// release, so a bare re-run on a host tracking main quietly moves it onto releases.
-	// That is a channel change, not a broken install, which is why it is one clause and
-	// not a paragraph.
-	if offeredFelisAPI {
-		b.WriteString("\nfelis-api (panel, plugins) is the exception: setup re-images it from the felis binary\nalready on this host, so it cannot install a NEWER felis-api. Re-run the bootstrap\ninstaller for that -- it keeps this install's root domain. It does default to the\nrelease channel, so pass FELIS_VERSION_BOOTSTRAP=dev if this host tracks main.\n")
+	// One trailer serves every selector now: setup is not an apply path at all on a
+	// completed install (shouldRunHostBootstrapBeforeConfig only enters the host
+	// bootstrap while an install marker is missing), so the installer re-run is the one
+	// worked path for all three components and there is no per-component exception left
+	// to scope. Two caveats stay because following the advice without them bites real
+	// hosts: the channel is not persisted anywhere (a bare re-run on a main host quietly
+	// moves it onto releases), and the private repo's one-liner needs the read token
+	// back in the environment before it can resolve anything.
+	if offeredCommand {
+		b.WriteString("\nRe-running the installer applies everything above: it fetches the newest version on\nthe channel in effect and re-applies the bundle (release is the default). The channel\nis not persisted, so pass FELIS_VERSION_BOOTSTRAP=dev if this host tracks main. While\nthis repo is private, the one-liner above 404s without a token; the README's install\nsection has the token'd form that works. felis setup is not this path: on a completed\ninstall it opens the config console and installs nothing newer. Restart game servers\nafterwards.\n")
 	}
 	return b.String()
 }

@@ -840,9 +840,11 @@ disk/memory thresholds, and the kubelet `DiskPressure` condition.
 ## 15. Control-plane upgrades, and rolling back a bad one
 
 There is no in-place updater: an upgrade is re-running the installer
-(`curl -fsSL <installer URL> | sudo bash`, or `sudo felis setup`), which
-rebuilds/re-imports the image and re-applies the bundle. Two properties of the
-control plane matter when you do:
+(`curl -fsSL <installer URL> | sudo bash`), which rebuilds/re-imports the image
+and re-applies the bundle. (`sudo felis setup` is not this path; on a completed
+install it only opens the config console.) The channel is not persisted across
+the re-run, so pass `FELIS_VERSION_BOOTSTRAP=dev` on a host that tracks main.
+Two properties of the control plane matter when you do:
 
 - Both Deployments use strategy **Recreate** (single replica, no leader election:
   two overlapping instances would fight over the same cluster). An upgrade takes

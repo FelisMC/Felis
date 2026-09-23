@@ -107,7 +107,7 @@ func TestApplyGuidanceMinecraftOffersNoCommand(t *testing.T) {
 	if !strings.Contains(out, "pinned by policy") {
 		t.Fatalf("want the pin explained:\n%s", out)
 	}
-	if strings.Contains(out, "run:") || strings.Contains(out, "felis setup is idempotent") {
+	if strings.Contains(out, "run:") || strings.Contains(out, "Re-running the installer") {
 		t.Fatalf("--mc must offer no command and no command trailer:\n%s", out)
 	}
 }
@@ -133,42 +133,37 @@ func TestUpdateTargetsMatchTopology(t *testing.T) {
 	}
 }
 
-// `sudo felis setup` is the right answer for velocity and the wrong one for felis-api,
-// so the caveat has to be scoped rather than appended to every run. setup hands
-// bootstrap the binary it is already running, and that arm skips the release lookup:
-// the run rebuilds the image and rolls the deployment off the SAME binary, which looks
-// like a successful update and changes nothing. install_velocity, by contrast, really
-// does re-resolve the newest build on every run.
-func TestApplyGuidanceScopesTheFelisAPICaveat(t *testing.T) {
-	const caveat = "cannot install a NEWER felis-api"
-
+// Re-running the installer is the one apply path this table may hand out. setup is NOT an
+// updater on a completed install -- its host-bootstrap phase only runs while an install
+// marker is missing, so it opens the config console and moves no component -- and even on
+// the bootstrap path it re-images felis-api from the binary setup is already running. The
+// table used to answer with "sudo felis setup" and scope a felis-api-only exception; both
+// taught a model that does not survive contact with an installed host.
+func TestApplyGuidancePointsEveryComponentAtTheInstaller(t *testing.T) {
 	api := renderApplyGuidance(
 		planResult([]updates.Action{{Component: "felis-api", Kind: updates.ActionNotify, LatestKnown: true}}),
 		map[string]bool{"panel": true}, false)
-	if !strings.Contains(api, caveat) {
-		t.Fatalf("--panel resolves to felis-api and must carry the caveat:\n%s", api)
+	for _, want := range []string{"deploy/bootstrap.sh", "FELIS_VERSION_BOOTSTRAP=dev", "felis setup is not this path"} {
+		if !strings.Contains(api, want) {
+			t.Fatalf("--panel guidance missing %q:\n%s", want, api)
+		}
 	}
-	// Naming the installer obliges us to name what a bare re-run still changes. The domain
-	// is handled -- detect_node_ip reuses the installed one -- but the channel is not
-	// persisted at all and defaults to release, so a host tracking main gets moved onto
-	// releases by following this advice.
-	if !strings.Contains(api, "FELIS_VERSION_BOOTSTRAP=dev") {
-		t.Fatalf("pointing at the installer without the channel caveat misleads a dev host:\n%s", api)
+	if strings.Contains(api, "run: sudo felis setup") {
+		t.Fatalf("setup must never be offered as the apply command:\n%s", api)
 	}
 
+	// The same path serves velocity; a scoped caveat would re-teach the old model that
+	// setup fixes velocity.
 	vel := renderApplyGuidance(
 		planResult([]updates.Action{{Component: "velocity", Kind: updates.ActionNotify, LatestKnown: true}}),
 		map[string]bool{"velocity": true}, false)
-	if strings.Contains(vel, caveat) {
-		t.Fatalf("velocity IS fixed by setup; the caveat would misdirect the operator:\n%s", vel)
-	}
-	if !strings.Contains(vel, "felis setup is idempotent") {
-		t.Fatalf("velocity still wants the ordinary trailer:\n%s", vel)
+	if !strings.Contains(vel, "run: curl -fsSL") || !strings.Contains(vel, "felis setup is not this path") {
+		t.Fatalf("velocity gets the same installer path:\n%s", vel)
 	}
 
 	// --mc offers no command at all, so neither trailer belongs.
 	mc := renderApplyGuidance(planResult(nil), map[string]bool{"mc": true}, true)
-	if strings.Contains(mc, caveat) {
-		t.Fatalf("--mc offers no command; the caveat is a non-sequitur:\n%s", mc)
+	if strings.Contains(mc, "deploy/bootstrap.sh") || strings.Contains(mc, "FELIS_VERSION_BOOTSTRAP") {
+		t.Fatalf("--mc offers no command; the trailer is a non-sequitur:\n%s", mc)
 	}
 }
