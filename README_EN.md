@@ -34,6 +34,27 @@ curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap
 
 The script installs K3s, deploys the control plane, and launches a setup wizard. Once done, open your browser at the configured domain.
 
+> **This repository is currently private**, so the command above returns 404. Use the
+> credentialed form instead; the installer itself needs the same token to resolve and
+> download the release, so pass it through with `sudo -E`:
+>
+> ```bash
+> export FELIS_GITHUB_TOKEN=<a token with read access to this repository>
+> printf 'header = "Authorization: Bearer %s"\n' "$FELIS_GITHUB_TOKEN" \
+>   | curl -fsSL --config - -H "Accept: application/vnd.github.raw" \
+>       https://api.github.com/repos/FelisMC/Felis/contents/deploy/bootstrap.sh \
+>   | sudo -E bash
+> ```
+>
+> The token reaches `curl --config -` over stdin instead of the command line: argv is
+> readable by any local user via `/proc`, and that is exactly why the installer's
+> internal `github_api` uses the same form.
+
+Rerunning this command is also how you upgrade felis-api to a newer version (`felis setup`
+cannot — it uses the binary already installed on the host). The rerun keeps the installed
+root domain but **not** the channel: if this host follows main, also
+`export FELIS_VERSION_BOOTSTRAP=dev`.
+
 ## Build from Source
 
 Felis is built with Go and Node.js:
