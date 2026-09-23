@@ -175,10 +175,13 @@ before the proxy Connects them.
 
 > **Status.** This slice is **code-complete and compile-verified** (paper jar
 > builds green on a Java-21 toolchain; the velocity end compiles the full shared
-> tree; the wire codec round-trips). It is **not** live-verified — there is no
-> running Paper + Velocity + real players in this environment — so §27 scenario 10
-> stays **FAIL (live-unverified)** in the spec matrix until it can be exercised
-> end-to-end on a real deployment.
+> tree; the wire codec round-trips; the fabric/forge/neoforge mods compile through
+> their vendored wrappers and boot real dedicated servers with `/link` registered —
+> all of it gated by CI). It is **not** client-verified:
+> no real game client has joined through the stack, so §27 scenario 10 stays
+> **FAIL (live-unverified)** until such a join is exercised. The client-independent
+> faces (proxy edge, subdomain MOTD, login boundary, backend registration) are
+> exercised on a live deployment — see `AUDIT-2026-09-22.md`.
 
 ## Building
 
@@ -216,7 +219,9 @@ Requires JDK 17 — **except `paper` and `limbo`, which need a Java-21 toolchain
 Gradle** (paper-api 1.21.4 is a Java-21 artifact and the Limbo API is compiled to major 65; the
 rest of the suite is Java 17). The first build of each mod downloads and remaps/decompiles Minecraft, so it
 takes a few minutes; subsequent builds are fast. Jars land in each module's
-`build/libs/`.
+`build/libs`. CI runs both gates: `bash plugins/test.sh` (JDK 21 — the install-time
+plugins plus the codec/invite tests) and `bash plugins/test-mods.sh` (JDK 17 — the
+three loader mods, via the wrappers above).
 
 ## Deploying
 

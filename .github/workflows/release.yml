@@ -40,6 +40,31 @@ jobs:
       - run: go vet ./...
       - run: go test ./...
 
+      # The same reason, for the Java layer the binary EMBEDS: the release asset is
+      # the tree's plugin sources (bootstrap_asset.go), and a tag whose plugins don't
+      # compile turns every install of that release into a failed bootstrap. JDK 21
+      # gates the install-time plugins + codec/invite tests; JDK 17 gates the loader
+      # mods (their vendored wrappers fetch their own Gradle).
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+
+      - run: bash plugins/test.sh
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - run: bash plugins/test-mods.sh
+
       # Both architectures, because bootstrap's default release channel DOWNLOADS these
       # rather than compiling on the target host — an arm64 host with no asset silently
       # falls back to a slow source build. Neither stage is emulated: the Dockerfile pins

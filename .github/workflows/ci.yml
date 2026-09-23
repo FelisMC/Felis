@@ -118,3 +118,22 @@ jobs:
           gradle-version: '8.14'
 
       - run: bash plugins/test.sh
+
+  mods:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The three loader mods (Minecraft 1.20.1 / 1.20.4, Java-17 lines) compile
+      # through their vendored Gradle wrappers, which fetch their own Gradle. Until
+      # this job nothing ever built them: no install path touches them, and their
+      # gradlew scripts were committed without the exec bit, so the README's
+      # one-liners failed on a fresh clone.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - run: bash plugins/test-mods.sh
