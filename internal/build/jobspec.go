@@ -211,9 +211,16 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 			"--context=" + contextPath,
 			"--destination=" + p.ImageRef,
 			// The internal registry is in-cluster only and may serve plain HTTP;
-			// it is never a public ingress (spec §17).
+			// it is never a public ingress (spec §17). Both directions need the
+			// insecure flags: --insecure/--skip-tls-verify cover the PUSH, while
+			// the pull side needs its own pair — a Dockerfile's `FROM
+			// registry.felis.svc:5000/...` otherwise fails with "server gave
+			// HTTP response to HTTPS client", breaking every build based on a
+			// platform image (the canonical modpack shape).
 			"--insecure",
 			"--skip-tls-verify",
+			"--insecure-pull",
+			"--skip-tls-verify-pull",
 		},
 		VolumeMounts:    kanikoMounts,
 		Resources:       corev1.ResourceRequirements{Limits: limits, Requests: buildRequests(limits)},

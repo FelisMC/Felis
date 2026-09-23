@@ -177,6 +177,15 @@ func TestBuildJobKanikoPushesAndTrivyGates(t *testing.T) {
 	if !hasArg(kaniko.Args, "--destination="+p.ImageRef) {
 		t.Errorf("kaniko must push to %q, args=%v", p.ImageRef, kaniko.Args)
 	}
+	// The pull direction needs its own flags: --insecure/--skip-tls-verify only
+	// cover the push, and without the pull pair a Dockerfile's `FROM` fails
+	// against the plain-HTTP registry ("server gave HTTP response to HTTPS
+	// client") — the live failure this guards.
+	for _, flag := range []string{"--insecure-pull", "--skip-tls-verify-pull"} {
+		if !hasArg(kaniko.Args, flag) {
+			t.Errorf("kaniko args = %v, want %s so base-image pulls use plain HTTP", kaniko.Args, flag)
+		}
+	}
 
 	if len(job.Spec.Template.Spec.Containers) != 1 {
 		t.Fatalf("expected exactly one (trivy) main container")
