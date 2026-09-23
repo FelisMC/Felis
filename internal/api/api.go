@@ -264,11 +264,15 @@ type apiRoute struct {
 }
 
 // internalAPIRoutes is the internal face's served route table (spec §7, §14):
-// service-token auth, never Zero Trust. It carries both health probes.
+// service-token auth, never Zero Trust. It carries both health probes and the
+// metrics scrape.
 func (a *API) internalAPIRoutes() []apiRoute {
 	return []apiRoute{
 		{Method: "GET", Pattern: "/healthz", Public: true, h: a.handleHealthz},
 		{Method: "GET", Pattern: "/readyz", Public: true, h: a.handleReadyz},
+		// Prometheus scrape (felis_* collectors); public because a scrape carries
+		// no token, internal-only so it is never exposed off-cluster.
+		{Method: "GET", Pattern: "/metrics", Public: true, h: a.handleMetrics},
 
 		{Method: "GET", Pattern: "/api/v1/servers", h: a.handleListServers},
 		// The build Pod's context-fetch initContainer streams a submission's stored

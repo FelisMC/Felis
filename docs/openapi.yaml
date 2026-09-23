@@ -467,6 +467,26 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /metrics:
+    get:
+      tags: [metrics]
+      operationId: metrics
+      summary: Prometheus metrics (felis_* collectors) on the internal face.
+      description: >-
+        Scrape-only infrastructure route, not a product API: the internal listener is
+        ClusterIP-only and a Prometheus scrape carries no token, the same stance as the
+        probes. Serves the felis_* exposition documented in troubleshooting §14; the
+        external face never serves it.
+      x-felis-face: [internal]
+      x-felis-tier: public
+      security: []
+      responses:
+        '200':
+          description: Prometheus text exposition format.
+          content:
+            text/plain:
+              schema: { type: string }
+
   /session/minecraft/hasJoined:
     get:
       tags: [nano]
