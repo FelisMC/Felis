@@ -31,3 +31,14 @@ Dockerfile
 *.key
 felis
 felis.exe
+
+# macOS materializes extended attributes as ._<name> sidecars (BSD tar uploads,
+# Finder copies, network volumes) and leaves .DS_Store behind. Neither is
+# source, and one is actively harmful: a ._*.sql beside the migrations is
+# //go:embed-ed into the binary and makes every `felis migrate` fail
+# ("non-numeric version") — observed live on a Mac-staged tree. Same exposure
+# for any tree the other //go:embed patterns walk (deploy/, plugins/).
+._*
+**/._*
+.DS_Store
+**/.DS_Store
