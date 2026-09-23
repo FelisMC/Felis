@@ -210,6 +210,58 @@ func TestBuildJobKanikoPushesAndTrivyGates(t *testing.T) {
 	}
 }
 
+// Kaniko (and only kaniko) must carry back exactly the unpacking capability
+// subset: drop-ALL broke every FROM <base image> build live ("failed to get
+// filesystem from image: chown /etc/gshadow: operation not permitted"), while a
+// scratch COPY masked it. The pod stays unprivileged and every other container
+// keeps the pure baseline.
+func TestBuildJobKanikoGetsOnlyUnpackCapabilities(t *testing.T) {
+	job, err := BuildJob(sampleJobParams())
+	if err != nil {
+		t.Fatalf("BuildJob: %v", err)
+	}
+	var kaniko *corev1.Container
+	for i := range job.Spec.Template.Spec.InitContainers {
+		if job.Spec.Template.Spec.InitContainers[i].Name == "kaniko" {
+			kaniko = &job.Spec.Template.Spec.InitContainers[i]
+		}
+	}
+	if kaniko == nil {
+		t.Fatal("no kaniko initContainer")
+	}
+	sc := kaniko.SecurityContext
+	if sc == nil || sc.Capabilities == nil {
+		t.Fatal("kaniko lost its security context")
+	}
+	if sc.Privileged == nil || *sc.Privileged ||
+		sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+		t.Errorf("kaniko must stay unprivileged with no escalation, got %+v", sc)
+	}
+	if len(sc.Capabilities.Drop) != 1 || string(sc.Capabilities.Drop[0]) != "ALL" {
+		t.Errorf("kaniko must still drop ALL, got %v", sc.Capabilities.Drop)
+	}
+	want := map[corev1.Capability]bool{"CHOWN": true, "DAC_OVERRIDE": true, "FOWNER": true}
+	if len(sc.Capabilities.Add) != len(want) {
+		t.Fatalf("kaniko capabilities.add = %v, want exactly the unpack trio", sc.Capabilities.Add)
+	}
+	for _, c := range sc.Capabilities.Add {
+		if !want[c] {
+			t.Errorf("kaniko must not gain %q — only the unpack trio is justified", c)
+		}
+	}
+	// Every other container keeps the pure baseline: nothing re-added.
+	all := append([]corev1.Container{}, job.Spec.Template.Spec.InitContainers...)
+	all = append(all, job.Spec.Template.Spec.Containers...)
+	for _, c := range all {
+		if c.Name == "kaniko" {
+			continue
+		}
+		if c.SecurityContext != nil && c.SecurityContext.Capabilities != nil && len(c.SecurityContext.Capabilities.Add) > 0 {
+			t.Errorf("container %q must not add capabilities, got %v", c.Name, c.SecurityContext.Capabilities.Add)
+		}
+	}
+}
+
 // A configured DB repository (the internal mirror) must reach Trivy as
 // --db-repository: without it the scan tries the internet, which the build egress
 // lock denies, and every build fails closed at the scan gate.

@@ -128,14 +128,28 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 		deadline = int64(defaultDeadline / time.Second)
 	}
 
-	// Hardened container security context shared by both build containers: no
-	// privilege, no privilege escalation, drop all capabilities. Kaniko needs a
-	// writable root filesystem to unpack layers, so we do not force read-only
-	// root here, but it gains no privilege.
+	// Hardened container security context baseline: no privilege, no privilege
+	// escalation, drop all capabilities. Kaniko needs a writable root filesystem
+	// to unpack layers, so we do not force read-only root here; it also needs a
+	// minimal capability subset added back (kanikoSec below), while fetch and
+	// trivy run with exactly this baseline.
 	sec := &corev1.SecurityContext{
 		Privileged:               boolPtr(false),
 		AllowPrivilegeEscalation: boolPtr(false),
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+	}
+	// Kaniko unpacks base-image layers as root, and the tar apply must chown/chmod
+	// files to the owners the layer recorded — impossible under drop-ALL (live:
+	// "failed to get filesystem from image: chown /etc/gshadow: operation not
+	// permitted" for any FROM <base image>; scratch builds masked this because
+	// COPY only ever creates files kaniko itself owns). Add back exactly the caps
+	// the unpack needs and nothing else: CHOWN/FOWNER for the ownership and mode
+	// restore, DAC_OVERRIDE to write entries whose bits would otherwise exclude
+	// even root once the capability-based exemption is gone.
+	kanikoSec := sec.DeepCopy()
+	kanikoSec.Capabilities = &corev1.Capabilities{
+		Drop: []corev1.Capability{"ALL"},
+		Add:  []corev1.Capability{"CHOWN", "DAC_OVERRIDE", "FOWNER"},
 	}
 
 	// The context Kaniko reads. An http(s) ref (the submit lane's derived ref: the
@@ -224,7 +238,7 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 		},
 		VolumeMounts:    kanikoMounts,
 		Resources:       corev1.ResourceRequirements{Limits: limits, Requests: buildRequests(limits)},
-		SecurityContext: sec,
+		SecurityContext: kanikoSec,
 	}
 	initContainers = append(initContainers, kaniko)
 
