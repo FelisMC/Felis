@@ -1,0 +1,107 @@
+# promtool unit tests: `promtool test rules felis-alerts_test.yml`
+# Proves every shipped rule actually fires on its target condition (and stays
+# silent before it).
+rule_files:
+  - felis-alerts.yaml
+evaluation_interval: 1m
+tests:
+  - name: build failure and slow starts
+    interval: 1m
+    input_series:
+      # counter: quiet for 5m, then one failure per step.
+      - series: 'felis_image_build_failures_total'
+        values: '0x5 1x15'
+      # histogram: all observations land in the (300,600] bucket.
+      - series: 'felis_start_duration_seconds_bucket{le="120"}'
+        values: '0x22'
+      - series: 'felis_start_duration_seconds_bucket{le="300"}'
+        values: '0x22'
+      - series: 'felis_start_duration_seconds_bucket{le="600"}'
+        values: '0+10x21'
+      - series: 'felis_start_duration_seconds_bucket{le="+Inf"}'
+        values: '0+10x21'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: FelisImageBuildFailures
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: FelisImageBuildFailures
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "modpack/image build failed in the last 6h"
+              description: >-
+                felis_image_build_failures_total increased. Inspect the failed build Job
+                (kubectl logs -n felis-build job/<build-job>); the same error text is on
+                GET /api/v1/images/build/{id} and in the submitter's row in the panel.
+      - eval_time: 20m
+        alertname: FelisSlowServerStarts
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "p90 server start time exceeds 5 minutes"
+              description: >-
+                Starts regularly take over five minutes (felis_start_duration_seconds,
+                observed when readiness is first reached). A start that never completes
+                records nothing — cross-check desiredState=Running servers with no ready
+                phase (troubleshooting §1).
+  - name: node disk and memory thresholds
+    interval: 1m
+    input_series:
+      - series: 'node_filesystem_avail_bytes{device="/dev/vda1",fstype="xfs",instance="node1",job="node-exporter",mountpoint="/"}'
+        values: '10x26'
+      - series: 'node_filesystem_size_bytes{device="/dev/vda1",fstype="xfs",instance="node1",job="node-exporter",mountpoint="/"}'
+        values: '100x26'
+      - series: 'kube_node_status_condition{condition="DiskPressure",node="n1",status="true"}'
+        values: '0x4 1x22'
+      - series: 'node_memory_MemAvailable_bytes{instance="node1",job="node-exporter"}'
+        values: '5x26'
+      - series: 'node_memory_MemTotal_bytes{instance="node1",job="node-exporter"}'
+        values: '100x26'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: FelisNodeDiskPressure
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: FelisNodeDiskSpaceLow
+        exp_alerts:
+          - exp_labels:
+              device: /dev/vda1
+              fstype: xfs
+              instance: node1
+              job: node-exporter
+              mountpoint: /
+              severity: warning
+            exp_annotations:
+              summary: "node filesystem / below 15% available"
+              description: >-
+                Sustained disk pressure evicts game pods and garbage-collects images
+                (troubleshooting §13b). Free space before kubelet raises DiskPressure.
+      - eval_time: 20m
+        alertname: FelisNodeDiskPressure
+        exp_alerts:
+          - exp_labels:
+              condition: DiskPressure
+              node: n1
+              status: "true"
+              severity: critical
+            exp_annotations:
+              summary: "kubelet reports DiskPressure on n1"
+              description: >-
+                The eviction chain is in progress: control-plane pods hold
+                system-cluster-critical and survive, game pods do not. Free disk now
+                (troubleshooting §13b).
+      - eval_time: 20m
+        alertname: FelisNodeMemoryLow
+        exp_alerts:
+          - exp_labels:
+              instance: node1
+              job: node-exporter
+              severity: warning
+            exp_annotations:
+              summary: "node memory available below 10% for 15m"
+              description: >-
+                PostgreSQL, the control plane, the registry and game servers share one
+                node; sustained memory pressure risks OOM kills.

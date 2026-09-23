@@ -1,0 +1,69 @@
+# Felis alert rules — plain Prometheus format (also the promtool-tested source
+# for felis-prometheusrule.yaml). See docs/troubleshooting.md §14 for scraping
+# and loading instructions.
+#
+# felis_* series come from two processes:
+#   - felis-operator pod :8080/metrics      → felis_servers_total, felis_start_duration_seconds
+#   - felis-api internal :8081/metrics      → felis_image_build_failures_total
+# node_* / kube_* series come from node-exporter / kube-state-metrics.
+groups:
+  - name: felis.rules
+    rules:
+      - alert: FelisImageBuildFailures
+        expr: increase(felis_image_build_failures_total[6h]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "modpack/image build failed in the last 6h"
+          description: >-
+            felis_image_build_failures_total increased. Inspect the failed build Job
+            (kubectl logs -n felis-build job/<build-job>); the same error text is on
+            GET /api/v1/images/build/{id} and in the submitter's row in the panel.
+      - alert: FelisSlowServerStarts
+        expr: histogram_quantile(0.9, sum by (le) (rate(felis_start_duration_seconds_bucket[30m]))) > 300
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p90 server start time exceeds 5 minutes"
+          description: >-
+            Starts regularly take over five minutes (felis_start_duration_seconds,
+            observed when readiness is first reached). A start that never completes
+            records nothing — cross-check desiredState=Running servers with no ready
+            phase (troubleshooting §1).
+  - name: felis.node.rules
+    rules:
+      - alert: FelisNodeDiskSpaceLow
+        expr: >-
+          node_filesystem_avail_bytes{fstype=~"ext4|xfs|btrfs"}
+          / node_filesystem_size_bytes{fstype=~"ext4|xfs|btrfs"} < 0.15
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "node filesystem {{ $labels.mountpoint }} below 15% available"
+          description: >-
+            Sustained disk pressure evicts game pods and garbage-collects images
+            (troubleshooting §13b). Free space before kubelet raises DiskPressure.
+      - alert: FelisNodeDiskPressure
+        expr: kube_node_status_condition{condition="DiskPressure",status="true"} == 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "kubelet reports DiskPressure on {{ $labels.node }}"
+          description: >-
+            The eviction chain is in progress: control-plane pods hold
+            system-cluster-critical and survive, game pods do not. Free disk now
+            (troubleshooting §13b).
+      - alert: FelisNodeMemoryLow
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "node memory available below 10% for 15m"
+          description: >-
+            PostgreSQL, the control plane, the registry and game servers share one
+            node; sustained memory pressure risks OOM kills.

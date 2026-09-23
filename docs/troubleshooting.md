@@ -762,6 +762,34 @@ All four mandated metrics have real producers; scrape them when triaging:
   actually deleted post-backup (§10); a spike here means worlds crossed the 15d
   idle line — cross-check that join events are flowing (§10 risk vectors).
 
+### Scraping
+
+The series come from two processes:
+
+- `felis-operator` pod `:8080/metrics` — `felis_servers_total`,
+  `felis_start_duration_seconds` (no Service; scrape pod-scoped, e.g. a
+  PodMonitor targeting port `metrics`).
+- `felis-api` internal face `:8081/metrics` (Service `felis-api-internal`) —
+  `felis_image_build_failures_total`. Unauthenticated like the probes;
+  ClusterIP-only, and the external face never serves it.
+- `felis_reaper_worlds_deleted_total` is produced inside the one-shot reaper
+  CronJob, which exits long before any scrape interval — without a pushgateway
+  it has no scrape path. Read the reaper Pod log or the `world_backups` table
+  for deletions instead.
+
+### Alert rules
+
+`deploy/alerts/` ships ready-made rules: build failures, slow starts, node
+disk/memory thresholds, and the kubelet `DiskPressure` condition.
+
+- Plain Prometheus: add `felis-alerts.yaml` to `rule_files`. Check and unit-test
+  it standalone with `promtool check rules felis-alerts.yaml` and
+  `promtool test rules felis-alerts_test.yml` (the tests pin exactly when each
+  alert fires).
+- kube-prometheus-stack / prometheus-operator: `kubectl apply -f
+  felis-prometheusrule.yaml` (adjust its `release:` label to your stack's
+  ruleSelector).
+
 ---
 
 ## 15. Control-plane upgrades, and rolling back a bad one
