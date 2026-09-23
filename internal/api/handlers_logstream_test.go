@@ -486,8 +486,9 @@ func TestServerConsoleDisconnectTeardown(t *testing.T) {
 	}}
 	api.Logs = streamer
 
+	rec := httptest.NewRecorder()
+	w := &firstDataWriter{ResponseWriter: rec, data: make(chan struct{})}
 	r := httptest.NewRequest("GET", "/api/v1/servers/survival/console", nil).WithContext(ctx)
-	w := httptest.NewRecorder()
 
 	done := make(chan struct{})
 	go func() {
@@ -501,6 +502,15 @@ func TestServerConsoleDisconnectTeardown(t *testing.T) {
 	case <-firstRead:
 	case <-time.After(2 * time.Second):
 		t.Fatal("relay never read the first log line")
+	}
+	// The first read is not enough: the relay still has to WRITE the event, and
+	// cancelling in that gap raced the write against the teardown (a live CI flake
+	// left the body empty). Wait for the write itself — the signal is closed after
+	// the recorder's Write returns, so the body read below happens-after it.
+	select {
+	case <-w.data:
+	case <-time.After(2 * time.Second):
+		t.Fatal("relay never wrote the first data event to the response")
 	}
 	cancel()
 
@@ -525,8 +535,32 @@ func TestServerConsoleDisconnectTeardown(t *testing.T) {
 	default:
 		t.Fatal("StreamLogs did not receive the cancellable request context (gotCtx not Done)")
 	}
-	if !strings.Contains(w.Body.String(), "data: boot progress 50%\n\n") {
-		t.Fatalf("expected the first event before disconnect, got %q", w.Body.String())
+	if !strings.Contains(rec.Body.String(), "data: boot progress 50%\n\n") {
+		t.Fatalf("expected the first event before disconnect, got %q", rec.Body.String())
+	}
+}
+
+// firstDataWriter signals once the relay has written a `data:` event into the
+// wrapped recorder, so a test can disconnect only after the event is actually
+// observable in the body — inspecting p per Write is race-free because the relay
+// is the lone writer and each relay event is a single Write.
+type firstDataWriter struct {
+	http.ResponseWriter
+	data chan struct{}
+	once sync.Once
+}
+
+func (b *firstDataWriter) Write(p []byte) (int, error) {
+	n, err := b.ResponseWriter.Write(p)
+	if strings.HasPrefix(string(p), "data:") {
+		b.once.Do(func() { close(b.data) })
+	}
+	return n, err
+}
+
+func (b *firstDataWriter) Flush() {
+	if f, ok := b.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
 	}
 }
 
