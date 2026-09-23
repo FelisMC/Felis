@@ -98,3 +98,23 @@ jobs:
 
       - run: npm run typecheck
         working-directory: panel
+
+  plugins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The other jobs never touch the Java layer: the plugin jars were only ever
+      # compiled by bootstrap on a live host, and the three test mains under
+      # plugins/*/test were run by hand. JDK 21 plus the Gradle major the plugin
+      # Dockerfiles pin (8.14) is that same toolchain, in CI.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+
+      - run: bash plugins/test.sh

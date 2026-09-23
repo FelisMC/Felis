@@ -198,9 +198,12 @@ preference):
 # Velocity — system Gradle is fine
 gradle -p plugins/velocity build
 
-# Paper and limbo — system Gradle too, but both compile on a Java-21 toolchain (see table)
+# Paper and limbo — system Gradle too, but both compile on a Java-21 toolchain (see table).
+# limbo also needs the LOOHP/Limbo API release it compiles against: the module's `+`
+# default cannot resolve (LOOHP's repository publishes no maven-metadata), so pass the
+# release that matches the Limbo.jar you bundle, exactly as deploy/bootstrap.sh does:
 gradle -p plugins/paper build
-gradle -p plugins/limbo build
+gradle -p plugins/limbo build -PlimboVersion=<release, e.g. 2026.0.3-ALPHA>
 
 # Fabric / Forge / NeoForge — use the per-module wrapper. Nothing installs these; the jar you
 # want is the one this produces.

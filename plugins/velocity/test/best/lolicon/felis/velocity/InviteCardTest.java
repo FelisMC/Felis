@@ -15,13 +15,15 @@ import java.util.List;
  * — a proxy console cannot render either, and a screenshot is not a check.
  *
  * <p>Hermetic and framework-free like {@link InviteBookTest}: it lives outside
- * {@code src/main/java} so it never ships in the plugin jar, needs only adventure-api on
- * the classpath, and a failed assertion throws so the process exits non-zero.
+ * {@code src/main/java} so it never ships in the plugin jar, needs only the Kyori jars
+ * on the classpath, and a failed assertion throws so the process exits non-zero.
  *
- * <p>Run: {@code javac -cp <adventure-api.jar> -d <out>
+ * <p>Run (all three jars on both classpaths — adventure-api's Component signatures
+ * reference Examinable, so javac needs examination-api too, not just the runtime):
+ * {@code javac -cp <adventure-api.jar>:<adventure-key.jar>:<examination-api.jar> -d <out>
  * velocity/src/main/java/best/lolicon/felis/velocity/InviteCard.java
  * velocity/test/best/lolicon/felis/velocity/InviteCardTest.java && java -cp
- * <out>;<adventure-api.jar>;<adventure-key.jar>;<examination-api.jar>
+ * <out>:<adventure-api.jar>:<adventure-key.jar>:<examination-api.jar>
  * best.lolicon.felis.velocity.InviteCardTest}.
  */
 public final class InviteCardTest {
