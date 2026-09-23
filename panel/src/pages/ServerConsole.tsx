@@ -93,6 +93,10 @@ function CommandInput({ name }: { name: string }) {
   const [command, setCommand] = useState("");
   const [sending, setSending] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // The last command's echo + the server's reply, rendered above the prompt the
+  // way a terminal does. The reply IS the result of a write: RCON returns text
+  // only, so dropping it would leave the user with no way to see what happened.
+  const [last, setLast] = useState<{ cmd: string; out: string } | null>(null);
   const historyRef = useRef<string[]>(loadHistory(name));
   const cursorRef = useRef(-1);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -111,7 +115,8 @@ function CommandInput({ name }: { name: string }) {
     }
     cursorRef.current = h.length;
     try {
-      await api.sendCommand(name, text);
+      const res = await api.sendCommand(name, text);
+      setLast({ cmd: text, out: (res.output ?? "").trim() });
     } catch (ex) {
       setErr(humanizeError(ex));
     } finally {
@@ -152,6 +157,12 @@ function CommandInput({ name }: { name: string }) {
 
   return (
     <div className="space-y-1.5">
+      {last && (
+        <pre className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-zinc-800 bg-zinc-950 px-3 py-2 font-mono text-xs text-zinc-300">
+          <span className="text-zinc-500">{"> " + last.cmd + "\n"}</span>
+          {last.out}
+        </pre>
+      )}
       <div className="flex items-center gap-2 rounded-md border border-zinc-700 bg-zinc-900 px-3 font-mono text-xs text-zinc-200">
         <span className="shrink-0 select-none text-zinc-500">{">"}</span>
         <input
