@@ -133,6 +133,11 @@ func writeConfig(path string, cfg *config.Config) error {
 	return os.Rename(tmpPath, path)
 }
 
+// applyFelisConfigSecret applies the rendered config to the control namespace and
+// then converges the workload-namespace mirror best-effort. The mirror feeds the
+// backup/restore/fileedit Jobs and the reaper; without this refresh a reconfigure
+// here would leave those readers on the previous render until the next `felis
+// setup` run (startup pass) or installer re-run.
 func applyFelisConfigSecret(ctx context.Context) error {
 	out, err := kubectlOutput(ctx,
 		"-n", "felis", "create", "secret", "generic", "felis-config",
@@ -142,7 +147,41 @@ func applyFelisConfigSecret(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return kubectlWithInput(ctx, out, "apply", "-f", "-")
+	if err := kubectlWithInput(ctx, out, "apply", "-f", "-"); err != nil {
+		return err
+	}
+	if err := replicateFelisConfigToWorkloadNamespace(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "felis setup: warning: the control-plane config is applied, but the workload-namespace mirror could not be refreshed (%v); re-run felis setup once that is fixed\n", err)
+	}
+	return nil
+}
+
+// replicateFelisConfigToWorkloadNamespace overwrites the workload-namespace
+// felis-config mirror with the freshly rendered pod config. Deliberately a full
+// replace, not create-if-absent: a stale mirror is exactly what silently hands
+// the Jobs that mount it old settings after a reconfigure. No-op when the
+// workload namespace is unset or is the control namespace itself.
+func replicateFelisConfigToWorkloadNamespace(ctx context.Context) error {
+	cfg, err := config.Load(hostSetupConfigPath)
+	if err != nil {
+		return err
+	}
+	ns := cfg.K8s.Namespace
+	if ns == "" || ns == "felis" {
+		return nil
+	}
+	manifest, err := kubectlOutput(ctx,
+		"-n", ns, "create", "secret", "generic", "felis-config",
+		"--from-file=felis.toml="+podSetupConfigPath,
+		"--dry-run=client", "-o", "yaml",
+	)
+	if err != nil {
+		return fmt.Errorf("render felis-config for %s: %w", ns, err)
+	}
+	if err := kubectlWithInput(ctx, manifest, "-n", ns, "apply", "-f", "-"); err != nil {
+		return fmt.Errorf("replicate felis-config to %s: %w", ns, err)
+	}
+	return nil
 }
 
 func installCloudflaredService(ctx context.Context, cloudflaredBin, configPath string) error {

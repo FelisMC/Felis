@@ -384,13 +384,13 @@ func applySMTPSecret(ctx context.Context, password string) error {
 }
 
 // replicateSMTPToWorkloadNamespace refreshes the workload-namespace (minecraft)
-// copies of felis-smtp and felis-config after email is reconfigured. The
-// reaper's CronJob runs there and resolves both by local reference — a
-// secretKeyRef is namespace-local, and `felis setup` creates the felis-config
-// replica create-if-absent, so without this refresh a later SMTP change would
-// never reach the pre-reap warning emails. Deliberately OVERWRITES both: these
-// are mirrors of the control-namespace sources, and a stale mirror is exactly
-// the failure this closes.
+// copy of felis-smtp after email is reconfigured. The reaper's CronJob runs
+// there and resolves the password by local reference — a secretKeyRef is
+// namespace-local — so without this refresh a later SMTP change would never
+// reach the pre-reap warning emails. Deliberately OVERWRITES: this is a mirror
+// of the control-namespace source, and a stale mirror is exactly the failure
+// this closes. The felis-config mirror rides along in applyFelisConfigSecret,
+// which every apply path refreshes.
 func replicateSMTPToWorkloadNamespace(ctx context.Context, password string) error {
 	cfg, err := config.Load(hostSetupConfigPath)
 	if err != nil {
@@ -406,17 +406,6 @@ func replicateSMTPToWorkloadNamespace(ctx context.Context, password string) erro
 	}
 	if err := kubectlWithInput(ctx, smtpManifest, "-n", ns, "apply", "-f", "-"); err != nil {
 		return fmt.Errorf("replicate %s to %s: %w", platform.SMTPSecretName, ns, err)
-	}
-	manifest, err := kubectlOutput(ctx,
-		"-n", ns, "create", "secret", "generic", "felis-config",
-		"--from-file=felis.toml="+podSetupConfigPath,
-		"--dry-run=client", "-o", "yaml",
-	)
-	if err != nil {
-		return fmt.Errorf("render felis-config for %s: %w", ns, err)
-	}
-	if err := kubectlWithInput(ctx, manifest, "-n", ns, "apply", "-f", "-"); err != nil {
-		return fmt.Errorf("replicate felis-config to %s: %w", ns, err)
 	}
 	return nil
 }
