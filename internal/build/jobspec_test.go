@@ -71,6 +71,23 @@ func TestBuildJobIsBoundedAndOneShot(t *testing.T) {
 	}
 }
 
+// A finished build must not squat in the namespace forever: without a TTL the
+// Job and its completed Pod accumulate one pair per build and eventually eat
+// the node's pod budget. The window is deliberately long (see buildJobTTL) so
+// the admin log stream stays useful for triage.
+func TestBuildJobIsReapedAfterCompletion(t *testing.T) {
+	job, err := BuildJob(sampleJobParams())
+	if err != nil {
+		t.Fatalf("BuildJob: %v", err)
+	}
+	if job.Spec.TTLSecondsAfterFinished == nil {
+		t.Fatal("TTLSecondsAfterFinished must be set so the finished Job (and its log Pod) is GC'd")
+	}
+	if got, want := *job.Spec.TTLSecondsAfterFinished, int32((7*24*time.Hour)/time.Second); got != want {
+		t.Errorf("TTLSecondsAfterFinished = %d, want %d (buildJobTTL)", got, want)
+	}
+}
+
 // No build container may be privileged or able to escalate, and all containers
 // must carry resource limits.
 func TestBuildJobContainersAreHardened(t *testing.T) {

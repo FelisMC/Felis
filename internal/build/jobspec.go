@@ -51,6 +51,20 @@ const (
 // upload is capped at 1 GiB by the submit lane; 4 GiB leaves expansion room.
 var contextSizeLimit = resource.MustParse("4Gi")
 
+// buildJobTTL is how long a finished build Job survives before the Job
+// controller deletes it — and with it the Pod whose kaniko log is the admin
+// failure-triage surface (GET /api/v1/images/build/{id}/logs).
+//
+// Every other Job family the platform renders carries a TTL (fileedit 2m,
+// backup/restore 10m); the build lane deliberately keeps a much longer one
+// because the logs are the point. Without ANY TTL the Job and its completed
+// Pod accumulate one pair per build forever: they count against the node's
+// pod budget (110 on stock k3s), grow etcd, and eventually block new builds.
+// Sync already tolerates a vanished Job (JobUnknown → failed; terminal builds
+// are returned unchanged), so a week-old log falling off costs a 404, not a
+// status flip.
+const buildJobTTL = 7 * 24 * time.Hour
+
 // JobParams are the rendered inputs to a build Job. They are derived from a
 // Build + Config by the Builder; jobspec is a pure function of them so the
 // security-critical Job shape is unit-tested without a cluster.
@@ -241,6 +255,8 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 			// A poisoned build must not loop — one shot, then a terminal verdict.
 			BackoffLimit:          int32Ptr(0),
 			ActiveDeadlineSeconds: int64Ptr(deadline),
+			// ...and a finished one must not linger forever (see buildJobTTL).
+			TTLSecondsAfterFinished: int32Ptr(int32(buildJobTTL / time.Second)),
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{Labels: buildLabels(p)},
 				Spec: corev1.PodSpec{
