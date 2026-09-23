@@ -2395,24 +2395,30 @@ push_image_to_registry() {
       return 0
       ;;
   esac
-  systemctl start docker
   log "mirroring ${ref} into the internal registry"
   docker tag "$ref" "$push_ref" || die "could not tag ${ref} as ${push_ref} — is docker healthy?"
   docker push "$push_ref" || die "could not mirror ${ref} into the internal registry — check the registry Deployment/pod and its PVC"
   docker rmi "$push_ref" >/dev/null 2>&1 || true
-  systemctl stop docker docker.socket 2>/dev/null || true
 }
 
 # Every image this installer builds is hosted in the registry, so the copies it
 # imported into containerd are a first-boot cache, not the only copy: kubelet
 # re-pulls from the registry after any image GC. Runs AFTER deploy_bundle — the
 # registry it pushes into does not exist before that.
+#
+# Docker is started once for the whole batch and stopped once at the end. A
+# start/stop pair per image trips systemd's start rate limit — observed live on
+# a re-run: three fast pushes, then "Start request repeated too quickly /
+# start-limit-hit" and the fourth image never got mirrored. docker.service is
+# socket-triggered, so each cycle counts twice against the burst limit.
 push_images_to_registry() {
   local img
+  systemctl start docker
   for img in "$FELIS_IMAGE" "$FELIS_LIMBO_IMAGE" "$FELIS_LOBBY_IMAGE" "$FELIS_PAPER_IMAGE"; do
     [ -n "$img" ] || continue
     push_image_to_registry "$img"
   done
+  systemctl stop docker docker.socket 2>/dev/null || true
 }
 
 # The login/lobby images use mutable :demo tags. Importing/pushing a replacement

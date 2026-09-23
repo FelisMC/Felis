@@ -704,6 +704,24 @@ esac
 out="$(run_push registry.felis.svc:5000/felis/felis:demo 1)"
 expect "a failed push fails the install loudly" "DIE: could not mirror" "$out"
 
+# docker must be started ONCE for the whole batch: a start/stop pair per image trips
+# systemd's start rate limit ("start-limit-hit" — observed live; the 4th image was never
+# mirrored because docker.service is socket-triggered and each cycle counts twice).
+wiblock="$(awk '/^push_images_to_registry\(\) \{/,/^}/' "$BS")"
+[ -n "$wiblock" ] || { echo "FAIL: no push_images_to_registry found in $BS"; exit 1; }
+out="$(
+  FELIS_IMAGE=a FELIS_LIMBO_IMAGE=b FELIS_LOBBY_IMAGE=c FELIS_PAPER_IMAGE=d bash -c '
+    systemctl() { printf "SYSTEMCTL %s\n" "$*"; }
+    push_image_to_registry() { printf "PUSH %s\n" "$1"; }
+    '"$wiblock"'
+    push_images_to_registry'
+)"
+starts="$(printf '%s\n' "$out" | grep -c 'SYSTEMCTL start docker')"
+stops="$(printf '%s\n' "$out" | grep -c 'SYSTEMCTL stop docker')"
+[ "$starts" = 1 ] && [ "$stops" = 1 ] && [ "$(printf '%s\n' "$out" | grep -c '^PUSH')" = 4 ] \
+  && echo "PASS the batch wraps all four pushes in ONE docker start/stop" \
+  || { echo "FAIL: expected 1 start / 1 stop / 4 pushes, got:"; printf '%s\n' "$out"; fails=$((fails + 1)); }
+
 # --- the registry's own image must not be re-pulled on every run --------------------------
 iblock="$(awk '/^import_registry_image\(\) \{/,/^}/' "$BS")"
 [ -n "$iblock" ] || { echo "FAIL: no import_registry_image found in $BS"; exit 1; }
