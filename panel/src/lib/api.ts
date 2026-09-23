@@ -678,6 +678,8 @@ export function humanizeError(e: unknown): string {
       return t("no_backup");
     case "not_stopped":
       return t("not_stopped");
+    case "no_world_volume":
+      return t("no_world_volume");
     case "restore_unavailable":
       return t("restore_unavailable");
     default:

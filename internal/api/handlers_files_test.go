@@ -119,6 +119,47 @@ func TestFileEditorStoppedGate(t *testing.T) {
 	}
 }
 
+// TestFileEditorWorldVolumeGate pins the second physical gate: a server with no
+// world PVC (never started, or already reaped) has no claim for the Job to mount,
+// so its Pod would sit Pending until the executor's wait timed out — a 90s hang
+// and a misleading 504 files_timeout for a request that is knowably impossible.
+// All three routes must refuse BEFORE creating a Job, with the same specific 409
+// the backup/restore faces use.
+func TestFileEditorWorldVolumeGate(t *testing.T) {
+	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
+
+	routes := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{"list", "GET", "/api/v1/servers/survival/files?path=config", ""},
+		{"read", "GET", "/api/v1/servers/survival/file?path=server.properties", ""},
+		{"write", "PUT", "/api/v1/servers/survival/file?path=server.properties", `{"content":"aGk="}`},
+	}
+
+	for _, rt := range routes {
+		t.Run(rt.name+" without a world volume -> 409 no_world_volume", func(t *testing.T) {
+			api, _, cl, files := mkFiles()
+			cl.noWorld["survival"] = true
+			api.External = staticExternal{p: owner}
+
+			var hdr map[string]string
+			if rt.body != "" {
+				hdr = jsonHeader
+			}
+			w := do(api.ExternalHandler(), rt.method, rt.path, rt.body, hdr)
+			if w.Code != http.StatusConflict || decodeErr(t, w) != "no_world_volume" {
+				t.Fatalf("code = %d body %s", w.Code, w.Body.String())
+			}
+			if files.calls != 0 {
+				t.Fatal("no claim to mount — the file Job must never be created")
+			}
+		})
+	}
+}
+
 // TestFileEditorAuthorization pins who may touch a world's files. It is the same
 // owner-or-admin rule the backup routes enforce, and it must hold on all three
 // routes — a read-only route leaking another owner's config (an RCON password
