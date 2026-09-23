@@ -691,7 +691,15 @@ expect "enabling retention passes the worlds root" "--worlds-host-path
 /var/lib/rancher/k3s/storage" "$out"
 expect "enabling retention passes the archive mount that must match felis.toml" "--archive-local-path
 /var/lib/felis/archives" "$out"
-expect "a missing worlds root is warned about, not silently skipped" "WARN: worlds root /var/lib/rancher/k3s/storage does not exist yet" "$out"
+
+# The warn fires only when the root is ABSENT (hostPath type Directory would fail);
+# the case above passes a path that exists on any host already running k3s, so it
+# must not also demand the warning — probing the real /var/lib/rancher path made
+# this suite red on exactly the hosts the installer is for. Point the warn case at
+# a path guaranteed missing.
+missing="/tmp/felis-worlds-root-must-not-exist-$$"
+out="$(run_bundle_flags felis-backups "$missing")"
+expect "a missing worlds root is warned about, not silently skipped" "WARN: worlds root $missing does not exist yet" "$out"
 
 # The reaper pod is non-root (uid 1000) and k3s ships the storage root 0700 root:root, so
 # the installer must grant traverse or every archive dies with permission denied.
