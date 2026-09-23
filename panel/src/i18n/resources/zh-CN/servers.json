@@ -159,6 +159,8 @@
   "luckperms_revert_success": "已成功撤销该操作！",
   "luckperms_presets": "预设",
   "luckperms_no_parent_groups": "未分配任何父组",
+  "luckperms_no_reply": "服务器没有返回可解析的数据——部分 LuckPerms 版本不通过 RCON 回包，下面的用户组/权限列表可能不准确；授予与撤销操作仍然会实际生效。",
+  "luckperms_no_output": "（服务器未返回输出）",
   "luckperms_global": "全局",
   "luckperms_no_perms": "尚未分配任何权限节点",
   "luckperms_rcon_output": "RCON 控制台输出",

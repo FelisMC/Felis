@@ -159,6 +159,8 @@
   "luckperms_revert_success": "Action reverted successfully!",
   "luckperms_presets": "Presets",
   "luckperms_no_parent_groups": "No parent groups assigned",
+  "luckperms_no_reply": "The server returned no parseable data — some LuckPerms versions do not reply over RCON, so the group/permission lists below may be incomplete. Grants and revocations still take effect.",
+  "luckperms_no_output": "(the server returned no output)",
   "luckperms_global": "global",
   "luckperms_no_perms": "No explicit permission nodes assigned",
   "luckperms_rcon_output": "RCON Console Output",

@@ -88,6 +88,18 @@ export function ServerLuckPerms() {
     [name, selectedPlayer]
   );
 
+  // LuckPerms does not reply over RCON (its commands finish asynchronously, after
+  // the response is flushed) — verified live on 5.5.85: every `lp` command
+  // returns an empty body while `list`/`plugins` answer normally. A silent,
+  // entry-less reply therefore means "could not read", NOT "no groups / no
+  // permissions": the two projection panels must not claim the latter on their
+  // own. The writes still work, so the page keeps offering them.
+  const lpSilent =
+    !!lpInfo &&
+    !(lpInfo.output ?? "").trim() &&
+    (lpInfo.groups?.length ?? 0) === 0 &&
+    (lpInfo.permissions?.length ?? 0) === 0;
+
   // Form State
   const [groupNameInput, setGroupNameInput] = useState("");
   const [permNodeInput, setPermNodeInput] = useState("");
@@ -135,7 +147,7 @@ export function ServerLuckPerms() {
         action: "add",
         target: groupName,
         status: "success",
-        output: res.output || `[RCON] parent add ${groupName}`,
+        output: res.output || t("luckperms_no_output"),
       });
       reloadLp();
     } catch (err) {
@@ -157,7 +169,7 @@ export function ServerLuckPerms() {
         action: "remove",
         target: groupName,
         status: "success",
-        output: res.output || `[RCON] parent remove ${groupName}`,
+        output: res.output || t("luckperms_no_output"),
       });
       reloadLp();
     } catch (err) {
@@ -194,7 +206,7 @@ export function ServerLuckPerms() {
         value: permValueInput,
         world: world || undefined,
         status: "success",
-        output: res.output || `[RCON] permission set ${node}`,
+        output: res.output || t("luckperms_no_output"),
       });
       setPermNodeInput("");
       setPermWorldInput("");
@@ -219,7 +231,7 @@ export function ServerLuckPerms() {
         target: node,
         world: world || undefined,
         status: "success",
-        output: res.output || `[RCON] permission unset ${node}`,
+        output: res.output || t("luckperms_no_output"),
       });
       reloadLp();
     } catch (err) {
@@ -394,6 +406,30 @@ export function ServerLuckPerms() {
                     {selectedPlayer}
                   </span>
                 </div>
+
+                {/* Ground truth: the raw RCON reply behind the two projection panels.
+                    The parse is LuckPerms-format-specific — on a server without the
+                    plugin it yields zero entries, and without this disclosure the
+                    panels would present that as "no groups / no permissions" while
+                    the real reply ("Unknown or incomplete command…") stays invisible.
+                    Same disclosure the whitelist/ban/online rosters carry. */}
+                {lpInfo?.output?.trim() && (
+                  <details className="group/details">
+                    <summary className="cursor-pointer select-none text-[10px] text-muted-foreground/70 hover:text-foreground font-mono transition-colors list-none flex items-center gap-1">
+                      <span className="transition-transform group-open/details:rotate-90">▶</span>
+                      {t("luckperms_rcon_output")}
+                    </summary>
+                    <pre className="mt-1.5 p-2 rounded bg-muted/60 border border-border/80 font-mono text-[10px] text-foreground/80 overflow-x-auto whitespace-pre-wrap break-all max-h-24">
+                      {lpInfo.output}
+                    </pre>
+                  </details>
+                )}
+
+                {lpSilent && (
+                  <div className="rounded-md border border-dashed border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+                    {t("luckperms_no_reply")}
+                  </div>
+                )}
 
                 {/* Operations Feedback */}
                 {formFeedback && (

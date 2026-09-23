@@ -245,6 +245,7 @@ export const api = {
       player: string;
       groups: string[];
       permissions: { node: string; value: boolean; world?: string }[];
+      output: string;
     }>("GET", `/servers/${name}/access/luckperms/${player}`),
 
   accessPermission: (
