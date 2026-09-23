@@ -87,7 +87,7 @@ sequenceDiagram
         else quota available
             Repo-->>API: true
             API->>Repo: ClaimServer(name, user_id)
-            Note over Repo: SELECT EXISTS(server); then atomic UPDATE servers SET owner_id=$2, claimed_at=now() WHERE name=$1 AND owner_id IS NULL AND deleted_at IS NULL
+            Note over Repo: ONE transaction: pg_advisory_xact_lock(user_id) serializes this user's claim lane; SELECT FROM servers WHERE name=$1 AND deleted_at IS NULL FOR UPDATE; re-run the four-dimension quota gate (authoritative — the pre-check above is a fast path); then UPDATE servers SET owner_id=$2, claimed_at=now() WHERE name=$1 AND owner_id IS NULL AND deleted_at IS NULL
             alt server missing
                 Repo-->>API: ErrNotFound
                 API-->>Panel: 404 not_found
@@ -137,14 +137,14 @@ sequenceDiagram
     Panel->>APIExternal: POST /api/v1/account/link/verify {code}
     APIExternal->>APIExternal: trim and uppercase code
     APIExternal->>Repo: VerifyLinkCode(user_id, code, now)
-    Repo->>Repo: SELECT non-expired code
+    Repo->>Repo: SELECT mc_uuid, auth_source FROM account_link_codes WHERE code=$1 AND expires_at>$2 FOR UPDATE
     alt missing or expired code
         Repo-->>APIExternal: ErrLinkCodeInvalid
         APIExternal-->>Panel: 400 invalid_code
-    else UUID linked to another user
+    else UUID linked to a different, live user
         Repo-->>APIExternal: ErrConflict
         APIExternal-->>Panel: 409 already_linked
-    else valid code
+    else valid code (re-verify by the same user is idempotent; a retired/soft-deleted owner's link is taken over)
         Repo->>Repo: INSERT account_links(user_id, mc_uuid, auth_source) ON CONFLICT (user_id, mc_uuid) DO UPDATE auth_source
         Repo->>Repo: DELETE account_link_codes WHERE code=$1
         Repo-->>APIExternal: mc_uuid, auth_source
