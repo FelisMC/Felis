@@ -241,24 +241,28 @@ func provisionSystemServers(ctx context.Context, cfg *config.Config, out io.Writ
 	}
 	secretOutcomes := []systemServerOutcome{
 		ensureSecretReplica(ctx, cl, controlNS, cfg.K8s.Namespace,
-			naming.ServiceTokenSecretName, naming.ServiceTokenSecretKey, "service-token", "minecraft ns"),
+			naming.ServiceTokenSecretName, naming.ServiceTokenSecretKey, "service-token", "minecraft ns", false),
 		ensureSecretReplica(ctx, cl, controlNS, cfg.K8s.Namespace,
-			naming.ForwardingSecretName, naming.ForwardingSecretKey, "forwarding-secret", "minecraft ns"),
+			naming.ForwardingSecretName, naming.ForwardingSecretKey, "forwarding-secret", "minecraft ns", false),
+		// refresh=true: felis-config is the rendered config, not a credential. The
+		// backup/restore/fileedit Jobs and the reaper mount this copy, so a re-run
+		// must update it when the control plane's render has moved on (a stale copy
+		// e.g. keeps an old database URL after a credential rotation).
 		ensureSecretReplica(ctx, cl, controlNS, cfg.K8s.Namespace,
-			"felis-config", "felis.toml", "config", "minecraft ns"),
+			"felis-config", "felis.toml", "config", "minecraft ns", true),
 		// The reaper's pre-reap warning emails authenticate with the same relay
 		// password felis-api uses; the reaper pod runs in the minecraft namespace,
 		// where a secretKeyRef resolves only against a local mirror. Skipped while
 		// the relay is not configured yet — the "configure email" screen refreshes
 		// both mirrors when it applies.
 		ensureSecretReplica(ctx, cl, controlNS, cfg.K8s.Namespace,
-			"felis-smtp", "password", "smtp", "minecraft ns"),
+			"felis-smtp", "password", "smtp", "minecraft ns", false),
 		// The build namespace needs the same token: the build Job's fetch
 		// initContainer reads the submission context from the internal face. Best
 		// effort — a deployment that only installs the control plane simply never
 		// builds a user submission.
 		ensureSecretReplica(ctx, cl, controlNS, buildNS,
-			naming.ServiceTokenSecretName, naming.ServiceTokenSecretKey, "service-token", "felis-build ns"),
+			naming.ServiceTokenSecretName, naming.ServiceTokenSecretKey, "service-token", "felis-build ns", false),
 	}
 	outcomes := ensureSystemServers(ctx, cl, cfg.K8s.Namespace, cfg.Velocity.LoginImage, cfg.Velocity.LobbyImage, apiBaseURL, cfg.Server.RootDomain, defaultPanelHostname(cfg.Server.RootDomain, cfg.Auth.PanelHostname))
 	outcomes = append(secretOutcomes, outcomes...)
@@ -269,6 +273,8 @@ func provisionSystemServers(ctx context.Context, cfg *config.Config, out io.Writ
 			fmt.Fprintf(out, "  - %s: ERROR %v\n", o.name, o.err)
 		case o.created:
 			fmt.Fprintf(out, "  - %s: created (DesiredState=Running)\n", o.name)
+		case o.updated:
+			fmt.Fprintf(out, "  - %s: refreshed from the control namespace\n", o.name)
 		default:
 			fmt.Fprintf(out, "  - %s: skipped (%s)\n", o.name, o.skipped)
 		}

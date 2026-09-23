@@ -156,7 +156,7 @@ func TestEnsureSecretReplica(t *testing.T) {
 	}
 	replicate := func(cl client.Client, controlNS, mcNS string) systemServerOutcome {
 		return ensureSecretReplica(ctx, cl, controlNS, mcNS,
-			naming.ServiceTokenSecretName, naming.ServiceTokenSecretKey, "service-token", "minecraft ns")
+			naming.ServiceTokenSecretName, naming.ServiceTokenSecretKey, "service-token", "minecraft ns", false)
 	}
 
 	t.Run("replicates when absent", func(t *testing.T) {
@@ -247,6 +247,87 @@ func TestEnsureSecretReplica(t *testing.T) {
 		out := replicate(cl, "felis", "felis")
 		if out.err != nil || out.available || !strings.Contains(out.skipped, naming.ServiceTokenSecretKey) {
 			t.Fatalf("outcome = %+v, want unavailable required key", out)
+		}
+	})
+}
+
+// The felis-config mirror is the one replica that must refresh: it is a rendered
+// config, and a stale workload-side copy (backup/restore/fileedit Jobs, the reaper)
+// misbehaves silently — a rotated database credential keeps the control plane moving
+// while every backup Job keeps failing auth. Credential Secrets keep create-if-absent.
+func TestEnsureSecretReplicaRefresh(t *testing.T) {
+	scheme := newSystemServerScheme(t)
+	ctx := context.Background()
+	configSecret := func(ns, body string) *corev1.Secret {
+		return &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "felis-config", Namespace: ns},
+			Type:       corev1.SecretTypeOpaque,
+			Data:       map[string][]byte{"felis.toml": []byte(body)},
+		}
+	}
+	refresh := func(cl client.Client) systemServerOutcome {
+		return ensureSecretReplica(ctx, cl, "felis", "minecraft",
+			"felis-config", "felis.toml", "config", "minecraft ns", true)
+	}
+	replicaBody := func(t *testing.T, cl client.Client) string {
+		t.Helper()
+		var got corev1.Secret
+		if err := cl.Get(ctx, client.ObjectKey{Namespace: "minecraft", Name: "felis-config"}, &got); err != nil {
+			t.Fatalf("get replica: %v", err)
+		}
+		return string(got.Data["felis.toml"])
+	}
+
+	t.Run("refreshes a stale config replica", func(t *testing.T) {
+		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+			configSecret("felis", "current"),
+			configSecret("minecraft", "stale"),
+		).Build()
+		out := refresh(cl)
+		if out.err != nil || !out.updated || !out.available {
+			t.Fatalf("outcome = %+v, want refreshed", out)
+		}
+		if got := replicaBody(t, cl); got != "current" {
+			t.Errorf("replica = %q, want current", got)
+		}
+	})
+
+	t.Run("leaves a current config replica alone", func(t *testing.T) {
+		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+			configSecret("felis", "same"),
+			configSecret("minecraft", "same"),
+		).Build()
+		out := refresh(cl)
+		if out.err != nil || out.updated || !out.available || out.skipped != "already current" {
+			t.Fatalf("outcome = %+v, want already current", out)
+		}
+	})
+
+	t.Run("fills an empty-key replica", func(t *testing.T) {
+		empty := &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "felis-config", Namespace: "minecraft"},
+			Data:       map[string][]byte{},
+		}
+		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+			configSecret("felis", "current"), empty).Build()
+		out := refresh(cl)
+		if out.err != nil || !out.updated {
+			t.Fatalf("outcome = %+v, want refreshed", out)
+		}
+		if got := replicaBody(t, cl); got != "current" {
+			t.Errorf("replica = %q, want current", got)
+		}
+	})
+
+	t.Run("missing source degrades to a skip", func(t *testing.T) {
+		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+			configSecret("minecraft", "stale")).Build()
+		out := refresh(cl)
+		if out.err != nil || out.updated || out.available || out.skipped == "" {
+			t.Fatalf("outcome = %+v, want skipped (source missing)", out)
+		}
+		if got := replicaBody(t, cl); got != "stale" {
+			t.Errorf("replica = %q, want untouched stale", got)
 		}
 	})
 }

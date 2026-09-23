@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"time"
@@ -256,6 +257,7 @@ func buildSystemServerClient() (client.Client, error) {
 type systemServerOutcome struct {
 	name      string
 	created   bool   // true = we created it this run
+	updated   bool   // true = we refreshed an existing replica from the source
 	available bool   // true = the required object now exists
 	skipped   string // non-empty = why it was skipped (image unset / already exists)
 	err       error  // non-nil = create failed
@@ -491,7 +493,14 @@ func phaseOrPending(p v1alpha1.Phase) string {
 // a create failure degrades to a reported outcome, never a hard setup failure. It
 // copies only Type and Data — never labels/annotations/ownerRefs — so the replica
 // carries no accidental GC owner or managed-by lineage.
-func ensureSecretReplica(ctx context.Context, cl client.Client, controlNamespace, minecraftNamespace, secretName, secretKey, label, where string) systemServerOutcome {
+//
+// refreshExisting switches the felis-config mirror to refresh-in-place: that Secret is
+// a rendered config, never a hand-rotated credential, and the workload Jobs that mount
+// it (backup/restore/fileedit) plus the reaper silently misbehave on a stale copy —
+// e.g. after a database credential rotation the control plane moves on while every
+// backup Job keeps failing auth. Credential Secrets keep the never-overwrite rule so a
+// rotated value survives; to rotate those, delete the replica and re-run setup.
+func ensureSecretReplica(ctx context.Context, cl client.Client, controlNamespace, minecraftNamespace, secretName, secretKey, label, where string, refreshExisting bool) systemServerOutcome {
 	name := label + " (" + where + ")"
 	validate := func(secret *corev1.Secret, location, skipped string) systemServerOutcome {
 		if len(secret.Data[secretKey]) == 0 {
@@ -499,6 +508,33 @@ func ensureSecretReplica(ctx context.Context, cl client.Client, controlNamespace
 				"Secret %s/%s has no non-empty %q key", location, secretName, secretKey)}
 		}
 		return systemServerOutcome{name: name, available: true, skipped: skipped}
+	}
+	// refreshFromControl updates an existing replica from the control-namespace source
+	// when the rendered key differs. Only the felis-config mirror opts in.
+	refreshFromControl := func(existing *corev1.Secret) systemServerOutcome {
+		var src corev1.Secret
+		if err := cl.Get(ctx, client.ObjectKey{Namespace: controlNamespace, Name: secretName}, &src); err != nil {
+			if apierrors.IsNotFound(err) {
+				return systemServerOutcome{name: name, skipped: fmt.Sprintf(
+					"source Secret %s/%s not found — provision it (deploy/bootstrap.sh), then re-run setup",
+					controlNamespace, secretName)}
+			}
+			return systemServerOutcome{name: name, err: err}
+		}
+		if out := validate(&src, controlNamespace, ""); !out.available {
+			return out
+		}
+		if bytes.Equal(existing.Data[secretKey], src.Data[secretKey]) {
+			return validate(existing, minecraftNamespace, "already current")
+		}
+		if existing.Data == nil {
+			existing.Data = map[string][]byte{}
+		}
+		existing.Data[secretKey] = src.Data[secretKey]
+		if err := cl.Update(ctx, existing); err != nil {
+			return systemServerOutcome{name: name, err: err}
+		}
+		return systemServerOutcome{name: name, updated: true, available: true}
 	}
 	if controlNamespace == minecraftNamespace {
 		// Same namespace needs no replica, but the source still has to exist.
@@ -518,6 +554,9 @@ func ensureSecretReplica(ctx context.Context, cl client.Client, controlNamespace
 	var existing corev1.Secret
 	getErr := cl.Get(ctx, client.ObjectKey{Namespace: minecraftNamespace, Name: secretName}, &existing)
 	if getErr == nil {
+		if refreshExisting {
+			return refreshFromControl(&existing)
+		}
 		return validate(&existing, minecraftNamespace, "already exists")
 	}
 	if !apierrors.IsNotFound(getErr) {
@@ -545,6 +584,9 @@ func ensureSecretReplica(ctx context.Context, cl client.Client, controlNamespace
 		if apierrors.IsAlreadyExists(err) {
 			if getErr := cl.Get(ctx, client.ObjectKey{Namespace: minecraftNamespace, Name: secretName}, &existing); getErr != nil {
 				return systemServerOutcome{name: name, err: getErr}
+			}
+			if refreshExisting {
+				return refreshFromControl(&existing)
 			}
 			return validate(&existing, minecraftNamespace, "already exists")
 		}

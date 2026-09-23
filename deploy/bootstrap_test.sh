@@ -820,6 +820,41 @@ case "$out" in
   *DOCKER*) echo "FAIL: a present registry:2 must not trigger a docker pull"; fails=$((fails + 1)) ;;
 esac
 
+# --- installer re-runs refresh the workload namespace's felis-config copy ---------------
+# The backup/restore/fileedit Jobs and the reaper mount the workload namespace's own
+# felis-config (a secretKeyRef is namespace-local). `felis setup` makes that replica
+# create-if-absent -- right for credentials, wrong for a rendered config -- so the
+# installer must refresh it every run; a stale copy keeps old DB/archive settings.
+
+fcblock="$(awk '/^apply_felis_config_secrets\(\) \{/,/^}/' "$BS")"
+[ -n "$fcblock" ] || { echo "FAIL: no apply_felis_config_secrets found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$fcblock" | wc -l)" -lt 20 ] \
+  || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
+
+kubcalls="$(mktemp)"
+run_fc() {
+  : > "$kubcalls"
+  CONTROL_NS=felis MINECRAFT_NS=minecraft STATE_DIR=/tmp/fc KUBCALLS="$kubcalls" bash -c '
+    kube() { printf "%s\n" "$*" >> "$KUBCALLS"; }
+    '"$fcblock"'
+    apply_felis_config_secrets'
+  cat "$kubcalls"
+}
+out="$(run_fc)"
+expect "the control plane's felis-config is applied" \
+  "-n felis create secret generic felis-config" "$out"
+expect "the workload namespace's copy is applied too" \
+  "-n minecraft create secret generic felis-config" "$out"
+expect "both copies render from the pod config" \
+  "felis.toml=/tmp/fc/felis.pod.toml" "$out"
+applies="$(printf '%s\n' "$out" | grep -c '^apply -f -$')"
+if [ "$applies" -eq 2 ]; then
+  echo "PASS both rendered copies are piped to kubectl apply"
+else
+  echo "FAIL: expected 2 applies, got $applies:"; printf '%s\n' "$out"; fails=$((fails + 1))
+fi
+rm -f "$kubcalls"
+
 # --- installer re-runs keep the operator's [registry] overrides --------------------------
 # §15's upgrade path is re-running the installer, but the build-lane mirrors and the
 # uploads backend live in [registry] as hand-written keys (docs/troubleshooting.md §8e or

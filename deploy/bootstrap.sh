@@ -344,6 +344,21 @@ apply_literal_secret() {
   rm -f "$tmp"
 }
 
+# The control plane mounts felis-config from its own namespace; the workload
+# namespace's backup/restore/fileedit Jobs and the reaper mount a local copy (a
+# secretKeyRef is namespace-local). The installer owns the rendered config, so both
+# copies are (re)applied on every run — unlike the create-if-absent credential
+# replicas `felis setup` makes, because a stale config copy keeps an old database URL
+# or archive policy after an upgrade or a credential rotation.
+apply_felis_config_secrets() {
+  kube -n "$CONTROL_NS" create secret generic felis-config \
+    --from-file=felis.toml="${STATE_DIR}/felis.pod.toml" \
+    --dry-run=client -o yaml | kube apply -f -
+  kube -n "$MINECRAFT_NS" create secret generic felis-config \
+    --from-file=felis.toml="${STATE_DIR}/felis.pod.toml" \
+    --dry-run=client -o yaml | kube apply -f -
+}
+
 as_postgres() {
   if command -v runuser >/dev/null 2>&1; then
     runuser -u postgres -- "$@"
@@ -2304,9 +2319,7 @@ deploy_bundle() {
   done
 
   log "provisioning felis-config + felis-service-token + felis-forwarding-secret + panel TLS secrets (out-of-band, never in the bundle)"
-  kube -n "$CONTROL_NS" create secret generic felis-config \
-    --from-file=felis.toml="${STATE_DIR}/felis.pod.toml" \
-    --dry-run=client -o yaml | kube apply -f -
+  apply_felis_config_secrets
   apply_literal_secret "$CONTROL_NS" felis-service-token token "$SERVICE_TOKEN"
   # The build namespace needs the same token: the build Job's fetch initContainer
   # streams a submission's build context from the felis-api internal face, and a
