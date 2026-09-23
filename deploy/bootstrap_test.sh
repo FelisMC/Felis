@@ -725,6 +725,69 @@ case "$out" in
   *DOCKER*) echo "FAIL: a present registry:2 must not trigger a docker pull"; fails=$((fails + 1)) ;;
 esac
 
+# --- installer re-runs keep the operator's [registry] overrides --------------------------
+# §15's upgrade path is re-running the installer, but the build-lane mirrors and the
+# uploads backend live in [registry] as hand-written keys (docs/troubleshooting.md §8e or
+# the storage wizard) that nothing in this script's inputs derives. A re-run must carry
+# them forward — without letting a stale url/build_namespace survive (installer-owned).
+
+wrblock="$(awk '/^write_felis_toml\(\) \{/,/^}/' "$BS")"
+prblock="$(awk '/^persisted_registry_block\(\) \{/,/^}/' "$BS")"
+[ -n "$wrblock" ] && [ -n "$prblock" ] \
+  || { echo "FAIL: write_felis_toml / persisted_registry_block not found in $BS"; exit 1; }
+# The blocks quote themselves (the awk program uses single quotes), so they are
+# sourced from a file instead of being spliced into a single-quoted bash -c.
+fnfile="$(mktemp)"
+printf '%s\n%s\n' "$prblock" "$wrblock" > "$fnfile"
+
+rdir="$(mktemp -d)"
+cat > "$rdir/felis.host.toml" <<'TOML'
+[registry]
+url = "stale.invalid:5000"
+build_namespace = "stale-ns"
+kaniko_image = "registry.felis.svc:5000/mirror/kaniko-executor:v1.24.0"
+trivy_db_repository = "registry.felis.svc:5000/mirror/trivy-db:2"
+
+[registry.s3]
+endpoint = "https://s3.example"
+region = "us-east-1"
+TOML
+
+run_write() { # out-file
+  STATE_DIR="$rdir" OUT_TOML="$1" FNFILE="$fnfile" bash -c '
+    log() { :; }
+    persisted_smtp_block() { :; }
+    persisted_auth_source_blocks() { :; }
+    . "$FNFILE"
+    FELIS_ROOT_DOMAIN=r.example.com DB_USER=u DB_PASSWORD=p DB_NAME=d MINECRAFT_NS=minecraft \
+    FELIS_EGRESS_MODE=nodeport FELIS_LIMBO_IMAGE=li FELIS_LOBBY_IMAGE=lo \
+    REGISTRY_URL=registry.felis.svc:5000 BUILD_NS=felis-build FELIS_ARCHIVE_LOCAL_PATH=/a \
+    write_felis_toml "$OUT_TOML" 127.0.0.1'
+}
+
+run_write "$rdir/out.toml"
+out="$(cat "$rdir/out.toml")"
+expect "a re-run carries the build-lane executor mirrors" \
+  'kaniko_image = "registry.felis.svc:5000/mirror/kaniko-executor:v1.24.0"' "$out"
+expect "a re-run carries the [registry.s3] uploads subtable" "[registry.s3]" "$out"
+expect "the carried subtable keeps its keys" 'endpoint = "https://s3.example"' "$out"
+expect "url stays installer-owned" 'url = "registry.felis.svc:5000"' "$out"
+case "$out" in
+  *stale.invalid* | *stale-ns*) echo "FAIL: stale installer-owned registry values survived the re-run"; fails=$((fails + 1)) ;;
+esac
+
+cp "$rdir/out.toml" "$rdir/felis.host.toml"
+run_write "$rdir/out2.toml"
+if cmp -s "$rdir/out.toml" "$rdir/out2.toml"; then
+  echo "PASS a carried-forward config converges (the second re-run is a no-op)"
+else
+  echo "FAIL: carrying [registry] overrides is not idempotent"
+  diff "$rdir/out.toml" "$rdir/out2.toml" | head
+  fails=$((fails + 1))
+fi
+
+rm -f "$fnfile"
+
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"
