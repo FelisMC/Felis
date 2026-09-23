@@ -20,7 +20,7 @@ Table of Contents
 - **Backup & Restore**: One-click snapshots of a server's whole data volume (worlds, config, plugins/mods — the entire /data volume) into the cluster's archive store, with rollback from any backup point — enabled by default (the installer renders the archive PVC and its path).
 - **World Reaper** (opt in): Worlds idle for more than 15 days are automatically backed up and removed to free disk space. Enable it by setting `FELIS_WORLDS_HOST_PATH` at install time (on k3s: `/var/lib/rancher/k3s/storage`); without it, no world is ever deleted.
 - **Multi-core Support**: Compatible with Paper, Fabric, Forge, and NeoForge, federated behind a Velocity proxy.
-- **Modpack Submission**: Players submit custom modpacks; admin approval triggers automatic build and deployment.
+- **Modpack Submission**: Players submit custom modpacks; admin approval triggers an automatic build, and the result is whitelisted as a server image you can select to deploy.
 - **Passkey Login**: Passwordless authentication via fingerprint, face recognition, or hardware security keys.
 - **Zero Trust Security**: Panel traffic protected by Cloudflare Access; the internal API is never exposed to the internet.
 

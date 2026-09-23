@@ -20,7 +20,7 @@ A Kubernetes-driven Minecraft server hosting platform — one command to deploy,
 - **备份与恢复**：一键把整服数据（世界、配置、插件/模组，即整个 /data 卷）打包进集群内的归档库，支持从任意备份点回滚；默认安装就已启用（归档 PVC 与路径由安装器一并生成）。
 - **智慧回收（可选开启）**：超过 15 天无人游玩的世界自动备份后删除，释放磁盘空间；安装时设置 `FELIS_WORLDS_HOST_PATH`（k3s 默认 `/var/lib/rancher/k3s/storage`）即启用每日回收，不设置则不删任何世界。
 - **多核心支持**：兼容 Paper、Fabric、Forge、NeoForge，经由 Velocity 代理统一入口。
-- **模组自助提交**：玩家自行上传模组包，服主审批通过后自动构建并部署。
+- **模组自助提交**：玩家自行上传模组包，服主审批通过后自动构建；构建产物进入镜像白名单，可直接选用为服务器镜像完成部署。
 - **Passkey 登录**：支持指纹、面容、硬件密钥等无密码认证方式。
 - **零信任安全**：面板流量由 Cloudflare Access 保护，集群内 API 不暴露到公网。
 
