@@ -18,9 +18,10 @@ import (
 )
 
 // cmdFetchContext is the in-Pod entrypoint the build Job's context-fetch
-// initContainer runs. It performs one read against the felis-api INTERNAL face —
-// the blob the platform stored for a submission — and extracts it into the shared
-// emptyDir the Kaniko container then builds from.
+// initContainer runs. It reads the blob the platform stored for a submission
+// from the felis-api INTERNAL face (with a bounded retry — see
+// fetchContextWithRetry) and extracts it into the shared emptyDir the Kaniko
+// container then builds from.
 //
 // Why this exists: the build Pod runs in the build namespace, where it can neither
 // mount the control-plane uploads PVC (a PVC does not cross namespaces) nor hold
@@ -56,32 +57,83 @@ func cmdFetchContext(args []string, _, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, *url, nil)
-	if err != nil {
+	// Validate the URL once up front: a bad one is a usage error (2), not
+	// something to sit in the retry loop.
+	if _, err := http.NewRequest(http.MethodGet, *url, nil); err != nil {
 		fmt.Fprintf(stderr, "felis fetch-context: bad --url: %v\n", err)
 		return 2
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
 	// No overall client timeout: a legitimate modpack context can be large and the
 	// Job's activeDeadlineSeconds is the real bound. The header timeout catches a
 	// wedged endpoint without capping a healthy download.
 	client := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: time.Minute}}
-	resp, err := client.Do(req)
+	resp, err := fetchContextWithRetry(ctx, client, *url, token, stderr)
 	if err != nil {
-		fmt.Fprintf(stderr, "felis fetch-context: GET failed: %v\n", err)
+		fmt.Fprintf(stderr, "felis fetch-context: %v\n", err)
 		return 1
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(stderr, "felis fetch-context: %s\n", resp.Status)
-		return 1
-	}
 
 	if err := extractTarGz(resp.Body, *out); err != nil {
 		fmt.Fprintf(stderr, "felis fetch-context: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+// fetchRetryInterval/fetchRetryWindow bound how long the fetch waits out a
+// control-plane blip before giving up. The api pod being replaced is a normal
+// event (rollout, eviction, a chaos drill), and without a retry one refused
+// dial turns it into a failed build: BackoffLimit=0 gives the Job no second
+// Pod, so the terminal verdict costs a manual re-approval — the live drill hit
+// exactly this (context-fetch exit 1 on `connect: connection refused` while
+// the api pod rolled; the new pod was serving 11 seconds later and the same
+// 198-byte blob). The window is tiny next to the Job's 30-minute
+// activeDeadline; a 4xx (missing blob, rejected token) still fails fast.
+//
+// Vars, not consts, so tests can shrink the window.
+var (
+	fetchRetryInterval = 3 * time.Second
+	fetchRetryWindow   = 45 * time.Second
+)
+
+// fetchContextWithRetry GETs the context tarball, retrying transport failures
+// and 5xx responses until fetchRetryWindow runs out. A 4xx is an answer, not a
+// blip — retrying it only delays the honest error.
+func fetchContextWithRetry(ctx context.Context, client *http.Client, url, token string, stderr io.Writer) (*http.Response, error) {
+	deadline := time.Now().Add(fetchRetryWindow)
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("bad --url: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+
+		resp, err := client.Do(req)
+		if err == nil && resp.StatusCode == http.StatusOK {
+			return resp, nil
+		}
+		if err == nil {
+			status := resp.Status
+			_ = resp.Body.Close()
+			err = fmt.Errorf("GET returned %s", status)
+			if resp.StatusCode < 500 {
+				return nil, err
+			}
+		}
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("GET failed: %w", err)
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("GET failed (retried for %s): %w", fetchRetryWindow, err)
+		}
+		fmt.Fprintf(stderr, "felis fetch-context: %v; retrying (the internal face may be restarting)\n", err)
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("GET failed: %w", err)
+		case <-time.After(fetchRetryInterval):
+		}
+	}
 }
 
 // extractTarGz streams a gzip'd tarball into root, creating directories as

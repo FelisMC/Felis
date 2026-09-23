@@ -5,12 +5,15 @@ import (
 	"bytes"
 	"compress/gzip"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type tarEntry struct {
@@ -167,5 +170,146 @@ func TestExtractTarGzRejectsNonGzip(t *testing.T) {
 	err := extractTarGz(strings.NewReader("not a tarball"), dir)
 	if err == nil || !strings.Contains(err.Error(), "gzip") {
 		t.Fatalf("err = %v, want a gzip complaint", err)
+	}
+}
+
+// shrinkFetchWindow swaps the retry knobs for a faster test and restores them
+// afterwards, so no test leaks a tiny window into another.
+func shrinkFetchWindow(t *testing.T, interval, window time.Duration) {
+	t.Helper()
+	oldInterval, oldWindow := fetchRetryInterval, fetchRetryWindow
+	fetchRetryInterval, fetchRetryWindow = interval, window
+	t.Cleanup(func() { fetchRetryInterval, fetchRetryWindow = oldInterval, oldWindow })
+}
+
+// A control-plane blip mid-fetch is survived: a 5xx on the first attempt is
+// retried and the second attempt's tarball extracts. This walks back the live
+// drill's failure, where the api pod rolled mid-fetch and the single attempt
+// died, failing the build Job.
+func TestFetchContextRetriesThroughBlip(t *testing.T) {
+	shrinkFetchWindow(t, 10*time.Millisecond, time.Second)
+	body := tgzBody(t, tarEntry{name: "Dockerfile", body: "FROM scratch\n"})
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			w.WriteHeader(http.StatusBadGateway) // the port is up, the API is not
+			return
+		}
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+
+	dir := t.TempDir()
+	t.Setenv("FELIS_SERVICE_TOKEN", "test-token")
+	var stderr bytes.Buffer
+	if code := cmdFetchContext([]string{"--url=" + srv.URL + "/sub-1/context", "--out=" + dir}, io.Discard, &stderr); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "Dockerfile")); err != nil || string(got) != "FROM scratch\n" {
+		t.Fatalf("extracted Dockerfile = (%q, %v)", got, err)
+	}
+	if !strings.Contains(stderr.String(), "retrying") {
+		t.Fatalf("stderr %q does not mention the retry", stderr.String())
+	}
+}
+
+// The live drill's exact shape: the dial itself is refused (the api pod is
+// gone and no endpoint answers). A refused dial is retried like any other
+// transport failure, and once the face is back the fetch completes.
+func TestFetchContextRetriesRefusedDial(t *testing.T) {
+	shrinkFetchWindow(t, 10*time.Millisecond, 5*time.Second)
+	body := tgzBody(t, tarEntry{name: "Dockerfile", body: "FROM scratch\n"})
+
+	// Borrow a listen address, then close it: the first attempts dial into a
+	// refused connection, exactly like a restarting control plane.
+	probe := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	addr := strings.TrimPrefix(probe.URL, "http://")
+	probe.Close()
+
+	dir := t.TempDir()
+	t.Setenv("FELIS_SERVICE_TOKEN", "test-token")
+	var stderr bytes.Buffer
+	// Start the fetch; while the retry loop burns refused dials, bring the same
+	// address back.
+	result := make(chan int, 1)
+	go func() {
+		result <- cmdFetchContext([]string{"--url=http://" + addr + "/sub-1/context", "--out=" + dir}, io.Discard, &stderr)
+	}()
+	time.Sleep(100 * time.Millisecond) // let a handful of dials be refused
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("rebind %s: %v", addr, err)
+	}
+	back := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write(body)
+	})}
+	defer back.Close()
+	go func() { _ = back.Serve(ln) }()
+
+	code := <-result
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	if got, err := os.ReadFile(filepath.Join(dir, "Dockerfile")); err != nil || string(got) != "FROM scratch\n" {
+		t.Fatalf("extracted Dockerfile = (%q, %v)", got, err)
+	}
+	if !strings.Contains(stderr.String(), "retrying") {
+		t.Fatalf("stderr %q does not mention the retry", stderr.String())
+	}
+}
+
+// A 4xx is an answer, not a blip: a missing/never-uploaded context fails
+// immediately — no retry loop burns the build's deadline on a terminal error.
+func TestFetchContextDoesNotRetry4xx(t *testing.T) {
+	shrinkFetchWindow(t, 5*time.Millisecond, 200*time.Millisecond)
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	t.Setenv("FELIS_SERVICE_TOKEN", "test-token")
+	var stderr bytes.Buffer
+	if code := cmdFetchContext([]string{"--url=" + srv.URL + "/sub-1/context", "--out=" + t.TempDir()}, io.Discard, &stderr); code != 1 {
+		t.Fatalf("exit = %d, want 1 (stderr %q)", code, stderr.String())
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("server saw %d attempts, want exactly 1", got)
+	}
+	if strings.Contains(stderr.String(), "retrying") {
+		t.Fatalf("stderr %q mentions a retry for a terminal 4xx", stderr.String())
+	}
+}
+
+// The retry is bounded: an internal face that stays down does not hang the
+// build pod; the window runs out and the fetch reports the exhausted retries.
+func TestFetchContextGivesUpAfterWindow(t *testing.T) {
+	shrinkFetchWindow(t, 5*time.Millisecond, 60*time.Millisecond)
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close() // the face is up but never healthy: 503 forever
+
+	t.Setenv("FELIS_SERVICE_TOKEN", "test-token")
+	var stderr bytes.Buffer
+	start := time.Now()
+	if code := cmdFetchContext([]string{"--url=" + srv.URL + "/sub-1/context", "--out=" + t.TempDir()}, io.Discard, &stderr); code != 1 {
+		t.Fatalf("exit = %d, want 1 (stderr %q)", code, stderr.String())
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("gave up after %v; the window is supposed to bound it", elapsed)
+	}
+	if got := atomic.LoadInt32(&calls); got < 2 {
+		t.Fatalf("server saw %d attempts, want at least one retry", got)
+	}
+	if !strings.Contains(stderr.String(), "retried for") {
+		t.Fatalf("stderr %q does not report the exhausted retry window", stderr.String())
 	}
 }
