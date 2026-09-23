@@ -192,6 +192,83 @@ for hdr in '[[ auth_source ]]' '[["auth_source"]]' "[['auth_source']]"; do
   esac
 done
 
+# --- [smtp] carry-forward does not hoard the auth_source comment block -------------------
+# persisted_smtp_block used to print every line between [smtp] and the next section
+# header -- which includes the generated Yggdrasil comment block that sits above
+# [[auth_source]]. Each re-run re-emitted that hoard plus a fresh template copy, so both
+# config files grew by one comment block per run (audit #50). The carry must be the
+# section's header and keys only, and must be byte-stable when written back.
+
+sblock="$(awk '/^persisted_smtp_block\(\) \{/,/^}/' "$BS")"
+[ -n "$sblock" ] || { echo "FAIL: no persisted_smtp_block found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$sblock" | wc -l)" -lt 40 ] \
+  || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
+
+sfn="$(mktemp)"
+printf '%s\n' "$sblock" > "$sfn"
+smtp_dir="$(mktemp -d)"
+trap 'rm -f "$jar" "$sfn"; rm -rf "$vdir" "$sdir" "$smtp_dir"' EXIT
+
+run_smtp() { # state-dir
+  STATE_DIR="$1" SBLOCK_FILE="$sfn" bash -c '. "$SBLOCK_FILE"; persisted_smtp_block'
+}
+
+cat > "$smtp_dir/felis.host.toml" <<'TOML'
+[server]
+listen = "0.0.0.0:8080"
+
+[smtp]
+  host = "mail.example"
+  port = 587
+  from = "felis@example.net"
+  username = "relay-user"
+  password_ref = "smtp-password"
+
+# Third-party Yggdrasil sources federated by the hasJoined multiplexer. Mojang is
+# always the code-owned identity anchor (premium-first), prepended in Go; sources here
+# append as namespace-rewritten guests. A fresh install federates LittleSkin. Edit the
+# list in /etc/felis/felis.host.toml and rerun the installer; re-runs keep it as it
+# is, and with no [[auth_source]] at all the server is Mojang-only.
+
+[[auth_source]]
+  tag = "littleskin"
+  prefix = "LS"
+  url = "https://littleskin.cn/api/yggdrasil/sessionserver/session/minecraft/hasJoined"
+TOML
+
+out="$(run_smtp "$smtp_dir")"
+expect "a configured [smtp] relay is carried" 'host = "mail.example"' "$out"
+expect "its port survives the carry" 'port = 587' "$out"
+expect "its credentials reference survives" 'password_ref = "smtp-password"' "$out"
+case "$out" in
+  *"#"*)
+    echo "FAIL: the carry hoards comment lines:"; printf '%s\n' "$out"; fails=$((fails + 1)) ;;
+  *) echo "PASS the carry is header and keys only -- no comment hoard" ;;
+esac
+case "$out" in
+  *"[["*)
+    echo "FAIL: the carry ran into the next section:"; printf '%s\n' "$out"; fails=$((fails + 1)) ;;
+  *) echo "PASS the carry stops at the next section header" ;;
+esac
+
+# Write the carry back the way write_felis_toml does (carry + one fresh template block +
+# the tables) and extract again: a second re-run must add nothing.
+{
+  printf '%s\n' "$out"
+  printf '\n%s\n' '# Third-party Yggdrasil sources federated by the hasJoined multiplexer. Mojang is'
+  printf '%s\n' '[[auth_source]]' '  tag = "littleskin"' '  prefix = "LS"' \
+    '  url = "https://littleskin.cn/api/yggdrasil/sessionserver/session/minecraft/hasJoined"'
+} > "$smtp_dir/felis.host.toml"
+out2="$(run_smtp "$smtp_dir")"
+printf '%s\n' "$out" > "$smtp_dir/first"
+printf '%s\n' "$out2" > "$smtp_dir/second"
+if cmp -s "$smtp_dir/first" "$smtp_dir/second"; then
+  echo "PASS a carried-forward [smtp] converges (a second re-run adds nothing)"
+else
+  echo "FAIL: carrying [smtp] is not idempotent:"; diff "$smtp_dir/first" "$smtp_dir/second" | head
+  fails=$((fails + 1))
+fi
+
 # --- write_nano_config leaves the unit able to read its config ---------------------------
 # felis-nano runs as a DynamicUser, so the directory must be searchable by others under a
 # hardened umask too, including one an older installer left at 0750 -- but the full

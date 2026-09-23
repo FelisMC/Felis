@@ -2087,24 +2087,30 @@ EOF
 # family as the root_domain loss fixed in ecbeb20 -- generated file, hand-set
 # value, no carry-forward.
 #
-# Cached on first call because write_felis_toml clobbers felis.host.toml before
-# it is called again for felis.pod.toml: by then the file this would read from
-# no longer has the block. The pod toml is the fallback for exactly that window.
+# The carry is the section's header and key lines only. Printing every line up to
+# the next section header hoarded the generated [[auth_source]] comment block
+# that sits below [smtp] into this carry: each re-run then re-emitted the hoard
+# plus a fresh template copy, growing both config files by one comment block per
+# run (audit #50). The extraction is idempotent, which is also why re-reading the
+# freshly rewritten host file on the pod pass is safe. The pod toml remains the
+# fallback for a host file with no [smtp] section at all.
 persisted_smtp_block() {
-  if [ -z "${SMTP_BLOCK_CACHED:-}" ]; then
-    SMTP_BLOCK_CACHED=1
-    SMTP_BLOCK=""
-    local f
-    for f in "${STATE_DIR}/felis.host.toml" "${STATE_DIR}/felis.pod.toml"; do
-      [ -r "$f" ] || continue
-      # Print from [smtp] up to (not including) the next section header.
-      SMTP_BLOCK="$(awk '/^[[:space:]]*\[smtp\]/ { f=1 }
-                         f && /^[[:space:]]*\[/ && !/^[[:space:]]*\[smtp\]/ { exit }
-                         f { print }' "$f")"
-      [ -n "$SMTP_BLOCK" ] && break
-    done
-  fi
-  printf '%s' "$SMTP_BLOCK"
+  local f out
+  for f in "${STATE_DIR}/felis.host.toml" "${STATE_DIR}/felis.pod.toml"; do
+    [ -r "$f" ] || continue
+    out="$(awk '
+      /^[[:space:]]*\[/ {
+        if (insmtp) exit
+        insmtp = ($0 ~ /^[[:space:]]*\[smtp\][[:space:]]*$/)
+        if (insmtp) print
+        next
+      }
+      insmtp && /^[[:space:]]*("[A-Za-z_][A-Za-z0-9_]*"|[A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=/ { print }
+    ' "$f")"
+    [ -n "$out" ] || continue
+    printf '%s' "$out"
+    return 0
+  done
 }
 
 # persisted_auth_source_blocks echoes the [[auth_source]] tables an earlier run left
