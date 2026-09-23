@@ -31,8 +31,12 @@ docker build -f deploy/lobby/Dockerfile \
   --build-arg PAPER_JAR_URL=https://<mirror>/paper-1.21.x-<build>.jar \
   --build-arg PAPER_JAR_SHA256=<sha256 of that jar> \
   -t felis-lobby:demo .
-docker save felis-lobby:demo | sudo k3s ctr images import -
-# felis.toml → [velocity] lobby_image = "felis-lobby:demo"
+# Publish into the cluster's registry (on the node; docker treats 127.0.0.1 as
+# insecure by default — or through a `kubectl -n felis port-forward svc/registry
+# 5000:5000`, which is equivalent: only the path after the host matters).
+docker tag  felis-lobby:demo 127.0.0.1:5000/felis/lobby:demo
+docker push 127.0.0.1:5000/felis/lobby:demo
+# felis.toml → [velocity] lobby_image = "registry.felis.svc:5000/felis/lobby:demo"
 sudo felis setup
 ```
 

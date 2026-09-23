@@ -90,13 +90,20 @@ docker build -f deploy/limbo/Dockerfile \
   version `2026.0.2-ALPHA` (the `-26.2` CI qualifier is not published to the
   maven repo).
 
-Import into k3s and point config at it:
+Publish it into the cluster's registry and point config at it. On the node
+itself (docker treats `127.0.0.1` as insecure by default):
 
 ```
-docker save felis-limbo:demo | sudo k3s ctr images import -
-# felis.toml → [velocity] login_image = "felis-limbo:demo"
+docker tag  felis-limbo:demo 127.0.0.1:5000/felis/limbo:demo
+docker push 127.0.0.1:5000/felis/limbo:demo
+# felis.toml → [velocity] login_image = "registry.felis.svc:5000/felis/limbo:demo"
 sudo felis setup
 ```
+
+The registry keys a repository by the path after the host, so pushing through a
+`kubectl -n felis port-forward svc/registry 5000:5000` from another machine is
+equivalent. Hosting the image in the registry (rather than only importing it
+into containerd) is what lets kubelet re-pull it after an image GC.
 
 ## Ports (handled for you)
 

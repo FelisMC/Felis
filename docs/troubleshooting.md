@@ -398,20 +398,40 @@ The build Job runs Kaniko and Trivy from external registries by default
 build namespace cannot reach those registries (the egress policy allows only
 DNS, the internal registry and `--package-cidr` mirrors — and an air-gapped box
 has no route at all), the Pods sit in `ImagePullBackOff`/`ErrImagePull` and the
-build stays `building` until its deadline. Point the overrides at images the box
-CAN pull — typically imports into the node's containerd, pushed through the
-internal registry — in `felis.toml`:
+build stays `building` until its deadline. Point the overrides at images **in
+the internal registry** — the one pull source that survives an image GC (a bare
+node-containerd import does not: kubelet's image GC collects unused images under
+disk pressure, and an air-gapped box then has nothing to restore them from) —
+in `felis.toml`:
 
 ```toml
 [registry]
 url = "registry.felis.svc:5000"
 build_namespace = "felis-build"
-kaniko_image = "registry.felis.svc:5000/mirror/kaniko:v1.23.2"
-trivy_image  = "registry.felis.svc:5000/mirror/trivy:0.58.1"
+kaniko_image = "registry.felis.svc:5000/mirror/kaniko-executor:v1.24.0"
+trivy_image  = "registry.felis.svc:5000/mirror/trivy:0.74.0"
 trivy_db_repository = "registry.felis.svc:5000/mirror/trivy-db:2"
 build_cpu_limit = "2"
 build_mem_limit = "4Gi"
 ```
+
+Mirror the executor images into the registry once. On the node itself, push
+through the loopback hostPort the registry Deployment binds (docker treats
+`127.0.0.1` as insecure by default):
+
+```sh
+docker pull gcr.io/kaniko-project/executor:v1.24.0   # any versions you pin
+docker pull aquasec/trivy:0.74.0
+docker tag gcr.io/kaniko-project/executor:v1.24.0 127.0.0.1:5000/mirror/kaniko-executor:v1.24.0
+docker tag aquasec/trivy:0.74.0                   127.0.0.1:5000/mirror/trivy:0.74.0
+docker push 127.0.0.1:5000/mirror/kaniko-executor:v1.24.0
+docker push 127.0.0.1:5000/mirror/trivy:0.74.0
+```
+
+From another machine, port-forward the registry instead (`kubectl -n felis
+port-forward svc/registry 5000:5000`) and push to `localhost:5000/...` — the
+registry keys a repository by the path after the host, so pushes through either
+door land in the same place the build Pods will pull from.
 
 Put them in **both** `/etc/felis/felis.host.toml` (host-side CLI) and
 `/etc/felis/felis.pod.toml` (the file rendered into the API's `felis-config`
@@ -436,12 +456,11 @@ build egress policy denies those hosts — so the scan step fails closed
 Kaniko pushed the image. Mirror the DB into the internal registry once:
 
 ```
-# On a host with internet + docker access to the cluster's registry
-# (add its address to the daemon's insecure-registries first; the registry
-# serves plain HTTP):
+# On the node (docker treats 127.0.0.1 as insecure by default), or through the
+# port-forward above:
 #   docker pull mirror.gcr.io/aquasec/trivy-db:2
-#   docker tag  mirror.gcr.io/aquasec/trivy-db:2 <registry-addr>:5000/mirror/trivy-db:2
-#   docker push <registry-addr>:5000/mirror/trivy-db:2
+#   docker tag  mirror.gcr.io/aquasec/trivy-db:2 127.0.0.1:5000/mirror/trivy-db:2
+#   docker push 127.0.0.1:5000/mirror/trivy-db:2
 ```
 
 The Job's Trivy container already runs with `--insecure`, so the internal
@@ -466,6 +485,16 @@ control namespace (or `--registry-namespace`):
 - **Storage:** PVC is RWO, `10Gi`, mounted at `/var/lib/registry`, **no
   `storageClassName`** → binds the cluster default class. If the cluster has no
   default StorageClass the PVC stays `Pending` and the registry never starts.
+- **Node-side pulls:** containerd cannot dial the Service VIP (the live stack
+  answered "Empty reply"), so the registry Deployment binds a loopback hostPort
+  (`127.0.0.1:<port>`) and the installer writes a `/etc/rancher/k3s/registries.yaml`
+  mirror relaying `registry.<ns>.svc:<port>` onto it. That pair is what lets
+  kubelet re-pull a garbage-collected image; both halves must survive together
+  (remove either and every pull after an image GC fails).
+- **Memory:** the registry's limit is 2Gi, deliberately larger than the other
+  control-plane pods' 256Mi — a live 475MB-layer push OOM-killed the 256Mi
+  template mid-upload (audit #46). Very large layers need headroom here, not
+  more CPU.
 - **Selector quirk worth knowing:** the registry Service selector is only
   `name + component=registry` — it deliberately lacks the
   `part-of=felis-control-plane` label, so the registry is *invisible* to the
@@ -702,9 +731,11 @@ changes, because retention was never conditional in the first place.
 
 ## 13b. Node runs out of disk: what survives, and how to recover
 
-A full disk is the one failure this platform cannot ride out by itself, because
-the images exist only in the node's containerd (air-gapped by design), so a
-GC'd image has no pull source.
+A full disk is the most destructive failure this stack sees: kubelet evicts game
+pods (the control plane is protected below), and its image GC then collects
+images nothing is running. The images have a pull source now — the in-cluster
+registry — so they come back without an operator re-import; freeing space is
+what completes the recovery.
 
 **Eviction.** Every control-plane pod (api, operator, reaper, registry) runs
 under the BUILT-IN `system-cluster-critical` PriorityClass (value 2e9). Kubelet's
@@ -725,26 +756,38 @@ management plane must be placeable.
 flapping); pods that need scheduling wait for it. This is the bulk of the
 "recovery takes minutes" observation, not a stuck node.
 
-**The images may be gone.** If pods were evicted, the kubelet can garbage-collect
-their images (unused > 2 minutes under imagefs pressure). Those pods then sit in
-`ImagePullBackOff`/`ErrImagePull` for a tag that plainly exists —
-`k3s ctr images ls` shows it missing. Recovery:
+**The images may be gone — they come back on their own.** If pods were evicted,
+the kubelet can garbage-collect their images (unused > 2 minutes under imagefs
+pressure). Every image this platform runs is ALSO hosted in the in-cluster
+registry: the installer builds each one as `registry.<ns>.svc:5000/felis/…`
+and mirrors it there, and the node's containerd is configured (a registries.yaml
+mirror onto the registry's loopback hostPort) to relay those refs back through
+it. So a GC'd image is re-pulled on the next attempt with no operator action —
+delete the stuck pod to force an immediate retry (or wait out the backoff), and
+the workload converges.
+
+If a pull does NOT come back:
 
 1. Free disk on the node (`df -h /var/lib/rancher`; the biggest consumers are
    `k3s ctr images ls -q` and the world/backup PVCs under
    `/var/lib/rancher/k3s/storage`).
-2. Re-import the images by re-running the installer (it rebuilds/re-imports from
-   the local Docker store, which the kubelet GC does not touch):
-   `curl -fsSL <installer URL> | sudo bash` (or `sudo felis setup`), then
-   `kubectl -n felis rollout status deploy/felis-api`.
-3. Delete the stuck pods so they retry against the re-imported image.
+2. Check the registry: `kubectl -n felis get pods -l
+   app.kubernetes.io/component=registry` and, on the node,
+   `curl -s http://127.0.0.1:5000/v2/` (expect `{}`).
+3. Check the mirror file: `/etc/rancher/k3s/registries.yaml` must map
+   `registry.felis.svc:5000` to `http://127.0.0.1:5000`. Missing or changed:
+   re-run the installer (it rewrites the file and restarts k3s only when the
+   content changed).
+4. Re-mirror a tag the registry does not have (hand-built images were never
+   pushed): `docker tag <ref> 127.0.0.1:5000/<repo>:<tag> && docker push
+   127.0.0.1:5000/<repo>:<tag>`.
 
-For a single image without a full installer run:
-`docker save felis:<tag> | k3s ctr images import -` — the Docker store is
-deliberately a second copy; treat it as the recovery path, not as free space.
-Verified end to end in the drill: `docker save felis-limbo:demo
-felis-lobby:demo | k3s ctr images import -` plus pod deletion had both system
-servers Running ~25s later.
+For an image that is in neither place, the old fallback still stands: re-run the
+installer (it rebuilds/re-imports from the local Docker store AND mirrors into
+the registry), or for a single image
+`docker save felis:<tag> | k3s ctr images import -`. The Docker store remains a
+deliberate second copy on the node; treat it as the recovery path, not as free
+space.
 
 ---
 
@@ -815,8 +858,9 @@ kubectl -n felis rollout status deploy/felis-api
 ```
 
 (the same for `felis-operator` and `registry`). `rollout undo` returns to the
-previous ReplicaSet, whose image is normally still on the node; if it was GC'd
-(§13b), re-import it first.
+previous ReplicaSet, whose image is normally still on the node; if the image GC
+collected it, the registry re-serves it automatically (§13b) for every tag the
+installer built — only hand-built tags need a manual re-mirror.
 
 ## Quick reference: symptom → section
 
