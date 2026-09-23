@@ -142,7 +142,9 @@ func (a *API) handleHasJoined(w http.ResponseWriter, r *http.Request) {
 
 	// Canonicalize identity. A trusted (Mojang) source keeps its UUID; a self-asserted
 	// source is rewritten into felisAuthNS so it can never land in Mojang's UUID space
-	// nor onto another source's. An unparseable identity UUID is not trustworthy → reject.
+	// nor onto another source's. resolveHasJoined has already screened both shapes and
+	// skipped unusable ones as failed; the two guards below are the last line before
+	// anything leaves, kept even though nothing reaches them.
 	var canonical uuid.UUID
 	if src.Identity {
 		id, err := uuid.Parse(prof.ID)
@@ -154,8 +156,8 @@ func (a *API) handleHasJoined(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// A third-party source is untrusted input, its name included: nothing stops a
 		// hostile or sloppy root from answering with "§4admin", an empty string, or 200
-		// characters, all of which this handler would otherwise relay straight into the
-		// proxy's player list.
+		// characters, all of which must not be relayed straight into the proxy's player
+		// list. Screened in resolveHasJoined; this is the last-line guard.
 		if !mcUsernameRe.MatchString(prof.Name) {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -320,9 +322,10 @@ func lookupPremiumName(ctx context.Context, username string) (bool, error) {
 
 // resolveHasJoined queries each configured source in priority order and returns the
 // first that validates the session (200 with a profile). 204 is "not my player". Any other
-// outcome (unreachable, another status, a body that is not a profile) skips the source too,
-// but is logged with its tag and reported as failed: otherwise a dead or mistyped source
-// looks exactly like a player it does not know, and nobody finds out.
+// outcome (unreachable, another status, a body that is not a profile, or a profile this
+// multiplexer will not emit) skips the source too, but is logged with its tag and reported
+// as failed: otherwise a dead or mistyped source looks exactly like a player it does not
+// know, and nobody finds out.
 func (a *API) resolveHasJoined(ctx context.Context, username, serverID, ip string) (prof *sessionProfile, src AuthSource, failed bool) {
 	for _, src := range a.AuthSources {
 		u := src.URL + "?username=" + url.QueryEscape(username) + "&serverId=" + url.QueryEscape(serverID)
@@ -359,6 +362,23 @@ func (a *API) resolveHasJoined(ctx context.Context, username, serverID, ip strin
 		resp.Body.Close()
 		if err != nil || p.ID == "" {
 			log.Printf("hasJoined: source %q answered 200 without a usable profile (err=%v)", src.Tag, err)
+			failed = true
+			continue
+		}
+		// Screen what a 200 is allowed to mean BEFORE it can win. A profile this
+		// multiplexer will not emit — an identity UUID that does not parse, a third-party
+		// name outside the Minecraft charset — is the same class as a body that is not a
+		// profile: skip, log, count as failed. Letting it win would stop the ladder on one
+		// sloppy root (every source behind it silently unreachable) and read as "nobody
+		// knows this player" to Velocity while a source had actually answered.
+		if src.Identity {
+			if _, perr := uuid.Parse(p.ID); perr != nil {
+				log.Printf("hasJoined: identity source %q answered 200 with an unparseable profile id %q", src.Tag, p.ID)
+				failed = true
+				continue
+			}
+		} else if !mcUsernameRe.MatchString(p.Name) {
+			log.Printf("hasJoined: source %q answered 200 with an unusable profile name %q", src.Tag, p.Name)
 			failed = true
 			continue
 		}

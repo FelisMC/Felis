@@ -2,12 +2,14 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -337,14 +339,26 @@ func TestHasJoined(t *testing.T) {
 		}
 	})
 
-	// Mojang is trusted for its UUIDs, which is exactly why one that does not parse must not
-	// be emitted as some default: every such login would share the nil UUID.
-	t.Run("identity source with an unparseable id -> 204", func(t *testing.T) {
+	// Mojang is trusted for its UUIDs, which is exactly why one that does not parse must
+	// not be emitted as some default: every such login would share the nil UUID. The
+	// unusable 200 is surfaced like every other bad answer — skipped, logged, and 503 when
+	// nothing else validates — instead of reading as "no such session".
+	t.Run("identity source with an unparseable id -> skipped and surfaced", func(t *testing.T) {
 		mojang := fakeYgg(t, "not-a-uuid", "Notch")
 		api := newTestAPI(newFakeRepo(), newFakeCluster())
 		api.AuthSources = []AuthSource{{Tag: "mojang", URL: mojang.URL, Identity: true}}
-		if w := getHasJoined(api.InternalHandler(), "Notch", "abc"); w.Code != http.StatusNoContent {
-			t.Fatalf("code = %d, want 204 (%q)", w.Code, w.Body.String())
+
+		var buf bytes.Buffer
+		prev := log.Writer()
+		log.SetOutput(&buf)
+		w := getHasJoined(api.InternalHandler(), "Notch", "abc")
+		log.SetOutput(prev)
+
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("code = %d, want 503 (%q)", w.Code, w.Body.String())
+		}
+		if !strings.Contains(buf.String(), "unparseable profile id") {
+			t.Fatalf("the skip was not logged: %q", buf.String())
 		}
 	})
 
@@ -559,16 +573,51 @@ func TestHasJoinedPremiumNameRename(t *testing.T) {
 		}
 	})
 
-	// A third-party root is untrusted input, its name field included.
-	t.Run("hostile upstream name -> 204", func(t *testing.T) {
+	// A third-party root is untrusted input, its name field included. An unusable name is
+	// refused AND surfaced: skipped like every other bad answer (logged, counted as
+	// failed), so it can never be relayed and can never be mistaken for "no such player".
+	t.Run("hostile upstream name is skipped, logged and surfaced", func(t *testing.T) {
 		stubMojangNames(t)
 		for _, bad := range []string{"§4admin", "not a name", "ab", strings.Repeat("x", 17), ""} {
 			third := fakeYgg(t, notchMojangID, bad)
 			api := newTestAPI(newFakeRepo(), newFakeCluster())
 			api.AuthSources = []AuthSource{{Tag: "littleskin", Prefix: "LS", URL: third.URL, Identity: false}}
-			if w := getHasJoined(api.InternalHandler(), "Notch", "abc"); w.Code != http.StatusNoContent {
-				t.Fatalf("upstream name %q: code = %d, want 204 (%q)", bad, w.Code, w.Body.String())
+
+			var buf bytes.Buffer
+			prev := log.Writer()
+			log.SetOutput(&buf)
+			w := getHasJoined(api.InternalHandler(), "Notch", "abc")
+			log.SetOutput(prev)
+
+			if w.Code != http.StatusServiceUnavailable {
+				t.Fatalf("upstream name %q: code = %d, want 503 (%q)", bad, w.Code, w.Body.String())
 			}
+			if !strings.Contains(buf.String(), "unusable profile name") {
+				t.Fatalf("upstream name %q: the skip was not logged: %q", bad, buf.String())
+			}
+		}
+	})
+
+	// The reason the skip must CONTINUE the ladder rather than stop it: a broken root early
+	// in the list would otherwise silently block a login its later source would have
+	// validated (live on the audit box, the bad name produced a silent 204 and the valid
+	// source was never asked).
+	t.Run("hostile name cannot block a later source", func(t *testing.T) {
+		stubMojangNames(t)
+		bad := fakeYgg(t, notchMojangID, "§4admin")
+		good := fakeYgg(t, notchMojangID, "Notch")
+		api := newTestAPI(newFakeRepo(), newFakeCluster())
+		api.AuthSources = []AuthSource{
+			{Tag: "broken", Prefix: "BR", URL: bad.URL, Identity: false},
+			{Tag: "littleskin", Prefix: "LS", URL: good.URL, Identity: false},
+		}
+		w := getHasJoined(api.InternalHandler(), "Notch", "abc")
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d, want 200 from the second source (%q)", w.Code, w.Body.String())
+		}
+		p := profileOf(t, w)
+		if want := undashed(uuid.NewMD5(felisAuthNS, []byte("littleskin:"+notchMojangID))); p.ID != want {
+			t.Fatalf("id = %q, want the second source's canonical %q", p.ID, want)
 		}
 	})
 }
