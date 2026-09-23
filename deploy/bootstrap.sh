@@ -59,7 +59,10 @@
 #   FELIS_GITHUB_TOKEN GitHub token; REQUIRED while the repo is private
 #   FELIS_REF         branch/tag/sha — pins the build, overrides the channel, and forces a
 #                     source build (naming a ref asks for that tree, not a published asset)
-#   FELIS_IMAGE       local image tag         (default: felis:demo  — never :latest)
+#   FELIS_IMAGE       control-plane image ref (default:
+#                     registry.felis.svc:5000/felis/felis:demo — never :latest;
+#                     anything not under the registry is used as-is but is NOT
+#                     mirrored into it, so it has no pull source after an image GC)
 #   FELIS_ROOT_DOMAIN deployment root domain  (default: <node-ip>.nip.io)
 #   FELIS_PANEL_NODEPORT local HTTPS panel/API NodePort (default: 30443)
 #   FELIS_EGRESS_MODE loadbalancer|nodeport   (default: nodeport — no MetalLB on a demo box)
@@ -114,7 +117,15 @@ export FELIS_GITHUB_TOKEN
 # Set by resolve_install_ref/stamp_version and linked into the binary as main.version.
 FELIS_VERSION=""
 FELIS_VERSION_BASE=""
-FELIS_IMAGE="${FELIS_IMAGE:-felis:demo}"
+# Where the installer parks every image it builds, so kubelet can re-pull one the
+# image GC has collected (the disk-pressure drill's dead end: ImagePullBackOff with
+# nothing to pull from). The node pulls through the loopback hostPort the registry
+# Deployment binds (configure_registry_mirror below); pushes go through
+# REGISTRY_PUSH_HOST — docker treats 127.0.0.1 as insecure by default, so the
+# daemon needs no insecure-registries entry for it.
+REGISTRY_URL="registry.felis.svc:5000"
+REGISTRY_PUSH_HOST="127.0.0.1:${REGISTRY_URL##*:}"
+FELIS_IMAGE="${FELIS_IMAGE:-${REGISTRY_URL}/felis/felis:demo}"
 FELIS_EGRESS_MODE="${FELIS_EGRESS_MODE:-nodeport}"
 FELIS_PANEL_NODEPORT="${FELIS_PANEL_NODEPORT:-30443}"
 # World-archive storage. The installer renders this PVC (minecraft namespace) and felis-api
@@ -156,12 +167,12 @@ PKG_LOCK_TIMEOUT="${PKG_LOCK_TIMEOUT:-${APT_LOCK_TIMEOUT:-900}}"
 APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-$PKG_LOCK_TIMEOUT}"
 
 # --- the game stack: proxy on the host, the two always-on backends in k3s ---
-FELIS_LIMBO_IMAGE="${FELIS_LIMBO_IMAGE:-felis-limbo:demo}"
-FELIS_LOBBY_IMAGE="${FELIS_LOBBY_IMAGE:-felis-lobby:demo}"
+FELIS_LIMBO_IMAGE="${FELIS_LIMBO_IMAGE:-${REGISTRY_URL}/felis/limbo:demo}"
+FELIS_LOBBY_IMAGE="${FELIS_LOBBY_IMAGE:-${REGISTRY_URL}/felis/lobby:demo}"
 # Plain Paper base recommended for a user's own server (deploy/paper). Not a system
 # server — forwarding is applied by the operator's init-forwarding initContainer, so it
 # needs no secret. Seeded recommended in 0019_recommended_paper.sql.
-FELIS_PAPER_IMAGE="${FELIS_PAPER_IMAGE:-felis-paper:demo}"
+FELIS_PAPER_IMAGE="${FELIS_PAPER_IMAGE:-${REGISTRY_URL}/felis/paper:demo}"
 # The Velocity MINOR is pinned, not discovered. PaperMC's Fill v3 groups velocity
 # builds by version group, and "newest across all groups" today means 4.0.0-SNAPSHOT —
 # an UNRELEASED proxy (the 4.0.0 group has zero published builds) that needs a Java 25
@@ -214,7 +225,6 @@ POD_CIDR="10.42.0.0/16"          # k3s default cluster CIDR
 SERVICE_CIDR="10.43.0.0/16"      # k3s default service CIDR
 DB_NAME="felis"
 DB_USER="felis"
-REGISTRY_URL="registry.felis.svc:5000"
 
 STATE_DIR="/etc/felis"
 SECRETS_ENV="${STATE_DIR}/secrets.env"
@@ -233,6 +243,10 @@ VELOCITY_SERVICE="/etc/systemd/system/felis-velocity.service"
 JRE_DIR="/opt/felis/jre"
 K3S_BIN_DIR="${K3S_BIN_DIR:-/usr/local/bin}"
 K3S_BIN="${K3S_BIN_DIR}/k3s"
+# k3s's containerd mirror config, written by configure_registry_mirror. A variable
+# (not just the literal path) so bootstrap_test.sh can point the writer at a
+# scratch file.
+K3S_REGISTRIES_FILE="/etc/rancher/k3s/registries.yaml"
 APT_LOCK_FILES=(
   /var/lib/dpkg/lock-frontend
   /var/lib/dpkg/lock
@@ -813,6 +827,13 @@ install_k3s() {
   systemctl enable --now k3s
   export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
   log "waiting for the node to become Ready"
+  wait_for_node_ready
+}
+
+# Waits for the (single) node to report Ready. Shared by the k3s install and the
+# registry-mirror restart below: both restart the agent, and a bootstrap that
+# proceeds early fails later with a misleading "not found"/timeout instead.
+wait_for_node_ready() {
   local i
   for i in $(seq 1 60); do
     if kube get nodes 2>/dev/null | grep -q ' Ready '; then
@@ -823,6 +844,78 @@ install_k3s() {
   done
   kube get nodes || true
   die "k3s node did not become Ready in time"
+}
+
+# ---------------------------------------------------------------------------
+# 4b. The in-cluster registry: the node-side pull path, the registry's own
+#     image, and the hosting of every image this installer builds.
+#
+#     Kubelet's image GC collects an unused image under disk pressure (drilled:
+#     the game images were collected and ImagePullBackOff had nothing to pull
+#     from). The fix is a pull source that is always there — the registry the
+#     bundle already renders. Two node-level facts make that work:
+#       * kubelet cannot reach the registry Service VIP (the live stack answered
+#         "Empty reply"), so containerd is told to go through the loopback
+#         hostPort the registry Deployment binds (the Deployment renders it) —
+#         that is configure_registry_mirror below;
+#       * the registry's own image (registry:2) must already be in containerd
+#         before the registry Deployment can start at all —
+#         import_registry_image below caches it.
+#     After deploy_bundle, push_images_to_registry mirrors the built images into
+#     the registry, so containerd's imported copies are a first-boot cache
+#     rather than the only copy.
+# ---------------------------------------------------------------------------
+
+# The node's containerd cannot dial the registry Service VIP, so pulls arrive
+# over the loopback hostPort the registry Deployment binds. k3s reads this file
+# when the agent starts and regenerates containerd's certs.d from it — no
+# restart, no effect — so a CONTENT change restarts k3s; an identical file
+# (every re-run) restarts nothing. K3S_REGISTRIES_FILE is a variable so
+# bootstrap_test.sh can point the function at a scratch file.
+configure_registry_mirror() {
+  local file="$K3S_REGISTRIES_FILE" tmp
+  tmp="$(mktemp)"
+  remember_temp "$tmp"
+  cat > "$tmp" <<EOF
+mirrors:
+  "${REGISTRY_URL}":
+    endpoint:
+      - "http://${REGISTRY_PUSH_HOST}"
+EOF
+  if [ -f "$file" ] && cmp -s "$tmp" "$file"; then
+    rm -f "$tmp"
+    ok "registry mirror already configured (${REGISTRY_URL} -> http://${REGISTRY_PUSH_HOST})"
+    return 0
+  fi
+  mkdir -p "$(dirname "$file")"
+  mv "$tmp" "$file"
+  log "restarting k3s to load the registry mirror (${REGISTRY_URL} -> http://${REGISTRY_PUSH_HOST})"
+  systemctl restart k3s
+  export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+  wait_for_node_ready
+}
+
+# The registry Deployment runs registry:2 (platform.defaultRegistryImage; the
+# renderer's default — this script never passes --registry-image). On a box
+# that cannot reach Docker Hub the Deployment can never start without a local
+# copy, so the installer caches one whenever it can. Best-effort by design: if
+# the pull fails the registry rollout still fails loudly at deploy_bundle, with
+# the regular diagnostics — but for every box that CAN pull, the image is
+# fetched exactly once, here, instead of at first pod start.
+import_registry_image() {
+  # The name containerd normalizes "registry:2" to after any docker-save import.
+  if k3s_cmd ctr images ls -q 2>/dev/null | grep -qx 'docker.io/library/registry:2'; then
+    ok "registry image registry:2 already in k3s containerd"
+    return 0
+  fi
+  log "importing the registry's own image (registry:2) into k3s containerd"
+  systemctl start docker
+  if docker pull registry:2 && docker save registry:2 | k3s_cmd ctr images import -; then
+    ok "registry image registry:2 imported"
+  else
+    warn "could not import registry:2: the in-cluster registry will start only if the node can pull it from Docker Hub; on an air-gapped box import it by hand (docs/troubleshooting.md §8e)"
+  fi
+  systemctl stop docker docker.socket 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
@@ -2223,10 +2316,48 @@ restart_existing_control_plane() {
   if [ "$had_operator" = "1" ]; then kube -n "$CONTROL_NS" rollout restart deployment/felis-operator; fi
 }
 
-# The login/lobby images use local mutable tags. Importing a replacement updates
-# containerd, but an existing StatefulSet template is byte-for-byte unchanged and
-# Kubernetes will not roll it. Recreate only the two always-on system pods so a
-# convergent bootstrap actually starts the images it just imported.
+# push_image_to_registry <ref> re-tags a locally built image for the node's
+# loopback push endpoint and uploads it. The registry keys a repository by the
+# path AFTER the host, so pushing 127.0.0.1:5000/felis/felis:demo lands exactly
+# where a later kubelet pull of registry.felis.svc:5000/felis/felis:demo (the
+# mirror rewrites the host) will look. A ref not under REGISTRY_URL is not
+# mirrored — warn, don't fail: the install is still self-consistent, that image
+# just has no pull source once GC collects its containerd copy.
+push_image_to_registry() {
+  local ref="$1" push_ref
+  case "$ref" in
+    "${REGISTRY_URL}/"*)
+      push_ref="${REGISTRY_PUSH_HOST}/${ref#"${REGISTRY_URL}/"}"
+      ;;
+    *)
+      warn "not mirroring ${ref} into the internal registry: it is not under ${REGISTRY_URL}; once the image GC collects that tag, nothing can re-pull it"
+      return 0
+      ;;
+  esac
+  systemctl start docker
+  log "mirroring ${ref} into the internal registry"
+  docker tag "$ref" "$push_ref" || die "could not tag ${ref} as ${push_ref} — is docker healthy?"
+  docker push "$push_ref" || die "could not mirror ${ref} into the internal registry — check the registry Deployment/pod and its PVC"
+  docker rmi "$push_ref" >/dev/null 2>&1 || true
+  systemctl stop docker docker.socket 2>/dev/null || true
+}
+
+# Every image this installer builds is hosted in the registry, so the copies it
+# imported into containerd are a first-boot cache, not the only copy: kubelet
+# re-pulls from the registry after any image GC. Runs AFTER deploy_bundle — the
+# registry it pushes into does not exist before that.
+push_images_to_registry() {
+  local img
+  for img in "$FELIS_IMAGE" "$FELIS_LIMBO_IMAGE" "$FELIS_LOBBY_IMAGE" "$FELIS_PAPER_IMAGE"; do
+    [ -n "$img" ] || continue
+    push_image_to_registry "$img"
+  done
+}
+
+# The login/lobby images use mutable :demo tags. Importing/pushing a replacement
+# updates containerd, but an existing StatefulSet template is byte-for-byte
+# unchanged and Kubernetes will not roll it. Recreate only the two always-on
+# system pods so a convergent bootstrap actually starts the images it just built.
 restart_existing_system_servers() {
   local name pods
   for name in "$LOGIN_SERVER" "$LOBBY_SERVER"; do
@@ -2631,6 +2762,11 @@ main() {
   ensure_panel_tls_cert
   install_docker
   install_k3s
+  # The registry mirror must exist before the bundle's pods start pulling (and
+  # before any re-run's rollouts); the registry's own image must be in containerd
+  # before its Deployment can start at all.
+  configure_registry_mirror
+  import_registry_image
   # Three ways to end up with a felis binary, in preference order. The release download is
   # the only one that skips compiling: it is the CI artifact for this exact tag, panel
   # included. Both other arms leave HAVE_PREBUILT_BINARY unset where a source build is what
@@ -2648,6 +2784,9 @@ main() {
   configure_postgres
   run_migrations
   deploy_bundle
+  # AFTER deploy_bundle: the registry the built images are mirrored into is part
+  # of that bundle.
+  push_images_to_registry
   restart_existing_system_servers
   # After deploy_bundle: the proxy dials felis-api's internal ClusterIP, which does not
   # exist until the bundle is applied.

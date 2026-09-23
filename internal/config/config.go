@@ -126,8 +126,9 @@ type RegistryConfig struct {
 	// install there IS no such reach (the build egress policy allows only DNS,
 	// the internal registry and explicit package mirrors), so the operator must
 	// point these at whatever their box can actually pull — typically images
-	// imported into the node's containerd alongside the felis image. Empty keeps
-	// the default.
+	// mirrored into the in-cluster registry (docs/troubleshooting.md §8e); a
+	// bare node-containerd import does not survive an image GC, there is no pull
+	// source for it. Empty keeps the default.
 	KanikoImage   string `toml:"kaniko_image"`
 	TrivyImage    string `toml:"trivy_image"`
 	BuildCPULimit string `toml:"build_cpu_limit"`

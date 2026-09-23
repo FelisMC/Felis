@@ -183,11 +183,11 @@ func (s *PGStore) ListImages(ctx context.Context) ([]Image, error) {
 // Image it constructed (source=external) without re-reading the row, so a sticky
 // source here would report a value the database does not hold.
 //
-// Note that the demote branch is unreachable for the ONLY recommended row Felis
-// currently seeds: the caller validates with ValidateImageRef first, which refuses
-// a bare local containerd tag, and 0018's felis-lobby:demo is exactly that. The
-// branch is written for the host-qualified recommendations this list grows into,
-// not for today's single seed.
+// Note that this demote branch is REACHABLE for today's recommended rows: 0021
+// re-pointed the seeds at host-qualified registry refs (registry.<ns>.svc:5000/…),
+// which ValidateImageRef accepts — so an admin re-admitting one of those refs
+// demotes the curated row, by design. It was dead only while the seeds were bare
+// local containerd tags (0018's felis-lobby:demo), which the validation refuses.
 func (s *PGStore) AddExternalImage(ctx context.Context, img Image) error {
 	const q = `INSERT INTO image_whitelist
 		(image_ref, source, added_by, enabled, added_at)

@@ -622,6 +622,109 @@ wdir="$(mktemp -d)"
 out="$(run_bundle_flags felis-backups "$wdir")"
 expect "enabling retention grants the reaper uid traverse on the worlds root" "SETFACL -m u:1000:x $wdir" "$out"
 
+# --- the registry mirror writer -----------------------------------------------------------
+# k3s only consults registries.yaml at agent start, so a CONTENT change must restart k3s and
+# an identical file (every re-run) must restart nothing. The k3s restart is the expensive,
+# disruptive half of the pair -- getting the idempotence wrong bounces the whole cluster on
+# every installer re-run, so both halves are pinned here against the extracted function.
+
+cmblock="$(awk '/^configure_registry_mirror\(\) \{/,/^}/' "$BS")"
+[ -n "$cmblock" ] || { echo "FAIL: no configure_registry_mirror found in $BS"; exit 1; }
+
+run_mirror() { # scratch-file
+  K3S_REGISTRIES_FILE="$1" REGISTRY_URL=registry.felis.svc:5000 REGISTRY_PUSH_HOST=127.0.0.1:5000 \
+  bash -c '
+    log() { printf "LOG: %s\n" "$*"; }
+    ok() { printf "OK: %s\n" "$*"; }
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    warn() { printf "WARN: %s\n" "$*"; }
+    remember_temp() { :; }
+    systemctl() { printf "SYSTEMCTL %s\n" "$*"; }
+    kube() { printf "n Ready \n"; }
+    wait_for_node_ready() { kube get nodes | grep -q " Ready " && ok "k3s node Ready"; }
+    '"$cmblock"'
+    configure_registry_mirror'
+}
+
+mfile="$(mktemp -u)"
+out="$(run_mirror "$mfile")"
+expect "a missing registries.yaml is written" "\"registry.felis.svc:5000\":" "$(cat "$mfile" 2>/dev/null)"
+expect "the mirror endpoint is the node loopback push/pull host" "\"http://127.0.0.1:5000\"" "$(cat "$mfile" 2>/dev/null)"
+expect "a content change restarts k3s" "SYSTEMCTL restart k3s" "$out"
+
+out="$(run_mirror "$mfile")"
+expect "an identical registries.yaml is recognised" "already configured" "$out"
+case "$out" in
+  *"SYSTEMCTL restart"*) echo "FAIL: a re-run with identical content must not restart k3s"; fails=$((fails + 1)) ;;
+esac
+
+printf 'mirrors: {}\n' >"$mfile"
+out="$(run_mirror "$mfile")"
+expect "changed content restarts k3s again" "SYSTEMCTL restart k3s" "$out"
+rm -f "$mfile"
+
+# --- image mirroring ----------------------------------------------------------------------
+# The registry keys a repository by the path AFTER the host, so the push must swap the
+# registry host for the node's loopback endpoint and nothing else. A ref outside the
+# registry must be warned about, not silently pushed somewhere unintended.
+
+pblock="$(awk '/^push_image_to_registry\(\) \{/,/^}/' "$BS")"
+[ -n "$pblock" ] || { echo "FAIL: no push_image_to_registry found in $BS"; exit 1; }
+
+run_push() { # ref [docker-push-exit]
+  REF="$1" PUSH_EXIT="${2:-0}" \
+  REGISTRY_URL=registry.felis.svc:5000 REGISTRY_PUSH_HOST=127.0.0.1:5000 \
+  bash -c '
+    log() { printf "LOG: %s\n" "$*"; }
+    warn() { printf "WARN: %s\n" "$*"; }
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    ok() { :; }
+    systemctl() { :; }
+    docker() {
+      case "$1" in
+        push) printf "DOCKER %s\n" "$*"; return "$PUSH_EXIT" ;;
+        *) printf "DOCKER %s\n" "$*" ;;
+      esac
+    }
+    '"$pblock"'
+    push_image_to_registry "$REF"'
+}
+
+out="$(run_push registry.felis.svc:5000/felis/felis:demo)"
+expect "a registry ref is re-tagged onto the node loopback endpoint" \
+  "DOCKER tag registry.felis.svc:5000/felis/felis:demo 127.0.0.1:5000/felis/felis:demo" "$out"
+expect "and pushed to exactly that endpoint" "DOCKER push 127.0.0.1:5000/felis/felis:demo" "$out"
+
+out="$(run_push registry.felis.svc:50000/felis/felis:demo)"
+expect "a ref outside the registry is refused with a warning" "WARN: not mirroring" "$out"
+case "$out" in
+  *"DOCKER push"*) echo "FAIL: a non-registry ref must not be pushed"; fails=$((fails + 1)) ;;
+esac
+
+out="$(run_push registry.felis.svc:5000/felis/felis:demo 1)"
+expect "a failed push fails the install loudly" "DIE: could not mirror" "$out"
+
+# --- the registry's own image must not be re-pulled on every run --------------------------
+iblock="$(awk '/^import_registry_image\(\) \{/,/^}/' "$BS")"
+[ -n "$iblock" ] || { echo "FAIL: no import_registry_image found in $BS"; exit 1; }
+
+out="$(
+  bash -c '
+    log() { printf "LOG: %s\n" "$*"; }
+    ok() { printf "OK: %s\n" "$*"; }
+    warn() { printf "WARN: %s\n" "$*"; }
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    systemctl() { :; }
+    k3s_cmd() { case "$*" in "ctr images ls -q") printf "docker.io/library/registry:2\n" ;; esac; }
+    docker() { printf "DOCKER %s\n" "$*"; return 1; }
+    '"$iblock"'
+    import_registry_image'
+)"
+expect "an already-imported registry:2 is left alone" "already in k3s containerd" "$out"
+case "$out" in
+  *DOCKER*) echo "FAIL: a present registry:2 must not trigger a docker pull"; fails=$((fails + 1)) ;;
+esac
+
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"
