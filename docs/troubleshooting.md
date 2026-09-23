@@ -417,7 +417,8 @@ build_mem_limit = "4Gi"
 
 Mirror the executor images into the registry once. On the node itself, push
 through the loopback hostPort the registry Deployment binds (docker treats
-`127.0.0.1` as insecure by default):
+`127.0.0.1` as insecure by default; the installer leaves the daemon stopped, so
+`sudo systemctl start docker` first):
 
 ```sh
 docker pull gcr.io/kaniko-project/executor:v1.24.0   # any versions you pin
@@ -779,7 +780,8 @@ If a pull does NOT come back:
    re-run the installer (it rewrites the file and restarts k3s only when the
    content changed).
 4. Re-mirror a tag the registry does not have (hand-built images were never
-   pushed): `docker tag <ref> 127.0.0.1:5000/<repo>:<tag> && docker push
+   pushed): `sudo systemctl start docker` (the installer leaves the daemon
+   stopped), then `docker tag <ref> 127.0.0.1:5000/<repo>:<tag> && docker push
    127.0.0.1:5000/<repo>:<tag>`.
 
 For an image that is in neither place, the old fallback still stands: re-run the
