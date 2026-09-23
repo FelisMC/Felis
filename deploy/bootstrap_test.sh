@@ -733,12 +733,13 @@ esac
 
 wrblock="$(awk '/^write_felis_toml\(\) \{/,/^}/' "$BS")"
 prblock="$(awk '/^persisted_registry_block\(\) \{/,/^}/' "$BS")"
-[ -n "$wrblock" ] && [ -n "$prblock" ] \
-  || { echo "FAIL: write_felis_toml / persisted_registry_block not found in $BS"; exit 1; }
+pablock="$(awk '/^persisted_archive_block\(\) \{/,/^}/' "$BS")"
+{ [ -n "$wrblock" ] && [ -n "$prblock" ] && [ -n "$pablock" ]; } \
+  || { echo "FAIL: write_felis_toml / persisted_{registry,archive}_block not found in $BS"; exit 1; }
 # The blocks quote themselves (the awk program uses single quotes), so they are
 # sourced from a file instead of being spliced into a single-quoted bash -c.
 fnfile="$(mktemp)"
-printf '%s\n%s\n' "$prblock" "$wrblock" > "$fnfile"
+printf '%s\n%s\n%s\n' "$prblock" "$pablock" "$wrblock" > "$fnfile"
 
 rdir="$(mktemp -d)"
 cat > "$rdir/felis.host.toml" <<'TOML'
@@ -751,6 +752,11 @@ trivy_db_repository = "registry.felis.svc:5000/mirror/trivy-db:2"
 [registry.s3]
 endpoint = "https://s3.example"
 region = "us-east-1"
+
+[archive]
+store = "tarLocal"
+local_path = "/stale/path"
+retention = "30d"
 TOML
 
 run_write() { # out-file
@@ -772,8 +778,11 @@ expect "a re-run carries the build-lane executor mirrors" \
 expect "a re-run carries the [registry.s3] uploads subtable" "[registry.s3]" "$out"
 expect "the carried subtable keeps its keys" 'endpoint = "https://s3.example"' "$out"
 expect "url stays installer-owned" 'url = "registry.felis.svc:5000"' "$out"
+expect "a re-run carries the archive retention window" 'retention = "30d"' "$out"
+expect "the archive mount stays installer-owned" 'local_path = "/a"' "$out"
 case "$out" in
-  *stale.invalid* | *stale-ns*) echo "FAIL: stale installer-owned registry values survived the re-run"; fails=$((fails + 1)) ;;
+  *stale.invalid* | *stale-ns* | *stale/path*)
+    echo "FAIL: stale installer-owned values survived the re-run"; fails=$((fails + 1)) ;;
 esac
 
 cp "$rdir/out.toml" "$rdir/felis.host.toml"
