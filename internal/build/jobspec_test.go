@@ -204,9 +204,9 @@ func TestBuildJobKanikoPushesAndTrivyGates(t *testing.T) {
 	if !hasArg(trivy.Args, p.ImageRef) {
 		t.Errorf("trivy must scan the pushed ref %q, args=%v", p.ImageRef, trivy.Args)
 	}
-	// No DB repository configured: Trivy keeps its own default.
-	if hasArg(trivy.Args, "--db-repository") {
-		t.Errorf("unset TrivyDBRepository must not render --db-repository, args=%v", trivy.Args)
+	// No DB repositories configured: Trivy keeps its own defaults.
+	if hasArg(trivy.Args, "--db-repository") || hasArg(trivy.Args, "--java-db-repository") {
+		t.Errorf("unset DB repositories must not render --db-repository/--java-db-repository, args=%v", trivy.Args)
 	}
 }
 
@@ -262,12 +262,14 @@ func TestBuildJobKanikoGetsOnlyUnpackCapabilities(t *testing.T) {
 	}
 }
 
-// A configured DB repository (the internal mirror) must reach Trivy as
-// --db-repository: without it the scan tries the internet, which the build egress
-// lock denies, and every build fails closed at the scan gate.
+// Configured DB repositories (the internal mirrors) must reach Trivy as
+// --db-repository / --java-db-repository: without them the scan tries the
+// internet, which the build egress lock denies, and every build fails closed at
+// the scan gate — the Java DB the moment the image contains a jar.
 func TestBuildJobTrivyDBRepositoryOverride(t *testing.T) {
 	p := sampleJobParams()
 	p.TrivyDBRepository = "registry.felis.svc:5000/mirror/trivy-db:2"
+	p.TrivyJavaDBRepository = "registry.felis.svc:5000/mirror/trivy-java-db:1"
 	job, err := BuildJob(p)
 	if err != nil {
 		t.Fatalf("BuildJob: %v", err)
@@ -275,6 +277,9 @@ func TestBuildJobTrivyDBRepositoryOverride(t *testing.T) {
 	trivy := job.Spec.Template.Spec.Containers[0]
 	if !argPairPresent(trivy.Args, "--db-repository", p.TrivyDBRepository) {
 		t.Errorf("trivy args = %v, want --db-repository %s", trivy.Args, p.TrivyDBRepository)
+	}
+	if !argPairPresent(trivy.Args, "--java-db-repository", p.TrivyJavaDBRepository) {
+		t.Errorf("trivy args = %v, want --java-db-repository %s", trivy.Args, p.TrivyJavaDBRepository)
 	}
 	// The scanned image ref must stay the last argument.
 	if last := trivy.Args[len(trivy.Args)-1]; last != p.ImageRef {

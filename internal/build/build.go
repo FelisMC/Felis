@@ -225,6 +225,11 @@ type Config struct {
 	// egress lock denies — an install with builds must point this at an internal
 	// mirror (see config.RegistryConfig.TrivyDBRepository).
 	TrivyDBRepository string
+	// TrivyJavaDBRepository overrides where Trivy fetches its Java DB
+	// (--java-db-repository), downloaded lazily for images that contain Java
+	// artifacts — i.e. every real modpack. Same egress story as the
+	// vulnerability DB (see config.RegistryConfig.TrivyJavaDBRepository).
+	TrivyJavaDBRepository string
 	// KanikoImage / TrivyImage are the executor images.
 	KanikoImage string
 	TrivyImage  string
@@ -359,19 +364,20 @@ func (b *Builder) Submit(ctx context.Context, req Request) (*Build, error) {
 // jobParams projects a build + config onto the inputs jobspec.go renders.
 func (b *Builder) jobParams(bld *Build, cfg Config) JobParams {
 	return JobParams{
-		BuildID:           bld.ID,
-		ImageRef:          bld.ImageRef,
-		ContextRef:        bld.ContextRef,
-		Namespace:         cfg.Namespace,
-		ServiceAccount:    cfg.ServiceAccount,
-		RegistryURL:       cfg.RegistryURL,
-		FelisImage:        cfg.FelisImage,
-		TrivyDBRepository: cfg.TrivyDBRepository,
-		KanikoImage:       cfg.KanikoImage,
-		TrivyImage:        cfg.TrivyImage,
-		Deadline:          cfg.Deadline,
-		CPULimit:          cfg.CPULimit,
-		MemLimit:          cfg.MemLimit,
+		BuildID:               bld.ID,
+		ImageRef:              bld.ImageRef,
+		ContextRef:            bld.ContextRef,
+		Namespace:             cfg.Namespace,
+		ServiceAccount:        cfg.ServiceAccount,
+		RegistryURL:           cfg.RegistryURL,
+		FelisImage:            cfg.FelisImage,
+		TrivyDBRepository:     cfg.TrivyDBRepository,
+		TrivyJavaDBRepository: cfg.TrivyJavaDBRepository,
+		KanikoImage:           cfg.KanikoImage,
+		TrivyImage:            cfg.TrivyImage,
+		Deadline:              cfg.Deadline,
+		CPULimit:              cfg.CPULimit,
+		MemLimit:              cfg.MemLimit,
 	}
 }
 

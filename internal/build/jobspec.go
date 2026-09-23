@@ -82,11 +82,16 @@ type JobParams struct {
 	// --db-repository flag). Empty keeps Trivy's own default; see
 	// build.Config.TrivyDBRepository for why an in-cluster install sets it.
 	TrivyDBRepository string
-	KanikoImage       string
-	TrivyImage        string
-	Deadline          time.Duration
-	CPULimit          string
-	MemLimit          string
+	// TrivyJavaDBRepository overrides Trivy's Java-DB source (the
+	// --java-db-repository flag), fetched lazily when the image contains Java
+	// artifacts; empty keeps Trivy's own default, which the build egress lock
+	// denies — a jar-bearing image then fails the scan.
+	TrivyJavaDBRepository string
+	KanikoImage           string
+	TrivyImage            string
+	Deadline              time.Duration
+	CPULimit              string
+	MemLimit              string
 }
 
 // BuildJobName is the deterministic Job name for a build id.
@@ -256,6 +261,9 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 	// its plain HTTP).
 	if p.TrivyDBRepository != "" {
 		trivyArgs = append(trivyArgs, "--db-repository", p.TrivyDBRepository)
+	}
+	if p.TrivyJavaDBRepository != "" {
+		trivyArgs = append(trivyArgs, "--java-db-repository", p.TrivyJavaDBRepository)
 	}
 	trivyArgs = append(trivyArgs, p.ImageRef)
 	trivy := corev1.Container{

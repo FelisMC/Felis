@@ -57,10 +57,12 @@ A grep across `*.md` and `*.go` returns both sets; only the Go ones are seams.
   build_cpu_limit / build_mem_limit` override them for mirrored or air-gapped
   installs. Trivy's vulnerability DB is the same story, and now has its own knob:
   `[registry] trivy_db_repository` points `--db-repository` at an internal mirror
-  (recipe in docs/troubleshooting.md §8e). Left unset on an egress-locked box the
-  scan step fails closed — Kaniko pushes, Trivy exits on the DB download — which
-  is the correct fail direction but leaves the build unfinished, so the mirror is
-  part of a production build install.
+  (recipe in docs/troubleshooting.md §8e); `trivy_java_db_repository` does the
+  same for the Java DB, which Trivy fetches so soon as the scanned image contains
+  a jar — i.e. for every real modpack build. Left unset on an egress-locked box
+  the scan step fails closed — Kaniko pushes, Trivy exits on the DB download —
+  which is the correct fail direction but leaves the build unfinished, so the
+  mirrors are part of a production build install.
 
 ## Built; only its I/O is unverifiable from this repo
 

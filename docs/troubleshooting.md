@@ -411,6 +411,7 @@ build_namespace = "felis-build"
 kaniko_image = "registry.felis.svc:5000/mirror/kaniko-executor:v1.24.0"
 trivy_image  = "registry.felis.svc:5000/mirror/trivy:0.74.0"
 trivy_db_repository = "registry.felis.svc:5000/mirror/trivy-db:2"
+trivy_java_db_repository = "registry.felis.svc:5000/mirror/trivy-java-db:1"
 build_cpu_limit = "2"
 build_mem_limit = "4Gi"
 ```
@@ -423,10 +424,13 @@ through the loopback hostPort the registry Deployment binds (docker treats
 ```sh
 docker pull gcr.io/kaniko-project/executor:v1.24.0   # any versions you pin
 docker pull aquasec/trivy:0.74.0
+docker pull mirror.gcr.io/aquasec/trivy-java-db:1
 docker tag gcr.io/kaniko-project/executor:v1.24.0 127.0.0.1:5000/mirror/kaniko-executor:v1.24.0
 docker tag aquasec/trivy:0.74.0                   127.0.0.1:5000/mirror/trivy:0.74.0
+docker tag mirror.gcr.io/aquasec/trivy-java-db:1  127.0.0.1:5000/mirror/trivy-java-db:1
 docker push 127.0.0.1:5000/mirror/kaniko-executor:v1.24.0
 docker push 127.0.0.1:5000/mirror/trivy:0.74.0
+docker push 127.0.0.1:5000/mirror/trivy-java-db:1
 ```
 
 From another machine, port-forward the registry instead (`kubectl -n felis
@@ -468,6 +472,13 @@ The Job's Trivy container already runs with `--insecure`, so the internal
 registry's plain HTTP works for the DB pull exactly as it does for the scanned
 image. Re-mirror the tag periodically (Trivy refreshes the DB several times a
 day upstream; a stale mirror only means stale CVE data, never a failed gate).
+
+`trivy_java_db_repository` is the same story one step lazier: Trivy downloads
+the Java DB on demand the first time it scans an image containing Java
+artifacts — every real modpack — and that download fails closed too. Mirror
+`mirror.gcr.io/aquasec/trivy-java-db:1` alongside the vulnerability DB (commands
+above); the Java DB refreshes far less often than the vulnerability DB, so a
+one-off mirror is usually fine.
 
 ---
 

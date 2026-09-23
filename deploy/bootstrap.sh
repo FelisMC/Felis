@@ -2188,7 +2188,7 @@ persisted_registry_block() {
     out="$(awk '
       /^[[:space:]]*\[/ { sect = $0; next }
       sect ~ /^[[:space:]]*\[registry\][[:space:]]*$/ &&
-        /^[[:space:]]*(kaniko_image|trivy_image|trivy_db_repository|build_cpu_limit|build_mem_limit|user_uploads_context)[[:space:]]*=/ { print }
+        /^[[:space:]]*(kaniko_image|trivy_image|trivy_db_repository|trivy_java_db_repository|build_cpu_limit|build_mem_limit|user_uploads_context)[[:space:]]*=/ { print }
       sect ~ /^[[:space:]]*\[registry\.s3\][[:space:]]*$/ && /^[[:space:]]*[A-Za-z_]+[[:space:]]*=/ {
         if (!s3hdr) { printf "[registry.s3]\n"; s3hdr = 1 }
         print

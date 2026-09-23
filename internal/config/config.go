@@ -145,6 +145,15 @@ type RegistryConfig struct {
 	// default (only usable on an install that deliberately opens internet
 	// egress to the DB hosts).
 	TrivyDBRepository string `toml:"trivy_db_repository"`
+	// TrivyJavaDBRepository points Trivy at an OCI repository holding the Java
+	// DB (--java-db-repository). Trivy fetches it lazily whenever the scanned
+	// image contains Java artifacts — every real modpack image does — so on an
+	// egress-locked box the scan fails closed without this mirror exactly like
+	// the vulnerability DB. The supported shape is an internal mirror: copy
+	// mirror.gcr.io/aquasec/trivy-java-db:1 into this cluster's registry and
+	// set this to registry.<ns>.svc:5000/mirror/trivy-java-db:1 (recipe in
+	// docs/troubleshooting.md §8e). Empty keeps Trivy's own default.
+	TrivyJavaDBRepository string `toml:"trivy_java_db_repository"`
 	// UserUploadsContext is the object-store base under which a user-submitted
 	// modpack's Kaniko build context is pinned. It belongs to the §16 build
 	// subsystem's input domain (the build-context store), introduced by the
