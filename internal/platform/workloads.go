@@ -77,6 +77,13 @@ const (
 	registryName        = "registry"
 	registryDataPath    = "/var/lib/registry"
 	registryStorageSize = "10Gi"
+	// registryLoopbackHost is the interface the registry's hostPort binds. Node-level
+	// containerd is the only client that needs it: it cannot reach the registry Service
+	// VIP (the live stack answered "Empty reply" to it), so the node's registries.yaml
+	// mirror rewrites registry.<ns>.svc:<port> onto http://127.0.0.1:<port> and the
+	// pull lands here. Loopback-only is deliberate — the registry serves plain HTTP
+	// and must never be reachable off the node.
+	registryLoopbackHost = "127.0.0.1"
 
 	configVolume   = "config"
 	tmpVolume      = "tmp"
@@ -671,6 +678,13 @@ func controlPlaneDeployment(p Params, sa string, container corev1.Container, vol
 // target real. The registry never calls the K8s API, so its token auto-mount is
 // disabled (matching the weak build/restore SA hygiene), and REGISTRY_HTTP_ADDR
 // pins its listen port to the Service port instead of trusting the image default.
+//
+// The container port also carries a loopback hostPort (registryLoopbackHost): it is
+// the node-side pull path. The node's containerd cannot dial the Service VIP, so
+// deploy/bootstrap.sh writes a registries.yaml mirror rewriting
+// registry.<registry-ns>.svc:<port> onto http://127.0.0.1:<port>, and that request
+// arrives at this hostPort — which is what lets kubelet re-pull a garbage-collected
+// platform image without an operator re-import.
 func registryDeployment(p Params) *appsv1.Deployment {
 	p = p.withDefaults()
 	labels := registryLabels()
@@ -682,7 +696,12 @@ func registryDeployment(p Params) *appsv1.Deployment {
 			{Name: "REGISTRY_HTTP_ADDR", Value: fmt.Sprintf(":%d", p.RegistryPort)},
 		},
 		Ports: []corev1.ContainerPort{
-			{Name: registryName, ContainerPort: p.RegistryPort, Protocol: corev1.ProtocolTCP},
+			{
+				Name: registryName, ContainerPort: p.RegistryPort, Protocol: corev1.ProtocolTCP,
+				// The node-side pull path: containerd's mirror rewrites the Service
+				// name onto 127.0.0.1:<port> (see the doc comment above).
+				HostPort: p.RegistryPort, HostIP: registryLoopbackHost,
+			},
 		},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: registryVolume, MountPath: registryDataPath},
@@ -710,7 +729,7 @@ func registryDeployment(p Params) *appsv1.Deployment {
 			TimeoutSeconds:      3,
 			FailureThreshold:    3,
 		},
-		Resources:       controlPlaneResources(),
+		Resources:       registryResources(),
 		SecurityContext: hardenedContainerSecurityContext(),
 	}
 
@@ -850,6 +869,27 @@ func controlPlaneResources() corev1.ResourceRequirements {
 		Limits: corev1.ResourceList{
 			corev1.ResourceCPU:    resource.MustParse("500m"),
 			corev1.ResourceMemory: resource.MustParse("256Mi"),
+		},
+	}
+}
+
+// registryResources sizes the registry for what it actually does: it is the pull
+// source for every image the node runs and the push target of every build, so its
+// limits are not the control plane's. The memory limit is LOAD-BEARING, not
+// tuning: a live drill pushing a 475MB layer into a 256Mi registry (the old
+// control-plane template) OOM-killed the registry mid-upload — dmesg oom-kill,
+// oom_score_adj 989, the push failed — and the identical push completed in
+// 2 seconds once the limit was 2Gi. Large layers (Kaniko-built modpacks, the game
+// images) are exactly that case, so 2Gi is the floor this renderer stands on.
+func registryResources() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("50m"),
+			corev1.ResourceMemory: resource.MustParse("64Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("1"),
+			corev1.ResourceMemory: resource.MustParse("2Gi"),
 		},
 	}
 }

@@ -425,6 +425,21 @@ func TestRegistry_DeploymentServicePVC(t *testing.T) {
 	if v := envValue(c.Env, "REGISTRY_HTTP_ADDR"); v != ":5000" {
 		t.Errorf("REGISTRY_HTTP_ADDR = %q, want :5000", v)
 	}
+	// The node-side pull path: exactly one container port, mirrored by a LOOPBACK
+	// hostPort. Node containerd cannot dial the Service VIP, so its registries.yaml
+	// mirror rewrites the Service name onto 127.0.0.1:<port>; nothing else may be
+	// exposed (the registry serves plain HTTP).
+	if len(c.Ports) != 1 {
+		t.Fatalf("registry container ports = %+v, want exactly 1", c.Ports)
+	}
+	if p0 := c.Ports[0]; p0.ContainerPort != p.RegistryPort || p0.HostPort != p.RegistryPort || p0.HostIP != registryLoopbackHost {
+		t.Errorf("registry port = %+v, want container/host port %d bound to %s", p0, p.RegistryPort, registryLoopbackHost)
+	}
+	// The registry's limits are deliberately NOT the control-plane template's: audit
+	// #46 caught the registry OOM-killed mid-upload at 256Mi on a real 475MB-layer push.
+	if mem := c.Resources.Limits[corev1.ResourceMemory]; mem.Value() < 2*1024*1024*1024 {
+		t.Errorf("registry memory limit = %s, want >= 2Gi (audit #46: 256Mi OOM-killed on a 475MB-layer push)", mem.String())
+	}
 	// Registry never calls the K8s API ⇒ no auto-mounted token.
 	if ps.AutomountServiceAccountToken == nil || *ps.AutomountServiceAccountToken {
 		t.Error("registry pod must set automountServiceAccountToken=false")
