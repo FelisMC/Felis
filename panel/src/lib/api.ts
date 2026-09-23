@@ -683,6 +683,92 @@ export function humanizeError(e: unknown): string {
       return t("no_world_volume");
     case "restore_unavailable":
       return t("restore_unavailable");
+    // Server create/edit (spec §22): the portability regex + reservation list are
+    // enforced server-side, and the create form's own checks are weaker, so these
+    // refusals reach the dialog as-is.
+    case "bad_name":
+      return t("bad_name");
+    case "bad_subdomain":
+      return t("bad_subdomain");
+    case "at_capacity":
+      return t("at_capacity");
+    case "storage_immutable":
+      return t("storage_immutable");
+    // Email identity: the verified-email uniqueness index (migration 0020) plus
+    // VerifyEmailOTP's guard make a second verified holder impossible; the OTP
+    // relay can also refuse to deliver at all.
+    case "email_taken":
+      return t("email_taken");
+    case "mail_undeliverable":
+      return t("mail_undeliverable");
+    // File editor (spec §7): path/size refusals from the sandboxed job, plus the
+    // subsystem being unwired.
+    case "bad_path":
+      return t("bad_path");
+    case "too_large":
+      return t("too_large");
+    case "files_timeout":
+      return t("files_timeout");
+    case "files_unavailable":
+      return t("files_unavailable");
+    case "jobs_unavailable":
+      return t("jobs_unavailable");
+    // Builds, uploads and review: terminal-state conflicts and unwired subsystems.
+    case "already_terminal":
+      return t("already_terminal");
+    case "build_unavailable":
+      return t("build_unavailable");
+    case "build_logs_unavailable":
+      return t("build_logs_unavailable");
+    case "already_reviewed":
+      return t("already_reviewed");
+    case "submissions_unavailable":
+      return t("submissions_unavailable");
+    case "uploads_unavailable":
+      return t("uploads_unavailable");
+    case "backup_unavailable":
+      return t("backup_unavailable");
+    // Account migration + the re-auth steps it depends on: every refusal below is
+    // an expected outcome of the Account → migrate flow, not a fault.
+    case "account_retired":
+      return t("account_retired");
+    case "no_migration":
+      return t("no_migration");
+    case "not_confirmed":
+      return t("not_confirmed");
+    case "already_confirmed":
+      return t("already_confirmed");
+    case "invalid_target":
+      return t("invalid_target");
+    case "target_not_found":
+      return t("target_not_found");
+    case "target_unavailable":
+      return t("target_unavailable");
+    case "no_passkey":
+      return t("no_passkey");
+    case "passkey_required":
+      return t("passkey_required");
+    case "no_step_up_factor":
+      return t("no_step_up_factor");
+    case "passkey_login_failed":
+      return t("passkey_login_failed");
+    case "passkey_login_invalid":
+      return t("passkey_login_invalid");
+    case "too_many_challenges":
+      return t("too_many_challenges");
+    // Operator-login approvals, live streams, and the remaining auth doors.
+    case "op_login_invalid":
+      return t("op_login_invalid");
+    case "op_login_not_found":
+      return t("op_login_not_found");
+    case "too_many_streams":
+      return t("too_many_streams");
+    case "protected_admin":
+      return t("protected_admin");
+    case "auth_unavailable":
+      return t("auth_unavailable");
+    case "setup_token_invalid":
+      return t("setup_token_invalid");
     default:
       if (err.status === 401) return t("session_expired");
       if (err.status === 403) return t("forbidden");
