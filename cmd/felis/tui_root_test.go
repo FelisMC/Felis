@@ -249,6 +249,34 @@ func TestRootReconfigureSMTP(t *testing.T) {
 	}
 }
 
+// TestRootReconfigureStorageKeepsStatusFraming locks the same rule for the
+// "change storage" path: on a re-run, completing it must land back on the
+// alreadySetUp status framing (with the updated recap), not "Setup complete."
+func TestRootReconfigureStorageKeepsStatusFraming(t *testing.T) {
+	m := newTestRoot(true, consoleModeSetup, "")
+	m = drive(t, m, preflightDoneMsg{})
+	if _, ok := m.screen.(*summaryModel); !ok {
+		t.Fatalf("re-run after preflight, screen = %T, want *summaryModel", m.screen)
+	}
+
+	m = drive(t, m, reconfigureStorageMsg{})
+	if _, ok := m.screen.(*storageChooserModel); !ok {
+		t.Fatalf("reconfigure-storage screen = %T, want *storageChooserModel", m.screen)
+	}
+
+	m = drive(t, m, storageResultMsg{method: storageLocal, detail: "local disk · /var/lib/felis/uploads"})
+	sum, ok := m.screen.(*summaryModel)
+	if !ok {
+		t.Fatalf("after reconfigure-storage, screen = %T, want *summaryModel", m.screen)
+	}
+	if !sum.alreadySetUp {
+		t.Fatalf("after reconfigure-storage, summary should keep the alreadySetUp framing")
+	}
+	if sum.storageLabel != "local disk · /var/lib/felis/uploads" {
+		t.Fatalf("storageLabel = %q, want the updated recap", sum.storageLabel)
+	}
+}
+
 func TestRootRerunLandsOnStatus(t *testing.T) {
 	// adminExists at start of a setup run = re-run: preflight should skip straight
 	// to the "manage in panel" status screen, never touching owner/connect.

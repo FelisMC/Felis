@@ -553,6 +553,7 @@ func (m *rootModel) showSummary() (tea.Model, tea.Cmd) {
 		storageLabel:  m.result.storageDetail,
 		routedHosts:   routed,
 		localHint:     m.result.connectMethod == connectLocal,
+		alreadySetUp:  m.result.alreadySetUp,
 	})
 }
 
