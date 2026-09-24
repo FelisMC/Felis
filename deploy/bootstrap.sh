@@ -1535,12 +1535,32 @@ game_stack_source() {
 # follows — a client that can pass the gate must also be able to reach the lobby.
 # MC_VERSION is read off Limbo's CI artifact name (Limbo-<limbo-ver>-<mc-ver>.jar), which
 # is the only place the pairing is published.
+# meta_get prints a small metadata document. curl's --retry covers transient HTTP
+# statuses and timeouts; a TLS handshake cut mid-way (exit 35, seen against Fill over
+# a flaky IPv6 path) is outside its retry set, so the outer loop retries every failure
+# twice more. --retry-all-errors would say the same but needs curl 7.71+.
+meta_get() {
+  local url="$1" out attempt
+  for attempt in 1 2 3; do
+    if out="$(curl -fsSL --retry 5 --retry-delay 2 \
+      -A "felis-bootstrap (+https://github.com/FelisMC/Felis)" "$url")"; then
+      printf '%s' "$out"
+      return 0
+    fi
+    if [ "$attempt" -lt 3 ]; then
+      warn "fetching ${url} failed (attempt ${attempt}/3); retrying"
+      sleep 5
+    fi
+  done
+  return 1
+}
+
 resolve_game_jars() {
   local ci="https://ci.loohpjames.com/job/Limbo/lastSuccessfulBuild" meta file base rest paper
   log "resolving the newest LOOHP/Limbo CI build"
   # Fetch first, filter second: `curl | grep | head` dies of SIGPIPE under `set -o pipefail`
   # the moment head closes the pipe early. Same shape everywhere below.
-  meta="$(curl -fsSL --retry 5 --retry-delay 2 "${ci}/api/json")" \
+  meta="$(meta_get "${ci}/api/json")" \
     || die "could not read the LOOHP/Limbo CI build metadata"
   file="$(printf '%s' "$meta" | grep -o 'Limbo-[0-9A-Za-z._-]*\.jar' || true)"
   file="${file%%$'\n'*}"
@@ -1578,9 +1598,7 @@ resolve_game_jars() {
 # Fabric or Velocity jar, neither of which Paper can load.
 luckperms_latest_jar() {
   local json url
-  json="$(curl -fsSL --retry 5 --retry-delay 2 \
-    -A "felis-bootstrap (+https://github.com/FelisMC/Felis)" \
-    "https://metadata.luckperms.net/data/all")" || return 1
+  json="$(meta_get "https://metadata.luckperms.net/data/all")" || return 1
   url="$(printf '%s' "$json" \
     | grep -o 'https://download\.luckperms\.net/[0-9]\{1,\}/bukkit/loader/[^"]*\.jar' || true)"
   url="${url%%$'\n'*}"
@@ -1600,9 +1618,7 @@ luckperms_latest_jar() {
 # unchecked.
 papermc_latest_jar() {
   local project="$1" version="$2" json urls url sha
-  json="$(curl -fsSL --retry 5 --retry-delay 2 \
-    -A "felis-bootstrap (+https://github.com/FelisMC/Felis)" \
-    "https://fill.papermc.io/v3/projects/${project}/versions/${version}/builds/latest")" || return 1
+  json="$(meta_get "https://fill.papermc.io/v3/projects/${project}/versions/${version}/builds/latest")" || return 1
   urls="$(printf '%s' "$json" | grep -o 'https://fill-data\.papermc\.io/[^"]*\.jar' || true)"
   url="${urls%%$'\n'*}"
   [ -n "$url" ] || return 1

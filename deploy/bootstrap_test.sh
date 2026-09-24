@@ -72,11 +72,15 @@ fn="$(awk '/^papermc_latest_jar\(\)/,/^}/' "$BS")"
 [ "$(printf '%s\n' "$fn" | wc -l)" -lt 30 ] \
   || { echo "FAIL: the extracted papermc_latest_jar is not just the function -- did its closing brace move?"; exit 1; }
 
+mg="$(awk '/^meta_get\(\)/,/^}/' "$BS")"
+[ -n "$mg" ] || { echo "FAIL: no meta_get in $BS"; exit 1; }
+
 rsha=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 
 run_resolver() { # canned-fill-response
   CANNED="$1" bash -c '
     curl() { printf "%s" "$CANNED"; }
+    '"$mg"'
     '"$fn"'
     if out="$(papermc_latest_jar velocity 3.5.1)"; then
       printf "RESOLVED %s\n" "$out"
@@ -92,6 +96,29 @@ expect "the resolver pairs the url with its own digest" \
 
 out="$(run_resolver '{"url":"https://fill-data.papermc.io/mirror/velocity-3.5.1-615.jar"}')"
 expect "a URL that carries no digest is refused" "REFUSED" "$out"
+
+# A TLS handshake cut mid-way (curl exit 35) is outside curl's own --retry set, so
+# meta_get retries it: two failures, then the answer, still resolves.
+tries="$(mktemp)"
+out="$(TRIES="$tries" bash -c '
+  # curl runs in a command substitution, so the attempt count lives in a file.
+  curl() { printf x >> "$TRIES"; [ "$(wc -c < "$TRIES")" -ge 3 ] || return 35; printf "body"; }
+  sleep() { :; }
+  warn() { :; }
+  '"$mg"'
+  if out="$(meta_get https://fill.papermc.io/x)"; then printf "GOT %s\n" "$out"; else printf "GAVE UP\n"; fi
+')"
+rm -f "$tries"
+expect "meta_get retries a failed handshake" "GOT body" "$out"
+
+out="$(bash -c '
+  curl() { return 35; }
+  sleep() { :; }
+  warn() { :; }
+  '"$mg"'
+  if meta_get https://fill.papermc.io/x >/dev/null; then printf "GOT\n"; else printf "GAVE UP\n"; fi
+')"
+expect "meta_get gives up after three attempts" "GAVE UP" "$out"
 
 # --- the resolved-Velocity digest gate --------------------------------------------------
 # The download must hash to what the content-addressed URL promised, BEFORE
