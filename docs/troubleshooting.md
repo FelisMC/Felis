@@ -257,6 +257,15 @@ What holds the world, in order:
    kubectl -n minecraft annotate minecraftserver <name> felis.lolicon.best/maintenance-
    ```
 
+3. The idle-world reaper (§10), which has no Job of its own: it writes the same
+   annotation as `reap@<RFC3339>` while it archives and deletes an idle world,
+   and rewrites it every 30 seconds, so the lock stays fresh however long the
+   archive takes. The refusal names `the idle-world reaper`. A reaper pod that
+   dies mid-archive stops rewriting it, and the lock lapses two minutes after
+   the last write. Dropping it by hand also ends the reap: the reaper checks
+   the lock before it deletes the world volume, keeps the world and retries the
+   next day.
+
 A restore, backup or file write refused with `409 not_stopped` although the
 panel shows `Stopped` means the game pod is still terminating (its shutdown save
 can take a while); retry once `kubectl -n minecraft get pods -l
@@ -768,6 +777,18 @@ world growth) — do not size the archive PVC as if only world data were stored.
 The reap sequence (all [GO-TESTED] hermetically) preserves the world unless a
 **confirmed, DB-recorded backup exists**:
 
+0. The world must be at rest before it is archived. A server still meant to
+   run is told to stop (`desiredState: Stopped`) and left for the next run; one
+   still stopping, whose game pod still exists, or whose world a restore,
+   backup or file write holds is left too. Each of these counts in
+   `awaiting_stop=` and does not fail the run. Once the server is down, the
+   reaper takes the world's maintenance lock (§3b) and holds it through the
+   archive and the volume delete: nothing can start the server or touch its
+   world in between. A lock the reaper can no longer rewrite, or one someone
+   else removed, ends the reap before `DeletePVC`. [GO-TESTED:
+   `TestHoldWorldStopsARunningServer`, `TestHoldWorldWaitsUntilQuiet`,
+   `TestReapLostHoldKeepsWorld`; live-drilled: a running server was told to
+   stop on the first run and archived and deleted under `reap@…` on the next.]
 1. `ensureCapacity` (only if `max_local_bytes > 0`) frees room by evicting
    owners' on-demand backups first, oldest first, then reaper archives whose
    off-site copy is confirmed. The only copy of a reaped world is never
@@ -783,8 +804,16 @@ The reap sequence (all [GO-TESTED] hermetically) preserves the world unless a
    off-site copy is confirmed`, counts it in `awaiting_offsite=` and leaves the
    PVC alone. The next daily run after the copy reuses the same archive and
    deletes. [GO-TESTED: `TestReapWaitsForOffsiteCopy`]
-5. **Only then** `DeletePVC` → `ReleaseWorld` → `Stop` (cosmetic) → audit →
-   `felis_reaper_worlds_deleted_total++`.
+5. **Only then**, with the lock still held, `DeletePVC` → `ReleaseWorld` →
+   audit → `felis_reaper_worlds_deleted_total++`, and the lock is dropped.
+
+An archive the run reuses (step 4's second run, or a reap interrupted after
+its archive) is read back end to end and checked against the sha256 recorded
+when it was written before the world goes. One that does not match is marked
+corrupt, never offered for restore, and replaced by a fresh archive; one that
+cannot be read at all keeps the world until the next run. [GO-TESTED:
+`TestReapReadsBackReusedArchive`, `TestReapReplacesCorruptArchive`,
+`TestReapKeepsWorldWhenReadBackFails`.]
 
 So a missing backup never results in a deleted world, and with a bucket
 configured neither does a backup that exists on this disk only. [GO-TESTED:
@@ -799,15 +828,34 @@ failing: `sudo felis offsite status` (§16).
 Each run ends with one line:
 
 ```
-felis reaper: evaluated=12 reaped=1 awaiting_offsite=0 warned=2 skipped=0 store_full=0 evicted=0 expired=3 expire_failed=0
+felis reaper: evaluated=12 reaped=1 awaiting_offsite=0 awaiting_stop=0 warned=2 skipped=0 store_full=0 evicted=0 expired=3 expire_failed=0 verified=6 corrupt=0 verify_failed=0 swept=0 orphan_archives=0
 ```
 
 `skipped` counts servers the run failed on (steps 1–3 above, or the cluster or
 the database answering with an error; exempt servers and rows whose CRD is gone
 are not counted), `store_full` the subset kept because the backup store is full,
-and `expire_failed` expired backups it could not remove. Any of them above zero
-makes the process exit 1: the worlds are safe, but the Job fails so the watchdog
-mails `world reaper Job … failed` and `FelisWorldJobFailed` fires. The Job retries
+and `expire_failed` expired backups it could not remove. `awaiting_stop` counts
+idle servers left for the next run because they were not yet down (step 0); it
+does not fail the run, but a server that stays there for days is being started
+again by something, or a Job keeps holding its world.
+
+After the servers, every run looks after the archive store itself:
+
+- `verified` archives were read back and matched their recorded sha256; each
+  run reads back up to ten archives not checked in the past week, oldest check
+  first. `corrupt` ones did
+  not match (or are gone from the volume) and are marked so: the backup page
+  shows them as damaged and refuses to restore them. `verify_failed` ones could
+  not be read at all and are retried the next run.
+- `swept` counts leftovers of an interrupted archive (`*.partial` files older
+  than six hours) the run removed. `orphan_archives` counts finished archives
+  no backup record points to; they are kept until they are older than
+  `retention`, then removed, and each run lists the first few by path.
+
+`skipped`, `expire_failed`, `corrupt`, `verify_failed` above zero, or a sweep
+that could not finish, make the process exit 1: the worlds are safe, but the
+Job fails so the watchdog mails `world reaper Job … failed` and
+`FelisWorldJobFailed` fires. The Job retries
 twice (`backoffLimit`), each retry re-running the whole batch, which is safe
 because every step is idempotent. Read the error above the summary:
 
@@ -888,8 +936,15 @@ SMTP sink.]
   [GO-TESTED `TestReapUnownedServerStillReaped`.] Claim or exempt servers you
   want to keep.
 - `DeletePVC` is idempotent (missing PVC is not an error), so a re-run will not
-  fail on already-reaped worlds; and `Stop` failure is only logged, so a reaped
-  world's `MinecraftServer` may not be flipped to `Stopped`.
+  fail on already-reaped worlds.
+- **An idle server whose world volume is already gone.** With a fresh reaper
+  archive taken since the last activity, the run takes it as a reap that was
+  interrupted after the delete and finishes it (release, audit, count). An
+  unowned server with no such archive only has its idle clock restarted, so it
+  is neither counted nor audited again every day. An owned one is released and
+  audited once, since there is no world to archive. [GO-TESTED:
+  `TestReapFinishesInterruptedReap`, `TestReapUnownedWithoutWorldRestartsClock`,
+  `TestReapOwnedWithoutWorldReleases`.]
 
 Only `TarLocal` (tar+gzip) archiving is implemented; VolumeSnapshot/Longhorn
 backends return `not implemented in this build`. The live PVC delete / Postgres
@@ -1850,6 +1905,7 @@ for 10 seconds (the Free plan's limits).
 | Build push 400 / SA denied / egress hang / Failed / executor ImagePullBackOff | §8, §8e |
 | Registry push/pull unreachable | §9 |
 | World deleted unexpectedly / backup skipped | §10 |
+| Reaper `awaiting_stop` stays above 0; `corrupt=` / backup shown as damaged; `orphan_archives` | §10 |
 | Idle auto-stop not firing; player count 0; `PlayersCounted=False` | §11 |
 | A config field seems ignored | §12 |
 | PVC left behind after delete | §13 |
