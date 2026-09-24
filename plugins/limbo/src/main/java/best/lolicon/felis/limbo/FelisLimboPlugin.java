@@ -1,5 +1,7 @@
 package best.lolicon.felis.limbo;
 
+import best.lolicon.felis.link.Control;
+import best.lolicon.felis.link.ControlFrame;
 import best.lolicon.felis.link.FelisApiClient;
 import best.lolicon.felis.link.LinkClient;
 import best.lolicon.felis.link.LinkCode;
@@ -21,13 +23,12 @@ import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
 
-import java.io.ByteArrayOutputStream;
-import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -61,11 +62,24 @@ import java.util.logging.Logger;
  *       browser — never the WeChat/QQ in-app browser, where WebAuthn/passkey does not
  *       work (the web entry additionally guards this, see internal/panel);</li>
  *   <li>polls {@code link/status/{uuid}} until the player redeems the code on the web
- *       console, then transfers them to the lobby via a BungeeCord {@code Connect}
- *       plugin message;</li>
- *   <li>disconnects (fail-closed) on blacklist, on a mint/transport failure, or when
- *       the login window elapses — "rather refuse than admit unauthenticated".</li>
+ *       console, then asks the proxy to move them to the lobby with a
+ *       {@code felis:control} {@code LoginRelease} frame, re-sent with backoff until
+ *       the player has left (the proxy re-checks the link before it lets them go);</li>
+ *   <li>disconnects (fail-closed) on blacklist, on a refused mint, or when the login
+ *       window elapses — "rather refuse than admit unauthenticated".</li>
  * </ol>
+ *
+ * <p>A felis-api outage at join (transport error or 5xx) is retried with backoff for
+ * {@link #START_RETRY_WINDOW_MILLIS} before the player is turned away. Each retry
+ * also sends a {@code LoginRelease}: the proxy keeps recent link confirmations for
+ * exactly this case, so a player who was signed in minutes ago can still get
+ * through a felis-api restart, and anyone else is refused there.
+ *
+ * <p>The release used to be a BungeeCord {@code Connect} on {@code bungeecord:main}.
+ * Velocity answers that channel itself, before any plugin can see it, so leaving it
+ * on for the gate left it on for every user backend (KickPlayer, ConnectOther). The
+ * installer now switches it off and the proxy accepts {@code LoginRelease} only from
+ * this server.
  *
  * <p><b>Config (deployment inputs, never compiled in).</b> The API base URL and
  * service token come from {@code FELIS_API_BASE_URL} / {@code FELIS_SERVICE_TOKEN}
@@ -96,9 +110,13 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
     private static final long MIN_TIMEOUT_SECONDS = 30L;
     private static final long MAX_TIMEOUT_SECONDS = 3600L;
 
-    // The BungeeCord plugin-message channel Velocity intercepts to move a player to
-    // another backend. "Connect" + the target server name is the classic transfer.
-    private static final String BUNGEE_CHANNEL = "bungeecord:main";
+    // Backoff between retries, in ticks (≈1s, 2s, 4s, then every 8s): used both for a
+    // felis-api outage at join and for re-sending the release until the player leaves.
+    private static final long[] BACKOFF_TICKS = {20L, 40L, 80L, 160L};
+    // How long a felis-api outage at join is retried before the player is turned away.
+    static final long START_RETRY_WINDOW_MILLIS = 60_000L;
+    // How long the release is re-sent after sign-in before giving up with a message.
+    private static final long RELEASE_WINDOW_MILLIS = 120_000L;
 
     // ---- readiness state ----
     private final AtomicBoolean ready = new AtomicBoolean(false);
@@ -112,9 +130,13 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
     private volatile String lobbyServer;
     private volatile long timeoutMillis;
 
-    // Per-player poll task ids, so a completed/abandoned login cancels its own timer
-    // rather than polling a departed UUID forever.
+    // Per-player task ids (the link poll, a join retry, or the next release), so a
+    // completed/abandoned login cancels its own timer rather than polling a departed
+    // UUID forever.
     private final ConcurrentHashMap<UUID, Integer> pollTasks = new ConcurrentHashMap<>();
+    // Players whose release loop is running; the async link poll can observe "linked"
+    // twice before its cancellation lands, and the release must start once.
+    private final Set<UUID> releasing = ConcurrentHashMap.newKeySet();
 
     @Override
     public void onEnable() {
@@ -141,6 +163,7 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
         // cancelTask(plugin) tears down every scheduled task this plugin owns.
         getServer().getScheduler().cancelTask(this);
         pollTasks.clear();
+        releasing.clear();
     }
 
     // ---- readiness endpoint (unchanged behavior) ----
@@ -227,12 +250,17 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
     public void onJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
         UUID id = player.getUniqueId();
+        releasing.remove(id); // a reconnect starts a fresh login
+        long startedAt = System.currentTimeMillis();
         // Everything below touches the network; run it off the tick thread so a slow
         // felis-api never stalls the server loop. The player waits in the limbo world.
-        getServer().getScheduler().runTaskAsync(this, () -> beginLogin(id));
+        getServer().getScheduler().runTaskAsync(this, () -> beginLogin(id, 0, startedAt));
     }
 
-    private void beginLogin(UUID id) {
+    private void beginLogin(UUID id, int attempt, long startedAt) {
+        if (online(id) == null) {
+            return; // left while a retry was pending
+        }
         try {
             if (apiClient.isBlacklisted(id)) {
                 disconnectOnMain(id, "该用户名已被回收保护 / This username is under reclaim protection. Contact staff.");
@@ -243,16 +271,37 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
             // useless code. Only unlinked players get one. The on-demand /link
             // command (proxy + lobby) stays the door to a fresh web session.
             if (apiClient.linkStatus(id)) {
-                getServer().getScheduler().runTask(this, () -> transferToLobby(id));
+                getServer().getScheduler().runTask(this, () -> startRelease(id));
                 return;
             }
             LinkCode code = linkClient.requestCode(id);
             getServer().getScheduler().runTask(this, () -> presentAndPoll(id, code));
         } catch (LinkException e) {
-            // Fail closed: we could not reach the auth backend, so we cannot admit the
-            // player. Refuse the connection rather than let them idle unauthenticated.
-            LOG.warning("FelisLimbo: login start failed for " + id + " — " + e.getMessage());
-            disconnectOnMain(id, "登录服务暂不可用，请稍后重连 / Login service unavailable, please reconnect shortly.");
+            boolean outage = e.statusCode() == 0 || e.statusCode() >= 500;
+            if (!outage || System.currentTimeMillis() - startedAt > START_RETRY_WINDOW_MILLIS) {
+                // Fail closed: felis-api refused, or stayed unreachable for the whole
+                // retry window. Refuse the connection rather than let them idle
+                // unauthenticated.
+                LOG.warning("FelisLimbo: login start failed for " + id + " after " + (attempt + 1)
+                        + " attempt(s) — " + e.getMessage());
+                disconnectOnMain(id, "登录服务暂不可用，请稍后重连 / Login service unavailable, please reconnect shortly.");
+                return;
+            }
+            LOG.info("FelisLimbo: felis-api unavailable at login for " + id + " (attempt " + (attempt + 1)
+                    + "): " + e.getMessage());
+            getServer().getScheduler().runTask(this, () -> {
+                Player player = online(id);
+                if (player == null) {
+                    return;
+                }
+                if (attempt == 0) {
+                    player.sendMessage("§e[Felis] 登录服务繁忙，正在重试… / The login service is busy — retrying…");
+                }
+                sendRelease(player);
+            });
+            int taskId = getServer().getScheduler().runTaskLaterAsync(
+                    this, () -> beginLogin(id, attempt + 1, startedAt), backoff(attempt));
+            track(id, taskId);
         }
     }
 
@@ -281,11 +330,7 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
         long deadline = System.currentTimeMillis() + timeoutMillis;
         int taskId = getServer().getScheduler().runTaskTimerAsync(
                 this, () -> pollOnce(id, deadline), POLL_PERIOD_TICKS, POLL_PERIOD_TICKS);
-        // Replace any prior task for this UUID (a reconnect) and cancel the stale one.
-        Integer previous = pollTasks.put(id, taskId);
-        if (previous != null) {
-            getServer().getScheduler().cancelTask(previous);
-        }
+        track(id, taskId);
     }
 
     private void pollOnce(UUID id, long deadline) {
@@ -301,11 +346,7 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
         }
         try {
             if (apiClient.linkStatus(id)) {
-                // Keep polling until the player actually leaves this backend. The
-                // proxy independently re-checks link status before releasing the
-                // gate; a transient failure there denies this attempt, so retrying
-                // avoids stranding an authenticated player in limbo.
-                getServer().getScheduler().runTask(this, () -> transferToLobby(id));
+                getServer().getScheduler().runTask(this, () -> startRelease(id));
             }
         } catch (LinkException e) {
             // A transient poll failure is not fatal — keep trying until the deadline.
@@ -313,18 +354,67 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
         }
     }
 
-    private void transferToLobby(UUID id) {
-        Player player = getServer().getPlayer(id);
-        if (player == null || !player.isValid()) {
+    // startRelease runs on the main thread once the player is known to be linked: stop
+    // the link poll, say so once, and start asking the proxy for the lobby.
+    private void startRelease(UUID id) {
+        Player player = online(id);
+        if (player == null || !releasing.add(id)) {
             return;
         }
-        try {
-            player.sendMessage("§a[Felis] 登录成功，正在进入大厅… / Signed in — sending you to the lobby…");
-            player.sendPluginMessage(BUNGEE_CHANNEL, bungeeConnect(lobbyServer));
-        } catch (IOException | RuntimeException e) {
-            LOG.warning("FelisLimbo: transfer to lobby failed for " + id + " — " + e.getMessage());
-            disconnectOnMain(id, "进入大厅失败，请重连 / Could not reach the lobby. Please reconnect.");
+        cancelPoll(id);
+        player.sendMessage("§a[Felis] 登录成功，正在进入大厅… / Signed in — sending you to the lobby…");
+        releaseAttempt(id, 0, System.currentTimeMillis() + RELEASE_WINDOW_MILLIS);
+    }
+
+    // releaseAttempt sends one LoginRelease and schedules the next. The proxy re-checks
+    // the link before it moves the player, and a transient failure there only denies
+    // that one attempt, so the gate keeps asking (with backoff, silently) until the
+    // player is gone or the window closes.
+    private void releaseAttempt(UUID id, int attempt, long deadline) {
+        Player player = online(id);
+        if (player == null) {
+            releasing.remove(id);
+            cancelPoll(id);
+            return;
         }
+        if (System.currentTimeMillis() > deadline) {
+            releasing.remove(id);
+            LOG.warning("FelisLimbo: " + id + " was not released to the lobby within "
+                    + (RELEASE_WINDOW_MILLIS / 1000) + "s");
+            disconnectOnMain(id, "进入大厅失败，请重连 / Could not reach the lobby. Please reconnect.");
+            return;
+        }
+        sendRelease(player);
+        int taskId = getServer().getScheduler().runTaskLater(
+                this, () -> releaseAttempt(id, attempt + 1, deadline), backoff(attempt));
+        track(id, taskId);
+    }
+
+    private void sendRelease(Player player) {
+        try {
+            player.sendPluginMessage(Control.CHANNEL, Control.encode(ControlFrame.loginRelease(player.getName())));
+        } catch (IOException | RuntimeException e) {
+            // The next attempt sends again; the window bounds how long we keep trying.
+            LOG.warning("FelisLimbo: could not send the lobby release for " + player.getUniqueId()
+                    + " — " + e.getMessage());
+        }
+    }
+
+    private Player online(UUID id) {
+        Player player = getServer().getPlayer(id);
+        return player != null && player.isValid() ? player : null;
+    }
+
+    // track records the player's current task, cancelling the one it replaces.
+    private void track(UUID id, int taskId) {
+        Integer previous = pollTasks.put(id, taskId);
+        if (previous != null && previous != taskId) {
+            getServer().getScheduler().cancelTask(previous);
+        }
+    }
+
+    private static long backoff(int attempt) {
+        return BACKOFF_TICKS[Math.min(attempt, BACKOFF_TICKS.length - 1)];
     }
 
     private void cancelPoll(UUID id) {
@@ -359,18 +449,6 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
                 Component.text("Felis Login"),
                 Component.text("Felis"),
                 page);
-    }
-
-    // bungeeConnect frames a BungeeCord "Connect" sub-channel message: the UTF string
-    // "Connect" followed by the target server name. Velocity intercepts this on the
-    // bungeecord:main channel and moves the player to that backend.
-    private static byte[] bungeeConnect(String server) throws IOException {
-        ByteArrayOutputStream buf = new ByteArrayOutputStream();
-        try (DataOutputStream out = new DataOutputStream(buf)) {
-            out.writeUTF("Connect");
-            out.writeUTF(server);
-        }
-        return buf.toByteArray();
     }
 
     // ---- env helpers ----
