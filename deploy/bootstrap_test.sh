@@ -949,8 +949,12 @@ run_bundle_flags() { # backup-pvc worlds-host-path
 out="$(run_bundle_flags felis-backups '')"
 expect "a default install asks the renderer for the archive PVC" "--backup-pvc
 felis-backups" "$out"
+# data-durability-17: without a worlds root the reaper still renders, retention-only,
+# so backups past their expiry leave the store; it needs the archive mount for that.
+expect "a default install passes the archive mount so expired backups are deleted" "--archive-local-path
+/var/lib/felis/archives" "$out"
 case "$out" in
-  *--worlds-host-path*) echo "FAIL: no reaper flags may render without FELIS_WORLDS_HOST_PATH"; fails=$((fails + 1)) ;;
+  *--worlds-host-path*) echo "FAIL: no worlds root may render without FELIS_WORLDS_HOST_PATH"; fails=$((fails + 1)) ;;
 esac
 
 expect "a known registry size reaches the renderer" "--registry-storage
@@ -961,6 +965,9 @@ esac
 
 out="$(run_bundle_flags '' '')"
 expect "an emptied FELIS_BACKUP_PVC is the explicit no-backup shape" "--backup-pvc=" "$out"
+case "$out" in
+  *--archive-local-path*) echo "FAIL: no archive mount may be passed without an archive PVC"; fails=$((fails + 1)) ;;
+esac
 # Game server egress excludes every private range already; the node's own public
 # addresses must be excluded too or a server can dial the panel NodePort on them.
 expect "every global node address is denied to game server egress (v4)" "--server-egress-deny-cidr

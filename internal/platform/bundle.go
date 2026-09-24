@@ -39,9 +39,10 @@ type Object interface {
 // node-pressure eviction shield is the BUILT-IN system-cluster-critical
 // PriorityClass the pod templates reference (workloads.go controlPlanePriorityName),
 // not an object this bundle renders.
-// The reaper CronJob is also part of Workloads, rendered only when the retention
-// storage topology is supplied (WorldsHostPath + BackupPVC + ArchiveLocalPath —
-// workloads.go documents the gate and the shape-asserted hostPath caveat). The
+// The reaper CronJob is also part of Workloads: it reaps worlds when the full
+// storage topology is supplied (WorldsHostPath + BackupPVC + ArchiveLocalPath)
+// and only looks after the archive store when the worlds root is missing
+// (workloads.go documents both gates and the shape-asserted hostPath caveat). The
 // per-server StatefulSet is never a static manifest — the operator renders it at
 // reconcile time (internal/operator).
 func Objects(p Params) []Object {

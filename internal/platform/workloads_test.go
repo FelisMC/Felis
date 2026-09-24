@@ -2,6 +2,7 @@ package platform
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -785,37 +786,80 @@ func reaperParams() Params {
 	return p
 }
 
-// TestReaperCronJob_Gating proves the reaper renders iff all three storage
-// coordinates are present: an incomplete configuration must produce NO CronJob
-// (the partial-flag mistake is rejected at the CLI; here the renderer fails safe).
+// TestReaperCronJob_Gating proves the reaper reaps iff all three storage
+// coordinates are present, and that the archive store alone (backup PVC + its
+// mount path) still renders the CronJob in its retention-only shape, with no
+// worlds-root pair: backups must expire on an install that never reaps worlds.
+// Anything less renders none (the partial-flag mistake is rejected at the CLI;
+// here the renderer fails safe).
 func TestReaperCronJob_Gating(t *testing.T) {
 	cases := []struct {
-		name   string
-		mutate func(p *Params)
-		want   bool
+		name       string
+		mutate     func(p *Params)
+		reap, cron bool
 	}{
-		{"none", func(p *Params) {}, false},
-		{"worlds only", func(p *Params) { p.WorldsHostPath = "/w" }, false},
-		{"worlds+backup", func(p *Params) { p.WorldsHostPath = "/w"; p.BackupPVC = "b" }, false},
-		{"worlds+archive", func(p *Params) { p.WorldsHostPath = "/w"; p.ArchiveLocalPath = "/a" }, false},
-		{"backup+archive (no worlds)", func(p *Params) { p.BackupPVC = "b"; p.ArchiveLocalPath = "/a" }, false},
-		{"all three", func(p *Params) { p.WorldsHostPath = "/w"; p.BackupPVC = "b"; p.ArchiveLocalPath = "/a" }, true},
+		{"none", func(p *Params) {}, false, false},
+		{"worlds only", func(p *Params) { p.WorldsHostPath = "/w" }, false, false},
+		{"worlds+backup", func(p *Params) { p.WorldsHostPath = "/w"; p.BackupPVC = "b" }, false, false},
+		{"worlds+archive", func(p *Params) { p.WorldsHostPath = "/w"; p.ArchiveLocalPath = "/a" }, false, false},
+		{"backup+archive (no worlds)", func(p *Params) { p.BackupPVC = "b"; p.ArchiveLocalPath = "/a" }, false, true},
+		{"all three", func(p *Params) { p.WorldsHostPath = "/w"; p.BackupPVC = "b"; p.ArchiveLocalPath = "/a" }, true, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			p := testParams()
 			c.mutate(&p)
-			if got := reaperEnabled(p); got != c.want {
-				t.Errorf("reaperEnabled = %v, want %v", got, c.want)
+			if got := reaperEnabled(p); got != c.reap {
+				t.Errorf("reaperEnabled = %v, want %v", got, c.reap)
 			}
-			cj := findCronJob(Workloads(p))
-			if c.want && cj == nil {
-				t.Error("CronJob must be in Workloads when enabled")
+			objs := Workloads(p)
+			cj := findCronJob(objs)
+			if c.cron != (cj != nil) {
+				t.Fatalf("CronJob rendered = %v, want %v", cj != nil, c.cron)
 			}
-			if !c.want && cj != nil {
-				t.Error("CronJob must NOT be in Workloads when disabled")
+			var pv bool
+			for _, o := range objs {
+				if _, ok := o.(*corev1.PersistentVolume); ok {
+					pv = true
+				}
+			}
+			if pv != c.reap {
+				t.Errorf("worlds-root PV rendered = %v, want %v", pv, c.reap)
+			}
+			if cj != nil {
+				_, ctr := cronPodSpec(t, cj)
+				if got := contains(ctr.Args, "--retention-only"); got == c.reap {
+					t.Errorf("args = %v: --retention-only must be passed exactly when no world is reaped", ctr.Args)
+				}
 			}
 		})
+	}
+}
+
+// TestReaperCronJob_RetentionOnlyShape pins what the store-only run is left
+// with: the config and the archive store, and nothing that reaches a world or
+// the API — no worlds mount, no SMTP password, no service account token.
+func TestReaperCronJob_RetentionOnlyShape(t *testing.T) {
+	p := reaperParams()
+	p.WorldsHostPath = ""
+	ps, c := cronPodSpec(t, reaperCronJob(p))
+	if want := []string{"--config", configFilePath, "--retention-only"}; !reflect.DeepEqual(c.Args, want) {
+		t.Errorf("args = %v, want %v", c.Args, want)
+	}
+	if volumeByName(ps.Volumes, worldsVolume) != nil || mountByName(c.VolumeMounts, worldsVolume) != nil {
+		t.Error("a retention-only run must not mount a worlds root")
+	}
+	if m := mountByName(c.VolumeMounts, backupVolume); m == nil || m.MountPath != p.ArchiveLocalPath || m.ReadOnly {
+		t.Errorf("backup must be mounted read-write at ArchiveLocalPath %q, got %+v", p.ArchiveLocalPath, m)
+	}
+	if len(c.Env) != 0 {
+		t.Errorf("env = %v, want none (it sends no warnings)", c.Env)
+	}
+	if ps.AutomountServiceAccountToken == nil || *ps.AutomountServiceAccountToken {
+		t.Error("a retention-only run never calls the API and must not mount a service account token")
+	}
+	if c.SecurityContext == nil || c.SecurityContext.Capabilities == nil || len(c.SecurityContext.Capabilities.Add) != 1 || c.SecurityContext.Capabilities.Add[0] != "DAC_OVERRIDE" {
+		t.Error("it reads back and deletes archives other identities wrote, so it keeps DAC_OVERRIDE")
 	}
 }
 

@@ -95,10 +95,11 @@
 #                     felis.toml [archive] local_path (default: /var/lib/felis/archives)
 #   FELIS_WORLDS_HOST_PATH node directory holding the world volumes (on the k3s this
 #                     installer provisions: /var/lib/rancher/k3s/storage). Setting it
-#                     enables the daily retention reaper, which archives and then deletes
-#                     worlds idle beyond the retention window; the reaper reads that
+#                     lets the daily reaper also archive and then delete worlds idle
+#                     for 15 days (without it the reaper only deletes backups past
+#                     their expiry and leaves every world); the reaper reads that
 #                     root as root, so it keeps k3s's own 0700 root:root
-#                     (default: unset = no reaper)
+#                     (default: unset = worlds are never reaped)
 #   FELIS_REGISTRY_STORAGE / FELIS_UPLOADS_STORAGE / FELIS_BACKUP_STORAGE capacity the
 #                     registry, uploads and world-archive PVCs request on first install
 #                     (defaults: 10Gi, 5Gi, 10Gi). An existing claim keeps its size; on
@@ -172,8 +173,8 @@ FELIS_BACKUP_STORAGE="${FELIS_BACKUP_STORAGE:-}"
 # Retention is opt-in because it DELETES worlds (after a verified archive): point this at the
 # node directory the world volumes live under. On the k3s this installer provisions that is
 # /var/lib/rancher/k3s/storage — the reaper resolves each PVC's local-path directory exactly
-# from its volumeName. Left unset, no reaper CronJob renders and archives accumulate until
-# the backup PVC fills (then backups fail loudly; nothing is deleted).
+# from its volumeName. Left unset, the reaper CronJob renders retention-only: backups past
+# their expiry are still deleted daily, and no world is ever archived or deleted.
 FELIS_WORLDS_HOST_PATH="${FELIS_WORLDS_HOST_PATH:-}"
 # k3s's local-path provisioner root. It appears with the first volume the provisioner
 # creates, which on a fresh install is after the reaper's PV has been applied.
@@ -3462,8 +3463,15 @@ deploy_bundle() {
   else
     manifest_args+=(--backup-pvc=)
   fi
-  # Retention renders only when the operator names where the worlds live; the archive path
-  # always travels with it because it must equal the [archive] local_path written above.
+  # With an archive store the reaper always renders, since backups past their expiry have
+  # to leave it; it reaps idle worlds only when the operator names where the worlds live.
+  # The archive path must equal the [archive] local_path written above.
+  if [ -n "$FELIS_BACKUP_PVC" ]; then
+    manifest_args+=(--archive-local-path "$FELIS_ARCHIVE_LOCAL_PATH")
+    if [ -z "$FELIS_WORLDS_HOST_PATH" ]; then
+      log "idle-world retention is off: the daily reaper deletes expired backups and keeps every world (set FELIS_WORLDS_HOST_PATH=${K3S_STORAGE_ROOT} to reap worlds idle for 15 days)"
+    fi
+  fi
   if [ -n "$FELIS_WORLDS_HOST_PATH" ]; then
     log "retention enabled: the daily reaper will read worlds from ${FELIS_WORLDS_HOST_PATH}"
     # The reaper reads this root as root with DAC_OVERRIDE (platform.reaperPodSecurityContext)
@@ -3478,7 +3486,7 @@ deploy_bundle() {
         warn "worlds root ${FELIS_WORLDS_HOST_PATH} does not exist yet; the reaper CronJob cannot start until it does (hostPath type Directory)"
       fi
     fi
-    manifest_args+=(--worlds-host-path "$FELIS_WORLDS_HOST_PATH" --archive-local-path "$FELIS_ARCHIVE_LOCAL_PATH")
+    manifest_args+=(--worlds-host-path "$FELIS_WORLDS_HOST_PATH")
   fi
   local size
   size="$(pvc_size "$CONTROL_NS" registry "$FELIS_REGISTRY_STORAGE" FELIS_REGISTRY_STORAGE)"

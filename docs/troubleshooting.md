@@ -756,7 +756,16 @@ Registry manifest rendering is [GO-TESTED]; actual serving is
 
 ## 10. World reaper: false-deletes and skipped backups (spec §18)
 
-The reaper is a **run-once daily CronJob batch**, not an operator controller. It
+The reaper is a **run-once daily CronJob batch**, not an operator controller.
+Every install with an archive store gets it. Without `FELIS_WORLDS_HOST_PATH`
+it runs `felis reaper --retention-only`: it deletes backups past their expiry,
+reads archives back and sweeps the store (the second half of "A failed reaper
+Job" below), never looks at a server, and its summary shows `evaluated=0`. The
+installer says so (`idle-world retention is off`). Setting the worlds root on a
+re-run turns world reaping on. [GO-TESTED: `TestRunRetentionTouchesNoWorld`,
+`TestReaperCronJob_Gating`, `TestReaperCronJob_RetentionOnlyShape`.]
+
+With a worlds root the reaper
 reaps a world only when `now - last_active_at > 15d` (`inactive_15d`); the 15-day
 deadline is **hard-fixed in code** (only `warn_before` / `retention` /
 `max_local_bytes` and the on-demand backup keys `manual_retention` /

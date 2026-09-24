@@ -1222,3 +1222,30 @@ func TestReapFinishesInterruptedReap(t *testing.T) {
 		t.Fatalf("owner %q audits %+v", st.byName["lambda"].OwnerID, st.audits)
 	}
 }
+
+// data-durability-17: with no worlds root the store is still looked after.
+// RunRetention expires, reads back and sweeps without listing a server or
+// reaching the cluster (nil here, so any call would panic).
+func TestRunRetentionTouchesNoWorld(t *testing.T) {
+	r, st, _, ar := newReaper(DefaultConfig(),
+		Candidate{Name: "idle", OwnerID: "user-1", LastActiveAt: idleBy(40 * Day)})
+	r.Cluster = nil
+	st.listErr = errors.New("servers must not be listed")
+	ca := checking(r, ar)
+	ca.sweepRemoved = []string{"/archives/.x-1.tar.gz.partial"}
+	st.backups = []*fakeBackup{
+		{id: "gone", server: "s1", ref: "ref-gone", size: 5, status: "present", createdAt: idleBy(120 * Day), expires: idleBy(1 * Day)},
+		{id: "keep", server: "s2", ref: "ref-keep", size: 5, status: "present", createdAt: idleBy(10 * Day), expires: testNow.Add(80 * Day)},
+	}
+
+	sum := r.RunRetention(context.Background())
+	if sum.Evaluated != 0 || sum.WorldsReaped != 0 || ar.archives != 0 {
+		t.Fatalf("retention looked at servers: %+v", sum)
+	}
+	if sum.BackupsExpired != 1 || sum.Verified != 1 || sum.Swept != 1 || sum.Failed() {
+		t.Fatalf("summary = %+v, want 1 expired, 1 read back, 1 swept", sum)
+	}
+	if len(ar.deletes) != 1 || ar.deletes[0] != "ref-gone" {
+		t.Fatalf("deleted archives = %v, want [ref-gone]", ar.deletes)
+	}
+}

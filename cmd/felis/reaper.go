@@ -32,11 +32,17 @@ import (
 // cadence, and RunOnce is idempotent and restart-safe, so a missed or retried
 // run simply converges. Only the tarLocal archive backend is wired in this
 // build; the snapshot backends (§19) are a later integration.
+//
+// --retention-only runs the archive-store half alone (reaper.RunRetention):
+// the CronJob an install without a worlds root gets, so backups past their
+// expiry still leave the store there. It builds no Kubernetes client and reads
+// no world.
 func cmdReaper(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("reaper", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "/etc/felis/felis.toml", "path to felis.toml")
 	worldsRoot := fs.String("worlds-root", "/worlds", "mount root under which world PVCs are visible (tarLocal: <root>/<pvc>, else the stock local-path <root>/<pv-name>_<ns>_<pvc-name>)")
+	retentionOnly := fs.Bool("retention-only", false, "only expire, read back and sweep the archive store: no server is evaluated and no world is read or deleted, so neither the worlds root nor the Kubernetes API is needed")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -55,13 +61,16 @@ func cmdReaper(args []string, stdout, stderr io.Writer) int {
 
 	ctx := ctrl.SetupSignalHandler()
 
-	scheme := runtime.NewScheme()
-	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(v1alpha1.AddToScheme(scheme))
-	cl, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
-	if err != nil {
-		fmt.Fprintf(stderr, "felis reaper: build k8s client: %v\n", err)
-		return 1
+	var cl client.Client
+	if !*retentionOnly {
+		scheme := runtime.NewScheme()
+		utilruntime.Must(clientgoscheme.AddToScheme(scheme))
+		utilruntime.Must(v1alpha1.AddToScheme(scheme))
+		cl, err = client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
+		if err != nil {
+			fmt.Fprintf(stderr, "felis reaper: build k8s client: %v\n", err)
+			return 1
+		}
 	}
 
 	archiver, err := buildArchiver(ctx, cfg, *worldsRoot, cl)
@@ -80,9 +89,13 @@ func cmdReaper(args []string, stdout, stderr io.Writer) int {
 	r := &reaper.Reaper{
 		Cfg:      rcfg,
 		Store:    reaper.NewPGStore(drv.DB()),
-		Cluster:  reaper.NewK8sCluster(cl, cfg.K8s.Namespace),
 		Archiver: archiver,
 	}
+	if *retentionOnly {
+		fmt.Fprintln(stderr, "felis reaper: retention only — no worlds root is configured, so idle worlds are neither archived nor released")
+		return reportReaperRun(r.RunRetention(ctx), stdout, stderr)
+	}
+	r.Cluster = reaper.NewK8sCluster(cl, cfg.K8s.Namespace)
 
 	// Pre-reap warnings go out by email when [smtp] is configured (the same
 	// relay and password_ref convention felis-api uses); without it the channel
@@ -248,14 +261,20 @@ func reaperConfig(cfg *config.Config) (reaper.Config, error) {
 
 // buildArchiver constructs the WorldArchiver. Only tarLocal is implemented in
 // this build; the resolver maps each world PVC to its directory under worldsRoot
-// (resolveWorldDir).
+// (resolveWorldDir). A nil cl is the retention-only run, which never archives a
+// world, so its archiver resolves none.
 func buildArchiver(ctx context.Context, cfg *config.Config, worldsRoot string, cl client.Client) (backup.WorldArchiver, error) {
 	switch cfg.Archive.Store {
 	case "tarLocal":
-		return &backup.TarLocal{
-			BackupRoot: cfg.Archive.LocalPath,
-			Resolve:    resolveWorldDir(ctx, cl, cfg.K8s.Namespace, worldsRoot),
-		}, nil
+		t := &backup.TarLocal{BackupRoot: cfg.Archive.LocalPath}
+		if cl != nil {
+			t.Resolve = resolveWorldDir(ctx, cl, cfg.K8s.Namespace, worldsRoot)
+		} else {
+			t.Resolve = func(pvc string) (string, error) {
+				return "", fmt.Errorf("resolve world PVC %s: this run has no worlds root (retention only)", pvc)
+			}
+		}
+		return t, nil
 	default:
 		return nil, fmt.Errorf("[archive] store %q is not implemented in this build (only tarLocal)", cfg.Archive.Store)
 	}

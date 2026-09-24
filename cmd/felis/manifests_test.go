@@ -90,12 +90,13 @@ func TestManifestsRendersBundle(t *testing.T) {
 		t.Error("rendered bundle must not contain ClusterRole/ClusterRoleBinding")
 	}
 	// Without the retention flags, the reaper CronJob is not rendered and the
-	// generator says so on stderr.
+	// generator says so on stderr, naming what that leaves: backups that never
+	// expire.
 	if strings.Contains(text, "kind: CronJob") {
-		t.Error("no reaper CronJob must render without --worlds-host-path")
+		t.Error("no reaper CronJob must render without --archive-local-path")
 	}
-	if !strings.Contains(errBuf.String(), "not rendered") {
-		t.Errorf("expected a 'reaper not rendered' notice on stderr, got %q", errBuf.String())
+	if !strings.Contains(errBuf.String(), "not rendered") || !strings.Contains(errBuf.String(), "never expired") {
+		t.Errorf("expected a 'reaper not rendered, backups never expired' notice on stderr, got %q", errBuf.String())
 	}
 }
 
@@ -141,6 +142,40 @@ func TestManifestsBackupPVCOptOut(t *testing.T) {
 		if strings.Contains(out.String(), absent) {
 			t.Errorf("--backup-pvc= bundle must not contain %q", absent)
 		}
+	}
+}
+
+// TestManifestsRendersRetentionOnly: the archive store without a worlds root
+// still gets the daily CronJob, retention-only, so backups past their expiry
+// leave the store on an install that never reaps a world; the operator is told
+// which of the two it got. An archive path with the store switched off is a
+// mistake and fails loud.
+func TestManifestsRendersRetentionOnly(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	code := run([]string{"manifests", "--felis-image", "reg/felis:test", "--velocity-cidr", "10.0.0.5/32",
+		"--archive-local-path", "/var/lib/felis/archives"}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, errBuf.String())
+	}
+	text := out.String()
+	for _, want := range []string{"kind: CronJob", "name: felis-reaper", "--retention-only", "claimName: felis-backups"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("retention-only bundle missing %q", want)
+		}
+	}
+	if strings.Contains(text, "kind: PersistentVolume\n") || strings.Contains(text, "--worlds-root") {
+		t.Error("a retention-only bundle must not reach for a worlds root")
+	}
+	if !strings.Contains(errBuf.String(), "retention-only") {
+		t.Errorf("stderr must say the CronJob is retention-only, got %q", errBuf.String())
+	}
+
+	out.Reset()
+	errBuf.Reset()
+	code = run([]string{"manifests", "--felis-image", "reg/felis:test", "--velocity-cidr", "10.0.0.5/32",
+		"--archive-local-path", "/var/lib/felis/archives", "--backup-pvc="}, &out, &errBuf)
+	if code != 2 || out.Len() != 0 || !strings.Contains(errBuf.String(), "--backup-pvc is empty") {
+		t.Errorf("archive path without an archive store: exit=%d out=%d bytes stderr=%q, want a fail-loud 2", code, out.Len(), errBuf.String())
 	}
 }
 

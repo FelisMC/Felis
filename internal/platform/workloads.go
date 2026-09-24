@@ -25,17 +25,20 @@ import (
 // workloads_test.go evaluates those correspondences with the SAME selector
 // machinery K8s uses, because no cluster runs here.
 //
-// The reaper CronJob (spec §18 three-clock retention) renders ONLY when the
+// The reaper CronJob (spec §18 three-clock retention) reaps worlds ONLY when the
 // storage topology is supplied — WorldsHostPath + BackupPVC + ArchiveLocalPath,
-// gated by reaperEnabled. It is opt-in-when-configured rather than always-on
+// gated by reaperEnabled. World reaping is opt-in-when-configured rather than always-on
 // because archiving idle worlds means mounting where the worlds physically live,
 // and the spec keeps that open (§18/§19: tarLocal-on-local-path is the starter,
 // Longhorn/snapshot the documented evolution, and they do not share a mount
 // model). The starter model — a node-local worlds-root, exposed through a static
 // hostPath PV and mounted read-only — is the only one coherent with the operator's per-server
 // ReadWriteOnce world PVCs (a shared RWX worlds mount would contradict them), so
-// that is what renders; when the trio is absent no CronJob is emitted, which is
-// the fail-safe choice for a workload that deletes PVCs. The reaper resolver
+// that is what renders; when the trio is absent no world is ever reaped, which is
+// the fail-safe choice for a workload that deletes PVCs. With only the archive
+// store configured (BackupPVC + ArchiveLocalPath) the CronJob still renders, in
+// a retention-only shape that expires, reads back and sweeps backups and never
+// touches a world (retentionEnabled). The reaper resolver
 // (cmd/felis/reaper.resolveWorldDir) finds worlds either as <WorldsHostPath>/<pvc>
 // or in the stock local-path layout k3s writes under its storage root
 // (<pv-name>_<ns>_<pvc-name>, read from the live PVC), so pointing
@@ -249,8 +252,11 @@ func Workloads(p Params) []Object {
 	if p.BackupPVC != "" {
 		objs = append(objs, backupPVC(p))
 	}
-	if reaperEnabled(p) {
+	switch {
+	case reaperEnabled(p):
 		objs = append(objs, worldsRootPV(p), worldsRootPVC(p), reaperCronJob(p))
+	case retentionEnabled(p):
+		objs = append(objs, reaperCronJob(p))
 	}
 	return objs
 }
@@ -289,7 +295,16 @@ const controlPlanePriorityName = "system-cluster-critical"
 // together so a partial configuration fails loudly rather than silently dropping
 // retention here.
 func reaperEnabled(p Params) bool {
-	return p.WorldsHostPath != "" && p.BackupPVC != "" && p.ArchiveLocalPath != ""
+	return p.WorldsHostPath != "" && retentionEnabled(p)
+}
+
+// retentionEnabled reports whether the archive store can be looked after: the
+// backup PVC and the path it must be mounted at. Without a worlds root the
+// same CronJob renders in its retention-only shape (see reaperCronJob), so
+// backups past their expiry still leave the store on an install that never
+// reaps worlds; without it they would pile up until the node's disk filled.
+func retentionEnabled(p Params) bool {
+	return p.BackupPVC != "" && p.ArchiveLocalPath != ""
 }
 
 // APIDeployment renders the felis-api Deployment (spec §7). It runs as the
@@ -600,37 +615,26 @@ func OperatorDeployment(p Params) *appsv1.Deployment {
 // pod loud if the worlds-root is absent, rather than silently creating an empty dir
 // and archiving nothing.
 //
-// Pre-conditions are the caller's: reaperCronJob assumes reaperEnabled(p) — it
-// dereferences WorldsHostPath / BackupPVC / ArchiveLocalPath without re-checking.
+// Retention only. With no WorldsHostPath the same CronJob runs `felis reaper
+// --retention-only`: it expires, reads back and sweeps the archive store and
+// never looks at a server. It then mounts no worlds root, reads no SMTP
+// password (it sends no warnings) and gets no service account token, since it
+// never calls the K8s API. It keeps the reaper's root + DAC_OVERRIDE identity:
+// the archives it reads back and deletes were written by that identity, and by
+// the backup Jobs.
+//
+// Pre-conditions are the caller's: reaperCronJob assumes retentionEnabled(p) —
+// it dereferences BackupPVC / ArchiveLocalPath without re-checking.
 func reaperCronJob(p Params) *batchv1.CronJob {
 	p = p.withDefaults()
 	labels := controlPlanePodLabels(ComponentReaper)
-
 	container := corev1.Container{
 		Name:    ComponentReaper,
 		Image:   p.FelisImage,
 		Command: []string{felisBinaryPath, "reaper"},
-		Args: []string{
-			"--config", configFilePath,
-			"--worlds-root", worldsMountPath,
-		},
-		// The [smtp] relay password for pre-reap warning emails — same optional
-		// Secret felis-api reads. Namespace caveat: a secretKeyRef is
-		// namespace-local, so this resolves against the minecraft-ns felis-smtp
-		// mirror that the "configure email" screen refreshes (the felis-config
-		// mirror it also refreshes is what puts [smtp] in this pod's config).
-		// Absent Secret ⇒ empty env ⇒ the reaper logs suppressed warnings
-		// instead of stamping them (never a failed pod).
-		Env: []corev1.EnvVar{
-			{Name: SMTPPasswordEnv, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-				LocalObjectReference: corev1.LocalObjectReference{Name: SMTPSecretName},
-				Key:                  SMTPSecretPasswordKey,
-				Optional:             boolPtr(true),
-			}}},
-		},
+		Args:    []string{"--config", configFilePath, "--retention-only"},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: configVolume, MountPath: configMountPath, ReadOnly: true},
-			{Name: worldsVolume, MountPath: worldsMountPath, ReadOnly: true},
 			{Name: backupVolume, MountPath: p.ArchiveLocalPath},
 			{Name: tmpVolume, MountPath: "/tmp"},
 		},
@@ -646,20 +650,40 @@ func reaperCronJob(p Params) *batchv1.CronJob {
 			},
 		},
 		{
-			Name: worldsVolume,
-			VolumeSource: corev1.VolumeSource{
-				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-					ClaimName: worldsRootName(p), ReadOnly: true,
-				},
-			},
-		},
-		{
 			Name: backupVolume,
 			VolumeSource: corev1.VolumeSource{
 				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: p.BackupPVC},
 			},
 		},
 		{Name: tmpVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+	}
+
+	if p.WorldsHostPath != "" {
+		container.Args = []string{"--config", configFilePath, "--worlds-root", worldsMountPath}
+		// The [smtp] relay password for pre-reap warning emails — same optional
+		// Secret felis-api reads. Namespace caveat: a secretKeyRef is
+		// namespace-local, so this resolves against the minecraft-ns felis-smtp
+		// mirror that the "configure email" screen refreshes (the felis-config
+		// mirror it also refreshes is what puts [smtp] in this pod's config).
+		// Absent Secret ⇒ empty env ⇒ the reaper logs suppressed warnings
+		// instead of stamping them (never a failed pod).
+		container.Env = []corev1.EnvVar{
+			{Name: SMTPPasswordEnv, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: SMTPSecretName},
+				Key:                  SMTPSecretPasswordKey,
+				Optional:             boolPtr(true),
+			}}},
+		}
+		container.VolumeMounts = append(container.VolumeMounts,
+			corev1.VolumeMount{Name: worldsVolume, MountPath: worldsMountPath, ReadOnly: true})
+		volumes = append(volumes, corev1.Volume{
+			Name: worldsVolume,
+			VolumeSource: corev1.VolumeSource{
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: worldsRootName(p), ReadOnly: true,
+				},
+			},
+		})
 	}
 
 	return &batchv1.CronJob{
@@ -771,7 +795,8 @@ func worldsRootPVC(p Params) *corev1.PersistentVolumeClaim {
 // reaperPodSpec is the reaper Job's pod template. It lives apart from the CronJob
 // literal only so the optional node pin is one visible branch: with ReaperNode
 // set the pod carries a kubernetes.io/hostname selector, keeping the reaper on
-// the node that actually holds the worlds hostPath on a multi-node cluster.
+// the node that actually holds the worlds hostPath on a multi-node cluster. The
+// retention-only shape gets no service account token: it never calls the API.
 func reaperPodSpec(p Params, container corev1.Container, volumes []corev1.Volume) corev1.PodSpec {
 	spec := corev1.PodSpec{
 		ServiceAccountName: SAReaper,
@@ -783,6 +808,9 @@ func reaperPodSpec(p Params, container corev1.Container, volumes []corev1.Volume
 	}
 	if p.ReaperNode != "" {
 		spec.NodeSelector = map[string]string{"kubernetes.io/hostname": p.ReaperNode}
+	}
+	if p.WorldsHostPath == "" {
+		spec.AutomountServiceAccountToken = boolPtr(false)
 	}
 	return spec
 }

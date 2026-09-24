@@ -413,10 +413,25 @@ func (r *Reaper) RunOnce(ctx context.Context) (Summary, error) {
 		}
 	}
 
-	r.expireBackups(ctx, now, &sum)
-	r.verifyBackups(ctx, now, &sum)
-	r.sweepArchives(ctx, now, &sum)
+	r.retain(ctx, now, &sum)
 	return sum, nil
+}
+
+// RunRetention is the archive-store half of RunOnce on its own: backups past
+// their expiry are deleted, archives are read back, and leftovers are swept,
+// while no server is looked at and no world is touched. It needs no Cluster,
+// which is what lets it run where the worlds are out of reach (an install with
+// no worlds root): backups still leave the store when they expire there.
+func (r *Reaper) RunRetention(ctx context.Context) Summary {
+	var sum Summary
+	r.retain(ctx, r.now(), &sum)
+	return sum
+}
+
+func (r *Reaper) retain(ctx context.Context, now time.Time, sum *Summary) {
+	r.expireBackups(ctx, now, sum)
+	r.verifyBackups(ctx, now, sum)
+	r.sweepArchives(ctx, now, sum)
 }
 
 // evaluate handles one server: exemption, reap, or warning. A returned error
