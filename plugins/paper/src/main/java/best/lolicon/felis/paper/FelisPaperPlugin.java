@@ -23,6 +23,9 @@ import org.bukkit.plugin.messaging.PluginMessageListener;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * FelisPaperPlugin is the felis-paper lobby face (spec §12): the {@code /menu} (and
@@ -42,9 +45,13 @@ import java.util.List;
  * compiled in from the shared core; {@code FelisApiClient} and the token config are
  * not on the lobby's classpath at all.
  *
- * <p><b>Flow.</b> Opening the menu paints a "loading" tile per configured server and
- * fires a {@code StatusQuery} for each; the proxy answers with {@code StatusUpdate}
- * frames that repaint each tile by phase + ownership. Clicking a tile sends a
+ * <p><b>Flow.</b> {@code /menu} sends a {@code ListRequest}; the proxy answers with a
+ * {@code ListUpdate} naming every user server it routes, built from the same registry
+ * it routes by, so a server created in the panel shows up here without anyone editing
+ * this plugin. The menu then paints a "loading" tile per server on the page (45 per
+ * page, arrows in the bottom row) and fires a {@code StatusQuery} for each; the proxy
+ * answers with {@code StatusUpdate} frames that repaint each tile by phase +
+ * ownership. Clicking a tile sends a
  * {@code ClaimRequest} when it is claimable (ownerless + stopped → "Claim &amp;
  * Start") or a {@code WakeRequest} otherwise (the single frame behind both the "Join"
  * of a running owned server and the "Wake" of a stopped owned one), then closes the
@@ -55,16 +62,22 @@ import java.util.List;
  */
 public final class FelisPaperPlugin extends JavaPlugin implements Listener, PluginMessageListener {
 
-    private static final int MAX_TILES = 54; // a double chest, the GUI ceiling
+    // Bottom-row navigation slots on a paged menu.
+    private static final int PREV_SLOT = 45;
+    private static final int PAGE_SLOT = 49;
+    private static final int NEXT_SLOT = 53;
+    // How long /menu waits for the proxy's ListUpdate before saying the list is down.
+    private static final long LIST_TIMEOUT_TICKS = 60L;
 
-    /** Server names to show as tiles, in display order; loaded from config. */
-    private final List<String> servers = new ArrayList<>();
+    /** Players who ran /menu and are waiting for the proxy's ListUpdate. */
+    private final Map<UUID, Boolean> pendingOpen = new ConcurrentHashMap<>();
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
-        servers.clear();
-        servers.addAll(getConfig().getStringList("servers"));
+        if (!getConfig().getStringList("servers").isEmpty()) {
+            getLogger().info("config.yml 'servers' is no longer read: the menu lists what the proxy routes.");
+        }
 
         // Open both ends of felis:control. Outgoing carries Wake/Claim/StatusQuery to
         // the proxy; incoming receives StatusUpdate/TransferReady/Error back.
@@ -72,8 +85,8 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
         getServer().getMessenger().registerIncomingPluginChannel(this, Control.CHANNEL, this);
         getServer().getPluginManager().registerEvents(this, this);
 
-        getLogger().info("felis-paper enabled: " + servers.size()
-                + " server tile(s), felis:control open. Pure UI face — no felis-api token.");
+        getLogger().info("felis-paper enabled: felis:control open, server list from the proxy. "
+                + "Pure UI face — no felis-api token.");
     }
 
     // ---- commands: /menu and /server both open the GUI ----
@@ -89,24 +102,50 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
     }
 
     private void openMenu(Player player) {
+        UUID id = player.getUniqueId();
+        pendingOpen.put(id, Boolean.TRUE);
+        sendUpstream(player, ControlFrame.listRequest());
+        getServer().getScheduler().runTaskLater(this, () -> {
+            if (pendingOpen.remove(id) != null && player.isOnline()) {
+                boolean zh = zh(player);
+                player.sendMessage(Component.text(
+                        zh ? "暂时拿不到服务器列表，请稍后再试。"
+                           : "The server list isn't available right now — please try again shortly.",
+                        NamedTextColor.YELLOW));
+            }
+        }, LIST_TIMEOUT_TICKS);
+    }
+
+    private void openPage(Player player, List<String> all, int page) {
         boolean zh = zh(player);
-        if (servers.isEmpty()) {
+        if (all.isEmpty()) {
             player.sendMessage(Component.text(
-                    zh ? "还没有配置任何服务器——请管理员先配置 felis-paper。"
-                       : "No servers are configured yet — ask an operator to set up felis-paper.",
+                    zh ? "还没有可加入的服务器——在网页控制台创建一个吧。"
+                       : "There are no servers to join yet — create one on the web console.",
                     NamedTextColor.YELLOW));
             return;
         }
-        int shown = Math.min(servers.size(), MAX_TILES);
-        List<String> view = new ArrayList<>(servers.subList(0, shown));
-        MenuHolder holder = new MenuHolder(view);
-        Inventory inv = Bukkit.createInventory(holder, invSize(shown), menuTitle(zh));
+        int pages = MenuHolder.pageCount(all.size());
+        int p = Math.max(0, Math.min(page, pages - 1));
+        MenuHolder holder = new MenuHolder(all, p);
+        List<String> view = holder.servers();
+        int size = pages > 1 ? 54 : invSize(view.size());
+        Inventory inv = Bukkit.createInventory(holder, size, menuTitle(zh, p, pages));
         holder.setInventory(inv);
-        for (int i = 0; i < shown; i++) {
+        for (int i = 0; i < view.size(); i++) {
             inv.setItem(i, loadingTile(view.get(i), zh));
         }
+        if (pages > 1) {
+            if (p > 0) {
+                inv.setItem(PREV_SLOT, navItem(Material.ARROW, zh ? "上一页" : "Previous page"));
+            }
+            inv.setItem(PAGE_SLOT, navItem(Material.PAPER, (p + 1) + " / " + pages));
+            if (p < pages - 1) {
+                inv.setItem(NEXT_SLOT, navItem(Material.ARROW, zh ? "下一页" : "Next page"));
+            }
+        }
         player.openInventory(inv);
-        // Ask the proxy for live status of every tile; answers repaint them.
+        // Ask the proxy for live status of every tile on this page; answers repaint them.
         for (String server : view) {
             sendUpstream(player, ControlFrame.statusQuery(server));
         }
@@ -132,6 +171,13 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
         Player player = (Player) event.getWhoClicked();
         MenuHolder holder = (MenuHolder) top.getHolder();
         int slot = event.getSlot();
+        if (holder.pages() > 1 && (slot == PREV_SLOT || slot == NEXT_SLOT)) {
+            int target = holder.page() + (slot == PREV_SLOT ? -1 : 1);
+            if (target >= 0 && target < holder.pages()) {
+                openPage(player, holder.all(), target);
+            }
+            return;
+        }
         if (slot < 0 || slot >= holder.servers().size()) {
             return; // padding slot
         }
@@ -175,10 +221,20 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
             return;
         }
         switch (frame.type()) {
+            case ControlFrame.LIST_UPDATE:
+                // Only a /menu that is still waiting opens; a late answer after the
+                // timeout message is dropped rather than popping a menu up unasked.
+                if (pendingOpen.remove(player.getUniqueId()) != null) {
+                    openPage(player, frame.servers(), 0);
+                }
+                break;
             case ControlFrame.STATUS_UPDATE:
                 applyStatus(player, frame);
                 break;
             case ControlFrame.ERROR:
+                if (frame.server() != null && markUnavailable(player, frame)) {
+                    break; // a tile's status query failed: shown on the tile itself
+                }
                 // The proxy already sanitizes transport faults; this is the only place
                 // a claim/quota/policy refusal becomes visible to the player.
                 player.sendMessage(Component.text("⚠ " + errorText(frame, zh(player)), NamedTextColor.RED));
@@ -207,6 +263,31 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
         top.setItem(slot, tile(frame, zh(player)));
     }
 
+    // markUnavailable repaints a still-loading tile whose status query was refused, so
+    // it stops saying "loading" forever. Returns false when there is no such tile (the
+    // error belongs to a click, and goes to chat).
+    private boolean markUnavailable(Player player, ControlFrame error) {
+        Inventory top = player.getOpenInventory().getTopInventory();
+        if (!(top.getHolder() instanceof MenuHolder)) {
+            return false;
+        }
+        MenuHolder holder = (MenuHolder) top.getHolder();
+        int slot = holder.servers().indexOf(error.server());
+        if (slot < 0 || holder.latest(error.server()) != null) {
+            return false;
+        }
+        boolean zh = zh(player);
+        ItemStack item = new ItemStack(Material.BARRIER);
+        ItemMeta meta = item.getItemMeta();
+        meta.displayName(Component.text(error.server(), NamedTextColor.DARK_GRAY)
+                .decoration(TextDecoration.ITALIC, false));
+        meta.lore(List.of(Component.text(errorText(error, zh), NamedTextColor.GRAY)
+                .decoration(TextDecoration.ITALIC, false)));
+        item.setItemMeta(meta);
+        top.setItem(slot, item);
+        return true;
+    }
+
     private void closeIfMenu(Player player) {
         if (player.getOpenInventory().getTopInventory().getHolder() instanceof MenuHolder) {
             player.closeInventory();
@@ -215,9 +296,20 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
 
     // ---- rendering ----
 
-    private static Component menuTitle(boolean zh) {
-        return Component.text(zh ? "Felis 服务器" : "Felis Servers", NamedTextColor.AQUA)
-                .decoration(TextDecoration.ITALIC, false);
+    private static Component menuTitle(boolean zh, int page, int pages) {
+        String title = zh ? "Felis 服务器" : "Felis Servers";
+        if (pages > 1) {
+            title += "  (" + (page + 1) + "/" + pages + ")";
+        }
+        return Component.text(title, NamedTextColor.AQUA).decoration(TextDecoration.ITALIC, false);
+    }
+
+    private static ItemStack navItem(Material material, String label) {
+        ItemStack item = new ItemStack(material);
+        ItemMeta meta = item.getItemMeta();
+        meta.displayName(Component.text(label, NamedTextColor.YELLOW).decoration(TextDecoration.ITALIC, false));
+        item.setItemMeta(meta);
+        return item;
     }
 
     private ItemStack tile(ControlFrame f, boolean zh) {
@@ -278,13 +370,34 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
                 case "already_claimed":
                     return zh ? "该服务器已被认领。"
                               : "That server is already claimed.";
+                case "at_capacity":
+                    return zh ? "集群当前已满，请稍后再试。"
+                              : "The cluster is full right now — please try again later.";
+                case "cooldown":
+                    return zh ? "这台服务器刚被唤醒过，请稍候再试。"
+                              : "That server was just woken — try again in a moment.";
+                case "forbidden":
+                    return zh ? "你没有权限这样做。"
+                              : "You're not allowed to do that.";
+                case "not_found":
+                case "bad_name":
+                case "invalid_server_name":
+                    return zh ? "这台服务器已不存在。"
+                              : "That server no longer exists.";
+                case "transport_error":
+                case "interrupted":
+                    return zh ? "Felis 暂时不可用，请稍后再试。"
+                              : "Felis is temporarily unavailable — please try again.";
                 default:
                     break;
             }
         }
-        return f.message() != null && !f.message().isEmpty()
-                ? f.message()
-                : (code != null ? code : (zh ? "请求失败，请重试。" : "Request failed — please try again."));
+        // An unmapped code carries felis-api's own English message; a Chinese client
+        // gets a generic line rather than untranslated text.
+        if (!zh && f.message() != null && !f.message().isEmpty()) {
+            return f.message();
+        }
+        return zh ? "请求失败，请重试。" : "Request failed — please try again.";
     }
 
     // ---- helpers ----

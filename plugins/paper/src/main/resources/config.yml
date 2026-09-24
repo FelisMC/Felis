@@ -2,15 +2,14 @@
 #
 # This plugin is a PURE UI face: it speaks only the felis:control plugin-message
 # channel to the Velocity proxy. It holds no felis-api token and never contacts
-# felis-api directly. The list below is only which server tiles to show in the
-# /menu GUI; the proxy (and felis-api behind it) stay the source of truth for
-# status, ownership and autostart — every tile is filled in by a live StatusQuery
-# over felis:control when the menu opens, and acting on a tile sends a Wake or
-# Claim frame that the proxy authorizes against the player's verified identity.
+# felis-api directly.
 #
-# Replace the examples below with the names of your felis servers (the CRD
-# metadata.name / the server's felis name, not its display title). Up to 54 are
-# shown. An empty list makes /menu say there is nothing to show.
-servers:
-  - smp
-  - creative
+# There is nothing to configure. /menu asks the proxy which servers to show
+# (a ListRequest over felis:control) and the proxy answers from the same registry
+# it routes by, so a server created in the panel appears here on its own. Tiles are
+# paged 45 at a time. Status, ownership and autostart stay with the proxy and
+# felis-api: every tile is filled in by a live StatusQuery when the menu opens, and
+# acting on a tile sends a Wake or Claim frame that the proxy authorizes against the
+# player's verified identity.
+#
+# Older versions read a static `servers:` list from this file. It is ignored now.
