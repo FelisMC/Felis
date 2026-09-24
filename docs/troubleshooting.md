@@ -495,6 +495,7 @@ build_disk_limit = "12Gi"          # §8f
 build_user_namespaces = "auto"     # §8f: auto | on | off
 build_runtime_class = ""           # §8f: e.g. "gvisor"
 max_concurrent_builds = 2          # §8f: 1-6; later builds queue
+user_uploads_max_bytes = "4Gi"     # every user's uploaded contexts together; 507 uploads_full past it
 ```
 
 Mirror the executor images into the registry once. On the node itself, push
@@ -675,9 +676,43 @@ control namespace (or `--registry-namespace`):
   registry at runtime (wrong DNS/port, PVC unbound, missing default StorageClass)
   surfaces as kaniko push or kubelet pull errors — [INTEGRATION-ONLY], **not** a
   Felis-emitted string.
-- **Storage:** PVC is RWO, `10Gi`, mounted at `/var/lib/registry`, **no
-  `storageClassName`** → binds the cluster default class. If the cluster has no
-  default StorageClass the PVC stays `Pending` and the registry never starts.
+- **Storage:** PVC is RWO, `10Gi` by default (`FELIS_REGISTRY_STORAGE` on the
+  first install, `--registry-storage` for `felis manifests`), mounted at
+  `/var/lib/registry`, **no `storageClassName`** → binds the cluster default
+  class. If the cluster has no default StorageClass the PVC stays `Pending` and
+  the registry never starts. On k3s local-path the size is a label: the volume
+  is a directory on the node disk and can outgrow it. What bounds the registry
+  there is the pruner and the garbage collector below. The uploads PVC
+  (`FELIS_UPLOADS_STORAGE`, 5Gi) and the world-archive PVC
+  (`FELIS_BACKUP_STORAGE`, 10Gi) work the same way; re-running the installer
+  keeps an existing claim's size and warns when the variable asks for another.
+  Uploaded build contexts are bounded by `user_uploads_max_bytes` (4Gi for all
+  users together, §8e), 2 GiB per user, and 10% free space on the volume; past
+  any of them an upload answers `507 uploads_full` or `403 submission_quota_exceeded`. A
+  rejected submission's upload is deleted 7 days after the verdict; an approved
+  one stays as the source for a rebuild.
+- **Unused images are deleted, in two steps.** Every 6 hours felis-api deletes
+  the manifests nothing uses (the log says `registry prune finished … deleted=N`).
+  It keeps: every whitelist entry (tag, `:*` wildcard, digest), every server's
+  pinned image, running builds, the control-plane, Kaniko and Trivy images, the
+  Trivy DB copies, anything pushed in the last 24 hours, and the 5 newest tagged
+  builds of each `felis/` and `mirror/` repository. To keep an older game build,
+  whitelist its versioned tag (§15b). Once a day the `registry-gc` sidecar then
+  frees the layers no remaining manifest names: it asks the gate for a read-only
+  window after 2 minutes without writes, runs `registry garbage-collect`, and
+  hands the window back (`kubectl -n felis logs deploy/registry -c registry-gc`).
+  During the window pulls work and every write answers `503` with
+  `Retry-After`; the installer and build pushes wait it out. A gate restarted
+  mid-sweep comes back read-only until the lease ends. To sweep now:
+  `kubectl -n felis exec deploy/registry -c registry-gc -- rm -f /var/lib/registry/.felis-last-gc`
+  and restart the pod.
+- **The registry volume is lost:** re-run the installer; it pushes every
+  platform image again. User images come back from their approved submissions:
+  the uploaded context of an approved submission stays on the uploads PVC
+  (`GET /api/v1/submissions/{id}/context`, its `context_ref` and `image_ref`
+  are in `GET /api/v1/submissions`), so an admin can build it again through
+  `POST /api/v1/images/build`. Servers pinned to a digest the new registry
+  lacks fail to pull until an admin picks a current image for them (§15b).
 - **Node-side pulls:** containerd cannot dial the Service VIP (the live stack
   answered "Empty reply"), so the registry Deployment binds a loopback hostPort
   (`127.0.0.1:<port>`) and the installer writes a `/etc/rancher/k3s/registries.yaml`
@@ -1328,7 +1363,9 @@ image_change_unconfirmed`. Back the world up first: Minecraft upgrades chunks
 as it loads them, and the old version cannot open them again. The audit log keeps
 `image_from`/`image_to` for every change, so the exact previous build can be set
 back (it is admitted by its tag) together with a restore of the pre-upgrade
-backup.
+backup. That rollback works while the registry still holds the old build: a
+build no server and no whitelist entry names is pruned after 24 hours, and the
+5 newest builds of each `felis/` repository are kept regardless (§9).
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -1336,6 +1373,7 @@ backup.
 | Create/edit refused with `registry_unavailable` | felis-api could not reach `registry.felis.svc:5000` | `kubectl -n felis get pods -l app.kubernetes.io/component=registry`; check the `felis-registry-ingress` NetworkPolicy still admits felis-api |
 | Installer warns `could not pin every user server` | the registry was down, or a server names a tag the registry lost | fix the registry, then `sudo felis pin-images` before starting those servers; a server whose tag is gone keeps its bare tag until an admin picks a new image |
 | A running server restarted during an installer re-run | it was pinned in place: the operator rolled it onto the pinned ref, the build it already ran | nothing; it happens once per server |
+| Create/edit refused with `the registry no longer holds build …` | the image names a digest the pruner deleted: nothing referenced it for 24 hours (§9) | pick a current tag; whitelist the versioned tag of a build you want kept |
 
 ## 16. Control-plane database backups and disaster recovery
 
