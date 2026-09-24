@@ -136,13 +136,27 @@ func fetchContextWithRetry(ctx context.Context, client *http.Client, url, token 
 	}
 }
 
+// maxContextBytes / maxContextEntries bound what one context may expand to. The
+// compressed upload is capped at 1 GiB, but gzip turns that into hundreds of GiB
+// or millions of empty files, and the emptyDir's 4 GiB sizeLimit is only
+// enforced by the kubelet's periodic sweep, after the disk has filled. The byte
+// cap matches that sizeLimit; the entry cap is far above any real modpack (a
+// large one is a few thousand files) and far below an inode exhaustion.
+//
+// Vars, not consts, so tests can shrink them.
+var (
+	maxContextBytes   int64 = 4 << 30
+	maxContextEntries       = 200_000
+)
+
 // extractTarGz streams a gzip'd tarball into root, creating directories as
 // needed. Every entry is vetted BEFORE anything is written: a path that is
 // absolute or escapes root (via ".."), a link (symlink or hardlink), or any
 // special file kind aborts the whole extraction. Refusing rather than skipping is
 // deliberate — a context that needs one of those constructs is not a context this
 // transport carries, and silently dropping entries would build from a corpus the
-// submitter did not upload.
+// submitter did not upload. The whole extraction is also bounded by
+// maxContextBytes and maxContextEntries.
 func extractTarGz(r io.Reader, root string) error {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return fmt.Errorf("create context dir: %w", err)
@@ -153,6 +167,8 @@ func extractTarGz(r io.Reader, root string) error {
 	}
 	defer zr.Close()
 	tr := tar.NewReader(zr)
+	var written int64
+	entries := 0
 	for {
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
@@ -160,6 +176,9 @@ func extractTarGz(r io.Reader, root string) error {
 		}
 		if err != nil {
 			return fmt.Errorf("read context tarball: %w", err)
+		}
+		if entries++; entries > maxContextEntries {
+			return fmt.Errorf("the build context has more than %d entries", maxContextEntries)
 		}
 		name := filepath.Clean(hdr.Name)
 		if name == "." {
@@ -188,9 +207,15 @@ func extractTarGz(r io.Reader, root string) error {
 			if err != nil {
 				return fmt.Errorf("create %q: %w", name, err)
 			}
-			if _, err := io.Copy(f, tr); err != nil {
+			n, err := io.Copy(f, io.LimitReader(tr, maxContextBytes-written+1))
+			written += n
+			if err != nil {
 				_ = f.Close()
 				return fmt.Errorf("write %q: %w", name, err)
+			}
+			if written > maxContextBytes {
+				_ = f.Close()
+				return fmt.Errorf("the build context expands past %d bytes", maxContextBytes)
 			}
 			if err := f.Close(); err != nil {
 				return fmt.Errorf("close %q: %w", name, err)

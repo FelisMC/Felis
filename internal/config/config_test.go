@@ -51,6 +51,9 @@ kaniko_image = "registry.felis.svc:5000/mirror/kaniko:v1.23.2"
 trivy_image = "registry.felis.svc:5000/mirror/trivy:0.58.1"
 build_cpu_limit = "1"
 build_mem_limit = "2Gi"
+build_disk_limit = "8Gi"
+build_user_namespaces = "off"
+build_runtime_class = "gvisor"
 
 [archive]
 store = "tarLocal"
@@ -94,6 +97,23 @@ func TestLoadValid(t *testing.T) {
 	}
 	if cfg.Registry.BuildCPULimit != "1" || cfg.Registry.BuildMemLimit != "2Gi" {
 		t.Errorf("build resource overrides = %q / %q", cfg.Registry.BuildCPULimit, cfg.Registry.BuildMemLimit)
+	}
+	if r := cfg.Registry; r.BuildDiskLimit != "8Gi" || r.BuildUserNamespaces != "off" || r.BuildRuntimeClass != "gvisor" {
+		t.Errorf("build isolation overrides = %q / %q / %q", r.BuildDiskLimit, r.BuildUserNamespaces, r.BuildRuntimeClass)
+	}
+}
+
+func TestLoadRejectsUnknownBuildUserNamespaces(t *testing.T) {
+	_, err := config.Load(writeTOML(t, `
+[server]
+root_domain = "mc.example.net"
+[database]
+url = "postgres://felis@db/felis"
+[registry]
+build_user_namespaces = "yes"
+`))
+	if err == nil || !strings.Contains(err.Error(), "build_user_namespaces") {
+		t.Fatalf("err = %v, want build_user_namespaces rejected", err)
 	}
 }
 

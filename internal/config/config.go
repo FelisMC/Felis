@@ -161,6 +161,16 @@ type RegistryConfig struct {
 	TrivyImage    string `toml:"trivy_image"`
 	BuildCPULimit string `toml:"build_cpu_limit"`
 	BuildMemLimit string `toml:"build_mem_limit"`
+	// BuildDiskLimit caps a build pod's ephemeral storage (context, unpacked base
+	// image and image tarball together). Empty keeps 12Gi.
+	BuildDiskLimit string `toml:"build_disk_limit"`
+	// BuildUserNamespaces runs build pods in a user namespace (hostUsers: false):
+	// "auto" (the default) turns it on when felis-api's startup probe pod ran
+	// with it, "on" always, "off" never.
+	BuildUserNamespaces string `toml:"build_user_namespaces"`
+	// BuildRuntimeClass runs build pods under a sandbox RuntimeClass such as
+	// gVisor or Kata. Empty runs them under the node's default runtime.
+	BuildRuntimeClass string `toml:"build_runtime_class"`
 	// TrivyDBRepository points Trivy at an OCI repository holding the
 	// vulnerability DB (--db-repository). Trivy's default fetches from
 	// mirror.gcr.io/ghcr.io, which the build egress lock denies — so on a
@@ -447,6 +457,11 @@ func (c *Config) Validate() error {
 	// fast at load instead, with the contract spelled out.
 	if c.Registry.URL != "" && strings.Contains(c.Registry.URL, "://") {
 		return fmt.Errorf("config: [registry] url %q must be a bare host[:port] with no scheme (e.g. registry.felis.svc:5000); a scheme breaks the user-modpack build lane's derived push target", c.Registry.URL)
+	}
+	switch c.Registry.BuildUserNamespaces {
+	case "", "auto", "on", "off":
+	default:
+		return fmt.Errorf("config: [registry] build_user_namespaces %q must be auto, on or off", c.Registry.BuildUserNamespaces)
 	}
 	// [smtp] is optional as a whole, but once a host is named the block must be
 	// deliverable: a From address (relays reject MAIL FROM:<>) and a sane port.

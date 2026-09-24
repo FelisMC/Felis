@@ -171,10 +171,10 @@ func TestBuildJobScansBeforePush(t *testing.T) {
 		t.Fatalf("BuildJob: %v", err)
 	}
 	inits := job.Spec.Template.Spec.InitContainers
-	if len(inits) != 2 || inits[0].Name != ContainerKaniko || inits[1].Name != ContainerTrivy {
-		t.Fatalf("initContainers = %v, want [kaniko trivy]", initNames(inits))
+	if len(inits) != 3 || inits[0].Name != ContainerGate || inits[1].Name != ContainerKaniko || inits[2].Name != ContainerTrivy {
+		t.Fatalf("initContainers = %v, want [egress-gate kaniko trivy]", initNames(inits))
 	}
-	kaniko, trivy := inits[0], inits[1]
+	kaniko, trivy := inits[1], inits[2]
 	for _, want := range []string{"--destination=" + p.ImageRef, "--no-push", "--tar-path=" + imageTarPath} {
 		if !hasArg(kaniko.Args, want) {
 			t.Errorf("kaniko args = %v, want %s", kaniko.Args, want)
@@ -339,9 +339,9 @@ func TestBuildJobTrivyDBRepositoryOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildJob: %v", err)
 	}
-	trivy := job.Spec.Template.Spec.InitContainers[1]
+	trivy := job.Spec.Template.Spec.InitContainers[2]
 	if trivy.Name != ContainerTrivy {
-		t.Fatalf("initContainers = %v, want trivy second", initNames(job.Spec.Template.Spec.InitContainers))
+		t.Fatalf("initContainers = %v, want trivy third", initNames(job.Spec.Template.Spec.InitContainers))
 	}
 	if !argPairPresent(trivy.Args, "--db-repository", p.TrivyDBRepository) {
 		t.Errorf("trivy args = %v, want --db-repository %s", trivy.Args, p.TrivyDBRepository)
@@ -423,10 +423,11 @@ func TestBuildJobFetchesHTTPContext(t *testing.T) {
 		t.Fatalf("BuildJob: %v", err)
 	}
 	inits := job.Spec.Template.Spec.InitContainers
-	if len(inits) != 3 || inits[0].Name != ContainerFetch || inits[1].Name != ContainerKaniko || inits[2].Name != ContainerTrivy {
-		t.Fatalf("initContainers = %v, want [%s %s %s]", initNames(inits), ContainerFetch, ContainerKaniko, ContainerTrivy)
+	if len(inits) != 4 || inits[0].Name != ContainerGate || inits[1].Name != ContainerFetch ||
+		inits[2].Name != ContainerKaniko || inits[3].Name != ContainerTrivy {
+		t.Fatalf("initContainers = %v, want [%s %s %s %s]", initNames(inits), ContainerGate, ContainerFetch, ContainerKaniko, ContainerTrivy)
 	}
-	fetch, kaniko := inits[0], inits[1]
+	fetch, kaniko := inits[1], inits[2]
 	if fetch.Image != p.FelisImage {
 		t.Errorf("fetch image = %q, want the platform image %q", fetch.Image, p.FelisImage)
 	}
@@ -494,12 +495,117 @@ func TestBuildJobNativeContextNeedsNoFetch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildJob: %v", err)
 	}
-	if inits := job.Spec.Template.Spec.InitContainers; len(inits) != 2 || inits[0].Name != ContainerKaniko {
-		t.Errorf("a native ref must render just kaniko + trivy, got %v", initNames(inits))
+	if inits := job.Spec.Template.Spec.InitContainers; len(inits) != 3 || inits[1].Name != ContainerKaniko {
+		t.Errorf("a native ref must render just the gate, kaniko and trivy, got %v", initNames(inits))
 	}
 	for _, v := range job.Spec.Template.Spec.Volumes {
 		if v.Name == contextVolume {
 			t.Errorf("a native ref must render no context volume, got %v", job.Spec.Template.Spec.Volumes)
+		}
+	}
+}
+
+// Nothing runs before the egress gate, and the gate itself holds nothing: no
+// credential, no root, no writable filesystem.
+func TestBuildJobGatesEgressFirst(t *testing.T) {
+	p := sampleJobParams()
+	p.ContextRef = "http://felis-api-internal.felis.svc.cluster.local:8081/ctx"
+	job, err := BuildJob(p)
+	if err != nil {
+		t.Fatalf("BuildJob: %v", err)
+	}
+	gate := job.Spec.Template.Spec.InitContainers[0]
+	if gate.Name != ContainerGate || gate.Image != p.FelisImage || len(gate.Args) != 1 || gate.Args[0] != "egress-gate" {
+		t.Fatalf("first initContainer = %s %s %v, want the platform image's egress-gate", gate.Name, gate.Image, gate.Args)
+	}
+	if len(gate.Env) != 0 || len(gate.VolumeMounts) != 0 {
+		t.Errorf("the gate must hold nothing, got env %v mounts %v", gate.Env, gate.VolumeMounts)
+	}
+	sc := gate.SecurityContext
+	if sc == nil || sc.RunAsNonRoot == nil || !*sc.RunAsNonRoot || sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
+		t.Errorf("the gate must run non-root on a read-only root, got %#v", sc)
+	}
+}
+
+// The pod runs under RuntimeDefault seccomp always, and in a user namespace or
+// a sandbox runtime when the install asks for them.
+func TestBuildJobSandboxing(t *testing.T) {
+	job, err := BuildJob(sampleJobParams())
+	if err != nil {
+		t.Fatalf("BuildJob: %v", err)
+	}
+	spec := job.Spec.Template.Spec
+	if spec.SecurityContext == nil || spec.SecurityContext.SeccompProfile == nil ||
+		spec.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Fatalf("pod securityContext = %#v, want seccompProfile RuntimeDefault", spec.SecurityContext)
+	}
+	if spec.HostUsers != nil || spec.RuntimeClassName != nil {
+		t.Errorf("defaults must leave hostUsers and runtimeClassName unset, got %v / %v", spec.HostUsers, spec.RuntimeClassName)
+	}
+	p := sampleJobParams()
+	p.UserNamespaces, p.RuntimeClass = true, "gvisor"
+	if job, err = BuildJob(p); err != nil {
+		t.Fatalf("BuildJob: %v", err)
+	}
+	spec = job.Spec.Template.Spec
+	if spec.HostUsers == nil || *spec.HostUsers {
+		t.Errorf("UserNamespaces must render hostUsers: false, got %v", spec.HostUsers)
+	}
+	if spec.RuntimeClassName == nil || *spec.RuntimeClassName != "gvisor" {
+		t.Errorf("runtimeClassName = %v, want gvisor", spec.RuntimeClassName)
+	}
+}
+
+// Every container carries an ephemeral-storage request and limit, and kaniko's
+// limit, the largest, is the configured disk cap.
+func TestBuildJobBoundsEphemeralStorage(t *testing.T) {
+	p := sampleJobParams()
+	p.ContextRef = "http://felis-api-internal.felis.svc.cluster.local:8081/ctx"
+	job, err := BuildJob(p)
+	if err != nil {
+		t.Fatalf("BuildJob: %v", err)
+	}
+	all := append(append([]corev1.Container{}, job.Spec.Template.Spec.InitContainers...), job.Spec.Template.Spec.Containers...)
+	for _, c := range all {
+		lim, lok := c.Resources.Limits[corev1.ResourceEphemeralStorage]
+		req, rok := c.Resources.Requests[corev1.ResourceEphemeralStorage]
+		if !lok || !rok || lim.IsZero() || req.Cmp(lim) > 0 {
+			t.Errorf("container %s ephemeral-storage request %v limit %v", c.Name, req.String(), lim.String())
+		}
+		if c.Name == ContainerKaniko && lim.String() != defaultDiskLimit {
+			t.Errorf("kaniko ephemeral-storage limit = %s, want the default %s", lim.String(), defaultDiskLimit)
+		}
+	}
+	p.DiskLimit = "512Mi"
+	if job, err = BuildJob(p); err != nil {
+		t.Fatalf("BuildJob: %v", err)
+	}
+	for _, c := range job.Spec.Template.Spec.InitContainers {
+		if c.Name != ContainerKaniko {
+			continue
+		}
+		lim := c.Resources.Limits[corev1.ResourceEphemeralStorage]
+		req := c.Resources.Requests[corev1.ResourceEphemeralStorage]
+		if lim.String() != "512Mi" || req.Cmp(lim) > 0 {
+			t.Errorf("a 512Mi disk cap rendered limit %s request %s", lim.String(), req.String())
+		}
+	}
+	p.DiskLimit = "lots"
+	if _, err := BuildJob(p); err == nil {
+		t.Error("an unparsable disk limit was accepted")
+	}
+}
+
+func TestBuildLimitRangeCoversEphemeralStorage(t *testing.T) {
+	lr := BuildLimitRange("felis-build")
+	if lr.Namespace != "felis-build" || len(lr.Spec.Limits) != 1 {
+		t.Fatalf("limit range = %#v", lr)
+	}
+	item := lr.Spec.Limits[0]
+	for _, res := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory, corev1.ResourceEphemeralStorage} {
+		d, dr := item.Default[res], item.DefaultRequest[res]
+		if d.IsZero() || dr.IsZero() || dr.Cmp(d) > 0 {
+			t.Errorf("%s default %s request %s", res, d.String(), dr.String())
 		}
 	}
 }

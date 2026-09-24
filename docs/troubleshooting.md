@@ -454,9 +454,9 @@ internal registry.
 `writeBuildError` (JobPhase→Failed). [GO-TESTED for the mapping.] The underlying
 cause — a kaniko build error, the **Trivy CRITICAL-CVE gate** failing the build
 (spec §16), or the final push — is in the Job's pod logs and is
-[INTEGRATION-ONLY]. The pod runs `kaniko` (builds a tarball, never pushes) and
-`trivy` (scans that tarball) as init containers, then `push` — so a CVE-rejected
-image never reaches the registry. Inspect every step:
+[INTEGRATION-ONLY]. The pod runs `egress-gate` (§8f), `context-fetch`, `kaniko`
+(builds a tarball, never pushes) and `trivy` (scans that tarball) as init
+containers, then `push` — so a CVE-rejected image never reaches the registry. Inspect every step:
 
 ```
 kubectl logs -n felis-build job/<build-job> --all-containers --prefix
@@ -490,6 +490,9 @@ trivy_db_repository = "registry.felis.svc:5000/mirror/trivy-db:2"
 trivy_java_db_repository = "registry.felis.svc:5000/mirror/trivy-java-db:1"
 build_cpu_limit = "2"
 build_mem_limit = "4Gi"
+build_disk_limit = "12Gi"          # §8f
+build_user_namespaces = "auto"     # §8f: auto | on | off
+build_runtime_class = ""           # §8f: e.g. "gvisor"
 ```
 
 Mirror the executor images into the registry once. On the node itself, push
@@ -559,6 +562,81 @@ artifacts — every real modpack — and that download fails closed too. Mirror
 `mirror.gcr.io/aquasec/trivy-java-db:1` alongside the vulnerability DB (commands
 above); the Java DB refreshes far less often than the vulnerability DB, so a
 one-off mirror is usually fine.
+
+### 8f. Build isolation model and residual risk
+
+A Dockerfile's `RUN` steps execute inside the kaniko container, as root. Kaniko
+is a daemonless image builder; it is **not** a sandbox. What stands between an
+approved-but-hostile Dockerfile and the node is the pod around it:
+
+| Layer | What it does | Where |
+|---|---|---|
+| Admin approval | Nothing builds until an administrator approves the submission | submit lane |
+| Weak identity | `felis-build` SA, no Role anywhere, no token mounted | §8b |
+| Egress lock | `felis-build-egress`: cluster DNS, the registry, the api internal face, nothing else | §8c |
+| Egress gate | first init container; holds the pod until the lock is enforced for it | `felis egress-gate` |
+| Capabilities | every container drops ALL; kaniko gets back only CHOWN, DAC_OVERRIDE, FOWNER to unpack base images | jobspec |
+| seccomp | the whole pod runs under the runtime's default profile (no `unshare`, `mount`, `keyctl`, `bpf`, …) | jobspec |
+| User namespace | with `build_user_namespaces` on, root in the pod is an unprivileged uid on the node | below |
+| Sandbox runtime | optional `build_runtime_class` (gVisor, Kata) | below |
+| Credentials | the registry credential lives only in the `push` container; the service token only in `context-fetch` | jobspec |
+| Resources | CPU, memory and ephemeral-storage limits per container; `activeDeadlineSeconds`; the context extraction stops at 4 GiB or 200 000 entries | jobspec, `felis fetch-context` |
+| Namespace backstop | `felis-build-limits` LimitRange gives any container without limits 1 CPU / 1 GiB / 1 GiB disk | bundle |
+
+**Egress gate.** The CNI programs a new pod's NetworkPolicy a moment after the
+pod starts. On k3s (kube-router), a pod in `felis-build` could reach the internet
+and the Kubernetes API for its first ~0.7 s. `egress-gate` dials the Kubernetes
+API Service, which the build policy never admits, and exits once it stops
+answering. The build pod log shows the wait:
+
+```
+felis egress-gate: 10.43.0.1:443 is unreachable after 612ms (...); the egress lock is in effect
+```
+
+If the probe still answers after two minutes the gate exits 1 and the build
+fails: `the build namespace's NetworkPolicy is not enforced`. The cluster is
+running without NetworkPolicy enforcement (a CNI without it, or k3s started with
+`--disable-network-policy`); fix the cluster, not the gate.
+
+**User namespaces (`build_user_namespaces`).** With `hostUsers: false`, uid 0
+in the build pod maps to an unprivileged uid range on the node, so a container
+escape lands as nobody. It needs Kubernetes ≥ 1.33, containerd 2.x, and a kernel
+with idmapped mounts on the node filesystem (5.19+ upstream; the RHEL/CentOS
+Stream 9 kernels carry the backport). `auto`, the default, lets felis-api decide
+at startup: it runs one `userns-probe-*` Job in `felis-build` and turns the
+feature on only when that pod ran. The api log says which way it went:
+
+```
+felis api: build pods run in a user namespace (hostUsers: false)
+felis api: build pods run without a user namespace: this node cannot start a pod with hostUsers: false
+```
+
+`on` forces it (builds then fail to start on a node that cannot do it), `off`
+never uses it.
+
+**Sandbox runtime (`build_runtime_class`).** Naming a RuntimeClass runs build
+pods under it, for example gVisor (`runsc`) or Kata. The class must exist
+(`kubectl get runtimeclass`), and kaniko must work under it: gVisor needs its
+default `overlay2` rootfs, and Kata needs nested virtualization on a VM node.
+Leave it empty unless you have installed and tested one.
+
+**Disk (`build_disk_limit`, default `12Gi`).** This caps kaniko's writable layer
+(the unpacked base image) and, as the largest limit in the pod, the pod's total
+disk: extracted context, unpacked base image and image tarball together. The
+kubelet enforces it by eviction on its housekeeping sweep, so a build that runs
+past it is killed within seconds. The build then fails with `Evicted` in
+`kubectl -n felis-build describe pod`. Raise it for very large modpacks, and
+keep the node's free disk above it.
+
+**Residual risk.** Without a user namespace or a sandbox runtime, the build runs
+as root in a container on the same kernel as the game servers and the control
+plane. Seccomp and the dropped capabilities remove the common escape primitives.
+A kernel vulnerability reachable through the remaining syscalls still reaches
+the node, and on a single-node install the node is the whole platform. Admin
+approval is the control that remains: read the Dockerfile and download the
+context before approving. On a node
+where the probe comes back negative, a kernel upgrade that brings idmapped
+mounts is the cheapest hardening available.
 
 ---
 

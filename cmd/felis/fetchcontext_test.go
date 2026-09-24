@@ -121,6 +121,30 @@ func TestExtractTarGzRefusesEscapes(t *testing.T) {
 	}
 }
 
+// A context that expands past the byte or entry cap is refused, however small
+// it was compressed: gzip bombs and inode floods stop at the cap.
+func TestExtractTarGzCapsExpansion(t *testing.T) {
+	bytesCap, entriesCap := maxContextBytes, maxContextEntries
+	t.Cleanup(func() { maxContextBytes, maxContextEntries = bytesCap, entriesCap })
+	maxContextBytes, maxContextEntries = 1000, 5
+
+	fits := tgzBody(t, tarEntry{name: "a", body: strings.Repeat("x", 600)}, tarEntry{name: "b", body: strings.Repeat("y", 400)})
+	if err := extractTarGz(bytes.NewReader(fits), t.TempDir()); err != nil {
+		t.Fatalf("a context exactly at the byte cap: %v", err)
+	}
+	big := tgzBody(t, tarEntry{name: "a", body: strings.Repeat("x", 600)}, tarEntry{name: "b", body: strings.Repeat("y", 401)})
+	if err := extractTarGz(bytes.NewReader(big), t.TempDir()); err == nil || !strings.Contains(err.Error(), "expands past") {
+		t.Fatalf("one byte over the cap: err = %v", err)
+	}
+	var many []tarEntry
+	for i := 0; i < 6; i++ {
+		many = append(many, tarEntry{name: "d" + string(rune('0'+i)) + "/", typ: tar.TypeDir})
+	}
+	if err := extractTarGz(bytes.NewReader(tgzBody(t, many...)), t.TempDir()); err == nil || !strings.Contains(err.Error(), "entries") {
+		t.Fatalf("six entries over a cap of five: err = %v", err)
+	}
+}
+
 // The command end to end: it dials the URL with the bearer token from the
 // environment, and refuses to run without it (the internal face would 401
 // anyway; failing at parse time is the honest earlier error).

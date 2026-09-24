@@ -9,6 +9,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"felis.lolicon.best/internal/api"
@@ -152,11 +153,13 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// The fetch initContainer runs THIS image's fetch-context entrypoint, so the
 	// build config carries the api's own image (the platform sets FELIS_IMAGE).
 	buildCfg.FelisImage = os.Getenv("FELIS_IMAGE")
+	buildJobs := build.NewK8sJobs(cl, buildCfg)
 	builder := &build.Builder{
 		Store:  build.NewPGStore(drv.DB()),
-		Jobs:   build.NewK8sJobs(cl, buildCfg),
+		Jobs:   buildJobs,
 		Config: buildCfg,
 	}
+	go probeBuildUserNamespaces(ctx, buildJobs, buildCfg, stderr)
 
 	// User-modpack approval lane (user-directed extension over §16; see
 	// internal/submit). An ordinary user may only SUBMIT a
@@ -457,10 +460,38 @@ func buildConfig(cfg *config.Config) build.Config {
 		TrivyImage:  cfg.Registry.TrivyImage,
 		CPULimit:    cfg.Registry.BuildCPULimit,
 		MemLimit:    cfg.Registry.BuildMemLimit,
+		DiskLimit:   cfg.Registry.BuildDiskLimit,
+		// "auto" follows the startup probe (see probeBuildUserNamespaces).
+		UserNamespaces:      cfg.Registry.BuildUserNamespaces,
+		UserNamespacesProbe: new(atomic.Bool),
+		RuntimeClass:        cfg.Registry.BuildRuntimeClass,
 		// Empty keeps Trivy's own default; an install with builds points this at
 		// the internal DB mirror (see config.RegistryConfig.TrivyDBRepository).
 		TrivyDBRepository:     cfg.Registry.TrivyDBRepository,
 		TrivyJavaDBRepository: cfg.Registry.TrivyJavaDBRepository,
+	}
+}
+
+// probeBuildUserNamespaces settles build_user_namespaces = "auto": one probe
+// pod with hostUsers: false tells whether this node's kernel and runtime can run
+// build pods in a user namespace. Builds submitted before it answers run without.
+func probeBuildUserNamespaces(ctx context.Context, jobs *build.K8sJobs, cfg build.Config, stderr io.Writer) {
+	if mode := cfg.UserNamespaces; mode != "" && mode != build.UserNamespacesAuto {
+		return
+	}
+	if cfg.FelisImage == "" {
+		fmt.Fprintln(stderr, "felis api: FELIS_IMAGE unset — build pods run without a user namespace")
+		return
+	}
+	ok, err := jobs.ProbeUserNamespaces(ctx, cfg.FelisImage)
+	cfg.UserNamespacesProbe.Store(ok)
+	switch {
+	case ok:
+		fmt.Fprintln(stderr, "felis api: build pods run in a user namespace (hostUsers: false)")
+	case err != nil:
+		fmt.Fprintf(stderr, "felis api: build pods run without a user namespace: the probe failed: %v\n", err)
+	default:
+		fmt.Fprintln(stderr, "felis api: build pods run without a user namespace: this node cannot start a pod with hostUsers: false")
 	}
 }
 

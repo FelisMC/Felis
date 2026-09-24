@@ -21,6 +21,7 @@ Commands:
   restore           Extract a world archive into a world volume (internal Job entrypoint)
   backup            Archive a world into the backup store and record it (internal Job entrypoint)
   files             List/read/write one file in a stopped server's world (internal Job entrypoint)
+  egress-gate       Hold a build pod until its egress NetworkPolicy is enforced (internal Job entrypoint)
   fetch-context     Fetch and extract a submission's build context (internal Job entrypoint)
   push-image        Push a scanned image tarball to the registry (internal Job entrypoint)
   registry-gate     Authorize registry writes in front of registry:2 (internal sidecar entrypoint)
@@ -56,6 +57,7 @@ var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"restore":          cmdRestore,
 	"backup":           cmdBackup,
 	"files":            cmdFiles,
+	"egress-gate":      cmdEgressGate,
 	"fetch-context":    cmdFetchContext,
 	"push-image":       cmdPushImage,
 	"registry-gate":    cmdRegistryGate,

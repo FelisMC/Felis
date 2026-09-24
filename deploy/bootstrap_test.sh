@@ -1037,6 +1037,9 @@ build_namespace = "stale-ns"
 kaniko_image = "registry.felis.svc:5000/mirror/kaniko-executor:v1.24.0"
 trivy_db_repository = "registry.felis.svc:5000/mirror/trivy-db:2"
 trivy_java_db_repository = "registry.felis.svc:5000/mirror/trivy-java-db:1"
+build_disk_limit = "20Gi"
+build_user_namespaces = "off"
+build_runtime_class = "gvisor"
 
 [registry.s3]
 endpoint = "https://s3.example"
@@ -1074,6 +1077,9 @@ expect "a re-run carries the trivy vulnerability-DB mirror" \
   'trivy_db_repository = "registry.felis.svc:5000/mirror/trivy-db:2"' "$out"
 expect "a re-run carries the trivy java-DB mirror" \
   'trivy_java_db_repository = "registry.felis.svc:5000/mirror/trivy-java-db:1"' "$out"
+expect "a re-run carries the build disk cap" 'build_disk_limit = "20Gi"' "$out"
+expect "a re-run carries the build user-namespace mode" 'build_user_namespaces = "off"' "$out"
+expect "a re-run carries the build runtime class" 'build_runtime_class = "gvisor"' "$out"
 expect "a re-run carries the [registry.s3] uploads subtable" "[registry.s3]" "$out"
 expect "the carried subtable keeps its keys" 'endpoint = "https://s3.example"' "$out"
 expect "url stays installer-owned" 'url = "registry.felis.svc:5000"' "$out"

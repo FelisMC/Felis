@@ -37,6 +37,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"felis.lolicon.best/internal/metrics"
@@ -243,6 +244,37 @@ type Config struct {
 	// CPULimit / MemLimit cap each build container (spec §16: resource limits).
 	CPULimit string
 	MemLimit string
+	// DiskLimit caps the build pod's ephemeral storage: the extracted context,
+	// the base image kaniko unpacks and the image tarball together.
+	DiskLimit string
+	// UserNamespaces selects hostUsers: false for build pods: UserNamespacesOn,
+	// UserNamespacesOff, or UserNamespacesAuto (the default), which follows
+	// UserNamespacesProbe.
+	UserNamespaces string
+	// UserNamespacesProbe carries ProbeUserNamespaces' verdict to every copy of
+	// this Config; nil or false keeps "auto" off.
+	UserNamespacesProbe *atomic.Bool
+	// RuntimeClass runs build pods under a sandbox RuntimeClass (gVisor, Kata)
+	// when set. The class must exist on the cluster.
+	RuntimeClass string
+}
+
+// Values of Config.UserNamespaces.
+const (
+	UserNamespacesAuto = "auto"
+	UserNamespacesOn   = "on"
+	UserNamespacesOff  = "off"
+)
+
+// userNamespaces resolves Config.UserNamespaces for one build.
+func (c Config) userNamespaces() bool {
+	switch c.UserNamespaces {
+	case UserNamespacesOn:
+		return true
+	case UserNamespacesOff:
+		return false
+	}
+	return c.UserNamespacesProbe != nil && c.UserNamespacesProbe.Load()
 }
 
 // Defaults applied when a Config field is left zero.
@@ -255,6 +287,7 @@ const (
 	defaultMaxDockerfile  = 256 * 1024 // 256 KiB
 	defaultCPULimit       = "2"
 	defaultMemLimit       = "4Gi"
+	defaultDiskLimit      = "12Gi"
 )
 
 // withDefaults returns a copy of c with zero fields filled, so a partially
@@ -283,6 +316,12 @@ func (c Config) withDefaults() Config {
 	}
 	if c.MemLimit == "" {
 		c.MemLimit = defaultMemLimit
+	}
+	if c.DiskLimit == "" {
+		c.DiskLimit = defaultDiskLimit
+	}
+	if c.UserNamespaces == "" {
+		c.UserNamespaces = UserNamespacesAuto
 	}
 	return c
 }
@@ -380,6 +419,9 @@ func (b *Builder) jobParams(bld *Build, cfg Config) JobParams {
 		Deadline:              cfg.Deadline,
 		CPULimit:              cfg.CPULimit,
 		MemLimit:              cfg.MemLimit,
+		DiskLimit:             cfg.DiskLimit,
+		UserNamespaces:        cfg.userNamespaces(),
+		RuntimeClass:          cfg.RuntimeClass,
 	}
 }
 

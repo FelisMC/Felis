@@ -33,6 +33,7 @@ const (
 // build-log streamer (internal/api.K8sBuildLogStreamer, spec §416 日志流复用 §8)
 // follows the same container this Job defines — one source of truth for the name.
 const (
+	ContainerGate   = "egress-gate"
 	ContainerKaniko = "kaniko"
 	ContainerTrivy  = "trivy"
 	ContainerPush   = "push"
@@ -63,6 +64,23 @@ var imageSizeLimit = resource.MustParse("10Gi")
 // tarball bomb wedges the build pod instead of the node's disk. The compressed
 // upload is capped at 1 GiB by the submit lane; 4 GiB leaves expansion room.
 var contextSizeLimit = resource.MustParse("4Gi")
+
+// Per-container ephemeral-storage bounds (writable layer + logs; emptyDirs count
+// toward the pod as a whole). Kaniko's limit is the operator's disk cap because
+// kaniko unpacks the base image into its own root filesystem, which no emptyDir
+// bound covers; it is also the largest limit in the pod, so it becomes the
+// pod-level cap the kubelet holds context + unpacked rootfs + image tarball to.
+// Trivy keeps its vulnerability and Java DBs (about 1.4 GiB live) in its layer.
+// The others write nothing but logs.
+var (
+	gateDisk     = diskBounds{request: resource.MustParse("16Mi"), limit: resource.MustParse("64Mi")}
+	fetchDisk    = diskBounds{request: resource.MustParse("64Mi"), limit: resource.MustParse("256Mi")}
+	kanikoDiskRq = resource.MustParse("1Gi")
+	trivyDisk    = diskBounds{request: resource.MustParse("256Mi"), limit: resource.MustParse("4Gi")}
+	pushDisk     = diskBounds{request: resource.MustParse("16Mi"), limit: resource.MustParse("256Mi")}
+)
+
+type diskBounds struct{ request, limit resource.Quantity }
 
 // buildJobTTL is how long a finished build Job survives before the Job
 // controller deletes it — and with it the Pod whose kaniko log is the admin
@@ -105,6 +123,15 @@ type JobParams struct {
 	Deadline              time.Duration
 	CPULimit              string
 	MemLimit              string
+	// DiskLimit caps kaniko's ephemeral storage, and with it the pod's (see
+	// kanikoDiskRq). Empty applies defaultDiskLimit.
+	DiskLimit string
+	// UserNamespaces runs the pod with hostUsers: false, so root in the build
+	// containers is an unprivileged uid on the node. It needs a kernel and runtime
+	// with idmapped mounts; Config.UserNamespaces decides.
+	UserNamespaces bool
+	// RuntimeClass, when set, runs the pod under that RuntimeClass (gVisor, Kata).
+	RuntimeClass string
 }
 
 // BuildJobName is the deterministic Job name for a build id.
@@ -127,8 +154,14 @@ func buildLabels(p JobParams) map[string]string {
 //     reach the K8s API (spec §16, §21);
 //   - no privileged container — Kaniko builds the Dockerfile without a daemon,
 //     so docker-in-docker / privileged is never needed (spec §16, §22);
-//   - activeDeadlineSeconds + backoffLimit=0 + per-container resource limits so
-//     a runaway or poisoned build cannot exhaust the cluster (spec §16);
+//   - the RuntimeDefault seccomp profile on the whole pod, and optionally a user
+//     namespace (hostUsers: false) and a sandbox RuntimeClass, because kaniko is
+//     no isolation boundary: the Dockerfile's RUN steps execute in its container;
+//   - an egress gate ahead of everything else, so nothing runs before the
+//     namespace's NetworkPolicy is enforced for this pod (cmd/felis egress-gate);
+//   - activeDeadlineSeconds + backoffLimit=0 + per-container CPU, memory and
+//     ephemeral-storage limits so a runaway or poisoned build cannot exhaust the
+//     node (spec §16);
 //   - the Trivy step runs with `--exit-code 1 --severity CRITICAL`, so a
 //     CRITICAL CVE fails the Pod and therefore the Job — the only retained
 //     automatic admission gate (spec §16).
@@ -148,6 +181,18 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 	limits, err := resourceLimits(p.CPULimit, p.MemLimit)
 	if err != nil {
 		return nil, err
+	}
+	diskCap := p.DiskLimit
+	if diskCap == "" {
+		diskCap = defaultDiskLimit
+	}
+	kanikoDisk, err := resource.ParseQuantity(diskCap)
+	if err != nil {
+		return nil, fmt.Errorf("build: invalid disk limit %q: %w", diskCap, err)
+	}
+	kanikoRq := kanikoDiskRq.DeepCopy()
+	if kanikoDisk.Cmp(kanikoRq) < 0 {
+		kanikoRq = kanikoDisk.DeepCopy()
 	}
 	if p.FelisImage == "" {
 		return nil, fmt.Errorf("build: FelisImage is required: the push container runs it")
@@ -187,7 +232,35 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 	// credentials) is first fetched into a shared emptyDir; a ref Kaniko can read
 	// in place (s3://, or a path an installer pre-mounted) passes through untouched.
 	contextPath := p.ContextRef
-	initContainers := []corev1.Container{}
+
+	// The gate runs before anything else. A new pod's NetworkPolicy is programmed
+	// asynchronously: live on k3s (kube-router), a build-labelled pod reached the
+	// internet and the Kubernetes API for the first ~0.7 s of its life. The gate
+	// holds the pod until a destination the policy denies stops answering, so the
+	// Dockerfile never runs inside that window.
+	gateSec := sec.DeepCopy()
+	gateSec.ReadOnlyRootFilesystem = boolPtr(true)
+	gateSec.RunAsNonRoot = boolPtr(true)
+	gateSec.RunAsUser = int64Ptr(nonRootUID)
+	gate := corev1.Container{
+		Name:  ContainerGate,
+		Image: p.FelisImage,
+		Args:  []string{"egress-gate"},
+		Resources: corev1.ResourceRequirements{
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:              resource.MustParse("100m"),
+				corev1.ResourceMemory:           resource.MustParse("64Mi"),
+				corev1.ResourceEphemeralStorage: gateDisk.limit,
+			},
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:              resource.MustParse("10m"),
+				corev1.ResourceMemory:           resource.MustParse("16Mi"),
+				corev1.ResourceEphemeralStorage: gateDisk.request,
+			},
+		},
+		SecurityContext: gateSec,
+	}
+	initContainers := []corev1.Container{gate}
 	imageMount := corev1.VolumeMount{Name: imageVolume, MountPath: imageMountPath}
 	kanikoMounts := []corev1.VolumeMount{imageMount}
 	podVolumes := []corev1.Volume{{
@@ -232,7 +305,7 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 				}},
 			}},
 			VolumeMounts:    []corev1.VolumeMount{{Name: contextVolume, MountPath: contextMountPath}},
-			Resources:       corev1.ResourceRequirements{Limits: limits, Requests: buildRequests(limits)},
+			Resources:       withDisk(limits, fetchDisk),
 			SecurityContext: fetchSec,
 		}
 		initContainers = append(initContainers, fetch)
@@ -269,7 +342,7 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 			"--skip-tls-verify-pull",
 		},
 		VolumeMounts:    kanikoMounts,
-		Resources:       corev1.ResourceRequirements{Limits: limits, Requests: buildRequests(limits)},
+		Resources:       withDisk(limits, diskBounds{request: kanikoRq, limit: kanikoDisk}),
 		SecurityContext: kanikoSec,
 	}
 	initContainers = append(initContainers, kaniko)
@@ -298,7 +371,7 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 		Image:           p.TrivyImage,
 		Args:            trivyArgs,
 		VolumeMounts:    []corev1.VolumeMount{{Name: imageVolume, MountPath: imageMountPath, ReadOnly: true}},
-		Resources:       corev1.ResourceRequirements{Limits: limits, Requests: buildRequests(limits)},
+		Resources:       withDisk(limits, trivyDisk),
 		SecurityContext: sec,
 	}
 	initContainers = append(initContainers, trivy)
@@ -328,7 +401,7 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 			secretEnv("FELIS_REGISTRY_PASSWORD", naming.RegistryPushPasswordKey),
 		},
 		VolumeMounts:    []corev1.VolumeMount{{Name: imageVolume, MountPath: imageMountPath, ReadOnly: true}},
-		Resources:       corev1.ResourceRequirements{Limits: limits, Requests: buildRequests(limits)},
+		Resources:       withDisk(limits, pushDisk),
 		SecurityContext: pushSec,
 	}
 
@@ -350,14 +423,42 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 					RestartPolicy:                corev1.RestartPolicyNever,
 					ServiceAccountName:           p.ServiceAccount,
 					AutomountServiceAccountToken: boolPtr(false),
-					InitContainers:               initContainers,
-					Containers:                   []corev1.Container{push},
-					Volumes:                      podVolumes,
+					// RUN steps execute in kaniko's container with root and three
+					// capabilities; RuntimeDefault takes away the syscalls a container
+					// never needs, among them most kernel-escape primitives (unshare,
+					// mount, keyctl, bpf). Every step was checked to run under it live.
+					SecurityContext: &corev1.PodSecurityContext{
+						SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+					},
+					InitContainers: initContainers,
+					Containers:     []corev1.Container{push},
+					Volumes:        podVolumes,
 				},
 			},
 		},
 	}
+	if p.UserNamespaces {
+		job.Spec.Template.Spec.HostUsers = boolPtr(false)
+	}
+	if p.RuntimeClass != "" {
+		rc := p.RuntimeClass
+		job.Spec.Template.Spec.RuntimeClassName = &rc
+	}
 	return job, nil
+}
+
+// nonRootUID is the distroless nonroot user the platform image ships as.
+const nonRootUID = 65532
+
+// withDisk is the resources block for one build container: the CPU and memory
+// caps with their schedulable floor (buildRequests), plus its ephemeral-storage
+// request and limit.
+func withDisk(limits corev1.ResourceList, d diskBounds) corev1.ResourceRequirements {
+	lim := limits.DeepCopy()
+	lim[corev1.ResourceEphemeralStorage] = d.limit
+	req := buildRequests(limits)
+	req[corev1.ResourceEphemeralStorage] = d.request
+	return corev1.ResourceRequirements{Limits: lim, Requests: req}
 }
 
 // isHTTPContextRef reports whether ref is an http(s) URL — the shape the submit
@@ -513,6 +614,36 @@ func BuildServiceAccount(namespace, name string) *corev1.ServiceAccount {
 			},
 		},
 		AutomountServiceAccountToken: boolPtr(false),
+	}
+}
+
+// BuildLimitRange bounds any container in the build namespace that arrives
+// without its own limits. Build Jobs set every limit themselves (BuildJob); this
+// is the backstop for anything else that lands in the namespace, which shares
+// the node's disk with the game worlds.
+func BuildLimitRange(namespace string) *corev1.LimitRange {
+	return &corev1.LimitRange{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "felis-build-limits",
+			Namespace: namespace,
+			Labels: map[string]string{
+				LabelManagedBy: managedByValue,
+				LabelComponent: componentValue,
+			},
+		},
+		Spec: corev1.LimitRangeSpec{Limits: []corev1.LimitRangeItem{{
+			Type: corev1.LimitTypeContainer,
+			Default: corev1.ResourceList{
+				corev1.ResourceCPU:              resource.MustParse("1"),
+				corev1.ResourceMemory:           resource.MustParse("1Gi"),
+				corev1.ResourceEphemeralStorage: resource.MustParse("1Gi"),
+			},
+			DefaultRequest: corev1.ResourceList{
+				corev1.ResourceCPU:              resource.MustParse("100m"),
+				corev1.ResourceMemory:           resource.MustParse("128Mi"),
+				corev1.ResourceEphemeralStorage: resource.MustParse("64Mi"),
+			},
+		}}},
 	}
 }
 
