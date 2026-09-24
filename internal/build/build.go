@@ -37,6 +37,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -267,6 +268,11 @@ type Config struct {
 	// when set. The class must exist on the cluster.
 	RuntimeClass string
 
+	// MaxConcurrent caps how many build Jobs run at once. A build submitted past
+	// the cap stays pending, and SyncAll starts queued builds oldest first as
+	// running ones finish. Zero applies the default; MaxConcurrentLimit bounds it.
+	MaxConcurrent int
+
 	// ContextOrigin is the scheme://host[:port] of the platform's internal API
 	// face, the only host an http(s) ContextRef may name: the fetch step presents
 	// the service token to it. Empty refuses every http(s) context.
@@ -302,7 +308,13 @@ const (
 	defaultCPULimit       = "2"
 	defaultMemLimit       = "4Gi"
 	defaultDiskLimit      = "12Gi"
+	defaultMaxConcurrent  = 2
 )
+
+// MaxConcurrentLimit is the highest MaxConcurrent the platform accepts. The
+// build namespace's pod quota (BuildResourceQuota) leaves room for exactly this
+// many build pods plus the user-namespace probe.
+const MaxConcurrentLimit = 6
 
 // withDefaults returns a copy of c with zero fields filled, so a partially
 // configured Config (or the zero value, in tests) is always usable.
@@ -337,15 +349,24 @@ func (c Config) withDefaults() Config {
 	if c.UserNamespaces == "" {
 		c.UserNamespaces = UserNamespacesAuto
 	}
+	if c.MaxConcurrent <= 0 {
+		c.MaxConcurrent = defaultMaxConcurrent
+	}
+	if c.MaxConcurrent > MaxConcurrentLimit {
+		c.MaxConcurrent = MaxConcurrentLimit
+	}
 	return c
 }
 
-// Builder orchestrates the build subsystem. It holds no mutable state; the
-// clock and id generator are injectable for hermetic tests.
+// Builder orchestrates the build subsystem. The clock and id generator are
+// injectable for hermetic tests. Its only state is the lock that serializes
+// starting Jobs, so two submissions cannot both take the last free slot.
 type Builder struct {
 	Store  Store
 	Jobs   Jobs
 	Config Config
+
+	startMu sync.Mutex
 
 	// Now is the clock, injectable for tests. Defaults to time.Now.
 	Now func() time.Time
@@ -368,10 +389,11 @@ func (b *Builder) newID() string {
 }
 
 // Submit validates req, records a pending build, and starts the Kaniko+Trivy
-// Job (spec §16). The build is returned in the building state once the Job is
-// created; if Job creation fails the build is marked failed so it never lingers
-// pending. The caller (felis-api) drives the build to a terminal state by
-// polling Sync / SyncAll.
+// Job (spec §16) when fewer than MaxConcurrent builds are running. Past the cap
+// the build is returned pending and waits in the queue SyncAll drains. A started
+// build is returned building; if Job creation fails it is marked failed so it
+// never lingers pending. The caller (felis-api) drives the build to a terminal
+// state by polling Sync / SyncAll.
 func (b *Builder) Submit(ctx context.Context, req Request) (*Build, error) {
 	cfg := b.Config.withDefaults()
 	if err := Validate(req, cfg); err != nil {
@@ -394,6 +416,34 @@ func (b *Builder) Submit(ctx context.Context, req Request) (*Build, error) {
 		return nil, err
 	}
 
+	b.startMu.Lock()
+	defer b.startMu.Unlock()
+	running, err := b.running(ctx)
+	if err != nil || running >= cfg.MaxConcurrent {
+		// Queued. When the count could not be read, SyncAll retries the start.
+		return bld, nil
+	}
+	return b.start(ctx, bld, cfg)
+}
+
+// running counts builds whose Job has been started and not yet reconciled to a
+// terminal state.
+func (b *Builder) running(ctx context.Context) (int, error) {
+	builds, err := b.Store.ListUnfinishedBuilds(ctx)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for i := range builds {
+		if builds[i].Status == StatusBuilding {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// start creates bld's Job and records it. The caller holds startMu.
+func (b *Builder) start(ctx context.Context, bld *Build, cfg Config) (*Build, error) {
 	jobName, err := b.Jobs.CreateBuildJob(ctx, b.jobParams(bld, cfg))
 	if err != nil {
 		// The pending row exists; mark it failed so it is not reconciled forever.
@@ -466,8 +516,12 @@ func (b *Builder) Sync(ctx context.Context, id string) (*Build, error) {
 		return bld, nil
 	}
 	if bld.JobName == "" {
-		// Created but the Job name was never recorded; treat as failed rather
-		// than reconcile forever against a phantom Job.
+		if bld.Status == StatusPending {
+			// Queued behind MaxConcurrent; SyncAll starts it.
+			return bld, nil
+		}
+		// Building with no Job name recorded; treat as failed rather than
+		// reconcile forever against a phantom Job.
 		return b.finish(ctx, bld, StatusFailed, "no build job recorded")
 	}
 
@@ -499,25 +553,76 @@ func (b *Builder) Sync(ctx context.Context, id string) (*Build, error) {
 	}
 }
 
-// SyncAll reconciles every unfinished build and returns the count advanced to a
+// SyncAll reconciles every running build, then starts queued builds oldest
+// first while fewer than MaxConcurrent run. It returns the count advanced to a
 // terminal state. felis-api calls this periodically (spec §16: the scan gate is
-// observed, not pushed by the build Pod).
+// observed, not pushed by the build Pod). One build's error does not stop the
+// rest; every error comes back joined.
 func (b *Builder) SyncAll(ctx context.Context) (int, error) {
 	builds, err := b.Store.ListUnfinishedBuilds(ctx)
 	if err != nil {
 		return 0, err
 	}
 	advanced := 0
+	var errs []error
 	for i := range builds {
+		if builds[i].Status == StatusPending && builds[i].JobName == "" {
+			continue // queued; startQueued below
+		}
 		bld, err := b.Sync(ctx, builds[i].ID)
 		if err != nil {
-			return advanced, err
+			errs = append(errs, fmt.Errorf("build %s: %w", builds[i].ID, err))
+			continue
 		}
 		if bld.Status.terminal() {
 			advanced++
 		}
 	}
-	return advanced, nil
+	started, err := b.startQueued(ctx)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	advanced += started
+	return advanced, errors.Join(errs...)
+}
+
+// startQueued starts pending builds, oldest first, while fewer than
+// MaxConcurrent run. It returns how many it failed outright (a Job that could
+// not be created), which count as advanced to a terminal state.
+func (b *Builder) startQueued(ctx context.Context) (int, error) {
+	cfg := b.Config.withDefaults()
+	b.startMu.Lock()
+	defer b.startMu.Unlock()
+	builds, err := b.Store.ListUnfinishedBuilds(ctx)
+	if err != nil {
+		return 0, err
+	}
+	running := 0
+	for i := range builds {
+		if builds[i].Status == StatusBuilding {
+			running++
+		}
+	}
+	failed := 0
+	var errs []error
+	for i := range builds {
+		if running >= cfg.MaxConcurrent {
+			break
+		}
+		bld := &builds[i]
+		if bld.Status != StatusPending || bld.JobName != "" {
+			continue
+		}
+		if _, err := b.start(ctx, bld, cfg); err != nil {
+			errs = append(errs, fmt.Errorf("build %s: %w", bld.ID, err))
+			if bld.Status == StatusFailed {
+				failed++
+			}
+			continue
+		}
+		running++
+	}
+	return failed, errors.Join(errs...)
 }
 
 // Cancel stops an in-flight build: delete its Job and mark it cancelled. A

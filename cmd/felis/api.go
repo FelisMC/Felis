@@ -465,6 +465,7 @@ func buildConfig(cfg *config.Config) build.Config {
 		UserNamespaces:      cfg.Registry.BuildUserNamespaces,
 		UserNamespacesProbe: new(atomic.Bool),
 		RuntimeClass:        cfg.Registry.BuildRuntimeClass,
+		MaxConcurrent:       cfg.Registry.MaxConcurrentBuilds,
 		// Empty keeps Trivy's own default; an install with builds points this at
 		// the internal DB mirror (see config.RegistryConfig.TrivyDBRepository).
 		TrivyDBRepository:     cfg.Registry.TrivyDBRepository,

@@ -3,6 +3,7 @@ package build
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -77,6 +78,13 @@ func (f *fakeStore) ListUnfinishedBuilds(_ context.Context) ([]Build, error) {
 			out = append(out, *b)
 		}
 	}
+	// Oldest first, like the SQL; the frozen test clock ties, so the id breaks it.
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID
+	})
 	return out, nil
 }
 
@@ -114,6 +122,9 @@ type fakeJobs struct {
 	phase     JobPhase
 	phaseErr  error
 	createErr error
+	// Per-job overrides of phase / phaseErr, keyed by Job name.
+	phases    map[string]JobPhase
+	phaseErrs map[string]error
 
 	created   []JobParams
 	cancelled []string
@@ -127,7 +138,13 @@ func (f *fakeJobs) CreateBuildJob(_ context.Context, p JobParams) (string, error
 	return BuildJobName(p.BuildID), nil
 }
 
-func (f *fakeJobs) JobPhase(_ context.Context, _ string) (JobPhase, error) {
+func (f *fakeJobs) JobPhase(_ context.Context, name string) (JobPhase, error) {
+	if err, ok := f.phaseErrs[name]; ok {
+		return JobUnknown, err
+	}
+	if p, ok := f.phases[name]; ok {
+		return p, nil
+	}
 	return f.phase, f.phaseErr
 }
 
@@ -442,6 +459,76 @@ func TestSyncAllAdvancesUnfinishedBuilds(t *testing.T) {
 	}
 	if n != 1 {
 		t.Errorf("advanced = %d, want 1", n)
+	}
+}
+
+// Builds past MaxConcurrent wait pending and start oldest first as running ones
+// finish (build-supply-chain-12).
+func TestSubmitQueuesPastMaxConcurrent(t *testing.T) {
+	b, st, jb := newBuilder()
+	b.Config.MaxConcurrent = 1
+	ctx := context.Background()
+	first, err := b.Submit(ctx, goodRequest())
+	if err != nil || first.Status != StatusBuilding {
+		t.Fatalf("first = %+v, %v; want building", first, err)
+	}
+	var queued []*Build
+	for range 2 {
+		q, err := b.Submit(ctx, goodRequest())
+		if err != nil || q.Status != StatusPending || q.JobName != "" {
+			t.Fatalf("queued = %+v, %v; want pending with no Job", q, err)
+		}
+		queued = append(queued, q)
+	}
+	if len(jb.created) != 1 {
+		t.Fatalf("jobs created = %d, want 1", len(jb.created))
+	}
+
+	// A queued build is not a phantom: Sync leaves it alone.
+	if got, err := b.Sync(ctx, queued[0].ID); err != nil || got.Status != StatusPending {
+		t.Fatalf("Sync(queued) = %+v, %v; want still pending", got, err)
+	}
+	// Nothing frees up while the first runs.
+	if _, err := b.SyncAll(ctx); err != nil || len(jb.created) != 1 {
+		t.Fatalf("SyncAll while full: err %v, jobs %d", err, len(jb.created))
+	}
+
+	jb.phases = map[string]JobPhase{first.JobName: JobSucceeded}
+	n, err := b.SyncAll(ctx)
+	if err != nil {
+		t.Fatalf("SyncAll: %v", err)
+	}
+	if n != 1 || len(jb.created) != 2 || jb.created[1].BuildID != queued[0].ID {
+		t.Fatalf("advanced %d, jobs %v; want the first finished and the oldest queued started", n, jb.created)
+	}
+	if st.builds[queued[0].ID].Status != StatusBuilding || st.builds[queued[1].ID].Status != StatusPending {
+		t.Fatalf("statuses = %s, %s; want building, pending",
+			st.builds[queued[0].ID].Status, st.builds[queued[1].ID].Status)
+	}
+}
+
+// One build whose Job cannot be read does not stall the others.
+func TestSyncAllContinuesPastOneBuildsError(t *testing.T) {
+	b, st, jb := newBuilder()
+	b.Config.MaxConcurrent = 3
+	ctx := context.Background()
+	var ids []string
+	for range 3 {
+		bld, err := b.Submit(ctx, goodRequest())
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, bld.ID)
+	}
+	jb.phase = JobSucceeded
+	jb.phaseErrs = map[string]error{BuildJobName(ids[0]): errors.New("apiserver hiccup")}
+	n, err := b.SyncAll(ctx)
+	if err == nil || !strings.Contains(err.Error(), ids[0]) {
+		t.Fatalf("err = %v, want it to name %s", err, ids[0])
+	}
+	if n != 2 || st.builds[ids[1]].Status != StatusSucceeded || st.builds[ids[2]].Status != StatusSucceeded {
+		t.Fatalf("advanced %d; statuses %s %s; want the other two succeeded", n,
+			st.builds[ids[1]].Status, st.builds[ids[2]].Status)
 	}
 }
 

@@ -171,6 +171,9 @@ type RegistryConfig struct {
 	// BuildRuntimeClass runs build pods under a sandbox RuntimeClass such as
 	// gVisor or Kata. Empty runs them under the node's default runtime.
 	BuildRuntimeClass string `toml:"build_runtime_class"`
+	// MaxConcurrentBuilds caps how many builds run at once; later ones queue.
+	// Zero keeps 2; at most 6 (the build namespace's pod quota).
+	MaxConcurrentBuilds int `toml:"max_concurrent_builds"`
 	// TrivyDBRepository points Trivy at an OCI repository holding the
 	// vulnerability DB (--db-repository). Trivy's default fetches from
 	// mirror.gcr.io/ghcr.io, which the build egress lock denies — so on a
@@ -462,6 +465,9 @@ func (c *Config) Validate() error {
 	case "", "auto", "on", "off":
 	default:
 		return fmt.Errorf("config: [registry] build_user_namespaces %q must be auto, on or off", c.Registry.BuildUserNamespaces)
+	}
+	if n := c.Registry.MaxConcurrentBuilds; n < 0 || n > 6 {
+		return fmt.Errorf("config: [registry] max_concurrent_builds %d must be 1-6 (0 keeps 2)", n)
 	}
 	// [smtp] is optional as a whole, but once a host is named the block must be
 	// deliverable: a From address (relays reject MAIL FROM:<>) and a sane port.

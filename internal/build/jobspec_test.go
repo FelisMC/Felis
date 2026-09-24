@@ -641,6 +641,19 @@ func TestBuildLimitRangeCoversEphemeralStorage(t *testing.T) {
 	}
 }
 
+// The pod quota must fit the most builds the config allows plus the probe pod,
+// or the queue admits a build whose pod the API server then refuses.
+func TestBuildResourceQuotaFitsMaxConcurrent(t *testing.T) {
+	rq := BuildResourceQuota("felis-build")
+	pods := rq.Spec.Hard[corev1.ResourcePods]
+	if rq.Namespace != "felis-build" || pods.Value() < MaxConcurrentLimit+1 {
+		t.Fatalf("quota = %#v; want pods ≥ %d", rq.Spec.Hard, MaxConcurrentLimit+1)
+	}
+	if c := (Config{MaxConcurrent: 100}).withDefaults().MaxConcurrent; c != MaxConcurrentLimit {
+		t.Fatalf("MaxConcurrent 100 resolved to %d, want the %d cap", c, MaxConcurrentLimit)
+	}
+}
+
 func initNames(cs []corev1.Container) []string {
 	names := make([]string, 0, len(cs))
 	for _, c := range cs {

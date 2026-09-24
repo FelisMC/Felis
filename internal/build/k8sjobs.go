@@ -36,6 +36,11 @@ func (k *K8sJobs) CreateBuildJob(ctx context.Context, p JobParams) (string, erro
 		return "", err
 	}
 	if err := k.c.Create(ctx, job); err != nil {
+		// The name is the build's; an existing Job is this build's own, created
+		// by a start that stopped before recording it.
+		if apierrors.IsAlreadyExists(err) {
+			return job.Name, nil
+		}
 		return "", err
 	}
 	return job.Name, nil

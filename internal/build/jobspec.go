@@ -656,6 +656,27 @@ func BuildLimitRange(namespace string) *corev1.LimitRange {
 	}
 }
 
+// BuildResourceQuota caps how many pods can run in the build namespace at once:
+// MaxConcurrentLimit builds, the user-namespace probe, and one to spare. The
+// Builder's queue keeps builds under it; the quota holds even when something
+// else creates pods there. Finished pods do not count.
+func BuildResourceQuota(namespace string) *corev1.ResourceQuota {
+	return &corev1.ResourceQuota{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "felis-build-quota",
+			Namespace: namespace,
+			Labels: map[string]string{
+				LabelManagedBy: managedByValue,
+				LabelComponent: componentValue,
+			},
+		},
+		Spec: corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{
+			corev1.ResourcePods:                   *resource.NewQuantity(MaxConcurrentLimit+2, resource.DecimalSI),
+			corev1.ResourcePersistentVolumeClaims: *resource.NewQuantity(0, resource.DecimalSI),
+		}},
+	}
+}
+
 // resourceLimits parses the CPU/memory limits into a ResourceList.
 func resourceLimits(cpu, mem string) (corev1.ResourceList, error) {
 	if cpu == "" {

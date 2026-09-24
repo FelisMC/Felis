@@ -491,12 +491,13 @@ export function ImageBuildPage() {
                             <div className="flex justify-center">
                               <Badge 
                                 variant="outline" 
+                                title={b.status === "pending" ? t("build_queued_hint") : undefined}
                                 className={cn(
                                   "text-[10px] py-0.5 font-semibold uppercase tracking-wider w-[80px] justify-center px-0 shrink-0",
                                   STATUS_BADGE_STYLE[b.status]
                                 )}
                               >
-                                {b.status}
+                                {t(`build_status_${b.status}`)}
                               </Badge>
                             </div>
                           </td>

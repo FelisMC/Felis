@@ -493,6 +493,7 @@ build_mem_limit = "4Gi"
 build_disk_limit = "12Gi"          # §8f
 build_user_namespaces = "auto"     # §8f: auto | on | off
 build_runtime_class = ""           # §8f: e.g. "gvisor"
+max_concurrent_builds = 2          # §8f: 1-6; later builds queue
 ```
 
 Mirror the executor images into the registry once. On the node itself, push
@@ -582,7 +583,8 @@ approved-but-hostile Dockerfile and the node is the pod around it:
 | Sandbox runtime | optional `build_runtime_class` (gVisor, Kata) | below |
 | Credentials | the registry credential lives only in the `push` container; the service token only in `context-fetch` | jobspec |
 | Resources | CPU, memory and ephemeral-storage limits per container; `activeDeadlineSeconds`; the context extraction stops at 4 GiB or 200 000 entries | jobspec, `felis fetch-context` |
-| Namespace backstop | `felis-build-limits` LimitRange gives any container without limits 1 CPU / 1 GiB / 1 GiB disk | bundle |
+| Namespace backstop | `felis-build-limits` LimitRange gives any container without limits 1 CPU / 1 GiB / 1 GiB disk; `felis-build-quota` allows 8 running pods and no PVCs | bundle |
+| Concurrency | at most `[registry] max_concurrent_builds` (default 2, at most 6) builds run; later ones wait as `pending` (Queued) and start oldest first | `build.Builder` |
 
 **Reviewed bytes.** Every upload records the sha256 of the archive, and the
 review page shows it. The context download carries the same value in the

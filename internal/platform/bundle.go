@@ -27,7 +27,7 @@ type Object interface {
 // namespaced Roles + RoleBindings — felis-api and felis-operator always, plus the
 // destructive felis-reaper identity only when retention is enabled, gated with its
 // CronJob), the two weak Job SAs (build/restore, which have NO Role anywhere), the
-// build-namespace egress NetworkPolicy and LimitRange, and the minecraft-namespace
+// build-namespace egress NetworkPolicy, LimitRange and ResourceQuota, and the minecraft-namespace
 // ingress NetworkPolicies.
 //
 // Scope: this is the authorization + network fence (spec §21, §22) plus the
@@ -96,6 +96,9 @@ func Objects(p Params) []Object {
 	buildLR := build.BuildLimitRange(p.BuildNamespace)
 	buildLR.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "LimitRange"}
 	objs = append(objs, buildLR)
+	buildRQ := build.BuildResourceQuota(p.BuildNamespace)
+	buildRQ.TypeMeta = metav1.TypeMeta{APIVersion: "v1", Kind: "ResourceQuota"}
+	objs = append(objs, buildRQ)
 
 	// Minecraft-namespace ingress fence (default-deny + RCON + game), the server
 	// egress fence, and the registry's ingress fence.
