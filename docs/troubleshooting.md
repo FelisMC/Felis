@@ -13,6 +13,8 @@ graded for how far the in-repo Go test suite proves the behaviour:
 
 - **[GO-TESTED]** — a hermetic `*_test.go` exercises this exact path; the
   string/code is asserted in CI.
+- **[PG-TESTED]** — a `-tags pgint` test in `internal/pgint` drives it against a
+  real Postgres with the shipped migrations (CONTRIBUTING.md has the command).
 - **[CODE-ONLY]** — the code path and string exist and are real, but no unit
   test drives them (notably the Velocity Java plugin, which is not compiled or
   tested in this repo).
@@ -697,6 +699,11 @@ SMTP sink.]
   the activity clock never resets** and an actively-played world becomes
   reap-eligible after 15 days. Verify join events are flowing (§3a) — this is the
   most important reaper check. [INTEGRATION-ONLY for the live Postgres write.]
+  A claim also resets it: `ClaimServer` sets `last_active_at` to the claim and
+  clears `warned_*`, so a world reaped long ago and claimed again gets a full 15
+  days, and a later reap archives the new owner's world rather than reusing the
+  previous owner's archive (`FreshBackup` counts only `inactive_15d` archives
+  taken since the claim). [PG-TESTED `TestReclaimRestartsReaperClock`.]
 - **Unowned servers are still reaped.** A server with `owner_id=""` gets **no
   pre-deletion warning** (`maybeWarn` skips unowned), but is still reaped at 15d.
   [GO-TESTED `TestReapUnownedServerStillReaped`.] Claim or exempt servers you

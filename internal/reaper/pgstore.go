@@ -50,9 +50,14 @@ func (s *PGStore) ListActiveServers(ctx context.Context) ([]Candidate, error) {
 }
 
 func (s *PGStore) FreshBackup(ctx context.Context, server string, since time.Time) (Fresh, bool, error) {
-	const q = `SELECT backup_ref, offsite_at IS NOT NULL FROM world_backups
-		WHERE server_name = $1 AND status = 'present' AND created_at >= $2
-		ORDER BY offsite_at IS NOT NULL DESC, created_at DESC LIMIT 1`
+	// Only the reaper's own archives count, and only those taken since the
+	// current owner claimed the server: a manual backup may predate a panel edit
+	// that did not move last_active_at, and an archive from before the claim is
+	// the previous owner's world.
+	const q = `SELECT b.backup_ref, b.offsite_at IS NOT NULL FROM world_backups b
+		WHERE b.server_name = $1 AND b.status = 'present' AND b.reason = 'inactive_15d' AND b.created_at >= $2
+		  AND b.created_at >= COALESCE((SELECT s.claimed_at FROM servers s WHERE s.name = $1 AND s.deleted_at IS NULL), '-infinity')
+		ORDER BY b.offsite_at IS NOT NULL DESC, b.created_at DESC LIMIT 1`
 	var f Fresh
 	switch err := s.db.QueryRowContext(ctx, q, server, since).Scan(&f.Ref, &f.Offsite); {
 	case err == sql.ErrNoRows:

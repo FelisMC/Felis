@@ -104,6 +104,7 @@ func (c *fakeCluster) Stop(_ context.Context, name string) error {
 
 type fakeBackup struct {
 	id, server, ref    string
+	reason             string
 	size               int64
 	status             string // present | deleted
 	createdAt, expires time.Time
@@ -137,7 +138,7 @@ func (s *fakeStore) ListActiveServers(context.Context) ([]Candidate, error) {
 func (s *fakeStore) FreshBackup(_ context.Context, server string, since time.Time) (Fresh, bool, error) {
 	var found *fakeBackup
 	for _, b := range s.backups {
-		if b.server == server && b.status == "present" && !b.createdAt.Before(since) {
+		if b.server == server && b.status == "present" && b.reason == ReasonInactive && !b.createdAt.Before(since) {
 			if found == nil || (b.offsite && !found.offsite) {
 				found = b
 			}
@@ -154,7 +155,7 @@ func (s *fakeStore) InsertBackup(_ context.Context, rec BackupRecord) error {
 		return s.insertErr
 	}
 	s.backups = append(s.backups, &fakeBackup{
-		id: rec.ID, server: rec.ServerName, ref: rec.BackupRef, size: rec.SizeBytes,
+		id: rec.ID, server: rec.ServerName, ref: rec.BackupRef, reason: rec.Reason, size: rec.SizeBytes,
 		status: "present", createdAt: s.clock, expires: rec.ExpiresAt,
 	})
 	s.rec.add("insert")
@@ -430,6 +431,21 @@ func TestReapDeletePVCFailureIsIdempotent(t *testing.T) {
 	}
 	if len(st.backups) != 1 {
 		t.Fatalf("retry duplicated the backup row: %d rows, want 1", len(st.backups))
+	}
+}
+
+// A manual backup taken after the last join is not the reaper's archive: the
+// owner may have edited the world from the panel since, which does not move
+// last_active_at. The reap writes its own archive.
+func TestReapDoesNotReuseManualBackup(t *testing.T) {
+	r, st, _, ar := newReaper(DefaultConfig(),
+		Candidate{Name: "eta", OwnerID: "user-7", LastActiveAt: idleBy(20 * Day)})
+	st.backups = []*fakeBackup{
+		{id: "man", server: "eta", ref: "ref-man", reason: "manual", size: 5, status: "present", createdAt: idleBy(10 * Day), expires: testNow.Add(80 * Day)},
+	}
+	sum := mustRun(t, r)
+	if sum.WorldsReaped != 1 || ar.archives != 1 {
+		t.Fatalf("summary = %+v, archives = %d: want the reap to archive afresh", sum, ar.archives)
 	}
 }
 

@@ -168,8 +168,9 @@ type Store interface {
 	// ListActiveServers returns every servers row with deleted_at IS NULL.
 	ListActiveServers(ctx context.Context) ([]Candidate, error)
 
-	// FreshBackup reports an existing present backup for server whose world is
-	// still current — created at or after since (the world's last_active_at),
+	// FreshBackup reports an existing present reaper archive (reason
+	// inactive_15d) for server whose world is still current — created at or
+	// after since (the world's last_active_at) and after the current claim,
 	// preferring one already copied off-site. It makes a reap idempotent across
 	// a DeletePVC failure, and across the wait for the off-site copy: the retry
 	// reuses the archive instead of writing a duplicate.

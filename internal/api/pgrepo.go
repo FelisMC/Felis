@@ -417,6 +417,12 @@ func (p *PGRepo) ServerResources(ctx context.Context, name string) (ResourceSpec
 // user for two DIFFERENT ownerless servers serialize instead of both passing the
 // gate (audit #4); the row is additionally taken FOR UPDATE so concurrent claims
 // of the SAME server still resolve to exactly one winner.
+//
+// A claim starts the reaper's clock afresh: last_active_at moves to the claim
+// and the pre-reap warnings clear. A world reaped before keeps its release time
+// as last_active_at, so without the reset a new owner who configures it from
+// the panel before anyone joins would lose it on the next reaper run, with no
+// warning and no archive of their own.
 func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string) (bool, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -470,7 +476,8 @@ func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string) (bool, er
 	}
 
 	res, err := tx.ExecContext(ctx,
-		`UPDATE servers SET owner_id = $2, claimed_at = now() WHERE name = $1 AND owner_id IS NULL AND deleted_at IS NULL`,
+		`UPDATE servers SET owner_id = $2, claimed_at = now(), last_active_at = now(), warned_3d_at = NULL, warned_1d_at = NULL
+		 WHERE name = $1 AND owner_id IS NULL AND deleted_at IS NULL`,
 		name, userID)
 	if err != nil {
 		return false, err

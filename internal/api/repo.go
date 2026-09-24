@@ -244,6 +244,8 @@ type Repo interface {
 	// authoritative gate: a claim that would exceed a cap → ErrQuotaExceeded (403),
 	// and two concurrent claims by one user cannot both pass (audit #4).
 	// QuotaCheck remains the advisory pre-check for the handler's fast-path 403.
+	// A successful claim resets last_active_at to now and clears warned_*, so the
+	// reaper counts idleness from the claim.
 	ClaimServer(ctx context.Context, name, userID string) (bool, error)
 	// UserInAllowlist reports whether the user's linked UUID is on the server
 	// allowlist (spec §9.4).
