@@ -321,6 +321,15 @@ WATCHDOG_QUIET_FILE="/run/felis/watchdog-quiet-until"
 VELOCITY_DIR="/opt/felis/velocity"
 VELOCITY_USER="felis-velocity"
 VELOCITY_SERVICE="/etc/systemd/system/felis-velocity.service"
+# What the running proxy was last started from (velocity_fingerprint), and the builds the
+# login and lobby pods were last started on: a rerun restarts only what actually changed,
+# since each of those restarts disconnects every player online.
+VELOCITY_FINGERPRINT="${STATE_DIR}/velocity.fingerprint"
+SYSTEM_SERVER_IMAGES="${STATE_DIR}/system-server-images"
+# The nftables rules that keep PostgreSQL's port to this host and its pods, on a host
+# without firewalld (configure_postgres_firewall).
+PG_FIREWALL_RULES="${STATE_DIR}/postgres-firewall.nft"
+PG_FIREWALL_SERVICE="/etc/systemd/system/felis-postgres-firewall.service"
 JRE_DIR="/opt/felis/jre"
 K3S_BIN_DIR="${K3S_BIN_DIR:-/usr/local/bin}"
 K3S_BIN="${K3S_BIN_DIR}/k3s"
@@ -783,7 +792,18 @@ pkg_refresh_once() {
     apt) apt_get update -y ;;
     dnf|yum) : ;;   # dnf/yum refresh metadata on demand
     zypper) wait_for_pkg_locks; zypper --non-interactive refresh ;;
-    pacman) wait_for_pkg_locks; pacman -Syu --noconfirm ;;
+    # Arch supports only whole-system upgrades (-Sy alone leaves a partial upgrade), so the
+    # refresh stays -Syu, with PostgreSQL held back once a cluster exists: a new major
+    # version cannot open the old data directory, and the upgrade would take the platform's
+    # database down on an unrelated rerun. check_postgres_major explains the way forward.
+    pacman)
+      wait_for_pkg_locks
+      if [ -f "$(postgres_data_dir)/PG_VERSION" ]; then
+        pacman -Syu --noconfirm --ignore postgresql
+      else
+        pacman -Syu --noconfirm
+      fi
+      ;;
   esac
   _PKG_REFRESHED=1
 }
@@ -1791,6 +1811,12 @@ build_game_stack() {
     --build-arg PAPER_JAR_SHA256="$PAPER_JAR_SHA256" \
     -t "$FELIS_PAPER_IMAGE" "$GAME_STACK_DIR"
 
+  # The builds the system servers run, for restart_existing_system_servers. Docker's layer
+  # cache gives an unchanged build the same id, so a rerun that rebuilt nothing leaves the
+  # login and lobby pods (and every player on them) alone.
+  LIMBO_IMAGE_ID="$(docker image inspect -f '{{.Id}}' "$FELIS_LIMBO_IMAGE")"
+  LOBBY_IMAGE_ID="$(docker image inspect -f '{{.Id}}' "$FELIS_LOBBY_IMAGE")"
+
   local img
   for img in "$FELIS_LIMBO_IMAGE" "$FELIS_LOBBY_IMAGE" "$FELIS_PAPER_IMAGE"; do
     log "importing ${img} into k3s containerd"
@@ -2187,10 +2213,34 @@ WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
   systemctl enable felis-velocity
-  # restart, not `enable --now`: on a re-run the old proxy is already up and --now would
-  # leave it running against the new config.
+  # A restart disconnects every player on the network, so a rerun that changed nothing the
+  # proxy runs leaves it up. Otherwise restart, not `enable --now`: on a re-run the old proxy
+  # is already up and --now would leave it running against the new config. The fingerprint is
+  # recorded only after the restart, so a run that died between writing and restarting still
+  # restarts next time.
+  local fp
+  fp="$(velocity_fingerprint)"
+  if systemctl is-active --quiet felis-velocity \
+      && [ "$fp" = "$(cat "$VELOCITY_FINGERPRINT" 2>/dev/null || true)" ]; then
+    ok "felis-velocity unchanged; left running (0.0.0.0:${FELIS_GAME_PORT})"
+    return 0
+  fi
   systemctl restart felis-velocity
+  printf '%s\n' "$fp" > "$VELOCITY_FINGERPRINT"
   ok "felis-velocity.service enabled and started (0.0.0.0:${FELIS_GAME_PORT})"
+}
+
+# velocity_fingerprint hashes what the proxy process runs: its unit (JVM flags and system
+# properties), the JRE, the jars and the files the installer writes for it. The Via config
+# and whatever else plugins write at runtime stay out; Via rewrites its config on every load.
+velocity_fingerprint() {
+  local f
+  for f in "$VELOCITY_SERVICE" "${JRE_DIR}/release" "${VELOCITY_DIR}/velocity.jar" \
+      "${VELOCITY_DIR}/velocity.toml" "${VELOCITY_DIR}/forwarding.secret" \
+      "${VELOCITY_DIR}/plugins/felis-link/felis-link.properties" "${VELOCITY_DIR}"/plugins/*.jar; do
+    [ -f "$f" ] || continue
+    printf '%s %s\n' "$(sha256sum <"$f" | cut -d' ' -f1)" "$f"
+  done | sha256sum | cut -d' ' -f1
 }
 
 configure_velocity_firewall() {
@@ -2285,17 +2335,44 @@ install_postgres() {
   fi
 
   init_postgres_data_dir
+  check_postgres_major
   systemctl enable --now postgresql
   ok "postgresql running"
 }
 
+# check_postgres_major refuses to start a PostgreSQL server whose major version differs from
+# the one that created the data directory. The server would not start anyway; this says why
+# and what to do, instead of a failed unit in the middle of the install. Debian and Ubuntu
+# keep one cluster per version under /var/lib/postgresql/<major> and upgrade with
+# pg_upgradecluster, so they are left to their own tooling.
+check_postgres_major() {
+  local data_dir have want
+  [ "$PKG" = "apt" ] && return 0
+  data_dir="$(postgres_data_dir)"
+  [ -f "${data_dir}/PG_VERSION" ] || return 0
+  have="$(tr -d '[:space:]' < "${data_dir}/PG_VERSION")"
+  want="$( (postgres --version 2>/dev/null || psql --version 2>/dev/null) | head -n 1 \
+    | sed -nE 's/^[^0-9]*([0-9]+)\..*/\1/p')"
+  [ -n "$want" ] && [ "$have" != "$want" ] || return 0
+  die "PostgreSQL ${want} is installed, but ${data_dir} holds a PostgreSQL ${have} cluster.
+  The server cannot open it. Upgrade the cluster first (pg_upgrade, with the ${have} binaries
+  still installed), or reinstall PostgreSQL ${have}, then rerun the installer. Take a
+  database bundle before either: sudo felis db backup"
+}
+
 configure_postgres() {
-  local cfg hba
+  local cfg hba listen
   cfg="$(as_postgres psql -tAc 'SHOW config_file;' 2>/dev/null || true)"
   hba="$(as_postgres psql -tAc 'SHOW hba_file;' 2>/dev/null || true)"
   [ -n "$cfg" ] && [ -n "$hba" ] || die "could not query postgresql config/hba file paths"
+  listen="$(as_postgres psql -tAc 'SHOW listen_addresses;' 2>/dev/null || true)"
 
-  # Listen on all interfaces (applied on restart). ALTER SYSTEM is idempotent.
+  # Listen on all interfaces (applied on restart). ALTER SYSTEM is idempotent. Pods reach the
+  # database at the node IP, and configure_postgres_firewall keeps the port from everyone else.
+  #
+  # The connection itself is not encrypted (sslmode=disable in felis.toml). On this
+  # single-node shape it never leaves the host: pods reach the node IP over their veth pair
+  # and the host binary uses loopback, so TLS would guard a path no other machine is on.
   as_postgres psql -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET listen_addresses = '*';" >/dev/null
 
   # Allow the host loopback, the pod CIDR, and the node IP before broader distro defaults.
@@ -2317,8 +2394,75 @@ SQL
     as_postgres createdb -O "$DB_USER" "$DB_NAME"
   fi
 
-  systemctl restart postgresql
+  # listen_addresses is the only setting here that needs a restart, and a restart cuts
+  # every connection felis-api holds mid-transaction. pg_hba.conf and the role are live
+  # after a reload.
+  if [ "$listen" = "*" ]; then
+    as_postgres psql -v ON_ERROR_STOP=1 -tAc 'SELECT pg_reload_conf();' >/dev/null
+  else
+    systemctl restart postgresql
+  fi
+  configure_postgres_firewall
   ok "postgresql configured (listen=*, role/db '${DB_NAME}', pg_hba opened to pods)"
+}
+
+# configure_postgres_firewall keeps 5432 to this host and its pods. PostgreSQL listens on
+# every address (pods dial the node IP), and pg_hba.conf only refuses a connection after the
+# server has spoken to it. firewalld's default zone does not open 5432 (configure_k3s_firewall
+# trusts only the pod and service CIDRs), so that host needs nothing more; on any other host a
+# small nftables table of our own drops 5432 from everywhere but loopback, the pod CIDR and the
+# node's own address, loaded at boot by a oneshot unit ordered before PostgreSQL.
+configure_postgres_firewall() {
+  if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
+    return 0
+  fi
+  command -v nft >/dev/null 2>&1 || pkg_install nftables
+  command -v nft >/dev/null 2>&1 || { warn "nft is not available; PostgreSQL's 5432 is reachable from the network (pg_hba still refuses other hosts)"; return 0; }
+  local node_rule
+  case "$NODE_IP" in
+    *:*) node_rule="ip6 saddr ${NODE_IP}" ;;
+    *) node_rule="ip saddr ${NODE_IP}" ;;
+  esac
+  install -d -m 0700 "$STATE_DIR"
+  cat > "$PG_FIREWALL_RULES" <<EOF
+# Generated by deploy/bootstrap.sh — do not edit by hand; rerun the installer.
+# The first two lines make a reload replace the table instead of failing on it.
+table inet felis_postgres
+delete table inet felis_postgres
+table inet felis_postgres {
+  chain input {
+    type filter hook input priority filter; policy accept;
+    tcp dport 5432 iif "lo" accept
+    tcp dport 5432 ip saddr ${POD_CIDR} accept
+    tcp dport 5432 ${node_rule} accept
+    tcp dport 5432 drop
+  }
+}
+EOF
+  chmod 0600 "$PG_FIREWALL_RULES"
+  cat > "$PG_FIREWALL_SERVICE" <<EOF
+[Unit]
+Description=Felis: keep PostgreSQL's port to this host and its pods
+DefaultDependencies=no
+After=nftables.service
+# nftables.service starts from a flushed ruleset; a restart of it reloads this table too.
+PartOf=nftables.service
+Before=network-pre.target postgresql.service
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$(command -v nft) -f ${PG_FIREWALL_RULES}
+ExecStop=$(command -v nft) delete table inet felis_postgres
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable felis-postgres-firewall.service >/dev/null 2>&1
+  systemctl restart felis-postgres-firewall.service
+  ok "5432 accepts loopback, ${POD_CIDR} and ${NODE_IP} only (nftables table felis_postgres)"
 }
 
 # ---------------------------------------------------------------------------
@@ -3171,18 +3315,32 @@ push_version_tag() {
 
 # The login/lobby images use mutable :demo tags. Importing/pushing a replacement
 # updates containerd, but an existing StatefulSet template is byte-for-byte
-# unchanged and Kubernetes will not roll it. Recreate only the two always-on
-# system pods so a convergent bootstrap actually starts the images it just built.
+# unchanged and Kubernetes will not roll it. Recreate the two always-on system
+# pods so a convergent bootstrap actually starts the images it just built — but
+# only when the build changed: every player online is on one of these two, and a
+# rerun that rebuilt nothing has nothing to start. SYSTEM_SERVER_IMAGES records the
+# build each was last started on; it is written after the restarts, so a run that
+# died in between restarts them next time.
 restart_existing_system_servers() {
-  local name pods
-  for name in "$LOGIN_SERVER" "$LOBBY_SERVER"; do
+  local name id pods next=""
+  while read -r name id; do
+    [ -n "$name" ] || continue
+    next="${next}${name} ${id}"$'\n'
     pods="$(kube -n "$MINECRAFT_NS" get pod \
       -l "felis.lolicon.best/server=${name}" -o name 2>/dev/null || true)"
     [ -n "$pods" ] || continue
+    if [ -n "$id" ] && grep -qxF "${name} ${id}" "$SYSTEM_SERVER_IMAGES" 2>/dev/null; then
+      ok "${name} system server already runs this build; left running"
+      continue
+    fi
     log "restarting existing ${name} system server to pick up its imported image"
     kube -n "$MINECRAFT_NS" delete pod \
       -l "felis.lolicon.best/server=${name}" --wait=false
-  done
+  done <<EOF
+${LOGIN_SERVER} ${LIMBO_IMAGE_ID:-}
+${LOBBY_SERVER} ${LOBBY_IMAGE_ID:-}
+EOF
+  printf '%s' "$next" > "$SYSTEM_SERVER_IMAGES"
 }
 
 diagnose_rollout() {

@@ -1356,6 +1356,28 @@ picks up the new release on its next start. A release that changes the game
 pod in any other way still restarts running servers once, as a server edit
 does.
 
+**What a rerun restarts.** Each of these drops every connected player (or cuts
+felis-api's open transactions), so the installer restarts one only when what it
+runs changed:
+
+| Component | Restarted when |
+|---|---|
+| `felis-velocity` (the proxy) | its unit, the JRE, `velocity.jar`, `velocity.toml`, the forwarding secret, the felis-link settings or a plugin jar changed, or it was not running. The fingerprint lives in `/etc/felis/velocity.fingerprint`; delete it to force a restart. |
+| login and lobby pods | the rebuilt limbo or lobby image has a new image ID (`/etc/felis/system-server-images`). Each restarts on its own. |
+| PostgreSQL | first install only (`listen_addresses` needs a restart). A rerun reloads the configuration, which keeps connections open. |
+| felis-api, felis-operator | the image tag changed (an upgrade), or a same-version rerun rebuilt it. |
+
+**PostgreSQL across reruns.** On hosts without firewalld the installer loads an
+nftables table, `inet felis_postgres`, from `felis-postgres-firewall.service`:
+port 5432 accepts loopback, the pod network and the node's own address and drops
+everything else (`nft list table inet felis_postgres`). firewalld hosts already
+keep 5432 closed to the network. The installer also refuses to start a
+PostgreSQL whose major version differs from the cluster in the data directory,
+and prints the `pg_upgrade` steps; distributions that move the server package to
+a new major (Arch, Fedora) would otherwise leave the database unable to start.
+On Arch the installer's `pacman -Syu` holds `postgresql` back once a cluster
+exists, so the database is upgraded only when you run `pg_upgrade` yourself.
+
 `rollout undo` reverts the image only. The upgrade's database migrations stay
 applied; when they are the problem, restore the `pre-migrate` bundle the upgrade
 took (§16, "Roll back an upgrade that broke the database").

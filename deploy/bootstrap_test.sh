@@ -1583,6 +1583,204 @@ case "$mainblock" in
   *) echo "FAIL main must call resolve_felis_image right before build_image"; fails=$((fails + 1)) ;;
 esac
 
+# --- a rerun restarts only what changed -------------------------------------------------
+# The proxy, the login and lobby pods and PostgreSQL each disconnect every player (or cut
+# felis-api's transactions) when restarted, so a rerun that changed none of them must leave
+# them running, and one that changed a thing must still restart it.
+
+vsblock="$(awk '/^install_velocity_service\(\) \{/,/^}/' "$BS"; awk '/^velocity_fingerprint\(\) \{/,/^}/' "$BS")"
+[ -n "$vsblock" ] || { echo "FAIL: no install_velocity_service found in $BS"; exit 1; }
+vdir="$(mktemp -d)"
+mkdir -p "$vdir/v/plugins/felis-link" "$vdir/jre"
+printf 'jar\n' > "$vdir/v/velocity.jar"
+printf 'plugin\n' > "$vdir/v/plugins/felis-velocity.jar"
+printf 'JAVA_VERSION="25"\n' > "$vdir/jre/release"
+run_velocity_service() { # is-active(0|1)
+  ACTIVE="$1" VELOCITY_SERVICE="$vdir/unit" VELOCITY_DIR="$vdir/v" JRE_DIR="$vdir/jre" \
+  VELOCITY_FINGERPRINT="$vdir/fp" VELOCITY_USER=felis-velocity FELIS_GAME_PORT=25565 \
+  FELIS_LEGACY_FORWARDING_SERVERS= bash -c '
+    set -Eeuo pipefail
+    ok() { printf "OK: %s\n" "$*"; }
+    felis_internal_ip() { printf "10.43.0.9"; }
+    systemctl() {
+      case "$1" in
+        is-active) [ "$ACTIVE" = 1 ] ;;
+        *) printf "SYSTEMCTL %s\n" "$*" ;;
+      esac
+    }
+    '"$vsblock"'
+    install_velocity_service'
+}
+out="$(run_velocity_service 1)"
+expect "a proxy with no recorded start is restarted" "SYSTEMCTL restart felis-velocity" "$out"
+[ -s "$vdir/fp" ] && echo "PASS the restart records what the proxy runs" \
+  || { echo "FAIL no fingerprint was recorded after the restart"; fails=$((fails + 1)); }
+out="$(run_velocity_service 1)"
+case "$out" in
+  *"SYSTEMCTL restart"*) echo "FAIL an unchanged rerun restarted the proxy"; fails=$((fails + 1)) ;;
+  *"felis-velocity unchanged; left running"*) echo "PASS an unchanged rerun leaves the proxy running" ;;
+  *) echo "FAIL install_velocity_service died on an unchanged rerun: $out"; fails=$((fails + 1)) ;;
+esac
+printf 'plugin v2\n' > "$vdir/v/plugins/felis-velocity.jar"
+expect "a changed plugin jar restarts the proxy" "SYSTEMCTL restart felis-velocity" "$(run_velocity_service 1)"
+expect "a stopped proxy is started whatever the fingerprint" "SYSTEMCTL restart felis-velocity" "$(run_velocity_service 0)"
+printf 'JAVA_VERSION="25.0.1"\n' > "$vdir/jre/release"
+expect "a patched JRE restarts the proxy" "SYSTEMCTL restart felis-velocity" "$(run_velocity_service 1)"
+rm -rf "$vdir"
+
+ssblock="$(awk '/^restart_existing_system_servers\(\) \{/,/^}/' "$BS")"
+[ -n "$ssblock" ] || { echo "FAIL: no restart_existing_system_servers found in $BS"; exit 1; }
+sdir2="$(mktemp -d)"
+run_system_restart() { # limbo-id lobby-id pods(0|1)
+  LIMBO_IMAGE_ID="$1" LOBBY_IMAGE_ID="$2" PODS="$3" SYSTEM_SERVER_IMAGES="$sdir2/state" \
+  LOGIN_SERVER=login LOBBY_SERVER=lobby MINECRAFT_NS=minecraft bash -c '
+    set -Eeuo pipefail
+    ok() { printf "OK: %s\n" "$*"; }
+    log() { :; }
+    kube() {
+      case "$*" in
+        *"get pod"*) [ "$PODS" = 1 ] && printf "pod/x-0\n" || true ;;
+        *delete*) printf "KUBE %s\n" "$*" ;;
+      esac
+    }
+    '"$ssblock"'
+    restart_existing_system_servers'
+}
+out="$(run_system_restart sha256:aaa sha256:bbb 1)"
+expect "an unrecorded login pod is restarted" "delete pod -l felis.lolicon.best/server=login" "$out"
+expect "an unrecorded lobby pod is restarted" "delete pod -l felis.lolicon.best/server=lobby" "$out"
+out="$(run_system_restart sha256:aaa sha256:bbb 1)"
+case "$out" in
+  *delete*) echo "FAIL an unchanged rebuild restarted a system server"; fails=$((fails + 1)) ;;
+  *"already runs this build"*) echo "PASS an unchanged rebuild leaves the system servers running" ;;
+  *) echo "FAIL restart_existing_system_servers died on an unchanged rebuild: $out"; fails=$((fails + 1)) ;;
+esac
+out="$(run_system_restart sha256:aaa sha256:ccc 1)"
+expect "a new lobby build restarts the lobby" "delete pod -l felis.lolicon.best/server=lobby" "$out"
+case "$out" in
+  *"server=login"*) echo "FAIL a new lobby build restarted the login gate too"; fails=$((fails + 1)) ;;
+  *) echo "PASS a new lobby build leaves the login gate running" ;;
+esac
+rm -f "$sdir2/state"
+out="$(run_system_restart sha256:aaa sha256:ccc 0)"
+case "$out" in
+  *delete*) echo "FAIL a missing pod was deleted"; fails=$((fails + 1)) ;;
+  *) echo "PASS no pod, nothing to restart" ;;
+esac
+expect "the builds are recorded even before the pods exist" "lobby sha256:ccc" "$(cat "$sdir2/state")"
+rm -rf "$sdir2"
+
+pgblock="$(awk '/^configure_postgres\(\) \{/,/^}/' "$BS")"
+[ -n "$pgblock" ] || { echo "FAIL: no configure_postgres found in $BS"; exit 1; }
+pgcalls="$(mktemp)"
+run_configure_pg() { # current listen_addresses
+  : > "$pgcalls"
+  LISTEN="$1" CALLS="$pgcalls" DB_NAME=felis DB_USER=felis DB_PASSWORD=pw bash -c '
+    set -Eeuo pipefail
+    ok() { :; }
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    as_postgres() {
+      case "$*" in
+        *"SHOW config_file"*) echo /c ;;
+        *"SHOW hba_file"*) echo /h ;;
+        *"SHOW listen_addresses"*) echo "$LISTEN" ;;
+        *pg_reload_conf*) echo RELOAD >> "$CALLS" ;;
+        *"SELECT 1 FROM pg_database"*) echo 1 ;;
+        *) cat >/dev/null ;;
+      esac
+    }
+    write_pg_hba_block() { :; }
+    configure_postgres_firewall() { echo FIREWALL; }
+    systemctl() { printf "SYSTEMCTL %s\n" "$*"; }
+    '"$pgblock"'
+    configure_postgres' < /dev/null
+  cat "$pgcalls"
+}
+out="$(run_configure_pg '*')"
+case "$out" in
+  *"SYSTEMCTL restart postgresql"*) echo "FAIL a rerun restarted PostgreSQL under felis-api"; fails=$((fails + 1)) ;;
+  *RELOAD*) echo "PASS a rerun reloads PostgreSQL instead of restarting it" ;;
+  *) echo "FAIL configure_postgres neither reloaded nor restarted: $out"; fails=$((fails + 1)) ;;
+esac
+expect "the firewall step runs" "FIREWALL" "$out"
+expect "a first install restarts PostgreSQL to listen on the node" "SYSTEMCTL restart postgresql" "$(run_configure_pg localhost)"
+rm -f "$pgcalls"
+
+pmblock="$(awk '/^check_postgres_major\(\) \{/,/^}/' "$BS")"
+[ -n "$pmblock" ] || { echo "FAIL: no check_postgres_major found in $BS"; exit 1; }
+pmdir="$(mktemp -d)"
+run_pg_major() { # PKG cluster-version server-version
+  printf '%s\n' "$2" > "$pmdir/PG_VERSION"
+  PKG="$1" SERVER="$3" DATA="$pmdir" bash -c '
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    postgres_data_dir() { printf "%s\n" "$DATA"; }
+    postgres() { printf "postgres (PostgreSQL) %s\n" "$SERVER"; }
+    '"$pmblock"'
+    check_postgres_major && echo STARTS'
+}
+expect "a new major version over an old cluster is refused" "DIE: PostgreSQL 17 is installed, but $pmdir holds a PostgreSQL 16 cluster" \
+  "$(run_pg_major dnf 16 17.2)"
+expect "the refusal names the way forward" "pg_upgrade" "$(run_pg_major pacman 16 17.2)"
+expect "the same major version starts" "STARTS" "$(run_pg_major dnf 16 16.4)"
+expect "Debian-family clusters are left to pg_upgradecluster" "STARTS" "$(run_pg_major apt 15 17.2)"
+rm -rf "$pmdir"
+
+rfblock="$(awk '/^pkg_refresh_once\(\) \{/,/^}/' "$BS")"
+pmdir="$(mktemp -d)"
+run_refresh() {
+  PKG=pacman DATA="$pmdir" bash -c '
+    wait_for_pkg_locks() { :; }
+    postgres_data_dir() { printf "%s\n" "$DATA"; }
+    pacman() { printf "PACMAN %s\n" "$*"; }
+    '"$rfblock"'
+    pkg_refresh_once'
+}
+case "$(run_refresh)" in
+  *--ignore*) echo "FAIL a host with no cluster yet held PostgreSQL back"; fails=$((fails + 1)) ;;
+  *"PACMAN -Syu"*) echo "PASS a fresh Arch host upgrades normally" ;;
+  *) echo "FAIL pkg_refresh_once did not refresh pacman"; fails=$((fails + 1)) ;;
+esac
+printf '16\n' > "$pmdir/PG_VERSION"
+expect "an Arch rerun holds PostgreSQL at the cluster's version" "PACMAN -Syu --noconfirm --ignore postgresql" "$(run_refresh)"
+rm -rf "$pmdir"
+
+# The rules heredoc closes nft blocks with a bare "}", so stop at the function's own brace.
+fwblock="$(awk '/^configure_postgres_firewall\(\) \{/ { f = 1 }
+  f { print; if ($0 ~ /<<EOF$/) h = 1; else if ($0 == "EOF") h = 0; else if (!h && $0 == "}") exit }' "$BS")"
+[ -n "$fwblock" ] || { echo "FAIL: no configure_postgres_firewall found in $BS"; exit 1; }
+fwdir="$(mktemp -d)"
+run_pg_firewall() { # firewalld-active(0|1) node-ip
+  FWD="$1" NODE_IP="$2" POD_CIDR=10.42.0.0/16 STATE_DIR="$fwdir" \
+  PG_FIREWALL_RULES="$fwdir/pg.nft" PG_FIREWALL_SERVICE="$fwdir/pg.service" bash -c '
+    set -Eeuo pipefail
+    ok() { :; }
+    warn() { printf "WARN: %s\n" "$*"; }
+    pkg_install() { :; }
+    firewall-cmd() { :; }
+    nft() { :; }
+    systemctl() {
+      case "$1" in
+        is-active) [ "$FWD" = 1 ] ;;
+        *) printf "SYSTEMCTL %s\n" "$*" ;;
+      esac
+    }
+    '"$fwblock"'
+    configure_postgres_firewall'
+}
+out="$(run_pg_firewall 1 203.0.113.7)"
+[ -e "$fwdir/pg.nft" ] && { echo "FAIL a firewalld host got a second firewall"; fails=$((fails + 1)); } \
+  || echo "PASS firewalld already closes 5432"
+out="$(run_pg_firewall 0 203.0.113.7)"
+rules="$(cat "$fwdir/pg.nft")"
+expect "the pods may reach the database" "tcp dport 5432 ip saddr 10.42.0.0/16 accept" "$rules"
+expect "the node itself may reach the database" "tcp dport 5432 ip saddr 203.0.113.7 accept" "$rules"
+expect "everyone else is dropped" "tcp dport 5432 drop" "$rules"
+expect "the rules load at boot" "SYSTEMCTL restart felis-postgres-firewall.service" "$out"
+expect "the unit orders itself before PostgreSQL" "Before=network-pre.target postgresql.service" "$(cat "$fwdir/pg.service")"
+run_pg_firewall 0 2001:db8::7 >/dev/null
+expect "a v6 node address gets a v6 rule" "tcp dport 5432 ip6 saddr 2001:db8::7 accept" "$(cat "$fwdir/pg.nft")"
+rm -rf "$fwdir"
+
 
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then

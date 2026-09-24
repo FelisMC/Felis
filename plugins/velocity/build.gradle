@@ -64,3 +64,11 @@ sourceSets {
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
 }
+
+// Byte-identical jars from identical sources. deploy/bootstrap.sh restarts the proxy only when
+// a file it runs changed (velocity_fingerprint), and build-time timestamps in the jar would
+// make every rebuild look like a change and disconnect every player on each rerun.
+tasks.withType(AbstractArchiveTask).configureEach {
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
