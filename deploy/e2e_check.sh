@@ -4,6 +4,7 @@
 #
 #   sudo bash deploy/e2e_check.sh install   # after the first run
 #   sudo bash deploy/e2e_check.sh rerun     # after the same commit ran again
+#   sudo bash deploy/e2e_check.sh release   # after the newest release installed
 #   sudo bash deploy/e2e_check.sh upgrade   # after this commit ran over a release
 #
 # It asks what an operator's first minutes ask: the binary runs, the control plane is
@@ -12,7 +13,7 @@
 # (it restarts only when what it runs changed) and keep every earlier answer.
 set -euo pipefail
 
-phase="${1:?usage: e2e_check.sh install|rerun|upgrade}"
+phase="${1:?usage: e2e_check.sh install|rerun|release|upgrade}"
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 KUBECTL=(/usr/local/bin/k3s kubectl)
 PID_FILE=/var/tmp/felis-e2e-velocity.pid
@@ -43,9 +44,12 @@ check "felis-api is ready (database and cluster reachable)" \
 for unit in k3s postgresql felis-velocity; do
   check "${unit} is active" systemctl is-active --quiet "$unit"
 done
-for timer in felis-db-backup.timer felis-watchdog.timer; do
-  check "${timer} is scheduled" systemctl is-enabled --quiet "$timer"
-done
+# A release may predate a timer; what this commit installs has them all.
+if [ "$phase" != release ]; then
+  for timer in felis-db-backup.timer felis-watchdog.timer; do
+    check "${timer} is scheduled" systemctl is-enabled --quiet "$timer"
+  done
+fi
 
 # A status ping is the proxy's own answer (ping passthrough is off), so it proves the JRE,
 # Velocity and its config without a login gate or a Mojang account.
@@ -90,6 +94,14 @@ while len(data) < size:
 print(json.loads(data)["version"]["name"])
 EOF
 }
+# The installer returns once the unit is started; the JVM binds the port a few
+# seconds later.
+for _ in $(seq 30); do
+  if version="$(ping_proxy 2>&1)"; then
+    break
+  fi
+  sleep 2
+done
 if version="$(ping_proxy 2>&1)"; then
   pass "the proxy answers a status ping (${version})"
 else
@@ -98,7 +110,7 @@ fi
 
 pid="$(systemctl show -p MainPID --value felis-velocity)"
 case "$phase" in
-  install) printf '%s\n' "$pid" > "$PID_FILE" ;;
+  install | release) printf '%s\n' "$pid" > "$PID_FILE" ;;
   rerun)
     if [ "$pid" = "$(cat "$PID_FILE" 2>/dev/null)" ]; then
       pass "the rerun left the proxy running (pid ${pid})"

@@ -125,7 +125,7 @@ jobs:
 
       - name: Check the release install
         if: steps.release.outputs.tag != ''
-        run: sudo bash deploy/e2e_check.sh install
+        run: sudo bash deploy/e2e_check.sh release
 
       - name: Upgrade to this commit
         if: steps.release.outputs.tag != ''
