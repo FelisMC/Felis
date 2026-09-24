@@ -28,6 +28,12 @@ type ServerInfo struct {
 	JavaMemory      string `json:"javaMemory,omitempty"`
 	StorageSize     string `json:"storageSize,omitempty"`
 	CPU             string `json:"cpu,omitempty"`
+	// IdleStopSeconds is how long the server may sit empty before idle
+	// auto-stop scales it down; 0 means it never idles out.
+	IdleStopSeconds int32 `json:"idleStopSeconds"`
+	// PlayerCountUnknown is true while the operator cannot read the player
+	// count over RCON; idle auto-stop waits until it can.
+	PlayerCountUnknown bool `json:"playerCountUnknown,omitempty"`
 }
 
 // CreateServerInput is the validated, structured create-server form (spec §15).
@@ -67,6 +73,9 @@ type ServerSpecPatch struct {
 	// (felis-api resolves both from the same form) or both stay nil.
 	JavaMemory *string
 	Resources  *corev1.ResourceRequirements
+	// IdleStopSeconds sets idle auto-stop: 0 turns it off, anything else is the
+	// empty duration before the stop (already range-checked).
+	IdleStopSeconds *int32
 }
 
 // Cluster is the lifecycle-layer access the API depends on: reads of the

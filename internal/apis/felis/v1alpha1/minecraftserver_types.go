@@ -226,7 +226,23 @@ type StartupSpec struct {
 	HealthHTTPPath string `json:"healthHTTPPath,omitempty"`
 }
 
+// DefaultEmptySecondsBeforeStop is how long a user server may sit empty before
+// idle auto-stop scales it down, when nobody chose another value (spec §8).
+const DefaultEmptySecondsBeforeStop int32 = 600
+
+// DefaultIdle is the idle policy every user server is created with: stop after
+// DefaultEmptySecondsBeforeStop of an empty server. System servers (the login
+// gate, the lobby) never take it; they must stay up.
+func DefaultIdle() IdleSpec {
+	return IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: DefaultEmptySecondsBeforeStop}
+}
+
 // IdleSpec configures empty-server auto-stop (spec §8).
+//
+// The two fields together tell a choice from its absence: turning auto-stop
+// off keeps EmptySecondsBeforeStop set (AutoStopEnabled=false, seconds > 0),
+// while a server that predates the default has both zero, and only that one
+// is filled in by `felis converge`.
 type IdleSpec struct {
 	// AutoStopEnabled turns on idle auto-stop.
 	AutoStopEnabled bool `json:"autoStopEnabled,omitempty"`

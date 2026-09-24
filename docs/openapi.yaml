@@ -298,6 +298,18 @@ components:
         endpointAddress: { type: string }
         playersOnline: { type: integer, format: int32 }
         playersMax: { type: integer, format: int32 }
+        displayName: { type: string }
+        image: { type: string }
+        javaMemory: { type: string }
+        storageSize: { type: string }
+        cpu: { type: string }
+        idleStopSeconds:
+          type: integer
+          format: int32
+          description: Seconds the server may sit empty before idle auto-stop scales it down; 0 when it never idles out (off, RCON disabled, or a system server).
+        playerCountUnknown:
+          type: boolean
+          description: Present and true while the operator cannot read the player count over RCON; idle auto-stop waits until it can.
 
     MyServerView:
       type: object
@@ -4550,8 +4562,8 @@ paths:
               type: object
               description: Only the supplied fields are patched; an empty patch is rejected.
               properties:
-                display_name: { type: string }
-                autostart_policy: { type: string }
+                displayName: { type: string }
+                autostartPolicy: { type: string }
                 image: { type: string }
                 memory: { type: string }
                 storage:
@@ -4561,9 +4573,13 @@ paths:
                   type: object
                   properties:
                     cpu: { type: string }
-                    cpu_request: { type: string }
+                    cpuRequest: { type: string }
                     memory: { type: string }
-                    memory_request: { type: string }
+                    memoryRequest: { type: string }
+                idleStopSeconds:
+                  type: integer
+                  format: int32
+                  description: Idle auto-stop. 0 turns it off; otherwise the server stops after this many seconds with nobody online (60–86400, else 400 bad_idle_stop).
       responses:
         '200':
           description: Patched.

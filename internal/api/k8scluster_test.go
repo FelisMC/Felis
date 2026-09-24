@@ -63,3 +63,72 @@ func TestCreateServerEnablesRcon(t *testing.T) {
 		t.Fatalf("rcon port = %d, want 0 so the operator default is the only copy", ms.Spec.Rcon.Port)
 	}
 }
+
+// TestCreateServerDefaultsIdleStop pins the other half of "a server nobody plays
+// on stops itself": the operator only idles out a server whose spec asks for
+// it, so a create that leaves spec.idle empty ships a server that runs forever.
+func TestCreateServerDefaultsIdleStop(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+	k := NewK8sCluster(c, "minecraft")
+	if err := k.CreateServer(context.Background(), CreateServerInput{
+		Name: "survival", Subdomain: "survival", Image: "reg/paper:1", JavaMemory: "2G", StorageSize: "10Gi",
+	}); err != nil {
+		t.Fatalf("CreateServer: %v", err)
+	}
+	info, err := k.GetServer(context.Background(), "survival")
+	if err != nil {
+		t.Fatalf("GetServer: %v", err)
+	}
+	if info.IdleStopSeconds != v1alpha1.DefaultEmptySecondsBeforeStop {
+		t.Fatalf("idleStopSeconds = %d, want the default %d", info.IdleStopSeconds, v1alpha1.DefaultEmptySecondsBeforeStop)
+	}
+}
+
+// TestPatchIdleStopKeepsTheChoiceVisible: turning idle stop off must leave a
+// duration on the spec, because a spec with none at all is what converge fills
+// with the default. Off followed by a converge must stay off.
+func TestPatchIdleStopKeepsTheChoiceVisible(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	legacy := &v1alpha1.MinecraftServer{}
+	legacy.Name, legacy.Namespace = "survival", "minecraft"
+	legacy.Spec.Rcon.Enabled = true
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(legacy).Build()
+	k := NewK8sCluster(c, "minecraft")
+	get := func() v1alpha1.IdleSpec {
+		var ms v1alpha1.MinecraftServer
+		if err := c.Get(context.Background(), types.NamespacedName{Namespace: "minecraft", Name: "survival"}, &ms); err != nil {
+			t.Fatalf("get: %v", err)
+		}
+		return ms.Spec.Idle
+	}
+
+	off := int32(0)
+	if err := k.PatchServerSpec(context.Background(), "survival", ServerSpecPatch{IdleStopSeconds: &off}); err != nil {
+		t.Fatalf("patch off: %v", err)
+	}
+	if got := get(); got.AutoStopEnabled || got.EmptySecondsBeforeStop <= 0 {
+		t.Fatalf("idle after off = %+v, want disabled with a duration kept", got)
+	}
+
+	thirty := int32(1800)
+	if err := k.PatchServerSpec(context.Background(), "survival", ServerSpecPatch{IdleStopSeconds: &thirty}); err != nil {
+		t.Fatalf("patch on: %v", err)
+	}
+	if got := get(); !got.AutoStopEnabled || got.EmptySecondsBeforeStop != 1800 {
+		t.Fatalf("idle after 1800 = %+v, want enabled at 1800", got)
+	}
+	info, err := k.GetServer(context.Background(), "survival")
+	if err != nil {
+		t.Fatalf("GetServer: %v", err)
+	}
+	if info.IdleStopSeconds != 1800 {
+		t.Fatalf("view idleStopSeconds = %d, want 1800", info.IdleStopSeconds)
+	}
+}

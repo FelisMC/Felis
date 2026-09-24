@@ -243,6 +243,19 @@ func buildMinecraftServerFromApplyRequest(req applyRequest, namespace string) (*
 			AutostartPolicy: policy,
 			Storage:         v1alpha1.StorageSpec{Size: storageQ.String()},
 			Resources:       corev1.ResourceRequirements{Limits: limits, Requests: requests},
+			// The rest matches what felis-api's create writes (K8sCluster.CreateServer):
+			// fall back to the login gate while stopped, RCON on (readiness, the
+			// player count and the console all ride it; the operator mints the
+			// password), and the default idle stop.
+			FallbackServer: naming.SystemLoginServer,
+			Rcon: v1alpha1.RconSpec{
+				Enabled: true,
+				SecretRef: v1alpha1.SecretKeyRef{
+					Name: naming.RconSecretName(req.Name),
+					Key:  naming.RconSecretKey,
+				},
+			},
+			Idle: v1alpha1.DefaultIdle(),
 		},
 	}, nil
 }

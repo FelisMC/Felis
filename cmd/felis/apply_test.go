@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	"felis.lolicon.best/internal/naming"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
@@ -166,6 +167,18 @@ func TestBuildMinecraftServerFromApplyRequest_Valid(t *testing.T) {
 	}
 	if ms.Spec.Storage.Size != "20Gi" {
 		t.Errorf("Storage.Size = %q, want 20Gi", ms.Spec.Storage.Size)
+	}
+	// Same operational defaults as the API create path: without RCON the server
+	// never reports players and the console answers 503; without spec.idle it
+	// never stops on its own.
+	if !ms.Spec.Rcon.Enabled || ms.Spec.Rcon.SecretRef.Name != naming.RconSecretName("test-server") {
+		t.Errorf("Rcon = %+v, want enabled with the operator-minted secret", ms.Spec.Rcon)
+	}
+	if ms.Spec.Idle != v1alpha1.DefaultIdle() {
+		t.Errorf("Idle = %+v, want the default %+v", ms.Spec.Idle, v1alpha1.DefaultIdle())
+	}
+	if ms.Spec.FallbackServer != naming.SystemLoginServer {
+		t.Errorf("FallbackServer = %q, want the login gate", ms.Spec.FallbackServer)
 	}
 	mem, ok := ms.Spec.Resources.Limits[corev1.ResourceMemory]
 	if !ok {

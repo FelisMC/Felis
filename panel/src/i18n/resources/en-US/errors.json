@@ -35,6 +35,7 @@
   "bad_subdomain": "That subdomain is invalid — use 3–32 lowercase letters, digits or dashes, and avoid reserved names.",
   "at_capacity": "The cluster is at its running-server cap — try again once a server stops.",
   "storage_immutable": "Storage size can't be changed online.",
+  "bad_idle_stop": "Idle stop must be between 1 minute and 24 hours, or Never.",
   "email_taken": "That email is already verified on another account — sign in with it or use another address.",
   "mail_undeliverable": "The verification email could not be delivered — try again later, or ask the operator to check the mail relay.",
   "bad_path": "That path is invalid — use a relative path inside the world directory.",

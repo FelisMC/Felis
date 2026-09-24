@@ -323,6 +323,8 @@ export const api = {
     autostartPolicy?: AutostartPolicy;
     image?: string;
     memory?: string;
+    /** Idle auto-stop: 0 turns it off, else seconds empty before the stop (60–86400). */
+    idleStopSeconds?: number;
     resources?: {
       cpu?: string;
       cpuRequest?: string;
@@ -738,6 +740,8 @@ export function humanizeError(e: unknown): string {
       return t("at_capacity");
     case "storage_immutable":
       return t("storage_immutable");
+    case "bad_idle_stop":
+      return t("bad_idle_stop");
     // Email identity: the verified-email uniqueness index (migration 0020) plus
     // VerifyEmailOTP's guard make a second verified holder impossible; the OTP
     // relay can also refuse to deliver at all.

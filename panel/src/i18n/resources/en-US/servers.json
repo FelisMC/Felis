@@ -126,7 +126,7 @@
   "create_server_cancel": "Cancel",
   "create_server_submit": "Create",
   "edit_server_title": "Edit Server Config",
-  "edit_server_desc": "Configure display name, autostart policy, image, memory, and CPU",
+  "edit_server_desc": "Configure display name, autostart policy, image, memory, CPU, and idle stop",
   "edit_server_desc_long": "Updating server spec. Fields left unchanged will retain their current values.",
   "edit_server_submit": "Save Config",
   "luckperms_group_name": "Group Name",
@@ -167,5 +167,12 @@
   "luckperms_clear_history": "Clear history",
   "edit_server_cpu": "CPU Limit",
   "edit_server_cpu_placeholder": "e.g. 1, 2, 500m",
-  "owned_filter_mine": "me"
+  "owned_filter_mine": "me",
+  "edit_server_idle": "Idle auto-stop",
+  "edit_server_idle_hint": "Stops the server after this long with nobody online, freeing memory and CPU. The next player to join wakes it.",
+  "edit_server_idle_unknown": "The player count can’t be read right now, so idle stop is paused until it can.",
+  "idle_stop_never": "Never",
+  "idle_stop_seconds": "{{count}} s",
+  "idle_stop_minutes": "{{count}} min",
+  "idle_stop_hours": "{{count}} h"
 }

@@ -618,6 +618,9 @@ type patchServerRequest struct {
 	Image           *string          `json:"image,omitempty"`
 	Memory          *string          `json:"memory,omitempty"`
 	Resources       *resourceRequest `json:"resources,omitempty"`
+	// IdleStopSeconds sets idle auto-stop: 0 turns it off, otherwise the server
+	// stops after that many seconds with nobody online (60 to 86400).
+	IdleStopSeconds *int32 `json:"idleStopSeconds,omitempty"`
 	// Storage is recognized only so the endpoint can reject it with a precise
 	// reason rather than an opaque "unknown field": a StatefulSet's PVC capacity
 	// is immutable except for storage-class-gated expansion, which this build does
@@ -625,6 +628,12 @@ type patchServerRequest struct {
 	// honor, so it is refused (storage_immutable) instead of silently dropped.
 	Storage *string `json:"storage,omitempty"`
 }
+
+// The idle auto-stop range an admin may pick through PATCH /servers/{name}.
+const (
+	minIdleStopSeconds = 60
+	maxIdleStopSeconds = 86400
+)
 
 // handlePatchServer (spec §7 PATCH /servers/{name}) is the admin-tier spec
 // mutation: it validates the structured form, re-admits any new image against the
@@ -647,7 +656,7 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 
 	// An empty patch is a client mistake, not a no-op success.
 	if body.DisplayName == nil && body.AutostartPolicy == nil && body.Image == nil &&
-		body.Memory == nil && body.Resources == nil && body.Storage == nil {
+		body.Memory == nil && body.Resources == nil && body.Storage == nil && body.IdleStopSeconds == nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
 			"patch must set at least one field"))
 		return
@@ -684,6 +693,19 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 		}
 		patch.AutostartPolicy = &policy
 		changed = append(changed, "autostartPolicy")
+	}
+
+	if body.IdleStopSeconds != nil {
+		// A minute is the floor: below it a player who drops for a reconnect
+		// finds the server stopping under them. A day is the ceiling; longer is
+		// what "off" is for.
+		if s := *body.IdleStopSeconds; s != 0 && (s < minIdleStopSeconds || s > maxIdleStopSeconds) {
+			writeError(w, r, newError(http.StatusBadRequest, "bad_idle_stop",
+				"idleStopSeconds must be 0 (off) or between %d and %d", minIdleStopSeconds, maxIdleStopSeconds))
+			return
+		}
+		patch.IdleStopSeconds = body.IdleStopSeconds
+		changed = append(changed, "idleStopSeconds")
 	}
 
 	if body.Image != nil {

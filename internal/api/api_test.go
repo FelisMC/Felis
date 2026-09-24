@@ -1576,6 +1576,9 @@ func (c *fakeCluster) PatchServerSpec(_ context.Context, n string, p ServerSpecP
 	if p.AutostartPolicy != nil {
 		info.AutostartPolicy = string(*p.AutostartPolicy)
 	}
+	if p.IdleStopSeconds != nil {
+		info.IdleStopSeconds = *p.IdleStopSeconds
+	}
 	return nil
 }
 

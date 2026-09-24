@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Settings, ChevronRight } from "lucide-react";
+import { Settings, ChevronRight, AlertTriangle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ConfirmFooter } from "@/components/ConfirmFooter";
 import {
@@ -25,6 +25,17 @@ import type { AutostartPolicy } from "@/lib/types";
 
 const MEMORY_OPTIONS = ["2Gi", "4Gi", "6Gi", "8Gi"];
 
+/** Idle auto-stop presets in seconds; "0" is Never. The server default is 600. */
+const IDLE_OPTIONS = ["0", "300", "600", "900", "1800", "3600", "7200"];
+
+/** idleLabel renders an idle-stop duration the way a person says it. */
+function idleLabel(t: (key: string, opts?: Record<string, unknown>) => string, seconds: number): string {
+  if (seconds <= 0) return t("idle_stop_never");
+  if (seconds % 3600 === 0) return t("idle_stop_hours", { count: seconds / 3600 });
+  if (seconds % 60 === 0) return t("idle_stop_minutes", { count: seconds / 60 });
+  return t("idle_stop_seconds", { count: seconds });
+}
+
 function policyOptions(t: (key: string) => string): { value: AutostartPolicy; label: string }[] {
   return [
     { value: "ownerOnly", label: t("create_server_policy_owner") },
@@ -39,6 +50,8 @@ interface EditServerForm {
   image: string;
   memory: string;
   cpu: string;
+  /** Idle auto-stop seconds as a Select value; "0" is Never. */
+  idleStop: string;
 }
 
 interface Props {
@@ -49,6 +62,9 @@ interface Props {
   currentMemory?: string;
   currentStorage?: string;
   currentCpu?: string;
+  currentIdleStopSeconds?: number;
+  /** The operator cannot read the player count, so idle stop is paused. */
+  playerCountUnknown?: boolean;
   onUpdated: () => void;
 }
 
@@ -60,8 +76,11 @@ export function EditServerDialog({
   currentMemory = "",
   currentStorage = "",
   currentCpu = "",
+  currentIdleStopSeconds = 0,
+  playerCountUnknown = false,
   onUpdated,
 }: Props) {
+  const currentIdleStop = String(currentIdleStopSeconds);
   const { t } = useTranslation("servers");
   const [open, setOpen] = useState(false);
   const images = useAsync(() => api.listImages(), []);
@@ -72,6 +91,7 @@ export function EditServerDialog({
     image: currentImage,
     memory: currentMemory,
     cpu: currentCpu,
+    idleStop: currentIdleStop,
   });
 
   const [error, setError] = useState<string | null>(null);
@@ -86,10 +106,11 @@ export function EditServerDialog({
         image: currentImage,
         memory: currentMemory,
         cpu: currentCpu,
+        idleStop: currentIdleStop,
       });
       setError(null);
     }
-  }, [open, currentDisplayName, currentPolicy, currentImage, currentMemory, currentCpu]);
+  }, [open, currentDisplayName, currentPolicy, currentImage, currentMemory, currentCpu, currentIdleStop]);
 
   function set<K extends keyof EditServerForm>(k: K, v: EditServerForm[K]) {
     setForm((f) => ({ ...f, [k]: v }));
@@ -103,7 +124,8 @@ export function EditServerDialog({
     form.autostartPolicy !== currentPolicy ||
     form.image !== currentImage ||
     form.memory !== currentMemory ||
-    form.cpu !== currentCpu;
+    form.cpu !== currentCpu ||
+    form.idleStop !== currentIdleStop;
 
   const canSubmit = hasChanges && !submitting;
 
@@ -129,6 +151,9 @@ export function EditServerDialog({
         payload.resources = {
           cpu: form.cpu.trim(),
         };
+      }
+      if (form.idleStop !== currentIdleStop) {
+        payload.idleStopSeconds = Number(form.idleStop);
       }
 
       await api.patchServer(serverName, payload);
@@ -263,6 +288,33 @@ export function EditServerDialog({
                 </SelectContent>
               </Select>
             </div>
+          </div>
+
+          <div className="grid gap-2">
+            <Label>{t("edit_server_idle")}</Label>
+            <Select value={form.idleStop} onValueChange={(v) => set("idleStop", v)}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {/* A duration set outside the presets (kubectl, converge) stays selectable. */}
+                {!IDLE_OPTIONS.includes(currentIdleStop) && (
+                  <SelectItem value={currentIdleStop}>{idleLabel(t, currentIdleStopSeconds)}</SelectItem>
+                )}
+                {IDLE_OPTIONS.map((s) => (
+                  <SelectItem key={s} value={s}>
+                    {idleLabel(t, Number(s))}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">{t("edit_server_idle_hint")}</p>
+            {playerCountUnknown && form.idleStop !== "0" && (
+              <p className="flex items-start gap-1.5 text-xs text-amber-600 dark:text-amber-400">
+                <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
+                {t("edit_server_idle_unknown")}
+              </p>
+            )}
           </div>
 
           {error && <p className="text-sm text-destructive">{error}</p>}

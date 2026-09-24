@@ -286,6 +286,8 @@ export function ServerConsole() {
                   currentMemory={data.javaMemory}
                   currentStorage={data.storageSize}
                   currentCpu={data.cpu}
+                  currentIdleStopSeconds={data.idleStopSeconds}
+                  playerCountUnknown={data.playerCountUnknown}
                   onUpdated={reload}
                 />
               )}

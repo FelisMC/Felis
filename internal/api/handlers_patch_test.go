@@ -273,3 +273,39 @@ func TestPatchServerImageWithoutBuilderIs503(t *testing.T) {
 		t.Error("no image may be patched without a Builder")
 	}
 }
+
+// TestPatchServerIdleStop covers the idle auto-stop knob: 0 turns it off, a
+// value inside the range is carried to the cluster, and one outside is refused
+// before anything is written.
+func TestPatchServerIdleStop(t *testing.T) {
+	for _, tc := range []struct {
+		body     string
+		wantCode int
+		want     int32
+	}{
+		{`{"idleStopSeconds":0}`, http.StatusOK, 0},
+		{`{"idleStopSeconds":900}`, http.StatusOK, 900},
+		{`{"idleStopSeconds":59}`, http.StatusBadRequest, 0},
+		{`{"idleStopSeconds":86401}`, http.StatusBadRequest, 0},
+		{`{"idleStopSeconds":-5}`, http.StatusBadRequest, 0},
+	} {
+		api, _, cl, _ := newPatchAPI()
+		w := patchSurvival(api, tc.body)
+		if w.Code != tc.wantCode {
+			t.Fatalf("%s: code = %d, want %d (%s)", tc.body, w.Code, tc.wantCode, w.Body.String())
+		}
+		p, patched := cl.patched["survival"]
+		if tc.wantCode != http.StatusOK {
+			if patched {
+				t.Fatalf("%s: a refused value reached the cluster: %+v", tc.body, p)
+			}
+			continue
+		}
+		if !patched || p.IdleStopSeconds == nil || *p.IdleStopSeconds != tc.want {
+			t.Fatalf("%s: patched idle = %v, want %d", tc.body, p.IdleStopSeconds, tc.want)
+		}
+		if got := cl.byName["survival"].IdleStopSeconds; got != tc.want {
+			t.Fatalf("%s: view idleStopSeconds = %d, want %d", tc.body, got, tc.want)
+		}
+	}
+}

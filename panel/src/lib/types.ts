@@ -36,6 +36,10 @@ export interface ServerInfo {
   javaMemory?: string;
   storageSize?: string;
   cpu?: string;
+  /** Seconds empty before idle auto-stop; 0 when the server never idles out. */
+  idleStopSeconds?: number;
+  /** True while the operator cannot read the player count; idle stop waits. */
+  playerCountUnknown?: boolean;
 }
 
 /** ServerStatus is GET /servers/{name}/status. It never carries `owned` or

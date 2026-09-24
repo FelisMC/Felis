@@ -183,3 +183,49 @@ func TestConvergeSystemServersGuards(t *testing.T) {
 		}
 	})
 }
+
+// TestConvergeUserServerIdle fills the idle default only where spec.idle was
+// never set: a server whose idle stop was turned off (duration kept), one with
+// its own duration, and a system server all stay as they are.
+func TestConvergeUserServerIdle(t *testing.T) {
+	scheme := newSystemServerScheme(t)
+	ctx := context.Background()
+	mk := func(name string, idle v1alpha1.IdleSpec, role string) *v1alpha1.MinecraftServer {
+		ms := &v1alpha1.MinecraftServer{}
+		ms.Name, ms.Namespace = name, "minecraft"
+		ms.Spec.Idle = idle
+		if role != "" {
+			ms.Labels = map[string]string{v1alpha1.LabelSystemRole: role}
+		}
+		return ms
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		mk("legacy", v1alpha1.IdleSpec{}, ""),
+		mk("off", v1alpha1.IdleSpec{EmptySecondsBeforeStop: 600}, ""),
+		mk("custom", v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: 1800}, ""),
+		mk(naming.SystemLobbyServer, v1alpha1.IdleSpec{}, naming.SystemLobbyServer),
+	).Build()
+
+	outcomes := convergeUserServerIdle(ctx, cl, "minecraft")
+	if len(outcomes) != 1 || outcomes[0].name != "legacy" || outcomes[0].err != nil {
+		t.Fatalf("outcomes = %+v, want exactly one fill for legacy", outcomes)
+	}
+	want := map[string]v1alpha1.IdleSpec{
+		"legacy":                 v1alpha1.DefaultIdle(),
+		"off":                    {EmptySecondsBeforeStop: 600},
+		"custom":                 {AutoStopEnabled: true, EmptySecondsBeforeStop: 1800},
+		naming.SystemLobbyServer: {},
+	}
+	for name, idle := range want {
+		var ms v1alpha1.MinecraftServer
+		if err := cl.Get(ctx, client.ObjectKey{Namespace: "minecraft", Name: name}, &ms); err != nil {
+			t.Fatalf("get %s: %v", name, err)
+		}
+		if ms.Spec.Idle != idle {
+			t.Errorf("%s idle = %+v, want %+v", name, ms.Spec.Idle, idle)
+		}
+	}
+	if again := convergeUserServerIdle(ctx, cl, "minecraft"); len(again) != 0 {
+		t.Fatalf("second pass = %+v, want nothing to do", again)
+	}
+}

@@ -491,6 +491,34 @@ func TestIdleAutoStop_UnreadTallyNeverStops(t *testing.T) {
 	}
 }
 
+// TestIdleAutoStop_SystemServerNeverIdles: the login gate and the lobby must
+// stay up whatever their spec says. A stopped gate locks every player out, and
+// nothing would wake it.
+func TestIdleAutoStop_SystemServerNeverIdles(t *testing.T) {
+	srv := runningServer()
+	srv.Labels = map[string]string{v1alpha1.LabelSystemRole: "lobby"}
+	srv.Spec.Idle = v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: 60}
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}, srv, rconSecret())
+	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	clock := base
+	r.Now = func() metav1.Time { return metav1.NewTime(clock) }
+
+	reconcile(t, r, "survival")
+	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival")
+	clock = base.Add(time.Hour)
+	res := reconcile(t, r, "survival")
+
+	server := getServer(t, c, "survival")
+	if server.Spec.DesiredState != v1alpha1.DesiredRunning || server.Status.EmptySince != nil {
+		t.Fatalf("system server: desiredState=%s emptySince=%v, want Running and no countdown",
+			server.Spec.DesiredState, server.Status.EmptySince)
+	}
+	if res.RequeueAfter != 0 {
+		t.Fatalf("RequeueAfter = %v, want none for a server that never idles", res.RequeueAfter)
+	}
+}
+
 // TestIdleAutoStop_RequeuesUntilDeadline pins the self-driving requeue: an
 // empty Running server must wake the controller at the auto-stop deadline with
 // no external event to lean on. Live, the EmptySince stamp sat unexamined for

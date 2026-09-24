@@ -11,6 +11,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
@@ -119,6 +120,8 @@ func (k *K8sCluster) CreateServer(ctx context.Context, in CreateServerInput) err
 			FallbackServer:  naming.SystemLoginServer,
 			Storage:         v1alpha1.StorageSpec{Size: in.StorageSize},
 			Resources:       in.Resources,
+			// A server nobody plays on stops itself; the next join wakes it.
+			Idle: v1alpha1.DefaultIdle(),
 			// RCON is what makes a server manageable at all: the operator gates
 			// phase=Running on the probe and samples the player tally from it (spec
 			// §5), and every write — console commands, the LuckPerms grants behind the
@@ -328,6 +331,18 @@ func (k *K8sCluster) PatchServerSpec(ctx context.Context, name string, p ServerS
 	if p.Resources != nil {
 		ms.Spec.Resources = *p.Resources
 	}
+	if p.IdleStopSeconds != nil {
+		// Off keeps the duration (or the default) on the spec, which is what
+		// marks it as a choice: converge only fills a server with none at all.
+		if *p.IdleStopSeconds == 0 {
+			ms.Spec.Idle.AutoStopEnabled = false
+			if ms.Spec.Idle.EmptySecondsBeforeStop <= 0 {
+				ms.Spec.Idle.EmptySecondsBeforeStop = v1alpha1.DefaultEmptySecondsBeforeStop
+			}
+		} else {
+			ms.Spec.Idle = v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: *p.IdleStopSeconds}
+		}
+	}
 	return k.c.Patch(ctx, &ms, patch)
 }
 
@@ -356,5 +371,19 @@ func serverInfo(ms *v1alpha1.MinecraftServer) *ServerInfo {
 		JavaMemory:      ms.Spec.JavaMemory,
 		StorageSize:     ms.Spec.Storage.Size,
 		CPU:             cpuStr,
+		IdleStopSeconds: idleStopSeconds(ms),
+		PlayerCountUnknown: ms.Status.Phase == v1alpha1.PhaseRunning &&
+			meta.IsStatusConditionFalse(ms.Status.Conditions, v1alpha1.ConditionPlayersCounted),
 	}
+}
+
+// idleStopSeconds is the effective idle auto-stop duration, 0 when the server
+// never idles out. It mirrors the operator's own rule: RCON must be on (the
+// count comes from it) and system servers are exempt.
+func idleStopSeconds(ms *v1alpha1.MinecraftServer) int32 {
+	if !ms.Spec.Rcon.Enabled || ms.Labels[v1alpha1.LabelSystemRole] != "" ||
+		!ms.Spec.Idle.AutoStopEnabled || ms.Spec.Idle.EmptySecondsBeforeStop <= 0 {
+		return 0
+	}
+	return ms.Spec.Idle.EmptySecondsBeforeStop
 }

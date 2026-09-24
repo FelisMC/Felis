@@ -237,7 +237,7 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 	// "empty" and stop a server full of people. It neither stamps nor clears
 	// EmptySince, so a flaky read does not restart the countdown either; the
 	// stop itself only ever follows a sample that really said zero.
-	if players.Known && server.Spec.Idle.AutoStopEnabled && server.Spec.Idle.EmptySecondsBeforeStop > 0 {
+	if players.Known && idleStopApplies(server) {
 		if players.Online == 0 {
 			if server.Status.EmptySince == nil {
 				t := r.now()
@@ -271,7 +271,7 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 	// (observed live: the stamp sat unexamined for minutes). Wake at the exact
 	// deadline while the tally says empty, or on a slow cadence while players
 	// are online, to notice the moment the last one leaves.
-	if server.Spec.Rcon.Enabled && server.Spec.Idle.AutoStopEnabled && server.Spec.Idle.EmptySecondsBeforeStop > 0 {
+	if server.Spec.Rcon.Enabled && idleStopApplies(server) {
 		if server.Status.EmptySince != nil {
 			deadline := server.Status.EmptySince.Time.Add(time.Duration(server.Spec.Idle.EmptySecondsBeforeStop) * time.Second)
 			if wait := deadline.Sub(r.now().Time); wait > 0 {
@@ -281,6 +281,14 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		return ctrl.Result{RequeueAfter: requeueIdleProbe}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+// idleStopApplies reports whether idle auto-stop is configured for server. A
+// system server (the login gate, the lobby) never idles out whatever its spec
+// says: stopping the gate locks every player out, and nothing would wake it.
+func idleStopApplies(server *v1alpha1.MinecraftServer) bool {
+	return server.Labels[v1alpha1.LabelSystemRole] == "" &&
+		server.Spec.Idle.AutoStopEnabled && server.Spec.Idle.EmptySecondsBeforeStop > 0
 }
 
 func (r *Reconciler) reconcileStopped(ctx context.Context, server *v1alpha1.MinecraftServer) (ctrl.Result, error) {

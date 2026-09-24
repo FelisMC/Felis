@@ -709,8 +709,19 @@ resolver cannot fix:
 
 ## 11. Idle auto-stop never fires; player count always shows 0
 
-Both are implemented, and both hang off the same switch: **`spec.rcon.enabled`**.
-Check it first.
+Every server created from the panel or `felis apply` stops itself after 600 s
+with nobody online (`spec.idle`), and the next join wakes it. An admin changes
+or turns it off under **Edit server → Idle auto-stop**. A server created before
+this default has no `spec.idle` and never stops; `sudo felis converge` gives it
+the default (§12b). The login gate and the lobby never idle out, whatever their
+spec says.
+
+```sh
+kubectl get minecraftserver <name> -o jsonpath='{.spec.idle}'
+```
+
+Both idle stop and the player count also hang off **`spec.rcon.enabled`**.
+Check it next.
 
 ```sh
 kubectl get minecraftserver <name> -o jsonpath='{.spec.rcon.enabled}'
@@ -823,6 +834,12 @@ gate, on a server whose image predates the listener would hold that server in
 `Starting` until the operator marks it `Failed` — that ordering is the reason
 this is a command you run rather than something setup does on every re-run.
 System servers that are already current report `already converged`.
+
+The same pass gives every **user** server whose `spec.idle` was never set (one
+created before idle stop became the default) the default: stop after 600 s
+empty. A server whose idle stop an admin turned off keeps a duration on its
+spec (`autoStopEnabled: false`, `emptySecondsBeforeStop` set), so converge
+leaves it off; only servers it actually filled get a line.
 
 ---
 
