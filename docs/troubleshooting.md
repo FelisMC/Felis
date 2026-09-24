@@ -700,7 +700,8 @@ control namespace (or `--registry-namespace`):
   `sudo felis offsite fetch-images` pushes the user images back at their old
   digests, so servers pinned to them pull again; it pushes only what the
   registry lacks, so a second run after an interruption is cheap. Without an
-  off-site copy, user images come back from their approved submissions:
+  off-site copy of the images, user images come back from their approved
+  submissions (whose uploads the off-site copy also carries):
   the uploaded context of an approved submission stays on the uploads PVC
   (`GET /api/v1/submissions/{id}/context`, its `context_ref` and `image_ref`
   are in `GET /api/v1/submissions`), so an admin can build it again through
@@ -1722,7 +1723,17 @@ host yourself, plus the off-site encryption key if the copy is in the bucket.
    restored image as freshly pushed and keeps it for 24 hours; finish the next
    step within that window so the restored servers and whitelist entries keep
    naming it.
-5. Restore the database and bring the servers back:
+5. Put the submission uploads back:
+
+   ```
+   sudo felis offsite fetch-uploads
+   ```
+
+   It writes every upload of the newest upload list (`-at <stamp>` for an
+   older one) into the `felis-uploads` volume, owned by the control plane's
+   uid, checking each against its sha256, and leaves one already in place
+   alone.
+6. Restore the database and bring the servers back:
 
    ```
    kubectl -n felis scale deployment felis-api felis-operator --replicas=0
@@ -1732,7 +1743,7 @@ host yourself, plus the off-site encryption key if the copy is in the bucket.
    tar -xOf felis-db-....tar k8s/minecraftservers.json | kubectl apply -f -
    ```
 
-6. Bring the world archives back into the archive volume:
+7. Bring the world archives back into the archive volume:
 
    ```
    sudo felis offsite fetch-worlds
@@ -1749,9 +1760,9 @@ host yourself, plus the off-site encryption key if the copy is in the bucket.
 A bundle on the same disk as the database protects against mistakes and bad
 upgrades, and a world archive on the same disk as the worlds protects against
 a deleted server. Neither survives losing the disk, and neither do the user
-images in the platform registry. The installer's off-site copy sends all three
-to an S3-compatible bucket (AWS S3, Cloudflare R2, Backblaze B2, MinIO, ...),
-encrypted on this host:
+images in the platform registry or the modpacks users uploaded for review. The
+installer's off-site copy sends all four to an S3-compatible bucket (AWS S3,
+Cloudflare R2, Backblaze B2, MinIO, ...), encrypted on this host:
 
 ```
 FELIS_OFFSITE_ENDPOINT=https://<account>.r2.cloudflarestorage.com \
@@ -1792,9 +1803,18 @@ What runs:
   in-cluster registry that `[registry] url` names; `-registry host:port` points
   it elsewhere, `-registry off` skips images. [VM-TESTED: 16 images, 638 MiB,
   restored into an empty registry at the same digests]
+- It also copies the submission uploads (`sub-*/context.tar.gz` on the
+  `felis-uploads` volume, §8), the source an admin rebuilds an approved image
+  from. Identical uploads are stored once; the upload list is versioned and
+  kept for 14 days like the image list (`fetch-uploads -at`). A context is read
+  again only when its size or modification time changed. It runs when
+  `[registry] user_uploads_context` is a local path (the installer's default);
+  `-uploads-dir` names the directory by hand, `-uploads-pvc ""` skips it.
+  [VM-TESTED: 17 uploads in 10 objects, 200 MiB, restored byte-identical]
 - Objects are `worlds/<archive>.fenc`, `db/<bundle>.fenc`,
-  `registry/blobs/<sha256>.fenc`, `registry/manifests/<sha256>.fenc` and
-  `registry/index/<stamp>.json.fenc`: AES-256-GCM in 64 KiB segments, so
+  `registry/blobs/<sha256>.fenc`, `registry/manifests/<sha256>.fenc`,
+  `registry/index/<stamp>.json.fenc`, `uploads/blobs/<sha256>.fenc` and
+  `uploads/index/<stamp>.json.fenc`: AES-256-GCM in 64 KiB segments, so
   truncation, reordering and a wrong key are all refused on the way back.
 - The reaper deletes an idle world only after its archive is in the bucket
   (§10).
@@ -1805,7 +1825,7 @@ Checking it:
 
 ```
 sudo felis offsite status        # last run, errors, what the bucket holds, what waits
-sudo felis offsite list          # the bundles and image lists in the bucket, newest first
+sudo felis offsite list          # the bundles, image lists and upload lists in the bucket, newest first
 sudo journalctl -u felis-offsite -n 50 --no-pager
 sudo systemctl start felis-offsite.service   # run one now
 ```
@@ -1823,8 +1843,9 @@ Without a bucket, copy the backup directory off the host on a schedule of your
 own (`rsync -a root@felis-host:/var/lib/felis/db-backups/ /backups/felis-db/`,
 with the `.sha256` sidecars; `sha256sum -c` on the far side proves the copy).
 That covers the database only; the world archives are under the
-`felis-backups` volume's directory in `/var/lib/rancher/k3s/storage/`, and the
-registry's images under the `registry` volume's (`*_felis_registry`).
+`felis-backups` volume's directory in `/var/lib/rancher/k3s/storage/`, the
+registry's images under the `registry` volume's (`*_felis_registry`) and the
+uploads under the `felis-uploads` volume's (`*_felis_felis-uploads`).
 
 ### `FELIS_PRE_MIGRATE_BACKUP=0`
 

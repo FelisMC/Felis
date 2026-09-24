@@ -3166,7 +3166,7 @@ install_offsite_timer() {
   fi
   cat > "$OFFSITE_SERVICE" <<EOF
 [Unit]
-Description=Felis off-site copy (world archives, database bundles and user registry images, encrypted, to the [offsite] bucket)
+Description=Felis off-site copy (world archives, database bundles, user registry images and submission uploads, encrypted, to the [offsite] bucket)
 After=network-online.target k3s.service postgresql.service felis-db-backup.service
 Wants=network-online.target
 

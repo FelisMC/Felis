@@ -25,13 +25,14 @@ import (
 
 const offsiteUsage = `usage:
   felis offsite sync         [-config path] [-archive-dir dir] [-db-dir dir] [-registry host:port|off]
-                             [-status-file path]
+                             [-uploads-dir dir] [-status-file path]
   felis offsite status       [-config path] [-status-file path]
   felis offsite list         [-config path]
   felis offsite fetch-db     [-config path | -endpoint url -bucket name [-region r] [-prefix p]]
                              [-dir dir] latest|<bundle>
   felis offsite fetch-worlds [-config path] [-archive-dir dir]
   felis offsite fetch-images [-config path] [-registry host:port] [-at version]
+  felis offsite fetch-uploads [-config path] [-uploads-dir dir] [-at version]
   felis offsite keygen
 
 Every verb but keygen reads the bucket credentials and the encryption key from
@@ -45,10 +46,10 @@ FELIS_OFFSITE_SECRET_KEY, FELIS_OFFSITE_KEY), taking any that are unset from
 const defaultOffsiteEnvFile = "/etc/felis/offsite.env"
 
 // cmdOffsite implements `felis offsite`: the off-site copy of the world
-// archives, the database bundles and the registry's user images
-// (internal/offsite). felis-offsite.timer
-// runs `sync` hourly on the host; the fetch verbs are the way back after the
-// node is lost (docs/troubleshooting.md §16).
+// archives, the database bundles, the registry's user images and the
+// submission uploads (internal/offsite). felis-offsite.timer runs `sync`
+// hourly on the host; the fetch verbs are the way back after the node is lost
+// (docs/troubleshooting.md §16).
 func cmdOffsite(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, offsiteUsage)
@@ -71,6 +72,8 @@ func cmdOffsite(args []string, stdout, stderr io.Writer) int {
 		return offsiteFetchWorlds(fs, rest, stdout, stderr)
 	case "fetch-images":
 		return offsiteFetchImages(fs, rest, stdout, stderr)
+	case "fetch-uploads":
+		return offsiteFetchUploads(fs, rest, stdout, stderr)
 	case "keygen":
 		k, err := offsite.NewKey()
 		if err != nil {
@@ -192,6 +195,8 @@ func offsiteSync(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int 
 	backupPVC := fs.String("backup-pvc", "felis-backups", `the world archive PVC, in the [k8s] namespace ("" when backups are off)`)
 	dbDir := fs.String("db-dir", dbbackup.DefaultDir, `database bundle directory ("" copies no bundles)`)
 	registry := fs.String("registry", "", `host[:port] of the registry whose user images are copied (default: the in-cluster registry's loopback hostPort; "off" copies none)`)
+	uploadsDir := fs.String("uploads-dir", "", "host directory of the submission uploads volume (default: resolved from the uploads PVC through the cluster)")
+	uploadsPVC := fs.String("uploads-pvc", platform.UploadsPVCName, `the submission uploads PVC, in the control-plane namespace ("" copies no uploads)`)
 	statusFile := fs.String("status-file", offsite.DefaultStatusFile, "where the result of this run is recorded for the watchdog and `status`")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -208,7 +213,11 @@ func offsiteSync(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int 
 	if prev, _ := offsite.ReadStatus(*statusFile); prev != nil {
 		st.LastSuccess = prev.LastSuccess
 	}
-	res, err := runOffsiteSync(cfg, env, *archiveDir, *backupPVC, *dbDir, offsiteRegistryEndpoint(*registry, cfg.Registry), stderr)
+	res, err := runOffsiteSync(cfg, env, offsiteSources{
+		archiveDir: *archiveDir, backupPVC: *backupPVC, dbDir: *dbDir,
+		registry:   offsiteRegistryEndpoint(*registry, cfg.Registry),
+		uploadsDir: *uploadsDir, uploadsPVC: *uploadsPVC,
+	}, stderr)
 	st.Result = res
 	if err != nil {
 		st.LastError = err.Error()
@@ -218,10 +227,12 @@ func offsiteSync(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int 
 	if werr := offsite.WriteStatus(*statusFile, st); werr != nil {
 		fmt.Fprintf(stderr, "felis offsite sync: record status: %v\n", werr)
 	}
-	fmt.Fprintf(stdout, "felis offsite sync: worlds copied=%d pending=%d missing=%d expired=%d; bundles copied=%d pruned=%d; images copied=%d blobs=%d pruned=%d; bucket holds %d worlds (%s), %d bundles, %d images in %d repositories (%s)\n",
+	fmt.Fprintf(stdout, "felis offsite sync: worlds copied=%d pending=%d missing=%d expired=%d; bundles copied=%d pruned=%d; images copied=%d blobs=%d pruned=%d; uploads copied=%d pruned=%d; bucket holds %d worlds (%s), %d bundles, %d images in %d repositories (%s), %d uploads (%s)\n",
 		res.WorldsUploaded, res.WorldsPending, len(res.WorldsMissing), res.WorldsExpired,
 		res.DBUploaded, res.DBPruned, res.ImagesUploaded, res.ImageBlobsUploaded, res.ImageObjectsPruned,
-		res.RemoteWorlds, offsite.HumanBytes(res.RemoteBytes), res.RemoteDB, res.Images, res.ImageRepos, offsite.HumanBytes(res.RemoteImageBytes))
+		res.UploadsUploaded, res.UploadObjectsPruned,
+		res.RemoteWorlds, offsite.HumanBytes(res.RemoteBytes), res.RemoteDB, res.Images, res.ImageRepos, offsite.HumanBytes(res.RemoteImageBytes),
+		res.Uploads, offsite.HumanBytes(res.RemoteUploadBytes))
 	for _, m := range res.WorldsMissing {
 		fmt.Fprintf(stderr, "felis offsite sync: recorded archive not on the volume, nothing to copy: %s\n", m)
 	}
@@ -235,7 +246,18 @@ func offsiteSync(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int 
 	return 0
 }
 
-func runOffsiteSync(cfg *config.Config, env *offsiteEnv, archiveDir, backupPVC, dbDir, registry string, log io.Writer) (offsite.Result, error) {
+// offsiteSources is where one sync pass reads from: the world archive volume
+// (archiveDir, or the backupPVC's directory), the bundle directory, the
+// registry's loopback endpoint and the uploads volume (uploadsDir, or the
+// uploadsPVC's directory). An empty source is skipped.
+type offsiteSources struct {
+	archiveDir, backupPVC  string
+	dbDir                  string
+	registry               string
+	uploadsDir, uploadsPVC string
+}
+
+func runOffsiteSync(cfg *config.Config, env *offsiteEnv, src offsiteSources, log io.Writer) (offsite.Result, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
 	defer cancel()
 	checkCtx, checkCancel := context.WithTimeout(ctx, 30*time.Second)
@@ -244,12 +266,22 @@ func runOffsiteSync(cfg *config.Config, env *offsiteEnv, archiveDir, backupPVC, 
 	if err != nil {
 		return offsite.Result{}, err
 	}
-	if archiveDir == "" && backupPVC != "" {
-		dir, err := resolveArchiveDir(ctx, cfg.K8s.Namespace, backupPVC, false, log)
+	archiveDir, uploadsDir := src.archiveDir, src.uploadsDir
+	if archiveDir == "" && src.backupPVC != "" {
+		dir, err := resolveVolumeDir(ctx, cfg.K8s.Namespace, src.backupPVC, archiveVolume, false, log)
 		if err != nil {
 			return offsite.Result{}, err
 		}
 		archiveDir = dir
+	}
+	// An s3:// uploads store is off the host already; only a local one, on
+	// the uploads PVC, needs the copy.
+	if uploadsDir == "" && src.uploadsPVC != "" && isLocalUploadsPath(cfg.Registry.UserUploadsContext) {
+		dir, err := resolveVolumeDir(ctx, platform.DefaultControlNamespace, src.uploadsPVC, uploadsVolume, false, log)
+		if err != nil {
+			return offsite.Result{}, err
+		}
+		uploadsDir = dir
 	}
 	drv, err := openStore(ctx, cfg.Database.URL, false)
 	if err != nil {
@@ -258,36 +290,45 @@ func runOffsiteSync(cfg *config.Config, env *offsiteEnv, archiveDir, backupPVC, 
 	defer drv.Close()
 	s := &offsite.Syncer{
 		Bucket: env.bucket, Catalog: offsite.PGCatalog{DB: drv.DB()}, Key: env.key,
-		ArchiveDir: archiveDir, DBDir: dbDir, DBKeep: env.cfg.DBKeep, Log: log,
+		ArchiveDir: archiveDir, DBDir: src.dbDir, DBKeep: env.cfg.DBKeep, UploadsDir: uploadsDir, Log: log,
 	}
-	if registry != "" {
-		s.Images = newRegistryImages(registry)
+	if src.registry != "" {
+		s.Images = newRegistryImages(src.registry)
 	}
 	return s.Run(ctx)
 }
 
-// resolveArchiveDir finds the host directory behind the world archive PVC: a
-// local-path volume is a directory on this node. A PVC still waiting for its
-// first consumer holds nothing yet: without bind that is "" (no archives),
-// with bind it is bound first, for fetch-worlds to write into.
-func resolveArchiveDir(ctx context.Context, ns, pvcName string, bind bool, log io.Writer) (string, error) {
+// volumeKind names a PVC the off-site copy reads or restores, for messages,
+// with the flag that bypasses finding it through the cluster.
+type volumeKind struct{ what, dirFlag, empty string }
+
+var (
+	archiveVolume = volumeKind{"archive volume", "-archive-dir", "no world has been archived"}
+	uploadsVolume = volumeKind{"uploads volume", "-uploads-dir", "no modpack has been uploaded"}
+)
+
+// resolveVolumeDir finds the host directory behind a PVC: a local-path volume
+// is a directory on this node. A PVC still waiting for its first consumer
+// holds nothing yet: without bind that is "" (nothing to copy), with bind it
+// is bound first, for a fetch to write into.
+func resolveVolumeDir(ctx context.Context, ns, pvcName string, kind volumeKind, bind bool, log io.Writer) (string, error) {
 	if ns == "" {
 		ns = platform.DefaultMinecraftNamespace
 	}
 	cl, err := buildSystemServerClient()
 	if err != nil {
-		return "", fmt.Errorf("reach the cluster to find the archive volume (or pass -archive-dir): %w", err)
+		return "", fmt.Errorf("reach the cluster to find the %s (or pass %s): %w", kind.what, kind.dirFlag, err)
 	}
 	var pvc corev1.PersistentVolumeClaim
 	if err := cl.Get(ctx, types.NamespacedName{Namespace: ns, Name: pvcName}, &pvc); err != nil {
-		return "", fmt.Errorf("archive volume %s/%s: %w", ns, pvcName, err)
+		return "", fmt.Errorf("%s %s/%s: %w", kind.what, ns, pvcName, err)
 	}
 	if pvc.Spec.VolumeName == "" {
 		if !bind {
-			fmt.Fprintf(log, "felis offsite: archive volume %s/%s is not bound yet; no world has been archived\n", ns, pvcName)
+			fmt.Fprintf(log, "felis offsite: %s %s/%s is not bound yet; %s\n", kind.what, ns, pvcName, kind.empty)
 			return "", nil
 		}
-		if err := bindVolume(ctx, cl, ns, pvcName, log); err != nil {
+		if err := bindVolume(ctx, cl, ns, pvcName, kind, log); err != nil {
 			return "", err
 		}
 		if err := cl.Get(ctx, types.NamespacedName{Namespace: ns, Name: pvcName}, &pvc); err != nil {
@@ -296,7 +337,7 @@ func resolveArchiveDir(ctx context.Context, ns, pvcName string, bind bool, log i
 	}
 	var pv corev1.PersistentVolume
 	if err := cl.Get(ctx, types.NamespacedName{Name: pvc.Spec.VolumeName}, &pv); err != nil {
-		return "", fmt.Errorf("archive volume %s: %w", pvc.Spec.VolumeName, err)
+		return "", fmt.Errorf("%s %s: %w", kind.what, pvc.Spec.VolumeName, err)
 	}
 	var dir string
 	switch {
@@ -305,10 +346,10 @@ func resolveArchiveDir(ctx context.Context, ns, pvcName string, bind bool, log i
 	case pv.Spec.HostPath != nil:
 		dir = pv.Spec.HostPath.Path
 	default:
-		return "", fmt.Errorf("archive volume %s is not a directory on a node (local or hostPath); pass -archive-dir with where it is mounted on this host", pv.Name)
+		return "", fmt.Errorf("%s %s is not a directory on a node (local or hostPath); pass %s with where it is mounted on this host", kind.what, pv.Name, kind.dirFlag)
 	}
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-		return "", fmt.Errorf("archive volume %s is %s on its node, which is not a directory here; run this on the node that holds it, or pass -archive-dir", pv.Name, dir)
+		return "", fmt.Errorf("%s %s is %s on its node, which is not a directory here; run this on the node that holds it, or pass %s", kind.what, pv.Name, dir, kind.dirFlag)
 	}
 	return dir, nil
 }
@@ -316,10 +357,10 @@ func resolveArchiveDir(ctx context.Context, ns, pvcName string, bind bool, log i
 // bindVolume runs a pod that mounts the PVC and exits, which is what makes a
 // WaitForFirstConsumer volume (k3s local-path) get provisioned. The pod uses
 // the control plane's own image, which every install already has.
-func bindVolume(ctx context.Context, cl client.Client, ns, pvcName string, log io.Writer) error {
+func bindVolume(ctx context.Context, cl client.Client, ns, pvcName string, kind volumeKind, log io.Writer) error {
 	var api appsv1.Deployment
 	if err := cl.Get(ctx, types.NamespacedName{Namespace: platform.DefaultControlNamespace, Name: "felis-api"}, &api); err != nil {
-		return fmt.Errorf("find the felis image to bind the archive volume with: %w", err)
+		return fmt.Errorf("find the felis image to bind the %s with: %w", kind.what, err)
 	}
 	if len(api.Spec.Template.Spec.Containers) == 0 {
 		return errors.New("felis-api has no container to take the image from")
@@ -327,9 +368,9 @@ func bindVolume(ctx context.Context, cl client.Client, ns, pvcName string, log i
 	image := api.Spec.Template.Spec.Containers[0].Image
 	pod := platform.VolumeBinderPod(ns, pvcName, image)
 	if err := cl.Create(ctx, pod); err != nil {
-		return fmt.Errorf("start a pod to bind the archive volume: %w", err)
+		return fmt.Errorf("start a pod to bind the %s: %w", kind.what, err)
 	}
-	fmt.Fprintf(log, "felis offsite: binding the archive volume %s/%s (pod %s)\n", ns, pvcName, pod.Name)
+	fmt.Fprintf(log, "felis offsite: binding the %s %s/%s (pod %s)\n", kind.what, ns, pvcName, pod.Name)
 	defer func() {
 		_ = cl.Delete(context.Background(), pod, client.PropagationPolicy(metav1.DeletePropagationBackground))
 	}()
@@ -345,7 +386,7 @@ func bindVolume(ctx context.Context, cl client.Client, ns, pvcName string, log i
 		case <-time.After(2 * time.Second):
 		}
 	}
-	return fmt.Errorf("the archive volume %s/%s did not bind within 3 minutes; see kubectl -n %s describe pod %s", ns, pvcName, ns, pod.Name)
+	return fmt.Errorf("the %s %s/%s did not bind within 3 minutes; see kubectl -n %s describe pod %s", kind.what, ns, pvcName, ns, pod.Name)
 }
 
 func offsiteStatus(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
@@ -360,7 +401,7 @@ func offsiteStatus(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) in
 		return 1
 	}
 	if !cfg.Offsite.Enabled() {
-		fmt.Fprintln(stdout, "off-site copy: not configured. World archives, database bundles and user images exist on this machine only.")
+		fmt.Fprintln(stdout, "off-site copy: not configured. World archives, database bundles, user images and uploaded modpacks exist on this machine only.")
 		fmt.Fprintln(stdout, "See docs/troubleshooting.md §16, \"Keep a copy somewhere else\".")
 		return 1
 	}
@@ -398,6 +439,12 @@ func offsiteStatus(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) in
 			r.Images, r.ImageRepos, offsite.HumanBytes(r.RemoteImageBytes), r.ImageIndex)
 	} else {
 		fmt.Fprintln(stdout, "images:       not copied (no in-cluster registry, or no sync has reached it yet)")
+	}
+	if r.UploadIndex != "" {
+		fmt.Fprintf(stdout, "uploads:      %d submission contexts (%s), uploads index %s\n",
+			r.Uploads, offsite.HumanBytes(r.RemoteUploadBytes), r.UploadIndex)
+	} else {
+		fmt.Fprintln(stdout, "uploads:      not copied (an s3:// uploads store, or no sync has reached the volume yet)")
 	}
 	fmt.Fprintf(stdout, "waiting:      %d world archives not yet copied\n", r.WorldsPending)
 	for _, m := range r.WorldsMissing {
@@ -469,6 +516,20 @@ func printOffsiteList(env *offsiteEnv, stdout, stderr io.Writer) int {
 			continue
 		}
 		fmt.Fprintf(stdout, "  %s  %d images in %d repositories\n", versions[i], x.Images(), len(x.Repositories))
+	}
+	uploads, err := offsite.UploadIndexes(ctx, env.bucket)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis offsite list: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "uploads index versions (%d, newest first; restore one with fetch-uploads -at):\n", len(uploads))
+	for i := len(uploads) - 1; i >= 0; i-- {
+		x, err := offsite.LoadUploadIndex(ctx, env.bucket, env.key, uploads[i])
+		if err != nil {
+			fmt.Fprintf(stdout, "  %s  unreadable: %v\n", uploads[i], err)
+			continue
+		}
+		fmt.Fprintf(stdout, "  %s  %d submission contexts (%s)\n", uploads[i], len(x.Contexts), offsite.HumanBytes(x.Bytes()))
 	}
 	return 0
 }
@@ -566,7 +627,7 @@ func offsiteFetchWorlds(fs *flag.FlagSet, args []string, stdout, stderr io.Write
 	defer cancel()
 	dir := *archiveDir
 	if dir == "" {
-		if dir, err = resolveArchiveDir(ctx, cfg.K8s.Namespace, *backupPVC, true, stderr); err != nil {
+		if dir, err = resolveVolumeDir(ctx, cfg.K8s.Namespace, *backupPVC, archiveVolume, true, stderr); err != nil {
 			fmt.Fprintf(stderr, "felis offsite fetch-worlds: %v\n", err)
 			return 1
 		}

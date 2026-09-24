@@ -13,7 +13,7 @@ Usage:
 Commands:
   migrate up        Apply embedded database migrations under an advisory lock (snapshots the database first)
   db                Back up, verify, list and restore the control-plane database (backup|restore|verify|list|check)
-  offsite           Copy world archives, database bundles and user images to an off-site bucket, and fetch them back (sync|status|list|fetch-db|fetch-worlds|fetch-images|keygen)
+  offsite           Copy world archives, database bundles, user images and uploads to an off-site bucket, and fetch them back (sync|status|list|fetch-db|fetch-worlds|fetch-images|fetch-uploads|keygen)
   operator          Run the MinecraftServer controller-manager
   api               Run the felis-api HTTP server
   nano              Run the Felis-nano hasJoined multiplexer (multi-Yggdrasil, no control plane)

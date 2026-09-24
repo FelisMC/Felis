@@ -455,19 +455,7 @@ func sameImages(a, b *ImageIndex) bool {
 // pruneImages drops the index versions replaced more than ImageHistory ago,
 // then every blob and manifest no remaining version names.
 func (s *Syncer) pruneImages(ctx context.Context, versions []string, newest *ImageIndex, remote map[string]int64, res *Result, fail func(string, ...any)) {
-	cutoff := s.now().Add(-ImageHistory)
-	var keep, drop []string
-	for i, v := range versions {
-		if i == len(versions)-1 {
-			break
-		}
-		replaced, err := time.Parse(imageStampLayout, versions[i+1])
-		if err == nil && replaced.Before(cutoff) {
-			drop = append(drop, v)
-		} else {
-			keep = append(keep, v)
-		}
-	}
+	keep, drop := retire(versions, s.now().Add(-ImageHistory))
 	live := map[string]bool{}
 	mark := func(x *ImageIndex) {
 		for d, m := range x.Manifests {
@@ -557,7 +545,7 @@ func (d *digestReader) Read(p []byte) (int, error) {
 	d.h.Write(p[:n])
 	d.n += int64(n)
 	if d.n > d.size {
-		return n, fmt.Errorf("blob %s is longer than the %d bytes its manifest records", d.digest, d.size)
+		return n, fmt.Errorf("blob %s is longer than the %d bytes recorded for it", d.digest, d.size)
 	}
 	if err == io.EOF {
 		if d.n != d.size {
@@ -570,11 +558,32 @@ func (d *digestReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// imageIndexStamps lists the index versions among keys, oldest first.
-func imageIndexStamps(keys map[string]int64) []string {
+// retire splits the index versions before the newest (oldest first) into the
+// ones still kept and the ones replaced before cutoff. The newest is in
+// neither: it is the state the pass just recorded.
+func retire(versions []string, cutoff time.Time) (keep, drop []string) {
+	for i, v := range versions {
+		if i == len(versions)-1 {
+			break
+		}
+		replaced, err := time.Parse(imageStampLayout, versions[i+1])
+		if err == nil && replaced.Before(cutoff) {
+			drop = append(drop, v)
+		} else {
+			keep = append(keep, v)
+		}
+	}
+	return keep, drop
+}
+
+// imageIndexStamps lists the registry index versions among keys, oldest first.
+func imageIndexStamps(keys map[string]int64) []string { return indexStamps(keys, imageIndexDir) }
+
+// indexStamps lists the index versions under dir among keys, oldest first.
+func indexStamps(keys map[string]int64, dir string) []string {
 	var out []string
 	for key := range keys {
-		stamp, ok := strings.CutPrefix(key, imageIndexDir)
+		stamp, ok := strings.CutPrefix(key, dir)
 		if !ok {
 			continue
 		}

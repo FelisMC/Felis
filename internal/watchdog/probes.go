@@ -361,8 +361,8 @@ func OffsiteFinding(statusFile string, now time.Time) *Finding {
 	}
 	f := &Finding{
 		Key: "offsite", Severity: Warning, For: backupFor,
-		Summary:   "异地备份从未成功同步过，世界归档、数据库备份与用户镜像只在本机",
-		SummaryEN: "the off-site copy has never completed; world archives, database bundles and user images exist on this machine only",
+		Summary:   "异地备份从未成功同步过，世界归档、数据库备份、用户镜像与上传的整合包只在本机",
+		SummaryEN: "the off-site copy has never completed; world archives, database bundles, user images and uploaded modpacks exist on this machine only",
 		Hint:      hint,
 	}
 	if st != nil && !st.LastSuccess.IsZero() {

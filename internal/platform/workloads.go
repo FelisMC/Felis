@@ -189,6 +189,15 @@ const (
 	nonRootUID int64 = 1000
 )
 
+// UploadsPVCName is felis-api's submission uploads PVC in the control-plane
+// namespace; the host-side off-site copy reads and restores it.
+const UploadsPVCName = uploadsPVCName
+
+// ControlPlaneUID is the uid and gid the control-plane pods run as, which own
+// what they write to their volumes; a host-side restore into one of them
+// writes as it.
+const ControlPlaneUID = int(nonRootUID)
+
 // APIInternalServiceName is the ClusterIP Service that fronts the felis-api
 // internal face (8081). It is SEPARATE from the external NodePort Service (SAAPI)
 // on purpose — see apiInternalService. The login pod resolves it by cross-namespace

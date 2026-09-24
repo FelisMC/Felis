@@ -1,7 +1,8 @@
 // Package offsite keeps a second copy of what a lost node would take with it:
 // every world archive (world_backups), the newest control-plane database
-// bundles (internal/dbbackup) and the user images in the platform registry
-// (images.go), encrypted, in an S3-compatible bucket off the machine. `felis
+// bundles (internal/dbbackup), the user images in the platform registry
+// (images.go) and the submission uploads (uploads.go), encrypted, in an
+// S3-compatible bucket off the machine. `felis
 // offsite sync` runs it from felis-offsite.timer on the host, which is where
 // the archive volume and the bundle directory live and where the registry
 // answers on its loopback hostPort.
@@ -94,8 +95,11 @@ type Syncer struct {
 	// Images is the platform registry whose user images are copied (images.go);
 	// nil copies none.
 	Images ImageSource
-	Now    func() time.Time
-	Log    io.Writer
+	// UploadsDir is the host directory of the uploads volume, whose submission
+	// contexts are copied (uploads.go); empty copies none.
+	UploadsDir string
+	Now        func() time.Time
+	Log        io.Writer
 }
 
 // Result is what one Run did and found.
@@ -127,7 +131,14 @@ type Result struct {
 	// ImagesIncomplete are manifests the registry lists without holding all
 	// of them, so there was nothing whole to copy.
 	ImagesIncomplete []string `json:"images_incomplete,omitempty"`
-	Errors           []string `json:"errors,omitempty"`
+	// UploadIndex is the newest uploads index version in the bucket, which
+	// names Uploads submission contexts.
+	UploadIndex         string   `json:"upload_index,omitempty"`
+	Uploads             int      `json:"uploads"`
+	UploadsUploaded     int      `json:"uploads_uploaded"`
+	UploadObjectsPruned int      `json:"upload_objects_pruned"`
+	RemoteUploadBytes   int64    `json:"remote_upload_bytes"`
+	Errors              []string `json:"errors,omitempty"`
 }
 
 func (s *Syncer) now() time.Time {
@@ -143,8 +154,8 @@ func (s *Syncer) logf(format string, args ...any) {
 	}
 }
 
-// Run does one pass: world archives, database bundles, registry images, then
-// expiry. A failure on one item is recorded and the pass carries on; the
+// Run does one pass: world archives, database bundles, registry images,
+// submission uploads, then expiry. A failure on one item is recorded and the pass carries on; the
 // returned error is non-nil when anything failed.
 func (s *Syncer) Run(ctx context.Context) (Result, error) {
 	var res Result
@@ -161,6 +172,7 @@ func (s *Syncer) Run(ctx context.Context) (Result, error) {
 	s.syncWorlds(ctx, remoteWorlds, &res, fail)
 	s.syncDB(ctx, &res, fail)
 	s.syncImages(ctx, &res, fail)
+	s.syncUploads(ctx, &res, fail)
 	s.expireWorlds(ctx, remoteWorlds, &res, fail)
 
 	for _, size := range remoteWorlds {
