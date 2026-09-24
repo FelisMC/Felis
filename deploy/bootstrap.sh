@@ -252,6 +252,13 @@ GOROOT_DIR="/opt/felis/go"
 NANO_SERVICE="/etc/systemd/system/felis-nano.service"
 DB_BACKUP_SERVICE="/etc/systemd/system/felis-db-backup.service"
 DB_BACKUP_TIMER="/etc/systemd/system/felis-db-backup.timer"
+WATCHDOG_SERVICE="/etc/systemd/system/felis-watchdog.service"
+WATCHDOG_TIMER="/etc/systemd/system/felis-watchdog.timer"
+WATCHDOG_STATE="/var/lib/felis/watchdog/state.json"
+# While this marker holds a future Unix time, felis watchdog mails nothing: an install
+# restarts the control plane and the system servers on purpose. cleanup removes it; the
+# time in it is the backstop for an installer killed before its EXIT trap runs.
+WATCHDOG_QUIET_FILE="/run/felis/watchdog-quiet-until"
 VELOCITY_DIR="/opt/felis/velocity"
 VELOCITY_USER="felis-velocity"
 VELOCITY_SERVICE="/etc/systemd/system/felis-velocity.service"
@@ -336,6 +343,9 @@ cleanup() {
   for path in "${TEMP_PATHS[@]-}"; do
     [ -n "$path" ] && rm -rf -- "$path" || true
   done
+  # A failed install leaves something broken the owners should hear about, so the
+  # watchdog speaks again the moment the installer exits, however it exits.
+  rm -f -- "$WATCHDOG_QUIET_FILE" 2>/dev/null || true
 }
 
 remember_temp() { TEMP_PATHS+=("$1"); }
@@ -2415,6 +2425,60 @@ run_migrations() {
   ok "migrations applied"
 }
 
+# Silence felis watchdog's mail for the rest of this install (see WATCHDOG_QUIET_FILE).
+# Two hours covers a slow source build; cleanup lifts it as soon as the installer exits.
+quiet_watchdog() {
+  install -d -m 0755 "$(dirname "$WATCHDOG_QUIET_FILE")"
+  printf '%s\n' "$(( $(date +%s) + 7200 ))" > "$WATCHDOG_QUIET_FILE"
+}
+
+# The platform watchdog: every two minutes it checks the control plane, the login gate,
+# the fleet, PostgreSQL, the game proxy, the database backups and the host's disks and
+# memory, and mails the owners (their verified addresses, over the [smtp] relay) what
+# has stayed wrong long enough to matter. It runs on the host so a k3s that is down is
+# still reported. The first run happens now, so a broken unit shows up in this install.
+install_watchdog_timer() {
+  local disks="/,/var/lib/rancher/k3s,/var/lib/postgresql,/var/lib/felis" path
+  for path in "$FELIS_WORLDS_HOST_PATH" "$FELIS_ARCHIVE_LOCAL_PATH" "$FELIS_DB_BACKUP_DIR"; do
+    if [ -n "$path" ]; then disks="${disks},${path}"; fi
+  done
+  install -d -m 0700 "$(dirname "$WATCHDOG_STATE")"
+  cat > "$WATCHDOG_SERVICE" <<EOF
+[Unit]
+Description=Felis platform watchdog (health checks, owner alert mail)
+After=network-online.target k3s.service postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=${HOST_BIN} watchdog -config ${STATE_DIR}/felis.host.toml -state ${WATCHDOG_STATE} -quiet-file ${WATCHDOG_QUIET_FILE} -backup-dir ${FELIS_DB_BACKUP_DIR} -proxy-addr 127.0.0.1:${FELIS_GAME_PORT} -disk-paths ${disks}
+TimeoutStartSec=3min
+Nice=5
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=full
+EOF
+  cat > "$WATCHDOG_TIMER" <<EOF
+[Unit]
+Description=Felis platform watchdog, every two minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=2min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now felis-watchdog.timer
+  if systemctl start felis-watchdog.service; then
+    ok "watchdog: checks every 2 minutes and mails the owners' verified addresses (journalctl -u felis-watchdog)"
+  else
+    journalctl -u felis-watchdog.service -n 20 --no-pager >&2 || true
+    warn "the first watchdog run failed (log above); nothing will be mailed until it runs: sudo systemctl start felis-watchdog.service"
+  fi
+}
+
 # The daily database backup. The first run happens now, so a broken pipeline (pg_dump
 # missing, directory unwritable) shows up in this install rather than in the first
 # restore someone needs.
@@ -3019,6 +3083,7 @@ main() {
     main_nano
     return
   fi
+  quiet_watchdog
   pause_package_background_timers
   detect_node_ip
   ensure_swap
@@ -3073,6 +3138,8 @@ main() {
   install_velocity
   # After deploy_bundle: the bundle's MinecraftServer export reads the cluster.
   install_db_backup_timer
+  # Last: its first run should see the platform as this install leaves it.
+  install_watchdog_timer
   mark_bootstrap_done
   summary
 }

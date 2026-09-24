@@ -964,11 +964,75 @@ space.
 
 ---
 
-## 14. Metrics for diagnosis (spec §23)
+## 14. Health alerts, and metrics for diagnosis (spec §23)
+
+Every full install runs `felis watchdog` from `felis-watchdog.timer`, which
+mails the owners when something breaks, with no monitoring stack needed. The
+metrics and Prometheus rules below are for a deployment that also runs its own
+Prometheus.
+
+### The watchdog: what mails the owners
+
+Every two minutes the host checks:
+
+| Check | Mailed after | Severity |
+|---|---|---|
+| `felis-api`, `felis-operator` or `registry` Deployment has no available pod (or is missing) | 5 min | critical |
+| Kubernetes API unreachable (k3s down): the cluster checks below are then unknown and keep their state | 5 min | critical |
+| Login gate not `Running` while it should be | 10 min | critical |
+| Other system servers (lobby) not `Running` while they should be | 10 min | warning |
+| A user server in `Failed` (§2) | 5 min | warning |
+| A backup, restore or reaper Job failed in the last 24h | at once, once | warning |
+| The reaper CronJob last succeeded over 26h ago (§10) | at once | warning |
+| Node `NotReady`, or kubelet reports Disk/Memory/PID pressure (§13b) | 2–5 min | critical |
+| PostgreSQL unreachable | 3 min | critical |
+| The game proxy (`felis-velocity`) refuses connections on the game port | 3 min | critical |
+| Newest control-plane database backup over 26h old, or none (§16) | 10 min | critical |
+| A watched filesystem below 15% free (below 5%: critical) | 15 min (5 min) | warning |
+| Host memory available below 10% | 15 min | warning |
+
+How it mails:
+
+- **Recipients** are the verified email addresses of enabled owner accounts.
+  The relay is the `[smtp]` one sign-in codes use.
+- **One mail per run**, holding everything that came due: new problems, a
+  daily reminder for each problem still open, and a resolved notice once a
+  problem has stayed gone for 10 minutes. A condition that heals before its
+  delay is never mailed; one that turns critical is mailed again at once.
+- **During an install** nothing is mailed. `bootstrap.sh` writes
+  `/run/felis/watchdog-quiet-until` and removes it when it exits.
+- **Caching:** the relay password and the recipient list are cached in
+  `/var/lib/felis/watchdog/state.json` (root-only). An outage of PostgreSQL or
+  of the API server can therefore still be mailed.
+- **No relay or no verified owner address:** each alert is written to the
+  journal only.
+
+Commands:
+
+```bash
+journalctl -u felis-watchdog -n 40          # every check of the latest runs
+sudo felis watchdog -dry-run                # run the checks now; mail nothing, change nothing
+systemctl list-timers felis-watchdog.timer  # when it last and next runs
+```
+
+A healthy run logs `every check passed`. Otherwise it logs one line per
+finding, and the mail's subject once one is sent.
+
+A `-dry-run` from a shell uses the command's defaults, and those do not include
+the game-proxy check. The unit carries `-proxy-addr 127.0.0.1:<game port>` and
+the disk list the install chose. `systemctl cat felis-watchdog` shows both.
+
+### Metrics
 
 All four mandated metrics have real producers; scrape them when triaging:
 
 - `felis_servers_total` — managed server count.
+- `felis_server_phase{server,role,phase,desired}` — 1 for each server's
+  current phase. `role` is `login`/`lobby` for system servers and empty for
+  user servers. `desired` tells a server that is down on purpose from one that
+  failed to come up.
+- `felis_build_info{component,version}` — 1 on the process serving it
+  (`operator` or `api`). Its absence is how an alert tells which process is down.
 - `felis_start_duration_seconds` — histogram, observed once per start when
   readiness is first reached (`ReadySignalAt − StartRequestedAt`). A start that
   never completes (§1) contributes **nothing** here — absence of observations is
@@ -980,12 +1044,16 @@ All four mandated metrics have real producers; scrape them when triaging:
 
 ### Scraping
 
-The series come from two processes:
+The series come from two processes. Both Services carry the
+`prometheus.io/scrape|port|path` annotations, so a Prometheus that discovers
+annotated Service endpoints picks them up as is.
 
-- `felis-operator` pod `:8080/metrics` — `felis_servers_total`,
-  `felis_start_duration_seconds` (no Service; scrape pod-scoped, e.g. a
-  PodMonitor targeting port `metrics`).
+- `felis-operator` `:8080/metrics` (Service `felis-operator-metrics`) —
+  `felis_servers_total`, `felis_server_phase`, `felis_start_duration_seconds`,
+  `felis_build_info{component="operator"}`, and controller-runtime's
+  `controller_runtime_reconcile_*` / `workqueue_*` series.
 - `felis-api` internal face `:8081/metrics` (Service `felis-api-internal`) —
+  `felis_build_info{component="api"}`,
   `felis_image_build_failures_total`, and the sign-in series of §17
   (`felis_mail_total`, `felis_rate_limited_total`,
   `felis_auth_otp_lockouts_total`, `felis_auth_failures_total`,
@@ -999,11 +1067,27 @@ The series come from two processes:
 
 ### Alert rules
 
-`deploy/alerts/` ships ready-made rules: build failures, slow starts, node
-disk/memory thresholds, the kubelet `DiskPressure` condition, control-plane
-database backup freshness (§16; needs node-exporter's textfile collector), and
-sign-in abuse: the mail budget, relay failures, throttled floods, account
-code locks and the refused sign-in rate, plus lost audit rows (§17).
+`deploy/alerts/` ships ready-made rules for these groups:
+
+- **Control plane:** `felis-operator` or `felis-api` down or unscraped
+  (`FelisOperatorDown`, `FelisAPIDown`).
+- **Servers:** the login gate or another system server not running
+  (`FelisLoginGateDown`, `FelisSystemServerDown`), and a user server in
+  `Failed` (`FelisServerFailed`).
+- **Operator reconcile:** errors piling up (`FelisReconcileErrors`), and a
+  pass stuck past its 3-minute bound (`FelisReconcileStuck`). The operator's
+  liveness probe restarts a pod whose pass passes 10 minutes; its readiness
+  waits for the informer caches to sync.
+- **World Jobs (kube-state-metrics):** a failed backup/restore/reaper Job
+  (`FelisWorldJobFailed`) and a reaper that has not succeeded in 26h
+  (`FelisReaperStale`).
+- **Builds and starts:** build failures and slow starts.
+- **Node:** disk and memory thresholds, and the kubelet `DiskPressure`
+  condition.
+- **Database backups:** control-plane backup freshness (§16; needs
+  node-exporter's textfile collector).
+- **Sign-in abuse (§17):** the mail budget, relay failures, throttled floods,
+  account code locks and the refused sign-in rate, plus lost audit rows.
 
 - Plain Prometheus: add `felis-alerts.yaml` to `rule_files`. Check and unit-test
   it standalone with `promtool check rules felis-alerts.yaml` and
@@ -1380,6 +1464,8 @@ for 10 seconds (the Free plan's limits).
 | PVC left behind after delete | §13 |
 | Node out of disk; pods evicted / ImagePullBackOff | §13b |
 | Which metric to scrape | §14 |
+| An alert mail from the watchdog; nothing is mailed when something breaks | §14 |
+| `FelisOperatorDown` / `FelisAPIDown` / `FelisLoginGateDown` / `FelisReconcileStuck` | §14, §1, §2 |
 | Upgrade / roll back a bad control-plane image | §15 |
 | `image_change_unconfirmed` / `image_not_in_registry` / `registry_unavailable`; move a world to a newer Minecraft | §15b |
 | Database backup overdue / `FelisDBBackupStale` / panel shows 从未备份 | §16 |

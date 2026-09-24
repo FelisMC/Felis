@@ -608,13 +608,14 @@ func TestWorkloads_DeploymentsCarryProbes(t *testing.T) {
 }
 
 // TestWorkloads_BundleContents sanity-checks the slice Workloads returns: the two
-// control-plane Deployments, the api external+internal Services, and the registry
+// control-plane Deployments, the api external+internal Services, the operator
+// metrics Service, and the registry
 // Deployment/Service/PVC, every one with TypeMeta (so its YAML header renders). The
 // internal Service must be present or the login pod's felis-api:8081 path is dead.
 func TestWorkloads_BundleContents(t *testing.T) {
 	objs := Workloads(testParams())
-	if len(objs) != 8 {
-		t.Fatalf("Workloads returned %d objects, want 8", len(objs))
+	if len(objs) != 9 {
+		t.Fatalf("Workloads returned %d objects, want 9", len(objs))
 	}
 	var haveInternalSvc bool
 	for _, o := range objs {
@@ -1012,5 +1013,37 @@ func TestWorldsRootStaticPV(t *testing.T) {
 		if _, ok := obj.(*corev1.PersistentVolume); ok {
 			t.Error("without the reaper trio no PV may render")
 		}
+	}
+}
+
+// TestOperatorMetricsService: the operator's /metrics has a ClusterIP scrape
+// target selecting the operator pods on their "metrics" port, marked for
+// prometheus.io discovery like the api's internal face.
+func TestOperatorMetricsService(t *testing.T) {
+	p := testParams()
+	svc := operatorMetricsService(p)
+	dep := OperatorDeployment(p)
+	if svc.Name != OperatorMetricsServiceName || svc.Namespace != p.ControlNamespace || svc.Spec.Type != corev1.ServiceTypeClusterIP {
+		t.Fatalf("Service = %s/%s %s, want %s/%s ClusterIP", svc.Namespace, svc.Name, svc.Spec.Type, p.ControlNamespace, OperatorMetricsServiceName)
+	}
+	if !mapSelectorMatches(svc.Spec.Selector, dep.Spec.Template.Labels) {
+		t.Errorf("selector %v does not select operator pod labels %v", svc.Spec.Selector, dep.Spec.Template.Labels)
+	}
+	if len(svc.Spec.Ports) != 1 || svc.Spec.Ports[0].TargetPort.StrVal != "metrics" || svc.Spec.Ports[0].Port != operatorMetricsPort {
+		t.Errorf("ports = %+v, want %d -> metrics", svc.Spec.Ports, operatorMetricsPort)
+	}
+	for _, s := range []*corev1.Service{svc, apiInternalService(p)} {
+		if s.Annotations["prometheus.io/scrape"] != "true" || s.Annotations["prometheus.io/port"] != fmt.Sprint(s.Spec.Ports[0].Port) {
+			t.Errorf("%s annotations = %v, want prometheus.io scrape on its port", s.Name, s.Annotations)
+		}
+	}
+	found := false
+	for _, o := range Workloads(p) {
+		if s, ok := o.(*corev1.Service); ok && s.Name == OperatorMetricsServiceName {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("Workloads does not render the operator metrics Service")
 	}
 }

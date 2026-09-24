@@ -173,6 +173,21 @@ const (
 // DNS; the on-node break-glass console resolves its ClusterIP and dials it directly.
 const APIInternalServiceName = SAAPI + "-internal"
 
+// OperatorMetricsServiceName is the ClusterIP Service in front of the operator's
+// /metrics, the scrape target for felis_servers_total, felis_server_phase,
+// felis_start_duration_seconds and controller-runtime's reconcile series.
+const OperatorMetricsServiceName = SAOperator + "-metrics"
+
+// scrapeAnnotations mark a Service for a Prometheus that discovers targets with
+// the common prometheus.io/* convention (kubernetes_sd role: endpoints).
+func scrapeAnnotations(port int32) map[string]string {
+	return map[string]string{
+		"prometheus.io/scrape": "true",
+		"prometheus.io/port":   fmt.Sprint(port),
+		"prometheus.io/path":   "/metrics",
+	}
+}
+
 // APIInternalPort is the felis-api internal-face port, exported for the on-node
 // console which builds http://<clusterIP>:APIInternalPort after a Service lookup.
 const APIInternalPort = apiInternalPort
@@ -206,6 +221,7 @@ func Workloads(p Params) []Object {
 		apiService(p),
 		apiInternalService(p),
 		OperatorDeployment(p),
+		operatorMetricsService(p),
 		registryDeployment(p),
 		registryService(p),
 		registryPVC(p),
@@ -430,8 +446,10 @@ func apiInternalService(p Params) *corev1.Service {
 	p = p.withDefaults()
 	labels := controlPlanePodLabels(ComponentAPI)
 	return &corev1.Service{
-		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
-		ObjectMeta: metav1.ObjectMeta{Name: APIInternalServiceName, Namespace: p.ControlNamespace, Labels: labels},
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
+		// The internal face also serves /metrics (felis-api's felis_* series).
+		ObjectMeta: metav1.ObjectMeta{Name: APIInternalServiceName, Namespace: p.ControlNamespace, Labels: labels,
+			Annotations: scrapeAnnotations(apiInternalPort)},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeClusterIP,
 			Selector: labels,
@@ -439,6 +457,28 @@ func apiInternalService(p Params) *corev1.Service {
 				Name:       "internal",
 				Port:       apiInternalPort,
 				TargetPort: intstr.FromString("internal"),
+				Protocol:   corev1.ProtocolTCP,
+			}},
+		},
+	}
+}
+
+// operatorMetricsService gives the operator's metrics listener a stable scrape
+// target. ClusterIP only: /metrics is unauthenticated, like felis-api's.
+func operatorMetricsService(p Params) *corev1.Service {
+	p = p.withDefaults()
+	labels := controlPlanePodLabels(ComponentOperator)
+	return &corev1.Service{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Service"},
+		ObjectMeta: metav1.ObjectMeta{Name: OperatorMetricsServiceName, Namespace: p.ControlNamespace, Labels: labels,
+			Annotations: scrapeAnnotations(operatorMetricsPort)},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeClusterIP,
+			Selector: labels,
+			Ports: []corev1.ServicePort{{
+				Name:       "metrics",
+				Port:       operatorMetricsPort,
+				TargetPort: intstr.FromString("metrics"),
 				Protocol:   corev1.ProtocolTCP,
 			}},
 		},
@@ -478,8 +518,9 @@ func OperatorDeployment(p Params) *appsv1.Deployment {
 			{Name: tmpVolume, MountPath: "/tmp"},
 		},
 		// controller-runtime serves /healthz and /readyz on the health listener
-		// (both registered as always-pass pings in cmd/felis/operator.go): the
-		// probe's contract is "the manager process is up", not a dependency check.
+		// (cmd/felis/operator.go): /healthz fails while a reconcile pass is stuck,
+		// so liveness restarts a wedged operator; /readyz waits for the informer
+		// caches. Neither checks a dependency, so an API blip restarts nothing.
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
 				Path: "/readyz", Port: intstr.FromInt32(operatorHealthPort),

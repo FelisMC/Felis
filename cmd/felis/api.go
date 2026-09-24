@@ -19,6 +19,7 @@ import (
 	"felis.lolicon.best/internal/fileedit"
 	"felis.lolicon.best/internal/imagepin"
 	"felis.lolicon.best/internal/mail"
+	"felis.lolicon.best/internal/metrics"
 	"felis.lolicon.best/internal/naming"
 	"felis.lolicon.best/internal/panel"
 	"felis.lolicon.best/internal/passkey"
@@ -109,6 +110,8 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis api: build k8s clientset: %v\n", err)
 		return 1
 	}
+
+	metrics.SetBuildInfo("api", resolvedVersion())
 
 	token := os.Getenv("FELIS_SERVICE_TOKEN")
 	if token == "" {

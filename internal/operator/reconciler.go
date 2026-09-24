@@ -78,6 +78,8 @@ type Reconciler struct {
 	// (internal/maintenance). It is the manager's uncached API reader, so the
 	// operator needs jobs:list and no Job informer. Nil skips the check.
 	Jobs client.Reader
+	// Watch records the passes in flight for the liveness probe. Nil skips it.
+	Watch *ReconcileWatch
 }
 
 func (r *Reconciler) now() metav1.Time {
@@ -109,8 +111,18 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 // The same server is never reconciled twice at once regardless.
 const maxConcurrentReconciles = 4
 
-// Reconcile drives a single MinecraftServer toward spec.desiredState.
+// Reconcile drives a single MinecraftServer toward spec.desiredState. One pass
+// is bounded by reconcileTimeout and reported to r.Watch while it runs.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	ctx, cancel := context.WithTimeout(ctx, reconcileTimeout)
+	defer cancel()
+	if r.Watch != nil {
+		defer r.Watch.begin(req.Name)()
+	}
+	return r.reconcile(ctx, req)
+}
+
+func (r *Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var server v1alpha1.MinecraftServer
 	if err := r.Get(ctx, req.NamespacedName, &server); err != nil {
 		// Deletion is handled by owner references on the children.

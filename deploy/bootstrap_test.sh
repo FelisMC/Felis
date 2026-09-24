@@ -1152,6 +1152,75 @@ expect "a failed first backup shows its log" "JOURNAL: pg_dump: connection refus
 expect "a failed first backup is a loud warning" "WARN: the first database backup failed" "$out"
 rm -rf "$tdir"
 
+wblock="$(awk '/^install_watchdog_timer\(\) \{/,/^}/' "$BS")"
+[ -n "$wblock" ] || { echo "FAIL: no install_watchdog_timer found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$wblock" | wc -l)" -lt 60 ] \
+  || { echo "FAIL: the extracted block is not install_watchdog_timer -- did its closing brace move?"; exit 1; }
+qblock="$(awk '/^quiet_watchdog\(\) \{/,/^}/' "$BS")"
+[ -n "$qblock" ] || { echo "FAIL: no quiet_watchdog found in $BS"; exit 1; }
+
+tdir="$(mktemp -d)"
+run_watchdog_timer() { # $1: exit status of the first run, $2: FELIS_WORLDS_HOST_PATH
+  FIRST="$1" FELIS_WORLDS_HOST_PATH="$2" WATCHDOG_SERVICE="$tdir/felis-watchdog.service" WATCHDOG_TIMER="$tdir/felis-watchdog.timer" \
+    WATCHDOG_STATE="$tdir/watchdog/state.json" WATCHDOG_QUIET_FILE=/run/felis/watchdog-quiet-until \
+    FELIS_DB_BACKUP_DIR=/var/lib/felis/db-backups FELIS_ARCHIVE_LOCAL_PATH=/var/lib/felis/archives FELIS_GAME_PORT=25577 \
+    HOST_BIN=/usr/local/bin/felis STATE_DIR=/etc/felis bash -c '
+    set -Eeuo pipefail
+    ok() { printf "OK: %s\n" "$*"; }; warn() { printf "WARN: %s\n" "$*"; }
+    systemctl() { printf "SYSTEMCTL: %s\n" "$*"; [ "$1" != start ] || return "$FIRST"; }
+    journalctl() { printf "JOURNAL: parse /etc/felis/felis.host.toml\n"; }
+    '"$wblock"'
+    install_watchdog_timer' 2>&1
+}
+
+out="$(run_watchdog_timer 0 "")"
+unit="$(cat "$tdir/felis-watchdog.service")"
+timer="$(cat "$tdir/felis-watchdog.timer")"
+expect "the watchdog runs the host binary against the host config, dialing the proxy's port" \
+  "ExecStart=/usr/local/bin/felis watchdog -config /etc/felis/felis.host.toml -state $tdir/watchdog/state.json -quiet-file /run/felis/watchdog-quiet-until -backup-dir /var/lib/felis/db-backups -proxy-addr 127.0.0.1:25577 -disk-paths /,/var/lib/rancher/k3s,/var/lib/postgresql,/var/lib/felis,/var/lib/felis/archives,/var/lib/felis/db-backups" "$unit"
+expect "a wedged run is killed before the next one is due twice over" "TimeoutStartSec=3min" "$unit"
+expect "the watchdog runs every two minutes" "OnUnitActiveSec=2min" "$timer"
+expect "the watchdog starts soon after boot" "OnBootSec=3min" "$timer"
+expect "the watchdog timer is enabled" "SYSTEMCTL: enable --now felis-watchdog.timer" "$out"
+expect "the first watchdog run happens during the install" "SYSTEMCTL: start felis-watchdog.service" "$out"
+expect "a working first run is reported" "OK: watchdog: checks every 2 minutes" "$out"
+if [ "$(stat -c %a "$tdir/watchdog" 2>/dev/null || stat -f %Lp "$tdir/watchdog")" = 700 ]; then
+  echo "PASS the watchdog state directory is private (it caches the relay password)"
+else
+  echo "FAIL the watchdog state directory must be 0700"; fails=$((fails + 1))
+fi
+
+out="$(run_watchdog_timer 0 /srv/worlds)"
+expect "a custom worlds root is watched for free space" "-disk-paths /,/var/lib/rancher/k3s,/var/lib/postgresql,/var/lib/felis,/srv/worlds," "$(cat "$tdir/felis-watchdog.service")"
+
+out="$(run_watchdog_timer 1 "")"
+expect "a failed first watchdog run shows its log" "JOURNAL: parse /etc/felis/felis.host.toml" "$out"
+expect "a failed first watchdog run is a loud warning" "WARN: the first watchdog run failed" "$out"
+
+out="$(WATCHDOG_QUIET_FILE="$tdir/run/quiet" bash -c '
+  set -Eeuo pipefail
+  '"$qblock"'
+  quiet_watchdog; cat "$WATCHDOG_QUIET_FILE"; date +%s' 2>&1)"
+until_ts="$(printf '%s\n' "$out" | sed -n 1p)"; now_ts="$(printf '%s\n' "$out" | sed -n 2p)"
+if [ -n "$until_ts" ] && [ "$((until_ts - now_ts))" -ge 3600 ] && [ "$((until_ts - now_ts))" -le 7200 ]; then
+  echo "PASS the install quiets the watchdog for a bounded while"
+else
+  echo "FAIL quiet_watchdog wrote '$until_ts' at $now_ts, want now+1h..2h"; fails=$((fails + 1))
+fi
+rm -rf "$tdir"
+
+cblock="$(awk '/^cleanup\(\) \{/,/^}/' "$BS")"
+case "$cblock" in
+  *'rm -f -- "$WATCHDOG_QUIET_FILE"'*) echo "PASS the installer lifts the watchdog's quiet period on exit" ;;
+  *) echo "FAIL cleanup must remove WATCHDOG_QUIET_FILE, or a failed install stays silent"; fails=$((fails + 1)) ;;
+esac
+main_block="$(awk '/^main\(\) \{/,/^}/' "$BS")"
+case "$main_block" in
+  *quiet_watchdog*pause_package_background_timers*install_db_backup_timer*install_watchdog_timer*mark_bootstrap_done*)
+    echo "PASS main quiets the watchdog first and installs it last" ;;
+  *) echo "FAIL main must call quiet_watchdog before any restart and install_watchdog_timer after the backup timer"; fails=$((fails + 1)) ;;
+esac
+
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"

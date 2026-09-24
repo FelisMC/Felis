@@ -27,6 +27,7 @@ Commands:
   apply             Create a MinecraftServer CRD (direct K8s write; use -f server.json)
   setup             Run host bootstrap + first-run setup console (TUI; requires root/sudo)
   converge          Fill in fields a newer desired spec added to already-installed system servers
+  watchdog          Check the platform once and mail the owners what has gone wrong (run by felis-watchdog.timer)
   version           Print the build stamp of this binary
   update            Report which platform components have updates available
   breakGlass        Open the local break-glass emergency console (TUI; requires root/sudo)
@@ -67,6 +68,7 @@ var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"pin-images":       cmdPinImages,
 	"version":          cmdVersion,
 	"update":           cmdUpdate,
+	"watchdog":         cmdWatchdog,
 }
 
 // run dispatches a subcommand. It is separate from main so the router is

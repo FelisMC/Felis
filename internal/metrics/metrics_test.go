@@ -13,9 +13,11 @@ import (
 // silent dashboard/alert break.
 var wantNames = []string{
 	"felis_servers_total",
+	"felis_server_phase",
 	"felis_start_duration_seconds",
 	"felis_image_build_failures_total",
 	"felis_reaper_worlds_deleted_total",
+	"felis_build_info",
 }
 
 func TestRegisterExposesNamedFelisMetrics(t *testing.T) {
@@ -28,6 +30,8 @@ func TestRegisterExposesNamedFelisMetrics(t *testing.T) {
 	// family — this proves the exported vars are the ones actually registered,
 	// not shadow copies.
 	ServersTotal.WithLabelValues("Running").Set(3)
+	ServerPhase.WithLabelValues("survival", "", "Running", "Running").Set(1)
+	SetBuildInfo("operator", "v1.2.3")
 	StartDurationSeconds.Observe(12.5)
 	ImageBuildFailuresTotal.Inc()
 	ReaperWorldsDeletedTotal.Add(2)
@@ -52,6 +56,26 @@ func TestRegisterExposesNamedFelisMetrics(t *testing.T) {
 			t.Errorf("metric %q is not under the felis_ namespace", name)
 		}
 	}
+}
+
+// TestSyncServerPhasesDropsDeletedServers: each sync publishes exactly the
+// servers in the snapshot, so a server that left the fleet or changed phase keeps
+// no stale series behind.
+func TestSyncServerPhasesDropsDeletedServers(t *testing.T) {
+	SyncServerPhases([]ServerPhaseSample{
+		{Server: "login", Role: "login", Phase: "Starting", Desired: "Running"},
+		{Server: "survival", Phase: "Running", Desired: "Running"},
+	})
+	SyncServerPhases([]ServerPhaseSample{
+		{Server: "login", Role: "login", Phase: "Running", Desired: "Running"},
+	})
+	if n := testutil.CollectAndCount(ServerPhase); n != 1 {
+		t.Fatalf("series after the second sync = %d, want 1", n)
+	}
+	if got := testutil.ToFloat64(ServerPhase.WithLabelValues("login", "login", "Running", "Running")); got != 1 {
+		t.Errorf("login Running = %v, want 1", got)
+	}
+	ServerPhase.Reset()
 }
 
 func TestSyncServerGaugeResetsStaleStates(t *testing.T) {

@@ -291,3 +291,219 @@ tests:
                 The actions went through but their audit rows were lost. The felis-api log
                 names each lost row (`audit: lost ...`); the usual cause is PostgreSQL
                 being unreachable or out of disk.
+  - name: operator and api presence
+    interval: 1m
+    input_series:
+      - series: 'felis_build_info{component="operator",version="v1",job="felis-operator",instance="op-0"}'
+        values: '1x30'
+      # felis-api stops being scraped after 5m; the series goes stale 5m later.
+      - series: 'felis_build_info{component="api",version="v1",job="felis-api",instance="api-0"}'
+        values: '1x5'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: FelisOperatorDown
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: FelisAPIDown
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: FelisAPIDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: api
+            exp_annotations:
+              summary: "felis-api is down or not scraped"
+              description: >-
+                No felis_build_info{component="api"} series for 10 minutes. The panel,
+                sign-in and the proxy's player lookups all go through felis-api. Check
+                `kubectl -n felis get deploy felis-api` and its log; if the pod is
+                healthy, the felis-api-internal Service is not being scraped
+                (troubleshooting §14).
+  - name: operator never scraped
+    interval: 1m
+    input_series:
+      - series: 'felis_build_info{component="api",version="v1",job="felis-api",instance="api-0"}'
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: FelisOperatorDown
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: FelisOperatorDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: operator
+            exp_annotations:
+              summary: "felis-operator is down or not scraped"
+              description: >-
+                No felis_build_info{component="operator"} series for 10 minutes. Without
+                the operator no server starts, stops or recovers. Check
+                `kubectl -n felis get deploy felis-operator` and its log; if the pod is
+                healthy, the felis-operator-metrics Service is not being scraped
+                (troubleshooting §14).
+  - name: system and user servers down
+    interval: 1m
+    input_series:
+      - series: 'felis_server_phase{server="login",role="login",phase="Starting",desired="Running"}'
+        values: '1x20'
+      - series: 'felis_server_phase{server="lobby",role="lobby",phase="Failed",desired="Running"}'
+        values: '1x20'
+      # Stopped on purpose: not an outage.
+      - series: 'felis_server_phase{server="lobby2",role="lobby",phase="Stopped",desired="Stopped"}'
+        values: '1x20'
+      # A user server carries no role label (the operator publishes role="").
+      - series: 'felis_server_phase{server="survival",phase="Failed",desired="Running"}'
+        values: '1x20'
+      - series: 'felis_server_phase{server="creative",phase="Running",desired="Running"}'
+        values: '1x20'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: FelisLoginGateDown
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: FelisLoginGateDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              server: login
+              role: login
+              phase: Starting
+              desired: Running
+            exp_annotations:
+              summary: "the login gate login is Starting"
+              description: >-
+                Every player connection passes through the login server first, so no one
+                can join. The MinecraftServer's conditions carry the reason:
+                `kubectl -n minecraft describe minecraftserver login`
+                (troubleshooting §1, §2).
+      - eval_time: 11m
+        alertname: FelisSystemServerDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              server: lobby
+              role: lobby
+              phase: Failed
+              desired: Running
+            exp_annotations:
+              summary: "system server lobby (lobby) is Failed"
+              description: >-
+                Players who sign in are sent to the lobby; while it is down they stay at
+                the gate. `kubectl -n minecraft describe minecraftserver lobby`
+                shows the reason (troubleshooting §1, §2).
+      - eval_time: 3m
+        alertname: FelisServerFailed
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: FelisServerFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              server: survival
+              phase: Failed
+              desired: Running
+            exp_annotations:
+              summary: "server survival is Failed"
+              description: >-
+                The operator gave up on this server (a crash loop, an image that will not
+                pull, a world volume that will not mount). Its conditions carry the
+                reason: `kubectl -n minecraft describe minecraftserver survival`
+                (troubleshooting §2).
+  - name: operator reconcile errors and a stuck pass
+    interval: 1m
+    input_series:
+      # Two failed reconciles a minute from 6m on.
+      - series: 'controller_runtime_reconcile_errors_total{controller="minecraftserver",job="felis-operator"}'
+        values: '0x5 0+2x20'
+      # One pass that started at 5m and never returns.
+      - series: 'workqueue_longest_running_processor_seconds{name="minecraftserver",controller="minecraftserver",job="felis-operator"}'
+        values: '0x5 60+60x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: FelisReconcileErrors
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: FelisReconcileErrors
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "the operator failed over 10 reconciles in 15 minutes"
+              description: >-
+                Server changes are being retried instead of applied. The felis-operator
+                log names each failing server and its error.
+      - eval_time: 12m
+        alertname: FelisReconcileStuck
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: FelisReconcileStuck
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "an operator reconcile has been running for over 5 minutes"
+              description: >-
+                Each reconcile is bounded at 3 minutes, so this one is ignoring its
+                deadline and holding a worker. The liveness probe restarts the operator
+                once a pass passes 10 minutes; the log from before the restart shows
+                where it hung.
+  - name: world job failures and a late reaper
+    interval: 1m
+    input_series:
+      - series: 'kube_job_failed{namespace="minecraft",job_name="backup-survival-abc",condition="true"}'
+        values: '0x2 1x10'
+      - series: 'kube_job_failed{namespace="minecraft",job_name="backup-survival-abc",condition="false"}'
+        values: '1x2 0x10'
+      # A build Job in another namespace is FelisImageBuildFailures' business.
+      - series: 'kube_job_failed{namespace="felis-build",job_name="build-x",condition="true"}'
+        values: '1x12'
+      # Evaluation starts at the epoch, so "over a day ago" is a negative timestamp.
+      - series: 'kube_cronjob_status_last_successful_time{namespace="minecraft",cronjob="felis-reaper"}'
+        values: '-100000x30'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: FelisWorldJobFailed
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: FelisWorldJobFailed
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: minecraft
+              job_name: backup-survival-abc
+              condition: "true"
+            exp_annotations:
+              summary: "Job backup-survival-abc failed"
+              description: >-
+                A world backup, restore or reaper run failed; after a failed backup that
+                world's newest archive is older than planned.
+                `kubectl -n minecraft logs job/backup-survival-abc` has the error
+                (troubleshooting §10).
+      - eval_time: 5m
+        alertname: FelisReaperStale
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: FelisReaperStale
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              namespace: minecraft
+              cronjob: felis-reaper
+            exp_annotations:
+              summary: "the world reaper has not succeeded in over 26h"
+              description: >-
+                felis-reaper runs daily; idle worlds are neither backed up nor reclaimed
+                while it fails. `kubectl -n minecraft get jobs --sort-by=.metadata.creationTimestamp`
+                lists its runs, and the newest one's log
+                shows why (troubleshooting §10).
+  - name: a reaper that ran yesterday stays quiet
+    interval: 1m
+    input_series:
+      - series: 'kube_cronjob_status_last_successful_time{namespace="minecraft",cronjob="felis-reaper"}'
+        values: '-50000x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: FelisReaperStale
+        exp_alerts: []

@@ -32,6 +32,18 @@ var (
 		Help:      "Current number of Minecraft servers known to the operator, by desired state.",
 	}, []string{"state"})
 
+	// ServerPhase is 1 for each server's current phase and absent for every other
+	// phase. role is the server's system role (login, lobby), empty for a user
+	// server, so an alert can single out the login gate; desired is its
+	// desiredState, so a server that is down on purpose can be told from one that
+	// failed to come up. SyncServerPhases republishes it from a full List, so a
+	// deleted server's series goes away instead of freezing at its last phase.
+	ServerPhase = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "server_phase",
+		Help:      "1 for each Minecraft server's current phase, by server, system role, phase and desired state.",
+	}, []string{"server", "role", "phase", "desired"})
+
 	// StartDurationSeconds observes the wall-clock time from desiredState=Running
 	// to a server reporting ready. Buckets are tuned for Minecraft cold starts
 	// (seconds to a few minutes), not the default sub-second web-latency buckets.
@@ -107,7 +119,24 @@ var (
 		Name:      "audit_write_failures_total",
 		Help:      "Audit rows the API failed to write.",
 	})
+
+	// BuildInfo is 1 for the process serving it, labelled by component
+	// ("operator", "api") and version. Both processes register every collector,
+	// so this is the one series that says which of them a scrape reached: an
+	// alert on absent(felis_build_info{component="api"}) fires when felis-api is
+	// down or no longer scraped, where every other felis_* series would still be
+	// present from the operator.
+	BuildInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Name:      "build_info",
+		Help:      "1 for the Felis component serving these metrics, by component and version.",
+	}, []string{"component", "version"})
 )
+
+// SetBuildInfo marks this process as component at version on felis_build_info.
+func SetBuildInfo(component, version string) {
+	BuildInfo.WithLabelValues(component, version).Set(1)
+}
 
 // OTPPurposes are the email-code doors OTPLockoutsTotal is labelled by.
 var OTPPurposes = []string{"onboard_email", "login_email", "op_login", "migrate_confirm"}
@@ -149,12 +178,27 @@ func SyncServerGauge(states []string) {
 	}
 }
 
+// ServerPhaseSample is one server's felis_server_phase series.
+type ServerPhaseSample struct {
+	Server, Role, Phase, Desired string
+}
+
+// SyncServerPhases republishes felis_server_phase from a full snapshot of the
+// fleet, Resetting first for the same reason SyncServerGauge does.
+func SyncServerPhases(samples []ServerPhaseSample) {
+	ServerPhase.Reset()
+	for _, s := range samples {
+		ServerPhase.WithLabelValues(s.Server, s.Role, s.Phase, s.Desired).Set(1)
+	}
+}
+
 // Collectors returns every felis_* collector in a stable order. Production and
 // tests register the same slice, so the test asserting the full set is exposed
 // also pins the production surface.
 func Collectors() []prometheus.Collector {
 	return []prometheus.Collector{
 		ServersTotal,
+		ServerPhase,
 		StartDurationSeconds,
 		ImageBuildFailuresTotal,
 		ReaperWorldsDeletedTotal,
@@ -164,6 +208,7 @@ func Collectors() []prometheus.Collector {
 		AuthFailuresTotal,
 		SessionsRevokedTotal,
 		AuditWriteFailuresTotal,
+		BuildInfo,
 	}
 }
 

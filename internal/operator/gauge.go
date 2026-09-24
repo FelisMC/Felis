@@ -13,8 +13,8 @@ import (
 // defaultGaugeInterval is the republish cadence used when none is configured.
 const defaultGaugeInterval = 30 * time.Second
 
-// GaugeSyncer periodically republishes felis_servers_total (spec §23) from a
-// full List of MinecraftServers.
+// GaugeSyncer periodically republishes felis_servers_total (spec §23) and
+// felis_server_phase from a full List of MinecraftServers.
 //
 // felis_servers_total is a fleet-wide gauge partitioned by desiredState, which a
 // per-object Reconcile fundamentally cannot maintain: one reconcile observes a
@@ -62,7 +62,8 @@ func (g *GaugeSyncer) Start(ctx context.Context) error {
 	}
 }
 
-// SyncOnce Lists the fleet once and republishes felis_servers_total from it.
+// SyncOnce Lists the fleet once and republishes felis_servers_total and
+// felis_server_phase from it.
 // Separated from Start so the List->translate->gauge path is unit-testable
 // against a fake client, leaving only the ticker loop untested.
 func (g *GaugeSyncer) SyncOnce(ctx context.Context) error {
@@ -71,7 +72,33 @@ func (g *GaugeSyncer) SyncOnce(ctx context.Context) error {
 		return err
 	}
 	metrics.SyncServerGauge(serverStates(list.Items))
+	metrics.SyncServerPhases(serverPhases(list.Items))
 	return nil
+}
+
+// serverPhases maps each server to its felis_server_phase labels. A server the
+// operator has not reported on yet is Unknown; desiredState defaults as in
+// serverStates.
+func serverPhases(items []v1alpha1.MinecraftServer) []metrics.ServerPhaseSample {
+	out := make([]metrics.ServerPhaseSample, 0, len(items))
+	for i := range items {
+		ms := &items[i]
+		phase := string(ms.Status.Phase)
+		if phase == "" {
+			phase = string(v1alpha1.PhaseUnknown)
+		}
+		desired := string(ms.Spec.DesiredState)
+		if desired == "" {
+			desired = string(v1alpha1.DesiredStopped)
+		}
+		out = append(out, metrics.ServerPhaseSample{
+			Server:  ms.Name,
+			Role:    ms.Labels[v1alpha1.LabelSystemRole],
+			Phase:   phase,
+			Desired: desired,
+		})
+	}
+	return out
 }
 
 // serverStates maps each server to its desiredState, defaulting an unset state

@@ -37,6 +37,116 @@ spec:
               observed when readiness is first reached). A start that never completes
               records nothing — cross-check desiredState=Running servers with no ready
               phase (troubleshooting §1).
+    - name: felis.platform.rules
+      rules:
+        - alert: FelisOperatorDown
+          expr: absent(felis_build_info{component="operator"})
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "felis-operator is down or not scraped"
+            description: >-
+              No felis_build_info{component="operator"} series for 10 minutes. Without
+              the operator no server starts, stops or recovers. Check
+              `kubectl -n felis get deploy felis-operator` and its log; if the pod is
+              healthy, the felis-operator-metrics Service is not being scraped
+              (troubleshooting §14).
+        - alert: FelisAPIDown
+          expr: absent(felis_build_info{component="api"})
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "felis-api is down or not scraped"
+            description: >-
+              No felis_build_info{component="api"} series for 10 minutes. The panel,
+              sign-in and the proxy's player lookups all go through felis-api. Check
+              `kubectl -n felis get deploy felis-api` and its log; if the pod is
+              healthy, the felis-api-internal Service is not being scraped
+              (troubleshooting §14).
+        - alert: FelisLoginGateDown
+          expr: felis_server_phase{role="login",desired="Running",phase!="Running"} == 1
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "the login gate {{ $labels.server }} is {{ $labels.phase }}"
+            description: >-
+              Every player connection passes through the login server first, so no one
+              can join. The MinecraftServer's conditions carry the reason:
+              `kubectl -n minecraft describe minecraftserver {{ $labels.server }}`
+              (troubleshooting §1, §2).
+        - alert: FelisSystemServerDown
+          expr: felis_server_phase{role!="",role!="login",desired="Running",phase!="Running"} == 1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "system server {{ $labels.server }} ({{ $labels.role }}) is {{ $labels.phase }}"
+            description: >-
+              Players who sign in are sent to the lobby; while it is down they stay at
+              the gate. `kubectl -n minecraft describe minecraftserver {{ $labels.server }}`
+              shows the reason (troubleshooting §1, §2).
+        - alert: FelisServerFailed
+          expr: felis_server_phase{role="",phase="Failed"} == 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "server {{ $labels.server }} is Failed"
+            description: >-
+              The operator gave up on this server (a crash loop, an image that will not
+              pull, a world volume that will not mount). Its conditions carry the
+              reason: `kubectl -n minecraft describe minecraftserver {{ $labels.server }}`
+              (troubleshooting §2).
+        - alert: FelisReconcileErrors
+          expr: sum(increase(controller_runtime_reconcile_errors_total{controller="minecraftserver"}[15m])) > 10
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "the operator failed over 10 reconciles in 15 minutes"
+            description: >-
+              Server changes are being retried instead of applied. The felis-operator
+              log names each failing server and its error.
+        - alert: FelisReconcileStuck
+          expr: max(workqueue_longest_running_processor_seconds{name="minecraftserver"}) > 300
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "an operator reconcile has been running for over 5 minutes"
+            description: >-
+              Each reconcile is bounded at 3 minutes, so this one is ignoring its
+              deadline and holding a worker. The liveness probe restarts the operator
+              once a pass passes 10 minutes; the log from before the restart shows
+              where it hung.
+    - name: felis.jobs.rules
+      rules:
+        - alert: FelisWorldJobFailed
+          expr: kube_job_failed{namespace="minecraft",condition="true"} == 1
+          labels:
+            severity: warning
+          annotations:
+            summary: "Job {{ $labels.job_name }} failed"
+            description: >-
+              A world backup, restore or reaper run failed; after a failed backup that
+              world's newest archive is older than planned.
+              `kubectl -n minecraft logs job/{{ $labels.job_name }}` has the error
+              (troubleshooting §10).
+        - alert: FelisReaperStale
+          expr: time() - kube_cronjob_status_last_successful_time{namespace="minecraft",cronjob="felis-reaper"} > 26 * 3600
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "the world reaper has not succeeded in over 26h"
+            description: >-
+              felis-reaper runs daily; idle worlds are neither backed up nor reclaimed
+              while it fails. `kubectl -n minecraft get jobs --sort-by=.metadata.creationTimestamp`
+              lists its runs, and the newest one's log
+              shows why (troubleshooting §10).
     - name: felis.node.rules
       rules:
         - alert: FelisNodeDiskSpaceLow

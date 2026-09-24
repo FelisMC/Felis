@@ -1,11 +1,15 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
 	"os"
+	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	felismetrics "felis.lolicon.best/internal/metrics"
@@ -75,16 +79,19 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stderr, "felis operator: watching namespace %q\n", *namespace)
 
-	// Register the two probe endpoints. controller-runtime only mounts /healthz and
-	// /readyz once at least one check is registered, so a bare listener would 404.
-	// The checks are the canonical always-pass ping: the probes' contract is "the
-	// manager process is up and serving", and a dependency hiccup (e.g. an API blip)
-	// must not restart the operator.
-	if err := mgr.AddHealthzCheck("ping", healthz.Ping); err != nil {
+	// /healthz fails while a reconcile pass has been stuck past its limit, so the
+	// liveness probe restarts an operator whose workers are wedged (a Pod whose
+	// process answers but no server starts or stops). /readyz waits for the
+	// informer caches: until they sync the operator acts on nothing, and one that
+	// never syncs (lost RBAC, an unreachable API) never reports Available.
+	// A dependency hiccup fails neither: the caches ride through API blips, and
+	// each pass is bounded well inside the stuck limit.
+	watch := &operator.ReconcileWatch{}
+	if err := mgr.AddHealthzCheck("reconcile", watch.Check); err != nil {
 		fmt.Fprintf(stderr, "felis operator: register healthz check: %v\n", err)
 		return 1
 	}
-	if err := mgr.AddReadyzCheck("ping", healthz.Ping); err != nil {
+	if err := mgr.AddReadyzCheck("informers", cacheSynced(mgr.GetCache())); err != nil {
 		fmt.Fprintf(stderr, "felis operator: register readyz check: %v\n", err)
 		return 1
 	}
@@ -98,6 +105,7 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis operator: register metrics: %v\n", err)
 		return 1
 	}
+	felismetrics.SetBuildInfo("operator", resolvedVersion())
 
 	r := &operator.Reconciler{
 		Client: mgr.GetClient(),
@@ -109,7 +117,8 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 		FelisImage: os.Getenv("FELIS_IMAGE"),
 		// Uncached: the maintenance-lock check lists Jobs only when a server is
 		// about to start, which does not justify a namespace-wide Job informer.
-		Jobs: mgr.GetAPIReader(),
+		Jobs:  mgr.GetAPIReader(),
+		Watch: watch,
 	}
 	if err := r.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(stderr, "felis operator: setup controller: %v\n", err)
@@ -130,4 +139,19 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// cacheSynced is a readyz check that passes once every informer the manager
+// started has synced. It waits at most a second, well inside the probe timeout.
+func cacheSynced(c interface {
+	WaitForCacheSync(ctx context.Context) bool
+}) healthz.Checker {
+	return func(req *http.Request) error {
+		ctx, cancel := context.WithTimeout(req.Context(), time.Second)
+		defer cancel()
+		if !c.WaitForCacheSync(ctx) {
+			return errors.New("informer caches not synced")
+		}
+		return nil
+	}
 }
