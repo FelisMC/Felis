@@ -324,6 +324,99 @@ func TestConsumeLoginEmailOTPContract(t *testing.T) {
 	}
 }
 
+// The account-level wrong-code budget must survive supersede: minting a fresh
+// code resets the per-code attempts, and the public login door can mint one a
+// minute, so only a counter outside email_otps bounds guessing per account.
+func TestOTPFailureBudgetContract(t *testing.T) {
+	ctx := context.Background()
+	u := newUser(t, "user", "otp-budget")
+	purpose := "login_email"
+	addr := "budget-" + suffix(t) + "@example.net"
+	start := mustNow().Truncate(time.Second)
+	mint := func(hash string, at time.Time) {
+		t.Helper()
+		if err := repo.CreateEmailOTP(ctx, "bud-"+suffix(t), u.ID, addr, hash, purpose, at.Add(5*time.Minute)); err != nil {
+			t.Fatalf("CreateEmailOTP: %v", err)
+		}
+	}
+
+	// Ten wrong guesses spread over three codes; the per-code cap (5) is never hit.
+	var tripped *api.OTPAccountLockedError
+	for i := 0; i < 10; i++ {
+		at := start.Add(time.Duration(i) * time.Minute)
+		if i%4 == 0 {
+			mint("h-good", at)
+		}
+		err := repo.ConsumeLoginEmailOTP(ctx, u.ID, purpose, "h-wrong", at)
+		if i < 9 {
+			if !errors.Is(err, api.ErrOTPInvalid) {
+				t.Fatalf("wrong guess %d = %v, want ErrOTPInvalid", i+1, err)
+			}
+			continue
+		}
+		if !errors.As(err, &tripped) || !tripped.JustLocked {
+			t.Fatalf("10th wrong guess = %v, want a fresh *OTPAccountLockedError", err)
+		}
+	}
+	if want := start.Add(24 * time.Hour); !tripped.Until.Equal(want) {
+		t.Fatalf("lock until %v, want %v (window opened by the first wrong guess)", tripped.Until, want)
+	}
+
+	// The right code on a live, barely-used code is refused while locked.
+	at := start.Add(10 * time.Minute)
+	var lock *api.OTPAccountLockedError
+	if err := repo.ConsumeLoginEmailOTP(ctx, u.ID, purpose, "h-good", at); !errors.As(err, &lock) || lock.JustLocked {
+		t.Fatalf("right code while locked = %v, want a standing *OTPAccountLockedError", err)
+	}
+	if until, err := repo.OTPLockedUntil(ctx, u.ID, purpose, at); err != nil || until.IsZero() {
+		t.Fatalf("OTPLockedUntil during lock = %v, %v", until, err)
+	}
+	// Other purposes of the same account are separate doors.
+	if until, err := repo.OTPLockedUntil(ctx, u.ID, "onboard_email", at); err != nil || !until.IsZero() {
+		t.Fatalf("onboard door locked too: %v, %v", until, err)
+	}
+
+	// After the window the door reopens and the count starts over.
+	later := start.Add(25 * time.Hour)
+	if until, err := repo.OTPLockedUntil(ctx, u.ID, purpose, later); err != nil || !until.IsZero() {
+		t.Fatalf("OTPLockedUntil after window = %v, %v", until, err)
+	}
+	mint("h-good", later)
+	if err := repo.ConsumeLoginEmailOTP(ctx, u.ID, purpose, "h-wrong", later); !errors.Is(err, api.ErrOTPInvalid) {
+		t.Fatalf("first wrong guess of a new window = %v, want ErrOTPInvalid", err)
+	}
+	var failures int
+	if err := db.QueryRowContext(ctx,
+		`SELECT failures FROM otp_failure_windows WHERE user_id = $1 AND purpose = $2`, u.ID, purpose).Scan(&failures); err != nil {
+		t.Fatalf("read budget row: %v", err)
+	}
+	if failures != 1 {
+		t.Fatalf("failures after window reset = %d, want 1", failures)
+	}
+	if err := repo.ConsumeLoginEmailOTP(ctx, u.ID, purpose, "h-good", later); err != nil {
+		t.Fatalf("right code after the window = %v, want nil", err)
+	}
+
+	// The onboarding primitive shares the rule.
+	onboard := "onboard_email"
+	for i := 0; i < 10; i++ {
+		at := start.Add(time.Duration(i) * time.Minute)
+		if i%4 == 0 {
+			if err := repo.CreateEmailOTP(ctx, "bud-on-"+suffix(t), u.ID, addr, "h-good", onboard, at.Add(5*time.Minute)); err != nil {
+				t.Fatalf("CreateEmailOTP onboard: %v", err)
+			}
+		}
+		_, err := repo.VerifyEmailOTP(ctx, u.ID, onboard, "h-wrong", at)
+		if i == 9 && !errors.Is(err, api.ErrOTPAccountLocked) {
+			t.Fatalf("10th wrong onboarding guess = %v, want ErrOTPAccountLocked", err)
+		}
+	}
+	if _, err := repo.VerifyEmailOTP(ctx, u.ID, onboard, "h-good", start.Add(10*time.Minute)); !errors.Is(err, api.ErrOTPAccountLocked) {
+		t.Fatalf("right onboarding code while locked = %v, want ErrOTPAccountLocked", err)
+	}
+	assertEmailProven(t, u.ID, "", false)
+}
+
 // ---- user admin (spec §7) -------------------------------------------------------
 
 // The claim gate must hold under concurrency (audit #4): two simultaneous claims

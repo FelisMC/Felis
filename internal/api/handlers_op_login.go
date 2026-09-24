@@ -144,6 +144,15 @@ func (a *API) handleOpLoginStart(w http.ResponseWriter, r *http.Request) {
 		neutral()
 		return
 	}
+	// A locked door (wrong-code budget spent) is neutral too: no request, no mail.
+	switch until, err := a.Repo.OTPLockedUntil(r.Context(), u.ID, otpPurposeOpLogin, a.now()); {
+	case err != nil:
+		writeError(w, r, err)
+		return
+	case !until.IsZero():
+		neutral()
+		return
+	}
 
 	id, err := newOTPID()
 	if err != nil {
@@ -272,7 +281,8 @@ func (a *API) handleOpLoginFinish(w http.ResponseWriter, r *http.Request) {
 	// attempt without minting anything and returns the uniform failure — the code, not
 	// the request, is the problem, and the request stays approved for a retry.
 	switch err := a.Repo.ConsumeLoginEmailOTP(r.Context(), loginReq.UserID, otpPurposeOpLogin, otpCodeHash(code), now); {
-	case errors.Is(err, ErrOTPInvalid), errors.Is(err, ErrOTPLocked):
+	case errors.Is(err, ErrOTPInvalid), errors.Is(err, ErrOTPLocked), errors.Is(err, ErrOTPAccountLocked):
+		a.noteOTPLock(r, err, loginReq.UserID, otpPurposeOpLogin)
 		writeError(w, r, invalid)
 		return
 	case err != nil:

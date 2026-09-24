@@ -314,9 +314,10 @@ type Repo interface {
 	CreateEmailOTP(ctx context.Context, id, userID, email, codeHash, purpose string, expiresAt time.Time) error
 	// VerifyEmailOTP redeems the newest live code for (userID, purpose) against
 	// codeHash, atomically (spec §B2). No live code, an expired one, or a consumed
-	// one → ErrOTPInvalid; an exhausted attempt budget → ErrOTPLocked; a hash
-	// mismatch increments attempts and returns ErrOTPInvalid WITHOUT consuming the
-	// code (so a typo does not burn it). On a match the code is consumed and the
+	// one → ErrOTPInvalid; an exhausted attempt budget → ErrOTPLocked; a spent
+	// (user, purpose) wrong-code budget → *OTPAccountLockedError, even for the right
+	// code; a hash mismatch increments attempts, charges that budget, and returns
+	// ErrOTPInvalid WITHOUT consuming the code (so a typo does not burn it). On a match the code is consumed and the
 	// user row is flipped to email=<the proven address>, email_verified=true; the
 	// proven email is returned — unless a DIFFERENT account has already proven the
 	// same address, which is ErrEmailTaken with the code left unconsumed (the
@@ -343,8 +344,14 @@ type Repo interface {
 	// settled — re-proving control of a code this session must not re-touch the row.
 	// Returning only an error is deliberate: unlike onboarding, login has nothing to
 	// prove about the address, so there is no email to hand back. Errors are exactly
-	// ErrOTPInvalid / ErrOTPLocked (ErrEmailTaken is structurally impossible here).
+	// ErrOTPInvalid / ErrOTPLocked / *OTPAccountLockedError (ErrEmailTaken is
+	// structurally impossible here).
 	ConsumeLoginEmailOTP(ctx context.Context, userID, purpose, codeHash string, now time.Time) error
+	// OTPLockedUntil reports when the (userID, purpose) wrong-code lock ends, or the
+	// zero time when that door is open. Both redeem paths enforce the lock
+	// themselves (returning *OTPAccountLockedError, and charging every mismatch to
+	// the budget); the start doors read it so a locked door mails no code.
+	OTPLockedUntil(ctx context.Context, userID, purpose string, now time.Time) (time.Time, error)
 
 	// ---- op.console staff login: in-game approval state machine (spec §B op-login) ----
 

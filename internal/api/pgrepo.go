@@ -820,18 +820,16 @@ func (p *PGRepo) VerifyEmailOTP(ctx context.Context, userID, purpose, codeHash s
 	if !expiresAt.After(now) {
 		return "", ErrOTPInvalid
 	}
+	if until, err := otpLockedUntil(ctx, tx, userID, purpose, now, true); err != nil {
+		return "", err
+	} else if !until.IsZero() {
+		return "", &OTPAccountLockedError{Until: until}
+	}
 	if attempts >= otpMaxAttempts {
 		return "", ErrOTPLocked
 	}
 	if storedHash != codeHash {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE email_otps SET attempts = attempts + 1 WHERE id = $1`, id); err != nil {
-			return "", fmt.Errorf("record otp attempt: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return "", err
-		}
-		return "", ErrOTPInvalid
+		return "", chargeOTPMismatch(ctx, tx, id, userID, purpose, now)
 	}
 
 	// A DIFFERENT account may not also prove this address: the pre-session login
@@ -2135,18 +2133,16 @@ func (p *PGRepo) ConsumeLoginEmailOTP(ctx context.Context, userID, purpose, code
 	if !expiresAt.After(now) {
 		return ErrOTPInvalid
 	}
+	if until, err := otpLockedUntil(ctx, tx, userID, purpose, now, true); err != nil {
+		return err
+	} else if !until.IsZero() {
+		return &OTPAccountLockedError{Until: until}
+	}
 	if attempts >= otpMaxAttempts {
 		return ErrOTPLocked
 	}
 	if storedHash != codeHash {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE email_otps SET attempts = attempts + 1 WHERE id = $1`, id); err != nil {
-			return fmt.Errorf("record otp attempt: %w", err)
-		}
-		if err := tx.Commit(); err != nil {
-			return err
-		}
-		return ErrOTPInvalid
+		return chargeOTPMismatch(ctx, tx, id, userID, purpose, now)
 	}
 
 	if _, err := tx.ExecContext(ctx,
@@ -2154,6 +2150,79 @@ func (p *PGRepo) ConsumeLoginEmailOTP(ctx context.Context, userID, purpose, code
 		return fmt.Errorf("consume otp: %w", err)
 	}
 	return tx.Commit()
+}
+
+// OTPLockedUntil reads the (user, purpose) wrong-code lock for a start door.
+func (p *PGRepo) OTPLockedUntil(ctx context.Context, userID, purpose string, now time.Time) (time.Time, error) {
+	return otpLockedUntil(ctx, p.db, userID, purpose, now, false)
+}
+
+// otpQuerier is the read half shared by *sql.DB and *sql.Tx.
+type otpQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// otpLockedUntil returns when the (user, purpose) lock ends, or zero when the
+// budget is not spent in the current window. forUpdate takes the row lock so a
+// redeem serialises its check with its own charge.
+func otpLockedUntil(ctx context.Context, q otpQuerier, userID, purpose string, now time.Time, forUpdate bool) (time.Time, error) {
+	query := `SELECT window_start, failures FROM otp_failure_windows WHERE user_id = $1 AND purpose = $2`
+	if forUpdate {
+		query += ` FOR UPDATE`
+	}
+	var (
+		start    time.Time
+		failures int
+	)
+	switch err := q.QueryRowContext(ctx, query, userID, purpose).Scan(&start, &failures); {
+	case errors.Is(err, sql.ErrNoRows):
+		return time.Time{}, nil
+	case err != nil:
+		return time.Time{}, fmt.Errorf("read otp failure budget: %w", err)
+	}
+	return otpLockEnd(start, failures, now), nil
+}
+
+// otpLockEnd is the lock rule on one budget row: spent inside a live window.
+func otpLockEnd(windowStart time.Time, failures int, now time.Time) time.Time {
+	end := windowStart.Add(otpFailureWindow)
+	if failures < otpFailureBudget || !end.After(now) {
+		return time.Time{}
+	}
+	return end
+}
+
+// chargeOTPMismatch records one wrong guess against the code and the account
+// budget, commits, and returns what the caller should answer: ErrOTPInvalid, or
+// the lock this guess just tripped. A window that has ended starts over at 1.
+func chargeOTPMismatch(ctx context.Context, tx *sql.Tx, codeID, userID, purpose string, now time.Time) error {
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE email_otps SET attempts = attempts + 1 WHERE id = $1`, codeID); err != nil {
+		return fmt.Errorf("record otp attempt: %w", err)
+	}
+	var (
+		start    time.Time
+		failures int
+	)
+	if err := tx.QueryRowContext(ctx,
+		`INSERT INTO otp_failure_windows (user_id, purpose, window_start, failures)
+		 VALUES ($1, $2, $3, 1)
+		 ON CONFLICT (user_id, purpose) DO UPDATE SET
+		   failures = CASE WHEN otp_failure_windows.window_start + $4 * interval '1 second' <= $3
+		                   THEN 1 ELSE otp_failure_windows.failures + 1 END,
+		   window_start = CASE WHEN otp_failure_windows.window_start + $4 * interval '1 second' <= $3
+		                   THEN $3 ELSE otp_failure_windows.window_start END
+		 RETURNING window_start, failures`,
+		userID, purpose, now, int64(otpFailureWindow/time.Second)).Scan(&start, &failures); err != nil {
+		return fmt.Errorf("charge otp failure budget: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if failures == otpFailureBudget {
+		return &OTPAccountLockedError{Until: start.Add(otpFailureWindow), JustLocked: true}
+	}
+	return ErrOTPInvalid
 }
 
 // ---- op.console staff login: in-game approval state machine (spec §B op-login) ----

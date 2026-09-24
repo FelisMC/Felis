@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 )
 
 // Sentinel errors the repository and cluster layers return so handlers can map
@@ -44,6 +45,11 @@ var (
 	// can answer 429 (back off / request a new code) rather than inviting another
 	// guess against a code that will never accept one.
 	ErrOTPLocked = errors.New("email code locked: too many attempts")
+	// ErrOTPAccountLocked means the (user, purpose) has spent its wrong-code budget
+	// for the current window (otpFailureBudget): every code for that door is refused,
+	// the right one included, until the window ends. The repo returns it as an
+	// *OTPAccountLockedError carrying the end of the lock.
+	ErrOTPAccountLocked = errors.New("email codes locked for this account: too many wrong codes")
 	// ErrPasskeyChallengeInvalid means a passkey enrollment ceremony cannot be
 	// finished: there is no live (unconsumed, unexpired) challenge for the caller and
 	// purpose (Phase 6 WebAuthn bind). Like ErrOTPInvalid it is a client error — the
@@ -101,6 +107,20 @@ func (e *MaintenanceBusyError) Error() string {
 }
 
 func (e *MaintenanceBusyError) Is(target error) bool { return target == ErrMaintenanceInProgress }
+
+// OTPAccountLockedError is ErrOTPAccountLocked with its detail. JustLocked is set
+// only on the wrong guess that spent the budget, so the handler notifies and
+// audits the lock exactly once.
+type OTPAccountLockedError struct {
+	Until      time.Time
+	JustLocked bool
+}
+
+func (e *OTPAccountLockedError) Error() string {
+	return ErrOTPAccountLocked.Error() + " until " + e.Until.UTC().Format(time.RFC3339)
+}
+
+func (e *OTPAccountLockedError) Is(target error) bool { return target == ErrOTPAccountLocked }
 
 // apiError is a handler-level error carrying an HTTP status and a stable,
 // machine-readable code. The error envelope matches the platform convention:

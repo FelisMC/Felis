@@ -47,6 +47,14 @@ const (
 	// keys (principal and recipient) so neither one account fanning out across many
 	// addresses, nor many accounts converging on one address, can flood a mailbox.
 	otpResendCooldown = 60 * time.Second
+	// otpFailureBudget caps wrong codes per (user, purpose) inside otpFailureWindow,
+	// across every code minted in it. The per-code cap alone resets on each resend,
+	// and the public login door can mint a code a minute, so without this an
+	// attacker gets ~7,200 guesses a day at one account. Ten a day puts a blind hit
+	// at 1e-5 per day; a person who mistypes that often can wait out the window or
+	// use a passkey.
+	otpFailureBudget = 10
+	otpFailureWindow = 24 * time.Hour
 )
 
 // OTPMailer delivers a one-time code to an email address. It is a seam, not a
@@ -129,6 +137,15 @@ func (a *API) handleEmailOTPStart(w http.ResponseWriter, r *http.Request) {
 	// can't sidestep the per-mailbox cap. If any later step fails the deferred rollback
 	// frees both windows, so a failed mint or delivery never consumes the cooldown —
 	// the same property the old record-after-send gave, now race-free.
+	// A spent wrong-code budget locks the door; mailing another code into it
+	// would only spend a send.
+	if until, err := a.Repo.OTPLockedUntil(r.Context(), p.UserID, otpPurposeOnboard, a.now()); err != nil {
+		writeError(w, r, err)
+		return
+	} else if !until.IsZero() {
+		writeOTPAccountLocked(w, r, until, a.now())
+		return
+	}
 	userKey, emailKey := "user:"+p.UserID, "email:"+strings.ToLower(email)
 	lim := a.otpLimiter()
 	userAt, ok := lim.reserve(userKey, otpResendCooldown)
@@ -205,7 +222,12 @@ func (a *API) handleEmailOTPVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	email, err := a.Repo.VerifyEmailOTP(r.Context(), p.UserID, otpPurposeOnboard, otpCodeHash(code), a.now())
+	var lock *OTPAccountLockedError
 	switch {
+	case errors.As(err, &lock):
+		a.noteOTPLock(r, err, p.UserID, otpPurposeOnboard)
+		writeOTPAccountLocked(w, r, lock.Until, a.now())
+		return
 	case errors.Is(err, ErrOTPLocked):
 		writeError(w, r, newError(http.StatusTooManyRequests, "otp_locked",
 			"too many incorrect attempts; request a new code"))

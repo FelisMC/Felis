@@ -55,6 +55,15 @@ var (
 		Name:      "reaper_worlds_deleted_total",
 		Help:      "Total number of world volumes deleted by the reaper.",
 	})
+
+	// OTPLockoutsTotal counts accounts whose email-code door locked after the
+	// daily wrong-code budget was spent, by code purpose. Outside a person
+	// fumbling codes, a lockout means someone is guessing at that account.
+	OTPLockoutsTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "auth_otp_lockouts_total",
+		Help:      "Email-code doors locked after too many wrong codes, by purpose.",
+	}, []string{"purpose"})
 )
 
 // SyncServerGauge republishes felis_servers_total from a full snapshot of the
@@ -87,6 +96,7 @@ func Collectors() []prometheus.Collector {
 		StartDurationSeconds,
 		ImageBuildFailuresTotal,
 		ReaperWorldsDeletedTotal,
+		OTPLockoutsTotal,
 	}
 }
 

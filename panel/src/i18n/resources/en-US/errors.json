@@ -22,6 +22,7 @@
   "generic": "Something went wrong.",
   "otp_resend_cooldown": "Verification code requested too frequently, please try again later.",
   "otp_locked": "Too many incorrect attempts, please request a new verification code.",
+  "otp_account_locked": "Too many wrong codes in 24 hours — email codes for this account are paused. Try again later or use a passkey.",
   "passkey_challenge_invalid": "Passkey challenge is invalid or expired, please try again.",
   "invalid_attestation": "Could not verify this Passkey, please try again.",
   "passkey_already_bound": "This Passkey is already bound to another account.",

@@ -206,6 +206,13 @@ func (a *API) handleMigrateConfirmOTPStart(w http.ResponseWriter, r *http.Reques
 	}
 	// Per-recipient cooldown, namespaced apart from the other OTP doors so they never
 	// perturb each other's throttle.
+	if until, err := a.Repo.OTPLockedUntil(r.Context(), p.UserID, otpPurposeMigrate, a.now()); err != nil {
+		writeError(w, r, err)
+		return
+	} else if !until.IsZero() {
+		writeOTPAccountLocked(w, r, until, a.now())
+		return
+	}
 	emailKey := "migrate:confirm:" + strings.ToLower(p.Email)
 	lim := a.otpLimiter()
 	emailAt, ok := lim.reserve(emailKey, otpResendCooldown)
@@ -267,7 +274,12 @@ func (a *API) handleMigrateConfirmOTPVerify(w http.ResponseWriter, r *http.Reque
 	if _, ok := a.requireInitiatedMigration(w, r, p.UserID); !ok {
 		return
 	}
+	var lock *OTPAccountLockedError
 	switch err := a.Repo.ConsumeLoginEmailOTP(r.Context(), p.UserID, otpPurposeMigrate, otpCodeHash(code), a.now()); {
+	case errors.As(err, &lock):
+		a.noteOTPLock(r, err, p.UserID, otpPurposeMigrate)
+		writeOTPAccountLocked(w, r, lock.Until, a.now())
+		return
 	case errors.Is(err, ErrOTPLocked):
 		writeError(w, r, newError(http.StatusTooManyRequests, "otp_locked",
 			"too many incorrect attempts; request a new code"))

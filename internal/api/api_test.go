@@ -74,6 +74,8 @@ type fakeRepo struct {
 	// player email OTPs (spec §B2). Keyed by row id; the verify path scans for the
 	// newest live (user, purpose) just as the PG query does.
 	otps map[string]*fakeEmailOTP
+	// otpBudget mirrors otp_failure_windows, keyed user|purpose.
+	otpBudget map[string]*fakeOTPBudget
 	// op-login requests (spec §B op-login). opLogins mirrors op_login_requests keyed
 	// by id; the in-game approve/finish paths mutate status/consumed in place, and
 	// tests plant rows directly to drive the status/finish/pending-list paths.
@@ -149,6 +151,37 @@ type fakeDataHold struct {
 	username  string
 	dataRef   string
 	expiresAt time.Time
+}
+
+// fakeOTPBudget mirrors an otp_failure_windows row.
+type fakeOTPBudget struct {
+	windowStart time.Time
+	failures    int
+}
+
+// OTPLockedUntil mirrors PGRepo.OTPLockedUntil through the shared otpLockEnd rule.
+func (f *fakeRepo) OTPLockedUntil(_ context.Context, userID, purpose string, now time.Time) (time.Time, error) {
+	b := f.otpBudget[userID+"|"+purpose]
+	if b == nil {
+		return time.Time{}, nil
+	}
+	return otpLockEnd(b.windowStart, b.failures, now), nil
+}
+
+// chargeOTP mirrors chargeOTPMismatch: one wrong guess on the code and the budget.
+func (f *fakeRepo) chargeOTP(live *fakeEmailOTP, now time.Time) error {
+	live.attempts++
+	key := live.userID + "|" + live.purpose
+	b := f.otpBudget[key]
+	if b == nil || !b.windowStart.Add(otpFailureWindow).After(now) {
+		b = &fakeOTPBudget{windowStart: now}
+		f.otpBudget[key] = b
+	}
+	b.failures++
+	if b.failures == otpFailureBudget {
+		return &OTPAccountLockedError{Until: b.windowStart.Add(otpFailureWindow), JustLocked: true}
+	}
+	return ErrOTPInvalid
 }
 
 // fakeEmailOTP mirrors an email_otps row: only the code hash is held (never the
@@ -227,6 +260,7 @@ func newFakeRepo() *fakeRepo {
 		sessions:          map[string]*fakeSession{},
 		settings:          map[string][]byte{},
 		otps:              map[string]*fakeEmailOTP{},
+		otpBudget:         map[string]*fakeOTPBudget{},
 		opLogins:          map[string]*fakeOpLogin{},
 		setupTokens:       map[string]fakeSetupToken{},
 		blacklist:         map[string]bool{},
@@ -373,12 +407,14 @@ func (f *fakeRepo) VerifyEmailOTP(_ context.Context, userID, purpose, codeHash s
 	if !live.expiresAt.After(now) {
 		return "", ErrOTPInvalid
 	}
+	if until, _ := f.OTPLockedUntil(context.Background(), userID, purpose, now); !until.IsZero() {
+		return "", &OTPAccountLockedError{Until: until}
+	}
 	if live.attempts >= otpMaxAttempts {
 		return "", ErrOTPLocked
 	}
 	if live.codeHash != codeHash {
-		live.attempts++ // a typo costs an attempt but does not consume the code
-		return "", ErrOTPInvalid
+		return "", f.chargeOTP(live, now) // a typo costs an attempt but does not consume the code
 	}
 	// A DIFFERENT verified holder of the same address → ErrEmailTaken, code left
 	// live — mirrors PGRepo's guard + the users_verified_email_unique index.
@@ -1319,12 +1355,14 @@ func (f *fakeRepo) ConsumeLoginEmailOTP(_ context.Context, userID, purpose, code
 	if live == nil || !live.expiresAt.After(now) {
 		return ErrOTPInvalid
 	}
+	if until, _ := f.OTPLockedUntil(context.Background(), userID, purpose, now); !until.IsZero() {
+		return &OTPAccountLockedError{Until: until}
+	}
 	if live.attempts >= otpMaxAttempts {
 		return ErrOTPLocked
 	}
 	if live.codeHash != codeHash {
-		live.attempts++ // a typo costs an attempt but does not consume the code
-		return ErrOTPInvalid
+		return f.chargeOTP(live, now) // a typo costs an attempt but does not consume the code
 	}
 	live.consumed = true
 	return nil

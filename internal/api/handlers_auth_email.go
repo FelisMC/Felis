@@ -126,6 +126,19 @@ func (a *API) handleLoginEmailStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A locked door (wrong-code budget spent) gets the same neutral 202 and no
+	// mail: the owner was told by the lock notice, and a distinct answer here
+	// would tell a prober the address has an account.
+	switch until, err := a.Repo.OTPLockedUntil(r.Context(), u.ID, otpPurposeLogin, a.now()); {
+	case err != nil:
+		writeError(w, r, err)
+		return
+	case !until.IsZero():
+		committed = true
+		writeJSON(w, http.StatusAccepted, map[string]any{"sent": true, "expires_at": expiresAt.UTC()})
+		return
+	}
+
 	code, err := newEmailOTP()
 	if err != nil {
 		writeError(w, r, err)
@@ -220,7 +233,9 @@ func (a *API) handleLoginEmailVerify(w http.ResponseWriter, r *http.Request) {
 	// verified; touching the row here would let a stale OTP-snapshot address overwrite
 	// the live one and could 500 a correct code on a spurious collision.
 	switch err := a.Repo.ConsumeLoginEmailOTP(r.Context(), u.ID, otpPurposeLogin, otpCodeHash(code), a.now()); {
-	case errors.Is(err, ErrOTPInvalid), errors.Is(err, ErrOTPLocked):
+	case errors.Is(err, ErrOTPInvalid), errors.Is(err, ErrOTPLocked), errors.Is(err, ErrOTPAccountLocked):
+		// The account lock answers the same way; its owner hears about it by mail.
+		a.noteOTPLock(r, err, u.ID, otpPurposeLogin)
 		// Both a wrong/expired code and an attempt-exhausted one return the SAME 400
 		// invalid_code, byte-identical to the unknown-account branch above. Surfacing
 		// otp_locked as a distinct 429 (as the authenticated onboarding door does) would

@@ -677,6 +677,8 @@ export function humanizeError(e: unknown): string {
       return t("otp_resend_cooldown");
     case "otp_locked":
       return t("otp_locked");
+    case "otp_account_locked":
+      return t("otp_account_locked");
     case "passkey_challenge_invalid":
       return t("passkey_challenge_invalid");
     case "invalid_attestation":
