@@ -294,6 +294,7 @@ func runOffsiteSync(cfg *config.Config, env *offsiteEnv, src offsiteSources, log
 	}
 	if src.registry != "" {
 		s.Images = newRegistryImages(src.registry)
+		s.ImagePins = imagePins(drv.DB(), cfg.Registry.URL)
 	}
 	return s.Run(ctx)
 }

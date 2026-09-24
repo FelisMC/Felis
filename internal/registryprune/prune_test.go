@@ -124,9 +124,9 @@ func TestParseRef(t *testing.T) {
 		{"other:5000/felis/paper:demo", "", "", "", false},
 		{host + "/", "", "", "", false},
 	} {
-		repo, tag, digest, ok := parseRef(c.ref, host)
+		repo, tag, digest, ok := ParseRef(c.ref, host)
 		if repo != c.repo || tag != c.tag || digest != c.digest || ok != c.ok {
-			t.Errorf("parseRef(%q) = %q %q %q %v, want %q %q %q %v", c.ref, repo, tag, digest, ok, c.repo, c.tag, c.digest, c.ok)
+			t.Errorf("ParseRef(%q) = %q %q %q %v, want %q %q %q %v", c.ref, repo, tag, digest, ok, c.repo, c.tag, c.digest, c.ok)
 		}
 	}
 }

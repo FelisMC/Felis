@@ -2,15 +2,18 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
+	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/imagepush"
 	"felis.lolicon.best/internal/offsite"
@@ -70,6 +73,49 @@ func (r *registryImages) PutBlob(ctx context.Context, repo, digest string, size 
 func (r *registryImages) PutManifest(ctx context.Context, repo, reference, mediaType string, body []byte) error {
 	_, err := r.pusher.PutManifest(ctx, r.host, repo, reference, mediaType, body)
 	return err
+}
+
+// imagePins lists, per repository of the registry refs spell as host, the
+// digests the MinecraftServers' specs and the image whitelist pin: what a
+// restored database and its servers will ask the registry for.
+func imagePins(db *sql.DB, host string) func(ctx context.Context) (map[string][]string, error) {
+	return func(ctx context.Context) (map[string][]string, error) {
+		cl, err := buildSystemServerClient()
+		if err != nil {
+			return nil, fmt.Errorf("reach the cluster: %w", err)
+		}
+		var servers v1alpha1.MinecraftServerList
+		if err := cl.List(ctx, &servers); err != nil {
+			return nil, fmt.Errorf("list MinecraftServers: %w", err)
+		}
+		refs := make([]string, 0, len(servers.Items))
+		for _, s := range servers.Items {
+			refs = append(refs, s.Spec.Image)
+		}
+		rows, err := db.QueryContext(ctx, `SELECT image_ref FROM image_whitelist`)
+		if err != nil {
+			return nil, fmt.Errorf("read the image whitelist: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var ref string
+			if err := rows.Scan(&ref); err != nil {
+				return nil, fmt.Errorf("read the image whitelist: %w", err)
+			}
+			refs = append(refs, ref)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("read the image whitelist: %w", err)
+		}
+		pins := map[string][]string{}
+		for _, ref := range refs {
+			repo, _, digest, ok := registryprune.ParseRef(ref, host)
+			if ok && digest != "" && !slices.Contains(pins[repo], digest) {
+				pins[repo] = append(pins[repo], digest)
+			}
+		}
+		return pins, nil
+	}
 }
 
 // registryGone marks a 404 as a manifest or blob the registry no longer holds.

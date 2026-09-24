@@ -280,6 +280,68 @@ func TestSyncImagesCopiesUserImages(t *testing.T) {
 	}
 }
 
+// TestSyncImagesCopiesPinnedPlatformRevisions: of felis/ and mirror/ only the
+// revisions a pin names are copied, without tags; a restore puts them back by
+// digest and leaves the tags the installer pushed on the new host alone. When
+// the pins cannot be read, the previous copy of those revisions is kept and
+// the run fails.
+func TestSyncImagesCopiesPinnedPlatformRevisions(t *testing.T) {
+	reg := newFakeRegistry()
+	old := reg.image("felis/paper", "demo", layer(4000))
+	current := reg.image("felis/paper", "demo", layer(4000))
+	reg.image("mirror/trivy", "1", layer(2000))
+	user := reg.image("user/a", "v1", layer(1000))
+
+	s, b, clock := newImageSyncer(t, reg)
+	s.ImagePins = func(context.Context) (map[string][]string, error) {
+		return map[string][]string{"felis/paper": {old}, "user/a": {user}}, nil
+	}
+	res, err := s.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	x, err := LoadImageIndex(context.Background(), b, s.Key, res.ImageIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paper, ok := x.Repositories["felis/paper"]
+	if !ok || !slices.Equal(paper.Manifests, []string{old}) || len(paper.Tags) != 0 {
+		t.Fatalf("felis/paper = %+v, want only the pinned %s and no tags", paper, old)
+	}
+	if _, ok := x.Repositories["mirror/trivy"]; ok {
+		t.Fatal("unpinned mirror/trivy was copied")
+	}
+	if got := x.Repositories["user/a"]; got.Tags["v1"] != user {
+		t.Fatalf("user/a = %+v", got)
+	}
+
+	fresh := newFakeRegistry()
+	rebuilt := fresh.image("felis/paper", "demo", layer(4000))
+	if _, err := FetchImages(context.Background(), b, s.Key, x, fresh, nil); err != nil {
+		t.Fatalf("FetchImages: %v", err)
+	}
+	if got := fresh.repos["felis/paper"]; got.tags["demo"] != rebuilt || !slices.Contains(got.digests, old) {
+		t.Fatalf("restored felis/paper: tags %v digests %v, want demo=%s and %s present", got.tags, got.digests, rebuilt, old)
+	}
+	if slices.Contains(fresh.repos["felis/paper"].digests, current) {
+		t.Fatal("the unpinned revision was restored")
+	}
+
+	*clock = clock.Add(time.Hour)
+	s.ImagePins = func(context.Context) (map[string][]string, error) { return nil, errors.New("cluster down") }
+	res, err = s.Run(context.Background())
+	if err == nil {
+		t.Fatal("Run succeeded without the pins")
+	}
+	x, err = LoadImageIndex(context.Background(), b, s.Key, res.ImageIndex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := x.Repositories["felis/paper"]; !slices.Equal(got.Manifests, []string{old}) {
+		t.Fatalf("without the pins felis/paper = %+v, want the previous copy kept", got)
+	}
+}
+
 // TestSyncImagesRejectsCorruptBlob: bytes that do not hash to the digest never
 // become that digest's object, the image stays out of the index, and the run
 // fails so the next one tries again.

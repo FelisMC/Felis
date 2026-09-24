@@ -1,10 +1,13 @@
 package offsite
 
-// The off-site copy of the platform registry's user images. The installer
-// pushes everything under felis/ and mirror/ again on any host, so those are
-// left out; every other repository holds builds that exist nowhere else: a
-// lost registry volume would otherwise leave each server pinned to one of them
-// in ImagePullBackOff until someone rebuilds it.
+// The off-site copy of the platform registry's user images. Every repository
+// outside felis/ and mirror/ holds builds that exist nowhere else: a lost
+// registry volume would otherwise leave each server pinned to one of them in
+// ImagePullBackOff until someone rebuilds it. The installer pushes felis/ and
+// mirror/ again on any host, but under the same tags at new digests (a build
+// is not reproducible, an upstream tag moves on), so from those only the
+// revisions a server or a whitelist entry pins by digest are copied, without
+// their tags: the tags belong to whatever the installer pushed last.
 //
 // The bucket holds each blob and manifest once, by digest, encrypted like
 // everything else, plus an index that says which repository holds which
@@ -234,19 +237,28 @@ func (s *Syncer) syncImages(ctx context.Context, res *Result, fail func(string, 
 		return
 	}
 	sort.Strings(repos)
-	listed := map[string]bool{}
+	pins, pinsKnown := map[string][]string{}, true
+	if s.ImagePins != nil {
+		if pins, err = s.ImagePins(ctx); err != nil {
+			fail("list the images servers and the whitelist pin: %v", err)
+			pinsKnown, c.failed = false, true
+		}
+	}
 	for _, repo := range repos {
-		if reservedRepo(repo) {
+		if reservedRepo(repo) && !pinsKnown {
+			c.carry(repo)
 			continue
 		}
-		listed[repo] = true
+		if reservedRepo(repo) && len(pins[repo]) == 0 {
+			continue
+		}
 		if ctx.Err() != nil {
 			c.fail("stopped before %s: %v", repo, ctx.Err())
 			c.failed = true
 			c.carry(repo)
 			continue
 		}
-		c.repo(ctx, repo)
+		c.repo(ctx, repo, pins[repo])
 	}
 
 	stamp := ""
@@ -277,15 +289,20 @@ func (s *Syncer) syncImages(ctx context.Context, res *Result, fail func(string, 
 	}
 }
 
-// repo copies one repository into c.next. A repository that cannot be read in
-// full keeps the entry the previous index had for it.
-func (c *imageCopy) repo(ctx context.Context, repo string) {
+// repo copies one repository into c.next; of a reserved one, only the pinned
+// revisions and none of its tags. A repository that cannot be read in full
+// keeps the entry the previous index had for it.
+func (c *imageCopy) repo(ctx context.Context, repo string, pinned []string) {
 	digests, tags, err := c.s.Images.Revisions(ctx, repo)
 	if err != nil {
 		c.fail("list the images of %s: %v", repo, err)
 		c.failed = true
 		c.carry(repo)
 		return
+	}
+	if reservedRepo(repo) {
+		digests = slices.DeleteFunc(digests, func(d string) bool { return !slices.Contains(pinned, d) })
+		tags = nil
 	}
 	entry := ImageRepo{Tags: map[string]string{}}
 	short := false
@@ -732,6 +749,9 @@ func FetchImages(ctx context.Context, b Bucket, key []byte, x *ImageIndex, t Ima
 	pushedBlobs := map[string]bool{}
 	for _, repo := range slices.Sorted(maps.Keys(x.Repositories)) {
 		entry := x.Repositories[repo]
+		if reservedRepo(repo) {
+			entry.Tags = nil // the installer's tags stay where it put them
+		}
 		done := map[string]bool{}
 		var push func(d string) error
 		push = func(d string) error {

@@ -95,6 +95,10 @@ type Syncer struct {
 	// Images is the platform registry whose user images are copied (images.go);
 	// nil copies none.
 	Images ImageSource
+	// ImagePins lists, per repository, the digests a server's spec or a
+	// whitelist entry pins. Under felis/ and mirror/ only those revisions are
+	// copied (images.go); nil copies none there.
+	ImagePins func(ctx context.Context) (map[string][]string, error)
 	// UploadsDir is the host directory of the uploads volume, whose submission
 	// contexts are copied (uploads.go); empty copies none.
 	UploadsDir string

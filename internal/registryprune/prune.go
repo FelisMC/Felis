@@ -172,7 +172,7 @@ func (p *Pruner) log() *slog.Logger {
 func Plan(indexes map[string]*registrygate.Index, refs []string, host string, now time.Time, grace time.Duration, keepTagged int) []Target {
 	keep := map[Target]bool{}
 	for _, ref := range refs {
-		repo, tag, digest, ok := parseRef(ref, host)
+		repo, tag, digest, ok := ParseRef(ref, host)
 		if !ok {
 			continue
 		}
@@ -255,9 +255,9 @@ func reserved(repo string) bool {
 	return false
 }
 
-// parseRef splits host/repo[:tag][@digest] for refs under host. A ref with
+// ParseRef splits host/repo[:tag][@digest] for refs under host. A ref with
 // neither tag nor digest means :latest, as it does for every image client.
-func parseRef(ref, host string) (repo, tag, digest string, ok bool) {
+func ParseRef(ref, host string) (repo, tag, digest string, ok bool) {
 	rest, ok := strings.CutPrefix(strings.TrimSpace(ref), host+"/")
 	if !ok || rest == "" {
 		return "", "", "", false

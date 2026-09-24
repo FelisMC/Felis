@@ -1792,9 +1792,14 @@ What runs:
   the right size is recorded without being sent again, so a run cut short
   resumes. [GO-TESTED: `internal/offsite`]
 - The same run copies the user images in the platform registry: every
-  repository outside `felis/` and `mirror/` (the installer pushes those again),
-  each manifest the registry's index lists and every layer it names, read
-  through the loopback hostPort. A layer shared by many images is stored once.
+  repository outside `felis/` and `mirror/`, each manifest the registry's index
+  lists and every layer it names, read through the loopback hostPort. A layer
+  shared by many images is stored once. The installer pushes `felis/` and
+  `mirror/` again on a new host, but at new digests, so from those the run
+  copies only the revisions a MinecraftServer or a whitelist entry pins by
+  digest (a server created from the platform's Paper image, for one), without
+  their tags; a restore puts them back by digest and leaves the installer's
+  tags alone.
   When the set changed, a new version of the image list is written; versions
   replaced more than 14 days ago are dropped together with the layers only
   they named, so an image deleted by mistake stays restorable for two weeks
