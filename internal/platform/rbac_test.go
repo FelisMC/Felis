@@ -221,10 +221,21 @@ func TestReaperRole_ScopeExact(t *testing.T) {
 			t.Errorf("reaper must NOT touch %s/%s (operator/api territory)", res.group, res.name)
 		}
 	}
-	// The reaper never lists from the cluster (candidates come from Postgres).
+	// The reaper never lists servers from the cluster (candidates come from Postgres).
 	for _, v := range []string{"list", "watch"} {
 		if hasRule(rp, groupFelis, "minecraftservers", v) {
 			t.Errorf("reaper must NOT %s minecraftservers (candidates come from the store)", v)
+		}
+	}
+	// Taking the world lock reads the game pod and the maintenance Jobs, list only.
+	if !hasRule(rp, groupCore, "pods", "list") || !hasRule(rp, groupBatch, "jobs", "list") {
+		t.Error("reaper must list pods and jobs to take the world maintenance lock")
+	}
+	for _, res := range []struct{ group, name string }{{groupCore, "pods"}, {groupBatch, "jobs"}} {
+		for _, v := range []string{"get", "watch", "create", "update", "patch", "delete"} {
+			if hasRule(rp, res.group, res.name, v) {
+				t.Errorf("reaper must NOT %s %s (list-only)", v, res.name)
+			}
 		}
 	}
 }

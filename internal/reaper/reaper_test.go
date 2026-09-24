@@ -24,7 +24,7 @@ var testNow = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 func idleBy(d time.Duration) time.Time { return testNow.Add(-d) }
 
 // recorder captures the cross-fake call order so a test can assert the strict
-// archive→insert→deletePVC→release→stop→audit sequence of red line ④.
+// hold→archive→insert→deletePVC→release→audit→unhold sequence of red line ④.
 type recorder struct{ events []string }
 
 func (r *recorder) add(e string) { r.events = append(r.events, e) }
@@ -33,6 +33,7 @@ func (r *recorder) add(e string) { r.events = append(r.events, e) }
 
 type fakeArchiver struct {
 	rec        *recorder
+	onArchive  func()
 	archiveErr error
 	deleteErr  error
 	archives   int
@@ -47,6 +48,9 @@ func (f *fakeArchiver) Archive(_ context.Context, server, _ string) (backup.Arch
 	f.archives++
 	f.seq++
 	f.rec.add("archive")
+	if f.onArchive != nil {
+		f.onArchive()
+	}
 	ref := fmt.Sprintf("ref-%s-%d", server, f.seq)
 	return backup.Archived{Ref: backup.ArchiveRef(ref), Size: 10, SHA256: "sha-" + ref}, nil
 }
@@ -104,7 +108,39 @@ type fakeCluster struct {
 	deletePVCErr   error
 	deletePVCCalls int
 	deletedPVCs    []string
-	stopped        []string
+
+	notQuiet map[string]bool // HoldWorld refuses these with ErrNotQuiet
+	holdErr  error           // HoldWorld fails with this
+	noWorld  map[string]bool // PVCs that do not exist
+	held     map[string]bool // servers held right now
+	holds    []string
+	lost     context.CancelCauseFunc
+}
+
+func (c *fakeCluster) HoldWorld(ctx context.Context, name string) (context.Context, func(), error) {
+	if c.holdErr != nil {
+		return nil, nil, c.holdErr
+	}
+	if c.notQuiet[name] {
+		return nil, nil, fmt.Errorf("%w: still stopping", ErrNotQuiet)
+	}
+	if c.held == nil {
+		c.held = map[string]bool{}
+	}
+	c.held[name] = true
+	c.holds = append(c.holds, name)
+	c.rec.add("hold")
+	held, cancel := context.WithCancelCause(ctx)
+	c.lost = cancel
+	return held, func() {
+		cancel(nil)
+		delete(c.held, name)
+		c.rec.add("unhold")
+	}, nil
+}
+
+func (c *fakeCluster) WorldExists(_ context.Context, pvc string) (bool, error) {
+	return !c.noWorld[pvc], nil
 }
 
 func (c *fakeCluster) Inspect(_ context.Context, name string) (ServerCRD, error) {
@@ -118,19 +154,16 @@ func (c *fakeCluster) Inspect(_ context.Context, name string) (ServerCRD, error)
 	return crd, nil
 }
 
-func (c *fakeCluster) DeletePVC(_ context.Context, pvc string) error {
+func (c *fakeCluster) DeletePVC(ctx context.Context, pvc string) error {
 	c.deletePVCCalls++
 	if c.deletePVCErr != nil {
 		return c.deletePVCErr
 	}
+	if len(c.held) == 0 || ctx.Err() != nil {
+		return fmt.Errorf("deleted %s without holding its world", pvc)
+	}
 	c.deletedPVCs = append(c.deletedPVCs, pvc)
 	c.rec.add("deletePVC")
-	return nil
-}
-
-func (c *fakeCluster) Stop(_ context.Context, name string) error {
-	c.stopped = append(c.stopped, name)
-	c.rec.add("stop")
 	return nil
 }
 
@@ -209,6 +242,15 @@ func (s *fakeStore) ReleaseWorld(_ context.Context, name string, at time.Time) e
 	c.Warned1dAt = time.Time{}
 	s.released = append(s.released, name)
 	s.rec.add("release")
+	return nil
+}
+
+func (s *fakeStore) RestartClock(_ context.Context, name string, at time.Time) error {
+	c := s.byName[name]
+	c.LastActiveAt = at
+	c.Warned3dAt = time.Time{}
+	c.Warned1dAt = time.Time{}
+	s.rec.add("restartClock")
 	return nil
 }
 
@@ -405,7 +447,7 @@ func TestReapIdleWorldFullSequence(t *testing.T) {
 	if sum.WorldsReaped != 1 {
 		t.Fatalf("WorldsReaped = %d, want 1", sum.WorldsReaped)
 	}
-	want := []string{"archive", "insert", "deletePVC", "release", "stop", "audit:" + ActionReapWorld}
+	want := []string{"hold", "archive", "insert", "deletePVC", "release", "audit:" + ActionReapWorld, "unhold"}
 	if !reflect.DeepEqual(st.rec.events, want) {
 		t.Fatalf("call order = %v, want %v", st.rec.events, want)
 	}
@@ -936,7 +978,7 @@ func TestReapReadsBackReusedArchive(t *testing.T) {
 	if sum.WorldsReaped != 1 || ar.archives != 0 || len(cl.deletedPVCs) != 1 {
 		t.Fatalf("summary %+v archives=%d deleted=%v: want the checked archive reused", sum, ar.archives, cl.deletedPVCs)
 	}
-	if st.rec.events[0] != "verify" || st.rec.events[1] != "deletePVC" {
+	if st.rec.events[1] != "verify" || st.rec.events[2] != "deletePVC" {
 		t.Errorf("events = %v, want the read-back before the delete", st.rec.events)
 	}
 	if !st.backups[0].verifiedAt.Equal(testNow) || !reflect.DeepEqual(ca.verified, []string{"ref-old"}) {
@@ -958,7 +1000,7 @@ func TestReapReplacesCorruptArchive(t *testing.T) {
 	if sum.WorldsReaped != 1 || sum.Corrupt != 1 || !sum.Failed() {
 		t.Fatalf("summary = %+v, want reaped with one corrupt archive reported", sum)
 	}
-	want := []string{"verify", "corrupt", "archive", "insert", "deletePVC"}
+	want := []string{"hold", "verify", "corrupt", "archive", "insert", "deletePVC"}
 	if !reflect.DeepEqual(st.rec.events[:len(want)], want) {
 		t.Errorf("events = %v, want %v first", st.rec.events, want)
 	}
@@ -1055,5 +1097,128 @@ func TestSweepPass(t *testing.T) {
 	st.liveErr = errors.New("db down")
 	if sum := mustRun(t, r); !sum.SweepFailed || ca.sweepLive != nil {
 		t.Errorf("sweep ran without the recorded archives: %+v", sum)
+	}
+}
+
+// data-durability-8: a server still up when its world goes idle is told to stop
+// and left for the next run, never archived while it may be writing; once it is
+// down the next run reaps it.
+func TestReapWaitsForServerToStop(t *testing.T) {
+	r, st, cl, ar := newReaper(DefaultConfig(),
+		Candidate{Name: "busy", OwnerID: "user-1", LastActiveAt: idleBy(20 * Day)})
+	cl.notQuiet = map[string]bool{"busy": true}
+
+	sum := mustRun(t, r)
+	if sum.AwaitingStop != 1 || sum.Skipped != 0 || sum.Failed() || ar.archives != 0 || cl.deletePVCCalls != 0 {
+		t.Fatalf("summary %+v archives=%d deletes=%d: want the world left alone for the next run", sum, ar.archives, cl.deletePVCCalls)
+	}
+	if st.byName["busy"].OwnerID != "user-1" || len(st.audits) != 0 {
+		t.Fatalf("a server not yet down was released: %+v", st.byName["busy"])
+	}
+
+	cl.notQuiet = nil
+	if sum := mustRun(t, r); sum.WorldsReaped != 1 || sum.AwaitingStop != 0 {
+		t.Fatalf("second run = %+v, want reaped once the server is down", sum)
+	}
+}
+
+// A hold that cannot be taken for any other reason is a failure of the run.
+func TestReapHoldErrorSkips(t *testing.T) {
+	r, _, cl, ar := newReaper(DefaultConfig(),
+		Candidate{Name: "flaky", OwnerID: "user-1", LastActiveAt: idleBy(20 * Day)})
+	cl.holdErr = errors.New("apiserver timeout")
+
+	sum := mustRun(t, r)
+	if sum.Skipped != 1 || !sum.Failed() || ar.archives != 0 {
+		t.Fatalf("summary %+v archives=%d: want the server skipped and the run failed", sum, ar.archives)
+	}
+}
+
+// The world is held from before the archive until after the reap is recorded,
+// and let go on every path, a failed archive included.
+func TestReapReleasesHoldOnEveryPath(t *testing.T) {
+	r, st, cl, ar := newReaper(DefaultConfig(),
+		Candidate{Name: "hotel", OwnerID: "user-1", LastActiveAt: idleBy(20 * Day)})
+	ar.archiveErr = errors.New("disk full")
+
+	mustRun(t, r)
+	if len(cl.held) != 0 || st.rec.events[len(st.rec.events)-1] != "unhold" {
+		t.Fatalf("hold not released after a failed archive: events=%v held=%v", st.rec.events, cl.held)
+	}
+}
+
+// A lock lost while the archive is written (felis-api could then start the
+// server) keeps the PVC; the archive is recorded and reused next run.
+func TestReapLostHoldKeepsWorld(t *testing.T) {
+	r, st, cl, ar := newReaper(DefaultConfig(),
+		Candidate{Name: "india", OwnerID: "user-1", LastActiveAt: idleBy(20 * Day)})
+	ar.onArchive = func() { cl.lost(errors.New("lock rewrite failing")) }
+
+	sum := mustRun(t, r)
+	if sum.WorldsReaped != 0 || sum.Skipped != 1 || cl.deletePVCCalls != 0 {
+		t.Fatalf("summary %+v deletes=%d: want the world kept once the hold was lost", sum, cl.deletePVCCalls)
+	}
+	if st.byName["india"].OwnerID != "user-1" {
+		t.Fatal("ownership released after the hold was lost")
+	}
+
+	ar.onArchive = nil
+	if sum := mustRun(t, r); sum.WorldsReaped != 1 || ar.archives != 1 {
+		t.Fatalf("retry = %+v archives=%d, want the recorded archive reused", sum, ar.archives)
+	}
+}
+
+// data-durability-19: an unowned server with no world (reaped before) is not
+// reaped again when its clock runs out; the clock restarts, with no audit and
+// no count.
+func TestReapUnownedWithoutWorldRestartsClock(t *testing.T) {
+	r, st, cl, ar := newReaper(DefaultConfig(),
+		Candidate{Name: "juliet", LastActiveAt: idleBy(16 * Day)})
+	cl.noWorld = map[string]bool{"world-juliet-0": true}
+
+	sum := mustRun(t, r)
+	if sum.WorldsReaped != 0 || sum.Skipped != 0 || sum.Failed() || ar.archives != 0 || cl.deletePVCCalls != 0 || len(st.audits) != 0 {
+		t.Fatalf("summary %+v archives=%d deletes=%d audits=%v: want only the clock restarted",
+			sum, ar.archives, cl.deletePVCCalls, st.audits)
+	}
+	if !st.byName["juliet"].LastActiveAt.Equal(testNow) {
+		t.Fatalf("last_active_at = %v, want restarted at %v", st.byName["juliet"].LastActiveAt, testNow)
+	}
+	if sum := mustRun(t, r); sum.WorldsReaped != 0 || len(st.audits) != 0 {
+		t.Fatalf("second run = %+v audits=%v", sum, st.audits)
+	}
+}
+
+// An owner who never started the server gives it up at the deadline like any
+// other; there is nothing to archive, and no world was deleted to count.
+func TestReapOwnedWithoutWorldReleases(t *testing.T) {
+	r, st, cl, ar := newReaper(DefaultConfig(),
+		Candidate{Name: "kappa", OwnerID: "user-4", LastActiveAt: idleBy(16 * Day)})
+	cl.noWorld = map[string]bool{"world-kappa-0": true}
+
+	sum := mustRun(t, r)
+	if sum.WorldsReaped != 0 || sum.Skipped != 0 || ar.archives != 0 || cl.deletePVCCalls != 0 {
+		t.Fatalf("summary %+v archives=%d deletes=%d", sum, ar.archives, cl.deletePVCCalls)
+	}
+	if st.byName["kappa"].OwnerID != "" || len(st.audits) != 1 || st.audits[0].FormerOwner != "user-4" {
+		t.Fatalf("owner %q audits %+v: want released and audited", st.byName["kappa"].OwnerID, st.audits)
+	}
+}
+
+// A run that deleted the PVC and failed before releasing the world is finished
+// by the next: released, audited and counted once, without a new archive.
+func TestReapFinishesInterruptedReap(t *testing.T) {
+	r, st, cl, ar := newReaper(DefaultConfig(),
+		Candidate{Name: "lambda", OwnerID: "user-5", LastActiveAt: idleBy(20 * Day)})
+	cl.noWorld = map[string]bool{"world-lambda-0": true}
+	st.backups = []*fakeBackup{{id: "prev", server: "lambda", ref: "ref-prev", reason: ReasonInactive, size: 5,
+		status: "present", createdAt: idleBy(Day), expires: testNow.Add(89 * Day)}}
+
+	sum := mustRun(t, r)
+	if sum.WorldsReaped != 1 || ar.archives != 0 || cl.deletePVCCalls != 0 {
+		t.Fatalf("summary %+v archives=%d deletes=%d: want the reap finished", sum, ar.archives, cl.deletePVCCalls)
+	}
+	if st.byName["lambda"].OwnerID != "" || len(st.audits) != 1 {
+		t.Fatalf("owner %q audits %+v", st.byName["lambda"].OwnerID, st.audits)
 	}
 }

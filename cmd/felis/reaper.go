@@ -138,8 +138,8 @@ func cmdReaper(args []string, stdout, stderr io.Writer) int {
 // FelisWorldJobFailed rule) reach the operator: a world that cannot be archived
 // is kept, and without this nobody would learn that it is never reaped.
 func reportReaperRun(sum reaper.Summary, stdout, stderr io.Writer) int {
-	fmt.Fprintf(stdout, "felis reaper: evaluated=%d reaped=%d awaiting_offsite=%d warned=%d skipped=%d store_full=%d evicted=%d expired=%d expire_failed=%d verified=%d corrupt=%d verify_failed=%d swept=%d orphan_archives=%d\n",
-		sum.Evaluated, sum.WorldsReaped, sum.AwaitingOffsite, sum.Warned, sum.Skipped, sum.StoreFull,
+	fmt.Fprintf(stdout, "felis reaper: evaluated=%d reaped=%d awaiting_offsite=%d awaiting_stop=%d warned=%d skipped=%d store_full=%d evicted=%d expired=%d expire_failed=%d verified=%d corrupt=%d verify_failed=%d swept=%d orphan_archives=%d\n",
+		sum.Evaluated, sum.WorldsReaped, sum.AwaitingOffsite, sum.AwaitingStop, sum.Warned, sum.Skipped, sum.StoreFull,
 		sum.EvictedEarly, sum.BackupsExpired, sum.ExpireFailed,
 		sum.Verified, sum.Corrupt, sum.VerifyFailed, sum.Swept, sum.OrphanArchives)
 	if !sum.Failed() {

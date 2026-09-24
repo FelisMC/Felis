@@ -90,6 +90,13 @@ func (s *PGStore) ReleaseWorld(ctx context.Context, name string, at time.Time) e
 	return err
 }
 
+func (s *PGStore) RestartClock(ctx context.Context, name string, at time.Time) error {
+	const q = `UPDATE servers SET last_active_at = $2, warned_3d_at = NULL, warned_1d_at = NULL
+		WHERE name = $1 AND deleted_at IS NULL`
+	_, err := s.db.ExecContext(ctx, q, name, at)
+	return err
+}
+
 func (s *PGStore) MarkWarned(ctx context.Context, name string, tier Tier, at time.Time) error {
 	// The column is one of two fixed identifiers, never user input.
 	col := "warned_3d_at"

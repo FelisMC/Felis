@@ -18,7 +18,8 @@
 //     conflict and re-checks.
 //
 // A lock older than Grace with no Job behind it is stale (felis-api died between
-// the two writes) and holds nothing.
+// the two writes) and holds nothing. The reaper is the one holder without a Job:
+// it keeps its lock fresh by rewriting it while it archives and reclaims a world.
 //
 // A restore that starts with a safety snapshot is two Jobs in a row: the backup
 // Job carries the restore to run after it (LabelThenRestore), and felis-api
@@ -83,6 +84,10 @@ const (
 	KindRestore   = "restore"
 	KindBackup    = "backup"
 	KindFileWrite = "file-write"
+	// KindReap is the reaper archiving an idle world and reclaiming its volume.
+	// It runs no Job: the reaper holds the Annotation itself and rewrites it
+	// well inside Grace for as long as it works on the world.
+	KindReap = "reap"
 )
 
 // FilesModeWrite is the LabelFilesMode value of a file write.

@@ -18,7 +18,7 @@
   "no_backup": "There's no restorable backup for this server yet.",
   "backup_corrupt": "This backup failed its read-back check and can't be restored intact — pick another backup.",
   "not_stopped": "Stop the server completely before restoring — a restore overwrites the live world volume.",
-  "maintenance_in_progress": "This server's world is busy with a restore, backup or file write — try again once it finishes, usually within a minute or two.",
+  "maintenance_in_progress": "This server's world is busy with a restore, backup, file write or idle reclaim — try again once it finishes. A restore, backup or file write usually takes a minute or two; an idle reclaim can take longer on a large world.",
   "no_world_volume": "This server has no world volume yet — start it once so it is created, then retry.",
   "backup_cooldown": "This server was backed up moments ago, and manual backups have a cooldown — try again in a few minutes.",
   "backup_store_full": "The backup store is full, so manual backups are paused — ask an administrator to free space.",

@@ -33,7 +33,11 @@ func (c *reclaimCluster) DeletePVC(_ context.Context, pvc string) error {
 	return nil
 }
 
-func (c *reclaimCluster) Stop(context.Context, string) error { return nil }
+func (c *reclaimCluster) HoldWorld(ctx context.Context, _ string) (context.Context, func(), error) {
+	return ctx, func() {}, nil
+}
+
+func (c *reclaimCluster) WorldExists(context.Context, string) (bool, error) { return true, nil }
 
 type reclaimArchiver struct{ archived []string }
 
@@ -385,5 +389,38 @@ func TestBackupReadBack(t *testing.T) {
 	}
 	if l := live(); l["/archives/"+newer+".tar.gz"] || !l["/archives/"+older+".tar.gz"] {
 		t.Fatalf("live refs after deleting %s still claim its archive", newer)
+	}
+}
+
+// TestRestartClock: an idle server with no world to reclaim gets its clock and
+// warnings reset, and keeps its owner and resource cache (data-durability-19).
+func TestRestartClock(t *testing.T) {
+	ctx := context.Background()
+	st := reaper.NewPGStore(db)
+	name := "clock-" + suffix(t)
+	old := time.Now().Add(-20 * reaper.Day).UTC().Truncate(time.Microsecond)
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO servers (name, cached_cpu_milli, cached_memory_mb, cached_storage_mb) VALUES ($1, 100, 128, 1)`,
+		name); err != nil {
+		t.Fatalf("seed server: %v", err)
+	}
+	if _, err := db.ExecContext(ctx,
+		`UPDATE servers SET last_active_at = $2, warned_3d_at = $2, warned_1d_at = $2 WHERE name = $1`, name, old); err != nil {
+		t.Fatalf("age server: %v", err)
+	}
+	at := time.Now().UTC().Truncate(time.Microsecond)
+	if err := st.RestartClock(ctx, name, at); err != nil {
+		t.Fatalf("RestartClock: %v", err)
+	}
+	var last time.Time
+	var w3, w1 sql.NullTime
+	var cpu int
+	if err := db.QueryRowContext(ctx,
+		`SELECT last_active_at, warned_3d_at, warned_1d_at, cached_cpu_milli FROM servers WHERE name = $1`, name).
+		Scan(&last, &w3, &w1, &cpu); err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if !last.Equal(at) || w3.Valid || w1.Valid || cpu != 100 {
+		t.Fatalf("after RestartClock: last_active_at=%v warned=%v/%v cpu=%d; want %v, cleared, cache kept", last, w3, w1, cpu, at)
 	}
 }

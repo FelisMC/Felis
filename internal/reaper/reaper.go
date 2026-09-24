@@ -55,6 +55,11 @@ const (
 // delete world data it cannot first inspect for the exemption flag.
 var ErrNotFound = errors.New("reaper: server not found")
 
+// ErrNotQuiet is returned by Cluster.HoldWorld while the server is not fully
+// down yet, or another operation (a restore, backup or file write) holds its
+// world. The world is left alone and the server is tried again on the next run.
+var ErrNotQuiet = errors.New("reaper: world not quiet")
+
 // errStoreFull is an internal sentinel: the backup store is at capacity and
 // could not be freed, so the world is preserved rather than deleted without a
 // backup (red line ④). It is never returned to callers.
@@ -219,6 +224,10 @@ type Store interface {
 	// row (red line ②).
 	ReleaseWorld(ctx context.Context, name string, at time.Time) error
 
+	// RestartClock sets last_active_at→at and clears warned_* on a server with
+	// no world to reclaim, so it is not found idle again every run.
+	RestartClock(ctx context.Context, name string, at time.Time) error
+
 	// MarkWarned stamps the warned_3d_at / warned_1d_at column for tier.
 	MarkWarned(ctx context.Context, name string, tier Tier, at time.Time) error
 
@@ -255,17 +264,25 @@ type Store interface {
 	Audit(ctx context.Context, rec AuditRecord) error
 }
 
-// Cluster is the lifecycle (Kubernetes) face: read the CRD, delete the world
-// PVC, and flip desiredState to Stopped. These are the only cluster operations
-// §18 performs.
+// Cluster is the lifecycle (Kubernetes) face: read the CRD, stop the server
+// and hold its world, and delete the world PVC. These are the only cluster
+// operations §18 performs.
 type Cluster interface {
 	// Inspect returns the exemption flag and world PVC name for a server, or
 	// ErrNotFound if the CRD is gone.
 	Inspect(ctx context.Context, name string) (ServerCRD, error)
+	// HoldWorld keeps everything else off the server's world until release is
+	// called: it sets desiredState=Stopped if the server is still meant to run,
+	// and once the server is fully down (not ready, phase Stopped, no game pod)
+	// and no restore, backup or file write holds the world, it takes the world
+	// maintenance lock (internal/maintenance, KindReap) and keeps it fresh.
+	// Until then it returns ErrNotQuiet. The returned context ends if the lock
+	// cannot be kept; the world must not be read or deleted on it after that.
+	HoldWorld(ctx context.Context, name string) (held context.Context, release func(), err error)
+	// WorldExists reports whether the world PersistentVolumeClaim exists.
+	WorldExists(ctx context.Context, pvc string) (bool, error)
 	// DeletePVC deletes the world PersistentVolumeClaim.
 	DeletePVC(ctx context.Context, pvc string) error
-	// Stop sets spec.desiredState=Stopped.
-	Stop(ctx context.Context, name string) error
 }
 
 // Warner delivers an impending-reap notice. It is optional and best-effort: a
@@ -309,6 +326,10 @@ type Summary struct {
 	// AwaitingOffsite are idle worlds that are archived and kept until the
 	// archive's off-site copy lands.
 	AwaitingOffsite int
+	// AwaitingStop are idle servers left for the next run because they were not
+	// fully down yet (the run told a running one to stop) or another operation
+	// held their world.
+	AwaitingStop int
 	// Verified are archives read back in full and found matching; Corrupt are
 	// the ones that were not (marked, and never reused or restored from);
 	// VerifyFailed are the ones that could not be read back at all this run.
@@ -379,6 +400,11 @@ func (r *Reaper) RunOnce(ctx context.Context) (Summary, error) {
 	for _, c := range cands {
 		sum.Evaluated++
 		if err := r.evaluate(ctx, now, offs, c, &sum); err != nil {
+			if errors.Is(err, ErrNotQuiet) {
+				sum.AwaitingStop++
+				r.log().Warn("reaper: idle world not quiet, retrying next run", "server", c.Name, "why", err)
+				continue
+			}
 			r.log().Error("reaper: skipping server", "server", c.Name, "err", err)
 			sum.Skipped++
 			if errors.Is(err, errStoreFull) {
@@ -419,9 +445,27 @@ func (r *Reaper) evaluate(ctx context.Context, now time.Time, offs []time.Durati
 	return nil
 }
 
-// reap archives the world, records the backup, and only then deletes the PVC,
-// releases ownership, and stops the server — the strict ordering of red line ④.
+// reap stops the server and holds its world, archives the world, records the
+// backup, and only then deletes the PVC and releases ownership — the strict
+// ordering of red line ④. Nothing can start the server or touch its world while
+// it is held, so the archive is of a world at rest and the PVC deleted is the
+// one archived.
 func (r *Reaper) reap(ctx context.Context, now time.Time, c Candidate, crd ServerCRD, sum *Summary) error {
+	held, release, err := r.Cluster.HoldWorld(ctx, c.Name)
+	if err != nil {
+		return fmt.Errorf("hold world: %w", err)
+	}
+	defer release()
+	ctx = held
+
+	exists, err := r.Cluster.WorldExists(ctx, crd.PVC)
+	if err != nil {
+		return fmt.Errorf("look up world volume: %w", err)
+	}
+	if !exists {
+		return r.reapNoWorld(ctx, now, c, sum)
+	}
+
 	// §26 soft cap: free space before adding a backup. If the store cannot be
 	// brought under cap, preserve the world rather than delete it unbacked.
 	if r.Cfg.MaxLocalBytes > 0 {
@@ -497,18 +541,22 @@ func (r *Reaper) reap(ctx context.Context, now time.Time, c Candidate, crd Serve
 	}
 
 	// World is safely archived and recorded — now (and only now) delete it.
+	// The lock must still be held: a lapsed one could have let the server start.
+	if err := context.Cause(ctx); err != nil {
+		return fmt.Errorf("world no longer held: %w", err)
+	}
 	if err := r.Cluster.DeletePVC(ctx, crd.PVC); err != nil {
 		// The backup row persists; next run's FreshBackup reuses it and retries
 		// the delete, so no duplicate archive is created.
 		return fmt.Errorf("delete pvc: %w", err)
 	}
+	return r.finishReap(ctx, now, c, ref, sum)
+}
+
+// finishReap releases a world whose PVC is gone and records the reap.
+func (r *Reaper) finishReap(ctx context.Context, now time.Time, c Candidate, ref string, sum *Summary) error {
 	if err := r.Store.ReleaseWorld(ctx, c.Name, now); err != nil {
 		return fmt.Errorf("release world: %w", err)
-	}
-	if err := r.Cluster.Stop(ctx, c.Name); err != nil {
-		// The world is already deleted and ownership released; the desiredState
-		// flip is cosmetic by comparison. Log, but the reap stands.
-		r.log().Error("reaper: set desiredState=Stopped failed", "server", c.Name, "err", err)
 	}
 	if err := r.Store.Audit(ctx, AuditRecord{Action: ActionReapWorld, ServerName: c.Name, FormerOwner: c.OwnerID}); err != nil {
 		r.log().Error("reaper: audit reap_world failed", "server", c.Name, "err", err)
@@ -516,10 +564,40 @@ func (r *Reaper) reap(ctx context.Context, now time.Time, c Candidate, crd Serve
 
 	sum.WorldsReaped++
 	// felis_reaper_worlds_deleted_total (spec §23) advances in lockstep with the
-	// per-run Summary tally — incremented here, at the one point a world's PVC has
-	// actually been deleted, not at evaluation time.
+	// per-run Summary tally — incremented once per world whose PVC went, not at
+	// evaluation time.
 	metrics.ReaperWorldsDeletedTotal.Inc()
 	r.log().Info("reaper: world reaped", "server", c.Name, "former_owner", c.OwnerID, "backup_ref", ref)
+	return nil
+}
+
+// reapNoWorld handles an idle server whose world PVC does not exist. With an
+// archive of the current world on record, an earlier run deleted the PVC and
+// stopped before releasing it, so the reap is finished now. Otherwise there was
+// no world to reclaim: an owner who never started the server gives it up
+// (nothing to back up), and an unowned one — typically a world reaped earlier —
+// only has its clock restarted, so it is not reaped over and over.
+func (r *Reaper) reapNoWorld(ctx context.Context, now time.Time, c Candidate, sum *Summary) error {
+	fresh, ok, err := r.Store.FreshBackup(ctx, c.Name, c.LastActiveAt)
+	if err != nil {
+		return fmt.Errorf("lookup fresh backup: %w", err)
+	}
+	if ok {
+		return r.finishReap(ctx, now, c, fresh.Ref, sum)
+	}
+	if c.OwnerID == "" {
+		if err := r.Store.RestartClock(ctx, c.Name, now); err != nil {
+			return fmt.Errorf("restart clock: %w", err)
+		}
+		return nil
+	}
+	if err := r.Store.ReleaseWorld(ctx, c.Name, now); err != nil {
+		return fmt.Errorf("release world: %w", err)
+	}
+	if err := r.Store.Audit(ctx, AuditRecord{Action: ActionReapWorld, ServerName: c.Name, FormerOwner: c.OwnerID}); err != nil {
+		r.log().Error("reaper: audit reap_world failed", "server", c.Name, "err", err)
+	}
+	r.log().Info("reaper: idle server released; it had no world to archive", "server", c.Name, "former_owner", c.OwnerID)
 	return nil
 }
 

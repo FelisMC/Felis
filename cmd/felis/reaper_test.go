@@ -27,6 +27,7 @@ func TestReportReaperRunFailsTheJob(t *testing.T) {
 		want int
 	}{
 		{"clean", reaper.Summary{Evaluated: 3, WorldsReaped: 1, AwaitingOffsite: 1}, 0},
+		{"waiting for a stop", reaper.Summary{Evaluated: 3, AwaitingStop: 1}, 0},
 		{"server failed", reaper.Summary{Evaluated: 3, Skipped: 1}, 1},
 		{"store full", reaper.Summary{Evaluated: 3, Skipped: 1, StoreFull: 1}, 1},
 		{"expiry failed", reaper.Summary{Evaluated: 3, ExpireFailed: 2}, 1},

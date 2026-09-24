@@ -175,9 +175,14 @@ func OperatorRole(p Params) *rbacv1.Role {
 // ReaperRole grants felis-reaper its two destructive, disjoint powers
 // (internal/reaper.k8scluster): patch a MinecraftServer to Stop it and delete its
 // world PVC. Candidate servers come from the Postgres store, not a cluster List,
-// so no list/watch is needed; the reaper uses a direct client. It can read+patch
-// minecraftservers but cannot create them, and holds no power over StatefulSets,
-// Services, or Secrets — those belong to the operator and api.
+// so minecraftservers need no list/watch; the reaper uses a direct client. It can
+// read+patch minecraftservers but cannot create them, and holds no power over
+// StatefulSets, Services, or Secrets — those belong to the operator and api.
+//
+// The same patch holds the world maintenance lock while a world is archived and
+// reclaimed (internal/maintenance). Taking it needs the two reads felis-api makes
+// before a restore: list pods (is the game pod gone) and list jobs (does a
+// restore, backup or file write hold the world). Both are list-only.
 //
 // persistentvolumeclaims also carries get: resolving where a world lives
 // (cmd/felis/reaper.resolveWorldDir) reads the PVC's volumeName to derive the
@@ -195,6 +200,8 @@ func ReaperRole(p Params) *rbacv1.Role {
 	return role(p.MinecraftNamespace, "felis-reaper", ComponentReaper, []rbacv1.PolicyRule{
 		rule([]string{groupFelis}, []string{"minecraftservers"}, []string{"get", "patch"}),
 		rule([]string{groupCore}, []string{"persistentvolumeclaims"}, []string{"get", "delete"}),
+		rule([]string{groupCore}, []string{"pods"}, []string{"list"}),
+		rule([]string{groupBatch}, []string{"jobs"}, []string{"list"}),
 	})
 }
 
