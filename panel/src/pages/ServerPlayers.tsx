@@ -11,6 +11,7 @@ import { BansSection } from "@/components/players/BansSection";
 import { api } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
+import { canManage, ownershipPending } from "@/lib/ownership";
 import type { Phase } from "@/lib/types";
 
 /** ServerPlayers is the per-server player-management subpage (/servers/:name/players):
@@ -59,10 +60,8 @@ export function ServerPlayers() {
   // /me/servers read itself failed, `mineError` breaks the pending state (below) so a
   // real owner sees a retry instead of an eternal spinner — never fail closed to
   // NotYours, which would wrongly tell an owner the server isn't theirs on a blip.
-  const ownershipPending =
-    tierLoading || (!isAdmin && mine === null && !mineError);
-  const owned =
-    isAdmin || (mine ?? []).some((s) => s.name === name && s.owned === true);
+  const pending = ownershipPending(tierLoading, isAdmin, mine, mineError);
+  const owned = canManage(isAdmin, mine, name);
   const phase: Phase = data.phase;
 
   const header = (
@@ -78,7 +77,7 @@ export function ServerPlayers() {
     <>
       {back}
       {header}
-      {ownershipPending ? (
+      {pending ? (
         <Loading />
       ) : mineError ? (
         <ErrorState error={mineError} onRetry={reloadMine} />

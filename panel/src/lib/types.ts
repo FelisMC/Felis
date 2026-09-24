@@ -17,8 +17,8 @@ export type Phase =
 
 export type AutostartPolicy = "ownerOnly" | "public" | "allowlist";
 
-/** ServerInfo is the projection returned by GET /servers/{name}/status and
- *  GET /me/servers (the latter wraps a list under { servers: [...] }). */
+/** ServerInfo is the GET /me/servers row (wrapped under { servers: [...] }).
+ *  Only this projection says whether the caller owns or may claim a server. */
 export interface ServerInfo {
   name: string;
   subdomain: string;
@@ -37,6 +37,10 @@ export interface ServerInfo {
   storageSize?: string;
   cpu?: string;
 }
+
+/** ServerStatus is GET /servers/{name}/status. It never carries `owned` or
+ *  `claimable`; owner-tier gates read /me/servers via lib/ownership. */
+export type ServerStatus = Omit<ServerInfo, "owned" | "claimable">;
 
 /** WhitelistResult projects GET /servers/{name}/access/whitelist (spec §7 access).
  *  `players` is a BEST-EFFORT parse of the vanilla "whitelist list" reply done

@@ -1582,7 +1582,9 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
   }
 
   if (is("GET", ctx) && ctx.parts[4] === "status") {
-    sendJSON(ctx.res, 200, projectServer(serverInfo, ctx.account));
+    // The real status projection (api.ServerInfo) carries no owned/claimable.
+    const { owned: _o, claimable: _c, ...status } = projectServer(serverInfo, ctx.account);
+    sendJSON(ctx.res, 200, status);
     return true;
   }
   if (is("GET", ctx) && ctx.parts[4] === "console") {

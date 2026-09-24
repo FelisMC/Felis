@@ -20,6 +20,7 @@ import type {
   ServerFileEntry,
   ServerJob,
   ServerInfo,
+  ServerStatus,
   SessionView,
   UserDetail,
   UserView,
@@ -200,7 +201,7 @@ export const api = {
   fleet: () =>
     request<{ servers: FleetServer[] }>("GET", "/fleet").then((r) => r.servers ?? []),
 
-  status: (name: string) => request<ServerInfo>("GET", `/servers/${name}/status`),
+  status: (name: string) => request<ServerStatus>("GET", `/servers/${name}/status`),
 
   wake: (name: string) =>
     request<{ name: string; desiredState: string }>("POST", `/servers/${name}/wake`),

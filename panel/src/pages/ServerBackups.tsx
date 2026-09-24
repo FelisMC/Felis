@@ -30,6 +30,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
+import { canManage, ownershipPending } from "@/lib/ownership";
 import { formatBytes, formatRelative, formatAbsolute, isExpired } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { BackupView } from "@/lib/types";
@@ -376,8 +377,8 @@ export function ServerBackups() {
   // While it is pending show the header with a spinner rather than flashing the list
   // at someone who may not own it; if that read itself failed, break to a retry so a
   // real owner never fails closed to NotYours on a transient blip.
-  const ownershipPending = tierLoading || (!isAdmin && mineQ.data === null && !mineQ.error);
-  const owned = isAdmin || (mineQ.data ?? []).some((s) => s.name === name && s.owned === true);
+  const pending = ownershipPending(tierLoading, isAdmin, mineQ.data, mineQ.error);
+  const owned = canManage(isAdmin, mineQ.data, name);
 
   // The async world-operation history (the backup/restore Jobs behind every 202).
   // Read only once the viewer is resolved as owner-or-admin (the route 403s
@@ -482,7 +483,7 @@ export function ServerBackups() {
     <>
       {back}
       {header}
-      {ownershipPending ? (
+      {pending ? (
         <Loading />
       ) : mineQ.error ? (
         <ErrorState error={mineQ.error} onRetry={mineQ.reload} />

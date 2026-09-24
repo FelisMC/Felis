@@ -12,6 +12,7 @@ import { Loading, ErrorState } from "@/components/States";
 import { api, consoleStreamURL, humanizeError } from "@/lib/api";
 import { useAsync, useConfig } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
+import { canManage } from "@/lib/ownership";
 import { hostFor } from "@/lib/config";
 import type { Phase, AutostartPolicy } from "@/lib/types";
 import { EditServerDialog } from "@/components/EditServerDialog";
@@ -193,6 +194,11 @@ export function ServerConsole() {
     () => api.status(name),
     [name],
   );
+  const { data: mine } = useAsync(
+    () => (isAdmin ? Promise.resolve([]) : api.myServers()),
+    [isAdmin, name],
+  );
+  const owned = canManage(isAdmin, mine, name);
 
   // The read-side stream (spec §8) follows the running pod's log. A pod exists
   // during BOTH Starting and Running — the operator marks Starting once the pod
@@ -283,7 +289,7 @@ export function ServerConsole() {
                   onUpdated={reload}
                 />
               )}
-              {(data.owned || isAdmin) && (
+              {owned && (
                 <Link
                   to={`/servers/${name}/luckperms`}
                   className="group flex items-center gap-3 rounded-lg border border-border bg-card p-4 transition-colors hover:border-primary/40 hover:bg-accent"

@@ -29,6 +29,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
+import { canManage, ownershipPending } from "@/lib/ownership";
 import { formatBytes, formatRelative } from "@/lib/format";
 import type { ServerFileEntry } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -93,8 +94,8 @@ export function ServerFiles() {
     () => (isAdmin ? Promise.resolve([]) : api.myServers()),
     [isAdmin, name],
   );
-  const ownershipPending = tierLoading || (!isAdmin && mineQ.data === null && !mineQ.error);
-  const owned = isAdmin || (mineQ.data ?? []).some((s) => s.name === name && s.owned === true);
+  const pending = ownershipPending(tierLoading, isAdmin, mineQ.data, mineQ.error);
+  const owned = canManage(isAdmin, mineQ.data, name);
   const stopped = statusQ.data?.phase === "Stopped";
 
   const [dir, setDir] = useState("");
@@ -241,7 +242,7 @@ export function ServerFiles() {
     <>
       {back}
       {header}
-      {ownershipPending ? (
+      {pending ? (
         <Loading />
       ) : mineQ.error ? (
         <ErrorState error={mineQ.error} onRetry={mineQ.reload} />

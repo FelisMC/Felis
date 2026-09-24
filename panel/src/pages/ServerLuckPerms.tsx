@@ -21,6 +21,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
+import { canManage, ownershipPending } from "@/lib/ownership";
 import type { Phase } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -299,8 +300,8 @@ export function ServerLuckPerms() {
   }
   if (!data) return back;
 
-  const ownershipPending = ownershipPendingCheck(tierLoading, isAdmin, mine, mineError);
-  const owned = isAdmin || (mine ?? []).some((s) => s.name === name && s.owned === true);
+  const pending = ownershipPending(tierLoading, isAdmin, mine, mineError);
+  const owned = canManage(isAdmin, mine, name);
   const phase: Phase = data.phase;
 
   const header = (
@@ -317,7 +318,7 @@ export function ServerLuckPerms() {
     <>
       {back}
       {header}
-      {ownershipPending ? (
+      {pending ? (
         <Loading />
       ) : mineError ? (
         <ErrorState error={mineError} onRetry={reloadMine} />
@@ -800,13 +801,4 @@ export function ServerLuckPerms() {
       )}
     </>
   );
-}
-
-function ownershipPendingCheck(
-  tierLoading: boolean,
-  isAdmin: boolean,
-  mine: any[] | null,
-  mineError: any
-): boolean {
-  return tierLoading || (!isAdmin && mine === null && !mineError);
 }
