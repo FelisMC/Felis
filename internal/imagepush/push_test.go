@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"felis.lolicon.best/internal/registrygate"
 )
@@ -188,6 +189,83 @@ func TestPushThroughTheGate(t *testing.T) {
 	}
 	if reg.puts != 3 {
 		t.Fatalf("re-push uploaded %d blobs in total, want the 3 from the first push", reg.puts)
+	}
+}
+
+// TestPushWaitsOutTheGCWindow: while the gate holds the registry read-only for
+// garbage collection, a push waits on Retry-After (without spending its attempts)
+// and completes once the window closes; past MaxWait it gives up with the 503.
+func TestPushWaitsOutTheGCWindow(t *testing.T) {
+	reg := newFakeRegistry()
+	upstream := httptest.NewServer(reg)
+	t.Cleanup(upstream.Close)
+	u, _ := url.Parse(upstream.URL)
+	g := registrygate.New(u, map[string]string{registrygate.PrincipalBuild: "build-secret"}, nil)
+	g.SetQuiet(0)
+	gate := httptest.NewServer(g)
+	t.Cleanup(gate.Close)
+	maint := httptest.NewServer(g.MaintHandler())
+	t.Cleanup(maint.Close)
+	host := strings.TrimPrefix(gate.URL, "http://")
+	setReadOnly := func(on bool) {
+		t.Helper()
+		path := "/readwrite"
+		if on {
+			path = "/readonly?lease=600"
+		}
+		resp, err := http.Post(maint.URL+path, "text/plain", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("POST %s = %d", path, resp.StatusCode)
+		}
+	}
+
+	ref := host + "/user-uploads/sub-gc:latest"
+	tarPath := writeTarball(t, ref, []byte("layer"))
+	setReadOnly(true)
+	var waits []time.Duration
+	p := &Pusher{Scheme: "http", Username: registrygate.PrincipalBuild, Password: "build-secret", Attempts: 1}
+	p.after = func(d time.Duration) <-chan time.Time {
+		waits = append(waits, d)
+		if len(waits) == 3 {
+			setReadOnly(false) // the sweep finished
+		}
+		ch := make(chan time.Time, 1)
+		ch <- time.Time{}
+		return ch
+	}
+	if _, err := p.Push(context.Background(), tarPath, ref); err != nil {
+		t.Fatalf("push across the window: %v", err)
+	}
+	if len(waits) != 3 || waits[0] != 30*time.Second {
+		t.Fatalf("waits = %v, want three Retry-After (30s) waits", waits)
+	}
+	if reg.manifests["user-uploads/sub-gc:latest"] == nil {
+		t.Fatal("no manifest after the window closed")
+	}
+
+	// A window that outlasts MaxWait fails the push with the 503.
+	setReadOnly(true)
+	ref2 := host + "/user-uploads/sub-gc2:latest"
+	tar2 := writeTarball(t, ref2, []byte("other layer"))
+	waits = nil
+	p.MaxWait = time.Minute
+	p.after = func(d time.Duration) <-chan time.Time {
+		waits = append(waits, d)
+		ch := make(chan time.Time, 1)
+		ch <- time.Time{}
+		return ch
+	}
+	_, err := p.Push(context.Background(), tar2, ref2)
+	var se *StatusError
+	if !errors.As(err, &se) || se.Code != http.StatusServiceUnavailable {
+		t.Fatalf("push past MaxWait = %v, want the 503", err)
+	}
+	if len(waits) != 2 {
+		t.Fatalf("waits = %v, want 2 (60s of MaxWait at 30s each)", waits)
 	}
 }
 

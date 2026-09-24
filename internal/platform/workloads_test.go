@@ -2,6 +2,7 @@ package platform
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -462,8 +463,8 @@ func TestRegistry_DeploymentServicePVC(t *testing.T) {
 	pvc := registryPVC(p)
 
 	ps, c := namedContainer(t, dep, registryName)
-	if len(ps.Containers) != 2 {
-		t.Fatalf("registry pod containers = %d, want registry + gate", len(ps.Containers))
+	if len(ps.Containers) != 3 {
+		t.Fatalf("registry pod containers = %d, want registry + gate + gc", len(ps.Containers))
 	}
 	if c.Image != defaultRegistryImage {
 		t.Errorf("registry image = %q, want default %q", c.Image, defaultRegistryImage)
@@ -475,6 +476,14 @@ func TestRegistry_DeploymentServicePVC(t *testing.T) {
 	}
 	if len(c.Ports) != 0 {
 		t.Errorf("registry container ports = %+v, want none (the gate owns the port)", c.Ports)
+	}
+	// Deletion on, and the blob descriptor cache off: a cached descriptor for a
+	// blob the GC removed would let the next push skip uploading it.
+	if v := envValue(c.Env, "REGISTRY_STORAGE_DELETE_ENABLED"); v != "true" {
+		t.Errorf("REGISTRY_STORAGE_DELETE_ENABLED = %q, want true", v)
+	}
+	if v := envValue(c.Env, "REGISTRY_STORAGE_CACHE_BLOBDESCRIPTOR"); v == "inmemory" || v == "redis" || v == "" {
+		t.Errorf("REGISTRY_STORAGE_CACHE_BLOBDESCRIPTOR = %q, want the cache disabled", v)
 	}
 	// The registry's limits are deliberately NOT the control-plane template's: audit
 	// #46 caught the registry OOM-killed mid-upload at 256Mi on a real 475MB-layer push.
@@ -495,10 +504,46 @@ func TestRegistry_DeploymentServicePVC(t *testing.T) {
 		fmt.Sprintf("--listen=:%d", p.RegistryPort),
 		fmt.Sprintf("--upstream=http://127.0.0.1:%d", p.RegistryPort+1),
 		"--auth-dir=" + registryAuthMountPath,
+		// The GC handshake has no authentication: loopback only.
+		fmt.Sprintf("--maint-listen=127.0.0.1:%d", p.RegistryPort+2),
+		"--maint-dir=" + registryMaintMountPath,
 	} {
 		if !contains(gate.Args, want) {
 			t.Errorf("gate args = %v, want %s", gate.Args, want)
 		}
+	}
+
+	// The GC sidecar: the registry image on the same data volume, hardened like
+	// the rest, pointed at the gate's maintenance port, never --delete-untagged
+	// (digest-pinned servers may boot an untagged manifest).
+	_, gc := namedContainer(t, dep, registryGCName)
+	if gc.Image != p.RegistryImage {
+		t.Errorf("gc image = %q, want the registry image %q", gc.Image, p.RegistryImage)
+	}
+	if v := envValue(gc.Env, "FELIS_GC_MAINT_PORT"); v != fmt.Sprint(p.RegistryPort+2) {
+		t.Errorf("FELIS_GC_MAINT_PORT = %q, want %d", v, p.RegistryPort+2)
+	}
+	script := strings.Join(gc.Command, " ")
+	if !strings.Contains(script, "garbage-collect") || strings.Contains(script, "delete-untagged") {
+		t.Errorf("gc command must run garbage-collect without --delete-untagged: %s", script)
+	}
+	if !strings.Contains(script, "/readonly?lease=") || !strings.Contains(script, "/readwrite") {
+		t.Errorf("gc command must take and hand back the gate's read-only window: %s", script)
+	}
+	gcData := false
+	for _, m := range gc.VolumeMounts {
+		if m.Name == registryAuthVolume {
+			t.Error("the gc sidecar must not mount the write tokens")
+		}
+		if m.Name == registryVolume && m.MountPath == registryDataPath {
+			gcData = true
+		}
+	}
+	if !gcData {
+		t.Errorf("gc sidecar must mount the registry data at %s, mounts=%v", registryDataPath, gc.VolumeMounts)
+	}
+	if gc.SecurityContext == nil || gc.SecurityContext.ReadOnlyRootFilesystem == nil || !*gc.SecurityContext.ReadOnlyRootFilesystem {
+		t.Error("gc sidecar must run with a read-only root filesystem")
 	}
 	// The node-side pull path: exactly one container port, mirrored by a LOOPBACK
 	// hostPort. Node containerd cannot dial the Service VIP, so its registries.yaml

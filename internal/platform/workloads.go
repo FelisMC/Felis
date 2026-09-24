@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"time"
 
 	"felis.lolicon.best/internal/naming"
 	appsv1 "k8s.io/api/apps/v1"
@@ -91,6 +92,14 @@ const (
 	registryGateName      = "registry-gate"
 	registryAuthVolume    = "registry-auth"
 	registryAuthMountPath = "/etc/felis-registry-auth"
+	// registryGCName is the garbage-collection sidecar, and registryMaint* the
+	// emptyDir where the gate keeps an open read-only window across its own restart
+	// (registrygate.SetMaintenanceState). registryGCInterval is how often a sweep
+	// runs; the pruner in felis-api deletes manifests between sweeps.
+	registryGCName         = "registry-gc"
+	registryMaintVolume    = "maint"
+	registryMaintMountPath = "/run/felis-maint"
+	registryGCInterval     = 24 * time.Hour
 
 	configVolume   = "config"
 	tmpVolume      = "tmp"
@@ -804,13 +813,15 @@ func controlPlaneDeployment(p Params, sa string, container corev1.Container, vol
 // target real. The registry never calls the K8s API, so its token auto-mount is
 // disabled (matching the weak build/restore SA hygiene).
 //
-// The pod has two containers. registry:2 itself has no auth and listens on the
+// The pod has three containers. registry:2 itself has no auth and listens on the
 // pod's loopback only (registryUpstreamPort), so nothing outside the pod can reach
 // it directly. The gate sidecar (felis registry-gate, internal/registrygate) owns
 // the registry port: reads pass anonymously, writes need the platform or build
 // credential from the registry-auth Secret, and the build credential cannot touch
 // the platform's own repositories. Before the gate any pod that could reach the
-// registry could overwrite felis/felis.
+// registry could overwrite felis/felis. The registry-gc sidecar reclaims the
+// blobs of deleted manifests inside a read-only window the gate grants
+// (registryGCScript).
 //
 // The gate's port also carries a loopback hostPort (registryLoopbackHost): it is
 // the node-side pull path. The node's containerd cannot dial the Service VIP, so
@@ -830,6 +841,15 @@ func registryDeployment(p Params) *appsv1.Deployment {
 		Image: p.RegistryImage,
 		Env: []corev1.EnvVar{
 			{Name: "REGISTRY_HTTP_ADDR", Value: fmt.Sprintf("127.0.0.1:%d", upstreamPort)},
+			// Manifest DELETE is how felis-api's pruner releases an image; the gate
+			// lets only the prune and platform principals send it.
+			{Name: "REGISTRY_STORAGE_DELETE_ENABLED", Value: "true"},
+			// The in-memory blob descriptor cache outlives a garbage-collect run: a
+			// blob the sweep deleted would still answer HEAD, a push would skip
+			// uploading it, and the manifest pushed after it would name a blob that
+			// is gone. Any value other than inmemory/redis turns the cache off
+			// (registry 2.8 logs "unknown cache type ... caching disabled").
+			{Name: "REGISTRY_STORAGE_CACHE_BLOBDESCRIPTOR", Value: "none"},
 		},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: registryVolume, MountPath: registryDataPath},
@@ -847,6 +867,8 @@ func registryDeployment(p Params) *appsv1.Deployment {
 			fmt.Sprintf("--listen=:%d", p.RegistryPort),
 			fmt.Sprintf("--upstream=http://127.0.0.1:%d", upstreamPort),
 			"--auth-dir=" + registryAuthMountPath,
+			fmt.Sprintf("--maint-listen=127.0.0.1:%d", registryMaintPort(p)),
+			"--maint-dir=" + registryMaintMountPath,
 		},
 		Ports: []corev1.ContainerPort{
 			{
@@ -858,6 +880,7 @@ func registryDeployment(p Params) *appsv1.Deployment {
 		},
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: registryAuthVolume, MountPath: registryAuthMountPath, ReadOnly: true},
+			{Name: registryMaintVolume, MountPath: registryMaintMountPath},
 		},
 		// /healthz answers 200 only while registry:2 answers GET /v2/ on loopback,
 		// so a registry whose storage broke shows up as an unready pod instead of a
@@ -898,7 +921,7 @@ func registryDeployment(p Params) *appsv1.Deployment {
 					AutomountServiceAccountToken: boolPtr(false),
 					PriorityClassName:            controlPlanePriorityName,
 					SecurityContext:              hardenedPodSecurityContext(),
-					Containers:                   []corev1.Container{registry, gate},
+					Containers:                   []corev1.Container{registry, gate, registryGCContainer(p)},
 					Volumes: []corev1.Volume{
 						{
 							Name: registryVolume,
@@ -907,6 +930,7 @@ func registryDeployment(p Params) *appsv1.Deployment {
 							},
 						},
 						{Name: tmpVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+						{Name: registryMaintVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 						{
 							Name: registryAuthVolume,
 							VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
@@ -928,6 +952,90 @@ func registryDeployment(p Params) *appsv1.Deployment {
 // registryUpstreamPort is the loopback port registry:2 listens on behind the gate:
 // the next port after the public one.
 func registryUpstreamPort(p Params) int32 { return p.RegistryPort + 1 }
+
+// registryMaintPort is the gate's loopback-only maintenance listener, the one
+// after the upstream port.
+func registryMaintPort(p Params) int32 { return p.RegistryPort + 2 }
+
+// registryGCScript is the registry-gc sidecar's loop. Once per interval (the last
+// run is stamped on the data volume, so a pod restart does not reset the clock) it
+// asks the gate for a read-only window, waiting up to 30 minutes for pushes to go
+// quiet, runs registry garbage-collect, and hands the window back. The window is
+// a lease, so a sidecar killed mid-sweep leaves the registry writable again within
+// the hour.
+//
+// No --delete-untagged: a server's spec pins its image by digest, and the tag it
+// was created from moves with every rebuild, so an untagged manifest may be the
+// exact build a sleeping server boots. Manifests go only when felis-api's pruner
+// has found no whitelist entry, server or recent build naming them and deleted
+// them; this sweep then frees the blobs nothing references any more.
+const registryGCScript = `set -u
+# sh as PID 1 ignores SIGTERM unless it traps it, and runs the trap only once the
+# foreground child exits: sleep in the background and wait, so a pod delete does
+# not sit out the grace period.
+trap 'exit 0' TERM
+nap() { sleep "$1" & wait $!; }
+maint="http://127.0.0.1:${FELIS_GC_MAINT_PORT}"
+stamp=/var/lib/registry/.felis-last-gc
+while :; do
+  now=$(date +%s)
+  last=$(cat "$stamp" 2>/dev/null || echo 0)
+  case "$last" in ''|*[!0-9]*) last=0 ;; esac
+  if [ $((now - last)) -ge "$FELIS_GC_INTERVAL_SECONDS" ]; then
+    tries=0
+    until wget -q -O /dev/null --post-data '' "$maint/readonly?lease=3600"; do
+      tries=$((tries + 1))
+      [ "$tries" -ge 180 ] && break
+      nap 10
+    done
+    if [ "$tries" -lt 180 ]; then
+      echo "felis-gc: registry is read-only; collecting"
+      if registry garbage-collect /etc/docker/registry/config.yml > /tmp/gc.log 2>&1; then
+        date +%s > "$stamp"
+        echo "felis-gc: done ($(grep -c 'blob eligible for deletion' /tmp/gc.log) blob(s) deleted)"
+      else
+        echo "felis-gc: garbage-collect failed:" >&2
+        tail -n 20 /tmp/gc.log >&2
+      fi
+      wget -q -O /dev/null --post-data '' "$maint/readwrite" \
+        || echo "felis-gc: could not hand the read-only window back; it lapses with its lease" >&2
+    else
+      echo "felis-gc: pushes never went quiet for 30 minutes; trying again later" >&2
+    fi
+  fi
+  nap 600
+done
+`
+
+// registryGCContainer renders the garbage-collection sidecar. It runs the
+// registry image (garbage-collect is a subcommand of the registry binary) against
+// the same data volume, under the same non-root identity and read-only root.
+func registryGCContainer(p Params) corev1.Container {
+	return corev1.Container{
+		Name:    registryGCName,
+		Image:   p.RegistryImage,
+		Command: []string{"/bin/sh", "-c", registryGCScript},
+		Env: []corev1.EnvVar{
+			{Name: "FELIS_GC_MAINT_PORT", Value: fmt.Sprint(registryMaintPort(p))},
+			{Name: "FELIS_GC_INTERVAL_SECONDS", Value: fmt.Sprint(int64(registryGCInterval / time.Second))},
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: registryVolume, MountPath: registryDataPath},
+			{Name: tmpVolume, MountPath: "/tmp"},
+		},
+		Resources: corev1.ResourceRequirements{
+			Requests: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("10m"),
+				corev1.ResourceMemory: resource.MustParse("16Mi"),
+			},
+			Limits: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("500m"),
+				corev1.ResourceMemory: resource.MustParse("512Mi"),
+			},
+		},
+		SecurityContext: hardenedContainerSecurityContext(),
+	}
+}
 
 // registryGateResources sizes the gate sidecar: a streaming reverse proxy that
 // holds no layer in memory.

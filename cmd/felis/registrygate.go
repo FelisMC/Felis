@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -26,17 +27,28 @@ import (
 // for an authenticated principal allowed to write that repository. See
 // internal/registrygate for the policy.
 //
-// Tokens are files under --auth-dir, one per principal (platform, build), mounted
-// from the registry-auth Secret. A missing file disables that principal: writes
-// fail closed while every pull keeps working, which is the right way round for a
-// registry the running workloads depend on.
+// Tokens are files under --auth-dir, one per principal (platform, build, prune),
+// mounted from the registry-auth Secret. A missing file disables that principal:
+// writes fail closed while every pull keeps working, which is the right way round
+// for a registry the running workloads depend on.
+//
+// --maint-listen is the GC sidecar's read-only handshake (registrygate.MaintHandler).
+// It has no authentication, so it must name a loopback address; --maint-dir keeps
+// an open window across a gate restart.
 func cmdRegistryGate(args []string, _, stderr io.Writer) int {
 	fs := flag.NewFlagSet("registry-gate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	listen := fs.String("listen", ":5000", "address the gate serves the registry API on")
 	upstream := fs.String("upstream", "http://127.0.0.1:5001", "the loopback registry the gate forwards to")
 	authDir := fs.String("auth-dir", "/etc/felis-registry-auth", "directory holding one token file per principal")
+	maintListen := fs.String("maint-listen", "", "loopback address for the GC sidecar's read-only handshake (empty disables it)")
+	maintDir := fs.String("maint-dir", "", "directory that keeps an open read-only window across a gate restart")
+	quiet := fs.Duration("maint-quiet", registrygate.DefaultQuiet, "how long writes must be idle before a read-only window is granted")
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *maintListen != "" && !loopbackAddr(*maintListen) {
+		fmt.Fprintf(stderr, "felis registry-gate: --maint-listen %q must be a loopback address: the handshake has no authentication\n", *maintListen)
 		return 2
 	}
 	target, err := url.Parse(*upstream)
@@ -46,7 +58,7 @@ func cmdRegistryGate(args []string, _, stderr io.Writer) int {
 	}
 	log := slog.New(slog.NewTextHandler(stderr, nil))
 	tokens := map[string]string{}
-	for _, p := range []string{registrygate.PrincipalPlatform, registrygate.PrincipalBuild} {
+	for _, p := range registrygate.Principals {
 		b, err := os.ReadFile(filepath.Join(*authDir, p))
 		tok := strings.TrimSpace(string(b))
 		if err != nil || tok == "" {
@@ -56,10 +68,27 @@ func cmdRegistryGate(args []string, _, stderr io.Writer) int {
 		tokens[p] = tok
 	}
 
+	gate := registrygate.New(target, tokens, log)
+	gate.SetQuiet(*quiet)
+	if *maintDir != "" {
+		if err := gate.SetMaintenanceState(registrygate.MaintStatePath(*maintDir)); err != nil {
+			// A corrupt file must not keep the registry from serving pulls.
+			log.Warn("ignoring the saved read-only window", "err", err)
+		}
+	}
 	srv := &http.Server{
 		Addr:              *listen,
-		Handler:           registrygate.New(target, tokens, log),
+		Handler:           gate,
 		ReadHeaderTimeout: 10 * time.Second,
+	}
+	var maint *http.Server
+	if *maintListen != "" {
+		maint = &http.Server{Addr: *maintListen, Handler: gate.MaintHandler(), ReadHeaderTimeout: 10 * time.Second}
+		go func() {
+			if err := maint.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Error("maintenance listener stopped; garbage collection cannot get a read-only window", "err", err)
+			}
+		}()
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -68,6 +97,9 @@ func cmdRegistryGate(args []string, _, stderr io.Writer) int {
 		shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdown)
+		if maint != nil {
+			_ = maint.Shutdown(shutdown)
+		}
 	}()
 	log.Info("registry gate listening", "addr", *listen, "upstream", target.String(), "principals", len(tokens))
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -75,6 +107,19 @@ func cmdRegistryGate(args []string, _, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// loopbackAddr reports whether a host:port listen address binds loopback only.
+func loopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // cmdPushImage is the build Job's publish step. It runs after Kaniko built the

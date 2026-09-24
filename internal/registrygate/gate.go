@@ -11,7 +11,13 @@
 //     and none of them should carry a credential;
 //   - the "platform" principal (the installer) may write anything;
 //   - the "build" principal (the push step of a build Job) may write any repository
-//     outside the platform-reserved ones (felis/…, mirror/…), and may not delete.
+//     outside the platform-reserved ones (felis/…, mirror/…), and may not delete;
+//   - the "prune" principal (felis-api's registry pruner) may only delete a
+//     manifest by digest, the one write that frees space.
+//
+// The gate also holds the registry read-only while the GC sidecar runs registry
+// garbage-collect (maint.go): a blob pushed during the sweep could be deleted
+// under a manifest that is about to reference it.
 //
 // Before this gate any pod that could reach the registry — a game server running a
 // tenant's plugin, or a Dockerfile RUN step inside Kaniko — could overwrite
@@ -27,16 +33,23 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
+
+var digestRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // Principal names. They are the basic-auth usernames and the file names under the
 // gate's auth directory (cmd/felis registry-gate --auth-dir).
 const (
 	PrincipalPlatform = "platform"
 	PrincipalBuild    = "build"
+	PrincipalPrune    = "prune"
 )
+
+// Principals lists every principal the gate knows, for loading their tokens.
+var Principals = []string{PrincipalPlatform, PrincipalBuild, PrincipalPrune}
 
 // ReservedRepoRoots are the first path components the build principal may never
 // write: felis/ holds the control-plane and game images the platform runs, mirror/
@@ -59,6 +72,7 @@ type Gate struct {
 
 	proxy  *httputil.ReverseProxy
 	health *http.Client
+	maint  maintenance
 }
 
 // New builds a Gate for upstream.
@@ -76,6 +90,8 @@ func New(upstream *url.URL, tokens map[string]string, log *slog.Logger) *Gate {
 	rp.FlushInterval = -1
 	g.proxy = rp
 	g.health = &http.Client{Timeout: 3 * time.Second}
+	g.maint.now = time.Now
+	g.maint.quiet = DefaultQuiet
 	return g
 }
 
@@ -135,6 +151,15 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "DENIED", reason)
 		return
 	}
+	if !g.maint.beginWrite() {
+		// Retry-After is what imagepush and docker push back off on; a GC sweep
+		// over a few GiB takes well under a minute.
+		w.Header().Set("Retry-After", "30")
+		writeError(w, http.StatusServiceUnavailable, "UNAVAILABLE",
+			"the registry is read-only while garbage collection runs; retry shortly")
+		return
+	}
+	defer g.maint.endWrite()
 	g.proxy.ServeHTTP(w, r)
 }
 
@@ -181,9 +206,28 @@ func Authorize(principal, method, path string) string {
 			}
 		}
 		return ""
+	case PrincipalPrune:
+		// Deleting a manifest only unlinks it; the blobs go at the next GC. The
+		// pruner never needs anything else, so a leaked prune token can neither
+		// plant an image nor delete a blob a live manifest still references.
+		if method != http.MethodDelete || !isManifestDigestPath(path) {
+			return "the prune principal may only delete a manifest by digest"
+		}
+		return ""
 	default:
 		return "unknown principal"
 	}
+}
+
+// isManifestDigestPath reports whether path is /v2/<repo>/manifests/sha256:<hex>.
+func isManifestDigestPath(path string) bool {
+	rest, ok := strings.CutPrefix(path, "/v2/")
+	if !ok {
+		return false
+	}
+	seg := strings.Split(rest, "/")
+	n := len(seg)
+	return n >= 3 && seg[n-2] == "manifests" && digestRE.MatchString(seg[n-1])
 }
 
 // RepoFromPath extracts the repository name from a registry API v2 path, or ""

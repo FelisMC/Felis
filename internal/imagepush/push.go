@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -57,6 +58,13 @@ type Pusher struct {
 	Log io.Writer
 	// Attempts bounds retries of one blob upload or the manifest PUT. Zero means 3.
 	Attempts int
+	// MaxWait bounds the total time a push waits out 503 answers that carry
+	// Retry-After — the gate's read-only window while garbage collection runs.
+	// Those waits do not use up Attempts. Zero means 20 minutes.
+	MaxWait time.Duration
+
+	// after is time.After, replaced in tests.
+	after func(time.Duration) <-chan time.Time
 }
 
 // Ref is a parsed host/repository:tag reference.
@@ -296,31 +304,60 @@ func (p *Pusher) do(ctx context.Context, method, target string, body io.Reader, 
 }
 
 // retry runs fn up to Attempts times, backing off between tries. A refusal the
-// registry will repeat (401/403/4xx other than 408/429) is returned at once.
+// registry will repeat (401/403/4xx other than 408/429) is returned at once. A 503
+// with Retry-After is waited out without using up an attempt, for as long as
+// MaxWait allows.
 func (p *Pusher) retry(ctx context.Context, fn func() error) error {
 	attempts := p.Attempts
 	if attempts <= 0 {
 		attempts = 3
 	}
-	var err error
-	for i := 0; i < attempts; i++ {
+	maxWait := p.MaxWait
+	if maxWait <= 0 {
+		maxWait = 20 * time.Minute
+	}
+	var (
+		err    error
+		waited time.Duration
+	)
+	for i := 0; i < attempts; {
 		if err = fn(); err == nil {
 			return nil
 		}
 		var se *StatusError
+		if errors.As(err, &se) && se.Code == http.StatusServiceUnavailable && se.RetryAfter > 0 && waited+se.RetryAfter <= maxWait {
+			p.logf("registry unavailable, waiting %s: %s", se.RetryAfter, se.Body)
+			if err := p.sleep(ctx, se.RetryAfter); err != nil {
+				return err
+			}
+			waited += se.RetryAfter
+			continue
+		}
 		if errors.As(err, &se) && se.Code >= 400 && se.Code < 500 && se.Code != http.StatusRequestTimeout && se.Code != http.StatusTooManyRequests {
 			return err
 		}
-		if i+1 < attempts {
+		i++
+		if i < attempts {
 			p.logf("retrying after: %v", err)
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(time.Duration(i+1) * time.Second):
+			if err := p.sleep(ctx, time.Duration(i)*time.Second); err != nil {
+				return err
 			}
 		}
 	}
 	return err
+}
+
+func (p *Pusher) sleep(ctx context.Context, d time.Duration) error {
+	after := p.after
+	if after == nil {
+		after = time.After
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-after(d):
+		return nil
+	}
 }
 
 func (p *Pusher) logf(format string, args ...any) {
@@ -334,6 +371,8 @@ type StatusError struct {
 	Op   string
 	Code int
 	Body string
+	// RetryAfter is the registry's Retry-After, when it sent one in seconds.
+	RetryAfter time.Duration
 }
 
 func (e *StatusError) Error() string {
@@ -342,7 +381,11 @@ func (e *StatusError) Error() string {
 
 func statusError(op string, resp *http.Response) error {
 	b, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-	return &StatusError{Op: op, Code: resp.StatusCode, Body: strings.TrimSpace(string(b))}
+	se := &StatusError{Op: op, Code: resp.StatusCode, Body: strings.TrimSpace(string(b))}
+	if sec, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && sec > 0 {
+		se.RetryAfter = time.Duration(sec) * time.Second
+	}
+	return se
 }
 
 // openEntry returns a reader positioned at the named tar entry. The caller closes

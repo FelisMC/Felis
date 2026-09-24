@@ -2869,8 +2869,25 @@ push_image_to_registry() {
   esac
   log "mirroring ${ref} into the internal registry"
   docker tag "$ref" "$push_ref" || die "could not tag ${ref} as ${push_ref} — is docker healthy?"
-  docker --config "$REGISTRY_DOCKER_CONFIG" push "$push_ref" || die "could not mirror ${ref} into the internal registry — check the registry Deployment/pod (both the registry and registry-gate containers) and its PVC"
+  local attempt=1
+  until docker --config "$REGISTRY_DOCKER_CONFIG" push "$push_ref"; do
+    # The gate answers writes 503 while the registry-gc sidecar sweeps; wait
+    # that out, and fail at once on anything else.
+    if [ "$attempt" -ge 40 ] || ! registry_read_only; then
+      die "could not mirror ${ref} into the internal registry — check the registry Deployment/pod (the registry, registry-gate and registry-gc containers) and its PVC"
+    fi
+    warn "the registry is read-only for garbage collection; retrying the push of ${push_ref} in 30s (${attempt}/40)"
+    attempt=$((attempt + 1))
+    sleep 30
+  done
   docker rmi "$push_ref" >/dev/null 2>&1 || true
+}
+
+# registry_read_only asks the gate, over its pod-loopback maintenance listener,
+# whether a garbage-collection window is open.
+registry_read_only() {
+  kubectl -n "$CONTROL_NS" exec deploy/registry -c registry-gc -- \
+    wget -q -O /dev/null "http://127.0.0.1:$((${REGISTRY_URL##*:} + 2))/readonly" >/dev/null 2>&1
 }
 
 # registry_docker_login logs a throwaway docker config into the registry gate as
