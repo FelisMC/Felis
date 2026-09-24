@@ -97,6 +97,14 @@ type Config struct {
 	// world is deleted on the first run after the copy lands, normally the
 	// next day.
 	RequireOffsite bool
+	// VerifyEvery is how often each stored archive is read back in full, and
+	// VerifyPerRun caps how many one run reads (the ones checked longest ago
+	// first), so bit rot in a backup is found before a restore needs it.
+	VerifyEvery  time.Duration
+	VerifyPerRun int
+	// PartialAfter is how old an unfinished archive file must be before it is
+	// swept: longer than any archive takes to write.
+	PartialAfter time.Duration
 }
 
 // DefaultConfig is the spec's §24 default window set.
@@ -110,6 +118,10 @@ func DefaultConfig() Config {
 		ManualRetention: 30 * Day,
 		ManualKeep:      5,
 		ManualCooldown:  10 * time.Minute,
+
+		VerifyEvery:  7 * Day,
+		VerifyPerRun: 10,
+		PartialAfter: 6 * time.Hour,
 	}
 }
 
@@ -149,11 +161,17 @@ type BackupRecord struct {
 	SizeBytes   int64
 	Reason      string
 	ExpiresAt   time.Time
+	// SHA256 is the archive's digest as written ("" when the backend keeps none)
+	// and SkippedEntries the world entries it could not hold.
+	SHA256         string
+	SkippedEntries int
 }
 
 // Fresh is the backup FreshBackup found.
 type Fresh struct {
-	Ref string
+	ID     string
+	Ref    string
+	SHA256 string
 	// Offsite reports that the archive has its off-site copy (offsite_at).
 	Offsite bool
 }
@@ -166,6 +184,7 @@ type StoredBackup struct {
 	BackupRef  string
 	SizeBytes  int64
 	Reason     string
+	SHA256     string // "" when none was recorded
 }
 
 // AuditRecord is a reaper-sourced audit_logs entry. The PG binding fills
@@ -186,9 +205,10 @@ type Store interface {
 	// FreshBackup reports an existing present reaper archive (reason
 	// inactive_15d) for server whose world is still current — created at or
 	// after since (the world's last_active_at) and after the current claim,
-	// preferring one already copied off-site. It makes a reap idempotent across
-	// a DeletePVC failure, and across the wait for the off-site copy: the retry
-	// reuses the archive instead of writing a duplicate.
+	// preferring one already copied off-site, and never one found corrupt. It
+	// makes a reap idempotent across a DeletePVC failure, and across the wait for
+	// the off-site copy: the retry reuses the archive instead of writing a
+	// duplicate.
 	FreshBackup(ctx context.Context, server string, since time.Time) (b Fresh, ok bool, err error)
 
 	// InsertBackup records a world_backups row (status=present).
@@ -217,6 +237,19 @@ type Store interface {
 
 	// MarkBackupDeleted flips a backup to status=deleted, deleted_at=at.
 	MarkBackupDeleted(ctx context.Context, id string, at time.Time) error
+
+	// BackupsToVerify lists up to limit present backups not found corrupt and
+	// not read back since checkedBefore, the ones never read back first, then
+	// the ones read back longest ago.
+	BackupsToVerify(ctx context.Context, checkedBefore time.Time, limit int) ([]StoredBackup, error)
+	// MarkBackupVerified records a read-back that matched at `at`, and the
+	// archive's digest when none was recorded yet.
+	MarkBackupVerified(ctx context.Context, id, sha256 string, at time.Time) error
+	// MarkBackupCorrupt records a read-back that failed: the backup is no
+	// longer reused for a reap or offered for a restore.
+	MarkBackupCorrupt(ctx context.Context, id string, at time.Time) error
+	// LiveBackupRefs lists the backup_ref of every backup not deleted.
+	LiveBackupRefs(ctx context.Context) ([]string, error)
 
 	// Audit appends a reaper-sourced audit_logs row.
 	Audit(ctx context.Context, rec AuditRecord) error
@@ -276,12 +309,27 @@ type Summary struct {
 	// AwaitingOffsite are idle worlds that are archived and kept until the
 	// archive's off-site copy lands.
 	AwaitingOffsite int
+	// Verified are archives read back in full and found matching; Corrupt are
+	// the ones that were not (marked, and never reused or restored from);
+	// VerifyFailed are the ones that could not be read back at all this run.
+	Verified     int
+	Corrupt      int
+	VerifyFailed int
+	// Swept are leftover files of interrupted archives removed; OrphanArchives
+	// are finished archives no backup records, kept for now (see
+	// backup.Swept); SweepFailed reports that the sweep did not complete.
+	Swept          int
+	OrphanArchives int
+	SweepFailed    bool
 }
 
-// Failed reports whether the run left work undone: a server it could not
-// process, or an expired backup it could not remove. The world is safe either
-// way, but the run did not do its job and whoever operates it must hear.
-func (s Summary) Failed() bool { return s.Skipped > 0 || s.ExpireFailed > 0 }
+// Failed reports whether the run left work undone or found damage: a server it
+// could not process, an expired backup it could not remove, an archive that did
+// not read back or could not be read, or a sweep that did not complete. The
+// worlds are safe either way, but whoever operates the run must hear.
+func (s Summary) Failed() bool {
+	return s.Skipped > 0 || s.ExpireFailed > 0 || s.Corrupt > 0 || s.VerifyFailed > 0 || s.SweepFailed
+}
 
 func (r *Reaper) now() time.Time {
 	if r.Now != nil {
@@ -340,6 +388,8 @@ func (r *Reaper) RunOnce(ctx context.Context) (Summary, error) {
 	}
 
 	r.expireBackups(ctx, now, &sum)
+	r.verifyBackups(ctx, now, &sum)
+	r.sweepArchives(ctx, now, &sum)
 	return sum, nil
 }
 
@@ -393,32 +443,49 @@ func (r *Reaper) reap(ctx context.Context, now time.Time, c Candidate, crd Serve
 	if err != nil {
 		return fmt.Errorf("lookup fresh backup: %w", err)
 	}
+	if ok {
+		// The archive may have sat on disk for days (a delete that failed, the
+		// wait for its off-site copy); it is about to become the only copy, so it
+		// is read back first. One that fails is marked and replaced by a fresh
+		// archive of the world, which is still there.
+		good, err := r.verifyOne(ctx, now, fresh.ID, fresh.Ref, fresh.SHA256, sum)
+		if err != nil {
+			return fmt.Errorf("read back archive %s: %w", fresh.ID, err)
+		}
+		ok = good
+	}
 	ref, offsite := fresh.Ref, fresh.Offsite
 	if !ok {
-		aref, size, err := r.Archiver.Archive(ctx, c.Name, crd.PVC)
+		a, err := r.Archiver.Archive(ctx, c.Name, crd.PVC)
 		if err != nil {
 			// Red line ④: archive failed → the PVC is untouched, the world
 			// survives, and this server is retried next run.
 			return fmt.Errorf("archive: %w", err)
 		}
+		if len(a.Skipped) > 0 {
+			r.log().Warn("reaper: archive leaves out entries that are not plain files or directories",
+				"server", c.Name, "count", len(a.Skipped), "first", a.Skipped[:min(len(a.Skipped), 5)])
+		}
 		rec := BackupRecord{
-			ID:          r.id(),
-			ServerName:  c.Name,
-			FormerOwner: c.OwnerID,
-			BackupRef:   string(aref),
-			SizeBytes:   size,
-			Reason:      ReasonInactive,
-			ExpiresAt:   now.Add(r.Cfg.Retention),
+			ID:             r.id(),
+			ServerName:     c.Name,
+			FormerOwner:    c.OwnerID,
+			BackupRef:      string(a.Ref),
+			SizeBytes:      a.Size,
+			Reason:         ReasonInactive,
+			ExpiresAt:      now.Add(r.Cfg.Retention),
+			SHA256:         a.SHA256,
+			SkippedEntries: len(a.Skipped),
 		}
 		if err := r.Store.InsertBackup(ctx, rec); err != nil {
 			// The archive exists but is untracked. Delete the orphan so it does
 			// not leak, then fail without touching the PVC.
-			if derr := r.Archiver.Delete(ctx, aref); derr != nil {
-				r.log().Error("reaper: orphan archive cleanup failed", "server", c.Name, "ref", aref, "err", derr)
+			if derr := r.Archiver.Delete(ctx, a.Ref); derr != nil {
+				r.log().Error("reaper: orphan archive cleanup failed", "server", c.Name, "ref", a.Ref, "err", derr)
 			}
 			return fmt.Errorf("insert backup: %w", err)
 		}
-		ref, offsite = string(aref), false
+		ref, offsite = string(a.Ref), false
 	}
 
 	// With an off-site bucket configured, the archive on this node's disk is
@@ -567,6 +634,93 @@ func (r *Reaper) expireBackups(ctx context.Context, now time.Time, sum *Summary)
 			continue
 		}
 		sum.BackupsExpired++
+	}
+}
+
+// verifyBackups is the read-back pass: up to VerifyPerRun present archives not
+// read back within VerifyEvery are read end to end and checked against their
+// recorded digest. A backend that cannot read its archives back skips it.
+func (r *Reaper) verifyBackups(ctx context.Context, now time.Time, sum *Summary) {
+	if _, ok := r.Archiver.(backup.Verifier); !ok || r.Cfg.VerifyPerRun <= 0 {
+		return
+	}
+	list, err := r.Store.BackupsToVerify(ctx, now.Add(-r.Cfg.VerifyEvery), r.Cfg.VerifyPerRun)
+	if err != nil {
+		r.log().Error("reaper: list backups to read back", "err", err)
+		sum.VerifyFailed++
+		return
+	}
+	for _, b := range list {
+		if _, err := r.verifyOne(ctx, now, b.ID, b.BackupRef, b.SHA256, sum); err != nil {
+			r.log().Error("reaper: read back archive", "id", b.ID, "server", b.ServerName, "err", err)
+			sum.VerifyFailed++
+		}
+	}
+}
+
+// verifyOne reads one archive back and records the outcome. It reports whether
+// the archive is good; an error means it could not be read back at all (the
+// store is not mounted, the run was cancelled), which says nothing about the
+// archive. A backend that cannot read its archives back reports every archive
+// good, as before read-backs existed.
+func (r *Reaper) verifyOne(ctx context.Context, now time.Time, id, ref, want string, sum *Summary) (bool, error) {
+	v, ok := r.Archiver.(backup.Verifier)
+	if !ok {
+		return true, nil
+	}
+	got, err := v.Verify(ctx, backup.ArchiveRef(ref), want)
+	switch {
+	case errors.Is(err, backup.ErrCorrupt):
+		sum.Corrupt++
+		r.log().Error("reaper: archive is corrupt; it will not be reused or offered for restore", "id", id, "ref", ref, "err", err)
+		if err := r.Store.MarkBackupCorrupt(ctx, id, now); err != nil {
+			return false, fmt.Errorf("mark corrupt: %w", err)
+		}
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	if err := r.Store.MarkBackupVerified(ctx, id, got, now); err != nil {
+		r.log().Error("reaper: record read-back", "id", id, "err", err)
+	}
+	sum.Verified++
+	return true, nil
+}
+
+// sweepArchives removes what interrupted archives left in the store (see
+// backup.Sweeper): unfinished files older than PartialAfter, and finished ones
+// no backup records once they are older than Retention, the longest any backup
+// is kept. Younger unrecorded archives are reported and kept.
+func (r *Reaper) sweepArchives(ctx context.Context, now time.Time, sum *Summary) {
+	sw, ok := r.Archiver.(backup.Sweeper)
+	if !ok {
+		return
+	}
+	refs, err := r.Store.LiveBackupRefs(ctx)
+	if err != nil {
+		// Without the list every archive would look unclaimed.
+		r.log().Error("reaper: list recorded archives; sweep skipped", "err", err)
+		sum.SweepFailed = true
+		return
+	}
+	live := make(map[backup.ArchiveRef]bool, len(refs))
+	for _, ref := range refs {
+		live[backup.ArchiveRef(ref)] = true
+	}
+	res, err := sw.Sweep(ctx, func(ref backup.ArchiveRef) bool { return live[ref] },
+		now.Add(-r.Cfg.PartialAfter), now.Add(-r.Cfg.Retention))
+	if err != nil {
+		r.log().Error("reaper: sweep archive store", "err", err)
+		sum.SweepFailed = true
+	}
+	for _, p := range res.Removed {
+		r.log().Info("reaper: removed leftover of an interrupted archive", "path", p)
+	}
+	sum.Swept += len(res.Removed)
+	sum.OrphanArchives += len(res.Orphans)
+	if len(res.Orphans) > 0 {
+		r.log().Warn("reaper: archives no backup records are kept until they are older than the retention",
+			"count", len(res.Orphans), "bytes", res.OrphanBytes, "first", res.Orphans[:min(len(res.Orphans), 5)])
 	}
 }
 

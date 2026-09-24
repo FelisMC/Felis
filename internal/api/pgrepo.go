@@ -675,7 +675,7 @@ func (p *PGRepo) SeedServer(ctx context.Context, name, subdomain string, cpuMill
 // listed — an expired or deleted backup is gone (spec §466).
 func (p *PGRepo) AllBackups(ctx context.Context) ([]BackupView, error) {
 	const q = `SELECT id, server_name, COALESCE(former_owner, ''), COALESCE(size_bytes, 0),
-		reason, status, created_at, expires_at
+		reason, status, created_at, expires_at, corrupt_at IS NOT NULL, verified_at, skipped_entries
 		FROM world_backups WHERE status = 'present' ORDER BY created_at DESC`
 	rows, err := p.db.QueryContext(ctx, q)
 	if err != nil {
@@ -689,7 +689,7 @@ func (p *PGRepo) AllBackups(ctx context.Context) ([]BackupView, error) {
 // former_owner never matches a user id, so orphaned backups stay admin-only.
 func (p *PGRepo) BackupsForUser(ctx context.Context, userID string) ([]BackupView, error) {
 	const q = `SELECT id, server_name, COALESCE(former_owner, ''), COALESCE(size_bytes, 0),
-		reason, status, created_at, expires_at
+		reason, status, created_at, expires_at, corrupt_at IS NOT NULL, verified_at, skipped_entries
 		FROM world_backups WHERE status = 'present' AND former_owner = $1 ORDER BY created_at DESC`
 	rows, err := p.db.QueryContext(ctx, q, userID)
 	if err != nil {
@@ -705,21 +705,26 @@ func scanBackupViews(rows *sql.Rows) ([]BackupView, error) {
 	var out []BackupView
 	for rows.Next() {
 		var v BackupView
+		var verified sql.NullTime
 		if err := rows.Scan(&v.ID, &v.ServerName, &v.FormerOwner, &v.SizeBytes,
-			&v.Reason, &v.Status, &v.CreatedAt, &v.ExpiresAt); err != nil {
+			&v.Reason, &v.Status, &v.CreatedAt, &v.ExpiresAt, &v.Corrupt, &verified, &v.SkippedEntries); err != nil {
 			return nil, err
+		}
+		if verified.Valid {
+			v.VerifiedAt = &verified.Time
 		}
 		out = append(out, v)
 	}
 	return out, rows.Err()
 }
 
-// LatestBackup returns the most recent present backup for a server (spec §466
-// restore), or ErrNotFound. Unlike the list queries this selects backup_ref — the
-// caller (the restore handler) hands it to the Restorer and never serializes it.
+// LatestBackup returns the most recent present backup for a server that has not
+// failed a read-back (spec §466 restore), or ErrNotFound. Unlike the list queries
+// this selects backup_ref — the caller (the restore handler) hands it to the
+// Restorer and never serializes it.
 func (p *PGRepo) LatestBackup(ctx context.Context, serverName string) (*BackupRecord, error) {
 	const q = `SELECT id, server_name, COALESCE(former_owner, ''), backup_ref, COALESCE(size_bytes, 0)
-		FROM world_backups WHERE server_name = $1 AND status = 'present'
+		FROM world_backups WHERE server_name = $1 AND status = 'present' AND corrupt_at IS NULL
 		ORDER BY created_at DESC LIMIT 1`
 	var b BackupRecord
 	switch err := p.db.QueryRowContext(ctx, q, serverName).Scan(
@@ -734,11 +739,12 @@ func (p *PGRepo) LatestBackup(ctx context.Context, serverName string) (*BackupRe
 
 // BackupByID returns a single present backup by its id, or ErrNotFound.
 func (p *PGRepo) BackupByID(ctx context.Context, id string) (*BackupRecord, error) {
-	const q = `SELECT id, server_name, COALESCE(former_owner, ''), backup_ref, COALESCE(size_bytes, 0)
+	const q = `SELECT id, server_name, COALESCE(former_owner, ''), backup_ref, COALESCE(size_bytes, 0),
+		corrupt_at IS NOT NULL
 		FROM world_backups WHERE id = $1 AND status = 'present'`
 	var b BackupRecord
 	switch err := p.db.QueryRowContext(ctx, q, id).Scan(
-		&b.ID, &b.ServerName, &b.FormerOwner, &b.BackupRef, &b.SizeBytes); {
+		&b.ID, &b.ServerName, &b.FormerOwner, &b.BackupRef, &b.SizeBytes, &b.Corrupt); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
 	case err != nil:

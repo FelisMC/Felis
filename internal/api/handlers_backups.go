@@ -141,6 +141,13 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, errForbidden)
 			return
 		}
+		// The reaper found this archive damaged when it read it back; the restore
+		// Job would refuse it too, but only after the world was locked for it.
+		if backup.Corrupt {
+			writeError(w, r, newError(http.StatusConflict, "backup_corrupt",
+				"this backup did not read back intact and cannot be restored; pick another"))
+			return
+		}
 	} else {
 		backup, err = a.Repo.LatestBackup(r.Context(), name)
 		if err != nil {

@@ -138,14 +138,24 @@ func cmdReaper(args []string, stdout, stderr io.Writer) int {
 // FelisWorldJobFailed rule) reach the operator: a world that cannot be archived
 // is kept, and without this nobody would learn that it is never reaped.
 func reportReaperRun(sum reaper.Summary, stdout, stderr io.Writer) int {
-	fmt.Fprintf(stdout, "felis reaper: evaluated=%d reaped=%d awaiting_offsite=%d warned=%d skipped=%d store_full=%d evicted=%d expired=%d expire_failed=%d\n",
+	fmt.Fprintf(stdout, "felis reaper: evaluated=%d reaped=%d awaiting_offsite=%d warned=%d skipped=%d store_full=%d evicted=%d expired=%d expire_failed=%d verified=%d corrupt=%d verify_failed=%d swept=%d orphan_archives=%d\n",
 		sum.Evaluated, sum.WorldsReaped, sum.AwaitingOffsite, sum.Warned, sum.Skipped, sum.StoreFull,
-		sum.EvictedEarly, sum.BackupsExpired, sum.ExpireFailed)
+		sum.EvictedEarly, sum.BackupsExpired, sum.ExpireFailed,
+		sum.Verified, sum.Corrupt, sum.VerifyFailed, sum.Swept, sum.OrphanArchives)
 	if !sum.Failed() {
 		return 0
 	}
-	fmt.Fprintf(stderr, "felis reaper: %d servers failed (%d kept because the backup store is full) and %d expired backups were not removed; the errors are above, and each is retried next run\n",
-		sum.Skipped, sum.StoreFull, sum.ExpireFailed)
+	if sum.Skipped > 0 || sum.ExpireFailed > 0 {
+		fmt.Fprintf(stderr, "felis reaper: %d servers failed (%d kept because the backup store is full) and %d expired backups were not removed; the errors are above, and each is retried next run\n",
+			sum.Skipped, sum.StoreFull, sum.ExpireFailed)
+	}
+	if sum.Corrupt > 0 {
+		fmt.Fprintf(stderr, "felis reaper: %d archives did not read back and are marked corrupt; they are no longer offered for restore (the errors are above)\n", sum.Corrupt)
+	}
+	if sum.VerifyFailed > 0 || sum.SweepFailed {
+		fmt.Fprintf(stderr, "felis reaper: %d archives could not be read back and the store sweep completed=%t; both are retried next run\n",
+			sum.VerifyFailed, !sum.SweepFailed)
+	}
 	return 1
 }
 

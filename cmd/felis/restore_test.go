@@ -32,11 +32,11 @@ func archiveTempWorld(t *testing.T, files map[string]string) (ref string, backup
 		BackupRoot: backupRoot,
 		Resolve:    func(string) (string, error) { return srcDir, nil },
 	}
-	got, _, err := ar.Archive(context.Background(), "survival", "world-survival-0")
+	got, err := ar.Archive(context.Background(), "survival", "world-survival-0")
 	if err != nil {
 		t.Fatalf("Archive: %v", err)
 	}
-	return string(got), backupRoot
+	return string(got.Ref), backupRoot
 }
 
 // The restore subcommand must extract the archived world into the target world

@@ -806,7 +806,7 @@ func (f *fakeRepo) LatestBackup(_ context.Context, serverName string) (*BackupRe
 	var latest *fakeBackup
 	for i := range f.backups {
 		b := &f.backups[i]
-		if b.view.Status != "present" || b.view.ServerName != serverName {
+		if b.view.Status != "present" || b.view.ServerName != serverName || b.view.Corrupt {
 			continue
 		}
 		if latest == nil || b.view.CreatedAt.After(latest.view.CreatedAt) {
@@ -830,7 +830,7 @@ func (f *fakeRepo) BackupByID(_ context.Context, id string) (*BackupRecord, erro
 			return &BackupRecord{
 				ID: b.view.ID, ServerName: b.view.ServerName,
 				FormerOwner: b.view.FormerOwner, BackupRef: b.ref,
-				SizeBytes: b.view.SizeBytes,
+				SizeBytes: b.view.SizeBytes, Corrupt: b.view.Corrupt,
 			}, nil
 		}
 	}

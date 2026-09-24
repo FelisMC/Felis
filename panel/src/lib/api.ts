@@ -743,6 +743,10 @@ export function humanizeError(e: unknown): string {
     // the restore subsystem may be unwired (503 restore_unavailable).
     case "no_backup":
       return t("no_backup");
+    // The backup failed a read-back (sha256 or gzip/tar parse), so the server
+    // refuses to extract it over the world.
+    case "backup_corrupt":
+      return t("backup_corrupt");
     case "not_stopped":
       return t("not_stopped");
     // World-volume lock: a restore, backup or file write is running on this

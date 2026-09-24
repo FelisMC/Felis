@@ -368,6 +368,16 @@ components:
         status: { type: string }
         created_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
+        corrupt:
+          type: boolean
+          description: The archive failed a read-back (a checksum, gzip or tar error) and cannot be restored. Omitted when false.
+        verified_at:
+          type: string
+          format: date-time
+          description: The archive's last read-back that matched. Omitted until the first.
+        skipped_entries:
+          type: integer
+          description: World entries the archive could not hold (symbolic links, devices, sockets). Omitted when zero.
 
     Build:
       type: object
@@ -3016,7 +3026,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '409':
-          description: Server is not stopped (not_stopped), a restore, backup or file write already holds its world volume (maintenance_in_progress), or a restore of another backup is still running (restore_in_progress).
+          description: Server is not stopped (not_stopped), a restore, backup or file write already holds its world volume (maintenance_in_progress), a restore of another backup is still running (restore_in_progress), or the chosen backup failed a read-back (backup_corrupt).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

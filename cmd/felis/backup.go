@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"felis.lolicon.best/internal/backup"
@@ -91,10 +92,15 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	ref, size, err := archiver.Archive(ctx, *server, naming.WorldPVCName(*server))
+	a, err := archiver.Archive(ctx, *server, naming.WorldPVCName(*server))
 	if err != nil {
 		fmt.Fprintf(stderr, "felis backup: archive: %v\n", err)
 		return 1
+	}
+	ref, size := a.Ref, a.Size
+	if len(a.Skipped) > 0 {
+		fmt.Fprintf(stderr, "felis backup: %d entries are not plain files or directories and are not in the archive: %s\n",
+			len(a.Skipped), strings.Join(a.Skipped[:min(len(a.Skipped), 10)], ", "))
 	}
 
 	drv, err := store.Open(ctx, cfg.Database.URL)
@@ -112,6 +118,9 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 		SizeBytes:   size,
 		Reason:      *reason,
 		ExpiresAt:   time.Now().Add(rcfg.ManualRetention),
+
+		SHA256:         a.SHA256,
+		SkippedEntries: len(a.Skipped),
 	}
 	st := reaper.NewPGStore(drv.DB())
 	if err := st.InsertBackup(ctx, rec); err != nil {

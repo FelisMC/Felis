@@ -142,10 +142,11 @@ export interface FleetServer {
  *  by handle; restore resolves the latest present backup server-side.
  *
  *  Only `status: "present"` rows are ever listed (the query filters them) and the
- *  list is created_at-descending, so the FIRST row for a given server is exactly
- *  the one a restore would recover (LatestBackup's WHERE mirrors this) — the UI must
- *  name that row, not a plausible proxy. `reason`/`status` cross an unvalidated JSON
- *  boundary; render unknown values tolerantly. */
+ *  list is created_at-descending, so the first row for a given server that is not
+ *  `corrupt` is exactly the one a restore would recover (LatestBackup's WHERE
+ *  mirrors this) — the UI must name that row, not a plausible proxy.
+ *  `reason`/`status` cross an unvalidated JSON boundary; render unknown values
+ *  tolerantly. */
 export interface BackupView {
   id: string;
   server_name: string;
@@ -156,6 +157,16 @@ export interface BackupView {
   status: string;
   created_at: string;
   expires_at: string;
+  /** True once the archive failed a read-back (its sha256 or its gzip/tar did
+   *  not check out). It stays listed so the loss is visible, and the API refuses
+   *  to restore it (409 backup_corrupt). */
+  corrupt?: boolean;
+  /** When the reaper last read the archive back intact. Absent until the first
+   *  read-back after it was written. */
+  verified_at?: string;
+  /** How many entries of the world were not plain files or directories
+   *  (symlinks, sockets) and so are not in the archive. */
+  skipped_entries?: number;
 }
 
 /** ServerJob is one row of GET /api/v1/servers/{name}/jobs — the observable

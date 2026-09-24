@@ -69,6 +69,13 @@ type BackupView struct {
 	Status      string    `json:"status"`
 	CreatedAt   time.Time `json:"created_at"`
 	ExpiresAt   time.Time `json:"expires_at"`
+	// Corrupt reports that the archive failed a read-back: it cannot be
+	// restored. VerifiedAt is its last read-back that matched, and
+	// SkippedEntries the world entries it could not hold (symbolic links,
+	// devices, sockets).
+	Corrupt        bool       `json:"corrupt,omitempty"`
+	VerifiedAt     *time.Time `json:"verified_at,omitempty"`
+	SkippedEntries int        `json:"skipped_entries,omitempty"`
 }
 
 // BackupRecord is the server-side view of a backup used to drive a restore (spec
@@ -81,6 +88,8 @@ type BackupRecord struct {
 	FormerOwner string
 	BackupRef   string
 	SizeBytes   int64
+	// Corrupt reports that the archive failed a read-back (see BackupView).
+	Corrupt bool
 }
 
 // StaffUser is the login-side projection of a users row (spec §B passwordless

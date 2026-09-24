@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
+  AlertTriangle,
   Archive,
   CheckCircle2,
   Clock,
@@ -8,6 +9,7 @@ import {
   Loader2,
   RotateCcw,
   ShieldCheck,
+  ShieldX,
   UserMinus,
   XCircle,
 } from "lucide-react";
@@ -36,14 +38,12 @@ import { formatBytes, formatRelative, formatAbsolute, isExpired } from "@/lib/fo
 import { cn } from "@/lib/utils";
 import type { BackupView, ServerJob } from "@/lib/types";
 
-/** LatestBackupCard renders the most-recent backup as the restore card — the one a
- *  restore actually recovers (the list is created_at-descending and the backend's
- *  LatestBackup selects the same present row), with the restore action beneath. Older
- *  archives are shown separately as a compact, read-only history (HistoryRow): a restore
- *  ALWAYS recovers this latest one, so giving an older backup an action card of its own
- *  would falsely imply you could restore (or delete) it — the backend offers neither.
- *  `showOwner` surfaces the former owner (admins list every world's backups; a user only
- *  ever sees their own). */
+/** BackupRow is one backup in the table, with its own restore action. `isLatest`
+ *  marks the row a restore with no pick recovers: the newest one that is not
+ *  corrupt, which is what the backend's LatestBackup selects. Under the reason it
+ *  shows what the reaper's read-back found — corrupt (restore refused), verified,
+ *  or entries the archive could not hold. `showOwner` surfaces the former owner
+ *  (admins list every world's backups; a user only ever sees their own). */
 function BackupRow({
   b,
   isLatest,
@@ -93,6 +93,7 @@ function BackupRow({
             <Clock className="h-3 w-3 text-muted-foreground/60 shrink-0" />
             <span>{reasonLabel}</span>
           </div>
+          <IntegrityNote b={b} now={now} locale={locale} />
         </div>
       </td>
       <td className="px-4 py-3.5 whitespace-nowrap text-muted-foreground">
@@ -119,7 +120,11 @@ function BackupRow({
         </td>
       )}
       <td className="px-4 py-3.5 whitespace-nowrap text-right">
-        {!expired ? (
+        {b.corrupt ? (
+          <span className="text-xs text-destructive/70 font-medium px-3 py-1.5">
+            {t("corrupt_short")}
+          </span>
+        ) : !expired ? (
           <RestoreControls
             serverName={serverName}
             backup={b}
@@ -137,6 +142,48 @@ function BackupRow({
         )}
       </td>
     </tr>
+  );
+}
+
+/** IntegrityNote is what the reaper's read-back says about one archive: corrupt
+ *  (it no longer matches what was written, so it cannot be restored), when it
+ *  was last read back intact, and how many entries of the world it could not
+ *  hold. A backup not read back yet shows nothing, as before. */
+function IntegrityNote({ b, now, locale }: { b: BackupView; now: number; locale: string }) {
+  const { t } = useTranslation("backups");
+  const skipped = b.skipped_entries ?? 0;
+  if (!b.corrupt && !b.verified_at && skipped === 0) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px]">
+      {b.corrupt ? (
+        <span
+          className="inline-flex items-center gap-1 font-medium text-destructive"
+          title={t("corrupt_hint")}
+        >
+          <ShieldX className="h-3 w-3 shrink-0" />
+          {t("corrupt_badge")}
+        </span>
+      ) : (
+        b.verified_at && (
+          <span
+            className="inline-flex items-center gap-1 text-muted-foreground"
+            title={formatAbsolute(b.verified_at, locale)}
+          >
+            <ShieldCheck className="h-3 w-3 shrink-0 text-emerald-500/80" />
+            {t("verified_at", { when: formatRelative(b.verified_at, now, locale) })}
+          </span>
+        )
+      )}
+      {skipped > 0 && (
+        <span
+          className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-500"
+          title={t("skipped_entries_hint")}
+        >
+          <AlertTriangle className="h-3 w-3 shrink-0" />
+          {t("skipped_entries", { count: skipped })}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -264,6 +311,15 @@ function RestoreControls({
   const [done, setDone] = useState<"snapshot" | "direct" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [safety, setSafety] = useState(true);
+
+  if (backup.corrupt) {
+    if (layout === "row") return null;
+    return (
+      <p className="mt-4 border-t border-primary/20 pt-4 text-xs text-destructive">
+        {t("corrupt_cannot_restore")}
+      </p>
+    );
+  }
 
   if (isExpired(backup.expires_at, now)) {
     if (layout === "row") return null;
@@ -525,10 +581,12 @@ export function ServerBackups() {
   const now = Date.now();
   const locale = i18n.language;
   // The global list, narrowed to this server. Already created_at-descending from the
-  // API, but re-sorted defensively so all[0] is unambiguously the restore target.
+  // API, but re-sorted defensively; the newest backup that is not corrupt is the
+  // one a restore with no pick recovers.
   const all = (backupsQ.data ?? [])
     .filter((b) => b.server_name === name)
     .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+  const latestID = all.find((b) => !b.corrupt)?.id;
 
   const header = (
     <PageHeader
@@ -597,11 +655,11 @@ export function ServerBackups() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
-                      {all.map((b, idx) => (
+                      {all.map((b) => (
                         <BackupRow
                           key={b.id}
                           b={b}
-                          isLatest={idx === 0}
+                          isLatest={b.id === latestID}
                           now={now}
                           locale={locale}
                           showOwner={isAdmin}

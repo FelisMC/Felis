@@ -40,14 +40,48 @@ type fakeArchiver struct {
 	seq        int
 }
 
-func (f *fakeArchiver) Archive(_ context.Context, server, _ string) (backup.ArchiveRef, int64, error) {
+func (f *fakeArchiver) Archive(_ context.Context, server, _ string) (backup.Archived, error) {
 	if f.archiveErr != nil {
-		return "", 0, f.archiveErr
+		return backup.Archived{}, f.archiveErr
 	}
 	f.archives++
 	f.seq++
 	f.rec.add("archive")
-	return backup.ArchiveRef(fmt.Sprintf("ref-%s-%d", server, f.seq)), 10, nil
+	ref := fmt.Sprintf("ref-%s-%d", server, f.seq)
+	return backup.Archived{Ref: backup.ArchiveRef(ref), Size: 10, SHA256: "sha-" + ref}, nil
+}
+
+// checkingArchiver is a fakeArchiver that also reads archives back
+// (backup.Verifier) and sweeps its store (backup.Sweeper).
+type checkingArchiver struct {
+	*fakeArchiver
+	corrupt   map[string]bool // refs that no longer read back
+	verifyErr error           // every read-back fails with this
+	verified  []string
+
+	sweepErr      error
+	sweepLive     func(backup.ArchiveRef) bool
+	sweepCutoffs  []time.Time
+	sweepRemoved  []string
+	sweepOrphaned []string
+}
+
+func (c *checkingArchiver) Verify(_ context.Context, ref backup.ArchiveRef, want string) (string, error) {
+	if c.verifyErr != nil {
+		return "", c.verifyErr
+	}
+	c.verified = append(c.verified, string(ref))
+	c.rec.add("verify")
+	if c.corrupt[string(ref)] {
+		return "", fmt.Errorf("%w: %s", backup.ErrCorrupt, ref)
+	}
+	return "sha-" + string(ref), nil
+}
+
+func (c *checkingArchiver) Sweep(_ context.Context, live func(backup.ArchiveRef) bool, partialBefore, orphanBefore time.Time) (backup.Swept, error) {
+	c.sweepLive = live
+	c.sweepCutoffs = []time.Time{partialBefore, orphanBefore}
+	return backup.Swept{Removed: c.sweepRemoved, Orphans: c.sweepOrphaned, OrphanBytes: int64(len(c.sweepOrphaned))}, c.sweepErr
 }
 
 func (f *fakeArchiver) Restore(context.Context, backup.ArchiveRef, string) error { return nil }
@@ -109,6 +143,10 @@ type fakeBackup struct {
 	status             string // present | deleted
 	createdAt, expires time.Time
 	offsite            bool
+	sha                string
+	skipped            int
+	verifiedAt         time.Time
+	corruptAt          time.Time
 }
 
 type fakeStore struct {
@@ -121,6 +159,7 @@ type fakeStore struct {
 	released  []string
 	listErr   error
 	insertErr error
+	liveErr   error
 	idn       int
 }
 
@@ -138,7 +177,7 @@ func (s *fakeStore) ListActiveServers(context.Context) ([]Candidate, error) {
 func (s *fakeStore) FreshBackup(_ context.Context, server string, since time.Time) (Fresh, bool, error) {
 	var found *fakeBackup
 	for _, b := range s.backups {
-		if b.server == server && b.status == "present" && b.reason == ReasonInactive && !b.createdAt.Before(since) {
+		if b.server == server && b.status == "present" && b.reason == ReasonInactive && !b.createdAt.Before(since) && b.corruptAt.IsZero() {
 			if found == nil || (b.offsite && !found.offsite) {
 				found = b
 			}
@@ -147,7 +186,7 @@ func (s *fakeStore) FreshBackup(_ context.Context, server string, since time.Tim
 	if found == nil {
 		return Fresh{}, false, nil
 	}
-	return Fresh{Ref: found.ref, Offsite: found.offsite}, true, nil
+	return Fresh{ID: found.id, Ref: found.ref, SHA256: found.sha, Offsite: found.offsite}, true, nil
 }
 
 func (s *fakeStore) InsertBackup(_ context.Context, rec BackupRecord) error {
@@ -156,7 +195,7 @@ func (s *fakeStore) InsertBackup(_ context.Context, rec BackupRecord) error {
 	}
 	s.backups = append(s.backups, &fakeBackup{
 		id: rec.ID, server: rec.ServerName, ref: rec.BackupRef, reason: rec.Reason, size: rec.SizeBytes,
-		status: "present", createdAt: s.clock, expires: rec.ExpiresAt,
+		status: "present", createdAt: s.clock, expires: rec.ExpiresAt, sha: rec.SHA256, skipped: rec.SkippedEntries,
 	})
 	s.rec.add("insert")
 	return nil
@@ -231,6 +270,73 @@ func (s *fakeStore) MarkBackupDeleted(_ context.Context, id string, at time.Time
 		}
 	}
 	return fmt.Errorf("no backup %s", id)
+}
+
+func (s *fakeStore) BackupsToVerify(_ context.Context, checkedBefore time.Time, limit int) ([]StoredBackup, error) {
+	var ps []*fakeBackup
+	for _, b := range s.backups {
+		if b.status == "present" && b.corruptAt.IsZero() && b.verifiedAt.Before(checkedBefore) {
+			ps = append(ps, b)
+		}
+	}
+	sort.SliceStable(ps, func(i, j int) bool {
+		if !ps[i].verifiedAt.Equal(ps[j].verifiedAt) {
+			return ps[i].verifiedAt.Before(ps[j].verifiedAt)
+		}
+		return ps[i].createdAt.Before(ps[j].createdAt)
+	})
+	var out []StoredBackup
+	for _, b := range ps {
+		if len(out) == limit {
+			break
+		}
+		out = append(out, StoredBackup{ID: b.id, ServerName: b.server, BackupRef: b.ref, SizeBytes: b.size, Reason: b.reason, SHA256: b.sha})
+	}
+	return out, nil
+}
+
+func (s *fakeStore) find(id string) (*fakeBackup, error) {
+	for _, b := range s.backups {
+		if b.id == id {
+			return b, nil
+		}
+	}
+	return nil, fmt.Errorf("no backup %s", id)
+}
+
+func (s *fakeStore) MarkBackupVerified(_ context.Context, id, sha string, at time.Time) error {
+	b, err := s.find(id)
+	if err != nil {
+		return err
+	}
+	b.verifiedAt = at
+	if b.sha == "" {
+		b.sha = sha
+	}
+	return nil
+}
+
+func (s *fakeStore) MarkBackupCorrupt(_ context.Context, id string, at time.Time) error {
+	b, err := s.find(id)
+	if err != nil {
+		return err
+	}
+	b.corruptAt = at
+	s.rec.add("corrupt")
+	return nil
+}
+
+func (s *fakeStore) LiveBackupRefs(context.Context) ([]string, error) {
+	if s.liveErr != nil {
+		return nil, s.liveErr
+	}
+	var out []string
+	for _, b := range s.backups {
+		if b.status != "deleted" {
+			out = append(out, b.ref)
+		}
+	}
+	return out, nil
 }
 
 func (s *fakeStore) Audit(_ context.Context, rec AuditRecord) error {
@@ -806,5 +912,148 @@ func TestListErrorAbortsBatch(t *testing.T) {
 	st.listErr = errors.New("db unreachable")
 	if _, err := r.RunOnce(context.Background()); err == nil {
 		t.Fatal("expected a hard error when listing servers fails")
+	}
+}
+
+// checking swaps the fixture's archiver for one that reads archives back and
+// sweeps.
+func checking(r *Reaper, ar *fakeArchiver) *checkingArchiver {
+	c := &checkingArchiver{fakeArchiver: ar, corrupt: map[string]bool{}}
+	r.Archiver = c
+	return c
+}
+
+// An archive left from an earlier run is read back before the world it holds is
+// deleted, and the read-back is recorded.
+func TestReapReadsBackReusedArchive(t *testing.T) {
+	r, st, cl, ar := newReaper(DefaultConfig(),
+		Candidate{Name: "kilo", OwnerID: "user-1", LastActiveAt: idleBy(20 * Day)})
+	ca := checking(r, ar)
+	st.backups = []*fakeBackup{{id: "old", server: "kilo", ref: "ref-old", reason: ReasonInactive, size: 5,
+		status: "present", createdAt: idleBy(Day), expires: testNow.Add(89 * Day), sha: "sha-ref-old"}}
+
+	sum := mustRun(t, r)
+	if sum.WorldsReaped != 1 || ar.archives != 0 || len(cl.deletedPVCs) != 1 {
+		t.Fatalf("summary %+v archives=%d deleted=%v: want the checked archive reused", sum, ar.archives, cl.deletedPVCs)
+	}
+	if st.rec.events[0] != "verify" || st.rec.events[1] != "deletePVC" {
+		t.Errorf("events = %v, want the read-back before the delete", st.rec.events)
+	}
+	if !st.backups[0].verifiedAt.Equal(testNow) || !reflect.DeepEqual(ca.verified, []string{"ref-old"}) {
+		t.Errorf("read-back not recorded: %+v", st.backups[0])
+	}
+}
+
+// A reused archive that no longer reads back is marked corrupt and the world,
+// still there, is archived afresh before it is deleted. The run reports it.
+func TestReapReplacesCorruptArchive(t *testing.T) {
+	r, st, cl, ar := newReaper(DefaultConfig(),
+		Candidate{Name: "lima", OwnerID: "user-1", LastActiveAt: idleBy(20 * Day)})
+	ca := checking(r, ar)
+	ca.corrupt["ref-rotten"] = true
+	st.backups = []*fakeBackup{{id: "rotten", server: "lima", ref: "ref-rotten", reason: ReasonInactive, size: 5,
+		status: "present", createdAt: idleBy(Day), expires: testNow.Add(89 * Day)}}
+
+	sum := mustRun(t, r)
+	if sum.WorldsReaped != 1 || sum.Corrupt != 1 || !sum.Failed() {
+		t.Fatalf("summary = %+v, want reaped with one corrupt archive reported", sum)
+	}
+	want := []string{"verify", "corrupt", "archive", "insert", "deletePVC"}
+	if !reflect.DeepEqual(st.rec.events[:len(want)], want) {
+		t.Errorf("events = %v, want %v first", st.rec.events, want)
+	}
+	if st.backups[0].corruptAt.IsZero() || len(st.backups) != 2 || st.backups[1].sha != "sha-ref-lima-1" {
+		t.Errorf("backups = %+v %+v", st.backups[0], st.backups[len(st.backups)-1])
+	}
+	if len(cl.deletedPVCs) != 1 {
+		t.Errorf("deleted = %v", cl.deletedPVCs)
+	}
+}
+
+// When the archive cannot be read back at all (the store is not mounted), the
+// world is kept and nothing is marked: the error says nothing about the archive.
+func TestReapKeepsWorldWhenReadBackFails(t *testing.T) {
+	r, st, cl, ar := newReaper(DefaultConfig(),
+		Candidate{Name: "mike", OwnerID: "user-1", LastActiveAt: idleBy(20 * Day)})
+	ca := checking(r, ar)
+	ca.verifyErr = errors.New("input/output error")
+	st.backups = []*fakeBackup{{id: "b", server: "mike", ref: "ref-b", reason: ReasonInactive, size: 5,
+		status: "present", createdAt: idleBy(Day), expires: testNow.Add(89 * Day)}}
+
+	sum := mustRun(t, r)
+	if sum.WorldsReaped != 0 || sum.Skipped != 1 || cl.deletePVCCalls != 0 || ar.archives != 0 {
+		t.Fatalf("summary %+v deletes=%d archives=%d: want the world kept", sum, cl.deletePVCCalls, ar.archives)
+	}
+	if !st.backups[0].corruptAt.IsZero() {
+		t.Error("an unreadable store marked the archive corrupt")
+	}
+}
+
+// The read-back pass takes VerifyPerRun archives, never-checked ones first, and
+// records what it finds; a corrupt one is marked and fails the run once.
+func TestVerifyPassSamplesArchives(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.VerifyPerRun = 2
+	r, st, _, ar := newReaper(cfg)
+	ca := checking(r, ar)
+	ca.corrupt["ref-c"] = true
+	st.backups = []*fakeBackup{
+		{id: "a", ref: "ref-a", status: "present", createdAt: idleBy(9 * Day), verifiedAt: idleBy(8 * Day), expires: testNow.Add(30 * Day)},
+		{id: "b", ref: "ref-b", status: "present", createdAt: idleBy(9 * Day), verifiedAt: idleBy(Day), expires: testNow.Add(30 * Day)},
+		{id: "c", ref: "ref-c", status: "present", createdAt: idleBy(5 * Day), expires: testNow.Add(30 * Day)},
+		{id: "d", ref: "ref-d", status: "deleted", createdAt: idleBy(5 * Day), expires: testNow.Add(30 * Day)},
+	}
+
+	sum := mustRun(t, r)
+	if !reflect.DeepEqual(ca.verified, []string{"ref-c", "ref-a"}) {
+		t.Errorf("read back %v, want [ref-c ref-a]", ca.verified)
+	}
+	if sum.Verified != 1 || sum.Corrupt != 1 || !sum.Failed() {
+		t.Errorf("summary = %+v", sum)
+	}
+	if st.backups[2].corruptAt.IsZero() || !st.backups[0].verifiedAt.Equal(testNow) || st.backups[0].sha != "sha-ref-a" {
+		t.Errorf("outcomes not recorded: %+v %+v", st.backups[0], st.backups[2])
+	}
+
+	// The next run skips the corrupt one and what was checked within
+	// VerifyEvery; a week on, b and a are due again, b first.
+	ca.verified = nil
+	if sum := mustRun(t, r); sum.Corrupt != 0 || len(ca.verified) != 0 {
+		t.Errorf("second run read back %v (%+v), want nothing", ca.verified, sum)
+	}
+	r.Now = func() time.Time { return testNow.Add(7*Day + time.Hour) }
+	if mustRun(t, r); !reflect.DeepEqual(ca.verified, []string{"ref-b", "ref-a"}) {
+		t.Errorf("a week later read back %v, want [ref-b ref-a]", ca.verified)
+	}
+}
+
+// The sweep claims every archive a backup records, removes leftovers past
+// PartialAfter and orphans past the retention, and never runs without the list
+// of recorded archives.
+func TestSweepPass(t *testing.T) {
+	r, st, _, ar := newReaper(DefaultConfig())
+	ca := checking(r, ar)
+	ca.sweepRemoved = []string{"/archives/.x-1.tar.gz.partial"}
+	ca.sweepOrphaned = []string{"/archives/x-2.tar.gz"}
+	st.backups = []*fakeBackup{
+		{id: "a", ref: "ref-a", status: "present", expires: testNow.Add(Day), verifiedAt: testNow},
+		{id: "d", ref: "ref-d", status: "deleted", expires: testNow.Add(Day)},
+	}
+	sum := mustRun(t, r)
+	if sum.Swept != 1 || sum.OrphanArchives != 1 || sum.Failed() {
+		t.Errorf("summary = %+v", sum)
+	}
+	if !ca.sweepLive("ref-a") || ca.sweepLive("ref-d") {
+		t.Error("sweep did not get the recorded archives as live")
+	}
+	cfg := DefaultConfig()
+	if want := []time.Time{testNow.Add(-cfg.PartialAfter), testNow.Add(-cfg.Retention)}; !reflect.DeepEqual(ca.sweepCutoffs, want) {
+		t.Errorf("cutoffs = %v, want %v", ca.sweepCutoffs, want)
+	}
+
+	ca.sweepLive = nil
+	st.liveErr = errors.New("db down")
+	if sum := mustRun(t, r); !sum.SweepFailed || ca.sweepLive != nil {
+		t.Errorf("sweep ran without the recorded archives: %+v", sum)
 	}
 }

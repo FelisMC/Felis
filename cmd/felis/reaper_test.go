@@ -30,6 +30,10 @@ func TestReportReaperRunFailsTheJob(t *testing.T) {
 		{"server failed", reaper.Summary{Evaluated: 3, Skipped: 1}, 1},
 		{"store full", reaper.Summary{Evaluated: 3, Skipped: 1, StoreFull: 1}, 1},
 		{"expiry failed", reaper.Summary{Evaluated: 3, ExpireFailed: 2}, 1},
+		{"corrupt archive", reaper.Summary{Evaluated: 3, Verified: 4, Corrupt: 1}, 1},
+		{"read-back failed", reaper.Summary{Evaluated: 3, VerifyFailed: 1}, 1},
+		{"sweep failed", reaper.Summary{Evaluated: 3, SweepFailed: true}, 1},
+		{"orphans kept", reaper.Summary{Evaluated: 3, Swept: 2, OrphanArchives: 1}, 0},
 	} {
 		var out, errb bytes.Buffer
 		if got := reportReaperRun(tc.sum, &out, &errb); got != tc.want {

@@ -37,10 +37,10 @@ func (c *reclaimCluster) Stop(context.Context, string) error { return nil }
 
 type reclaimArchiver struct{ archived []string }
 
-func (a *reclaimArchiver) Archive(_ context.Context, server, _ string) (backup.ArchiveRef, int64, error) {
+func (a *reclaimArchiver) Archive(_ context.Context, server, _ string) (backup.Archived, error) {
 	ref := "/archives/" + server + "-new.tar.gz"
 	a.archived = append(a.archived, ref)
-	return backup.ArchiveRef(ref), 42, nil
+	return backup.Archived{Ref: backup.ArchiveRef(ref), Size: 42}, nil
 }
 
 func (a *reclaimArchiver) Restore(context.Context, backup.ArchiveRef, string) error { return nil }
@@ -242,5 +242,148 @@ func TestManualBackupRationing(t *testing.T) {
 	}
 	if at, err := repo.LastBackupRequest(ctx, name, time.Now().Add(time.Minute)); err != nil || !at.IsZero() {
 		t.Fatalf("a request before since still counted: (%v, %v)", at, err)
+	}
+}
+
+// TestBackupReadBack pins the SQL behind data-durability-7/15/16: the digest a
+// backup is written with survives a later read-back, a corrupt archive is no
+// longer offered for reuse, restore or read-back but stays listed, and it is
+// the first a keep-N prune removes.
+func TestBackupReadBack(t *testing.T) {
+	ctx := context.Background()
+	st := reaper.NewPGStore(db)
+	name := "readback-" + suffix(t)
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO servers (name, cached_cpu_milli, cached_memory_mb, cached_storage_mb) VALUES ($1, 100, 128, 1)`,
+		name); err != nil {
+		t.Fatalf("seed server: %v", err)
+	}
+	now := time.Now()
+	sfx := suffix(t)
+	older, newer := "bk-old-"+sfx, "bk-new-"+sfx
+	for _, r := range []reaper.BackupRecord{
+		{ID: older, ServerName: name, BackupRef: "/archives/" + older + ".tar.gz", SizeBytes: 10,
+			Reason: "inactive_15d", ExpiresAt: now.Add(90 * reaper.Day), SHA256: "aa", SkippedEntries: 2},
+		{ID: newer, ServerName: name, BackupRef: "/archives/" + newer + ".tar.gz", SizeBytes: 10,
+			Reason: "inactive_15d", ExpiresAt: now.Add(90 * reaper.Day)},
+	} {
+		if err := st.InsertBackup(ctx, r); err != nil {
+			t.Fatalf("InsertBackup %s: %v", r.ID, err)
+		}
+	}
+	if _, err := db.ExecContext(ctx,
+		`UPDATE world_backups SET created_at = CASE id WHEN $1 THEN $3::timestamptz ELSE $4::timestamptz END WHERE id IN ($1, $2)`,
+		older, newer, now.Add(-2*time.Hour), now.Add(-time.Hour)); err != nil {
+		t.Fatalf("age backups: %v", err)
+	}
+
+	if f, ok, err := st.FreshBackup(ctx, name, now.Add(-reaper.Day)); err != nil || !ok || f.ID != newer || f.SHA256 != "" {
+		t.Fatalf("FreshBackup = (%+v, %v, %v); want %s with no digest yet", f, ok, err, newer)
+	}
+
+	// A read-back fills in a missing digest and never rewrites a recorded one.
+	checked := now.Add(-time.Minute)
+	for id, sum := range map[string]string{newer: "bb", older: "zz"} {
+		if err := st.MarkBackupVerified(ctx, id, sum, checked); err != nil {
+			t.Fatalf("MarkBackupVerified %s: %v", id, err)
+		}
+	}
+	due := func(before time.Time) map[string]string {
+		t.Helper()
+		bs, err := st.BackupsToVerify(ctx, before, 100000)
+		if err != nil {
+			t.Fatalf("BackupsToVerify: %v", err)
+		}
+		out := map[string]string{}
+		for _, b := range bs {
+			if b.ServerName == name {
+				out[b.ID] = b.SHA256
+			}
+		}
+		return out
+	}
+	if got := due(checked.Add(-time.Second)); len(got) != 0 {
+		t.Fatalf("due before their read-back = %v; want none", got)
+	}
+	if got := due(checked.Add(time.Second)); got[newer] != "bb" || got[older] != "aa" || len(got) != 2 {
+		t.Fatalf("due after their read-back = %v; want %s=bb and %s=aa", got, newer, older)
+	}
+
+	corruptAt := now.Add(-30 * time.Second)
+	if err := st.MarkBackupCorrupt(ctx, newer, corruptAt); err != nil {
+		t.Fatalf("MarkBackupCorrupt: %v", err)
+	}
+	if err := st.MarkBackupCorrupt(ctx, newer, now); err != nil {
+		t.Fatalf("MarkBackupCorrupt again: %v", err)
+	}
+	var first time.Time
+	if err := db.QueryRowContext(ctx, `SELECT corrupt_at FROM world_backups WHERE id = $1`, newer).Scan(&first); err != nil ||
+		!first.Equal(corruptAt.Truncate(time.Microsecond)) {
+		t.Fatalf("corrupt_at = (%v, %v); want the first finding %v kept", first, err, corruptAt)
+	}
+
+	if f, ok, err := st.FreshBackup(ctx, name, now.Add(-reaper.Day)); err != nil || !ok || f.ID != older || f.SHA256 != "aa" {
+		t.Fatalf("FreshBackup after corruption = (%+v, %v, %v); want the intact %s", f, ok, err, older)
+	}
+	if got := due(now.Add(reaper.Day)); len(got) != 1 || got[older] == "" {
+		t.Fatalf("due after corruption = %v; want only %s", got, older)
+	}
+	if b, err := repo.LatestBackup(ctx, name); err != nil || b.ID != older {
+		t.Fatalf("LatestBackup = (%+v, %v); want %s", b, err, older)
+	}
+	if b, err := repo.BackupByID(ctx, newer); err != nil || !b.Corrupt {
+		t.Fatalf("BackupByID(corrupt) = (%+v, %v); want Corrupt", b, err)
+	}
+	if b, err := repo.BackupByID(ctx, older); err != nil || b.Corrupt {
+		t.Fatalf("BackupByID(intact) = (%+v, %v); want not Corrupt", b, err)
+	}
+
+	views, err := repo.AllBackups(ctx)
+	if err != nil {
+		t.Fatalf("AllBackups: %v", err)
+	}
+	seen := 0
+	for _, v := range views {
+		switch v.ID {
+		case newer:
+			seen++
+			if !v.Corrupt || v.VerifiedAt == nil || v.SkippedEntries != 0 {
+				t.Fatalf("listed corrupt backup = %+v; want corrupt, verified_at set", v)
+			}
+		case older:
+			seen++
+			if v.Corrupt || v.VerifiedAt == nil || v.SkippedEntries != 2 {
+				t.Fatalf("listed intact backup = %+v; want verified_at set and 2 skipped entries", v)
+			}
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("AllBackups listed %d of the 2 backups", seen)
+	}
+
+	if excess, err := st.ExcessBackups(ctx, name, "inactive_15d", 1, ""); err != nil || len(excess) != 1 || excess[0].ID != newer {
+		t.Fatalf("ExcessBackups(keep 1) = (%+v, %v); want the corrupt %s pruned first", excess, err, newer)
+	}
+
+	live := func() map[string]bool {
+		t.Helper()
+		refs, err := st.LiveBackupRefs(ctx)
+		if err != nil {
+			t.Fatalf("LiveBackupRefs: %v", err)
+		}
+		out := map[string]bool{}
+		for _, r := range refs {
+			out[r] = true
+		}
+		return out
+	}
+	if l := live(); !l["/archives/"+older+".tar.gz"] || !l["/archives/"+newer+".tar.gz"] {
+		t.Fatalf("live refs miss a present backup")
+	}
+	if err := st.MarkBackupDeleted(ctx, newer, now); err != nil {
+		t.Fatalf("MarkBackupDeleted: %v", err)
+	}
+	if l := live(); l["/archives/"+newer+".tar.gz"] || !l["/archives/"+older+".tar.gz"] {
+		t.Fatalf("live refs after deleting %s still claim its archive", newer)
 	}
 }

@@ -414,6 +414,29 @@ func TestRestoreBackup(t *testing.T) {
 		}
 	})
 
+	t.Run("restore by backup_id that failed a read-back -> 409 backup_corrupt", func(t *testing.T) {
+		api, repo, _, restorer := mkTwo()
+		repo.backups[1].view.Corrupt = true
+		api.External = staticExternal{p: owner}
+		w := do(api.ExternalHandler(), "POST", path, `{"backup_id":"bk2"}`, jsonHeaders)
+		if w.Code != http.StatusConflict || decodeErr(t, w) != "backup_corrupt" {
+			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
+		}
+		if restorer.calls != 0 {
+			t.Fatal("a corrupt backup reached the restorer")
+		}
+	})
+
+	t.Run("no body skips a latest backup that failed a read-back", func(t *testing.T) {
+		api, repo, _, restorer := mkTwo()
+		repo.backups[0].view.Corrupt = true
+		api.External = staticExternal{p: owner}
+		w := do(api.ExternalHandler(), "POST", path, "", nil)
+		if w.Code != http.StatusAccepted || restorer.gotRef != "ref-bk2" {
+			t.Fatalf("code = %d ref %q, want 202 restoring the newest intact backup", w.Code, restorer.gotRef)
+		}
+	})
+
 	t.Run("no body -> falls back to LatestBackup (backward compat)", func(t *testing.T) {
 		api, _, _, restorer := mkTwo()
 		api.External = staticExternal{p: owner}

@@ -53,13 +53,14 @@ func (s *PGStore) FreshBackup(ctx context.Context, server string, since time.Tim
 	// Only the reaper's own archives count, and only those taken since the
 	// current owner claimed the server: a manual backup may predate a panel edit
 	// that did not move last_active_at, and an archive from before the claim is
-	// the previous owner's world.
-	const q = `SELECT b.backup_ref, b.offsite_at IS NOT NULL FROM world_backups b
+	// the previous owner's world. One found corrupt is never reused.
+	const q = `SELECT b.id, b.backup_ref, COALESCE(b.sha256, ''), b.offsite_at IS NOT NULL FROM world_backups b
 		WHERE b.server_name = $1 AND b.status = 'present' AND b.reason = 'inactive_15d' AND b.created_at >= $2
+		  AND b.corrupt_at IS NULL
 		  AND b.created_at >= COALESCE((SELECT s.claimed_at FROM servers s WHERE s.name = $1 AND s.deleted_at IS NULL), '-infinity')
 		ORDER BY b.offsite_at IS NOT NULL DESC, b.created_at DESC LIMIT 1`
 	var f Fresh
-	switch err := s.db.QueryRowContext(ctx, q, server, since).Scan(&f.Ref, &f.Offsite); {
+	switch err := s.db.QueryRowContext(ctx, q, server, since).Scan(&f.ID, &f.Ref, &f.SHA256, &f.Offsite); {
 	case err == sql.ErrNoRows:
 		return Fresh{}, false, nil
 	case err != nil:
@@ -70,10 +71,11 @@ func (s *PGStore) FreshBackup(ctx context.Context, server string, since time.Tim
 
 func (s *PGStore) InsertBackup(ctx context.Context, rec BackupRecord) error {
 	const q = `INSERT INTO world_backups
-		(id, server_name, former_owner, backup_ref, size_bytes, reason, status, created_at, expires_at)
-		VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, 'present', now(), $7)`
+		(id, server_name, former_owner, backup_ref, size_bytes, reason, status, created_at, expires_at, sha256, skipped_entries)
+		VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, 'present', now(), $7, NULLIF($8, ''), $9)`
 	_, err := s.db.ExecContext(ctx, q,
-		rec.ID, rec.ServerName, rec.FormerOwner, rec.BackupRef, rec.SizeBytes, rec.Reason, rec.ExpiresAt)
+		rec.ID, rec.ServerName, rec.FormerOwner, rec.BackupRef, rec.SizeBytes, rec.Reason, rec.ExpiresAt,
+		rec.SHA256, rec.SkippedEntries)
 	return err
 }
 
@@ -107,7 +109,7 @@ func (s *PGStore) PresentBackupBytes(ctx context.Context) (int64, error) {
 }
 
 func (s *PGStore) EvictableBackups(ctx context.Context) ([]StoredBackup, error) {
-	const q = `SELECT id, server_name, backup_ref, size_bytes, reason FROM world_backups
+	const q = `SELECT id, server_name, backup_ref, size_bytes, reason, COALESCE(sha256, '') FROM world_backups
 		WHERE status = 'present' AND (reason <> 'inactive_15d' OR offsite_at IS NOT NULL)
 		ORDER BY reason = 'inactive_15d', created_at ASC`
 	return s.queryBackups(ctx, q)
@@ -118,9 +120,9 @@ func (s *PGStore) EvictableBackups(ctx context.Context) ([]StoredBackup, error) 
 // set, is a backup id left out of the list whatever its age (the one a chained
 // restore is about to extract).
 func (s *PGStore) ExcessBackups(ctx context.Context, server, reason string, keep int, protect string) ([]StoredBackup, error) {
-	const q = `SELECT id, server_name, backup_ref, size_bytes, reason FROM world_backups
+	const q = `SELECT id, server_name, backup_ref, size_bytes, reason, COALESCE(sha256, '') FROM world_backups
 		WHERE server_name = $1 AND status = 'present' AND reason = $2 AND id <> $4
-		ORDER BY created_at DESC OFFSET $3`
+		ORDER BY corrupt_at IS NULL DESC, created_at DESC OFFSET $3`
 	out, err := s.queryBackups(ctx, q, server, reason, keep, protect)
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
@@ -129,7 +131,7 @@ func (s *PGStore) ExcessBackups(ctx context.Context, server, reason string, keep
 }
 
 func (s *PGStore) ListExpiredBackups(ctx context.Context, now time.Time) ([]StoredBackup, error) {
-	const q = `SELECT id, server_name, backup_ref, size_bytes, reason FROM world_backups
+	const q = `SELECT id, server_name, backup_ref, size_bytes, reason, COALESCE(sha256, '') FROM world_backups
 		WHERE status = 'present' AND expires_at < $1 ORDER BY expires_at ASC`
 	return s.queryBackups(ctx, q, now)
 }
@@ -143,10 +145,47 @@ func (s *PGStore) queryBackups(ctx context.Context, q string, args ...any) ([]St
 	var out []StoredBackup
 	for rows.Next() {
 		var b StoredBackup
-		if err := rows.Scan(&b.ID, &b.ServerName, &b.BackupRef, &b.SizeBytes, &b.Reason); err != nil {
+		if err := rows.Scan(&b.ID, &b.ServerName, &b.BackupRef, &b.SizeBytes, &b.Reason, &b.SHA256); err != nil {
 			return nil, err
 		}
 		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+func (s *PGStore) BackupsToVerify(ctx context.Context, checkedBefore time.Time, limit int) ([]StoredBackup, error) {
+	const q = `SELECT id, server_name, backup_ref, size_bytes, reason, COALESCE(sha256, '') FROM world_backups
+		WHERE status = 'present' AND corrupt_at IS NULL AND (verified_at IS NULL OR verified_at < $1)
+		ORDER BY verified_at NULLS FIRST, created_at LIMIT $2`
+	return s.queryBackups(ctx, q, checkedBefore, limit)
+}
+
+func (s *PGStore) MarkBackupVerified(ctx context.Context, id, sha256 string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE world_backups SET verified_at = $3, sha256 = COALESCE(sha256, NULLIF($2, '')) WHERE id = $1`,
+		id, sha256, at)
+	return err
+}
+
+func (s *PGStore) MarkBackupCorrupt(ctx context.Context, id string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE world_backups SET corrupt_at = $2 WHERE id = $1 AND corrupt_at IS NULL`, id, at)
+	return err
+}
+
+func (s *PGStore) LiveBackupRefs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT backup_ref FROM world_backups WHERE status <> 'deleted'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var ref string
+		if err := rows.Scan(&ref); err != nil {
+			return nil, err
+		}
+		out = append(out, ref)
 	}
 	return out, rows.Err()
 }
