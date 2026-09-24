@@ -214,6 +214,12 @@ function initialState(): MockState {
         playersOnline: 12,
         playersMax: 20,
         autostartPolicy: "public",
+        javaMemory: "4Gi",
+        storageSize: "20Gi",
+        // Pinned the way felis-api stores it: the tag it was created from plus the
+        // digest that tag named then.
+        image:
+          "registry.felis.svc:5000/paper-1.21:demo@sha256:3b637d68843f53750a2e3c2d29c0346b6f81ffd22db2902b80bd5048ee04cc09",
       }),
       server("lobby", "Hub Lobby", "Running", "linked", {
         playersOnline: 28,
