@@ -3,6 +3,7 @@ package platform
 import (
 	"bytes"
 	"fmt"
+	"maps"
 
 	"felis.lolicon.best/internal/build"
 	"felis.lolicon.best/internal/restore"
@@ -51,7 +52,11 @@ func Objects(p Params) []Object {
 	// namespaceSelectors match on. (K8s ≥1.21 adds this label automatically, but
 	// rendering it makes the bundle self-contained and the selectors provable.)
 	for _, ns := range distinctNamespaces(p) {
-		objs = append(objs, namespaceObject(ns))
+		nsObj := namespaceObject(ns)
+		if ns == p.MinecraftNamespace && minecraftNamespaceIsOwn(p) {
+			maps.Copy(nsObj.Labels, minecraftPodSecurityLabels)
+		}
+		objs = append(objs, nsObj)
 	}
 
 	// Control-plane RBAC: SAs, then Roles, then RoleBindings.
@@ -141,6 +146,39 @@ func distinctNamespaces(p Params) []string {
 		out = append(out, ns)
 	}
 	return out
+}
+
+// minecraftPodSecurityLabels put the minecraft namespace under the PodSecurity
+// admission baseline profile. Everything Felis runs there fits it: game servers run
+// as naming.GameUID with every capability dropped, their prepare-data init and the
+// file/backup/restore Jobs run as root holding at most CHOWN and DAC_OVERRIDE (both
+// on baseline's allow-list), and the reaper reaches the node's worlds-root through a
+// static PV rather than an inline hostPath. What baseline then refuses — privileged
+// containers, host namespaces and ports, inline hostPath, extra capabilities — is
+// exactly what a pod smuggled in through any other write path to this namespace
+// would need to reach the node.
+//
+// warn repeats the enforced level so a StatefulSet or Job that would render a
+// refused pod reports it at apply time, instead of the controller failing to create
+// pods quietly. audit records restricted-profile violations for the path toward
+// restricted (only the root prepare-data init and root Jobs stand in its way).
+var minecraftPodSecurityLabels = map[string]string{
+	"pod-security.kubernetes.io/enforce":         "baseline",
+	"pod-security.kubernetes.io/enforce-version": "latest",
+	"pod-security.kubernetes.io/warn":            "baseline",
+	"pod-security.kubernetes.io/warn-version":    "latest",
+	"pod-security.kubernetes.io/audit":           "restricted",
+	"pod-security.kubernetes.io/audit-version":   "latest",
+}
+
+// minecraftNamespaceIsOwn reports whether the minecraft namespace is shared with
+// no other component. The registry (hostPort) and the build Jobs do not fit the
+// baseline profile, so the labels go on only when neither lives there, and the
+// control plane's namespace is never labelled from here.
+func minecraftNamespaceIsOwn(p Params) bool {
+	return p.MinecraftNamespace != p.ControlNamespace &&
+		p.MinecraftNamespace != p.BuildNamespace &&
+		p.MinecraftNamespace != p.RegistryNamespace
 }
 
 // namespaceObject renders a Namespace carrying the immutable name label the

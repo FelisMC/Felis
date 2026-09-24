@@ -2496,18 +2496,10 @@ deploy_bundle() {
   # always travels with it because it must equal the [archive] local_path written above.
   if [ -n "$FELIS_WORLDS_HOST_PATH" ]; then
     log "retention enabled: the daily reaper will read worlds from ${FELIS_WORLDS_HOST_PATH}"
-    # The reaper pod runs as the tree's non-root uid (1000, platform.workloads.nonRootUID)
-    # and must traverse into the per-volume directories under this root. k3s's own storage
-    # root ships 0700 root:root, so grant traverse — an ACL entry when the host has setfacl,
-    # otherwise the equivalent o+x. Traverse only: no listing either way, and the per-volume
-    # directories themselves are world-accessible (local-path creates them 0777).
-    if [ -d "$FELIS_WORLDS_HOST_PATH" ]; then
-      if command -v setfacl >/dev/null 2>&1; then
-        setfacl -m u:1000:x "$FELIS_WORLDS_HOST_PATH" || chmod o+x "$FELIS_WORLDS_HOST_PATH"
-      else
-        chmod o+x "$FELIS_WORLDS_HOST_PATH"
-      fi
-    else
+    # The reaper reads this root as root with DAC_OVERRIDE (platform.reaperPodSecurityContext)
+    # through a static hostPath PV, so the host directory keeps k3s's own 0700 root:root and
+    # needs no extra grant. It must exist, though: the PV declares type Directory.
+    if [ ! -d "$FELIS_WORLDS_HOST_PATH" ]; then
       warn "worlds root ${FELIS_WORLDS_HOST_PATH} does not exist yet; the reaper CronJob cannot start until it does (hostPath type Directory)"
     fi
     manifest_args+=(--worlds-host-path "$FELIS_WORLDS_HOST_PATH" --archive-local-path "$FELIS_ARCHIVE_LOCAL_PATH")

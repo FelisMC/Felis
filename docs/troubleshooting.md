@@ -91,6 +91,26 @@ kubectl describe pod <pod>     # look at Events + container State
   Fix the StorageClass name or capacity. [INTEGRATION-ONLY.]
 - **Container crash-looping before the readiness port opens** → check container
   logs; this is a backend/entrypoint problem, not a Felis problem.
+- **Stuck in `Init:` or `AccessDeniedException` / `Permission denied` in the
+  log** → the pod runs as uid/gid **1000** (`naming.GameUID`) with every
+  capability dropped, whatever `USER` the image declares. Before the server
+  starts, the `prepare-data` initContainer (`felis init-volume`, root with only
+  `CHOWN` + `DAC_OVERRIDE`) hands every world entry not yet owned by 1000:1000
+  to that uid, so a world written by an older root-run release or extracted by a
+  restore Job is fixed on its next start:
+  `kubectl logs <pod> -c prepare-data` prints how many entries it changed and
+  lists up to 20 it could not. An image that writes outside `/data` and `/tmp`
+  (a directory baked into the image as root) cannot run as uid 1000; rebuild it
+  to keep its state under `/data`. [GO-TESTED: `TestBuildStatefulSetRunsGameAsNonRoot`,
+  `TestChownTreeHandsOverMismatchedEntries`; INTEGRATION-ONLY for the walk on a
+  live volume.]
+- **`FailedCreate … violates PodSecurity "baseline"`** on the StatefulSet or a
+  Job → the minecraft namespace enforces the PodSecurity `baseline` profile
+  (`pod-security.kubernetes.io/enforce=baseline`, set by the install bundle).
+  Everything Felis renders there fits it; a pod that is refused was edited or
+  created outside Felis (hostPath, hostPort, privileged, extra capabilities).
+  `kubectl get events -n minecraft --field-selector reason=FailedCreate` names
+  the field. [GO-TESTED: `TestObjects_MinecraftNamespaceEnforcesBaseline`.]
 
 ### 1b. `RconSecretUnavailable` — RCON secret missing or malformed
 
@@ -681,7 +701,13 @@ store paths are [INTEGRATION-ONLY].
 
 ### Where worlds are read from (hostPath resolution)
 
-The CronJob mounts `--worlds-host-path` read-only at `/worlds`; the resolver
+The CronJob mounts `--worlds-host-path` read-only at `/worlds` through a static
+PersistentVolume (`felis-worlds-root-<digest>`, hostPath type `Directory`,
+`Retain`, pre-bound to the same-named PVC in the minecraft namespace), since the
+namespace's PodSecurity baseline refuses an inline hostPath in any pod. A
+re-install with a different worlds root or `--reaper-node` renders a new pair
+under a new digest; the old PV/PVC pair is left behind unused and can be
+deleted by hand (Retain: deleting it never touches the directory). The resolver
 runs `cmd/felis/reaper.resolveWorldDir`: it looks for `<root>/<pvc>`, then for
 the stock local-path directory `<root>/<pv-name>_<ns>_<pvc-name>` derived from
 the live PVC's `spec.volumeName` (never a glob — a leftover directory of a
@@ -691,19 +717,18 @@ supported way to enable retention on a stock install. Two deployment facts the
 resolver cannot fix:
 
 - **Permissions.** The reaper Pod runs as **root** and carries `DAC_OVERRIDE`:
-  worlds are written by the game image's own UID (root for every Paper image we
-  ship), and Paper saves `level.dat` mode-0600, so any fixed non-root identity
-  (the previous uid-1000 convention, and the ACL setup that went with it) could
-  neither walk the tree nor read the files — every archive failed
-  `open …/level.dat: permission denied` and the same defect failed on-demand
-  backups/restores. Root is the same identity the game container itself runs as
-  (see the operator's forwarding-init note); `DAC_OVERRIDE` extends the archive
-  to game images with a different UID. If a world is still **preserved** while a
-  reap was expected, it is now a different cause: check the run's ERROR logs for
-  the resolver's `lstat` messages before suspecting permissions.
+  k3s's storage root is `0700 root:root`, worlds are written by the game uid
+  (1000) — or by root, for a world an older release wrote — and Paper saves
+  `level.dat` mode-0600, so a fixed non-root identity (the previous uid-1000
+  convention, and the ACL setup that went with it) could neither walk the tree
+  nor read the files — every archive failed `open …/level.dat: permission
+  denied`. The installer no longer grants uid 1000 any access to the storage
+  root: that uid is now the game servers'. If a world is still **preserved**
+  while a reap was expected, it is a different cause: check the run's ERROR
+  logs for the resolver's `lstat` messages before suspecting permissions.
 - **Node placement.** Multi-node clusters: the world's directory exists only on
-  the node holding its volume, and the CronJob sets no `nodeSelector`, so add
-  one (single-node starters are pinned implicitly).
+  the node holding its volume, so pass `--reaper-node`; it pins both the
+  CronJob's pod and the PV (single-node starters are pinned implicitly).
 
 ---
 

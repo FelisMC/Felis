@@ -862,14 +862,13 @@ func TestReaperCronJob_Shape(t *testing.T) {
 		t.Error("config must be mounted read-only")
 	}
 
-	// worlds: node hostPath at WorldsHostPath, type Directory, mounted READ-ONLY at
-	// /worlds — the reaper only reads worlds to tar them (deletion is a PVC API call).
+	// worlds: the static worlds-root claim (never an inline hostPath, which the
+	// namespace's PodSecurity baseline refuses), mounted READ-ONLY at /worlds — the
+	// reaper only reads worlds to tar them (deletion is a PVC API call).
 	wVol := volumeByName(ps.Volumes, worldsVolume)
-	if wVol == nil || wVol.HostPath == nil || wVol.HostPath.Path != p.WorldsHostPath {
-		t.Errorf("worlds volume must be hostPath %q, got %+v", p.WorldsHostPath, wVol)
-	}
-	if wVol != nil && (wVol.HostPath == nil || wVol.HostPath.Type == nil || *wVol.HostPath.Type != corev1.HostPathDirectory) {
-		t.Error("worlds hostPath must be type Directory (fail loud if the dir is absent)")
+	if wVol == nil || wVol.HostPath != nil || wVol.PersistentVolumeClaim == nil ||
+		wVol.PersistentVolumeClaim.ClaimName != worldsRootName(p) || !wVol.PersistentVolumeClaim.ReadOnly {
+		t.Errorf("worlds volume must be the read-only claim %q, got %+v", worldsRootName(p), wVol)
 	}
 	if m := mountByName(c.VolumeMounts, worldsVolume); m == nil || m.MountPath != worldsMountPath || !m.ReadOnly {
 		t.Errorf("worlds must be mounted read-only at %s, got %+v", worldsMountPath, m)
@@ -947,4 +946,71 @@ func containsSeq(seq, sub []string) bool {
 		}
 	}
 	return true
+}
+
+// TestWorldsRootStaticPV pins the pair that replaced the reaper's inline hostPath:
+// the PV names the node directory (type Directory, so a missing root fails loud),
+// is kept by Retain, sits outside every StorageClass and is reserved for exactly
+// its PVC, which in turn names it back. Both render only alongside the reaper.
+func TestWorldsRootStaticPV(t *testing.T) {
+	p := reaperParams()
+	var pv *corev1.PersistentVolume
+	var pvc *corev1.PersistentVolumeClaim
+	for _, obj := range Workloads(p) {
+		switch o := obj.(type) {
+		case *corev1.PersistentVolume:
+			pv = o
+		case *corev1.PersistentVolumeClaim:
+			if o.Name == worldsRootName(p) {
+				pvc = o
+			}
+		}
+	}
+	if pv == nil || pvc == nil {
+		t.Fatalf("reaper-enabled bundle must render the worlds-root PV and PVC (pv=%v pvc=%v)", pv != nil, pvc != nil)
+	}
+	hp := pv.Spec.HostPath
+	if hp == nil || hp.Path != p.WorldsHostPath || hp.Type == nil || *hp.Type != corev1.HostPathDirectory {
+		t.Errorf("PV hostPath = %+v, want %s type Directory", hp, p.WorldsHostPath)
+	}
+	if pv.Spec.PersistentVolumeReclaimPolicy != corev1.PersistentVolumeReclaimRetain {
+		t.Errorf("PV reclaim policy = %q, want Retain", pv.Spec.PersistentVolumeReclaimPolicy)
+	}
+	if pv.Spec.StorageClassName != "" || pvc.Spec.StorageClassName == nil || *pvc.Spec.StorageClassName != "" {
+		t.Error("PV and PVC must both opt out of every StorageClass")
+	}
+	if ref := pv.Spec.ClaimRef; ref == nil || ref.Namespace != p.withDefaults().MinecraftNamespace || ref.Name != pvc.Name {
+		t.Errorf("PV claimRef = %+v, want %s/%s", ref, p.withDefaults().MinecraftNamespace, pvc.Name)
+	}
+	if pvc.Spec.VolumeName != pv.Name || pvc.Namespace != p.withDefaults().MinecraftNamespace {
+		t.Errorf("PVC %s/%s volumeName = %q, want %q", pvc.Namespace, pvc.Name, pvc.Spec.VolumeName, pv.Name)
+	}
+	if pv.Spec.NodeAffinity != nil {
+		t.Error("no ReaperNode: the PV must carry no node affinity")
+	}
+
+	// A pinned reaper pins its PV to the same node, and a moved root gets a new name
+	// because hostPath and node affinity are immutable on a live PV.
+	pinned := reaperParams()
+	pinned.ReaperNode = "node-a"
+	ppv := worldsRootPV(pinned)
+	terms := ppv.Spec.NodeAffinity
+	if terms == nil || terms.Required == nil || len(terms.Required.NodeSelectorTerms) != 1 ||
+		terms.Required.NodeSelectorTerms[0].MatchExpressions[0].Values[0] != "node-a" {
+		t.Errorf("pinned PV node affinity = %+v, want kubernetes.io/hostname in [node-a]", terms)
+	}
+	if ppv.Name == pv.Name {
+		t.Error("a different node pin must render a differently named PV")
+	}
+	moved := reaperParams()
+	moved.WorldsHostPath = "/srv/worlds"
+	if worldsRootName(moved) == pv.Name {
+		t.Error("a different worlds-root must render a differently named PV")
+	}
+
+	for _, obj := range Workloads(testParams()) {
+		if _, ok := obj.(*corev1.PersistentVolume); ok {
+			t.Error("without the reaper trio no PV may render")
+		}
+	}
 }

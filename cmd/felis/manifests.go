@@ -124,8 +124,8 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 			"multi-node cluster you MUST pass --reaper-node <name> (or add a nodeSelector) for the node holding the " +
 			"worlds, or the reaper may schedule where the hostPath is empty"
 		if *reaperNode != "" {
-			pin = fmt.Sprintf("the CronJob is pinned to node %q via kubernetes.io/hostname — keep this pointed at the "+
-				"node that actually holds the world volumes", *reaperNode)
+			pin = fmt.Sprintf("the CronJob and its worlds-root PV are pinned to node %q via kubernetes.io/hostname — "+
+				"keep this pointed at the node that actually holds the world volumes", *reaperNode)
 		}
 		fmt.Fprintf(stderr, "felis manifests: note: rendering the retention reaper CronJob (worlds hostPath %q). "+
 			"These points are NOT verified here:\n"+

@@ -670,6 +670,7 @@ run_bundle_flags() { # backup-pvc worlds-host-path
     kube() { cat; }
     myManifests() { printf "%s\n" "$@"; }
     setfacl() { printf "SETFACL %s\n" "$*"; }
+    chmod() { printf "CHMOD %s\n" "$*"; }
     node_global_cidrs() { printf "203.0.113.7/32\n2001:db8::7/128\n"; }
     run_bundle() {
     '"$mblock"'
@@ -723,11 +724,14 @@ missing="/tmp/felis-worlds-root-must-not-exist-$$"
 out="$(run_bundle_flags felis-backups "$missing")"
 expect "a missing worlds root is warned about, not silently skipped" "WARN: worlds root $missing does not exist yet" "$out"
 
-# The reaper pod is non-root (uid 1000) and k3s ships the storage root 0700 root:root, so
-# the installer must grant traverse or every archive dies with permission denied.
+# The reaper reads the root as root with DAC_OVERRIDE through a static PV, so an existing
+# root is left exactly as k3s shipped it: uid 1000 is now the game servers' uid, and a
+# traverse grant for it on the node's storage root would serve nothing but them.
 wdir="$(mktemp -d)"
 out="$(run_bundle_flags felis-backups "$wdir")"
-expect "enabling retention grants the reaper uid traverse on the worlds root" "SETFACL -m u:1000:x $wdir" "$out"
+case "$out" in
+  *SETFACL*|*CHMOD*|*WARN*) echo "FAIL: an existing worlds root must get no grant and no warning: $out"; fails=$((fails + 1)) ;;
+esac
 
 # --- the registry mirror writer -----------------------------------------------------------
 # k3s only consults registries.yaml at agent start, so a CONTENT change must restart k3s and

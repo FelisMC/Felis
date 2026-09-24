@@ -1,6 +1,8 @@
 package platform
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 
 	"felis.lolicon.best/internal/naming"
@@ -28,8 +30,8 @@ import (
 // because archiving idle worlds means mounting where the worlds physically live,
 // and the spec keeps that open (§18/§19: tarLocal-on-local-path is the starter,
 // Longhorn/snapshot the documented evolution, and they do not share a mount
-// model). The starter model — a node-local hostPath worlds-root mounted
-// read-only — is the only one coherent with the operator's per-server
+// model). The starter model — a node-local worlds-root, exposed through a static
+// hostPath PV and mounted read-only — is the only one coherent with the operator's per-server
 // ReadWriteOnce world PVCs (a shared RWX worlds mount would contradict them), so
 // that is what renders; when the trio is absent no CronJob is emitted, which is
 // the fail-safe choice for a workload that deletes PVCs. The reaper resolver
@@ -41,8 +43,8 @@ import (
 // the hosting node, and is not provable without a cluster. No nodeSelector is set
 // unless ReaperNode names one: the single-node starter pins the worlds to one node
 // implicitly, while a multi-node deployment passes --reaper-node (rendered as a
-// kubernetes.io/hostname selector) or the CronJob could schedule on a node where
-// the hostPath is empty.
+// kubernetes.io/hostname selector and PV node affinity) or the CronJob could
+// schedule on a node where the worlds-root is empty.
 const (
 	// configSecretName / serviceTokenSecretName are referenced BY NAME and NEVER
 	// rendered into the bundle: felis.toml carries the database URL (a credential)
@@ -213,7 +215,7 @@ func Workloads(p Params) []Object {
 		objs = append(objs, backupPVC(p))
 	}
 	if reaperEnabled(p) {
-		objs = append(objs, reaperCronJob(p))
+		objs = append(objs, worldsRootPV(p), worldsRootPVC(p), reaperCronJob(p))
 	}
 	return objs
 }
@@ -522,23 +524,24 @@ func OperatorDeployment(p Params) *appsv1.Deployment {
 // workloads_test.go — the reaper never opens an RCON connection.
 //
 // Mounts (the storage crux). felis.toml is mounted read-only from the config
-// Secret (it carries the DB URL). The worlds-root is a node-local hostPath mounted
-// READ-ONLY at /worlds: the reaper only reads worlds to tar them; deleting a world
+// Secret (it carries the DB URL). The worlds-root is the node directory behind the
+// static worldsRootPV, claimed by worldsRootPVC and mounted READ-ONLY at /worlds
+// (why a PV rather than an inline hostPath: see worldsRootPV). The reaper only
+// reads worlds to tar them; deleting a world
 // is a K8s API call (DeletePVC), never an rm, so the mount never needs write. The
 // backup PVC is mounted READ-WRITE at p.ArchiveLocalPath — which MUST equal
 // felis.toml [archive] local_path, because tarLocal writes archive refs as absolute
 // paths under it and the restore Job later mounts the same PVC at the same path to
 // resolve them (see the ArchiveLocalPath field doc). A /tmp emptyDir absorbs writes
-// under the read-only root filesystem. hostPath type Directory fails the pod loud
-// if the worlds-root is absent, rather than silently creating an empty dir and
-// archiving nothing.
+// under the read-only root filesystem. The PV's hostPath type Directory fails the
+// pod loud if the worlds-root is absent, rather than silently creating an empty dir
+// and archiving nothing.
 //
 // Pre-conditions are the caller's: reaperCronJob assumes reaperEnabled(p) — it
 // dereferences WorldsHostPath / BackupPVC / ArchiveLocalPath without re-checking.
 func reaperCronJob(p Params) *batchv1.CronJob {
 	p = p.withDefaults()
 	labels := controlPlanePodLabels(ComponentReaper)
-	hostPathDir := corev1.HostPathDirectory
 
 	container := corev1.Container{
 		Name:    ComponentReaper,
@@ -582,7 +585,9 @@ func reaperCronJob(p Params) *batchv1.CronJob {
 		{
 			Name: worldsVolume,
 			VolumeSource: corev1.VolumeSource{
-				HostPath: &corev1.HostPathVolumeSource{Path: p.WorldsHostPath, Type: &hostPathDir},
+				PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
+					ClaimName: worldsRootName(p), ReadOnly: true,
+				},
 			},
 		},
 		{
@@ -620,6 +625,81 @@ func reaperCronJob(p Params) *batchv1.CronJob {
 						Spec:       reaperPodSpec(p, container, volumes),
 					},
 				},
+			},
+		},
+	}
+}
+
+// worldsRootName names the static PV and its PVC. The PV's hostPath and node
+// affinity are immutable once created, so the name carries a digest of them: a
+// re-install that moves the worlds-root renders a fresh pair (and the reaper
+// follows it) instead of an apply the API server would refuse. The namespace is in
+// the digest because a PV is cluster-scoped and two installs must not collide.
+func worldsRootName(p Params) string {
+	sum := sha256.Sum256([]byte(p.MinecraftNamespace + "\x00" + p.WorldsHostPath + "\x00" + p.ReaperNode))
+	return "felis-worlds-root-" + hex.EncodeToString(sum[:4])
+}
+
+// worldsRootStorage is the nominal size both halves of the static pair declare. A
+// hostPath volume enforces no quota; the PVC only has to request no more than the
+// PV offers for the two to bind.
+const worldsRootStorage = "1Gi"
+
+// worldsRootPV exposes the node's worlds-root to the reaper as a pre-bound static
+// PersistentVolume. The reaper's pod then mounts a PVC, not a hostPath, and that is
+// what lets the minecraft namespace enforce the PodSecurity baseline profile (see
+// minecraftPodSecurityLabels): baseline refuses any pod with an inline hostPath
+// volume, whoever submits it. The node path is still reachable, but only through
+// this PV, which is cluster-scoped and so something only a cluster admin — the
+// installer applying this bundle — can create. A game server, file-editor or
+// backup pod in the namespace cannot name a node path of its own.
+//
+// Retain keeps a deleted claim from ever handing the path to a reclaimer, the
+// empty storageClassName keeps the default provisioner out of it, and the claimRef
+// reserves it for exactly worldsRootPVC. With ReaperNode set the PV carries the
+// same node pin as the reaper pod, since the directory exists only on that node.
+func worldsRootPV(p Params) *corev1.PersistentVolume {
+	p = p.withDefaults()
+	name := worldsRootName(p)
+	hostPathDir := corev1.HostPathDirectory
+	pv := &corev1.PersistentVolume{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolume"},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: controlPlanePodLabels(ComponentReaper)},
+		Spec: corev1.PersistentVolumeSpec{
+			Capacity:                      corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(worldsRootStorage)},
+			AccessModes:                   []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimRetain,
+			StorageClassName:              "",
+			ClaimRef:                      &corev1.ObjectReference{Namespace: p.MinecraftNamespace, Name: name},
+			PersistentVolumeSource: corev1.PersistentVolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{Path: p.WorldsHostPath, Type: &hostPathDir},
+			},
+		},
+	}
+	if p.ReaperNode != "" {
+		pv.Spec.NodeAffinity = &corev1.VolumeNodeAffinity{Required: &corev1.NodeSelector{
+			NodeSelectorTerms: []corev1.NodeSelectorTerm{{MatchExpressions: []corev1.NodeSelectorRequirement{{
+				Key: "kubernetes.io/hostname", Operator: corev1.NodeSelectorOpIn, Values: []string{p.ReaperNode},
+			}}}},
+		}}
+	}
+	return pv
+}
+
+// worldsRootPVC is the reaper's claim on worldsRootPV, bound by name both ways.
+func worldsRootPVC(p Params) *corev1.PersistentVolumeClaim {
+	p = p.withDefaults()
+	name := worldsRootName(p)
+	noClass := ""
+	return &corev1.PersistentVolumeClaim{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: p.MinecraftNamespace, Labels: controlPlanePodLabels(ComponentReaper)},
+		Spec: corev1.PersistentVolumeClaimSpec{
+			AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+			StorageClassName: &noClass,
+			VolumeName:       name,
+			Resources: corev1.VolumeResourceRequirements{
+				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(worldsRootStorage)},
 			},
 		},
 	}
@@ -976,7 +1056,7 @@ func hardenedPodSecurityContext() *corev1.PodSecurityContext {
 }
 
 // reaperPodSecurityContext is the reaper's Pod identity: ROOT, deliberately NOT
-// the control-plane's non-root uid. Its HostPath mount IS the live storage root,
+// the control-plane's non-root uid. Its worlds mount IS the live storage root,
 // and the world directories beneath it (and the files inside them) are written
 // by the game uid (naming.GameUID) — or by root, in a world an older release
 // wrote — with Paper's mode-0600 saves (level.dat) included, while the storage

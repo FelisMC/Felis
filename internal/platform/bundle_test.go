@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"sigs.k8s.io/yaml"
@@ -68,6 +70,63 @@ func TestObjects_NamespacesLabeled(t *testing.T) {
 	for name, found := range want {
 		if !found {
 			t.Errorf("namespace %q not rendered", name)
+		}
+	}
+}
+
+// TestObjects_MinecraftNamespaceEnforcesBaseline pins the PodSecurity labels on the
+// minecraft namespace, and proves nothing the bundle renders into it would be
+// refused by them: no pod template there mounts an inline hostPath or uses a host
+// port. The control namespace (registry hostPort) stays unlabelled, and a layout
+// that folds the minecraft namespace into another one drops the labels.
+func TestObjects_MinecraftNamespaceEnforcesBaseline(t *testing.T) {
+	p := reaperParams()
+	for _, obj := range Objects(p) {
+		if ns, ok := obj.(*corev1.Namespace); ok {
+			enforce := ns.Labels["pod-security.kubernetes.io/enforce"]
+			switch ns.Name {
+			case "minecraft":
+				if enforce != "baseline" || ns.Labels["pod-security.kubernetes.io/warn"] != "baseline" {
+					t.Errorf("minecraft namespace labels = %v, want enforce+warn baseline", ns.Labels)
+				}
+			default:
+				if enforce != "" {
+					t.Errorf("namespace %s must not be labelled by the bundle, got enforce=%q", ns.Name, enforce)
+				}
+			}
+		}
+		if obj.GetNamespace() != "minecraft" {
+			continue
+		}
+		var spec *corev1.PodSpec
+		switch o := obj.(type) {
+		case *batchv1.CronJob:
+			spec = &o.Spec.JobTemplate.Spec.Template.Spec
+		case *appsv1.Deployment:
+			spec = &o.Spec.Template.Spec
+		}
+		if spec == nil {
+			continue
+		}
+		for _, v := range spec.Volumes {
+			if v.HostPath != nil {
+				t.Errorf("%s/%s mounts inline hostPath %q, which baseline refuses", obj.GetNamespace(), obj.GetName(), v.HostPath.Path)
+			}
+		}
+		for _, c := range append(append([]corev1.Container{}, spec.InitContainers...), spec.Containers...) {
+			for _, port := range c.Ports {
+				if port.HostPort != 0 {
+					t.Errorf("%s/%s container %s uses hostPort %d, which baseline refuses", obj.GetNamespace(), obj.GetName(), c.Name, port.HostPort)
+				}
+			}
+		}
+	}
+
+	shared := testParams()
+	shared.MinecraftNamespace = shared.withDefaults().ControlNamespace
+	for _, obj := range Objects(shared) {
+		if ns, ok := obj.(*corev1.Namespace); ok && ns.Labels["pod-security.kubernetes.io/enforce"] != "" {
+			t.Errorf("a minecraft namespace shared with the control plane must stay unlabelled, got %v", ns.Labels)
 		}
 	}
 }
