@@ -1,0 +1,250 @@
+# Felis Operations Guide
+
+What a Felis host needs, how big it should be, how to take Felis off it again, and where
+the disaster-recovery procedures live. Fault-finding is in
+[troubleshooting.md](troubleshooting.md); this document refers to its sections as §N.
+
+Evidence tags follow troubleshooting.md: **[VM-VERIFIED]** was run on a real host,
+**[GO-TESTED]** / **[SH-TESTED]** is covered by `go test` or the shell tests under
+`deploy/`, **[CODE-ONLY]** is what the code does and has not been run end to end.
+
+## 1. Supported hosts
+
+`deploy/bootstrap.sh` provisions a single node. It needs systemd, root, and one of the
+package managers below; everything else (Docker, k3s, PostgreSQL, the JRE, cloudflared)
+it installs.
+
+| OS family | Package manager | Architectures | Status |
+|---|---|---|---|
+| CentOS Stream 9 (firewalld active, PostgreSQL 13) | dnf | aarch64 | **[VM-VERIFIED]** install, same-version rerun, upgrade, uninstall and reinstall |
+| Ubuntu 24.04 LTS | apt | x86_64 | [CODE-ONLY] |
+| RHEL / Rocky / Alma 9, Fedora | dnf | x86_64, aarch64 | [CODE-ONLY] same code path as CentOS Stream |
+| Debian 12, other Ubuntu releases | apt | x86_64, aarch64 | [CODE-ONLY] |
+| openSUSE Leap / Tumbleweed | zypper | x86_64, aarch64 | [CODE-ONLY] |
+| Arch Linux | pacman | x86_64, aarch64 | [CODE-ONLY] |
+
+Pinned component versions (a fresh install gets exactly these; an installed k3s or
+cloudflared is left as it is, see §4):
+
+| Component | Version | Where it is pinned |
+|---|---|---|
+| k3s | v1.36.4+k3s1 | `FELIS_K3S_VERSION` in `bootstrap.sh` |
+| cloudflared | 2026.9.1 | `FELIS_CLOUDFLARED_VERSION`, sha256 per architecture |
+| Temurin JRE (Velocity) | 25, patch build pinned | `FELIS_JRE_VERSION`, sha256 per architecture |
+| Go (nano builds) | 1.26.8 | `GO_PINNED_VERSION`, sha256 per architecture |
+| Minecraft / Limbo / Paper / Velocity / LuckPerms | `deploy/game-stack.lock` | §15b |
+| PostgreSQL | the distribution's package | 13 and 18 are exercised by the `pgint` CI job |
+
+32-bit hosts are not supported: there is no k3s, JRE or Go build the installer will fetch
+for them.
+
+## 2. Sizing
+
+### What the platform itself uses
+
+Measured on the verification host (4 vCPU, 5.5 GB RAM, 6 GB swap, CentOS Stream 9
+aarch64) with the control plane, the login and lobby system servers and one idle Paper
+server running **[VM-VERIFIED]**:
+
+| Process | Resident memory |
+|---|---|
+| k3s (server, kubelet, containerd) | ~1.1 GB |
+| Velocity (`-Xms512M -Xmx1G`, heap pre-touched) | ~0.73 GB |
+| lobby (Paper, pod limit 1 GiB) | ~0.7–0.85 GB |
+| login (Limbo, pod limit 512 MiB) | ~0.16 GB |
+| felis-api, felis-operator, registry gate | ~50 MB each |
+| PostgreSQL | ~30 MB plus page cache |
+| **Total in use** | **~3.4 GB** |
+
+Every game server adds the memory its owner gave it: the pod's limit equals its request,
+and the JVM heap is derived from it (§1a). Quotas cap it per user (panel → 管理 → 配额).
+
+The installer's own peak is the image builds (Docker plus a Gradle container); it stops
+Docker afterwards so that memory goes back to the servers. On a host under 2 GB of RAM
+without swap it adds a 2 GiB `/swapfile`.
+
+### Recommendations
+
+| Concurrent players | Game servers running | CPU | RAM | `FELIS_VELOCITY_XMX` |
+|---|---|---|---|---|
+| up to 20 | 1–2 small | 2 vCPU | 4 GB + 2 GB swap | 1G (default) |
+| up to 100 | 3–5 | 4 vCPU | 8–16 GB | 1G |
+| up to 300 | 5–10 | 8 vCPU | 16–32 GB | 2G |
+| 300+ | more | 8+ vCPU | 32 GB+ | 3G–4G |
+
+The player-count rows are planning figures, not measurements: a Minecraft server's cost
+depends mostly on what its players do (view distance, redstone, mods). Size RAM as the
+platform's ~3.5 GB plus the sum of the servers you expect to run at once, then add a
+quarter for the page cache and PostgreSQL. Velocity itself needs little per player; raise
+its heap when `journalctl -u felis-velocity` shows long GC pauses or `OutOfMemoryError`.
+
+`FELIS_VELOCITY_XMX` (default `1G`, at least `256M`, written `<n>M` or `<n>G`) is read on
+every installer run. The initial heap stays at 512M, or equals the maximum when that is
+lower. Changing it rewrites the unit, and the rerun restarts the proxy, which disconnects
+everyone online; do it in a quiet hour **[VM-VERIFIED]**:
+
+```
+curl -fsSL <raw-url>/deploy/bootstrap.sh | sudo FELIS_VELOCITY_XMX=2G bash
+```
+
+### Disk
+
+| What | Where | Size |
+|---|---|---|
+| Worlds | one volume per server under `/var/lib/rancher/k3s/storage` | what the world grows to |
+| World archives | the `felis-backups` volume (`FELIS_BACKUP_STORAGE`, default 10Gi requested) | about one compressed world per backup kept |
+| In-cluster registry | the `registry` volume (default 10Gi requested) | 2–3 GB for the stock images; grows with custom builds, pruned daily (§9) |
+| k3s's containerd images | `/var/lib/rancher/k3s/agent/containerd` | 6–9 GB |
+| Docker's images and build cache | `/var/lib/containerd` (Docker's containerd store) | 5–10 GB after repeated upgrades |
+| Toolchains and sources | `/opt/felis` | ~2.5 GB |
+| Database bundles | `/var/lib/felis/db-backups` | a few MB each, 14 daily kept |
+
+k3s's local-path volumes do not enforce the requested sizes (§9), so every volume shares
+the root filesystem. Give the host at least **40 GB**, and 60 GB or more once worlds and
+custom images accumulate. The watchdog mails the owners when a watched filesystem passes
+its threshold, and §13b covers a full disk. `docker builder prune -af` (with Docker
+started) reclaims the build cache when space is short; the next upgrade rebuilds it.
+
+## 3. Uninstall
+
+`deploy/uninstall.sh` takes off what the installer put on. It prints what it will remove
+and asks before it starts (`--yes` skips the question) **[SH-TESTED]
+[VM-VERIFIED]**:
+
+```
+curl -fsSL <raw-url>/deploy/uninstall.sh | sudo bash -s -- --yes     # keep the data
+curl -fsSL <raw-url>/deploy/uninstall.sh | sudo bash -s -- --purge   # remove the data too
+```
+
+With a private repository, fetch it the way the README fetches `bootstrap.sh`.
+
+Both modes remove the `felis-*` systemd units and `cloudflared-felis.service`, the
+Velocity user, `/opt/felis`, `/usr/local/bin/felis`, the installer's cloudflared binary
+(unless another unit runs it), the `felis_postgres` and `felis_edge` nftables tables and
+the firewalld ports the installer opened. k3s goes with k3s's own `k3s-uninstall.sh` when
+the cluster holds nothing but Felis's namespaces; when it runs anything else only
+`felis`, `minecraft`, `felis-build` and the MinecraftServer CRD are deleted.
+`--keep-k3s` and `--remove-k3s` override that choice.
+
+| | keep data (default) | `--purge` |
+|---|---|---|
+| Final database bundle | taken first (`felis db backup -label manual`); a failure stops the uninstall before anything is removed. `--no-backup` skips it | none |
+| `felis` database and role | kept | dropped; `listen_addresses` and `pg_hba.conf` go back to how they were |
+| `/etc/felis` (secrets, `felis.toml`, `offsite.env`, tunnel config) | kept; `bootstrap.done` and the per-run records go | deleted, with the tunnel's credentials file |
+| `/var/lib/felis` (database bundles) | kept | deleted |
+| Worlds, archives, registry, uploads | moved to `/var/lib/felis/retained/k3s-storage-<stamp>/` (with `--keep-k3s`: their volumes switch to `Retain` and stay in place) | deleted |
+| Felis images, Docker build cache | kept | deleted |
+
+Neither mode removes packages (Docker, PostgreSQL, git, nftables) or the swap file: other
+software may use them. On a host that should end up bare:
+
+```
+sudo swapoff /swapfile && sudo rm /swapfile && sudo sed -i '\|^/swapfile |d' /etc/fstab
+sudo dnf remove docker-ce docker-ce-cli containerd.io postgresql-server   # or apt/zypper/pacman
+```
+
+The Cloudflare side outlives the host. After an uninstall that is final, delete the
+tunnel (Zero Trust → Networks → Tunnels, or `cloudflared tunnel delete <name>`), its
+DNS records for the panel hostnames, and the Access application.
+
+### Reinstall on top of kept data
+
+A keep-data uninstall leaves everything a reinstall needs. The installer reuses
+`/etc/felis/secrets.env`, so the database password and the forwarding and session
+secrets are unchanged, and it migrates the kept database instead of creating one
+**[VM-VERIFIED]**.
+
+Each step below was run on the reference VM after a keep-data uninstall, and the
+restored worlds matched their kept `level.dat` checksums **[VM-VERIFIED]**. `kept` names
+the directory the uninstall moved the volumes to:
+
+```
+kept="$(ls -d /var/lib/felis/retained/k3s-storage-* | tail -n 1)"
+store=/var/lib/rancher/k3s/storage
+```
+
+1. Install as usual (`curl ... | sudo bash`). Name the same root domain if it was not
+   the `<ip>.nip.io` default: `felis.host.toml` is kept, and the installer reads the
+   domain from it.
+2. Run `sudo felis setup`. It recreates the login and lobby servers; the Owner already
+   exists, so it opens on the status screen and you can quit there.
+3. Put the image registry and the uploads back. They hold every custom server image
+   and uploaded file; without the registry, a restored server fails to pull its image.
+
+   ```
+   sudo k3s kubectl -n felis scale deploy/registry deploy/felis-api --replicas=0
+   sudo k3s kubectl -n felis wait --for=delete pod -l app.kubernetes.io/component=registry --timeout=120s
+   sudo k3s kubectl -n felis wait --for=delete pod -l app.kubernetes.io/component=api --timeout=120s
+   sudo rsync -a --delete "$kept"/pvc-*_felis_registry/ "$(ls -d $store/pvc-*_felis_registry)"/
+   sudo rsync -a --delete "$kept"/pvc-*_felis_felis-uploads/ "$(ls -d $store/pvc-*_felis_felis-uploads)"/
+   sudo k3s kubectl -n felis scale deploy/registry deploy/felis-api --replicas=1
+   ```
+
+   Then run the installer once more. It pushes this release's images over the older
+   copies the kept registry carried.
+4. Bring the game servers back. The final bundle holds every MinecraftServer as it was;
+   the selector skips login and lobby, which step 2 created for this release:
+
+   ```
+   b="$(ls -t /var/lib/felis/db-backups/felis-db-*-manual.tar | head -n 1)"
+   tar -xOf "$b" k8s/minecraftservers.json \
+     | sudo k3s kubectl apply -l '!felis.lolicon.best/system-role' -f -
+   ```
+
+5. Put each world back. A server's volume exists once it has started once, so start it
+   from the panel, stop it again, and copy the kept world over the new one:
+
+   ```
+   s=<server>
+   sudo rsync -a --delete "$kept"/pvc-*_minecraft_world-$s-0/ "$(ls -d $store/pvc-*_minecraft_world-$s-0)"/
+   ```
+
+   Then start it. The lobby works the same way: stop it with
+   `sudo k3s kubectl -n minecraft patch minecraftserver lobby --type=merge -p '{"spec":{"desiredState":"Stopped"}}'`,
+   copy `world-lobby-0`, and patch it back to `Running`.
+6. Bring the archives back so the panel's restore points work again. The archive volume
+   appears with the first backup, so back up any server from the panel first, then:
+
+   ```
+   sudo rsync -a "$kept"/pvc-*_minecraft_felis-backups/ "$(ls -d $store/pvc-*_minecraft_felis-backups)"/
+   ```
+
+   With an off-site bucket configured, `sudo felis offsite fetch-worlds` fetches them
+   instead (troubleshooting §16).
+7. Delete `/var/lib/felis/retained/` once every server is back.
+
+## 4. Upgrading the pieces around Felis
+
+A rerun of the installer upgrades Felis itself (§15). The components it installs keep
+the version they were installed with unless noted:
+
+| Component | How a rerun treats it | Upgrade |
+|---|---|---|
+| Velocity, Limbo, Paper, LuckPerms | follow `deploy/game-stack.lock` | rerun after a release that moves the lock (§15b) |
+| Temurin JRE | moves to the pinned patch build | rerun |
+| k3s | left alone | by hand, one minor version at a time: `curl -sfL https://get.k3s.io \| INSTALL_K3S_VERSION=<version> sh -` |
+| cloudflared | left alone | replace `/usr/local/bin/cloudflared` with the release binary, then `systemctl restart cloudflared-felis` |
+| PostgreSQL | the distribution's package | the package manager; a major version needs `pg_upgrade` first (the installer refuses to start a newer server on an older cluster) |
+| Docker, git, nftables | distribution packages | the package manager |
+
+`sudo felis update` reports Felis, Velocity, k3s and cloudflared against their newest
+releases.
+
+## 5. Disaster recovery
+
+The procedures are in §16: what a database bundle holds, restoring one on the same host,
+rolling back an upgrade, and rebuilding on a new host from the off-site copy. For a
+production install:
+
+- **Configure the off-site copy** (`FELIS_OFFSITE_*`, §16 "Keep a copy somewhere
+  else"). Without it the world archives sit on the same disk as the worlds, and the
+  database bundles on the same disk as the database; losing the disk loses both. The
+  installer ends with `NO OFF-SITE COPY` until it is set.
+- **Keep the off-site encryption key off the host**, in a password manager. The bucket
+  holds only sealed objects.
+- **Keep one database bundle off the host** as well when there is no bucket. It contains
+  `secrets.env`, which a rebuild needs to read the rest.
+- **Rehearse the rebuild** once on a spare VM: §16 "Rebuild on a new host", steps 1–5,
+  then log in and restore one world. `felis offsite status` and `felis db check` exit
+  non-zero when the copy or the newest bundle is stale; wire them into your monitoring,
+  or rely on the watchdog's mail.

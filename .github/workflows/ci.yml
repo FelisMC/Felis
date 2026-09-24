@@ -135,6 +135,7 @@ jobs:
           ./shellcheck-v0.11.0/shellcheck -S warning $(git ls-files '*.sh')
 
       - run: sh deploy/bootstrap_test.sh
+      - run: sh deploy/uninstall_test.sh
 
   panel:
     runs-on: ubuntu-latest
