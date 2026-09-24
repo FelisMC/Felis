@@ -217,16 +217,27 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 			return ctrl.Result{RequeueAfter: requeueStarting}, nil
 		}
 		players = pc
+		// A tally that could not be read pauses idle auto-stop (below) instead of
+		// counting as an empty server; the condition says so, so a server that
+		// never stops idle shows why.
+		if pc.Known {
+			r.setCondition(server, v1alpha1.ConditionPlayersCounted, metav1.ConditionTrue, "Counted", "RCON list reply read")
+		} else {
+			r.setCondition(server, v1alpha1.ConditionPlayersCounted, metav1.ConditionFalse, "ListUnreadable",
+				"RCON list failed or its reply matched no known format; idle auto-stop is paused until the player count can be read")
+		}
 	}
 
 	// Idle auto-stop (spec §8): when enabled, the server is Running, and the
 	// player tally is zero, track the empty duration and auto-stop when the
 	// configured timeout expires. The existing RCON probe already supplies
 	// the player count — no extra network cost.
-	// Rcon.Enabled is part of the condition because `players` is only a real tally
-	// when the probe above ran: with RCON off it keeps its zero value, which this
-	// branch would read as "empty" and use to stop a server full of people.
-	if server.Spec.Rcon.Enabled && server.Spec.Idle.AutoStopEnabled && server.Spec.Idle.EmptySecondsBeforeStop > 0 {
+	// players.Known gates the whole branch: an unread tally (RCON off, `list`
+	// failed, or a reply format the parser does not know) must never read as
+	// "empty" and stop a server full of people. It neither stamps nor clears
+	// EmptySince, so a flaky read does not restart the countdown either; the
+	// stop itself only ever follows a sample that really said zero.
+	if players.Known && server.Spec.Idle.AutoStopEnabled && server.Spec.Idle.EmptySecondsBeforeStop > 0 {
 		if players.Online == 0 {
 			if server.Status.EmptySince == nil {
 				t := r.now()
@@ -525,8 +536,11 @@ func (r *Reconciler) markRunningReady(server *v1alpha1.MinecraftServer, players 
 	server.Status.Ready = true
 	server.Status.ObservedGeneration = server.Generation
 	// Refresh the player tally sampled by this reconcile's RCON probe so the panel
-	// reports live occupancy instead of the 0/0 markStopped leaves behind.
-	server.Status.Players = v1alpha1.PlayersStatus{Online: players.Online, Max: players.Max}
+	// reports live occupancy instead of the 0/0 markStopped leaves behind. An
+	// unread tally keeps the last one shown.
+	if players.Known {
+		server.Status.Players = v1alpha1.PlayersStatus{Online: players.Online, Max: players.Max}
+	}
 	if server.Status.ReadySignalAt == nil {
 		t := r.now()
 		server.Status.ReadySignalAt = &t

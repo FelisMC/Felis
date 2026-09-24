@@ -72,6 +72,9 @@ const (
 	ConditionReady       = "Ready"
 	ConditionRconReached = "RconReached"
 	ConditionProvisioned = "Provisioned"
+	// ConditionPlayersCounted is False while the RCON `list` reply cannot be
+	// read; idle auto-stop waits for a real count (spec §8).
+	ConditionPlayersCounted = "PlayersCounted"
 )
 
 // +kubebuilder:object:root=true

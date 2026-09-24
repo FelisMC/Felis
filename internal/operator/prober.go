@@ -10,17 +10,20 @@ import (
 )
 
 // PlayerCount is a server's online/max player tally as read from RCON `list`.
-// Both fields are zero when the count could not be read; that is not an error,
-// only the absence of a fresh sample (see Prober).
+// Known is false when the count could not be read (the command failed, or its
+// reply matched no format below); that is not a probe error, only the absence
+// of a fresh sample. The zero value is "unknown", so a caller that forgets to
+// check can never mistake a failed read for an empty server.
 type PlayerCount struct {
 	Online int32
 	Max    int32
+	Known  bool
 }
 
 // Prober reports whether a server's RCON endpoint is reachable and accepts the
 // password, and best-effort returns its current player tally. A nil error is the
-// loader-agnostic readiness gate (spec §5); the PlayerCount is advisory and is
-// zero (with a nil error) whenever the tally could not be sampled. It is an
+// loader-agnostic readiness gate (spec §5); the PlayerCount is advisory and has
+// Known=false (with a nil error) whenever the tally could not be sampled. It is an
 // interface so the reconciler can be tested without a live server.
 type Prober interface {
 	Probe(ctx context.Context, addr, password string) (PlayerCount, error)
@@ -37,7 +40,7 @@ type RconProber struct {
 // Probe dials addr and authenticates with password, honoring the smaller of the
 // configured timeout and any deadline already on ctx. Auth success gates
 // readiness; the player tally is then read with `list` on a best-effort basis —
-// a failed or unparseable `list` yields a zero PlayerCount, never a probe error,
+// a failed or unparseable `list` yields an unknown PlayerCount, never a probe error,
 // so a transient count-read hiccup can never flap a healthy server out of Ready.
 func (p RconProber) Probe(ctx context.Context, addr, password string) (PlayerCount, error) {
 	timeout := p.Timeout
@@ -68,26 +71,55 @@ func (p RconProber) Probe(ctx context.Context, addr, password string) (PlayerCou
 	return pc, nil
 }
 
-// listReplyPattern matches the vanilla/Paper `list` response, e.g.
-// "There are 3 of a max of 20 players online: alice, bob, carol". The search is
-// unanchored so leading color codes or trailing player names do not defeat it.
-var listReplyPattern = regexp.MustCompile(`There are (\d+) of a max of (\d+) players online`)
+// listReplyPatterns match the `list` replies of the loaders Felis runs, tried in
+// order against the reply with § color codes stripped:
+//
+//   - vanilla 1.13+ / Paper / Fabric / Forge:
+//     "There are 3 of a max of 20 players online: alice, bob, carol"
+//   - vanilla 1.12 and older, Bukkit's own list:
+//     "There are 3/20 players online:"
+//   - EssentialsX (its /list replaces the vanilla one, RCON included); with
+//     vanished players it prints visible/hidden, and both count as online:
+//     "There are 3 out of maximum 20 players online."
+//     "There are 3/1 out of maximum 20 players online."
+//
+// Each has groups (online, hidden, max); hidden is empty where the format has
+// none. The search is unanchored so trailing player names do not defeat it.
+var listReplyPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`There are (\d+)() of a max(?:imum)? of (\d+) players online`),
+	regexp.MustCompile(`There are (\d+)(?:/(\d+))? out of (?:a )?maximum (?:of )?(\d+) players online`),
+	regexp.MustCompile(`There are (\d+)()/(\d+) players online`),
+}
+
+// colorCode matches a legacy § formatting code (color, bold, reset, ...).
+var colorCode = regexp.MustCompile(`(?i)§[0-9a-fk-orx]`)
 
 // parseListReply extracts the online/max tally from a `list` reply. ok is false
-// (and the PlayerCount zero) when the reply does not match the known format, so
-// callers can distinguish "no sample" from a genuine "0 of N".
+// (and the PlayerCount unknown) when the reply matches none of the known
+// formats, so callers can distinguish "no sample" from a genuine "0 of N".
 func parseListReply(reply string) (PlayerCount, bool) {
-	m := listReplyPattern.FindStringSubmatch(reply)
-	if m == nil {
-		return PlayerCount{}, false
+	plain := colorCode.ReplaceAllString(reply, "")
+	for _, re := range listReplyPatterns {
+		m := re.FindStringSubmatch(plain)
+		if m == nil {
+			continue
+		}
+		online, err := strconv.ParseInt(m[1], 10, 32)
+		if err != nil {
+			return PlayerCount{}, false
+		}
+		if m[2] != "" {
+			hidden, err := strconv.ParseInt(m[2], 10, 32)
+			if err != nil {
+				return PlayerCount{}, false
+			}
+			online += hidden
+		}
+		max, err := strconv.ParseInt(m[3], 10, 32)
+		if err != nil {
+			return PlayerCount{}, false
+		}
+		return PlayerCount{Online: int32(online), Max: int32(max), Known: true}, true
 	}
-	online, err := strconv.ParseInt(m[1], 10, 32)
-	if err != nil {
-		return PlayerCount{}, false
-	}
-	max, err := strconv.ParseInt(m[2], 10, 32)
-	if err != nil {
-		return PlayerCount{}, false
-	}
-	return PlayerCount{Online: int32(online), Max: int32(max)}, true
+	return PlayerCount{}, false
 }

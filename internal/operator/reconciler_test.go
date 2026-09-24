@@ -14,6 +14,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -254,7 +255,7 @@ func TestReconcileRunning_RconProbeGatesReadiness(t *testing.T) {
 }
 
 func TestReconcileRunning_PopulatesPlayerTally(t *testing.T) {
-	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 3, Max: 20}}, runningServer(), rconSecret())
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 3, Max: 20, Known: true}}, runningServer(), rconSecret())
 
 	reconcile(t, r, "survival") // creates workload, Starting
 	markPodReady(t, c, "survival")
@@ -331,7 +332,7 @@ func TestReconcileStopped_ScalesRunningWorkloadDown(t *testing.T) {
 // TestIdleAutoStop_EmptyServerGetsTimestamp verifies that the first Running
 // reconcile with zero players stamps EmptySince and keeps the server Running.
 func TestIdleAutoStop_EmptyServerGetsTimestamp(t *testing.T) {
-	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20}}, runningServer(), rconSecret())
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}, runningServer(), rconSecret())
 	// Enable idle auto-stop with a generous timeout so we don't trigger the
 	// actual stop in this test.
 	s := getServer(t, c, "survival")
@@ -357,7 +358,7 @@ func TestIdleAutoStop_EmptyServerGetsTimestamp(t *testing.T) {
 // first reconcile stamps EmptySince; after advancing the clock past the
 // timeout, the next reconcile flips desiredState to Stopped.
 func TestIdleAutoStop_StopsAfterTimeout(t *testing.T) {
-	prober := fakeProber{players: operator.PlayerCount{Online: 0, Max: 20}}
+	prober := fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}
 	r, c := newReconciler(t, prober, runningServer(), rconSecret())
 
 	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
@@ -397,7 +398,7 @@ func TestIdleAutoStop_StopsAfterTimeout(t *testing.T) {
 // TestIdleAutoStop_ResetsWhenPlayerJoins verifies that EmptySince is cleared
 // when the player tally goes from zero to non-zero.
 func TestIdleAutoStop_ResetsWhenPlayerJoins(t *testing.T) {
-	emptyProber := fakeProber{players: operator.PlayerCount{Online: 0, Max: 20}}
+	emptyProber := fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}
 	r, c := newReconciler(t, emptyProber, runningServer(), rconSecret())
 
 	s := getServer(t, c, "survival")
@@ -417,7 +418,7 @@ func TestIdleAutoStop_ResetsWhenPlayerJoins(t *testing.T) {
 	}
 
 	// Swap to a prober that reports players online.
-	populatedProber := fakeProber{players: operator.PlayerCount{Online: 3, Max: 20}}
+	populatedProber := fakeProber{players: operator.PlayerCount{Online: 3, Max: 20, Known: true}}
 	r.Prober = populatedProber
 	reconcile(t, r, "survival")
 
@@ -427,13 +428,76 @@ func TestIdleAutoStop_ResetsWhenPlayerJoins(t *testing.T) {
 	}
 }
 
+// TestIdleAutoStop_UnreadTallyNeverStops pins the safety rule behind
+// PlayerCount.Known: a `list` reply the parser cannot read is no sample at all.
+// It must not stamp EmptySince, must not stop a server whose countdown already
+// ran out, must keep the last known tally on display, and must say why on the
+// PlayersCounted condition.
+func TestIdleAutoStop_UnreadTallyNeverStops(t *testing.T) {
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 4, Max: 20, Known: true}}, runningServer(), rconSecret())
+	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	clock := base
+	r.Now = func() metav1.Time { return metav1.NewTime(clock) }
+
+	s := getServer(t, c, "survival")
+	s.Spec.Idle = v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: 60}
+	if err := c.Update(context.Background(), s); err != nil {
+		t.Fatalf("enable idle: %v", err)
+	}
+	reconcile(t, r, "survival")
+	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival")
+
+	// The tally becomes unreadable: nothing is stamped, the last count stays.
+	r.Prober = fakeProber{}
+	reconcile(t, r, "survival")
+	server := getServer(t, c, "survival")
+	if server.Status.EmptySince != nil {
+		t.Fatalf("EmptySince = %v, want nil: an unread tally is not an empty server", server.Status.EmptySince)
+	}
+	if server.Status.Players.Online != 4 {
+		t.Errorf("players.online = %d, want the last known 4", server.Status.Players.Online)
+	}
+	cond := meta.FindStatusCondition(server.Status.Conditions, v1alpha1.ConditionPlayersCounted)
+	if cond == nil || cond.Status != metav1.ConditionFalse || cond.Reason != "ListUnreadable" {
+		t.Fatalf("PlayersCounted = %+v, want False/ListUnreadable", cond)
+	}
+
+	// A countdown already past its deadline does not fire on an unread tally.
+	r.Prober = fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}
+	reconcile(t, r, "survival")
+	server = getServer(t, c, "survival")
+	cond = meta.FindStatusCondition(server.Status.Conditions, v1alpha1.ConditionPlayersCounted)
+	if cond == nil || cond.Status != metav1.ConditionTrue {
+		t.Fatalf("PlayersCounted = %+v, want True after a readable reply", cond)
+	}
+	r.Prober = fakeProber{}
+	clock = base.Add(10 * time.Minute)
+	reconcile(t, r, "survival")
+	server = getServer(t, c, "survival")
+	if server.Spec.DesiredState != v1alpha1.DesiredRunning {
+		t.Fatalf("desiredState = %s, want Running while the tally is unread", server.Spec.DesiredState)
+	}
+	if server.Status.EmptySince == nil {
+		t.Fatal("EmptySince was cleared by an unread tally; a flaky read must not restart the countdown")
+	}
+
+	// The next real zero stops it.
+	r.Prober = fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}
+	reconcile(t, r, "survival")
+	server = getServer(t, c, "survival")
+	if server.Spec.DesiredState != v1alpha1.DesiredStopped {
+		t.Fatalf("desiredState = %s, want Stopped once a real zero is read past the deadline", server.Spec.DesiredState)
+	}
+}
+
 // TestIdleAutoStop_RequeuesUntilDeadline pins the self-driving requeue: an
 // empty Running server must wake the controller at the auto-stop deadline with
 // no external event to lean on. Live, the EmptySince stamp sat unexamined for
 // minutes because nothing re-triggered the reconcile loop — this test fails if
 // the requeue is ever dropped again.
 func TestIdleAutoStop_RequeuesUntilDeadline(t *testing.T) {
-	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20}}, runningServer(), rconSecret())
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}, runningServer(), rconSecret())
 	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
 	r.Now = func() metav1.Time { return metav1.NewTime(base) }
 
@@ -456,7 +520,7 @@ func TestIdleAutoStop_RequeuesUntilDeadline(t *testing.T) {
 // notices the last player leaving: with players online there is no deadline to
 // aim at, but the tally must still be re-sampled.
 func TestIdleAutoStop_RequeuesWhileOccupied(t *testing.T) {
-	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 3, Max: 20}}, runningServer(), rconSecret())
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 3, Max: 20, Known: true}}, runningServer(), rconSecret())
 
 	s := getServer(t, c, "survival")
 	s.Spec.Idle = v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: 900}
@@ -476,7 +540,7 @@ func TestIdleAutoStop_RequeuesWhileOccupied(t *testing.T) {
 // TestNoIdleRequeueWhenDisabled guards against a blanket requeue: servers
 // without idle auto-stop keep the old quiescent behaviour.
 func TestNoIdleRequeueWhenDisabled(t *testing.T) {
-	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20}}, runningServer(), rconSecret())
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}, runningServer(), rconSecret())
 
 	reconcile(t, r, "survival")
 	markPodReady(t, c, "survival")
@@ -491,7 +555,7 @@ func TestNoIdleRequeueWhenDisabled(t *testing.T) {
 // not drift while the Secret is untouched — a drifting value would roll the
 // pod on every reconcile.
 func TestRconStamp_StableAcrossReconciles(t *testing.T) {
-	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20}}, runningServer(), rconSecret())
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}, runningServer(), rconSecret())
 
 	reconcile(t, r, "survival")
 	markPodReady(t, c, "survival")
@@ -512,7 +576,7 @@ func TestRconStamp_StableAcrossReconciles(t *testing.T) {
 // rolled onto it — otherwise the old pod keeps authenticating with the lost
 // password and the RCON gate fails forever.
 func TestRconSecretRecreation_RollsTemplate(t *testing.T) {
-	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20}}, runningServer(), rconSecret())
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}, runningServer(), rconSecret())
 
 	reconcile(t, r, "survival")
 	markPodReady(t, c, "survival")
@@ -553,7 +617,7 @@ func stsTemplateStamp(t *testing.T, c client.Client, name string) string {
 // TestIdleAutoStop_SkipsWhenDisabled verifies that a Running empty server does
 // NOT get an EmptySince timestamp when AutoStopEnabled is false.
 func TestIdleAutoStop_SkipsWhenDisabled(t *testing.T) {
-	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20}}, runningServer(), rconSecret())
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}, runningServer(), rconSecret())
 
 	// Idle is NOT enabled (default).
 	s := getServer(t, c, "survival")

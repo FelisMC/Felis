@@ -716,24 +716,37 @@ Check it first.
 kubectl get minecraftserver <name> -o jsonpath='{.spec.rcon.enabled}'
 ```
 
-The player tally is a by-product of the RCON readiness probe — `prober.go:63`
-runs `list` on the same connection that just authenticated, and `parseListReply`
-extracts the tally from `There are (\d+) of a max of (\d+) players online`. With
-RCON disabled the probe never runs, `players` keeps its zero value, and
-`markRunningReady` (`reconciler.go:413`) writes that zero into
-`status.players.online`. So a permanent 0 means "never sampled", not "nobody
-online".
+The player tally is a by-product of the RCON readiness probe: `prober.go` runs
+`list` on the same connection that just authenticated, and `parseListReply`
+reads the tally from the vanilla/Paper/Fabric/Forge reply (`There are 3 of a
+max of 20 players online`), the 1.12/Bukkit reply (`There are 3/20 players
+online`) or the EssentialsX reply (`There are 3 out of maximum 20 players
+online`, vanished players included), with `§` color codes stripped. With RCON
+disabled the probe never runs and no tally is ever read, so a permanent 0 means
+"never sampled", not "nobody online".
 
-Idle auto-stop (`reconciler.go:175`) reads that same tally, which is why it
-carries the RCON condition explicitly:
+A tally that could not be read counts as **unknown**, never as zero. Idle
+auto-stop only acts on a count it actually read:
 
 ```go
-if server.Spec.Rcon.Enabled && server.Spec.Idle.AutoStopEnabled && server.Spec.Idle.EmptySecondsBeforeStop > 0 {
+if players.Known && server.Spec.Idle.AutoStopEnabled && server.Spec.Idle.EmptySecondsBeforeStop > 0 {
 ```
 
-The comment above it says why: with RCON off the zero tally "would read as
-'empty' and use to stop a server full of people". So the guard is deliberate —
-enabling `spec.idle.*` without RCON is a no-op by design, not a missing feature.
+An unknown tally leaves `status.players` at the last real count, neither starts
+nor clears the empty countdown, and sets the `PlayersCounted` condition to
+`False` with reason `ListUnreadable`. So enabling `spec.idle.*` without RCON is
+a no-op by design, and a server whose `list` reply is in a format Felis does
+not know (a plugin that rewrites `/list`, a translated reply) never idles out:
+
+```sh
+kubectl get minecraftserver <name> -o jsonpath='{.status.conditions[?(@.type=="PlayersCounted")]}'
+# Reason ListUnreadable: run `list` in the server's panel console to see
+# what the server actually answers.
+```
+
+Fix it by restoring a supported `/list` (for example, drop the plugin's
+override or its translation of that one message). The server keeps running
+either way; only the idle stop waits.
 
 Both fields set and still nothing happens? Then the probe is failing rather than
 disabled: the server would be stuck in `Starting` with `RconNotReachable`
@@ -1286,7 +1299,7 @@ for 10 seconds (the Free plan's limits).
 | Build push 400 / SA denied / egress hang / Failed / executor ImagePullBackOff | §8, §8e |
 | Registry push/pull unreachable | §9 |
 | World deleted unexpectedly / backup skipped | §10 |
-| Idle auto-stop not firing; player count 0 | §11 |
+| Idle auto-stop not firing; player count 0; `PlayersCounted=False` | §11 |
 | A config field seems ignored | §12 |
 | PVC left behind after delete | §13 |
 | Node out of disk; pods evicted / ImagePullBackOff | §13b |
