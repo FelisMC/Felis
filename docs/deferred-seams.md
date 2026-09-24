@@ -95,10 +95,19 @@ worth revisiting.
   moved inside `ClaimServer` (advisory lock + re-check + UPDATE in one transaction),
   red-then-green in the pgint suite, which is exactly the real-Postgres harness this
   line was waiting for.
-- `internal/api/api.go:671` — `cooldownLimiter` is process-local, so across N api
+- `internal/api/api.go:773` — `cooldownLimiter` is process-local, so across N api
   replicas a caller could draw up to N OTP codes per window. The intra-replica burst
   is closed; cross-replica bounding needs a shared store, out of scope for a
-  single-replica install.
+  single-replica install. Revisit before the api Deployment runs more than one
+  replica.
+- `internal/submit/submit.go:524` — the per-user upload storage budget reads the
+  stored bytes, then writes. On one replica the API's per-user upload reservation
+  serializes it; across replicas a burst can overshoot by one blob per interleaved
+  upload, each still under the single-blob cap. The pending-submission cap no
+  longer has this shape: `CreateSubmission` counts and inserts under a
+  per-submitter advisory lock (pgint `TestSubmitPendingCapHoldsUnderConcurrency`).
+  Revisit with the cooldown above, before scaling api replicas: a reservation row
+  per upload in the same kind of transaction closes it.
 - `internal/submit/submit.go:436` and `internal/submit/submit_test.go:351` — a
   post-CAS `Approve`
   failure leaves a row indistinguishable from the benign case, so `Approve` returns a

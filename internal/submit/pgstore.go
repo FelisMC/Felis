@@ -24,13 +24,35 @@ var _ Store = (*PGStore)(nil)
 const submissionColumns = `id, submitted_by, display_name, context_ref, status,
 	image_ref, build_id, reviewed_by, reject_reason, created_at, reviewed_at, context_sha256`
 
-func (s *PGStore) CreateSubmission(ctx context.Context, sub *Submission) error {
+// CreateSubmission counts and inserts in one transaction under a per-submitter
+// advisory lock, so two creates by the same user, on one replica or several,
+// serialize and the second sees the first's row. A hashtext collision between
+// two users only serializes their creates.
+func (s *PGStore) CreateSubmission(ctx context.Context, sub *Submission, maxPending int) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('submission:' || $1))`, sub.SubmittedBy); err != nil {
+		return 0, err
+	}
+	var pending int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM image_submissions
+		WHERE submitted_by = $1 AND status = 'pending_review'`, sub.SubmittedBy).Scan(&pending); err != nil {
+		return 0, err
+	}
+	if pending >= maxPending {
+		return pending, ErrQuotaExceeded
+	}
 	const q = `INSERT INTO image_submissions
 		(id, submitted_by, display_name, context_ref, status, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6)`
-	_, err := s.db.ExecContext(ctx, q,
-		sub.ID, sub.SubmittedBy, sub.DisplayName, sub.ContextRef, string(sub.Status), sub.CreatedAt)
-	return err
+	if _, err := tx.ExecContext(ctx, q,
+		sub.ID, sub.SubmittedBy, sub.DisplayName, sub.ContextRef, string(sub.Status), sub.CreatedAt); err != nil {
+		return pending, err
+	}
+	return pending, tx.Commit()
 }
 
 func (s *PGStore) CountPendingSubmissionsBy(ctx context.Context, submittedBy string) (int, error) {

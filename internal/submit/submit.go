@@ -187,12 +187,12 @@ type Submission struct {
 // interface so the Manager is tested against an in-memory fake; the Postgres
 // implementation (PGStore) is integration-tested only.
 type Store interface {
-	// CreateSubmission inserts a pending_review row.
-	CreateSubmission(ctx context.Context, s *Submission) error
-	// CountPendingSubmissionsBy reports how many of one user's submissions are
-	// still pending_review — the queue-length read behind the per-user pending
-	// cap in Create.
-	CountPendingSubmissionsBy(ctx context.Context, submittedBy string) (int, error)
+	// CreateSubmission inserts a pending_review row unless its submitter already
+	// has maxPending rows pending_review, in which case nothing is written and
+	// the error is ErrQuotaExceeded. It returns how many were pending before
+	// the insert. The count and the insert are one decision, so concurrent
+	// creates on any number of api replicas never land a row over the cap.
+	CreateSubmission(ctx context.Context, s *Submission, maxPending int) (int, error)
 	// GetSubmission loads one submission, or ErrNotFound.
 	GetSubmission(ctx context.Context, id string) (*Submission, error)
 	// ListSubmissions returns every submission, newest first (admin queue).
@@ -449,18 +449,6 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Submission, e
 		return nil, invalidf("submitter identity is required")
 	}
 
-	// Per-user pending cap: every pending row is a review-queue item an admin
-	// must read, so one account may not park an unbounded number of them. The
-	// check and the insert are not atomic (two concurrent creates may jointly
-	// land one row over the cap); that is a soft overshoot of a queue-length
-	// lever, not a resource bound, so it is deliberately not worth a lock.
-	if pending, err := m.Store.CountPendingSubmissionsBy(ctx, req.SubmittedBy); err != nil {
-		return nil, err
-	} else if pending >= m.maxPendingPerUser() {
-		return nil, fmt.Errorf("%w: %d submissions are already awaiting review (limit %d)",
-			ErrQuotaExceeded, pending, m.maxPendingPerUser())
-	}
-
 	id := m.newID()
 	s := &Submission{
 		ID:          id,
@@ -470,7 +458,13 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Submission, e
 		Status:      StatusPendingReview,
 		CreatedAt:   m.now(),
 	}
-	if err := m.Store.CreateSubmission(ctx, s); err != nil {
+	// Per-user pending cap: every pending row is a review-queue item an admin
+	// must read, so one account may not park an unbounded number of them. The
+	// store checks and inserts as one step.
+	if pending, err := m.Store.CreateSubmission(ctx, s, m.maxPendingPerUser()); errors.Is(err, ErrQuotaExceeded) {
+		return nil, fmt.Errorf("%w: %d submissions are already awaiting review (limit %d)",
+			ErrQuotaExceeded, pending, m.maxPendingPerUser())
+	} else if err != nil {
 		return nil, err
 	}
 	return s, nil

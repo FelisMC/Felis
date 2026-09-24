@@ -1109,6 +1109,48 @@ func TestRedeemPlayerBindCodeContract(t *testing.T) {
 
 // ---- submissions ---------------------------------------------------------------
 
+// TestSubmitPendingCapHoldsUnderConcurrency: parallel creates by one user,
+// through separate connections as separate replicas would make them, admit
+// exactly the cap (build-supply-chain-16).
+func TestSubmitPendingCapHoldsUnderConcurrency(t *testing.T) {
+	ctx := context.Background()
+	u := newUser(t, "user", "subcap")
+	s := submit.NewPGStore(db)
+	now := mustNow()
+	const limit, tries = 3, 12
+	sfx := suffix(t)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	admitted, refused := 0, 0
+	for i := 0; i < tries; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := fmt.Sprintf("sub-cap-%d-%s", i, sfx)
+			_, err := s.CreateSubmission(ctx, &submit.Submission{ID: id, SubmittedBy: u.ID, DisplayName: "cap",
+				ContextRef: "s3://bucket/" + id, Status: submit.StatusPendingReview, CreatedAt: now}, limit)
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
+				admitted++
+			case errors.Is(err, submit.ErrQuotaExceeded):
+				refused++
+			default:
+				t.Errorf("create %d: %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if admitted != limit || refused != tries-limit {
+		t.Fatalf("admitted %d, refused %d; want %d and %d", admitted, refused, limit, tries-limit)
+	}
+	if n, err := s.CountPendingSubmissionsBy(ctx, u.ID); err != nil || n != limit {
+		t.Fatalf("pending = (%d, %v), want %d", n, err, limit)
+	}
+}
+
+
 func TestSubmitStoreContract(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "sub")
@@ -1121,7 +1163,7 @@ func TestSubmitStoreContract(t *testing.T) {
 		ContextRef: "s3://bucket/" + id + "/context.tar.gz",
 		Status:     submit.StatusPendingReview, CreatedAt: now,
 	}
-	if err := s.CreateSubmission(ctx, sub); err != nil {
+	if _, err := s.CreateSubmission(ctx, sub, 5); err != nil {
 		t.Fatalf("CreateSubmission: %v", err)
 	}
 	// The pending-queue count is the read behind the per-user pending cap: a
@@ -1131,6 +1173,14 @@ func TestSubmitStoreContract(t *testing.T) {
 	}
 	if n, err := s.CountPendingSubmissionsBy(ctx, u.ID+"-nobody"); err != nil || n != 0 {
 		t.Fatalf("CountPendingSubmissionsBy for an unknown user = (%d, %v), want (0, nil)", n, err)
+	}
+	over := &submit.Submission{ID: id + "-over", SubmittedBy: u.ID, DisplayName: "over the cap",
+		ContextRef: "s3://bucket/over", Status: submit.StatusPendingReview, CreatedAt: now}
+	if n, err := s.CreateSubmission(ctx, over, 1); !errors.Is(err, submit.ErrQuotaExceeded) || n != 1 {
+		t.Fatalf("create at the cap = (%d, %v), want (1, ErrQuotaExceeded)", n, err)
+	}
+	if _, err := s.GetSubmission(ctx, over.ID); !errors.Is(err, submit.ErrNotFound) {
+		t.Fatalf("a refused create left a row: %v", err)
 	}
 	got, err := s.GetSubmission(ctx, id)
 	if err != nil {
@@ -1200,11 +1250,11 @@ func TestSubmitStoreContract(t *testing.T) {
 	// wrong owner or a reviewed row can never delete through it — and the admin
 	// path deletes any status, exactly once.
 	id2 := "sub-w-" + suffix(t)
-	if err := s.CreateSubmission(ctx, &submit.Submission{
+	if _, err := s.CreateSubmission(ctx, &submit.Submission{
 		ID: id2, SubmittedBy: u.ID, DisplayName: "withdraw me",
 		ContextRef: "s3://bucket/" + id2 + "/context.tar.gz",
 		Status:     submit.StatusPendingReview, CreatedAt: now,
-	}); err != nil {
+	}, 5); err != nil {
 		t.Fatalf("CreateSubmission(2): %v", err)
 	}
 	if ok, err := s.DeletePendingSubmission(ctx, id2, "someone-else"); err != nil || ok {

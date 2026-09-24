@@ -113,25 +113,24 @@ type fakeStore struct {
 
 func newFakeStore() *fakeStore { return &fakeStore{subs: map[string]*Submission{}} }
 
-func (f *fakeStore) CreateSubmission(_ context.Context, s *Submission) error {
-	if f.createErr != nil {
-		return f.createErr
-	}
-	cp := *s
-	f.subs[s.ID] = &cp
-	return nil
-}
-
-func (f *fakeStore) CountPendingSubmissionsBy(_ context.Context, by string) (int, error) {
+func (f *fakeStore) CreateSubmission(_ context.Context, s *Submission, maxPending int) (int, error) {
 	if f.countErr != nil {
 		return 0, f.countErr
 	}
 	var n int
-	for _, s := range f.subs {
-		if s.SubmittedBy == by && s.Status == StatusPendingReview {
+	for _, x := range f.subs {
+		if x.SubmittedBy == s.SubmittedBy && x.Status == StatusPendingReview {
 			n++
 		}
 	}
+	if n >= maxPending {
+		return n, ErrQuotaExceeded
+	}
+	if f.createErr != nil {
+		return n, f.createErr
+	}
+	cp := *s
+	f.subs[s.ID] = &cp
 	return n, nil
 }
 
