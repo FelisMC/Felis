@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"felis.lolicon.best/internal/imagepin"
@@ -135,6 +136,9 @@ func TestPatchServerImageSamePinIsNoChange(t *testing.T) {
 	}
 	if p := cl.patched["survival"]; p.Image != nil {
 		t.Errorf("patched image = %q, want no image change", *p.Image)
+	}
+	if !strings.Contains(w.Body.String(), `"patched":[]`) {
+		t.Errorf("body = %s, want an empty patched list", w.Body.String())
 	}
 	if len(repo.audits) != 1 || repo.audits[0].Payload != nil {
 		t.Errorf("audits = %+v, want a plain server.patch", repo.audits)

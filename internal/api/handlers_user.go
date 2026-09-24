@@ -683,7 +683,9 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 	// the SAME helpers the create form uses. `changed` records what actually moves
 	// so the response and audit name the real mutation.
 	var patch ServerSpecPatch
-	var changed []string
+	// Non-nil so a patch that moves nothing (re-picking the image a server is
+	// already pinned to) still answers "patched": [], as the API documents.
+	changed := []string{}
 	// imageFrom is the image a confirmed image change replaced, for the audit row.
 	var imageFrom string
 
