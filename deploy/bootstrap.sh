@@ -42,6 +42,8 @@
 #                     through the handshake address instead of modern forwarding
 #                     (default: legacy18). Read once at Velocity start, so changing it
 #                     means re-running this script and restarting the proxy.
+#   FELIS_VELOCITY_XMX maximum heap of the Velocity proxy, as <n>M or <n>G (default: 1G;
+#                     at least 256M). docs/operations.md sizes it by player count.
 #   FELIS_VELOCITY_FORK_JAR path to a Felis-Legacy Velocity fork build to install as the
 #                     proxy instead of the stock download (default: unset, stock).
 #   FELIS_VELOCITY_FORK_JAR_SHA256 expected sha256 of that jar. REQUIRED whenever the jar
@@ -91,9 +93,9 @@
 #   FELIS_WORLDS_HOST_PATH node directory holding the world volumes (on the k3s this
 #                     installer provisions: /var/lib/rancher/k3s/storage). Setting it
 #                     enables the daily retention reaper, which archives and then deletes
-#                     worlds idle beyond the retention window, and grants the reaper's
-#                     uid (1000) traverse access to that root — k3s ships it 0700
-#                     root:root (default: unset = no reaper)
+#                     worlds idle beyond the retention window; the reaper reads that
+#                     root as root, so it keeps k3s's own 0700 root:root
+#                     (default: unset = no reaper)
 #   FELIS_REGISTRY_STORAGE / FELIS_UPLOADS_STORAGE / FELIS_BACKUP_STORAGE capacity the
 #                     registry, uploads and world-archive PVCs request on first install
 #                     (defaults: 10Gi, 5Gi, 10Gi). An existing claim keeps its size; on
@@ -170,6 +172,9 @@ FELIS_BACKUP_STORAGE="${FELIS_BACKUP_STORAGE:-}"
 # from its volumeName. Left unset, no reaper CronJob renders and archives accumulate until
 # the backup PVC fills (then backups fail loudly; nothing is deleted).
 FELIS_WORLDS_HOST_PATH="${FELIS_WORLDS_HOST_PATH:-}"
+# k3s's local-path provisioner root. It appears with the first volume the provisioner
+# creates, which on a fresh install is after the reaper's PV has been applied.
+K3S_STORAGE_ROOT="/var/lib/rancher/k3s/storage"
 # Control-plane database backups (felis db backup): a daily timer bundles pg_dump with the
 # /etc/felis state a rebuild needs, and every upgrade that has migrations to apply snapshots
 # the database first (felis migrate up). The directory sits outside /var/lib/rancher on
@@ -211,6 +216,7 @@ FELIS_NANO_PROXY_CIDR="${FELIS_NANO_PROXY_CIDR:-}"
 # needs this. Overridable because adding a second 1.8 backend otherwise means editing this
 # script; it is still a restart-time list, not one that follows the CRs.
 FELIS_LEGACY_FORWARDING_SERVERS="${FELIS_LEGACY_FORWARDING_SERVERS:-legacy18}"
+FELIS_VELOCITY_XMX="${FELIS_VELOCITY_XMX:-1G}"
 # The Go tarball is unpacked and run as root, so the default version is pinned by the sha256
 # go.dev/dl publishes for each architecture install_go_toolchain handles. Move all three
 # together; any other FELIS_GO_VERSION has to bring its own FELIS_GO_SHA256.
@@ -702,6 +708,24 @@ validate_settings() {
   case "$FELIS_GAME_STACK" in
     pinned|latest) ;;
     *) die "FELIS_GAME_STACK must be pinned or latest (got '${FELIS_GAME_STACK}')" ;;
+  esac
+  [ "$(heap_megabytes "$FELIS_VELOCITY_XMX")" -ge 256 ] \
+    || die "FELIS_VELOCITY_XMX must be a heap size of at least 256M, written <n>M or <n>G (got '${FELIS_VELOCITY_XMX}')"
+}
+
+# heap_megabytes prints a JVM heap size written <n>M or <n>G in megabytes, or 0 for any
+# other spelling.
+heap_megabytes() {
+  local n="${1%?}"
+  case "$n" in
+    ""|*[!0-9]*|0*) echo 0; return ;;
+  esac
+  # Six digits of gigabytes is far past any host; the cap keeps the arithmetic in range.
+  [ "${#n}" -le 6 ] || { echo 0; return; }
+  case "$1" in
+    *[Mm]) echo "$n" ;;
+    *[Gg]) echo "$((n * 1024))" ;;
+    *) echo 0 ;;
   esac
 }
 
@@ -2371,6 +2395,10 @@ install_velocity_service() {
   # sees it -- unquoted, that spelling would hand java a stray "legacy112" argument and the unit
   # would not start. Quoting keeps the whole property one argv item.
   local legacy_forwarding_servers="${FELIS_LEGACY_FORWARDING_SERVERS}"
+  # -Xms stays at 512M so a small proxy does not reserve its whole ceiling up front, unless
+  # the ceiling itself is lower (the JVM refuses an initial heap above the maximum).
+  local xmx="$FELIS_VELOCITY_XMX" xms="512M"
+  [ "$(heap_megabytes "$xmx")" -ge 512 ] || xms="$xmx"
   cat > "$VELOCITY_SERVICE" <<EOF
 [Unit]
 Description=Felis Velocity proxy (Mojang authentication + modern forwarding)
@@ -2382,7 +2410,7 @@ Type=simple
 User=${VELOCITY_USER}
 Group=${VELOCITY_USER}
 WorkingDirectory=${VELOCITY_DIR}
-ExecStart=${JRE_DIR}/bin/java -Xms512M -Xmx1G -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:+AlwaysPreTouch -Dmojang.sessionserver=http://${api_ip}:8081/session/minecraft/hasJoined "-Dfelis.legacy-forwarding.servers=${legacy_forwarding_servers}" -jar ${VELOCITY_DIR}/velocity.jar
+ExecStart=${JRE_DIR}/bin/java -Xms${xms} -Xmx${xmx} -XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:+AlwaysPreTouch -Dmojang.sessionserver=http://${api_ip}:8081/session/minecraft/hasJoined "-Dfelis.legacy-forwarding.servers=${legacy_forwarding_servers}" -jar ${VELOCITY_DIR}/velocity.jar
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=yes
@@ -3330,7 +3358,13 @@ deploy_bundle() {
     # through a static hostPath PV, so the host directory keeps k3s's own 0700 root:root and
     # needs no extra grant. It must exist, though: the PV declares type Directory.
     if [ ! -d "$FELIS_WORLDS_HOST_PATH" ]; then
-      warn "worlds root ${FELIS_WORLDS_HOST_PATH} does not exist yet; the reaper CronJob cannot start until it does (hostPath type Directory)"
+      if [ "$FELIS_WORLDS_HOST_PATH" = "$K3S_STORAGE_ROOT" ]; then
+        # The provisioner would create it moments later with this same 0700 root:root;
+        # creating it now keeps a fresh install from warning about its own default.
+        install -d -m 0700 -o root -g root "$FELIS_WORLDS_HOST_PATH"
+      else
+        warn "worlds root ${FELIS_WORLDS_HOST_PATH} does not exist yet; the reaper CronJob cannot start until it does (hostPath type Directory)"
+      fi
     fi
     manifest_args+=(--worlds-host-path "$FELIS_WORLDS_HOST_PATH" --archive-local-path "$FELIS_ARCHIVE_LOCAL_PATH")
   fi

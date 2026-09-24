@@ -875,6 +875,8 @@ run_bundle_flags() { # backup-pvc worlds-host-path
     myManifests() { printf "%s\n" "$@"; }
     setfacl() { printf "SETFACL %s\n" "$*"; }
     chmod() { printf "CHMOD %s\n" "$*"; }
+    install() { printf "INSTALL %s\n" "$*"; }
+    K3S_STORAGE_ROOT="${K3S_STORAGE_ROOT_T:-/var/lib/rancher/k3s/storage}"
     node_global_cidrs() { printf "203.0.113.7/32\n2001:db8::7/128\n"; }
     pvc_size() { case "$2" in registry) printf "20Gi\n" ;; esac; }
     run_bundle() {
@@ -934,6 +936,14 @@ expect "enabling retention passes the archive mount that must match felis.toml" 
 missing="/tmp/felis-worlds-root-must-not-exist-$$"
 out="$(run_bundle_flags felis-backups "$missing")"
 expect "a missing worlds root is warned about, not silently skipped" "WARN: worlds root $missing does not exist yet" "$out"
+
+# On a fresh install the k3s default root does not exist until the provisioner's first
+# volume; the installer creates it with k3s's own mode instead of warning about its default.
+out="$(K3S_STORAGE_ROOT_T="$missing" run_bundle_flags felis-backups "$missing")"
+expect "a missing k3s storage root is created with k3s's mode" "INSTALL -d -m 0700 -o root -g root $missing" "$out"
+case "$out" in
+  *WARN*) echo "FAIL: the installer's own default root must not be warned about: $out"; fails=$((fails + 1)) ;;
+esac
 
 # The reaper reads the root as root with DAC_OVERRIDE through a static PV, so an existing
 # root is left exactly as k3s shipped it: uid 1000 is now the game servers' uid, and a
@@ -1709,15 +1719,15 @@ esac
 # felis-api's transactions) when restarted, so a rerun that changed none of them must leave
 # them running, and one that changed a thing must still restart it.
 
-vsblock="$(awk '/^install_velocity_service\(\) \{/,/^}/' "$BS"; awk '/^velocity_fingerprint\(\) \{/,/^}/' "$BS")"
+vsblock="$(awk '/^install_velocity_service\(\) \{/,/^}/' "$BS"; awk '/^velocity_fingerprint\(\) \{/,/^}/' "$BS"; awk '/^heap_megabytes\(\) \{/,/^}/' "$BS")"
 [ -n "$vsblock" ] || { echo "FAIL: no install_velocity_service found in $BS"; exit 1; }
 vdir="$(mktemp -d)"
 mkdir -p "$vdir/v/plugins/felis-link" "$vdir/jre"
 printf 'jar\n' > "$vdir/v/velocity.jar"
 printf 'plugin\n' > "$vdir/v/plugins/felis-velocity.jar"
 printf 'JAVA_VERSION="25"\n' > "$vdir/jre/release"
-run_velocity_service() { # is-active(0|1)
-  ACTIVE="$1" VELOCITY_SERVICE="$vdir/unit" VELOCITY_DIR="$vdir/v" JRE_DIR="$vdir/jre" \
+run_velocity_service() { # is-active(0|1) [heap]
+  ACTIVE="$1" FELIS_VELOCITY_XMX="${2:-1G}" VELOCITY_SERVICE="$vdir/unit" VELOCITY_DIR="$vdir/v" JRE_DIR="$vdir/jre" \
   VELOCITY_FINGERPRINT="$vdir/fp" VELOCITY_USER=felis-velocity FELIS_GAME_PORT=25565 \
   FELIS_LEGACY_FORWARDING_SERVERS='' bash -c '
     set -Eeuo pipefail
@@ -1734,6 +1744,7 @@ run_velocity_service() { # is-active(0|1)
 }
 out="$(run_velocity_service 1)"
 expect "a proxy with no recorded start is restarted" "SYSTEMCTL restart felis-velocity" "$out"
+expect "the default heap is 512M..1G" "java -Xms512M -Xmx1G " "$(cat "$vdir/unit")"
 [ -s "$vdir/fp" ] && echo "PASS the restart records what the proxy runs" \
   || { echo "FAIL no fingerprint was recorded after the restart"; fails=$((fails + 1)); }
 out="$(run_velocity_service 1)"
@@ -1747,6 +1758,10 @@ expect "a changed plugin jar restarts the proxy" "SYSTEMCTL restart felis-veloci
 expect "a stopped proxy is started whatever the fingerprint" "SYSTEMCTL restart felis-velocity" "$(run_velocity_service 0)"
 printf 'JAVA_VERSION="25.0.1"\n' > "$vdir/jre/release"
 expect "a patched JRE restarts the proxy" "SYSTEMCTL restart felis-velocity" "$(run_velocity_service 1)"
+expect "a new heap size restarts the proxy" "SYSTEMCTL restart felis-velocity" "$(run_velocity_service 1 3G)"
+expect "the unit carries the new ceiling" "java -Xms512M -Xmx3G " "$(cat "$vdir/unit")"
+run_velocity_service 1 384M >/dev/null
+expect "a ceiling below 512M is also the initial heap" "java -Xms384M -Xmx384M " "$(cat "$vdir/unit")"
 rm -rf "$vdir"
 
 ssblock="$(awk '/^restart_existing_system_servers\(\) \{/,/^}/' "$BS")"
@@ -1902,6 +1917,21 @@ run_pg_firewall 0 2001:db8::7 >/dev/null
 expect "a v6 node address gets a v6 rule" "tcp dport 5432 ip6 saddr 2001:db8::7 accept" "$(cat "$fwdir/pg.nft")"
 rm -rf "$fwdir"
 
+
+# --- the proxy heap -----------------------------------------------------------------------
+hblock="$(awk '/^heap_megabytes\(\) \{/,/^}/' "$BS")"
+[ -n "$hblock" ] || { echo "FAIL: no heap_megabytes found in $BS"; exit 1; }
+heap() { bash -c "$hblock"'
+heap_megabytes "$1"' _ "$1"; }
+expect "a heap in gigabytes converts to megabytes" "2048" "$(heap 2G)"
+expect "a heap in megabytes is kept" "768" "$(heap 768m)"
+for bad in 1 1K 0G 01G G -1G 1.5G 9999999G; do
+  expect "the heap spelling '$bad' is refused" "0" "$(heap "$bad")"
+done
+case "$(awk '/^install_velocity_service\(\) \{/,/^}/' "$BS")" in
+  *'-Xms${xms} -Xmx${xmx} '*) echo "PASS the proxy unit takes its heap from FELIS_VELOCITY_XMX" ;;
+  *) echo "FAIL the proxy unit's heap is not FELIS_VELOCITY_XMX"; fails=$((fails + 1)) ;;
+esac
 
 # --- reproducible image ids ---------------------------------------------------------------
 # restart_existing_system_servers compares image ids across runs; a default BuildKit
