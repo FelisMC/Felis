@@ -467,28 +467,57 @@ A `push` that fails with `403` means the target repository is under `felis/` or
 the `felis-registry-push` Secret in `felis-build` is missing or stale (re-run the
 installer).
 
-### 8e. Build Pods never start: executor images and air-gapped installs
+### 8e. Build Pods never start: executor images and the scan DBs
 
-The build Job runs Kaniko and Trivy from external registries by default
-(`gcr.io/kaniko-project/executor:latest`, `aquasec/trivy:latest`). The kubelet
-pulls those images over the node's own network, so the build namespace's egress
-policy does not apply to the pull; what blocks it is a node without a route to
-those registries (an air-gapped box, a firewall, a rate-limited Docker Hub).
-The Pods then sit in `ImagePullBackOff`/`ErrImagePull` and the build stays
-`building` until its deadline. Point the overrides at images **in
-the internal registry** — the one pull source that survives an image GC (a bare
-node-containerd import does not: kubelet's image GC collects unused images under
-disk pressure, and an air-gapped box then has nothing to restore them from) —
-in `felis.toml`:
+A build Job runs Kaniko and Trivy, and Trivy reads two databases: the
+vulnerability DB and, for any image with Java artifacts (every real modpack),
+the Java DB. The build namespace has no internet egress, so all four come from
+the internal registry, under `mirror/`:
+
+| Tool | Upstream | Copy |
+|---|---|---|
+| kaniko | `gcr.io/kaniko-project/executor:v1.24.0@sha256:4e7a52dd…` | `mirror/kaniko-executor:v1.24.0` |
+| trivy | `ghcr.io/aquasecurity/trivy:0.74.0@sha256:62b1e65e…` | `mirror/trivy:0.74.0` |
+| vulnerability DB | `mirror.gcr.io/aquasec/trivy-db:2` | `mirror/trivy-db:2` |
+| Java DB | `mirror.gcr.io/aquasec/trivy-java-db:1` | `mirror/trivy-java-db:1` |
+
+The executor images are pinned by digest (`internal/build/tools.go`), so a moved
+upstream tag never changes what a build runs; the DBs follow their tag. The
+installer copies all four with `felis mirror-build-tools`, and
+`felis-build-tools.timer` repeats the copy at 04:00 and 16:00, which is what
+keeps the DBs current. The watchdog mails a warning when three days pass without
+a clean run: scans still gate, but against old advisories.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Build Pods in `ImagePullBackOff` on `mirror/kaniko-executor` or `mirror/trivy` | the first copy has not finished, or the node had no internet during install | `journalctl -u felis-build-tools -n 50`; `sudo felis mirror-build-tools` once the node can reach gcr.io, ghcr.io and mirror.gcr.io |
+| Scan fails with `failed to download vulnerability DB` | `mirror/trivy-db:2` is missing | same |
+| Watchdog: `the vulnerability DB was last refreshed … ago` | the timer's runs fail (network, registry down, disk) | read the error in the mail or in `/var/lib/felis/build-tools/status.json`; `sudo felis mirror-build-tools` to retry now |
+
+`sudo felis mirror-build-tools -only trivy-db` refreshes one tool. The copy is
+single-platform (the node's architecture), written as the `platform` principal
+through the loopback hostPort with the token from `/etc/felis/secrets.env`.
+
+**An air-gapped node** cannot fetch anything. Copy the four references above
+into the registry from a machine that can (`kubectl -n felis port-forward
+svc/registry 5000:5000`, then push to `localhost:5000/mirror/...` as `platform`,
+password `kubectl -n felis get secret felis-registry-auth -o
+jsonpath='{.data.platform}' | base64 -d`), and repeat that for the DBs as often
+as advisories matter to you. The watchdog warning stays until the timer can
+reach upstream; that is accurate.
+
+**Kaniko is archived upstream** (June 2025); v1.24.0 is its last release and
+gets no security fixes. To run a maintained fork, copy it under `mirror/` and
+point the override at it. The other `[registry]` keys in `felis.toml`:
 
 ```toml
 [registry]
 url = "registry.felis.svc:5000"
 build_namespace = "felis-build"
-kaniko_image = "registry.felis.svc:5000/mirror/kaniko-executor:v1.24.0"
-trivy_image  = "registry.felis.svc:5000/mirror/trivy:0.74.0"
-trivy_db_repository = "registry.felis.svc:5000/mirror/trivy-db:2"
-trivy_java_db_repository = "registry.felis.svc:5000/mirror/trivy-java-db:1"
+kaniko_image = ""                  # empty: the mirror/ copy above
+trivy_image = ""
+trivy_db_repository = ""
+trivy_java_db_repository = ""
 build_cpu_limit = "2"
 build_mem_limit = "4Gi"
 build_disk_limit = "12Gi"          # §8f
@@ -497,33 +526,6 @@ build_runtime_class = ""           # §8f: e.g. "gvisor"
 max_concurrent_builds = 2          # §8f: 1-6; later builds queue
 user_uploads_max_bytes = "4Gi"     # every user's uploaded contexts together; 507 uploads_full past it
 ```
-
-Mirror the executor images into the registry once. On the node itself, push
-through the loopback hostPort the registry Deployment binds (docker treats
-`127.0.0.1` as insecure by default; the installer leaves the daemon stopped, so
-`sudo systemctl start docker` first). The registry takes writes only from an
-authenticated principal, and `mirror/` only from `platform`, so log in with the
-platform token first:
-
-```sh
-kubectl -n felis get secret felis-registry-auth -o jsonpath='{.data.platform}' | base64 -d \
-  | docker login --username platform --password-stdin 127.0.0.1:5000
-docker pull gcr.io/kaniko-project/executor:v1.24.0   # any versions you pin
-docker pull aquasec/trivy:0.74.0
-docker pull mirror.gcr.io/aquasec/trivy-java-db:1
-docker tag gcr.io/kaniko-project/executor:v1.24.0 127.0.0.1:5000/mirror/kaniko-executor:v1.24.0
-docker tag aquasec/trivy:0.74.0                   127.0.0.1:5000/mirror/trivy:0.74.0
-docker tag mirror.gcr.io/aquasec/trivy-java-db:1  127.0.0.1:5000/mirror/trivy-java-db:1
-docker push 127.0.0.1:5000/mirror/kaniko-executor:v1.24.0
-docker push 127.0.0.1:5000/mirror/trivy:0.74.0
-docker push 127.0.0.1:5000/mirror/trivy-java-db:1
-docker logout 127.0.0.1:5000
-```
-
-From another machine, port-forward the registry instead (`kubectl -n felis
-port-forward svc/registry 5000:5000`) and push to `localhost:5000/...` — the
-registry keys a repository by the path after the host, so pushes through either
-door land in the same place the build Pods will pull from.
 
 Put them in **both** `/etc/felis/felis.host.toml` (host-side CLI) and
 `/etc/felis/felis.pod.toml` (the file rendered into the API's `felis-config`
@@ -539,32 +541,10 @@ kubectl -n felis create secret generic felis-config \
 kubectl -n felis rollout restart deployment/felis-api
 ```
 
-Unset fields keep the defaults.
-
-`trivy_db_repository` is not optional on an egress-locked box. Trivy fetches its
-vulnerability DB from `mirror.gcr.io`/`ghcr.io` unless told otherwise, and the
-build egress policy denies those hosts — so the scan step fails closed
-(`failed to download vulnerability DB`), nothing is pushed, and NO build ever
-completes. Mirror the DB into the internal registry once:
-
-```
-# On the node (docker treats 127.0.0.1 as insecure by default), or through the
-# port-forward above, logged in as platform (see the block above):
-#   docker pull mirror.gcr.io/aquasec/trivy-db:2
-#   docker tag  mirror.gcr.io/aquasec/trivy-db:2 127.0.0.1:5000/mirror/trivy-db:2
-#   docker push 127.0.0.1:5000/mirror/trivy-db:2
-```
-
-The Job's Trivy container runs with `--insecure`, so the internal registry's plain
-HTTP works for the DB pull; reads need no credential. Re-mirror the tag periodically (Trivy refreshes the DB several times a
-day upstream; a stale mirror only means stale CVE data, never a failed gate).
-
-`trivy_java_db_repository` is the same story one step lazier: Trivy downloads
-the Java DB on demand the first time it scans an image containing Java
-artifacts — every real modpack — and that download fails closed too. Mirror
-`mirror.gcr.io/aquasec/trivy-java-db:1` alongside the vulnerability DB (commands
-above); the Java DB refreshes far less often than the vulnerability DB, so a
-one-off mirror is usually fine.
+Unset fields keep the defaults. The Job's Trivy container runs with
+`--insecure`, so the internal registry's plain HTTP works for the DB pulls;
+reads need no credential. The registry pruner keeps every tool reference the
+api resolves (§9).
 
 ### 8f. Build isolation model and residual risk
 
@@ -1158,7 +1138,8 @@ If a pull does NOT come back:
    content changed).
 4. Re-mirror a tag the registry does not have (hand-built images were never
    pushed): `sudo systemctl start docker` (the installer leaves the daemon
-   stopped), log in as `platform` (§8e), then `docker tag <ref>
+   stopped), log in as `platform` (password: `kubectl -n felis get secret
+   felis-registry-auth -o jsonpath='{.data.platform}' | base64 -d`), then `docker tag <ref>
    127.0.0.1:5000/<repo>:<tag> && docker push 127.0.0.1:5000/<repo>:<tag>`.
 
 For an image that is in neither place, the old fallback still stands: re-run the

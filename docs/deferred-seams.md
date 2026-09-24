@@ -52,17 +52,10 @@ A grep across `*.md` and `*.go` returns both sets; only the Go ones are seams.
   Secret-replica mechanism the login gate uses (bootstrap + `felis setup`), and the
   build egress lock allows exactly the control namespace on the internal port.
   Uniform for local and s3:// stores — neither hands the sandboxed build Pod a
-  filesystem view or object-store credentials. Kaniko/Trivy images are
-  external-only by default; `[registry] kaniko_image / trivy_image /
-  build_cpu_limit / build_mem_limit` override them for mirrored or air-gapped
-  installs. Trivy's vulnerability DB is the same story, and now has its own knob:
-  `[registry] trivy_db_repository` points `--db-repository` at an internal mirror
-  (recipe in docs/troubleshooting.md §8e); `trivy_java_db_repository` does the
-  same for the Java DB, which Trivy fetches so soon as the scanned image contains
-  a jar — i.e. for every real modpack build. Left unset on an egress-locked box
-  the scan step fails closed — Trivy exits on the DB download before anything is
-  pushed — which is the correct fail direction but leaves every build unfinished,
-  so the mirrors are part of a production build install.
+  filesystem view or object-store credentials. Kaniko, Trivy and Trivy's two DBs
+  come from the registry's `mirror/` copies, which the installer and
+  felis-build-tools.timer keep current (`felis mirror-build-tools`,
+  docs/troubleshooting.md §8e); the `[registry]` keys override them.
 
 ## Built; only its I/O is unverifiable from this repo
 
