@@ -39,6 +39,22 @@ import (
 // as success — see Restore.
 var ErrAlreadyExists = errors.New("restore: job already exists")
 
+// ErrOtherRestoreRunning is returned when a restore of a DIFFERENT backup is
+// still running on the server. The caller's request did not take effect; the
+// API answers 409 restore_in_progress rather than a 202 that names the backup
+// it asked for.
+var ErrOtherRestoreRunning error = otherRestoreRunning{}
+
+type otherRestoreRunning struct{}
+
+func (otherRestoreRunning) Error() string {
+	return "restore: a restore of another backup is still running"
+}
+
+// RestoreInProgress marks the error for internal/api, which cannot import this
+// package and recognises it by the method.
+func (otherRestoreRunning) RestoreInProgress() bool { return true }
+
 // Jobs is the cluster-side restore lifecycle the Restorer depends on. It is an
 // interface so the orchestration is tested against a fake; the controller-runtime
 // implementation (K8sJobs) is integration-tested only — it requires a live
@@ -47,7 +63,9 @@ var ErrAlreadyExists = errors.New("restore: job already exists")
 // whole contract, exactly matching the asynchronous 202 the handler answers.
 type Jobs interface {
 	// CreateRestoreJob renders and applies the restore Job for p. It returns
-	// ErrAlreadyExists if a Job of the same (deterministic) name already exists.
+	// ErrAlreadyExists if an unfinished Job of the same (deterministic) name is
+	// already restoring p.BackupRef, and ErrOtherRestoreRunning if it is
+	// restoring another archive.
 	CreateRestoreJob(ctx context.Context, p JobParams) error
 }
 
@@ -162,16 +180,18 @@ type Restorer struct {
 // serverName's world PVC. It returns once the Job is created — the extraction
 // runs in the Pod — so the handler's 202 ("restoring") is honest.
 //
-// It is idempotent: a duplicate enqueue while a restore Job for this server is
-// still running is treated as success rather than surfaced as an error.
+// It is idempotent: a duplicate enqueue of the same archive while a restore Job
+// for this server is still running is treated as success rather than surfaced
+// as an error.
 //
-// The coalescing key is the Job name (RestoreJobName), which depends only on the
-// server, NOT on backupRef — so a second request that arrives while one is in
-// flight is absorbed regardless of the ref it carries, and if the two refs
-// differ the second is silently dropped (the in-flight restore wins). That is
-// acceptable here: restore runs only for a Stopped server (handler gate ⑥) and
-// the handler always passes the latest backup, which for a stopped server does
-// not change, so concurrent requests carry the same ref in practice.
+// The Job name (RestoreJobName) depends only on the server, and the handler lets
+// the caller pick any of the server's backups, so a collision can carry a
+// different ref. The world-volume lock refuses a second restore while the first
+// Job runs, which makes this rare (it takes the lock seeing the Job finished
+// while its pods are still going), but when it happens the running Job's ref
+// annotation decides: the same archive coalesces, another archive is
+// ErrOtherRestoreRunning, so no caller is told "restoring" for a backup that is
+// not the one being extracted.
 //
 // A FINISHED Job — succeeded or failed — does not absorb the next request: its
 // deterministic name is replaced so the retry enqueues for real (see

@@ -103,10 +103,46 @@ func TestRestoreJobFinished(t *testing.T) {
 			Conditions: []batchv1.JobCondition{{Type: batchv1.JobFailed, Status: "True"}},
 		}}, true},
 		{"failed-and-some-active", batchv1.Job{Status: batchv1.JobStatus{Active: 1, Failed: 1}}, false},
+		// The failure is decided while the pod is still being torn down: the
+		// world-volume lock already admits the next restore, so this must too.
+		{"failure-target-pod-terminating", batchv1.Job{Status: batchv1.JobStatus{
+			Active:     1,
+			Conditions: []batchv1.JobCondition{{Type: batchv1.JobFailureTarget, Status: "True"}},
+		}}, true},
 	}
 	for _, tc := range cases {
 		if got := restoreJobFinished(&tc.job); got != tc.want {
 			t.Errorf("%s: restoreJobFinished = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+// A running restore of a different archive refuses the request instead of
+// absorbing it: the caller would otherwise get a 202 naming the backup it chose
+// while another one is extracted.
+func TestCreateRestoreJobRefusesAnotherArchiveInFlight(t *testing.T) {
+	inFlight := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "restore-survival", Namespace: "minecraft",
+			Annotations: map[string]string{AnnotationBackupRef: "/backups/other.tar.gz"},
+		},
+		Status: batchv1.JobStatus{Active: 1},
+	}
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(inFlight).Build()
+
+	err := NewK8sJobs(c).CreateRestoreJob(context.Background(), testParams())
+	if !errors.Is(err, ErrOtherRestoreRunning) {
+		t.Fatalf("CreateRestoreJob = %v, want ErrOtherRestoreRunning", err)
+	}
+	if err := (&Restorer{Jobs: NewK8sJobs(c), Config: Config{Image: "felis:test", BackupPVC: "felis-backups"}}).
+		Restore(context.Background(), "survival", "/backups/x.tar.gz"); !errors.Is(err, ErrOtherRestoreRunning) {
+		t.Fatalf("Restore = %v, want ErrOtherRestoreRunning", err)
+	}
+
+	// The same archive still coalesces.
+	p := testParams()
+	p.BackupRef = "/backups/other.tar.gz"
+	if err := NewK8sJobs(c).CreateRestoreJob(context.Background(), p); !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("same archive: CreateRestoreJob = %v, want ErrAlreadyExists", err)
 	}
 }

@@ -20,6 +20,16 @@ const (
 	managedByValue = "felis-backup"
 	componentValue = "world-backup"
 
+	// The restore chain a safety snapshot carries (internal/maintenance keeps the
+	// canonical copies; maintenance_test pins these against them).
+	labelThenRestore          = "felis.lolicon.best/then-restore"
+	thenRestorePending        = "pending"
+	annotationRestoreRef      = "felis.lolicon.best/restore-ref"
+	annotationRestoreBackupID = "felis.lolicon.best/restore-backup-id"
+
+	// ReasonPreRestore is the world_backups reason of a safety snapshot.
+	ReasonPreRestore = "pre_restore"
+
 	worldVolume     = "world"
 	backupVolume    = "backup"
 	configVolume    = "config"
@@ -54,6 +64,14 @@ type JobParams struct {
 	RunAsUser      int64
 	RunAsGroup     int64
 	FSGroup        int64
+
+	// RestoreRef / RestoreBackupID make this backup the safety snapshot in front
+	// of a restore: the Job is labelled as a pending chain and names the backup
+	// felis-api restores once the snapshot succeeds (internal/maintenance). The
+	// snapshot is recorded as ReasonPreRestore, and its prune spares the backup
+	// the restore will extract.
+	RestoreRef      string
+	RestoreBackupID string
 
 	TTLAfterFinished time.Duration
 }
@@ -106,6 +124,9 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 	if p.ConfigSecret == "" {
 		return nil, fmt.Errorf("backup: config secret name is required")
 	}
+	if p.RestoreRef != "" && p.RestoreBackupID == "" {
+		return nil, fmt.Errorf("backup: a chained restore needs the backup id")
+	}
 	limits, err := resourceLimits(p.CPULimit, p.MemLimit)
 	if err != nil {
 		return nil, err
@@ -128,6 +149,9 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 	// records an empty former_owner, exactly as the reaper does for an unowned reap.
 	if p.FormerOwner != "" {
 		args = append(args, "--former-owner", p.FormerOwner)
+	}
+	if p.RestoreRef != "" {
+		args = append(args, "--reason", ReasonPreRestore, "--protect", p.RestoreBackupID)
 	}
 
 	container := corev1.Container{
@@ -167,12 +191,22 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 	if name == "" {
 		name = BackupJobName(p.Server)
 	}
+	meta := metav1.ObjectMeta{
+		Name:      name,
+		Namespace: p.Namespace,
+		Labels:    backupLabels(p),
+	}
+	if p.RestoreRef != "" {
+		// On the Job only: felis-api settles the chain by patching this label, and
+		// the pods never need it.
+		meta.Labels[labelThenRestore] = thenRestorePending
+		meta.Annotations = map[string]string{
+			annotationRestoreRef:      p.RestoreRef,
+			annotationRestoreBackupID: p.RestoreBackupID,
+		}
+	}
 	job := &batchv1.Job{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: p.Namespace,
-			Labels:    backupLabels(p),
-		},
+		ObjectMeta: meta,
 		Spec: batchv1.JobSpec{
 			// One shot: a wedged archive must not loop. The TTL GCs the finished Job
 			// so a later backup of the same server is not blocked forever by a stale

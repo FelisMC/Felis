@@ -6,7 +6,9 @@ import (
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -37,8 +39,10 @@ func NewK8sJobs(c client.Client) *K8sJobs {
 // of the same server collides on Create. The collision is answered by the state
 // of the Job already holding the name:
 //
-//   - still running (or not yet started): ErrAlreadyExists, which the Restorer
-//     treats as success — the idempotent coalesce.
+//   - still running (or not yet started) on the same archive: ErrAlreadyExists,
+//     which the Restorer treats as success — the idempotent coalesce.
+//   - still running on another archive: ErrOtherRestoreRunning. A Job from
+//     before the ref annotation cannot be compared and coalesces as before.
 //   - finished (succeeded OR failed): the finished Job is deleted and replaced,
 //     so the caller's retry enqueues for real. Without this, the deterministic
 //     name plus the ten-minute TTL would swallow the retry — most importantly
@@ -68,9 +72,14 @@ func (k *K8sJobs) CreateRestoreJob(ctx context.Context, p JobParams) error {
 		return getErr
 	}
 	if !restoreJobFinished(&existing) {
+		if ref, ok := existing.Annotations[AnnotationBackupRef]; ok && ref != p.BackupRef {
+			return ErrOtherRestoreRunning
+		}
 		return ErrAlreadyExists
 	}
-	if deleteErr := k.c.Delete(ctx, &existing); deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
+	// Background propagation: a Job deleted with the API's default policy
+	// orphans its pods, which then outlive it for good.
+	if deleteErr := k.c.Delete(ctx, &existing, client.PropagationPolicy(metav1.DeletePropagationBackground)); deleteErr != nil && !apierrors.IsNotFound(deleteErr) {
 		return deleteErr
 	}
 	// The API server keeps the object until its job-tracking finalizer has run,
@@ -128,7 +137,21 @@ func (k *K8sJobs) recreate(ctx context.Context, job *batchv1.Job) error {
 // that is merely created-but-not-started (no active pods yet, no completions)
 // counts as in flight, not finished, so a duplicate enqueue during startup still
 // coalesces.
+//
+// A terminal condition wins over pods still shutting down: the world-volume lock
+// (internal/maintenance.JobFinished) already lets the next restore in at that
+// point, and answering it with the coalesce would be a 202 for a restore that
+// never runs.
 func restoreJobFinished(job *batchv1.Job) bool {
+	for _, c := range job.Status.Conditions {
+		if c.Status != corev1.ConditionTrue {
+			continue
+		}
+		switch c.Type {
+		case batchv1.JobComplete, batchv1.JobFailed, batchv1.JobSuccessCriteriaMet, batchv1.JobFailureTarget:
+			return true
+		}
+	}
 	if job.Status.Active > 0 {
 		return false
 	}

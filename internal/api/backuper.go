@@ -23,3 +23,13 @@ import "context"
 type Backuper interface {
 	Backup(ctx context.Context, serverName, formerOwner string) error
 }
+
+// RestoreSnapshotter is the Backuper's safety-snapshot lever: it enqueues a backup
+// of the world as it is now, labelled with the restore to run once that backup
+// has succeeded (backupID, backupRef). RestoreChains settles it: it starts the
+// restore after a successful snapshot and gives the restore up after a failed
+// one, so a restore never overwrites a world that has no copy. Until it is
+// settled the snapshot holds the world volume as a restore (internal/maintenance).
+type RestoreSnapshotter interface {
+	BackupThenRestore(ctx context.Context, serverName, formerOwner, backupID, backupRef string) error
+}

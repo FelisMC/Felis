@@ -41,3 +41,21 @@ func TestBackupMintsUniqueJobNamePerCall(t *testing.T) {
 		t.Errorf("two backups reused the Job name %q — retry would silently no-op", jobs.got[0].JobName)
 	}
 }
+
+func TestBackupThenRestoreChainsTheRestore(t *testing.T) {
+	jobs := &captureJobs{}
+	b := &Backuper{Jobs: jobs, Config: Config{Image: "img", BackupPVC: "pvc"}}
+	if err := b.BackupThenRestore(context.Background(), "survival", "usr-1", "bk-1", "/backups/a.tar.gz"); err != nil {
+		t.Fatalf("BackupThenRestore: %v", err)
+	}
+	if len(jobs.got) != 1 {
+		t.Fatalf("created %d jobs, want 1", len(jobs.got))
+	}
+	p := jobs.got[0]
+	if p.RestoreRef != "/backups/a.tar.gz" || p.RestoreBackupID != "bk-1" || p.FormerOwner != "usr-1" {
+		t.Errorf("params = %+v", p)
+	}
+	if !strings.HasPrefix(p.JobName, BackupJobName("survival")+"-") {
+		t.Errorf("JobName %q", p.JobName)
+	}
+}

@@ -20,6 +20,11 @@ const (
 	managedByValue = "felis-restore"
 	componentValue = "world-restore"
 
+	// AnnotationBackupRef records which archive the Job extracts, so a second
+	// restore that collides with it on the name can tell a duplicate of the same
+	// request from a request for a different backup (K8sJobs.CreateRestoreJob).
+	AnnotationBackupRef = "felis.lolicon.best/backup-ref"
+
 	worldVolume     = "world"
 	backupVolume    = "backup"
 	felisBinaryPath = "/usr/local/bin/felis"
@@ -144,9 +149,10 @@ func RestoreJob(p JobParams) (*batchv1.Job, error) {
 
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      RestoreJobName(p.Server),
-			Namespace: p.Namespace,
-			Labels:    restoreLabels(p),
+			Name:        RestoreJobName(p.Server),
+			Namespace:   p.Namespace,
+			Labels:      restoreLabels(p),
+			Annotations: map[string]string{AnnotationBackupRef: p.BackupRef},
 		},
 		Spec: batchv1.JobSpec{
 			// One shot: a bad archive must not loop. The TTL GCs the finished Job

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   Archive,
@@ -7,6 +7,7 @@ import {
   HardDrive,
   Loader2,
   RotateCcw,
+  ShieldCheck,
   UserMinus,
   XCircle,
 } from "lucide-react";
@@ -33,7 +34,7 @@ import { useTier } from "@/lib/tier";
 import { canManage, ownershipPending } from "@/lib/ownership";
 import { formatBytes, formatRelative, formatAbsolute, isExpired } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import type { BackupView } from "@/lib/types";
+import type { BackupView, ServerJob } from "@/lib/types";
 
 /** LatestBackupCard renders the most-recent backup as the restore card — the one a
  *  restore actually recovers (the list is created_at-descending and the backend's
@@ -67,6 +68,8 @@ function BackupRow({
       ? t("reason_inactive")
       : b.reason === "manual"
       ? t("reason_manual")
+      : b.reason === "pre_restore"
+      ? t("reason_pre_restore")
       : t("reason_label", { reason: b.reason });
 
   return (
@@ -169,13 +172,53 @@ function JobStateBadge({ state }: { state: string }) {
   return <span className="text-[10px] font-medium text-muted-foreground">{state}</span>;
 }
 
+/** ChainNote says what became of the restore behind a safety snapshot (a backup
+ *  job carrying then_restore). A snapshot that failed already reads as a failed
+ *  job with its error, so this only covers the chain itself. */
+function ChainNote({ job }: { job: ServerJob }) {
+  const { t } = useTranslation("backups");
+  if (job.state === "failed") return null;
+  if (job.then_restore === "pending") {
+    return (
+      <span className="text-xs text-muted-foreground">
+        {job.state === "running" ? t("chain_pending") : t("chain_starting")}
+      </span>
+    );
+  }
+  if (job.then_restore === "started") {
+    return <span className="text-xs text-muted-foreground">{t("chain_started")}</span>;
+  }
+  if (job.then_restore === "abandoned") {
+    // Known codes get their own wording; one this panel predates falls back to
+    // the backend's English.
+    const known = ["snapshot_failed", "not_configured", "server_gone", "server_started", "restore_busy"];
+    const reason = job.then_restore_reason;
+    const text =
+      reason && known.includes(reason)
+        ? t(`chain_abandoned_${reason}`)
+        : job.message
+        ? t("chain_abandoned_because", { reason: job.message })
+        : t("chain_abandoned");
+    return (
+      <span
+        className="max-w-[22rem] truncate text-xs text-amber-600 dark:text-amber-500"
+        title={text}
+      >
+        {text}
+      </span>
+    );
+  }
+  return null;
+}
 
-/** RestoreControls is the restore ACTION, living only on the latest backup card.
- *  Restore is the panel's one irreversible operation, so it hides behind a single
- *  button that opens a confirm dialog. The dialog states the full cost up front — the
- *  server is stopped (online players drop) and the current world is overwritten by
- *  THIS exact backup (named by relative + absolute time), and it can't be undone — and
- *  then, on confirm, runs the whole chain itself: stop → wait for Stopped → restore.
+/** RestoreControls is the restore ACTION on each unexpired backup row. Restore
+ *  overwrites the world, so it hides behind a single button that opens a confirm
+ *  dialog. The dialog states the full cost up front — the server is stopped (online
+ *  players drop) and the current world is overwritten by THIS exact backup — and
+ *  offers a safety snapshot, on by default: the backend first backs up the world as
+ *  it is and restores only once that succeeded, which makes a wrong pick undoable.
+ *  Turning it off brings back the irreversible wording. On confirm it runs the whole
+ *  chain itself: stop → wait for Stopped → restore.
  *  The backend refuses a restore unless the world volume is free (409 not_stopped), so
  *  stopping here means the user never has to detour to the console and come back. There
  *  is deliberately no type-the-name step: the friction that matters is owning the
@@ -217,8 +260,10 @@ function RestoreControls({
   // drives which progress label shows once the chain reaches a concrete stage.
   const [submitting, setSubmitting] = useState(false);
   const [step, setStep] = useState<"stopping" | "restoring" | null>(null);
-  const [done, setDone] = useState(false); // restore enqueued — terminal
+  // restore enqueued — terminal; "snapshot" when the backend backs the world up first
+  const [done, setDone] = useState<"snapshot" | "direct" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [safety, setSafety] = useState(true);
 
   if (isExpired(backup.expires_at, now)) {
     if (layout === "row") return null;
@@ -234,14 +279,14 @@ function RestoreControls({
       return (
         <div className="flex items-center gap-1.5 text-xs text-emerald-500 font-medium">
           <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-          <span>{t("restore_started_short")}</span>
+          <span>{t(done === "snapshot" ? "restore_snapshot_started_short" : "restore_started_short")}</span>
         </div>
       );
     }
     return (
       <div className="mt-4 flex items-start gap-2 border-t border-primary/20 pt-4 text-sm text-emerald-500">
         <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
-        <span>{t("restore_started")}</span>
+        <span>{t(done === "snapshot" ? "restore_snapshot_started" : "restore_started")}</span>
       </div>
     );
   }
@@ -273,8 +318,8 @@ function RestoreControls({
         }
       }
       setStep("restoring");
-      await api.restoreBackup(serverName, backup.id);
-      setDone(true);
+      const res = await api.restoreBackup(serverName, backup.id, safety);
+      setDone(res.safety_snapshot ? "snapshot" : "direct");
       setOpen(false);
     } catch (e) {
       setError(humanizeError(e));
@@ -298,12 +343,37 @@ function RestoreControls({
       <DialogHeader>
         <DialogTitle>{t("restore_btn")}</DialogTitle>
         <DialogDescription>
-          {t("restore_confirm", {
+          {t(safety ? "restore_confirm_safe" : "restore_confirm", {
             relative: formatRelative(backup.created_at, now, locale),
             absolute: formatAbsolute(backup.created_at, locale),
           })}
         </DialogDescription>
       </DialogHeader>
+
+      <label
+        className={cn(
+          "flex cursor-pointer items-start gap-3 rounded-md border p-3 text-sm transition-colors",
+          safety ? "border-primary/30 bg-primary/5" : "border-destructive/30 bg-destructive/5",
+          submitting && "cursor-not-allowed opacity-60",
+        )}
+      >
+        <input
+          type="checkbox"
+          className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer accent-primary disabled:cursor-not-allowed"
+          checked={safety}
+          disabled={submitting}
+          onChange={(e) => setSafety(e.target.checked)}
+        />
+        <span className="flex flex-col gap-1">
+          <span className="flex items-center gap-1.5 font-medium text-foreground">
+            <ShieldCheck className="h-4 w-4 shrink-0 text-primary" />
+            {t("safety_snapshot_label")}
+          </span>
+          <span className="text-xs text-muted-foreground">
+            {t(safety ? "safety_snapshot_hint" : "safety_snapshot_off_hint")}
+          </span>
+        </span>
+      </label>
 
       {step && (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -318,7 +388,7 @@ function RestoreControls({
         onConfirm={confirmRestore}
         loading={submitting}
         cancelLabel={t("cancel")}
-        confirmLabel={t("restore_confirm_yes")}
+        confirmLabel={t(safety ? "restore_confirm_yes" : "restore_confirm_yes_unsafe")}
       />
     </DialogContent>
   );
@@ -382,17 +452,30 @@ export function ServerBackups() {
 
   // The async world-operation history (the backup/restore Jobs behind every 202).
   // Read only once the viewer is resolved as owner-or-admin (the route 403s
-  // otherwise); while anything is still running it re-reads on an interval so the
-  // enqueue converges to succeeded/failed here instead of only in kubectl.
+  // otherwise); while anything is still running — or a safety snapshot still has
+  // its restore to start — it re-reads on an interval so the enqueue converges to
+  // succeeded/failed here instead of only in kubectl.
   const jobsQ = useAsync(
     () => (owned ? api.serverJobs(name) : Promise.resolve([])),
     [name, owned],
   );
   useEffect(() => {
-    if (!(jobsQ.data ?? []).some((j) => j.state === "running")) return;
+    if (!(jobsQ.data ?? []).some((j) => j.state === "running" || j.then_restore === "pending")) return;
     const id = setInterval(jobsQ.reload, 5000);
     return () => clearInterval(id);
   }, [jobsQ.data, jobsQ.reload]);
+  // A backup job that stops running has just added (or failed to add) a row, so
+  // the list is re-read then rather than only on the next visit.
+  const runningBackups = useRef<Set<string>>(new Set());
+  const reloadBackups = backupsQ.reload;
+  useEffect(() => {
+    const now = new Set(
+      (jobsQ.data ?? []).filter((j) => j.kind === "backup" && j.state === "running").map((j) => j.name),
+    );
+    const finished = [...runningBackups.current].some((n) => !now.has(n));
+    runningBackups.current = now;
+    if (finished) reloadBackups();
+  }, [jobsQ.data, reloadBackups]);
 
   const [backingUp, setBackingUp] = useState(false);
   const [backupMsg, setBackupMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
@@ -571,7 +654,9 @@ export function ServerBackups() {
                               {j.kind === "restore"
                                 ? t("job_restore")
                                 : j.kind === "backup"
-                                ? t("job_backup")
+                                ? j.then_restore
+                                  ? t("job_pre_restore")
+                                  : t("job_backup")
                                 : j.kind}
                             </span>
                             {at && (
@@ -593,6 +678,7 @@ export function ServerBackups() {
                                 {j.message}
                               </span>
                             )}
+                            {j.then_restore && <ChainNote job={j} />}
                           </div>
                         </li>
                       );

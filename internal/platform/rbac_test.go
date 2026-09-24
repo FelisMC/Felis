@@ -73,7 +73,7 @@ func TestAPIRole_CreatesJobsInBothNamespaces(t *testing.T) {
 	if mc.Namespace != "minecraft" {
 		t.Errorf("felis-api minecraft Role namespace = %q, want minecraft", mc.Namespace)
 	}
-	for _, v := range []string{"create", "get", "delete", "list"} {
+	for _, v := range []string{"create", "get", "delete", "list", "patch"} {
 		if !hasRule(mc, "batch", "jobs", v) {
 			t.Errorf("felis-api (minecraft) must have batch/jobs:%s for the restore-Job lifecycle", v)
 		}

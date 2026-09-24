@@ -20,6 +20,12 @@
 // A lock older than Grace with no Job behind it is stale (felis-api died between
 // the two writes) and holds nothing.
 //
+// A restore that starts with a safety snapshot is two Jobs in a row: the backup
+// Job carries the restore to run after it (LabelThenRestore), and felis-api
+// creates the restore Job once the backup has succeeded. The backup Job keeps
+// holding the volume, as a restore, from its creation until felis-api has
+// settled what follows it, so nothing can wake the server between the two Jobs.
+//
 // File reads and listings are not holders. They mount the volume read-only for a
 // second or two, and a server starting beside one cannot hurt either side, so
 // nobody waits for them.
@@ -50,6 +56,26 @@ const (
 	// LabelFilesMode is the file-editor operation (list, read, write) a files Job
 	// performs. Only write holds the volume.
 	LabelFilesMode = "felis.lolicon.best/files-mode"
+
+	// LabelThenRestore marks a backup Job that is the safety snapshot in front of
+	// a restore. Its value is the chain's state: ThenRestorePending until felis-api
+	// settles it, then ThenRestoreStarted or ThenRestoreAbandoned. A label, so the
+	// settling loop finds pending chains with a selector.
+	LabelThenRestore = "felis.lolicon.best/then-restore"
+	// AnnotationRestoreRef / AnnotationRestoreBackupID name the backup the chained
+	// restore extracts: its archive ref and its world_backups id.
+	AnnotationRestoreRef      = "felis.lolicon.best/restore-ref"
+	AnnotationRestoreBackupID = "felis.lolicon.best/restore-backup-id"
+	// AnnotationThenRestoreReason is the code saying why a chain was abandoned
+	// (internal/api defines the codes).
+	AnnotationThenRestoreReason = "felis.lolicon.best/then-restore-reason"
+)
+
+// States of LabelThenRestore.
+const (
+	ThenRestorePending   = "pending"
+	ThenRestoreStarted   = "started"
+	ThenRestoreAbandoned = "abandoned"
 )
 
 // Kinds of holder.
@@ -80,6 +106,13 @@ func JobKind(j *batchv1.Job) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// RestorePending reports whether j is a safety-snapshot backup Job whose restore
+// felis-api has not yet started or abandoned. Such a Job holds the volume as a
+// restore whether or not it has finished.
+func RestorePending(j *batchv1.Job) bool {
+	return j.Labels[LabelManagedBy] == "felis-backup" && j.Labels[LabelThenRestore] == ThenRestorePending
 }
 
 // JobFinished reports whether a Job has reached a terminal condition. The
@@ -119,13 +152,19 @@ func parseLock(v string) (string, time.Time, bool) {
 }
 
 // Holder reports what, if anything, holds the server's world volume at `now`:
-// the first unfinished maintenance Job among jobs, else a lock in annotations
-// younger than Grace. jobs may contain unrelated Jobs; only the server's own
-// holders count.
+// the first unfinished maintenance Job among jobs (or a safety snapshot whose
+// restore is still pending), else a lock in annotations younger than Grace. jobs
+// may contain unrelated Jobs; only the server's own holders count.
 func Holder(server string, annotations map[string]string, jobs []batchv1.Job, now time.Time) (string, bool) {
 	for i := range jobs {
 		j := &jobs[i]
-		if j.Labels[LabelServer] != server || JobFinished(j) {
+		if j.Labels[LabelServer] != server {
+			continue
+		}
+		if RestorePending(j) {
+			return KindRestore, true
+		}
+		if JobFinished(j) {
 			continue
 		}
 		if kind, ok := JobKind(j); ok {

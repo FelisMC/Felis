@@ -104,8 +104,10 @@ func APIMinecraftRole(p Params) *rbacv1.Role {
 		// nothing in felis-api lists or deletes PVCs.
 		rule([]string{groupCore}, []string{"persistentvolumeclaims"}, []string{"get"}),
 		// list backs GET /servers/{name}/jobs — the async status outlet reads the
-		// backup/restore Jobs back by the server label (read-only).
-		rule([]string{groupBatch}, []string{"jobs"}, []string{"create", "get", "delete", "list"}),
+		// backup/restore Jobs back by the server label — and finds the pending
+		// restore chains; patch settles a chain by relabelling its safety-snapshot
+		// Job (internal/api restorechain.go).
+		rule([]string{groupBatch}, []string{"jobs"}, []string{"create", "get", "delete", "list", "patch"}),
 		// Read-side console (spec §8 读=pods/log follow): list pods to find the
 		// server's running pod, then read its log subresource. Two separate rules so
 		// the verbs stay tight — list on pods, get on pods/log, and nothing else.

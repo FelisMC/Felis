@@ -76,8 +76,14 @@ func (a *API) handleListBackups(w http.ResponseWriter, r *http.Request) {
 //	   makes that atomic against a wake and refuses a second restore, backup or
 //	   file write on the same world with 409 maintenance_in_progress until the
 //	   restore Job finishes.
-//	⑧ hand off to the Restorer. Restore is asynchronous (a restore Job, like an
-//	   image build Job), so success means "enqueued" and the handler answers 202.
+//	⑧ hand off. By default the restore starts with a safety snapshot of the world
+//	   as it is (restorechain.go): a pre_restore backup Job that the restore Job
+//	   follows once it succeeds, so a wrong pick can be walked back from the
+//	   backup list. "safety_snapshot": false in the body restores straight away.
+//	   Either way the work is asynchronous (Jobs, like an image build), so
+//	   success means "enqueued" and the handler answers 202, saying in
+//	   safety_snapshot which of the two it did. A restore of another backup still
+//	   running on the world is 409 restore_in_progress.
 //
 // The opaque backup_ref is resolved server-side from the backup and handed to the
 // Restorer directly; the client never names a backup by handle (spec §286
@@ -104,8 +110,10 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Optional backup_id in the JSON body; absent → LatestBackup (backward compat).
+	// safety_snapshot defaults to true.
 	var body struct {
-		BackupID string `json:"backup_id"`
+		BackupID       string `json:"backup_id"`
+		SafetySnapshot *bool  `json:"safety_snapshot"`
 	}
 	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 		if err := decodeJSON(w, r, &body); err != nil {
@@ -204,7 +212,23 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
-	if err := a.Restorer.Restore(r.Context(), name, backup.BackupRef); err != nil {
+	snapshotter, snapshot := a.snapshotFirst()
+	if body.SafetySnapshot != nil && !*body.SafetySnapshot {
+		snapshot = false
+	}
+	if snapshot {
+		// The snapshot records the current owner, like an on-demand backup, so
+		// the way back is theirs to take.
+		err = snapshotter.BackupThenRestore(r.Context(), name, rec.OwnerID, backup.ID, backup.BackupRef)
+	} else {
+		err = a.Restorer.Restore(r.Context(), name, backup.BackupRef)
+	}
+	if err != nil {
+		if isRestoreInProgress(err) {
+			writeError(w, r, newError(http.StatusConflict, "restore_in_progress",
+				"a restore of another backup is still running on this server's world; retry once it finishes"))
+			return
+		}
 		// ErrNotFound (server vanished from the execution backend) → 404; else 500.
 		a.writeLookupError(w, r, err)
 		return
@@ -212,9 +236,10 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 
 	a.audit(r, "backup.restore", name)
 	writeJSON(w, http.StatusAccepted, map[string]any{
-		"name":      name,
-		"status":    "restoring",
-		"backup_id": backup.ID,
+		"name":            name,
+		"status":          "restoring",
+		"backup_id":       backup.ID,
+		"safety_snapshot": snapshot,
 	})
 }
 

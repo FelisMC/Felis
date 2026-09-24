@@ -2,12 +2,16 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 	"strings"
 	"time"
 
+	"felis.lolicon.best/internal/maintenance"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -115,11 +119,83 @@ func lastTerminationLine(pod *corev1.Pod) string {
 	return ""
 }
 
-// jobToAsyncJob projects one Job onto its kind/state/message. Complete condition →
+// jobToAsyncJob projects one Job onto the AsyncJob the jobs route answers with.
+func jobToAsyncJob(j *batchv1.Job) (AsyncJob, bool) {
+	aj, ok := jobOutcome(j)
+	if !ok {
+		return aj, false
+	}
+	// A safety snapshot says what became of the restore behind it; a chain given
+	// up after a snapshot that succeeded explains itself in the message.
+	if state := j.Labels[maintenance.LabelThenRestore]; state != "" && aj.Kind == "backup" {
+		aj.ThenRestore = state
+		aj.RestoreBackupID = j.Annotations[maintenance.AnnotationRestoreBackupID]
+		if reason := j.Annotations[maintenance.AnnotationThenRestoreReason]; reason != "" {
+			aj.ThenRestoreReason = reason
+			if aj.Message == "" {
+				aj.Message = chainAbandonMessage(reason)
+			}
+		}
+	}
+	return aj, true
+}
+
+// PendingRestoreChains lists the safety snapshots felis-api has yet to settle,
+// across every server (the label selector keeps it to them).
+func (k *K8sJobStatus) PendingRestoreChains(ctx context.Context) ([]RestoreChain, error) {
+	var list batchv1.JobList
+	if err := k.c.List(ctx, &list, client.InNamespace(k.namespace), client.MatchingLabels{
+		jobManagedByLabel:            jobManagedByBackup,
+		maintenance.LabelThenRestore: maintenance.ThenRestorePending,
+	}); err != nil {
+		return nil, err
+	}
+	out := make([]RestoreChain, 0, len(list.Items))
+	for i := range list.Items {
+		j := &list.Items[i]
+		snapshot := ChainSnapshotRunning
+		for _, c := range j.Status.Conditions {
+			if c.Status != corev1.ConditionTrue {
+				continue
+			}
+			switch c.Type {
+			case batchv1.JobComplete, batchv1.JobSuccessCriteriaMet:
+				snapshot = ChainSnapshotSucceeded
+			case batchv1.JobFailed, batchv1.JobFailureTarget:
+				snapshot = ChainSnapshotFailed
+			}
+		}
+		out = append(out, RestoreChain{
+			Job:       j.Name,
+			Server:    j.Labels[jobServerLabel],
+			BackupID:  j.Annotations[maintenance.AnnotationRestoreBackupID],
+			BackupRef: j.Annotations[maintenance.AnnotationRestoreRef],
+			Snapshot:  snapshot,
+		})
+	}
+	return out, nil
+}
+
+// SettleRestoreChain records how a chain was settled on its snapshot Job, which
+// releases the world volume the chain was holding.
+func (k *K8sJobStatus) SettleRestoreChain(ctx context.Context, job, state, reason string) error {
+	meta := map[string]any{"labels": map[string]string{maintenance.LabelThenRestore: state}}
+	if reason != "" {
+		meta["annotations"] = map[string]string{maintenance.AnnotationThenRestoreReason: reason}
+	}
+	patch, err := json.Marshal(map[string]any{"metadata": meta})
+	if err != nil {
+		return err
+	}
+	obj := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: k.namespace, Name: job}}
+	return k.c.Patch(ctx, obj, client.RawPatch(types.MergePatchType, patch))
+}
+
+// jobOutcome projects one Job onto its kind/state/message. Complete condition →
 // succeeded, Failed → failed with its reason (Job conditions carry the generic
 // "backoff limit exceeded" text; the pod log holds the underlying error), anything
 // else is still running.
-func jobToAsyncJob(j *batchv1.Job) (AsyncJob, bool) {
+func jobOutcome(j *batchv1.Job) (AsyncJob, bool) {
 	kind := ""
 	switch j.Labels[jobManagedByLabel] {
 	case jobManagedByBackup:

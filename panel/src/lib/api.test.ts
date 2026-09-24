@@ -634,6 +634,28 @@ describe("image whitelist and builds wire shapes", () => {
       expect((opts as RequestInit).body).toBeUndefined();
     });
 
+    it("restoreBackup sends backup_id, and safety_snapshot only when turned off", async () => {
+      const fetchSpy = fakeFetch(
+        { name: "survival", status: "restoring", backup_id: "bk1", safety_snapshot: true },
+        { status: 202 },
+      );
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.restoreBackup("survival", "bk1");
+      expect(res.safety_snapshot).toBe(true);
+      const calls = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls;
+      expect(String(calls[0][0])).toBe("/servers/survival/restore-backup");
+      expect(JSON.parse((calls[0][1] as RequestInit).body as string)).toEqual({ backup_id: "bk1" });
+
+      await api.restoreBackup("survival", "bk1", false);
+      expect(JSON.parse((calls[1][1] as RequestInit).body as string)).toEqual({
+        backup_id: "bk1",
+        safety_snapshot: false,
+      });
+
+      await api.restoreBackup("survival");
+      expect((calls[2][1] as RequestInit).body).toBeUndefined();
+    });
+
     it("serverJobs GETs /servers/{name}/jobs and unwraps the jobs array", async () => {
       const job = {
         name: "felis-backup-survival-123",

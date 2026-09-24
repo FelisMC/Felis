@@ -113,13 +113,15 @@ func (s *PGStore) EvictableBackups(ctx context.Context) ([]StoredBackup, error) 
 	return s.queryBackups(ctx, q)
 }
 
-// ExcessManualBackups lists server's present on-demand backups beyond the
-// newest keep, oldest first: what the backup Job removes after adding one.
-func (s *PGStore) ExcessManualBackups(ctx context.Context, server string, keep int) ([]StoredBackup, error) {
+// ExcessBackups lists server's present backups of one reason beyond the newest
+// keep, oldest first: what the backup Job removes after adding one. protect, when
+// set, is a backup id left out of the list whatever its age (the one a chained
+// restore is about to extract).
+func (s *PGStore) ExcessBackups(ctx context.Context, server, reason string, keep int, protect string) ([]StoredBackup, error) {
 	const q = `SELECT id, server_name, backup_ref, size_bytes, reason FROM world_backups
-		WHERE server_name = $1 AND status = 'present' AND reason = 'manual'
-		ORDER BY created_at DESC OFFSET $2`
-	out, err := s.queryBackups(ctx, q, server, keep)
+		WHERE server_name = $1 AND status = 'present' AND reason = $2 AND id <> $4
+		ORDER BY created_at DESC OFFSET $3`
+	out, err := s.queryBackups(ctx, q, server, reason, keep, protect)
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
 	}

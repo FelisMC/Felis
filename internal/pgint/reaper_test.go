@@ -187,12 +187,23 @@ func TestManualBackupRationing(t *testing.T) {
 	insert(sole, "inactive_15d", now.Add(-100*reaper.Day), false, 1000)
 	insert(copied, "inactive_15d", now.Add(-50*reaper.Day), true, 100)
 
-	excess, err := st.ExcessManualBackups(ctx, name, 5)
+	excess, err := st.ExcessBackups(ctx, name, "manual", 5, "")
 	if err != nil {
-		t.Fatalf("ExcessManualBackups: %v", err)
+		t.Fatalf("ExcessBackups: %v", err)
 	}
 	if len(excess) != 2 || excess[0].ID != manual[0] || excess[1].ID != manual[1] {
 		t.Fatalf("excess = %+v; want the two oldest manual backups, oldest first", excess)
+	}
+	// The backup a chained restore will extract is never pruned.
+	excess, err = st.ExcessBackups(ctx, name, "manual", 5, manual[0])
+	if err != nil {
+		t.Fatalf("ExcessBackups(protect): %v", err)
+	}
+	if len(excess) != 1 || excess[0].ID != manual[1] {
+		t.Fatalf("excess with %s protected = %+v; want only %s", manual[0], excess, manual[1])
+	}
+	if excess, err = st.ExcessBackups(ctx, name, "pre_restore", 0, ""); err != nil || len(excess) != 0 {
+		t.Fatalf("pre_restore excess = %+v, %v; the manual ones are not its to prune", excess, err)
 	}
 
 	all, err := st.EvictableBackups(ctx)

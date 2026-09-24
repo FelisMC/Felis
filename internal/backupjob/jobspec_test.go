@@ -199,6 +199,44 @@ func TestBackupJobArgsCarryServerAndOwner(t *testing.T) {
 	}
 }
 
+// A safety snapshot records itself as pre_restore, spares the backup the chained
+// restore extracts from its prune, and carries the chain on the Job (only there:
+// felis-api settles it by patching the Job's label).
+func TestBackupJobCarriesTheRestoreChain(t *testing.T) {
+	p := sampleJobParams()
+	p.RestoreRef, p.RestoreBackupID = "/backups/survival/a.tar.gz", "bk-1"
+	job, err := BackupJob(p)
+	if err != nil {
+		t.Fatalf("BackupJob: %v", err)
+	}
+	args := job.Spec.Template.Spec.Containers[0].Args
+	if !argsContain(args, "--reason", ReasonPreRestore) || !argsContain(args, "--protect", "bk-1") {
+		t.Errorf("args = %v, want --reason %s --protect bk-1", args, ReasonPreRestore)
+	}
+	if job.Labels[labelThenRestore] != thenRestorePending {
+		t.Errorf("job labels = %v, want %s=%s", job.Labels, labelThenRestore, thenRestorePending)
+	}
+	if _, ok := job.Spec.Template.Labels[labelThenRestore]; ok {
+		t.Errorf("pod template carries the chain label: %v", job.Spec.Template.Labels)
+	}
+	if job.Annotations[annotationRestoreRef] != p.RestoreRef || job.Annotations[annotationRestoreBackupID] != "bk-1" {
+		t.Errorf("job annotations = %v", job.Annotations)
+	}
+
+	plain, err := BackupJob(sampleJobParams())
+	if err != nil {
+		t.Fatalf("BackupJob(plain): %v", err)
+	}
+	if _, ok := plain.Labels[labelThenRestore]; ok || len(plain.Annotations) != 0 {
+		t.Errorf("a plain backup carries a chain: labels %v annotations %v", plain.Labels, plain.Annotations)
+	}
+	for _, a := range plain.Spec.Template.Spec.Containers[0].Args {
+		if a == "--reason" || a == "--protect" {
+			t.Errorf("a plain backup passes %s: %v", a, plain.Spec.Template.Spec.Containers[0].Args)
+		}
+	}
+}
+
 func TestBackupJobRejectsMissingInputs(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -208,6 +246,7 @@ func TestBackupJobRejectsMissingInputs(t *testing.T) {
 		{"no world pvc", func(p *JobParams) { p.WorldPVC = "" }},
 		{"no backup pvc", func(p *JobParams) { p.BackupPVC = "" }},
 		{"no config secret", func(p *JobParams) { p.ConfigSecret = "" }},
+		{"chain without backup id", func(p *JobParams) { p.RestoreRef = "/backups/a.tar.gz" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := sampleJobParams()

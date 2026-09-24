@@ -187,6 +187,24 @@ func (b *Backuper) Backup(ctx context.Context, serverName, formerOwner string) e
 	return nil
 }
 
+// BackupThenRestore enqueues the safety snapshot in front of a restore: a backup
+// Job like Backup's, recorded as a pre_restore backup and labelled with the
+// restore to run once it succeeds (backupID, backupRef). felis-api creates that
+// restore Job when the snapshot finishes and gives it up if the snapshot fails,
+// so the world is never overwritten without a way back; the snapshot Job holds
+// the world volume as a restore until then (internal/maintenance).
+func (b *Backuper) BackupThenRestore(ctx context.Context, serverName, formerOwner, backupID, backupRef string) error {
+	p := b.jobParams(serverName, formerOwner)
+	p.RestoreRef, p.RestoreBackupID = backupRef, backupID
+	if err := b.Jobs.CreateBackupJob(ctx, p); err != nil {
+		if errors.Is(err, ErrAlreadyExists) {
+			return nil // suffix collision — treat as enqueued
+		}
+		return err
+	}
+	return nil
+}
+
 // jobNameSuffix is a short random hex tag that makes each backup Job name unique.
 // 32 bits is ample: collisions only matter within a single Job's TTL window across
 // a handful of manual backups.

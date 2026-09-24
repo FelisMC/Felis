@@ -125,6 +125,52 @@ func TestHolderFromJobs(t *testing.T) {
 	}
 }
 
+// A safety snapshot holds the volume as a restore from its creation until
+// felis-api settles the chain, finished or not, so nothing wakes the server
+// between the backup Job and the restore Job it is followed by.
+func TestHolderFromRestoreChain(t *testing.T) {
+	j, err := backupjob.BackupJob(backupjob.JobParams{
+		Server: "survival", WorldPVC: "world-survival-0", BackupPVC: "felis-backups",
+		Namespace: "minecraft", Image: "felis:1", ConfigSecret: "felis-config", ConfigMount: "/etc/felis",
+		RestoreRef: "/backups/survival/a.tar.gz", RestoreBackupID: "bk-1",
+	})
+	if err != nil {
+		t.Fatalf("BackupJob: %v", err)
+	}
+	if j.Annotations[AnnotationRestoreRef] != "/backups/survival/a.tar.gz" || j.Annotations[AnnotationRestoreBackupID] != "bk-1" {
+		t.Fatalf("chain annotations = %v", j.Annotations)
+	}
+	if !RestorePending(j) {
+		t.Fatalf("a fresh safety snapshot is not a pending chain: labels %v", j.Labels)
+	}
+	for _, tc := range []struct {
+		name string
+		job  batchv1.Job
+		held bool
+		kind string
+	}{
+		{"running", *j, true, KindRestore},
+		{"succeeded, restore not started yet", finished(*j, batchv1.JobComplete), true, KindRestore},
+		{"failed, not settled yet", finished(*j, batchv1.JobFailed), true, KindRestore},
+		{"restore started", settled(finished(*j, batchv1.JobComplete), ThenRestoreStarted), false, ""},
+		{"abandoned", settled(finished(*j, batchv1.JobFailed), ThenRestoreAbandoned), false, ""},
+		{"abandoned while running", settled(*j, ThenRestoreAbandoned), true, KindBackup},
+	} {
+		kind, held := Holder("survival", nil, []batchv1.Job{tc.job}, now)
+		if held != tc.held || kind != tc.kind {
+			t.Errorf("%s: Holder = %q, %v; want %q, %v", tc.name, kind, held, tc.kind, tc.held)
+		}
+	}
+	if plain := backupJob(t, "survival"); RestorePending(&plain) {
+		t.Fatal("a plain backup is a pending chain")
+	}
+}
+
+func settled(j batchv1.Job, state string) batchv1.Job {
+	j.Labels = map[string]string{LabelServer: j.Labels[LabelServer], LabelManagedBy: j.Labels[LabelManagedBy], LabelThenRestore: state}
+	return j
+}
+
 func TestHolderFromLock(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

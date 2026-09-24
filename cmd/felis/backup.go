@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/backup"
+	"felis.lolicon.best/internal/backupjob"
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/naming"
 	"felis.lolicon.best/internal/reaper"
@@ -36,11 +37,18 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 	server := fs.String("server", "", "server name whose world is being backed up")
 	formerOwner := fs.String("former-owner", "", "owner recorded on the backup row (empty for an unowned server)")
 	worldsRoot := fs.String("worlds-root", "/world", "mount path of the world PVC being archived")
+	reason := fs.String("reason", reasonManual, "world_backups reason: manual, or pre_restore for the safety snapshot in front of a restore")
+	protect := fs.String("protect", "", "backup id the prune must keep (the one a chained restore extracts)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if *server == "" {
 		fmt.Fprintln(stderr, "felis backup: --server is required")
+		return 2
+	}
+	keep, ok := map[string]int{reasonManual: -1, backupjob.ReasonPreRestore: preRestoreKeep}[*reason]
+	if !ok {
+		fmt.Fprintf(stderr, "felis backup: unknown --reason %q (manual or %s)\n", *reason, backupjob.ReasonPreRestore)
 		return 2
 	}
 
@@ -59,6 +67,9 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintf(stderr, "felis backup: %v\n", err)
 		return 1
+	}
+	if keep < 0 {
+		keep = rcfg.ManualKeep
 	}
 
 	// The world PVC is mounted directly at worldsRoot; the resolver returns it for
@@ -99,7 +110,7 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 		FormerOwner: *formerOwner,
 		BackupRef:   string(ref),
 		SizeBytes:   size,
-		Reason:      "manual",
+		Reason:      *reason,
 		ExpiresAt:   time.Now().Add(rcfg.ManualRetention),
 	}
 	st := reaper.NewPGStore(drv.DB())
@@ -116,16 +127,25 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 	}
 
 	fmt.Fprintf(stdout, "felis backup: server=%s archived %d bytes to %s (backup %s)\n", *server, size, ref, rec.ID)
-	pruneManualBackups(ctx, st, archiver, *server, rcfg.ManualKeep, stdout, stderr)
+	pruneBackups(ctx, st, archiver, *server, *reason, keep, *protect, stdout, stderr)
 	return 0
 }
 
-// pruneManualBackups keeps server's newest keep on-demand backups and removes
-// the rest, oldest first, so repeated backups of one world cannot fill the
-// shared archive store. The new backup is already recorded; a removal that
-// fails is reported and retried after the next backup.
-func pruneManualBackups(ctx context.Context, st *reaper.PGStore, archiver backup.WorldArchiver, server string, keep int, stdout, stderr io.Writer) {
-	excess, err := st.ExcessManualBackups(ctx, server, keep)
+const (
+	reasonManual = "manual"
+	// preRestoreKeep is how many safety snapshots a server keeps: enough to walk
+	// back a couple of restores in a row, without every restore adding a world's
+	// worth of bytes for the full manual retention.
+	preRestoreKeep = 3
+)
+
+// pruneBackups keeps server's newest keep backups of this reason and removes the
+// rest, oldest first, so repeated backups of one world cannot fill the shared
+// archive store. protect is never removed: it is the backup a chained restore is
+// about to extract. The new backup is already recorded; a removal that fails is
+// reported and retried after the next backup.
+func pruneBackups(ctx context.Context, st *reaper.PGStore, archiver backup.WorldArchiver, server, reason string, keep int, protect string, stdout, stderr io.Writer) {
+	excess, err := st.ExcessBackups(ctx, server, reason, keep, protect)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis backup: list older backups of %s: %v\n", server, err)
 		return
@@ -139,7 +159,7 @@ func pruneManualBackups(ctx context.Context, st *reaper.PGStore, archiver backup
 			fmt.Fprintf(stderr, "felis backup: record the removal of %s: %v\n", b.ID, err)
 			continue
 		}
-		fmt.Fprintf(stdout, "felis backup: removed older backup %s of %s (keeping the newest %d)\n", b.ID, server, keep)
+		fmt.Fprintf(stdout, "felis backup: removed older %s backup %s of %s (keeping the newest %d)\n", reason, b.ID, server, keep)
 	}
 }
 

@@ -357,14 +357,21 @@ export const api = {
   // Preconditions are enforced server-side and surfaced as codes: owner-or-admin +
   // former-owner match (403), a present backup must exist (404 no_backup), and the
   // server MUST be fully stopped (409 not_stopped) since the restore writes into
-  // the live world volume. The reply is 202 {name, status:"restoring", backup_id} —
-  // success means the restore Job was enqueued, not that the world is back yet.
-  restoreBackup: (name: string, backupId?: string) =>
-    request<{ name: string; status: string; backup_id: string }>(
+  // the live world volume. By default the backend first backs up the world as it
+  // is (a "pre_restore" backup) and starts the restore only once that succeeded;
+  // safetySnapshot=false skips it. The reply is 202 {name, status:"restoring",
+  // backup_id, safety_snapshot} — success means the work was enqueued, not that
+  // the world is back yet; serverJobs shows the snapshot and the restore.
+  restoreBackup: (name: string, backupId?: string, safetySnapshot = true) => {
+    const body: { backup_id?: string; safety_snapshot?: boolean } = {};
+    if (backupId) body.backup_id = backupId;
+    if (!safetySnapshot) body.safety_snapshot = false;
+    return request<{ name: string; status: string; backup_id: string; safety_snapshot?: boolean }>(
       "POST",
       `/servers/${name}/restore-backup`,
-      backupId ? { backup_id: backupId } : undefined,
-    ),
+      Object.keys(body).length ? body : undefined,
+    );
+  },
 
   // backupNow enqueues a manual backup (spec §7 POST backup). Preconditions are
   // enforced server-side and surfaced as codes: owner-or-admin (403) and the

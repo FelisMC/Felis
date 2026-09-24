@@ -75,6 +75,12 @@ type API struct {
 	// endpoints only answer 202). Optional: nil → that route reports 503.
 	JobStatus JobStatusReader
 
+	// RestoreChains finds and settles the safety snapshots that run in front of a
+	// restore (restorechain.go). A restore takes a snapshot first only when this
+	// is set, the Backuper can chain a restore and the Restorer is wired, since
+	// something has to start the restore once the snapshot is done.
+	RestoreChains RestoreChains
+
 	// Files is the server file editor (list / read / write a file in a stopped
 	// server's world volume — the "one wrong line in server.properties" repair).
 	// Like Restorer and Backuper it is optional: when nil the file routes report

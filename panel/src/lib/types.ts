@@ -168,6 +168,12 @@ export interface ServerJob {
   message?: string;
   started_at?: string;
   finished_at?: string;
+  /** Set on a restore's safety snapshot (a backup job): "pending" until the
+   *  restore behind it starts ("started") or is given up ("abandoned", with a
+   *  code in then_restore_reason and its English in message). */
+  then_restore?: string;
+  then_restore_reason?: string;
+  restore_backup_id?: string;
 }
 
 /** WhitelistImage is one row of GET /images (the create-form dropdown source). */

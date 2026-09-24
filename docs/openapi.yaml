@@ -362,7 +362,9 @@ components:
           type: string
           description: Present only when the world had an owner at backup time.
         size_bytes: { type: integer, format: int64 }
-        reason: { type: string }
+        reason:
+          type: string
+          description: inactive_15d (idle reclaim), manual (on demand) or pre_restore (the safety snapshot in front of a restore).
         status: { type: string }
         created_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
@@ -2961,6 +2963,15 @@ paths:
       tags: [backups]
       operationId: restoreBackup
       summary: Restore a world from a backup (owner-or-admin plus a former-owner match).
+      description: >-
+        By default the restore starts with a safety snapshot: a backup of the
+        data volume as it is now (reason "pre_restore", the newest 3 kept per
+        server), and the restore Job starts only once that backup has
+        succeeded. If the snapshot fails the restore is given up and the world
+        is left as it was. GET /servers/{name}/jobs shows the snapshot as a
+        backup job whose then_restore says what became of the restore. The
+        world stays locked from the request until the restore Job finishes.
+        Pass safety_snapshot false to restore straight away.
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ accessJWT: [] }]
@@ -2976,18 +2987,25 @@ paths:
                 backup_id:
                   type: string
                   description: Which backup to restore; defaults to the latest for the server.
+                safety_snapshot:
+                  type: boolean
+                  default: true
+                  description: Back up the current world before overwriting it.
       responses:
         '202':
-          description: Restore started.
+          description: Restore started (after the safety snapshot when safety_snapshot is true).
           content:
             application/json:
               schema:
                 type: object
-                required: [name, status, backup_id]
+                required: [name, status, backup_id, safety_snapshot]
                 properties:
                   name: { type: string }
                   status: { type: string, const: restoring }
                   backup_id: { type: string }
+                  safety_snapshot:
+                    type: boolean
+                    description: Whether a safety snapshot runs first. False when the request turned it off, or when this install cannot take one.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2998,7 +3016,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '409':
-          description: Server is not stopped (not_stopped), or a restore, backup or file write already holds its world volume (maintenance_in_progress).
+          description: Server is not stopped (not_stopped), a restore, backup or file write already holds its world volume (maintenance_in_progress), or a restore of another backup is still running (restore_in_progress).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -3088,6 +3106,21 @@ paths:
                         message: { type: string }
                         started_at: { type: string, format: date-time }
                         finished_at: { type: string, format: date-time }
+                        then_restore:
+                          type: string
+                          enum: [pending, started, abandoned]
+                          description: >-
+                            Set on a restore's safety snapshot (a backup job):
+                            pending until the restore behind it starts, or
+                            abandoned with then_restore_reason saying why (its
+                            English wording is in message).
+                        then_restore_reason:
+                          type: string
+                          enum: [snapshot_failed, not_configured, server_gone, server_started, restore_busy]
+                          description: Why an abandoned chain was given up.
+                        restore_backup_id:
+                          type: string
+                          description: The backup the chained restore extracts.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':

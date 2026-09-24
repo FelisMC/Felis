@@ -287,6 +287,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	}
 
 	cluster := api.NewK8sCluster(cl, cfg.K8s.Namespace)
+	jobStatus := api.NewK8sJobStatus(cl, cfg.K8s.Namespace)
 	a := &api.API{
 		Repo:    repo,
 		Cluster: cluster,
@@ -294,16 +295,19 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		Logs:    api.NewK8sLogStreamer(clientset, cfg.K8s.Namespace),
 		// Build-log stream (spec §16) is scoped to the BUILD namespace — the same
 		// value the Builder renders Jobs into — so it follows where build Pods run.
-		BuildLogs:   api.NewK8sBuildLogStreamer(clientset, cfg.Registry.BuildNamespace),
-		Internal:    api.BearerTokenAuth{Token: token},
-		Builder:     builder,
-		Images:      imagePinner(cfg.Registry.URL),
-		Restorer:    restorer,
-		Backuper:    backuper,
-		JobStatus:   api.NewK8sJobStatus(cl, cfg.K8s.Namespace),
-		Files:       files,
-		Submissions: submissions,
-		Mailer:      mailer,
+		BuildLogs: api.NewK8sBuildLogStreamer(clientset, cfg.Registry.BuildNamespace),
+		Internal:  api.BearerTokenAuth{Token: token},
+		Builder:   builder,
+		Images:    imagePinner(cfg.Registry.URL),
+		Restorer:  restorer,
+		Backuper:  backuper,
+		JobStatus: jobStatus,
+		// A restore starts with a safety snapshot; settleRestoreChains starts the
+		// restore behind each one.
+		RestoreChains: jobStatus,
+		Files:         files,
+		Submissions:   submissions,
+		Mailer:        mailer,
 		// The external face is fronted by SessionAuth: it prefers a local session
 		// cookie (minted by the passwordless doors) and otherwise delegates to the
 		// Cloudflare-Access JWT verifier, so both auth models coexist on one face. The
@@ -410,6 +414,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// and advance any whose Job has reached a terminal phase. GET on a build also
 	// reconciles it, but this loop converges builds nobody is polling.
 	go reconcileBuilds(ctx, builder, stderr)
+	go settleRestoreChains(ctx, a, stderr)
 
 	if pruner := registryPruner(cfg, builder.Store, cluster, stderr); pruner != nil {
 		go pruner.Loop(ctx, registryPruneInterval)
@@ -645,6 +650,25 @@ func reconcileBuilds(ctx context.Context, b *build.Builder, stderr io.Writer) {
 		case <-t.C:
 			if _, err := b.SyncAll(ctx); err != nil {
 				fmt.Fprintf(stderr, "felis api: build reconcile: %v\n", err)
+			}
+		}
+	}
+}
+
+// settleRestoreChains starts the restore behind each safety snapshot that has
+// finished (and gives up the one behind a snapshot that failed). The world stays
+// locked in between, so the interval is how long a finished snapshot keeps the
+// server down before its restore begins.
+func settleRestoreChains(ctx context.Context, a *api.API, stderr io.Writer) {
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := a.SettleRestoreChains(ctx); err != nil {
+				fmt.Fprintf(stderr, "felis api: restore chains: %v\n", err)
 			}
 		}
 	}

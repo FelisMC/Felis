@@ -19,6 +19,13 @@ type AsyncJob struct {
 	Message    string    `json:"message,omitempty"`
 	StartedAt  time.Time `json:"started_at,omitzero"`
 	FinishedAt time.Time `json:"finished_at,omitzero"`
+	// ThenRestore is set on a restore's safety snapshot (a backup Job): "pending"
+	// until the restore behind it starts ("started") or is given up
+	// ("abandoned", with a ChainAbandon* code in ThenRestoreReason and its
+	// English in Message). RestoreBackupID is the backup that restore extracts.
+	ThenRestore       string `json:"then_restore,omitempty"`
+	ThenRestoreReason string `json:"then_restore_reason,omitempty"`
+	RestoreBackupID   string `json:"restore_backup_id,omitempty"`
 }
 
 // JobStatusReader reads the newest backup/restore Jobs for a server, newest

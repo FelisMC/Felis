@@ -224,6 +224,9 @@ func TestRestoreJobInvokesFelisRestoreWithParams(t *testing.T) {
 	if !argPairPresent(c.Args, "--ref", p.BackupRef) {
 		t.Errorf("args must carry --ref %q, got %v", p.BackupRef, c.Args)
 	}
+	if got := job.Annotations[AnnotationBackupRef]; got != p.BackupRef {
+		t.Errorf("backup-ref annotation = %q, want %q", got, p.BackupRef)
+	}
 	if !argPairPresent(c.Args, "--archive-store", p.ArchiveStore) {
 		t.Errorf("args must carry --archive-store %q, got %v", p.ArchiveStore, c.Args)
 	}
