@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"felis.lolicon.best/internal/registrygate"
 )
 
 // invalidf builds a validation error wrapping ErrInvalid so the API layer maps
@@ -111,6 +113,15 @@ func validateRegistryTarget(ref, registryURL string) error {
 	if registryURL != "" && host != registryHost(registryURL) {
 		return invalidf("image reference %q must target the internal registry %q, not %q",
 			ref, registryHost(registryURL), host)
+	}
+	// The registry gate refuses the build principal these repositories anyway
+	// (they hold the platform's own images and the scanner's DB mirrors); refusing
+	// here turns a build that would fail at its last step into a 400 up front.
+	root, _, _ := strings.Cut(rest, "/")
+	for _, reserved := range registrygate.ReservedRepoRoots {
+		if root == reserved || strings.HasPrefix(root, reserved+":") {
+			return invalidf("image reference %q is in %s/, which is reserved for the platform's own images", ref, reserved)
+		}
 	}
 	return nil
 }

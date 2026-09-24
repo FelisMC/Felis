@@ -71,6 +71,18 @@ const (
 	EnvAPIBaseURL = "FELIS_API_BASE_URL"
 )
 
+// Registry write credentials (internal/registrygate). The registry namespace holds
+// RegistryAuthSecretName with one key per principal (platform, build), mounted into
+// the gate sidecar. The build namespace holds RegistryPushSecretName with the build
+// principal's username/password, read only by a build Job's push container. Both
+// are provisioned out-of-band by deploy/bootstrap.sh.
+const (
+	RegistryAuthSecretName  = "felis-registry-auth"
+	RegistryPushSecretName  = "felis-registry-push"
+	RegistryPushUsernameKey = "username"
+	RegistryPushPasswordKey = "password"
+)
+
 // ForwardingSecretName / ForwardingSecretKey name the Velocity modern player-info
 // forwarding secret — the shared HMAC key the proxy signs each login handshake with
 // and every backend verifies. It is what makes a backend's idea of "who is this

@@ -1,22 +1,24 @@
 // Package build implements the image build subsystem (spec §16) — "the
 // platform's biggest security surface". A SysAdmin uploads a Dockerfile and a
-// context tarball; felis-api starts an in-cluster Kaniko Job that builds and
-// pushes to the internal registry, after which a Trivy scan gates admission to
-// the image whitelist.
+// context tarball; felis-api starts an in-cluster Job in which Kaniko builds the
+// image into a tarball, Trivy scans that tarball, and only a clean image is
+// pushed to the internal registry and admitted to the image whitelist.
 //
 // Trust model (spec §16, §22): we trust the SysAdmin at the *ingress* (only an
 // admin through Zero Trust may submit a build) but never trust the *Dockerfile
 // at runtime* — an arbitrary Dockerfile is build-time RCE whose victim is the
 // cluster, not the uploader. So the build Pod runs with a deliberately weak
-// service account in an isolated namespace that can only push to the registry
+// service account in an isolated namespace that can only reach the registry
 // and cannot touch the minecraft namespace, the felis database, or the K8s API
 // (spec §21). Those isolation guarantees live in the Job/NetworkPolicy specs
 // (jobspec.go) and are asserted by unit tests, since no cluster runs here.
 //
 // The Trivy gate is enforced as the build Pod's *exit code*: a kaniko
-// initContainer builds and pushes, then a trivy container scans the pushed ref
-// with `--exit-code 1 --severity CRITICAL`. Therefore "Job Succeeded" is
-// equivalent to "pushed AND no CRITICAL CVE". felis-api observes the Job phase
+// initContainer builds into a tarball (--no-push), a trivy initContainer scans it
+// with `--exit-code 1 --severity CRITICAL`, and only then does the push container
+// — the one holding the registry credential — publish it. Therefore "Job
+// Succeeded" is equivalent to "no CRITICAL CVE AND pushed", and a rejected image
+// never reaches the registry. felis-api observes the Job phase
 // and performs the database writes — the build Pod itself never has database
 // credentials (the weak-SA red line). On success the image is admitted to
 // image_whitelist with enabled=true (recording added_by); on failure the build
@@ -70,11 +72,11 @@ const (
 	JobUnknown JobPhase = iota
 	JobPending
 	JobRunning
-	// JobSucceeded means kaniko pushed AND trivy found no CRITICAL CVE — the
-	// scan gate passed (spec §16).
+	// JobSucceeded means trivy found no CRITICAL CVE AND the image was pushed —
+	// the scan gate passed (spec §16).
 	JobSucceeded
-	// JobFailed means kaniko failed OR trivy found a CRITICAL CVE — the build
-	// is rejected and nothing is admitted.
+	// JobFailed means kaniko failed, trivy found a CRITICAL CVE, or the push
+	// failed — the build is rejected and nothing is admitted.
 	JobFailed
 )
 
@@ -390,7 +392,7 @@ func (b *Builder) Get(ctx context.Context, id string) (*Build, error) {
 // translation (spec §16). A terminal build is returned unchanged (idempotent).
 //
 //   - JobSucceeded → status=succeeded AND the image is admitted to the whitelist
-//     with enabled=true (kaniko pushed and trivy found no CRITICAL CVE).
+//     with enabled=true (trivy found no CRITICAL CVE and the push landed).
 //   - JobFailed / JobUnknown → status=failed, nothing admitted (a CRITICAL CVE
 //     surfaces here as a failed Job, since trivy runs with --exit-code 1).
 //   - JobPending / JobRunning → no change.

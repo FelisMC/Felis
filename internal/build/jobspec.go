@@ -26,14 +26,16 @@ const (
 )
 
 // Container names within the build Pod. Kaniko is the initContainer that builds
-// and pushes the image — its log IS the "build log" an admin watches (spec §16);
-// Trivy is the main container whose CRITICAL-CVE verdict gates admission and is
-// surfaced via the build status, not the log stream. Exported so the build-log
-// streamer (internal/api.K8sBuildLogStreamer, spec §416 日志流复用 §8) follows the
-// same container this Job defines — one source of truth for the name.
+// the image into a tarball — its log IS the "build log" an admin watches (spec
+// §16); Trivy is the next initContainer, whose CRITICAL-CVE verdict gates both the
+// push and admission and is surfaced via the build status, not the log stream;
+// Push is the main container that publishes the scanned tarball. Exported so the
+// build-log streamer (internal/api.K8sBuildLogStreamer, spec §416 日志流复用 §8)
+// follows the same container this Job defines — one source of truth for the name.
 const (
 	ContainerKaniko = "kaniko"
 	ContainerTrivy  = "trivy"
+	ContainerPush   = "push"
 	// ContainerFetch is the initContainer that pulls a submission's build context
 	// from the felis-api internal face and extracts it into the shared emptyDir.
 	// It exists only for an http(s) ContextRef (see BuildJob); a ref Kaniko can
@@ -44,7 +46,18 @@ const (
 	// initContainer writes the extracted tree there, Kaniko reads it read-only.
 	contextVolume    = "context"
 	contextMountPath = "/context"
+
+	// imageVolume/imageTarPath carry the built image from Kaniko (--tar-path) to
+	// Trivy (--input) and then to the push container.
+	imageVolume    = "image"
+	imageMountPath = "/image"
+	imageTarPath   = imageMountPath + "/image.tar"
 )
+
+// imageSizeLimit bounds the built image tarball. A modpack image is typically a
+// JRE, a server jar and a few hundred MiB of mods; 10 GiB leaves ample room while
+// still stopping a runaway build from filling the node's disk.
+var imageSizeLimit = resource.MustParse("10Gi")
 
 // contextSizeLimit bounds the extracted (attacker-controlled) context tree so a
 // tarball bomb wedges the build pod instead of the node's disk. The compressed
@@ -120,13 +133,24 @@ func buildLabels(p JobParams) map[string]string {
 //     CRITICAL CVE fails the Pod and therefore the Job — the only retained
 //     automatic admission gate (spec §16).
 //
-// Sequencing: kaniko runs as an initContainer (build + push to the internal
-// registry) and trivy as the main container (scan the pushed ref). The Pod
-// succeeds only if kaniko pushed AND trivy found no CRITICAL CVE.
+// Sequencing: kaniko builds with --no-push into a tarball, trivy scans that
+// tarball, and only then does the push container publish it. So:
+//
+//   - an image that fails the scan is never published — it used to be pushed to
+//     the final tag first and scanned after, overwriting whatever that tag held;
+//   - the registry credential lives in the push container alone. Kaniko executes
+//     the untrusted Dockerfile and holds no credential at all, and the registry
+//     refuses anonymous writes (internal/registrygate).
+//
+// The Pod succeeds only if kaniko built, trivy found no CRITICAL CVE, and the push
+// landed.
 func BuildJob(p JobParams) (*batchv1.Job, error) {
 	limits, err := resourceLimits(p.CPULimit, p.MemLimit)
 	if err != nil {
 		return nil, err
+	}
+	if p.FelisImage == "" {
+		return nil, fmt.Errorf("build: FelisImage is required: the push container runs it")
 	}
 	deadline := int64(p.Deadline / time.Second)
 	if deadline <= 0 {
@@ -164,12 +188,15 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 	// in place (s3://, or a path an installer pre-mounted) passes through untouched.
 	contextPath := p.ContextRef
 	initContainers := []corev1.Container{}
-	var kanikoMounts []corev1.VolumeMount
-	var podVolumes []corev1.Volume
+	imageMount := corev1.VolumeMount{Name: imageVolume, MountPath: imageMountPath}
+	kanikoMounts := []corev1.VolumeMount{imageMount}
+	podVolumes := []corev1.Volume{{
+		Name: imageVolume,
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
+			SizeLimit: quantityPtr(imageSizeLimit),
+		}},
+	}}
 	if isHTTPContextRef(p.ContextRef) {
-		if p.FelisImage == "" {
-			return nil, fmt.Errorf("build: context ref %q needs FelisImage for the fetch initContainer", p.ContextRef)
-		}
 		contextPath = contextMountPath
 		// The fetch container runs as root while Kaniko keeps the image default
 		// (also root): Kaniko re-copies the Dockerfile out of the context and
@@ -209,17 +236,17 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 			SecurityContext: fetchSec,
 		}
 		initContainers = append(initContainers, fetch)
-		kanikoMounts = []corev1.VolumeMount{{Name: contextVolume, MountPath: contextMountPath, ReadOnly: true}}
-		podVolumes = []corev1.Volume{{
+		kanikoMounts = append(kanikoMounts, corev1.VolumeMount{Name: contextVolume, MountPath: contextMountPath, ReadOnly: true})
+		podVolumes = append(podVolumes, corev1.Volume{
 			Name: contextVolume,
 			VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
 				// The extracted tree is attacker-controlled; bound it so a tarball
 				// bomb wedges THIS pod (admitted failure) instead of filling the
 				// node's disk. The compressed upload is capped at 1 GiB by the
 				// submit lane, and 4 GiB leaves room for a typical expansion.
-				SizeLimit: sizeLimitPtr(),
+				SizeLimit: quantityPtr(contextSizeLimit),
 			}},
-		}}
+		})
 	}
 
 	kaniko := corev1.Container{
@@ -228,16 +255,16 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 		Args: []string{
 			"--dockerfile=Dockerfile",
 			"--context=" + contextPath,
+			// --destination only names the image inside the tarball; --no-push
+			// keeps Kaniko off the registry's write path entirely.
 			"--destination=" + p.ImageRef,
-			// The internal registry is in-cluster only and may serve plain HTTP;
-			// it is never a public ingress (spec §17). Both directions need the
-			// insecure flags: --insecure/--skip-tls-verify cover the PUSH, while
-			// the pull side needs its own pair — a Dockerfile's `FROM
-			// registry.felis.svc:5000/...` otherwise fails with "server gave
-			// HTTP response to HTTPS client", breaking every build based on a
+			"--no-push",
+			"--tar-path=" + imageTarPath,
+			// The internal registry is in-cluster only and serves plain HTTP; it
+			// is never a public ingress (spec §17). A Dockerfile's `FROM
+			// registry.felis.svc:5000/...` fails with "server gave HTTP response
+			// to HTTPS client" without these, breaking every build based on a
 			// platform image (the canonical modpack shape).
-			"--insecure",
-			"--skip-tls-verify",
 			"--insecure-pull",
 			"--skip-tls-verify-pull",
 		},
@@ -249,6 +276,7 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 
 	trivyArgs := []string{
 		"image",
+		"--input", imageTarPath,
 		"--exit-code", "1",
 		"--severity", "CRITICAL",
 		"--no-progress",
@@ -265,13 +293,43 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 	if p.TrivyJavaDBRepository != "" {
 		trivyArgs = append(trivyArgs, "--java-db-repository", p.TrivyJavaDBRepository)
 	}
-	trivyArgs = append(trivyArgs, p.ImageRef)
 	trivy := corev1.Container{
 		Name:            ContainerTrivy,
 		Image:           p.TrivyImage,
 		Args:            trivyArgs,
+		VolumeMounts:    []corev1.VolumeMount{{Name: imageVolume, MountPath: imageMountPath, ReadOnly: true}},
 		Resources:       corev1.ResourceRequirements{Limits: limits, Requests: buildRequests(limits)},
 		SecurityContext: sec,
+	}
+	initContainers = append(initContainers, trivy)
+
+	// The publish step: the only container that holds the registry credential,
+	// read from a Secret the installer materializes in this namespace. It runs
+	// the felis binary (internal/imagepush), which only reads the tarball.
+	pushSec := sec.DeepCopy()
+	pushSec.ReadOnlyRootFilesystem = boolPtr(true)
+	secretEnv := func(name, key string) corev1.EnvVar {
+		return corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: naming.RegistryPushSecretName},
+			Key:                  key,
+		}}}
+	}
+	push := corev1.Container{
+		Name:  ContainerPush,
+		Image: p.FelisImage,
+		Args: []string{
+			"push-image",
+			"--tar=" + imageTarPath,
+			"--ref=" + p.ImageRef,
+			"--scheme=http",
+		},
+		Env: []corev1.EnvVar{
+			secretEnv("FELIS_REGISTRY_USERNAME", naming.RegistryPushUsernameKey),
+			secretEnv("FELIS_REGISTRY_PASSWORD", naming.RegistryPushPasswordKey),
+		},
+		VolumeMounts:    []corev1.VolumeMount{{Name: imageVolume, MountPath: imageMountPath, ReadOnly: true}},
+		Resources:       corev1.ResourceRequirements{Limits: limits, Requests: buildRequests(limits)},
+		SecurityContext: pushSec,
 	}
 
 	job := &batchv1.Job{
@@ -293,7 +351,7 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 					ServiceAccountName:           p.ServiceAccount,
 					AutomountServiceAccountToken: boolPtr(false),
 					InitContainers:               initContainers,
-					Containers:                   []corev1.Container{trivy},
+					Containers:                   []corev1.Container{push},
 					Volumes:                      podVolumes,
 				},
 			},
@@ -307,6 +365,20 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 // fetch initContainer can turn into a local path for Kaniko.
 func isHTTPContextRef(ref string) bool {
 	return strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://")
+}
+
+// ClusterDNSPeer selects the cluster DNS pods (CoreDNS in kube-system, labelled
+// k8s-app=kube-dns on k3s and upstream alike) — the only resolver a sandboxed pod
+// needs.
+func ClusterDNSPeer() networkingv1.NetworkPolicyPeer {
+	return networkingv1.NetworkPolicyPeer{
+		NamespaceSelector: &metav1.LabelSelector{
+			MatchLabels: map[string]string{"kubernetes.io/metadata.name": "kube-system"},
+		},
+		PodSelector: &metav1.LabelSelector{
+			MatchLabels: map[string]string{"k8s-app": "kube-dns"},
+		},
+	}
 }
 
 // NetPolParams parameterises the build-namespace egress lock.
@@ -329,8 +401,8 @@ type NetPolParams struct {
 // BuildNetworkPolicy renders the default-deny egress policy for build Pods
 // (spec §16, §21: build ns egress 仅放 registry + 包源,默认拒外网). It selects
 // build Pods by the managed-by label, denies all ingress, and allows egress
-// only to DNS, the internal registry, and any explicitly configured package
-// mirrors. There is deliberately no allow-all egress rule.
+// only to the cluster DNS pods, the internal registry, felis-api's internal
+// face, and any explicitly configured package mirrors. There is deliberately no allow-all egress rule.
 func BuildNetworkPolicy(p NetPolParams) *networkingv1.NetworkPolicy {
 	port := p.RegistryPort
 	if port == 0 {
@@ -351,9 +423,13 @@ func BuildNetworkPolicy(p NetPolParams) *networkingv1.NetworkPolicy {
 	ctxPort := intstr.FromInt32(apiPort)
 
 	egress := []networkingv1.NetworkPolicyEgressRule{
-		// DNS resolution: port-restricted to 53, so this is not an open-internet
-		// hole — name resolution only.
+		// DNS resolution, to the cluster resolver only. Port 53 to ANY address
+		// would be an exfiltration channel out of an otherwise sealed sandbox
+		// (a Dockerfile RUN can speak DNS, or anything else, to a resolver it
+		// controls); the cluster DNS Service is DNATed to these pods before the
+		// policy is evaluated, so selecting them is what "resolve names" means.
 		{
+			To: []networkingv1.NetworkPolicyPeer{ClusterDNSPeer()},
 			Ports: []networkingv1.NetworkPolicyPort{
 				{Protocol: &dnsUDP, Port: &dns53},
 				{Protocol: &dnsTCP, Port: &dns53},
@@ -487,11 +563,10 @@ func buildRequests(limits corev1.ResourceList) corev1.ResourceList {
 func boolPtr(b bool) *bool    { return &b }
 func int32Ptr(i int32) *int32 { return &i }
 
-// sizeLimitPtr returns a copy of contextSizeLimit for a VolumeSource (the API
-// object only ever gets serialized, but a shared pointer across rendered Jobs
-// invites accidental aliasing).
-func sizeLimitPtr() *resource.Quantity {
-	q := contextSizeLimit
+// quantityPtr returns a pointer to a copy of q for a VolumeSource (the API object
+// only ever gets serialized, but a shared pointer across rendered Jobs invites
+// accidental aliasing).
+func quantityPtr(q resource.Quantity) *resource.Quantity {
 	return &q
 }
 func int64Ptr(i int64) *int64 { return &i }

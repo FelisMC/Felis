@@ -217,6 +217,36 @@ func TestSubmitRejectsExternalRegistryTarget(t *testing.T) {
 	}
 }
 
+// The platform's own images and the scanner's DB mirrors live under felis/ and
+// mirror/; the registry gate refuses the build principal there, and Validate turns
+// that into a 400 before a Job spends minutes building an image it cannot push.
+func TestValidateRejectsReservedRepos(t *testing.T) {
+	cfg := Config{RegistryURL: "registry.felis.svc:5000"}
+	for _, ref := range []string{
+		"registry.felis.svc:5000/felis/felis:v0.1.0",
+		"registry.felis.svc:5000/felis:latest",
+		"registry.felis.svc:5000/felis",
+		"registry.felis.svc:5000/mirror/trivy-db:2",
+	} {
+		req := goodRequest()
+		req.ImageRef = ref
+		if err := Validate(req, cfg); !errors.Is(err, ErrInvalid) {
+			t.Errorf("Validate(%q) = %v, want ErrInvalid", ref, err)
+		}
+	}
+	for _, ref := range []string{
+		"registry.felis.svc:5000/user-uploads/s1:latest",
+		"registry.felis.svc:5000/felis-pack:1",
+		"registry.felis.svc:5000/builds/felis:1",
+	} {
+		req := goodRequest()
+		req.ImageRef = ref
+		if err := Validate(req, cfg); err != nil {
+			t.Errorf("Validate(%q) = %v, want accepted", ref, err)
+		}
+	}
+}
+
 func TestSubmitRejectsEmptyAndOversizeDockerfile(t *testing.T) {
 	b, _, _ := newBuilder()
 	req := goodRequest()

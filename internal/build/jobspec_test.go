@@ -17,6 +17,7 @@ func sampleJobParams() JobParams {
 		Namespace:      defaultNamespace,
 		ServiceAccount: defaultServiceAccount,
 		RegistryURL:    "registry.felis.svc:5000",
+		FelisImage:     "felis:test",
 		KanikoImage:    defaultKanikoImage,
 		TrivyImage:     defaultTrivyImage,
 		Deadline:       30 * time.Minute,
@@ -159,54 +160,118 @@ func TestBuildJobRequestsAreASchedulableFloor(t *testing.T) {
 	}
 }
 
-// kaniko builds and pushes to the request's exact target; trivy gates admission
-// with --exit-code 1 --severity CRITICAL on that same ref.
-func TestBuildJobKanikoPushesAndTrivyGates(t *testing.T) {
+// kaniko builds the request's exact target into a tarball and never pushes;
+// trivy gates on that tarball with --exit-code 1 --severity CRITICAL; only then
+// does the push container publish it. An image that fails the scan is therefore
+// never in the registry, and the credential is never where the Dockerfile runs.
+func TestBuildJobScansBeforePush(t *testing.T) {
 	p := sampleJobParams()
 	job, err := BuildJob(p)
 	if err != nil {
 		t.Fatalf("BuildJob: %v", err)
 	}
-	if len(job.Spec.Template.Spec.InitContainers) != 1 {
-		t.Fatalf("expected exactly one (kaniko) initContainer")
+	inits := job.Spec.Template.Spec.InitContainers
+	if len(inits) != 2 || inits[0].Name != ContainerKaniko || inits[1].Name != ContainerTrivy {
+		t.Fatalf("initContainers = %v, want [kaniko trivy]", initNames(inits))
 	}
-	kaniko := job.Spec.Template.Spec.InitContainers[0]
-	if kaniko.Name != "kaniko" {
-		t.Errorf("init container = %q, want kaniko", kaniko.Name)
+	kaniko, trivy := inits[0], inits[1]
+	for _, want := range []string{"--destination=" + p.ImageRef, "--no-push", "--tar-path=" + imageTarPath} {
+		if !hasArg(kaniko.Args, want) {
+			t.Errorf("kaniko args = %v, want %s", kaniko.Args, want)
+		}
 	}
-	if !hasArg(kaniko.Args, "--destination="+p.ImageRef) {
-		t.Errorf("kaniko must push to %q, args=%v", p.ImageRef, kaniko.Args)
+	for _, pushFlag := range []string{"--insecure", "--skip-tls-verify"} {
+		if hasArg(kaniko.Args, pushFlag) {
+			t.Errorf("kaniko args = %v still carry the push-side %s", kaniko.Args, pushFlag)
+		}
 	}
-	// The pull direction needs its own flags: --insecure/--skip-tls-verify only
-	// cover the push, and without the pull pair a Dockerfile's `FROM` fails
-	// against the plain-HTTP registry ("server gave HTTP response to HTTPS
-	// client") — the live failure this guards.
+	// The pull direction needs its own flags: without the pull pair a
+	// Dockerfile's `FROM` fails against the plain-HTTP registry ("server gave
+	// HTTP response to HTTPS client") — the live failure this guards.
 	for _, flag := range []string{"--insecure-pull", "--skip-tls-verify-pull"} {
 		if !hasArg(kaniko.Args, flag) {
 			t.Errorf("kaniko args = %v, want %s so base-image pulls use plain HTTP", kaniko.Args, flag)
 		}
 	}
 
-	if len(job.Spec.Template.Spec.Containers) != 1 {
-		t.Fatalf("expected exactly one (trivy) main container")
+	// The scan gate: a CRITICAL CVE must fail the Pod (and thus the Job) before
+	// the push container ever starts.
+	if !argPairPresent(trivy.Args, "--input", imageTarPath) {
+		t.Errorf("trivy must scan the built tarball, args=%v", trivy.Args)
 	}
-	trivy := job.Spec.Template.Spec.Containers[0]
-	if trivy.Name != "trivy" {
-		t.Errorf("main container = %q, want trivy", trivy.Name)
+	if hasArg(trivy.Args, p.ImageRef) {
+		t.Errorf("trivy must not scan the registry ref (nothing is pushed yet), args=%v", trivy.Args)
 	}
-	// The scan gate: a CRITICAL CVE must fail the Pod (and thus the Job).
 	if !argPairPresent(trivy.Args, "--exit-code", "1") {
 		t.Errorf("trivy must run with --exit-code 1, args=%v", trivy.Args)
 	}
 	if !argPairPresent(trivy.Args, "--severity", "CRITICAL") {
 		t.Errorf("trivy must gate on --severity CRITICAL, args=%v", trivy.Args)
 	}
-	if !hasArg(trivy.Args, p.ImageRef) {
-		t.Errorf("trivy must scan the pushed ref %q, args=%v", p.ImageRef, trivy.Args)
-	}
 	// No DB repositories configured: Trivy keeps its own defaults.
 	if hasArg(trivy.Args, "--db-repository") || hasArg(trivy.Args, "--java-db-repository") {
 		t.Errorf("unset DB repositories must not render --db-repository/--java-db-repository, args=%v", trivy.Args)
+	}
+
+	if len(job.Spec.Template.Spec.Containers) != 1 {
+		t.Fatalf("expected exactly one (push) main container")
+	}
+	push := job.Spec.Template.Spec.Containers[0]
+	if push.Name != ContainerPush || push.Image != p.FelisImage {
+		t.Errorf("main container = %s (%s), want push running the platform image", push.Name, push.Image)
+	}
+	if !hasArg(push.Args, "push-image") || !hasArg(push.Args, "--ref="+p.ImageRef) || !hasArg(push.Args, "--tar="+imageTarPath) {
+		t.Errorf("push args = %v, want push-image --tar=%s --ref=%s", push.Args, imageTarPath, p.ImageRef)
+	}
+	creds := map[string]string{}
+	for _, e := range push.Env {
+		if e.Value != "" || e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil {
+			t.Errorf("push env %s must come from a secretKeyRef, got %#v", e.Name, e)
+			continue
+		}
+		creds[e.Name] = e.ValueFrom.SecretKeyRef.Name
+	}
+	for _, name := range []string{"FELIS_REGISTRY_USERNAME", "FELIS_REGISTRY_PASSWORD"} {
+		if creds[name] != "felis-registry-push" {
+			t.Errorf("push env %s from secret %q, want felis-registry-push", name, creds[name])
+		}
+	}
+	// Nothing else in the pod may hold the credential.
+	for _, c := range inits {
+		for _, e := range c.Env {
+			if e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil && e.ValueFrom.SecretKeyRef.Name == "felis-registry-push" {
+				t.Errorf("container %s holds the registry credential", c.Name)
+			}
+		}
+	}
+	// The tarball is shared through a bounded emptyDir, read-only past kaniko.
+	var imgVol *corev1.Volume
+	for i := range job.Spec.Template.Spec.Volumes {
+		if job.Spec.Template.Spec.Volumes[i].Name == imageVolume {
+			imgVol = &job.Spec.Template.Spec.Volumes[i]
+		}
+	}
+	if imgVol == nil || imgVol.EmptyDir == nil || imgVol.EmptyDir.SizeLimit == nil {
+		t.Fatalf("image volume must be a size-limited emptyDir, got %#v", imgVol)
+	}
+	for _, c := range []corev1.Container{trivy, push} {
+		ro := false
+		for _, m := range c.VolumeMounts {
+			if m.Name == imageVolume && m.ReadOnly {
+				ro = true
+			}
+		}
+		if !ro {
+			t.Errorf("%s must mount the image tarball read-only, got %v", c.Name, c.VolumeMounts)
+		}
+	}
+}
+
+func TestBuildJobNeedsFelisImage(t *testing.T) {
+	p := sampleJobParams()
+	p.FelisImage = ""
+	if _, err := BuildJob(p); err == nil {
+		t.Fatal("a build without FelisImage has no push container and must fail to render")
 	}
 }
 
@@ -274,21 +339,23 @@ func TestBuildJobTrivyDBRepositoryOverride(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildJob: %v", err)
 	}
-	trivy := job.Spec.Template.Spec.Containers[0]
+	trivy := job.Spec.Template.Spec.InitContainers[1]
+	if trivy.Name != ContainerTrivy {
+		t.Fatalf("initContainers = %v, want trivy second", initNames(job.Spec.Template.Spec.InitContainers))
+	}
 	if !argPairPresent(trivy.Args, "--db-repository", p.TrivyDBRepository) {
 		t.Errorf("trivy args = %v, want --db-repository %s", trivy.Args, p.TrivyDBRepository)
 	}
 	if !argPairPresent(trivy.Args, "--java-db-repository", p.TrivyJavaDBRepository) {
 		t.Errorf("trivy args = %v, want --java-db-repository %s", trivy.Args, p.TrivyJavaDBRepository)
 	}
-	// The scanned image ref must stay the last argument.
-	if last := trivy.Args[len(trivy.Args)-1]; last != p.ImageRef {
-		t.Errorf("image ref must remain the last argument, args=%v", trivy.Args)
+	if !argPairPresent(trivy.Args, "--input", imageTarPath) {
+		t.Errorf("trivy args = %v, want --input %s", trivy.Args, imageTarPath)
 	}
 }
 
 // The build namespace egress lock must be default-deny: deny all ingress, and
-// allow egress only to DNS + the internal registry — never an allow-all rule.
+// allow egress only to cluster DNS + the internal registry — never an allow-all rule.
 func TestBuildNetworkPolicyIsDefaultDeny(t *testing.T) {
 	np := BuildNetworkPolicy(NetPolParams{
 		Namespace:         "felis-build",
@@ -321,6 +388,19 @@ func TestBuildNetworkPolicyIsDefaultDeny(t *testing.T) {
 	if !egressAllowsPort(np, 53) {
 		t.Error("egress must allow DNS (port 53)")
 	}
+	// ...but only to the cluster resolver: port 53 to any address is a way out
+	// of the sandbox for anything that speaks DNS (or anything at all) on 53.
+	for i, rule := range np.Spec.Egress {
+		for _, port := range rule.Ports {
+			if port.Port == nil || port.Port.IntVal != 53 {
+				continue
+			}
+			if len(rule.To) != 1 || rule.To[0].PodSelector == nil || rule.To[0].PodSelector.MatchLabels["k8s-app"] != "kube-dns" ||
+				rule.To[0].NamespaceSelector == nil || rule.To[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "kube-system" {
+				t.Errorf("egress rule %d opens port 53 to %v, want only kube-system/k8s-app=kube-dns", i, rule.To)
+			}
+		}
+	}
 	// The context fetch: build Pods stream submissions from the control
 	// namespace's internal face (defaults: felis + 8081).
 	if !egressAllowsNamespace(np, "felis") {
@@ -343,8 +423,8 @@ func TestBuildJobFetchesHTTPContext(t *testing.T) {
 		t.Fatalf("BuildJob: %v", err)
 	}
 	inits := job.Spec.Template.Spec.InitContainers
-	if len(inits) != 2 || inits[0].Name != ContainerFetch || inits[1].Name != ContainerKaniko {
-		t.Fatalf("initContainers = %v, want [%s %s]", initNames(inits), ContainerFetch, ContainerKaniko)
+	if len(inits) != 3 || inits[0].Name != ContainerFetch || inits[1].Name != ContainerKaniko || inits[2].Name != ContainerTrivy {
+		t.Fatalf("initContainers = %v, want [%s %s %s]", initNames(inits), ContainerFetch, ContainerKaniko, ContainerTrivy)
 	}
 	fetch, kaniko := inits[0], inits[1]
 	if fetch.Image != p.FelisImage {
@@ -405,17 +485,6 @@ func TestBuildJobFetchesHTTPContext(t *testing.T) {
 	}
 }
 
-// Without the platform image the fetch initContainer cannot run, so rendering an
-// http(s) context must fail loudly at Job-creation time, not with an ImagePull
-// error at 3am.
-func TestBuildJobHTTPContextNeedsFelisImage(t *testing.T) {
-	p := sampleJobParams()
-	p.ContextRef = "https://example.invalid/sub-abc/context"
-	if _, err := BuildJob(p); err == nil {
-		t.Fatal("http(s) context without FelisImage must fail to render")
-	}
-}
-
 // A ref Kaniko reads natively (or an installer pre-mounted) must NOT grow the
 // fetch initContainer: the transport is for http(s) only.
 func TestBuildJobNativeContextNeedsNoFetch(t *testing.T) {
@@ -425,11 +494,13 @@ func TestBuildJobNativeContextNeedsNoFetch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildJob: %v", err)
 	}
-	if len(job.Spec.Template.Spec.InitContainers) != 1 || job.Spec.Template.Spec.InitContainers[0].Name != ContainerKaniko {
-		t.Errorf("a native ref must render just kaniko, got %v", initNames(job.Spec.Template.Spec.InitContainers))
+	if inits := job.Spec.Template.Spec.InitContainers; len(inits) != 2 || inits[0].Name != ContainerKaniko {
+		t.Errorf("a native ref must render just kaniko + trivy, got %v", initNames(inits))
 	}
-	if len(job.Spec.Template.Spec.Volumes) != 0 {
-		t.Errorf("a native ref must render no context volume, got %v", job.Spec.Template.Spec.Volumes)
+	for _, v := range job.Spec.Template.Spec.Volumes {
+		if v.Name == contextVolume {
+			t.Errorf("a native ref must render no context volume, got %v", job.Spec.Template.Spec.Volumes)
+		}
 	}
 }
 

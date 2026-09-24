@@ -84,6 +84,11 @@ const (
 	// pull lands here. Loopback-only is deliberate — the registry serves plain HTTP
 	// and must never be reachable off the node.
 	registryLoopbackHost = "127.0.0.1"
+	// registryGateName is the write-authorization sidecar in the registry pod, and
+	// registryAuth* mount its per-principal token files (naming.RegistryAuthSecretName).
+	registryGateName      = "registry-gate"
+	registryAuthVolume    = "registry-auth"
+	registryAuthMountPath = "/etc/felis-registry-auth"
 
 	configVolume   = "config"
 	tmpVolume      = "tmp"
@@ -676,24 +681,51 @@ func controlPlaneDeployment(p Params, sa string, container corev1.Container, vol
 // Build Jobs push to registry.<registry-ns>.svc:<port>, the destination the build
 // egress NetworkPolicy opens — so this Deployment+Service+PVC make that policy
 // target real. The registry never calls the K8s API, so its token auto-mount is
-// disabled (matching the weak build/restore SA hygiene), and REGISTRY_HTTP_ADDR
-// pins its listen port to the Service port instead of trusting the image default.
+// disabled (matching the weak build/restore SA hygiene).
 //
-// The container port also carries a loopback hostPort (registryLoopbackHost): it is
+// The pod has two containers. registry:2 itself has no auth and listens on the
+// pod's loopback only (registryUpstreamPort), so nothing outside the pod can reach
+// it directly. The gate sidecar (felis registry-gate, internal/registrygate) owns
+// the registry port: reads pass anonymously, writes need the platform or build
+// credential from the registry-auth Secret, and the build credential cannot touch
+// the platform's own repositories. Before the gate any pod that could reach the
+// registry could overwrite felis/felis.
+//
+// The gate's port also carries a loopback hostPort (registryLoopbackHost): it is
 // the node-side pull path. The node's containerd cannot dial the Service VIP, so
 // deploy/bootstrap.sh writes a registries.yaml mirror rewriting
 // registry.<registry-ns>.svc:<port> onto http://127.0.0.1:<port>, and that request
 // arrives at this hostPort — which is what lets kubelet re-pull a garbage-collected
-// platform image without an operator re-import.
+// platform image without an operator re-import. The gate runs the felis image, so
+// the installer pins that image in containerd: the registry must never depend on
+// pulling its own gate from itself.
 func registryDeployment(p Params) *appsv1.Deployment {
 	p = p.withDefaults()
 	labels := registryLabels()
+	upstreamPort := registryUpstreamPort(p)
 
-	container := corev1.Container{
+	registry := corev1.Container{
 		Name:  registryName,
 		Image: p.RegistryImage,
 		Env: []corev1.EnvVar{
-			{Name: "REGISTRY_HTTP_ADDR", Value: fmt.Sprintf(":%d", p.RegistryPort)},
+			{Name: "REGISTRY_HTTP_ADDR", Value: fmt.Sprintf("127.0.0.1:%d", upstreamPort)},
+		},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: registryVolume, MountPath: registryDataPath},
+			{Name: tmpVolume, MountPath: "/tmp"},
+		},
+		Resources:       registryResources(),
+		SecurityContext: hardenedContainerSecurityContext(),
+	}
+
+	gate := corev1.Container{
+		Name:    registryGateName,
+		Image:   p.FelisImage,
+		Command: []string{felisBinaryPath, "registry-gate"},
+		Args: []string{
+			fmt.Sprintf("--listen=:%d", p.RegistryPort),
+			fmt.Sprintf("--upstream=http://127.0.0.1:%d", upstreamPort),
+			"--auth-dir=" + registryAuthMountPath,
 		},
 		Ports: []corev1.ContainerPort{
 			{
@@ -704,32 +736,31 @@ func registryDeployment(p Params) *appsv1.Deployment {
 			},
 		},
 		VolumeMounts: []corev1.VolumeMount{
-			{Name: registryVolume, MountPath: registryDataPath},
-			{Name: tmpVolume, MountPath: "/tmp"},
+			{Name: registryAuthVolume, MountPath: registryAuthMountPath, ReadOnly: true},
 		},
-		// Distribution serves GET /v2/ (200 = app + storage healthy) for any
-		// client, so both probes reuse it: without them a registry whose storage
-		// backend broke would stay "Running" and every build push would fail with
-		// nothing red in the Deployment status.
+		// /healthz answers 200 only while registry:2 answers GET /v2/ on loopback,
+		// so a registry whose storage broke shows up as an unready pod instead of a
+		// "Running" one every push fails against. Liveness checks the gate alone: a
+		// failing registry is not fixed by restarting the gate in front of it.
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
-				Path: "/v2/", Port: intstr.FromString(registryName),
+				Path: "/healthz", Port: intstr.FromString(registryName),
 			}},
 			InitialDelaySeconds: 5,
 			PeriodSeconds:       10,
-			TimeoutSeconds:      3,
+			TimeoutSeconds:      5,
 			FailureThreshold:    3,
 		},
 		LivenessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{
-				Path: "/v2/", Port: intstr.FromString(registryName),
+				Path: "/livez", Port: intstr.FromString(registryName),
 			}},
 			InitialDelaySeconds: 10,
 			PeriodSeconds:       10,
 			TimeoutSeconds:      3,
 			FailureThreshold:    3,
 		},
-		Resources:       registryResources(),
+		Resources:       registryGateResources(),
 		SecurityContext: hardenedContainerSecurityContext(),
 	}
 
@@ -746,7 +777,7 @@ func registryDeployment(p Params) *appsv1.Deployment {
 					AutomountServiceAccountToken: boolPtr(false),
 					PriorityClassName:            controlPlanePriorityName,
 					SecurityContext:              hardenedPodSecurityContext(),
-					Containers:                   []corev1.Container{container},
+					Containers:                   []corev1.Container{registry, gate},
 					Volumes: []corev1.Volume{
 						{
 							Name: registryVolume,
@@ -755,9 +786,39 @@ func registryDeployment(p Params) *appsv1.Deployment {
 							},
 						},
 						{Name: tmpVolume, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+						{
+							Name: registryAuthVolume,
+							VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+								SecretName: naming.RegistryAuthSecretName,
+								// Optional: without the Secret the gate starts with no
+								// principals, so pulls keep working and every write is
+								// refused — never a registry that cannot start.
+								Optional:    boolPtr(true),
+								DefaultMode: int32Ptr(0o440),
+							}},
+						},
 					},
 				},
 			},
+		},
+	}
+}
+
+// registryUpstreamPort is the loopback port registry:2 listens on behind the gate:
+// the next port after the public one.
+func registryUpstreamPort(p Params) int32 { return p.RegistryPort + 1 }
+
+// registryGateResources sizes the gate sidecar: a streaming reverse proxy that
+// holds no layer in memory.
+func registryGateResources() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("20m"),
+			corev1.ResourceMemory: resource.MustParse("32Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("500m"),
+			corev1.ResourceMemory: resource.MustParse("128Mi"),
 		},
 	}
 }

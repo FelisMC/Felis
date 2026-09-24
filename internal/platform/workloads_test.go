@@ -23,6 +23,20 @@ func podSpec(t *testing.T, d *appsv1.Deployment) (corev1.PodSpec, corev1.Contain
 	return ps, ps.Containers[0]
 }
 
+// namedContainer returns the pod template of a Deployment and its container
+// called name, failing if there is none.
+func namedContainer(t *testing.T, d *appsv1.Deployment, name string) (corev1.PodSpec, corev1.Container) {
+	t.Helper()
+	ps := d.Spec.Template.Spec
+	for _, c := range ps.Containers {
+		if c.Name == name {
+			return ps, c
+		}
+	}
+	t.Fatalf("%s: no container %q", d.Name, name)
+	return ps, corev1.Container{}
+}
+
 // rconPeerSelector returns the podSelector of the allow-rcon NetworkPolicy peer,
 // compiled into the same labels.Selector K8s evaluates at runtime. This is the
 // real gate: a pod reaches server RCON iff its labels Match this selector.
@@ -121,7 +135,7 @@ func TestControlPlanePods_SatisfyRConPeer(t *testing.T) {
 func TestControlPlanePods_Hardened(t *testing.T) {
 	p := testParams()
 	for _, d := range []*appsv1.Deployment{APIDeployment(p), OperatorDeployment(p), registryDeployment(p)} {
-		ps, c := podSpec(t, d)
+		ps := d.Spec.Template.Spec
 
 		if ps.SecurityContext == nil || ps.SecurityContext.RunAsNonRoot == nil || !*ps.SecurityContext.RunAsNonRoot {
 			t.Errorf("%s: pod must set runAsNonRoot=true", d.Name)
@@ -129,21 +143,23 @@ func TestControlPlanePods_Hardened(t *testing.T) {
 		if ps.SecurityContext == nil || ps.SecurityContext.RunAsUser == nil || *ps.SecurityContext.RunAsUser != nonRootUID {
 			t.Errorf("%s: pod runAsUser must be %d", d.Name, nonRootUID)
 		}
-		sc := c.SecurityContext
-		if sc == nil {
-			t.Fatalf("%s: container has no SecurityContext", d.Name)
-		}
-		if sc.Privileged == nil || *sc.Privileged {
-			t.Errorf("%s: container must not be privileged", d.Name)
-		}
-		if sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
-			t.Errorf("%s: container must set allowPrivilegeEscalation=false", d.Name)
-		}
-		if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
-			t.Errorf("%s: container must set readOnlyRootFilesystem=true", d.Name)
-		}
-		if sc.Capabilities == nil || len(sc.Capabilities.Drop) == 0 || sc.Capabilities.Drop[0] != "ALL" {
-			t.Errorf("%s: container must drop ALL capabilities", d.Name)
+		for _, c := range ps.Containers {
+			sc := c.SecurityContext
+			if sc == nil {
+				t.Fatalf("%s/%s: container has no SecurityContext", d.Name, c.Name)
+			}
+			if sc.Privileged == nil || *sc.Privileged {
+				t.Errorf("%s/%s: container must not be privileged", d.Name, c.Name)
+			}
+			if sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+				t.Errorf("%s/%s: container must set allowPrivilegeEscalation=false", d.Name, c.Name)
+			}
+			if sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
+				t.Errorf("%s/%s: container must set readOnlyRootFilesystem=true", d.Name, c.Name)
+			}
+			if sc.Capabilities == nil || len(sc.Capabilities.Drop) == 0 || sc.Capabilities.Drop[0] != "ALL" {
+				t.Errorf("%s/%s: container must drop ALL capabilities", d.Name, c.Name)
+			}
 		}
 	}
 }
@@ -416,29 +432,77 @@ func TestRegistry_DeploymentServicePVC(t *testing.T) {
 	svc := registryService(p)
 	pvc := registryPVC(p)
 
-	ps, c := podSpec(t, dep)
+	ps, c := namedContainer(t, dep, registryName)
+	if len(ps.Containers) != 2 {
+		t.Fatalf("registry pod containers = %d, want registry + gate", len(ps.Containers))
+	}
 	if c.Image != defaultRegistryImage {
 		t.Errorf("registry image = %q, want default %q", c.Image, defaultRegistryImage)
 	}
-	// REGISTRY_HTTP_ADDR pins the listen port to the Service port rather than
-	// trusting the image default.
-	if v := envValue(c.Env, "REGISTRY_HTTP_ADDR"); v != ":5000" {
-		t.Errorf("REGISTRY_HTTP_ADDR = %q, want :5000", v)
+	// registry:2 itself listens on loopback only and exposes nothing: every request
+	// from outside the pod passes the gate, which is what makes writes authorized.
+	if v := envValue(c.Env, "REGISTRY_HTTP_ADDR"); v != fmt.Sprintf("127.0.0.1:%d", p.RegistryPort+1) {
+		t.Errorf("REGISTRY_HTTP_ADDR = %q, want loopback 127.0.0.1:%d", v, p.RegistryPort+1)
 	}
-	// The node-side pull path: exactly one container port, mirrored by a LOOPBACK
-	// hostPort. Node containerd cannot dial the Service VIP, so its registries.yaml
-	// mirror rewrites the Service name onto 127.0.0.1:<port>; nothing else may be
-	// exposed (the registry serves plain HTTP).
-	if len(c.Ports) != 1 {
-		t.Fatalf("registry container ports = %+v, want exactly 1", c.Ports)
-	}
-	if p0 := c.Ports[0]; p0.ContainerPort != p.RegistryPort || p0.HostPort != p.RegistryPort || p0.HostIP != registryLoopbackHost {
-		t.Errorf("registry port = %+v, want container/host port %d bound to %s", p0, p.RegistryPort, registryLoopbackHost)
+	if len(c.Ports) != 0 {
+		t.Errorf("registry container ports = %+v, want none (the gate owns the port)", c.Ports)
 	}
 	// The registry's limits are deliberately NOT the control-plane template's: audit
 	// #46 caught the registry OOM-killed mid-upload at 256Mi on a real 475MB-layer push.
 	if mem := c.Resources.Limits[corev1.ResourceMemory]; mem.Value() < 2*1024*1024*1024 {
 		t.Errorf("registry memory limit = %s, want >= 2Gi (audit #46: 256Mi OOM-killed on a 475MB-layer push)", mem.String())
+	}
+
+	// The gate: the platform image, forwarding to the loopback registry, reading
+	// the per-principal tokens from the optional Secret.
+	_, gate := namedContainer(t, dep, registryGateName)
+	if gate.Image != p.FelisImage {
+		t.Errorf("gate image = %q, want the platform image %q", gate.Image, p.FelisImage)
+	}
+	if len(gate.Command) != 2 || gate.Command[1] != "registry-gate" {
+		t.Errorf("gate command = %v, want felis registry-gate", gate.Command)
+	}
+	for _, want := range []string{
+		fmt.Sprintf("--listen=:%d", p.RegistryPort),
+		fmt.Sprintf("--upstream=http://127.0.0.1:%d", p.RegistryPort+1),
+		"--auth-dir=" + registryAuthMountPath,
+	} {
+		if !contains(gate.Args, want) {
+			t.Errorf("gate args = %v, want %s", gate.Args, want)
+		}
+	}
+	// The node-side pull path: exactly one container port, mirrored by a LOOPBACK
+	// hostPort. Node containerd cannot dial the Service VIP, so its registries.yaml
+	// mirror rewrites the Service name onto 127.0.0.1:<port>; nothing else may be
+	// exposed (the registry serves plain HTTP).
+	if len(gate.Ports) != 1 {
+		t.Fatalf("gate ports = %+v, want exactly 1", gate.Ports)
+	}
+	if p0 := gate.Ports[0]; p0.ContainerPort != p.RegistryPort || p0.HostPort != p.RegistryPort || p0.HostIP != registryLoopbackHost {
+		t.Errorf("gate port = %+v, want container/host port %d bound to %s", p0, p.RegistryPort, registryLoopbackHost)
+	}
+	auth := volumeByName(ps.Volumes, registryAuthVolume)
+	if auth == nil || auth.Secret == nil || auth.Secret.SecretName != "felis-registry-auth" {
+		t.Fatalf("gate token volume = %#v, want Secret felis-registry-auth", auth)
+	}
+	// Optional: a missing Secret must degrade to "reads only", never to a registry
+	// pod stuck in ContainerCreating that every game pull depends on.
+	if auth.Secret.Optional == nil || !*auth.Secret.Optional {
+		t.Error("the registry-auth Secret volume must be optional")
+	}
+	mounted := false
+	for _, m := range gate.VolumeMounts {
+		if m.Name == registryAuthVolume && m.ReadOnly {
+			mounted = true
+		}
+	}
+	for _, m := range c.VolumeMounts {
+		if m.Name == registryAuthVolume {
+			t.Error("registry:2 must not mount the write tokens")
+		}
+	}
+	if !mounted {
+		t.Errorf("gate must mount the tokens read-only, mounts=%v", gate.VolumeMounts)
 	}
 	// Registry never calls the K8s API ⇒ no auto-mounted token.
 	if ps.AutomountServiceAccountToken == nil || *ps.AutomountServiceAccountToken {
@@ -492,7 +556,7 @@ func TestWorkloads_DeploymentsCarryProbes(t *testing.T) {
 	}{
 		{APIDeployment(p), "/readyz", "/healthz", apiInternalPort},
 		{OperatorDeployment(p), "/readyz", "/healthz", operatorHealthPort},
-		{registryDeployment(p), "/v2/", "/v2/", p.RegistryPort},
+		{registryDeployment(p), "/healthz", "/livez", p.RegistryPort},
 	}
 	// resolve maps a probe target (by number or container-port name) to the
 	// declared container port it denotes.
@@ -508,7 +572,14 @@ func TestWorkloads_DeploymentsCarryProbes(t *testing.T) {
 		return 0, false
 	}
 	for _, tc := range cases {
-		_, c := podSpec(t, tc.dep)
+		var c corev1.Container
+		if tc.dep.Name == registryName {
+			// The gate owns the registry port; registry:2 behind it is probed
+			// through the gate's /healthz.
+			_, c = namedContainer(t, tc.dep, registryGateName)
+		} else {
+			_, c = podSpec(t, tc.dep)
+		}
 		if c.ReadinessProbe == nil || c.ReadinessProbe.HTTPGet == nil {
 			t.Fatalf("%s: readiness probe missing or not an HTTP GET", tc.dep.Name)
 		}

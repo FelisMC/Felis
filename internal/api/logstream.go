@@ -299,7 +299,7 @@ func (k *K8sLogStreamer) StreamLogs(ctx context.Context, name string) (io.ReadCl
 // the build-id label and follows the kaniko container's log — the build/push
 // output an admin watches live as a build runs. It deliberately does NOT reuse
 // K8sLogStreamer's PodRunning filter: a Pod running its kaniko *initContainer* is
-// Phase=Pending (the main trivy container has not started), so a running filter
+// Phase=Pending (the trivy scan and the push container have not started), so a running filter
 // would never match a live build. Trivy's CRITICAL-CVE verdict is the admission
 // gate, surfaced via the build status (handleGetBuild), not through this stream.
 //

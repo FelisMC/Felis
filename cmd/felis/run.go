@@ -20,6 +20,8 @@ Commands:
   backup            Archive a world into the backup store and record it (internal Job entrypoint)
   files             List/read/write one file in a stopped server's world (internal Job entrypoint)
   fetch-context     Fetch and extract a submission's build context (internal Job entrypoint)
+  push-image        Push a scanned image tarball to the registry (internal Job entrypoint)
+  registry-gate     Authorize registry writes in front of registry:2 (internal sidecar entrypoint)
   manifests         Render the control-plane RBAC + NetworkPolicy install bundle as YAML
   apply             Create a MinecraftServer CRD (direct K8s write; use -f server.json)
   setup             Run host bootstrap + first-run setup console (TUI; requires root/sudo)
@@ -50,6 +52,8 @@ var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"backup":           cmdBackup,
 	"files":            cmdFiles,
 	"fetch-context":    cmdFetchContext,
+	"push-image":       cmdPushImage,
+	"registry-gate":    cmdRegistryGate,
 	"manifests":        cmdManifests,
 	"apply":            cmdApply,
 	"setup":            cmdSetup,
