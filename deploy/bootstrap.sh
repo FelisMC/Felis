@@ -67,7 +67,9 @@
 #   FELIS_REF         branch/tag/sha — pins the build, overrides the channel, and forces a
 #                     source build (naming a ref asks for that tree, not a published asset)
 #   FELIS_IMAGE       control-plane image ref (default:
-#                     registry.felis.svc:5000/felis/felis:demo — never :latest;
+#                     registry.felis.svc:5000/felis/felis:<the felis version>, so each
+#                     release has its own tag and `kubectl rollout undo` returns to the
+#                     previous one; :demo when the version is unknown — never :latest;
 #                     anything not under the registry is used as-is but is NOT
 #                     mirrored into it, so it has no pull source after an image GC)
 #   FELIS_ROOT_DOMAIN deployment root domain  (default: <node-ip>.nip.io)
@@ -117,6 +119,9 @@ if [ -n "$FELIS_REF" ]; then FELIS_REF_PINNED=1; fi
 # release download. It is what the image build, the CRD apply and the game stack key off:
 # all three only need "is there a binary and no checkout", never "which route got us here".
 HAVE_PREBUILT_BINARY=""
+# The image the control plane ran before this run moved it (deploy_bundle), for the rollback
+# hint in summary.
+PREVIOUS_FELIS_IMAGE=""
 # Optional GitHub credential, needed while this repository is private: GitHub answers
 # 404 (not 403) for a repo the caller cannot see, so without it both the release lookup
 # and the clone fail as "not found". Exported because git's credential helper below runs
@@ -136,7 +141,9 @@ FELIS_VERSION_BASE=""
 # daemon needs no insecure-registries entry for it.
 REGISTRY_URL="registry.felis.svc:5000"
 REGISTRY_PUSH_HOST="127.0.0.1:${REGISTRY_URL##*:}"
-FELIS_IMAGE="${FELIS_IMAGE:-${REGISTRY_URL}/felis/felis:demo}"
+# Empty unless the operator names one: resolve_felis_image derives the tag from the version
+# this run installs, which is only known once the binary or the checkout is.
+FELIS_IMAGE="${FELIS_IMAGE:-}"
 FELIS_EGRESS_MODE="${FELIS_EGRESS_MODE:-nodeport}"
 FELIS_PANEL_NODEPORT="${FELIS_PANEL_NODEPORT:-30443}"
 # World-archive storage. The installer renders this PVC (minecraft namespace) and felis-api
@@ -1554,6 +1561,39 @@ build_image_from_source() {
   chmod 0755 "$HOST_BIN"
 }
 
+# resolve_felis_image names the control-plane image after the release it carries
+# (registry.felis.svc:5000/felis/felis:v1.2.3) unless FELIS_IMAGE was given. One tag per
+# release is what makes `kubectl rollout undo` a rollback: the previous ReplicaSet names the
+# previous tag, and the registry keeps the newest five of them (its pruner, §9). Under one
+# mutable tag the undo re-created the pods on the image the upgrade had just written over it.
+#
+# The version is the release tag on the download path, the stamp on a source build
+# (v1.2.3+gabc1234 becomes the tag v1.2.3-gabc1234: '+' is not allowed in a tag), and the
+# binary's own report on the setup-console path, which skips both. A rerun of the same version
+# reuses its tag; deploy_bundle restarts the pods onto the rebuilt image then.
+resolve_felis_image() {
+  local v
+  [ -z "$FELIS_IMAGE" ] || return 0
+  v="$FELIS_VERSION"
+  if [ -z "$v" ] && [ -n "$HAVE_PREBUILT_BINARY" ]; then
+    v="$("$HOST_BIN" version 2>/dev/null | head -n 1 || true)"
+    v="${v#felis }"
+  fi
+  FELIS_IMAGE="${REGISTRY_URL}/felis/felis:$(image_tag_for_version "$v")"
+  ok "control-plane image: ${FELIS_IMAGE}"
+}
+
+# image_tag_for_version turns a felis version into an image tag: every character a tag may not
+# hold becomes '-'. An unknown version ("dev" is what an unstamped binary reports) is :demo.
+image_tag_for_version() {
+  local v
+  v="$(printf '%s' "$1" | tr -c 'A-Za-z0-9_.-' '-')"
+  case "$v" in
+    ""|dev|[!A-Za-z0-9_]*) printf 'demo' ;;
+    *) printf '%s' "${v:0:128}" ;;
+  esac
+}
+
 build_image() {
   systemctl start docker
   # Keyed on the binary, not on the route that produced it: the TUI hand-off and a release
@@ -2894,12 +2934,16 @@ EOF
 }
 
 deploy_bundle() {
-  local had_api=0 had_operator=0
+  local prev_api prev_operator
   export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
   write_felis_toml "${STATE_DIR}/felis.pod.toml" "${NODE_IP}"
 
-  kube -n "$CONTROL_NS" get deployment felis-api >/dev/null 2>&1 && had_api=1
-  kube -n "$CONTROL_NS" get deployment felis-operator >/dev/null 2>&1 && had_operator=1
+  prev_api="$(deployment_image felis-api api)"
+  prev_operator="$(deployment_image felis-operator operator)"
+  if [ -n "$prev_api" ] && [ "$prev_api" != "$FELIS_IMAGE" ]; then
+    PREVIOUS_FELIS_IMAGE="$prev_api"
+    printf '%s\n' "$prev_api" > "${STATE_DIR}/previous-felis-image"
+  fi
 
   # Always the embedded copy. It is byte-identical to deploy/crd/ (bootstrap_asset.go embeds
   # that very file), it needs no checkout — which the release-download path does not have —
@@ -2972,7 +3016,7 @@ deploy_bundle() {
     if [ -n "$size" ]; then manifest_args+=(--backup-storage "$size"); fi
   fi
   "$HOST_BIN" manifests "${manifest_args[@]}" | kube apply -f -
-  restart_existing_control_plane "$had_api" "$had_operator"
+  restart_existing_control_plane "$prev_api" "$prev_operator"
 
   log "waiting for control-plane rollouts"
   local d
@@ -3002,17 +3046,32 @@ pvc_size() {
   printf '%s' "$have"
 }
 
-restart_existing_control_plane() {
-  local had_api="$1" had_operator="$2"
-  [ "$had_api$had_operator" != "00" ] || return 0
+# deployment_image <deployment> <container> prints the image that container of a
+# control-plane Deployment runs now, or nothing when the Deployment does not exist yet.
+deployment_image() {
+  kube -n "$CONTROL_NS" get deployment "$1" \
+    -o "jsonpath={.spec.template.spec.containers[?(@.name==\"$2\")].image}" 2>/dev/null || true
+}
 
-  log "restarting existing control-plane deployments to pick up ${FELIS_IMAGE}"
+# restart_existing_control_plane restarts the Deployments the bundle apply left as they were:
+# those that already ran FELIS_IMAGE, whose tag now names a rebuilt image (a rerun of the same
+# version, or a FELIS_IMAGE the operator reuses). A Deployment whose image changed is rolling
+# from the apply already, and must not be restarted on top: the restart is a second template
+# change, so `rollout undo` would step back to the new image instead of the previous release.
+restart_existing_control_plane() {
+  local prev_api="$1" prev_operator="$2"
   # `if`, not `[ test ] && cmd`: as the LAST command of the function the and-list returns 1
   # when the test is false, which becomes the function's exit status and kills the whole
   # install under `set -Eeuo pipefail` — right after the bundle is applied and before the
-  # rollout wait. Fires on any host carrying felis-api without felis-operator.
-  if [ "$had_api" = "1" ]; then kube -n "$CONTROL_NS" rollout restart deployment/felis-api; fi
-  if [ "$had_operator" = "1" ]; then kube -n "$CONTROL_NS" rollout restart deployment/felis-operator; fi
+  # rollout wait.
+  if [ "$prev_api" = "$FELIS_IMAGE" ]; then
+    log "restarting felis-api onto the rebuilt ${FELIS_IMAGE}"
+    kube -n "$CONTROL_NS" rollout restart deployment/felis-api
+  fi
+  if [ "$prev_operator" = "$FELIS_IMAGE" ]; then
+    log "restarting felis-operator onto the rebuilt ${FELIS_IMAGE}"
+    kube -n "$CONTROL_NS" rollout restart deployment/felis-operator
+  fi
 }
 
 # push_image_to_registry <ref> re-tags a locally built image for the node's
@@ -3183,6 +3242,13 @@ summary() {
   log "the proxy in Minecraft — that is what makes the Owner's admin identity a real"
   log "Mojang account rather than a password."
   log "Use 'sudo felis breakGlass' only for emergency local Owner recovery/reset."
+  if [ -n "${PREVIOUS_FELIS_IMAGE:-}" ]; then
+    echo
+    log "The control plane moved from ${PREVIOUS_FELIS_IMAGE} to ${FELIS_IMAGE}"
+    log "(also recorded in ${STATE_DIR}/previous-felis-image). To go back to it:"
+    log "    kubectl -n ${CONTROL_NS} rollout undo deployment/felis-api deployment/felis-operator"
+    log "The database stays migrated; docs/troubleshooting.md §16 has the full rollback."
+  fi
   echo
   summary_offsite
   echo
@@ -3538,6 +3604,7 @@ main() {
   else
     fetch_source
   fi
+  resolve_felis_image
   build_image
   # After build_image imported the felis image: the registry pod's gate runs it.
   pin_registry_images

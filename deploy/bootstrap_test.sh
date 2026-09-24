@@ -1515,6 +1515,74 @@ else
 fi
 rm -rf "$odir" "$ofile"
 
+# --- the control-plane image is tagged by release, so rollout undo is a rollback --------
+# Under one mutable tag `kubectl rollout undo` re-created the pods on the image the upgrade had
+# just written over it. The tag must follow the version, and an upgrade must not restart the
+# Deployments on top of the apply's own roll (that second revision is what undo would reach).
+
+imgblock="$(awk '/^resolve_felis_image\(\) \{/,/^}/' "$BS"; awk '/^image_tag_for_version\(\) \{/,/^}/' "$BS")"
+[ -n "$imgblock" ] || { echo "FAIL: no resolve_felis_image found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$imgblock" | wc -l)" -lt 30 ] \
+  || { echo "FAIL: the extracted block is not resolve_felis_image -- did it move?"; exit 1; }
+
+run_image() { # FELIS_IMAGE FELIS_VERSION HAVE_PREBUILT_BINARY binary-version
+  FELIS_IMAGE="$1" FELIS_VERSION="$2" HAVE_PREBUILT_BINARY="$3" BIN_VERSION="$4" \
+  REGISTRY_URL=registry.felis.svc:5000 HOST_BIN=fakeFelis bash -c '
+    ok() { :; }
+    fakeFelis() { printf "felis %s\n" "$BIN_VERSION"; }
+    '"$imgblock"'
+    resolve_felis_image
+    printf "%s\n" "$FELIS_IMAGE"'
+}
+
+expect "a release install is tagged with its release" "registry.felis.svc:5000/felis/felis:v1.2.3" \
+  "$(run_image '' v1.2.3 '' '')"
+expect "a source build's stamp becomes a legal tag" "registry.felis.svc:5000/felis/felis:v1.2.3-gabc1234" \
+  "$(run_image '' 'v1.2.3+gabc1234' '' '')"
+expect "the setup console path asks the binary it installed" "registry.felis.svc:5000/felis/felis:v1.4.0" \
+  "$(run_image '' '' 1 v1.4.0)"
+expect "an unstamped binary keeps the old tag" "registry.felis.svc:5000/felis/felis:demo" \
+  "$(run_image '' '' 1 dev)"
+expect "an unknown version keeps the old tag" "registry.felis.svc:5000/felis/felis:demo" \
+  "$(run_image '' '' '' '')"
+expect "an explicit FELIS_IMAGE is used as given" "reg.example/felis:mine" \
+  "$(run_image reg.example/felis:mine v1.2.3 '' '')"
+
+rsblock="$(awk '/^restart_existing_control_plane\(\) \{/,/^}/' "$BS")"
+[ -n "$rsblock" ] || { echo "FAIL: no restart_existing_control_plane found in $BS"; exit 1; }
+run_restart() { # prev-api prev-operator
+  FELIS_IMAGE=reg/felis/felis:v2 CONTROL_NS=felis bash -c '
+    set -Eeuo pipefail
+    log() { :; }
+    kube() { printf "KUBE %s\n" "$*"; }
+    '"$rsblock"'
+    restart_existing_control_plane "$1" "$2"
+    echo DONE' _ "$1" "$2"
+}
+
+out="$(run_restart reg/felis/felis:v1 reg/felis/felis:v1)"
+case "$out" in
+  *"rollout restart"*) echo "FAIL an upgrade restarted the control plane on top of the apply's roll"; fails=$((fails + 1)) ;;
+  *DONE*) echo "PASS an upgrade leaves the roll to the apply" ;;
+  *) echo "FAIL restart_existing_control_plane died on an upgrade: $out"; fails=$((fails + 1)) ;;
+esac
+out="$(run_restart reg/felis/felis:v2 reg/felis/felis:v2)"
+expect "a rerun of the same tag restarts felis-api onto the rebuilt image" "KUBE -n felis rollout restart deployment/felis-api" "$out"
+expect "a rerun of the same tag restarts felis-operator too" "KUBE -n felis rollout restart deployment/felis-operator" "$out"
+out="$(run_restart '' '')"
+case "$out" in
+  *"rollout restart"*) echo "FAIL a first install restarted Deployments that did not exist"; fails=$((fails + 1)) ;;
+  *DONE*) echo "PASS a first install restarts nothing" ;;
+  *) echo "FAIL restart_existing_control_plane died on a first install: $out"; fails=$((fails + 1)) ;;
+esac
+
+mainblock="$(awk '/^main\(\) \{/,/^}/' "$BS")"
+case "$mainblock" in
+  *"resolve_felis_image
+  build_image"*) echo "PASS the image is named before it is built" ;;
+  *) echo "FAIL main must call resolve_felis_image right before build_image"; fails=$((fails + 1)) ;;
+esac
+
 
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then

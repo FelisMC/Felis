@@ -1330,17 +1330,31 @@ attestation. Check a downloaded binary with
 `gh attestation verify felis-linux-amd64 --repo FelisMC/Felis`; it names the
 workflow run and commit that built it.
 
-Roll back with:
+Each release runs under its own image tag, `felis/felis:v1.2.3` (a source
+build's stamp `v1.2.3+gabc1234` becomes `v1.2.3-gabc1234`; a build that reports
+no version uses `:demo`). At the end of an upgrade the installer prints the tag
+it moved away from, and keeps it in `/etc/felis/previous-felis-image`. Roll
+back with:
 
 ```
-kubectl -n felis rollout undo deploy/felis-api
+kubectl -n felis rollout undo deployment/felis-api deployment/felis-operator
 kubectl -n felis rollout status deploy/felis-api
 ```
 
-(the same for `felis-operator` and `registry`). `rollout undo` returns to the
-previous ReplicaSet, whose image is normally still on the node; if the image GC
-collected it, the registry re-serves it automatically (§13b) for every tag the
-installer built — only hand-built tags need a manual re-mirror.
+`rollout undo` returns each Deployment to its previous ReplicaSet, which names
+the previous release's tag. That image is normally still on the node; if the
+image GC collected it, the registry re-serves it (§13b): the pruner keeps the
+five newest `felis/felis` tags and every image a game pod still runs. A rerun
+of the same version reuses its tag and restarts both Deployments onto the
+rebuilt image, so after such a rerun undo lands on that same tag again. The
+next installer run re-applies the bundle and moves the image to whatever that
+run installs.
+
+A platform upgrade leaves running game servers alone. Their init containers
+run the felis image too; a running server keeps the one it started with and
+picks up the new release on its next start. A release that changes the game
+pod in any other way still restarts running servers once, as a server edit
+does.
 
 `rollout undo` reverts the image only. The upgrade's database migrations stay
 applied; when they are the problem, restore the `pre-migrate` bundle the upgrade
