@@ -109,11 +109,15 @@ type Source struct {
 	tokens map[string]string // host/repo → bearer token
 }
 
+// sourceClient is shared by every Source without its own Client, so reads
+// reuse keep-alive connections instead of opening one per request.
+var sourceClient = &http.Client{Transport: &http.Transport{Proxy: http.ProxyFromEnvironment, ResponseHeaderTimeout: sourceRequestTimeout}}
+
 func (s *Source) client() *http.Client {
 	if s.Client != nil {
 		return s.Client
 	}
-	return &http.Client{Transport: &http.Transport{Proxy: http.ProxyFromEnvironment, ResponseHeaderTimeout: sourceRequestTimeout}}
+	return sourceClient
 }
 
 func (s *Source) url(r SourceRef, tail string) string {

@@ -240,10 +240,11 @@ func (p *Pusher) uploadBlob(ctx context.Context, r Ref, digest string, size int6
 	if err != nil {
 		return err
 	}
-	start.Body.Close()
 	if start.StatusCode != http.StatusAccepted {
+		defer start.Body.Close()
 		return statusError("start upload", start)
 	}
+	drainClose(start)
 	loc, err := start.Location()
 	if err != nil {
 		return fmt.Errorf("start upload: %w", err)
@@ -261,10 +262,11 @@ func (p *Pusher) uploadBlob(ctx context.Context, r Ref, digest string, size int6
 	if err != nil {
 		return err
 	}
-	put.Body.Close()
 	if put.StatusCode != http.StatusCreated {
+		defer put.Body.Close()
 		return statusError("upload", put)
 	}
+	drainClose(put)
 	p.logf("pushed  %s (%d bytes)", digest, size)
 	return nil
 }
@@ -311,12 +313,16 @@ func (p *Pusher) do(ctx context.Context, method, target string, body io.Reader, 
 	}
 	c := p.Client
 	if c == nil {
-		// No overall timeout: a modpack layer can take minutes on a slow disk, and
-		// the Job's activeDeadlineSeconds is the real bound.
-		c = &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 2 * time.Minute}}
+		c = pushClient
 	}
 	return c.Do(req)
 }
+
+// pushClient is shared by every Pusher without its own Client, so a restore of
+// many images reuses keep-alive connections instead of opening one per
+// request. No overall timeout: a modpack layer can take minutes on a slow disk,
+// and the caller's deadline is the real bound.
+var pushClient = &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: 2 * time.Minute}}
 
 // retry runs fn up to Attempts times, backing off between tries. A refusal the
 // registry will repeat (401/403/4xx other than 408/429) is returned at once. A 503
@@ -392,6 +398,13 @@ type StatusError struct {
 
 func (e *StatusError) Error() string {
 	return fmt.Sprintf("%s: registry answered %d: %s", e.Op, e.Code, e.Body)
+}
+
+// drainClose reads what is left of a small response body so its connection
+// goes back to the pool.
+func drainClose(resp *http.Response) {
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+	resp.Body.Close()
 }
 
 func statusError(op string, resp *http.Response) error {
