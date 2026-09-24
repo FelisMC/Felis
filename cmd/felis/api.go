@@ -284,9 +284,10 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		rcfg = reaper.DefaultConfig()
 	}
 
+	cluster := api.NewK8sCluster(cl, cfg.K8s.Namespace)
 	a := &api.API{
 		Repo:    repo,
-		Cluster: api.NewK8sCluster(cl, cfg.K8s.Namespace),
+		Cluster: cluster,
 		Console: api.NewK8sConsole(cl, cfg.K8s.Namespace),
 		Logs:    api.NewK8sLogStreamer(clientset, cfg.K8s.Namespace),
 		// Build-log stream (spec §16) is scoped to the BUILD namespace — the same
@@ -408,7 +409,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// reconciles it, but this loop converges builds nobody is polling.
 	go reconcileBuilds(ctx, builder, stderr)
 
-	if pruner := registryPruner(cfg, builder.Store, a.Cluster, stderr); pruner != nil {
+	if pruner := registryPruner(cfg, builder.Store, cluster, stderr); pruner != nil {
 		go pruner.Loop(ctx, registryPruneInterval)
 	}
 	go reapRejectedContexts(ctx, submissions, stderr)
@@ -683,13 +684,19 @@ type imageRefStore interface {
 
 type serverLister interface {
 	ListServers(ctx context.Context) ([]api.ServerInfo, error)
+	PodImages(ctx context.Context) ([]string, error)
 }
 
 // inUseImageRefs lists every image reference the platform still depends on: the
 // whitelist (disabled rows too, an admin may enable them again), every server's
-// spec, builds still running, and the images the control plane and the build
-// Jobs run. Any source failing fails the whole list, so the pruner never decides
-// on a partial view.
+// spec, the images the game pods run, builds still running, and the images the
+// control plane and the build Jobs run. Any source failing fails the whole list,
+// so the pruner never decides on a partial view.
+//
+// The pods matter for the felis image: a running server keeps the one it started
+// with across platform upgrades (operator.PodTemplateAnnotation), which after a
+// few releases is no longer among the newest tags the pruner keeps anyway, and
+// the pod needs it again whenever it is recreated.
 func inUseImageRefs(ctx context.Context, store imageRefStore, servers serverLister, static []string) ([]string, error) {
 	refs := append([]string(nil), static...)
 	images, err := store.ListImages(ctx)
@@ -706,6 +713,11 @@ func inUseImageRefs(ctx context.Context, store imageRefStore, servers serverList
 	for _, s := range srvs {
 		refs = append(refs, s.Image)
 	}
+	podImages, err := servers.PodImages(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("game pods: %w", err)
+	}
+	refs = append(refs, podImages...)
 	builds, err := store.ListUnfinishedBuilds(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("running builds: %w", err)

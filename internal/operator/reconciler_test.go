@@ -1083,3 +1083,86 @@ func TestIdleAutoStopIsInertWithoutRcon(t *testing.T) {
 			got, v1alpha1.DesiredRunning)
 	}
 }
+
+const (
+	felisV1 = "registry.felis.svc:5000/felis/felis:v1.0.0"
+	felisV2 = "registry.felis.svc:5000/felis/felis:v1.1.0"
+)
+
+func initImages(t *testing.T, c client.Client, name string) []string {
+	t.Helper()
+	var images []string
+	for _, ic := range getSTS(t, c, name).Spec.Template.Spec.InitContainers {
+		images = append(images, ic.Image)
+	}
+	if len(images) == 0 {
+		t.Fatal("the StatefulSet runs no felis init container")
+	}
+	return images
+}
+
+func expectInitImages(t *testing.T, c client.Client, want string) {
+	t.Helper()
+	for _, got := range initImages(t, c, "survival") {
+		if got != want {
+			t.Fatalf("init container image = %q, want %q", got, want)
+		}
+	}
+}
+
+// TestFelisUpgradeLeavesARunningServerAlone: the installer moves the felis image
+// on every release. A running server keeps the template it started with rather
+// than restarting under its players; any other change still rolls it, and the
+// roll carries the new image along.
+func TestFelisUpgradeLeavesARunningServerAlone(t *testing.T) {
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 1, Max: 20, Known: true}}, runningServer(), rconSecret())
+	r.FelisImage = felisV1
+	reconcile(t, r, "survival")
+	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival")
+	expectInitImages(t, c, felisV1)
+	stamp := getSTS(t, c, "survival").Annotations[operator.PodTemplateAnnotation]
+	if stamp == "" {
+		t.Fatal("the StatefulSet must carry the pod-template fingerprint")
+	}
+
+	r.FelisImage = felisV2
+	reconcile(t, r, "survival")
+	expectInitImages(t, c, felisV1)
+	if got := getSTS(t, c, "survival").Annotations[operator.PodTemplateAnnotation]; got != stamp {
+		t.Fatalf("fingerprint moved from %q to %q on an image-only change", stamp, got)
+	}
+
+	server := getServer(t, c, "survival")
+	server.Spec.JavaMemory = "6G"
+	if err := c.Update(context.Background(), server); err != nil {
+		t.Fatalf("edit spec: %v", err)
+	}
+	reconcile(t, r, "survival")
+	expectInitImages(t, c, felisV2)
+	if got := getSTS(t, c, "survival").Annotations[operator.PodTemplateAnnotation]; got == stamp {
+		t.Fatal("a spec edit must move the fingerprint")
+	}
+}
+
+// TestFelisUpgradeReachesAServerOnItsNextStart: a stopped server's next start
+// writes the whole template, the new felis image included.
+func TestFelisUpgradeReachesAServerOnItsNextStart(t *testing.T) {
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 1, Max: 20, Known: true}}, runningServer(), rconSecret())
+	r.FelisImage = felisV1
+	stopRunningServer(t, r, c)
+	markPodTerminated(t, c, "survival")
+	reconcile(t, r, "survival")
+
+	r.FelisImage = felisV2
+	server := getServer(t, c, "survival")
+	server.Spec.DesiredState = v1alpha1.DesiredRunning
+	if err := c.Update(context.Background(), server); err != nil {
+		t.Fatalf("flip desiredState: %v", err)
+	}
+	reconcile(t, r, "survival")
+	if sts := getSTS(t, c, "survival"); sts.Spec.Replicas == nil || *sts.Spec.Replicas != 1 {
+		t.Fatalf("replicas = %v, want 1 after start", sts.Spec.Replicas)
+	}
+	expectInitImages(t, c, felisV2)
+}

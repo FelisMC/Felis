@@ -67,6 +67,26 @@ func (k *K8sCluster) WorldVolumeExists(ctx context.Context, name string) (bool, 
 	return true, nil
 }
 
+// PodImages lists the image of every container and init container of every pod
+// in the namespace, for the registry pruner (cmd/felis inUseImageRefs). It is
+// one list call on the pods:list grant the console already holds.
+func (k *K8sCluster) PodImages(ctx context.Context) ([]string, error) {
+	var pods corev1.PodList
+	if err := k.c.List(ctx, &pods, client.InNamespace(k.namespace)); err != nil {
+		return nil, err
+	}
+	var images []string
+	for _, p := range pods.Items {
+		for _, c := range p.Spec.InitContainers {
+			images = append(images, c.Image)
+		}
+		for _, c := range p.Spec.Containers {
+			images = append(images, c.Image)
+		}
+	}
+	return images, nil
+}
+
 func (k *K8sCluster) GetBySubdomain(ctx context.Context, subdomain string) (*ServerInfo, error) {
 	var list v1alpha1.MinecraftServerList
 	if err := k.c.List(ctx, &list, client.InNamespace(k.namespace)); err != nil {

@@ -108,9 +108,14 @@ func (f fakeRefStore) ListUnfinishedBuilds(context.Context) ([]build.Build, erro
 	return f.builds, nil
 }
 
-type fakeServers []api.ServerInfo
+type fakeServers struct {
+	list    []api.ServerInfo
+	pods    []string
+	podsErr error
+}
 
-func (f fakeServers) ListServers(context.Context) ([]api.ServerInfo, error) { return f, nil }
+func (f fakeServers) ListServers(context.Context) ([]api.ServerInfo, error) { return f.list, nil }
+func (f fakeServers) PodImages(context.Context) ([]string, error)           { return f.pods, f.podsErr }
 
 // The registry pruner deletes whatever this list does not name, so every source of
 // a reference has to be in it, and a failing source must fail the list.
@@ -120,7 +125,10 @@ func TestInUseImageRefsCoversEverySource(t *testing.T) {
 		images: []build.Image{{ImageRef: reg + "modpacks/pack:*"}, {ImageRef: reg + "felis/paper:demo"}},
 		builds: []build.Build{{ImageRef: reg + "user-uploads/sub-9:latest"}},
 	}
-	servers := fakeServers{{Name: "s1", Image: reg + "felis/paper:demo@sha256:" + fmt.Sprintf("%064d", 1)}}
+	servers := fakeServers{
+		list: []api.ServerInfo{{Name: "s1", Image: reg + "felis/paper:demo@sha256:" + fmt.Sprintf("%064d", 1)}},
+		pods: []string{reg + "felis/felis:v1.0.0"},
+	}
 	got, err := inUseImageRefs(context.Background(), store, servers, []string{reg + "felis/felis:b60"})
 	if err != nil {
 		t.Fatal(err)
@@ -129,11 +137,18 @@ func TestInUseImageRefsCoversEverySource(t *testing.T) {
 		reg + "felis/felis:b60",
 		reg + "modpacks/pack:*", reg + "felis/paper:demo",
 		reg + "felis/paper:demo@sha256:" + fmt.Sprintf("%064d", 1),
+		reg + "felis/felis:v1.0.0",
 		reg + "user-uploads/sub-9:latest",
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("refs = %v\nwant %v", got, want)
 	}
+
+	servers.podsErr = errors.New("apiserver down")
+	if _, err := inUseImageRefs(context.Background(), store, servers, nil); err == nil {
+		t.Fatal("a failing pod list produced a reference list")
+	}
+	servers.podsErr = nil
 
 	store.err = errors.New("db down")
 	if _, err := inUseImageRefs(context.Background(), store, servers, nil); err == nil {

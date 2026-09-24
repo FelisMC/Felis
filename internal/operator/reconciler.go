@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -59,6 +60,35 @@ const RconSecretAnnotation = "felis.lolicon.best/rcon-secret"
 func rconStamp(password []byte) string {
 	sum := sha256.Sum256(password)
 	return hex.EncodeToString(sum[:8])
+}
+
+// PodTemplateAnnotation stamps the StatefulSet with a fingerprint of the pod
+// template the operator last wrote, taken with the felis image left out of the
+// init containers. The installer tags that image by release, so every platform
+// upgrade hands the operator a new one; rolling every running server onto it
+// would restart each world under its players for an init step that has already
+// run. While a server runs and the fingerprint still matches, its template is
+// left as it is and the new image arrives with its next start (stop scales to
+// zero, and a start writes the whole template). Any other change — a spec edit,
+// a new RCON password, a builder change in a new release — moves the
+// fingerprint and rolls the pod as before.
+const PodTemplateAnnotation = "felis.lolicon.best/pod-template"
+
+// podTemplateStamp fingerprints tmpl for PodTemplateAnnotation. encoding/json
+// writes map keys sorted, so the same template always hashes the same.
+func podTemplateStamp(tmpl *corev1.PodTemplateSpec, felisImage string) (string, error) {
+	t := tmpl.DeepCopy()
+	for i := range t.Spec.InitContainers {
+		if felisImage != "" && t.Spec.InitContainers[i].Image == felisImage {
+			t.Spec.InitContainers[i].Image = ""
+		}
+	}
+	b, err := json.Marshal(t)
+	if err != nil {
+		return "", fmt.Errorf("fingerprint pod template: %w", err)
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:8]), nil
 }
 
 // Reconciler reconciles a MinecraftServer with its managed children.
@@ -536,19 +566,37 @@ func (r *Reconciler) rconPassword(ctx context.Context, server *v1alpha1.Minecraf
 
 // applyStatefulSet creates the StatefulSet or, if it exists, updates only its
 // mutable fields (StatefulSet selector/serviceName/volumeClaimTemplates are
-// immutable and must not be re-sent).
+// immutable and must not be re-sent). A running server whose template changed
+// only in the felis image keeps its template (PodTemplateAnnotation).
 func (r *Reconciler) applyStatefulSet(ctx context.Context, desired *appsv1.StatefulSet) error {
+	stamp, err := podTemplateStamp(&desired.Spec.Template, r.FelisImage)
+	if err != nil {
+		return err
+	}
+	if desired.Annotations == nil {
+		desired.Annotations = map[string]string{}
+	}
+	desired.Annotations[PodTemplateAnnotation] = stamp
+
 	var existing appsv1.StatefulSet
-	err := r.Get(ctx, client.ObjectKeyFromObject(desired), &existing)
+	err = r.Get(ctx, client.ObjectKeyFromObject(desired), &existing)
 	if apierrors.IsNotFound(err) {
 		return r.Create(ctx, desired)
 	}
 	if err != nil {
 		return err
 	}
+	running := existing.Spec.Replicas != nil && *existing.Spec.Replicas > 0
 	existing.Labels = desired.Labels
 	existing.Spec.Replicas = desired.Spec.Replicas
+	if running && existing.Annotations[PodTemplateAnnotation] == stamp {
+		return r.Update(ctx, &existing)
+	}
 	existing.Spec.Template = desired.Spec.Template
+	if existing.Annotations == nil {
+		existing.Annotations = map[string]string{}
+	}
+	existing.Annotations[PodTemplateAnnotation] = stamp
 	return r.Update(ctx, &existing)
 }
 
