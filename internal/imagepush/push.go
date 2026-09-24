@@ -493,3 +493,23 @@ func (w *prefixWriter) Write(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
+
+// UploadBlob uploads the blob open returns into host/repo unless the repository
+// already holds digest, retrying like Push. open is called once per attempt.
+func (p *Pusher) UploadBlob(ctx context.Context, host, repo, digest string, size int64, open func() (io.ReadCloser, error)) error {
+	r := Ref{Host: host, Repo: repo}
+	return p.retry(ctx, func() error { return p.uploadBlob(ctx, r, digest, size, open) })
+}
+
+// PutManifest stores body in host/repo under reference, a tag or the digest body
+// hashes to, retrying like Push, and returns that digest.
+func (p *Pusher) PutManifest(ctx context.Context, host, repo, reference, mediaType string, body []byte) (string, error) {
+	r := Ref{Host: host, Repo: repo, Tag: reference}
+	var digest string
+	err := p.retry(ctx, func() error {
+		d, err := p.putManifest(ctx, r, mediaType, body)
+		digest = d
+		return err
+	})
+	return digest, err
+}

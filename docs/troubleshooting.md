@@ -696,7 +696,11 @@ control namespace (or `--registry-namespace`):
   `kubectl -n felis exec deploy/registry -c registry-gc -- rm -f /var/lib/registry/.felis-last-gc`
   and restart the pod.
 - **The registry volume is lost:** re-run the installer; it pushes every
-  platform image again. User images come back from their approved submissions:
+  platform image again. With the off-site copy on (§16),
+  `sudo felis offsite fetch-images` pushes the user images back at their old
+  digests, so servers pinned to them pull again; it pushes only what the
+  registry lacks, so a second run after an interruption is cheap. Without an
+  off-site copy, user images come back from their approved submissions:
   the uploaded context of an approved submission stays on the uploads PVC
   (`GET /api/v1/submissions/{id}/context`, its `context_ref` and `image_ref`
   are in `GET /api/v1/submissions`), so an admin can build it again through
@@ -1705,7 +1709,20 @@ host yourself, plus the off-site encryption key if the copy is in the bucket.
    bundle, so it takes the fresh-install path, creates the empty database with
    the restored password and migrates it. It finds `[offsite]` in the restored
    `felis.host.toml` and turns the hourly copy back on.
-4. Restore the database and bring the servers back:
+4. Push the user images back into the new registry:
+
+   ```
+   sudo felis offsite fetch-images
+   ```
+
+   It restores the newest image list in the bucket (`-at <stamp>` for an
+   older one; `felis offsite list` shows them) through the registry's loopback
+   port as the platform principal, verifying every manifest and layer against
+   its digest, and pushes only what the registry lacks. The pruner counts a
+   restored image as freshly pushed and keeps it for 24 hours; finish the next
+   step within that window so the restored servers and whitelist entries keep
+   naming it.
+5. Restore the database and bring the servers back:
 
    ```
    kubectl -n felis scale deployment felis-api felis-operator --replicas=0
@@ -1715,7 +1732,7 @@ host yourself, plus the off-site encryption key if the copy is in the bucket.
    tar -xOf felis-db-....tar k8s/minecraftservers.json | kubectl apply -f -
    ```
 
-5. Bring the world archives back into the archive volume:
+6. Bring the world archives back into the archive volume:
 
    ```
    sudo felis offsite fetch-worlds
@@ -1725,16 +1742,16 @@ host yourself, plus the off-site encryption key if the copy is in the bucket.
    and the volume lacks, provisioning the `felis-backups` volume first if
    nothing has used it yet (a short-lived `felis-bind-felis-backups-*` pod). It
    lists any it could not find in the bucket. Restore a world from its archive
-   as usual (§10, §13). Custom images built on the old host are rebuilt from
-   their submissions (§8), or re-pushed.
+   as usual (§10, §13).
 
 ### Keep a copy somewhere else
 
 A bundle on the same disk as the database protects against mistakes and bad
 upgrades, and a world archive on the same disk as the worlds protects against
-a deleted server. Neither survives losing the disk. The installer's off-site
-copy sends both to an S3-compatible bucket (AWS S3, Cloudflare R2, Backblaze
-B2, MinIO, ...), encrypted on this host:
+a deleted server. Neither survives losing the disk, and neither do the user
+images in the platform registry. The installer's off-site copy sends all three
+to an S3-compatible bucket (AWS S3, Cloudflare R2, Backblaze B2, MinIO, ...),
+encrypted on this host:
 
 ```
 FELIS_OFFSITE_ENDPOINT=https://<account>.r2.cloudflarestorage.com \
@@ -1763,9 +1780,22 @@ What runs:
   its retention (`expires_at`) has passed. An object already in the bucket at
   the right size is recorded without being sent again, so a run cut short
   resumes. [GO-TESTED: `internal/offsite`]
-- Objects are `worlds/<archive>.fenc` and `db/<bundle>.fenc`: AES-256-GCM in
-  64 KiB segments, so truncation, reordering and a wrong key are all refused
-  on the way back.
+- The same run copies the user images in the platform registry: every
+  repository outside `felis/` and `mirror/` (the installer pushes those again),
+  each manifest the registry's index lists and every layer it names, read
+  through the loopback hostPort. A layer shared by many images is stored once.
+  When the set changed, a new version of the image list is written; versions
+  replaced more than 14 days ago are dropped together with the layers only
+  they named, so an image deleted by mistake stays restorable for two weeks
+  (`fetch-images -at`). A manifest the registry lost mid-run keeps its earlier
+  copy and is listed under `not whole:` in `status`. The copy covers the
+  in-cluster registry that `[registry] url` names; `-registry host:port` points
+  it elsewhere, `-registry off` skips images. [VM-TESTED: 16 images, 638 MiB,
+  restored into an empty registry at the same digests]
+- Objects are `worlds/<archive>.fenc`, `db/<bundle>.fenc`,
+  `registry/blobs/<sha256>.fenc`, `registry/manifests/<sha256>.fenc` and
+  `registry/index/<stamp>.json.fenc`: AES-256-GCM in 64 KiB segments, so
+  truncation, reordering and a wrong key are all refused on the way back.
 - The reaper deletes an idle world only after its archive is in the bucket
   (§10).
 - The watchdog mails the owners when no sync has completed for 12 hours
@@ -1775,7 +1805,7 @@ Checking it:
 
 ```
 sudo felis offsite status        # last run, errors, what the bucket holds, what waits
-sudo felis offsite list          # the bundles in the bucket, newest first
+sudo felis offsite list          # the bundles and image lists in the bucket, newest first
 sudo journalctl -u felis-offsite -n 50 --no-pager
 sudo systemctl start felis-offsite.service   # run one now
 ```
@@ -1793,7 +1823,8 @@ Without a bucket, copy the backup directory off the host on a schedule of your
 own (`rsync -a root@felis-host:/var/lib/felis/db-backups/ /backups/felis-db/`,
 with the `.sha256` sidecars; `sha256sum -c` on the far side proves the copy).
 That covers the database only; the world archives are under the
-`felis-backups` volume's directory in `/var/lib/rancher/k3s/storage/`.
+`felis-backups` volume's directory in `/var/lib/rancher/k3s/storage/`, and the
+registry's images under the `registry` volume's (`*_felis_registry`).
 
 ### `FELIS_PRE_MIGRATE_BACKUP=0`
 

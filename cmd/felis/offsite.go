@@ -24,12 +24,14 @@ import (
 )
 
 const offsiteUsage = `usage:
-  felis offsite sync         [-config path] [-archive-dir dir] [-db-dir dir] [-status-file path]
+  felis offsite sync         [-config path] [-archive-dir dir] [-db-dir dir] [-registry host:port|off]
+                             [-status-file path]
   felis offsite status       [-config path] [-status-file path]
   felis offsite list         [-config path]
   felis offsite fetch-db     [-config path | -endpoint url -bucket name [-region r] [-prefix p]]
                              [-dir dir] latest|<bundle>
   felis offsite fetch-worlds [-config path] [-archive-dir dir]
+  felis offsite fetch-images [-config path] [-registry host:port] [-at version]
   felis offsite keygen
 
 Every verb but keygen reads the bucket credentials and the encryption key from
@@ -43,7 +45,8 @@ FELIS_OFFSITE_SECRET_KEY, FELIS_OFFSITE_KEY), taking any that are unset from
 const defaultOffsiteEnvFile = "/etc/felis/offsite.env"
 
 // cmdOffsite implements `felis offsite`: the off-site copy of the world
-// archives and the database bundles (internal/offsite). felis-offsite.timer
+// archives, the database bundles and the registry's user images
+// (internal/offsite). felis-offsite.timer
 // runs `sync` hourly on the host; the fetch verbs are the way back after the
 // node is lost (docs/troubleshooting.md §16).
 func cmdOffsite(args []string, stdout, stderr io.Writer) int {
@@ -66,6 +69,8 @@ func cmdOffsite(args []string, stdout, stderr io.Writer) int {
 		return offsiteFetchDB(fs, rest, stdout, stderr)
 	case "fetch-worlds":
 		return offsiteFetchWorlds(fs, rest, stdout, stderr)
+	case "fetch-images":
+		return offsiteFetchImages(fs, rest, stdout, stderr)
 	case "keygen":
 		k, err := offsite.NewKey()
 		if err != nil {
@@ -186,6 +191,7 @@ func offsiteSync(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int 
 	archiveDir := fs.String("archive-dir", "", "host directory of the world archive volume (default: resolved from the backup PVC through the cluster)")
 	backupPVC := fs.String("backup-pvc", "felis-backups", `the world archive PVC, in the [k8s] namespace ("" when backups are off)`)
 	dbDir := fs.String("db-dir", dbbackup.DefaultDir, `database bundle directory ("" copies no bundles)`)
+	registry := fs.String("registry", "", `host[:port] of the registry whose user images are copied (default: the in-cluster registry's loopback hostPort; "off" copies none)`)
 	statusFile := fs.String("status-file", offsite.DefaultStatusFile, "where the result of this run is recorded for the watchdog and `status`")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -202,7 +208,7 @@ func offsiteSync(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int 
 	if prev, _ := offsite.ReadStatus(*statusFile); prev != nil {
 		st.LastSuccess = prev.LastSuccess
 	}
-	res, err := runOffsiteSync(cfg, env, *archiveDir, *backupPVC, *dbDir, stderr)
+	res, err := runOffsiteSync(cfg, env, *archiveDir, *backupPVC, *dbDir, offsiteRegistryEndpoint(*registry, cfg.Registry), stderr)
 	st.Result = res
 	if err != nil {
 		st.LastError = err.Error()
@@ -212,11 +218,15 @@ func offsiteSync(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int 
 	if werr := offsite.WriteStatus(*statusFile, st); werr != nil {
 		fmt.Fprintf(stderr, "felis offsite sync: record status: %v\n", werr)
 	}
-	fmt.Fprintf(stdout, "felis offsite sync: worlds copied=%d pending=%d missing=%d expired=%d; bundles copied=%d pruned=%d; bucket holds %d worlds (%s) and %d bundles\n",
+	fmt.Fprintf(stdout, "felis offsite sync: worlds copied=%d pending=%d missing=%d expired=%d; bundles copied=%d pruned=%d; images copied=%d blobs=%d pruned=%d; bucket holds %d worlds (%s), %d bundles, %d images in %d repositories (%s)\n",
 		res.WorldsUploaded, res.WorldsPending, len(res.WorldsMissing), res.WorldsExpired,
-		res.DBUploaded, res.DBPruned, res.RemoteWorlds, offsite.HumanBytes(res.RemoteBytes), res.RemoteDB)
+		res.DBUploaded, res.DBPruned, res.ImagesUploaded, res.ImageBlobsUploaded, res.ImageObjectsPruned,
+		res.RemoteWorlds, offsite.HumanBytes(res.RemoteBytes), res.RemoteDB, res.Images, res.ImageRepos, offsite.HumanBytes(res.RemoteImageBytes))
 	for _, m := range res.WorldsMissing {
 		fmt.Fprintf(stderr, "felis offsite sync: recorded archive not on the volume, nothing to copy: %s\n", m)
+	}
+	for _, m := range res.ImagesIncomplete {
+		fmt.Fprintf(stderr, "felis offsite sync: registry image not whole: %s\n", m)
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "felis offsite sync: %v\n", err)
@@ -225,7 +235,7 @@ func offsiteSync(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int 
 	return 0
 }
 
-func runOffsiteSync(cfg *config.Config, env *offsiteEnv, archiveDir, backupPVC, dbDir string, log io.Writer) (offsite.Result, error) {
+func runOffsiteSync(cfg *config.Config, env *offsiteEnv, archiveDir, backupPVC, dbDir, registry string, log io.Writer) (offsite.Result, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
 	defer cancel()
 	checkCtx, checkCancel := context.WithTimeout(ctx, 30*time.Second)
@@ -249,6 +259,9 @@ func runOffsiteSync(cfg *config.Config, env *offsiteEnv, archiveDir, backupPVC, 
 	s := &offsite.Syncer{
 		Bucket: env.bucket, Catalog: offsite.PGCatalog{DB: drv.DB()}, Key: env.key,
 		ArchiveDir: archiveDir, DBDir: dbDir, DBKeep: env.cfg.DBKeep, Log: log,
+	}
+	if registry != "" {
+		s.Images = newRegistryImages(registry)
 	}
 	return s.Run(ctx)
 }
@@ -347,7 +360,7 @@ func offsiteStatus(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) in
 		return 1
 	}
 	if !cfg.Offsite.Enabled() {
-		fmt.Fprintln(stdout, "off-site copy: not configured. World archives and database bundles exist on this machine only.")
+		fmt.Fprintln(stdout, "off-site copy: not configured. World archives, database bundles and user images exist on this machine only.")
 		fmt.Fprintln(stdout, "See docs/troubleshooting.md §16, \"Keep a copy somewhere else\".")
 		return 1
 	}
@@ -380,9 +393,18 @@ func offsiteStatus(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) in
 	r := st.Result
 	fmt.Fprintf(stdout, "bucket holds: %d world archives (%s), %d database bundles, newest %s\n",
 		r.RemoteWorlds, offsite.HumanBytes(r.RemoteBytes), r.RemoteDB, orNone(r.NewestDB))
+	if r.ImageIndex != "" {
+		fmt.Fprintf(stdout, "images:       %d in %d repositories (%s), registry index %s\n",
+			r.Images, r.ImageRepos, offsite.HumanBytes(r.RemoteImageBytes), r.ImageIndex)
+	} else {
+		fmt.Fprintln(stdout, "images:       not copied (no in-cluster registry, or no sync has reached it yet)")
+	}
 	fmt.Fprintf(stdout, "waiting:      %d world archives not yet copied\n", r.WorldsPending)
 	for _, m := range r.WorldsMissing {
 		fmt.Fprintf(stdout, "missing:      %s is recorded but not on the volume\n", m)
+	}
+	for _, m := range r.ImagesIncomplete {
+		fmt.Fprintf(stdout, "not whole:    %s\n", m)
 	}
 	if st.LastSuccess.IsZero() || now.Sub(st.LastSuccess) > offsite.StaleAfter {
 		fmt.Fprintf(stdout, "\nThe last successful sync is older than %s: journalctl -u felis-offsite -n 50\n", dbbackup.Age(offsite.StaleAfter))
@@ -434,6 +456,20 @@ func printOffsiteList(env *offsiteEnv, stdout, stderr io.Writer) int {
 		total += w.Size
 	}
 	fmt.Fprintf(stdout, "world archives: %d (%s)\n", len(worlds), offsite.HumanBytes(total))
+	versions, err := offsite.ImageIndexes(ctx, env.bucket)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis offsite list: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "registry index versions (%d, newest first; restore one with fetch-images -at):\n", len(versions))
+	for i := len(versions) - 1; i >= 0; i-- {
+		x, err := offsite.LoadImageIndex(ctx, env.bucket, env.key, versions[i])
+		if err != nil {
+			fmt.Fprintf(stdout, "  %s  unreadable: %v\n", versions[i], err)
+			continue
+		}
+		fmt.Fprintf(stdout, "  %s  %d images in %d repositories\n", versions[i], x.Images(), len(x.Repositories))
+	}
 	return 0
 }
 

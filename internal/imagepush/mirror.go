@@ -452,3 +452,14 @@ func WriteMirrorStatus(path string, st MirrorStatus) error {
 	}
 	return os.Rename(tmp, path)
 }
+
+// Manifest fetches one manifest of host/repo by tag or digest and returns its
+// bytes and media type; a digest reference is checked against the bytes.
+func (s *Source) Manifest(ctx context.Context, host, repo, reference string) ([]byte, string, error) {
+	return s.manifest(ctx, SourceRef{Host: host, Repo: repo}, reference)
+}
+
+// Blob opens one blob of host/repo. The caller checks the bytes against digest.
+func (s *Source) Blob(ctx context.Context, host, repo, digest string) (io.ReadCloser, error) {
+	return s.blob(ctx, SourceRef{Host: host, Repo: repo}, digest)
+}

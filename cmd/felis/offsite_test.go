@@ -2,12 +2,14 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"felis.lolicon.best/internal/config"
+	"felis.lolicon.best/internal/imagepush"
 	"felis.lolicon.best/internal/offsite"
 )
 
@@ -92,5 +94,29 @@ func TestOffsiteFetchDBRejectsOddNames(t *testing.T) {
 		"-dir", t.TempDir(), "../../etc/shadow"}, &out, &errb)
 	if code != 2 || !strings.Contains(errb.String(), "not a bundle name") {
 		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+}
+
+func TestOffsiteRegistryEndpoint(t *testing.T) {
+	for _, tc := range []struct{ flag, url, want string }{
+		{"", "registry.felis.svc:5000", "127.0.0.1:5000"},
+		{"", "registry.felis.svc.cluster.local:5001", "127.0.0.1:5001"},
+		{"", "ghcr.io/acme", ""},
+		{"", "", ""},
+		{"off", "registry.felis.svc:5000", ""},
+		{"10.0.0.5:5000", "ghcr.io/acme", "10.0.0.5:5000"},
+	} {
+		if got := offsiteRegistryEndpoint(tc.flag, config.RegistryConfig{URL: tc.url}); got != tc.want {
+			t.Errorf("offsiteRegistryEndpoint(%q, %q) = %q, want %q", tc.flag, tc.url, got, tc.want)
+		}
+	}
+}
+
+func TestRegistryGoneMarksNotFound(t *testing.T) {
+	if err := registryGone(&imagepush.StatusError{Op: "get blob", Code: 404}); !errors.Is(err, offsite.ErrImageGone) {
+		t.Fatalf("404 = %v, want ErrImageGone", err)
+	}
+	if err := registryGone(&imagepush.StatusError{Op: "get blob", Code: 503}); errors.Is(err, offsite.ErrImageGone) {
+		t.Fatalf("503 = %v, want it kept an ordinary failure", err)
 	}
 }

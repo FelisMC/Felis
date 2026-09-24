@@ -14,7 +14,6 @@ import (
 
 	"felis.lolicon.best/internal/build"
 	"felis.lolicon.best/internal/imagepush"
-	"felis.lolicon.best/internal/registrygate"
 )
 
 // defaultBuildToolsStatus is where mirror-build-tools records its last run; the
@@ -49,16 +48,9 @@ func cmdMirrorBuildTools(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis mirror-build-tools: %v\n", err)
 		return 2
 	}
-	if err := loadEnvFile(*secrets); err != nil {
-		fmt.Fprintf(stderr, "felis mirror-build-tools: read %s: %v\n", *secrets, err)
-		return 1
-	}
-	user, pass := os.Getenv("FELIS_REGISTRY_USERNAME"), os.Getenv("FELIS_REGISTRY_PASSWORD")
-	if pass == "" {
-		user, pass = registrygate.PrincipalPlatform, os.Getenv("REGISTRY_PLATFORM_TOKEN")
-	}
-	if pass == "" {
-		fmt.Fprintln(stderr, "felis mirror-build-tools: no registry credential: set FELIS_REGISTRY_PASSWORD or run as root on the node (REGISTRY_PLATFORM_TOKEN in /etc/felis/secrets.env)")
+	user, pass, err := registryWriteCredential(*secrets)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis mirror-build-tools: %v\n", err)
 		return 2
 	}
 

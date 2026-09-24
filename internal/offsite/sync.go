@@ -1,8 +1,10 @@
 // Package offsite keeps a second copy of what a lost node would take with it:
-// every world archive (world_backups) and the newest control-plane database
-// bundles (internal/dbbackup), encrypted, in an S3-compatible bucket off the
-// machine. `felis offsite sync` runs it from felis-offsite.timer on the host,
-// which is where both the archive volume and the bundle directory live.
+// every world archive (world_backups), the newest control-plane database
+// bundles (internal/dbbackup) and the user images in the platform registry
+// (images.go), encrypted, in an S3-compatible bucket off the machine. `felis
+// offsite sync` runs it from felis-offsite.timer on the host, which is where
+// the archive volume and the bundle directory live and where the registry
+// answers on its loopback hostPort.
 //
 // The database records the copy: world_backups.offsite_at is set once an
 // archive's object is in the bucket, and with [offsite] configured the reaper
@@ -89,6 +91,9 @@ type Syncer struct {
 	// bucket keeps.
 	DBDir  string
 	DBKeep int
+	// Images is the platform registry whose user images are copied (images.go);
+	// nil copies none.
+	Images ImageSource
 	Now    func() time.Time
 	Log    io.Writer
 }
@@ -110,7 +115,19 @@ type Result struct {
 	DBPruned      int      `json:"db_pruned"`
 	RemoteDB      int      `json:"remote_db"`
 	NewestDB      string   `json:"newest_db,omitempty"`
-	Errors        []string `json:"errors,omitempty"`
+	// ImageIndex is the newest registry index version in the bucket, which
+	// lists ImageRepos repositories holding Images images.
+	ImageIndex         string `json:"image_index,omitempty"`
+	ImageRepos         int    `json:"image_repos"`
+	Images             int    `json:"images"`
+	ImagesUploaded     int    `json:"images_uploaded"`
+	ImageBlobsUploaded int    `json:"image_blobs_uploaded"`
+	ImageObjectsPruned int    `json:"image_objects_pruned"`
+	RemoteImageBytes   int64  `json:"remote_image_bytes"`
+	// ImagesIncomplete are manifests the registry lists without holding all
+	// of them, so there was nothing whole to copy.
+	ImagesIncomplete []string `json:"images_incomplete,omitempty"`
+	Errors           []string `json:"errors,omitempty"`
 }
 
 func (s *Syncer) now() time.Time {
@@ -126,9 +143,9 @@ func (s *Syncer) logf(format string, args ...any) {
 	}
 }
 
-// Run does one pass: world archives, then database bundles, then expiry. A
-// failure on one item is recorded and the pass carries on; the returned error
-// is non-nil when anything failed.
+// Run does one pass: world archives, database bundles, registry images, then
+// expiry. A failure on one item is recorded and the pass carries on; the
+// returned error is non-nil when anything failed.
 func (s *Syncer) Run(ctx context.Context) (Result, error) {
 	var res Result
 	fail := func(format string, args ...any) {
@@ -143,6 +160,7 @@ func (s *Syncer) Run(ctx context.Context) (Result, error) {
 	}
 	s.syncWorlds(ctx, remoteWorlds, &res, fail)
 	s.syncDB(ctx, &res, fail)
+	s.syncImages(ctx, &res, fail)
 	s.expireWorlds(ctx, remoteWorlds, &res, fail)
 
 	for _, size := range remoteWorlds {
@@ -327,23 +345,28 @@ func (s *Syncer) expireWorlds(ctx context.Context, remote map[string]int64, res 
 	}
 }
 
-// putFile encrypts the file at p into key. The sealed size is known in
-// advance, so the upload streams: nothing larger than one part is buffered.
+// putFile encrypts the file at p into key.
 func (s *Syncer) putFile(ctx context.Context, key, p string, size int64) error {
 	f, err := os.Open(p)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+	// A file that changed size under us would not match the declared length;
+	// LimitReader keeps the stream to the size we announced and the bucket's
+	// length check catches a short one.
+	return s.putStream(ctx, key, io.LimitReader(f, size), size)
+}
+
+// putStream encrypts size bytes of src into key. The sealed size is known in
+// advance, so the upload streams: nothing larger than one part is buffered.
+// An error from src fails the upload.
+func (s *Syncer) putStream(ctx context.Context, key string, src io.Reader, size int64) error {
 	pr, pw := io.Pipe()
 	go func() {
-		// A file that changed size under us would not match the declared
-		// length; LimitReader keeps the stream to the size we announced and
-		// the length check below catches a short one.
-		err := Encrypt(pw, io.LimitReader(f, size), s.Key)
-		pw.CloseWithError(err)
+		pw.CloseWithError(Encrypt(pw, src, s.Key))
 	}()
-	err = s.Bucket.Put(ctx, key, pr, SealedSize(size))
+	err := s.Bucket.Put(ctx, key, pr, SealedSize(size))
 	pr.CloseWithError(errors.New("upload finished"))
 	return err
 }
