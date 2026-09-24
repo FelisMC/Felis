@@ -1,7 +1,11 @@
 package platform
 
 import (
+	"net"
+
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	"felis.lolicon.best/internal/build"
+	"felis.lolicon.best/internal/naming"
 	"felis.lolicon.best/internal/operator"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -122,6 +126,135 @@ func allowGameFromVelocity(p Params) *networkingv1.NetworkPolicy {
 		}}
 	}
 	return netpol("felis-allow-game-from-velocity", p.MinecraftNamespace, serverPodSelector(), ingress)
+}
+
+// serverEgressExceptV4 / V6 are the destinations a game server never reaches
+// through the internet rule: every private, shared, link-local, loopback,
+// multicast and reserved range. They cover the pod and Service CIDRs of any stock
+// k3s/k8s install (10.42/16, 10.43/16), the node's private addresses, cloud
+// metadata (169.254.169.254) and the operator's LAN.
+var (
+	serverEgressExceptV4 = []string{
+		"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
+		"172.16.0.0/12", "192.168.0.0/16", "224.0.0.0/4", "240.0.0.0/4",
+	}
+	serverEgressExceptV6 = []string{"::1/128", "fc00::/7", "fe80::/10", "ff00::/8"}
+)
+
+// ServerEgressPolicies render the egress fence for game server pods. A server runs
+// code its owner chose — plugins, mods, a whole image — so the namespace used to
+// be a launch pad: any server could push to the unauthenticated registry, dial
+// felis-api's internal face, PostgreSQL on the node, or the kube API. Now:
+//
+//   - every server may resolve names and reach the public internet (plugin
+//     updates, resource packs, web maps) and nothing private;
+//   - the login system server additionally reaches felis-api's internal face,
+//     the one platform service it is built to call.
+//
+// Policies are additive, so the login pod gets the union of both.
+func ServerEgressPolicies(p Params) []*networkingv1.NetworkPolicy {
+	p = p.withDefaults()
+	return []*networkingv1.NetworkPolicy{serverEgress(p), loginToInternalAPI(p)}
+}
+
+func serverEgress(p Params) *networkingv1.NetworkPolicy {
+	v4 := append([]string{}, serverEgressExceptV4...)
+	v6 := append([]string{}, serverEgressExceptV6...)
+	for _, c := range p.ServerEgressDenyCIDRs {
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			continue // `felis manifests` rejects these before rendering
+		}
+		if n.IP.To4() != nil {
+			v4 = append(v4, n.String())
+		} else {
+			v6 = append(v6, n.String())
+		}
+	}
+	peers := []networkingv1.NetworkPolicyPeer{
+		{IPBlock: &networkingv1.IPBlock{CIDR: "0.0.0.0/0", Except: v4}},
+		{IPBlock: &networkingv1.IPBlock{CIDR: "::/0", Except: v6}},
+	}
+	for _, c := range p.ServerEgressAllowCIDRs {
+		if _, n, err := net.ParseCIDR(c); err == nil {
+			peers = append(peers, networkingv1.NetworkPolicyPeer{IPBlock: &networkingv1.IPBlock{CIDR: n.String()}})
+		}
+	}
+	udp, tcp := corev1.ProtocolUDP, corev1.ProtocolTCP
+	dns := intstr.FromInt32(53)
+	return &networkingv1.NetworkPolicy{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},
+		ObjectMeta: metav1.ObjectMeta{Name: "felis-server-egress", Namespace: p.MinecraftNamespace},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: serverPodSelector(),
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+			Egress: []networkingv1.NetworkPolicyEgressRule{
+				// Name resolution through the cluster resolver: the DNS Service
+				// sits inside 10/8, which the internet rule excludes.
+				{
+					To:    []networkingv1.NetworkPolicyPeer{build.ClusterDNSPeer()},
+					Ports: []networkingv1.NetworkPolicyPort{{Protocol: &udp, Port: &dns}, {Protocol: &tcp, Port: &dns}},
+				},
+				{To: peers},
+			},
+		},
+	}
+}
+
+// loginToInternalAPI opens felis-api's internal face (8081) to the login system
+// server only. The selector needs both the reserved name and the setup-owned
+// system-role label the operator copies onto that pod — the same pair that decides
+// who receives FELIS_SERVICE_TOKEN (internal/operator buildEnv), so a user server
+// can never match it by picking a name.
+func loginToInternalAPI(p Params) *networkingv1.NetworkPolicy {
+	tcp := corev1.ProtocolTCP
+	port := intstr.FromInt32(apiInternalPort)
+	sel := serverPodSelector()
+	sel.MatchLabels[v1alpha1.LabelServer] = naming.SystemLoginServer
+	sel.MatchLabels[v1alpha1.LabelSystemRole] = naming.SystemLoginServer
+	return &networkingv1.NetworkPolicy{
+		TypeMeta:   metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"},
+		ObjectMeta: metav1.ObjectMeta{Name: "felis-login-to-internal-api", Namespace: p.MinecraftNamespace},
+		Spec: networkingv1.NetworkPolicySpec{
+			PodSelector: sel,
+			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress},
+			Egress: []networkingv1.NetworkPolicyEgressRule{{
+				To: []networkingv1.NetworkPolicyPeer{{
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"kubernetes.io/metadata.name": p.ControlNamespace},
+					},
+					PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+						LabelPartOf:    controlPlanePartOf,
+						LabelComponent: ComponentAPI,
+					}},
+				}},
+				Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &port}},
+			}},
+		},
+	}
+}
+
+// RegistryIngressPolicy fences the registry pod: only build pods reach its port.
+// Everything else that uses the registry runs on the node — containerd's pulls and
+// the installer's pushes both arrive through the loopback hostPort — and Kubernetes
+// never blocks resident-node traffic. Write authorization is the gate's job; this
+// policy keeps every other pod from even trying.
+func RegistryIngressPolicy(p Params) *networkingv1.NetworkPolicy {
+	p = p.withDefaults()
+	tcp := corev1.ProtocolTCP
+	port := intstr.FromInt32(p.RegistryPort)
+	np := netpol("felis-registry-ingress", p.RegistryNamespace,
+		metav1.LabelSelector{MatchLabels: registryLabels()},
+		[]networkingv1.NetworkPolicyIngressRule{{
+			From: []networkingv1.NetworkPolicyPeer{{
+				NamespaceSelector: &metav1.LabelSelector{
+					MatchLabels: map[string]string{"kubernetes.io/metadata.name": p.BuildNamespace},
+				},
+			}},
+			Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &port}},
+		}},
+	)
+	return np
 }
 
 // netpol assembles an ingress-only NetworkPolicy. A nil/empty ingress slice with

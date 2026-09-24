@@ -670,6 +670,7 @@ run_bundle_flags() { # backup-pvc worlds-host-path
     kube() { cat; }
     myManifests() { printf "%s\n" "$@"; }
     setfacl() { printf "SETFACL %s\n" "$*"; }
+    node_global_cidrs() { printf "203.0.113.7/32\n2001:db8::7/128\n"; }
     run_bundle() {
     '"$mblock"'
     }
@@ -685,6 +686,27 @@ esac
 
 out="$(run_bundle_flags '' '')"
 expect "an emptied FELIS_BACKUP_PVC is the explicit no-backup shape" "--backup-pvc=" "$out"
+# Game server egress excludes every private range already; the node's own public
+# addresses must be excluded too or a server can dial the panel NodePort on them.
+expect "every global node address is denied to game server egress (v4)" "--server-egress-deny-cidr
+203.0.113.7/32" "$out"
+expect "every global node address is denied to game server egress (v6)" "--server-egress-deny-cidr
+2001:db8::7/128" "$out"
+
+ngblock="$(awk '/^node_global_cidrs\(\) \{/,/^}/' "$BS")"
+[ -n "$ngblock" ] || { echo "FAIL: no node_global_cidrs found in $BS"; exit 1; }
+out="$(bash -c '
+  ip() {
+    printf "2: eth0    inet 203.0.113.7/24 brd 203.0.113.255 scope global eth0\\       valid_lft forever\n"
+    printf "2: eth0    inet6 2001:db8::7/64 scope global dynamic\\       valid_lft 86000sec\n"
+  }
+  '"$ngblock"'
+  node_global_cidrs')"
+expect "a global v4 address becomes a /32" "203.0.113.7/32" "$out"
+expect "a global v6 address becomes a /128" "2001:db8::7/128" "$out"
+case "$out" in
+  */24*|*/64*) echo "FAIL: node_global_cidrs must deny the address, not its whole subnet"; fails=$((fails + 1)) ;;
+esac
 
 out="$(run_bundle_flags felis-backups /var/lib/rancher/k3s/storage)"
 expect "enabling retention passes the worlds root" "--worlds-host-path
@@ -758,7 +780,7 @@ pblock="$(awk '/^push_image_to_registry\(\) \{/,/^}/' "$BS")"
 
 run_push() { # ref [docker-push-exit]
   REF="$1" PUSH_EXIT="${2:-0}" \
-  REGISTRY_URL=registry.felis.svc:5000 REGISTRY_PUSH_HOST=127.0.0.1:5000 \
+  REGISTRY_URL=registry.felis.svc:5000 REGISTRY_PUSH_HOST=127.0.0.1:5000 REGISTRY_DOCKER_CONFIG=/cfg \
   bash -c '
     log() { printf "LOG: %s\n" "$*"; }
     warn() { printf "WARN: %s\n" "$*"; }
@@ -766,9 +788,9 @@ run_push() { # ref [docker-push-exit]
     ok() { :; }
     systemctl() { :; }
     docker() {
-      case "$1" in
-        push) printf "DOCKER %s\n" "$*"; return "$PUSH_EXIT" ;;
-        *) printf "DOCKER %s\n" "$*" ;;
+      printf "DOCKER %s\n" "$*"
+      case " $* " in
+        *" push "*) return "$PUSH_EXIT" ;;
       esac
     }
     '"$pblock"'
@@ -778,7 +800,7 @@ run_push() { # ref [docker-push-exit]
 out="$(run_push registry.felis.svc:5000/felis/felis:demo)"
 expect "a registry ref is re-tagged onto the node loopback endpoint" \
   "DOCKER tag registry.felis.svc:5000/felis/felis:demo 127.0.0.1:5000/felis/felis:demo" "$out"
-expect "and pushed to exactly that endpoint" "DOCKER push 127.0.0.1:5000/felis/felis:demo" "$out"
+expect "and pushed to exactly that endpoint, with the platform login" "DOCKER --config /cfg push 127.0.0.1:5000/felis/felis:demo" "$out"
 
 out="$(run_push registry.felis.svc:50000/felis/felis:demo)"
 expect "a ref outside the registry is refused with a warning" "WARN: not mirroring" "$out"
@@ -798,14 +820,69 @@ out="$(
   FELIS_IMAGE=a FELIS_LIMBO_IMAGE=b FELIS_LOBBY_IMAGE=c FELIS_PAPER_IMAGE=d bash -c '
     systemctl() { printf "SYSTEMCTL %s\n" "$*"; }
     push_image_to_registry() { printf "PUSH %s\n" "$1"; }
+    registry_docker_login() { printf "LOGIN\n"; }
     '"$wiblock"'
     push_images_to_registry'
 )"
+expect "the batch logs in to the registry gate before pushing" "SYSTEMCTL start docker
+LOGIN
+PUSH a" "$out"
 starts="$(printf '%s\n' "$out" | grep -c 'SYSTEMCTL start docker')"
 stops="$(printf '%s\n' "$out" | grep -c 'SYSTEMCTL stop docker')"
 [ "$starts" = 1 ] && [ "$stops" = 1 ] && [ "$(printf '%s\n' "$out" | grep -c '^PUSH')" = 4 ] \
   && echo "PASS the batch wraps all four pushes in ONE docker start/stop" \
   || { echo "FAIL: expected 1 start / 1 stop / 4 pushes, got:"; printf '%s\n' "$out"; fails=$((fails + 1)); }
+
+# The registry refuses anonymous writes, and the platform token must never reach
+# docker's argv (ps) or root's ~/.docker: stdin into a throwaway --config dir.
+lblock="$(awk '/^registry_docker_login\(\) \{/,/^}/' "$BS")"
+[ -n "$lblock" ] || { echo "FAIL: no registry_docker_login found in $BS"; exit 1; }
+calls="$(mktemp)"
+out="$(
+  CALLS="$calls" REGISTRY_PLATFORM_TOKEN=s3cret REGISTRY_PUSH_HOST=127.0.0.1:5000 bash -c '
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    remember_temp() { printf "TEMP %s\n" "$1"; }
+    docker() { printf "DOCKER %s STDIN=%s\n" "$*" "$(cat)" >>"$CALLS"; }
+    '"$lblock"'
+    registry_docker_login
+    rm -rf "$REGISTRY_DOCKER_CONFIG"'
+)$(printf '\n'; cat "$calls")"
+rm -f "$calls"
+expect "the installer logs in as the platform principal via stdin" "login --username platform --password-stdin 127.0.0.1:5000 STDIN=s3cret" "$out"
+case "$(printf '%s\n' "$out" | grep '^DOCKER')" in
+  *"DOCKER --config /"*) echo "PASS the login writes a throwaway docker config" ;;
+  *) echo "FAIL: registry_docker_login must use a --config temp dir, got: $out"; fails=$((fails + 1)) ;;
+esac
+case "$out" in
+  *"--password s3cret"*|*"-p s3cret"*) echo "FAIL: the registry token reached docker argv"; fails=$((fails + 1)) ;;
+esac
+expect "the throwaway config is registered for EXIT cleanup" "TEMP /" "$out"
+
+# The registry pod's two images can only come from containerd's own store: pin
+# both against kubelet image GC, and unpin a previous felis tag.
+pnblock="$(awk '/^pin_registry_images\(\) \{/,/^}/' "$BS")"
+[ -n "$pnblock" ] || { echo "FAIL: no pin_registry_images found in $BS"; exit 1; }
+calls="$(mktemp)"
+out="$(
+  CALLS="$calls" FELIS_IMAGE=registry.felis.svc:5000/felis/felis:v2 bash -c '
+    ok() { printf "OK: %s\n" "$*"; }
+    warn() { printf "WARN: %s\n" "$*"; }
+    k3s_cmd() {
+      case "$*" in
+        "ctr images ls -q") printf "registry.felis.svc:5000/felis/felis:v1\nregistry.felis.svc:5000/felis/felis:v2\ndocker.io/library/registry:2\nregistry.felis.svc:5000/felis/limbo:demo\n" ;;
+        *) printf "CTR %s\n" "$*" >>"$CALLS" ;;
+      esac
+    }
+    '"$pnblock"'
+    pin_registry_images'
+)$(printf '\n'; cat "$calls")"
+rm -f "$calls"
+expect "the running felis image is pinned" "CTR ctr images label registry.felis.svc:5000/felis/felis:v2 io.cri-containerd.pinned=pinned" "$out"
+expect "registry:2 is pinned" "CTR ctr images label docker.io/library/registry:2 io.cri-containerd.pinned=pinned" "$out"
+expect "a previous felis tag is unpinned" "CTR ctr images label registry.felis.svc:5000/felis/felis:v1 io.cri-containerd.pinned=" "$out"
+case "$out" in
+  *"limbo:demo io.cri"*) echo "FAIL: only the registry pod's images may be pinned or unpinned"; fails=$((fails + 1)) ;;
+esac
 
 # --- the registry's own image must not be re-pulled on every run --------------------------
 iblock="$(awk '/^import_registry_image\(\) \{/,/^}/' "$BS")"

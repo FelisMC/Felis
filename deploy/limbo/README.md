@@ -143,11 +143,14 @@ set them by hand:
   pod's internal port 8081. That Service is deliberately separate from the external
   NodePort `felis-api` (443) so the no-Zero-Trust internal face is never published on
   a node's external IP.
-- **NetworkPolicy:** none is required today — neither the minecraft-namespace egress
-  nor the control-namespace ingress is policy-locked, so the login pod's call to the
-  API internal port is reachable. If a future deployment adds a minecraft egress lock
-  or a control-namespace ingress fence, it must also open the login-pod →
-  felis-api-internal (8081) path.
+- **NetworkPolicy:** the minecraft namespace is egress-locked
+  (`felis-server-egress`: DNS plus the public internet, every private range
+  excluded), so the internal API is unreachable from a game server by default.
+  `felis-login-to-internal-api` opens exactly the login pod → felis-api (8081) path,
+  selecting on the reserved `login` name AND the setup-owned
+  `felis.lolicon.best/system-role=login` label the operator copies onto the pod — the
+  same pair that decides who receives `FELIS_SERVICE_TOKEN`, so a user server cannot
+  match it by picking a name.
 
 The Velocity gate/lobby wiring is printed by `felis setup` and enforces the
 invariant: fresh connections hit `login` first, and only an authenticated release

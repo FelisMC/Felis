@@ -54,6 +54,10 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 	fs.Var(&velocityCIDRs, "velocity-cidr", "CIDR of a Velocity proxy host allowed to reach game port 25565 (repeatable, REQUIRED)")
 	var packageCIDRs multiFlag
 	fs.Var(&packageCIDRs, "package-cidr", "CIDR of a package mirror build Pods may reach (repeatable; default none = no internet egress)")
+	var serverDenyCIDRs multiFlag
+	fs.Var(&serverDenyCIDRs, "server-egress-deny-cidr", "extra CIDR game server pods may never reach, e.g. the node's public address (repeatable)")
+	var serverAllowCIDRs multiFlag
+	fs.Var(&serverAllowCIDRs, "server-egress-allow-cidr", "private CIDR game server pods may reach despite the private-range block, e.g. a LAN database (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -74,7 +78,9 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 			"(the felis-api/operator Deployments run it and it is passed through as FELIS_IMAGE, e.g. --felis-image registry.felis.svc:5000/felis:v1)")
 		return 2
 	}
-	for _, cidr := range append(append([]string{}, velocityCIDRs...), packageCIDRs...) {
+	allCIDRs := append(append([]string{}, velocityCIDRs...), packageCIDRs...)
+	allCIDRs = append(append(allCIDRs, serverDenyCIDRs...), serverAllowCIDRs...)
+	for _, cidr := range allCIDRs {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
 			fmt.Fprintf(stderr, "felis manifests: invalid CIDR %q: %v\n", cidr, err)
 			return 2
@@ -148,6 +154,9 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 		ArchiveLocalPath:   *archiveLocalPath,
 		VelocityCIDRs:      []string(velocityCIDRs),
 		PackageSourceCIDRs: []string(packageCIDRs),
+
+		ServerEgressDenyCIDRs:  []string(serverDenyCIDRs),
+		ServerEgressAllowCIDRs: []string(serverAllowCIDRs),
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "felis manifests: render: %v\n", err)

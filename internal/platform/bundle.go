@@ -89,10 +89,15 @@ func Objects(p Params) []Object {
 	buildNP.TypeMeta = metav1.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"}
 	objs = append(objs, buildNP)
 
-	// Minecraft-namespace ingress fence (default-deny + RCON + game).
+	// Minecraft-namespace ingress fence (default-deny + RCON + game), the server
+	// egress fence, and the registry's ingress fence.
 	for _, np := range MinecraftNetworkPolicies(p) {
 		objs = append(objs, np)
 	}
+	for _, np := range ServerEgressPolicies(p) {
+		objs = append(objs, np)
+	}
+	objs = append(objs, RegistryIngressPolicy(p))
 
 	// The running control-plane the fence protects: felis-api/operator Deployments
 	// (which bind the SAs to workloads and stamp the RCON-peer labels) and the

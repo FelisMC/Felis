@@ -386,13 +386,20 @@ internal registry.
 
 `reconcileBuilds` polls the Job; a Job reaching `Failed` is surfaced via
 `writeBuildError` (JobPhase→Failed). [GO-TESTED for the mapping.] The underlying
-cause — a kaniko build error or the **Trivy CRITICAL-CVE gate** failing the build
-before push (spec §16) — is in the Job's pod logs and is [INTEGRATION-ONLY].
-Inspect:
+cause — a kaniko build error, the **Trivy CRITICAL-CVE gate** failing the build
+(spec §16), or the final push — is in the Job's pod logs and is
+[INTEGRATION-ONLY]. The pod runs `kaniko` (builds a tarball, never pushes) and
+`trivy` (scans that tarball) as init containers, then `push` — so a CVE-rejected
+image never reaches the registry. Inspect every step:
 
 ```
-kubectl logs -n felis-build job/<build-job>
+kubectl logs -n felis-build job/<build-job> --all-containers --prefix
 ```
+
+A `push` that fails with `403` means the target repository is under `felis/` or
+`mirror/` — the registry gate reserves those for the platform (§9); `401` means
+the `felis-registry-push` Secret in `felis-build` is missing or stale (re-run the
+installer).
 
 ### 8e. Build Pods never start: executor images and air-gapped installs
 
@@ -422,9 +429,13 @@ build_mem_limit = "4Gi"
 Mirror the executor images into the registry once. On the node itself, push
 through the loopback hostPort the registry Deployment binds (docker treats
 `127.0.0.1` as insecure by default; the installer leaves the daemon stopped, so
-`sudo systemctl start docker` first):
+`sudo systemctl start docker` first). The registry takes writes only from an
+authenticated principal, and `mirror/` only from `platform`, so log in with the
+platform token first:
 
 ```sh
+kubectl -n felis get secret felis-registry-auth -o jsonpath='{.data.platform}' | base64 -d \
+  | docker login --username platform --password-stdin 127.0.0.1:5000
 docker pull gcr.io/kaniko-project/executor:v1.24.0   # any versions you pin
 docker pull aquasec/trivy:0.74.0
 docker pull mirror.gcr.io/aquasec/trivy-java-db:1
@@ -434,6 +445,7 @@ docker tag mirror.gcr.io/aquasec/trivy-java-db:1  127.0.0.1:5000/mirror/trivy-ja
 docker push 127.0.0.1:5000/mirror/kaniko-executor:v1.24.0
 docker push 127.0.0.1:5000/mirror/trivy:0.74.0
 docker push 127.0.0.1:5000/mirror/trivy-java-db:1
+docker logout 127.0.0.1:5000
 ```
 
 From another machine, port-forward the registry instead (`kubectl -n felis
@@ -460,20 +472,19 @@ Unset fields keep the defaults.
 `trivy_db_repository` is not optional on an egress-locked box. Trivy fetches its
 vulnerability DB from `mirror.gcr.io`/`ghcr.io` unless told otherwise, and the
 build egress policy denies those hosts — so the scan step fails closed
-(`failed to download vulnerability DB`) and NO build ever completes, even though
-Kaniko pushed the image. Mirror the DB into the internal registry once:
+(`failed to download vulnerability DB`), nothing is pushed, and NO build ever
+completes. Mirror the DB into the internal registry once:
 
 ```
 # On the node (docker treats 127.0.0.1 as insecure by default), or through the
-# port-forward above:
+# port-forward above, logged in as platform (see the block above):
 #   docker pull mirror.gcr.io/aquasec/trivy-db:2
 #   docker tag  mirror.gcr.io/aquasec/trivy-db:2 127.0.0.1:5000/mirror/trivy-db:2
 #   docker push 127.0.0.1:5000/mirror/trivy-db:2
 ```
 
-The Job's Trivy container already runs with `--insecure`, so the internal
-registry's plain HTTP works for the DB pull exactly as it does for the scanned
-image. Re-mirror the tag periodically (Trivy refreshes the DB several times a
+The Job's Trivy container runs with `--insecure`, so the internal registry's plain
+HTTP works for the DB pull; reads need no credential. Re-mirror the tag periodically (Trivy refreshes the DB several times a
 day upstream; a stale mirror only means stale CVE data, never a failed gate).
 
 `trivy_java_db_repository` is the same story one step lazier: Trivy downloads
@@ -510,6 +521,27 @@ control namespace (or `--registry-namespace`):
   control-plane pods' 256Mi — a live 475MB-layer push OOM-killed the 256Mi
   template mid-upload (audit #46). Very large layers need headroom here, not
   more CPU.
+- **Write authorization:** registry:2 listens on the pod's loopback only; the
+  `registry-gate` sidecar (`felis registry-gate`, the felis image) owns the port and
+  the hostPort. Reads are anonymous — containerd, Kaniko and Trivy pull without a
+  credential — but an anonymous `GET /v2/` answers `401 Basic` so docker knows to
+  send the credential on a push. Every write needs HTTP basic auth against a token
+  in the `felis-registry-auth` Secret: `platform` may write anything (the
+  installer's own images, the `mirror/` DB copies); `build` (a build Job's `push`
+  container, via `felis-registry-push` in `felis-build`) may write anything outside
+  `felis/` and `mirror/` and may never delete. A missing Secret leaves the registry
+  read-only rather than down. The tokens persist in `/etc/felis/secrets.env`;
+  rotating one means editing it there and re-running the installer, then
+  `kubectl -n felis rollout restart deployment/registry` (the gate reads its tokens
+  at start).
+- **Who can connect:** `felis-registry-ingress` admits only the `felis-build`
+  namespace to the registry pod. Node-local traffic (containerd pulls, the
+  installer's pushes through the hostPort) is always allowed by Kubernetes; game
+  servers cannot reach it at all (`felis-server-egress`).
+- **GC pinning:** the registry pod's own images (registry:2 and the felis image
+  its gate runs) cannot be pulled from the registry they make up, so the installer
+  labels both `io.cri-containerd.pinned=pinned` in containerd and kubelet's image
+  GC never collects them. Check with `k3s ctr images ls | grep pinned`.
 - **Selector quirk worth knowing:** the registry Service selector is only
   `name + component=registry` — it deliberately lacks the
   `part-of=felis-control-plane` label, so the registry is *invisible* to the
@@ -812,15 +844,17 @@ If a pull does NOT come back:
    `/var/lib/rancher/k3s/storage`).
 2. Check the registry: `kubectl -n felis get pods -l
    app.kubernetes.io/component=registry` and, on the node,
-   `curl -s http://127.0.0.1:5000/v2/` (expect `{}`).
+   `curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:5000/healthz`
+   (expect `200`: the registry gate answers it only while registry:2 behind it
+   does). An anonymous `GET /v2/` answers `401` by design — see §9.
 3. Check the mirror file: `/etc/rancher/k3s/registries.yaml` must map
    `registry.felis.svc:5000` to `http://127.0.0.1:5000`. Missing or changed:
    re-run the installer (it rewrites the file and restarts k3s only when the
    content changed).
 4. Re-mirror a tag the registry does not have (hand-built images were never
    pushed): `sudo systemctl start docker` (the installer leaves the daemon
-   stopped), then `docker tag <ref> 127.0.0.1:5000/<repo>:<tag> && docker push
-   127.0.0.1:5000/<repo>:<tag>`.
+   stopped), log in as `platform` (§8e), then `docker tag <ref>
+   127.0.0.1:5000/<repo>:<tag> && docker push 127.0.0.1:5000/<repo>:<tag>`.
 
 For an image that is in neither place, the old fallback still stands: re-run the
 installer (it rebuilds/re-imports from the local Docker store AND mirrors into

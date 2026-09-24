@@ -119,6 +119,40 @@ func TestBuildStatefulSetForwardingInitContainer(t *testing.T) {
 	}
 }
 
+// The system-role label travels onto the pod: the platform's NetworkPolicies select
+// on it (felis-login-to-internal-api opens 8081 only to name=login AND
+// system-role=login), and a pod without it would be fenced off the one service it
+// exists to call. The selector stays the immutable labelsFor subset, so existing
+// StatefulSets roll instead of failing to update.
+func TestBuildStatefulSetCopiesSystemRoleOntoPods(t *testing.T) {
+	login := &v1alpha1.MinecraftServer{}
+	login.Name = naming.SystemLoginServer
+	login.Labels = map[string]string{v1alpha1.LabelSystemRole: naming.SystemLoginServer}
+	sts, err := buildStatefulSet(login, 1, "felis:demo")
+	if err != nil {
+		t.Fatalf("buildStatefulSet: %v", err)
+	}
+	pod := sts.Spec.Template.Labels
+	if pod[v1alpha1.LabelSystemRole] != naming.SystemLoginServer {
+		t.Errorf("pod labels = %v, want %s=%s", pod, v1alpha1.LabelSystemRole, naming.SystemLoginServer)
+	}
+	for k, v := range sts.Spec.Selector.MatchLabels {
+		if pod[k] != v {
+			t.Errorf("selector %s=%s does not match the pod template", k, v)
+		}
+	}
+	if _, ok := sts.Spec.Selector.MatchLabels[v1alpha1.LabelSystemRole]; ok {
+		t.Error("the system role must stay out of the (immutable) selector")
+	}
+
+	user := &v1alpha1.MinecraftServer{}
+	user.Name = "survival"
+	userSts, _ := buildStatefulSet(user, 1, "felis:demo")
+	if _, ok := userSts.Spec.Template.Labels[v1alpha1.LabelSystemRole]; ok {
+		t.Errorf("a user server pod must carry no system role, got %v", userSts.Spec.Template.Labels)
+	}
+}
+
 // A server with a health port also exposes it as a named container port so the
 // kubelet can reach it.
 func TestBuildStatefulSetAddsHealthPort(t *testing.T) {

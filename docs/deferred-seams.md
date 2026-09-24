@@ -60,9 +60,9 @@ A grep across `*.md` and `*.go` returns both sets; only the Go ones are seams.
   (recipe in docs/troubleshooting.md §8e); `trivy_java_db_repository` does the
   same for the Java DB, which Trivy fetches so soon as the scanned image contains
   a jar — i.e. for every real modpack build. Left unset on an egress-locked box
-  the scan step fails closed — Kaniko pushes, Trivy exits on the DB download —
-  which is the correct fail direction but leaves the build unfinished, so the
-  mirrors are part of a production build install.
+  the scan step fails closed — Trivy exits on the DB download before anything is
+  pushed — which is the correct fail direction but leaves every build unfinished,
+  so the mirrors are part of a production build install.
 
 ## Built; only its I/O is unverifiable from this repo
 
@@ -132,8 +132,8 @@ worth revisiting.
 
 ## Recorded outside the code
 
-- `deploy/limbo/README.md:139` — no NetworkPolicy locks the minecraft-namespace
-  egress or the control-namespace ingress today, which is why the login pod reaches
-  `felis-api-internal:8081`. This is a conditional obligation rather than a seam: if
-  a future deployment adds either lock, it must also open that path. Spec v4.1 §21
-  asks for those policies; `cmd/felis/manifests.go` renders the game-port one.
+- The minecraft-namespace egress is locked (`felis-server-egress`, DNS plus the
+  public internet with every private range and the node's own global addresses
+  excluded) and `felis-login-to-internal-api` opens the one platform path a game pod
+  needs — login → felis-api:8081. Any new in-cluster service a game server must call
+  needs its own allow policy next to that one (`internal/platform/netpol.go`).

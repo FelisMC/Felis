@@ -73,6 +73,18 @@ func labelsFor(server *v1alpha1.MinecraftServer) map[string]string {
 	}
 }
 
+// podLabelsFor is labelsFor plus the setup-owned system-role label, copied onto
+// the pod so the platform's NetworkPolicies can tell the login gate apart from a
+// user server (internal/platform loginToInternalAPI). Only the template carries it:
+// the StatefulSet selector is immutable and stays selectorFor.
+func podLabelsFor(server *v1alpha1.MinecraftServer) map[string]string {
+	l := labelsFor(server)
+	if role := server.Labels[v1alpha1.LabelSystemRole]; role != "" {
+		l[v1alpha1.LabelSystemRole] = role
+	}
+	return l
+}
+
 func headlessServiceName(name string) string { return name + "-hl" }
 
 // rconPort resolves the RCON port, defaulting to the conventional DefaultRconPort.
@@ -274,7 +286,7 @@ func buildStatefulSet(server *v1alpha1.MinecraftServer, replicas int32, felisIma
 			ServiceName: headlessServiceName(server.Name),
 			Selector:    &metav1.LabelSelector{MatchLabels: selectorFor(server)},
 			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: labelsFor(server)},
+				ObjectMeta: metav1.ObjectMeta{Labels: podLabelsFor(server)},
 				Spec: corev1.PodSpec{
 					TerminationGracePeriodSeconds: &grace,
 					InitContainers:                initContainers,

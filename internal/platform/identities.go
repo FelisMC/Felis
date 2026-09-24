@@ -98,6 +98,16 @@ type Params struct {
 	// Pods (spec §16). Empty means no internet egress at all — the locked-down
 	// default the build subsystem already enforces.
 	PackageSourceCIDRs []string
+	// ServerEgressDenyCIDRs are extra destinations game server pods may never
+	// reach, on top of the private, link-local and loopback ranges the server
+	// egress policy always excludes. The installer passes the node's own global
+	// addresses: a node with a public IP would otherwise be reachable from a
+	// tenant's plugin on every host port (PostgreSQL, the kube API, kubelet).
+	ServerEgressDenyCIDRs []string
+	// ServerEgressAllowCIDRs are private destinations game servers MAY reach
+	// despite that exclusion, e.g. a LAN database a server's plugin uses. Empty by
+	// default: a tenant's code has no business on the operator's network.
+	ServerEgressAllowCIDRs []string
 	// FelisImage is the container image the felis-api and felis-operator
 	// Deployments run (the multi-call `felis` binary). It has NO default and no
 	// safe guess: `felis manifests` REQUIRES --felis-image and refuses to render

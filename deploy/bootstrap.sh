@@ -299,6 +299,7 @@ die()  { printf '\033[1;31m[fail]\033[0m %s\n' "$*" >&2; exit 1; }
 
 TEMP_PATHS=()
 DOCKER_CONTAINERS=()
+REGISTRY_DOCKER_CONFIG=""
 PKG_TIMERS_TO_RESTORE=()
 
 on_error() {
@@ -357,6 +358,40 @@ apply_felis_config_secrets() {
   kube -n "$MINECRAFT_NS" create secret generic felis-config \
     --from-file=felis.toml="${STATE_DIR}/felis.pod.toml" \
     --dry-run=client -o yaml | kube apply -f -
+}
+
+# The registry gate reads one token file per principal from felis-registry-auth
+# (registry namespace = control namespace); a build Job's push container reads the
+# build principal's username/password from felis-registry-push in the build
+# namespace. Values go through 0600 temp files, never kubectl's argv.
+apply_registry_secrets() {
+  local dir
+  dir="$(umask 077; mktemp -d)"
+  remember_temp "$dir"
+  printf '%s' "$REGISTRY_PLATFORM_TOKEN" > "${dir}/platform"
+  printf '%s' "$REGISTRY_BUILD_TOKEN" > "${dir}/build"
+  printf '%s' build > "${dir}/username"
+  kube -n "$CONTROL_NS" create secret generic felis-registry-auth \
+    --from-file=platform="${dir}/platform" \
+    --from-file=build="${dir}/build" \
+    --dry-run=client -o yaml | kube apply -f -
+  kube -n "$BUILD_NS" create secret generic felis-registry-push \
+    --from-file=username="${dir}/username" \
+    --from-file=password="${dir}/build" \
+    --dry-run=client -o yaml | kube apply -f -
+  rm -rf -- "$dir"
+}
+
+# node_global_cidrs prints one host-length CIDR per global address on this node.
+# Game server egress already excludes every private range; this adds the node's
+# public addresses, which would otherwise let a server dial the panel NodePort,
+# SSH, or anything else the host serves on them.
+node_global_cidrs() {
+  command -v ip >/dev/null 2>&1 || return 0
+  ip -o addr show scope global 2>/dev/null | awk '
+    $3 == "inet"  { split($4, a, "/"); print a[1] "/32" }
+    $3 == "inet6" { split($4, a, "/"); print a[1] "/128" }
+  ' | sort -u
 }
 
 as_postgres() {
@@ -931,6 +966,30 @@ import_registry_image() {
     warn "could not import registry:2: the in-cluster registry will start only if the node can pull it from Docker Hub; on an air-gapped box import it by hand (docs/troubleshooting.md §8e)"
   fi
   systemctl stop docker docker.socket 2>/dev/null || true
+}
+
+# The registry pod runs registry:2 and, as its registry-gate sidecar, the felis
+# image — neither of which can be pulled from the registry they make up. A kubelet
+# image GC that collected either would leave the registry, and every pull through
+# it, dead until someone re-imported by hand. containerd reports an image labelled
+# io.cri-containerd.pinned=pinned as pinned over CRI, and kubelet's image GC never
+# removes a pinned image. Older felis/felis tags are unpinned first, so upgrades
+# do not pile up pinned images forever.
+pin_registry_images() {
+  local ref
+  while read -r ref; do
+    case "$ref" in
+      "$FELIS_IMAGE") ;;
+      */felis/felis:*) k3s_cmd ctr images label "$ref" io.cri-containerd.pinned= >/dev/null 2>&1 || true ;;
+    esac
+  done < <(k3s_cmd ctr images ls -q 2>/dev/null || true)
+  for ref in "$FELIS_IMAGE" docker.io/library/registry:2; do
+    if k3s_cmd ctr images label "$ref" io.cri-containerd.pinned=pinned >/dev/null 2>&1; then
+      ok "pinned ${ref} in containerd (exempt from kubelet image GC)"
+    else
+      warn "could not pin ${ref} in containerd: if the kubelet's image GC collects it, the registry pod cannot restart until it is re-imported (docs/troubleshooting.md §8e)"
+    fi
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -2042,6 +2101,12 @@ load_or_make_secrets() {
   # the username — i.e. anyone could join as anyone, the Owner included. Same value on
   # the proxy (forwarding.secret) and in every backend pod (felis-forwarding-secret).
   FORWARDING_SECRET="${FORWARDING_SECRET:-$(openssl rand -hex 32)}"
+  # Registry write credentials, one per principal the registry gate knows
+  # (internal/registrygate): platform pushes the installer's own images and the
+  # Trivy DB mirrors, build is what a build Job's push container presents and may
+  # never write under felis/ or mirror/. Reads stay anonymous.
+  REGISTRY_PLATFORM_TOKEN="${REGISTRY_PLATFORM_TOKEN:-$(openssl rand -hex 32)}"
+  REGISTRY_BUILD_TOKEN="${REGISTRY_BUILD_TOKEN:-$(openssl rand -hex 32)}"
   (
     umask 077
     cat > "$SECRETS_ENV" <<EOF
@@ -2049,6 +2114,8 @@ DB_PASSWORD=${DB_PASSWORD}
 SERVICE_TOKEN=${SERVICE_TOKEN}
 SESSION_SECRET=${SESSION_SECRET}
 FORWARDING_SECRET=${FORWARDING_SECRET}
+REGISTRY_PLATFORM_TOKEN=${REGISTRY_PLATFORM_TOKEN}
+REGISTRY_BUILD_TOKEN=${REGISTRY_BUILD_TOKEN}
 EOF
   )
   chmod 0600 "$SECRETS_ENV"
@@ -2324,7 +2391,7 @@ deploy_bundle() {
     kube create namespace "$ns" --dry-run=client -o yaml | kube apply -f -
   done
 
-  log "provisioning felis-config + felis-service-token + felis-forwarding-secret + panel TLS secrets (out-of-band, never in the bundle)"
+  log "provisioning felis-config + felis-service-token + felis-forwarding-secret + registry credentials + panel TLS secrets (out-of-band, never in the bundle)"
   apply_felis_config_secrets
   apply_literal_secret "$CONTROL_NS" felis-service-token token "$SERVICE_TOKEN"
   # The build namespace needs the same token: the build Job's fetch initContainer
@@ -2337,6 +2404,7 @@ deploy_bundle() {
   # forwarding mode is one proxy-wide setting — a backend that does not speak it is not
   # "less secure", it is unjoinable.
   apply_literal_secret "$CONTROL_NS" felis-forwarding-secret secret "$FORWARDING_SECRET"
+  apply_registry_secrets
   kube -n "$CONTROL_NS" create secret tls felis-api-tls \
     --cert="$PANEL_TLS_CERT" \
     --key="$PANEL_TLS_KEY" \
@@ -2348,6 +2416,10 @@ deploy_bundle() {
     --panel-node-port "$FELIS_PANEL_NODEPORT"
     --velocity-cidr "${NODE_IP}/32"
   )
+  local cidr
+  while read -r cidr; do
+    [ -n "$cidr" ] && manifest_args+=(--server-egress-deny-cidr "$cidr")
+  done < <(node_global_cidrs)
   # Backups are on by default (the renderer's own default names felis-backups); an emptied
   # FELIS_BACKUP_PVC asks for the no-backup shape explicitly, and a custom name must be
   # passed through or the api would advertise a PVC the bundle never created.
@@ -2422,8 +2494,20 @@ push_image_to_registry() {
   esac
   log "mirroring ${ref} into the internal registry"
   docker tag "$ref" "$push_ref" || die "could not tag ${ref} as ${push_ref} — is docker healthy?"
-  docker push "$push_ref" || die "could not mirror ${ref} into the internal registry — check the registry Deployment/pod and its PVC"
+  docker --config "$REGISTRY_DOCKER_CONFIG" push "$push_ref" || die "could not mirror ${ref} into the internal registry — check the registry Deployment/pod (both the registry and registry-gate containers) and its PVC"
   docker rmi "$push_ref" >/dev/null 2>&1 || true
+}
+
+# registry_docker_login logs a throwaway docker config into the registry gate as
+# the platform principal: writes are refused anonymously, and this identity is
+# the only one allowed under felis/. The config lives in a 0700 temp dir that the
+# EXIT trap removes, so the token never lands in root's ~/.docker.
+registry_docker_login() {
+  REGISTRY_DOCKER_CONFIG="$(umask 077; mktemp -d)"
+  remember_temp "$REGISTRY_DOCKER_CONFIG"
+  printf '%s' "$REGISTRY_PLATFORM_TOKEN" | docker --config "$REGISTRY_DOCKER_CONFIG" \
+    login --username platform --password-stdin "$REGISTRY_PUSH_HOST" >/dev/null \
+    || die "could not log in to the internal registry at ${REGISTRY_PUSH_HOST} as platform — check the registry-gate container's log and the felis-registry-auth Secret"
 }
 
 # Every image this installer builds is hosted in the registry, so the copies it
@@ -2439,6 +2523,7 @@ push_image_to_registry() {
 push_images_to_registry() {
   local img
   systemctl start docker
+  registry_docker_login
   for img in "$FELIS_IMAGE" "$FELIS_LIMBO_IMAGE" "$FELIS_LOBBY_IMAGE" "$FELIS_PAPER_IMAGE"; do
     [ -n "$img" ] || continue
     push_image_to_registry "$img"
@@ -2871,6 +2956,8 @@ main() {
     fetch_source
   fi
   build_image
+  # After build_image imported the felis image: the registry pod's gate runs it.
+  pin_registry_images
   build_game_stack
   install_postgres
   configure_postgres

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -18,6 +19,33 @@ func TestObjects_EveryDocHasTypeMeta(t *testing.T) {
 			t.Errorf("%T %s/%s has empty TypeMeta (kind=%q version=%q)",
 				obj, obj.GetNamespace(), obj.GetName(), gvk.Kind, gvk.Version)
 		}
+	}
+}
+
+// TestObjects_CarryTheFences checks the bundle ships every NetworkPolicy the
+// security model counts on, each in the namespace it guards. Rendering one is
+// worth nothing if Objects forgets to include it.
+func TestObjects_CarryTheFences(t *testing.T) {
+	want := map[string]string{
+		"felis-default-deny-ingress":  "minecraft",
+		"felis-server-egress":         "minecraft",
+		"felis-login-to-internal-api": "minecraft",
+		"felis-registry-ingress":      "felis",
+	}
+	for _, obj := range Objects(testParams()) {
+		np, ok := obj.(*networkingv1.NetworkPolicy)
+		if !ok {
+			continue
+		}
+		if ns, expected := want[np.Name]; expected {
+			if np.Namespace != ns {
+				t.Errorf("%s in namespace %q, want %q", np.Name, np.Namespace, ns)
+			}
+			delete(want, np.Name)
+		}
+	}
+	for name := range want {
+		t.Errorf("bundle is missing NetworkPolicy %s", name)
 	}
 }
 
