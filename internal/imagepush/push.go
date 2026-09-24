@@ -211,13 +211,28 @@ func (p *Pusher) describe(tarPath string) (*manifest, error) {
 }
 
 func (p *Pusher) pushBlob(ctx context.Context, r Ref, tarPath string, b descriptor) error {
-	head, err := p.do(ctx, http.MethodHead, p.url(r, "blobs/"+b.Digest), nil, 0, "")
+	return p.uploadBlob(ctx, r, b.Digest, b.Size, func() (io.ReadCloser, error) {
+		f, entry, err := openEntry(tarPath, b.file)
+		if err != nil {
+			return nil, err
+		}
+		return struct {
+			io.Reader
+			io.Closer
+		}{entry, f}, nil
+	})
+}
+
+// uploadBlob uploads the blob open returns, unless r's repository already holds
+// digest. The registry checks the bytes against digest.
+func (p *Pusher) uploadBlob(ctx context.Context, r Ref, digest string, size int64, open func() (io.ReadCloser, error)) error {
+	head, err := p.do(ctx, http.MethodHead, p.url(r, "blobs/"+digest), nil, 0, "")
 	if err != nil {
 		return err
 	}
 	head.Body.Close()
 	if head.StatusCode == http.StatusOK {
-		p.logf("exists  %s", b.Digest)
+		p.logf("exists  %s", digest)
 		return nil
 	}
 
@@ -234,15 +249,15 @@ func (p *Pusher) pushBlob(ctx context.Context, r Ref, tarPath string, b descript
 		return fmt.Errorf("start upload: %w", err)
 	}
 	q := loc.Query()
-	q.Set("digest", b.Digest)
+	q.Set("digest", digest)
 	loc.RawQuery = q.Encode()
 
-	f, entry, err := openEntry(tarPath, b.file)
+	body, err := open()
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	put, err := p.do(ctx, http.MethodPut, loc.String(), entry, b.Size, "application/octet-stream")
+	defer body.Close()
+	put, err := p.do(ctx, http.MethodPut, loc.String(), body, size, "application/octet-stream")
 	if err != nil {
 		return err
 	}
@@ -250,7 +265,7 @@ func (p *Pusher) pushBlob(ctx context.Context, r Ref, tarPath string, b descript
 	if put.StatusCode != http.StatusCreated {
 		return statusError("upload", put)
 	}
-	p.logf("pushed  %s (%d bytes)", b.Digest, b.Size)
+	p.logf("pushed  %s (%d bytes)", digest, size)
 	return nil
 }
 
