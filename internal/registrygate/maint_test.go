@@ -1,6 +1,7 @@
 package registrygate
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -204,5 +205,74 @@ func TestReadOnlyWindowSurvivesAGateRestart(t *testing.T) {
 	}
 	if err := g3.SetMaintenanceState(state); err == nil || !strings.Contains(err.Error(), "maintenance state") {
 		t.Fatalf("a corrupt state file = %v, want an error naming it", err)
+	}
+}
+
+func TestManifestIndexListsUntaggedRevisions(t *testing.T) {
+	root := t.TempDir()
+	base := root + "/docker/registry/v2/repositories/felis/paper/_manifests"
+	hexA := strings.Repeat("a", 64)
+	hexB := strings.Repeat("b", 64)
+	hexGone := strings.Repeat("c", 64)
+	for _, h := range []string{hexA, hexB} {
+		if err := os.MkdirAll(base+"/revisions/sha256/"+h, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(base+"/revisions/sha256/"+h+"/link", []byte("sha256:"+h), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A deleted manifest leaves its directory without a link.
+	if err := os.MkdirAll(base+"/revisions/sha256/"+hexGone, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(base+"/tags/demo/current", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(base+"/tags/demo/current/link", []byte("sha256:"+hexB), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	if err := os.Chtimes(base+"/revisions/sha256/"+hexA+"/link", old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	up := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(up.Close)
+	target, _ := url.Parse(up.URL)
+	g := New(target, nil, nil)
+	g.DataDir = root
+	srv := httptest.NewServer(g)
+	t.Cleanup(srv.Close)
+
+	resp, err := http.Get(srv.URL + IndexPathPrefix + "felis/paper")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var idx Index
+	if err := json.NewDecoder(resp.Body).Decode(&idx); err != nil {
+		t.Fatal(err)
+	}
+	if len(idx.Revisions) != 2 || idx.Revisions[0].Digest != "sha256:"+hexA || !idx.Revisions[0].Pushed.Equal(old) {
+		t.Fatalf("revisions = %+v, want a (pushed %s) and b, without the deleted c", idx.Revisions, old)
+	}
+	if idx.Tags["demo"] != "sha256:"+hexB || len(idx.Tags) != 1 {
+		t.Fatalf("tags = %v, want demo -> b", idx.Tags)
+	}
+
+	// A repository that does not exist is empty; a traversal is refused.
+	if idx, err := ReadIndex(root, "user-uploads/none"); err != nil || len(idx.Revisions) != 0 || len(idx.Tags) != 0 {
+		t.Fatalf("missing repo = %+v, %v, want empty", idx, err)
+	}
+	for _, bad := range []string{"felis/../felis/paper", "felis/./paper", "Felis/paper", "felis//paper", "felis/paper/"} {
+		resp, err := http.Get(srv.URL + IndexPathPrefix + bad)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("index of %q = %d, want 400", bad, resp.StatusCode)
+		}
 	}
 }

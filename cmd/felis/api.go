@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"regexp"
@@ -26,6 +27,7 @@ import (
 	"felis.lolicon.best/internal/passkey"
 	"felis.lolicon.best/internal/platform"
 	"felis.lolicon.best/internal/reaper"
+	"felis.lolicon.best/internal/registryprune"
 	"felis.lolicon.best/internal/restore"
 	"felis.lolicon.best/internal/store"
 	"felis.lolicon.best/internal/submit"
@@ -399,6 +401,10 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// reconciles it, but this loop converges builds nobody is polling.
 	go reconcileBuilds(ctx, builder, stderr)
 
+	if pruner := registryPruner(cfg, builder.Store, a.Cluster, stderr); pruner != nil {
+		go pruner.Loop(ctx, registryPruneInterval)
+	}
+
 	select {
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -611,6 +617,80 @@ func reconcileBuilds(ctx context.Context, b *build.Builder, stderr io.Writer) {
 			}
 		}
 	}
+}
+
+// registryPruneInterval spaces the registry pruner's runs. The registry-gc
+// sidecar sweeps once a day, so pruning more often only changes which sweep frees
+// a layer.
+const registryPruneInterval = 6 * time.Hour
+
+// registryPruner deletes the registry manifests nothing references
+// (internal/registryprune); the registry-gc sidecar frees their layers on its next
+// sweep. It acts as the gate's prune principal, whose token the api Deployment
+// injects from felis-registry-auth. Without the token the registry only grows,
+// which is said once here.
+func registryPruner(cfg *config.Config, store imageRefStore, servers serverLister, stderr io.Writer) *registryprune.Pruner {
+	if cfg.Registry.URL == "" {
+		return nil
+	}
+	token := os.Getenv(platform.RegistryPruneTokenEnv)
+	if token == "" {
+		fmt.Fprintf(stderr, "felis api: registry pruner disabled (%s unset) — images nothing uses are never deleted from the registry\n", platform.RegistryPruneTokenEnv)
+		return nil
+	}
+	static := []string{
+		os.Getenv("FELIS_IMAGE"),
+		cfg.Registry.KanikoImage, cfg.Registry.TrivyImage,
+		cfg.Registry.TrivyDBRepository, cfg.Registry.TrivyJavaDBRepository,
+	}
+	return &registryprune.Pruner{
+		Registry: &registryprune.Client{Endpoint: "http://" + cfg.Registry.URL, Token: token},
+		Host:     cfg.Registry.URL,
+		Refs: func(ctx context.Context) ([]string, error) {
+			return inUseImageRefs(ctx, store, servers, static)
+		},
+		Log: slog.New(slog.NewTextHandler(stderr, nil)),
+	}
+}
+
+type imageRefStore interface {
+	ListImages(ctx context.Context) ([]build.Image, error)
+	ListUnfinishedBuilds(ctx context.Context) ([]build.Build, error)
+}
+
+type serverLister interface {
+	ListServers(ctx context.Context) ([]api.ServerInfo, error)
+}
+
+// inUseImageRefs lists every image reference the platform still depends on: the
+// whitelist (disabled rows too, an admin may enable them again), every server's
+// spec, builds still running, and the images the control plane and the build
+// Jobs run. Any source failing fails the whole list, so the pruner never decides
+// on a partial view.
+func inUseImageRefs(ctx context.Context, store imageRefStore, servers serverLister, static []string) ([]string, error) {
+	refs := append([]string(nil), static...)
+	images, err := store.ListImages(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("image whitelist: %w", err)
+	}
+	for _, img := range images {
+		refs = append(refs, img.ImageRef)
+	}
+	srvs, err := servers.ListServers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("servers: %w", err)
+	}
+	for _, s := range srvs {
+		refs = append(refs, s.Image)
+	}
+	builds, err := store.ListUnfinishedBuilds(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("running builds: %w", err)
+	}
+	for _, b := range builds {
+		refs = append(refs, b.ImageRef)
+	}
+	return refs, nil
 }
 
 // mailLimit turns smtp.max_per_hour into the API's install-wide mail bucket:

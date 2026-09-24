@@ -72,8 +72,8 @@ const (
 )
 
 // Registry write credentials (internal/registrygate). The registry namespace holds
-// RegistryAuthSecretName with one key per principal (platform, build), mounted into
-// the gate sidecar. The build namespace holds RegistryPushSecretName with the build
+// RegistryAuthSecretName with one key per principal (platform, build, prune),
+// mounted into the gate sidecar; felis-api reads the prune key into env. The build namespace holds RegistryPushSecretName with the build
 // principal's username/password, read only by a build Job's push container. Both
 // are provisioned out-of-band by deploy/bootstrap.sh.
 const (

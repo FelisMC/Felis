@@ -236,11 +236,13 @@ func loginToInternalAPI(p Params) *networkingv1.NetworkPolicy {
 
 // RegistryIngressPolicy fences the registry pod: only build pods and felis-api
 // reach its port. Build pods push what they build; felis-api reads a manifest
-// digest to pin a new server's image (internal/imagepin). Everything else that
-// uses the registry runs on the node — containerd's pulls and the installer's
-// pushes both arrive through the loopback hostPort — and Kubernetes never blocks
-// resident-node traffic. Write authorization is the gate's job (felis-api holds no
-// registry credential); this policy keeps every other pod from even trying.
+// digest to pin a new server's image (internal/imagepin) and deletes manifests
+// nothing references (internal/registryprune). Everything else that uses the
+// registry runs on the node — containerd's pulls and the installer's pushes both
+// arrive through the loopback hostPort — and Kubernetes never blocks
+// resident-node traffic. Write authorization is the gate's job (felis-api holds
+// only the prune principal, which can delete a manifest by digest and nothing
+// else); this policy keeps every other pod from even trying.
 func RegistryIngressPolicy(p Params) *networkingv1.NetworkPolicy {
 	p = p.withDefaults()
 	tcp := corev1.ProtocolTCP

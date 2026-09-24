@@ -151,6 +151,16 @@ const (
 	// [smtp] password_ref defaults to this name.
 	SMTPPasswordEnv = "FELIS_SMTP_PASSWORD"
 
+	// RegistryPruneTokenEnv carries the registry gate's prune principal token into
+	// felis-api, whose pruner deletes the manifests nothing references
+	// (internal/registryprune). It comes from the prune key of
+	// naming.RegistryAuthSecretName, optionally: that Secret lives in the registry
+	// namespace, which is the control namespace on every install the bootstrap
+	// makes, and an install that splits them or predates the key runs without the
+	// pruner.
+	RegistryPruneTokenEnv = "FELIS_REGISTRY_PRUNE_TOKEN"
+	registryPruneTokenKey = "prune"
+
 	// worldsMountPath is where the reaper CronJob mounts the worlds-root (read-only).
 	// It is the default of `felis reaper --worlds-root`; the resolver then reads each
 	// world at <worldsMountPath>/<pvc>. Single-sourced with cmd/felis/reaper.go.
@@ -338,6 +348,9 @@ func APIDeployment(p Params) *appsv1.Deployment {
 		// setup wizard's "configure email" step creates felis-smtp.
 		corev1.EnvVar{Name: SMTPPasswordEnv, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{Name: SMTPSecretName}, Key: SMTPSecretPasswordKey, Optional: optional,
+		}}},
+		corev1.EnvVar{Name: RegistryPruneTokenEnv, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: naming.RegistryAuthSecretName}, Key: registryPruneTokenKey, Optional: optional,
 		}}},
 	)
 
@@ -869,6 +882,8 @@ func registryDeployment(p Params) *appsv1.Deployment {
 			"--auth-dir=" + registryAuthMountPath,
 			fmt.Sprintf("--maint-listen=127.0.0.1:%d", registryMaintPort(p)),
 			"--maint-dir=" + registryMaintMountPath,
+			// The manifest index felis-api's pruner reads (registrygate/index.go).
+			"--data-dir=" + registryDataPath,
 		},
 		Ports: []corev1.ContainerPort{
 			{
@@ -881,6 +896,7 @@ func registryDeployment(p Params) *appsv1.Deployment {
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: registryAuthVolume, MountPath: registryAuthMountPath, ReadOnly: true},
 			{Name: registryMaintVolume, MountPath: registryMaintMountPath},
+			{Name: registryVolume, MountPath: registryDataPath, ReadOnly: true},
 		},
 		// /healthz answers 200 only while registry:2 answers GET /v2/ on loopback,
 		// so a registry whose storage broke shows up as an unready pod instead of a

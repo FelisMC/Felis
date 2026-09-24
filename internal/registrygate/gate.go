@@ -69,6 +69,9 @@ type Gate struct {
 	Upstream *url.URL
 	// Log receives one line per refused write. Nil discards.
 	Log *slog.Logger
+	// DataDir is the registry's storage root, mounted read-only, for the manifest
+	// index (index.go). Empty turns the index off.
+	DataDir string
 
 	proxy  *httputil.ReverseProxy
 	health *http.Client
@@ -103,6 +106,10 @@ func (g *Gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	case "/healthz":
 		g.serveHealth(w, r)
+		return
+	}
+	if strings.HasPrefix(r.URL.Path, IndexPathPrefix) {
+		g.serveIndex(w, r)
 		return
 	}
 	if !strings.HasPrefix(r.URL.Path, "/v2/") && r.URL.Path != "/v2" {

@@ -411,10 +411,12 @@ apply_registry_secrets() {
   remember_temp "$dir"
   printf '%s' "$REGISTRY_PLATFORM_TOKEN" > "${dir}/platform"
   printf '%s' "$REGISTRY_BUILD_TOKEN" > "${dir}/build"
+  printf '%s' "$REGISTRY_PRUNE_TOKEN" > "${dir}/prune"
   printf '%s' build > "${dir}/username"
   kube -n "$CONTROL_NS" create secret generic felis-registry-auth \
     --from-file=platform="${dir}/platform" \
     --from-file=build="${dir}/build" \
+    --from-file=prune="${dir}/prune" \
     --dry-run=client -o yaml | kube apply -f -
   kube -n "$BUILD_NS" create secret generic felis-registry-push \
     --from-file=username="${dir}/username" \
@@ -2210,9 +2212,11 @@ load_or_make_secrets() {
   # Registry write credentials, one per principal the registry gate knows
   # (internal/registrygate): platform pushes the installer's own images and the
   # Trivy DB mirrors, build is what a build Job's push container presents and may
-  # never write under felis/ or mirror/. Reads stay anonymous.
+  # never write under felis/ or mirror/, prune is felis-api deleting manifests
+  # nothing references (internal/registryprune). Reads stay anonymous.
   REGISTRY_PLATFORM_TOKEN="${REGISTRY_PLATFORM_TOKEN:-$(openssl rand -hex 32)}"
   REGISTRY_BUILD_TOKEN="${REGISTRY_BUILD_TOKEN:-$(openssl rand -hex 32)}"
+  REGISTRY_PRUNE_TOKEN="${REGISTRY_PRUNE_TOKEN:-$(openssl rand -hex 32)}"
   (
     umask 077
     cat > "$SECRETS_ENV" <<EOF
@@ -2222,6 +2226,7 @@ SESSION_SECRET=${SESSION_SECRET}
 FORWARDING_SECRET=${FORWARDING_SECRET}
 REGISTRY_PLATFORM_TOKEN=${REGISTRY_PLATFORM_TOKEN}
 REGISTRY_BUILD_TOKEN=${REGISTRY_BUILD_TOKEN}
+REGISTRY_PRUNE_TOKEN=${REGISTRY_PRUNE_TOKEN}
 EOF
   )
   chmod 0600 "$SECRETS_ENV"

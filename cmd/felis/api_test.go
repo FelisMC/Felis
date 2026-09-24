@@ -1,9 +1,14 @@
 package main
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"testing"
 
+	"felis.lolicon.best/internal/api"
+	"felis.lolicon.best/internal/build"
 	"felis.lolicon.best/internal/config"
 )
 
@@ -89,5 +94,49 @@ func TestNewAPIServerSetsHardenedTimeouts(t *testing.T) {
 	}
 	if srv.ReadTimeout != 0 {
 		t.Errorf("ReadTimeout = %v, want 0 (unset) so a slow SSE attach is not capped", srv.ReadTimeout)
+	}
+}
+
+type fakeRefStore struct {
+	images []build.Image
+	builds []build.Build
+	err    error
+}
+
+func (f fakeRefStore) ListImages(context.Context) ([]build.Image, error) { return f.images, f.err }
+func (f fakeRefStore) ListUnfinishedBuilds(context.Context) ([]build.Build, error) {
+	return f.builds, nil
+}
+
+type fakeServers []api.ServerInfo
+
+func (f fakeServers) ListServers(context.Context) ([]api.ServerInfo, error) { return f, nil }
+
+// The registry pruner deletes whatever this list does not name, so every source of
+// a reference has to be in it, and a failing source must fail the list.
+func TestInUseImageRefsCoversEverySource(t *testing.T) {
+	const reg = "registry.felis.svc:5000/"
+	store := fakeRefStore{
+		images: []build.Image{{ImageRef: reg + "modpacks/pack:*"}, {ImageRef: reg + "felis/paper:demo"}},
+		builds: []build.Build{{ImageRef: reg + "user-uploads/sub-9:latest"}},
+	}
+	servers := fakeServers{{Name: "s1", Image: reg + "felis/paper:demo@sha256:" + fmt.Sprintf("%064d", 1)}}
+	got, err := inUseImageRefs(context.Background(), store, servers, []string{reg + "felis/felis:b60"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		reg + "felis/felis:b60",
+		reg + "modpacks/pack:*", reg + "felis/paper:demo",
+		reg + "felis/paper:demo@sha256:" + fmt.Sprintf("%064d", 1),
+		reg + "user-uploads/sub-9:latest",
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("refs = %v\nwant %v", got, want)
+	}
+
+	store.err = errors.New("db down")
+	if _, err := inUseImageRefs(context.Background(), store, servers, nil); err == nil {
+		t.Fatal("a failing whitelist read produced a reference list")
 	}
 }

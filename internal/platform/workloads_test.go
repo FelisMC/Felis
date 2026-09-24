@@ -11,6 +11,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
+
+	"felis.lolicon.best/internal/naming"
 )
 
 // podSpec returns the single container and the pod template of a Deployment,
@@ -289,6 +291,7 @@ func TestAPIDeployment_UploadsStorage(t *testing.T) {
 		{UploadsS3AccessKeyEnv, UploadsS3SecretName, UploadsS3SecretAccessKey},
 		{UploadsS3SecretKeyEnv, UploadsS3SecretName, UploadsS3SecretSecretKey},
 		{SMTPPasswordEnv, SMTPSecretName, SMTPSecretPasswordKey},
+		{RegistryPruneTokenEnv, naming.RegistryAuthSecretName, "prune"},
 	} {
 		e := envVar(c.Env, ev.name)
 		if e == nil || e.ValueFrom == nil || e.ValueFrom.SecretKeyRef == nil {
@@ -507,6 +510,7 @@ func TestRegistry_DeploymentServicePVC(t *testing.T) {
 		// The GC handshake has no authentication: loopback only.
 		fmt.Sprintf("--maint-listen=127.0.0.1:%d", p.RegistryPort+2),
 		"--maint-dir=" + registryMaintMountPath,
+		"--data-dir=" + registryDataPath,
 	} {
 		if !contains(gate.Args, want) {
 			t.Errorf("gate args = %v, want %s", gate.Args, want)
@@ -573,6 +577,12 @@ func TestRegistry_DeploymentServicePVC(t *testing.T) {
 	for _, m := range c.VolumeMounts {
 		if m.Name == registryAuthVolume {
 			t.Error("registry:2 must not mount the write tokens")
+		}
+	}
+	// The gate reads the manifest index off the data volume, and never writes it.
+	for _, m := range gate.VolumeMounts {
+		if m.Name == registryVolume && !m.ReadOnly {
+			t.Error("the gate must mount the registry data read-only")
 		}
 	}
 	if !mounted {

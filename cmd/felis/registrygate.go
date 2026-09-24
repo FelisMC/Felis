@@ -44,6 +44,7 @@ func cmdRegistryGate(args []string, _, stderr io.Writer) int {
 	maintListen := fs.String("maint-listen", "", "loopback address for the GC sidecar's read-only handshake (empty disables it)")
 	maintDir := fs.String("maint-dir", "", "directory that keeps an open read-only window across a gate restart")
 	quiet := fs.Duration("maint-quiet", registrygate.DefaultQuiet, "how long writes must be idle before a read-only window is granted")
+	dataDir := fs.String("data-dir", "", "the registry's storage root, mounted read-only, for the manifest index (empty disables it)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -70,6 +71,7 @@ func cmdRegistryGate(args []string, _, stderr io.Writer) int {
 
 	gate := registrygate.New(target, tokens, log)
 	gate.SetQuiet(*quiet)
+	gate.DataDir = *dataDir
 	if *maintDir != "" {
 		if err := gate.SetMaintenanceState(registrygate.MaintStatePath(*maintDir)); err != nil {
 			// A corrupt file must not keep the registry from serving pulls.
