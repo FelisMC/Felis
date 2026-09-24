@@ -20,8 +20,11 @@ graded for how far the in-repo Go test suite proves the behaviour:
   containerd, Postgres, or the network, not by Felis Go code; you will see it in
   `kubectl describe` / pod logs, never in `MinecraftServer.status`.
 - **[INERT]** — the configuration field exists in the CRD but no controller
-  reads it. Tuning it does nothing. §12 lists the one field this still applies
-  to, alongside the fields that *are* read and the condition each depends on.
+  reads it. Tuning it does nothing. **No CRD field carries this status today**;
+  the last one, `spec.storage.retainOnDelete`, was removed rather than
+  implemented (§13 records why). A field whose change seems ignored is almost
+  always a condition instead — §12 lists the fields that *are* read and the
+  condition each depends on.
 
 The operator never invents the parent domain; routing identity is
 `spec.subdomain` under the deployment zone. Examples below use
