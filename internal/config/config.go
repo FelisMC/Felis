@@ -149,14 +149,12 @@ type RegistryConfig struct {
 	BuildNamespace string `toml:"build_namespace"`
 	// KanikoImage / TrivyImage / BuildCPULimit / BuildMemLimit override the
 	// build subsystem's compiled-in defaults (gcr.io/kaniko-project/executor and
-	// aquasec/trivy, 2 CPU / 4Gi per build container). The defaults assume the
-	// build namespace can reach those registries; on an air-gapped or mirrored
-	// install there IS no such reach (the build egress policy allows only DNS,
-	// the internal registry and explicit package mirrors), so the operator must
-	// point these at whatever their box can actually pull — typically images
-	// mirrored into the in-cluster registry (docs/troubleshooting.md §8e); a
-	// bare node-containerd import does not survive an image GC, there is no pull
-	// source for it. Empty keeps the default.
+	// aquasec/trivy, 2 CPU / 4Gi per build container). The kubelet pulls the
+	// executor images over the node's network, so the defaults need a node that
+	// can reach those registries; an air-gapped or mirrored install points these
+	// at images mirrored into the in-cluster registry (docs/troubleshooting.md
+	// §8e). A bare node-containerd import does not survive an image GC, there is
+	// no pull source for it. Empty keeps the default.
 	KanikoImage   string `toml:"kaniko_image"`
 	TrivyImage    string `toml:"trivy_image"`
 	BuildCPULimit string `toml:"build_cpu_limit"`

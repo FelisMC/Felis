@@ -32,16 +32,13 @@ var idRE = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,127}$`)
 // Manager.Blobs nil so the upload endpoint returns 503 rather than pretending to
 // accept a file it cannot persist.
 //
-// Base MUST equal the Manager's ContextStore so the blob lands exactly where
-// deriveContextRef points Kaniko's --context; cmd/felis wires both from the one
+// Base MUST equal the Manager's ContextStore; cmd/felis wires both from the one
 // config field (registry.user_uploads_context).
 //
-// INTEGRATION-ONLY seam (out of scope of the upload transport): persisting the
-// blob is end-to-end only once the same uploads PVC is mounted into the Kaniko
-// build Pod and Kaniko is told to read a local context (build/jobspec.go passes
-// the ref straight into --context). The transport here makes the file durable at
-// the derived location; wiring that path into the sandboxed build Job is a
-// separate deployment integration, exactly like the restore executor's PVC mount.
+// The build Pod never mounts this PVC. With Manager.ContextBaseURL set (every
+// installed API) the derived context ref is the internal face's
+// /api/v1/internal/submissions/{id}/context route, which streams the blob out
+// of this store to the build Job's `felis fetch-context` step.
 type LocalContextStore struct {
 	// Base is the directory (uploads PVC mount) submission contexts are written
 	// under. Each submission gets its own {Base}/{id}/ subdirectory.

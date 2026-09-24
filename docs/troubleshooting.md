@@ -470,11 +470,12 @@ installer).
 ### 8e. Build Pods never start: executor images and air-gapped installs
 
 The build Job runs Kaniko and Trivy from external registries by default
-(`gcr.io/kaniko-project/executor:latest`, `aquasec/trivy:latest`). On a box whose
-build namespace cannot reach those registries (the egress policy allows only
-DNS, the internal registry and `--package-cidr` mirrors — and an air-gapped box
-has no route at all), the Pods sit in `ImagePullBackOff`/`ErrImagePull` and the
-build stays `building` until its deadline. Point the overrides at images **in
+(`gcr.io/kaniko-project/executor:latest`, `aquasec/trivy:latest`). The kubelet
+pulls those images over the node's own network, so the build namespace's egress
+policy does not apply to the pull; what blocks it is a node without a route to
+those registries (an air-gapped box, a firewall, a rate-limited Docker Hub).
+The Pods then sit in `ImagePullBackOff`/`ErrImagePull` and the build stays
+`building` until its deadline. Point the overrides at images **in
 the internal registry** — the one pull source that survives an image GC (a bare
 node-containerd import does not: kubelet's image GC collects unused images under
 disk pressure, and an air-gapped box then has nothing to restore them from) —
