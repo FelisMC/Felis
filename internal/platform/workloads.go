@@ -1102,7 +1102,7 @@ func registryPVC(p Params) *corev1.PersistentVolumeClaim {
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(registryStorageSize)},
+				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(p.RegistryStorage)},
 			},
 		},
 	}
@@ -1123,7 +1123,7 @@ func uploadsPVC(p Params) *corev1.PersistentVolumeClaim {
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(uploadsStorageSize)},
+				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(p.UploadsStorage)},
 			},
 		},
 	}
@@ -1147,7 +1147,7 @@ func backupPVC(p Params) *corev1.PersistentVolumeClaim {
 		Spec: corev1.PersistentVolumeClaimSpec{
 			AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
 			Resources: corev1.VolumeResourceRequirements{
-				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(backupStorageSize)},
+				Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse(p.BackupStorage)},
 			},
 		},
 	}

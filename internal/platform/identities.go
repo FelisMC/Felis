@@ -1,5 +1,11 @@
 package platform
 
+import (
+	"fmt"
+
+	"k8s.io/apimachinery/pkg/api/resource"
+)
+
 // Identity constants and the Params that parameterise the install bundle.
 //
 // The label and SA-name constants are PINNED here because three independent
@@ -171,6 +177,35 @@ type Params struct {
 	// must-match. It is reaper-only and has no default; empty (with WorldsHostPath set)
 	// is rejected fail-loud by the generator.
 	ArchiveLocalPath string
+	// RegistryStorage, UploadsStorage and BackupStorage are the capacities the
+	// registry, uploads and world-archive PVCs request ("20Gi"); empty keeps
+	// 10Gi, 5Gi and 10Gi. A PVC's request can only grow, and only on a class that
+	// allows expansion, so the installer keeps an existing PVC's size. On k3s
+	// local-path the request is a label: the volume is a directory on the node's
+	// disk and nothing stops it outgrowing the number; the registry pruner, the
+	// uploads budget (user_uploads_max_bytes) and the archive cap
+	// (max_local_bytes) are what bound them there.
+	RegistryStorage string
+	UploadsStorage  string
+	BackupStorage   string
+}
+
+// Validate reports a Params the renderer cannot turn into objects.
+func (p Params) Validate() error {
+	for _, q := range []struct{ name, v string }{
+		{"registry storage", p.RegistryStorage},
+		{"uploads storage", p.UploadsStorage},
+		{"backup storage", p.BackupStorage},
+	} {
+		if q.v == "" {
+			continue
+		}
+		v, err := resource.ParseQuantity(q.v)
+		if err != nil || v.Sign() <= 0 {
+			return fmt.Errorf("%s %q is not a positive size such as 20Gi", q.name, q.v)
+		}
+	}
+	return nil
 }
 
 // withDefaults returns a copy of p with zero namespace/registry fields filled.
@@ -197,6 +232,15 @@ func (p Params) withDefaults() Params {
 	}
 	if p.RegistryImage == "" {
 		p.RegistryImage = defaultRegistryImage
+	}
+	if p.RegistryStorage == "" {
+		p.RegistryStorage = registryStorageSize
+	}
+	if p.UploadsStorage == "" {
+		p.UploadsStorage = uploadsStorageSize
+	}
+	if p.BackupStorage == "" {
+		p.BackupStorage = backupStorageSize
 	}
 	return p
 }

@@ -49,6 +49,9 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 	backupPVC := fs.String("backup-pvc", "felis-backups", "name of the world-archive PVC this bundle renders in the Minecraft namespace and advertises to the backup/restore executors via FELIS_BACKUP_PVC (default: felis-backups; pass an empty value to render none, leaving backup/restore answering 503)")
 	worldsHostPath := fs.String("worlds-host-path", "", "node directory the reaper reads worlds from: each world PVC resolves as <path>/<pvc>, or as the stock local-path directory <path>/<pv-name>_<ns>_<pvc-name> (k3s storage root: /var/lib/rancher/k3s/storage); enables the reaper CronJob (requires --archive-local-path and a non-empty --backup-pvc)")
 	archiveLocalPath := fs.String("archive-local-path", "", "path the backup PVC is mounted at in the reaper CronJob; MUST equal felis.toml [archive] local_path")
+	registryStorage := fs.String("registry-storage", "", "capacity the registry PVC requests (default 10Gi; k3s local-path does not enforce it)")
+	uploadsStorage := fs.String("uploads-storage", "", "capacity the uploads PVC requests (default 5Gi; k3s local-path does not enforce it)")
+	backupStorage := fs.String("backup-storage", "", "capacity the world-archive PVC requests (default 10Gi; k3s local-path does not enforce it)")
 	reaperNode := fs.String("reaper-node", "", "node that holds --worlds-host-path: pins the reaper CronJob's pod there via nodeSelector kubernetes.io/hostname (multi-node clusters need this, or the reaper may schedule where the hostPath is empty)")
 	var velocityCIDRs multiFlag
 	fs.Var(&velocityCIDRs, "velocity-cidr", "CIDR of a Velocity proxy host allowed to reach game port 25565 (repeatable, REQUIRED)")
@@ -139,7 +142,7 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 			"(pass --worlds-host-path and --archive-local-path — the archive PVC defaults to felis-backups — to enable it)")
 	}
 
-	out, err := platform.RenderYAML(platform.Params{
+	params := platform.Params{
 		ControlNamespace:   *controlNS,
 		MinecraftNamespace: *minecraftNS,
 		BuildNamespace:     *buildNS,
@@ -157,7 +160,16 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 
 		ServerEgressDenyCIDRs:  []string(serverDenyCIDRs),
 		ServerEgressAllowCIDRs: []string(serverAllowCIDRs),
-	})
+
+		RegistryStorage: *registryStorage,
+		UploadsStorage:  *uploadsStorage,
+		BackupStorage:   *backupStorage,
+	}
+	if err := params.Validate(); err != nil {
+		fmt.Fprintf(stderr, "felis manifests: %v\n", err)
+		return 2
+	}
+	out, err := platform.RenderYAML(params)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis manifests: render: %v\n", err)
 		return 1

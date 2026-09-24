@@ -77,6 +77,10 @@
 #                     worlds idle beyond the retention window, and grants the reaper's
 #                     uid (1000) traverse access to that root — k3s ships it 0700
 #                     root:root (default: unset = no reaper)
+#   FELIS_REGISTRY_STORAGE / FELIS_UPLOADS_STORAGE / FELIS_BACKUP_STORAGE capacity the
+#                     registry, uploads and world-archive PVCs request on first install
+#                     (defaults: 10Gi, 5Gi, 10Gi). An existing claim keeps its size; on
+#                     k3s local-path the number is not enforced, see troubleshooting §9
 #   PKG_LOCK_TIMEOUT seconds to wait for package-manager locks (default: 900)
 #   APT_LOCK_TIMEOUT legacy alias for PKG_LOCK_TIMEOUT
 set -Eeuo pipefail
@@ -134,6 +138,10 @@ FELIS_PANEL_NODEPORT="${FELIS_PANEL_NODEPORT:-30443}"
 # construction — a mismatch would leave tarLocal's absolute archive refs unresolvable.
 FELIS_BACKUP_PVC="${FELIS_BACKUP_PVC:-felis-backups}"
 FELIS_ARCHIVE_LOCAL_PATH="${FELIS_ARCHIVE_LOCAL_PATH:-/var/lib/felis/archives}"
+# PVC capacities; empty keeps `felis manifests`' defaults.
+FELIS_REGISTRY_STORAGE="${FELIS_REGISTRY_STORAGE:-}"
+FELIS_UPLOADS_STORAGE="${FELIS_UPLOADS_STORAGE:-}"
+FELIS_BACKUP_STORAGE="${FELIS_BACKUP_STORAGE:-}"
 # Retention is opt-in because it DELETES worlds (after a verified archive): point this at the
 # node directory the world volumes live under. On the k3s this installer provisions that is
 # /var/lib/rancher/k3s/storage — the reaper resolves each PVC's local-path directory exactly
@@ -2828,6 +2836,15 @@ deploy_bundle() {
     fi
     manifest_args+=(--worlds-host-path "$FELIS_WORLDS_HOST_PATH" --archive-local-path "$FELIS_ARCHIVE_LOCAL_PATH")
   fi
+  local size
+  size="$(pvc_size "$CONTROL_NS" registry "$FELIS_REGISTRY_STORAGE" FELIS_REGISTRY_STORAGE)"
+  if [ -n "$size" ]; then manifest_args+=(--registry-storage "$size"); fi
+  size="$(pvc_size "$CONTROL_NS" felis-uploads "$FELIS_UPLOADS_STORAGE" FELIS_UPLOADS_STORAGE)"
+  if [ -n "$size" ]; then manifest_args+=(--uploads-storage "$size"); fi
+  if [ -n "$FELIS_BACKUP_PVC" ]; then
+    size="$(pvc_size "$MINECRAFT_NS" "$FELIS_BACKUP_PVC" "$FELIS_BACKUP_STORAGE" FELIS_BACKUP_STORAGE)"
+    if [ -n "$size" ]; then manifest_args+=(--backup-storage "$size"); fi
+  fi
   "$HOST_BIN" manifests "${manifest_args[@]}" | kube apply -f -
   restart_existing_control_plane "$had_api" "$had_operator"
 
@@ -2839,6 +2856,24 @@ deploy_bundle() {
       die "control-plane rollout did not complete: ${d}"
     fi
   done
+}
+
+# pvc_size <namespace> <claim> <wanted> <env name> prints the size to render the claim
+# with: its current request when it exists, else the wanted size (empty = the renderer's
+# default). A claim's request can only grow, and only on a storage class that allows
+# expansion (k3s local-path does not), so re-applying a different size would fail the
+# whole apply; a mismatch is reported and left to the operator.
+pvc_size() {
+  local ns="$1" claim="$2" want="$3" env="$4" have
+  have="$(kube -n "$ns" get pvc "$claim" -o jsonpath='{.spec.resources.requests.storage}' 2>/dev/null || true)"
+  if [ -z "$have" ]; then
+    printf '%s' "$want"
+    return 0
+  fi
+  if [ -n "$want" ] && [ "$want" != "$have" ]; then
+    warn "PVC ${ns}/${claim} already requests ${have}; keeping it (${env}=${want} applies to a new claim; grow this one with kubectl patch where its storage class allows expansion)"
+  fi
+  printf '%s' "$have"
 }
 
 restart_existing_control_plane() {

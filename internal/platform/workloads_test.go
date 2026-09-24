@@ -1131,3 +1131,37 @@ func TestOperatorMetricsService(t *testing.T) {
 		t.Error("Workloads does not render the operator metrics Service")
 	}
 }
+
+// TestPVCSizes proves the three claim sizes follow Params and default when unset,
+// and that Validate refuses a size the API server would reject.
+func TestPVCSizes(t *testing.T) {
+	sizes := func(p Params) map[string]string {
+		got := map[string]string{}
+		for _, o := range Workloads(p.withDefaults()) {
+			if pvc, ok := o.(*corev1.PersistentVolumeClaim); ok {
+				got[pvc.Name] = pvc.Spec.Resources.Requests.Storage().String()
+			}
+		}
+		return got
+	}
+	p := testParams()
+	p.BackupPVC = "felis-backups"
+	def := sizes(p)
+	if def[registryName] != registryStorageSize || def[uploadsPVCName] != uploadsStorageSize || def["felis-backups"] != backupStorageSize {
+		t.Errorf("default sizes = %v", def)
+	}
+	p.RegistryStorage, p.UploadsStorage, p.BackupStorage = "40Gi", "8Gi", "100Gi"
+	if got := sizes(p); got[registryName] != "40Gi" || got[uploadsPVCName] != "8Gi" || got["felis-backups"] != "100Gi" {
+		t.Errorf("configured sizes = %v", got)
+	}
+	if err := p.Validate(); err != nil {
+		t.Errorf("Validate(%+v) = %v", p, err)
+	}
+	for _, bad := range []string{"lots", "0", "-1Gi"} {
+		q := testParams()
+		q.UploadsStorage = bad
+		if err := q.Validate(); err == nil {
+			t.Errorf("Validate accepted uploads storage %q", bad)
+		}
+	}
+}

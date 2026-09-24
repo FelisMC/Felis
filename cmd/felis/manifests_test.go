@@ -219,3 +219,27 @@ func TestManifestsReaperNodePin(t *testing.T) {
 		t.Errorf("--reaper-node without --worlds-host-path: exit = %d, want 2", code)
 	}
 }
+
+// TestManifestsStorageSizes proves the PVC size flags reach the rendered claims
+// and a size the API server would reject fails before anything is applied.
+func TestManifestsStorageSizes(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	code := run([]string{"manifests", "--felis-image", "reg/felis:test", "--velocity-cidr", "10.0.0.5/32",
+		"--registry-storage", "40Gi", "--uploads-storage", "8Gi"}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("exit code = %d, stderr = %s", code, errBuf.String())
+	}
+	for _, want := range []string{"storage: 40Gi", "storage: 8Gi"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("bundle lacks %q", want)
+		}
+	}
+
+	out.Reset()
+	errBuf.Reset()
+	code = run([]string{"manifests", "--felis-image", "reg/felis:test", "--velocity-cidr", "10.0.0.5/32",
+		"--registry-storage", "lots"}, &out, &errBuf)
+	if code == 0 || !strings.Contains(errBuf.String(), "registry storage") {
+		t.Errorf("--registry-storage lots: exit %d, stderr %q; want a refusal naming the flag", code, errBuf.String())
+	}
+}
