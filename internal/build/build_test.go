@@ -221,6 +221,61 @@ func TestSubmitRejectsExternalRegistryTarget(t *testing.T) {
 // The platform's own images and the scanner's DB mirrors live under felis/ and
 // mirror/; the registry gate refuses the build principal there, and Validate turns
 // that into a 400 before a Job spends minutes building an image it cannot push.
+// A context digest must be a real sha256 and needs a fetch step to enforce it.
+func TestValidateContextDigest(t *testing.T) {
+	cfg := Config{RegistryURL: "registry.felis.svc:5000", ContextOrigin: "http://felis-api-internal:8081"}
+	req := Request{ImageRef: "registry.felis.svc:5000/user-uploads/sub-1:latest", Dockerfile: "FROM scratch",
+		ContextRef: "http://felis-api-internal:8081/api/v1/internal/submissions/sub-1/context", ContextDigest: strings.Repeat("e", 64)}
+	if err := Validate(req, cfg); err != nil {
+		t.Fatalf("valid digest: %v", err)
+	}
+	bad := req
+	bad.ContextDigest = strings.Repeat("E", 64)
+	if err := Validate(bad, cfg); err == nil {
+		t.Fatal("an uppercase digest was accepted")
+	}
+	bad = req
+	bad.ContextRef = "s3://bucket/ctx.tar.gz"
+	if err := Validate(bad, cfg); err == nil {
+		t.Fatal("a digest on a context Kaniko fetches itself was accepted")
+	}
+}
+
+// The fetch step hands the service token to the context URL's host, so an
+// http(s) context must be an upload on the internal face (build-supply-chain-13).
+func TestValidateConfinesHTTPContextsToTheInternalFace(t *testing.T) {
+	cfg := Config{RegistryURL: "registry.felis.svc:5000", ContextOrigin: "http://felis-api-internal.felis.svc.cluster.local:8081/"}
+	req := goodRequest()
+	for _, ref := range []string{
+		"http://felis-api-internal.felis.svc.cluster.local:8081/api/v1/internal/submissions/sub-1/context",
+		"HTTP://Felis-API-Internal.felis.svc.cluster.local:8081/api/v1/internal/submissions/sub-1/context",
+		"tar://contexts/abc.tar.gz",
+	} {
+		req.ContextRef = ref
+		if err := Validate(req, cfg); err != nil {
+			t.Errorf("Validate(%q) = %v, want accepted", ref, err)
+		}
+	}
+	for _, ref := range []string{
+		"https://attacker.example/api/v1/internal/submissions/sub-1/context",
+		"http://felis-api-internal.felis.svc.cluster.local:8082/api/v1/internal/submissions/sub-1/context",
+		"https://felis-api-internal.felis.svc.cluster.local:8081/api/v1/internal/submissions/sub-1/context",
+		"http://felis-api-internal.felis.svc.cluster.local:8081/api/v1/internal/servers",
+		"http://felis-api-internal.felis.svc.cluster.local:8081/api/v1/internal/submissions/../x/context",
+		"http://felis-api-internal.felis.svc.cluster.local:8081/api/v1/internal/submissions/sub-1/context?next=https://x",
+		"http://u:p@felis-api-internal.felis.svc.cluster.local:8081/api/v1/internal/submissions/sub-1/context",
+	} {
+		req.ContextRef = ref
+		if err := Validate(req, cfg); !errors.Is(err, ErrInvalid) {
+			t.Errorf("Validate(%q) = %v, want ErrInvalid", ref, err)
+		}
+	}
+	req.ContextRef = "http://felis-api-internal.felis.svc.cluster.local:8081/api/v1/internal/submissions/sub-1/context"
+	if err := Validate(req, Config{RegistryURL: "registry.felis.svc:5000"}); !errors.Is(err, ErrInvalid) {
+		t.Errorf("without an internal face configured an http context was accepted: %v", err)
+	}
+}
+
 func TestValidateRejectsReservedRepos(t *testing.T) {
 	cfg := Config{RegistryURL: "registry.felis.svc:5000"}
 	for _, ref := range []string{

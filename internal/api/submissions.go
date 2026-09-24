@@ -2,8 +2,11 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 
 	"felis.lolicon.best/internal/build"
@@ -39,7 +42,9 @@ type SubmissionService interface {
 	List(ctx context.Context) ([]submit.Submission, error)
 	// Approve is the admin gate: it claims pending_review -> approved (CAS) and the
 	// winner starts the SAME Trivy-gated build as an admin's direct build.
-	Approve(ctx context.Context, id, reviewedBy string) (*submit.Submission, error)
+	// expectedDigest is the context sha256 the reviewer inspected; a row whose
+	// context has since been replaced refuses with ErrContextChanged.
+	Approve(ctx context.Context, id, reviewedBy, expectedDigest string) (*submit.Submission, error)
 	// Reject is the admin's other verdict: pending_review -> rejected with a
 	// required reason; it starts no build.
 	Reject(ctx context.Context, id, reviewedBy, reason string) (*submit.Submission, error)
@@ -54,7 +59,9 @@ type SubmissionService interface {
 	// context-fetch route: the build Pod's initContainer cannot mount the uploads
 	// PVC across namespaces and holds no object-store credentials, so it streams
 	// the blob from the API over the service-token-gated internal face instead.
-	OpenContext(ctx context.Context, id string) (io.ReadCloser, error)
+	// The string is the sha256 the row records for the blob ("" when none was
+	// recorded); the routes refuse to finish a stream that does not match it.
+	OpenContext(ctx context.Context, id string) (io.ReadCloser, string, error)
 }
 
 // createSubmissionRequest is the POST /me/submissions body. The user
@@ -80,6 +87,18 @@ const (
 type rejectSubmissionRequest struct {
 	Reason string `json:"reason"`
 }
+
+// approveSubmissionRequest is the POST /submissions/{id}/approve body: the
+// context digest the admin reviewed. The panel sends the digest of the bytes it
+// downloaded (the X-Felis-Context-Sha256 header), or the listed one.
+type approveSubmissionRequest struct {
+	ExpectedDigest string `json:"expected_digest"`
+}
+
+// contextDigestHeader carries the recorded sha256 on both context routes, so a
+// reviewer can compare it with `sha256sum` and the panel can approve exactly the
+// bytes it fetched.
+const contextDigestHeader = "X-Felis-Context-Sha256"
 
 // handleCreateSubmission records a new pending_review submission (app-tier). The
 // submitter is the authenticated principal's id — never the body — so a user can
@@ -269,7 +288,14 @@ func (a *API) handleApproveSubmission(w http.ResponseWriter, r *http.Request) {
 	}
 	p := principalFromContext(r.Context())
 	id := r.PathValue("id")
-	sub, err := a.Submissions.Approve(r.Context(), id, p.Email)
+	var body approveSubmissionRequest
+	if r.ContentLength != 0 {
+		if err := decodeJSON(w, r, &body); err != nil {
+			writeError(w, r, err)
+			return
+		}
+	}
+	sub, err := a.Submissions.Approve(r.Context(), id, p.Email, body.ExpectedDigest)
 	if err != nil {
 		writeSubmitError(w, r, err)
 		return
@@ -368,6 +394,9 @@ func writeSubmitError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, submit.ErrAlreadyReviewed):
 		writeError(w, r, newError(http.StatusConflict, "already_reviewed",
 			"submission has already been reviewed"))
+	case errors.Is(err, submit.ErrContextChanged):
+		writeError(w, r, newError(http.StatusConflict, "context_changed",
+			"the build context was uploaded again after it was reviewed; review the new upload before approving"))
 	case errors.Is(err, submit.ErrQuotaExceeded):
 		writeError(w, r, newError(http.StatusForbidden, "submission_quota_exceeded",
 			"submission quota reached"))
@@ -390,11 +419,11 @@ func writeSubmitError(w http.ResponseWriter, r *http.Request, err error) {
 // fetcher extracts it under a zip-slip guard, and Kaniko treats the result as
 // hostile regardless (spec §16).
 func (a *API) handleInternalSubmissionContext(w http.ResponseWriter, r *http.Request) {
-	rc, ok := a.openSubmissionContext(w, r)
+	rc, digest, ok := a.openSubmissionContext(w, r)
 	if !ok {
 		return
 	}
-	streamSubmissionContext(w, rc)
+	streamSubmissionContext(w, r, rc, digest)
 }
 
 // handleAdminSubmissionContext streams a submission's stored build-context
@@ -405,44 +434,77 @@ func (a *API) handleInternalSubmissionContext(w http.ResponseWriter, r *http.Req
 // ones the build Pod fetches over the internal face; the attachment disposition
 // makes the browser download the attacker-supplied archive, never render it.
 func (a *API) handleAdminSubmissionContext(w http.ResponseWriter, r *http.Request) {
-	rc, ok := a.openSubmissionContext(w, r)
+	rc, digest, ok := a.openSubmissionContext(w, r)
 	if !ok {
 		return
 	}
 	w.Header().Set("Content-Disposition", `attachment; filename="context.tar.gz"`)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	a.audit(r, "submission.context.download", r.PathValue("id"))
-	streamSubmissionContext(w, rc)
+	streamSubmissionContext(w, r, rc, digest)
 }
 
 // openSubmissionContext resolves the build-context blob named in the request
 // path, mapping the submit-layer errors onto the shared submission statuses (a
 // missing blob is 404, an unwired transport 503). On failure the error response
 // is already written and the caller must return.
-func (a *API) openSubmissionContext(w http.ResponseWriter, r *http.Request) (io.ReadCloser, bool) {
+func (a *API) openSubmissionContext(w http.ResponseWriter, r *http.Request) (io.ReadCloser, string, bool) {
 	if a.Submissions == nil {
 		writeError(w, r, errSubmissionsUnavailable)
-		return nil, false
+		return nil, "", false
 	}
-	rc, err := a.Submissions.OpenContext(r.Context(), r.PathValue("id"))
+	rc, digest, err := a.Submissions.OpenContext(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeSubmitError(w, r, err)
-		return nil, false
+		return nil, "", false
 	}
-	return rc, true
+	return rc, digest, true
 }
 
-// streamSubmissionContext copies the blob to w verbatim and closes it. The
-// caller must have set every header already: the copy commits the response, so
-// a failure mid-stream can only truncate it.
-func streamSubmissionContext(w http.ResponseWriter, rc io.ReadCloser) {
+// streamSubmissionContext copies the blob to w and closes it. The caller must
+// have set every header already: the copy commits the response.
+//
+// With a recorded digest the final chunk is held back until the whole blob has
+// been hashed. Bytes that do not match the row (a re-upload landed between the
+// row read and the open) or a failed read abort the response instead of ending
+// it cleanly, so neither the reviewer's download nor the build's fetch can take
+// a prefix or a different blob for the recorded one.
+func streamSubmissionContext(w http.ResponseWriter, r *http.Request, rc io.ReadCloser, digest string) {
 	defer rc.Close()
 	w.Header().Set("Content-Type", "application/gzip")
-	if _, err := io.Copy(w, rc); err != nil {
-		// The status is already committed; the client sees a truncated stream and
-		// the fetch fails on size/extract, so there is nothing left to write here.
+	if digest == "" {
+		// A context uploaded before digests were kept: nothing to check against.
+		_, _ = io.Copy(w, rc)
 		return
 	}
+	w.Header().Set(contextDigestHeader, digest)
+	h := sha256.New()
+	buf := make([]byte, 32<<10)
+	var held []byte
+	for {
+		n, err := rc.Read(buf)
+		if n > 0 {
+			if len(held) > 0 {
+				if _, werr := w.Write(held); werr != nil {
+					return
+				}
+			}
+			held = append(held[:0], buf[:n]...)
+			h.Write(buf[:n])
+		}
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			log.Printf("api: submission %s context read failed mid-stream: %v", r.PathValue("id"), err)
+			panic(http.ErrAbortHandler)
+		}
+	}
+	if got := hex.EncodeToString(h.Sum(nil)); got != digest {
+		log.Printf("api: submission %s context hashes to %s, the row records %s; response aborted", r.PathValue("id"), got, digest)
+		panic(http.ErrAbortHandler)
+	}
+	_, _ = w.Write(held)
 }
 
 // Compile-time proof that the production Manager satisfies the API interface.

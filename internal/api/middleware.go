@@ -70,6 +70,11 @@ func withRecover(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
+				if rec == http.ErrAbortHandler {
+					// A deliberate abort of a committed response (see
+					// streamSubmissionContext): let net/http cut the connection.
+					panic(rec)
+				}
 				log.Printf("api: %s %s: panic (request_id=%s): %v\n%s",
 					r.Method, r.URL.Path, requestIDFromContext(r.Context()), rec, debug.Stack())
 				writeError(w, r, newError(http.StatusInternalServerError, "panic", "internal error"))

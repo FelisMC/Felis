@@ -100,9 +100,12 @@ const buildJobTTL = 7 * 24 * time.Hour
 // Build + Config by the Builder; jobspec is a pure function of them so the
 // security-critical Job shape is unit-tested without a cluster.
 type JobParams struct {
-	BuildID        string
-	ImageRef       string
-	ContextRef     string
+	BuildID    string
+	ImageRef   string
+	ContextRef string
+	// ContextDigest, when set, is passed to the fetch container, which refuses a
+	// context whose sha256 differs (see Request.ContextDigest).
+	ContextDigest  string
 	Namespace      string
 	ServiceAccount string
 	RegistryURL    string
@@ -269,7 +272,7 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 			SizeLimit: quantityPtr(imageSizeLimit),
 		}},
 	}}
-	if isHTTPContextRef(p.ContextRef) {
+	if IsHTTPContextRef(p.ContextRef) {
 		contextPath = contextMountPath
 		// The fetch container runs as root while Kaniko keeps the image default
 		// (also root): Kaniko re-copies the Dockerfile out of the context and
@@ -287,11 +290,7 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 		fetch := corev1.Container{
 			Name:  ContainerFetch,
 			Image: p.FelisImage,
-			Args: []string{
-				"fetch-context",
-				"--url=" + p.ContextRef,
-				"--out=" + contextMountPath,
-			},
+			Args:  fetchArgs(p),
 			// The internal face is service-token gated, and the token is read from a
 			// Secret the installer materializes in THIS namespace (secretKeyRef is
 			// namespace-local). It is mounted into this initContainer only: the Kaniko
@@ -461,10 +460,20 @@ func withDisk(limits corev1.ResourceList, d diskBounds) corev1.ResourceRequireme
 	return corev1.ResourceRequirements{Limits: lim, Requests: req}
 }
 
-// isHTTPContextRef reports whether ref is an http(s) URL — the shape the submit
+// fetchArgs is the context-fetch container's argv. The digest flag rides along
+// only when the build pins one; admin builds from a URL they supplied have none.
+func fetchArgs(p JobParams) []string {
+	args := []string{"fetch-context", "--url=" + p.ContextRef, "--out=" + contextMountPath}
+	if p.ContextDigest != "" {
+		args = append(args, "--sha256="+p.ContextDigest)
+	}
+	return args
+}
+
+// IsHTTPContextRef reports whether ref is an http(s) URL — the shape the submit
 // lane derives when the API is the blob transport — i.e. a context only the
 // fetch initContainer can turn into a local path for Kaniko.
-func isHTTPContextRef(ref string) bool {
+func IsHTTPContextRef(ref string) bool {
 	return strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://")
 }
 

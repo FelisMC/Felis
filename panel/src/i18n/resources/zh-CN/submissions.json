@@ -35,6 +35,8 @@
   "error_file_required": "必须上传构建上下文文件。",
   "field_context_ref": "构建上下文引用",
   "field_image_ref": "目标镜像引用",
+  "field_context_sha256": "上下文 SHA-256",
+  "field_context_sha256_hint": "平台收到的文件摘要，可用 sha256sum 与本地文件核对。审核通过的就是这份内容。",
   "clear_btn": "清除",
   "file_hint": "支持 .tar.gz 格式 (最大 1GB)",
   "withdraw_btn": "撤回提交",

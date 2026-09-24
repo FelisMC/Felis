@@ -469,6 +469,9 @@ func buildConfig(cfg *config.Config) build.Config {
 		// the internal DB mirror (see config.RegistryConfig.TrivyDBRepository).
 		TrivyDBRepository:     cfg.Registry.TrivyDBRepository,
 		TrivyJavaDBRepository: cfg.Registry.TrivyJavaDBRepository,
+		// The submit lane's derived context URLs live here; the fetch step's
+		// service token goes nowhere else.
+		ContextOrigin: internalAPIBaseURL(),
 	}
 }
 

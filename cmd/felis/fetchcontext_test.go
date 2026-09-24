@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net"
 	"net/http"
@@ -184,6 +186,69 @@ func TestCmdFetchContextFetchAndExtract(t *testing.T) {
 	t.Setenv("FELIS_SERVICE_TOKEN", "test-token")
 	if code := cmdFetchContext([]string{"--url=" + srv404.URL + "/sub-1/context", "--out=" + t.TempDir()}, io.Discard, io.Discard); code != 1 {
 		t.Fatalf("404 exit = %d, want 1", code)
+	}
+}
+
+// With --sha256 the fetch refuses any bytes but the approved ones, including
+// a tarball that extracts cleanly: that is exactly the context an uploader
+// swapped in after the review.
+func TestCmdFetchContextChecksDigest(t *testing.T) {
+	body := tgzBody(t, tarEntry{name: "Dockerfile", body: "FROM scratch\n"})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	t.Setenv("FELIS_SERVICE_TOKEN", "test-token")
+	sum := sha256.Sum256(body)
+	good := hex.EncodeToString(sum[:])
+	args := func(digest string) []string {
+		return []string{"--url=" + srv.URL + "/sub-1/context", "--out=" + t.TempDir(), "--sha256=" + digest}
+	}
+
+	if code := cmdFetchContext(args(good), io.Discard, io.Discard); code != 0 {
+		t.Fatalf("matching digest exit = %d, want 0", code)
+	}
+	var stderr bytes.Buffer
+	other := strings.Repeat("0", 64)
+	if code := cmdFetchContext(args(other), io.Discard, &stderr); code != 1 || !strings.Contains(stderr.String(), "changed after approval") {
+		t.Fatalf("mismatched digest exit = %d, stderr %q; want 1 naming the change", code, stderr.String())
+	}
+	stderr.Reset()
+	if code := cmdFetchContext(args("ABC"), io.Discard, &stderr); code != 2 {
+		t.Fatalf("malformed digest exit = %d, want 2 (stderr %q)", code, stderr.String())
+	}
+
+	// Bytes after the tar end marker still count: appending to an approved blob
+	// must change what the fetch accepts.
+	padded := append(append([]byte{}, body...), "trailing"...)
+	srvPadded := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(padded)
+	}))
+	defer srvPadded.Close()
+	if code := cmdFetchContext([]string{"--url=" + srvPadded.URL + "/c", "--out=" + t.TempDir(), "--sha256=" + good}, io.Discard, io.Discard); code != 1 {
+		t.Fatalf("padded blob exit = %d, want 1", code)
+	}
+}
+
+// The request carries the service token, so a redirect is a failure: the token
+// never follows it to another host (build-supply-chain-13).
+func TestCmdFetchContextRefusesRedirects(t *testing.T) {
+	var leaked bool
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		leaked = true
+	}))
+	defer elsewhere.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.URL+"/steal", http.StatusFound)
+	}))
+	defer srv.Close()
+	t.Setenv("FELIS_SERVICE_TOKEN", "test-token")
+	var stderr bytes.Buffer
+	if code := cmdFetchContext([]string{"--url=" + srv.URL + "/c", "--out=" + t.TempDir()}, io.Discard, &stderr); code != 1 {
+		t.Fatalf("redirect exit = %d, want 1 (stderr %q)", code, stderr.String())
+	}
+	if leaked {
+		t.Fatal("the fetch followed the redirect")
 	}
 }
 

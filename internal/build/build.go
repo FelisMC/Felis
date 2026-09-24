@@ -129,6 +129,11 @@ type Request struct {
 	// ContextRef locates the uploaded tar.gz context in object storage / a PVC
 	// (spec §17: Kaniko pulls it; Git context is intentionally not supported).
 	ContextRef string
+	// ContextDigest is the lowercase hex sha256 of the context tarball an admin
+	// approved. When set, the context-fetch initContainer refuses any other bytes,
+	// so a context replaced after review never reaches Kaniko. It needs an
+	// http(s) ContextRef: a ref Kaniko fetches itself has no fetch step to check.
+	ContextDigest string
 	// BaseImage is the resolved FROM, recorded for audit only — it is NOT a hard
 	// gate (spec §16: base FROM is not hard-gated; the scan + egress lock cover
 	// poisoned bases).
@@ -152,6 +157,10 @@ type Build struct {
 	Error       string     `json:"error,omitempty"`
 	CreatedAt   time.Time  `json:"created_at"`
 	FinishedAt  *time.Time `json:"finished_at,omitempty"`
+
+	// ContextDigest is Request.ContextDigest, kept on the row as the audit record
+	// of which bytes the build was allowed to consume.
+	ContextDigest string `json:"context_digest,omitempty"`
 }
 
 // Image mirrors an image_whitelist row (spec §6): the dynamic, auditable image
@@ -257,6 +266,11 @@ type Config struct {
 	// RuntimeClass runs build pods under a sandbox RuntimeClass (gVisor, Kata)
 	// when set. The class must exist on the cluster.
 	RuntimeClass string
+
+	// ContextOrigin is the scheme://host[:port] of the platform's internal API
+	// face, the only host an http(s) ContextRef may name: the fetch step presents
+	// the service token to it. Empty refuses every http(s) context.
+	ContextOrigin string
 }
 
 // Values of Config.UserNamespaces.
@@ -375,6 +389,7 @@ func (b *Builder) Submit(ctx context.Context, req Request) (*Build, error) {
 		RequestedBy: req.RequestedBy,
 		CreatedAt:   now,
 	}
+	bld.ContextDigest = req.ContextDigest
 	if err := b.Store.CreateBuild(ctx, bld); err != nil {
 		return nil, err
 	}
@@ -408,6 +423,7 @@ func (b *Builder) jobParams(bld *Build, cfg Config) JobParams {
 		BuildID:               bld.ID,
 		ImageRef:              bld.ImageRef,
 		ContextRef:            bld.ContextRef,
+		ContextDigest:         bld.ContextDigest,
 		Namespace:             cfg.Namespace,
 		ServiceAccount:        cfg.ServiceAccount,
 		RegistryURL:           cfg.RegistryURL,

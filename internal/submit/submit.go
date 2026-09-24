@@ -59,6 +59,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -98,6 +99,11 @@ var (
 	// an honest 503, never a 500, exactly as the restore executor does when its
 	// integration is not wired.
 	ErrUploadsUnavailable = errors.New("submit: context upload transport not configured")
+	// ErrContextChanged reports that the submission's context digest no longer
+	// matches the one the reviewer approved: the submitter uploaded again after
+	// the review began. The API maps it to 409 so the panel reloads and the admin
+	// reviews the new bytes.
+	ErrContextChanged = errors.New("submit: the build context changed since it was reviewed")
 	// ErrBlobNotFound reports that a submission has no stored context blob (or it
 	// was never uploaded). The internal context-fetch route maps it to 404, the
 	// same distinction Exists draws for Approve.
@@ -170,6 +176,11 @@ type Submission struct {
 	RejectReason string     `json:"reject_reason,omitempty"`
 	CreatedAt    time.Time  `json:"created_at"`
 	ReviewedAt   *time.Time `json:"reviewed_at,omitempty"`
+
+	// ContextSHA256 is the lowercase hex sha256 of the stored context tarball,
+	// recorded by the upload that wrote it; empty until one is uploaded. Approve
+	// must name it, and the build refuses any other bytes.
+	ContextSHA256 string `json:"context_sha256,omitempty"`
 }
 
 // Store is the business-layer persistence the Manager depends on. It is an
@@ -192,7 +203,14 @@ type Store interface {
 	// derived image_ref, the reviewer and reviewed_at. It reports whether THIS
 	// call won the transition: false means a concurrent review already moved the
 	// row, so the caller must NOT start a build.
-	ApproveSubmission(ctx context.Context, id, reviewedBy, imageRef string, at time.Time) (won bool, err error)
+	//
+	// digest is part of the predicate: the row's context_sha256 (NULL read as "")
+	// must equal it, so an approval of content that a re-upload has since
+	// replaced loses the CAS.
+	ApproveSubmission(ctx context.Context, id, reviewedBy, imageRef, digest string, at time.Time) (won bool, err error)
+	// SetContextDigest records the sha256 of the context an upload just stored,
+	// only while the row is still pending_review. Reports whether it did.
+	SetContextDigest(ctx context.Context, id, digest string) (bool, error)
 	// RejectSubmission atomically flips pending_review -> rejected, recording the
 	// reviewer, the reason and reviewed_at. Reports whether THIS call won.
 	RejectSubmission(ctx context.Context, id, reviewedBy, reason string, at time.Time) (won bool, err error)
@@ -371,14 +389,26 @@ func (m *Manager) deriveContextRef(id string) string {
 }
 
 // OpenContext returns the stored build context for id — the read path behind the
-// internal context-fetch route. It requires the upload transport (Blobs): with no
-// transport there is no blob to read, so it reports ErrUploadsUnavailable, the
-// same honest 503 the upload endpoint gives.
-func (m *Manager) OpenContext(ctx context.Context, id string) (io.ReadCloser, error) {
+// internal context-fetch route and the reviewer's download — together with the
+// sha256 the row records for it (empty for a context uploaded before digests
+// were kept). The row is read first: a re-upload landing between the two reads
+// shows up as bytes that do not match the digest, which the caller's verifying
+// stream refuses. It requires the upload transport (Blobs): with no transport
+// there is no blob to read, so it reports ErrUploadsUnavailable, the same honest
+// 503 the upload endpoint gives.
+func (m *Manager) OpenContext(ctx context.Context, id string) (io.ReadCloser, string, error) {
 	if m.Blobs == nil {
-		return nil, ErrUploadsUnavailable
+		return nil, "", ErrUploadsUnavailable
 	}
-	return m.Blobs.Open(ctx, id)
+	sub, err := m.Store.GetSubmission(ctx, id)
+	if err != nil {
+		return nil, "", err
+	}
+	rc, err := m.Blobs.Open(ctx, id)
+	if err != nil {
+		return nil, "", err
+	}
+	return rc, sub.ContextSHA256, nil
 }
 
 // auditDockerfile is the audit-archive Dockerfile recorded on the build row. It
@@ -466,7 +496,10 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Submission, e
 //     refused as a spent allowance (403) before the excess is persisted.
 //
 // A re-upload while still pending atomically supersedes the previous blob, so a
-// user can fix their pack before an admin reviews it.
+// user can fix their pack before an admin reviews it. The upload hashes what it
+// stores and records the digest on the row; Approve binds to that digest, so a
+// re-upload after the admin looked makes the approval fail rather than build
+// the new bytes unseen.
 func (m *Manager) UploadContext(ctx context.Context, id, submittedBy string, r io.Reader) (*Submission, error) {
 	if strings.TrimSpace(submittedBy) == "" {
 		return nil, invalidf("submitter identity is required")
@@ -518,9 +551,21 @@ func (m *Manager) UploadContext(ctx context.Context, id, submittedBy string, r i
 		// refused as a spent allowance, never as a malformed request.
 		limit, over = remaining, errStorageQuota
 	}
-	if _, err := m.Blobs.Put(ctx, id, &cappedReader{r: br, left: limit, over: over}); err != nil {
+	h := sha256.New()
+	if _, err := m.Blobs.Put(ctx, id, io.TeeReader(&cappedReader{r: br, left: limit, over: over}, h)); err != nil {
 		return nil, err
 	}
+	digest := hex.EncodeToString(h.Sum(nil))
+	won, err := m.Store.SetContextDigest(ctx, id, digest)
+	if err != nil {
+		return nil, err
+	}
+	if !won {
+		// Reviewed while the bytes streamed in. The blob was replaced anyway, but
+		// the approved digest no longer matches it, so its build refuses them.
+		return nil, ErrAlreadyReviewed
+	}
+	sub.ContextSHA256 = digest
 	return sub, nil
 }
 
@@ -611,9 +656,13 @@ func (c *cappedReader) Read(p []byte) (int, error) {
 // one and the reason the error is differentiated. The alternative ordering
 // (Submit-then-CAS) would either double-build under a concurrent approve or
 // orphan a build on a lost race, both worse still.
-func (m *Manager) Approve(ctx context.Context, id, reviewedBy string) (*Submission, error) {
+func (m *Manager) Approve(ctx context.Context, id, reviewedBy, expectedDigest string) (*Submission, error) {
 	if strings.TrimSpace(reviewedBy) == "" {
 		return nil, invalidf("reviewer identity is required")
+	}
+	expectedDigest = strings.ToLower(strings.TrimSpace(expectedDigest))
+	if m.Blobs != nil && !build.IsSHA256Hex(expectedDigest) {
+		return nil, invalidf("expected_digest must be the sha256 of the context you reviewed (64 hex characters)")
 	}
 
 	sub, err := m.Store.GetSubmission(ctx, id)
@@ -638,6 +687,12 @@ func (m *Manager) Approve(ctx context.Context, id, reviewedBy string) (*Submissi
 		if !ok {
 			return nil, invalidf("no build context has been uploaded for this submission")
 		}
+		if sub.ContextSHA256 == "" {
+			return nil, invalidf("this context was uploaded before digests were recorded; the submitter must upload it again")
+		}
+		if sub.ContextSHA256 != expectedDigest {
+			return nil, ErrContextChanged
+		}
 	}
 
 	imageRef := m.deriveImageRef(id)
@@ -648,19 +703,29 @@ func (m *Manager) Approve(ctx context.Context, id, reviewedBy string) (*Submissi
 		BaseImage:   "", // declared inside the uploaded context, unknown here
 		RequestedBy: reviewedBy,
 	}
+	// Pin the build to the reviewed bytes: the fetch step refuses anything else,
+	// which covers an upload that was already streaming when the CAS won. Only an
+	// http(s) context has that step; the installed API always derives one.
+	if build.IsHTTPContextRef(sub.ContextRef) {
+		req.ContextDigest = sub.ContextSHA256
+	}
 	// Pre-validate against the SAME registry the Builder enforces, BEFORE the CAS,
 	// so a deterministic config error cannot strand the row in approved.
-	if err := build.Validate(req, build.Config{RegistryURL: m.Registry}); err != nil {
+	if err := build.Validate(req, build.Config{RegistryURL: m.Registry, ContextOrigin: m.ContextBaseURL}); err != nil {
 		return nil, err
 	}
 
 	now := m.now()
-	won, err := m.Store.ApproveSubmission(ctx, id, reviewedBy, imageRef, now)
+	won, err := m.Store.ApproveSubmission(ctx, id, reviewedBy, imageRef, sub.ContextSHA256, now)
 	if err != nil {
 		return nil, err
 	}
 	if !won {
-		// Lost the race to a concurrent approve/reject.
+		// Lost the race: a concurrent approve/reject moved the row, or a re-upload
+		// replaced the digest between the read above and the CAS.
+		if cur, err := m.Store.GetSubmission(ctx, id); err == nil && cur.Status == StatusPendingReview {
+			return nil, ErrContextChanged
+		}
 		return nil, ErrAlreadyReviewed
 	}
 

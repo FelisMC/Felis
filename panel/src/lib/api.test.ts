@@ -473,11 +473,34 @@ describe("image whitelist and builds wire shapes", () => {
       const sub = { id: "sub-1", status: "approved" };
       const fetchSpy = fakeFetch(sub);
       vi.stubGlobal("fetch", fetchSpy);
-      const res = await api.approveSubmission("sub-1");
+      const digest = "a".repeat(64);
+      const res = await api.approveSubmission("sub-1", digest);
       expect(res).toEqual(sub);
       const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
       expect(String(url)).toBe("/submissions/sub-1/approve");
       expect((opts as RequestInit).method).toBe("POST");
+      expect(JSON.parse((opts as RequestInit).body as string)).toEqual({ expected_digest: digest });
+    });
+
+    it("downloadSubmissionContext resolves to the digest the API streamed", async () => {
+      const digest = "b".repeat(64);
+      const fetchSpy = vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: new Headers({ "X-Felis-Context-Sha256": digest.toUpperCase() }),
+        blob: async () => new Blob(["ctx"]),
+      })) as unknown as typeof fetch;
+      vi.stubGlobal("fetch", fetchSpy);
+      vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:ctx");
+      vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+      const link = { href: "", download: "", click: vi.fn() };
+      vi.stubGlobal("document", { createElement: () => link });
+      await expect(api.downloadSubmissionContext("sub-1")).resolves.toBe(digest);
+      expect(link.click).toHaveBeenCalledOnce();
+      expect(link.download).toBe("sub-1-context.tar.gz");
+      const [url] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toBe("/submissions/sub-1/context");
     });
 
     it("rejectSubmission POSTs {reason} to /submissions/{id}/reject", async () => {

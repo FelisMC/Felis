@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { gzipSync } from "node:zlib";
 import type { Plugin } from "vite";
 import type {
   AutostartPolicy,
@@ -167,6 +169,23 @@ const LOGIN_HINT_SCRIPT = `
 // archiving owner; GET /backups is scoped by it for non-admins (BackupsForUser).
 const GiB = 1024 ** 3;
 const DAY_MS = 86_400_000;
+
+// Uploaded build contexts by submission id. Seeded submissions get a small
+// stand-in archive so the review page's download and digest check have bytes.
+const contextBlobs = new Map<string, Buffer>();
+
+function contextBlob(id: string): Buffer {
+  let blob = contextBlobs.get(id);
+  if (!blob) {
+    blob = gzipSync(Buffer.from(`FROM eclipse-temurin:21-jre\n# mock build context for ${id}\n`));
+    contextBlobs.set(id, blob);
+  }
+  return blob;
+}
+
+function sha256Hex(b: Buffer): string {
+  return createHash("sha256").update(b).digest("hex");
+}
 const RETENTION_DAYS = 90;
 
 function backup(server: string, daysAgo: number, sizeBytes: number, formerOwner: string): BackupView {
@@ -329,6 +348,7 @@ function initialState(): MockState {
         submitted_by: "owner@mock.felis.local",
         display_name: "RLCraft Survival Pack",
         context_ref: "minio/contexts/sub-owner-1/context.tar.gz",
+        context_sha256: sha256Hex(contextBlob("sub-owner-1")),
         status: "pending_review",
         created_at: new Date(Date.now() - 1800000).toISOString(),
       },
@@ -337,6 +357,7 @@ function initialState(): MockState {
         submitted_by: "owner@mock.felis.local",
         display_name: "ATM 9 Server Pack",
         context_ref: "minio/contexts/sub-owner-2/context.tar.gz",
+        context_sha256: sha256Hex(contextBlob("sub-owner-2")),
         status: "approved",
         image_ref: "registry.felis.svc:5000/user-uploads/sub-owner-2:latest",
         build_id: "bld-3",
@@ -349,6 +370,7 @@ function initialState(): MockState {
         submitted_by: "owner@mock.felis.local",
         display_name: "Oversized Custom Modpack",
         context_ref: "minio/contexts/sub-owner-3/context.tar.gz",
+        context_sha256: sha256Hex(contextBlob("sub-owner-3")),
         status: "rejected",
         reviewed_by: "setup@mock.felis.local",
         created_at: new Date(Date.now() - 172800000).toISOString(),
@@ -360,6 +382,7 @@ function initialState(): MockState {
         submitted_by: "linked@mock.felis.local",
         display_name: "Create: Astral pack",
         context_ref: "minio/contexts/sub-2/context.tar.gz",
+        context_sha256: sha256Hex(contextBlob("sub-2")),
         status: "approved",
         image_ref: "registry.felis.svc:5000/user-uploads/sub-2:latest",
         build_id: "bld-1",
@@ -372,6 +395,7 @@ function initialState(): MockState {
         submitted_by: "user@mock.felis.local",
         display_name: "Dangerous Modpack (Exploitative)",
         context_ref: "minio/contexts/sub-3/context.tar.gz",
+        context_sha256: sha256Hex(contextBlob("sub-3")),
         status: "rejected",
         reviewed_by: "owner@mock.felis.local",
         reject_reason: "Contains malicious code in scripts/run.sh that tries to download remote malware.",
@@ -1404,10 +1428,38 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
       return true;
     }
 
-    // Read the body stream to end so the socket is clean
-    for await (const _ of ctx.req) { /* discard */ }
+    const chunks: Buffer[] = [];
+    for await (const chunk of ctx.req) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    const blob = Buffer.concat(chunks);
+    contextBlobs.set(id, blob);
+    sub.context_sha256 = sha256Hex(blob);
 
     sendJSON(ctx.res, 200, sub);
+    return true;
+  }
+
+  // GET /api/v1/submissions/{id}/context — the reviewer's download, carrying the
+  // digest the approval must name.
+  if (isAdminSubmissions && is("GET", ctx) && ctx.parts[4] === "context" && ctx.parts.length === 5) {
+    if (!isAdmin(ctx.account.role)) {
+      sendError(ctx.res, 403, "forbidden", "admin account required");
+      return true;
+    }
+    const id = ctx.parts[3];
+    const sub = ctx.state.submissions.find((s) => s.id === id);
+    if (!sub || !sub.context_sha256) {
+      sendError(ctx.res, 404, "not_found", "no context uploaded for this submission");
+      return true;
+    }
+    const blob = contextBlob(id);
+    ctx.res.writeHead(200, {
+      "Content-Type": "application/gzip",
+      "Content-Disposition": `attachment; filename="${id}-context.tar.gz"`,
+      "X-Felis-Context-Sha256": sha256Hex(blob),
+    });
+    ctx.res.end(blob);
     return true;
   }
 
@@ -1435,6 +1487,19 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
     }
     if (sub.status !== "pending_review") {
       sendError(ctx.res, 409, "already_reviewed", "submission already reviewed");
+      return true;
+    }
+    const { expected_digest: expected } = await readJSON<{ expected_digest?: string }>(ctx.req);
+    if (!/^[0-9a-f]{64}$/.test(expected?.trim().toLowerCase() ?? "")) {
+      sendError(ctx.res, 400, "bad_request", "expected_digest must be the sha256 of the context you reviewed (64 hex characters)");
+      return true;
+    }
+    if (!sub.context_sha256) {
+      sendError(ctx.res, 400, "bad_request", "this context was uploaded before digests were recorded; the submitter must upload it again");
+      return true;
+    }
+    if (expected!.trim().toLowerCase() !== sub.context_sha256) {
+      sendError(ctx.res, 409, "context_changed", "the build context was uploaded again after it was reviewed; review the new upload before approving");
       return true;
     }
 

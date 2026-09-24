@@ -35,6 +35,8 @@
   "error_file_required": "Build context file is required.",
   "field_context_ref": "Context Reference",
   "field_image_ref": "Image Reference",
+  "field_context_sha256": "Context SHA-256",
+  "field_context_sha256_hint": "The digest of the file the platform received; compare it with sha256sum of your local file. Approval binds exactly this content.",
   "clear_btn": "Clear",
   "file_hint": "Supports .tar.gz (max 1GB)",
   "withdraw_btn": "Withdraw",

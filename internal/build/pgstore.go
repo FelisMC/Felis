@@ -21,17 +21,17 @@ func NewPGStore(db *sql.DB) *PGStore { return &PGStore{db: db} }
 
 func (s *PGStore) CreateBuild(ctx context.Context, b *Build) error {
 	const q = `INSERT INTO image_builds
-		(id, image_ref, status, dockerfile, context_ref, base_image, requested_by, created_at)
-		VALUES ($1, $2, $3, $4, NULLIF($5, ''), NULLIF($6, ''), $7, $8)`
+		(id, image_ref, status, dockerfile, context_ref, base_image, requested_by, created_at, context_digest)
+		VALUES ($1, $2, $3, $4, NULLIF($5, ''), NULLIF($6, ''), $7, $8, NULLIF($9, ''))`
 	_, err := s.db.ExecContext(ctx, q,
 		b.ID, b.ImageRef, string(b.Status), b.Dockerfile, b.ContextRef, b.BaseImage,
-		b.RequestedBy, b.CreatedAt)
+		b.RequestedBy, b.CreatedAt, b.ContextDigest)
 	return err
 }
 
 func (s *PGStore) GetBuild(ctx context.Context, id string) (*Build, error) {
 	const q = `SELECT id, image_ref, status, dockerfile, context_ref, base_image,
-			requested_by, job_name, log_ref, error, created_at, finished_at
+			requested_by, job_name, log_ref, error, created_at, finished_at, context_digest
 		FROM image_builds WHERE id = $1`
 	return s.scanBuild(s.db.QueryRowContext(ctx, q, id))
 }
@@ -42,9 +42,10 @@ func (s *PGStore) scanBuild(row *sql.Row) (*Build, error) {
 		status                              string
 		ctxRef, base, jobName, logRef, eMsg sql.NullString
 		finished                            sql.NullTime
+		digest                              sql.NullString
 	)
 	switch err := row.Scan(&b.ID, &b.ImageRef, &status, &b.Dockerfile, &ctxRef, &base,
-		&b.RequestedBy, &jobName, &logRef, &eMsg, &b.CreatedAt, &finished); {
+		&b.RequestedBy, &jobName, &logRef, &eMsg, &b.CreatedAt, &finished, &digest); {
 	case err == sql.ErrNoRows:
 		return nil, ErrNotFound
 	case err != nil:
@@ -56,6 +57,7 @@ func (s *PGStore) scanBuild(row *sql.Row) (*Build, error) {
 	b.JobName = jobName.String
 	b.LogRef = logRef.String
 	b.Error = eMsg.String
+	b.ContextDigest = digest.String
 	if finished.Valid {
 		t := finished.Time
 		b.FinishedAt = &t
@@ -91,7 +93,7 @@ func (s *PGStore) FinishBuild(ctx context.Context, id string, status Status, err
 
 func (s *PGStore) ListUnfinishedBuilds(ctx context.Context) ([]Build, error) {
 	const q = `SELECT id, image_ref, status, dockerfile, context_ref, base_image,
-			requested_by, job_name, log_ref, error, created_at, finished_at
+			requested_by, job_name, log_ref, error, created_at, finished_at, context_digest
 		FROM image_builds WHERE status IN ('pending', 'building') ORDER BY created_at ASC`
 	rows, err := s.db.QueryContext(ctx, q)
 	if err != nil {
@@ -105,9 +107,10 @@ func (s *PGStore) ListUnfinishedBuilds(ctx context.Context) ([]Build, error) {
 			status                              string
 			ctxRef, base, jobName, logRef, eMsg sql.NullString
 			finished                            sql.NullTime
+			digest                              sql.NullString
 		)
 		if err := rows.Scan(&b.ID, &b.ImageRef, &status, &b.Dockerfile, &ctxRef, &base,
-			&b.RequestedBy, &jobName, &logRef, &eMsg, &b.CreatedAt, &finished); err != nil {
+			&b.RequestedBy, &jobName, &logRef, &eMsg, &b.CreatedAt, &finished, &digest); err != nil {
 			return nil, err
 		}
 		b.Status = Status(status)
@@ -116,6 +119,7 @@ func (s *PGStore) ListUnfinishedBuilds(ctx context.Context) ([]Build, error) {
 		b.JobName = jobName.String
 		b.LogRef = logRef.String
 		b.Error = eMsg.String
+		b.ContextDigest = digest.String
 		if finished.Valid {
 			t := finished.Time
 			b.FinishedAt = &t

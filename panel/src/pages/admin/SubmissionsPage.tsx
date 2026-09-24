@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { ClipboardCheck, CheckCircle2, CircleSlash, ChevronDown, ChevronUp, Check, X, Loader2, Download, Trash2 } from "lucide-react";
+import { ClipboardCheck, CheckCircle2, CircleSlash, ChevronDown, ChevronUp, Check, X, Loader2, Download, Trash2, ShieldCheck, TriangleAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatCard } from "@/components/StatCard";
@@ -24,7 +24,7 @@ import { Pagination } from "@/components/Pagination";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { formatRelative, formatAbsolute } from "@/lib/format";
-import type { Submission, SubmissionStatus } from "@/lib/types";
+import type { ApiError, Submission, SubmissionStatus } from "@/lib/types";
 
 const PAGE_SIZE = 10;
 
@@ -46,6 +46,10 @@ export function SubmissionsPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [busyType, setBusyType] = useState<"approve" | "reject" | "delete" | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  // The sha256 of each context this reviewer downloaded in this session. An
+  // approval names the digest of what was actually read; the listed digest
+  // stands in when the review happened elsewhere (the CLI, an earlier session).
+  const [reviewedDigests, setReviewedDigests] = useState<Record<string, string>>({});
   // Delete arms the row (trash → confirm/cancel) before it fires; a row gone on
   // one stray click would take its uploaded context with it.
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
@@ -101,16 +105,23 @@ export function SubmissionsPage() {
     return filteredSubmissions.slice(start, start + PAGE_SIZE);
   }, [filteredSubmissions, page]);
 
-  async function handleApprove(id: string) {
-    if (busyId) return;
-    setBusyId(id);
+  async function handleApprove(sub: Submission) {
+    const digest = reviewedDigests[sub.id] ?? sub.context_sha256;
+    if (busyId || !digest) return;
+    setBusyId(sub.id);
     setBusyType("approve");
     setActionError(null);
     try {
-      await api.approveSubmission(id);
+      await api.approveSubmission(sub.id, digest);
       reload();
     } catch (err) {
       setActionError(humanizeError(err));
+      // A newer upload replaced what was reviewed: forget the stale download and
+      // show the new digest, so the next approval has to be a fresh review.
+      if ((err as Partial<ApiError>).code === "context_changed") {
+        setReviewedDigests(({ [sub.id]: _stale, ...rest }) => rest);
+        reload();
+      }
     } finally {
       setBusyId(null);
       setBusyType(null);
@@ -168,7 +179,13 @@ export function SubmissionsPage() {
     setActionError(null);
     setDownloadingId(sub.id);
     try {
-      await api.downloadSubmissionContext(sub.id);
+      const digest = await api.downloadSubmissionContext(sub.id);
+      if (digest) {
+        setReviewedDigests((prev) => ({ ...prev, [sub.id]: digest }));
+        // The list predates a re-upload: refresh it so the page shows what was
+        // just downloaded.
+        if (digest !== sub.context_sha256) reload();
+      }
     } catch (err) {
       setActionError(humanizeError(err));
     } finally {
@@ -291,6 +308,8 @@ export function SubmissionsPage() {
                   const isBusyApprove = busyId === sub.id && busyType === "approve";
                   const isBusyReject = busyId === sub.id && busyType === "reject";
                   const isBusyDelete = busyId === sub.id && busyType === "delete";
+                  const reviewedDigest = reviewedDigests[sub.id];
+                  const approveDigest = reviewedDigest ?? sub.context_sha256;
                   return (
                     <div key={sub.id} className="flex flex-col">
                       <div
@@ -342,9 +361,9 @@ export function SubmissionsPage() {
                                 size="icon"
                                 variant="outline"
                                 className="h-7 w-7 text-emerald-500 hover:text-emerald-600 border-emerald-500/20 hover:bg-emerald-500/10 focus-visible:ring-emerald-500"
-                                onClick={() => handleApprove(sub.id)}
-                                disabled={!!busyId}
-                                title={t("approve_btn")}
+                                onClick={() => handleApprove(sub)}
+                                disabled={!!busyId || !approveDigest}
+                                title={approveDigest ? t("approve_btn") : t("approve_needs_context")}
                               >
                                 {isBusyApprove ? (
                                   <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -422,6 +441,29 @@ export function SubmissionsPage() {
                                   <span className="ml-1">{t("download_context_btn")}</span>
                                 </Button>
                               </div>
+                            </div>
+                            <div>
+                              <p className="font-semibold text-foreground mb-1">{t("context_sha256_label")}</p>
+                              {sub.context_sha256 ? (
+                                <pre className="font-mono bg-background border rounded p-1.5 truncate select-all" title={t("context_sha256_hint")}>{sub.context_sha256}</pre>
+                              ) : (
+                                <p className="text-amber-600 dark:text-amber-400">{t("context_sha256_missing")}</p>
+                              )}
+                              {reviewedDigest && reviewedDigest === sub.context_sha256 && (
+                                <p className="mt-1 flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
+                                  <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+                                  {t("context_sha256_downloaded")}
+                                </p>
+                              )}
+                              {reviewedDigest && sub.context_sha256 && reviewedDigest !== sub.context_sha256 && (
+                                <p className="mt-1 flex items-start gap-1 text-amber-600 dark:text-amber-400">
+                                  <TriangleAlert className="h-3.5 w-3.5 shrink-0 mt-px" />
+                                  <span>{t("context_sha256_stale", { digest: reviewedDigest.slice(0, 12) })}</span>
+                                </p>
+                              )}
+                              {sub.status === "pending_review" && sub.context_sha256 && !reviewedDigest && (
+                                <p className="mt-1 text-muted-foreground/80">{t("context_sha256_hint")}</p>
+                              )}
                             </div>
                             {sub.image_ref && (
                               <div>

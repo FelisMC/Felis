@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,6 +17,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"felis.lolicon.best/internal/build"
 )
 
 // cmdFetchContext is the in-Pod entrypoint the build Job's context-fetch
@@ -41,7 +45,12 @@ func cmdFetchContext(args []string, _, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	url := fs.String("url", "", "internal-face URL of the submission's build-context tarball")
 	out := fs.String("out", "/context", "directory to extract the build context into")
+	want := fs.String("sha256", "", "refuse the context unless the tarball's sha256 is this lowercase hex digest")
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if *want != "" && !build.IsSHA256Hex(*want) {
+		fmt.Fprintf(stderr, "felis fetch-context: --sha256 %q is not a lowercase hex sha256\n", *want)
 		return 2
 	}
 	if *url == "" {
@@ -66,7 +75,12 @@ func cmdFetchContext(args []string, _, stderr io.Writer) int {
 	// No overall client timeout: a legitimate modpack context can be large and the
 	// Job's activeDeadlineSeconds is the real bound. The header timeout catches a
 	// wedged endpoint without capping a healthy download.
-	client := &http.Client{Transport: &http.Transport{ResponseHeaderTimeout: time.Minute}}
+	// Redirects are refused: the request carries the service token, and the
+	// internal face never redirects, so a 3xx is someone steering the token.
+	client := &http.Client{
+		Transport:     &http.Transport{ResponseHeaderTimeout: time.Minute},
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	resp, err := fetchContextWithRetry(ctx, client, *url, token, stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis fetch-context: %v\n", err)
@@ -74,8 +88,26 @@ func cmdFetchContext(args []string, _, stderr io.Writer) int {
 	}
 	defer resp.Body.Close()
 
-	if err := extractTarGz(resp.Body, *out); err != nil {
+	h := sha256.New()
+	body := io.TeeReader(resp.Body, h)
+	if err := extractTarGz(body, *out); err != nil {
 		fmt.Fprintf(stderr, "felis fetch-context: %v\n", err)
+		return 1
+	}
+	if *want == "" {
+		return 0
+	}
+	// The tar end marker comes before the gzip trailer and whatever follows it,
+	// so read to EOF: the digest must cover every byte the blob holds. The blob
+	// itself is size-capped at upload, which bounds this read.
+	if _, err := io.Copy(io.Discard, io.LimitReader(body, maxContextBytes)); err != nil {
+		fmt.Fprintf(stderr, "felis fetch-context: %v\n", err)
+		return 1
+	}
+	if got := hex.EncodeToString(h.Sum(nil)); got != *want {
+		// The init container failing is what keeps Kaniko from ever starting on
+		// the extracted tree.
+		fmt.Fprintf(stderr, "felis fetch-context: the context's sha256 is %s, the approved digest is %s: it changed after approval; refusing to build\n", got, *want)
 		return 1
 	}
 	return 0

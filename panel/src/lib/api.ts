@@ -492,8 +492,10 @@ export const api = {
   listSubmissions: () =>
     request<{ submissions: Submission[] }>("GET", "/submissions").then((r) => r.submissions ?? []),
 
-  approveSubmission: (id: string) =>
-    request<Submission>("POST", `/submissions/${id}/approve`),
+  // expectedDigest is the sha256 of the context the reviewer looked at; the API
+  // refuses the approval (409 context_changed) when the upload has since changed.
+  approveSubmission: (id: string, expectedDigest: string) =>
+    request<Submission>("POST", `/submissions/${id}/approve`, { expected_digest: expectedDigest }),
 
   rejectSubmission: (id: string, reason: string) =>
     request<Submission>("POST", `/submissions/${id}/reject`, { reason }),
@@ -506,7 +508,9 @@ export const api = {
   // Dockerfile lives inside the tarball, so approving without this would be
   // blind. The body is the attacker-supplied archive — download it, never
   // render it — which the API's attachment disposition enforces.
-  downloadSubmissionContext: async (id: string): Promise<void> => {
+  // Resolves to the sha256 the API vouched for while streaming these bytes (it
+  // aborts the transfer on a mismatch), so the approval can name what was read.
+  downloadSubmissionContext: async (id: string): Promise<string | null> => {
     const { apiBase } = await loadConfig();
     const res = await fetch(`${apiBase}/submissions/${id}/context`, {
       method: "GET",
@@ -528,6 +532,7 @@ export const api = {
       announceSetupRequired(err);
       throw err;
     }
+    const digest = res.headers.get("X-Felis-Context-Sha256")?.trim().toLowerCase() || null;
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -535,6 +540,7 @@ export const api = {
     link.download = `${id}-context.tar.gz`;
     link.click();
     URL.revokeObjectURL(url);
+    return digest;
   },
 
   listMySubmissions: () =>
@@ -788,6 +794,8 @@ export function humanizeError(e: unknown): string {
       return t("build_logs_unavailable");
     case "already_reviewed":
       return t("already_reviewed");
+    case "context_changed":
+      return t("context_changed");
     case "submission_quota_exceeded":
       return t("submission_quota_exceeded");
     case "submission_cooldown":

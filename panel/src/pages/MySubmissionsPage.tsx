@@ -430,6 +430,12 @@ export function MySubmissionsPage() {
                               <p className="font-semibold text-foreground mb-1">{t("field_context_ref")}</p>
                               <pre className="font-mono bg-background border rounded p-1.5 truncate select-all">{sub.context_ref}</pre>
                             </div>
+                            {sub.context_sha256 && (
+                              <div>
+                                <p className="font-semibold text-foreground mb-1">{t("field_context_sha256")}</p>
+                                <pre className="font-mono bg-background border rounded p-1.5 truncate select-all" title={t("field_context_sha256_hint")}>{sub.context_sha256}</pre>
+                              </div>
+                            )}
                             {sub.image_ref && (
                               <div>
                                 <p className="font-semibold text-foreground mb-1">{t("field_image_ref")}</p>

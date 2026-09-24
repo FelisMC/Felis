@@ -52,6 +52,7 @@
   "build_unavailable": "构建功能当前不可用。",
   "build_logs_unavailable": "构建日志暂时不可用。",
   "already_reviewed": "该提交已经审核过了。",
+  "context_changed": "提交者在你审阅之后重新上传了构建上下文。请重新下载并审阅新的上传再通过。",
   "submission_quota_exceeded": "你的提交配额已满：待审核提交过多，或已存上传总量达到上限。",
   "submission_cooldown": "操作太频繁——请稍后再试。",
   "submissions_unavailable": "提交流程当前不可用。",

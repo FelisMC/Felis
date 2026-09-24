@@ -572,6 +572,7 @@ approved-but-hostile Dockerfile and the node is the pod around it:
 | Layer | What it does | Where |
 |---|---|---|
 | Admin approval | Nothing builds until an administrator approves the submission | submit lane |
+| Reviewed bytes | the approval names the context's sha256; a re-upload after review fails the approval, and the build refuses any other bytes | submit lane, `felis fetch-context` |
 | Weak identity | `felis-build` SA, no Role anywhere, no token mounted | §8b |
 | Egress lock | `felis-build-egress`: cluster DNS, the registry, the api internal face, nothing else | §8c |
 | Egress gate | first init container; holds the pod until the lock is enforced for it | `felis egress-gate` |
@@ -582,6 +583,25 @@ approved-but-hostile Dockerfile and the node is the pod around it:
 | Credentials | the registry credential lives only in the `push` container; the service token only in `context-fetch` | jobspec |
 | Resources | CPU, memory and ephemeral-storage limits per container; `activeDeadlineSeconds`; the context extraction stops at 4 GiB or 200 000 entries | jobspec, `felis fetch-context` |
 | Namespace backstop | `felis-build-limits` LimitRange gives any container without limits 1 CPU / 1 GiB / 1 GiB disk | bundle |
+
+**Reviewed bytes.** Every upload records the sha256 of the archive, and the
+review page shows it. The context download carries the same value in the
+`X-Felis-Context-Sha256` header; the API cuts the transfer off if the stored
+bytes no longer match it. Approving sends that digest back as
+`expected_digest`, and the approval fails with `409 context_changed` when the
+submitter has uploaded again since: download and review the new upload. The
+approved digest is pinned on the build, and `felis fetch-context --sha256`
+hashes every byte it receives; a mismatch fails the build before Kaniko starts:
+
+```
+felis fetch-context: the context's sha256 is 3f…, the approved digest is 9a…: it changed after approval; refusing to build
+```
+
+The panel approves with the digest of the file it downloaded in the same
+session. When the review happened elsewhere (a CLI download, another browser),
+it approves with the digest the list shows, so compare that value with
+`sha256sum` of the file you actually read. A submission uploaded before digests
+were recorded cannot be approved until the submitter uploads it again.
 
 **Egress gate.** The CNI programs a new pod's NetworkPolicy a moment after the
 pod starts. On k3s (kube-router), a pod in `felis-build` could reach the internet

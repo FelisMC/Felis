@@ -22,7 +22,7 @@ func NewPGStore(db *sql.DB) *PGStore { return &PGStore{db: db} }
 var _ Store = (*PGStore)(nil)
 
 const submissionColumns = `id, submitted_by, display_name, context_ref, status,
-	image_ref, build_id, reviewed_by, reject_reason, created_at, reviewed_at`
+	image_ref, build_id, reviewed_by, reject_reason, created_at, reviewed_at, context_sha256`
 
 func (s *PGStore) CreateSubmission(ctx context.Context, sub *Submission) error {
 	const q = `INSERT INTO image_submissions
@@ -77,12 +77,20 @@ func (s *PGStore) cas(ctx context.Context, q string, args ...any) (bool, error) 
 }
 
 // ApproveSubmission is the approve CAS: it flips the row only while it is still
-// pending_review, so a concurrent reviewer cannot also win.
-func (s *PGStore) ApproveSubmission(ctx context.Context, id, reviewedBy, imageRef string, at time.Time) (bool, error) {
+// pending_review AND still carries the digest the reviewer approved, so neither
+// a concurrent reviewer nor a re-upload after the review can let it win.
+func (s *PGStore) ApproveSubmission(ctx context.Context, id, reviewedBy, imageRef, digest string, at time.Time) (bool, error) {
 	const q = `UPDATE image_submissions
 		SET status = 'approved', image_ref = $2, reviewed_by = $3, reviewed_at = $4
+		WHERE id = $1 AND status = 'pending_review' AND COALESCE(context_sha256, '') = $5`
+	return s.cas(ctx, q, id, imageRef, reviewedBy, at, digest)
+}
+
+// SetContextDigest records an upload's digest, only while the row is pending.
+func (s *PGStore) SetContextDigest(ctx context.Context, id, digest string) (bool, error) {
+	const q = `UPDATE image_submissions SET context_sha256 = $2
 		WHERE id = $1 AND status = 'pending_review'`
-	return s.cas(ctx, q, id, imageRef, reviewedBy, at)
+	return s.cas(ctx, q, id, digest)
 }
 
 // RejectSubmission is the reject CAS, mirroring ApproveSubmission.
@@ -164,10 +172,11 @@ func scanSubmissionRows(row rowScanner) (*Submission, error) {
 		status                                      string
 		imageRef, buildID, reviewedBy, rejectReason sql.NullString
 		reviewedAt                                  sql.NullTime
+		digest                                      sql.NullString
 	)
 	if err := row.Scan(
 		&sub.ID, &sub.SubmittedBy, &sub.DisplayName, &sub.ContextRef, &status,
-		&imageRef, &buildID, &reviewedBy, &rejectReason, &sub.CreatedAt, &reviewedAt,
+		&imageRef, &buildID, &reviewedBy, &rejectReason, &sub.CreatedAt, &reviewedAt, &digest,
 	); err != nil {
 		return nil, err
 	}
@@ -176,6 +185,7 @@ func scanSubmissionRows(row rowScanner) (*Submission, error) {
 	sub.BuildID = buildID.String
 	sub.ReviewedBy = reviewedBy.String
 	sub.RejectReason = rejectReason.String
+	sub.ContextSHA256 = digest.String
 	if reviewedAt.Valid {
 		t := reviewedAt.Time
 		sub.ReviewedAt = &t

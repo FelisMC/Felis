@@ -3,6 +3,8 @@ package submit
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -103,6 +105,10 @@ type fakeStore struct {
 	deleteErr  error
 
 	linked []string // "id=buildID" recorder
+
+	// beforeApprove runs between the Manager's read and its CAS, the window a
+	// concurrent re-upload lands in.
+	beforeApprove func()
 }
 
 func newFakeStore() *fakeStore { return &fakeStore{subs: map[string]*Submission{}} }
@@ -156,12 +162,15 @@ func (f *fakeStore) ListSubmissionsBy(_ context.Context, by string) ([]Submissio
 	return out, nil
 }
 
-func (f *fakeStore) ApproveSubmission(_ context.Context, id, reviewedBy, imageRef string, at time.Time) (bool, error) {
+func (f *fakeStore) ApproveSubmission(_ context.Context, id, reviewedBy, imageRef, digest string, at time.Time) (bool, error) {
+	if f.beforeApprove != nil {
+		f.beforeApprove()
+	}
 	if f.approveErr != nil {
 		return false, f.approveErr
 	}
 	s, ok := f.subs[id]
-	if !ok || s.Status != StatusPendingReview {
+	if !ok || s.Status != StatusPendingReview || s.ContextSHA256 != digest {
 		return false, nil // CAS lost / nonexistent
 	}
 	s.Status = StatusApproved
@@ -169,6 +178,15 @@ func (f *fakeStore) ApproveSubmission(_ context.Context, id, reviewedBy, imageRe
 	s.ReviewedBy = reviewedBy
 	t := at
 	s.ReviewedAt = &t
+	return true, nil
+}
+
+func (f *fakeStore) SetContextDigest(_ context.Context, id, digest string) (bool, error) {
+	s, ok := f.subs[id]
+	if !ok || s.Status != StatusPendingReview {
+		return false, nil
+	}
+	s.ContextSHA256 = digest
 	return true, nil
 }
 
@@ -307,14 +325,14 @@ func TestContextRefIsFetchURLAndOpenContextServesIt(t *testing.T) {
 	}
 
 	// Before any upload the read path reports not-found (the route's 404).
-	if _, err := m.OpenContext(ctx, sub.ID); !errors.Is(err, ErrBlobNotFound) {
+	if _, _, err := m.OpenContext(ctx, sub.ID); !errors.Is(err, ErrBlobNotFound) {
 		t.Fatalf("OpenContext before upload = %v, want ErrBlobNotFound", err)
 	}
 	payload := "\x1f\x8b\x08\x00payload"
 	if _, err := m.UploadContext(ctx, sub.ID, "user-1", strings.NewReader(payload)); err != nil {
 		t.Fatalf("UploadContext: %v", err)
 	}
-	rc, err := m.OpenContext(ctx, sub.ID)
+	rc, digest, err := m.OpenContext(ctx, sub.ID)
 	if err != nil {
 		t.Fatalf("OpenContext: %v", err)
 	}
@@ -323,13 +341,16 @@ func TestContextRefIsFetchURLAndOpenContextServesIt(t *testing.T) {
 	if string(got) != payload {
 		t.Fatalf("OpenContext served %q, want %q", got, payload)
 	}
+	if digest != sha256Hex(payload) {
+		t.Fatalf("OpenContext digest = %q, want the payload's sha256", digest)
+	}
 }
 
 // No upload transport ⇒ no readable blob: the route reports the same 503 the
 // upload endpoint does, rather than a misleading 404.
 func TestOpenContextWithoutTransportIsUnavailable(t *testing.T) {
 	m, _, _ := newManager()
-	if _, err := m.OpenContext(context.Background(), "sub-1"); !errors.Is(err, ErrUploadsUnavailable) {
+	if _, _, err := m.OpenContext(context.Background(), "sub-1"); !errors.Is(err, ErrUploadsUnavailable) {
 		t.Fatalf("OpenContext with nil Blobs = %v, want ErrUploadsUnavailable", err)
 	}
 }
@@ -362,7 +383,7 @@ func TestApproveStartsExactlyOneBuildAndLinks(t *testing.T) {
 	m, st, bl := newManager()
 	seed, _ := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
 
-	sub, err := m.Approve(context.Background(), seed.ID, "admin@example.test")
+	sub, err := m.Approve(context.Background(), seed.ID, "admin@example.test", "")
 	if err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
@@ -428,11 +449,11 @@ func TestApproveIsCASNoDoubleBuild(t *testing.T) {
 	m, _, bl := newManager()
 	seed, _ := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
 
-	if _, err := m.Approve(context.Background(), seed.ID, "admin@x"); err != nil {
+	if _, err := m.Approve(context.Background(), seed.ID, "admin@x", ""); err != nil {
 		t.Fatalf("first Approve: %v", err)
 	}
 	// A second approve loses the CAS and must NOT start another build.
-	_, err := m.Approve(context.Background(), seed.ID, "admin@x")
+	_, err := m.Approve(context.Background(), seed.ID, "admin@x", "")
 	if !errors.Is(err, ErrAlreadyReviewed) {
 		t.Fatalf("second Approve err = %v, want ErrAlreadyReviewed", err)
 	}
@@ -447,7 +468,7 @@ func TestApproveRejectedSubmission(t *testing.T) {
 	if _, err := m.Reject(context.Background(), seed.ID, "admin@x", "nope"); err != nil {
 		t.Fatalf("Reject: %v", err)
 	}
-	_, err := m.Approve(context.Background(), seed.ID, "admin@x")
+	_, err := m.Approve(context.Background(), seed.ID, "admin@x", "")
 	if !errors.Is(err, ErrAlreadyReviewed) {
 		t.Fatalf("Approve after reject err = %v, want ErrAlreadyReviewed", err)
 	}
@@ -458,7 +479,7 @@ func TestApproveRejectedSubmission(t *testing.T) {
 
 func TestApproveUnknown(t *testing.T) {
 	m, _, _ := newManager()
-	_, err := m.Approve(context.Background(), "sub-nope", "admin@x")
+	_, err := m.Approve(context.Background(), "sub-nope", "admin@x", "")
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("err = %v, want ErrNotFound", err)
 	}
@@ -472,7 +493,7 @@ func TestApproveBuildFailureLeavesApprovedUnlinked(t *testing.T) {
 	bl.submitErr = errors.New("apiserver unreachable")
 	seed, _ := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
 
-	_, err := m.Approve(context.Background(), seed.ID, "admin@x")
+	_, err := m.Approve(context.Background(), seed.ID, "admin@x", "")
 	if err == nil {
 		t.Fatal("Approve should surface the build hand-off failure")
 	}
@@ -503,7 +524,7 @@ func TestApproveLinkFailureNamesRunningBuild(t *testing.T) {
 	st.linkErr = errors.New("db write timeout")
 	seed, _ := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
 
-	_, err := m.Approve(context.Background(), seed.ID, "admin@x")
+	_, err := m.Approve(context.Background(), seed.ID, "admin@x", "")
 	if err == nil {
 		t.Fatal("Approve must surface the link-write failure (a build is running)")
 	}
@@ -544,7 +565,7 @@ func TestApproveValidatesBeforeCAS(t *testing.T) {
 	m.Registry = "" // derived ref becomes "/user-uploads/...", not host-qualified
 	seed, _ := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
 
-	_, err := m.Approve(context.Background(), seed.ID, "admin@x")
+	_, err := m.Approve(context.Background(), seed.ID, "admin@x", "")
 	if !errors.Is(err, build.ErrInvalid) {
 		t.Fatalf("err = %v, want build.ErrInvalid (pre-CAS validation)", err)
 	}
@@ -1009,7 +1030,7 @@ func TestApproveRefusesMissingContext(t *testing.T) {
 	m.Blobs = newFakeBlobs() // empty → Exists=false
 	seed, _ := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
 
-	_, err := m.Approve(context.Background(), seed.ID, "admin@x")
+	_, err := m.Approve(context.Background(), seed.ID, "admin@x", sha256Hex("never uploaded"))
 	if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("err = %v, want ErrInvalid (no context uploaded)", err)
 	}
@@ -1026,12 +1047,17 @@ func TestApproveProceedsWithUploadedContext(t *testing.T) {
 	// build through the SAME gated Builder.
 	m, _, bl := newManager()
 	m.Blobs = newFakeBlobs()
+	m.ContextBaseURL = "http://felis-api-internal.felis.svc.cluster.local:8081"
 	seed, _ := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
-	if _, err := m.UploadContext(context.Background(), seed.ID, "user-1", strings.NewReader(gzBody("mods"))); err != nil {
+	up, err := m.UploadContext(context.Background(), seed.ID, "user-1", strings.NewReader(gzBody("mods")))
+	if err != nil {
 		t.Fatalf("UploadContext: %v", err)
 	}
+	if up.ContextSHA256 != sha256Hex(gzBody("mods")) {
+		t.Fatalf("upload digest = %q, want the stored bytes' sha256", up.ContextSHA256)
+	}
 
-	sub, err := m.Approve(context.Background(), seed.ID, "admin@x")
+	sub, err := m.Approve(context.Background(), seed.ID, "admin@x", up.ContextSHA256)
 	if err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
@@ -1041,6 +1067,97 @@ func TestApproveProceedsWithUploadedContext(t *testing.T) {
 	if bl.calls != 1 {
 		t.Fatalf("builds started = %d, want 1", bl.calls)
 	}
+	if bl.got[0].ContextDigest != up.ContextSHA256 {
+		t.Fatalf("build digest = %q, want the approved %q", bl.got[0].ContextDigest, up.ContextSHA256)
+	}
+}
+
+// Review binds to bytes (build-supply-chain-6): an approval names the digest
+// the admin inspected, and a re-upload after that makes it fail instead of
+// building content nobody saw.
+func TestApproveBindsTheReviewedDigest(t *testing.T) {
+	ctx := context.Background()
+	m, st, bl := newManager()
+	m.Blobs = newFakeBlobs()
+	seed, _ := m.Create(ctx, CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
+	benign, evil := gzBody("benign"), gzBody("evil")
+	if _, err := m.UploadContext(ctx, seed.ID, "user-1", strings.NewReader(benign)); err != nil {
+		t.Fatal(err)
+	}
+	reviewed := sha256Hex(benign)
+
+	// The swap lands after the review.
+	if _, err := m.UploadContext(ctx, seed.ID, "user-1", strings.NewReader(evil)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Approve(ctx, seed.ID, "admin@x", reviewed); !errors.Is(err, ErrContextChanged) {
+		t.Fatalf("approve after a swap = %v, want ErrContextChanged", err)
+	}
+
+	// The swap lands between the Manager's read and its CAS.
+	if _, err := m.UploadContext(ctx, seed.ID, "user-1", strings.NewReader(benign)); err != nil {
+		t.Fatal(err)
+	}
+	st.beforeApprove = func() { st.subs[seed.ID].ContextSHA256 = sha256Hex(evil) }
+	if _, err := m.Approve(ctx, seed.ID, "admin@x", reviewed); !errors.Is(err, ErrContextChanged) {
+		t.Fatalf("approve racing a swap = %v, want ErrContextChanged", err)
+	}
+	st.beforeApprove = nil
+	if st.subs[seed.ID].Status != StatusPendingReview || bl.calls != 0 {
+		t.Fatalf("status %q, builds %d; want still pending with nothing built", st.subs[seed.ID].Status, bl.calls)
+	}
+
+	for _, bad := range []string{"", "not-a-digest"} {
+		if _, err := m.Approve(ctx, seed.ID, "admin@x", bad); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("approve with digest %q = %v, want ErrInvalid", bad, err)
+		}
+	}
+
+	// A context uploaded before digests were recorded must be uploaded again.
+	st.subs[seed.ID].ContextSHA256 = ""
+	if _, err := m.Approve(ctx, seed.ID, "admin@x", reviewed); !errors.Is(err, ErrInvalid) ||
+		!strings.Contains(err.Error(), "upload it again") {
+		t.Fatalf("approve of an undigested context = %v, want the re-upload instruction", err)
+	}
+}
+
+// An upload that finishes after the approval won cannot slip its digest in: the
+// row keeps the approved one, which the build's fetch step then enforces, and
+// the uploader hears that the submission was reviewed.
+func TestUploadAfterApprovalKeepsTheApprovedDigest(t *testing.T) {
+	ctx := context.Background()
+	m, st, _ := newManager()
+	fb := newFakeBlobs()
+	m.Blobs = fb
+	seed, _ := m.Create(ctx, CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
+	up, _ := m.UploadContext(ctx, seed.ID, "user-1", strings.NewReader(gzBody("benign")))
+
+	// The second upload passed its pending check; the approval wins while its
+	// bytes are still streaming in.
+	m.Blobs = approvingBlobs{fakeBlobs: fb, approve: func() { st.subs[seed.ID].Status = StatusApproved }}
+	if _, err := m.UploadContext(ctx, seed.ID, "user-1", strings.NewReader(gzBody("evil"))); !errors.Is(err, ErrAlreadyReviewed) {
+		t.Fatalf("late upload = %v, want ErrAlreadyReviewed", err)
+	}
+	if st.subs[seed.ID].ContextSHA256 != up.ContextSHA256 {
+		t.Fatalf("row digest = %q, want the approved %q", st.subs[seed.ID].ContextSHA256, up.ContextSHA256)
+	}
+}
+
+// approvingBlobs flips the row to approved once Put has stored the bytes.
+type approvingBlobs struct {
+	*fakeBlobs
+	approve func()
+}
+
+func (a approvingBlobs) Put(ctx context.Context, id string, r io.Reader) (int64, error) {
+	n, err := a.fakeBlobs.Put(ctx, id, r)
+	a.approve()
+	return n, err
+}
+
+func sha256Hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }
 
 // keysOf lists a map's keys for test diagnostics.

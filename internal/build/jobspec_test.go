@@ -527,6 +527,37 @@ func TestBuildJobGatesEgressFirst(t *testing.T) {
 	}
 }
 
+// An approved submission pins its context digest on the fetch container, which
+// then refuses any other bytes; a build without one fetches unpinned.
+func TestBuildJobPinsContextDigest(t *testing.T) {
+	p := sampleJobParams()
+	p.ContextRef = "http://felis-api-internal.felis.svc.cluster.local:8081/ctx"
+	fetchArgsOf := func(p JobParams) []string {
+		t.Helper()
+		job, err := BuildJob(p)
+		if err != nil {
+			t.Fatalf("BuildJob: %v", err)
+		}
+		for _, c := range job.Spec.Template.Spec.InitContainers {
+			if c.Name == ContainerFetch {
+				return c.Args
+			}
+		}
+		t.Fatal("no fetch container")
+		return nil
+	}
+	for _, a := range fetchArgsOf(p) {
+		if strings.HasPrefix(a, "--sha256") {
+			t.Fatalf("unpinned build carries %q", a)
+		}
+	}
+	p.ContextDigest = strings.Repeat("d", 64)
+	args := fetchArgsOf(p)
+	if args[len(args)-1] != "--sha256="+p.ContextDigest {
+		t.Fatalf("fetch args = %v, want the digest pinned", args)
+	}
+}
+
 // The pod runs under RuntimeDefault seccomp always, and in a user namespace or
 // a sandbox runtime when the install asks for them.
 func TestBuildJobSandboxing(t *testing.T) {

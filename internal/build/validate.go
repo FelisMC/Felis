@@ -2,6 +2,7 @@ package build
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -37,7 +38,64 @@ func Validate(req Request, cfg Config) error {
 	if strings.TrimSpace(req.ContextRef) == "" {
 		return invalidf("context reference is required")
 	}
+	if IsHTTPContextRef(req.ContextRef) {
+		if err := validateContextURL(req.ContextRef, cfg.ContextOrigin); err != nil {
+			return err
+		}
+	}
+	if req.ContextDigest != "" {
+		if !IsSHA256Hex(req.ContextDigest) {
+			return invalidf("context digest %q is not a lowercase hex sha256", req.ContextDigest)
+		}
+		if !IsHTTPContextRef(req.ContextRef) {
+			return invalidf("a context digest needs an http(s) context reference, whose fetch step checks it")
+		}
+	}
 	return nil
+}
+
+// internalContextPathRE is the one internal-face route a build fetches from.
+var internalContextPathRE = regexp.MustCompile(`^/api/v1/internal/submissions/[A-Za-z0-9_-]+/context$`)
+
+// validateContextURL admits an http(s) context only when it is an uploaded
+// submission on the platform's internal face. The fetch step sends the service
+// token to whatever host the URL names, so an admin-typed URL pointing anywhere
+// else would hand that token to a stranger.
+func validateContextURL(ref, origin string) error {
+	if origin == "" {
+		return invalidf("an http(s) context reference is fetched from the platform's internal API, which this builder is not configured with")
+	}
+	u, err := url.Parse(ref)
+	if err != nil || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
+		URLOrigin(ref) != URLOrigin(origin) || !internalContextPathRE.MatchString(u.Path) {
+		return invalidf("an http(s) context reference must be an uploaded submission on the internal API (%s/api/v1/internal/submissions/<id>/context)",
+			strings.TrimRight(origin, "/"))
+	}
+	return nil
+}
+
+// URLOrigin returns the lowercased scheme://host[:port] of raw, or "" when raw
+// is not an absolute http(s) URL.
+func URLOrigin(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return ""
+	}
+	return strings.ToLower(u.Scheme + "://" + u.Host)
+}
+
+// IsSHA256Hex reports whether s is a lowercase hex-encoded sha256 digest, the
+// form the submit lane records and the context fetcher compares against.
+func IsSHA256Hex(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // ValidateImageRef checks a bare image reference (used by external admission,

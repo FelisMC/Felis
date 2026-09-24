@@ -290,6 +290,8 @@ export interface Submission {
   reject_reason?: string;
   created_at: string;
   reviewed_at?: string;
+  /** sha256 of the uploaded context; approval must name it (migration 0025). */
+  context_sha256?: string;
 }
 
 export interface UpdateWindow {

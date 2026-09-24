@@ -1153,13 +1153,30 @@ func TestSubmitStoreContract(t *testing.T) {
 		t.Fatalf("ListSubmissions: (%v, %v), want the submission present", all, err)
 	}
 
+	// The upload records its digest; the approval CAS names it, so an approval of
+	// a replaced context loses while the row stays pending.
+	reviewed, swapped := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	if ok, err := s.SetContextDigest(ctx, id, reviewed); err != nil || !ok {
+		t.Fatalf("SetContextDigest = (%v, %v), want (true, nil)", ok, err)
+	}
+	if got, _ := s.GetSubmission(ctx, id); got.ContextSHA256 != reviewed {
+		t.Fatalf("context_sha256 = %q, want %q", got.ContextSHA256, reviewed)
+	}
+	if ok, err := s.ApproveSubmission(ctx, id, "reviewer@example.net", "registry/x:1", swapped, now); err != nil || ok {
+		t.Fatalf("approve naming another digest = (%v, %v), want (false, nil)", ok, err)
+	}
+
 	// The approval CAS: exactly one winner, and only from pending_review.
-	ok, err := s.ApproveSubmission(ctx, id, "reviewer@example.net", "registry.felis.svc:5000/user-uploads/"+id+":latest", now)
+	ok, err := s.ApproveSubmission(ctx, id, "reviewer@example.net", "registry.felis.svc:5000/user-uploads/"+id+":latest", reviewed, now)
 	if err != nil || !ok {
 		t.Fatalf("ApproveSubmission = (%v, %v), want (true, nil)", ok, err)
 	}
-	if ok, err := s.ApproveSubmission(ctx, id, "reviewer@example.net", "registry/x:1", now); err != nil || ok {
+	if ok, err := s.ApproveSubmission(ctx, id, "reviewer@example.net", "registry/x:1", reviewed, now); err != nil || ok {
 		t.Fatalf("second approve = (%v, %v), want (false, nil)", ok, err)
+	}
+	// A reviewed row's digest is frozen: a late upload cannot rewrite it.
+	if ok, err := s.SetContextDigest(ctx, id, swapped); err != nil || ok {
+		t.Fatalf("SetContextDigest after approve = (%v, %v), want (false, nil)", ok, err)
 	}
 	if ok, err := s.RejectSubmission(ctx, id, "reviewer@example.net", "no", now); err != nil || ok {
 		t.Fatalf("reject after approve = (%v, %v), want (false, nil)", ok, err)
@@ -1218,15 +1235,17 @@ func TestBuildStoreContract(t *testing.T) {
 	now := mustNow()
 
 	done := "bld-done-" + suffix(t)
+	digest := strings.Repeat("c", 64)
 	if err := s.CreateBuild(ctx, &build.Build{ID: done, ImageRef: "registry.felis.svc:5000/user-uploads/" + done + ":latest",
-		Status: build.StatusPending, RequestedBy: "pgint", Dockerfile: "FROM scratch\n", ContextRef: "http://api/x"}); err != nil {
+		Status: build.StatusPending, RequestedBy: "pgint", Dockerfile: "FROM scratch\n", ContextRef: "http://api/x",
+		ContextDigest: digest}); err != nil {
 		t.Fatalf("CreateBuild: %v", err)
 	}
 	got, err := s.GetBuild(ctx, done)
 	if err != nil {
 		t.Fatalf("GetBuild: %v", err)
 	}
-	if got.Status != build.StatusPending || got.JobName != "" {
+	if got.Status != build.StatusPending || got.JobName != "" || got.ContextDigest != digest {
 		t.Fatalf("fresh build = %+v", got)
 	}
 	if err := s.SetBuildJob(ctx, done, "job-"+suffix(t)); err != nil {

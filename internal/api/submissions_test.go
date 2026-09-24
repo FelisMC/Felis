@@ -2,11 +2,14 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +49,9 @@ type fakeSubmissions struct {
 	openedID    string
 	openBody    string
 	openErr     error
+
+	approvedDigest string
+	openDigest     string
 }
 
 func (f *fakeSubmissions) Create(_ context.Context, req submit.CreateRequest) (*submit.Submission, error) {
@@ -77,8 +83,8 @@ func (f *fakeSubmissions) List(_ context.Context) ([]submit.Submission, error) {
 	return f.listed, f.listErr
 }
 
-func (f *fakeSubmissions) Approve(_ context.Context, id, reviewedBy string) (*submit.Submission, error) {
-	f.approvedID, f.approvedBy = id, reviewedBy
+func (f *fakeSubmissions) Approve(_ context.Context, id, reviewedBy, expectedDigest string) (*submit.Submission, error) {
+	f.approvedID, f.approvedBy, f.approvedDigest = id, reviewedBy, expectedDigest
 	if f.approveErr != nil {
 		return nil, f.approveErr
 	}
@@ -111,12 +117,12 @@ func (f *fakeSubmissions) Delete(_ context.Context, id string) (*submit.Submissi
 
 // openErr injects the OpenContext outcome; the body recorder lets the internal
 // route test assert byte-exact streaming and the 404 mapping.
-func (f *fakeSubmissions) OpenContext(_ context.Context, id string) (io.ReadCloser, error) {
+func (f *fakeSubmissions) OpenContext(_ context.Context, id string) (io.ReadCloser, string, error) {
 	f.openedID = id
 	if f.openErr != nil {
-		return nil, f.openErr
+		return nil, "", f.openErr
 	}
-	return io.NopCloser(strings.NewReader(f.openBody)), nil
+	return io.NopCloser(strings.NewReader(f.openBody)), f.openDigest, nil
 }
 
 // appSubAPI wires a submissions service behind an ordinary user principal (the
@@ -483,6 +489,31 @@ func TestApproveSubmission(t *testing.T) {
 	}
 }
 
+// The digest the reviewer inspected travels in the body, and a context replaced
+// since then is a 409 the panel can act on.
+func TestApproveSubmissionForwardsTheReviewedDigest(t *testing.T) {
+	fs := &fakeSubmissions{}
+	digest := strings.Repeat("ab", 32)
+	w := do(adminSubAPI(fs).ExternalHandler(), "POST", "/api/v1/submissions/sub-9/approve",
+		`{"expected_digest":"`+digest+`"}`, nil)
+	if w.Code != http.StatusOK || fs.approvedDigest != digest {
+		t.Fatalf("code = %d, forwarded digest %q (%s)", w.Code, fs.approvedDigest, w.Body.String())
+	}
+
+	fs = &fakeSubmissions{approveErr: submit.ErrContextChanged}
+	w = do(adminSubAPI(fs).ExternalHandler(), "POST", "/api/v1/submissions/sub-9/approve",
+		`{"expected_digest":"`+digest+`"}`, nil)
+	if w.Code != http.StatusConflict || decodeErr(t, w) != "context_changed" {
+		t.Fatalf("code = %d body %s, want 409 context_changed", w.Code, w.Body.String())
+	}
+
+	w = do(adminSubAPI(&fakeSubmissions{}).ExternalHandler(), "POST", "/api/v1/submissions/sub-9/approve",
+		`{"digest":"x"}`, nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown field code = %d, want 400", w.Code)
+	}
+}
+
 func TestApproveSubmissionAlreadyReviewedIs409(t *testing.T) {
 	fs := &fakeSubmissions{approveErr: submit.ErrAlreadyReviewed}
 	api := adminSubAPI(fs)
@@ -633,6 +664,40 @@ func TestAdminSubmissionContextRoute(t *testing.T) {
 		}
 		if cd := w.Header().Get("Content-Disposition"); cd != `attachment; filename="context.tar.gz"` {
 			t.Fatalf("content-disposition = %q", cd)
+		}
+	})
+
+	t.Run("names the recorded digest", func(t *testing.T) {
+		body := "\x1f\x8b\x08\x00blob"
+		sum := sha256.Sum256([]byte(body))
+		fs := &fakeSubmissions{openBody: body, openDigest: hex.EncodeToString(sum[:])}
+		w := do(adminSubAPI(fs).ExternalHandler(), "GET", "/api/v1/submissions/sub-7/context", "", nil)
+		if w.Code != http.StatusOK || w.Body.String() != body {
+			t.Fatalf("code = %d body %q", w.Code, w.Body.String())
+		}
+		if got := w.Header().Get("X-Felis-Context-Sha256"); got != fs.openDigest {
+			t.Fatalf("digest header = %q, want %q", got, fs.openDigest)
+		}
+	})
+
+	// Bytes that are not the recorded ones must not arrive as a complete download:
+	// the reviewer would inspect a blob the approval does not name.
+	t.Run("aborts a blob that does not match", func(t *testing.T) {
+		big := "\x1f\x8b" + strings.Repeat("x", 100<<10)
+		fs := &fakeSubmissions{openBody: big, openDigest: strings.Repeat("0", 64)}
+		srv := httptest.NewServer(adminSubAPI(fs).ExternalHandler())
+		defer srv.Close()
+		resp, err := http.Get(srv.URL + "/api/v1/submissions/sub-7/context")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		got, err := io.ReadAll(resp.Body)
+		if err == nil {
+			t.Fatalf("read %d bytes cleanly; want the response aborted", len(got))
+		}
+		if len(got) >= len(big) {
+			t.Fatalf("received all %d bytes before the abort", len(got))
 		}
 	})
 
