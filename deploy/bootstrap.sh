@@ -3401,6 +3401,34 @@ EOF
   ok "off-site copy: secrets in ${OFFSITE_ENV}"
 }
 
+# Releases before the reaper ran as root granted uid 1000 traverse on the worlds root: an
+# ACL entry, or o+x where the host had no setfacl. uid 1000 is now the game servers' uid,
+# and the per-volume directories below that root are 0777, so the grant let a game process
+# (and, for o+x, every local account) reach any world by its directory name. Every run
+# takes it back: the ACL entry from any worlds root, the other-bits only from k3s's storage
+# root, which k3s ships 0700 root:root. A custom root keeps its mode, which may be the
+# operator's own.
+revoke_worlds_root_grant() {
+  local dir
+  for dir in "$K3S_STORAGE_ROOT" "$FELIS_WORLDS_HOST_PATH"; do
+    [ -n "$dir" ] && [ -d "$dir" ] || continue
+    if command -v getfacl >/dev/null 2>&1 && getfacl -cpn "$dir" 2>/dev/null | grep -q '^user:1000:'; then
+      if setfacl -x u:1000 "$dir"; then
+        log "revoked the old uid-1000 traverse grant on ${dir}"
+      else
+        warn "could not revoke the old uid-1000 traverse grant on ${dir}; remove it with: setfacl -x u:1000 ${dir}"
+      fi
+    fi
+  done
+  if [ -d "$K3S_STORAGE_ROOT" ] && [ -n "$(find "$K3S_STORAGE_ROOT" -maxdepth 0 -perm -o=x)" ]; then
+    if chmod o-rwx "$K3S_STORAGE_ROOT"; then
+      log "revoked the old world-traversable mode on ${K3S_STORAGE_ROOT} (back to k3s's 0700)"
+    else
+      warn "could not restore ${K3S_STORAGE_ROOT} to 0700; any local account can reach the world volumes below it: chmod o-rwx ${K3S_STORAGE_ROOT}"
+    fi
+  fi
+}
+
 deploy_bundle() {
   local prev_api prev_operator prev_gate
   export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
@@ -3444,6 +3472,8 @@ deploy_bundle() {
     --cert="$PANEL_TLS_CERT" \
     --key="$PANEL_TLS_KEY" \
     --dry-run=client -o yaml | kube apply -f -
+
+  revoke_worlds_root_grant
 
   log "rendering + applying the control-plane bundle"
   local -a manifest_args=(

@@ -1022,6 +1022,34 @@ case "$out" in
   *SETFACL*|*CHMOD*|*WARN*) echo "FAIL: an existing worlds root must get no grant and no warning: $out"; fails=$((fails + 1)) ;;
 esac
 
+# data-durability-18: an older release's traverse grant on the worlds root is taken back on
+# every run -- the ACL entry from any root, the other-bits only from k3s's own storage root.
+rvblock="$(awk '/^revoke_worlds_root_grant\(\) \{/,/^}/' "$BS")"
+[ -n "$rvblock" ] || { echo "FAIL: no revoke_worlds_root_grant found in $BS"; exit 1; }
+run_revoke() { # k3s-root worlds-root acl-dir
+  K3S_STORAGE_ROOT="$1" FELIS_WORLDS_HOST_PATH="$2" ACL_DIR="$3" bash -c '
+    log() { printf "LOG %s\n" "$*"; }
+    warn() { printf "WARN %s\n" "$*"; }
+    getfacl() { case "$*" in *"$ACL_DIR") printf "user::rwx\nuser:1000:--x\ngroup::---\n" ;; *) printf "user::rwx\ngroup::---\n" ;; esac; }
+    setfacl() { printf "SETFACL %s\n" "$*"; }
+    '"$rvblock"'
+    revoke_worlds_root_grant' 2>&1
+}
+k3sroot="$(mktemp -d)"; custom="$(mktemp -d)"
+command chmod 0701 "$k3sroot"; command chmod 0755 "$custom"
+out="$(run_revoke "$k3sroot" "$custom" "$custom")"
+expect "the old ACL grant is revoked from a custom worlds root" "SETFACL -x u:1000 $custom" "$out"
+expect "the old o+x on k3s's storage root is revoked" "LOG revoked the old world-traversable mode on $k3sroot" "$out"
+mode_of() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+if [ "$(mode_of "$k3sroot")" = 700 ]; then echo "PASS k3s's storage root is back to 0700"; else echo "FAIL k3s's storage root is $(mode_of "$k3sroot"), want 700"; fails=$((fails + 1)); fi
+if [ "$(mode_of "$custom")" = 755 ]; then echo "PASS a custom worlds root keeps its own mode"; else echo "FAIL a custom worlds root was changed to $(mode_of "$custom")"; fails=$((fails + 1)); fi
+out="$(run_revoke "$k3sroot" "" "/nowhere")"
+case "$out" in
+  *SETFACL*|*LOG*|*WARN*) echo "FAIL: a root with no old grant must be left alone: $out"; fails=$((fails + 1)) ;;
+  *) echo "PASS a root with no old grant is left alone" ;;
+esac
+command rm -rf "$k3sroot" "$custom"
+
 # --- the registry mirror writer -----------------------------------------------------------
 # k3s only consults registries.yaml at agent start, so a CONTENT change must restart k3s and
 # an identical file (every re-run) must restart nothing. The k3s restart is the expensive,
