@@ -10,6 +10,8 @@ import (
 	"os"
 	"path"
 	"time"
+
+	"felis.lolicon.best/internal/naming"
 )
 
 // The three operations the editor supports. The set is deliberately closed and
@@ -343,7 +345,20 @@ func write(r *os.Root, path string, content []byte) Result {
 	if err := f.Close(); err != nil {
 		return failure(err, path)
 	}
+	// The Job runs as root, so a file it just created is root's. The server runs as
+	// the game uid and could read it (0644) but never rewrite it — a config the
+	// panel authored that Paper then fails to save. Best effort: the content has
+	// landed and reporting failure would lie, and the server's prepare-data
+	// initContainer re-owns anything left behind on its next start anyway.
+	_ = ownWritten(r, path)
 	return Result{}
+}
+
+// ownWritten hands a written file to the game uid. os.Root.Chown follows a symlink
+// only within the root, so this can never re-own a file outside the mount. A var so
+// tests, which cannot chown, can observe the call.
+var ownWritten = func(r *os.Root, name string) error {
+	return r.Chown(name, int(naming.GameUID), int(naming.GameGID))
 }
 
 // failure maps a filesystem error onto a caller-facing Result code. Anything that

@@ -126,9 +126,11 @@ func RestoreJob(p JobParams) (*batchv1.Job, error) {
 			AllowPrivilegeEscalation: boolPtr(false),
 			ReadOnlyRootFilesystem:   boolPtr(true),
 			// Root + DAC_OVERRIDE (see restore.Config.RunAsUser): the world is
-			// owned by the game image's UID and Paper's files are mode 0600, so
-			// the restore must bypass file modes to overwrite what the server
-			// wrote — otherwise level.dat is un-restorable.
+			// owned by the game uid and Paper's files are mode 0600, so the
+			// restore must bypass file modes to overwrite what the server wrote —
+			// otherwise level.dat is un-restorable. What it extracts lands
+			// root-owned; the server's prepare-data initContainer hands it to the
+			// game uid before the server next starts.
 			Capabilities: &corev1.Capabilities{
 				Drop: []corev1.Capability{"ALL"},
 				Add:  []corev1.Capability{"DAC_OVERRIDE"},
@@ -226,8 +228,8 @@ func resourceLimits(cpu, mem string) (corev1.ResourceList, error) {
 func boolPtr(b bool) *bool { return &b }
 
 // restorePodSecurityContext pins the Pod identity. Root by default — the world
-// volume is owned by the game image's UID and Paper writes mode-0600 files, so a
-// fixed non-root executor could neither read nor replace them. FSGroup is only
+// volume is owned by the game uid and Paper writes mode-0600 files, so a different
+// non-root executor could neither read nor replace them. FSGroup is only
 // rendered when configured: a root executor must not chgrp the world volume.
 func restorePodSecurityContext(p JobParams) *corev1.PodSecurityContext {
 	sc := &corev1.PodSecurityContext{

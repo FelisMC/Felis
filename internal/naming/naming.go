@@ -145,6 +145,18 @@ func ValidateSystemServerName(name string) error {
 // mounts it), so it lives here rather than being duplicated per subsystem.
 const worldVolumeName = "world"
 
+// GameUID / GameGID are the identity every game server process runs as, and so the
+// owner every file on a world volume must carry. The operator pins them in the
+// server pod's securityContext (whatever USER the image declares), its prepare-data
+// initContainer chowns a world that an older root-run release or a root restore
+// left behind, and the file editor hands a file it creates to them. 1000 is the
+// uid the eclipse-temurin (Ubuntu) images the Felis game images build on already
+// reserve for their unprivileged user.
+const (
+	GameUID int64 = 1000
+	GameGID int64 = 1000
+)
+
 // WorldPVCName returns the world PersistentVolumeClaim name for a server,
 // matching the operator's StatefulSet volumeClaimTemplate naming
 // ("world-<name>-0" for the sole replica).

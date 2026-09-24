@@ -69,8 +69,8 @@ func TestFilesJobIsolation(t *testing.T) {
 		if sc == nil || sc.RunAsNonRoot == nil || *sc.RunAsNonRoot {
 			t.Fatal("RunAsNonRoot must be false: root is the owner-matching default for game-image worlds")
 		}
-		// Root because the world volume belongs to the game image's UID and Paper
-		// saves mode-0600 files a fixed non-root editor cannot open.
+		// Root because the world volume belongs to the game uid and Paper saves
+		// mode-0600 files a different non-root editor uid cannot open.
 		if sc.RunAsUser == nil || *sc.RunAsUser != 0 ||
 			sc.RunAsGroup == nil || *sc.RunAsGroup != 0 {
 			t.Fatalf("uid/gid must be 0:0 by default, got %+v", sc)
@@ -102,6 +102,19 @@ func TestFilesJobIsolation(t *testing.T) {
 		}
 		if len(sc.Capabilities.Add) != 1 || sc.Capabilities.Add[0] != "DAC_OVERRIDE" {
 			t.Fatalf("capabilities must add exactly DAC_OVERRIDE, got %+v", sc.Capabilities.Add)
+		}
+	})
+
+	// Only a write creates a file it must hand back to the game uid, so only a
+	// write keeps CHOWN; a read stays at DAC_OVERRIDE alone (asserted above).
+	t.Run("a write also keeps CHOWN", func(t *testing.T) {
+		w, err := FilesJob(testParams(OpWrite))
+		if err != nil {
+			t.Fatalf("FilesJob: %v", err)
+		}
+		add := w.Spec.Template.Spec.Containers[0].SecurityContext.Capabilities.Add
+		if len(add) != 2 || add[0] != "CHOWN" || add[1] != "DAC_OVERRIDE" {
+			t.Fatalf("write capabilities = %v, want [CHOWN DAC_OVERRIDE]", add)
 		}
 	})
 

@@ -978,11 +978,12 @@ func hardenedPodSecurityContext() *corev1.PodSecurityContext {
 // reaperPodSecurityContext is the reaper's Pod identity: ROOT, deliberately NOT
 // the control-plane's non-root uid. Its HostPath mount IS the live storage root,
 // and the world directories beneath it (and the files inside them) are written
-// by the game image's own UID — root for every Paper image we ship — with
-// Paper's mode-0600 saves (level.dat) included. Only an owner-matching uid (or
-// DAC override, granted on the container below) can archive and delete those
-// worlds; the uid-1000 convention failed them with `permission denied`
-// (verified live). Same rationale as the operator's forwarding-init container.
+// by the game uid (naming.GameUID) — or by root, in a world an older release
+// wrote — with Paper's mode-0600 saves (level.dat) included, while the storage
+// root that holds each world directory belongs to root. Only root with DAC
+// override (granted on the container below) can both archive every world and
+// remove its directory from that root; the uid-1000 control-plane convention
+// failed them with `permission denied` (verified live).
 func reaperPodSecurityContext() *corev1.PodSecurityContext {
 	return &corev1.PodSecurityContext{
 		RunAsNonRoot:   boolPtr(false),

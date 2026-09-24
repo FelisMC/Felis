@@ -78,6 +78,13 @@ COPY deploy/limbo/entrypoint.sh /usr/local/bin/felis-entrypoint.sh
 # The operator mounts the world PVC at /data. Runtime state lives there; /limbo
 # remains the immutable image seed copied into the volume by the entrypoint.
 WORKDIR /data
+# Run as the game uid (naming.GameUID in the Go tree). The operator pins the same uid in
+# the pod securityContext whatever USER an image declares; declaring it here as well
+# keeps a plain `docker run` of this image off root, and chowning the empty /data seed
+# lets that run write its world. The jar seed above stays root-owned and read-only to
+# the server.
+RUN chown 1000:1000 /data
+USER 1000:1000
 
 ENV FELIS_HEALTH_PORT=8080
 # FELIS_GAME_PORT is the port the entrypoint pins Limbo to; it MUST equal the operator's

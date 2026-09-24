@@ -228,6 +228,10 @@ func buildStatefulSet(server *v1alpha1.MinecraftServer, replicas int32, felisIma
 		// StartupSpec.HealthHTTPPort) that reports true readiness — used below when
 		// set.
 		ReadinessProbe: readinessProbe(server),
+		// The server runs untrusted plugins, so it keeps no capability and can never
+		// regain one. The root filesystem stays writable: an arbitrary Paper image
+		// may unpack its runtime or write temp files outside /data.
+		SecurityContext: hardenedContainerSecurityContext(false),
 	}
 	if hp := server.Spec.Startup.HealthHTTPPort; hp > 0 {
 		container.Ports = append(container.Ports, corev1.ContainerPort{
@@ -252,13 +256,18 @@ func buildStatefulSet(server *v1alpha1.MinecraftServer, replicas int32, felisIma
 		}
 	}
 
-	// An arbitrary user Paper image does not consume FELIS_FORWARDING_SECRET, so the
-	// operator writes the forwarding config into the world volume for it via an
-	// initContainer. System servers (login/lobby) are Felis-built and handle it in
-	// their own entrypoints, and without a felis image name there is nothing to run.
+	// Every server first hands its world volume to the game uid (prepareDataInitContainer),
+	// since the pod runs as that uid and a world an older root-run release wrote would
+	// otherwise be read-only to it. An arbitrary user Paper image then gets the forwarding
+	// config written for it (it does not consume FELIS_FORWARDING_SECRET itself); system
+	// servers (login/lobby) are Felis-built and handle forwarding in their own
+	// entrypoints. Without a felis image name there is nothing to run either step with.
 	var initContainers []corev1.Container
-	if felisImage != "" && server.Labels[v1alpha1.LabelSystemRole] == "" {
-		initContainers = append(initContainers, forwardingInitContainer(felisImage))
+	if felisImage != "" {
+		initContainers = append(initContainers, prepareDataInitContainer(felisImage))
+		if server.Labels[v1alpha1.LabelSystemRole] == "" {
+			initContainers = append(initContainers, forwardingInitContainer(felisImage))
+		}
 	}
 
 	grace := graceSeconds(server)
@@ -298,6 +307,7 @@ func buildStatefulSet(server *v1alpha1.MinecraftServer, replicas int32, felisIma
 					// default to no SA-token mount). The pod keeps the default SA but
 					// with automounting explicitly disabled.
 					AutomountServiceAccountToken: boolPtr(false),
+					SecurityContext:              gamePodSecurityContext(),
 				},
 			},
 			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{pvc},
@@ -395,11 +405,10 @@ func forwardingSecretEnvVar() corev1.EnvVar {
 // felis image's `init-forwarding` subcommand, which merges the proxies.velocity block
 // into config/paper-global.yml and forces online-mode=false in server.properties.
 //
-// It runs as root: the world volume's ownership is set by the storage provisioner and
-// the main container runs as the user image's own UID, so root is the only UID that
-// can reliably write these files and leave them rewritable by that main container.
-// This is a bounded privilege — the init exits before the server container starts, and
-// the server container keeps whatever (non-root) UID its image declares.
+// It runs as the game uid like the server container (the pod securityContext), after
+// prepareDataInitContainer has handed the volume to that uid, so it needs no privilege
+// at all: no capability, a read-only root filesystem, and the files it writes are
+// owned by the very uid that rewrites them on boot.
 //
 // Only user servers get it: the Felis-built system images (login limbo, lobby) already
 // consume the secret in their own entrypoints, and the login limbo is not Paper at all.
@@ -412,9 +421,89 @@ func forwardingInitContainer(felisImage string) corev1.Container {
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: dataVolumeName, MountPath: dataMountPath},
 		},
+		Resources:       initContainerResources(),
+		SecurityContext: hardenedContainerSecurityContext(true),
+	}
+}
+
+// prepareDataInitContainer runs `felis init-volume`, which chowns every world-volume
+// entry not already owned by naming.GameUID:GameGID. It is the one container in the
+// pod that runs as root, and it holds only what a chown walk needs: CHOWN to change
+// an owner and DAC_OVERRIDE to descend into a directory some other uid left at 0700.
+// Both are inside the PodSecurity baseline profile; everything else is dropped, the
+// root filesystem is read-only, and it exits before the server container starts.
+//
+// fsGroup (gamePodSecurityContext) alone would not do: kubelet skips it for hostPath
+// volumes, which is what a k3s local-path PV is underneath, and it only fixes the
+// group besides.
+func prepareDataInitContainer(felisImage string) corev1.Container {
+	return corev1.Container{
+		Name:    "prepare-data",
+		Image:   felisImage,
+		Command: []string{felisBinaryPath, "init-volume", "--data", dataMountPath},
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: dataVolumeName, MountPath: dataMountPath},
+		},
+		Resources: initContainerResources(),
 		SecurityContext: &corev1.SecurityContext{
-			RunAsUser:    int64Ptr(0),
-			RunAsNonRoot: boolPtr(false),
+			RunAsUser:                int64Ptr(0),
+			RunAsGroup:               int64Ptr(0),
+			RunAsNonRoot:             boolPtr(false),
+			Privileged:               boolPtr(false),
+			AllowPrivilegeEscalation: boolPtr(false),
+			ReadOnlyRootFilesystem:   boolPtr(true),
+			Capabilities: &corev1.Capabilities{
+				Drop: []corev1.Capability{"ALL"},
+				Add:  []corev1.Capability{"CHOWN", "DAC_OVERRIDE"},
+			},
+		},
+	}
+}
+
+// gamePodSecurityContext pins every container in a server pod to the game uid,
+// whatever USER its image declares, and to the runtime's default seccomp filter.
+// fsGroup makes a volume type that supports ownership management group-writable
+// for that uid; OnRootMismatch keeps kubelet from re-walking a large world on every
+// start once the volume root already carries the group.
+func gamePodSecurityContext() *corev1.PodSecurityContext {
+	onRootMismatch := corev1.FSGroupChangeOnRootMismatch
+	return &corev1.PodSecurityContext{
+		RunAsNonRoot:        boolPtr(true),
+		RunAsUser:           int64Ptr(naming.GameUID),
+		RunAsGroup:          int64Ptr(naming.GameGID),
+		FSGroup:             int64Ptr(naming.GameGID),
+		FSGroupChangePolicy: &onRootMismatch,
+		SeccompProfile:      &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+	}
+}
+
+// hardenedContainerSecurityContext drops every capability and forbids gaining one
+// back through a setuid binary. readOnlyRoot is set for the felis-image containers,
+// which write nothing outside the world volume.
+func hardenedContainerSecurityContext(readOnlyRoot bool) *corev1.SecurityContext {
+	sc := &corev1.SecurityContext{
+		Privileged:               boolPtr(false),
+		AllowPrivilegeEscalation: boolPtr(false),
+		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+	}
+	if readOnlyRoot {
+		sc.ReadOnlyRootFilesystem = boolPtr(true)
+	}
+	return sc
+}
+
+// initContainerResources bounds the two felis-image initContainers. Both are short
+// file walks; the memory ceiling stops a pathological volume from taking the node's
+// memory with it, and no CPU limit keeps a large world's chown from being throttled
+// into the pod's start-up time.
+func initContainerResources() corev1.ResourceRequirements {
+	return corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{
+			corev1.ResourceCPU:    resource.MustParse("10m"),
+			corev1.ResourceMemory: resource.MustParse("32Mi"),
+		},
+		Limits: corev1.ResourceList{
+			corev1.ResourceMemory: resource.MustParse("128Mi"),
 		},
 	}
 }

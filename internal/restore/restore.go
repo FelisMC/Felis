@@ -87,11 +87,11 @@ type Config struct {
 	CPULimit string
 	MemLimit string
 	// RunAsUser / RunAsGroup / FSGroup are the Pod's runtime identity. They default
-	// to ROOT (0:0) for the same reason the operator's forwarding-init runs as
-	// root: the world volume is written by the game image's own UID (root for the
-	// images we ship), and Paper saves mode-0600 files a non-root writer/reader
-	// cannot replace (a uid-1000 restore cannot overwrite level.dat). DAC_OVERRIDE
-	// on the container covers images whose UID is neither root nor ours; FSGroup
+	// to ROOT (0:0): the world volume is written by the game uid (naming.GameUID),
+	// or by root in a world an older release wrote, and Paper saves mode-0600
+	// files only their owner can replace. DAC_OVERRIDE on the container overwrites
+	// them whichever uid owns them; the extracted files land root-owned and the
+	// server's prepare-data initContainer re-owns them on its next start. FSGroup
 	// is omitted when zero.
 	RunAsUser  int64
 	RunAsGroup int64

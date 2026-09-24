@@ -183,7 +183,7 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 					ServiceAccountName:           p.ServiceAccount,
 					AutomountServiceAccountToken: boolPtr(false),
 					// Root by default (see Config.RunAsUser): the world volume's
-					// owner is the game image's UID, so only an owner-matching or
+					// owner is the game uid, so only an owner-matching or
 					// DAC-overriding uid can read it. FSGroup is omitted when unset
 					// so a root pod never triggers a volume chgrp.
 					SecurityContext: backupPodSecurityContext(p),
@@ -248,9 +248,9 @@ func int32Ptr(i int32) *int32 { return &i }
 func int64Ptr(i int64) *int64 { return &i }
 
 // backupPodSecurityContext pins the Pod identity. RunAsNonRoot is false because
-// the default identity is root: worlds are owned by the game image's UID (root
-// for the images we ship), and Paper writes mode-0600 files a non-root reader
-// cannot open. FSGroup stays unset unless configured — a root executor must not
+// the default identity is root: worlds are owned by the game uid (or root, for a
+// world an older release wrote), and Paper writes mode-0600 files any other
+// non-root reader cannot open. FSGroup stays unset unless configured — a root executor must not
 // needlessly chgrp the world volume.
 func backupPodSecurityContext(p JobParams) *corev1.PodSecurityContext {
 	sc := &corev1.PodSecurityContext{

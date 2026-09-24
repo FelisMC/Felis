@@ -194,8 +194,18 @@ func TestExecuteHappyPath(t *testing.T) {
 	})
 
 	t.Run("write creates a new file but not parent directories", func(t *testing.T) {
+		var owned []string
+		prev := ownWritten
+		ownWritten = func(_ *os.Root, name string) error {
+			owned = append(owned, name)
+			return os.ErrPermission // a test runner cannot chown; the write must still succeed
+		}
+		defer func() { ownWritten = prev }()
 		if res, err := Execute(root, OpWrite, "ops.json", []byte("[]")); err != nil || res.Code != "" {
 			t.Fatalf("creating a new file should succeed: %v / %+v", err, res)
+		}
+		if len(owned) != 1 || owned[0] != "ops.json" {
+			t.Errorf("written file handed to the game uid = %v, want [ops.json]", owned)
 		}
 		res, err := Execute(root, OpWrite, "nope/deep.txt", []byte("x"))
 		if err != nil {

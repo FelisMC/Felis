@@ -161,7 +161,7 @@ func TestRestoreJobIsBoundedOneShotAndSelfCleaning(t *testing.T) {
 	}
 }
 
-// The Pod runs as root (the world volume belongs to the game image's UID — see
+// The Pod runs as root (the world volume belongs to the game uid — see
 // restore.Config.RunAsUser), and the container stays non-privileged,
 // escalation-proof, read-only root, ALL caps dropped except DAC_OVERRIDE, with
 // resource limits.

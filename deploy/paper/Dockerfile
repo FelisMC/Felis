@@ -5,7 +5,7 @@
 # internal/store/migrations/0019_recommended_paper.sql). It is NOT a system server: it
 # carries no felis-paper /menu plugin, no LuckPerms, and no forwarding-secret gate.
 #
-# It writes NO Velocity forwarding config itself. The operator injects a root
+# It writes NO Velocity forwarding config itself. The operator injects a
 # `felis init-forwarding` initContainer into every USER server (internal/operator/
 # builders.go: buildStatefulSet) that writes config/paper-global.yml + server.properties
 # online-mode=false onto the /data PVC before this container starts. That external step is
@@ -54,6 +54,13 @@ COPY deploy/paper/entrypoint.sh /usr/local/bin/felis-entrypoint.sh
 # on the PVC. /paper stays the immutable image seed: the jar is never copied onto the
 # volume, so the panel file editor (which sees only /data) cannot tamper with it.
 WORKDIR /data
+# Run as the game uid (naming.GameUID in the Go tree). The operator pins the same uid in
+# the pod securityContext whatever USER an image declares; declaring it here as well
+# keeps a plain `docker run` of this image off root, and chowning the empty /data seed
+# lets that run write its world. The jar seed above stays root-owned and read-only to
+# the server.
+RUN chown 1000:1000 /data
+USER 1000:1000
 
 # FELIS_GAME_PORT is the port the entrypoint pins Paper to; it MUST equal the operator's
 # GamePort (internal/operator/builders.go). Default 25565 — override only in lockstep with

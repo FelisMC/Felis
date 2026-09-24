@@ -20,18 +20,14 @@ const forwardingSecretEnv = "FELIS_FORWARDING_SECRET"
 // config/ and server.properties live under it.
 const defaultForwardingDataDir = "/data"
 
-// fwd*Mode make the written config readable AND rewritable by the main server
-// container, whose UID we do not control (an arbitrary user image). The
-// initContainer runs as root (see buildStatefulSet) so it can write into a data
-// volume of unknown ownership; 0666/0777 then let a non-root Paper rewrite the
-// same files on boot.
-//
-// This relies on the initContainer running as root to write into a volume of
-// unknown ownership; that is how the operator schedules it. If that ever changes,
-// give the server pod an fsGroup so the shared volume is group-writable instead.
+// fwd*Mode are the modes the written config lands with. The initContainer runs as
+// the same uid as the server container (naming.GameUID, pinned by the operator in
+// the pod securityContext) after the prepare-data initContainer has handed the
+// whole volume to that uid, so owner read/write is all the server needs to rewrite
+// these files on boot and nothing else on the node gets write access to them.
 const (
-	fwdFileMode os.FileMode = 0o666
-	fwdDirMode  os.FileMode = 0o777
+	fwdFileMode os.FileMode = 0o644
+	fwdDirMode  os.FileMode = 0o755
 )
 
 // cmdInitForwarding is the felis-image initContainer entrypoint that makes an
@@ -96,9 +92,8 @@ func writePaperGlobal(dataDir, secret string) error {
 	if err := os.MkdirAll(dir, fwdDirMode); err != nil {
 		return fmt.Errorf("create %s: %w", dir, err)
 	}
-	// MkdirAll honours the process umask (root's is typically 022 → 0755); chmod
-	// does not, and a non-root main container must be able to place/replace the
-	// file in this directory on boot.
+	// MkdirAll honours the process umask; chmod does not, so a directory an older
+	// release left at 0777 is brought back to fwdDirMode here.
 	if err := os.Chmod(dir, fwdDirMode); err != nil {
 		return fmt.Errorf("chmod %s: %w", dir, err)
 	}
@@ -188,8 +183,8 @@ func upsertProperty(content []byte, key, value string) []byte {
 }
 
 // writeFileMode writes data then forces the mode, since WriteFile honours the
-// umask (root's is typically 022 → 0644) but a non-root main container must be
-// able to rewrite these files on boot.
+// umask and leaves an existing file's mode alone: a file an older release wrote
+// world-writable (0666) is tightened back to fwdFileMode on the next boot.
 func writeFileMode(path string, data []byte) error {
 	if err := os.WriteFile(path, data, fwdFileMode); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)

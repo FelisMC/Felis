@@ -3,7 +3,7 @@
 #
 # A plain Paper backend for a user's OWN world — NOT a system server. Unlike deploy/limbo
 # and deploy/lobby it writes no Velocity forwarding config and has no secret gate: the
-# operator injects a root `felis init-forwarding` initContainer that writes
+# operator injects a `felis init-forwarding` initContainer that writes
 # config/paper-global.yml + server.properties online-mode=false onto /data BEFORE this
 # container starts, so forwarding is configured externally and this stays a drop-in Paper
 # image. With no initContainer (no FELIS_IMAGE) Paper just boots standalone-online —

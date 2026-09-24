@@ -56,9 +56,9 @@ func TestReadinessProbeHTTPCustomPath(t *testing.T) {
 	}
 }
 
-// A user server (no system-role label) gets the forwarding-config initContainer,
-// running the felis image as root and mounting the world volume. A system server
-// and a build with no felis image name get none.
+// A user server (no system-role label) gets the forwarding-config initContainer after
+// prepare-data, running the felis image and mounting the world volume. A system
+// server gets only prepare-data, and a build with no felis image name gets neither.
 func TestBuildStatefulSetForwardingInitContainer(t *testing.T) {
 	user := &v1alpha1.MinecraftServer{}
 	user.Spec.Storage.Size = "1Gi"
@@ -68,15 +68,18 @@ func TestBuildStatefulSetForwardingInitContainer(t *testing.T) {
 		t.Fatalf("buildStatefulSet: %v", err)
 	}
 	inits := sts.Spec.Template.Spec.InitContainers
-	if len(inits) != 1 {
-		t.Fatalf("want 1 initContainer, got %d", len(inits))
+	if len(inits) != 2 || inits[0].Name != "prepare-data" || inits[1].Name != "init-forwarding" {
+		t.Fatalf("want [prepare-data init-forwarding], got %+v", inits)
 	}
-	ic := inits[0]
+	ic := inits[1]
 	if ic.Image != "felis:demo" {
 		t.Errorf("init image = %q, want felis:demo", ic.Image)
 	}
-	if ic.SecurityContext == nil || ic.SecurityContext.RunAsUser == nil || *ic.SecurityContext.RunAsUser != 0 {
-		t.Errorf("init must run as root, got %+v", ic.SecurityContext)
+	// It shares the server's uid (pod securityContext) and holds no privilege.
+	if sc := ic.SecurityContext; sc == nil || sc.RunAsUser != nil ||
+		sc.Capabilities == nil || len(sc.Capabilities.Add) != 0 || !dropsAll(sc) ||
+		sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem {
+		t.Errorf("init-forwarding must run unprivileged as the pod uid, got %+v", sc)
 	}
 	mounted := false
 	for _, vm := range ic.VolumeMounts {
@@ -91,7 +94,7 @@ func TestBuildStatefulSetForwardingInitContainer(t *testing.T) {
 	// cannot do without the secret: a missing Env here makes `init-forwarding` no-op and
 	// the server Ready-but-unjoinable — the exact silent failure the feature removes.
 	// Same secretKeyRef rule as the main container (optional so a non-modern proxy still
-	// schedules), so assert it, not just the image/root/mount above.
+	// schedules), so assert it, not just the image/identity/mount above.
 	fwd := findEnv(ic.Env, envForwardingSecret)
 	if fwd == nil {
 		t.Fatalf("init must carry %s or it writes no forwarding config", envForwardingSecret)
@@ -109,13 +112,63 @@ func TestBuildStatefulSetForwardingInitContainer(t *testing.T) {
 		t.Error("no felis image must yield no initContainer")
 	}
 
-	// System server handles forwarding in its own entrypoint.
+	// System server handles forwarding in its own entrypoint, but its world still
+	// needs handing to the game uid.
 	sys := &v1alpha1.MinecraftServer{}
 	sys.Spec.Storage.Size = "1Gi"
 	sys.Labels = map[string]string{v1alpha1.LabelSystemRole: "lobby"}
 	sysSts, _ := buildStatefulSet(sys, 1, "felis:demo")
-	if len(sysSts.Spec.Template.Spec.InitContainers) != 0 {
-		t.Error("system server must get no forwarding initContainer")
+	if got := sysSts.Spec.Template.Spec.InitContainers; len(got) != 1 || got[0].Name != "prepare-data" {
+		t.Errorf("system server must get only prepare-data, got %+v", got)
+	}
+}
+
+func dropsAll(sc *corev1.SecurityContext) bool {
+	return sc.Capabilities != nil && len(sc.Capabilities.Drop) == 1 && sc.Capabilities.Drop[0] == "ALL"
+}
+
+// The server pod runs as the game uid under the runtime's seccomp filter, and the
+// game container holds no capability. Only prepare-data runs as root, with exactly
+// the two capabilities a chown walk needs — both inside the PodSecurity baseline.
+func TestBuildStatefulSetRunsGameAsNonRoot(t *testing.T) {
+	s := &v1alpha1.MinecraftServer{}
+	s.Spec.Storage.Size = "1Gi"
+	sts, err := buildStatefulSet(s, 1, "felis:demo")
+	if err != nil {
+		t.Fatalf("buildStatefulSet: %v", err)
+	}
+	pod := sts.Spec.Template.Spec.SecurityContext
+	if pod == nil || pod.RunAsNonRoot == nil || !*pod.RunAsNonRoot ||
+		pod.RunAsUser == nil || *pod.RunAsUser != naming.GameUID ||
+		pod.RunAsGroup == nil || *pod.RunAsGroup != naming.GameGID ||
+		pod.FSGroup == nil || *pod.FSGroup != naming.GameGID ||
+		pod.SeccompProfile == nil || pod.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Fatalf("pod securityContext = %+v, want non-root %d:%d with fsGroup and RuntimeDefault seccomp",
+			pod, naming.GameUID, naming.GameGID)
+	}
+	game := sts.Spec.Template.Spec.Containers[0].SecurityContext
+	if game == nil || game.AllowPrivilegeEscalation == nil || *game.AllowPrivilegeEscalation ||
+		!dropsAll(game) || len(game.Capabilities.Add) != 0 || game.RunAsUser != nil {
+		t.Errorf("game container securityContext = %+v, want no escalation and drop ALL", game)
+	}
+
+	prep := sts.Spec.Template.Spec.InitContainers[0]
+	sc := prep.SecurityContext
+	if sc == nil || sc.RunAsUser == nil || *sc.RunAsUser != 0 || sc.RunAsNonRoot == nil || *sc.RunAsNonRoot {
+		t.Fatalf("prepare-data must run as root, got %+v", sc)
+	}
+	if !dropsAll(sc) || len(sc.Capabilities.Add) != 2 ||
+		sc.Capabilities.Add[0] != "CHOWN" || sc.Capabilities.Add[1] != "DAC_OVERRIDE" {
+		t.Errorf("prepare-data capabilities = %+v, want drop ALL + CHOWN, DAC_OVERRIDE", sc.Capabilities)
+	}
+	if sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+		t.Error("prepare-data must forbid privilege escalation")
+	}
+	if len(prep.Command) < 2 || prep.Command[1] != "init-volume" {
+		t.Errorf("prepare-data command = %v, want felis init-volume", prep.Command)
+	}
+	if prep.Resources.Limits.Memory().IsZero() {
+		t.Error("prepare-data must carry a memory limit")
 	}
 }
 

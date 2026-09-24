@@ -807,9 +807,9 @@ func TestReaperCronJob_Shape(t *testing.T) {
 	}
 
 	// The reaper is the one world-touching workload, so its identity is ROOT, not
-	// the control-plane's non-root uid: the worlds it archives and deletes are
-	// written by the game image's own UID (root for the images we ship), including
-	// Paper's mode-0600 files. DAC_OVERRIDE covers images with another UID.
+	// the control-plane's non-root uid: the worlds it archives and deletes sit in a
+	// root-owned storage root and hold Paper's mode-0600 files, whichever uid (the
+	// game uid, or root for a world an older release wrote) owns them.
 	if ps.SecurityContext == nil || ps.SecurityContext.RunAsNonRoot == nil || *ps.SecurityContext.RunAsNonRoot {
 		t.Error("reaper pod must NOT require non-root: root is the owner-matching identity for game-image worlds")
 	}

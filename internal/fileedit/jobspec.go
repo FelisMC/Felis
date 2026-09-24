@@ -169,12 +169,9 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 			Privileged:               boolPtr(false),
 			AllowPrivilegeEscalation: boolPtr(false),
 			ReadOnlyRootFilesystem:   boolPtr(true),
-			// Root + DAC_OVERRIDE (see Config.RunAsUser): the file the editor is
-			// asked to touch may be a mode-0600 file the game wrote as its own
-			// (image) UID — level.dat — which a fixed non-root uid cannot open.
 			Capabilities: &corev1.Capabilities{
 				Drop: []corev1.Capability{"ALL"},
-				Add:  []corev1.Capability{"DAC_OVERRIDE"},
+				Add:  filesCapabilities(p.Op),
 			},
 		},
 	}
@@ -253,9 +250,21 @@ func boolPtr(b bool) *bool    { return &b }
 func int32Ptr(i int32) *int32 { return &i }
 func int64Ptr(i int64) *int64 { return &i }
 
-// filesPodSecurityContext pins the Pod identity. Root by default: the world
-// volume belongs to the game image's UID (root for the images we ship) and its
-// mode-0600 files (level.dat) are otherwise unreadable/unwritable. FSGroup is
+// filesCapabilities is what the root executor keeps after dropping ALL (see
+// Config.RunAsUser). DAC_OVERRIDE opens a mode-0600 file (level.dat) the game wrote
+// as its own uid, which a fixed non-root uid could not. A write also keeps CHOWN so
+// the file it creates can be handed to naming.GameUID (exec.go ownWritten); a list
+// or read changes nothing and gets no more than it needs.
+func filesCapabilities(op string) []corev1.Capability {
+	if op == OpWrite {
+		return []corev1.Capability{"CHOWN", "DAC_OVERRIDE"}
+	}
+	return []corev1.Capability{"DAC_OVERRIDE"}
+}
+
+// filesPodSecurityContext pins the Pod identity. Root by default: the world volume
+// belongs to the game uid (naming.GameUID), and root with DAC_OVERRIDE reaches its
+// mode-0600 files as well as any a previous root-run release left behind. FSGroup is
 // only rendered when configured so a root executor never chgrps the volume.
 func filesPodSecurityContext(p JobParams) *corev1.PodSecurityContext {
 	sc := &corev1.PodSecurityContext{

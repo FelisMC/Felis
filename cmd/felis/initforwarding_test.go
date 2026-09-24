@@ -164,8 +164,9 @@ func TestUpsertPropertyAppends(t *testing.T) {
 	}
 }
 
-// The written files must be group/world writable so a non-root main container can
-// rewrite them. chmod semantics are POSIX-only, so this asserts on non-Windows.
+// The written files land at fwdFileMode: owner-writable for the game uid the init
+// shares with the server container, and no longer world-writable. chmod semantics
+// are POSIX-only, so this asserts on non-Windows.
 func TestWriteForwardingFileModes(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX file modes not represented on Windows")
