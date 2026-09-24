@@ -2,6 +2,7 @@ package felis
 
 import (
 	"io/fs"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -202,6 +203,113 @@ func requireEmbedded(t *testing.T, path string) {
 	if _, err := fs.Stat(gameStackAssets, path); err != nil {
 		t.Errorf("%s is a game-stack build input but is not in gameStackAssets; an "+
 			"install with no source checkout dies on it: %v", path, err)
+	}
+}
+
+// The lock file is the install's only source of upstream builds, and bootstrap.sh reads it
+// with a strict KEY=value parser that dies on anything unexpected, so a malformed lock is a
+// failed install on every host. Check the shipped copy the same way here.
+func TestGameStackLockIsComplete(t *testing.T) {
+	lock := map[string]string{}
+	for line := range strings.SplitSeq(readGameStackFile(t, "deploy/game-stack.lock"), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			t.Fatalf("not a KEY=value line: %q", line)
+		}
+		lock[k] = v
+	}
+	m := regexp.MustCompile(`GAME_STACK_LOCK_KEYS="([^"]*)"`).FindStringSubmatch(BootstrapScript())
+	if m == nil {
+		t.Fatal("bootstrap.sh no longer declares GAME_STACK_LOCK_KEYS")
+	}
+	keys := strings.Fields(m[1])
+	sha := regexp.MustCompile(`^[0-9a-f]{64}$`)
+	for _, k := range keys {
+		v, ok := lock[k]
+		if !ok || v == "" {
+			t.Errorf("game-stack.lock does not set %s", k)
+			continue
+		}
+		if strings.HasSuffix(k, "_SHA256") && !sha.MatchString(v) {
+			t.Errorf("%s=%q is not a lowercase sha256", k, v)
+		}
+		// A moving URL pins nothing: the digest check would start failing the day
+		// upstream publishes the next build.
+		if strings.HasSuffix(k, "_URL") && strings.Contains(v, "lastSuccessfulBuild") {
+			t.Errorf("%s names a moving build: %s", k, v)
+		}
+	}
+	for k := range lock {
+		if !strings.Contains(" "+m[1]+" ", " "+k+" ") {
+			t.Errorf("game-stack.lock sets %s, which bootstrap.sh refuses as an unknown key", k)
+		}
+	}
+	// Fill's URLs are content-addressed; a lock whose digest disagrees with its own URL
+	// was edited by hand and half-way.
+	for _, name := range []string{"PAPER", "VELOCITY"} {
+		if !strings.Contains(lock[name+"_JAR_URL"], "/objects/"+lock[name+"_JAR_SHA256"]+"/") {
+			t.Errorf("%s_JAR_SHA256 is not the digest in %s_JAR_URL", name, name)
+		}
+	}
+	if !strings.Contains(lock["LIMBO_JAR_URL"], "-"+lock["MC_VERSION"]+".jar") {
+		t.Errorf("LIMBO_JAR_URL %s is not a Minecraft %s build", lock["LIMBO_JAR_URL"], lock["MC_VERSION"])
+	}
+	if !strings.Contains(lock["PAPER_JAR_URL"], "/paper-"+lock["MC_VERSION"]+"-") {
+		t.Errorf("PAPER_JAR_URL %s is not a Minecraft %s build; the lobby would not speak the login gate's protocol", lock["PAPER_JAR_URL"], lock["MC_VERSION"])
+	}
+}
+
+// Each downloaded jar's digest is a build-arg bootstrap.sh passes and the Dockerfile must
+// both require and spend on the file it downloaded; docker only warns about an unknown
+// --build-arg, so a renamed arg would ship an unchecked jar.
+func TestGameStackDigestsReachTheImageBuilds(t *testing.T) {
+	script := BootstrapScript()
+	for _, c := range []struct{ dockerfile, arg, path string }{
+		{"deploy/limbo/Dockerfile", "LIMBO_JAR_SHA256", "/limbo/Limbo.jar"},
+		{"deploy/limbo/Dockerfile", "LIMBO_SCHEM_SHA256", "/limbo/spawn.schem"},
+		{"deploy/lobby/Dockerfile", "LUCKPERMS_JAR_SHA256", "/paper/plugins/LuckPerms.jar"},
+	} {
+		if !strings.Contains(script, "--build-arg "+c.arg+"=\"$"+c.arg+"\"") {
+			t.Errorf("bootstrap.sh never passes --build-arg %s", c.arg)
+		}
+		dockerfile := readGameStackFile(t, c.dockerfile)
+		if !strings.Contains(dockerfile, "ARG "+c.arg) {
+			t.Errorf("%s declares no ARG %s", c.dockerfile, c.arg)
+		}
+		if !strings.Contains(dockerfile, `echo "$`+c.arg+`  `+c.path+`" | sha256sum -c`) {
+			t.Errorf("%s never verifies %s against %s", c.dockerfile, c.path, c.arg)
+		}
+	}
+}
+
+// A base image named by tag alone is whatever the tag points at on build day.
+func TestDockerfileBaseImagesArePinnedByDigest(t *testing.T) {
+	root, err := os.ReadFile("Dockerfile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{"Dockerfile": string(root)}
+	for _, name := range []string{"deploy/limbo/Dockerfile", "deploy/lobby/Dockerfile", "deploy/paper/Dockerfile"} {
+		files[name] = readGameStackFile(t, name)
+	}
+	pinned := regexp.MustCompile(`^FROM (--platform=\S+ )?\S+:\S+@sha256:[0-9a-f]{64}( AS \S+)?$`)
+	for name, body := range files {
+		n := 0
+		for line := range strings.SplitSeq(body, "\n") {
+			if !strings.HasPrefix(line, "FROM ") {
+				continue
+			}
+			n++
+			if !pinned.MatchString(line) {
+				t.Errorf("%s: %q is not pinned by digest", name, line)
+			}
+		}
+		if n == 0 {
+			t.Errorf("%s has no FROM line", name)
+		}
 	}
 }
 

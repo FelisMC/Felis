@@ -1,0 +1,23 @@
+# The upstream builds this release installs. deploy/bootstrap.sh reads this file (the
+# default FELIS_GAME_STACK=pinned), downloads exactly these artifacts and refuses any whose
+# sha256 differs, so every host installing one release gets the same login gate, lobby,
+# plain-Paper image and proxy, and a rerun rebuilds nothing that did not change.
+#
+# MC_VERSION is the protocol the whole stack speaks: Limbo speaks exactly one, and Paper
+# follows it so a client that passes the login gate can also reach the lobby.
+#
+# Refresh with deploy/update-game-stack-lock.sh, which resolves upstream's newest builds and
+# hashes them. Plain KEY=value lines only; bootstrap reads it without evaluating it.
+MC_VERSION=26.3
+LIMBO_VERSION=2026.0.3-ALPHA
+LIMBO_JAR_URL=https://ci.loohpjames.com/job/Limbo/76/artifact/target/Limbo-2026.0.3-ALPHA-26.3.jar
+LIMBO_JAR_SHA256=a2de91fcaa2255aed8a111b8786f370213423c7798eee778c00d016d83aa65d2
+LIMBO_SCHEM_URL=https://ci.loohpjames.com/job/Limbo/76/artifact/spawn.schem
+LIMBO_SCHEM_SHA256=70c85dae2db157971ef513e318820c5a5e10a96b813b70e21f8af2b632cbcbc7
+PAPER_JAR_URL=https://fill-data.papermc.io/v1/objects/49399919246cbf443efc8507447dc948eb7477c41be560b0e87e2a455aff824a/paper-26.3-40.jar
+PAPER_JAR_SHA256=49399919246cbf443efc8507447dc948eb7477c41be560b0e87e2a455aff824a
+LUCKPERMS_JAR_URL=https://download.luckperms.net/1672/bukkit/loader/LuckPerms-Bukkit-5.5.85.jar
+LUCKPERMS_JAR_SHA256=dc637ce18f48d3b75a7ffd1784b85be16a627359090dfe5adf15dab6d145dc7d
+VELOCITY_VERSION=3.5.1
+VELOCITY_JAR_URL=https://fill-data.papermc.io/v1/objects/b4e3164df5377346854dc6cb9e6a78022b1946ff69e89676313f5f6f1c6f0fb3/velocity-3.5.1-615.jar
+VELOCITY_JAR_SHA256=b4e3164df5377346854dc6cb9e6a78022b1946ff69e89676313f5f6f1c6f0fb3

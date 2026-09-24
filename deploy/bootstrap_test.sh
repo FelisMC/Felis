@@ -120,32 +120,27 @@ out="$(bash -c '
 ')"
 expect "meta_get gives up after three attempts" "GAVE UP" "$out"
 
-# --- the resolved-Velocity digest gate --------------------------------------------------
-# The download must hash to what the content-addressed URL promised, BEFORE
+# --- the Velocity digest gate -----------------------------------------------------------
+# The download must hash to what the lock (or the content-addressed URL) promised, BEFORE
 # atomic_install_file — the same refusal the Via plugins and the fork jar already get.
 
-# The end pattern spells ${VELOCITY_DIR} with dots: escaped braces are literal in gawk
-# and mawk but undefined in POSIX awk, and CI's awk is whatever ubuntu ships.
-vblock="$(awk '/log "resolving the newest Velocity/,/atomic_install_file "\$tmp" "\$.VELOCITY_DIR.\/velocity\.jar"/' "$BS")"
-[ -n "$vblock" ] || { echo "FAIL: no resolved-Velocity install block found in $BS"; exit 1; }
-[ "$(printf '%s\n' "$vblock" | wc -l)" -lt 30 ] \
-  || { echo "FAIL: the extracted block is not the velocity install -- did its last line move?"; exit 1; }
+vblock="$(awk '/^stage_velocity_jar\(\) \{/,/^}/' "$BS")"
+[ -n "$vblock" ] || { echo "FAIL: no stage_velocity_jar found in $BS"; exit 1; }
 
 vdir="$(mktemp -d)"
 trap 'rm -f "$jar"; rm -rf "$vdir"' EXIT
 vwant="$(printf 'stand-in velocity build\n' | sha256sum | cut -d' ' -f1)"
 
-run_velocity_install() { # digest-the-resolver-reports
-  WANT="$1" VELOCITY_DIR="$vdir" FELIS_VELOCITY_VERSION=3.5.1 bash -c '
+run_velocity_install() { # expected-digest
+  WANT="$1" VELOCITY_DIR="$vdir" bash -c '
     die() { printf "DIE: %s\n" "$*"; exit 1; }
     log() { printf "LOG: %s\n" "$*"; }
+    ok() { printf "OK: %s\n" "$*"; }
     remember_temp() { :; }
-    papermc_latest_jar() {
-      printf "%s %s\n" "https://fill-data.papermc.io/v1/objects/${WANT}/velocity-3.5.1-615.jar" "$WANT"
-    }
     curl() { while [ "$#" -gt 1 ] && [ "$1" != "-o" ]; do shift; done; printf "stand-in velocity build\n" > "$2"; }
-    atomic_install_file() { printf "INSTALL: %s\n" "$2"; }
-    '"$vblock"
+    atomic_install_file() { printf "INSTALL: %s\n" "$2"; cp "$1" "$2"; }
+    '"$vblock"'
+    stage_velocity_jar "https://fill-data.papermc.io/v1/objects/${WANT}/velocity-3.5.1-615.jar" "$WANT" 3.5.1'
 }
 
 out="$(run_velocity_install deadbeef)"
@@ -158,6 +153,111 @@ esac
 
 out="$(run_velocity_install "$vwant")"
 expect "the matching download installs" "INSTALL: ${vdir}/velocity.jar" "$out"
+out="$(run_velocity_install "$vwant")"
+case "$out" in
+  *LOG:*|*INSTALL:*) echo "FAIL a rerun of the staged build downloaded it again"; fails=$((fails + 1)) ;;
+  *"Velocity 3.5.1 already staged"*) echo "PASS a rerun of the staged build leaves velocity.jar alone" ;;
+  *) echo "FAIL stage_velocity_jar died on a staged build: $out"; fails=$((fails + 1)) ;;
+esac
+
+ivblock="$(awk '/^install_velocity\(\) \{/,/^}/' "$BS")"
+run_velocity_choice() { # FELIS_GAME_STACK FELIS_VELOCITY_VERSION lock-version
+  FELIS_GAME_STACK="$1" FELIS_VELOCITY_VERSION="$2" VELOCITY_VERSION="$3" VELOCITY_LATEST_MINOR=3.5.1 \
+  VELOCITY_JAR_URL=https://fill-data.papermc.io/v1/objects/aaa/velocity-3.5.1-615.jar VELOCITY_JAR_SHA256=aaa \
+  FELIS_VELOCITY_FORK_JAR= bash -c '
+    set -Eeuo pipefail
+    log() { :; }
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    install_jre() { :; }
+    prepare_velocity_layout() { :; }
+    install_via_plugins() { :; }
+    write_velocity_config() { :; }
+    install_velocity_service() { :; }
+    configure_velocity_firewall() { :; }
+    papermc_latest_jar() { printf "https://fill-data.papermc.io/v1/objects/bbb/velocity-%s-700.jar bbb\n" "$2"; }
+    stage_velocity_jar() { printf "STAGE %s %s %s\n" "$@"; }
+    '"$ivblock"'
+    install_velocity'
+}
+expect "a pinned install stages the lock's Velocity build" \
+  "STAGE https://fill-data.papermc.io/v1/objects/aaa/velocity-3.5.1-615.jar aaa 3.5.1" "$(run_velocity_choice pinned '' 3.5.1)"
+expect "another FELIS_VELOCITY_VERSION resolves that minor's newest build" \
+  "STAGE https://fill-data.papermc.io/v1/objects/bbb/velocity-3.6.0-700.jar bbb 3.6.0" "$(run_velocity_choice pinned 3.6.0 3.5.1)"
+expect "FELIS_GAME_STACK=latest resolves the newest build of the default minor" \
+  "STAGE https://fill-data.papermc.io/v1/objects/bbb/velocity-3.5.1-700.jar bbb 3.5.1" "$(run_velocity_choice latest '' 3.5.1)"
+
+# --- the game-stack lock ----------------------------------------------------------------
+# bootstrap.sh reads deploy/game-stack.lock as data: known keys only, all of them present,
+# values limited to URL and version characters, digests shaped like digests.
+
+lblock="$(awk '/^load_game_stack_lock\(\) \{/,/^}/' "$BS")"
+[ -n "$lblock" ] || { echo "FAIL: no load_game_stack_lock found in $BS"; exit 1; }
+lkeys="$(grep '^GAME_STACK_LOCK_KEYS=' "$BS")"
+[ -n "$lkeys" ] || { echo "FAIL: no GAME_STACK_LOCK_KEYS in $BS"; exit 1; }
+ldir="$(mktemp -d)"
+run_lock() { # lock-file
+  LOCK="$1" bash -c '
+    set -Eeuo pipefail
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    '"$lkeys"'
+    '"$lblock"'
+    load_game_stack_lock "$LOCK"
+    printf "MC=%s LIMBO=%s VELOCITY=%s\n" "$MC_VERSION" "$LIMBO_JAR_URL" "$VELOCITY_JAR_SHA256"'
+}
+repo_lock="$(dirname "$BS")/game-stack.lock"
+out="$(run_lock "$repo_lock")"
+expect "the shipped lock loads" "MC=$(sed -n 's/^MC_VERSION=//p' "$repo_lock") LIMBO=https://ci.loohpjames.com/job/Limbo/" "$out"
+{ cat "$repo_lock"; printf 'EVIL=$(touch /tmp/pwned)\n'; } > "$ldir/unknown"
+expect "an unknown key is refused" "DIE: $ldir/unknown: unknown key EVIL" "$(run_lock "$ldir/unknown")"
+sed 's|^LIMBO_VERSION=.*|LIMBO_VERSION=$(id)|' "$repo_lock" > "$ldir/subst"
+expect "a value with shell syntax is refused" "DIE: $ldir/subst: LIMBO_VERSION has an unexpected value" "$(run_lock "$ldir/subst")"
+grep -v '^LUCKPERMS_JAR_SHA256=' "$repo_lock" > "$ldir/missing"
+expect "a missing key is refused" "DIE: $ldir/missing does not set LUCKPERMS_JAR_SHA256" "$(run_lock "$ldir/missing")"
+sed 's|^PAPER_JAR_SHA256=.*|PAPER_JAR_SHA256=ABCDEF|' "$repo_lock" > "$ldir/badsha"
+expect "a malformed digest is refused" "DIE: $ldir/badsha: PAPER_JAR_SHA256 is not a lowercase sha256" "$(run_lock "$ldir/badsha")"
+expect "no lock file is refused with the way out" "FELIS_GAME_STACK=latest" "$(run_lock "$ldir/none")"
+rm -rf "$ldir"
+
+# --- the Temurin JRE pin ----------------------------------------------------------------
+jblock="$(awk '/^install_jre\(\) \{/,/^}/' "$BS")"
+[ -n "$jblock" ] || { echo "FAIL: no install_jre found in $BS"; exit 1; }
+jdir="$(mktemp -d)"
+jtar="$(mktemp -d)"
+mkdir -p "$jtar/jdk-25.0.9+1-jre/bin"
+printf '#!/bin/sh\n' > "$jtar/jdk-25.0.9+1-jre/bin/java"
+chmod +x "$jtar/jdk-25.0.9+1-jre/bin/java"
+printf 'IMPLEMENTOR="Eclipse Adoptium"\nIMPLEMENTOR_VERSION="Temurin-25.0.9+1"\n' > "$jtar/jdk-25.0.9+1-jre/release"
+tar -C "$jtar" -czf "$jtar/jre.tar.gz" "jdk-25.0.9+1-jre"
+jsha="$(sha256sum < "$jtar/jre.tar.gz" | cut -d' ' -f1)"
+run_jre() { # machine pinned-sha
+  MACHINE="$1" SHA="$2" TARBALL="$jtar/jre.tar.gz" JRE_DIR="$jdir/jre" FELIS_JRE_VERSION=25 \
+  JRE_PINNED_FEATURE=25 JRE_PINNED_RELEASE=25.0.9+1 JRE_PINNED_SHA256_X64="$2" JRE_PINNED_SHA256_AARCH64="$2" bash -c '
+    set -Eeuo pipefail
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    log() { printf "LOG: %s\n" "$*"; }
+    ok() { printf "OK: %s\n" "$*"; }
+    remember_temp() { :; }
+    uname() { printf "%s\n" "$MACHINE"; }
+    curl() { local prev=""; while [ "$#" -gt 1 ] && [ "$1" != "-o" ]; do prev="$1"; shift; done; printf "URL %s\n" "$prev" >&2; cp "$TARBALL" "$2"; }
+    '"$jblock"'
+    install_jre' 2>&1
+}
+out="$(run_jre x86_64 deadbeef)"
+expect "a JRE download with the wrong digest is refused" "hashes to ${jsha}, expected deadbeef" "$out"
+[ -e "$jdir/jre" ] && { echo "FAIL a refused JRE was unpacked"; fails=$((fails + 1)); } || echo "PASS a refused JRE is not unpacked"
+out="$(run_jre aarch64 "$jsha")"
+expect "the pinned JRE is downloaded from its GitHub release" \
+  "URL https://github.com/adoptium/temurin25-binaries/releases/download/jdk-25.0.9%2B1/OpenJDK25U-jre_aarch64_linux_hotspot_25.0.9_1.tar.gz" "$out"
+expect "the pinned JRE installs" "OK: JRE at $jdir/jre/bin/java (Temurin 25.0.9+1)" "$out"
+expect "a rerun of the pinned JRE is a no-op" "OK: Temurin 25.0.9+1 JRE already installed" "$(run_jre x86_64 "$jsha")"
+printf 'IMPLEMENTOR="Eclipse Adoptium"\nIMPLEMENTOR_VERSION="Temurin-25.0.1+8"\n' > "$jdir/jre/release"
+out="$(run_jre x86_64 "$jsha")"
+expect "an older installer-managed JRE moves to the pin" "LOG: moving the proxy's JRE to Temurin 25.0.9+1" "$out"
+expect "the moved JRE is the pinned build" 'IMPLEMENTOR_VERSION="Temurin-25.0.9+1"' "$(cat "$jdir/jre/release")"
+printf 'IMPLEMENTOR="Azul Systems, Inc."\n' > "$jdir/jre/release"
+expect "a JRE someone else installed is left alone" "is not a Temurin build this installer put there" "$(run_jre x86_64 "$jsha")"
+expect "an unsupported architecture keeps a pre-staged JRE" "OK: JRE already installed at $jdir/jre" "$(run_jre riscv64 "$jsha")"
+rm -rf "$jdir" "$jtar"
 
 # --- [[auth_source]] carry-forward -----------------------------------------------------
 # write_felis_toml regenerates felis.toml wholesale on every run; this is what keeps the

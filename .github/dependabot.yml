@@ -1,8 +1,23 @@
-# The workflows pin every action to a commit SHA. This keeps those pins moving: Dependabot
-# reads the "# vX.Y.Z" comment next to each SHA and opens a PR that bumps both together.
+# The workflows pin every action to a commit SHA, and every Dockerfile pins its base images
+# by digest. This keeps those pins moving: Dependabot reads the "# vX.Y.Z" comment next to
+# each action SHA, and the tag in front of each image digest, and opens a PR that bumps both
+# together.
 version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+  - package-ecosystem: docker
+    directories:
+      - /
+      - /deploy/limbo
+      - /deploy/lobby
+      - /deploy/paper
+    schedule:
+      interval: weekly
+    # A new major is a runtime change (Paper 26.x needs Java 25, Limbo's jar is Java 21
+    # bytecode), so only digests and minors are proposed; majors move by hand.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]

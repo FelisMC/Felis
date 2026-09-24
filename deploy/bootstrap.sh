@@ -46,6 +46,14 @@
 #                     proxy instead of the stock download (default: unset, stock).
 #   FELIS_VELOCITY_FORK_JAR_SHA256 expected sha256 of that jar. REQUIRED whenever the jar
 #                     above is set; the install refuses on a mismatch.
+#   FELIS_GAME_STACK  pinned|latest — which Limbo, Paper, LuckPerms and Velocity builds to
+#                     install (default: pinned, the builds deploy/game-stack.lock names,
+#                     each checked against its sha256). latest resolves upstream's newest
+#                     builds on every run; the Minecraft version then follows Limbo's CI.
+#   FELIS_JRE_VERSION Temurin feature version for the proxy (default: 25, whose build and
+#                     digests are pinned; a rerun moves an installer-managed JRE to the
+#                     pinned build). Another feature version is checked against the
+#                     digest Adoptium's API publishes for it.
 #   FELIS_GO_VERSION  Go toolchain used to build the nano binary (default: 1.26.4)
 #   FELIS_GO_SHA256   sha256 of that version's linux tarball for this host's architecture.
 #                     REQUIRED for a non-default FELIS_GO_VERSION; the default's is pinned.
@@ -239,12 +247,17 @@ FELIS_LOBBY_IMAGE="${FELIS_LOBBY_IMAGE:-${REGISTRY_URL}/felis/lobby:demo}"
 # server — forwarding is applied by the operator's init-forwarding initContainer, so it
 # needs no secret. Seeded recommended in 0019_recommended_paper.sql.
 FELIS_PAPER_IMAGE="${FELIS_PAPER_IMAGE:-${REGISTRY_URL}/felis/paper:demo}"
-# The Velocity MINOR is pinned, not discovered. PaperMC's Fill v3 groups velocity
-# builds by version group, and "newest across all groups" today means 4.0.0-SNAPSHOT —
-# an UNRELEASED proxy (the 4.0.0 group has zero published builds) that needs a Java 25
-# runtime. Crossing a major is a deliberate code change, so we track the newest BUILD of
-# a pinned minor and let a human move the pin.
-FELIS_VELOCITY_VERSION="${FELIS_VELOCITY_VERSION:-3.5.1}"
+# The Velocity build comes from deploy/game-stack.lock (VELOCITY_VERSION and its jar digest).
+# Setting FELIS_VELOCITY_VERSION to another version, or FELIS_GAME_STACK=latest, installs
+# the newest BUILD of that minor instead. The minor itself is never discovered: PaperMC's
+# Fill v3 groups velocity builds by version group, and "newest across all groups" can mean
+# an unreleased 4.x SNAPSHOT that needs another runtime. Crossing a major is a deliberate
+# code change.
+FELIS_VELOCITY_VERSION="${FELIS_VELOCITY_VERSION:-}"
+VELOCITY_LATEST_MINOR="3.5.1"
+# pinned installs the builds deploy/game-stack.lock names (resolve_game_jars); latest asks
+# upstream for its newest ones, which is how that lock file gets refreshed.
+FELIS_GAME_STACK="${FELIS_GAME_STACK:-pinned}"
 # Path to a Felis-Legacy Velocity fork build, installed as the proxy in place of the
 # stock download. Unset — the default — changes nothing.
 #
@@ -275,6 +288,14 @@ FELIS_VELOCITY_FORK_JAR_SHA256="${FELIS_VELOCITY_FORK_JAR_SHA256:-}"
 # a lottery across four package managers — a tarball is one code path everywhere (same
 # reasoning as install_go_toolchain).
 FELIS_JRE_VERSION="${FELIS_JRE_VERSION:-25}"
+# The JRE the proxy runs on is unpacked as root and carries every player session, so the
+# default feature version is pinned to one build and the sha256 Adoptium publishes for each
+# architecture. Move the three together (the Adoptium API lists them:
+# /v3/assets/latest/25/hotspot?image_type=jre&os=linux).
+JRE_PINNED_FEATURE="25"
+JRE_PINNED_RELEASE="25.0.4.1+1"
+JRE_PINNED_SHA256_X64="1731a34baadec5479258ea0202e4d5d865d2efeee60cb0c7d7eb056fe96ca219"
+JRE_PINNED_SHA256_AARCH64="34828cbb93ed31c281c84ecb31ddab655d11a802f263c1fc019d42e9e0230fed"
 # The port the proxy listens on: the ONLY Minecraft port players ever touch. Backends
 # are ClusterIP-only, verify the modern-forwarding HMAC, and use NetworkPolicy to limit
 # non-node ingress to the declared proxy CIDRs.
@@ -671,6 +692,10 @@ validate_settings() {
   validate_listen FELIS_NANO_LISTEN "$FELIS_NANO_LISTEN"
   validate_cidr FELIS_NANO_PROXY_CIDR "$FELIS_NANO_PROXY_CIDR"
   validate_offsite_settings
+  case "$FELIS_GAME_STACK" in
+    pinned|latest) ;;
+    *) die "FELIS_GAME_STACK must be pinned or latest (got '${FELIS_GAME_STACK}')" ;;
+  esac
 }
 
 # validate_offsite_settings checks the FELIS_OFFSITE_* inputs before anything is
@@ -1198,7 +1223,7 @@ github_api() {
 # can never disagree about what "latest" means.
 github_latest_tag() {
   local json tag
-  # Fetch first, filter second — the SIGPIPE reason documented on resolve_game_jars.
+  # Fetch first, filter second — the SIGPIPE reason documented on resolve_latest_game_jars.
   json="$(github_api "repos/$(repo_slug)/releases/latest")" || return 1
   tag="$(printf '%s' "$json" | grep -o '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' || true)"
   tag="${tag%%$'\n'*}"
@@ -1236,7 +1261,7 @@ felis_asset_arch() {
 # reachable this way — fetch releases/assets/<id> with the JSON Accept if that is ever needed.
 github_asset_id() {
   local tag="$1" name="$2" json id
-  # Fetch first, filter second — the SIGPIPE reason documented on resolve_game_jars.
+  # Fetch first, filter second — the SIGPIPE reason documented on resolve_latest_game_jars.
   json="$(github_api "repos/$(repo_slug)/releases/tags/${tag}")" || return 1
   id="$(printf '%s' "$json" | tr -d '\n' | tr '{' '\n' \
     | grep "\"name\":[[:space:]]*\"${name}\"" \
@@ -1685,11 +1710,6 @@ game_stack_source() {
   ok "game-stack sources unpacked to ${GAME_STACK_DIR}"
 }
 
-# resolve_game_jars pins Limbo and Paper to the SAME Minecraft version. LOOHP/Limbo
-# speaks exactly one protocol per build, so the login gate dictates the version and Paper
-# follows — a client that can pass the gate must also be able to reach the lobby.
-# MC_VERSION is read off Limbo's CI artifact name (Limbo-<limbo-ver>-<mc-ver>.jar), which
-# is the only place the pairing is published.
 # meta_get prints a small metadata document. curl's --retry covers transient HTTP
 # statuses and timeouts; a TLS handshake cut mid-way (exit 35, seen against Fill over
 # a flaky IPv6 path) is outside its retry set, so the outer loop retries every failure
@@ -1710,8 +1730,71 @@ meta_get() {
   return 1
 }
 
+# resolve_game_jars sets the artifacts the three game images and the proxy are built from:
+# the builds deploy/game-stack.lock names (FELIS_GAME_STACK=pinned, the default), or
+# upstream's newest ones (latest). Pinned is what makes an install reproducible: every host
+# installing one release gets the same login gate, lobby and proxy, each download is
+# checked against the lock's sha256, and a rerun's docker builds hit their cache, so
+# restart_existing_system_servers leaves the login and lobby pods running.
 resolve_game_jars() {
-  local ci="https://ci.loohpjames.com/job/Limbo/lastSuccessfulBuild" meta file base rest paper
+  if [ "$FELIS_GAME_STACK" = "latest" ]; then
+    resolve_latest_game_jars
+    return 0
+  fi
+  load_game_stack_lock "${GAME_STACK_DIR}/deploy/game-stack.lock"
+  ok "Limbo ${LIMBO_VERSION} + Paper on Minecraft ${MC_VERSION}, LuckPerms and Velocity ${VELOCITY_VERSION}: the builds game-stack.lock pins"
+}
+
+GAME_STACK_LOCK_KEYS="MC_VERSION LIMBO_VERSION LIMBO_JAR_URL LIMBO_JAR_SHA256 LIMBO_SCHEM_URL LIMBO_SCHEM_SHA256 PAPER_JAR_URL PAPER_JAR_SHA256 LUCKPERMS_JAR_URL LUCKPERMS_JAR_SHA256 VELOCITY_VERSION VELOCITY_JAR_URL VELOCITY_JAR_SHA256"
+
+# load_game_stack_lock reads the lock's KEY=value lines into the globals of the same names.
+# It never sources the file: only the keys above are accepted, every one has to be set, the
+# values are limited to URL and version characters (they reach docker build-args), and each
+# *_SHA256 has to be a sha256.
+load_game_stack_lock() {
+  local file="$1" line key value
+  [ -f "$file" ] || die "no game-stack lock at ${file}; FELIS_GAME_STACK=latest resolves upstream's newest builds instead"
+  for key in $GAME_STACK_LOCK_KEYS; do printf -v "$key" '%s' ""; done
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    key="${line%%=*}"
+    value="${line#*=}"
+    [ "$key" != "$line" ] || die "${file}: not a KEY=value line: ${line}"
+    case " ${GAME_STACK_LOCK_KEYS} " in
+      *" ${key} "*) ;;
+      *) die "${file}: unknown key ${key}" ;;
+    esac
+    case "$value" in
+      ''|*[!A-Za-z0-9._:/+%-]*) die "${file}: ${key} has an unexpected value: ${value}" ;;
+    esac
+    printf -v "$key" '%s' "$value"
+  done < "$file"
+  for key in $GAME_STACK_LOCK_KEYS; do
+    [ -n "${!key}" ] || die "${file} does not set ${key}"
+    case "$key" in
+      *_SHA256) [[ "${!key}" =~ ^[0-9a-f]{64}$ ]] || die "${file}: ${key} is not a lowercase sha256" ;;
+    esac
+  done
+}
+
+# url_sha256 prints the sha256 of what $1 serves.
+url_sha256() {
+  local sum
+  sum="$(curl -fsSL --retry 5 --retry-delay 2 -A "felis-bootstrap (+https://github.com/FelisMC/Felis)" "$1" | sha256sum)" || return 1
+  printf '%s\n' "${sum%% *}"
+}
+
+# resolve_latest_game_jars pins Limbo and Paper to the SAME Minecraft version. LOOHP/Limbo
+# speaks exactly one protocol per build, so the login gate dictates the version and Paper
+# follows — a client that can pass the gate must also be able to reach the lobby.
+# MC_VERSION is read off Limbo's CI artifact name (Limbo-<limbo-ver>-<mc-ver>.jar), which
+# is the only place the pairing is published.
+#
+# Limbo's CI and LuckPerms publish no digest, so latest hashes their downloads as it finds
+# them: the image builds still check that they receive those bytes, but nothing vouches for
+# the bytes themselves. That is what the lock file adds.
+resolve_latest_game_jars() {
+  local ci="https://ci.loohpjames.com/job/Limbo/lastSuccessfulBuild" meta build file base rest paper
   log "resolving the newest LOOHP/Limbo CI build"
   # Fetch first, filter second: `curl | grep | head` dies of SIGPIPE under `set -o pipefail`
   # the moment head closes the pipe early. Same shape everywhere below.
@@ -1720,6 +1803,13 @@ resolve_game_jars() {
   file="$(printf '%s' "$meta" | grep -o 'Limbo-[0-9A-Za-z._-]*\.jar' || true)"
   file="${file%%$'\n'*}"
   [ -n "$file" ] || die "no Limbo jar in the LOOHP/Limbo CI artifact list"
+  # The numbered build, so the jar hashed below is the jar the image build downloads even
+  # if CI finishes another build in between.
+  build="$(printf '%s' "$meta" | grep -o '"number":[0-9]*' || true)"
+  build="${build%%$'\n'*}"
+  build="${build#*:}"
+  [ -n "$build" ] || die "no build number in the LOOHP/Limbo CI metadata"
+  ci="https://ci.loohpjames.com/job/Limbo/${build}"
 
   base="${file%.jar}"          # Limbo-2026.0.2-ALPHA-26.2
   MC_VERSION="${base##*-}"     # 26.2
@@ -1742,7 +1832,16 @@ resolve_game_jars() {
   log "resolving the newest LuckPerms build"
   LUCKPERMS_JAR_URL="$(luckperms_latest_jar)" \
     || die "could not resolve a LuckPerms build (metadata.luckperms.net is down or flapping); the lobby needs it for the panel's permission controls"
-  ok "Limbo ${LIMBO_VERSION} + Paper, both on Minecraft ${MC_VERSION}; LuckPerms resolved"
+
+  log "hashing the Limbo and LuckPerms downloads (their upstreams publish no digest)"
+  LIMBO_JAR_SHA256="$(url_sha256 "$LIMBO_JAR_URL")" || die "could not download ${LIMBO_JAR_URL}"
+  LIMBO_SCHEM_SHA256="$(url_sha256 "$LIMBO_SCHEM_URL")" || die "could not download ${LIMBO_SCHEM_URL}"
+  LUCKPERMS_JAR_SHA256="$(url_sha256 "$LUCKPERMS_JAR_URL")" || die "could not download ${LUCKPERMS_JAR_URL}"
+  VELOCITY_VERSION="$VELOCITY_LATEST_MINOR"
+  VELOCITY_JAR_URL=""
+  VELOCITY_JAR_SHA256=""
+  ok "Limbo ${LIMBO_VERSION} (CI build ${build}) + Paper, both on Minecraft ${MC_VERSION}; LuckPerms resolved"
+  warn "FELIS_GAME_STACK=latest: these are upstream's builds as of now, not the ones this release pins"
 }
 
 # luckperms_latest_jar prints the download URL of the current LuckPerms Bukkit build.
@@ -1792,7 +1891,9 @@ build_game_stack() {
   log "building ${FELIS_LIMBO_IMAGE} (LOOHP/Limbo ${LIMBO_VERSION}, Minecraft ${MC_VERSION})"
   docker build -f "${GAME_STACK_DIR}/deploy/limbo/Dockerfile" \
     --build-arg LIMBO_JAR_URL="$LIMBO_JAR_URL" \
+    --build-arg LIMBO_JAR_SHA256="$LIMBO_JAR_SHA256" \
     --build-arg LIMBO_SCHEM_URL="$LIMBO_SCHEM_URL" \
+    --build-arg LIMBO_SCHEM_SHA256="$LIMBO_SCHEM_SHA256" \
     --build-arg LIMBO_VERSION="$LIMBO_VERSION" \
     -t "$FELIS_LIMBO_IMAGE" "$GAME_STACK_DIR"
 
@@ -1801,6 +1902,7 @@ build_game_stack() {
     --build-arg PAPER_JAR_URL="$PAPER_JAR_URL" \
     --build-arg PAPER_JAR_SHA256="$PAPER_JAR_SHA256" \
     --build-arg LUCKPERMS_JAR_URL="$LUCKPERMS_JAR_URL" \
+    --build-arg LUCKPERMS_JAR_SHA256="$LUCKPERMS_JAR_SHA256" \
     -t "$FELIS_LOBBY_IMAGE" "$GAME_STACK_DIR"
 
   # Plain Paper, same MC_VERSION and PAPER_JAR_URL (no new dependency). Forwarding is the
@@ -1985,29 +2087,84 @@ pin_via_block_connections() {
 }
 
 install_jre() {
-  local arch url
-  if [ -x "${JRE_DIR}/bin/java" ]; then
-    ok "JRE already installed at ${JRE_DIR}"
-    return 0
-  fi
+  local arch want url release json
   case "$(uname -m)" in
-    x86_64|amd64) arch="x64" ;;
-    aarch64|arm64) arch="aarch64" ;;
-    *) die "no Temurin JRE build for architecture $(uname -m); pre-stage one at ${JRE_DIR}" ;;
+    x86_64|amd64) arch="x64"; want="$JRE_PINNED_SHA256_X64" ;;
+    aarch64|arm64) arch="aarch64"; want="$JRE_PINNED_SHA256_AARCH64" ;;
+    *)
+      if [ -x "${JRE_DIR}/bin/java" ]; then
+        ok "JRE already installed at ${JRE_DIR}"
+        return 0
+      fi
+      die "no Temurin JRE build for architecture $(uname -m); pre-stage one at ${JRE_DIR}"
+      ;;
   esac
-  url="https://api.adoptium.net/v3/binary/latest/${FELIS_JRE_VERSION}/ga/linux/${arch}/jre/hotspot/normal/eclipse"
 
-  log "installing Temurin ${FELIS_JRE_VERSION} JRE (${arch}) to ${JRE_DIR}"
-  local tmp
+  if [ "$FELIS_JRE_VERSION" = "$JRE_PINNED_FEATURE" ]; then
+    release="$JRE_PINNED_RELEASE"
+    url="https://github.com/adoptium/temurin${JRE_PINNED_FEATURE}-binaries/releases/download/jdk-${release/+/%2B}/OpenJDK${JRE_PINNED_FEATURE}U-jre_${arch}_linux_hotspot_${release/+/_}.tar.gz"
+  else
+    # Another feature version is installed once and then left alone; its digest is the
+    # one Adoptium's API publishes next to the link.
+    if [ -x "${JRE_DIR}/bin/java" ]; then
+      ok "JRE already installed at ${JRE_DIR}"
+      return 0
+    fi
+    json="$(meta_get "https://api.adoptium.net/v3/assets/latest/${FELIS_JRE_VERSION}/hotspot?architecture=${arch}&image_type=jre&os=linux&vendor=eclipse")" \
+      || die "could not ask the Adoptium API for a Temurin ${FELIS_JRE_VERSION} JRE"
+    url="$(printf '%s' "$json" | grep -o '"link": *"[^"]*\.tar\.gz"' || true)"
+    url="${url%%$'\n'*}"
+    url="${url%\"}"
+    url="${url##*\"}"
+    want="$(printf '%s' "$json" | grep -o '"checksum": *"[0-9a-f]\{64\}"' || true)"
+    want="${want%%$'\n'*}"
+    want="${want%\"}"
+    want="${want##*\"}"
+    release="$(printf '%s' "$json" | grep -o '"release_name": *"jdk-[^"]*"' || true)"
+    release="${release%%$'\n'*}"
+    release="${release%\"}"
+    release="${release##*\"jdk-}"
+    [ -n "$url" ] && [ -n "$want" ] && [ -n "$release" ] \
+      || die "the Adoptium API lists no Temurin ${FELIS_JRE_VERSION} JRE for linux/${arch}"
+  fi
+
+  # A rerun moves the installer's own JRE to the pinned build, which is how a JRE security
+  # release reaches the proxy: bump the pin, rerun, and install_velocity_service restarts
+  # the proxy because the JRE's release file changed. A JRE someone else put here (another
+  # vendor, or pre-staged for an architecture Temurin does not build) is left alone.
+  if [ -x "${JRE_DIR}/bin/java" ]; then
+    if grep -qxF "IMPLEMENTOR_VERSION=\"Temurin-${release}\"" "${JRE_DIR}/release" 2>/dev/null; then
+      ok "Temurin ${release} JRE already installed at ${JRE_DIR}"
+      return 0
+    fi
+    if ! grep -qxF 'IMPLEMENTOR="Eclipse Adoptium"' "${JRE_DIR}/release" 2>/dev/null; then
+      ok "JRE at ${JRE_DIR} is not a Temurin build this installer put there; left as is"
+      return 0
+    fi
+    log "moving the proxy's JRE to Temurin ${release}"
+  fi
+
+  log "installing Temurin ${release} JRE (${arch}) to ${JRE_DIR}"
+  local tmp have
   tmp="$(mktemp -d)"
   remember_temp "$tmp"
-  curl -fsSL "$url" -o "${tmp}/jre.tar.gz" || die "failed to download the Temurin JRE: ${url}"
-  mkdir -p "$JRE_DIR"
+  curl -fsSL --retry 5 --retry-delay 2 "$url" -o "${tmp}/jre.tar.gz" \
+    || die "failed to download the Temurin JRE: ${url}"
+  have="$(sha256sum <"${tmp}/jre.tar.gz" | cut -d' ' -f1)"
+  [ "$have" = "$want" ] \
+    || die "Temurin ${release} JRE (${arch}) hashes to ${have}, expected ${want}; refusing to install it"
+  # Unpacked beside the live one and swapped in with two renames, so a failed unpack leaves
+  # the proxy's runtime untouched. The running proxy keeps the files it has open.
+  rm -rf "${JRE_DIR}.new" "${JRE_DIR}.old"
+  mkdir -p "${JRE_DIR}.new"
   # The tarball has a single versioned top-level directory (jdk-25+36-jre/); strip it so
   # the path in the systemd unit never carries a build number.
-  tar -C "$JRE_DIR" --strip-components=1 -xzf "${tmp}/jre.tar.gz" || die "failed to unpack the JRE"
-  [ -x "${JRE_DIR}/bin/java" ] || die "unpacked JRE has no bin/java"
-  ok "JRE at ${JRE_DIR}/bin/java"
+  tar -C "${JRE_DIR}.new" --strip-components=1 -xzf "${tmp}/jre.tar.gz" || die "failed to unpack the JRE"
+  [ -x "${JRE_DIR}.new/bin/java" ] || die "unpacked JRE has no bin/java"
+  [ ! -e "$JRE_DIR" ] || mv "$JRE_DIR" "${JRE_DIR}.old"
+  mv "${JRE_DIR}.new" "$JRE_DIR"
+  rm -rf "${JRE_DIR}.old"
+  ok "JRE at ${JRE_DIR}/bin/java (Temurin ${release})"
 }
 
 install_velocity() {
@@ -2039,28 +2196,47 @@ install_velocity() {
     log "installing the Felis-Legacy Velocity fork from ${FELIS_VELOCITY_FORK_JAR} (sha256 ${have})"
     atomic_install_file "$FELIS_VELOCITY_FORK_JAR" "${VELOCITY_DIR}/velocity.jar" 0644 root root
   else
-    log "resolving the newest Velocity ${FELIS_VELOCITY_VERSION} build"
-    resolved="$(papermc_latest_jar velocity "$FELIS_VELOCITY_VERSION")" \
-      || die "no Velocity build for ${FELIS_VELOCITY_VERSION} (override with FELIS_VELOCITY_VERSION)"
-    url="${resolved% *}"
-    want="${resolved##* }"
-    log "downloading Velocity ${FELIS_VELOCITY_VERSION}"
-    tmp="$(mktemp "${VELOCITY_DIR}/.velocity.jar.XXXXXX")"
-    remember_temp "$tmp"
-    curl -fsSL "$url" -o "$tmp" || die "failed to download Velocity: ${url}"
-    # The same gate the Via plugins and the fork jar pass: this jar is the proxy every
-    # player connects through, and Fill already promised its digest in the URL — a
-    # truncated or tampered download becomes a refusal here, not a proxy that won't boot.
-    have="$(sha256sum <"$tmp" | cut -d' ' -f1)"
-    [ "$have" = "$want" ] \
-      || die "Velocity ${FELIS_VELOCITY_VERSION} checksum mismatch: got ${have}, expected ${want}"
-    atomic_install_file "$tmp" "${VELOCITY_DIR}/velocity.jar" 0644 root root
+    local version="${FELIS_VELOCITY_VERSION:-${VELOCITY_VERSION:-$VELOCITY_LATEST_MINOR}}"
+    if [ "$FELIS_GAME_STACK" = "pinned" ] && [ "$version" = "${VELOCITY_VERSION:-}" ]; then
+      url="$VELOCITY_JAR_URL"
+      want="$VELOCITY_JAR_SHA256"
+    else
+      log "resolving the newest Velocity ${version} build"
+      resolved="$(papermc_latest_jar velocity "$version")" \
+        || die "no Velocity build for ${version} (override with FELIS_VELOCITY_VERSION)"
+      url="${resolved% *}"
+      want="${resolved##* }"
+    fi
+    stage_velocity_jar "$url" "$want" "$version"
   fi
 
   install_via_plugins
   write_velocity_config
   install_velocity_service
   configure_velocity_firewall
+}
+
+# stage_velocity_jar installs the stock proxy from $1 unless velocity.jar already hashes to
+# $2, so a rerun of the same build neither downloads nor touches the file the proxy runs.
+stage_velocity_jar() {
+  local url="$1" want="$2" version="$3" have="" tmp
+  [ -f "${VELOCITY_DIR}/velocity.jar" ] && have="$(sha256sum <"${VELOCITY_DIR}/velocity.jar" | cut -d' ' -f1)"
+  if [ "$have" = "$want" ]; then
+    ok "Velocity ${version} already staged"
+    return 0
+  fi
+  log "downloading Velocity ${version}"
+  tmp="$(mktemp "${VELOCITY_DIR}/.velocity.jar.XXXXXX")"
+  remember_temp "$tmp"
+  curl -fsSL --retry 5 --retry-delay 2 "$url" -o "$tmp" || die "failed to download Velocity: ${url}"
+  # The same gate the Via plugins and the fork jar pass: this jar is the proxy every
+  # player connects through, and the lock file (or Fill's content-addressed URL) names its
+  # digest — a truncated or tampered download becomes a refusal here, not a proxy that
+  # won't boot.
+  have="$(sha256sum <"$tmp" | cut -d' ' -f1)"
+  [ "$have" = "$want" ] \
+    || die "Velocity ${version} checksum mismatch: got ${have}, expected ${want}"
+  atomic_install_file "$tmp" "${VELOCITY_DIR}/velocity.jar" 0644 root root
 }
 
 # felis_internal_ip echoes the felis-api-internal Service ClusterIP. Cluster DNS does not

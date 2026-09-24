@@ -21,14 +21,18 @@
 # minutes. The FINAL stage is deliberately NOT pinned — it must stay on the target platform
 # or the published arm64 image would carry amd64 layers. It contains only COPY, which
 # BuildKit performs itself, so it needs no QEMU either; adding a RUN there would.
-FROM --platform=$BUILDPLATFORM node:22-bookworm AS panel
+#
+# Every base image here and in deploy/{limbo,lobby,paper} is pinned by digest, so a rebuild
+# of one release uses the same bytes; .github/dependabot.yml proposes the bumps (tag and
+# digest together).
+FROM --platform=$BUILDPLATFORM node:22-bookworm@sha256:363e1587494626837fa7f9a23bdb453d13b0ff3c67c705c2805cfc69c2d2fad7 AS panel
 WORKDIR /panel
 COPY panel/package*.json ./
 RUN npm ci
 COPY panel/ ./
 RUN npm run build
 
-FROM --platform=$BUILDPLATFORM golang:1.26 AS build
+FROM --platform=$BUILDPLATFORM golang:1.26@sha256:6c2a5538f964f1c82f97ad14988bf05de100d922d159d0e398b54c7b0ca0c6c9 AS build
 WORKDIR /src
 ARG TARGETOS=linux
 ARG TARGETARCH
@@ -55,7 +59,7 @@ ARG FELIS_VERSION=dev
 RUN CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="${TARGETARCH:-$(go env GOARCH)}" \
     go build -trimpath -ldflags="-s -w -X main.version=${FELIS_VERSION}" -o /out/felis ./cmd/felis
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 ENV PATH=/usr/local/bin:/usr/bin:/bin
 COPY --chmod=0755 --from=build /out/felis /usr/local/bin/felis
 # distroless "nonroot" is uid 65532; the rendered PodSecurityContext pins

@@ -1324,6 +1324,9 @@ Two properties of the control plane matter when you do:
 | cloudflared (when absent) | release `FELIS_CLOUDFLARED_VERSION` (default `2026.9.1`) against a pinned sha256; another version needs `FELIS_CLOUDFLARED_SHA256` |
 | Go toolchain (nano, source builds) | pinned sha256 per architecture; another version needs `FELIS_GO_SHA256` |
 | the registry image | pinned by digest (`registry:2.8.3@sha256:a3d8…`) |
+| Limbo, its spawn schematic, Paper, LuckPerms, Velocity | the builds and sha256s in `deploy/game-stack.lock`; each image build and the proxy install refuse a download that hashes differently (§15b) |
+| the Temurin JRE the proxy runs on | release `25.0.4.1+1` against a pinned sha256 per architecture |
+| base images of the felis, limbo, lobby and paper images | pinned by digest in each `Dockerfile` |
 
 On a public repository each release also carries a signed build-provenance
 attestation. Check a downloaded binary with
@@ -1384,10 +1387,29 @@ took (§16, "Roll back an upgrade that broke the database").
 
 ## 15b. Game images, pinned builds, and moving a world to a newer Minecraft
 
+Each release pins the upstream builds it installs in `deploy/game-stack.lock`:
+the Limbo CI build and its Minecraft version, the Paper build for that version,
+LuckPerms and Velocity, each with its sha256. Every host installing one release
+builds the same login gate, lobby and plain-Paper image, and a rerun of the same
+release rebuilds nothing. Moving the stack to newer upstream builds is a release
+change: `bash deploy/update-game-stack-lock.sh` resolves and hashes upstream's
+newest builds and rewrites the lock (`--check` only reports whether upstream
+moved on). Two installer knobs leave the lock:
+
+- `FELIS_GAME_STACK=latest` resolves upstream's newest builds at install time,
+  hashes the ones that publish no digest, and warns that they are not the
+  release's builds.
+- `FELIS_VELOCITY_VERSION=<minor>` installs that minor's newest Velocity build
+  (content-addressed, so still sha256-checked).
+
+`FELIS_JRE_VERSION` picks the proxy's Java feature release (default 25, pinned
+to Temurin `25.0.4.1+1`). A JRE the installer put there moves to the pinned
+build on the next rerun; a JRE from any other vendor is left in place.
+
 The platform's game images live under mutable tags
-(`registry.felis.svc:5000/felis/paper:demo`): every installer run resolves the
-newest Paper/Limbo release and pushes the new build over the same tag. A server
-never follows that tag on its own. felis-api stores the image a server is
+(`registry.felis.svc:5000/felis/paper:demo`): an installer run that builds a
+different stack pushes the new build over the same tag. A server never follows
+that tag on its own. felis-api stores the image a server is
 created with pinned to the digest the tag named at that moment
 (`…/felis/paper:demo@sha256:…`), and the installer's `pin_user_server_images`
 step pins any older server still on a bare tag *before* it pushes the new

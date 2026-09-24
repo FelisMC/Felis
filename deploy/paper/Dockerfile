@@ -14,11 +14,11 @@
 # image a user brings is made joinable the same way. If the initContainer is absent (no
 # FELIS_IMAGE configured) Paper boots as a standalone online server: degraded, not broken.
 #
-# Build (deploy/bootstrap.sh does this for you; PAPER_JAR_URL comes from PaperMC's Fill v3
-# API — the SAME url the lobby build resolves, so this reuses it and adds no new dependency):
+# Build (deploy/bootstrap.sh does this for you, with the SAME Paper build the lobby uses —
+# deploy/game-stack.lock names it — so this adds no new dependency):
+#   . <(grep '^PAPER_' deploy/game-stack.lock)
 #   docker build -f deploy/paper/Dockerfile \
-#     --build-arg PAPER_JAR_URL=https://fill-data.papermc.io/v1/objects/<sha>/paper-<ver>-<build>.jar \
-#     --build-arg PAPER_JAR_SHA256=<that same sha — the objects/ path segment> \
+#     --build-arg PAPER_JAR_URL="$PAPER_JAR_URL" --build-arg PAPER_JAR_SHA256="$PAPER_JAR_SHA256" \
 #     -t felis-paper:demo .
 #   docker save felis-paper:demo | sudo k3s ctr images import -
 #   # felis.toml → recommended via 0019_recommended_paper.sql (no [velocity] key points here)
@@ -29,7 +29,7 @@
 
 # 25-jre, not 21: Paper 26.2 declares java.version.minimum=25 (PaperMC Fill v3) and refuses
 # to boot on anything older.
-FROM eclipse-temurin:25-jre
+FROM eclipse-temurin:25-jre@sha256:bb036ed6cfdc57e3da7c22634d15f1b840d2caf76183861c80e81ca4b5104abb
 ARG PAPER_JAR_URL
 # Required alongside the URL: Fill's URLs are content-addressed, but nothing enforces
 # that shape at build time. Checking the digest after the download turns a truncated or

@@ -24,6 +24,7 @@ var bootstrapAssets embed.FS
 // otherwise be baked into every felis binary. Keep them explicit — add a source
 // directory here, never a parent.
 //
+//go:embed deploy/game-stack.lock
 //go:embed deploy/limbo/Dockerfile deploy/limbo/entrypoint.sh
 //go:embed deploy/lobby/Dockerfile deploy/lobby/entrypoint.sh
 //go:embed deploy/paper/Dockerfile deploy/paper/entrypoint.sh

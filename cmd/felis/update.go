@@ -72,7 +72,7 @@ var updateTargets = []updateTarget{
 	{
 		selector:  "velocity",
 		component: "velocity",
-		note:      "re-runs install_velocity: newest BUILD of the pinned minor (FELIS_VELOCITY_VERSION), atomic jar install, then restarts felis-velocity",
+		note:      "re-runs install_velocity: the build the release pins in deploy/game-stack.lock (FELIS_VELOCITY_VERSION=<minor> takes that minor's newest build instead), sha256-checked, atomic jar install, then restarts felis-velocity only if the jar or its config changed",
 		command:   installerRerun,
 	},
 	{

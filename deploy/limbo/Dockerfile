@@ -10,10 +10,11 @@
 # There is no bundled server.properties — Limbo writes a default on first run.
 # So the runtime is assembled from those two URLs (not a zip) via --build-arg:
 #
+#   . <(grep '^LIMBO_' deploy/game-stack.lock)
 #   docker build -f deploy/limbo/Dockerfile \
-#     --build-arg LIMBO_JAR_URL=https://ci.loohpjames.com/job/Limbo/<n>/artifact/target/Limbo-<ver>.jar \
-#     --build-arg LIMBO_SCHEM_URL=https://ci.loohpjames.com/job/Limbo/<n>/artifact/spawn.schem \
-#     --build-arg LIMBO_VERSION=<maven-api-version> \
+#     --build-arg LIMBO_JAR_URL="$LIMBO_JAR_URL" --build-arg LIMBO_JAR_SHA256="$LIMBO_JAR_SHA256" \
+#     --build-arg LIMBO_SCHEM_URL="$LIMBO_SCHEM_URL" --build-arg LIMBO_SCHEM_SHA256="$LIMBO_SCHEM_SHA256" \
+#     --build-arg LIMBO_VERSION="$LIMBO_VERSION" \
 #     -t felis-limbo:demo .
 #
 # Note LIMBO_VERSION (the maven API version the plugin compiles against, e.g.
@@ -33,7 +34,7 @@
 # JDK 17 fails to read them with "wrong version 65.0, should be 61.0". The image
 # also provides the `gradle` binary (this tree vendors no Gradle wrapper).
 # build.gradle still targets release 17 bytecode so the plugin loads on Java 17+.
-FROM gradle:8.14-jdk21 AS plugin
+FROM gradle:8.14-jdk21@sha256:5c4c0c4284de4a19951e82ac78f86dbcda2e136644bbfe159beba7ea3420cc80 AS plugin
 WORKDIR /src
 # Copy what the limbo module needs: its own tree plus the shared link core it
 # srcDir-includes (../shared/src/main/java → /src/plugins/shared/src/main/java), so
@@ -50,21 +51,33 @@ RUN cd plugins/limbo \
 # 21-jre: the Limbo jar is Java 21 bytecode (class-file major 65), so a Java 17
 # JRE cannot run it (UnsupportedClassVersionError). A 21 JRE also runs the
 # plugin's release-17 bytecode fine.
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:21-jre@sha256:49e21e16e3c86eb7816a44a67549910ed090fbeb40c29c525d58bf5e02e91b0f
 ARG LIMBO_JAR_URL
+ARG LIMBO_JAR_SHA256
 ARG LIMBO_SCHEM_URL
+ARG LIMBO_SCHEM_SHA256
 WORKDIR /limbo
 # Pull the two loose LOOHP/Limbo CI artifacts: the server jar (required, saved as
-# Limbo.jar) and the default spawn schematic (optional). Fail loudly if the jar
-# URL was not supplied.
+# Limbo.jar) and the default spawn schematic (optional). Each is checked against the
+# digest deploy/game-stack.lock names (bootstrap.sh passes it): the login gate is the
+# first thing every player's connection reaches, and Limbo's CI publishes no digest of
+# its own.
 RUN set -eu; \
     if [ -z "${LIMBO_JAR_URL:-}" ]; then \
       echo "ERROR: --build-arg LIMBO_JAR_URL=<Limbo server jar> is required" >&2; exit 1; \
     fi; \
+    if [ -z "${LIMBO_JAR_SHA256:-}" ]; then \
+      echo "ERROR: --build-arg LIMBO_JAR_SHA256=<Limbo jar sha256> is required" >&2; exit 1; \
+    fi; \
+    if [ -n "${LIMBO_SCHEM_URL:-}" ] && [ -z "${LIMBO_SCHEM_SHA256:-}" ]; then \
+      echo "ERROR: --build-arg LIMBO_SCHEM_SHA256=<spawn.schem sha256> is required with LIMBO_SCHEM_URL" >&2; exit 1; \
+    fi; \
     apt-get update && apt-get install -y --no-install-recommends curl ca-certificates; \
     curl -fSL "$LIMBO_JAR_URL" -o /limbo/Limbo.jar; \
+    echo "$LIMBO_JAR_SHA256  /limbo/Limbo.jar" | sha256sum -c; \
     if [ -n "${LIMBO_SCHEM_URL:-}" ]; then \
       curl -fSL "$LIMBO_SCHEM_URL" -o /limbo/spawn.schem; \
+      echo "$LIMBO_SCHEM_SHA256  /limbo/spawn.schem" | sha256sum -c; \
     fi; \
     apt-get purge -y curl && apt-get autoremove -y && rm -rf /var/lib/apt/lists/*; \
     mkdir -p /limbo/plugins
