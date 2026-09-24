@@ -724,6 +724,16 @@ control namespace (or `--registry-namespace`):
   its gate runs) cannot be pulled from the registry they make up, so the installer
   labels both `io.cri-containerd.pinned=pinned` in containerd and kubelet's image
   GC never collects them. Check with `k3s ctr images ls | grep pinned`.
+- **The registry image is pinned by digest**
+  (`docker.io/library/registry:2.8.3@sha256:a3d8aaa6…`), and the installer
+  caches it with `k3s crictl pull`. On an air-gapped node, carry it over with
+  containerd's own export, which keeps the digest ref. On a connected machine
+  with k3s or containerd (`R` is the full `docker.io/library/registry@sha256:…`
+  ref from `internal/platform/identities.go`):
+  `ctr images pull --all-platforms $R && ctr images export --all-platforms
+  registry.tar $R`; on the node: `k3s ctr images import --all-platforms
+  registry.tar`, then re-run the installer to pin it. A `docker save` round trip
+  rewrites the manifest, and kubelet will not match it to the digest.
 - **Selector quirk worth knowing:** the registry Service selector is only
   `name + component=registry` — it deliberately lacks the
   `part-of=felis-control-plane` label, so the registry is *invisible* to the
@@ -1290,7 +1300,9 @@ annotated Service endpoints picks them up as is.
 
 There is no in-place updater: an upgrade is re-running the installer
 (`curl -fsSL <installer URL> | sudo bash`), which rebuilds/re-imports the image
-and re-applies the bundle. (`sudo felis setup` is not this path; on a completed
+and re-applies the bundle. `felis update --panel` prints that command with the
+script read at the newest release's tag, so the installer and the binary it
+downloads come from the same release. (`sudo felis setup` is not this path; on a completed
 install it only opens the config console.) The channel is not persisted across
 the re-run, so pass `FELIS_VERSION_BOOTSTRAP=dev` on a host that tracks main.
 Two properties of the control plane matter when you do:
@@ -1302,6 +1314,21 @@ Two properties of the control plane matter when you do:
 - If the new pod cannot start (bad tag, missing image), the installer's rollout
   wait fails after 180s and prints `kubectl describe` diagnostics: you see
   `ErrImagePull`/`ImagePullBackOff` there instead of a silent hang.
+
+**What the installer checks before it runs anything it downloaded:**
+
+| Download | Check |
+|---|---|
+| `felis-linux-<arch>` (release channel) | its sha256 must match the release's `SHA256SUMS`; a release without one, or a mismatch, is compiled from the same tag instead |
+| k3s (fresh install only) | the install script is read at `FELIS_K3S_VERSION`'s tag (default `v1.36.4+k3s1`), and it checks the binary against that release's sha256 list |
+| cloudflared (when absent) | release `FELIS_CLOUDFLARED_VERSION` (default `2026.9.1`) against a pinned sha256; another version needs `FELIS_CLOUDFLARED_SHA256` |
+| Go toolchain (nano, source builds) | pinned sha256 per architecture; another version needs `FELIS_GO_SHA256` |
+| the registry image | pinned by digest (`registry:2.8.3@sha256:a3d8…`) |
+
+On a public repository each release also carries a signed build-provenance
+attestation. Check a downloaded binary with
+`gh attestation verify felis-linux-amd64 --repo FelisMC/Felis`; it names the
+workflow run and commit that built it.
 
 Roll back with:
 
