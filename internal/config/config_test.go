@@ -609,3 +609,50 @@ url = "postgres://felis@db/felis"
 		t.Fatal("negative max_per_hour accepted")
 	}
 }
+
+// TestLoadOffsite: a bucket turns the table on and fills in the secret refs and
+// bundle count; a half-filled or malformed table fails at load.
+func TestLoadOffsite(t *testing.T) {
+	const head = `
+[server]
+root_domain = "mc.example.net"
+[database]
+url = "postgres://felis@db/felis"
+`
+	cfg, err := config.Load(writeTOML(t, head))
+	if err != nil {
+		t.Fatalf("Load without [offsite]: %v", err)
+	}
+	if cfg.Offsite.Enabled() || cfg.Offsite.KeyRef != "" {
+		t.Fatalf("absent [offsite] must stay off and zero, got %+v", cfg.Offsite)
+	}
+
+	cfg, err = config.Load(writeTOML(t, head+`
+[offsite]
+endpoint = "https://s3.example.net"
+bucket = "felis-copies"
+prefix = "site-a"
+`))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	o := cfg.Offsite
+	if !o.Enabled() || o.AccessKeyRef != "FELIS_OFFSITE_ACCESS_KEY" || o.SecretKeyRef != "FELIS_OFFSITE_SECRET_KEY" ||
+		o.KeyRef != "FELIS_OFFSITE_KEY" || o.DBKeep != 30 {
+		t.Fatalf("defaults not applied: %+v", o)
+	}
+
+	for name, body := range map[string]string{
+		"no bucket":        "endpoint = \"https://s3.example.net\"",
+		"no endpoint":      "bucket = \"b\"",
+		"path in endpoint": "endpoint = \"https://s3.example.net/b\"\nbucket = \"b\"",
+		"ftp endpoint":     "endpoint = \"ftp://s3.example.net\"\nbucket = \"b\"",
+		"bucket with key":  "endpoint = \"s3.example.net\"\nbucket = \"b/x\"",
+		"negative keep":    "endpoint = \"s3.example.net\"\nbucket = \"b\"\ndb_keep = -1",
+		"secret in toml":   "endpoint = \"s3.example.net\"\nbucket = \"b\"\nsecret_key = \"x\"",
+	} {
+		if _, err := config.Load(writeTOML(t, head+"[offsite]\n"+body+"\n")); err == nil {
+			t.Errorf("%s: loaded", name)
+		}
+	}
+}

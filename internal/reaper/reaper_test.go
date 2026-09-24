@@ -107,6 +107,7 @@ type fakeBackup struct {
 	size               int64
 	status             string // present | deleted
 	createdAt, expires time.Time
+	offsite            bool
 }
 
 type fakeStore struct {
@@ -133,13 +134,19 @@ func (s *fakeStore) ListActiveServers(context.Context) ([]Candidate, error) {
 	return out, nil
 }
 
-func (s *fakeStore) FreshBackup(_ context.Context, server string, since time.Time) (string, bool, error) {
+func (s *fakeStore) FreshBackup(_ context.Context, server string, since time.Time) (Fresh, bool, error) {
+	var found *fakeBackup
 	for _, b := range s.backups {
 		if b.server == server && b.status == "present" && !b.createdAt.Before(since) {
-			return b.ref, true, nil
+			if found == nil || (b.offsite && !found.offsite) {
+				found = b
+			}
 		}
 	}
-	return "", false, nil
+	if found == nil {
+		return Fresh{}, false, nil
+	}
+	return Fresh{Ref: found.ref, Offsite: found.offsite}, true, nil
 }
 
 func (s *fakeStore) InsertBackup(_ context.Context, rec BackupRecord) error {
@@ -423,6 +430,38 @@ func TestReapDeletePVCFailureIsIdempotent(t *testing.T) {
 	}
 	if len(st.backups) != 1 {
 		t.Fatalf("retry duplicated the backup row: %d rows, want 1", len(st.backups))
+	}
+}
+
+// With an off-site bucket configured the reaper archives an idle world but
+// keeps it until the archive's copy is confirmed; the next run reuses that
+// archive and deletes the world, without archiving it again.
+func TestReapWaitsForOffsiteCopy(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.RequireOffsite = true
+	r, st, cl, ar := newReaper(cfg,
+		Candidate{Name: "echo", OwnerID: "user-5", LastActiveAt: idleBy(20 * Day)})
+
+	sum := mustRun(t, r)
+	if sum.WorldsReaped != 0 || sum.AwaitingOffsite != 1 || sum.Skipped != 0 {
+		t.Fatalf("run1 summary = %+v, want archived and awaiting the copy", sum)
+	}
+	if ar.archives != 1 || len(st.backups) != 1 || cl.deletePVCCalls != 0 {
+		t.Fatalf("run1: archives=%d backups=%d deletes=%d, want 1/1/0", ar.archives, len(st.backups), cl.deletePVCCalls)
+	}
+
+	// The copy has not landed yet: still kept, still one archive.
+	if sum := mustRun(t, r); sum.AwaitingOffsite != 1 || ar.archives != 1 || cl.deletePVCCalls != 0 {
+		t.Fatalf("run2 = %+v archives=%d deletes=%d, want the world still kept", sum, ar.archives, cl.deletePVCCalls)
+	}
+
+	st.backups[0].offsite = true
+	sum = mustRun(t, r)
+	if sum.WorldsReaped != 1 || sum.AwaitingOffsite != 0 {
+		t.Fatalf("run3 summary = %+v, want reaped", sum)
+	}
+	if ar.archives != 1 || len(cl.deletedPVCs) != 1 {
+		t.Fatalf("run3: archives=%d deleted=%v, want the copied archive reused and the PVC gone", ar.archives, cl.deletedPVCs)
 	}
 }
 

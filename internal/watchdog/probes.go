@@ -13,6 +13,7 @@ import (
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/dbbackup"
 	"felis.lolicon.best/internal/naming"
+	"felis.lolicon.best/internal/offsite"
 	"felis.lolicon.best/internal/platform"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
@@ -333,6 +334,43 @@ func BackupFinding(dir string, now time.Time) *Finding {
 	return f
 }
 
+// OffsiteFinding reports an off-site copy that has not completed a clean run
+// within offsite.StaleAfter, going by the record `felis offsite sync` leaves
+// in statusFile. It is a warning: the local copies are intact, but a lost
+// node would now lose what the bucket lacks, and the reaper keeps idle worlds
+// on disk until their archives reach the bucket.
+func OffsiteFinding(statusFile string, now time.Time) *Finding {
+	const hint = "journalctl -u felis-offsite -n 50; `sudo felis offsite status` (docs/troubleshooting.md §16)"
+	st, err := offsite.ReadStatus(statusFile)
+	if err != nil {
+		return &Finding{
+			Key: "offsite", Severity: Warning, For: backupFor,
+			Summary:   fmt.Sprintf("无法读取异地备份状态 %s", statusFile),
+			SummaryEN: fmt.Sprintf("cannot read the off-site copy status %s: %v", statusFile, err),
+			Hint:      hint,
+		}
+	}
+	if st != nil && !st.LastSuccess.IsZero() && now.Sub(st.LastSuccess) <= offsite.StaleAfter {
+		return nil
+	}
+	f := &Finding{
+		Key: "offsite", Severity: Warning, For: backupFor,
+		Summary:   "异地备份从未成功同步过，世界归档与数据库备份只在本机",
+		SummaryEN: "the off-site copy has never completed; world archives and database bundles exist on this machine only",
+		Hint:      hint,
+	}
+	if st != nil && !st.LastSuccess.IsZero() {
+		age := roundHours(now.Sub(st.LastSuccess))
+		f.Summary = fmt.Sprintf("异地备份已有 %s 没有成功同步", age)
+		f.SummaryEN = fmt.Sprintf("the off-site copy last completed %s ago", age)
+	}
+	if st != nil && st.LastError != "" {
+		f.Summary += "（最近一次错误：" + st.LastError + "）"
+		f.SummaryEN += " (last error: " + st.LastError + ")"
+	}
+	return f
+}
+
 // DiskFindings reports each filesystem under paths that is running out of
 // space. Paths on one filesystem are reported once, under the first of them; a
 // path that does not exist is skipped (a feature that is not in use).
@@ -407,8 +445,9 @@ func MemoryFinding(meminfo string) *Finding {
 	}
 }
 
+// roundHours prints a duration to the hour, "35h" rather than "35h0m0s".
 func roundHours(d time.Duration) string {
-	return d.Round(time.Hour).String()
+	return strings.TrimSuffix(d.Round(time.Hour).String(), "0m0s")
 }
 
 func humanBytes(b uint64) string {

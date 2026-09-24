@@ -49,18 +49,18 @@ func (s *PGStore) ListActiveServers(ctx context.Context) ([]Candidate, error) {
 	return out, rows.Err()
 }
 
-func (s *PGStore) FreshBackup(ctx context.Context, server string, since time.Time) (string, bool, error) {
-	const q = `SELECT backup_ref FROM world_backups
+func (s *PGStore) FreshBackup(ctx context.Context, server string, since time.Time) (Fresh, bool, error) {
+	const q = `SELECT backup_ref, offsite_at IS NOT NULL FROM world_backups
 		WHERE server_name = $1 AND status = 'present' AND created_at >= $2
-		ORDER BY created_at DESC LIMIT 1`
-	var ref string
-	switch err := s.db.QueryRowContext(ctx, q, server, since).Scan(&ref); {
+		ORDER BY offsite_at IS NOT NULL DESC, created_at DESC LIMIT 1`
+	var f Fresh
+	switch err := s.db.QueryRowContext(ctx, q, server, since).Scan(&f.Ref, &f.Offsite); {
 	case err == sql.ErrNoRows:
-		return "", false, nil
+		return Fresh{}, false, nil
 	case err != nil:
-		return "", false, err
+		return Fresh{}, false, err
 	}
-	return ref, true, nil
+	return f, true, nil
 }
 
 func (s *PGStore) InsertBackup(ctx context.Context, rec BackupRecord) error {

@@ -1029,6 +1029,43 @@ func backupPVC(p Params) *corev1.PersistentVolumeClaim {
 	}
 }
 
+// VolumeBinderPod mounts pvc and exits at once. A WaitForFirstConsumer volume
+// (k3s local-path) has no directory until a pod uses it, and on a rebuilt node
+// nothing has yet, so `felis offsite fetch-worlds` runs this to have the
+// archive volume provisioned before it writes the archives back into it. It
+// runs as the control-plane identity, which the archive volume's files already
+// belong to (fsGroup).
+func VolumeBinderPod(ns, pvc, image string) *corev1.Pod {
+	return &corev1.Pod{
+		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Pod"},
+		ObjectMeta: metav1.ObjectMeta{
+			GenerateName: "felis-bind-" + pvc + "-",
+			Namespace:    ns,
+			Labels:       map[string]string{LabelName: appName, LabelComponent: "volume-binder"},
+		},
+		Spec: corev1.PodSpec{
+			RestartPolicy:                corev1.RestartPolicyNever,
+			AutomountServiceAccountToken: boolPtr(false),
+			SecurityContext:              hardenedPodSecurityContext(),
+			Containers: []corev1.Container{{
+				Name:            "bind",
+				Image:           image,
+				Command:         []string{felisBinaryPath, "version"},
+				SecurityContext: hardenedContainerSecurityContext(),
+				VolumeMounts:    []corev1.VolumeMount{{Name: "archives", MountPath: "/archives"}},
+				Resources: corev1.ResourceRequirements{
+					Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("10m"), corev1.ResourceMemory: resource.MustParse("16Mi")},
+					Limits:   corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("64Mi")},
+				},
+			}},
+			Volumes: []corev1.Volume{{
+				Name:         "archives",
+				VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: pvc}},
+			}},
+		},
+	}
+}
+
 // registryLabels are the registry's recommended labels. Note the absence of
 // part-of=felis-control-plane: that is what keeps the registry out of the RCON
 // NetworkPolicy peer's reach (asserted in workloads_test.go).

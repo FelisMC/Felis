@@ -81,6 +81,12 @@ type Config struct {
 	WarnBefore     []time.Duration // §24: warn these long before the deadline (default 3d, 1d)
 	Retention      time.Duration   // §18: keep a backup this long after deletion (default 3mo≈90d)
 	MaxLocalBytes  int64           // §26: backup store soft cap; 0 = unlimited
+	// RequireOffsite holds each deletion until the world's archive has its
+	// off-site copy ([offsite] configured; internal/offsite records the copy).
+	// The archive is written on the run that finds the world idle, and the
+	// world is deleted on the first run after the copy lands, normally the
+	// next day.
+	RequireOffsite bool
 }
 
 // DefaultConfig is the spec's §24 default window set.
@@ -131,6 +137,13 @@ type BackupRecord struct {
 	ExpiresAt   time.Time
 }
 
+// Fresh is the backup FreshBackup found.
+type Fresh struct {
+	Ref string
+	// Offsite reports that the archive has its off-site copy (offsite_at).
+	Offsite bool
+}
+
 // StoredBackup is an existing world_backups row, used by both the expiry pass
 // and the capacity-eviction path.
 type StoredBackup struct {
@@ -156,10 +169,11 @@ type Store interface {
 	ListActiveServers(ctx context.Context) ([]Candidate, error)
 
 	// FreshBackup reports an existing present backup for server whose world is
-	// still current — created at or after since (the world's last_active_at).
-	// It makes a reap idempotent across a DeletePVC failure: the retry reuses
-	// the archive instead of writing a duplicate.
-	FreshBackup(ctx context.Context, server string, since time.Time) (ref string, ok bool, err error)
+	// still current — created at or after since (the world's last_active_at),
+	// preferring one already copied off-site. It makes a reap idempotent across
+	// a DeletePVC failure, and across the wait for the off-site copy: the retry
+	// reuses the archive instead of writing a duplicate.
+	FreshBackup(ctx context.Context, server string, since time.Time) (b Fresh, ok bool, err error)
 
 	// InsertBackup records a world_backups row (status=present).
 	InsertBackup(ctx context.Context, rec BackupRecord) error
@@ -232,6 +246,9 @@ type Summary struct {
 	Skipped        int // exempt, CRD gone, or could not back up
 	EvictedEarly   int
 	BackupsExpired int
+	// AwaitingOffsite are idle worlds that are archived and kept until the
+	// archive's off-site copy lands.
+	AwaitingOffsite int
 }
 
 func (r *Reaper) now() time.Time {
@@ -336,10 +353,11 @@ func (r *Reaper) reap(ctx context.Context, now time.Time, c Candidate, crd Serve
 	// world but failed before deleting the PVC, reuse that backup rather than
 	// writing a duplicate. The world has not changed since last_active_at, so
 	// any present backup created after it still describes the current world.
-	ref, ok, err := r.Store.FreshBackup(ctx, c.Name, c.LastActiveAt)
+	fresh, ok, err := r.Store.FreshBackup(ctx, c.Name, c.LastActiveAt)
 	if err != nil {
 		return fmt.Errorf("lookup fresh backup: %w", err)
 	}
+	ref, offsite := fresh.Ref, fresh.Offsite
 	if !ok {
 		aref, size, err := r.Archiver.Archive(ctx, c.Name, crd.PVC)
 		if err != nil {
@@ -364,7 +382,15 @@ func (r *Reaper) reap(ctx context.Context, now time.Time, c Candidate, crd Serve
 			}
 			return fmt.Errorf("insert backup: %w", err)
 		}
-		ref = string(aref)
+		ref, offsite = string(aref), false
+	}
+
+	// With an off-site bucket configured, the archive on this node's disk is
+	// not enough on its own: a lost disk would take it along with the world.
+	if r.Cfg.RequireOffsite && !offsite {
+		sum.AwaitingOffsite++
+		r.log().Info("reaper: world archived, kept until the archive's off-site copy is confirmed", "server", c.Name, "backup_ref", ref)
+		return nil
 	}
 
 	// World is safely archived and recorded — now (and only now) delete it.

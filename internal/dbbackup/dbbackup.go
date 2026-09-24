@@ -266,8 +266,8 @@ func BundleName(t time.Time, label string) string {
 	return bundlePrefix + t.UTC().Format(stampLayout) + "-" + label + bundleExt
 }
 
-// parseBundleName reverses BundleName.
-func parseBundleName(name string) (time.Time, string, bool) {
+// ParseBundleName reverses BundleName: the stamp and label of a bundle file name.
+func ParseBundleName(name string) (time.Time, string, bool) {
 	if !strings.HasPrefix(name, bundlePrefix) || !strings.HasSuffix(name, bundleExt) {
 		return time.Time{}, "", false
 	}
@@ -297,7 +297,7 @@ func List(dir string) ([]Bundle, error) {
 		if !e.Type().IsRegular() {
 			continue
 		}
-		t, label, ok := parseBundleName(e.Name())
+		t, label, ok := ParseBundleName(e.Name())
 		if !ok {
 			continue
 		}

@@ -131,8 +131,8 @@ func cmdReaper(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis reaper: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "felis reaper: evaluated=%d reaped=%d warned=%d skipped=%d evicted=%d expired=%d\n",
-		sum.Evaluated, sum.WorldsReaped, sum.Warned, sum.Skipped, sum.EvictedEarly, sum.BackupsExpired)
+	fmt.Fprintf(stdout, "felis reaper: evaluated=%d reaped=%d awaiting_offsite=%d warned=%d skipped=%d evicted=%d expired=%d\n",
+		sum.Evaluated, sum.WorldsReaped, sum.AwaitingOffsite, sum.Warned, sum.Skipped, sum.EvictedEarly, sum.BackupsExpired)
 	return 0
 }
 
@@ -198,6 +198,7 @@ func reaperConfig(cfg *config.Config) (reaper.Config, error) {
 		}
 		rc.MaxLocalBytes = b
 	}
+	rc.RequireOffsite = cfg.Offsite.Enabled()
 	return rc, nil
 }
 

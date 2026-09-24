@@ -164,6 +164,35 @@ func TestControlPlanePods_Hardened(t *testing.T) {
 	}
 }
 
+// TestVolumeBinderPod pins the pod `felis offsite fetch-worlds` runs to get the
+// archive volume provisioned: hardened like the control plane (it runs in the
+// Minecraft namespace under PSA), mounting the named claim, gone once it exits.
+func TestVolumeBinderPod(t *testing.T) {
+	pod := VolumeBinderPod("minecraft", "felis-backups", "registry.example/felis:1")
+	ps := pod.Spec
+	if pod.Namespace != "minecraft" || pod.GenerateName == "" || ps.RestartPolicy != corev1.RestartPolicyNever {
+		t.Fatalf("pod meta = %+v, restart %s", pod.ObjectMeta, ps.RestartPolicy)
+	}
+	if ps.SecurityContext == nil || ps.SecurityContext.RunAsNonRoot == nil || !*ps.SecurityContext.RunAsNonRoot ||
+		ps.SecurityContext.SeccompProfile == nil || ps.SecurityContext.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
+		t.Errorf("pod security context = %+v", ps.SecurityContext)
+	}
+	if ps.AutomountServiceAccountToken == nil || *ps.AutomountServiceAccountToken {
+		t.Error("the binder needs no API token")
+	}
+	c := ps.Containers[0]
+	if got := append(append([]string{}, c.Command...), c.Args...); !containsSeq(got, []string{felisBinaryPath, "version"}) {
+		t.Errorf("command = %v", got)
+	}
+	if sc := c.SecurityContext; sc == nil || sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation ||
+		sc.Capabilities == nil || len(sc.Capabilities.Drop) == 0 || sc.Capabilities.Drop[0] != "ALL" {
+		t.Errorf("container security context = %+v", c.SecurityContext)
+	}
+	if len(ps.Volumes) != 1 || ps.Volumes[0].PersistentVolumeClaim == nil || ps.Volumes[0].PersistentVolumeClaim.ClaimName != "felis-backups" {
+		t.Errorf("volumes = %+v", ps.Volumes)
+	}
+}
+
 // TestAPIDeployment_Wiring pins the api entrypoint, the credential plumbing, and
 // the FELIS_IMAGE passthrough.
 func TestAPIDeployment_Wiring(t *testing.T) {

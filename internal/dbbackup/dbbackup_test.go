@@ -474,8 +474,8 @@ func TestParseBundleName(t *testing.T) {
 		"felis-db-20260924T033000Z-daily.tar.sha256": false,
 		"other.tar": false,
 	} {
-		if _, _, got := parseBundleName(name); got != ok {
-			t.Errorf("parseBundleName(%q) ok = %v, want %v", name, got, ok)
+		if _, _, got := ParseBundleName(name); got != ok {
+			t.Errorf("ParseBundleName(%q) ok = %v, want %v", name, got, ok)
 		}
 	}
 }

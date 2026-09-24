@@ -1020,12 +1020,14 @@ rm -f "$kubcalls"
 wrblock="$(awk '/^write_felis_toml\(\) \{/,/^}/' "$BS")"
 prblock="$(awk '/^persisted_registry_block\(\) \{/,/^}/' "$BS")"
 pablock="$(awk '/^persisted_archive_block\(\) \{/,/^}/' "$BS")"
-{ [ -n "$wrblock" ] && [ -n "$prblock" ] && [ -n "$pablock" ]; } \
-  || { echo "FAIL: write_felis_toml / persisted_{registry,archive}_block not found in $BS"; exit 1; }
+poblock="$(awk '/^persisted_offsite_block\(\) \{/,/^}/' "$BS")"
+oblock="$(awk '/^offsite_block\(\) \{/,/^}/' "$BS")"
+{ [ -n "$wrblock" ] && [ -n "$prblock" ] && [ -n "$pablock" ] && [ -n "$poblock" ] && [ -n "$oblock" ]; } \
+  || { echo "FAIL: write_felis_toml / persisted_{registry,archive,offsite}_block / offsite_block not found in $BS"; exit 1; }
 # The blocks quote themselves (the awk program uses single quotes), so they are
 # sourced from a file instead of being spliced into a single-quoted bash -c.
 fnfile="$(mktemp)"
-printf '%s\n%s\n%s\n' "$prblock" "$pablock" "$wrblock" > "$fnfile"
+printf '%s\n%s\n%s\n%s\n%s\n' "$prblock" "$pablock" "$poblock" "$oblock" "$wrblock" > "$fnfile"
 
 rdir="$(mktemp -d)"
 cat > "$rdir/felis.host.toml" <<'TOML'
@@ -1044,6 +1046,10 @@ region = "us-east-1"
 store = "tarLocal"
 local_path = "/stale/path"
 retention = "30d"
+
+[offsite]
+endpoint = "https://objects.example"
+bucket = "felis-offsite"
 TOML
 
 run_write() { # out-file
@@ -1055,7 +1061,7 @@ run_write() { # out-file
     FELIS_ROOT_DOMAIN=r.example.com DB_USER=u DB_PASSWORD=p DB_NAME=d MINECRAFT_NS=minecraft \
     FELIS_EGRESS_MODE=nodeport FELIS_LIMBO_IMAGE=li FELIS_LOBBY_IMAGE=lo \
     REGISTRY_URL=registry.felis.svc:5000 BUILD_NS=felis-build FELIS_ARCHIVE_LOCAL_PATH=/a \
-    write_felis_toml "$OUT_TOML" 127.0.0.1'
+    FELIS_OFFSITE_BUCKET= write_felis_toml "$OUT_TOML" 127.0.0.1'
 }
 
 run_write "$rdir/out.toml"
@@ -1071,6 +1077,11 @@ expect "the carried subtable keeps its keys" 'endpoint = "https://s3.example"' "
 expect "url stays installer-owned" 'url = "registry.felis.svc:5000"' "$out"
 expect "a re-run carries the archive retention window" 'retention = "30d"' "$out"
 expect "the archive mount stays installer-owned" 'local_path = "/a"' "$out"
+expect "a re-run keeps the off-site bucket, set apart from the next section" '[offsite]
+endpoint = "https://objects.example"
+bucket = "felis-offsite"
+
+[auth]' "$out"
 case "$out" in
   *stale.invalid* | *stale-ns* | *stale/path*)
     echo "FAIL: stale installer-owned values survived the re-run"; fails=$((fails + 1)) ;;
@@ -1220,6 +1231,158 @@ case "$main_block" in
     echo "PASS main quiets the watchdog first and installs it last" ;;
   *) echo "FAIL main must call quiet_watchdog before any restart and install_watchdog_timer after the backup timer"; fails=$((fails + 1)) ;;
 esac
+case "$main_block" in
+  *load_or_make_secrets*configure_offsite*run_migrations*install_db_backup_timer*install_offsite_timer*install_watchdog_timer*)
+    echo "PASS main configures the off-site copy before the toml is written and starts it after the first backup" ;;
+  *) echo "FAIL main must call configure_offsite before run_migrations and install_offsite_timer between the backup and watchdog timers"; fails=$((fails + 1)) ;;
+esac
+
+# --- the off-site copy: [offsite], its secrets file, the hourly timer ---------------------
+# Without it every backup is on one disk. A re-run must keep the bucket, the encryption key
+# must never change under objects sealed with the old one, and an install without a bucket
+# must say so loudly.
+
+ofile="$(mktemp)"
+for fn in validate_offsite_settings persisted_offsite_block offsite_block offsite_enabled configure_offsite install_offsite_timer summary_offsite; do
+  blk="$(awk "/^${fn}\\(\\) \\{/,/^}/" "$BS")"
+  [ -n "$blk" ] || { echo "FAIL: no ${fn} found in $BS"; exit 1; }
+  [ "$(printf '%s\n' "$blk" | wc -l)" -lt 90 ] \
+    || { echo "FAIL: the extracted block is not ${fn} -- did its closing brace move?"; exit 1; }
+  printf '%s\n' "$blk" >> "$ofile"
+done
+
+odir="$(mktemp -d)"
+run_offsite() { # script; runs with the off-site functions sourced
+  STATE_DIR="$odir" OFFSITE_ENV="$odir/offsite.env" OFFSITE_SERVICE="$odir/felis-offsite.service" \
+    OFFSITE_TIMER="$odir/felis-offsite.timer" FNFILE="$ofile" HOST_BIN=fakefelis \
+    FELIS_DB_BACKUP_DIR=/var/lib/felis/db-backups FELIS_BACKUP_PVC=felis-backups bash -c '
+    set -Eeuo pipefail
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    log() { printf "LOG: %s\n" "$*"; }; ok() { printf "OK: %s\n" "$*"; }; warn() { printf "WARN: %s\n" "$*"; }
+    systemctl() { printf "SYSTEMCTL: %s\n" "$*" >&2; }
+    fakefelis() { printf "RUN: %s\n" "$*" >&2; [ -z "${CHECK_FAILS:-}" ] || { echo "bucket: access denied" >&2; return 1; }; }
+    FELIS_OFFSITE_ENDPOINT="${FELIS_OFFSITE_ENDPOINT:-}" FELIS_OFFSITE_BUCKET="${FELIS_OFFSITE_BUCKET:-}"
+    FELIS_OFFSITE_REGION="${FELIS_OFFSITE_REGION:-}" FELIS_OFFSITE_PREFIX="${FELIS_OFFSITE_PREFIX:-}"
+    FELIS_OFFSITE_DB_KEEP="${FELIS_OFFSITE_DB_KEEP:-}"
+    . "$FNFILE"
+    '"$1" 2>&1
+}
+
+out="$(FELIS_OFFSITE_BUCKET=b run_offsite validate_offsite_settings)"
+expect "a bucket without an endpoint is refused" "DIE: FELIS_OFFSITE_BUCKET needs FELIS_OFFSITE_ENDPOINT" "$out"
+out="$(FELIS_OFFSITE_ENDPOINT=https://s3.example FELIS_OFFSITE_BUCKET='b"x' run_offsite validate_offsite_settings)"
+expect "a quote cannot reach the generated toml" "DIE: FELIS_OFFSITE_BUCKET must not contain quotes" "$out"
+out="$(FELIS_OFFSITE_ENDPOINT=https://s3.example FELIS_OFFSITE_BUCKET=b FELIS_OFFSITE_SECRET_KEY="se'cret" run_offsite validate_offsite_settings)"
+expect "a quote cannot reach the secrets file" "DIE: FELIS_OFFSITE_SECRET_KEY must not contain quotes" "$out"
+out="$(FELIS_OFFSITE_ENDPOINT=https://s3.example FELIS_OFFSITE_BUCKET=b/sub run_offsite validate_offsite_settings)"
+expect "a path in the bucket name is refused" "DIE: FELIS_OFFSITE_BUCKET is a bucket name" "$out"
+out="$(FELIS_OFFSITE_ENDPOINT=https://s3.example run_offsite validate_offsite_settings)"
+expect "an endpoint without a bucket is refused" "DIE: FELIS_OFFSITE_* is set without FELIS_OFFSITE_BUCKET" "$out"
+out="$(FELIS_OFFSITE_ENDPOINT=https://s3.example FELIS_OFFSITE_BUCKET=b FELIS_OFFSITE_DB_KEEP=0 run_offsite validate_offsite_settings)"
+expect "db_keep must be positive" "DIE: FELIS_OFFSITE_DB_KEEP must be a positive number" "$out"
+out="$(run_offsite 'validate_offsite_settings; echo fine')"
+expect "no off-site settings is a valid install" "fine" "$out"
+
+out="$(FELIS_OFFSITE_ENDPOINT=https://s3.example FELIS_OFFSITE_BUCKET=felis FELIS_OFFSITE_PREFIX=host1 run_offsite offsite_block)"
+expect "the environment writes [offsite]" '[offsite]
+endpoint = "https://s3.example"
+bucket = "felis"
+prefix = "host1"' "$out"
+
+cat > "$odir/felis.host.toml" <<'TOML'
+[archive]
+store = "tarLocal"
+
+[offsite]
+endpoint = "https://s3.example"
+bucket = "kept"
+key_ref = "MY_KEY"
+
+[auth]
+admin_hostname = "x"
+TOML
+out="$(run_offsite offsite_block)"
+expect "a re-run keeps the configured bucket" 'bucket = "kept"' "$out"
+expect "a re-run keeps the key reference" 'key_ref = "MY_KEY"' "$out"
+case "$out" in
+  *admin_hostname*) echo "FAIL the carried [offsite] swallowed the next section"; fails=$((fails + 1)) ;;
+  *) echo "PASS the carried [offsite] stops at the next section" ;;
+esac
+
+# First configured install: the key is generated, the file is private, the key is shown once.
+rm -f "$odir/felis.host.toml"
+out="$(FELIS_OFFSITE_ENDPOINT=https://s3.example FELIS_OFFSITE_BUCKET=felis \
+  FELIS_OFFSITE_ACCESS_KEY=AK FELIS_OFFSITE_SECRET_KEY=SK run_offsite 'configure_offsite; summary_offsite')"
+envf="$(cat "$odir/offsite.env" 2>/dev/null)"
+expect "the access key is kept for the unit" "FELIS_OFFSITE_ACCESS_KEY='AK'" "$envf"
+expect "an encryption key is generated" "FELIS_OFFSITE_KEY='" "$envf"
+key="$(sed -n "s/^FELIS_OFFSITE_KEY='\(.*\)'$/\1/p" "$odir/offsite.env")"
+if [ "$(printf '%s' "$key" | base64 -d 2>/dev/null | wc -c | tr -d ' ')" = 32 ]; then
+  echo "PASS the generated key is 32 random bytes in base64"
+else
+  echo "FAIL the generated key '$key' is not 32 bytes of base64"; fails=$((fails + 1))
+fi
+if [ "$(stat -c %a "$odir/offsite.env" 2>/dev/null || stat -f %Lp "$odir/offsite.env")" = 600 ]; then
+  echo "PASS the off-site secrets file is private"
+else
+  echo "FAIL offsite.env must be 0600"; fails=$((fails + 1))
+fi
+expect "a new key is shown once, with the warning to keep it elsewhere" "WARN:     FELIS_OFFSITE_KEY=${key}" "$out"
+
+# A re-run with new credentials keeps the key; a different key is refused.
+out="$(FELIS_OFFSITE_ENDPOINT=https://s3.example FELIS_OFFSITE_BUCKET=felis \
+  FELIS_OFFSITE_ACCESS_KEY=AK2 run_offsite 'configure_offsite; summary_offsite')"
+expect "rotated credentials replace the old ones" "FELIS_OFFSITE_ACCESS_KEY='AK2'" "$(cat "$odir/offsite.env")"
+expect "the secret key the re-run did not give is kept" "FELIS_OFFSITE_SECRET_KEY='SK'" "$(cat "$odir/offsite.env")"
+expect "the key survives a re-run" "FELIS_OFFSITE_KEY='${key}'" "$(cat "$odir/offsite.env")"
+case "$out" in
+  *"FELIS_OFFSITE_KEY="*) echo "FAIL a re-run printed the key again"; fails=$((fails + 1)) ;;
+  *) echo "PASS a re-run does not print the key again" ;;
+esac
+out="$(FELIS_OFFSITE_ENDPOINT=https://s3.example FELIS_OFFSITE_BUCKET=felis \
+  FELIS_OFFSITE_KEY=c29tZXRoaW5nIGVsc2UgZW50aXJlbHkgZGlmZmVyZW50IQ== run_offsite configure_offsite)"
+expect "a different key is refused" "DIE: FELIS_OFFSITE_KEY differs from the key in" "$out"
+expect "the refusal leaves the key alone" "FELIS_OFFSITE_KEY='${key}'" "$(cat "$odir/offsite.env")"
+
+rm -f "$odir/offsite.env"
+out="$(FELIS_OFFSITE_ENDPOINT=https://s3.example FELIS_OFFSITE_BUCKET=felis run_offsite configure_offsite)"
+expect "a bucket without credentials is refused" "DIE: [offsite] names a bucket but there are no credentials" "$out"
+
+out="$(run_offsite 'configure_offsite; install_offsite_timer; summary_offsite; echo "enabled=$OFFSITE_ENABLED"')"
+expect "no bucket leaves the off-site copy off" "enabled=0" "$out"
+expect "no bucket is a loud warning" "WARN: NO OFF-SITE COPY" "$out"
+
+out="$(OFFSITE_ENABLED=1 run_offsite install_offsite_timer)"
+unit="$(cat "$odir/felis-offsite.service")"
+timer="$(cat "$odir/felis-offsite.timer")"
+expect "the unit loads the secrets" "EnvironmentFile=$odir/offsite.env" "$unit"
+expect "the unit syncs from the host config" \
+  "ExecStart=fakefelis offsite sync -config $odir/felis.host.toml -env-file $odir/offsite.env -db-dir /var/lib/felis/db-backups -backup-pvc \"felis-backups\"" "$unit"
+expect "a run ends before the next hour's" "TimeoutStartSec=55min" "$unit"
+expect "the copy runs hourly" "OnCalendar=hourly" "$timer"
+expect "a missed run catches up at boot" "Persistent=true" "$timer"
+expect "the timer is enabled" "SYSTEMCTL: enable --now felis-offsite.timer" "$out"
+expect "the bucket is checked during the install" "RUN: offsite list -config $odir/felis.host.toml -env-file $odir/offsite.env" "$out"
+expect "the first copy runs in the background" "SYSTEMCTL: start --no-block felis-offsite.service" "$out"
+
+out="$(OFFSITE_ENABLED=1 CHECK_FAILS=1 run_offsite install_offsite_timer)"
+expect "an unreachable bucket shows why" "bucket: access denied" "$out"
+expect "an unreachable bucket is a loud warning" "WARN: the [offsite] bucket did not answer" "$out"
+case "$out" in
+  *"start --no-block"*) echo "FAIL a failed check still started the copy"; fails=$((fails + 1)) ;;
+  *) echo "PASS a failed check does not start the copy" ;;
+esac
+
+out="$(OFFSITE_ENABLED=0 run_offsite 'systemctl() { printf "SYSTEMCTL: %s\n" "$*" >> "$STATE_DIR/systemctl.log"; }; install_offsite_timer')"
+expect "removing [offsite] disables the timer" "SYSTEMCTL: disable --now felis-offsite.timer" "$(cat "$odir/systemctl.log")"
+expect "removing [offsite] says so" "WARN: no [offsite] bucket is configured any more" "$out"
+if [ -e "$odir/felis-offsite.service" ] || [ -e "$odir/felis-offsite.timer" ]; then
+  echo "FAIL removing [offsite] left the units behind"; fails=$((fails + 1))
+else
+  echo "PASS removing [offsite] removes the units"
+fi
+rm -rf "$odir" "$ofile"
+
 
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then

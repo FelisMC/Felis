@@ -12,6 +12,7 @@ import (
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/dbbackup"
+	"felis.lolicon.best/internal/offsite"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -146,12 +147,36 @@ func TestBackupFinding(t *testing.T) {
 		}
 	}
 	touch(t0.Add(-30 * time.Hour))
-	if f := BackupFinding(dir, t0); f == nil || !strings.Contains(f.SummaryEN, "30h0m0s old") {
+	if f := BackupFinding(dir, t0); f == nil || !strings.Contains(f.SummaryEN, "30h old") {
 		t.Fatalf("stale: %+v", f)
 	}
 	touch(t0.Add(-2 * time.Hour))
 	if f := BackupFinding(dir, t0); f != nil {
 		t.Fatalf("fresh backup reported: %+v", f)
+	}
+}
+
+func TestOffsiteFinding(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "offsite", "status.json")
+	if f := OffsiteFinding(path, t0); f == nil || !strings.Contains(f.SummaryEN, "never completed") {
+		t.Fatalf("no status: %+v", f)
+	}
+	write := func(st offsite.Status) {
+		if err := offsite.WriteStatus(path, st); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(offsite.Status{LastAttempt: t0.Add(-time.Hour), LastError: "bucket unreachable"})
+	if f := OffsiteFinding(path, t0); f == nil || !strings.Contains(f.SummaryEN, "machine only (last error: bucket unreachable)") {
+		t.Fatalf("failing from the start: %+v", f)
+	}
+	write(offsite.Status{LastAttempt: t0.Add(-time.Hour), LastSuccess: t0.Add(-13 * time.Hour), LastError: "access denied"})
+	if f := OffsiteFinding(path, t0); f == nil || f.Severity != Warning || !strings.Contains(f.SummaryEN, "13h ago (last error: access denied)") {
+		t.Fatalf("stale: %+v", f)
+	}
+	write(offsite.Status{LastAttempt: t0.Add(-time.Hour), LastSuccess: t0.Add(-2 * time.Hour), LastError: "one bundle failed"})
+	if f := OffsiteFinding(path, t0); f != nil {
+		t.Fatalf("a success within %s reported: %+v", offsite.StaleAfter, f)
 	}
 }
 

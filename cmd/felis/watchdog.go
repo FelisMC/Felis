@@ -14,6 +14,7 @@ import (
 
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/mail"
+	"felis.lolicon.best/internal/offsite"
 	"felis.lolicon.best/internal/platform"
 	"felis.lolicon.best/internal/store"
 	"felis.lolicon.best/internal/watchdog"
@@ -40,6 +41,7 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 	diskPaths := fs.String("disk-paths", "/,/var/lib/rancher/k3s,/var/lib/postgresql,/var/lib/felis", "comma-separated paths whose filesystems must keep free space")
 	proxyAddr := fs.String("proxy-addr", "", `game proxy address to dial, e.g. 127.0.0.1:25565 ("" skips the check)`)
 	controlNS := fs.String("control-namespace", platform.DefaultControlNamespace, "namespace of the control plane")
+	offsiteStatus := fs.String("offsite-status", offsite.DefaultStatusFile, "the record `felis offsite sync` leaves, checked when [offsite] is configured")
 	dryRun := fs.Bool("dry-run", false, "print every finding and the mail that is due; send nothing and keep the state as it was")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -101,6 +103,9 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 	}
 	if *backupDir != "" {
 		add(watchdog.BackupFinding(*backupDir, now))
+	}
+	if cfg.Offsite.Enabled() {
+		add(watchdog.OffsiteFinding(*offsiteStatus, now))
 	}
 	report.Findings = append(report.Findings, watchdog.DiskFindings(splitList(*diskPaths))...)
 	add(watchdog.MemoryFinding("/proc/meminfo"))

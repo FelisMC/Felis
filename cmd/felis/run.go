@@ -13,6 +13,7 @@ Usage:
 Commands:
   migrate up        Apply embedded database migrations under an advisory lock (snapshots the database first)
   db                Back up, verify, list and restore the control-plane database (backup|restore|verify|list|check)
+  offsite           Copy world archives and database bundles to an off-site bucket, and fetch them back (sync|status|list|fetch-db|fetch-worlds|keygen)
   operator          Run the MinecraftServer controller-manager
   api               Run the felis-api HTTP server
   nano              Run the Felis-nano hasJoined multiplexer (multi-Yggdrasil, no control plane)
@@ -47,6 +48,7 @@ Run "felis <command> -h" for command-specific flags.
 var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"migrate":          cmdMigrate,
 	"db":               cmdDB,
+	"offsite":          cmdOffsite,
 	"operator":         cmdOperator,
 	"api":              cmdAPI,
 	"nano":             cmdNano,

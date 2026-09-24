@@ -23,6 +23,7 @@ type Config struct {
 	K8s      K8sConfig      `toml:"k8s"`
 	Registry RegistryConfig `toml:"registry"`
 	Archive  ArchiveConfig  `toml:"archive"`
+	Offsite  OffsiteConfig  `toml:"offsite"`
 	SMTP     SMTPConfig     `toml:"smtp"`
 	// AuthSources is the [[auth_source]] array-of-tables: the third-party Yggdrasil
 	// roots the Felis-nano hasJoined multiplexer federates over, in priority order
@@ -236,6 +237,48 @@ type ArchiveS3Config struct {
 	SecretKeyRef string `toml:"secret_key_ref"`
 }
 
+// OffsiteConfig is the [offsite] table: the S3-compatible bucket, away from
+// this machine, that `felis offsite sync` (felis-offsite.timer on the host)
+// copies every world archive and the newest database bundles into, encrypted
+// (internal/offsite). An empty bucket means no off-site copy: the archives and
+// the database then share the node's disk with the worlds.
+//
+// When it is set the reaper deletes an idle world only once the archive it made
+// has its off-site copy, so the reaper pod reads this table too. The secrets
+// follow the credential rule of [archive.s3]: the *_ref fields NAME the
+// environment variables holding them (bootstrap writes /etc/felis/offsite.env),
+// and they are never written into felis.toml.
+type OffsiteConfig struct {
+	// Endpoint is https://host[:port]; http:// only for a store on a trusted
+	// network. A bare host means TLS.
+	Endpoint string `toml:"endpoint"`
+	Region   string `toml:"region"`
+	Bucket   string `toml:"bucket"`
+	// Prefix places every object under this key prefix, so one bucket can hold
+	// several installs.
+	Prefix       string `toml:"prefix"`
+	AccessKeyRef string `toml:"access_key_ref"`
+	SecretKeyRef string `toml:"secret_key_ref"`
+	// KeyRef names the variable holding the encryption key (`felis offsite
+	// keygen`). The copies are unreadable without it, so it must also be kept
+	// somewhere other than this machine.
+	KeyRef string `toml:"key_ref"`
+	// DBKeep is how many of the newest database bundles the bucket keeps.
+	DBKeep int `toml:"db_keep"`
+}
+
+// Enabled reports whether an off-site bucket is configured.
+func (o OffsiteConfig) Enabled() bool { return o.Bucket != "" }
+
+// Default environment variable names for the [offsite] secrets, and the bundle
+// count kept off-site.
+const (
+	DefaultOffsiteAccessKeyEnv = "FELIS_OFFSITE_ACCESS_KEY"
+	DefaultOffsiteSecretKeyEnv = "FELIS_OFFSITE_SECRET_KEY"
+	DefaultOffsiteKeyEnv       = "FELIS_OFFSITE_KEY"
+	DefaultOffsiteDBKeep       = 30
+)
+
 // archive store backends recognized by §19.
 var archiveStores = map[string]struct{}{
 	"tarLocal":       {},
@@ -347,6 +390,20 @@ func (c *Config) applyDefaults() {
 	if c.SMTP.Host != "" && c.SMTP.Port == 0 {
 		c.SMTP.Port = defaultSMTPPort
 	}
+	if c.Offsite.Enabled() {
+		if c.Offsite.AccessKeyRef == "" {
+			c.Offsite.AccessKeyRef = DefaultOffsiteAccessKeyEnv
+		}
+		if c.Offsite.SecretKeyRef == "" {
+			c.Offsite.SecretKeyRef = DefaultOffsiteSecretKeyEnv
+		}
+		if c.Offsite.KeyRef == "" {
+			c.Offsite.KeyRef = DefaultOffsiteKeyEnv
+		}
+		if c.Offsite.DBKeep == 0 {
+			c.Offsite.DBKeep = DefaultOffsiteDBKeep
+		}
+	}
 }
 
 // Validate enforces the mandatory fields (spec §24: database.url is 强制) and
@@ -398,10 +455,41 @@ func (c *Config) Validate() error {
 	if c.SMTP.MaxPerHour < 0 {
 		return fmt.Errorf("config: [smtp] max_per_hour %d must be positive (0 means the default %d)", c.SMTP.MaxPerHour, DefaultMailPerHour)
 	}
+	if err := c.Offsite.validate(); err != nil {
+		return err
+	}
 	if h := c.Auth.ClientIPHeader; strings.ContainsAny(h, " :\t\r\n") {
 		return fmt.Errorf("config: [auth] client_ip_header %q must be a bare header name such as CF-Connecting-IP or X-Forwarded-For", h)
 	}
 	return c.validateAuthSources()
+}
+
+// validate checks a configured [offsite] table. Nothing is required of an
+// unconfigured one; a half-filled one (an endpoint and no bucket) is refused,
+// since it reads as configured while nothing is copied anywhere.
+func (o OffsiteConfig) validate() error {
+	if !o.Enabled() {
+		if o.Endpoint != "" || o.Prefix != "" {
+			return fmt.Errorf("config: [offsite] names an endpoint or prefix but no bucket; set bucket, or remove the table")
+		}
+		return nil
+	}
+	if strings.TrimSpace(o.Endpoint) == "" {
+		return fmt.Errorf("config: [offsite] endpoint is required with bucket %q (e.g. https://s3.eu-central-1.amazonaws.com)", o.Bucket)
+	}
+	if u, err := url.Parse(o.Endpoint); strings.Contains(o.Endpoint, "://") && (err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || strings.Trim(u.Path, "/") != "") {
+		return fmt.Errorf("config: [offsite] endpoint %q must be http(s)://host[:port] with no path; the bucket goes in bucket", o.Endpoint)
+	}
+	if strings.ContainsAny(o.Bucket, "/ ") {
+		return fmt.Errorf("config: [offsite] bucket %q must be a bare bucket name; put a key prefix in prefix", o.Bucket)
+	}
+	if strings.Contains(o.Prefix, "..") {
+		return fmt.Errorf("config: [offsite] prefix %q must not contain ..", o.Prefix)
+	}
+	if o.DBKeep < 1 {
+		return fmt.Errorf("config: [offsite] db_keep %d must be at least 1", o.DBKeep)
+	}
+	return nil
 }
 
 // authSourcePrefixRe is the shape of a prefix. It is prepended to a real Minecraft

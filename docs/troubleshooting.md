@@ -643,12 +643,22 @@ The reap sequence (all [GO-TESTED] hermetically) preserves the world unless a
    **preserved** (not deleted).
 2. `Archiver.Archive` fails ⇒ world **preserved**, PVC untouched.
 3. `InsertBackup` (DB) fails ⇒ the orphan archive is deleted, PVC **untouched**.
-4. **Only then** `DeletePVC` → `ReleaseWorld` → `Stop` (cosmetic) → audit →
+4. With an `[offsite]` bucket configured (§16), the archive must also be in the
+   bucket: until `felis offsite sync` has copied it and set `offsite_at` on its
+   `world_backups` row, the run logs `world archived, kept until the archive's
+   off-site copy is confirmed`, counts it in `awaiting_offsite=` and leaves the
+   PVC alone. The next daily run after the copy reuses the same archive and
+   deletes. [GO-TESTED: `TestReapWaitsForOffsiteCopy`]
+5. **Only then** `DeletePVC` → `ReleaseWorld` → `Stop` (cosmetic) → audit →
    `felis_reaper_worlds_deleted_total++`.
 
-So a missing backup never results in a deleted world. [GO-TESTED:
+So a missing backup never results in a deleted world, and with a bucket
+configured neither does a backup that exists on this disk only. [GO-TESTED:
 `TestReapArchiveFailurePreservesWorld`,
 `TestReapInsertBackupFailurePreservesWorld`, `TestReapIdleWorldFullSequence`.]
+
+`awaiting_offsite` that stays above zero for more than a day means the copy is
+failing: `sudo felis offsite status` (§16).
 
 ### Exemptions (world never reaped)
 
@@ -1297,12 +1307,26 @@ older installer version to bring the host binary back in line.
 
 ### Rebuild on a new host (the old one is gone)
 
-This needs a bundle that was copied off the old host (next section).
+This needs the off-site copy (next section) or a bundle you copied off the old
+host yourself, plus the off-site encryption key if the copy is in the bucket.
 
-1. Check the copy: `sha256sum -c felis-db-....tar.sha256`.
+1. Get the newest bundle. From the bucket, with any `felis` binary of the same
+   or a newer release (the `felis-linux-<arch>` release asset runs on its own;
+   this works from any machine that can reach the bucket):
+
+   ```
+   export FELIS_OFFSITE_ACCESS_KEY=... FELIS_OFFSITE_SECRET_KEY=... FELIS_OFFSITE_KEY=...
+   sudo -E felis offsite fetch-db -endpoint https://s3.example.com -bucket felis-backups \
+        [-region ...] [-prefix ...] latest
+   ```
+
+   It writes the bundle into `/var/lib/felis/db-backups` (`-dir` to change),
+   checks it (`felis db verify`) and names it. A wrong key fails with
+   `object does not decrypt with this key` and writes nothing. For a copy you
+   made yourself, check it with `sha256sum -c felis-db-....tar.sha256`.
 2. Put the old host's state in place **before** installing, so the installer
-   reuses the same DB password, session secret and forwarding secret (the
-   Velocity proxy and existing sessions keep working):
+   reuses the same DB password, session secret, forwarding secret and the
+   `[offsite]` bucket with its credentials and key (`offsite.env`):
 
    ```
    sudo install -d -m 0700 /etc/felis
@@ -1311,34 +1335,97 @@ This needs a bundle that was copied off the old host (next section).
 
 3. Run the installer as for a first install. `bootstrap.done` is not in the
    bundle, so it takes the fresh-install path, creates the empty database with
-   the restored password and migrates it.
+   the restored password and migrates it. It finds `[offsite]` in the restored
+   `felis.host.toml` and turns the hourly copy back on.
 4. Restore the database and bring the servers back:
 
    ```
    kubectl -n felis scale deployment felis-api felis-operator --replicas=0
-   sudo felis db restore -yes -no-safety-backup /path/to/felis-db-....tar
+   sudo felis db restore -yes -no-safety-backup /var/lib/felis/db-backups/felis-db-....tar
    sudo felis migrate up -config /etc/felis/felis.host.toml
    kubectl -n felis scale deployment felis-api felis-operator --replicas=1
    tar -xOf felis-db-....tar k8s/minecraftservers.json | kubectl apply -f -
    ```
 
-5. Worlds come back from their own archives (§10), which are a separate volume
-   and need their own off-host copy. Custom images built on the old host are
-   rebuilt from their submissions (§8), or re-pushed.
+5. Bring the world archives back into the archive volume:
+
+   ```
+   sudo felis offsite fetch-worlds
+   ```
+
+   It fetches every archive the restored `world_backups` index lists as present
+   and the volume lacks, provisioning the `felis-backups` volume first if
+   nothing has used it yet (a short-lived `felis-bind-felis-backups-*` pod). It
+   lists any it could not find in the bucket. Restore a world from its archive
+   as usual (§10, §13). Custom images built on the old host are rebuilt from
+   their submissions (§8), or re-pushed.
 
 ### Keep a copy somewhere else
 
 A bundle on the same disk as the database protects against mistakes and bad
-upgrades, not against losing the disk. Copy the directory off the host on a
-schedule of your own, for example from another machine:
+upgrades, and a world archive on the same disk as the worlds protects against
+a deleted server. Neither survives losing the disk. The installer's off-site
+copy sends both to an S3-compatible bucket (AWS S3, Cloudflare R2, Backblaze
+B2, MinIO, ...), encrypted on this host:
 
 ```
-rsync -a --delete root@felis-host:/var/lib/felis/db-backups/ /backups/felis-db/
+FELIS_OFFSITE_ENDPOINT=https://<account>.r2.cloudflarestorage.com \
+FELIS_OFFSITE_BUCKET=felis-backups \
+FELIS_OFFSITE_ACCESS_KEY=... FELIS_OFFSITE_SECRET_KEY=... \
+  bash deploy/bootstrap.sh          # or the curl | sudo bash one-liner
 ```
 
-or with `rclone copy /var/lib/felis/db-backups remote:felis-db` from a systemd
-timer on the host. Copy the `.sha256` sidecars too; `sha256sum -c` on the far
-side proves the copy.
+Optional: `FELIS_OFFSITE_REGION`, `FELIS_OFFSITE_PREFIX` (a key prefix, so one
+bucket can hold several installs) and `FELIS_OFFSITE_DB_KEEP` (default 30).
+The installer writes `[offsite]` into `felis.toml`, keeps the credentials and
+a generated encryption key in `/etc/felis/offsite.env` (mode 0600), and
+**prints the key once**. Store it in a password manager: the bucket holds only
+sealed objects, and without the key they cannot be read. A later re-run keeps
+the key; it refuses a `FELIS_OFFSITE_KEY` that differs from the one in
+`offsite.env`, since every object already in the bucket is sealed with it.
+Without a bucket the installer ends with `NO OFF-SITE COPY`.
+
+What runs:
+
+- **`felis-offsite.timer`** runs `felis offsite sync` hourly (plus up to
+  10 min random delay, `Persistent=true`). Each run copies every world archive
+  whose row has no `offsite_at` yet and records it, copies the newest
+  `db_keep` database bundles the bucket lacks and prunes older ones there, and
+  deletes a world archive from the bucket once its row has been deleted and
+  its retention (`expires_at`) has passed. An object already in the bucket at
+  the right size is recorded without being sent again, so a run cut short
+  resumes. [GO-TESTED: `internal/offsite`]
+- Objects are `worlds/<archive>.fenc` and `db/<bundle>.fenc`: AES-256-GCM in
+  64 KiB segments, so truncation, reordering and a wrong key are all refused
+  on the way back.
+- The reaper deletes an idle world only after its archive is in the bucket
+  (§10).
+- The watchdog mails the owners when no sync has completed for 12 hours
+  (`the off-site copy last completed ... ago`).
+
+Checking it:
+
+```
+sudo felis offsite status        # last run, errors, what the bucket holds, what waits
+sudo felis offsite list          # the bundles in the bucket, newest first
+sudo journalctl -u felis-offsite -n 50 --no-pager
+sudo systemctl start felis-offsite.service   # run one now
+```
+
+`status` exits 1 when no sync has completed in 12 hours. `missing:` lines are
+archives the database records but the volume no longer has (an archive
+removed by hand); there is nothing left to copy for those.
+
+To change the bucket, edit `[offsite]` in `/etc/felis/felis.host.toml` (and
+`offsite.env` for new credentials) and re-run the installer; to turn the copy
+off, delete the section and re-run. Keeping the same key across buckets keeps
+old copies readable.
+
+Without a bucket, copy the backup directory off the host on a schedule of your
+own (`rsync -a root@felis-host:/var/lib/felis/db-backups/ /backups/felis-db/`,
+with the `.sha256` sidecars; `sha256sum -c` on the far side proves the copy).
+That covers the database only; the world archives are under the
+`felis-backups` volume's directory in `/var/lib/rancher/k3s/storage/`.
 
 ### `FELIS_PRE_MIGRATE_BACKUP=0`
 
@@ -1472,6 +1559,7 @@ for 10 seconds (the Free plan's limits).
 | `pre-migration backup failed, nothing applied` during an upgrade | §16 |
 | Undo a mistaken change / restore the control-plane database | §16 |
 | Host lost: rebuild from a database bundle | §16 |
+| `the off-site copy last completed ... ago` / `NO OFF-SITE COPY` / reaper `awaiting_offsite` stays above 0 | §16, §10 |
 | Sign-in 429 `rate_limited` for everyone at once | §17 |
 | 429 `mail_rate_limited` / `FelisMailBudgetExhausted` | §17 |
 | Right code refused; `otp_account_locked` / `FelisOTPAccountLocked` | §17 |

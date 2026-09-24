@@ -153,6 +153,19 @@ FELIS_DB_BACKUP_METRICS="${FELIS_DB_BACKUP_METRICS:-/var/lib/node_exporter/textf
 # 0 migrates without the pre-migration snapshot, e.g. against an external database newer
 # than this host's pg_dump. The upgrade stops if the snapshot fails and this is not set.
 FELIS_PRE_MIGRATE_BACKUP="${FELIS_PRE_MIGRATE_BACKUP:-1}"
+# The off-site copy (felis offsite, troubleshooting §16). Every hour the host encrypts each
+# world archive and the newest database bundles and copies them to an S3-compatible bucket,
+# and the reaper deletes an idle world only once its archive is there. Without a bucket
+# every backup lives on this one machine, and losing its disk loses them all. Set the
+# bucket and its endpoint to turn it on; FELIS_OFFSITE_ACCESS_KEY / FELIS_OFFSITE_SECRET_KEY
+# (and optionally a FELIS_OFFSITE_KEY from `felis offsite keygen`) go into
+# /etc/felis/offsite.env, mode 0600, with the encryption key generated when there is none.
+# A re-run without these keeps the [offsite] felis.host.toml already has.
+FELIS_OFFSITE_ENDPOINT="${FELIS_OFFSITE_ENDPOINT:-}"
+FELIS_OFFSITE_BUCKET="${FELIS_OFFSITE_BUCKET:-}"
+FELIS_OFFSITE_REGION="${FELIS_OFFSITE_REGION:-}"
+FELIS_OFFSITE_PREFIX="${FELIS_OFFSITE_PREFIX:-}"
+FELIS_OFFSITE_DB_KEEP="${FELIS_OFFSITE_DB_KEEP:-}"
 INSTALL_MODE="${FELIS_INSTALL_MODE:-}"
 # Loopback by default: hasJoined is an unauthenticated endpoint by protocol (Velocity
 # sends no token), so a public bind is a free auth relay — anyone can point their own
@@ -255,6 +268,9 @@ DB_BACKUP_TIMER="/etc/systemd/system/felis-db-backup.timer"
 WATCHDOG_SERVICE="/etc/systemd/system/felis-watchdog.service"
 WATCHDOG_TIMER="/etc/systemd/system/felis-watchdog.timer"
 WATCHDOG_STATE="/var/lib/felis/watchdog/state.json"
+OFFSITE_ENV="${STATE_DIR}/offsite.env"
+OFFSITE_SERVICE="/etc/systemd/system/felis-offsite.service"
+OFFSITE_TIMER="/etc/systemd/system/felis-offsite.timer"
 # While this marker holds a future Unix time, felis watchdog mails nothing: an install
 # restarts the control plane and the system servers on purpose. cleanup removes it; the
 # time in it is the backstop for an installer killed before its EXIT trap runs.
@@ -600,6 +616,34 @@ validate_settings() {
   validate_nodeport FELIS_PANEL_NODEPORT "$FELIS_PANEL_NODEPORT"
   validate_listen FELIS_NANO_LISTEN "$FELIS_NANO_LISTEN"
   validate_cidr FELIS_NANO_PROXY_CIDR "$FELIS_NANO_PROXY_CIDR"
+  validate_offsite_settings
+}
+
+# validate_offsite_settings checks the FELIS_OFFSITE_* inputs before anything is
+# installed. They are written into felis.toml as TOML strings and the secrets into a
+# single-quoted env file, so a quote, a backslash or a line break is refused outright.
+validate_offsite_settings() {
+  local name value
+  for name in FELIS_OFFSITE_ENDPOINT FELIS_OFFSITE_BUCKET FELIS_OFFSITE_REGION FELIS_OFFSITE_PREFIX \
+    FELIS_OFFSITE_ACCESS_KEY FELIS_OFFSITE_SECRET_KEY FELIS_OFFSITE_KEY; do
+    value="${!name:-}"
+    case "$value" in
+      *\"* | *\'* | *\\* | *$'\n'* | *$'\r'*) die "${name} must not contain quotes, backslashes or line breaks" ;;
+    esac
+  done
+  if [ -z "$FELIS_OFFSITE_BUCKET" ]; then
+    if [ -n "$FELIS_OFFSITE_ENDPOINT$FELIS_OFFSITE_REGION$FELIS_OFFSITE_PREFIX$FELIS_OFFSITE_DB_KEEP" ]; then
+      die "FELIS_OFFSITE_* is set without FELIS_OFFSITE_BUCKET; name the bucket too"
+    fi
+    return 0
+  fi
+  [ -n "$FELIS_OFFSITE_ENDPOINT" ] || die "FELIS_OFFSITE_BUCKET needs FELIS_OFFSITE_ENDPOINT (https://host[:port] of the S3-compatible store)"
+  case "$FELIS_OFFSITE_BUCKET" in
+    */* | *' '*) die "FELIS_OFFSITE_BUCKET is a bucket name; put a path inside it in FELIS_OFFSITE_PREFIX" ;;
+  esac
+  if [ -n "$FELIS_OFFSITE_DB_KEEP" ] && ! [[ "$FELIS_OFFSITE_DB_KEEP" =~ ^[1-9][0-9]*$ ]]; then
+    die "FELIS_OFFSITE_DB_KEEP must be a positive number of bundles, got: ${FELIS_OFFSITE_DB_KEEP}"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -2319,8 +2363,52 @@ persisted_registry_block() {
   done
 }
 
+# persisted_offsite_block echoes the [offsite] section an earlier run (or the operator)
+# left behind: after the first install the bucket is configured by editing felis.host.toml
+# or by re-running with FELIS_OFFSITE_*, and a plain re-run must keep it. Deleting the
+# section and re-running is how the off-site copy is turned off. Same first-readable-file
+# rule as persisted_smtp_block.
+persisted_offsite_block() {
+  local f out
+  for f in "${STATE_DIR}/felis.host.toml" "${STATE_DIR}/felis.pod.toml"; do
+    [ -r "$f" ] || continue
+    out="$(awk '
+      /^[[:space:]]*\[/ {
+        if (inoff) exit
+        inoff = ($0 ~ /^[[:space:]]*\[offsite\][[:space:]]*$/)
+        if (inoff) print
+        next
+      }
+      inoff && /^[[:space:]]*(endpoint|region|bucket|prefix|access_key_ref|secret_key_ref|key_ref|db_keep)[[:space:]]*=/ { print }
+    ' "$f")"
+    [ -n "$out" ] || continue
+    printf '%s\n' "$out"
+    return 0
+  done
+}
+
+# offsite_block is the [offsite] section this run writes: from FELIS_OFFSITE_* when the
+# bucket is given, else the one an earlier run left.
+offsite_block() {
+  if [ -z "$FELIS_OFFSITE_BUCKET" ]; then
+    persisted_offsite_block
+    return 0
+  fi
+  printf '[offsite]\n'
+  printf 'endpoint = "%s"\n' "$FELIS_OFFSITE_ENDPOINT"
+  printf 'bucket = "%s"\n' "$FELIS_OFFSITE_BUCKET"
+  if [ -n "$FELIS_OFFSITE_REGION" ]; then printf 'region = "%s"\n' "$FELIS_OFFSITE_REGION"; fi
+  if [ -n "$FELIS_OFFSITE_PREFIX" ]; then printf 'prefix = "%s"\n' "$FELIS_OFFSITE_PREFIX"; fi
+  if [ -n "$FELIS_OFFSITE_DB_KEEP" ]; then printf 'db_keep = %s\n' "$FELIS_OFFSITE_DB_KEEP"; fi
+}
+
+# offsite_enabled: the [offsite] section this run writes names a bucket.
+offsite_enabled() {
+  offsite_block | grep -Eq '^[[:space:]]*bucket[[:space:]]*=[[:space:]]*"[^"]+"'
+}
+
 write_felis_toml() {
-  local target="$1" db_host="$2" smtp_block auth_source_blocks registry_block archive_block
+  local target="$1" db_host="$2" smtp_block auth_source_blocks registry_block archive_block offsite_section
   smtp_block="$(persisted_smtp_block)"
   if [ -n "$smtp_block" ]; then
     log "carrying forward the configured [smtp] relay"
@@ -2337,10 +2425,16 @@ write_felis_toml() {
     log "carrying forward the configured [archive] overrides"
     archive_block="${archive_block}"$'\n' # keep a blank line before the next section
   fi
+  # The pod copy needs it as much as the host one: the reaper reads [offsite] from the
+  # config Secret to know it must wait for each archive's off-site copy.
+  offsite_section="$(offsite_block)"
+  if [ -n "$offsite_section" ]; then
+    offsite_section="${offsite_section}"$'\n\n' # keep a blank line before the next section
+  fi
   cat > "$target" <<EOF
 # Generated by deploy/bootstrap.sh; rerun the installer to regenerate. Hand edits are
-# overwritten, except [smtp], [[auth_source]], and the operator-owned [registry] /
-# [archive] overrides, which carry forward.
+# overwritten, except [smtp], [[auth_source]], [offsite], and the operator-owned
+# [registry] / [archive] overrides, which carry forward.
 [server]
 listen = "0.0.0.0:8080"
 root_domain = "${FELIS_ROOT_DOMAIN}"
@@ -2366,7 +2460,7 @@ ${registry_block}
 store = "tarLocal"
 local_path = "${FELIS_ARCHIVE_LOCAL_PATH}"
 ${archive_block}
-[auth]
+${offsite_section}[auth]
 admin_hostname = "op.console.${FELIS_ROOT_DOMAIN}"
 panel_hostname = "console.${FELIS_ROOT_DOMAIN}"
 
@@ -2430,6 +2524,82 @@ run_migrations() {
 quiet_watchdog() {
   install -d -m 0755 "$(dirname "$WATCHDOG_QUIET_FILE")"
   printf '%s\n' "$(( $(date +%s) + 7200 ))" > "$WATCHDOG_QUIET_FILE"
+}
+
+# The hourly off-site copy. The bucket is checked now, in the install, so wrong
+# credentials or an unreachable endpoint show up here; the first copy itself runs in the
+# background, since a host with many archives can take a long while to upload them.
+# With no bucket configured the timer is removed (the operator deleted [offsite]) and the
+# install says loudly that every backup is on this machine only.
+install_offsite_timer() {
+  if [ "${OFFSITE_ENABLED:-0}" != 1 ]; then
+    if [ -e "$OFFSITE_TIMER" ] || [ -e "$OFFSITE_SERVICE" ]; then
+      systemctl disable --now felis-offsite.timer >/dev/null 2>&1 || true
+      rm -f "$OFFSITE_TIMER" "$OFFSITE_SERVICE"
+      systemctl daemon-reload
+      warn "no [offsite] bucket is configured any more; the off-site copy timer was removed"
+    fi
+    return 0
+  fi
+  cat > "$OFFSITE_SERVICE" <<EOF
+[Unit]
+Description=Felis off-site copy (world archives and database bundles, encrypted, to the [offsite] bucket)
+After=network-online.target k3s.service postgresql.service felis-db-backup.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=${OFFSITE_ENV}
+ExecStart=${HOST_BIN} offsite sync -config ${STATE_DIR}/felis.host.toml -env-file ${OFFSITE_ENV} -db-dir ${FELIS_DB_BACKUP_DIR} -backup-pvc "${FELIS_BACKUP_PVC}"
+TimeoutStartSec=55min
+Nice=10
+IOSchedulingClass=idle
+PrivateTmp=yes
+NoNewPrivileges=yes
+EOF
+  cat > "$OFFSITE_TIMER" <<EOF
+[Unit]
+Description=Hourly Felis off-site copy
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=10min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now felis-offsite.timer
+  if "$HOST_BIN" offsite list -config "${STATE_DIR}/felis.host.toml" -env-file "$OFFSITE_ENV" >/dev/null; then
+    systemctl start --no-block felis-offsite.service
+    ok "off-site copy: hourly to the [offsite] bucket, first copy started (sudo felis offsite status; journalctl -u felis-offsite)"
+  else
+    warn "the [offsite] bucket did not answer (error above); nothing is copied off this machine until it does: fix ${OFFSITE_ENV} or [offsite] in ${STATE_DIR}/felis.host.toml, then sudo systemctl start felis-offsite.service"
+  fi
+}
+
+# summary_offsite is the installer's last word on where the backups live.
+summary_offsite() {
+  if [ "${OFFSITE_ENABLED:-0}" != 1 ]; then
+    warn "NO OFF-SITE COPY: every world archive and database backup is on this machine only."
+    warn "Losing its disk loses them all. Set FELIS_OFFSITE_BUCKET, FELIS_OFFSITE_ENDPOINT,"
+    warn "FELIS_OFFSITE_ACCESS_KEY and FELIS_OFFSITE_SECRET_KEY and re-run (docs/troubleshooting.md §16)."
+    return 0
+  fi
+  if [ "${OFFSITE_KEY_NEW:-0}" = 1 ]; then
+    echo
+    warn "================================================================================"
+    warn "The off-site copies are encrypted with this key. Store it NOW somewhere other than"
+    warn "this machine (a password manager): without it nothing in the bucket can be read."
+    warn ""
+    warn "    FELIS_OFFSITE_KEY=${FELIS_OFFSITE_KEY}"
+    warn ""
+    warn "It is also in ${OFFSITE_ENV}, which is lost with this machine."
+    warn "================================================================================"
+  else
+    log "Off-site copy: the encryption key is in ${OFFSITE_ENV}; keep a copy of it off this machine."
+  fi
 }
 
 # The platform watchdog: every two minutes it checks the control plane, the login gate,
@@ -2518,6 +2688,53 @@ EOF
     journalctl -u felis-db-backup.service -n 20 --no-pager >&2 || true
     warn "the first database backup failed (log above); fix it before relying on the daily timer: sudo systemctl start felis-db-backup.service"
   fi
+}
+
+# configure_offsite writes OFFSITE_ENV, the secrets behind [offsite]: the bucket's access
+# keys and the key every off-site object is sealed with. Values in this run's environment
+# replace the file's (rotating the bucket credentials is a re-run); the encryption key is
+# generated when neither has one. A different key than the file's is refused: every object
+# already in the bucket is sealed with the old one, and swapping it would make them
+# unreadable without a word.
+configure_offsite() {
+  OFFSITE_ENABLED=0
+  OFFSITE_KEY_NEW=0
+  offsite_enabled || return 0
+  OFFSITE_ENABLED=1
+  local env_ak="${FELIS_OFFSITE_ACCESS_KEY:-}" env_sk="${FELIS_OFFSITE_SECRET_KEY:-}" env_key="${FELIS_OFFSITE_KEY:-}"
+  local file_key=""
+  FELIS_OFFSITE_ACCESS_KEY="" FELIS_OFFSITE_SECRET_KEY="" FELIS_OFFSITE_KEY=""
+  if [ -f "$OFFSITE_ENV" ]; then
+    # shellcheck disable=SC1090
+    . "$OFFSITE_ENV"
+    file_key="$FELIS_OFFSITE_KEY"
+  fi
+  FELIS_OFFSITE_ACCESS_KEY="${env_ak:-$FELIS_OFFSITE_ACCESS_KEY}"
+  FELIS_OFFSITE_SECRET_KEY="${env_sk:-$FELIS_OFFSITE_SECRET_KEY}"
+  if [ -n "$env_key" ] && [ -n "$file_key" ] && [ "$env_key" != "$file_key" ]; then
+    die "FELIS_OFFSITE_KEY differs from the key in ${OFFSITE_ENV}; the objects already in the bucket are sealed with that one. Unset FELIS_OFFSITE_KEY to keep it (docs/troubleshooting.md §16)"
+  fi
+  FELIS_OFFSITE_KEY="${env_key:-$file_key}"
+  if [ -z "$FELIS_OFFSITE_ACCESS_KEY" ] || [ -z "$FELIS_OFFSITE_SECRET_KEY" ]; then
+    die "[offsite] names a bucket but there are no credentials for it: set FELIS_OFFSITE_ACCESS_KEY and FELIS_OFFSITE_SECRET_KEY (they are kept in ${OFFSITE_ENV})"
+  fi
+  if [ -z "$FELIS_OFFSITE_KEY" ]; then
+    FELIS_OFFSITE_KEY="$(openssl rand -base64 32)"
+    OFFSITE_KEY_NEW=1
+  fi
+  (
+    umask 077
+    cat > "$OFFSITE_ENV" <<EOF
+# The off-site copy's secrets (felis offsite, docs/troubleshooting.md §16). Keep a copy of
+# FELIS_OFFSITE_KEY somewhere other than this machine: without it the copies in the
+# bucket cannot be read, and this file goes with the machine.
+FELIS_OFFSITE_ACCESS_KEY='${FELIS_OFFSITE_ACCESS_KEY}'
+FELIS_OFFSITE_SECRET_KEY='${FELIS_OFFSITE_SECRET_KEY}'
+FELIS_OFFSITE_KEY='${FELIS_OFFSITE_KEY}'
+EOF
+  )
+  chmod 0600 "$OFFSITE_ENV"
+  ok "off-site copy: secrets in ${OFFSITE_ENV}"
 }
 
 deploy_bundle() {
@@ -2766,6 +2983,8 @@ summary() {
   log "the proxy in Minecraft — that is what makes the Owner's admin identity a real"
   log "Mojang account rather than a password."
   log "Use 'sudo felis breakGlass' only for emergency local Owner recovery/reset."
+  echo
+  summary_offsite
   echo
 }
 
@@ -3099,6 +3318,7 @@ main() {
   bootstrap_from_tui || [ -n "${FELIS_SKIP_FETCH:-}" ] || resolve_install_ref
   install_cloudflared
   load_or_make_secrets
+  configure_offsite
   ensure_panel_tls_cert
   install_docker
   install_k3s
@@ -3138,6 +3358,8 @@ main() {
   install_velocity
   # After deploy_bundle: the bundle's MinecraftServer export reads the cluster.
   install_db_backup_timer
+  # After the backup timer: its first bundle is part of the first copy.
+  install_offsite_timer
   # Last: its first run should see the platform as this install leaves it.
   install_watchdog_timer
   mark_bootstrap_done
