@@ -5,8 +5,10 @@ import best.lolicon.felis.link.ControlFrame;
 import best.lolicon.felis.link.FelisApiClient;
 import best.lolicon.felis.link.LinkException;
 import best.lolicon.felis.link.MenuStatus;
+import best.lolicon.felis.link.ServerView;
 
 import com.velocitypowered.api.event.Subscribe;
+import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.connection.PluginMessageEvent;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
@@ -15,7 +17,11 @@ import com.velocitypowered.api.proxy.messages.ChannelIdentifier;
 import com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier;
 import org.slf4j.Logger;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * ControlChannel is the proxy end of the {@code felis:control} plugin-message channel
@@ -28,11 +34,19 @@ import java.util.UUID;
  *
  * <p><b>Anti-spoof (spec §14).</b> The acting identity is taken from the
  * {@link ServerConnection} the message arrived on — {@code source.getPlayer()} — and
- * never from the frame's {@code player} field, so a compromised backend cannot drive
- * an action as another player. A frame whose source is not a backend server (e.g. a
- * client) is consumed and dropped. The frame's {@code server} field is data, not
- * identity: it names which backend the player asked for, and the autostartPolicy /
- * ownership gates server-side decide whether this UUID may act on it.
+ * never from the frame's {@code player} field. That alone does not make a frame
+ * trustworthy: every user backend runs plugins its owner chose, and the player on a
+ * connection is whoever happens to be standing on that server. So the connection's
+ * <em>server</em> decides what may be sent at all ({@link ControlPolicy}): the lobby
+ * gets the menu frames, the login gate gets {@code LoginRelease}, and every other
+ * backend is dropped. A frame from a client is dropped too. The {@code server} field
+ * must name a managed user server; the autostartPolicy / ownership gates
+ * server-side then decide whether this UUID may act on it.
+ *
+ * <p><b>Load.</b> Each accepted frame is at most one blocking felis-api call, so
+ * frames are metered per player ({@link FrameBudget}) and menu projections are
+ * shared across players for {@link #STATUS_TTL_MILLIS}: a lobby full of players
+ * opening the menu at once reads each server's status once, not once per player.
  *
  * <p><b>Threading.</b> {@code felis:control} frames arrive on a Velocity event
  * thread, but every felis-api call below blocks on HTTP. So each handler does the
@@ -42,32 +56,65 @@ import java.util.UUID;
  * from inside that callback. {@code setResult} must run before the handler returns;
  * it cannot be set from the async hop.
  *
- * <p>The three upstream frames map onto the menu's buttons (spec §12): a
+ * <p>The lobby's upstream frames map onto the menu (spec §12): a {@code ListRequest}
+ * asks which tiles to draw ({@code ListUpdate} back, built from the registry); a
  * {@code StatusQuery} refreshes a tile ({@code StatusUpdate} back); a
  * {@code WakeRequest} (owned server) wakes and parks; a {@code ClaimRequest}
  * (ownerless server) runs the two-rule split — claim asserts ownership/quota, then
  * the wake applies the autostartPolicy gate — and parks on success. Refusals come
  * back as {@code Error}; readiness as {@code TransferReady} just before the proxy
  * Connects the player (via {@link WaitingRouter.MenuTransferListener}).
+ *
+ * <p>The login gate's one frame, {@code LoginRelease}, asks the proxy to move the
+ * player to the lobby. It replaces the BungeeCord {@code Connect} the gate used to
+ * send: {@code bungeecord:main} is handled inside Velocity before any plugin event,
+ * so it cannot be restricted to the gate and is switched off in velocity.toml
+ * instead. The release itself is still authorized by
+ * {@link WaitingRouter#onServerPreConnect}.
  */
 public final class ControlChannel implements WaitingRouter.MenuTransferListener {
 
     /** The namespaced channel both ends register; shared with the codec's name. */
     static final ChannelIdentifier CHANNEL = MinecraftChannelIdentifier.from(Control.CHANNEL);
 
+    // How long one server's menu projection is reused across players.
+    static final long STATUS_TTL_MILLIS = 2_000L;
+    // Two full menu pages (45 tiles + the list each) in a burst, then 10 frames a second.
+    private static final int FRAME_BURST = 96;
+    private static final double FRAME_REFILL_PER_SECOND = 10.0;
+    // Upper bound on names in one ListUpdate. A proxy→backend plugin message is capped
+    // at 32767 bytes; 500 names of at most 32 chars stays well under it.
+    static final int MAX_LISTED = 500;
+    // A refused source is logged at most once per interval, so a hostile backend
+    // cannot turn its own refusals into a log flood.
+    private static final long REFUSAL_LOG_INTERVAL_MILLIS = 60_000L;
+
     private final ProxyServer proxy;
     private final Logger log;
     private final FelisApiClient api;
     private final WaitingRouter router;
+    private final ServerRegistry registry;
     private final FelisVelocityPlugin plugin;
+    private final ControlPolicy policy;
+    private final String loginServer;
+    private final String lobbyServer;
+    private final FrameBudget budget =
+            new FrameBudget(FRAME_BURST, FRAME_REFILL_PER_SECOND, System::currentTimeMillis);
+    private final Map<String, CachedStatus> statusCache = new ConcurrentHashMap<>();
+    private final Map<String, Long> lastRefusalLog = new ConcurrentHashMap<>();
 
-    ControlChannel(ProxyServer proxy, Logger log, FelisApiClient api,
-                   WaitingRouter router, FelisVelocityPlugin plugin) {
+    ControlChannel(ProxyServer proxy, Logger log, FelisApiClient api, WaitingRouter router,
+                   ServerRegistry registry, FelisVelocityPlugin plugin,
+                   String loginServer, String lobbyServer) {
         this.proxy = proxy;
         this.log = log;
         this.api = api;
         this.router = router;
+        this.registry = registry;
         this.plugin = plugin;
+        this.loginServer = loginServer;
+        this.lobbyServer = lobbyServer;
+        this.policy = new ControlPolicy(loginServer, lobbyServer, registry::isManaged);
     }
 
     /**
@@ -96,13 +143,31 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
         }
         ServerConnection source = (ServerConnection) event.getSource();
         Player player = source.getPlayer();
+        String sourceName = source.getServerInfo().getName();
 
         ControlFrame frame;
         try {
             frame = Control.decode(event.getData());
         } catch (IllegalArgumentException e) {
-            log.debug("Felis: dropping malformed felis:control frame from {}: {}",
-                    source.getServerInfo().getName(), e.getMessage());
+            log.debug("Felis: dropping malformed felis:control frame from {}: {}", sourceName, e.getMessage());
+            return;
+        }
+
+        ControlPolicy.Verdict verdict = policy.check(sourceName, frame);
+        if (verdict != ControlPolicy.Verdict.ACCEPT) {
+            refused(sourceName, frame, verdict);
+            if (verdict == ControlPolicy.Verdict.BAD_SERVER && frame.server() != null
+                    && ControlFrame.STATUS_QUERY.equals(frame.type())) {
+                // The tile asked about a server that is gone (or never was): answer so
+                // it stops saying "loading", without echoing a malformed name back.
+                send(source, ControlFrame.error("not_found", "unknown server",
+                        ControlPolicy.wellFormed(frame.server()) ? frame.server() : null));
+            }
+            return;
+        }
+        if (!budget.tryTake(player.getUniqueId())) {
+            log.debug("Felis: felis:control budget exhausted for {}; dropping '{}'",
+                    player.getUniqueId(), frame.type());
             return;
         }
 
@@ -116,25 +181,69 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
             case ControlFrame.CLAIM_REQUEST:
                 handleClaim(source, player, frame.server());
                 break;
+            case ControlFrame.LIST_REQUEST:
+                send(source, ControlFrame.listUpdate(listed()));
+                break;
+            case ControlFrame.LOGIN_RELEASE:
+                router.releaseFromLogin(player);
+                break;
             default:
-                // Downstream-only types (StatusUpdate/TransferReady/Error) are not
-                // actionable arriving upstream; a well-behaved lobby never sends them.
-                log.debug("Felis: ignoring non-actionable felis:control frame '{}' from {}",
-                        frame.type(), player.getUsername());
+                // ControlPolicy admits only the types above.
+                break;
         }
+    }
+
+    @Subscribe
+    public void onDisconnect(DisconnectEvent event) {
+        budget.forget(event.getPlayer().getUniqueId());
+    }
+
+    // listed is the lobby's tile set: every managed user server, by name. The system
+    // servers are the lobby itself and the gate in front of it, so neither is a tile.
+    private List<String> listed() {
+        List<String> names = new ArrayList<>();
+        for (ServerView v : registry.all()) {
+            if (policy.isUserServer(v.name())) {
+                names.add(v.name());
+            }
+        }
+        names.sort(String::compareTo);
+        return names.size() > MAX_LISTED ? names.subList(0, MAX_LISTED) : names;
+    }
+
+    private void refused(String sourceName, ControlFrame frame, ControlPolicy.Verdict verdict) {
+        if (verdict == ControlPolicy.Verdict.BAD_SERVER) {
+            log.debug("Felis: dropping felis:control '{}' from {}: not a managed user server",
+                    frame.type(), sourceName);
+            return;
+        }
+        long now = System.currentTimeMillis();
+        Long last = lastRefusalLog.get(sourceName);
+        if (last != null && now - last < REFUSAL_LOG_INTERVAL_MILLIS) {
+            return;
+        }
+        lastRefusalLog.put(sourceName, now);
+        log.warn("Felis: refused felis:control '{}' from backend {} ({}). Only {} may send menu frames "
+                        + "and only {} may send LoginRelease; a user backend sending these is running "
+                        + "a plugin that tries to act for the players on it.",
+                frame.type(), sourceName, verdict, lobbyServer, loginServer);
     }
 
     // A StatusQuery refreshes one tile: read the menu projection and answer with a
     // StatusUpdate, or an Error if felis-api refuses (e.g. 404 unknown server).
     private void handleStatusQuery(ServerConnection source, String server) {
-        if (isBlank(server)) {
-            return; // nothing to look up
+        CachedStatus cached = statusCache.get(server);
+        if (cached != null && System.currentTimeMillis() - cached.atMillis <= STATUS_TTL_MILLIS) {
+            send(source, cached.frame);
+            return;
         }
         plugin.async(() -> {
             try {
                 MenuStatus s = api.menuStatus(server);
-                send(source, ControlFrame.statusUpdate(
-                        s.name(), s.phase(), s.ready(), s.playersOnline(), s.playersMax(), s.claimable()));
+                ControlFrame frame = ControlFrame.statusUpdate(
+                        s.name(), s.phase(), s.ready(), s.playersOnline(), s.playersMax(), s.claimable());
+                statusCache.put(server, new CachedStatus(frame, System.currentTimeMillis()));
+                send(source, frame);
             } catch (LinkException e) {
                 send(source, errorFrame(e, server));
             }
@@ -145,10 +254,6 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
     // it and park them in the shared queue. enqueueFromMenu does the HTTP off-thread
     // and reports its own refusals to the player; nothing to await here.
     private void handleWake(ServerConnection source, Player player, String server) {
-        if (isBlank(server)) {
-            send(source, ControlFrame.error("bad_request", "wake without a server", null));
-            return;
-        }
         router.enqueueFromMenu(player, server);
     }
 
@@ -156,10 +261,6 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
     // split. Claim first (ownership + quota); only on success wake-and-park (the
     // autostartPolicy gate). A claim refusal answers with Error and never wakes.
     private void handleClaim(ServerConnection source, Player player, String server) {
-        if (isBlank(server)) {
-            send(source, ControlFrame.error("bad_request", "claim without a server", null));
-            return;
-        }
         UUID id = player.getUniqueId();
         plugin.async(() -> {
             try {
@@ -168,6 +269,7 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
                 send(source, errorFrame(e, server));
                 return; // claim refused → do not wake a server the player doesn't own
             }
+            statusCache.remove(server); // it is no longer claimable
             // Owned now → run the second rule. enqueueFromMenu spawns its own async
             // hop for the wake, which is fine from here.
             router.enqueueFromMenu(player, server);
@@ -203,7 +305,13 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
         return ControlFrame.error(code, message, server);
     }
 
-    private static boolean isBlank(String s) {
-        return s == null || s.isEmpty();
+    private static final class CachedStatus {
+        final ControlFrame frame;
+        final long atMillis;
+
+        CachedStatus(ControlFrame frame, long atMillis) {
+            this.frame = frame;
+            this.atMillis = atMillis;
+        }
     }
 }

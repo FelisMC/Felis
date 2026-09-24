@@ -2,14 +2,17 @@ package best.lolicon.felis.link;
 
 import java.io.IOException;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 /**
  * FelisApiClient is the proxy's read/drive client for the felis-api internal face
@@ -27,8 +30,21 @@ import java.util.UUID;
  * refused this UUID (do not enqueue the player); 429 means a wake is already
  * cooling down ("already waking, keep waiting"); 503 means the cluster is at
  * capacity (tell the player to try later — nothing is coming up).
+ *
+ * <p><b>Path safety.</b> Server names reach this client from plugin messages and
+ * chat, so every value spliced into a request path goes through
+ * {@link #serverSegment} or {@link #segment}. A name outside the platform's own
+ * alphabet ({@code ^[a-z0-9-]{3,32}$}, no leading or trailing dash — the rule
+ * {@code naming.ValidateServerName} enforces server-side) is refused before any
+ * request is built, and what passes is percent-encoded as well. Without this a
+ * WakeRequest for {@code victim/join-event?} became {@code POST
+ * …/servers/victim/join-event}, which appends the sender to another tenant's
+ * allowlist.
  */
 public final class FelisApiClient {
+    // Mirrors internal/naming.serverNameRE plus its no-leading/trailing-dash rule.
+    private static final Pattern SERVER_NAME = Pattern.compile("^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$");
+
     private final LinkConfig config;
     private final HttpClient http;
 
@@ -56,7 +72,7 @@ public final class FelisApiClient {
 
     /** serverStatus reads one server's current lifecycle view (internal status). */
     public ServerView serverStatus(String name) throws LinkException {
-        return ServerView.fromJson(getObject("/api/v1/internal/servers/" + Objects.requireNonNull(name, "name") + "/status", 200));
+        return ServerView.fromJson(getObject("/api/v1/internal/servers/" + serverSegment(name) + "/status", 200));
     }
 
     /**
@@ -70,7 +86,7 @@ public final class FelisApiClient {
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(mcUuid, "mcUuid");
         String body = "{\"mc_uuid\":\"" + mcUuid + "\"}";
-        return ServerView.fromJson(postObject("/api/v1/internal/servers/" + name + "/wake", body, 202));
+        return ServerView.fromJson(postObject("/api/v1/internal/servers/" + serverSegment(name) + "/wake", body, 202));
     }
 
     /**
@@ -82,7 +98,7 @@ public final class FelisApiClient {
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(mcUuid, "mcUuid");
         String body = "{\"mc_uuid\":\"" + mcUuid + "\"}";
-        HttpResponse<String> res = send(post("/api/v1/internal/servers/" + name + "/join-event", body));
+        HttpResponse<String> res = send(post("/api/v1/internal/servers/" + serverSegment(name) + "/join-event", body));
         int status = res.statusCode();
         if (status != 204 && status != 200) {
             throw parseError(status, res.body());
@@ -103,7 +119,7 @@ public final class FelisApiClient {
         Objects.requireNonNull(name, "name");
         Objects.requireNonNull(mcUuid, "mcUuid");
         String body = "{\"mc_uuid\":\"" + mcUuid + "\"}";
-        Map<?, ?> res = postObject("/api/v1/internal/servers/" + name + "/claim", body, 200);
+        Map<?, ?> res = postObject("/api/v1/internal/servers/" + serverSegment(name) + "/claim", body, 200);
         Object claimed = res.get("claimed");
         if (!(claimed instanceof Boolean) || !((Boolean) claimed)) {
             // A 200 that doesn't affirm the claim is a contract breach, not a refusal —
@@ -122,7 +138,7 @@ public final class FelisApiClient {
      */
     public MenuStatus menuStatus(String name) throws LinkException {
         Objects.requireNonNull(name, "name");
-        return MenuStatus.fromJson(getObject("/api/v1/internal/servers/" + name + "/menu", 200));
+        return MenuStatus.fromJson(getObject("/api/v1/internal/servers/" + serverSegment(name) + "/menu", 200));
     }
 
     /**
@@ -173,15 +189,15 @@ public final class FelisApiClient {
      * {@link LinkException}s; a 200 that does not affirm {@code approved:true} is a
      * contract breach, not a refusal.
      *
-     * <p>{@code requestId} is interpolated into the request path, so the caller must
-     * pass a validated opaque handle (the 32-hex id minted by op-login start) — never
-     * unsanitised chat input. The Velocity command validates the charset first.
+     * <p>{@code requestId} is interpolated into the request path. It is
+     * percent-encoded here, and the Velocity command also validates its charset
+     * before calling.
      */
     public void opLoginApprove(String requestId, UUID approverUuid) throws LinkException {
         Objects.requireNonNull(requestId, "requestId");
         Objects.requireNonNull(approverUuid, "approverUuid");
         String body = "{\"approver_uuid\":\"" + approverUuid + "\"}";
-        Map<?, ?> res = postObject("/api/v1/internal/op-login/" + requestId + "/approve", body, 200);
+        Map<?, ?> res = postObject("/api/v1/internal/op-login/" + segment(requestId) + "/approve", body, 200);
         Object approved = res.get("approved");
         if (!(approved instanceof Boolean) || !((Boolean) approved)) {
             throw new LinkException(200, "bad_response", "approve returned 200 without approved=true");
@@ -213,6 +229,29 @@ public final class FelisApiClient {
 
     // ---- transport ----
 
+    /**
+     * serverSegment admits {@code name} into a request path only when it is a
+     * well-formed Felis server name. The refusal carries a 400 so callers that relay
+     * {@code LinkException} messages to a player treat it as a request error, and it
+     * does not echo the input back.
+     */
+    static String serverSegment(String name) throws LinkException {
+        Objects.requireNonNull(name, "name");
+        if (!SERVER_NAME.matcher(name).matches()) {
+            throw new LinkException(400, "invalid_server_name", "not a valid Felis server name");
+        }
+        return name;
+    }
+
+    /** segment percent-encodes one opaque path segment; "." and ".." are refused. */
+    static String segment(String value) throws LinkException {
+        Objects.requireNonNull(value, "value");
+        if (value.isEmpty() || value.equals(".") || value.equals("..")) {
+            throw new LinkException(400, "invalid_path_segment", "not a valid request path segment");
+        }
+        return URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
+    }
+
     private Map<?, ?> getObject(String path, int expect) throws LinkException {
         HttpRequest req = base(path).GET().build();
         return expectObject(send(req), expect);
@@ -222,16 +261,25 @@ public final class FelisApiClient {
         return expectObject(send(post(path, body)), expect);
     }
 
-    private HttpRequest post(String path, String body) {
+    private HttpRequest post(String path, String body) throws LinkException {
         return base(path)
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body))
                 .build();
     }
 
-    private HttpRequest.Builder base(String path) {
+    private HttpRequest.Builder base(String path) throws LinkException {
+        URI uri;
+        try {
+            uri = URI.create(config.apiBaseUrl() + path);
+        } catch (IllegalArgumentException e) {
+            // Unreachable for paths built from the segment helpers above; kept so a
+            // malformed base URL surfaces as a LinkException the callers already
+            // handle rather than an unchecked throw out of a scheduler task.
+            throw new LinkException(0, "bad_request", "could not build the felis-api request URL", e);
+        }
         return HttpRequest.newBuilder()
-                .uri(URI.create(config.apiBaseUrl() + path))
+                .uri(uri)
                 .timeout(config.timeout())
                 .header("Authorization", "Bearer " + config.serviceToken())
                 .header("Accept", "application/json");

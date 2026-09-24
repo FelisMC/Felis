@@ -1,6 +1,8 @@
 package best.lolicon.felis.link;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.List;
 
 /**
  * ControlRoundTripTest is a hermetic, dependency-free check of the {@code
@@ -31,6 +33,7 @@ public final class ControlRoundTripTest {
         wireCarriesRefinedStatusFields();
         errorOmitsServerWhenAbsentButRoundTrips();
         escapesAwkwardStrings();
+        listUpdateCarriesNamesInOrder();
         rejectsMalformedAndUnknownFrames();
         System.out.println("ControlRoundTripTest OK (" + checks + " checks)");
     }
@@ -46,6 +49,10 @@ public final class ControlRoundTripTest {
         roundTrip(ControlFrame.transferReady("Notch", "survival"));
         roundTrip(ControlFrame.error("quota_exceeded", "server quota exhausted", "survival"));
         roundTrip(ControlFrame.error("not_linked", "link your account first", null));
+        roundTrip(ControlFrame.listRequest());
+        roundTrip(ControlFrame.listUpdate(Arrays.asList("alpha", "beta-2", "gamma")));
+        roundTrip(ControlFrame.listUpdate(List.of()));
+        roundTrip(ControlFrame.loginRelease("Notch"));
     }
 
     // The discriminator the dispatch switch keys on must appear verbatim on the wire.
@@ -56,6 +63,22 @@ public final class ControlRoundTripTest {
         assertContains(ControlFrame.statusUpdate("s", "Running", true, 1, 2, false), "\"type\":\"StatusUpdate\"");
         assertContains(ControlFrame.transferReady("p", "s"), "\"type\":\"TransferReady\"");
         assertContains(ControlFrame.error("c", "m", null), "\"type\":\"Error\"");
+        assertContains(ControlFrame.listRequest(), "\"type\":\"ListRequest\"");
+        assertContains(ControlFrame.listUpdate(List.of("a")), "\"type\":\"ListUpdate\"");
+        assertContains(ControlFrame.loginRelease("p"), "\"type\":\"LoginRelease\"");
+    }
+
+    // ListUpdate is the lobby's whole tile set: order is display order and must hold,
+    // an empty list stays empty (never null), and non-string entries a hand-written
+    // frame might carry are skipped rather than failing the whole list.
+    private static void listUpdateCarriesNamesInOrder() {
+        ControlFrame f = decode(ControlFrame.listUpdate(Arrays.asList("zeta", "alpha", null, "mid")));
+        assertEq("list order (null dropped)", List.of("zeta", "alpha", "mid"), f.servers());
+        assertEq("empty list", List.of(), decode(ControlFrame.listUpdate(null)).servers());
+        assertEq("servers on a non-list frame", List.of(), decode(ControlFrame.statusQuery("s")).servers());
+        ControlFrame mixed = Control.decode(
+                "{\"type\":\"ListUpdate\",\"servers\":[\"a\",1,true,\"b\"]}".getBytes(StandardCharsets.UTF_8));
+        assertEq("non-string entries skipped", List.of("a", "b"), mixed.servers());
     }
 
     // StatusUpdate refines the spec's "players" into ready + online + max; the GUI

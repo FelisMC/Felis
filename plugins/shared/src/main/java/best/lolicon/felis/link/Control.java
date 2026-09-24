@@ -1,6 +1,8 @@
 package best.lolicon.felis.link;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -65,6 +67,22 @@ public final class Control {
                     kv(sb, "server", frame.server());
                 }
                 break;
+            case ControlFrame.LIST_REQUEST:
+                break;
+            case ControlFrame.LIST_UPDATE:
+                sb.append(",\"servers\":[");
+                List<String> names = frame.servers();
+                for (int i = 0; i < names.size(); i++) {
+                    if (i > 0) {
+                        sb.append(',');
+                    }
+                    jsonString(sb, names.get(i));
+                }
+                sb.append(']');
+                break;
+            case ControlFrame.LOGIN_RELEASE:
+                kv(sb, "player", frame.player());
+                break;
             default:
                 throw new IllegalArgumentException("control: cannot encode unknown frame type '" + frame.type() + "'");
         }
@@ -107,6 +125,12 @@ public final class Control {
                 return ControlFrame.transferReady(str(o, "player"), str(o, "server"));
             case ControlFrame.ERROR:
                 return ControlFrame.error(str(o, "code"), str(o, "message"), str(o, "server"));
+            case ControlFrame.LIST_REQUEST:
+                return ControlFrame.listRequest();
+            case ControlFrame.LIST_UPDATE:
+                return ControlFrame.listUpdate(strList(o, "servers"));
+            case ControlFrame.LOGIN_RELEASE:
+                return ControlFrame.loginRelease(str(o, "player"));
             default:
                 throw new IllegalArgumentException("control: unknown frame type '" + type + "'");
         }
@@ -173,6 +197,21 @@ public final class Control {
     private static String str(Map<?, ?> o, String key) {
         Object v = o.get(key);
         return v instanceof String ? (String) v : null;
+    }
+
+    // strList keeps the string entries of an array field and skips anything else, so a
+    // partly malformed list still yields the names that are well-formed.
+    private static List<String> strList(Map<?, ?> o, String key) {
+        List<String> out = new ArrayList<>();
+        Object v = o.get(key);
+        if (v instanceof List) {
+            for (Object e : (List<?>) v) {
+                if (e instanceof String) {
+                    out.add((String) e);
+                }
+            }
+        }
+        return out;
     }
 
     private static boolean bool(Map<?, ?> o, String key) {

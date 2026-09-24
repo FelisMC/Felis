@@ -1,5 +1,8 @@
 package best.lolicon.felis.link;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -11,15 +14,25 @@ import java.util.Objects;
  * is just the immutable value, source-shared into both the velocity and paper jars
  * so the two ends can never drift on field names.
  *
- * <p>There are six frame types, discriminated by {@link #type()}:
+ * <p>There are nine frame types, discriminated by {@link #type()}:
  * <ul>
- *   <li><b>Upstream</b> (lobby → velocity): {@link #WAKE_REQUEST} and
+ *   <li><b>Upstream from the lobby</b>: {@link #WAKE_REQUEST} and
  *       {@link #CLAIM_REQUEST} carry {@code player}+{@code server};
- *       {@link #STATUS_QUERY} carries {@code server}.</li>
+ *       {@link #STATUS_QUERY} carries {@code server}; {@link #LIST_REQUEST} carries
+ *       nothing.</li>
+ *   <li><b>Upstream from the login gate</b>: {@link #LOGIN_RELEASE} carries nothing
+ *       but the informational {@code player}. It replaces the BungeeCord
+ *       {@code Connect} the gate used to send, so {@code bungeecord:main} can be
+ *       switched off proxy-wide.</li>
  *   <li><b>Downstream</b> (velocity → lobby): {@link #STATUS_UPDATE} is the tile
- *       projection; {@link #TRANSFER_READY} tells the lobby a parked player's
- *       backend is up; {@link #ERROR} reports a refusal.</li>
+ *       projection; {@link #LIST_UPDATE} is the set of tiles to show;
+ *       {@link #TRANSFER_READY} tells the lobby a parked player's backend is up;
+ *       {@link #ERROR} reports a refusal.</li>
  * </ul>
+ *
+ * <p>Which upstream types a backend may send is decided by the proxy from the
+ * connection they arrive on (the lobby's set, or the login gate's single type); a
+ * frame from any other backend is dropped whatever its type.
  *
  * <p>The {@code player} field is informational only on the upstream frames:
  * Velocity derives the real identity from the {@code ServerConnection} the message
@@ -50,6 +63,12 @@ public final class ControlFrame {
     public static final String TRANSFER_READY = "TransferReady";
     /** Downstream: a refusal (code, message, optional server). */
     public static final String ERROR = "Error";
+    /** Upstream (lobby): ask for the current tile list; answered by {@link #LIST_UPDATE}. */
+    public static final String LIST_REQUEST = "ListRequest";
+    /** Downstream: the user servers the lobby should show, in display order (servers). */
+    public static final String LIST_UPDATE = "ListUpdate";
+    /** Upstream (login gate): the player finished signing in; move them to the lobby (player). */
+    public static final String LOGIN_RELEASE = "LoginRelease";
 
     private final String type;
     private final String player;
@@ -61,9 +80,16 @@ public final class ControlFrame {
     private final boolean claimable;
     private final String code;
     private final String message;
+    private final List<String> servers;
 
     private ControlFrame(String type, String player, String server, String phase, boolean ready,
                          int playersOnline, int playersMax, boolean claimable, String code, String message) {
+        this(type, player, server, phase, ready, playersOnline, playersMax, claimable, code, message, List.of());
+    }
+
+    private ControlFrame(String type, String player, String server, String phase, boolean ready,
+                         int playersOnline, int playersMax, boolean claimable, String code, String message,
+                         List<String> servers) {
         this.type = type;
         this.player = player;
         this.server = server;
@@ -74,6 +100,7 @@ public final class ControlFrame {
         this.claimable = claimable;
         this.code = code;
         this.message = message;
+        this.servers = servers;
     }
 
     // ---- factories (tolerant: no field validation, so decode can always rebuild) ----
@@ -102,6 +129,28 @@ public final class ControlFrame {
     /** error reports a refusal; {@code server} is optional (null when not server-scoped). */
     public static ControlFrame error(String code, String message, String server) {
         return new ControlFrame(ERROR, null, server, null, false, 0, 0, false, code, message);
+    }
+
+    public static ControlFrame listRequest() {
+        return new ControlFrame(LIST_REQUEST, null, null, null, false, 0, 0, false, null, null);
+    }
+
+    /** listUpdate carries the tile names; null entries are dropped, the list is copied. */
+    public static ControlFrame listUpdate(List<String> servers) {
+        List<String> copy = new ArrayList<>();
+        if (servers != null) {
+            for (String s : servers) {
+                if (s != null) {
+                    copy.add(s);
+                }
+            }
+        }
+        return new ControlFrame(LIST_UPDATE, null, null, null, false, 0, 0, false, null, null,
+                Collections.unmodifiableList(copy));
+    }
+
+    public static ControlFrame loginRelease(String player) {
+        return new ControlFrame(LOGIN_RELEASE, player, null, null, false, 0, 0, false, null, null);
     }
 
     // ---- accessors ----
@@ -146,6 +195,11 @@ public final class ControlFrame {
         return message;
     }
 
+    /** servers is the {@link #LIST_UPDATE} payload; empty (never null) on every other type. */
+    public List<String> servers() {
+        return servers;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -164,12 +218,14 @@ public final class ControlFrame {
                 && Objects.equals(server, f.server)
                 && Objects.equals(phase, f.phase)
                 && Objects.equals(code, f.code)
-                && Objects.equals(message, f.message);
+                && Objects.equals(message, f.message)
+                && Objects.equals(servers, f.servers);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(type, player, server, phase, ready, playersOnline, playersMax, claimable, code, message);
+        return Objects.hash(type, player, server, phase, ready, playersOnline, playersMax, claimable, code, message,
+                servers);
     }
 
     @Override

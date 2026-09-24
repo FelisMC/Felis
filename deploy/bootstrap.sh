@@ -1806,6 +1806,12 @@ try = ["${LOGIN_SERVER}"]
 
 [advanced]
 haproxy-protocol = false
+# Off on purpose. Velocity answers bungeecord:main itself, before any plugin event, so
+# with it on EVERY backend — including each user's own server and whatever plugins its
+# owner installed — can KickPlayer or ConnectOther anyone on the network, and no plugin
+# can restrict that to one server. The login gate releases players over felis:control
+# instead, which felis-velocity accepts only from the login server.
+bungee-plugin-message-channel = false
 
 [query]
 enabled = false

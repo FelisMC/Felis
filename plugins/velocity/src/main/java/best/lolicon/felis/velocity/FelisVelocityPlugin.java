@@ -15,6 +15,7 @@ import com.velocitypowered.api.command.CommandManager;
 import com.velocitypowered.api.command.CommandMeta;
 import com.velocitypowered.api.command.CommandSource;
 import com.velocitypowered.api.event.Subscribe;
+import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
@@ -78,6 +79,11 @@ public final class FelisVelocityPlugin {
     private final Logger logger;
     private final Path dataDirectory;
     private final InviteBook invites = new InviteBook(INVITE_TTL.toMillis(), INVITE_COOLDOWN.toMillis());
+    // Every acting command below is one felis-api call made with the service token.
+    // Five in a burst, then one every five seconds, per player: plenty for a person
+    // typing, and a bound on a client macro that would otherwise mint link codes or
+    // fire claims as fast as it can send chat.
+    private final FrameBudget commandBudget = new FrameBudget(5, 0.2, System::currentTimeMillis);
 
     private FelisVelocityConfig config;
     private LinkClient linkClient;
@@ -107,6 +113,8 @@ public final class FelisVelocityPlugin {
         registerFelisCommand();
         registerInviteCommand();
 
+        warnIfBungeeChannelOpen();
+
         this.onlineMode = proxy.getConfiguration().isOnlineMode();
         if (!onlineMode) {
             logger.error("Felis routing DISABLED: the proxy is in offline mode (online-mode=false). "
@@ -133,7 +141,8 @@ public final class FelisVelocityPlugin {
         // same waiting queue through this channel. Opened only with routing active —
         // it depends on the same online-mode + root-domain guards, and its claim/wake
         // identity is the verified UUID off the backend connection (spec §14).
-        ControlChannel control = new ControlChannel(proxy, logger, apiClient, router, this);
+        ControlChannel control = new ControlChannel(proxy, logger, apiClient, router, registry, this,
+                config.loginServer(), config.lobbyServer());
         control.register();
         proxy.getEventManager().register(this, control);
 
@@ -147,6 +156,22 @@ public final class FelisVelocityPlugin {
                 config.rootDomain(), config.loginServer(), config.lobbyServer());
     }
 
+    @Subscribe
+    public void onDisconnect(DisconnectEvent event) {
+        commandBudget.forget(event.getPlayer().getUniqueId());
+    }
+
+    // withinBudget spends one command token for the player, or tells them to slow down.
+    private boolean withinBudget(Player player) {
+        if (commandBudget.tryTake(player.getUniqueId())) {
+            return true;
+        }
+        player.sendMessage(Component.text(
+                zh(player) ? "操作太频繁了，请过几秒再试。" : "Slow down — try again in a few seconds.",
+                NamedTextColor.YELLOW));
+        return false;
+    }
+
     /** async runs a task on Velocity's scheduler so felis-api I/O never blocks the proxy thread. */
     void async(Runnable task) {
         proxy.getScheduler().buildTask(this, task).schedule();
@@ -156,7 +181,36 @@ public final class FelisVelocityPlugin {
         proxy.getScheduler().buildTask(this, task).delay(interval).repeat(interval).schedule();
     }
 
+    /**
+     * warnIfBungeeChannelOpen reports a proxy that still answers {@code bungeecord:main}.
+     * Velocity handles that channel itself, before any plugin event, so no plugin can
+     * restrict who uses it: with it on, any user backend can KickPlayer or ConnectOther
+     * anyone on the network. The installer writes
+     * {@code bungee-plugin-message-channel = false}; this catches a hand-edited or
+     * older velocity.toml. The switch is not part of the plugin API, so it is read
+     * reflectively, and an unreadable value is reported as unknown.
+     */
+    private void warnIfBungeeChannelOpen() {
+        Object cfg = proxy.getConfiguration();
+        Boolean open;
+        try {
+            open = (Boolean) cfg.getClass().getMethod("isBungeePluginChannelEnabled").invoke(cfg);
+        } catch (ReflectiveOperationException | ClassCastException | SecurityException e) {
+            open = null;
+        }
+        if (Boolean.FALSE.equals(open)) {
+            return;
+        }
+        logger.error("Felis: the BungeeCord plugin-message channel is {}. Every user backend can then kick or "
+                        + "move any player on the network. Set 'bungee-plugin-message-channel = false' under "
+                        + "[advanced] in velocity.toml (re-running the installer writes it) and restart.",
+                open == null ? "in an unknown state" : "ENABLED");
+    }
+
     private void refreshRegistrations() {
+        if (router != null) {
+            router.pruneLinks();
+        }
         try {
             List<ServerView> servers = apiClient.listServers();
             registry.refresh(servers);
@@ -188,6 +242,9 @@ public final class FelisVelocityPlugin {
     }
 
     private void requestAndReply(Player player) {
+        if (!withinBudget(player)) {
+            return;
+        }
         boolean zh = zh(player);
         player.sendMessage(Component.text(
                 zh ? "正在获取绑定码……" : "Requesting a link code…", NamedTextColor.GRAY));
@@ -460,6 +517,9 @@ public final class FelisVelocityPlugin {
                        : "You're already on « " + match.name() + " ».", NamedTextColor.GRAY));
             return false;
         }
+        if (!withinBudget(player)) {
+            return false;
+        }
         // Wake + park + transfer through the shared waiting queue; it reports its own
         // policy-gate (403) and transient refusals to the player.
         if (joinIfReady) {
@@ -494,6 +554,9 @@ public final class FelisVelocityPlugin {
                        : "« " + name + " » isn't a claimable felis server.", NamedTextColor.YELLOW));
             return;
         }
+        if (!withinBudget(player)) {
+            return;
+        }
         UUID uuid = player.getUniqueId();
         player.sendMessage(Component.text(
                 zh ? "正在认领「" + name + "」……" : "Claiming « " + name + " »…", NamedTextColor.GRAY));
@@ -524,6 +587,9 @@ public final class FelisVelocityPlugin {
         boolean zh = zh(player);
         if (!routingActive) {
             player.sendMessage(routingDisabled(zh));
+            return;
+        }
+        if (!withinBudget(player)) {
             return;
         }
         UUID uuid = player.getUniqueId();
@@ -615,6 +681,9 @@ public final class FelisVelocityPlugin {
             player.sendMessage(Component.text(
                     zh ? "这不像一个有效的批准码。" : "That doesn't look like a valid approval code.",
                     NamedTextColor.RED));
+            return;
+        }
+        if (!withinBudget(player)) {
             return;
         }
         UUID approver = player.getUniqueId();

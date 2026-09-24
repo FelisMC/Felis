@@ -5,9 +5,12 @@
 #
 # Two gates, both runnable on any machine with a JDK 21 and Gradle:
 #
-#   1. The three hand-written, framework-free test mains under shared/test and
+#   1. The hand-written, framework-free test mains under shared/test and
 #      velocity/test. They check what "compiles" cannot: the felis:control codec
-#      round-trips every frame kind (spec §12), /invite prompts cannot double-fire
+#      round-trips every frame kind (spec §12), no server name can re-aim a
+#      felis-api request path, only the lobby and the login gate may drive
+#      felis:control (and each only with its own frames), the link-status outage
+#      fallback fails closed outside its window, /invite prompts cannot double-fire
 #      or outlive their TTL, and the invite card really is a green/red clickable
 #      prompt. InviteCardTest needs the adventure jars the velocity plugin compiles
 #      against; they are fetched from Maven Central below, pinned by version and
@@ -55,6 +58,26 @@ javac -d "$work/shared-classes" \
   plugins/shared/src/main/java/best/lolicon/felis/link/*.java \
   plugins/shared/test/best/lolicon/felis/link/ControlRoundTripTest.java
 java -cp "$work/shared-classes" best.lolicon.felis.link.ControlRoundTripTest
+
+echo "==> FelisApiClientTest (request paths cannot be re-aimed, shared)"
+javac -d "$work/shared-classes" \
+  plugins/shared/src/main/java/best/lolicon/felis/link/*.java \
+  plugins/shared/test/best/lolicon/felis/link/FelisApiClientTest.java
+java -cp "$work/shared-classes" best.lolicon.felis.link.FelisApiClientTest
+
+echo "==> ControlPolicyTest (who may send what on felis:control, velocity)"
+mkdir -p "$work/policy-classes"
+javac -d "$work/policy-classes" \
+  plugins/shared/src/main/java/best/lolicon/felis/link/*.java \
+  plugins/velocity/src/main/java/best/lolicon/felis/velocity/ControlPolicy.java \
+  plugins/velocity/src/main/java/best/lolicon/felis/velocity/LinkGate.java \
+  plugins/velocity/src/main/java/best/lolicon/felis/velocity/FrameBudget.java \
+  plugins/velocity/test/best/lolicon/felis/velocity/ControlPolicyTest.java \
+  plugins/velocity/test/best/lolicon/felis/velocity/LinkGateTest.java
+java -cp "$work/policy-classes" best.lolicon.felis.velocity.ControlPolicyTest
+
+echo "==> LinkGateTest (outage fallback + frame budget, velocity)"
+java -cp "$work/policy-classes" best.lolicon.felis.velocity.LinkGateTest
 
 echo "==> InviteBookTest (/invite prompt store, velocity)"
 mkdir -p "$work/velocity-classes"

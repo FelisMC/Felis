@@ -25,6 +25,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * WaitingRouter implements the §11 domain-autostart routing loop and its waiting
@@ -51,9 +52,17 @@ import java.util.concurrent.ConcurrentHashMap;
  * (we tell them to try later — nothing is coming up, so we do not enqueue). Real
  * user-backend joins are reported back so the reaper sees activity and the player is
  * auto-added to the allowlist.
+ *
+ * <p>Link checks go through {@link LinkGate}, which rides out a short felis-api
+ * outage on a recent positive answer for the same UUID and otherwise fails closed.
  */
 public final class WaitingRouter {
     private static final long WAIT_TIMEOUT_MILLIS = 120_000L;
+    // How long a positive link answer can stand in for felis-api while it is down.
+    private static final long LINK_GRACE_MILLIS = 10 * 60_000L;
+    // The login gate re-sends its release with backoff (and during a felis-api outage
+    // on every retry), so a denial line is shown at most once per this interval.
+    private static final long GATE_NOTICE_INTERVAL_MILLIS = 15_000L;
 
     private final ProxyServer proxy;
     private final Logger log;
@@ -63,8 +72,14 @@ public final class WaitingRouter {
     private final String loginServer;
     private final String lobbyServer;
 
+    private final LinkGate links;
     private final Map<UUID, Waiter> waiting = new ConcurrentHashMap<>();
     private final Map<UUID, String> pendingTargets = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> lastGateNotice = new ConcurrentHashMap<>();
+    // tick is scheduled at a fixed rate and makes blocking calls; when felis-api is
+    // slow a run can outlast the interval, and overlapping runs would multiply the
+    // load on the thing that is already slow.
+    private final AtomicBoolean ticking = new AtomicBoolean(false);
 
     // Notified just before a menu-originated waiter is transferred, so the lobby's
     // felis:control face can tell the player's GUI the backend is ready. Null until
@@ -80,6 +95,44 @@ public final class WaitingRouter {
         this.plugin = plugin;
         this.loginServer = loginServer;
         this.lobbyServer = lobbyServer;
+        this.links = new LinkGate(api::linkStatus, LINK_GRACE_MILLIS, System::currentTimeMillis);
+    }
+
+    /** pruneLinks bounds the LinkGate's fallback records; called on the refresh loop. */
+    void pruneLinks() {
+        links.prune();
+    }
+
+    /**
+     * releaseFromLogin is the proxy end of the login gate's {@code LoginRelease}: ask
+     * Velocity to move the player to the lobby. The move is authorized where every
+     * login exit is, in {@link #onServerPreConnect}, so a gate that sends this early
+     * gets a denial and nothing else. ControlChannel has already checked the frame
+     * came from the login server, so the player is standing on it.
+     */
+    void releaseFromLogin(Player player) {
+        Optional<RegisteredServer> lobby = proxy.getServer(lobbyServer);
+        if (lobby.isEmpty()) {
+            log.warn("Felis: login release for {} but the lobby '{}' is not registered yet",
+                    player.getUniqueId(), lobbyServer);
+            return; // the gate retries; the next refresh registers the lobby
+        }
+        player.createConnectionRequest(lobby.get()).connect().whenComplete((result, err) -> {
+            if (err != null) {
+                log.warn("Felis: login release for {} failed: {}", player.getUniqueId(), err.toString());
+            }
+        });
+    }
+
+    // linked runs the link check through the gate and notes when the answer came from
+    // the outage fallback rather than felis-api.
+    private boolean linked(UUID id) throws LinkException {
+        LinkGate.Result r = links.check(id);
+        if (r.degraded) {
+            log.warn("Felis: felis-api unreachable; admitting {} on a link confirmation from the last {} min",
+                    id, LINK_GRACE_MILLIS / 60_000L);
+        }
+        return r.linked;
     }
 
     /**
@@ -213,8 +266,8 @@ public final class WaitingRouter {
         UUID id = player.getUniqueId();
         boolean zh = FelisVelocityPlugin.zh(player);
         try {
-            if (!api.linkStatus(id)) {
-                player.sendMessage(Component.text(
+            if (!linked(id)) {
+                gateNotice(player, Component.text(
                         zh ? "请先完成登录，再离开登录区。"
                            : "Finish signing in before leaving the login area.", NamedTextColor.YELLOW));
                 return;
@@ -222,7 +275,7 @@ public final class WaitingRouter {
         } catch (LinkException e) {
             log.warn("Felis: could not verify login release for {} (status={}): {}",
                     id, e.statusCode(), e.getMessage());
-            player.sendMessage(Component.text(
+            gateNotice(player, Component.text(
                     zh ? "登录验证暂时不可用，请稍候重试。"
                        : "Login verification is temporarily unavailable. Please wait and try again.",
                     NamedTextColor.RED));
@@ -265,6 +318,19 @@ public final class WaitingRouter {
         UUID id = event.getPlayer().getUniqueId();
         pendingTargets.remove(id);
         waiting.remove(id);
+        lastGateNotice.remove(id);
+    }
+
+    // gateNotice shows a login-gate denial, suppressing repeats the gate's own retry
+    // loop would otherwise print every few seconds.
+    private void gateNotice(Player player, Component line) {
+        long now = System.currentTimeMillis();
+        Long last = lastGateNotice.get(player.getUniqueId());
+        if (last != null && now - last < GATE_NOTICE_INTERVAL_MILLIS) {
+            return;
+        }
+        lastGateNotice.put(player.getUniqueId(), now);
+        player.sendMessage(line);
     }
 
     @Subscribe
@@ -281,16 +347,27 @@ public final class WaitingRouter {
             try {
                 api.reportJoin(name, id);
             } catch (LinkException e) {
-                log.debug("Felis: join-event {} failed (status={}): {}", name, e.statusCode(), e.getMessage());
+                // A lost join-event leaves the reaper blind to real activity and skips
+                // the allowlist append, so it is an operator-visible failure.
+                log.warn("Felis: join-event for {} on {} failed (status={}): {}",
+                        id, name, e.statusCode(), e.getMessage());
             }
         });
     }
 
     /** tick drains the waiting queue; the plugin schedules it on the async pool. */
     void tick() {
-        if (waiting.isEmpty()) {
+        if (waiting.isEmpty() || !ticking.compareAndSet(false, true)) {
             return;
         }
+        try {
+            drain();
+        } finally {
+            ticking.set(false);
+        }
+    }
+
+    private void drain() {
         long now = System.currentTimeMillis();
         Map<String, Boolean> readyCache = new HashMap<>(); // one status poll per distinct server
         for (Map.Entry<UUID, Waiter> e : new ArrayList<>(waiting.entrySet())) {
@@ -328,7 +405,7 @@ public final class WaitingRouter {
                 continue; // ready but not yet registered → next tick
             }
             try {
-                if (!api.linkStatus(id)) {
+                if (!linked(id)) {
                     waiting.remove(id);
                     player.sendMessage(Component.text(
                             zh ? "你的账户已不再绑定。请重连以重新登录。"
@@ -376,7 +453,7 @@ public final class WaitingRouter {
         }
         plugin.async(() -> {
             try {
-                if (!api.linkStatus(id)) {
+                if (!linked(id)) {
                     player.sendMessage(Component.text(
                             zh ? "请先完成登录，再加入服务器。"
                                : "Finish signing in before joining a server.", NamedTextColor.YELLOW));
@@ -457,6 +534,8 @@ public final class WaitingRouter {
     private void transfer(Player player, String serverName, RegisteredServer backend) {
         player.createConnectionRequest(backend).connect().whenComplete((result, err) -> {
             if (err != null || (result != null && !result.isSuccessful())) {
+                log.warn("Felis: transfer of {} to {} failed: {}", player.getUniqueId(), serverName,
+                        err != null ? err.toString() : result.getStatus());
                 player.sendMessage(Component.text(
                         FelisVelocityPlugin.zh(player)
                                 ? "无法把你连接到「" + serverName + "」。请重试。"
