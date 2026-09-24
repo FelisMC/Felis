@@ -47,6 +47,7 @@ type fakeRepo struct {
 	serverResources map[string]ResourceSpec
 	resourceUpdates map[string]ResourceSpec
 	audits          []AuditEntry
+	failAudit       error // Audit fails with it (a store outage)
 	joins           []string
 	// create-server seeding (spec §15)
 	seeded  map[string]bool   // name -> servers row exists
@@ -745,6 +746,9 @@ func (f *fakeRepo) SeedServer(_ context.Context, name, subdomain string, _, _, _
 }
 func (f *fakeRepo) Ping(_ context.Context) error { return f.pingErr }
 func (f *fakeRepo) Audit(_ context.Context, e AuditEntry) error {
+	if f.failAudit != nil {
+		return f.failAudit
+	}
 	f.audits = append(f.audits, e)
 	return nil
 }
@@ -857,7 +861,8 @@ func (f *fakeRepo) SessionUser(_ context.Context, tokenHash string, now time.Tim
 				return nil, ErrNotFound
 			}
 			return &SessionedUser{
-				ID: u.ID, Email: u.Email, Role: u.Role,
+				ID: u.ID, Username: u.Username, Email: u.Email, Role: u.Role,
+				EmailVerified: u.EmailVerified,
 			}, nil
 		}
 	}

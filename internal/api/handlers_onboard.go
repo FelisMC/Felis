@@ -103,13 +103,16 @@ func (a *API) handleBindRedeem(w http.ResponseWriter, r *http.Request) {
 	userID, mcUUID, authSource, err := a.Repo.RedeemPlayerBindCode(r.Context(), uid, code, a.now())
 	switch {
 	case errors.Is(err, ErrLinkCodeInvalid):
+		a.authFailure(r, "bind_redeem", "bad_code", nil)
 		writeError(w, r, newError(http.StatusBadRequest, "invalid_code", "bind code is invalid or expired"))
 		return
 	case errors.Is(err, ErrPlayerBindForbidden):
+		a.authFailure(r, "bind_redeem", "staff_account", nil)
 		writeError(w, r, newError(http.StatusForbidden, "staff_account",
 			"that Minecraft account belongs to staff; sign in at the operator console"))
 		return
 	case errors.Is(err, ErrPlayerAccountRetired):
+		a.authFailure(r, "bind_redeem", "account_retired", nil)
 		// The linked Felis account is disabled or soft-deleted: the door refuses to
 		// reuse it, because minting a session here would resurrect the account the
 		// owner just retired (audit #33). The code survives, so re-enabling the
@@ -133,7 +136,8 @@ func (a *API) handleBindRedeem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setSessionCookie(w, token, expires)
-	a.audit(r, userID, "account.bind_redeem", "")
+	// The in-game code proved the Minecraft account; it names the actor.
+	a.auditEntry(r, AuditEntry{Actor: "mc:" + mcUUID, ActorUserID: userID, Action: "account.bind_redeem"})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user_id": userID, "linked": true, "mc_uuid": mcUUID, "auth_source": authSource,
 	})

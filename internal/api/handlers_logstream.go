@@ -98,6 +98,6 @@ func (a *API) handleServerConsole(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.audit(r, p.Email, "console.attach", name)
+	a.audit(r, "console.attach", name)
 	relayLogStream(w, r, src)
 }

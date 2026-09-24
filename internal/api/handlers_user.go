@@ -67,7 +67,7 @@ func (a *API) handleWake(w http.ResponseWriter, r *http.Request) {
 	// held at capacity should retry the instant a slot frees, not wait out a
 	// cooldown their refused wake never earned).
 	a.limiter().record(name)
-	a.audit(r, p.Email, "wake", name)
+	a.audit(r, "wake", name)
 	writeJSON(w, http.StatusAccepted, map[string]any{"name": name, "desiredState": "Running"})
 }
 
@@ -95,7 +95,7 @@ func (a *API) handleStop(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	a.audit(r, p.Email, "stop", name)
+	a.audit(r, "stop", name)
 	writeJSON(w, http.StatusAccepted, map[string]any{"name": name, "desiredState": "Stopped"})
 }
 
@@ -160,7 +160,7 @@ func (a *API) handleClaim(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ④ audit. Allowlist population happens on first successful join (spec §9.4).
-	a.audit(r, p.Email, "claim", name)
+	a.audit(r, "claim", name)
 	writeJSON(w, http.StatusOK, map[string]any{"name": name, "claimed": true})
 }
 
@@ -321,7 +321,6 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, errBuildUnavailable)
 		return
 	}
-	p := principalFromContext(r.Context())
 
 	var body createServerRequest
 	if err := decodeJSON(w, r, &body); err != nil {
@@ -449,7 +448,7 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.audit(r, p.Email, "server.create", body.Name)
+	a.audit(r, "server.create", body.Name)
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"name":         body.Name,
 		"subdomain":    body.Subdomain,
@@ -634,7 +633,6 @@ type patchServerRequest struct {
 // (Postgres) is untouched, so the two never desync (spec §22). The admin gate is
 // the adminOnly wrapper in routing — every caller here is already an admin.
 func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
-	p := principalFromContext(r.Context())
 	name := r.PathValue("name")
 	if err := naming.ValidateServerName(name); err != nil {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
@@ -794,7 +792,7 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	a.audit(r, p.Email, "server.patch", name)
+	a.audit(r, "server.patch", name)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name":    name,
 		"patched": changed,
@@ -836,18 +834,6 @@ func (a *API) isOwnerOrAdmin(p *Principal, rec *ServerRecord) bool {
 		return true
 	}
 	return rec != nil && rec.OwnerID != "" && rec.OwnerID == p.UserID
-}
-
-// audit writes a best-effort audit row; a logging failure must not fail the
-// underlying operation, which already succeeded.
-func (a *API) audit(r *http.Request, actor, action, server string) {
-	_ = a.Repo.Audit(r.Context(), AuditEntry{
-		Actor:      actor,
-		Source:     "external",
-		Action:     action,
-		ServerName: server,
-		RequestID:  requestIDFromContext(r.Context()),
-	})
 }
 
 // quantityToMilli converts a K8s resource.Quantity to millicores (e.g. "2"→2000,

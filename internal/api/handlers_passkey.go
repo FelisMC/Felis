@@ -355,7 +355,7 @@ func (a *API) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Request
 		writeError(w, r, err)
 		return
 	}
-	a.audit(r, auditActor(p), "account.passkey.registered", cred.ID)
+	a.audit(r, "account.passkey.registered", cred.ID)
 	writeJSON(w, http.StatusCreated, passkeyView(cred))
 }
 
@@ -415,7 +415,7 @@ func (a *API) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	a.audit(r, auditActor(p), "account.passkey.removed", id)
+	a.audit(r, "account.passkey.removed", id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -593,6 +593,7 @@ func (a *API) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 	u, err := a.Repo.UserByEmail(r.Context(), email)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
+			a.authFailure(r, "passkey", "no_account", nil)
 			writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
 				"passkey login could not be completed; begin again"))
 			return
@@ -604,6 +605,7 @@ func (a *API) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 	sessionData, err := a.Repo.ConsumePasskeyChallengeByUser(r.Context(), u.ID, passkeyPurposeLogin, a.now())
 	if err != nil {
 		if errors.Is(err, ErrPasskeyChallengeInvalid) {
+			a.authFailure(r, "passkey", "challenge_invalid", u)
 			writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
 				"passkey login could not be completed; begin again"))
 			return
@@ -625,6 +627,7 @@ func (a *API) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 	}
 	va, err := a.Passkey.FinishLogin(user, sessionData, bytes.NewReader(req.Assertion))
 	if err != nil {
+		a.authFailure(r, "passkey", "bad_assertion", u)
 		writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
 			"passkey login could not be completed; begin again"))
 		return
@@ -634,7 +637,7 @@ func (a *API) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 	// distinctly; a successful assertion advances the stored counter and stamps last_used_at.
 	if err := a.applyAssertionCounter(r.Context(), va); err != nil {
 		if errors.Is(err, errPasskeyClonedAuthenticator) {
-			a.audit(r, u.Username, "auth.passkey_clone_rejected", va.CredentialID)
+			a.passkeyCloneRejected(r, "passkey", u, va.CredentialID)
 			writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
 				"passkey login could not be completed; begin again"))
 			return
@@ -654,7 +657,7 @@ func (a *API) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setSessionCookie(w, token, expires)
-	a.audit(r, u.Username, "auth.passkey_login", "")
+	a.auditAccount(r, u, "auth.passkey_login", "")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user_id": u.ID,
 		"role":    u.Role,

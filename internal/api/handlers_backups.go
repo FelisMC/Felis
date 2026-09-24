@@ -208,7 +208,7 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.audit(r, p.Email, "backup.restore", name)
+	a.audit(r, "backup.restore", name)
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"name":      name,
 		"status":    "restoring",
@@ -256,7 +256,7 @@ func (a *API) handleBackupNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.enqueueBackup(w, r, name, rec, p.Email, "external")
+	a.enqueueBackup(w, r, name, rec, auditActor(p), "external")
 }
 
 // handleInternalBackup is the internal-face backup trigger. The break-glass console
@@ -360,10 +360,11 @@ func (a *API) enqueueBackup(w http.ResponseWriter, r *http.Request, name string,
 		return
 	}
 
-	_ = a.Repo.Audit(r.Context(), AuditEntry{
-		Actor: actor, Source: source, Action: "backup.create",
-		ServerName: name, RequestID: requestIDFromContext(r.Context()),
-	})
+	e := AuditEntry{Actor: actor, Source: source, Action: "backup.create", ServerName: name}
+	if p := principalFromContext(r.Context()); p != nil {
+		e.ActorUserID = p.UserID
+	}
+	a.auditEntry(r, e)
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"name":   name,
 		"status": "backing_up",

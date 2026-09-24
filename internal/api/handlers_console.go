@@ -117,6 +117,6 @@ func (a *API) handleCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.audit(r, p.Email, "console.command", name)
+	a.audit(r, "console.command", name)
 	writeJSON(w, http.StatusOK, map[string]any{"name": name, "output": output})
 }

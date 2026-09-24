@@ -747,10 +747,16 @@ func (p *PGRepo) Audit(ctx context.Context, e AuditEntry) error {
 	if len(e.Payload) > 0 {
 		payload = string(e.Payload)
 	}
+	// actor_user_id goes through a lookup so an id with no users row (an
+	// Access-JWT subject, a purged account) lands as NULL instead of failing
+	// the foreign key and losing the row.
 	_, err := p.db.ExecContext(ctx,
-		`INSERT INTO audit_logs (actor, source, action, server_name, request_id, payload)
-		 VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6)`,
-		e.Actor, e.Source, e.Action, e.ServerName, e.RequestID, payload)
+		`INSERT INTO audit_logs (actor, source, action, server_name, request_id, payload,
+		                         actor_user_id, client_ip, user_agent)
+		 VALUES ($1, $2, $3, NULLIF($4, ''), NULLIF($5, ''), $6,
+		         (SELECT id FROM users WHERE id = NULLIF($7, '')), NULLIF($8, '')::inet, NULLIF($9, ''))`,
+		e.Actor, e.Source, e.Action, e.ServerName, e.RequestID, payload,
+		e.ActorUserID, e.ClientIP, e.UserAgent)
 	return err
 }
 
@@ -1086,13 +1092,13 @@ func (p *PGRepo) SessionUser(ctx context.Context, tokenHash string, now time.Tim
 	// minted for an account that was alive a moment ago stops authenticating the
 	// instant the account is disabled or soft-deleted, so every authenticated route
 	// is fail-closed regardless of which door minted the cookie (audit #33).
-	const q = `SELECT u.id, COALESCE(u.email, ''), u.role::text, COALESCE(u.email_verified, false)
+	const q = `SELECT u.id, u.username, COALESCE(u.email, ''), u.role::text, COALESCE(u.email_verified, false)
 		FROM sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > $2
 		  AND u.disabled = false AND u.deleted_at IS NULL`
 	var u SessionedUser
 	switch err := p.db.QueryRowContext(ctx, q, tokenHash, now).Scan(
-		&u.ID, &u.Email, &u.Role, &u.EmailVerified); {
+		&u.ID, &u.Username, &u.Email, &u.Role, &u.EmailVerified); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
 	case err != nil:

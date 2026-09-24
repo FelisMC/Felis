@@ -167,7 +167,7 @@ func (a *API) handleLoginEmailStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	committed = true
-	a.audit(r, u.Username, "auth.login_email.otp_sent", "")
+	a.auditAccount(r, u, "auth.login_email.otp_sent", "")
 	writeJSON(w, http.StatusAccepted, map[string]any{"sent": true, "expires_at": expiresAt.UTC()})
 }
 
@@ -219,6 +219,7 @@ func (a *API) handleLoginEmailVerify(w http.ResponseWriter, r *http.Request) {
 		// Uniform with a wrong code: a caller probing whether an address has an account
 		// gets the same invalid_code either way. (The /auth/options oracle is the
 		// sanctioned place to learn existence; this door does not double as one.)
+		a.authFailure(r, "login_email", "no_account", nil)
 		writeError(w, r, newError(http.StatusBadRequest, "invalid_code", "email code is invalid or expired"))
 		return
 	case err != nil:
@@ -240,6 +241,7 @@ func (a *API) handleLoginEmailVerify(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, ErrOTPInvalid), errors.Is(err, ErrOTPLocked), errors.Is(err, ErrOTPAccountLocked):
 		// The account lock answers the same way; its owner hears about it by mail.
 		a.noteOTPLock(r, err, u.ID, otpPurposeLogin)
+		a.authFailure(r, "login_email", otpFailureReason(err), u)
 		// Both a wrong/expired code and an attempt-exhausted one return the SAME 400
 		// invalid_code, byte-identical to the unknown-account branch above. Surfacing
 		// otp_locked as a distinct 429 (as the authenticated onboarding door does) would
@@ -263,6 +265,7 @@ func (a *API) handleLoginEmailVerify(w http.ResponseWriter, r *http.Request) {
 	// Staff means anything above role=user: an admin OR the role=owner identity. The
 	// player door must yield only player sessions.
 	if u.Role != "user" {
+		a.authFailure(r, "login_email", "staff_account", u)
 		writeError(w, r, newError(http.StatusForbidden, "staff_account",
 			"that account is staff; sign in at the operator console"))
 		return
@@ -279,7 +282,7 @@ func (a *API) handleLoginEmailVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setSessionCookie(w, token, expires)
-	a.audit(r, u.Username, "auth.login_email", "")
+	a.auditAccount(r, u, "auth.login_email", "")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user_id": u.ID,
 		"role":    u.Role,

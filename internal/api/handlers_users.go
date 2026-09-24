@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"felis.lolicon.best/internal/metrics"
 )
 
 // ---- user CRUD ----
@@ -99,7 +101,7 @@ func (a *API) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.audit(r, p.Email, "user.create", u.ID)
+	a.audit(r, "user.create", u.ID)
 	writeJSON(w, http.StatusCreated, u)
 }
 
@@ -179,7 +181,7 @@ func (a *API) handlePatchUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.audit(r, p.Email, "user.patch", id)
+	a.audit(r, "user.patch", id)
 	writeJSON(w, http.StatusOK, u)
 }
 
@@ -215,7 +217,7 @@ func (a *API) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.audit(r, p.Email, "user.delete", id)
+	a.audit(r, "user.delete", id)
 	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
 }
 
@@ -266,7 +268,7 @@ func (a *API) handleDisableUser(w http.ResponseWriter, r *http.Request) {
 	if body.Disabled {
 		action = "user.disable"
 	}
-	a.audit(r, p.Email, action, id)
+	a.audit(r, action, id)
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "disabled": body.Disabled})
 }
 
@@ -323,7 +325,7 @@ func (a *API) handleSetQuotas(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.audit(r, p.Email, "user.set_quotas", id)
+	a.audit(r, "user.set_quotas", id)
 	writeJSON(w, http.StatusOK, v)
 }
 
@@ -350,7 +352,6 @@ func (a *API) handleListUserSessions(w http.ResponseWriter, r *http.Request) {
 // handleRevokeUserSessions revokes every live session of a user
 // (DELETE /users/{id}/sessions).
 func (a *API) handleRevokeUserSessions(w http.ResponseWriter, r *http.Request) {
-	p := principalFromContext(r.Context())
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, r, errBadRequest)
@@ -362,14 +363,14 @@ func (a *API) handleRevokeUserSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.audit(r, p.Email, "user.revoke_sessions", id)
+	metrics.SessionsRevokedTotal.WithLabelValues("admin").Inc()
+	a.audit(r, "user.revoke_sessions", id)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // handleRevokeUserSession revokes a single session of a user
 // (DELETE /users/{id}/sessions/{hash}).
 func (a *API) handleRevokeUserSession(w http.ResponseWriter, r *http.Request) {
-	p := principalFromContext(r.Context())
 	id := r.PathValue("id")
 	tokenHash := r.PathValue("hash")
 	if id == "" || tokenHash == "" {
@@ -382,7 +383,8 @@ func (a *API) handleRevokeUserSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.audit(r, p.Email, "user.revoke_session", id)
+	metrics.SessionsRevokedTotal.WithLabelValues("admin").Inc()
+	a.audit(r, "user.revoke_session", id)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -397,7 +399,6 @@ func (a *API) handleRevokeUserSession(w http.ResponseWriter, r *http.Request) {
 // DeleteAllPasskeyCredentialsForUser treats removing zero rows as success, so
 // unbinding an account that holds no passkeys is a 200 no-op, not a 404.
 func (a *API) handleUnbindUserPasskeys(w http.ResponseWriter, r *http.Request) {
-	p := principalFromContext(r.Context())
 	id := r.PathValue("id")
 	if id == "" {
 		writeError(w, r, errBadRequest)
@@ -409,7 +410,7 @@ func (a *API) handleUnbindUserPasskeys(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.audit(r, p.Email, "user.unbind_passkeys", id)
+	a.audit(r, "user.unbind_passkeys", id)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -418,7 +419,6 @@ func (a *API) handleUnbindUserPasskeys(w http.ResponseWriter, r *http.Request) {
 // handleUnlinkAccount removes a single (user_id, mc_uuid) binding
 // (DELETE /users/{id}/links/{mc_uuid}).
 func (a *API) handleUnlinkAccount(w http.ResponseWriter, r *http.Request) {
-	p := principalFromContext(r.Context())
 	userID := r.PathValue("id")
 	mcUUID := r.PathValue("mc_uuid")
 	if userID == "" || mcUUID == "" {
@@ -436,14 +436,13 @@ func (a *API) handleUnlinkAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.audit(r, p.Email, "user.unlink_account", userID)
+	a.audit(r, "user.unlink_account", userID)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "mc_uuid": mcUUID})
 }
 
 // handleLinkAccount force-binds a UUID to a user
 // (POST /users/{id}/links).
 func (a *API) handleLinkAccount(w http.ResponseWriter, r *http.Request) {
-	p := principalFromContext(r.Context())
 	userID := r.PathValue("id")
 	if userID == "" {
 		writeError(w, r, errBadRequest)
@@ -489,7 +488,7 @@ func (a *API) handleLinkAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.audit(r, p.Email, "user.link_account", userID)
+	a.audit(r, "user.link_account", userID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":          true,
 		"mc_uuid":     body.MCUUID,

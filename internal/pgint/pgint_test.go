@@ -327,6 +327,57 @@ func TestConsumeLoginEmailOTPContract(t *testing.T) {
 // The account-level wrong-code budget must survive supersede: minting a fresh
 // code resets the per-code attempts, and the public login door can mint one a
 // minute, so only a counter outside email_otps bounds guessing per account.
+// TestAuditAttributionContract pins migration 0023: actor_user_id is filled
+// from a real account id and falls to NULL (never a failed insert) for an id
+// with no users row; client_ip and user_agent land when given.
+func TestAuditAttributionContract(t *testing.T) {
+	ctx := context.Background()
+	u := newUser(t, "user", "audit")
+	action := "pgint.audit." + suffix(t)
+	for _, e := range []api.AuditEntry{
+		{Actor: u.Username, ActorUserID: u.ID, Action: action, ClientIP: "2001:db8::7", UserAgent: "pgint/1"},
+		{Actor: "sso-subject", ActorUserID: "not-a-user-" + suffix(t), Action: action},
+		{Actor: "anonymous", Action: action, ClientIP: "203.0.113.9"},
+	} {
+		e.Source = "external"
+		if err := repo.Audit(ctx, e); err != nil {
+			t.Fatalf("Audit(%s): %v", e.Actor, err)
+		}
+	}
+	rows, err := db.QueryContext(ctx, `SELECT actor, COALESCE(actor_user_id, ''), COALESCE(host(client_ip), ''), COALESCE(user_agent, '')
+		FROM audit_logs WHERE action = $1 ORDER BY id`, action)
+	if err != nil {
+		t.Fatalf("select: %v", err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var actor, uid, ip, ua string
+		if err := rows.Scan(&actor, &uid, &ip, &ua); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got = append(got, strings.Join([]string{actor, uid, ip, ua}, "|"))
+	}
+	want := []string{
+		u.Username + "|" + u.ID + "|2001:db8::7|pgint/1",
+		"sso-subject|||",
+		"anonymous||203.0.113.9|",
+	}
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("audit rows:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+
+	// The session principal carries the username the rows are signed with.
+	hash := "audit-sess-" + suffix(t)
+	if err := repo.CreateSession(ctx, hash, u.ID, mustNow().Add(time.Hour)); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	su, err := repo.SessionUser(ctx, hash, mustNow())
+	if err != nil || su.Username != u.Username {
+		t.Fatalf("SessionUser = %+v, %v; want username %q", su, err, u.Username)
+	}
+}
+
 func TestOTPFailureBudgetContract(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "otp-budget")

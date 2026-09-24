@@ -136,6 +136,7 @@ func (a *API) handleOpLoginStart(w http.ResponseWriter, r *http.Request) {
 	u, err := a.Repo.UserByEmail(r.Context(), email)
 	switch {
 	case errors.Is(err, ErrNotFound):
+		a.authFailure(r, "op_login", "no_account", nil)
 		neutral()
 		return
 	case err != nil:
@@ -148,6 +149,7 @@ func (a *API) handleOpLoginStart(w http.ResponseWriter, r *http.Request) {
 	// on console.<root_domain>) gets the neutral response, never a request or a code.
 	// Staff means admin OR owner — the Owner is the primary op.console user.
 	if !staffRole(u.Role) {
+		a.authFailure(r, "op_login", "not_staff", u)
 		neutral()
 		return
 	}
@@ -191,7 +193,7 @@ func (a *API) handleOpLoginStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	committed = true
-	a.audit(r, u.Username, "auth.op_login.otp_sent", "")
+	a.auditAccount(r, u, "auth.op_login.otp_sent", "")
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"request_id": id, "expires_at": expiresAt.UTC(),
 	})
@@ -271,6 +273,7 @@ func (a *API) handleOpLoginFinish(w http.ResponseWriter, r *http.Request) {
 	loginReq, err := a.Repo.OpLoginRequestByID(r.Context(), requestID)
 	switch {
 	case errors.Is(err, ErrNotFound):
+		a.authFailure(r, "op_login", "unknown_request", nil)
 		writeError(w, r, invalid)
 		return
 	case err != nil:
@@ -281,6 +284,7 @@ func (a *API) handleOpLoginFinish(w http.ResponseWriter, r *http.Request) {
 	// code before an admin approved) must not consume the code. Not-approved collapses
 	// into the same uniform failure as a bad code, so the ordering leaks nothing.
 	if loginReq.Status != "approved" || loginReq.Consumed || !loginReq.ExpiresAt.After(now) {
+		a.authFailure(r, "op_login", "not_approved", a.opLoginAccount(r, loginReq.UserID))
 		writeError(w, r, invalid)
 		return
 	}
@@ -290,6 +294,7 @@ func (a *API) handleOpLoginFinish(w http.ResponseWriter, r *http.Request) {
 	switch err := a.Repo.ConsumeLoginEmailOTP(r.Context(), loginReq.UserID, otpPurposeOpLogin, otpCodeHash(code), now); {
 	case errors.Is(err, ErrOTPInvalid), errors.Is(err, ErrOTPLocked), errors.Is(err, ErrOTPAccountLocked):
 		a.noteOTPLock(r, err, loginReq.UserID, otpPurposeOpLogin)
+		a.authFailure(r, "op_login", otpFailureReason(err), a.opLoginAccount(r, loginReq.UserID))
 		writeError(w, r, invalid)
 		return
 	case err != nil:
@@ -317,6 +322,7 @@ func (a *API) handleOpLoginFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !staffRole(u.Role) {
+		a.authFailure(r, "op_login", "not_staff", u)
 		writeError(w, r, newError(http.StatusForbidden, "staff_account", "that account is not an operator"))
 		return
 	}
@@ -331,8 +337,17 @@ func (a *API) handleOpLoginFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setSessionCookie(w, token, expires)
-	a.audit(r, u.Username, "auth.op_login", "")
+	a.auditAccount(r, u, "auth.op_login", "")
 	writeJSON(w, http.StatusOK, map[string]any{"user_id": u.ID, "role": u.Role})
+}
+
+// opLoginAccount loads the account a login request belongs to for a failure's
+// audit row, falling back to the bare id.
+func (a *API) opLoginAccount(r *http.Request, userID string) *StaffUser {
+	if u, err := a.Repo.UserByID(r.Context(), userID); err == nil {
+		return u
+	}
+	return &StaffUser{ID: userID}
 }
 
 // handleOpLoginPending lists live pending staff login requests, oldest first (internal
@@ -421,9 +436,9 @@ func (a *API) handleOpLoginApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	payload, _ := json.Marshal(map[string]string{"request_id": id, "approver_user_id": approverID})
-	_ = a.Repo.Audit(r.Context(), AuditEntry{
-		Actor: approver.Username, Source: "internal", Action: "auth.op_login.approved",
-		RequestID: requestIDFromContext(r.Context()), Payload: payload,
+	a.auditEntry(r, AuditEntry{
+		Actor: approver.Username, ActorUserID: approverID, Source: "internal",
+		Action: "auth.op_login.approved", Payload: payload,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"approved": true})
 }

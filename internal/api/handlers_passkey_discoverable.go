@@ -128,6 +128,7 @@ func (a *API) handlePasskeyLoginDiscoverableFinish(w http.ResponseWriter, r *htt
 	sessionData, err := a.Repo.ConsumeDiscoverableChallenge(r.Context(), req.LoginID, a.now())
 	if err != nil {
 		if errors.Is(err, ErrPasskeyChallengeInvalid) {
+			a.authFailure(r, "passkey_discoverable", "challenge_invalid", nil)
 			writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
 				"passkey login could not be completed; begin again"))
 			return
@@ -166,6 +167,9 @@ func (a *API) handlePasskeyLoginDiscoverableFinish(w http.ResponseWriter, r *htt
 	}
 	va, err := a.Passkey.FinishDiscoverableLogin(resolve, sessionData, bytes.NewReader(req.Assertion))
 	if err != nil {
+		// resolved is set when the credential named a live account and only the
+		// signature (or the credential's binding) failed.
+		a.authFailure(r, "passkey_discoverable", "bad_assertion", resolved)
 		writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
 			"passkey login could not be completed; begin again"))
 		return
@@ -184,7 +188,7 @@ func (a *API) handlePasskeyLoginDiscoverableFinish(w http.ResponseWriter, r *htt
 	// resolved account; a successful assertion advances the stored counter and stamps last_used_at.
 	if err := a.applyAssertionCounter(r.Context(), va); err != nil {
 		if errors.Is(err, errPasskeyClonedAuthenticator) {
-			a.audit(r, resolved.Username, "auth.passkey_clone_rejected", va.CredentialID)
+			a.passkeyCloneRejected(r, "passkey_discoverable", resolved, va.CredentialID)
 			writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
 				"passkey login could not be completed; begin again"))
 			return
@@ -204,7 +208,7 @@ func (a *API) handlePasskeyLoginDiscoverableFinish(w http.ResponseWriter, r *htt
 		return
 	}
 	setSessionCookie(w, token, expires)
-	a.audit(r, resolved.Username, "auth.passkey_login_discoverable", "")
+	a.auditAccount(r, resolved, "auth.passkey_login_discoverable", "")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user_id": resolved.ID,
 		"role":    resolved.Role,

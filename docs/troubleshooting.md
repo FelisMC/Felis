@@ -933,7 +933,9 @@ The series come from two processes:
 - `felis-api` internal face `:8081/metrics` (Service `felis-api-internal`) —
   `felis_image_build_failures_total`, and the sign-in series of §17
   (`felis_mail_total`, `felis_rate_limited_total`,
-  `felis_auth_otp_lockouts_total`). Unauthenticated like the probes;
+  `felis_auth_otp_lockouts_total`, `felis_auth_failures_total`,
+  `felis_sessions_revoked_total`, `felis_audit_write_failures_total`).
+  Unauthenticated like the probes;
   ClusterIP-only, and the external face never serves it.
 - `felis_reaper_worlds_deleted_total` is produced inside the one-shot reaper
   CronJob, which exits long before any scrape interval — without a pushgateway
@@ -945,8 +947,8 @@ The series come from two processes:
 `deploy/alerts/` ships ready-made rules: build failures, slow starts, node
 disk/memory thresholds, the kubelet `DiskPressure` condition, control-plane
 database backup freshness (§16; needs node-exporter's textfile collector), and
-sign-in abuse: the mail budget, relay failures, throttled floods and account
-code locks (§17).
+sign-in abuse: the mail budget, relay failures, throttled floods, account
+code locks and the refused sign-in rate, plus lost audit rows (§17).
 
 - Plain Prometheus: add `felis-alerts.yaml` to `rule_files`. Check and unit-test
   it standalone with `promtool check rules felis-alerts.yaml` and
@@ -1171,7 +1173,7 @@ Skips the pre-migration snapshot (`migrate up -no-backup`). The installer warns
 loudly when it is set. Use it only when the snapshot cannot work and you have
 another backup, e.g. an external database newer than the host's `pg_dump`.
 
-## 17. Sign-in refused with 429, mail budget, account code locks
+## 17. Sign-in refused with 429, mail budget, account code locks, failed sign-ins
 
 The public sign-in doors (`/api/v1/auth/*` except logout and the op-login
 status poll) have three limits of their own. Each answers 429 with a
@@ -1232,6 +1234,29 @@ sudo -u postgres psql felis -c \
   "DELETE FROM otp_failure_windows WHERE user_id = (SELECT id FROM users WHERE username = '<name>');"
 ```
 
+### Who tried: the audit trail
+
+Every refused sign-in writes an `auth.<door>.failed` row (payload `reason`:
+`bad_code`, `no_account`, `staff_account`, `not_staff`, `bad_assertion`, ...)
+and counts in `felis_auth_failures_total{door,reason}`; `FelisSignInFailures`
+fires above 30 in 15 minutes. The first refusal of each throttled burst writes
+`auth.rate_limited` with the source address. Rows carry `actor_user_id` (the
+account, the column to attribute by), `client_ip` (the same address the limit
+keys on) and `user_agent`. `actor` is display text: a verified email or the
+username, never an address the caller set without verifying.
+
+```sh
+sudo -u postgres psql felis -c "
+  SELECT created_at, action, actor, client_ip, payload->>'reason' AS reason
+  FROM audit_logs
+  WHERE action LIKE 'auth.%' AND created_at > now() - interval '1 hour'
+  ORDER BY created_at DESC LIMIT 50;"
+```
+
+A failed audit write does not fail the action; it logs `audit: lost ...` in
+`felis-api` and counts in `felis_audit_write_failures_total`
+(`FelisAuditWriteFailing`). The cause is almost always PostgreSQL (§16).
+
 ### Optional: a Cloudflare rate limiting rule in front
 
 The limits above live in the API, so they hold on any edge. Behind Cloudflare
@@ -1274,3 +1299,5 @@ for 10 seconds (the Free plan's limits).
 | Sign-in 429 `rate_limited` for everyone at once | §17 |
 | 429 `mail_rate_limited` / `FelisMailBudgetExhausted` | §17 |
 | Right code refused; `otp_account_locked` / `FelisOTPAccountLocked` | §17 |
+| `FelisSignInFailures` / who is guessing, from where | §17 |
+| `FelisAuditWriteFailing` | §17 |

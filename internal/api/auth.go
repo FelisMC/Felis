@@ -15,7 +15,10 @@ import (
 type Principal struct {
 	// UserID is the stable web identity (SSO subject → users.id).
 	UserID string
-	// Email is the audited actor identity (spec §14: audit actor = Access email).
+	// Username is the account's login name; empty for an Access-JWT caller.
+	Username string
+	// Email is the account's address. Only an Access JWT or EmailVerified vouches
+	// for it: a player can set any address before verifying it (auditActor).
 	Email string
 	// Role is "owner", "admin", or "user" (mirrors users.role).
 	Role string

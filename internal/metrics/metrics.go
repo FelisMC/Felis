@@ -81,6 +81,32 @@ var (
 		Name:      "rate_limited_total",
 		Help:      "Requests refused by a volumetric rate limit, by scope.",
 	}, []string{"scope"})
+
+	// AuthFailuresTotal counts refused sign-in attempts by door (login_email,
+	// op_login, passkey, passkey_discoverable, setup_redeem, bind_redeem) and
+	// reason (bad_code, no_account, staff_account, bad_credential, ...). A few a
+	// day is people mistyping; a steady stream is guessing or enumeration.
+	AuthFailuresTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "auth_failures_total",
+		Help:      "Refused sign-in attempts, by door and reason.",
+	}, []string{"door", "reason"})
+
+	// SessionsRevokedTotal counts sessions ended before expiry, by who ended
+	// them: logout (the holder) or admin (the owner revoking a user's sessions).
+	SessionsRevokedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "sessions_revoked_total",
+		Help:      "Sessions revoked before expiry, by who revoked them.",
+	}, []string{"by"})
+
+	// AuditWriteFailuresTotal counts audit rows the API failed to write. The
+	// action went through; only its record was lost.
+	AuditWriteFailuresTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "audit_write_failures_total",
+		Help:      "Audit rows the API failed to write.",
+	})
 )
 
 // OTPPurposes are the email-code doors OTPLockoutsTotal is labelled by.
@@ -135,6 +161,9 @@ func Collectors() []prometheus.Collector {
 		OTPLockoutsTotal,
 		MailTotal,
 		RateLimitedTotal,
+		AuthFailuresTotal,
+		SessionsRevokedTotal,
+		AuditWriteFailuresTotal,
 	}
 }
 

@@ -73,7 +73,7 @@ func (a *API) handleBuildImage(w http.ResponseWriter, r *http.Request) {
 		writeBuildError(w, r, err)
 		return
 	}
-	a.audit(r, p.Email, "image.build", bld.ImageRef)
+	a.audit(r, "image.build", bld.ImageRef)
 	writeJSON(w, http.StatusAccepted, bld)
 }
 
@@ -151,7 +151,7 @@ func (a *API) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 			"could not open build logs"))
 		return
 	}
-	a.audit(r, p.Email, "image.build.logs", id)
+	a.audit(r, "image.build.logs", id)
 	relayLogStream(w, r, src)
 }
 
@@ -162,14 +162,13 @@ func (a *API) handleCancelBuild(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, errBuildUnavailable)
 		return
 	}
-	p := principalFromContext(r.Context())
 	id := r.PathValue("id")
 	bld, err := a.Builder.Cancel(r.Context(), id)
 	if err != nil {
 		writeBuildError(w, r, err)
 		return
 	}
-	a.audit(r, p.Email, "image.build.cancel", bld.ImageRef)
+	a.audit(r, "image.build.cancel", bld.ImageRef)
 	writeJSON(w, http.StatusOK, bld)
 }
 
@@ -206,7 +205,7 @@ func (a *API) handleAddImage(w http.ResponseWriter, r *http.Request) {
 		writeBuildError(w, r, err)
 		return
 	}
-	a.audit(r, p.Email, "image.admit", img.ImageRef)
+	a.audit(r, "image.admit", img.ImageRef)
 	writeJSON(w, http.StatusCreated, img)
 }
 
@@ -218,7 +217,6 @@ func (a *API) handleRemoveImage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, errBuildUnavailable)
 		return
 	}
-	p := principalFromContext(r.Context())
 	ref := r.URL.Query().Get("ref")
 	if ref == "" {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
@@ -229,7 +227,7 @@ func (a *API) handleRemoveImage(w http.ResponseWriter, r *http.Request) {
 		writeBuildError(w, r, err)
 		return
 	}
-	a.audit(r, p.Email, "image.remove", ref)
+	a.audit(r, "image.remove", ref)
 	w.WriteHeader(http.StatusNoContent)
 }
 

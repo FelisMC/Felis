@@ -192,7 +192,7 @@ func (a *API) handleEmailOTPStart(w http.ResponseWriter, r *http.Request) {
 	// The send succeeded: keep both reservations (the deferred rollback becomes a
 	// no-op) so the cooldown windows stand.
 	committed = true
-	a.audit(r, auditActor(p), "account.email.otp_sent", "")
+	a.audit(r, "account.email.otp_sent", "")
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"sent":       true,
 		"expires_at": expiresAt.UTC(),
@@ -224,6 +224,9 @@ func (a *API) handleEmailOTPVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	email, err := a.Repo.VerifyEmailOTP(r.Context(), p.UserID, otpPurposeOnboard, otpCodeHash(code), a.now())
+	if isOTPRefusal(err) {
+		a.authFailure(r, "onboard_email", otpFailureReason(err), nil)
+	}
 	var lock *OTPAccountLockedError
 	switch {
 	case errors.As(err, &lock):
@@ -245,7 +248,7 @@ func (a *API) handleEmailOTPVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	a.audit(r, auditActor(p), "account.email.verified", "")
+	a.audit(r, "account.email.verified", "")
 	writeJSON(w, http.StatusOK, map[string]any{"verified": true, "email": email})
 }
 
@@ -316,16 +319,6 @@ func (a *API) handleSetEmail(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	a.audit(r, auditActor(p), "account.email.set", "")
+	a.audit(r, "account.email.set", "")
 	writeJSON(w, http.StatusOK, map[string]any{"email": email})
-}
-
-// auditActor picks the most identifying actor string for a principal: the audited
-// Access email when present, else the stable user id. A player mid-onboarding may
-// not have a verified email yet, so the id keeps the audit row attributable.
-func auditActor(p *Principal) string {
-	if p.Email != "" {
-		return p.Email
-	}
-	return p.UserID
 }

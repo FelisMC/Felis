@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -149,13 +150,14 @@ func TestOpLoginVertical(t *testing.T) {
 		t.Fatalf("session row for the cookie = %+v (ok=%v), want userID a1", s, ok)
 	}
 
-	// Three audits by "op": otp_sent (start), approved (in-game vouch), op_login (finish).
-	if n := len(repo.audits); n != 3 {
-		t.Fatalf("want 3 audits, got %d: %+v", n, repo.audits)
+	// Four audits by "op": otp_sent (start), the early finish refused before
+	// approval, approved (in-game vouch), op_login (finish).
+	if n := len(repo.audits); n != 4 {
+		t.Fatalf("want 4 audits, got %d: %+v", n, repo.audits)
 	}
-	wantActions := []string{"auth.op_login.otp_sent", "auth.op_login.approved", "auth.op_login"}
+	wantActions := []string{"auth.op_login.otp_sent", "auth.op_login.failed", "auth.op_login.approved", "auth.op_login"}
 	for i, want := range wantActions {
-		if repo.audits[i].Action != want || repo.audits[i].Actor != "op" {
+		if repo.audits[i].Action != want || repo.audits[i].Actor != "op" || repo.audits[i].ActorUserID != "a1" {
 			t.Errorf("audit[%d] = %+v, want action %q by op", i, repo.audits[i], want)
 		}
 	}
@@ -213,7 +215,7 @@ func TestOpLoginOwnerAdmitted(t *testing.T) {
 // a request_id + expires_at, mint/mail nothing, and still burn the per-recipient
 // cooldown — so neither the response nor the throttle tells a caller who is staff.
 func TestOpLoginStartNeutral(t *testing.T) {
-	check := func(t *testing.T, seed func(*fakeRepo), email string) {
+	check := func(t *testing.T, seed func(*fakeRepo), email, wantReason, wantUser string) {
 		t.Helper()
 		repo := newFakeRepo()
 		repo.settings[LocalAuthEnabledKey] = []byte("true")
@@ -236,9 +238,15 @@ func TestOpLoginStartNeutral(t *testing.T) {
 		if s, _ := b["expires_at"].(string); s == "" {
 			t.Error("neutral start must still return expires_at")
 		}
-		if len(repo.opLogins) != 0 || len(repo.otps) != 0 || mailer.calls != 0 || len(repo.audits) != 0 {
-			t.Errorf("neutral start must mint/mail/audit nothing: reqs=%d otps=%d mails=%d audits=%d",
-				len(repo.opLogins), len(repo.otps), mailer.calls, len(repo.audits))
+		if len(repo.opLogins) != 0 || len(repo.otps) != 0 || mailer.calls != 0 {
+			t.Errorf("neutral start must mint/mail nothing: reqs=%d otps=%d mails=%d",
+				len(repo.opLogins), len(repo.otps), mailer.calls)
+		}
+		// The response is neutral; the operator's record is not.
+		if len(repo.audits) != 1 || repo.audits[0].Action != "auth.op_login.failed" ||
+			!strings.Contains(string(repo.audits[0].Payload), `"reason":"`+wantReason+`"`) ||
+			repo.audits[0].ActorUserID != wantUser {
+			t.Errorf("neutral start audits = %+v, want one auth.op_login.failed %s by %q", repo.audits, wantReason, wantUser)
 		}
 		// The reservation is KEPT: re-probing the same address is throttled like a resend.
 		if w := startOp(eh, email); w.Code != http.StatusTooManyRequests || decodeErr(t, w) != "otp_resend_cooldown" {
@@ -247,12 +255,12 @@ func TestOpLoginStartNeutral(t *testing.T) {
 	}
 
 	t.Run("unknown address", func(t *testing.T) {
-		check(t, nil, "ghost@example.net")
+		check(t, nil, "ghost@example.net", "no_account", "")
 	})
 	t.Run("non-staff (role=user) address is ignored by the staff door", func(t *testing.T) {
 		check(t, func(repo *fakeRepo) {
 			repo.staff["p"] = &StaffUser{ID: "u9", Username: "p", Email: "player@example.net", Role: "user", EmailVerified: true}
-		}, "player@example.net")
+		}, "player@example.net", "not_staff", "u9")
 	})
 }
 

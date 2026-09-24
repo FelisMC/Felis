@@ -98,9 +98,8 @@ func (a *API) handleReclaimUsername(w http.ResponseWriter, r *http.Request) {
 		// accountability record shows the reclaim was declined, and why.
 		payload, _ := json.Marshal(map[string]string{
 			"username": req.Username, "squatter_uuid": req.SquatterUUID, "reason": "protected_admin"})
-		_ = a.Repo.Audit(r.Context(), AuditEntry{
-			Actor: "velocity", Source: "internal", Action: "player.reclaim.refused",
-			RequestID: requestIDFromContext(r.Context()), Payload: payload,
+		a.auditEntry(r, AuditEntry{
+			Actor: "velocity", Source: "internal", Action: "player.reclaim.refused", Payload: payload,
 		})
 		writeError(w, r, newError(http.StatusConflict, "protected_admin",
 			"that username belongs to a linked administrator on the login server and cannot be reclaimed"))
@@ -126,9 +125,8 @@ func (a *API) handleReclaimUsername(w http.ResponseWriter, r *http.Request) {
 	// payload (the flat columns model a server op, not this), keyed by Source
 	// internal since velocity, not a human, drives it.
 	payload, _ := json.Marshal(map[string]string{"username": req.Username, "squatter_uuid": req.SquatterUUID})
-	_ = a.Repo.Audit(r.Context(), AuditEntry{
-		Actor: "velocity", Source: "internal", Action: "player.reclaim",
-		RequestID: requestIDFromContext(r.Context()), Payload: payload,
+	a.auditEntry(r, AuditEntry{
+		Actor: "velocity", Source: "internal", Action: "player.reclaim", Payload: payload,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"blacklisted":     true,

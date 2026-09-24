@@ -159,7 +159,7 @@ func (a *API) handleAccessWhitelist(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	a.audit(r, principalFromContext(r.Context()).Email, "access.whitelist."+body.Action, name)
+	a.audit(r, "access.whitelist."+body.Action, name)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name": name, "action": body.Action, "player": body.Player, "output": out,
 	})
@@ -249,7 +249,7 @@ func (a *API) handleAccessBan(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	a.audit(r, principalFromContext(r.Context()).Email, "access.ban."+body.Action, name)
+	a.audit(r, "access.ban."+body.Action, name)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name": name, "action": body.Action, "player": body.Player, "output": out,
 	})
@@ -282,7 +282,7 @@ func (a *API) handleAccessKick(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	a.audit(r, principalFromContext(r.Context()).Email, "access.kick", name)
+	a.audit(r, "access.kick", name)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name": name, "player": body.Player, "output": out,
 	})
@@ -354,7 +354,7 @@ func (a *API) handleAccessPermission(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	a.audit(r, principalFromContext(r.Context()).Email, "access.permission."+body.Action, name)
+	a.audit(r, "access.permission."+body.Action, name)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name": name, "action": body.Action, "player": body.Player,
 		"node": body.Node, "output": out,
@@ -397,7 +397,7 @@ func (a *API) handleAccessGroup(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	a.audit(r, principalFromContext(r.Context()).Email, "access.group."+body.Action, name)
+	a.audit(r, "access.group."+body.Action, name)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name": name, "action": body.Action, "player": body.Player, "group": body.Group, "output": out,
 	})

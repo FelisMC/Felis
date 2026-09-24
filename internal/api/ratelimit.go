@@ -54,6 +54,9 @@ const (
 type tokenBucket struct {
 	tokens float64
 	at     time.Time
+	// refusing is set from a refusal until the next admission, so one episode
+	// of refusals can be recorded once.
+	refusing bool
 }
 
 // bucketSet is a set of token buckets keyed by caller. A missing key is a full
@@ -121,8 +124,16 @@ func (s *bucketSet) bucket(key string, now time.Time) *tokenBucket {
 // take spends one token from key's bucket. When none is left it reports how
 // long until one is. A disabled limit always admits.
 func (s *bucketSet) take(key string) (bool, time.Duration) {
+	ok, wait, _ := s.admit(key)
+	return ok, wait
+}
+
+// admit is take that also reports whether a refusal is the first since key was
+// last admitted, so a flood leaves one audit row per episode instead of one
+// per refused request.
+func (s *bucketSet) admit(key string) (ok bool, wait time.Duration, first bool) {
 	if s == nil || !s.limit.enabled() {
-		return true, 0
+		return true, 0, false
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -130,9 +141,12 @@ func (s *bucketSet) take(key string) (bool, time.Duration) {
 	b := s.bucket(key, now)
 	if b.tokens >= 1 {
 		b.tokens--
-		return true, 0
+		b.refusing = false
+		return true, 0, false
 	}
-	return false, s.wait(b)
+	first = !b.refusing
+	b.refusing = true
+	return false, s.wait(b), first
 }
 
 // peek reports whether key's bucket holds a token, without spending it.
@@ -176,9 +190,14 @@ const mailGateKey = "mail"
 // throttleAuthDoor applies the per-source bucket to one public auth door.
 func (a *API) throttleAuthDoor(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ok, wait := a.authDoorGate().take(sourceKey(a.clientIP(r)))
+		key := sourceKey(a.clientIP(r))
+		ok, wait, first := a.authDoorGate().admit(key)
 		if !ok {
 			metrics.RateLimitedTotal.WithLabelValues("auth_door").Inc()
+			if first {
+				a.auditEntry(r, AuditEntry{Actor: anonymousActor, Action: "auth.rate_limited",
+					Payload: auditPayload(map[string]any{"source": key, "door": r.URL.Path})})
+			}
 			writeError(w, r, newError(http.StatusTooManyRequests, "rate_limited",
 				"too many sign-in requests from this network; try again shortly").retryAfter(wait))
 			return

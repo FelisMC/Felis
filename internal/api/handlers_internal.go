@@ -51,9 +51,8 @@ func (a *API) handleReady(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
 		return
 	}
-	_ = a.Repo.Audit(r.Context(), AuditEntry{
+	a.auditEntry(r, AuditEntry{
 		Actor: "backend", Source: "internal", Action: "ready", ServerName: name,
-		RequestID: requestIDFromContext(r.Context()),
 	})
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -163,9 +162,8 @@ func (a *API) handleInternalWake(w http.ResponseWriter, r *http.Request) {
 	// the cap held with 503 (or a SetDesiredState error) leaves the cooldown
 	// untouched and the next join attempt is not also throttled.
 	a.limiter().record(name)
-	_ = a.Repo.Audit(r.Context(), AuditEntry{
+	a.auditEntry(r, AuditEntry{
 		Actor: "velocity", Source: "internal", Action: "wake", ServerName: name,
-		RequestID: requestIDFromContext(r.Context()),
 	})
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"name": name, "desiredState": "Running",
@@ -256,9 +254,8 @@ func (a *API) handleInternalClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = a.Repo.Audit(r.Context(), AuditEntry{
+	a.auditEntry(r, AuditEntry{
 		Actor: "velocity", Source: "internal", Action: "claim", ServerName: name,
-		RequestID: requestIDFromContext(r.Context()),
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"name": name, "claimed": true})
 }

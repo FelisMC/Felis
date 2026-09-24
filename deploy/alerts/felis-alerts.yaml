@@ -6,7 +6,9 @@
 #   - felis-operator pod :8080/metrics      → felis_servers_total, felis_start_duration_seconds
 #   - felis-api internal :8081/metrics      → felis_image_build_failures_total,
 #                                             felis_mail_total, felis_rate_limited_total,
-#                                             felis_auth_otp_lockouts_total
+#                                             felis_auth_otp_lockouts_total,
+#                                             felis_auth_failures_total,
+#                                             felis_audit_write_failures_total
 #   - node-exporter textfile collector      → felis_db_backup_* (felis-db-backup.timer)
 # node_* / kube_* series come from node-exporter / kube-state-metrics.
 groups:
@@ -142,3 +144,25 @@ groups:
             The audit log names the account (action auth.otp.locked); the owner was
             mailed. Unless they fumbled codes, someone is guessing at it
             (troubleshooting §17).
+      - alert: FelisSignInFailures
+        expr: sum(increase(felis_auth_failures_total[15m])) > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "over 30 refused sign-ins in 15 minutes"
+          description: >-
+            Wrong codes, unknown addresses or bad passkey assertions well above people
+            mistyping: someone is guessing or enumerating. `sum by (door, reason)
+            (increase(felis_auth_failures_total[15m]))` shows where; the audit rows
+            (action auth.<door>.failed) carry each caller's client_ip (troubleshooting §17).
+      - alert: FelisAuditWriteFailing
+        expr: increase(felis_audit_write_failures_total[15m]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "felis-api failed to write audit rows"
+          description: >-
+            The actions went through but their audit rows were lost. The felis-api log
+            names each lost row (`audit: lost ...`); the usual cause is PostgreSQL
+            being unreachable or out of disk.

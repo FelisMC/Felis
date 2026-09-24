@@ -124,7 +124,7 @@ func (a *API) handleCreateSubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	committed = true
-	a.audit(r, p.Email, "submission.create", sub.ID)
+	a.audit(r, "submission.create", sub.ID)
 	writeJSON(w, http.StatusCreated, sub)
 }
 
@@ -172,7 +172,7 @@ func (a *API) handleUploadSubmissionContext(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	committed = true
-	a.audit(r, p.Email, "submission.upload", sub.ID)
+	a.audit(r, "submission.upload", sub.ID)
 	writeJSON(w, http.StatusOK, sub)
 }
 
@@ -274,7 +274,7 @@ func (a *API) handleApproveSubmission(w http.ResponseWriter, r *http.Request) {
 		writeSubmitError(w, r, err)
 		return
 	}
-	a.audit(r, p.Email, "submission.approve", sub.ID)
+	a.audit(r, "submission.approve", sub.ID)
 	writeJSON(w, http.StatusOK, sub)
 }
 
@@ -297,7 +297,7 @@ func (a *API) handleRejectSubmission(w http.ResponseWriter, r *http.Request) {
 		writeSubmitError(w, r, err)
 		return
 	}
-	a.audit(r, p.Email, "submission.reject", sub.ID)
+	a.audit(r, "submission.reject", sub.ID)
 	writeJSON(w, http.StatusOK, sub)
 }
 
@@ -318,7 +318,7 @@ func (a *API) handleWithdrawSubmission(w http.ResponseWriter, r *http.Request) {
 		writeSubmitError(w, r, err)
 		return
 	}
-	a.audit(r, p.Email, "submission.withdraw", sub.ID)
+	a.audit(r, "submission.withdraw", sub.ID)
 	writeJSON(w, http.StatusOK, sub)
 }
 
@@ -333,13 +333,12 @@ func (a *API) handleDeleteSubmission(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, errSubmissionsUnavailable)
 		return
 	}
-	p := principalFromContext(r.Context())
 	sub, err := a.Submissions.Delete(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeSubmitError(w, r, err)
 		return
 	}
-	a.audit(r, p.Email, "submission.delete", sub.ID)
+	a.audit(r, "submission.delete", sub.ID)
 	writeJSON(w, http.StatusOK, sub)
 }
 
@@ -412,7 +411,7 @@ func (a *API) handleAdminSubmissionContext(w http.ResponseWriter, r *http.Reques
 	}
 	w.Header().Set("Content-Disposition", `attachment; filename="context.tar.gz"`)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	a.audit(r, principalFromContext(r.Context()).Email, "submission.context.download", r.PathValue("id"))
+	a.audit(r, "submission.context.download", r.PathValue("id"))
 	streamSubmissionContext(w, rc)
 }
 

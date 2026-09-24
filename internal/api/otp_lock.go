@@ -61,12 +61,7 @@ func (a *API) noteOTPLock(r *http.Request, err error, userID, purpose string) {
 	payload, _ := json.Marshal(map[string]any{
 		"user_id": userID, "purpose": purpose, "until": lock.Until.UTC(), "failures": otpFailureBudget,
 	})
-	if aerr := a.Repo.Audit(ctx, AuditEntry{
-		Actor: actor, Source: "external", Action: "auth.otp.locked",
-		RequestID: requestIDFromContext(ctx), Payload: payload,
-	}); aerr != nil {
-		log.Printf("auth: audit of otp lock for user %s failed: %v", userID, aerr)
-	}
+	a.auditEntry(r, AuditEntry{Actor: actor, ActorUserID: userID, Action: "auth.otp.locked", Payload: payload})
 
 	door, notify := otpDoorName[purpose]
 	if !notify || uerr != nil || u.Email == "" {

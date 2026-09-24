@@ -67,6 +67,7 @@ func (a *API) handleSetupRedeem(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Unknown, already-consumed, or expired — uniform 400 so the token cannot
 		// be used as an oracle.
+		a.authFailure(r, "setup_redeem", "bad_token", nil)
 		writeError(w, r, newError(http.StatusBadRequest, "setup_token_invalid",
 			"this setup link is invalid or has already been used"))
 		return
@@ -96,7 +97,7 @@ func (a *API) handleSetupRedeem(w http.ResponseWriter, r *http.Request) {
 	creds, _ := a.Repo.PasskeyCredentialsForUser(r.Context(), u.ID)
 	hasPasskey := len(creds) > 0
 
-	a.audit(r, u.Username, "auth.setup_redeem", "")
+	a.auditAccount(r, u, "auth.setup_redeem", "")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user_id":        u.ID,
 		"username":       u.Username,

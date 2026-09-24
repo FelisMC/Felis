@@ -236,3 +236,58 @@ tests:
       - eval_time: 90m
         alertname: FelisOTPAccountLocked
         exp_alerts: []
+  - name: sign-in failure rate
+    interval: 1m
+    input_series:
+      # Two doors failing at 3/min between them from t=0.
+      - series: 'felis_auth_failures_total{door="login_email",reason="bad_code",job="felis-api"}'
+        values: '0+2x40'
+      - series: 'felis_auth_failures_total{door="op_login",reason="no_account",job="felis-api"}'
+        values: '0+1x40'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: FelisSignInFailures
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: FelisSignInFailures
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "over 30 refused sign-ins in 15 minutes"
+              description: >-
+                Wrong codes, unknown addresses or bad passkey assertions well above people
+                mistyping: someone is guessing or enumerating. `sum by (door, reason)
+                (increase(felis_auth_failures_total[15m]))` shows where; the audit rows
+                (action auth.<door>.failed) carry each caller's client_ip (troubleshooting §17).
+  - name: people mistyping stays quiet
+    interval: 1m
+    input_series:
+      - series: 'felis_auth_failures_total{door="login_email",reason="bad_code",job="felis-api"}'
+        values: '0 0 1 1 2 2 3 3 4 4 5x30'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: FelisSignInFailures
+        exp_alerts: []
+  - name: audit rows lost
+    interval: 1m
+    input_series:
+      - series: 'felis_audit_write_failures_total{job="felis-api",instance="api-0"}'
+        values: '0 0 0 2x20'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: FelisAuditWriteFailing
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: FelisAuditWriteFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: felis-api
+              instance: api-0
+            exp_annotations:
+              summary: "felis-api failed to write audit rows"
+              description: >-
+                The actions went through but their audit rows were lost. The felis-api log
+                names each lost row (`audit: lost ...`); the usual cause is PostgreSQL
+                being unreachable or out of disk.

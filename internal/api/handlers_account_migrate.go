@@ -114,11 +114,10 @@ func (a *API) handleMigrateStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Internal-face event: attribute to the in-game initiator, Source 'internal'.
-	_ = a.Repo.Audit(r.Context(), AuditEntry{
-		Actor:     "mc:" + mcUUID,
-		Source:    "internal",
-		Action:    "account.migrate.start",
-		RequestID: requestIDFromContext(r.Context()),
+	a.auditEntry(r, AuditEntry{
+		Actor:  "mc:" + mcUUID,
+		Source: "internal",
+		Action: "account.migrate.start",
 	})
 	writeJSON(w, http.StatusCreated, map[string]any{"started": true, "state": "initiated"})
 }
@@ -247,7 +246,7 @@ func (a *API) handleMigrateConfirmOTPStart(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	committed = true
-	a.audit(r, auditActor(p), "account.migrate.confirm_otp_sent", "")
+	a.audit(r, "account.migrate.confirm_otp_sent", "")
 	writeJSON(w, http.StatusAccepted, map[string]any{"sent": true, "expires_at": expiresAt.UTC()})
 }
 
@@ -275,7 +274,11 @@ func (a *API) handleMigrateConfirmOTPVerify(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var lock *OTPAccountLockedError
-	switch err := a.Repo.ConsumeLoginEmailOTP(r.Context(), p.UserID, otpPurposeMigrate, otpCodeHash(code), a.now()); {
+	err := a.Repo.ConsumeLoginEmailOTP(r.Context(), p.UserID, otpPurposeMigrate, otpCodeHash(code), a.now())
+	if isOTPRefusal(err) {
+		a.authFailure(r, "migrate_confirm", otpFailureReason(err), nil)
+	}
+	switch {
 	case errors.As(err, &lock):
 		a.noteOTPLock(r, err, p.UserID, otpPurposeMigrate)
 		writeOTPAccountLocked(w, r, lock.Until, a.now())
@@ -300,7 +303,7 @@ func (a *API) handleMigrateConfirmOTPVerify(w http.ResponseWriter, r *http.Reque
 		writeError(w, r, err)
 		return
 	}
-	a.audit(r, auditActor(p), "account.migrate.confirmed", "")
+	a.audit(r, "account.migrate.confirmed", "")
 	writeJSON(w, http.StatusOK, map[string]any{"confirmed": true})
 }
 
@@ -387,6 +390,7 @@ func (a *API) handleMigrateConfirmPasskeyFinish(w http.ResponseWriter, r *http.R
 	sessionData, err := a.Repo.ConsumePasskeyChallengeByUser(r.Context(), p.UserID, passkeyPurposeMigrate, a.now())
 	if err != nil {
 		if errors.Is(err, ErrPasskeyChallengeInvalid) {
+			a.authFailure(r, "migrate_passkey", "challenge_invalid", nil)
 			writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
 				"passkey confirmation could not be completed; begin again"))
 			return
@@ -401,6 +405,7 @@ func (a *API) handleMigrateConfirmPasskeyFinish(w http.ResponseWriter, r *http.R
 	}
 	va, err := a.Passkey.FinishLogin(migratePasskeyUser(p, creds), sessionData, bytes.NewReader(req.Assertion))
 	if err != nil {
+		a.authFailure(r, "migrate_passkey", "bad_assertion", nil)
 		writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
 			"passkey confirmation could not be completed; begin again"))
 		return
@@ -412,7 +417,7 @@ func (a *API) handleMigrateConfirmPasskeyFinish(w http.ResponseWriter, r *http.R
 	// next login.
 	if err := a.applyAssertionCounter(r.Context(), va); err != nil {
 		if errors.Is(err, errPasskeyClonedAuthenticator) {
-			a.audit(r, auditActor(p), "auth.passkey_clone_rejected", va.CredentialID)
+			a.passkeyCloneRejected(r, "migrate_passkey", nil, va.CredentialID)
 			writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
 				"passkey confirmation could not be completed; begin again"))
 			return
@@ -429,7 +434,7 @@ func (a *API) handleMigrateConfirmPasskeyFinish(w http.ResponseWriter, r *http.R
 		writeError(w, r, err)
 		return
 	}
-	a.audit(r, auditActor(p), "account.migrate.confirmed", "")
+	a.audit(r, "account.migrate.confirmed", "")
 	writeJSON(w, http.StatusOK, map[string]any{"confirmed": true})
 }
 
@@ -506,7 +511,7 @@ func (a *API) handleMigrateIssueCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	a.audit(r, auditActor(p), "account.migrate.code_issued", targetID)
+	a.audit(r, "account.migrate.code_issued", targetID)
 	writeJSON(w, http.StatusCreated, map[string]any{"code": code, "expires_at": expiresAt.UTC()})
 }
 
@@ -544,7 +549,7 @@ func (a *API) handleMigrateRedeem(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	a.audit(r, auditActor(p), "account.migrate.redeemed", sourceUserID)
+	a.audit(r, "account.migrate.redeemed", sourceUserID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"migrated":      true,
 		"servers_moved": len(moved),

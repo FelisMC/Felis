@@ -164,8 +164,7 @@ func (a *API) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p := principalFromContext(r.Context())
-	a.audit(r, p.Email, "file.write", name+":"+path)
+	a.audit(r, "file.write", name+":"+path)
 	writeJSON(w, http.StatusOK, map[string]any{"path": path, "status": "written"})
 }
 

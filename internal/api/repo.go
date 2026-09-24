@@ -32,14 +32,21 @@ type MyServerView struct {
 	PlayersMax    int32  `json:"playersMax"`
 }
 
-// AuditEntry is one row written to audit_logs (spec §6). The actor is the Access
-// email for human callers and the component name for internal callers.
+// AuditEntry is one row written to audit_logs (spec §6). Actor is display text:
+// a verified email or the username for people (auditActor), the component name
+// for internal callers. ActorUserID is the account that acted, the column to
+// attribute by: an unverified email proves nothing, so only the id is binding.
 type AuditEntry struct {
-	Actor      string
-	Source     string
-	Action     string
-	ServerName string
-	RequestID  string
+	Actor       string
+	ActorUserID string
+	Source      string
+	Action      string
+	ServerName  string
+	RequestID   string
+	// ClientIP and UserAgent say where an external call came from; empty for
+	// internal callers. ClientIP is the address the sign-in limit keys on.
+	ClientIP  string
+	UserAgent string
 	// Payload is an optional structured detail blob stored in the audit_logs.payload
 	// jsonb column. It MUST be valid JSON or nil; nil (the zero value) is stored as
 	// SQL NULL, so existing callers that leave it unset are unaffected. The
@@ -125,6 +132,7 @@ type PasskeyCredential struct {
 // accounts without a second DB read.
 type SessionedUser struct {
 	ID            string
+	Username      string
 	Email         string
 	Role          string
 	EmailVerified bool

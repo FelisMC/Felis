@@ -229,7 +229,7 @@ func (a *API) handleLinkVerify(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	a.audit(r, p.Email, "account.link", "")
+	a.audit(r, "account.link", "")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"linked": true, "mc_uuid": mcUUID, "auth_source": authSource,
 	})

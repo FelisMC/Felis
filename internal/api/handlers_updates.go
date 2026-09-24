@@ -113,6 +113,6 @@ func (a *API) handleSetUpdateWindow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	a.audit(r, principalFromContext(r.Context()).Email, "updates.window_set", "")
+	a.audit(r, "updates.window_set", "")
 	writeJSON(w, http.StatusOK, body)
 }
