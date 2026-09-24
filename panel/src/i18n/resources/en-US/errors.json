@@ -42,6 +42,8 @@
   "build_unavailable": "Image builds aren't available right now.",
   "build_logs_unavailable": "Build logs aren't available right now.",
   "already_reviewed": "This submission has already been reviewed.",
+  "submission_quota_exceeded": "Your submission quota is full: too many pending reviews, or your stored uploads are at the limit.",
+  "submission_cooldown": "Too many submission requests — try again shortly.",
   "submissions_unavailable": "Submissions aren't available right now.",
   "uploads_unavailable": "Uploads aren't available right now.",
   "backup_unavailable": "Backups aren't available right now.",

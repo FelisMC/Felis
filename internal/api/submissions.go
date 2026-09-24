@@ -59,6 +59,15 @@ type createSubmissionRequest struct {
 	DisplayName string `json:"display_name"`
 }
 
+// The submission lane's two cooldown keys, prefixed into the shared submit
+// limiter's per-user keys. Create and upload are separate levers on purpose:
+// creating a submission and then immediately uploading its context is the lane's
+// normal shape, so one must never consume the other's window.
+const (
+	submissionCreateKey = "create:"
+	submissionUploadKey = "upload:"
+)
+
 // rejectSubmissionRequest is the POST /submissions/{id}/reject body. A reason is
 // required (the submit layer rejects an empty one with 400).
 type rejectSubmissionRequest struct {
@@ -74,6 +83,26 @@ func (a *API) handleCreateSubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := principalFromContext(r.Context())
+	// Reserve the per-user create cooldown BEFORE the store write. Unlike the
+	// wake lever's allowed→record (whose real gate is the running cap and whose
+	// effect is idempotent), a create is a non-idempotent row insertion with no
+	// other bound on its rate, so a burst of truly concurrent creates must yield
+	// exactly one winner per window. The deferred rollback frees the window
+	// whenever the create fails — a 400 typo, a spent quota, a store error — so
+	// only a row that was actually recorded consumes it.
+	lim := a.submitLimiter()
+	reservedAt, ok := lim.reserve(submissionCreateKey+p.UserID, a.SubmitCreateCooldown)
+	if !ok {
+		writeError(w, r, newError(http.StatusTooManyRequests, "submission_cooldown",
+			"a submission was created recently; wait a moment before creating another"))
+		return
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			lim.release(submissionCreateKey+p.UserID, reservedAt)
+		}
+	}()
 	var body createSubmissionRequest
 	if err := decodeJSON(w, r, &body); err != nil {
 		writeError(w, r, err)
@@ -87,6 +116,7 @@ func (a *API) handleCreateSubmission(w http.ResponseWriter, r *http.Request) {
 		writeSubmitError(w, r, err)
 		return
 	}
+	committed = true
 	a.audit(r, p.Email, "submission.create", sub.ID)
 	writeJSON(w, http.StatusCreated, sub)
 }
@@ -107,12 +137,34 @@ func (a *API) handleUploadSubmissionContext(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	p := principalFromContext(r.Context())
+	// Reserve the per-user upload cooldown BEFORE streaming. The body is the
+	// expensive part (up to the 1 GiB blob cap), so without a reservation the
+	// throttle would never bound the resource it exists for: a caller could
+	// repeatedly start long uploads and abort them. Reserving also collapses the
+	// lane's parallel overshoot — a burst of concurrent uploads from one user
+	// yields exactly one admitted stream per replica. The rollback keeps a failed
+	// upload (aborted transfer, wrong format, spent quota) from burning the
+	// window, so a legit retry after a genuine failure is not punished.
+	lim := a.submitLimiter()
+	reservedAt, ok := lim.reserve(submissionUploadKey+p.UserID, a.SubmitUploadCooldown)
+	if !ok {
+		writeError(w, r, newError(http.StatusTooManyRequests, "submission_cooldown",
+			"an upload was accepted recently; wait a moment before uploading again"))
+		return
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			lim.release(submissionUploadKey+p.UserID, reservedAt)
+		}
+	}()
 	id := r.PathValue("id")
 	sub, err := a.Submissions.UploadContext(r.Context(), id, p.UserID, r.Body)
 	if err != nil {
 		writeSubmitError(w, r, err)
 		return
 	}
+	committed = true
 	a.audit(r, p.Email, "submission.upload", sub.ID)
 	writeJSON(w, http.StatusOK, sub)
 }
@@ -250,9 +302,10 @@ var errSubmissionsUnavailable = newError(http.StatusServiceUnavailable, "submiss
 
 // writeSubmitError maps submit-package errors onto HTTP status codes. Only the
 // business sentinels are client-facing: a validation failure is 400, a missing
-// submission is 404, an already-reviewed submission is 409, and an unconfigured
-// upload transport is 503 (the store this deployment set has no implemented
-// transport — an honest "not available here", not a client error). Everything
+// submission is 404, an already-reviewed submission is 409, a spent per-user
+// allowance is 403 (the same status the server-resource quota answers with), and
+// an unconfigured upload transport is 503 (the store this deployment set has no
+// implemented transport — an honest "not available here", not a client error). Everything
 // else — including a build.ErrInvalid raised by the pre-CAS build.Validate (a
 // platform registry/context MISCONFIGURATION, never client input, since every
 // build input is platform-derived) and a post-CAS Submit hand-off failure — is a
@@ -267,6 +320,9 @@ func writeSubmitError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, submit.ErrAlreadyReviewed):
 		writeError(w, r, newError(http.StatusConflict, "already_reviewed",
 			"submission has already been reviewed"))
+	case errors.Is(err, submit.ErrQuotaExceeded):
+		writeError(w, r, newError(http.StatusForbidden, "submission_quota_exceeded",
+			"submission quota reached"))
 	case errors.Is(err, submit.ErrBlobNotFound):
 		writeError(w, r, newError(http.StatusNotFound, "not_found", "no context uploaded for this submission"))
 	case errors.Is(err, submit.ErrUploadsUnavailable):

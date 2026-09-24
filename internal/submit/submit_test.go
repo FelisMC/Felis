@@ -24,6 +24,7 @@ type fakeBlobs struct {
 	stored      map[string][]byte
 	putErr      error
 	existsErr   error
+	sizeErr     error
 	forceExists *bool // overrides the stored-map lookup for the approve-gate tests
 }
 
@@ -52,6 +53,18 @@ func (f *fakeBlobs) Exists(_ context.Context, id string) (bool, error) {
 	return ok, nil
 }
 
+// Size mirrors the real stores: a missing blob is (0, false, nil).
+func (f *fakeBlobs) Size(_ context.Context, id string) (int64, bool, error) {
+	if f.sizeErr != nil {
+		return 0, false, f.sizeErr
+	}
+	b, ok := f.stored[id]
+	if !ok {
+		return 0, false, nil
+	}
+	return int64(len(b)), true, nil
+}
+
 func (f *fakeBlobs) Open(_ context.Context, id string) (io.ReadCloser, error) {
 	b, ok := f.stored[id]
 	if !ok {
@@ -73,6 +86,7 @@ type fakeStore struct {
 	subs map[string]*Submission
 
 	createErr  error
+	countErr   error
 	approveErr error
 	rejectErr  error
 	linkErr    error
@@ -89,6 +103,19 @@ func (f *fakeStore) CreateSubmission(_ context.Context, s *Submission) error {
 	cp := *s
 	f.subs[s.ID] = &cp
 	return nil
+}
+
+func (f *fakeStore) CountPendingSubmissionsBy(_ context.Context, by string) (int, error) {
+	if f.countErr != nil {
+		return 0, f.countErr
+	}
+	var n int
+	for _, s := range f.subs {
+		if s.SubmittedBy == by && s.Status == StatusPendingReview {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (f *fakeStore) GetSubmission(_ context.Context, id string) (*Submission, error) {
@@ -668,6 +695,127 @@ func TestUploadContextNoTransportUnavailable(t *testing.T) {
 	_, err := m.UploadContext(context.Background(), seed.ID, "user-1", strings.NewReader(gzBody("x")))
 	if !errors.Is(err, ErrUploadsUnavailable) {
 		t.Fatalf("err = %v, want ErrUploadsUnavailable", err)
+	}
+}
+
+// The per-user pending cap bounds the review queue: at the limit a new create is
+// refused with ErrQuotaExceeded (403), a reviewed row frees a slot, and another
+// user's queue is unaffected.
+func TestCreatePendingCapRejects(t *testing.T) {
+	m, _, _ := newManager()
+	m.MaxPendingPerUser = 2
+	ctx := context.Background()
+
+	for i := 0; i < 2; i++ {
+		if _, err := m.Create(ctx, CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"}); err != nil {
+			t.Fatalf("create %d: %v", i+1, err)
+		}
+	}
+	_, err := m.Create(ctx, CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
+	if !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("create past the cap = %v, want ErrQuotaExceeded", err)
+	}
+
+	// A verdict moves the row out of pending_review, so the slot frees up.
+	if _, err := m.Reject(ctx, "sub-1", "admin@example.net", "out of scope"); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+	if _, err := m.Create(ctx, CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"}); err != nil {
+		t.Fatalf("create after review: %v", err)
+	}
+
+	// The cap is per user, never global.
+	if _, err := m.Create(ctx, CreateRequest{DisplayName: "Other", SubmittedBy: "user-2"}); err != nil {
+		t.Fatalf("other user's first create: %v", err)
+	}
+}
+
+// The per-user storage budget bounds the sum of a user's stored contexts. It is
+// charged against the blob store's actual sizes, refuses at the boundary with
+// ErrQuotaExceeded (403 — not the 400 a single oversize blob gets), and does not
+// double-charge a re-upload of the same submission.
+func TestUploadContextStorageBudget(t *testing.T) {
+	m, _, _ := newManager()
+	fb := newFakeBlobs()
+	m.Blobs = fb
+	m.MaxStoredBytesPerUser = 10 // tiny budget; gzBody is 4 magic bytes + payload
+	ctx := context.Background()
+
+	a, err := m.Create(ctx, CreateRequest{DisplayName: "A", SubmittedBy: "user-1"})
+	if err != nil {
+		t.Fatalf("create A: %v", err)
+	}
+	b, err := m.Create(ctx, CreateRequest{DisplayName: "B", SubmittedBy: "user-1"})
+	if err != nil {
+		t.Fatalf("create B: %v", err)
+	}
+
+	if _, err := m.UploadContext(ctx, a.ID, "user-1", strings.NewReader(gzBody("a"))); err != nil {
+		t.Fatalf("first upload: %v", err)
+	}
+	// A's 5 bytes leave 5. B's exactly-5-byte blob must be accepted — the budget
+	// binds only past the limit, never at it.
+	if _, err := m.UploadContext(ctx, b.ID, "user-1", strings.NewReader(gzBody("b"))); err != nil {
+		t.Fatalf("upload exactly at the budget = %v, want accepted", err)
+	}
+	if _, err := m.UploadContext(ctx, a.ID, "user-1", strings.NewReader(gzBody("far too much"))); err != nil {
+		// A re-upload is charged only for its NEW bytes (its old blob is
+		// superseded), and 16 bytes exceed the 5 bytes left after B.
+		if !errors.Is(err, ErrQuotaExceeded) {
+			t.Fatalf("re-upload past the budget = %v, want ErrQuotaExceeded", err)
+		}
+	} else {
+		t.Fatal("re-upload past the budget was accepted")
+	}
+	// Nothing oversize persisted, and A's good blob was not clobbered.
+	if string(fb.stored[a.ID]) != gzBody("a") {
+		t.Fatalf("A's blob = %q, want the original (a failed re-upload must not replace it)", fb.stored[a.ID])
+	}
+
+	// B now holds 5 and the budget is full: a fresh submission's upload is
+	// refused up front, before reading any body.
+	c, err := m.Create(ctx, CreateRequest{DisplayName: "C", SubmittedBy: "user-1"})
+	if err != nil {
+		t.Fatalf("create C: %v", err)
+	}
+	_, err = m.UploadContext(ctx, c.ID, "user-1", strings.NewReader(gzBody("c")))
+	if !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("upload with no budget left = %v, want ErrQuotaExceeded", err)
+	}
+	if _, ok := fb.stored[c.ID]; ok {
+		t.Fatal("a budget-refused upload must persist nothing")
+	}
+
+	// A 5-byte replacement of A fits exactly (10 − B's 5), proving the
+	// replacement is not double-charged against its own old bytes.
+	if _, err := m.UploadContext(ctx, a.ID, "user-1", strings.NewReader(gzBody("z"))); err != nil {
+		t.Fatalf("budget-exact replacement = %v, want accepted", err)
+	}
+}
+
+// A single oversize blob stays a 400 (ErrInvalid), distinct from the 403 the
+// per-user budget answers with — the two failure classes must not collapse.
+func TestUploadContextOversizeIsNotQuotaError(t *testing.T) {
+	m, _, _ := newManager()
+	fb := newFakeBlobs()
+	m.Blobs = fb
+	m.MaxContextBytes = 4
+	seed, _ := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
+
+	_, err := m.UploadContext(context.Background(), seed.ID, "user-1", strings.NewReader(gzBody("too big")))
+	if !errors.Is(err, ErrInvalid) || errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("err = %v, want ErrInvalid and NOT ErrQuotaExceeded", err)
+	}
+}
+
+// A store failure while counting the pending queue must surface as-is, never as
+// a quota verdict that blames the user.
+func TestCreatePendingCountFailureSurfaces(t *testing.T) {
+	m, st, _ := newManager()
+	st.countErr = errors.New("db is down")
+	_, err := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
+	if err == nil || errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("err = %v, want the raw store failure", err)
 	}
 }
 

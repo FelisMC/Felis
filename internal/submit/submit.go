@@ -86,6 +86,12 @@ var (
 	ErrInvalid         = errors.New("submit: invalid request")
 	ErrNotFound        = errors.New("submit: submission not found")
 	ErrAlreadyReviewed = errors.New("submit: submission already reviewed")
+	// ErrQuotaExceeded reports that the caller's upload allowance is spent —
+	// either too many of their submissions are already awaiting review, or their
+	// stored contexts already fill the per-user byte budget. The request is not
+	// malformed; the allowance is exhausted. The API maps it to 403, matching the
+	// server-resource quota's status (spec §7).
+	ErrQuotaExceeded = errors.New("submit: quota exceeded")
 	// ErrUploadsUnavailable means this deployment configured a context store with
 	// no implemented upload transport (a nil Manager.Blobs — e.g. an object-store
 	// base with no client wired). UploadContext returns it so the endpoint reports
@@ -108,14 +114,37 @@ func invalidf(format string, a ...any) error {
 // preserves that chain through to the API error mapper.
 var errContextTooLarge = fmt.Errorf("%w: build context exceeds the maximum allowed size", ErrInvalid)
 
+// errStorageQuota trips when an upload would push the user past their per-user
+// storage budget. It wraps ErrQuotaExceeded so the API answers 403, distinctly
+// from errContextTooLarge's 400: the blob is fine, the allowance is spent.
+var errStorageQuota = fmt.Errorf("%w: the upload exceeds your remaining storage allowance", ErrQuotaExceeded)
+
 const (
 	maxDisplayName  = 200
 	maxRejectReason = 1000
 	// defaultMaxContextBytes caps an uploaded build-context blob. Modpack contexts
 	// (mods, configs, an occasional bundled world) are large, so the cap is
 	// generous; it bounds what one untrusted upload can write to the uploads PVC,
-	// not a tight quota. Override per-Manager via MaxContextBytes.
+	// one blob at a time. The per-user budget below bounds the SUM across a user's
+	// uploads; this cap is what keeps any single write bounded. Override per-Manager
+	// via MaxContextBytes.
 	defaultMaxContextBytes = 1 << 30 // 1 GiB
+	// defaultMaxPendingPerUser caps how many pending_review submissions one user
+	// may hold at once. Untrusted ingress has no natural bound — a logged-in
+	// player could otherwise file rows all day — and every pending row is a
+	// review-queue item an admin has to read, so the cap is small on purpose:
+	// enough to stage a couple of packs, far short of a flood. Override per
+	// Manager via MaxPendingPerUser.
+	defaultMaxPendingPerUser = 5
+	// defaultMaxStoredBytesPerUser caps the total bytes one user's stored
+	// contexts may occupy on the uploads store. The uploads PVC renders at a
+	// fixed 5Gi (platform/workloads.go); without a per-user budget one account
+	// could fill it and every other user's upload would start failing. Two GiB
+	// leaves room for a couple of full-size modpacks (a single blob may be 1 GiB)
+	// while keeping a small user base from exhausting the volume; size the PVC
+	// above users × this budget before raising it. Override per Manager via
+	// MaxStoredBytesPerUser.
+	defaultMaxStoredBytesPerUser = 2 << 30 // 2 GiB
 )
 
 // displayNameRE constrains the user-supplied label to a calm, single-line set:
@@ -149,6 +178,10 @@ type Submission struct {
 type Store interface {
 	// CreateSubmission inserts a pending_review row.
 	CreateSubmission(ctx context.Context, s *Submission) error
+	// CountPendingSubmissionsBy reports how many of one user's submissions are
+	// still pending_review — the queue-length read behind the per-user pending
+	// cap in Create.
+	CountPendingSubmissionsBy(ctx context.Context, submittedBy string) (int, error)
 	// GetSubmission loads one submission, or ErrNotFound.
 	GetSubmission(ctx context.Context, id string) (*Submission, error)
 	// ListSubmissions returns every submission, newest first (admin queue).
@@ -196,6 +229,12 @@ type Builds interface {
 type Blobs interface {
 	Put(ctx context.Context, id string, r io.Reader) (int64, error)
 	Exists(ctx context.Context, id string) (bool, error)
+	// Size returns the stored blob's size in bytes; ok=false means no blob is
+	// stored for id. UploadContext sums this over a user's submissions to enforce
+	// the per-user storage budget, so it must report what is actually on the
+	// store — never a recorded number that could drift from it (a re-upload
+	// supersedes the previous blob in place).
+	Size(ctx context.Context, id string) (int64, bool, error)
 	// Open returns the stored blob's bytes for the internal context-fetch route
 	// the build Pod's initContainer dials (cmd/felis fetch-context). It returns an
 	// error wrapping ErrBlobNotFound when no blob exists, so the route can answer
@@ -239,6 +278,12 @@ type Manager struct {
 	// MaxContextBytes overrides the uploaded-context size cap; 0 uses
 	// defaultMaxContextBytes.
 	MaxContextBytes int64
+	// MaxPendingPerUser overrides how many of one user's submissions may await
+	// review at once; 0 uses defaultMaxPendingPerUser.
+	MaxPendingPerUser int
+	// MaxStoredBytesPerUser overrides the per-user stored-context budget; 0 uses
+	// defaultMaxStoredBytesPerUser.
+	MaxStoredBytesPerUser int64
 
 	Now   func() time.Time
 	IDGen func() string
@@ -249,6 +294,20 @@ func (m *Manager) maxContextBytes() int64 {
 		return m.MaxContextBytes
 	}
 	return defaultMaxContextBytes
+}
+
+func (m *Manager) maxPendingPerUser() int {
+	if m.MaxPendingPerUser > 0 {
+		return m.MaxPendingPerUser
+	}
+	return defaultMaxPendingPerUser
+}
+
+func (m *Manager) maxStoredBytesPerUser() int64 {
+	if m.MaxStoredBytesPerUser > 0 {
+		return m.MaxStoredBytesPerUser
+	}
+	return defaultMaxStoredBytesPerUser
 }
 
 func (m *Manager) now() time.Time {
@@ -344,6 +403,18 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Submission, e
 		return nil, invalidf("submitter identity is required")
 	}
 
+	// Per-user pending cap: every pending row is a review-queue item an admin
+	// must read, so one account may not park an unbounded number of them. The
+	// check and the insert are not atomic (two concurrent creates may jointly
+	// land one row over the cap); that is a soft overshoot of a queue-length
+	// lever, not a resource bound, so it is deliberately not worth a lock.
+	if pending, err := m.Store.CountPendingSubmissionsBy(ctx, req.SubmittedBy); err != nil {
+		return nil, err
+	} else if pending >= m.maxPendingPerUser() {
+		return nil, fmt.Errorf("%w: %d submissions are already awaiting review (limit %d)",
+			ErrQuotaExceeded, pending, m.maxPendingPerUser())
+	}
+
 	id := m.newID()
 	s := &Submission{
 		ID:          id,
@@ -373,7 +444,10 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Submission, e
 //   - the context is mutable ONLY while pending_review — once approved the build
 //     has already consumed it, once rejected it is dead;
 //   - the body must be a gzip tarball (context.tar.gz) and is size-capped, so a
-//     wrong-format or oversize upload is rejected as a 400 without persisting.
+//     wrong-format or oversize upload is rejected as a 400 without persisting;
+//   - a user's stored contexts are budgeted (MaxStoredBytesPerUser): the write
+//     is capped at the remaining budget, so an upload that would exceed it is
+//     refused as a spent allowance (403) before the excess is persisted.
 //
 // A re-upload while still pending atomically supersedes the previous blob, so a
 // user can fix their pack before an admin reviews it.
@@ -404,22 +478,72 @@ func (m *Manager) UploadContext(ctx context.Context, id, submittedBy string, r i
 		return nil, invalidf("build context must be a gzip-compressed tarball (.tar.gz)")
 	}
 
-	// Cap the size: cappedReader trips errContextTooLarge on the first byte past
-	// the limit, so the store never persists an oversize blob (it removes its temp
-	// file on the copy error) and the failure surfaces as a 400, not a 500.
-	if _, err := m.Blobs.Put(ctx, id, &cappedReader{r: br, left: m.maxContextBytes()}); err != nil {
+	// Per-user storage budget: sum the bytes this user's OTHER submissions
+	// already hold (excluding this id, whose blob a re-upload supersedes) and cap
+	// the write at whatever remains. cappedReader trips on the first byte past
+	// the limit, so the store never persists a blob that would exceed the budget
+	// (it removes its temp file on the copy error) and the failure surfaces as a
+	// 403, not a 500. The read-then-write pair is not atomic in this package: a
+	// burst that reaches two api replicas (or any direct caller of the Manager)
+	// can overshoot by up to one blob per interleaved upload — each write still
+	// bounded by the single-blob cap — while the API's per-user upload
+	// reservation collapses the single-replica case.
+	used, err := m.storedBytes(ctx, submittedBy, id)
+	if err != nil {
+		return nil, err
+	}
+	remaining := m.maxStoredBytesPerUser() - used
+	if remaining <= 0 {
+		return nil, errStorageQuota
+	}
+	limit, over := m.maxContextBytes(), errContextTooLarge
+	if remaining < limit {
+		// The budget binds before the single-blob cap: an upload tripping here is
+		// refused as a spent allowance, never as a malformed request.
+		limit, over = remaining, errStorageQuota
+	}
+	if _, err := m.Blobs.Put(ctx, id, &cappedReader{r: br, left: limit, over: over}); err != nil {
 		return nil, err
 	}
 	return sub, nil
 }
 
+// storedBytes sums the stored-blob sizes of submittedBy's submissions, excluding
+// excludeID — the submission a pending re-upload is about to replace, whose
+// bytes must not be counted twice. Sizes are read from the blob store itself,
+// the same source of truth uploads/approval consult, so the sum cannot drift
+// from what is actually occupying the volume (including blobs uploaded before
+// any budget existed).
+func (m *Manager) storedBytes(ctx context.Context, submittedBy, excludeID string) (int64, error) {
+	subs, err := m.Store.ListSubmissionsBy(ctx, submittedBy)
+	if err != nil {
+		return 0, err
+	}
+	var total int64
+	for _, s := range subs {
+		if s.ID == excludeID {
+			continue
+		}
+		n, ok, err := m.Blobs.Size(ctx, s.ID)
+		if err != nil {
+			return 0, err
+		}
+		if ok {
+			total += n
+		}
+	}
+	return total, nil
+}
+
 // cappedReader passes through at most left bytes; the first byte beyond the limit
-// trips errContextTooLarge. It reads one probe byte past the limit to tell an
-// exactly-at-limit blob (accepted) from a larger one (rejected), so a stream of
-// exactly the cap is never falsely rejected.
+// trips over — errContextTooLarge for the single-blob cap, errStorageQuota when
+// the per-user budget binds first. It reads one probe byte past the limit to tell
+// an exactly-at-limit blob (accepted) from a larger one (rejected), so a stream
+// of exactly the cap is never falsely rejected.
 type cappedReader struct {
 	r    io.Reader
 	left int64
+	over error
 }
 
 func (c *cappedReader) Read(p []byte) (int, error) {
@@ -429,7 +553,7 @@ func (c *cappedReader) Read(p []byte) (int, error) {
 		var probe [1]byte
 		n, err := c.r.Read(probe[:])
 		if n > 0 {
-			return 0, errContextTooLarge
+			return 0, c.over
 		}
 		if err == nil {
 			return 0, io.EOF

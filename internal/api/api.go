@@ -123,6 +123,15 @@ type API struct {
 	// on the wake lever). Zero disables throttling.
 	WakeCooldown time.Duration
 
+	// SubmitCreateCooldown / SubmitUploadCooldown throttle the user-modpack
+	// submission lane per user: create bounds how quickly review-queue rows can
+	// appear, upload bounds how often a user may stream a (up to 1 GiB) build
+	// context. The keys are separate, so the lane's normal shape — create, then
+	// upload — is never blocked by its own throttle. Zero disables each lever
+	// (the same idiom as WakeCooldown); cmd/felis wires positive values.
+	SubmitCreateCooldown time.Duration
+	SubmitUploadCooldown time.Duration
+
 	// MaxRunningServers caps how many servers may be desired-Running cluster-wide
 	// (spec §9.1: the concurrency-上限 lever hanging on the same wake chokepoint as
 	// cooldown and autostartPolicy). Zero — the default — disables it: §9.2 wires
@@ -157,6 +166,9 @@ type API struct {
 
 	otpCooldownOnce sync.Once
 	otpCooldown     *cooldownLimiter
+
+	submitCooldownOnce sync.Once
+	submitCooldown     *cooldownLimiter
 
 	streamCapOnce sync.Once
 	streamCap     *streamLimiter
@@ -202,6 +214,20 @@ func (a *API) otpLimiter() *cooldownLimiter {
 		a.otpCooldown = &cooldownLimiter{now: a.now, last: map[string]time.Time{}}
 	})
 	return a.otpCooldown
+}
+
+// submitLimiter lazily builds a SEPARATE cooldown limiter for the user-modpack
+// submission lane, so its throttles never share state with the wake or OTP
+// keyspaces. One limiter backs both levers with prefixed keys (see the
+// submissionCreateKey/UploadKey constants), so create and upload never contend
+// with each other. Like the other cooldowns it is process-local; with multiple
+// api replicas the effective spacing is per-replica, the same accepted
+// KNOWN-LIMITATION the OTP resend throttle carries.
+func (a *API) submitLimiter() *cooldownLimiter {
+	a.submitCooldownOnce.Do(func() {
+		a.submitCooldown = &cooldownLimiter{now: a.now, last: map[string]time.Time{}}
+	})
+	return a.submitCooldown
 }
 
 // streamGate lazily builds the per-principal SSE stream cap bound to

@@ -291,6 +291,11 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		AdminHostname: cfg.Auth.AdminHostname,
 		PanelHostname: cfg.Auth.PanelHostname,
 		WakeCooldown:  30 * time.Second,
+		// The user-modpack lane's per-user throttles: a create spaces out
+		// review-queue rows, an upload spaces out (up to 1 GiB) context streams.
+		// Separate keys, so the normal create→upload sequence stays immediate.
+		SubmitCreateCooldown: 30 * time.Second,
+		SubmitUploadCooldown: 15 * time.Second,
 		// Bound concurrent console/build-log SSE streams per principal. Generous enough
 		// for legitimate multi-tab / multi-server watching, while capping how many
 		// upstream follow connections a single caller can tie up if their streams stall.

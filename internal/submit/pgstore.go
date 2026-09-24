@@ -33,6 +33,14 @@ func (s *PGStore) CreateSubmission(ctx context.Context, sub *Submission) error {
 	return err
 }
 
+func (s *PGStore) CountPendingSubmissionsBy(ctx context.Context, submittedBy string) (int, error) {
+	const q = `SELECT count(*) FROM image_submissions
+		WHERE submitted_by = $1 AND status = 'pending_review'`
+	var n int
+	err := s.db.QueryRowContext(ctx, q, submittedBy).Scan(&n)
+	return n, err
+}
+
 func (s *PGStore) GetSubmission(ctx context.Context, id string) (*Submission, error) {
 	const q = `SELECT ` + submissionColumns + ` FROM image_submissions WHERE id = $1`
 	return scanSubmission(s.db.QueryRowContext(ctx, q, id))

@@ -129,5 +129,25 @@ func (s *LocalContextStore) Open(_ context.Context, id string) (io.ReadCloser, e
 	return f, nil
 }
 
+// Size reports the stored blob's size — the accounting read behind the per-user
+// storage budget. A missing blob is (0, false, nil): absence is not an error
+// here, it is simply no bytes to count (the same distinction Exists draws for
+// Approve).
+func (s *LocalContextStore) Size(_ context.Context, id string) (int64, bool, error) {
+	dir, err := s.dir(id)
+	if err != nil {
+		return 0, false, err
+	}
+	fi, err := os.Stat(filepath.Join(dir, contextBlobName))
+	switch {
+	case err == nil:
+		return fi.Size(), true, nil
+	case os.IsNotExist(err):
+		return 0, false, nil
+	default:
+		return 0, false, fmt.Errorf("submit: stat context blob: %w", err)
+	}
+}
+
 // Compile-time proof that the filesystem store satisfies the Blobs transport.
 var _ Blobs = (*LocalContextStore)(nil)

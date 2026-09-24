@@ -522,6 +522,14 @@ describe("image whitelist and builds wire shapes", () => {
       expect((opts as RequestInit).body).toBe(blob);
       expect((opts as RequestInit).headers).toEqual({ "Content-Type": "application/x-gzip" });
     });
+
+    // The lane's two throttled outcomes (a spent allowance, a closed cooldown)
+    // must surface as their own copy, not the generic forbidden/error text.
+    it("maps the submission quota/cooldown codes to stable human copy", async () => {
+      const { humanizeError } = await import("./api");
+      expect(humanizeError({ code: "submission_quota_exceeded" })).toMatch(/quota/i);
+      expect(humanizeError({ code: "submission_cooldown" })).toMatch(/try again/i);
+    });
   });
 
   describe("updates maintenance window", () => {

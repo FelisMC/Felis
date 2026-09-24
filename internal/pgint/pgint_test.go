@@ -980,6 +980,14 @@ func TestSubmitStoreContract(t *testing.T) {
 	if err := s.CreateSubmission(ctx, sub); err != nil {
 		t.Fatalf("CreateSubmission: %v", err)
 	}
+	// The pending-queue count is the read behind the per-user pending cap: a
+	// fresh user starts at zero and a pending row counts.
+	if n, err := s.CountPendingSubmissionsBy(ctx, u.ID); err != nil || n != 1 {
+		t.Fatalf("CountPendingSubmissionsBy after create = (%d, %v), want (1, nil)", n, err)
+	}
+	if n, err := s.CountPendingSubmissionsBy(ctx, u.ID+"-nobody"); err != nil || n != 0 {
+		t.Fatalf("CountPendingSubmissionsBy for an unknown user = (%d, %v), want (0, nil)", n, err)
+	}
 	got, err := s.GetSubmission(ctx, id)
 	if err != nil {
 		t.Fatalf("GetSubmission: %v", err)
@@ -1011,6 +1019,10 @@ func TestSubmitStoreContract(t *testing.T) {
 	}
 	if ok, err := s.RejectSubmission(ctx, id, "reviewer@example.net", "no", now); err != nil || ok {
 		t.Fatalf("reject after approve = (%v, %v), want (false, nil)", ok, err)
+	}
+	// A reviewed row leaves the pending queue.
+	if n, err := s.CountPendingSubmissionsBy(ctx, u.ID); err != nil || n != 0 {
+		t.Fatalf("CountPendingSubmissionsBy after approve = (%d, %v), want (0, nil)", n, err)
 	}
 	got, _ = s.GetSubmission(ctx, id)
 	if got.Status != submit.StatusApproved || got.ImageRef == "" || got.ReviewedBy != "reviewer@example.net" || got.ReviewedAt == nil {

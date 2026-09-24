@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"felis.lolicon.best/internal/build"
 	"felis.lolicon.best/internal/submit"
@@ -566,4 +567,113 @@ func TestAdminSubmissionContextRoute(t *testing.T) {
 			t.Fatalf("code = %d, want 503", w.Code)
 		}
 	})
+}
+
+// A spent per-user allowance is 403 submission_quota_exceeded on both the create
+// and the upload path — distinctly NOT the 400 a malformed request gets, and not
+// the 429 the cooldown answers with.
+func TestSubmissionQuotaIs403(t *testing.T) {
+	t.Run("create", func(t *testing.T) {
+		fs := &fakeSubmissions{createErr: fmt.Errorf("%w: 5 submissions are already awaiting review", submit.ErrQuotaExceeded)}
+		w := do(appSubAPI(fs).ExternalHandler(), "POST", "/api/v1/me/submissions", `{"display_name":"Pack"}`, nil)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("code = %d, want 403 (%s)", w.Code, w.Body.String())
+		}
+		if got := decodeErr(t, w); got != "submission_quota_exceeded" {
+			t.Errorf("error code = %q, want submission_quota_exceeded", got)
+		}
+	})
+	t.Run("upload", func(t *testing.T) {
+		fs := &fakeSubmissions{uploadErr: fmt.Errorf("%w: exceeds your remaining storage allowance", submit.ErrQuotaExceeded)}
+		w := do(appSubAPI(fs).ExternalHandler(), "POST", "/api/v1/me/submissions/sub-9/context", "\x1f\x8bdata", nil)
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("code = %d, want 403 (%s)", w.Code, w.Body.String())
+		}
+		if got := decodeErr(t, w); got != "submission_quota_exceeded" {
+			t.Errorf("error code = %q, want submission_quota_exceeded", got)
+		}
+	})
+}
+
+// The per-user create cooldown bounds review-queue growth: a second create in
+// the same window is 429 submission_cooldown and never reaches the service; the
+// window recovers afterwards.
+func TestCreateSubmissionRateLimited(t *testing.T) {
+	fs := &fakeSubmissions{}
+	api := appSubAPI(fs)
+	clock := time.Unix(1_700_000_000, 0)
+	api.Now = func() time.Time { return clock }
+	api.SubmitCreateCooldown = time.Minute
+	eh := api.ExternalHandler()
+
+	if w := do(eh, "POST", "/api/v1/me/submissions", `{"display_name":"First"}`, nil); w.Code != http.StatusCreated {
+		t.Fatalf("first create: code = %d, want 201 (%s)", w.Code, w.Body.String())
+	}
+	w := do(eh, "POST", "/api/v1/me/submissions", `{"display_name":"Second"}`, nil)
+	if w.Code != http.StatusTooManyRequests || decodeErr(t, w) != "submission_cooldown" {
+		t.Fatalf("immediate second create: code = %d body %s, want 429 submission_cooldown", w.Code, w.Body.String())
+	}
+	// The gate sits before the body handling: even a malformed request is
+	// refused while the window is closed, so it cannot be used to probe.
+	if w := do(eh, "POST", "/api/v1/me/submissions", `{`, nil); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("malformed create during cooldown: code = %d, want 429", w.Code)
+	}
+	clock = clock.Add(time.Minute + time.Second)
+	if w := do(eh, "POST", "/api/v1/me/submissions", `{"display_name":"Third"}`, nil); w.Code != http.StatusCreated {
+		t.Fatalf("post-cooldown create: code = %d, want 201 (%s)", w.Code, w.Body.String())
+	}
+}
+
+// A failed create frees the window: only a row that was actually recorded burns
+// the cooldown, so a validation typo is not punished with a wait.
+func TestCreateSubmissionFailureDoesNotBurnCooldown(t *testing.T) {
+	fs := &fakeSubmissions{createErr: fmt.Errorf("%w: display name is required", submit.ErrInvalid)}
+	api := appSubAPI(fs)
+	api.Now = func() time.Time { return time.Unix(1_700_000_000, 0) }
+	api.SubmitCreateCooldown = time.Minute
+	eh := api.ExternalHandler()
+
+	if w := do(eh, "POST", "/api/v1/me/submissions", `{"display_name":""}`, nil); w.Code != http.StatusBadRequest {
+		t.Fatalf("failed create: code = %d, want 400", w.Code)
+	}
+	fs.createErr = nil
+	if w := do(eh, "POST", "/api/v1/me/submissions", `{"display_name":"Fixed"}`, nil); w.Code != http.StatusCreated {
+		t.Fatalf("retry at the same instant: code = %d, want 201 (%s)", w.Code, w.Body.String())
+	}
+}
+
+// The per-user upload cooldown bounds context streaming: a second upload in the
+// same window is 429 submission_cooldown, and a FAILED upload frees the window
+// for an immediate retry.
+func TestUploadSubmissionContextRateLimited(t *testing.T) {
+	fs := &fakeSubmissions{}
+	api := appSubAPI(fs)
+	clock := time.Unix(1_700_000_000, 0)
+	api.Now = func() time.Time { return clock }
+	api.SubmitUploadCooldown = time.Minute
+	eh := api.ExternalHandler()
+	body := "\x1f\x8b\x08\x00 the modpack bytes"
+
+	if w := do(eh, "POST", "/api/v1/me/submissions/sub-9/context", body, nil); w.Code != http.StatusOK {
+		t.Fatalf("first upload: code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	w := do(eh, "POST", "/api/v1/me/submissions/sub-9/context", body, nil)
+	if w.Code != http.StatusTooManyRequests || decodeErr(t, w) != "submission_cooldown" {
+		t.Fatalf("immediate second upload: code = %d body %s, want 429 submission_cooldown", w.Code, w.Body.String())
+	}
+
+	// A failed upload releases its reservation, so the user is not punished for
+	// a genuine failure (aborted transfer, spent quota) with a cooldown wait.
+	fs2 := &fakeSubmissions{uploadErr: submit.ErrUploadsUnavailable}
+	api2 := appSubAPI(fs2)
+	api2.Now = func() time.Time { return clock }
+	api2.SubmitUploadCooldown = time.Minute
+	eh2 := api2.ExternalHandler()
+	if w := do(eh2, "POST", "/api/v1/me/submissions/sub-9/context", body, nil); w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("failed upload: code = %d, want 503", w.Code)
+	}
+	fs2.uploadErr = nil
+	if w := do(eh2, "POST", "/api/v1/me/submissions/sub-9/context", body, nil); w.Code != http.StatusOK {
+		t.Fatalf("retry at the same instant after failure: code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
 }

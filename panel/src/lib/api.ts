@@ -722,6 +722,10 @@ export function humanizeError(e: unknown): string {
       return t("build_logs_unavailable");
     case "already_reviewed":
       return t("already_reviewed");
+    case "submission_quota_exceeded":
+      return t("submission_quota_exceeded");
+    case "submission_cooldown":
+      return t("submission_cooldown");
     case "submissions_unavailable":
       return t("submissions_unavailable");
     case "uploads_unavailable":

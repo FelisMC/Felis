@@ -187,6 +187,24 @@ func (s *S3ContextStore) Exists(ctx context.Context, id string) (bool, error) {
 	return true, nil
 }
 
+// Size reports the stored blob's size — the accounting read behind the per-user
+// storage budget. A missing object is (0, false, nil), the same distinction
+// Exists draws.
+func (s *S3ContextStore) Size(ctx context.Context, id string) (int64, bool, error) {
+	key, err := s.keyFor(id)
+	if err != nil {
+		return 0, false, err
+	}
+	info, err := s.client.StatObject(ctx, s.bucket, key, minio.StatObjectOptions{})
+	if err != nil {
+		if isS3NotFound(err) {
+			return 0, false, nil
+		}
+		return 0, false, fmt.Errorf("submit: stat context blob: %w", err)
+	}
+	return info.Size, true, nil
+}
+
 // Open returns the stored context blob for id — the read side of the transport the
 // build Pod's fetch initContainer uses. minio's GetObject returns only once the
 // server answered with an object (it surfaces NoSuchKey up front), so a missing
