@@ -679,6 +679,12 @@ export function humanizeError(e: unknown): string {
       return t("otp_locked");
     case "otp_account_locked":
       return t("otp_account_locked");
+    // Volumetric limits on the sign-in doors (internal/api/ratelimit.go): one
+    // network calling too fast, or the install-wide mail budget spent.
+    case "rate_limited":
+      return t("rate_limited");
+    case "mail_rate_limited":
+      return t("mail_rate_limited");
     case "passkey_challenge_invalid":
       return t("passkey_challenge_invalid");
     case "invalid_attestation":

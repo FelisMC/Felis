@@ -23,6 +23,8 @@
   "otp_resend_cooldown": "验证码发送频繁，请稍后再试。",
   "otp_locked": "验证码错误次数过多，请重新获取验证码。",
   "otp_account_locked": "24 小时内验证码错误次数已达上限，此账号的邮箱验证码暂时停用，请稍后再试或改用 Passkey。",
+  "rate_limited": "登录请求过于频繁，请稍等一分钟再试。",
+  "mail_rate_limited": "服务器当前发信过多，验证码暂时发不出去，请稍后再试或改用 Passkey。",
   "passkey_challenge_invalid": "验证挑战无效或已过期，请重试。",
   "invalid_attestation": "无法验证此 Passkey，请重试。",
   "passkey_already_bound": "此 Passkey 已被其他账户绑定。",

@@ -21,10 +21,10 @@ import (
 //
 // Anti-abuse divergence from the email-first door: that door reserves a per-recipient cooldown
 // (a.otpLimiter) keyed on the typed email. A usernameless begin has no recipient OR principal to
-// key a fair per-caller limit on, so — matching the stance in handlers_auth_email.go (behind
-// Cloudflare RemoteAddr is the proxy; CGNAT false-positives) — volumetric per-source limiting is
-// left to the edge, and the server-side bound is a hard global cap on live challenges enforced
-// atomically in CreateDiscoverableChallenge (ErrTooManyDiscoverableChallenges → 429).
+// key a fair per-caller limit on, so one client is bounded by the per-address token bucket every
+// public auth door sits behind (throttleAuthDoor), and the table by a hard global cap on live
+// challenges enforced atomically in CreateDiscoverableChallenge (ErrTooManyDiscoverableChallenges
+// → 429).
 
 // handlePasskeyLoginDiscoverableBegin starts a usernameless assertion ceremony (Public,
 // pre-session). It has no request body — the whole point is that the caller supplies no

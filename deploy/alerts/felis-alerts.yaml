@@ -4,7 +4,9 @@
 #
 # felis_* series come from two processes:
 #   - felis-operator pod :8080/metrics      → felis_servers_total, felis_start_duration_seconds
-#   - felis-api internal :8081/metrics      → felis_image_build_failures_total
+#   - felis-api internal :8081/metrics      → felis_image_build_failures_total,
+#                                             felis_mail_total, felis_rate_limited_total,
+#                                             felis_auth_otp_lockouts_total
 #   - node-exporter textfile collector      → felis_db_backup_* (felis-db-backup.timer)
 # node_* / kube_* series come from node-exporter / kube-state-metrics.
 groups:
@@ -94,3 +96,49 @@ groups:
             --collector.textfile.directory at the directory of
             FELIS_DB_BACKUP_METRICS (default /var/lib/node_exporter/textfile_collector)
             (troubleshooting §16).
+  - name: felis.auth.rules
+    rules:
+      - alert: FelisMailBudgetExhausted
+        expr: sum(increase(felis_mail_total{result="throttled"}[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "the install-wide mail budget refused mail"
+          description: >-
+            felis_mail_total{result="throttled"} increased: [smtp] max_per_hour is
+            spent, and every sign-in code is refused with 429 mail_rate_limited until
+            it refills. Check felis_rate_limited_total for a flood before raising the
+            budget (troubleshooting §17).
+      - alert: FelisMailDeliveryFailing
+        expr: sum(increase(felis_mail_total{result="failed"}[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "the SMTP relay refused mail in the last 15m"
+          description: >-
+            felis_mail_total{result="failed"} increased: sign-in codes are not being
+            delivered (502 mail_undeliverable). The relay's reason is in the
+            felis-api log (troubleshooting §17).
+      - alert: FelisSignInFlood
+        expr: sum(rate(felis_rate_limited_total{scope="auth_door"}[5m])) * 60 > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "sign-in doors refusing over 10 requests a minute"
+          description: >-
+            The per-address sign-in limit has been refusing callers for 10 minutes.
+            A script is hammering the auth doors; if real users report rate_limited
+            at once instead, [auth] client_ip_header is missing and everyone shares
+            the proxy's address (troubleshooting §17).
+      - alert: FelisOTPAccountLocked
+        expr: sum by (purpose) (increase(felis_auth_otp_lockouts_total[1h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "an account's email-code sign-in locked after 10 wrong codes"
+          description: >-
+            Someone entered 10 wrong codes for one account within 24h ({{ $labels.purpose }}).
+            The audit log names the account (action auth.otp.locked); the owner was
+            mailed. Unless they fumbled codes, someone is guessing at it
+            (troubleshooting §17).

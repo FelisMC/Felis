@@ -116,3 +116,26 @@ func TestCountersRecordExpectedValues(t *testing.T) {
 		t.Errorf("start_duration_seconds collected %d metrics, want 1 histogram", n)
 	}
 }
+
+// The sign-in alerts use increase(), which needs a zero sample before the first
+// event; every child they watch must be exposed before anything is counted.
+func TestSignInSeriesStartAtZero(t *testing.T) {
+	want := map[string]int{
+		"felis_mail_total":              6,
+		"felis_rate_limited_total":      1,
+		"felis_auth_otp_lockouts_total": len(OTPPurposes),
+	}
+	for _, c := range []prometheus.Collector{MailTotal, RateLimitedTotal, OTPLockoutsTotal} {
+		reg := prometheus.NewRegistry()
+		reg.MustRegister(c)
+		mfs, err := reg.Gather()
+		if err != nil {
+			t.Fatalf("Gather: %v", err)
+		}
+		for _, mf := range mfs {
+			if n := len(mf.GetMetric()); n < want[mf.GetName()] {
+				t.Errorf("%s exposes %d children, want at least %d", mf.GetName(), n, want[mf.GetName()])
+			}
+		}
+	}
+}

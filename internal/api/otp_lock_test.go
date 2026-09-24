@@ -3,9 +3,12 @@ package api
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"felis.lolicon.best/internal/metrics"
 )
 
 // The per-code attempt cap resets on every resend; these pin the account-level
@@ -179,5 +182,16 @@ func TestOTPLockNoticeNamesDoorAndTime(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("body missing %q:\n%s", want, body)
 		}
+	}
+}
+
+// The lockout alert sees a purpose only if metrics pre-creates its series.
+func TestOTPPurposesMatchMetricLabels(t *testing.T) {
+	got := []string{otpPurposeOnboard, otpPurposeLogin, otpPurposeOpLogin, otpPurposeMigrate}
+	want := slices.Clone(metrics.OTPPurposes)
+	slices.Sort(got)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("otp purposes %v, metrics.OTPPurposes %v", got, want)
 	}
 }

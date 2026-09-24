@@ -931,7 +931,9 @@ The series come from two processes:
   `felis_start_duration_seconds` (no Service; scrape pod-scoped, e.g. a
   PodMonitor targeting port `metrics`).
 - `felis-api` internal face `:8081/metrics` (Service `felis-api-internal`) —
-  `felis_image_build_failures_total`. Unauthenticated like the probes;
+  `felis_image_build_failures_total`, and the sign-in series of §17
+  (`felis_mail_total`, `felis_rate_limited_total`,
+  `felis_auth_otp_lockouts_total`). Unauthenticated like the probes;
   ClusterIP-only, and the external face never serves it.
 - `felis_reaper_worlds_deleted_total` is produced inside the one-shot reaper
   CronJob, which exits long before any scrape interval — without a pushgateway
@@ -941,8 +943,10 @@ The series come from two processes:
 ### Alert rules
 
 `deploy/alerts/` ships ready-made rules: build failures, slow starts, node
-disk/memory thresholds, the kubelet `DiskPressure` condition, and control-plane
-database backup freshness (§16; needs node-exporter's textfile collector).
+disk/memory thresholds, the kubelet `DiskPressure` condition, control-plane
+database backup freshness (§16; needs node-exporter's textfile collector), and
+sign-in abuse: the mail budget, relay failures, throttled floods and account
+code locks (§17).
 
 - Plain Prometheus: add `felis-alerts.yaml` to `rule_files`. Check and unit-test
   it standalone with `promtool check rules felis-alerts.yaml` and
@@ -1167,6 +1171,75 @@ Skips the pre-migration snapshot (`migrate up -no-backup`). The installer warns
 loudly when it is set. Use it only when the snapshot cannot work and you have
 another backup, e.g. an external database newer than the host's `pg_dump`.
 
+## 17. Sign-in refused with 429, mail budget, account code locks
+
+The public sign-in doors (`/api/v1/auth/*` except logout and the op-login
+status poll) have three limits of their own. Each answers 429 with a
+`Retry-After` header and a distinct error code.
+
+### `rate_limited`: one address called the doors too often
+
+Each client address gets 20 calls at once, refilled at 20 a minute, shared
+across every door. A person signing in makes three or four calls, so this only
+bites scripts. IPv6 clients share one limit per /64. Refusals count in
+`felis_rate_limited_total{scope="auth_door"}`; `FelisSignInFlood` fires when
+more than 10 a minute are refused for 10 minutes.
+
+The address comes from `[auth] client_ip_header`:
+
+- Behind the Cloudflare tunnel it is `CF-Connecting-IP`. The edge setup writes
+  it, and an install with an `access_jwt_aud` implies it. The header is
+  trustworthy there because the same setup fences the panel NodePort to
+  loopback, so every request reaching the API came through cloudflared.
+- Behind your own reverse proxy it is `X-Forwarded-For` (the rightmost entry,
+  the one your proxy appended). Firewall the NodePort so only the proxy reaches
+  it, or a direct caller can write any address it likes.
+- Unset, the TCP peer is used. Behind any proxy every visitor then shares the
+  proxy's address and one limit, so **everyone gets `rate_limited` at once**.
+  The `felis api` log says at start which it keys on (`sign-in rate limit keys
+  on ...`). Set the header in `/etc/felis/felis.toml` and
+  `/etc/felis/felis.pod.toml`, then `felis converge`.
+
+### `mail_rate_limited`: the install-wide mail budget is spent
+
+Every code and notice the API mails spends one token of a single budget,
+`[smtp] max_per_hour` (default 120; a quarter of it may go at once), so a flood
+cannot burn the relay's quota and get the sending account suspended. While it
+is spent, every address gets the same 429 and nothing reaches the relay.
+`felis_mail_total{result="throttled"}` counts refusals and
+`FelisMailBudgetExhausted` fires on the first one. Look at
+`felis_rate_limited_total` first: a flood shows there. If sign-ins are real,
+raise `max_per_hour` to what your relay allows.
+
+`FelisMailDeliveryFailing` is the other half: the relay itself refused mail
+(`felis_mail_total{result="failed"}`, 502 `mail_undeliverable` to the caller).
+The relay's reason is in the `felis-api` log.
+
+### `otp_account_locked`: ten wrong codes in 24 hours
+
+Ten wrong email codes for one account within 24 hours, counted across every
+code it was sent, lock that account's email-code sign-in until 24 hours after
+the first miss. The public doors answer a locked account exactly like a wrong
+code, and the owner gets one mail saying so. Signed-in doors (email
+verification, migration step-up) answer 429 `otp_account_locked`. Passkey
+sign-in keeps working. Each lock is audited as `auth.otp.locked` and counted in
+`felis_auth_otp_lockouts_total{purpose}` (`FelisOTPAccountLocked`).
+
+To lift a lock early once you have confirmed the owner locked themselves out:
+
+```sh
+sudo -u postgres psql felis -c \
+  "DELETE FROM otp_failure_windows WHERE user_id = (SELECT id FROM users WHERE username = '<name>');"
+```
+
+### Optional: a Cloudflare rate limiting rule in front
+
+The limits above live in the API, so they hold on any edge. Behind Cloudflare
+you can also stop floods before they reach the tunnel: Security → WAF → Rate
+limiting rules, match URI Path starts with `/api/v1/auth/` on the console and
+op.console hostnames, count by IP, 30 requests per 10 seconds, action Block
+for 10 seconds (the Free plan's limits).
+
 ---
 
 ## Quick reference: symptom → section
@@ -1198,3 +1271,6 @@ another backup, e.g. an external database newer than the host's `pg_dump`.
 | `pre-migration backup failed, nothing applied` during an upgrade | §16 |
 | Undo a mistaken change / restore the control-plane database | §16 |
 | Host lost: rebuild from a database bundle | §16 |
+| Sign-in 429 `rate_limited` for everyone at once | §17 |
+| 429 `mail_rate_limited` / `FelisMailBudgetExhausted` | §17 |
+| Right code refused; `otp_account_locked` / `FelisOTPAccountLocked` | §17 |

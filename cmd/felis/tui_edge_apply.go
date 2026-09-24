@@ -32,7 +32,9 @@ func applyCloudflareEdge(ctx context.Context, result *cfsetup.Result, panelHost,
 	if adminHost == "" {
 		return fmt.Errorf("admin hostname is required")
 	}
-	if err := writeConnectionConfig(panelHost, adminHost, result.AccessAud); err != nil {
+	// cloudflared is the only way in once the NodePort is fenced, so the
+	// visitor address it writes can key the sign-in rate limit.
+	if err := writeConnectionConfig(panelHost, adminHost, result.AccessAud, "CF-Connecting-IP"); err != nil {
 		return err
 	}
 	if err := applyFelisConfigSecret(ctx); err != nil {
@@ -78,7 +80,8 @@ func applyReverseProxy(ctx context.Context, panelHost, adminHost string) error {
 	if adminHost == "" {
 		return fmt.Errorf("admin hostname is required")
 	}
-	if err := writeConnectionConfig(panelHost, adminHost, ""); err != nil {
+	// Caddy, nginx and Traefik all append the peer they saw to X-Forwarded-For.
+	if err := writeConnectionConfig(panelHost, adminHost, "", "X-Forwarded-For"); err != nil {
 		return err
 	}
 	if err := applyFelisConfigSecret(ctx); err != nil {
@@ -93,16 +96,17 @@ func applyReverseProxy(ctx context.Context, panelHost, adminHost string) error {
 // writeConnectionConfig stamps the chosen hostnames (and optional Access audience)
 // into both the host and pod config files. An empty aud clears any prior
 // Cloudflare audience, which is correct when switching to a non-Access front.
-func writeConnectionConfig(panelHost, adminHost, aud string) error {
+// clientIPHeader is the header that front writes the visitor address into.
+func writeConnectionConfig(panelHost, adminHost, aud, clientIPHeader string) error {
 	for _, path := range []string{hostSetupConfigPath, podSetupConfigPath} {
-		if err := updateAuthConfig(path, panelHost, adminHost, aud); err != nil {
+		if err := updateAuthConfig(path, panelHost, adminHost, aud, clientIPHeader); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func updateAuthConfig(path, panelHost, adminHost, aud string) error {
+func updateAuthConfig(path, panelHost, adminHost, aud, clientIPHeader string) error {
 	cfg, err := config.Load(path)
 	if err != nil {
 		return err
@@ -112,6 +116,7 @@ func updateAuthConfig(path, panelHost, adminHost, aud string) error {
 	}
 	cfg.Auth.AdminHostname = adminHost
 	cfg.Auth.AccessJWTAud = aud
+	cfg.Auth.ClientIPHeader = clientIPHeader
 	return writeConfig(path, cfg)
 }
 

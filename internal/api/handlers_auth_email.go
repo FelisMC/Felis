@@ -24,12 +24,9 @@ import (
 //     this separator).
 //   - No principal. The throttle cannot key off a user id (there is none yet); it
 //     keys off the typed recipient address, the same anti-bomb dimension the onboard
-//     start uses. Per-source (client-IP) aggregate limiting is deliberately NOT done
-//     here: cooldownLimiter is a one-per-window primitive, so keying it on client IP
-//     would false-positive on shared egress (CGNAT / office NAT), and behind
-//     Cloudflare RemoteAddr is the proxy anyway. The only real harm — bombing one
-//     mailbox — is already bounded per recipient; volumetric per-source limiting
-//     belongs at the edge.
+//     start uses. Volume from one client is bounded separately by the per-address
+//     token bucket every public auth door sits behind (throttleAuthDoor), and total
+//     mail by the install-wide mail budget (ratelimit.go).
 //   - Refuse staff. Like handleBindRedeem this public door provably never mints a
 //     session for an admin identity: op.console stays behind Zero Trust (and its own
 //     in-game approval gate). The refusal happens only AFTER a valid code is
@@ -81,6 +78,13 @@ func (a *API) handleLoginEmailStart(w http.ResponseWriter, r *http.Request) {
 	email := strings.TrimSpace(req.Email)
 	if !looksLikeEmail(email) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "a valid email is required"))
+		return
+	}
+
+	// The install-wide mail budget is checked before the address is resolved,
+	// so while it is spent every address gets the same 429.
+	if err := a.checkMailBudget(); err != nil {
+		writeError(w, r, err)
 		return
 	}
 

@@ -16,11 +16,10 @@ import (
 // address has an account precisely because THIS endpoint is the one sanctioned place
 // existence is revealed. An empty methods array means "no (verified) account". That
 // makes it a mass-enumeration surface by design — an accepted product decision, the
-// same one the email door's header records. It is bounded only at the edge: the
-// handler sends no mail and mutates nothing, so a per-recipient cooldown would merely
-// block a legitimate retry, and per-source (client-IP) limiting is the edge's job
-// (behind Cloudflare RemoteAddr is the proxy, and CGNAT would false-positive) — see
-// the handlers_auth_email.go header for the same reasoning.
+// same one the email door's header records. The handler sends no mail and mutates
+// nothing, so a per-recipient cooldown would merely block a legitimate retry; what
+// bounds enumeration is the per-client-address token bucket shared by every public
+// auth door (throttleAuthDoor in ratelimit.go).
 //
 // It never reveals STAFFNESS. Methods are computed by the SAME rule for every resolved
 // account — no role branch, no operator hint — so a staff email and a player email in

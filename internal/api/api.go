@@ -158,6 +158,16 @@ type API struct {
 	// Consumed by handleHasJoined (handlers_hasjoined.go).
 	AuthSources []AuthSource
 
+	// AuthDoorLimit bounds how often one client address may call the public
+	// pre-session auth doors (ratelimit.go). MailLimit bounds all mail the API
+	// sends, install-wide. Zero values disable them; cmd/felis wires both.
+	AuthDoorLimit RateLimit
+	MailLimit     RateLimit
+	// ClientIPHeader names the header the install's edge writes the client
+	// address into (CF-Connecting-IP behind the Cloudflare tunnel,
+	// X-Forwarded-For behind an operator proxy). Empty means the TCP peer.
+	ClientIPHeader string
+
 	// Now is the clock, injectable for tests. Defaults to time.Now.
 	Now func() time.Time
 
@@ -172,6 +182,11 @@ type API struct {
 
 	streamCapOnce sync.Once
 	streamCap     *streamLimiter
+
+	authDoorOnce    sync.Once
+	authDoorBuckets *bucketSet
+	mailOnce        sync.Once
+	mailBuckets     *bucketSet
 }
 
 // panelURL returns the public player-console origin ("https://console.<root>"),
@@ -286,6 +301,11 @@ type apiRoute struct {
 	// whose EmailVerified is false is restricted to these routes only.
 	SetupAllowed bool
 
+	// AuthDoor marks a public pre-session auth door: it is rate limited per
+	// client address (throttleAuthDoor). The op-login status poll is left off,
+	// since the browser calls it every few seconds while it waits.
+	AuthDoor bool
+
 	h http.HandlerFunc
 }
 
@@ -381,21 +401,21 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// counter-slice to the anti-enumeration doors — the ONE sanctioned place existence
 		// is disclosed — but it never reveals staffness (methods computed with no role
 		// branch, so a staff and a player address in the same state are indistinguishable).
-		{Method: "POST", Pattern: "/api/v1/auth/options", Public: true, h: a.handleAuthOptions},
-		{Method: "POST", Pattern: "/api/v1/auth/setup/redeem", Public: true, h: a.handleSetupRedeem},
+		{Method: "POST", Pattern: "/api/v1/auth/options", Public: true, AuthDoor: true, h: a.handleAuthOptions},
+		{Method: "POST", Pattern: "/api/v1/auth/setup/redeem", Public: true, AuthDoor: true, h: a.handleSetupRedeem},
 		{Method: "GET", Pattern: "/api/v1/auth/setup/status", SetupAllowed: true, h: a.handleSetupStatus},
-		{Method: "POST", Pattern: "/api/v1/auth/passkey/login/begin", Public: true, h: a.handlePasskeyLoginBegin},
-		{Method: "POST", Pattern: "/api/v1/auth/passkey/login/finish", Public: true, h: a.handlePasskeyLoginFinish},
+		{Method: "POST", Pattern: "/api/v1/auth/passkey/login/begin", Public: true, AuthDoor: true, h: a.handlePasskeyLoginBegin},
+		{Method: "POST", Pattern: "/api/v1/auth/passkey/login/finish", Public: true, AuthDoor: true, h: a.handlePasskeyLoginFinish},
 		// Discoverable ("usernameless") passkey login (task #40): the from-zero sibling of the
 		// email-first pair above — no identifier typed, the account is resolved from the
 		// userHandle inside the signed assertion (handlers_passkey_discoverable.go).
-		{Method: "POST", Pattern: "/api/v1/auth/passkey/login/discoverable/begin", Public: true, h: a.handlePasskeyLoginDiscoverableBegin},
-		{Method: "POST", Pattern: "/api/v1/auth/passkey/login/discoverable/finish", Public: true, h: a.handlePasskeyLoginDiscoverableFinish},
-		{Method: "POST", Pattern: "/api/v1/auth/email/start", Public: true, h: a.handleLoginEmailStart},
-		{Method: "POST", Pattern: "/api/v1/auth/email/verify", Public: true, h: a.handleLoginEmailVerify},
-		{Method: "POST", Pattern: "/api/v1/auth/op-login/start", Public: true, h: a.handleOpLoginStart},
+		{Method: "POST", Pattern: "/api/v1/auth/passkey/login/discoverable/begin", Public: true, AuthDoor: true, h: a.handlePasskeyLoginDiscoverableBegin},
+		{Method: "POST", Pattern: "/api/v1/auth/passkey/login/discoverable/finish", Public: true, AuthDoor: true, h: a.handlePasskeyLoginDiscoverableFinish},
+		{Method: "POST", Pattern: "/api/v1/auth/email/start", Public: true, AuthDoor: true, h: a.handleLoginEmailStart},
+		{Method: "POST", Pattern: "/api/v1/auth/email/verify", Public: true, AuthDoor: true, h: a.handleLoginEmailVerify},
+		{Method: "POST", Pattern: "/api/v1/auth/op-login/start", Public: true, AuthDoor: true, h: a.handleOpLoginStart},
 		{Method: "GET", Pattern: "/api/v1/auth/op-login/status/{id}", Public: true, h: a.handleOpLoginStatus},
-		{Method: "POST", Pattern: "/api/v1/auth/op-login/finish", Public: true, h: a.handleOpLoginFinish},
+		{Method: "POST", Pattern: "/api/v1/auth/op-login/finish", Public: true, AuthDoor: true, h: a.handleOpLoginFinish},
 		// Player-console bootstrap (console-tier access model): the account-less
 		// player's door into console.<root_domain>. Public — like login there is no prior
 		// principal — and session-minting, but the artifact it consumes is a one-time
@@ -403,7 +423,7 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// possession already proves a Minecraft identity. A code whose UUID belongs to
 		// staff is refused (403) so this never yields an admin session; op.console stays
 		// behind Zero Trust (handlers_onboard.go).
-		{Method: "POST", Pattern: "/api/v1/auth/bind", Public: true, h: a.handleBindRedeem},
+		{Method: "POST", Pattern: "/api/v1/auth/bind", Public: true, AuthDoor: true, h: a.handleBindRedeem},
 
 		// App-auth tier: operations on your own servers (spec §14).
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/wake", h: a.handleWake},
@@ -614,7 +634,11 @@ func (a *API) buildFace(routes []apiRoute, guard func(http.Handler) http.Handler
 	for _, rt := range routes {
 		pattern := rt.Method + " " + rt.Pattern
 		if rt.Public {
-			mux.HandleFunc(pattern, rt.h)
+			h := rt.h
+			if rt.AuthDoor {
+				h = a.throttleAuthDoor(h)
+			}
+			mux.HandleFunc(pattern, h)
 			continue
 		}
 		h := rt.h
@@ -727,10 +751,35 @@ func principalFromContext(ctx context.Context) *Principal {
 // reserve/release pair closes the intra-replica concurrent burst (the bug fixed in
 // #35); cross-replica bounding would need a shared store (out of scope for the
 // single-replica demo).
+//
+// Entries older than the longest window the limiter has been asked about can
+// no longer block anything, so checks sweep them out (at most once per
+// bucketSweepEvery). Without that, every distinct address typed into a public
+// door, whose neutral branch keeps its reservation, stayed in the map for the
+// life of the process.
 type cooldownLimiter struct {
-	mu   sync.Mutex
-	now  func() time.Time
-	last map[string]time.Time
+	mu        sync.Mutex
+	now       func() time.Time
+	last      map[string]time.Time
+	maxWindow time.Duration
+	swept     time.Time
+}
+
+// noteWindow widens the retention to window and sweeps stale entries when due.
+// The caller holds mu.
+func (c *cooldownLimiter) noteWindow(window time.Duration, now time.Time) {
+	if window > c.maxWindow {
+		c.maxWindow = window
+	}
+	if c.maxWindow <= 0 || now.Sub(c.swept) < bucketSweepEvery {
+		return
+	}
+	c.swept = now
+	for k, t := range c.last {
+		if now.Sub(t) >= c.maxWindow {
+			delete(c.last, k)
+		}
+	}
 }
 
 // allowed reports whether name may wake now WITHOUT recording the attempt. A
@@ -745,7 +794,9 @@ func (c *cooldownLimiter) allowed(name string, window time.Duration) bool {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if last, ok := c.last[name]; ok && c.now().Sub(last) < window {
+	now := c.now()
+	c.noteWindow(window, now)
+	if last, ok := c.last[name]; ok && now.Sub(last) < window {
 		return false
 	}
 	return true
@@ -778,10 +829,11 @@ func (c *cooldownLimiter) reserve(name string, window time.Duration) (time.Time,
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if last, ok := c.last[name]; ok && c.now().Sub(last) < window {
+	t := c.now()
+	c.noteWindow(window, t)
+	if last, ok := c.last[name]; ok && t.Sub(last) < window {
 		return time.Time{}, false
 	}
-	t := c.now()
 	c.last[name] = t
 	return t, true
 }

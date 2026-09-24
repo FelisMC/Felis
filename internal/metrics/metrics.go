@@ -64,7 +64,43 @@ var (
 		Name:      "auth_otp_lockouts_total",
 		Help:      "Email-code doors locked after too many wrong codes, by purpose.",
 	}, []string{"purpose"})
+
+	// MailTotal counts mail the API tried to send, by kind (otp, notice) and
+	// result: sent, failed (the relay refused it) or throttled (the
+	// install-wide mail budget refused it before it reached the relay).
+	MailTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "mail_total",
+		Help:      "Mail the API tried to send, by kind and result (sent, failed, throttled).",
+	}, []string{"kind", "result"})
+
+	// RateLimitedTotal counts requests refused by a volumetric limit, by scope
+	// (auth_door: one client address calling the public sign-in doors too fast).
+	RateLimitedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: namespace,
+		Name:      "rate_limited_total",
+		Help:      "Requests refused by a volumetric rate limit, by scope.",
+	}, []string{"scope"})
 )
+
+// OTPPurposes are the email-code doors OTPLockoutsTotal is labelled by.
+var OTPPurposes = []string{"onboard_email", "login_email", "op_login", "migrate_confirm"}
+
+// The sign-in alerts watch these counters with increase(). A labelled child
+// that does not exist yet has no sample before its first event, so increase()
+// would miss exactly the first lockout or throttle; every child the alerts use
+// is created at zero up front.
+func init() {
+	for _, kind := range []string{"otp", "notice"} {
+		for _, result := range []string{"sent", "failed", "throttled"} {
+			MailTotal.WithLabelValues(kind, result)
+		}
+	}
+	RateLimitedTotal.WithLabelValues("auth_door")
+	for _, p := range OTPPurposes {
+		OTPLockoutsTotal.WithLabelValues(p)
+	}
+}
 
 // SyncServerGauge republishes felis_servers_total from a full snapshot of the
 // fleet's per-server states. states holds one entry per MinecraftServer the
@@ -97,6 +133,8 @@ func Collectors() []prometheus.Collector {
 		ImageBuildFailuresTotal,
 		ReaperWorldsDeletedTotal,
 		OTPLockoutsTotal,
+		MailTotal,
+		RateLimitedTotal,
 	}
 }
 

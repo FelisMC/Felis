@@ -147,6 +147,19 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: >
+        This client address called the public sign-in doors faster than the per-address
+        limit allows (code rate_limited); Retry-After gives the seconds until the next
+        call is admitted. The address is the visitor header the install's edge writes
+        ([auth] client_ip_header: CF-Connecting-IP behind the Cloudflare tunnel), else
+        the TCP peer; IPv6 clients share one limit per /64.
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
     AccessResult:
       description: The structured access mutation succeeded; the raw RCON reply is in output.
       content:
@@ -1875,8 +1888,8 @@ paths:
         array. It never reveals staffness: methods are computed identically for every
         resolved account (no role branch), so a staff and a player address in the same
         credential state return byte-identical bodies. passkey is offered only when a
-        verifier is wired. Sends no mail and mutates nothing; not rate-limited at the app
-        layer (volumetric abuse is bounded at the edge). Gated on local_auth_enabled.
+        verifier is wired. Sends no mail and mutates nothing; bounded by the per-address
+        sign-in rate limit (429 rate_limited). Gated on local_auth_enabled.
       x-felis-face: [external]
       x-felis-tier: public
       security: []
@@ -1918,6 +1931,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          $ref: '#/components/responses/RateLimited'
 
   /api/v1/auth/passkey/login/begin:
     post:
@@ -1973,7 +1988,9 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '429':
-          description: A passkey login for this recipient was started too recently (otp_resend_cooldown).
+          description: >-
+            A passkey login for this recipient was started too recently (otp_resend_cooldown);
+            or this client address called the sign-in doors too often (rate_limited, with Retry-After).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -2045,6 +2062,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          $ref: '#/components/responses/RateLimited'
         '503':
           description: No passkey verifier is wired on this deployment (passkey_unavailable).
           content:
@@ -2066,9 +2085,9 @@ paths:
         userHandle inside the signed assertion at finish. The challenge cannot be
         user-keyed, so it is stashed under login_id in a non-user-keyed store and echoed
         back at finish. Mounted Public and gated on local_auth_enabled. There is no
-        recipient or principal to key a per-caller cooldown on (that volumetric limiting
-        is delegated to the edge), so the server-side brake is a hard global cap on live
-        challenges (429 too_many_challenges). Inert for a credential until its owner
+        recipient or principal to key a per-caller cooldown on, so one client is bounded
+        by the per-address sign-in rate limit (429 rate_limited) and the table by a hard
+        global cap on live challenges (429 too_many_challenges). Inert for a credential until its owner
         enrolls a resident passkey; email-OTP and username-first passkey remain the
         fallbacks, so no authenticator is ever locked out.
       x-felis-face: [external]
@@ -2114,8 +2133,9 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '429':
           description: >-
-            Too many discoverable logins are in flight server-wide; the global cap is hit
-            (too_many_challenges). No per-recipient signal is leaked — the cap is global.
+            Too many discoverable logins are in flight server-wide (too_many_challenges;
+            the cap is global, so no per-recipient signal leaks); or this client address
+            called the sign-in doors too often (rate_limited, with Retry-After).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -2192,6 +2212,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          $ref: '#/components/responses/RateLimited'
         '503':
           description: No passkey verifier is wired on this deployment (passkey_unavailable).
           content:
@@ -2253,7 +2275,10 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '429':
-          description: A code for this recipient was requested too recently (otp_resend_cooldown).
+          description: >-
+            A code for this recipient was requested too recently (otp_resend_cooldown);
+            or this client address called the sign-in doors too often (rate_limited, with Retry-After);
+            or the install-wide mail budget is spent (mail_rate_limited, with Retry-After).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -2318,6 +2343,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          $ref: '#/components/responses/RateLimited'
 
   /api/v1/auth/op-login/start:
     post:
@@ -2373,7 +2400,10 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '429':
-          description: A code for this recipient was requested too recently (otp_resend_cooldown).
+          description: >-
+            A code for this recipient was requested too recently (otp_resend_cooldown);
+            or this client address called the sign-in doors too often (rate_limited, with Retry-After);
+            or the install-wide mail budget is spent (mail_rate_limited, with Retry-After).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -2467,6 +2497,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          $ref: '#/components/responses/RateLimited'
 
   /api/v1/auth/setup/redeem:
     post:
@@ -2524,6 +2556,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          $ref: '#/components/responses/RateLimited'
 
   /api/v1/auth/setup/status:
     get:
@@ -2640,6 +2674,8 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          $ref: '#/components/responses/RateLimited'
 
   /api/v1/me:
     get:
@@ -3778,7 +3814,8 @@ paths:
           description: >-
             Resend requested before the cooldown elapsed (otp_resend_cooldown); or the
             account spent its daily wrong-code budget (otp_account_locked, with
-            Retry-After).
+            Retry-After); or the install-wide mail budget is spent
+            (mail_rate_limited, with Retry-After).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -4091,7 +4128,8 @@ paths:
           description: >-
             Resend requested before the cooldown elapsed (otp_resend_cooldown), or the
             account's daily wrong-code budget is spent (otp_account_locked, with
-            Retry-After).
+            Retry-After); or the install-wide mail budget is spent
+            (mail_rate_limited, with Retry-After).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

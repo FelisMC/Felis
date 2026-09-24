@@ -151,3 +151,88 @@ tests:
                 --collector.textfile.directory at the directory of
                 FELIS_DB_BACKUP_METRICS (default /var/lib/node_exporter/textfile_collector)
                 (troubleshooting §16).
+  - name: sign-in mail budget and relay
+    interval: 1m
+    input_series:
+      # Created at zero on start; the budget refuses one mail at t=3m.
+      - series: 'felis_mail_total{kind="otp",result="throttled",job="felis-api"}'
+        values: '0 0 0 1x30'
+      - series: 'felis_mail_total{kind="otp",result="failed",job="felis-api"}'
+        values: '0x33'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: FelisMailBudgetExhausted
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: FelisMailBudgetExhausted
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "the install-wide mail budget refused mail"
+              description: >-
+                felis_mail_total{result="throttled"} increased: [smtp] max_per_hour is
+                spent, and every sign-in code is refused with 429 mail_rate_limited until
+                it refills. Check felis_rate_limited_total for a flood before raising the
+                budget (troubleshooting §17).
+      - eval_time: 5m
+        alertname: FelisMailDeliveryFailing
+        exp_alerts: []
+  - name: sign-in flood
+    interval: 1m
+    input_series:
+      # 30 refusals a minute from t=0; a lone refused script at 2/min stays quiet.
+      - series: 'felis_rate_limited_total{scope="auth_door",job="felis-api"}'
+        values: '0+30x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: FelisSignInFlood
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: FelisSignInFlood
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "sign-in doors refusing over 10 requests a minute"
+              description: >-
+                The per-address sign-in limit has been refusing callers for 10 minutes.
+                A script is hammering the auth doors; if real users report rate_limited
+                at once instead, [auth] client_ip_header is missing and everyone shares
+                the proxy's address (troubleshooting §17).
+  - name: sign-in trickle stays quiet
+    interval: 1m
+    input_series:
+      - series: 'felis_rate_limited_total{scope="auth_door",job="felis-api"}'
+        values: '0+2x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: FelisSignInFlood
+        exp_alerts: []
+  - name: account email-code lock
+    interval: 1m
+    input_series:
+      - series: 'felis_auth_otp_lockouts_total{purpose="login_email",job="felis-api"}'
+        values: '0 0 1x90'
+      - series: 'felis_auth_otp_lockouts_total{purpose="op_login",job="felis-api"}'
+        values: '0x92'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: FelisOTPAccountLocked
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: FelisOTPAccountLocked
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              purpose: login_email
+            exp_annotations:
+              summary: "an account's email-code sign-in locked after 10 wrong codes"
+              description: >-
+                Someone entered 10 wrong codes for one account within 24h (login_email).
+                The audit log names the account (action auth.otp.locked); the owner was
+                mailed. Unless they fumbled codes, someone is guessing at it
+                (troubleshooting §17).
+      - eval_time: 90m
+        alertname: FelisOTPAccountLocked
+        exp_alerts: []

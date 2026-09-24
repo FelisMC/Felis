@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strconv"
 	"time"
 
 	"felis.lolicon.best/internal/metrics"
@@ -35,14 +34,9 @@ var otpDoorName = map[string][2]string{
 
 // writeOTPAccountLocked answers a signed-in door whose budget is spent.
 func writeOTPAccountLocked(w http.ResponseWriter, r *http.Request, until, now time.Time) {
-	secs := int64(until.Sub(now).Round(time.Second) / time.Second)
-	if secs < 1 {
-		secs = 1
-	}
-	w.Header().Set("Retry-After", strconv.FormatInt(secs, 10))
 	writeError(w, r, newError(http.StatusTooManyRequests, "otp_account_locked",
 		"too many wrong codes on this account; email codes work again after %s",
-		until.UTC().Format(time.RFC3339)))
+		until.UTC().Format(time.RFC3339)).retryAfter(max(until.Sub(now), time.Second)))
 }
 
 // noteOTPLock handles a redeem that met the account lock. Only the guess that
@@ -83,10 +77,18 @@ func (a *API) noteOTPLock(r *http.Request, err error, userID, purpose string) {
 		log.Printf("auth: no notice mailer; user %s was not told their %s is locked", userID, purpose)
 		return
 	}
+	if ok, _ := a.mailGate().take(mailGateKey); !ok {
+		metrics.MailTotal.WithLabelValues("notice", "throttled").Inc()
+		log.Printf("auth: mail budget spent; user %s was not told their %s is locked", userID, purpose)
+		return
+	}
 	subject, body := otpLockNotice(door, lock.Until)
 	if err := sender.SendNotice(ctx, u.Email, subject, body); err != nil {
+		metrics.MailTotal.WithLabelValues("notice", "failed").Inc()
 		log.Printf("auth: otp lock notice to user %s failed: %v", userID, err)
+		return
 	}
+	metrics.MailTotal.WithLabelValues("notice", "sent").Inc()
 }
 
 // otpLockNotice renders the bilingual lock notice.

@@ -300,8 +300,20 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		// for legitimate multi-tab / multi-server watching, while capping how many
 		// upstream follow connections a single caller can tie up if their streams stall.
 		MaxStreamsPerPrincipal: 16,
+		// Public sign-in doors, per client address: a person signing in makes a
+		// handful of calls, so 20 at once refilled at 20 a minute never bites a
+		// real user and still turns a spray into a trickle. The client address
+		// is the edge's header when the install names one (config.AuthConfig).
+		AuthDoorLimit:  api.RateLimit{Burst: 20, PerMinute: 20},
+		ClientIPHeader: cfg.Auth.EffectiveClientIPHeader(),
+		MailLimit:      mailLimit(cfg.SMTP.MaxPerHour),
 	}
 	fmt.Fprintln(stderr, "felis api: external face fails closed (Access JWKS key function not configured)")
+	if a.ClientIPHeader != "" {
+		fmt.Fprintf(stderr, "felis api: sign-in rate limit keys on the %s header\n", a.ClientIPHeader)
+	} else {
+		fmt.Fprintln(stderr, "felis api: sign-in rate limit keys on the TCP peer ([auth] client_ip_header unset)")
+	}
 
 	// Felis-nano: the multi-source hasJoined multiplexer. Mojang leads as the code-owned
 	// identity anchor (正版优先); config can only append namespace-rewritten third-party
@@ -545,4 +557,14 @@ func reconcileBuilds(ctx context.Context, b *build.Builder, stderr io.Writer) {
 			}
 		}
 	}
+}
+
+// mailLimit turns smtp.max_per_hour into the API's install-wide mail bucket:
+// the hourly cap as the refill rate, with a quarter of it (at least 5) allowed
+// at once so a burst of real sign-ins is not queued behind the average.
+func mailLimit(perHour int) api.RateLimit {
+	if perHour <= 0 {
+		perHour = config.DefaultMailPerHour
+	}
+	return api.RateLimit{Burst: max(perHour/4, 5), PerMinute: float64(perHour) / 60}
 }

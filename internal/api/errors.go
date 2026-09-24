@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -130,9 +131,18 @@ type apiError struct {
 	status int
 	code   string
 	msg    string
+	// wait, when positive, is sent as Retry-After (whole seconds, rounded up).
+	wait time.Duration
 }
 
 func (e *apiError) Error() string { return e.msg }
+
+// retryAfter returns a copy of e that tells the client when to retry.
+func (e *apiError) retryAfter(d time.Duration) *apiError {
+	c := *e
+	c.wait = d
+	return &c
+}
 
 // newError builds an apiError with a formatted message.
 func newError(status int, code, format string, a ...any) *apiError {
@@ -175,6 +185,9 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 		log.Printf("api: %s %s: unmapped error (request_id=%s): %v",
 			r.Method, r.URL.Path, requestIDFromContext(r.Context()), err)
 		ae = newError(http.StatusInternalServerError, "internal", "internal error")
+	}
+	if ae.wait > 0 {
+		w.Header().Set("Retry-After", strconv.FormatInt(int64((ae.wait+time.Second-1)/time.Second), 10))
 	}
 	body := map[string]any{
 		"error": map[string]string{

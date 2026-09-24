@@ -1218,9 +1218,8 @@ func (p *PGRepo) ConsumePasskeyChallengeByUser(ctx context.Context, userID, purp
 // exist, a new begin is refused (ErrTooManyDiscoverableChallenges → 429). The cap is generous —
 // a login challenge lives only passkeyChallengeTTL (5 min) and each row is ~1 KB — so real
 // concurrency never approaches it, while an abusive begin-flood is bounded to a few MB instead
-// of growing without limit. Volumetric per-IP limiting is the edge's job (handlers_auth_email.go):
-// behind Cloudflare RemoteAddr is the proxy, and a usernameless door has no recipient to key a
-// fair per-caller limit on.
+// of growing without limit. One client's volume is bounded before it gets here, by the
+// per-address token bucket in front of every public auth door (ratelimit.go).
 const maxLiveDiscoverableChallenges = 4096
 
 // CreateDiscoverableChallenge stashes a discoverable-login ceremony under an opaque handle,

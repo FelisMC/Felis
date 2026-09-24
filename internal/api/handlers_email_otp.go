@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"felis.lolicon.best/internal/metrics"
 )
 
 // Player email verification (spec §B2 onboarding). Forced web onboarding proves a
@@ -250,12 +252,21 @@ func (a *API) handleEmailOTPVerify(w http.ResponseWriter, r *http.Request) {
 // deliverOTP hands the code to the configured Mailer, or — when none is wired (the
 // demo) — logs it server-side as a KNOWN-LIMITATION. The code is logged ONLY in the
 // no-mailer fallback and ONLY to the server log; it is never put in an HTTP response.
+//
+// Every real send spends one token of the install-wide mail budget (mailGate);
+// a spent budget is a 429 mail_rate_limited and nothing reaches the relay.
 func (a *API) deliverOTP(ctx context.Context, email, code string) error {
 	if a.Mailer == nil {
 		log.Printf("email-otp: no Mailer configured; code for %s is %s (KNOWN-LIMITATION: demo has no SMTP)", email, code)
 		return nil
 	}
+	if ok, wait := a.mailGate().take(mailGateKey); !ok {
+		metrics.MailTotal.WithLabelValues("otp", "throttled").Inc()
+		log.Printf("api: OTP mail refused by the install-wide mail budget (request_id=%s)", requestIDFromContext(ctx))
+		return errMailRateLimited(wait)
+	}
 	if err := a.Mailer.SendOTP(ctx, email, code); err != nil {
+		metrics.MailTotal.WithLabelValues("otp", "failed").Inc()
 		// Mapped here rather than at each of the four call sites, so every door that
 		// mails a code answers the same way. A relay refusal is neither the caller's
 		// fault nor a bug in Felis, and a bare 500 says neither — it reads as "the
@@ -269,6 +280,7 @@ func (a *API) deliverOTP(ctx context.Context, email, code string) error {
 		return newError(http.StatusBadGateway, "mail_undeliverable",
 			"the mail relay refused this message; ask the server operator to check the SMTP settings")
 	}
+	metrics.MailTotal.WithLabelValues("otp", "sent").Inc()
 	return nil
 }
 

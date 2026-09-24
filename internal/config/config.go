@@ -71,7 +71,16 @@ type SMTPConfig struct {
 	// Username is the AUTH identity; empty means the relay needs no AUTH.
 	Username    string `toml:"username"`
 	PasswordRef string `toml:"password_ref"`
+	// MaxPerHour caps the mail the API sends install-wide (codes and notices),
+	// so a flood cannot spend the relay's quota and get the account suspended.
+	// 0 means DefaultMailPerHour. Size it to the relay's own limit.
+	MaxPerHour int `toml:"max_per_hour"`
 }
+
+// DefaultMailPerHour is the install-wide mail cap when smtp.max_per_hour is
+// unset: far above a community's normal sign-in mail, far below the daily
+// quota of common relays.
+const DefaultMailPerHour = 120
 
 // ServerConfig is the [server] table.
 type ServerConfig struct {
@@ -106,6 +115,24 @@ type AuthConfig struct {
 	AdminHostname string `toml:"admin_hostname"`
 	PanelHostname string `toml:"panel_hostname"`
 	AccessJWTAud  string `toml:"access_jwt_aud"`
+	// ClientIPHeader names the header the edge writes the visitor's address
+	// into: CF-Connecting-IP behind the Cloudflare tunnel (the edge setup
+	// writes it), X-Forwarded-For behind an operator's reverse proxy. The API
+	// keys its per-client sign-in rate limit on it. Empty means the TCP peer,
+	// except that an install with an Access audience (set only by the
+	// Cloudflare edge setup) implies CF-Connecting-IP.
+	ClientIPHeader string `toml:"client_ip_header"`
+}
+
+// EffectiveClientIPHeader resolves ClientIPHeader with its Cloudflare default.
+func (a AuthConfig) EffectiveClientIPHeader() string {
+	if a.ClientIPHeader != "" {
+		return a.ClientIPHeader
+	}
+	if a.AccessJWTAud != "" {
+		return "CF-Connecting-IP"
+	}
+	return ""
 }
 
 // K8sConfig is the [k8s] table.
@@ -367,6 +394,12 @@ func (c *Config) Validate() error {
 		if c.SMTP.Port < 1 || c.SMTP.Port > 65535 {
 			return fmt.Errorf("config: [smtp] port %d must be 1-65535 (587 STARTTLS, 465 implicit TLS)", c.SMTP.Port)
 		}
+	}
+	if c.SMTP.MaxPerHour < 0 {
+		return fmt.Errorf("config: [smtp] max_per_hour %d must be positive (0 means the default %d)", c.SMTP.MaxPerHour, DefaultMailPerHour)
+	}
+	if h := c.Auth.ClientIPHeader; strings.ContainsAny(h, " :\t\r\n") {
+		return fmt.Errorf("config: [auth] client_ip_header %q must be a bare header name such as CF-Connecting-IP or X-Forwarded-For", h)
 	}
 	return c.validateAuthSources()
 }

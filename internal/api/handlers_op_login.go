@@ -86,6 +86,13 @@ func (a *API) handleOpLoginStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The install-wide mail budget is checked before the address is resolved,
+	// so while it is spent every address gets the same 429.
+	if err := a.checkMailBudget(); err != nil {
+		writeError(w, r, err)
+		return
+	}
+
 	// Per-recipient cooldown reserved BEFORE any work, identical to the console email
 	// door: one winner per window, and the neutral (non-staff) branch keeps the
 	// reservation too so probing an address is throttled exactly like a real send. The

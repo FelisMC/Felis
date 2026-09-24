@@ -574,3 +574,38 @@ host = "smtp.example.net"
 		t.Fatal("expected error when [smtp] host is set without a from address")
 	}
 }
+
+// TestClientIPHeaderAndMailCap pins the two knobs behind the sign-in rate
+// limits: the visitor-address header (explicit, or implied by an Access
+// audience that only the Cloudflare edge setup writes) and the mail cap.
+func TestClientIPHeaderAndMailCap(t *testing.T) {
+	base := `
+[server]
+root_domain = "mc.example.net"
+[database]
+url = "postgres://felis@db/felis"
+`
+	for _, tc := range []struct {
+		name, auth, want string
+	}{
+		{"unset", "", ""},
+		{"cloudflare audience implies CF-Connecting-IP", "access_jwt_aud = \"aud123\"\n", "CF-Connecting-IP"},
+		{"explicit wins", "access_jwt_aud = \"aud123\"\nclient_ip_header = \"X-Forwarded-For\"\n", "X-Forwarded-For"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := config.Load(writeTOML(t, base+"[auth]\n"+tc.auth))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if got := cfg.Auth.EffectiveClientIPHeader(); got != tc.want {
+				t.Fatalf("EffectiveClientIPHeader = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	if _, err := config.Load(writeTOML(t, base+"[auth]\nclient_ip_header = \"CF-Connecting-IP: 1.2.3.4\"\n")); err == nil {
+		t.Fatal("a header line with a value was accepted as a header name")
+	}
+	if _, err := config.Load(writeTOML(t, base+"[smtp]\nhost = \"smtp.example.net\"\nfrom = \"f@example.net\"\nmax_per_hour = -1\n")); err == nil {
+		t.Fatal("negative max_per_hour accepted")
+	}
+}
