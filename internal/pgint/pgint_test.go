@@ -1150,7 +1150,6 @@ func TestSubmitPendingCapHoldsUnderConcurrency(t *testing.T) {
 	}
 }
 
-
 func TestSubmitStoreContract(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "sub")
