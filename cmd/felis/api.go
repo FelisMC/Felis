@@ -466,22 +466,18 @@ func buildConfig(cfg *config.Config) build.Config {
 	return build.Config{
 		Namespace:   cfg.Registry.BuildNamespace,
 		RegistryURL: cfg.Registry.URL,
-		// Empty overrides fall back to the build package's defaults, so an
-		// install that has not imported kaniko/trivy keeps the compiled-in refs
-		// (and fails loudly on pull rather than silently building with the wrong
-		// image).
+		// Empty overrides fall back to the registry's copies of the tools
+		// (build.Tools), which felis mirror-build-tools keeps current.
 		KanikoImage: cfg.Registry.KanikoImage,
 		TrivyImage:  cfg.Registry.TrivyImage,
 		CPULimit:    cfg.Registry.BuildCPULimit,
 		MemLimit:    cfg.Registry.BuildMemLimit,
 		DiskLimit:   cfg.Registry.BuildDiskLimit,
 		// "auto" follows the startup probe (see probeBuildUserNamespaces).
-		UserNamespaces:      cfg.Registry.BuildUserNamespaces,
-		UserNamespacesProbe: new(atomic.Bool),
-		RuntimeClass:        cfg.Registry.BuildRuntimeClass,
-		MaxConcurrent:       cfg.Registry.MaxConcurrentBuilds,
-		// Empty keeps Trivy's own default; an install with builds points this at
-		// the internal DB mirror (see config.RegistryConfig.TrivyDBRepository).
+		UserNamespaces:        cfg.Registry.BuildUserNamespaces,
+		UserNamespacesProbe:   new(atomic.Bool),
+		RuntimeClass:          cfg.Registry.BuildRuntimeClass,
+		MaxConcurrent:         cfg.Registry.MaxConcurrentBuilds,
 		TrivyDBRepository:     cfg.Registry.TrivyDBRepository,
 		TrivyJavaDBRepository: cfg.Registry.TrivyJavaDBRepository,
 		// The submit lane's derived context URLs live here; the fetch step's
@@ -669,11 +665,7 @@ func registryPruner(cfg *config.Config, store imageRefStore, servers serverListe
 		fmt.Fprintf(stderr, "felis api: registry pruner disabled (%s unset) — images nothing uses are never deleted from the registry\n", platform.RegistryPruneTokenEnv)
 		return nil
 	}
-	static := []string{
-		os.Getenv("FELIS_IMAGE"),
-		cfg.Registry.KanikoImage, cfg.Registry.TrivyImage,
-		cfg.Registry.TrivyDBRepository, cfg.Registry.TrivyJavaDBRepository,
-	}
+	static := append([]string{os.Getenv("FELIS_IMAGE")}, buildConfig(cfg).ToolRefs()...)
 	return &registryprune.Pruner{
 		Registry: &registryprune.Client{Endpoint: "http://" + cfg.Registry.URL, Token: token},
 		Host:     cfg.Registry.URL,

@@ -12,6 +12,7 @@ import (
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/dbbackup"
+	"felis.lolicon.best/internal/imagepush"
 	"felis.lolicon.best/internal/naming"
 	"felis.lolicon.best/internal/offsite"
 	"felis.lolicon.best/internal/platform"
@@ -45,6 +46,11 @@ const (
 	maxBackupAge = 26 * time.Hour
 	// maxReaperAge is the same for the daily reaper CronJob.
 	maxReaperAge = 26 * time.Hour
+	// maxScanDBAge is how old the registry's copy of Trivy's vulnerability DB may
+	// grow. felis-build-tools.timer refreshes it twice a day and upstream publishes
+	// every six hours; three days of failed refreshes means scans are passing
+	// images against advisories that are no longer current.
+	maxScanDBAge = 72 * time.Hour
 
 	diskLowRatio      = 0.15
 	diskCriticalRatio = 0.05
@@ -363,6 +369,42 @@ func OffsiteFinding(statusFile string, now time.Time) *Finding {
 		age := roundHours(now.Sub(st.LastSuccess))
 		f.Summary = fmt.Sprintf("异地备份已有 %s 没有成功同步", age)
 		f.SummaryEN = fmt.Sprintf("the off-site copy last completed %s ago", age)
+	}
+	if st != nil && st.LastError != "" {
+		f.Summary += "（最近一次错误：" + st.LastError + "）"
+		f.SummaryEN += " (last error: " + st.LastError + ")"
+	}
+	return f
+}
+
+// ScanDBFinding reports the build lane's tool copies (the vulnerability DBs in
+// particular) not refreshed within maxScanDBAge, going by the record
+// `felis mirror-build-tools` leaves in statusFile. A build still runs and its scan
+// still gates, but against an old DB: a warning.
+func ScanDBFinding(statusFile string, now time.Time) *Finding {
+	const hint = "journalctl -u felis-build-tools -n 50; refresh now with `sudo felis mirror-build-tools` (docs/troubleshooting.md §8e)"
+	st, err := imagepush.ReadMirrorStatus(statusFile)
+	if err != nil {
+		return &Finding{
+			Key: "scan-db", Severity: Warning, For: backupFor,
+			Summary:   fmt.Sprintf("无法读取构建工具镜像状态 %s", statusFile),
+			SummaryEN: fmt.Sprintf("cannot read the build tools status %s: %v", statusFile, err),
+			Hint:      hint,
+		}
+	}
+	if st != nil && !st.LastSuccess.IsZero() && now.Sub(st.LastSuccess) <= maxScanDBAge {
+		return nil
+	}
+	f := &Finding{
+		Key: "scan-db", Severity: Warning, For: backupFor,
+		Summary:   "漏洞库从未复制进内置 registry，构建的漏洞扫描无法运行",
+		SummaryEN: "the vulnerability DB was never copied into the registry; build scans cannot run",
+		Hint:      hint,
+	}
+	if st != nil && !st.LastSuccess.IsZero() {
+		age := roundHours(now.Sub(st.LastSuccess))
+		f.Summary = fmt.Sprintf("漏洞库已有 %s 没有刷新，构建扫描用的是过期数据", age)
+		f.SummaryEN = fmt.Sprintf("the vulnerability DB was last refreshed %s ago; build scans use stale advisories", age)
 	}
 	if st != nil && st.LastError != "" {
 		f.Summary += "（最近一次错误：" + st.LastError + "）"

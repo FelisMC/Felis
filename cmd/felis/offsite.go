@@ -90,10 +90,10 @@ type offsiteEnv struct {
 	key    []byte
 }
 
-// loadOffsiteEnvFile sets each KEY=VALUE of path that is not already in the
-// environment, so a root shell reaches the bucket the same way the unit does.
+// loadEnvFile sets each KEY=VALUE of path that is not already in the
+// environment, so a root shell runs a command the same way its unit does.
 // A missing file is not an error.
-func loadOffsiteEnvFile(path string) error {
+func loadEnvFile(path string) error {
 	if path == "" {
 		return nil
 	}
@@ -167,7 +167,7 @@ func resolveOffsite(c config.OffsiteConfig) (*offsiteEnv, error) {
 
 // loadOffsite loads felis.toml and the env file and resolves [offsite].
 func loadOffsite(cfgPath, envFile string) (*config.Config, *offsiteEnv, error) {
-	if err := loadOffsiteEnvFile(envFile); err != nil {
+	if err := loadEnvFile(envFile); err != nil {
 		return nil, nil, fmt.Errorf("read %s: %w", envFile, err)
 	}
 	cfg, err := config.Load(cfgPath)
@@ -454,7 +454,7 @@ func offsiteFetchDB(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) i
 		fmt.Fprint(stderr, offsiteUsage)
 		return 2
 	}
-	if err := loadOffsiteEnvFile(*envFile); err != nil {
+	if err := loadEnvFile(*envFile); err != nil {
 		fmt.Fprintf(stderr, "felis offsite fetch-db: read %s: %v\n", *envFile, err)
 		return 1
 	}

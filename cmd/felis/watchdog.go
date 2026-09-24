@@ -42,6 +42,7 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 	proxyAddr := fs.String("proxy-addr", "", `game proxy address to dial, e.g. 127.0.0.1:25565 ("" skips the check)`)
 	controlNS := fs.String("control-namespace", platform.DefaultControlNamespace, "namespace of the control plane")
 	offsiteStatus := fs.String("offsite-status", offsite.DefaultStatusFile, "the record `felis offsite sync` leaves, checked when [offsite] is configured")
+	toolsStatus := fs.String("build-tools-status", defaultBuildToolsStatus, "the record `felis mirror-build-tools` leaves, checked when builds scan against the registry's DB copy")
 	dryRun := fs.Bool("dry-run", false, "print every finding and the mail that is due; send nothing and keep the state as it was")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -107,6 +108,9 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 	if cfg.Offsite.Enabled() {
 		add(watchdog.OffsiteFinding(*offsiteStatus, now))
 	}
+	if usesMirroredScanDB(cfg) {
+		add(watchdog.ScanDBFinding(*toolsStatus, now))
+	}
 	report.Findings = append(report.Findings, watchdog.DiskFindings(splitList(*diskPaths))...)
 	add(watchdog.MemoryFinding("/proc/meminfo"))
 
@@ -159,6 +163,17 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 	}
 	state.Commit(plan, now)
 	return save()
+}
+
+// usesMirroredScanDB reports whether build scans read the vulnerability DB copy
+// felis mirror-build-tools keeps in the platform registry: the default, or an
+// explicit trivy_db_repository under the registry's mirror/.
+func usesMirroredScanDB(cfg *config.Config) bool {
+	if cfg.Registry.URL == "" {
+		return false
+	}
+	repo := cfg.Registry.TrivyDBRepository
+	return repo == "" || strings.HasPrefix(repo, cfg.Registry.URL+"/mirror/")
 }
 
 // refreshSMTPPassword caches the relay password from the felis-smtp Secret, or

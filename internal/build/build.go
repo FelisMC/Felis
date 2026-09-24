@@ -234,16 +234,15 @@ type Config struct {
 	// shape); an install that never builds user submissions can leave it empty.
 	FelisImage string
 	// TrivyDBRepository overrides where Trivy fetches its vulnerability DB
-	// (--db-repository). Empty keeps Trivy's upstream default, which the build
-	// egress lock denies — an install with builds must point this at an internal
-	// mirror (see config.RegistryConfig.TrivyDBRepository).
+	// (--db-repository). Empty means the platform registry's copy (Tools); with no
+	// RegistryURL it stays empty, which keeps Trivy's upstream default.
 	TrivyDBRepository string
 	// TrivyJavaDBRepository overrides where Trivy fetches its Java DB
 	// (--java-db-repository), downloaded lazily for images that contain Java
-	// artifacts — i.e. every real modpack. Same egress story as the
-	// vulnerability DB (see config.RegistryConfig.TrivyJavaDBRepository).
+	// artifacts — i.e. every real modpack. Defaults like TrivyDBRepository.
 	TrivyJavaDBRepository string
-	// KanikoImage / TrivyImage are the executor images.
+	// KanikoImage / TrivyImage are the executor images. Empty means the platform
+	// registry's copies (Tools).
 	KanikoImage string
 	TrivyImage  string
 	// Deadline caps a build's wall-clock (spec §16: activeDeadlineSeconds).
@@ -301,8 +300,6 @@ func (c Config) userNamespaces() bool {
 const (
 	defaultNamespace      = "felis-build"
 	defaultServiceAccount = "felis-build"
-	defaultKanikoImage    = "gcr.io/kaniko-project/executor:latest"
-	defaultTrivyImage     = "aquasec/trivy:latest"
 	defaultDeadline       = 30 * time.Minute
 	defaultMaxDockerfile  = 256 * 1024 // 256 KiB
 	defaultCPULimit       = "2"
@@ -325,11 +322,19 @@ func (c Config) withDefaults() Config {
 	if c.ServiceAccount == "" {
 		c.ServiceAccount = defaultServiceAccount
 	}
+	// The executor images and the scan DBs default to the platform registry's
+	// copies (Tools); an explicit felis.toml value wins.
 	if c.KanikoImage == "" {
-		c.KanikoImage = defaultKanikoImage
+		c.KanikoImage = toolRef(c.RegistryURL, "kaniko")
 	}
 	if c.TrivyImage == "" {
-		c.TrivyImage = defaultTrivyImage
+		c.TrivyImage = toolRef(c.RegistryURL, "trivy")
+	}
+	if c.TrivyDBRepository == "" && c.RegistryURL != "" {
+		c.TrivyDBRepository = toolRef(c.RegistryURL, "trivy-db")
+	}
+	if c.TrivyJavaDBRepository == "" && c.RegistryURL != "" {
+		c.TrivyJavaDBRepository = toolRef(c.RegistryURL, "trivy-java-db")
 	}
 	if c.Deadline <= 0 {
 		c.Deadline = defaultDeadline

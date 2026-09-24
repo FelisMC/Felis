@@ -24,6 +24,7 @@ Commands:
   egress-gate       Hold a build pod until its egress NetworkPolicy is enforced (internal Job entrypoint)
   fetch-context     Fetch and extract a submission's build context (internal Job entrypoint)
   push-image        Push a scanned image tarball to the registry (internal Job entrypoint)
+  mirror-build-tools Copy kaniko, trivy and Trivy's DBs into the registry (run by felis-build-tools.timer)
   registry-gate     Authorize registry writes in front of registry:2 (internal sidecar entrypoint)
   manifests         Render the control-plane RBAC + NetworkPolicy install bundle as YAML
   apply             Create a MinecraftServer CRD (direct K8s write; use -f server.json)
@@ -47,32 +48,33 @@ Run "felis <command> -h" for command-specific flags.
 // The help aliases are deliberately NOT entries: they print usage rather than run a
 // subcommand, and listing them would make the table disagree with the command list.
 var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
-	"migrate":          cmdMigrate,
-	"db":               cmdDB,
-	"offsite":          cmdOffsite,
-	"operator":         cmdOperator,
-	"api":              cmdAPI,
-	"nano":             cmdNano,
-	"reaper":           cmdReaper,
-	"restore":          cmdRestore,
-	"backup":           cmdBackup,
-	"files":            cmdFiles,
-	"egress-gate":      cmdEgressGate,
-	"fetch-context":    cmdFetchContext,
-	"push-image":       cmdPushImage,
-	"registry-gate":    cmdRegistryGate,
-	"manifests":        cmdManifests,
-	"apply":            cmdApply,
-	"setup":            cmdSetup,
-	"converge":         cmdConverge,
-	"breakGlass":       cmdBreakGlass,
-	"bootstrap-assets": cmdBootstrapAssets,
-	"init-forwarding":  cmdInitForwarding,
-	"init-volume":      cmdInitVolume,
-	"pin-images":       cmdPinImages,
-	"version":          cmdVersion,
-	"update":           cmdUpdate,
-	"watchdog":         cmdWatchdog,
+	"migrate":            cmdMigrate,
+	"db":                 cmdDB,
+	"offsite":            cmdOffsite,
+	"operator":           cmdOperator,
+	"api":                cmdAPI,
+	"nano":               cmdNano,
+	"reaper":             cmdReaper,
+	"restore":            cmdRestore,
+	"backup":             cmdBackup,
+	"files":              cmdFiles,
+	"egress-gate":        cmdEgressGate,
+	"fetch-context":      cmdFetchContext,
+	"push-image":         cmdPushImage,
+	"mirror-build-tools": cmdMirrorBuildTools,
+	"registry-gate":      cmdRegistryGate,
+	"manifests":          cmdManifests,
+	"apply":              cmdApply,
+	"setup":              cmdSetup,
+	"converge":           cmdConverge,
+	"breakGlass":         cmdBreakGlass,
+	"bootstrap-assets":   cmdBootstrapAssets,
+	"init-forwarding":    cmdInitForwarding,
+	"init-volume":        cmdInitVolume,
+	"pin-images":         cmdPinImages,
+	"version":            cmdVersion,
+	"update":             cmdUpdate,
+	"watchdog":           cmdWatchdog,
 }
 
 // run dispatches a subcommand. It is separate from main so the router is

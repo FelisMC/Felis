@@ -26,7 +26,7 @@ not a line
 	t.Setenv("FELIS_OFFSITE_ACCESS_KEY", "from-the-shell")
 	t.Setenv("FELIS_OFFSITE_SECRET_KEY", "")
 	t.Setenv("FELIS_OFFSITE_KEY", "")
-	if err := loadOffsiteEnvFile(path); err != nil {
+	if err := loadEnvFile(path); err != nil {
 		t.Fatal(err)
 	}
 	for k, want := range map[string]string{
@@ -38,7 +38,7 @@ not a line
 			t.Errorf("%s = %q, want %q", k, got, want)
 		}
 	}
-	if err := loadOffsiteEnvFile(filepath.Join(t.TempDir(), "absent")); err != nil {
+	if err := loadEnvFile(filepath.Join(t.TempDir(), "absent")); err != nil {
 		t.Errorf("a missing env file is not an error: %v", err)
 	}
 }

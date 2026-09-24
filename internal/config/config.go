@@ -148,13 +148,10 @@ type RegistryConfig struct {
 	URL            string `toml:"url"`
 	BuildNamespace string `toml:"build_namespace"`
 	// KanikoImage / TrivyImage / BuildCPULimit / BuildMemLimit override the
-	// build subsystem's compiled-in defaults (gcr.io/kaniko-project/executor and
-	// aquasec/trivy, 2 CPU / 4Gi per build container). The kubelet pulls the
-	// executor images over the node's network, so the defaults need a node that
-	// can reach those registries; an air-gapped or mirrored install points these
-	// at images mirrored into the in-cluster registry (docs/troubleshooting.md
-	// §8e). A bare node-containerd import does not survive an image GC, there is
-	// no pull source for it. Empty keeps the default.
+	// build subsystem's defaults: the kaniko and trivy copies the installer keeps
+	// in this registry under mirror/ (build.Tools), 2 CPU / 4Gi per build
+	// container. Set the images only to run another build of the tools
+	// (docs/troubleshooting.md §8e). Empty keeps the default.
 	KanikoImage   string `toml:"kaniko_image"`
 	TrivyImage    string `toml:"trivy_image"`
 	BuildCPULimit string `toml:"build_cpu_limit"`
@@ -173,25 +170,18 @@ type RegistryConfig struct {
 	// Zero keeps 2; at most 6 (the build namespace's pod quota).
 	MaxConcurrentBuilds int `toml:"max_concurrent_builds"`
 	// TrivyDBRepository points Trivy at an OCI repository holding the
-	// vulnerability DB (--db-repository). Trivy's default fetches from
-	// mirror.gcr.io/ghcr.io, which the build egress lock denies — so on a
-	// default install the scan step fails closed and no build ever completes.
-	// The supported shape is an internal mirror: copy
-	// mirror.gcr.io/aquasec/trivy-db:2 into this cluster's registry (recipe in
-	// docs/troubleshooting.md §8) and set this to
-	// registry.<ns>.svc:5000/mirror/trivy-db:2. The scan runs with --insecure,
-	// so the plain-HTTP internal registry works. Empty keeps Trivy's own
-	// default (only usable on an install that deliberately opens internet
-	// egress to the DB hosts).
+	// vulnerability DB (--db-repository). Trivy's own default fetches from
+	// mirror.gcr.io/ghcr.io, which the build egress lock denies, so the default
+	// here is the copy felis-build-tools.timer refreshes in this registry,
+	// <url>/mirror/trivy-db:2 (build.Tools). The scan runs with --insecure, so
+	// the plain-HTTP internal registry works. Empty keeps that default.
 	TrivyDBRepository string `toml:"trivy_db_repository"`
 	// TrivyJavaDBRepository points Trivy at an OCI repository holding the Java
 	// DB (--java-db-repository). Trivy fetches it lazily whenever the scanned
 	// image contains Java artifacts — every real modpack image does — so on an
-	// egress-locked box the scan fails closed without this mirror exactly like
-	// the vulnerability DB. The supported shape is an internal mirror: copy
-	// mirror.gcr.io/aquasec/trivy-java-db:1 into this cluster's registry and
-	// set this to registry.<ns>.svc:5000/mirror/trivy-java-db:1 (recipe in
-	// docs/troubleshooting.md §8e). Empty keeps Trivy's own default.
+	// egress-locked box it comes from this registry exactly like the
+	// vulnerability DB: <url>/mirror/trivy-java-db:1 by default. Empty keeps that
+	// default.
 	TrivyJavaDBRepository string `toml:"trivy_java_db_repository"`
 	// UserUploadsContext is the object-store base under which a user-submitted
 	// modpack's Kaniko build context is pinned. It belongs to the §16 build

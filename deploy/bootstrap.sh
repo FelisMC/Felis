@@ -279,6 +279,9 @@ WATCHDOG_STATE="/var/lib/felis/watchdog/state.json"
 OFFSITE_ENV="${STATE_DIR}/offsite.env"
 OFFSITE_SERVICE="/etc/systemd/system/felis-offsite.service"
 OFFSITE_TIMER="/etc/systemd/system/felis-offsite.timer"
+BUILD_TOOLS_SERVICE="/etc/systemd/system/felis-build-tools.service"
+BUILD_TOOLS_TIMER="/etc/systemd/system/felis-build-tools.timer"
+BUILD_TOOLS_STATUS="/var/lib/felis/build-tools/status.json"
 # While this marker holds a future Unix time, felis watchdog mails nothing: an install
 # restarts the control plane and the system servers on purpose. cleanup removes it; the
 # time in it is the backstop for an installer killed before its EXIT trap runs.
@@ -2679,6 +2682,47 @@ EOF
   fi
 }
 
+# The build lane's tools: kaniko and trivy (pinned by digest in internal/build/tools.go)
+# and Trivy's vulnerability and Java DBs, copied into the registry's mirror/ where build
+# Jobs pull them; the build namespace has no internet egress. The timer refreshes the DBs
+# twice a day (upstream publishes every six hours) and the watchdog warns when three days
+# pass without a clean run. The first copy starts now in the background: the Java DB
+# alone is several hundred MB.
+install_build_tools_timer() {
+  install -d -m 0755 "$(dirname "$BUILD_TOOLS_STATUS")"
+  cat > "$BUILD_TOOLS_SERVICE" <<EOF
+[Unit]
+Description=Copy the Felis build tools and Trivy's vulnerability DBs into the registry
+After=network-online.target k3s.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${HOST_BIN} mirror-build-tools -endpoint ${REGISTRY_PUSH_HOST} -status ${BUILD_TOOLS_STATUS} -secrets-env ${SECRETS_ENV}
+TimeoutStartSec=1h
+Nice=10
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=full
+EOF
+  cat > "$BUILD_TOOLS_TIMER" <<EOF
+[Unit]
+Description=Refresh the Felis build tools and Trivy DBs twice a day
+
+[Timer]
+OnCalendar=*-*-* 04,16:00:00
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now felis-build-tools.timer
+  systemctl start --no-block felis-build-tools.service
+  ok "build tools: kaniko, trivy and the Trivy DBs are being copied into the registry (journalctl -u felis-build-tools); refreshed twice a day"
+}
+
 # The daily database backup. The first run happens now, so a broken pipeline (pg_dump
 # missing, directory unwritable) shows up in this install rather than in the first
 # restore someone needs.
@@ -3426,6 +3470,8 @@ main() {
   # AFTER deploy_bundle: the registry the built images are mirrored into is part
   # of that bundle.
   push_images_to_registry
+  # After deploy_bundle, like the pushes: it writes into the registry.
+  install_build_tools_timer
   restart_existing_system_servers
   # After deploy_bundle: the proxy dials felis-api's internal ClusterIP, which does not
   # exist until the bundle is applied.
