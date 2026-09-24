@@ -5,6 +5,7 @@ the disaster-recovery procedures live. Fault-finding is in
 [troubleshooting.md](troubleshooting.md); this document refers to its sections as §N.
 
 Evidence tags follow troubleshooting.md: **[VM-VERIFIED]** was run on a real host,
+**[CI]** runs end to end on every push to main (`.github/workflows/e2e.yml`),
 **[GO-TESTED]** / **[SH-TESTED]** is covered by `go test` or the shell tests under
 `deploy/`, **[CODE-ONLY]** is what the code does and has not been run end to end.
 
@@ -17,7 +18,7 @@ it installs.
 | OS family | Package manager | Architectures | Status |
 |---|---|---|---|
 | CentOS Stream 9 (firewalld active, PostgreSQL 13) | dnf | aarch64 | **[VM-VERIFIED]** install, same-version rerun, upgrade, uninstall and reinstall |
-| Ubuntu 24.04 LTS | apt | x86_64 | [CODE-ONLY] |
+| Ubuntu 24.04 LTS | apt | x86_64 | **[CI]** fresh install, same-commit rerun, and upgrade from the newest release to the pushed commit |
 | RHEL / Rocky / Alma 9, Fedora | dnf | x86_64, aarch64 | [CODE-ONLY] same code path as CentOS Stream |
 | Debian 12, other Ubuntu releases | apt | x86_64, aarch64 | [CODE-ONLY] |
 | openSUSE Leap / Tumbleweed | zypper | x86_64, aarch64 | [CODE-ONLY] |

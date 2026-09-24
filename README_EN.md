@@ -27,7 +27,10 @@ Table of Contents
 
 ## Getting Started
 
-On a prepared Linux host, run:
+On a prepared Linux host, run (the verified distributions and architectures are listed in
+[operations §1](docs/operations.md#1-supported-hosts): CentOS Stream 9 on aarch64 is verified
+on a real host, and Ubuntu 24.04 on x86_64 gets a fresh install, rerun and upgrade in CI on
+every push):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap.sh | sudo bash

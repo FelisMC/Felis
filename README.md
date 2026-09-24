@@ -27,7 +27,7 @@ A Kubernetes-driven Minecraft server hosting platform — one command to deploy,
 
 ## 使用方式
 
-在准备好的 Linux 主机上执行：
+在准备好的 Linux 主机上执行（已验证的发行版与架构见 [运维手册 §1](docs/operations.md#1-supported-hosts)：CentOS Stream 9 aarch64 实机验证，Ubuntu 24.04 x86_64 每次推送由 CI 跑全新安装、重跑与升级）：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap.sh | sudo bash
