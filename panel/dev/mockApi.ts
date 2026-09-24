@@ -721,6 +721,29 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
 
 async function handleSession(ctx: SessionContext): Promise<boolean> {
   switch (route(ctx)) {
+    case "GET platform/db-backup": {
+      if (!isAdmin(ctx.account.role)) {
+        sendError(ctx.res, 403, "forbidden", "admin account required");
+        return true;
+      }
+      // Yesterday's daily run: fresh, so the card shows its healthy state.
+      const at = new Date(Date.now() - 9 * 3600 * 1000);
+      const stamp = at.toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
+      sendJSON(ctx.res, 200, {
+        last: {
+          at: at.toISOString(),
+          name: `felis-db-${stamp}-daily.tar`,
+          label: "daily",
+          size_bytes: 3_482_112,
+          felis_version: "dev",
+          schema_version: 31,
+          dir: "/var/lib/felis/db-backups",
+        },
+        stale: false,
+        max_age_seconds: 26 * 3600,
+      });
+      return true;
+    }
     case "GET updates/window":
       if (!isAdmin(ctx.account.role)) {
         sendError(ctx.res, 403, "forbidden", "admin account required");

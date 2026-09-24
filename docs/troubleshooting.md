@@ -941,7 +941,8 @@ The series come from two processes:
 ### Alert rules
 
 `deploy/alerts/` ships ready-made rules: build failures, slow starts, node
-disk/memory thresholds, and the kubelet `DiskPressure` condition.
+disk/memory thresholds, the kubelet `DiskPressure` condition, and control-plane
+database backup freshness (§16; needs node-exporter's textfile collector).
 
 - Plain Prometheus: add `felis-alerts.yaml` to `rule_files`. Check and unit-test
   it standalone with `promtool check rules felis-alerts.yaml` and
@@ -982,6 +983,192 @@ previous ReplicaSet, whose image is normally still on the node; if the image GC
 collected it, the registry re-serves it automatically (§13b) for every tag the
 installer built — only hand-built tags need a manual re-mirror.
 
+`rollout undo` reverts the image only. The upgrade's database migrations stay
+applied; when they are the problem, restore the `pre-migrate` bundle the upgrade
+took (§16, "Roll back an upgrade that broke the database").
+
+## 16. Control-plane database backups and disaster recovery
+
+The PostgreSQL database behind felis-api holds everything that is not a world:
+accounts, passkeys, Minecraft account links, server ownership, quotas, audit
+logs, and the `world_backups` index that maps an archive (§10) back to its
+owner. Losing it orphans every world archive. It lives on the host (not in
+k3s), so it is backed up on the host too.
+
+### What runs, and where the bundles go
+
+- **`felis-db-backup.timer`** runs `felis db backup` daily at
+  `FELIS_DB_BACKUP_TIME` (default `*-*-* 03:30:00`, plus up to 15 min random
+  delay). `Persistent=true` catches up at boot after the host was off at that
+  time. The installer takes the first backup during the install, so a broken
+  pipeline shows up there. [CODE-ONLY; unit and timer content GO-TESTED in
+  `deploy/bootstrap_test.sh`]
+- **Every upgrade** (`felis migrate up`, which the installer runs) takes a
+  `pre-migrate` bundle first when the database already has data and a
+  migration is pending, and **applies nothing** if that backup fails
+  (`pre-migration backup failed, nothing applied`). [GO-TESTED]
+- **Every restore** takes a `pre-restore` bundle of the database it is about to
+  replace (skip with `-no-safety-backup`). [GO-TESTED]
+
+Bundles land in `FELIS_DB_BACKUP_DIR` (default `/var/lib/felis/db-backups`,
+mode 0700; outside `/var/lib/rancher` so a k3s reinstall cannot take them
+along). One bundle is `felis-db-<UTC stamp>-<label>.tar`:
+
+| Member | Content |
+|---|---|
+| `MANIFEST.json` | version, schema version, `pg_dump --version`, sha256 of every member |
+| `db.dump` | `pg_dump --format=custom` of the `felis` database |
+| `state/etc/felis/...` | `secrets.env` (DB password, session/forwarding secrets, registry tokens), `felis.host.toml`, `felis.pod.toml`, the `felis.toml` symlink, the panel TLS pair. `bootstrap.done` is left out on purpose |
+| `k8s/minecraftservers.json` | every MinecraftServer, status and server-side metadata stripped, ready for `kubectl apply` (best effort: when the cluster did not answer, the manifest records why) |
+
+next to a `.sha256` sidecar in `sha256sum` format. **A bundle contains the
+secrets; treat it like `/etc/felis` itself.** Retention per label: `daily` 14
+(`FELIS_DB_BACKUP_KEEP`), `pre-migrate` 10, `pre-restore` 5, `manual` never
+pruned.
+
+Installer knobs: `FELIS_DB_BACKUP_DIR`, `FELIS_DB_BACKUP_KEEP`,
+`FELIS_DB_BACKUP_TIME`, `FELIS_DB_BACKUP_METRICS` and
+`FELIS_PRE_MIGRATE_BACKUP` (below).
+
+### Is the newest backup fresh?
+
+Three places answer, all with the same 26 h limit:
+
+- The panel: **管理 → 维护与备份** shows the newest backup, its kind and size,
+  and turns red with the fix commands when it is missing or overdue (read from
+  the `db_backup_last` platform setting each backup writes).
+- `sudo felis db check` exits 1 with the reason; `sudo felis db list` shows every
+  bundle with its age.
+- Prometheus: `FelisDBBackupStale` (critical) and `FelisDBBackupMetricMissing`
+  (warning) in `deploy/alerts/`. They read
+  `felis_db_backup_last_success_timestamp_seconds`, which each daily run writes
+  to `FELIS_DB_BACKUP_METRICS` (default
+  `/var/lib/node_exporter/textfile_collector/felis_db_backup.prom`). Point
+  node-exporter's `--collector.textfile.directory` at that directory, or
+  `FelisDBBackupMetricMissing` fires after 2 h.
+
+When a backup is overdue:
+
+```
+sudo systemctl status felis-db-backup.timer          # enabled? next run?
+sudo journalctl -u felis-db-backup -n 50 --no-pager   # why the last run failed
+sudo felis db backup                                  # take one now (label manual)
+```
+
+Common failures: PostgreSQL down (`pg_dump: ... connection refused`); the
+backup directory's disk full (the half-written `.partial` is removed and the
+previous bundles stay intact); `pg_dump: server version mismatch` when an
+external database is newer than the host's client tools (install the matching
+`postgresql` client package).
+
+### Check a bundle
+
+```
+sudo felis db verify felis-db-20260924T033012Z-daily.tar   # bare names resolve in the backup dir
+sha256sum -c felis-db-20260924T033012Z-daily.tar.sha256    # on a copy, without felis
+```
+
+`verify` checks the sidecar, every member against the manifest, that nothing
+is missing or unlisted, and that the manifest comes first. It does not touch
+the database.
+
+### Restore on the same host (undo a mistake)
+
+```
+kubectl -n felis scale deployment felis-api felis-operator --replicas=0
+sudo felis db restore -yes felis-db-20260924T033012Z-daily.tar
+sudo felis migrate up -config /etc/felis/felis.host.toml
+kubectl -n felis scale deployment felis-api felis-operator --replicas=1
+```
+
+- Without `-yes`, restore prints what the bundle holds and exits 2.
+- It refuses while other clients are connected (`other clients are connected to the database (N)`)
+  and prints the scale command; `-force` overrides, for a client you know is
+  idle.
+- The replay is one transaction: it drops everything the `felis` role owns and
+  loads the dump. **Any failure rolls back and leaves the database exactly as it
+  was** (`rolled back, the database is unchanged`, with the psql and pg_restore
+  errors). [GO-TESTED]
+- The database before the restore is in the `pre-restore` bundle it names;
+  restoring that one undoes the restore.
+- `migrate up` brings an older bundle's schema up to the running release.
+  Nothing migrates at startup, so skip it only when you are rolling back to the
+  release that wrote the bundle (next section).
+- Restore replaces the database only. World data (PVCs and archives, §10, §13)
+  is not in the bundle and is not touched; a server created after the bundle
+  keeps its PVC but loses its owner row.
+
+### Roll back an upgrade that broke the database
+
+The installer's migrations only roll forward. The `pre-migrate` bundle taken by
+the upgrade is the way back:
+
+```
+kubectl -n felis scale deployment felis-api felis-operator --replicas=0
+sudo felis db list | grep pre-migrate                  # newest one is the upgrade's
+sudo felis db restore -yes <that bundle>
+kubectl -n felis rollout undo deploy/felis-api
+kubectl -n felis rollout undo deploy/felis-operator
+kubectl -n felis scale deployment felis-api felis-operator --replicas=1
+```
+
+Do **not** run `felis migrate up` here: the host binary is already the new
+release and would re-apply the migrations you are rolling back. Re-run the
+older installer version to bring the host binary back in line.
+
+### Rebuild on a new host (the old one is gone)
+
+This needs a bundle that was copied off the old host (next section).
+
+1. Check the copy: `sha256sum -c felis-db-....tar.sha256`.
+2. Put the old host's state in place **before** installing, so the installer
+   reuses the same DB password, session secret and forwarding secret (the
+   Velocity proxy and existing sessions keep working):
+
+   ```
+   sudo install -d -m 0700 /etc/felis
+   sudo tar -xpf felis-db-....tar -C / --strip-components=1 state/etc/felis
+   ```
+
+3. Run the installer as for a first install. `bootstrap.done` is not in the
+   bundle, so it takes the fresh-install path, creates the empty database with
+   the restored password and migrates it.
+4. Restore the database and bring the servers back:
+
+   ```
+   kubectl -n felis scale deployment felis-api felis-operator --replicas=0
+   sudo felis db restore -yes -no-safety-backup /path/to/felis-db-....tar
+   sudo felis migrate up -config /etc/felis/felis.host.toml
+   kubectl -n felis scale deployment felis-api felis-operator --replicas=1
+   tar -xOf felis-db-....tar k8s/minecraftservers.json | kubectl apply -f -
+   ```
+
+5. Worlds come back from their own archives (§10), which are a separate volume
+   and need their own off-host copy. Custom images built on the old host are
+   rebuilt from their submissions (§8), or re-pushed.
+
+### Keep a copy somewhere else
+
+A bundle on the same disk as the database protects against mistakes and bad
+upgrades, not against losing the disk. Copy the directory off the host on a
+schedule of your own, for example from another machine:
+
+```
+rsync -a --delete root@felis-host:/var/lib/felis/db-backups/ /backups/felis-db/
+```
+
+or with `rclone copy /var/lib/felis/db-backups remote:felis-db` from a systemd
+timer on the host. Copy the `.sha256` sidecars too; `sha256sum -c` on the far
+side proves the copy.
+
+### `FELIS_PRE_MIGRATE_BACKUP=0`
+
+Skips the pre-migration snapshot (`migrate up -no-backup`). The installer warns
+loudly when it is set. Use it only when the snapshot cannot work and you have
+another backup, e.g. an external database newer than the host's `pg_dump`.
+
+---
+
 ## Quick reference: symptom → section
 
 | Symptom | Section |
@@ -1007,3 +1194,7 @@ installer built — only hand-built tags need a manual re-mirror.
 | Node out of disk; pods evicted / ImagePullBackOff | §13b |
 | Which metric to scrape | §14 |
 | Upgrade / roll back a bad control-plane image | §15 |
+| Database backup overdue / `FelisDBBackupStale` / panel shows 从未备份 | §16 |
+| `pre-migration backup failed, nothing applied` during an upgrade | §16 |
+| Undo a mistaken change / restore the control-plane database | §16 |
+| Host lost: rebuild from a database bundle | §16 |

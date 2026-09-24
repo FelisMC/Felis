@@ -565,6 +565,9 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// only — the runner/executors that consume the window are still INTEGRATION-ONLY.
 		{Method: "GET", Pattern: "/api/v1/updates/window", Admin: true, h: a.handleGetUpdateWindow},
 		{Method: "PUT", Pattern: "/api/v1/updates/window", Admin: true, h: a.handleSetUpdateWindow},
+		// Control-plane database backup freshness, as the host's felis-db-backup.timer
+		// last recorded it. Admin-tier: it names the host backup directory.
+		{Method: "GET", Pattern: "/api/v1/platform/db-backup", Admin: true, h: a.handleGetDBBackup},
 
 		// User admin (spec §7, owner-only). Every route gates on the admin Zero-Trust
 		// path AND the owner role: listing, mutating, disabling, or deleting users is

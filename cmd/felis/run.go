@@ -11,7 +11,8 @@ Usage:
   felis <command> [flags]
 
 Commands:
-  migrate up        Apply embedded database migrations under an advisory lock
+  migrate up        Apply embedded database migrations under an advisory lock (snapshots the database first)
+  db                Back up, verify, list and restore the control-plane database (backup|restore|verify|list|check)
   operator          Run the MinecraftServer controller-manager
   api               Run the felis-api HTTP server
   nano              Run the Felis-nano hasJoined multiplexer (multi-Yggdrasil, no control plane)
@@ -44,6 +45,7 @@ Run "felis <command> -h" for command-specific flags.
 // subcommand, and listing them would make the table disagree with the command list.
 var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"migrate":          cmdMigrate,
+	"db":               cmdDB,
 	"operator":         cmdOperator,
 	"api":              cmdAPI,
 	"nano":             cmdNano,

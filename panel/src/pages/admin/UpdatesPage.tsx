@@ -13,6 +13,7 @@ import { Loading, ErrorState } from "@/components/States";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { formatAbsolute } from "@/lib/format";
+import { DBBackupCard } from "./DBBackupCard";
 
 function toLocalDatetimeString(dateOrStr: Date | string | null | undefined): string {
   if (!dateOrStr) return "";
@@ -165,6 +166,9 @@ export function UpdatesPage() {
   return (
     <div className="space-y-6">
       <PageHeader icon={Clock} title={t("updates_title")} subtitle={t("updates_subtitle")} />
+
+      {/* Control-plane database backup freshness (read-only, host timer) */}
+      <DBBackupCard />
 
       {/* Stats Cards Row */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">

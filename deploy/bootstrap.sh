@@ -140,6 +140,19 @@ FELIS_ARCHIVE_LOCAL_PATH="${FELIS_ARCHIVE_LOCAL_PATH:-/var/lib/felis/archives}"
 # from its volumeName. Left unset, no reaper CronJob renders and archives accumulate until
 # the backup PVC fills (then backups fail loudly; nothing is deleted).
 FELIS_WORLDS_HOST_PATH="${FELIS_WORLDS_HOST_PATH:-}"
+# Control-plane database backups (felis db backup): a daily timer bundles pg_dump with the
+# /etc/felis state a rebuild needs, and every upgrade that has migrations to apply snapshots
+# the database first (felis migrate up). The directory sits outside /var/lib/rancher on
+# purpose: reinstalling k3s must not take the database backups with it. Copy it off the
+# host for anything beyond "undo a bad upgrade or a mistaken delete" (troubleshooting §16).
+FELIS_DB_BACKUP_DIR="${FELIS_DB_BACKUP_DIR:-/var/lib/felis/db-backups}"
+FELIS_DB_BACKUP_KEEP="${FELIS_DB_BACKUP_KEEP:-14}"
+FELIS_DB_BACKUP_TIME="${FELIS_DB_BACKUP_TIME:-*-*-* 03:30:00}"
+# node-exporter textfile collector target; FelisDBBackupStale (deploy/alerts) reads it.
+FELIS_DB_BACKUP_METRICS="${FELIS_DB_BACKUP_METRICS:-/var/lib/node_exporter/textfile_collector/felis_db_backup.prom}"
+# 0 migrates without the pre-migration snapshot, e.g. against an external database newer
+# than this host's pg_dump. The upgrade stops if the snapshot fails and this is not set.
+FELIS_PRE_MIGRATE_BACKUP="${FELIS_PRE_MIGRATE_BACKUP:-1}"
 INSTALL_MODE="${FELIS_INSTALL_MODE:-}"
 # Loopback by default: hasJoined is an unauthenticated endpoint by protocol (Velocity
 # sends no token), so a public bind is a free auth relay — anyone can point their own
@@ -237,6 +250,8 @@ HOST_BIN="/usr/local/bin/felis"
 # version sits here, and an operator's Go at the conventional path is not ours to swap.
 GOROOT_DIR="/opt/felis/go"
 NANO_SERVICE="/etc/systemd/system/felis-nano.service"
+DB_BACKUP_SERVICE="/etc/systemd/system/felis-db-backup.service"
+DB_BACKUP_TIMER="/etc/systemd/system/felis-db-backup.timer"
 VELOCITY_DIR="/opt/felis/velocity"
 VELOCITY_USER="felis-velocity"
 VELOCITY_SERVICE="/etc/systemd/system/felis-velocity.service"
@@ -2364,11 +2379,60 @@ ensure_default_config() {
 # 8. Migrate + deploy bundle
 # ---------------------------------------------------------------------------
 run_migrations() {
+  local backup_flags=(-backup-dir "$FELIS_DB_BACKUP_DIR")
   write_felis_toml "${STATE_DIR}/felis.host.toml" "127.0.0.1"
   ensure_default_config
+  if [ "$FELIS_PRE_MIGRATE_BACKUP" = 0 ]; then
+    warn "FELIS_PRE_MIGRATE_BACKUP=0: pending migrations run without a database snapshot"
+    backup_flags=(-no-backup)
+  fi
+  # Migrations only roll forward. On an existing database with migrations pending, the
+  # binary bundles the database into FELIS_DB_BACKUP_DIR first and refuses to migrate
+  # if that fails; a fresh database has nothing to protect and is migrated directly.
   log "running database migrations (host binary -> 127.0.0.1)"
-  "$HOST_BIN" migrate up -config "${STATE_DIR}/felis.host.toml"
+  "$HOST_BIN" migrate up -config "${STATE_DIR}/felis.host.toml" "${backup_flags[@]}"
   ok "migrations applied"
+}
+
+# The daily database backup. The first run happens now, so a broken pipeline (pg_dump
+# missing, directory unwritable) shows up in this install rather than in the first
+# restore someone needs.
+install_db_backup_timer() {
+  install -d -m 0700 "$FELIS_DB_BACKUP_DIR"
+  cat > "$DB_BACKUP_SERVICE" <<EOF
+[Unit]
+Description=Felis control-plane database backup (pg_dump + /etc/felis state)
+After=postgresql.service k3s.service
+Wants=postgresql.service
+
+[Service]
+Type=oneshot
+ExecStart=${HOST_BIN} db backup -config ${STATE_DIR}/felis.host.toml -dir ${FELIS_DB_BACKUP_DIR} -label daily -keep ${FELIS_DB_BACKUP_KEEP} -metrics-file ${FELIS_DB_BACKUP_METRICS}
+Nice=10
+IOSchedulingClass=idle
+PrivateTmp=yes
+NoNewPrivileges=yes
+EOF
+  cat > "$DB_BACKUP_TIMER" <<EOF
+[Unit]
+Description=Daily Felis control-plane database backup
+
+[Timer]
+OnCalendar=${FELIS_DB_BACKUP_TIME}
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now felis-db-backup.timer
+  if systemctl start felis-db-backup.service; then
+    ok "database backups: daily at ${FELIS_DB_BACKUP_TIME}, newest ${FELIS_DB_BACKUP_KEEP} kept in ${FELIS_DB_BACKUP_DIR} (first one taken now)"
+  else
+    journalctl -u felis-db-backup.service -n 20 --no-pager >&2 || true
+    warn "the first database backup failed (log above); fix it before relying on the daily timer: sudo systemctl start felis-db-backup.service"
+  fi
 }
 
 deploy_bundle() {
@@ -2970,6 +3034,8 @@ main() {
   # After deploy_bundle: the proxy dials felis-api's internal ClusterIP, which does not
   # exist until the bundle is applied.
   install_velocity
+  # After deploy_bundle: the bundle's MinecraftServer export reads the cluster.
+  install_db_backup_timer
   mark_bootstrap_done
   summary
 }

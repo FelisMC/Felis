@@ -289,6 +289,28 @@ export interface UpdateWindow {
   end: string | null;
 }
 
+// ---- Control-plane database backup (internal/api/handlers_dbbackup.go dbBackupView) ----
+
+export type DBBackupLabel = "daily" | "pre-migrate" | "pre-restore" | "manual";
+
+export interface DBBackupRecord {
+  at: string;
+  name: string;
+  label: DBBackupLabel;
+  size_bytes: number;
+  felis_version?: string;
+  schema_version?: number;
+  dir: string;
+}
+
+export interface DBBackupStatus {
+  /** Null until the host has recorded its first backup. */
+  last: DBBackupRecord | null;
+  /** True when there is no record or it is older than max_age_seconds. */
+  stale: boolean;
+  max_age_seconds: number;
+}
+
 // ---- User admin types (internal/api/repo.go UserView, UserDetail, QuotaView, SessionView) ----
 
 export interface UserView {

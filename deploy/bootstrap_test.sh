@@ -1017,6 +1017,70 @@ fi
 
 rm -f "$fnfile"
 
+# --- database backups: the pre-migration snapshot and the daily timer --------------------
+# Migrations only roll forward, so an upgrade must hand `migrate up` the snapshot directory,
+# and only an explicit FELIS_PRE_MIGRATE_BACKUP=0 may take that away.
+
+mblock="$(awk '/^run_migrations\(\) \{/,/^}/' "$BS")"
+[ -n "$mblock" ] || { echo "FAIL: no run_migrations found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$mblock" | wc -l)" -lt 30 ] \
+  || { echo "FAIL: the extracted block is not run_migrations -- did its closing brace move?"; exit 1; }
+
+run_migrate() { # FELIS_PRE_MIGRATE_BACKUP
+  FELIS_PRE_MIGRATE_BACKUP="$1" FELIS_DB_BACKUP_DIR=/var/lib/felis/db-backups STATE_DIR=/etc/felis \
+    HOST_BIN=fakefelis bash -c '
+    log() { :; }; ok() { :; }; warn() { printf "WARN: %s\n" "$*"; }
+    write_felis_toml() { :; }; ensure_default_config() { :; }
+    fakefelis() { printf "RUN: %s\n" "$*"; }
+    '"$mblock"'
+    run_migrations' 2>&1
+}
+
+out="$(run_migrate 1)"
+expect "an upgrade snapshots into the backup dir" "RUN: migrate up -config /etc/felis/felis.host.toml -backup-dir /var/lib/felis/db-backups" "$out"
+out="$(run_migrate 0)"
+expect "FELIS_PRE_MIGRATE_BACKUP=0 opts out explicitly" "RUN: migrate up -config /etc/felis/felis.host.toml -no-backup" "$out"
+expect "the opt-out is loud" "WARN: FELIS_PRE_MIGRATE_BACKUP=0" "$out"
+
+tblock="$(awk '/^install_db_backup_timer\(\) \{/,/^}/' "$BS")"
+[ -n "$tblock" ] || { echo "FAIL: no install_db_backup_timer found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$tblock" | wc -l)" -lt 60 ] \
+  || { echo "FAIL: the extracted block is not install_db_backup_timer -- did its closing brace move?"; exit 1; }
+
+tdir="$(mktemp -d)"
+run_timer() { # exit status of the first backup
+  FIRST="$1" DB_BACKUP_SERVICE="$tdir/felis-db-backup.service" DB_BACKUP_TIMER="$tdir/felis-db-backup.timer" \
+    FELIS_DB_BACKUP_DIR="$tdir/db-backups" FELIS_DB_BACKUP_KEEP=7 FELIS_DB_BACKUP_TIME='*-*-* 04:00:00' \
+    FELIS_DB_BACKUP_METRICS=/var/lib/node_exporter/textfile_collector/felis_db_backup.prom \
+    HOST_BIN=/usr/local/bin/felis STATE_DIR=/etc/felis bash -c '
+    ok() { printf "OK: %s\n" "$*"; }; warn() { printf "WARN: %s\n" "$*"; }
+    systemctl() { printf "SYSTEMCTL: %s\n" "$*"; [ "$1" != start ] || return "$FIRST"; }
+    journalctl() { printf "JOURNAL: pg_dump: connection refused\n"; }
+    '"$tblock"'
+    install_db_backup_timer' 2>&1
+}
+
+out="$(run_timer 0)"
+unit="$(cat "$tdir/felis-db-backup.service")"
+timer="$(cat "$tdir/felis-db-backup.timer")"
+expect "the unit runs a daily-labelled backup with the configured retention" \
+  "ExecStart=/usr/local/bin/felis db backup -config /etc/felis/felis.host.toml -dir $tdir/db-backups -label daily -keep 7 -metrics-file /var/lib/node_exporter/textfile_collector/felis_db_backup.prom" "$unit"
+expect "the timer fires at the configured time" "OnCalendar=*-*-* 04:00:00" "$timer"
+expect "a missed run (host off at 03:30) catches up at boot" "Persistent=true" "$timer"
+expect "the timer is enabled" "SYSTEMCTL: enable --now felis-db-backup.timer" "$out"
+expect "the first backup runs during the install" "SYSTEMCTL: start felis-db-backup.service" "$out"
+expect "a working first backup is reported" "OK: database backups: daily" "$out"
+if [ "$(stat -c %a "$tdir/db-backups" 2>/dev/null || stat -f %Lp "$tdir/db-backups")" = 700 ]; then
+  echo "PASS the backup directory is private"
+else
+  echo "FAIL the backup directory must be 0700"; fails=$((fails + 1))
+fi
+
+out="$(run_timer 1)"
+expect "a failed first backup shows its log" "JOURNAL: pg_dump: connection refused" "$out"
+expect "a failed first backup is a loud warning" "WARN: the first database backup failed" "$out"
+rm -rf "$tdir"
+
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"

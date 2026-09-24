@@ -72,3 +72,29 @@ spec:
             description: >-
               PostgreSQL, the control plane, the registry and game servers share one
               node; sustained memory pressure risks OOM kills.
+    - name: felis.backup.rules
+      rules:
+        - alert: FelisDBBackupStale
+          expr: time() - max(felis_db_backup_last_success_timestamp_seconds) > 26 * 3600
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "no control-plane database backup in over 26h"
+            description: >-
+              felis-db-backup.timer runs daily; the newest bundle is more than a day
+              old. Read `journalctl -u felis-db-backup` on the host, then take one now
+              with `sudo felis db backup` (troubleshooting §16).
+        - alert: FelisDBBackupMetricMissing
+          expr: absent(felis_db_backup_last_success_timestamp_seconds)
+          for: 2h
+          labels:
+            severity: warning
+          annotations:
+            summary: "database backup freshness is not being scraped"
+            description: >-
+              No felis_db_backup_last_success_timestamp_seconds series, so
+              FelisDBBackupStale cannot fire. Point node-exporter's
+              --collector.textfile.directory at the directory of
+              FELIS_DB_BACKUP_METRICS (default /var/lib/node_exporter/textfile_collector)
+              (troubleshooting §16).

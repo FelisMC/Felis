@@ -580,6 +580,19 @@ describe("image whitelist and builds wire shapes", () => {
     });
   });
 
+  describe("control-plane database backup", () => {
+    it("getDBBackup GETs /platform/db-backup and keeps a null last", async () => {
+      const status = { last: null, stale: true, max_age_seconds: 93600 };
+      const fetchSpy = fakeFetch(status);
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.getDBBackup();
+      expect(res).toEqual(status);
+      const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toBe("/platform/db-backup");
+      expect((opts as RequestInit).method).toBe("GET");
+    });
+  });
+
   describe("backup now and server jobs wire shapes", () => {
     it("backupNow POSTs to /servers/{name}/backup with no body and parses the 202", async () => {
       const fetchSpy = fakeFetch({ name: "survival", status: "backing_up" }, { status: 202 });

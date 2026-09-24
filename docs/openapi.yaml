@@ -201,6 +201,49 @@ components:
           nullable: true
           description: Window end (RFC3339, exclusive), or null when unset.
 
+    DBBackupStatus:
+      type: object
+      description: >
+        The newest control-plane database backup the host recorded
+        (internal/api/handlers_dbbackup.go dbBackupView; the record itself is
+        internal/dbbackup Status, written by `felis db backup`).
+      required: [last, stale, max_age_seconds]
+      properties:
+        last:
+          type: object
+          nullable: true
+          description: Null until the first backup has been recorded.
+          required: [at, name, label, size_bytes, dir]
+          properties:
+            at:
+              type: string
+              format: date-time
+              description: When the bundle was written.
+            name:
+              type: string
+              description: Bundle file name, felis-db-<UTC stamp>-<label>.tar.
+            label:
+              type: string
+              enum: [daily, pre-migrate, pre-restore, manual]
+            size_bytes:
+              type: integer
+              format: int64
+            felis_version:
+              type: string
+            schema_version:
+              type: integer
+              description: Newest applied migration at backup time.
+            dir:
+              type: string
+              description: Backup directory on the host.
+        stale:
+          type: boolean
+          description: True when there is no record or it is older than max_age_seconds.
+        max_age_seconds:
+          type: integer
+          format: int64
+          description: The freshness limit (26h), shared with `felis db check` and FelisDBBackupStale.
+
     PasskeyCredential:
       type: object
       description: >
@@ -2719,6 +2762,31 @@ paths:
                 $ref: '#/components/schemas/UpdateWindow'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/platform/db-backup:
+    get:
+      tags: [admin-updates]
+      operationId: getDBBackup
+      summary: Freshness of the newest control-plane database backup (admin).
+      description: >-
+        What the host's felis-db-backup.timer (or a manual `felis db backup`)
+        last recorded in platform_settings. last is null before the first
+        backup; stale is true then, and whenever the newest backup is older than
+        max_age_seconds. Read-only: backups run on the host, never through the API.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ accessJWT: [] }]
+      responses:
+        '200':
+          description: The newest recorded backup and whether it is stale.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DBBackupStatus'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':

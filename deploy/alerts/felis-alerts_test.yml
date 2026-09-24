@@ -105,3 +105,49 @@ tests:
               description: >-
                 PostgreSQL, the control plane, the registry and game servers share one
                 node; sustained memory pressure risks OOM kills.
+  - name: database backup freshness
+    interval: 1m
+    input_series:
+      # The newest bundle was taken at t=0 and none since.
+      - series: 'felis_db_backup_last_success_timestamp_seconds{instance="node1",job="node-exporter",label="daily"}'
+        values: '0x1630'
+    alert_rule_test:
+      - eval_time: 25h
+        alertname: FelisDBBackupStale
+        exp_alerts: []
+      - eval_time: 27h
+        alertname: FelisDBBackupStale
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "no control-plane database backup in over 26h"
+              description: >-
+                felis-db-backup.timer runs daily; the newest bundle is more than a day
+                old. Read `journalctl -u felis-db-backup` on the host, then take one now
+                with `sudo felis db backup` (troubleshooting §16).
+      - eval_time: 27h
+        alertname: FelisDBBackupMetricMissing
+        exp_alerts: []
+  - name: database backup freshness not scraped
+    interval: 1m
+    input_series:
+      - series: 'up{job="node-exporter"}'
+        values: '1x200'
+    alert_rule_test:
+      - eval_time: 1h
+        alertname: FelisDBBackupMetricMissing
+        exp_alerts: []
+      - eval_time: 3h
+        alertname: FelisDBBackupMetricMissing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "database backup freshness is not being scraped"
+              description: >-
+                No felis_db_backup_last_success_timestamp_seconds series, so
+                FelisDBBackupStale cannot fire. Point node-exporter's
+                --collector.textfile.directory at the directory of
+                FELIS_DB_BACKUP_METRICS (default /var/lib/node_exporter/textfile_collector)
+                (troubleshooting §16).
