@@ -157,7 +157,8 @@ func TestDialUnreachable(t *testing.T) {
 }
 
 func TestExecuteGracefulShutdownSequence(t *testing.T) {
-	// Mirrors the operator preStop hook: save then stop.
+	// A save followed by a second command on the same connection: the reply
+	// ids must line up across consecutive Executes.
 	f := startFakeRCON(t, "pw", map[string]string{
 		"save-all flush": "Saved the game",
 		"stop":           "Stopping the server",

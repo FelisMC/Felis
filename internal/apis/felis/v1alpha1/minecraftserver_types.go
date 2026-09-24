@@ -197,13 +197,12 @@ type StorageSpec struct {
 	StorageClassName string `json:"storageClassName,omitempty"`
 }
 
-// LifecycleSpec tunes graceful shutdown (spec §7). The operator injects a
-// preStop RCON "save-all flush; stop" hook when PreStopSaveAndStop is set.
+// LifecycleSpec tunes graceful shutdown (spec §7). Before scaling a server with
+// RCON to zero the operator runs "save-all flush" over RCON; the grace period is
+// then the time the server has to finish its own shutdown save after SIGTERM.
 type LifecycleSpec struct {
 	// TerminationGracePeriodSeconds is the pod grace period (default 300).
 	TerminationGracePeriodSeconds int64 `json:"terminationGracePeriodSeconds,omitempty"`
-	// PreStopSaveAndStop enables the operator-injected RCON save+stop preStop.
-	PreStopSaveAndStop bool `json:"preStopSaveAndStop,omitempty"`
 }
 
 // StartupSpec bounds the Starting phase (spec §5).

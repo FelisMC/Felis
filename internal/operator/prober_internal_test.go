@@ -1,6 +1,13 @@
 package operator
 
-import "testing"
+import (
+	"context"
+	"encoding/binary"
+	"io"
+	"net"
+	"testing"
+	"time"
+)
 
 func TestParseListReply(t *testing.T) {
 	cases := []struct {
@@ -80,5 +87,75 @@ func TestParseListReply(t *testing.T) {
 				t.Errorf("count = %+v, want %+v", got, tc.want)
 			}
 		})
+	}
+}
+
+// serveFakeRcon accepts one RCON connection, accepts any password, and answers
+// each command after delay. Every command body is sent on the returned channel.
+func serveFakeRcon(t *testing.T, delay time.Duration) (string, <-chan string) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	cmds := make(chan string, 4)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for {
+			var hdr [12]byte
+			if _, err := io.ReadFull(conn, hdr[:]); err != nil {
+				return
+			}
+			size := int32(binary.LittleEndian.Uint32(hdr[0:]))
+			id := int32(binary.LittleEndian.Uint32(hdr[4:]))
+			typ := int32(binary.LittleEndian.Uint32(hdr[8:]))
+			rest := make([]byte, size-8)
+			if _, err := io.ReadFull(conn, rest); err != nil {
+				return
+			}
+			reply := ""
+			if typ == 3 { // auth: answer with an auth response carrying the same id
+				typ = 2
+			} else {
+				cmds <- string(rest[:len(rest)-2])
+				time.Sleep(delay)
+				typ, reply = 0, "Saved the game"
+			}
+			out := binary.LittleEndian.AppendUint32(nil, uint32(4+4+len(reply)+2))
+			out = binary.LittleEndian.AppendUint32(out, uint32(id))
+			out = binary.LittleEndian.AppendUint32(out, uint32(typ))
+			out = append(append(out, reply...), 0, 0)
+			if _, err := conn.Write(out); err != nil {
+				return
+			}
+		}
+	}()
+	return ln.Addr().String(), cmds
+}
+
+func TestRconProberSaveFlushes(t *testing.T) {
+	addr, cmds := serveFakeRcon(t, 0)
+	if err := (RconProber{}).Save(context.Background(), addr, "pw"); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if got := <-cmds; got != "save-all flush" {
+		t.Errorf("command = %q, want save-all flush", got)
+	}
+}
+
+func TestRconProberSaveTimesOut(t *testing.T) {
+	addr, _ := serveFakeRcon(t, time.Second)
+	start := time.Now()
+	err := (RconProber{SaveTimeout: 100 * time.Millisecond}).Save(context.Background(), addr, "pw")
+	if err == nil {
+		t.Fatal("Save returned nil for a reply slower than SaveTimeout")
+	}
+	if elapsed := time.Since(start); elapsed > 900*time.Millisecond {
+		t.Errorf("Save took %v, want it bounded by SaveTimeout", elapsed)
 	}
 }

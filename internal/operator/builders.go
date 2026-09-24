@@ -108,18 +108,6 @@ func rconAddress(server *v1alpha1.MinecraftServer) string {
 	return fmt.Sprintf("%s.%s.svc.cluster.local:%d", server.Name, server.Namespace, rconPort(server))
 }
 
-// preStopScript is the operator-injected graceful-shutdown sequence (spec §7):
-// flush the world, then stop the server, both over RCON. It relies on rcon-cli
-// being present in the Felis base image and reading the RCON_* env injected
-// alongside it.
-func preStopScript(server *v1alpha1.MinecraftServer) string {
-	port := rconPort(server)
-	return fmt.Sprintf(
-		`rcon-cli --port %d --password "$RCON_PASSWORD" save-all flush; rcon-cli --port %d --password "$RCON_PASSWORD" stop`,
-		port, port,
-	)
-}
-
 // buildHeadlessService backs the StatefulSet's stable network identity.
 func buildHeadlessService(server *v1alpha1.MinecraftServer) *corev1.Service {
 	svc := &corev1.Service{
@@ -198,9 +186,10 @@ func readinessProbe(server *v1alpha1.MinecraftServer) *corev1.Probe {
 	return probe
 }
 
-// buildStatefulSet renders the workload for replicas in {0,1}. It is where
-// graceful shutdown is injected: the pod gets terminationGracePeriodSeconds and
-// (when enabled) a preStop RCON save+stop hook.
+// buildStatefulSet renders the workload for replicas in {0,1}. Its half of
+// graceful shutdown is terminationGracePeriodSeconds, the time the server gets to
+// save on SIGTERM; the reconciler flushes the world over RCON before it scales to
+// zero (saveBeforeStop).
 func buildStatefulSet(server *v1alpha1.MinecraftServer, replicas int32, felisImage string) (*appsv1.StatefulSet, error) {
 	storageSize := server.Spec.Storage.Size
 	if storageSize == "" {
@@ -245,15 +234,6 @@ func buildStatefulSet(server *v1alpha1.MinecraftServer, replicas int32, felisIma
 		container.Ports = append(container.Ports, corev1.ContainerPort{
 			Name: "rcon", ContainerPort: rconPort(server), Protocol: corev1.ProtocolTCP,
 		})
-		if server.Spec.Lifecycle.PreStopSaveAndStop {
-			container.Lifecycle = &corev1.Lifecycle{
-				PreStop: &corev1.LifecycleHandler{
-					Exec: &corev1.ExecAction{
-						Command: []string{"/bin/sh", "-c", preStopScript(server)},
-					},
-				},
-			}
-		}
 	}
 
 	// Every server first hands its world volume to the game uid (prepareDataInitContainer),

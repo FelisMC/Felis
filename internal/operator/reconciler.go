@@ -1,7 +1,8 @@
 // Package operator reconciles MinecraftServer objects (spec §4, §5, §7). The
 // CRD is the lifecycle source-of-truth; this controller renders the
-// StatefulSet/Service/PVC from it, gates readiness on an RCON probe, and injects
-// graceful shutdown. It never reads or writes business-layer (Postgres) fields.
+// StatefulSet/Service/PVC from it, gates readiness on an RCON probe, and flushes
+// the world over RCON before scaling a server down. It never reads or writes
+// business-layer (Postgres) fields.
 package operator
 
 import (
@@ -25,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
@@ -96,8 +98,16 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		// and a watch is what lets a deleted Secret be noticed at all (a quiet
 		// Running server otherwise produces no events).
 		Owns(&corev1.Secret{}).
+		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		Complete(r)
 }
+
+// maxConcurrentReconciles lets that many servers reconcile at once. A reconcile
+// blocks on RCON (up to 5s for a probe, and up to defaultSaveTimeout for the
+// save ahead of a stop), so with controller-runtime's default of one, a single
+// large world saving would stall every other server's start, stop and readiness.
+// The same server is never reconciled twice at once regardless.
+const maxConcurrentReconciles = 4
 
 // Reconcile drives a single MinecraftServer toward spec.desiredState.
 func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -302,8 +312,11 @@ func (r *Reconciler) reconcileStopped(ctx context.Context, server *v1alpha1.Mine
 		return ctrl.Result{}, err
 	}
 
-	// Scaling to zero triggers each pod's preStop RCON save+stop (spec §7).
+	// Graceful shutdown (spec §7): flush the world over RCON, then scale to zero,
+	// which sends the server SIGTERM and so its own shutdown save within the
+	// grace period.
 	if sts.Spec.Replicas == nil || *sts.Spec.Replicas != 0 {
+		r.saveBeforeStop(ctx, server, &sts)
 		zero := int32(0)
 		sts.Spec.Replicas = &zero
 		if err := r.Update(ctx, &sts); err != nil {
@@ -321,6 +334,37 @@ func (r *Reconciler) reconcileStopped(ctx context.Context, server *v1alpha1.Mine
 
 	r.markStopped(server)
 	return ctrl.Result{}, r.patchStatus(ctx, server)
+}
+
+// saveBeforeStop runs `save-all flush` on a server that is about to be scaled to
+// zero. The SIGTERM that follows makes the server save again on its way out, but
+// that save races the grace period: a large world killed mid-save rolls back to
+// whatever was last flushed. Flushing first leaves the shutdown save with almost
+// nothing to write.
+//
+// It is best-effort and never holds up the stop. A server without RCON, or with no
+// ready pod (still booting, or already terminating), has nothing to flush it with,
+// and a failed save still leaves the shutdown save; holding a stop the user asked
+// for over it would only keep the server up. A conflict on the Update that follows
+// re-runs it on the next reconcile, which is harmless: a second flush right after
+// the first writes nothing.
+func (r *Reconciler) saveBeforeStop(ctx context.Context, server *v1alpha1.MinecraftServer, sts *appsv1.StatefulSet) {
+	if !server.Spec.Rcon.Enabled || sts.Status.ReadyReplicas == 0 {
+		return
+	}
+	logger := ctrl.LoggerFrom(ctx)
+	password, err := r.rconPassword(ctx, server)
+	if err != nil {
+		logger.Info("skipping pre-stop world save: RCON password unavailable", "error", err.Error())
+		return
+	}
+	start := time.Now()
+	if err := r.Prober.Save(ctx, rconAddress(server), password); err != nil {
+		logger.Info("pre-stop world save failed; stopping anyway, the server saves again on SIGTERM",
+			"error", err.Error(), "elapsed", time.Since(start).Round(time.Millisecond).String())
+		return
+	}
+	logger.Info("pre-stop world save done", "elapsed", time.Since(start).Round(time.Millisecond).String())
 }
 
 // maintenanceHold reports whether a restore, backup or file write holds the

@@ -20,21 +20,52 @@ type PlayerCount struct {
 	Known  bool
 }
 
-// Prober reports whether a server's RCON endpoint is reachable and accepts the
-// password, and best-effort returns its current player tally. A nil error is the
-// loader-agnostic readiness gate (spec §5); the PlayerCount is advisory and has
-// Known=false (with a nil error) whenever the tally could not be sampled. It is an
-// interface so the reconciler can be tested without a live server.
+// Prober is the operator's RCON channel into a running server. It is an interface
+// so the reconciler can be tested without a live server.
+//
+// Probe reports whether the endpoint is reachable and accepts the password, and
+// best-effort returns the current player tally. A nil error is the loader-agnostic
+// readiness gate (spec §5); the PlayerCount is advisory and has Known=false (with
+// a nil error) whenever the tally could not be sampled.
+//
+// Save flushes the world to disk (`save-all flush`) and returns once the server
+// has answered, i.e. once the save is done. The reconciler runs it right before
+// scaling a server to zero (spec §7).
 type Prober interface {
 	Probe(ctx context.Context, addr, password string) (PlayerCount, error)
+	Save(ctx context.Context, addr, password string) error
 }
 
 // RconProber is the production Prober: a successful Dial (TCP connect + auth)
 // is the readiness gate; on that same connection it then runs `list` to sample
 // the player tally before closing.
 type RconProber struct {
-	// Timeout bounds a single probe. Defaults to 5s.
+	// Timeout bounds a single probe, and the connect+auth step of a save.
+	// Defaults to 5s.
 	Timeout time.Duration
+	// SaveTimeout bounds the wait for `save-all flush` to answer. Defaults to
+	// defaultSaveTimeout.
+	SaveTimeout time.Duration
+}
+
+// defaultSaveTimeout is how long a stop waits for the pre-stop save. The server
+// answers `save-all flush` only after every loaded chunk is written, which takes
+// seconds on a large world. Past this the stop goes ahead anyway: SIGTERM runs the
+// server's own shutdown save within the pod's grace period, so the explicit save
+// only moves most of that work ahead of the kill deadline.
+const defaultSaveTimeout = 30 * time.Second
+
+// boundTimeout returns d (or def when d is unset), shortened to ctx's deadline.
+func boundTimeout(ctx context.Context, d, def time.Duration) time.Duration {
+	if d <= 0 {
+		d = def
+	}
+	if dl, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(dl); remaining > 0 && remaining < d {
+			d = remaining
+		}
+	}
+	return d
 }
 
 // Probe dials addr and authenticates with password, honoring the smaller of the
@@ -43,15 +74,7 @@ type RconProber struct {
 // a failed or unparseable `list` yields an unknown PlayerCount, never a probe error,
 // so a transient count-read hiccup can never flap a healthy server out of Ready.
 func (p RconProber) Probe(ctx context.Context, addr, password string) (PlayerCount, error) {
-	timeout := p.Timeout
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
-	if dl, ok := ctx.Deadline(); ok {
-		if remaining := time.Until(dl); remaining > 0 && remaining < timeout {
-			timeout = remaining
-		}
-	}
+	timeout := boundTimeout(ctx, p.Timeout, 5*time.Second)
 	conn, err := rcon.Dial(addr, password, timeout)
 	if err != nil {
 		return PlayerCount{}, err
@@ -69,6 +92,22 @@ func (p RconProber) Probe(ctx context.Context, addr, password string) (PlayerCou
 	}
 	pc, _ := parseListReply(reply)
 	return pc, nil
+}
+
+// Save runs `save-all flush` and waits for its reply. The reply text is not
+// checked: vanilla, Paper and the modded loaders word it differently, and any
+// reply at all means the command ran to completion on the server thread.
+func (p RconProber) Save(ctx context.Context, addr, password string) error {
+	conn, err := rcon.Dial(addr, password, boundTimeout(ctx, p.Timeout, 5*time.Second))
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(boundTimeout(ctx, p.SaveTimeout, defaultSaveTimeout))); err != nil {
+		return err
+	}
+	_, err = conn.Execute("save-all flush")
+	return err
 }
 
 // listReplyPatterns match the `list` replies of the loaders Felis runs, tried in

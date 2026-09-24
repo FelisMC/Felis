@@ -3,8 +3,8 @@
 // The operator uses it for two purposes:
 //   - Readiness probing: a successful Dial (TCP connect + auth) is the
 //     loader-agnostic "RCON 探通" gate. A status ping is never sufficient.
-//   - Graceful shutdown: Execute("save-all flush") then Execute("stop") from
-//     the operator-injected preStop hook.
+//   - Graceful shutdown: Execute("save-all flush") right before the operator
+//     scales a server to zero.
 //
 // Multi-packet responses (a single command whose reply exceeds one ~4 KiB
 // packet) are not reassembled; Phase-1 commands ("list", "save-all", "stop")

@@ -256,7 +256,7 @@ What holds the world, in order:
    ```
 
 A restore, backup or file write refused with `409 not_stopped` although the
-panel shows `Stopped` means the game pod is still terminating (its preStop save
+panel shows `Stopped` means the game pod is still terminating (its shutdown save
 can take a while); retry once `kubectl -n minecraft get pods -l
 felis.lolicon.best/server=<name>` shows nothing.
 

@@ -123,10 +123,6 @@ spec:
               lifecycle:
                 description: Lifecycle tunes graceful shutdown (spec §7).
                 properties:
-                  preStopSaveAndStop:
-                    description: PreStopSaveAndStop enables the operator-injected
-                      RCON save+stop preStop.
-                    type: boolean
                   terminationGracePeriodSeconds:
                     description: TerminationGracePeriodSeconds is the pod grace period
                       (default 300).

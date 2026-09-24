@@ -3,6 +3,7 @@ package operator_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -27,10 +28,20 @@ import (
 type fakeProber struct {
 	err     error
 	players operator.PlayerCount
+	saveErr error
+	// saves, when set, records each Save's address.
+	saves *[]string
 }
 
 func (f fakeProber) Probe(context.Context, string, string) (operator.PlayerCount, error) {
 	return f.players, f.err
+}
+
+func (f fakeProber) Save(_ context.Context, addr, _ string) error {
+	if f.saves != nil {
+		*f.saves = append(*f.saves, addr)
+	}
+	return f.saveErr
 }
 
 func newScheme(t *testing.T) *runtime.Scheme {
@@ -61,7 +72,6 @@ func runningServer() *v1alpha1.MinecraftServer {
 			Storage:        v1alpha1.StorageSpec{Size: "10Gi"},
 			FallbackServer: "lobby",
 			Motd:           v1alpha1.MotdSpec{Running: "up", Stopped: "down", Starting: "booting"},
-			Lifecycle:      v1alpha1.LifecycleSpec{PreStopSaveAndStop: true},
 			Rcon: v1alpha1.RconSpec{
 				Enabled:   true,
 				Port:      25575,
@@ -171,18 +181,16 @@ func TestReconcileRunning_CreatesWorkloadAndInjectsGracefulShutdown(t *testing.T
 		t.Errorf("headless service ClusterIP = %q, want None", hl.Spec.ClusterIP)
 	}
 
-	// StatefulSet exists with graceful-shutdown injection.
+	// StatefulSet exists with the shutdown grace period. The pre-stop save runs
+	// from the operator over RCON, so the pod carries no preStop hook (none of the
+	// game images ship an RCON client to run one with).
 	sts := getSTS(t, c, "survival")
 	if got := sts.Spec.Template.Spec.TerminationGracePeriodSeconds; got == nil || *got != 300 {
 		t.Errorf("terminationGracePeriodSeconds = %v, want 300", got)
 	}
 	container := sts.Spec.Template.Spec.Containers[0]
-	if container.Lifecycle == nil || container.Lifecycle.PreStop == nil || container.Lifecycle.PreStop.Exec == nil {
-		t.Fatal("expected preStop exec hook to be injected")
-	}
-	preStop := strings.Join(container.Lifecycle.PreStop.Exec.Command, " ")
-	if !strings.Contains(preStop, "save-all flush") || !strings.Contains(preStop, "stop") {
-		t.Errorf("preStop hook missing save/stop sequence: %q", preStop)
+	if container.Lifecycle != nil {
+		t.Errorf("container lifecycle = %+v, want none", container.Lifecycle)
 	}
 	// RCON password is sourced from the Secret, never inlined.
 	var sawRconPassword bool
@@ -325,6 +333,93 @@ func TestReconcileStopped_ScalesRunningWorkloadDown(t *testing.T) {
 	if sts.Spec.Replicas == nil || *sts.Spec.Replicas != 0 {
 		t.Errorf("replicas = %v, want 0 after stop", sts.Spec.Replicas)
 	}
+}
+
+// stopRunningServer takes survival to Running with a ready pod, then flips it to
+// Stopped and reconciles once.
+func stopRunningServer(t *testing.T, r *operator.Reconciler, c client.Client) {
+	t.Helper()
+	reconcile(t, r, "survival")
+	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival")
+	server := getServer(t, c, "survival")
+	server.Spec.DesiredState = v1alpha1.DesiredStopped
+	if err := c.Update(context.Background(), server); err != nil {
+		t.Fatalf("flip desiredState: %v", err)
+	}
+	reconcile(t, r, "survival")
+}
+
+func TestReconcileStopped_SavesBeforeScalingDown(t *testing.T) {
+	var saves []string
+	r, c := newReconciler(t, fakeProber{saves: &saves}, runningServer(), rconSecret())
+
+	stopRunningServer(t, r, c)
+
+	if want := []string{"survival.minecraft.svc.cluster.local:25575"}; !slices.Equal(saves, want) {
+		t.Errorf("saves = %v, want %v", saves, want)
+	}
+	if sts := getSTS(t, c, "survival"); sts.Spec.Replicas == nil || *sts.Spec.Replicas != 0 {
+		t.Errorf("replicas = %v, want 0 after stop", sts.Spec.Replicas)
+	}
+
+	// Once scaled to zero the next reconcile only waits for the pod to go; it
+	// does not flush again.
+	reconcile(t, r, "survival")
+	if len(saves) != 1 {
+		t.Errorf("saves after second reconcile = %d, want 1", len(saves))
+	}
+}
+
+func TestReconcileStopped_FailedSaveStillStops(t *testing.T) {
+	var saves []string
+	prober := fakeProber{saves: &saves, saveErr: errors.New("i/o timeout")}
+	r, c := newReconciler(t, prober, runningServer(), rconSecret())
+
+	stopRunningServer(t, r, c)
+
+	if len(saves) != 1 {
+		t.Fatalf("saves = %d, want 1 attempt", len(saves))
+	}
+	if sts := getSTS(t, c, "survival"); sts.Spec.Replicas == nil || *sts.Spec.Replicas != 0 {
+		t.Errorf("replicas = %v, want 0: a failed save must not hold the stop", sts.Spec.Replicas)
+	}
+	if server := getServer(t, c, "survival"); server.Status.Phase != v1alpha1.PhaseStopping {
+		t.Errorf("phase = %s, want Stopping", server.Status.Phase)
+	}
+}
+
+func TestReconcileStopped_SkipsSaveWithoutReadyPodOrRcon(t *testing.T) {
+	t.Run("pod not ready", func(t *testing.T) {
+		var saves []string
+		r, c := newReconciler(t, fakeProber{saves: &saves}, runningServer(), rconSecret())
+		reconcile(t, r, "survival") // StatefulSet at replicas=1, pod never ready
+		server := getServer(t, c, "survival")
+		server.Spec.DesiredState = v1alpha1.DesiredStopped
+		if err := c.Update(context.Background(), server); err != nil {
+			t.Fatalf("flip desiredState: %v", err)
+		}
+		reconcile(t, r, "survival")
+		if len(saves) != 0 {
+			t.Errorf("saves = %v, want none for a pod that never became ready", saves)
+		}
+		if sts := getSTS(t, c, "survival"); sts.Spec.Replicas == nil || *sts.Spec.Replicas != 0 {
+			t.Errorf("replicas = %v, want 0", sts.Spec.Replicas)
+		}
+	})
+	t.Run("rcon disabled", func(t *testing.T) {
+		var saves []string
+		s := runningServer()
+		s.Spec.Rcon = v1alpha1.RconSpec{}
+		r, c := newReconciler(t, fakeProber{saves: &saves}, s)
+		stopRunningServer(t, r, c)
+		if len(saves) != 0 {
+			t.Errorf("saves = %v, want none without RCON", saves)
+		}
+		if sts := getSTS(t, c, "survival"); sts.Spec.Replicas == nil || *sts.Spec.Replicas != 0 {
+			t.Errorf("replicas = %v, want 0", sts.Spec.Replicas)
+		}
+	})
 }
 
 // --- idle auto-stop tests (spec §8) ---------------------------------------
