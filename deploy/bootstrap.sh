@@ -49,13 +49,20 @@
 #   FELIS_GO_VERSION  Go toolchain used to build the nano binary (default: 1.26.4)
 #   FELIS_GO_SHA256   sha256 of that version's linux tarball for this host's architecture.
 #                     REQUIRED for a non-default FELIS_GO_VERSION; the default's is pinned.
+#   FELIS_K3S_VERSION k3s release a fresh install gets (default: v1.36.4+k3s1). An
+#                     installed k3s is left alone.
+#   FELIS_CLOUDFLARED_VERSION / FELIS_CLOUDFLARED_SHA256 cloudflared release installed
+#                     when none is present (default: 2026.9.1, digests pinned); the
+#                     sha256 is REQUIRED for any other version
 #   FELIS_REPO_URL    git URL to build from   (raw script mode only)
 #   FELIS_VERSION_BOOTSTRAP release|dev — which version to install (default: release).
 #                     release DOWNLOADS the prebuilt felis binary published for the newest
 #                     tag (panel included — it is go:embed'ed into that same binary) and
 #                     builds only a thin image around it; dev clones and compiles. If the
 #                     asset is missing or this architecture has none, release warns and falls
-#                     back to compiling the SAME tag. The game stack is always built here.
+#                     back to compiling the SAME tag. The downloaded binary must match
+#                     the release's SHA256SUMS before it is run; a release without one
+#                     is compiled from source too. The game stack is always built here.
 #   FELIS_GITHUB_TOKEN GitHub token; REQUIRED while the repo is private
 #   FELIS_REF         branch/tag/sha — pins the build, overrides the channel, and forces a
 #                     source build (naming a ref asks for that tree, not a published asset)
@@ -197,6 +204,24 @@ GO_PINNED_SHA256_AMD64="1153d3d50e0ac764b447adfe05c2bcf08e889d42a02e0fe0259bd47f
 GO_PINNED_SHA256_ARM64="ef758ae7c6cf9267c9c0ef080b8965f453d89ab2d25d9eb22de4405925238768"
 FELIS_GO_VERSION="${FELIS_GO_VERSION:-$GO_PINNED_VERSION}"
 FELIS_GO_SHA256="${FELIS_GO_SHA256:-}"
+# cloudflared runs as root on the edge, so it gets the same treatment: a pinned release and
+# the sha256 GitHub lists for each asset. A different FELIS_CLOUDFLARED_VERSION has to bring
+# its own FELIS_CLOUDFLARED_SHA256. install_cloudflared only runs when the binary is absent;
+# upgrading an installed one is `felis update`'s report plus a manual swap.
+CLOUDFLARED_PINNED_VERSION="2026.9.1"
+CLOUDFLARED_PINNED_SHA256_AMD64="03f1f25d1cc93b9ad6c60569d44060bc4f17ed97075760ed8cfca4b12dcd68cc"
+CLOUDFLARED_PINNED_SHA256_ARM64="3d97437c71848bd8df68041e12436b484a661d95073ea1937f01a845ce88faa3"
+CLOUDFLARED_PINNED_SHA256_ARM="093ffa3638ab2b636de63c43a8c68f96a69cf71f9699dd8277a91b160b0f4fc0"
+FELIS_CLOUDFLARED_VERSION="${FELIS_CLOUDFLARED_VERSION:-$CLOUDFLARED_PINNED_VERSION}"
+FELIS_CLOUDFLARED_SHA256="${FELIS_CLOUDFLARED_SHA256:-}"
+# The k3s release a fresh install gets, and the tag its install script is read from. The
+# script checks the k3s binary against that release's sha256sum file, so pinning the tag
+# pins both. An installed k3s is never touched; see docs/troubleshooting.md for upgrades.
+FELIS_K3S_VERSION="${FELIS_K3S_VERSION:-v1.36.4+k3s1}"
+# The in-cluster registry's image, by digest. It must equal platform.defaultRegistryImage
+# (internal/platform/identities.go, TestBootstrapPinsTheRegistryImage): the renderer puts
+# that ref in the Deployment, and this script caches and pins the same ref in containerd.
+REGISTRY_IMAGE="docker.io/library/registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
 PKG_LOCK_TIMEOUT="${PKG_LOCK_TIMEOUT:-${APT_LOCK_TIMEOUT:-900}}"
 APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-$PKG_LOCK_TIMEOUT}"
 
@@ -804,19 +829,26 @@ install_cloudflared() {
     ok "cloudflared already installed"
     return 0
   fi
-  local machine arch url tmp
+  local machine arch url tmp want have
   machine="$(uname -m)"
   case "$machine" in
-    x86_64|amd64) arch="amd64" ;;
-    aarch64|arm64) arch="arm64" ;;
-    armv7l|armv6l) arch="arm" ;;
+    x86_64|amd64) arch="amd64"; want="$CLOUDFLARED_PINNED_SHA256_AMD64" ;;
+    aarch64|arm64) arch="arm64"; want="$CLOUDFLARED_PINNED_SHA256_ARM64" ;;
+    armv7l|armv6l) arch="arm"; want="$CLOUDFLARED_PINNED_SHA256_ARM" ;;
     *) die "unsupported architecture for cloudflared: ${machine}" ;;
   esac
-  url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${arch}"
+  [ "$FELIS_CLOUDFLARED_VERSION" = "$CLOUDFLARED_PINNED_VERSION" ] || want="$FELIS_CLOUDFLARED_SHA256"
+  [ -n "$want" ] || die "no pinned sha256 for cloudflared ${FELIS_CLOUDFLARED_VERSION}; set FELIS_CLOUDFLARED_SHA256 to the digest of cloudflared-linux-${arch} on that GitHub release"
+  url="https://github.com/cloudflare/cloudflared/releases/download/${FELIS_CLOUDFLARED_VERSION}/cloudflared-linux-${arch}"
   tmp="$(mktemp)"
   remember_temp "$tmp"
-  log "installing cloudflared (${arch})"
-  curl -fsSL "$url" -o "$tmp"
+  log "installing cloudflared ${FELIS_CLOUDFLARED_VERSION} (${arch})"
+  curl -fsSL --retry 5 --retry-delay 2 "$url" -o "$tmp"
+  have="$(sha256sum <"$tmp" | cut -d' ' -f1)"
+  if [ "$have" != "$(printf '%s' "$want" | tr 'A-Z' 'a-z')" ]; then
+    rm -f "$tmp"
+    die "cloudflared-linux-${arch} ${FELIS_CLOUDFLARED_VERSION} hashes to ${have}, expected ${want}; refusing to install it"
+  fi
   install -m 0755 "$tmp" /usr/local/bin/cloudflared
   rm -f "$tmp"
   ok "cloudflared installed ($(cloudflared --version | head -n 1))"
@@ -947,8 +979,11 @@ install_k3s() {
   if [ -x "$K3S_BIN" ]; then
     ok "k3s already installed at ${K3S_BIN}"
   else
-    log "installing k3s into ${K3S_BIN_DIR} (no traefik/servicelb/metrics-server)"
-    curl -sfL https://get.k3s.io | \
+    log "installing k3s ${FELIS_K3S_VERSION} into ${K3S_BIN_DIR} (no traefik/servicelb/metrics-server)"
+    # The script from the release's own tag rather than get.k3s.io, which serves whatever
+    # master holds today. '+' is literal in a URL path, so the tag needs no escaping.
+    curl -sfL --retry 5 --retry-delay 2 "https://raw.githubusercontent.com/k3s-io/k3s/${FELIS_K3S_VERSION}/install.sh" | \
+      INSTALL_K3S_VERSION="$FELIS_K3S_VERSION" \
       INSTALL_K3S_BIN_DIR="$K3S_BIN_DIR" \
       INSTALL_K3S_EXEC="--disable traefik --disable servicelb --disable metrics-server --write-kubeconfig-mode 644" \
       sh -
@@ -990,7 +1025,7 @@ wait_for_node_ready() {
 #         "Empty reply"), so containerd is told to go through the loopback
 #         hostPort the registry Deployment binds (the Deployment renders it) —
 #         that is configure_registry_mirror below;
-#       * the registry's own image (registry:2) must already be in containerd
+#       * the registry's own image (REGISTRY_IMAGE) must already be in containerd
 #         before the registry Deployment can start at all —
 #         import_registry_image below caches it.
 #     After deploy_bundle, push_images_to_registry mirrors the built images into
@@ -1027,30 +1062,37 @@ EOF
   wait_for_node_ready
 }
 
-# The registry Deployment runs registry:2 (platform.defaultRegistryImage; the
+# The registry Deployment runs REGISTRY_IMAGE (platform.defaultRegistryImage; the
 # renderer's default — this script never passes --registry-image). On a box
 # that cannot reach Docker Hub the Deployment can never start without a local
 # copy, so the installer caches one whenever it can. Best-effort by design: if
 # the pull fails the registry rollout still fails loudly at deploy_bundle, with
 # the regular diagnostics — but for every box that CAN pull, the image is
 # fetched exactly once, here, instead of at first pod start.
+#
+# crictl pulls through CRI, the same call kubelet makes, so containerd records the
+# digest ref the Deployment names and kubelet finds it. A docker save/import round
+# trip rewrites the manifest and would leave a copy the digest ref never matches.
 import_registry_image() {
-  # The name containerd normalizes "registry:2" to after any docker-save import.
-  if k3s_cmd ctr images ls -q 2>/dev/null | grep -qx 'docker.io/library/registry:2'; then
-    ok "registry image registry:2 already in k3s containerd"
+  if k3s_cmd ctr images ls -q 2>/dev/null | grep -qxF "$(registry_image_containerd_ref)"; then
+    ok "registry image ${REGISTRY_IMAGE} already in k3s containerd"
     return 0
   fi
-  log "importing the registry's own image (registry:2) into k3s containerd"
-  systemctl start docker
-  if docker pull registry:2 && docker save registry:2 | k3s_cmd ctr images import -; then
-    ok "registry image registry:2 imported"
+  log "pulling the registry's own image (${REGISTRY_IMAGE}) into k3s containerd"
+  if k3s_cmd crictl pull "$REGISTRY_IMAGE" >/dev/null; then
+    ok "registry image ${REGISTRY_IMAGE} pulled"
   else
-    warn "could not import registry:2: the in-cluster registry will start only if the node can pull it from Docker Hub; on an air-gapped box import it by hand (docs/troubleshooting.md §8e)"
+    warn "could not pull ${REGISTRY_IMAGE}: the in-cluster registry will start only if the node can pull it from Docker Hub; on an air-gapped box import it by hand (docs/troubleshooting.md §8e)"
   fi
-  systemctl stop docker docker.socket 2>/dev/null || true
 }
 
-# The registry pod runs registry:2 and, as its registry-gate sidecar, the felis
+# registry_image_containerd_ref prints the name containerd lists REGISTRY_IMAGE under
+# once CRI has pulled it: the repository and the digest, with the tag dropped.
+registry_image_containerd_ref() {
+  printf '%s@%s\n' "${REGISTRY_IMAGE%%:*}" "${REGISTRY_IMAGE#*@}"
+}
+
+# The registry pod runs REGISTRY_IMAGE and, as its registry-gate sidecar, the felis
 # image — neither of which can be pulled from the registry they make up. A kubelet
 # image GC that collected either would leave the registry, and every pull through
 # it, dead until someone re-imported by hand. containerd reports an image labelled
@@ -1058,14 +1100,16 @@ import_registry_image() {
 # removes a pinned image. Older felis/felis tags are unpinned first, so upgrades
 # do not pile up pinned images forever.
 pin_registry_images() {
-  local ref
+  local ref registry_ref
+  registry_ref="$(registry_image_containerd_ref)"
   while read -r ref; do
     case "$ref" in
-      "$FELIS_IMAGE") ;;
-      */felis/felis:*) k3s_cmd ctr images label "$ref" io.cri-containerd.pinned= >/dev/null 2>&1 || true ;;
+      "$FELIS_IMAGE"|"$registry_ref") ;;
+      */felis/felis:*|docker.io/library/registry[:@]*)
+        k3s_cmd ctr images label "$ref" io.cri-containerd.pinned= >/dev/null 2>&1 || true ;;
     esac
   done < <(k3s_cmd ctr images ls -q 2>/dev/null || true)
-  for ref in "$FELIS_IMAGE" docker.io/library/registry:2; do
+  for ref in "$FELIS_IMAGE" "$registry_ref"; do
     if k3s_cmd ctr images label "$ref" io.cri-containerd.pinned=pinned >/dev/null 2>&1; then
       ok "pinned ${ref} in containerd (exempt from kubelet image GC)"
     else
@@ -1215,6 +1259,35 @@ download_release_asset() {
   fi
 }
 
+# verify_release_checksum checks the downloaded asset $2 (at $3) against the SHA256SUMS
+# file release.yml publishes next to it on tag $1. It returns non-zero, with a warning,
+# when the release has no SHA256SUMS (a tag cut before release.yml wrote one, or a release
+# still uploading), when the file does not list the asset, or when the hash differs.
+verify_release_checksum() {
+  local tag="$1" name="$2" file="$3" sums want have
+  sums="$(mktemp)"
+  remember_temp "$sums"
+  if ! download_release_asset "$tag" SHA256SUMS "$sums"; then
+    rm -f "$sums"
+    warn "release ${tag} publishes no SHA256SUMS, so ${name} cannot be verified; building ${tag} from source on this host instead"
+    return 1
+  fi
+  # sha256sum's text-mode line is "<hash>  <name>", binary mode "<hash> *<name>".
+  want="$(awk -v n="$name" '$2 == n || $2 == "*" n { print $1; exit }' "$sums")"
+  rm -f "$sums"
+  if [ -z "$want" ]; then
+    warn "release ${tag}'s SHA256SUMS does not list ${name}; building ${tag} from source on this host instead"
+    return 1
+  fi
+  # Hash stdin, never the path: the same sha256sum escaping install_via_plugins avoids.
+  have="$(sha256sum <"$file" | cut -d' ' -f1)"
+  if [ "$have" != "$want" ]; then
+    warn "downloaded ${name} hashes to ${have}, but release ${tag}'s SHA256SUMS says ${want}; discarding it and building ${tag} from source on this host instead"
+    return 1
+  fi
+  ok "${name} matches release ${tag}'s SHA256SUMS"
+}
+
 # use_release_binary reports whether this run should install a prebuilt binary instead of
 # compiling one. Only the plain release channel qualifies: FELIS_SKIP_FETCH means "build
 # exactly what I staged" and a pinned FELIS_REF means "build that tree", both of which are
@@ -1263,6 +1336,15 @@ download_release_binary() {
     # different commit than the tag the operator asked for. Falling back keeps the tag and
     # changes only how it is obtained, so no operator action is needed at all.
     warn "release ${FELIS_REF} publishes no usable ${asset}; building ${FELIS_REF} from source on this host instead"
+    return 1
+  fi
+
+  # The hash comes BEFORE the exec below: until the file matches the release's SHA256SUMS it
+  # is unverified bytes, and running it as root to ask its version would hand root to
+  # whoever could swap the asset or sit on the download path. Missing or unmatched both
+  # fall back to the source build of the same tag, which trusts only the git fetch.
+  if ! verify_release_checksum "$FELIS_REF" "$asset" "$tmp"; then
+    rm -f "$tmp"
     return 1
   fi
   chmod 0755 "$tmp"

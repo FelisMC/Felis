@@ -65,8 +65,11 @@ const (
 
 	// defaultRegistryImage is the upstream CNCF Distribution registry. It is an
 	// official, stable image and the only registry implementation the build/restore
-	// subsystems are exercised against (registry.<ns>.svc:5000).
-	defaultRegistryImage = "registry:2"
+	// subsystems are exercised against (registry.<ns>.svc:5000). Pinned by digest so
+	// a re-tag upstream cannot change what holds every image on the box; the tag is
+	// for humans. deploy/bootstrap.sh's REGISTRY_IMAGE caches and GC-pins this exact
+	// ref and must name the same one (TestBootstrapPinsTheRegistryImage).
+	defaultRegistryImage = "docker.io/library/registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
 )
 
 // Params parameterises the install bundle. Namespaces and the registry location
@@ -121,7 +124,7 @@ type Params struct {
 	// passes this value through as FELIS_IMAGE so the restore executor launches its
 	// `felis restore` Job using the very same image.
 	FelisImage string
-	// RegistryImage is the in-cluster registry image. Defaults to registry:2.
+	// RegistryImage is the in-cluster registry image. Defaults to registry 2.8.3, by digest.
 	RegistryImage string
 	// BackupPVC is the name of the world-archive PersistentVolumeClaim. The bundle
 	// RENDERS this PVC (backupPVC in workloads.go, Minecraft namespace — where every

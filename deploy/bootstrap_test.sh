@@ -635,6 +635,83 @@ gtmp="$(printf '%s\n' "$out" | sed -n 's/^TEMP: //p')"
 expect "the Go download is staged in a directory the cleanup removes" \
   "CURL: ${gtmp:-<none>}/go1.26.4.linux-amd64.tar.gz" "$out"
 
+# --- a release binary is hashed against SHA256SUMS before anything runs it ---------------
+# download_release_binary executes the asset as root to read its version stamp, so the
+# checksum has to come first, and every failure has to fall back to the source build.
+
+vblock="$(awk '/^verify_release_checksum\(\) \{/,/^}/' "$BS")"
+[ -n "$vblock" ] || { echo "FAIL: no verify_release_checksum found in $BS"; exit 1; }
+asset_file="$sdir/felis-linux-amd64"
+printf 'stand-in felis binary\n' > "$asset_file"
+asum="$(sha256sum <"$asset_file" | cut -d' ' -f1)"
+
+run_verify() { # SHA256SUMS-content ("" = the release has none)
+  SUMS="$1" TMPDIR="$sdir" bash -c '
+    ok() { printf "OK: %s\n" "$*"; }
+    warn() { printf "WARN: %s\n" "$*"; }
+    remember_temp() { :; }
+    download_release_asset() { [ -n "$SUMS" ] || return 1; printf "%s" "$SUMS" > "$3"; }
+    '"$vblock"'
+    verify_release_checksum v9.9.9 felis-linux-amd64 '"$asset_file"' && echo VERIFIED'
+}
+expect "a listed, matching binary is accepted" "VERIFIED" \
+  "$(run_verify "$(printf '%s  felis-linux-arm64\n%s  felis-linux-amd64\n' deadbeef "$asum")")"
+expect "a binary-mode SHA256SUMS line is read too" "VERIFIED" \
+  "$(run_verify "$(printf '%s *felis-linux-amd64\n' "$asum")")"
+out="$(run_verify "$(printf '%s  felis-linux-amd64\n' deadbeef)")"
+expect "a hash mismatch is refused and names both hashes" "hashes to ${asum}, but release v9.9.9's SHA256SUMS says deadbeef" "$out"
+case "$out" in *VERIFIED*) echo "FAIL: a mismatched binary must not verify"; fails=$((fails + 1)) ;; esac
+out="$(run_verify "$(printf '%s  felis-linux-amd64.sig\n' "$asum")")"
+expect "a SHA256SUMS that does not list the asset is refused" "does not list felis-linux-amd64" "$out"
+case "$out" in *VERIFIED*) echo "FAIL: an unlisted binary must not verify"; fails=$((fails + 1)) ;; esac
+out="$(run_verify "")"
+expect "a release without SHA256SUMS falls back to a source build" "publishes no SHA256SUMS" "$out"
+case "$out" in *VERIFIED*) echo "FAIL: a release without SHA256SUMS must not verify"; fails=$((fails + 1)) ;; esac
+
+dblock="$(awk '/^download_release_binary\(\) \{/,/^}/' "$BS")"
+[ -n "$dblock" ] || { echo "FAIL: no download_release_binary found in $BS"; exit 1; }
+v="$(printf '%s\n' "$dblock" | grep -n 'verify_release_checksum' | head -1 | cut -d: -f1)"
+x="$(printf '%s\n' "$dblock" | grep -n '"\$tmp" version' | head -1 | cut -d: -f1)"
+[ -n "$v" ] && [ -n "$x" ] && [ "$v" -lt "$x" ] \
+  && echo "PASS the release binary is verified before it is executed" \
+  || { echo "FAIL: download_release_binary must call verify_release_checksum before running the binary (lines: $v $x)"; fails=$((fails + 1)); }
+
+# --- cloudflared is a pinned release, checked before it is installed ---------------------
+cfblock="$(awk '/^install_cloudflared\(\) \{/,/^}/' "$BS")"
+[ -n "$cfblock" ] || { echo "FAIL: no install_cloudflared found in $BS"; exit 1; }
+cfsum="$(printf 'stand-in cloudflared\n' | sha256sum | cut -d' ' -f1)"
+run_cf() { # FELIS_CLOUDFLARED_VERSION pinned-amd64-digest [FELIS_CLOUDFLARED_SHA256]
+  FELIS_CLOUDFLARED_VERSION="$1" CLOUDFLARED_PINNED_VERSION=2026.9.1 CLOUDFLARED_PINNED_SHA256_AMD64="$2" \
+    CLOUDFLARED_PINNED_SHA256_ARM64=unused CLOUDFLARED_PINNED_SHA256_ARM=unused \
+    FELIS_CLOUDFLARED_SHA256="${3:-}" TMPDIR="$sdir" bash -c '
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    log() { printf "LOG: %s\n" "$*"; }
+    ok() { printf "OK: %s\n" "$*"; }
+    remember_temp() { :; }
+    command() { return 1; }
+    uname() { echo x86_64; }
+    cloudflared() { echo "cloudflared version test"; }
+    curl() { printf "CURL: %s\n" "$*"; while [ "$#" -gt 1 ] && [ "$1" != "-o" ]; do shift; done
+      printf "stand-in cloudflared\n" > "$2"; }
+    install() { printf "INSTALL: %s\n" "$*"; }
+    '"$cfblock"'
+    install_cloudflared'
+}
+out="$(run_cf 2026.9.1 "$cfsum")"
+expect "cloudflared comes from the pinned release, never latest" "releases/download/2026.9.1/cloudflared-linux-amd64" "$out"
+expect "a matching cloudflared is installed" "INSTALL: -m 0755" "$out"
+out="$(run_cf 2026.9.1 deadbeef)"
+expect "a cloudflared that does not match the pin is refused" "DIE: cloudflared-linux-amd64 2026.9.1 hashes to ${cfsum}, expected deadbeef" "$out"
+case "$out" in *INSTALL:*) echo "FAIL: a refused cloudflared must not be installed"; fails=$((fails + 1)) ;; esac
+expect "another cloudflared version needs its own digest" "DIE: no pinned sha256 for cloudflared 2027.1.0" "$(run_cf 2027.1.0 "$cfsum")"
+expect "another cloudflared version installs with its digest" "INSTALL: -m 0755" "$(run_cf 2027.1.0 deadbeef "$cfsum")"
+
+# k3s: the install script is read from the pinned tag, and told the same version.
+kblock="$(awk '/^install_k3s\(\) \{/,/^}/' "$BS")"
+expect "k3s's install script comes from the pinned tag" 'raw.githubusercontent.com/k3s-io/k3s/${FELIS_K3S_VERSION}/install.sh' "$kblock"
+expect "k3s's install script is told the pinned version" 'INSTALL_K3S_VERSION="$FELIS_K3S_VERSION"' "$kblock"
+case "$kblock" in *"https://get.k3s.io"*) echo "FAIL: get.k3s.io serves master's script; read it from the pinned tag"; fails=$((fails + 1)) ;; esac
+
 # --- a private repo without a token fails with the hint instead of prompting -------------
 # git asks for credentials on /dev/tty, where a piped install would sit waiting. Every
 # network git call goes through git_auth, so the switch belongs there.
@@ -685,7 +762,7 @@ expect "a failed fetch into an existing checkout names the token" "set FELIS_GIT
 
 mblock="$(awk '/^  log "rendering \+ applying the control-plane bundle"/,/kube apply -f -/' "$BS")"
 [ -n "$mblock" ] || { echo "FAIL: no manifest_args block found in $BS"; exit 1; }
-[ "$(printf '%s\n' "$mblock" | wc -l)" -lt 40 ] \
+[ "$(printf '%s\n' "$mblock" | wc -l)" -lt 60 ] \
   || { echo "FAIL: the extracted block is not the manifest_args block -- did it move?"; exit 1; }
 
 run_bundle_flags() { # backup-pvc worlds-host-path
@@ -699,6 +776,7 @@ run_bundle_flags() { # backup-pvc worlds-host-path
     setfacl() { printf "SETFACL %s\n" "$*"; }
     chmod() { printf "CHMOD %s\n" "$*"; }
     node_global_cidrs() { printf "203.0.113.7/32\n2001:db8::7/128\n"; }
+    pvc_size() { case "$2" in registry) printf "20Gi\n" ;; esac; }
     run_bundle() {
     '"$mblock"'
     }
@@ -710,6 +788,12 @@ expect "a default install asks the renderer for the archive PVC" "--backup-pvc
 felis-backups" "$out"
 case "$out" in
   *--worlds-host-path*) echo "FAIL: no reaper flags may render without FELIS_WORLDS_HOST_PATH"; fails=$((fails + 1)) ;;
+esac
+
+expect "a known registry size reaches the renderer" "--registry-storage
+20Gi" "$out"
+case "$out" in
+  *--uploads-storage*|*--backup-storage*) echo "FAIL: an unset size must leave the renderer's default alone"; fails=$((fails + 1)) ;;
 esac
 
 out="$(run_bundle_flags '' '')"
@@ -922,24 +1006,33 @@ expect "the throwaway config is registered for EXIT cleanup" "TEMP /" "$out"
 # both against kubelet image GC, and unpin a previous felis tag.
 pnblock="$(awk '/^pin_registry_images\(\) \{/,/^}/' "$BS")"
 [ -n "$pnblock" ] || { echo "FAIL: no pin_registry_images found in $BS"; exit 1; }
+rrblock="$(awk '/^registry_image_containerd_ref\(\) \{/,/^}/' "$BS")"
+[ -n "$rrblock" ] || { echo "FAIL: no registry_image_containerd_ref found in $BS"; exit 1; }
+regimage="$(grep -m1 '^REGISTRY_IMAGE=' "$BS" | cut -d'"' -f2)"
+regdigest="${regimage#*@}"
 calls="$(mktemp)"
 out="$(
-  CALLS="$calls" FELIS_IMAGE=registry.felis.svc:5000/felis/felis:v2 bash -c '
+  CALLS="$calls" REGISTRY_IMAGE="$regimage" REGDIGEST="$regdigest" FELIS_IMAGE=registry.felis.svc:5000/felis/felis:v2 bash -c '
     ok() { printf "OK: %s\n" "$*"; }
     warn() { printf "WARN: %s\n" "$*"; }
     k3s_cmd() {
       case "$*" in
-        "ctr images ls -q") printf "registry.felis.svc:5000/felis/felis:v1\nregistry.felis.svc:5000/felis/felis:v2\ndocker.io/library/registry:2\nregistry.felis.svc:5000/felis/limbo:demo\n" ;;
+        "ctr images ls -q") printf "registry.felis.svc:5000/felis/felis:v1\nregistry.felis.svc:5000/felis/felis:v2\ndocker.io/library/registry:2\ndocker.io/library/registry@%s\nregistry.felis.svc:5000/felis/limbo:demo\n" "$REGDIGEST" ;;
         *) printf "CTR %s\n" "$*" >>"$CALLS" ;;
       esac
     }
+    '"$rrblock"'
     '"$pnblock"'
     pin_registry_images'
 )$(printf '\n'; cat "$calls")"
 rm -f "$calls"
 expect "the running felis image is pinned" "CTR ctr images label registry.felis.svc:5000/felis/felis:v2 io.cri-containerd.pinned=pinned" "$out"
-expect "registry:2 is pinned" "CTR ctr images label docker.io/library/registry:2 io.cri-containerd.pinned=pinned" "$out"
+expect "the registry image is pinned by digest" "CTR ctr images label docker.io/library/registry@${regdigest} io.cri-containerd.pinned=pinned" "$out"
 expect "a previous felis tag is unpinned" "CTR ctr images label registry.felis.svc:5000/felis/felis:v1 io.cri-containerd.pinned=" "$out"
+expect "the old registry:2 tag is unpinned" "CTR ctr images label docker.io/library/registry:2 io.cri-containerd.pinned=" "$out"
+case "$out" in
+  *"registry@${regdigest} io.cri-containerd.pinned="$'\n'*) echo "FAIL: the current registry image must not be unpinned"; fails=$((fails + 1)) ;;
+esac
 case "$out" in
   *"limbo:demo io.cri"*) echo "FAIL: only the registry pod's images may be pinned or unpinned"; fails=$((fails + 1)) ;;
 esac
@@ -986,22 +1079,24 @@ p="$(line_of pin_user_server_images)"; b="$(line_of build_game_stack)"; u="$(lin
 iblock="$(awk '/^import_registry_image\(\) \{/,/^}/' "$BS")"
 [ -n "$iblock" ] || { echo "FAIL: no import_registry_image found in $BS"; exit 1; }
 
-out="$(
-  bash -c '
+run_import() { # listed-refs
+  LISTED="$1" REGISTRY_IMAGE="$regimage" bash -c '
     log() { printf "LOG: %s\n" "$*"; }
     ok() { printf "OK: %s\n" "$*"; }
     warn() { printf "WARN: %s\n" "$*"; }
     die() { printf "DIE: %s\n" "$*"; exit 1; }
-    systemctl() { :; }
-    k3s_cmd() { case "$*" in "ctr images ls -q") printf "docker.io/library/registry:2\n" ;; esac; }
-    docker() { printf "DOCKER %s\n" "$*"; return 1; }
+    k3s_cmd() { case "$*" in "ctr images ls -q") printf "%b" "$LISTED" ;; *) printf "PULL %s\n" "$*" >&2 ;; esac; }
+    '"$rrblock"'
     '"$iblock"'
-    import_registry_image'
-)"
-expect "an already-imported registry:2 is left alone" "already in k3s containerd" "$out"
+    import_registry_image' 2>&1
+}
+out="$(run_import "docker.io/library/registry@${regdigest}\n")"
+expect "an already-pulled registry image is left alone" "already in k3s containerd" "$out"
 case "$out" in
-  *DOCKER*) echo "FAIL: a present registry:2 must not trigger a docker pull"; fails=$((fails + 1)) ;;
+  *PULL*) echo "FAIL: a present registry image must not be pulled again"; fails=$((fails + 1)) ;;
 esac
+out="$(run_import "docker.io/library/registry:2\n")"
+expect "only the pinned digest counts as present; the old tag is pulled over" "PULL crictl pull ${regimage}" "$out"
 
 # --- installer re-runs refresh the workload namespace's felis-config copy ---------------
 # The backup/restore/fileedit Jobs and the reaper mount the workload namespace's own

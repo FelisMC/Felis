@@ -45,7 +45,7 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 	registryPort := fs.Int("registry-port", 5000, "port the in-cluster registry listens on")
 	panelNodePort := fs.Int("panel-node-port", int(platform.DefaultPanelNodePort), "NodePort that exposes the built-in HTTPS panel/API origin")
 	felisImage := fs.String("felis-image", "", "container image the felis-api/operator Deployments run, also passed through as FELIS_IMAGE (REQUIRED)")
-	registryImage := fs.String("registry-image", "", "in-cluster registry image (default: registry:2)")
+	registryImage := fs.String("registry-image", "", "in-cluster registry image (default: registry 2.8.3, pinned by digest)")
 	backupPVC := fs.String("backup-pvc", "felis-backups", "name of the world-archive PVC this bundle renders in the Minecraft namespace and advertises to the backup/restore executors via FELIS_BACKUP_PVC (default: felis-backups; pass an empty value to render none, leaving backup/restore answering 503)")
 	worldsHostPath := fs.String("worlds-host-path", "", "node directory the reaper reads worlds from: each world PVC resolves as <path>/<pvc>, or as the stock local-path directory <path>/<pv-name>_<ns>_<pvc-name> (k3s storage root: /var/lib/rancher/k3s/storage); enables the reaper CronJob (requires --archive-local-path and a non-empty --backup-pvc)")
 	archiveLocalPath := fs.String("archive-local-path", "", "path the backup PVC is mounted at in the reaper CronJob; MUST equal felis.toml [archive] local_path")
