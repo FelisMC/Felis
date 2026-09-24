@@ -19,5 +19,11 @@
   "saved": "Saved {{path}}",
   "saving": "Saving…",
   "save": "Save",
-  "too_large": "Exceeds the {{limit}} editor limit."
+  "too_large": "Exceeds the {{limit}} editor limit.",
+  "conflict_title": "Someone else changed this file",
+  "conflict_body": "The file changed after you opened it (another manager saved it, or the server rewrote it on its last run). Your edits are still in the editor and have not been written.",
+  "conflict_reload": "Load latest",
+  "conflict_reload_hint": "Discard your edits and show the file as it is now",
+  "conflict_overwrite": "Overwrite anyway",
+  "conflict_overwrite_hint": "Replace their change with your version"
 }

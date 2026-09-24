@@ -714,6 +714,17 @@ describe("image whitelist and builds wire shapes", () => {
       expect((opts as RequestInit).method).toBe("PUT");
       expect((opts as RequestInit).body).toBe(JSON.stringify({ content: "" }));
     });
+
+    it("writeServerFile sends the hash the read returned as expect_sha256", async () => {
+      const fetchSpy = fakeFetch({ path: "a.txt", status: "written", sha256: "b".repeat(64) });
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.writeServerFile("survival", "a.txt", "aGk=", "a".repeat(64));
+      expect(res.sha256).toBe("b".repeat(64));
+      const [, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect((opts as RequestInit).body).toBe(
+        JSON.stringify({ content: "aGk=", expect_sha256: "a".repeat(64) }),
+      );
+    });
   });
 
   describe("user passkey unbind wire shape", () => {

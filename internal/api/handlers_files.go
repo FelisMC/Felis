@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"regexp"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/fileedit"
@@ -30,12 +31,16 @@ import (
 // mirrors how ImageBuilder uses build.Request/build.Image rather than restating a
 // parallel type on this side of the seam.
 //
-// It returns fileedit.ErrNotFound / ErrBadPath / ErrTooLarge for caller-fault
-// failures, which writeFileEditError maps to 404 / 400 / 413.
+// It returns fileedit.ErrNotFound / ErrBadPath / ErrTooLarge / ErrConflict /
+// ErrNoSpace, which writeFileEditError maps to 404 / 400 / 413 / 409 / 507.
+//
+// Read and Write both return the file's SHA-256 (hex). Write's expect is the hash
+// a client read the file at; when set, a file that changed since is refused with
+// ErrConflict instead of being overwritten.
 type FileEditor interface {
 	List(ctx context.Context, server, path string) (entries []fileedit.Entry, truncated bool, err error)
-	Read(ctx context.Context, server, path string) ([]byte, error)
-	Write(ctx context.Context, server, path string, content []byte) error
+	Read(ctx context.Context, server, path string) (content []byte, sha256 string, err error)
+	Write(ctx context.Context, server, path string, content []byte, expect string) (sha256 string, err error)
 }
 
 // writeFileRequest is the PUT /servers/{name}/file body. Content is []byte, so
@@ -49,8 +54,14 @@ type FileEditor interface {
 // answering 200 — a client serialisation bug silently destroying the very config
 // the caller opened this endpoint to repair. nil now means "the field was omitted"
 // and is refused; an explicit "" is still a legitimate deliberate truncate.
+//
+// ExpectSHA256 is optional. The panel always sends the hash its read returned,
+// so a save over a file someone else changed in the meantime answers 409
+// file_changed; omitting it (a script, or "overwrite anyway") writes
+// unconditionally.
 type writeFileRequest struct {
-	Content *[]byte `json:"content"`
+	Content      *[]byte `json:"content"`
+	ExpectSHA256 string  `json:"expect_sha256,omitempty"`
 }
 
 // handleListFiles serves GET /api/v1/servers/{name}/files?path=… — one directory's
@@ -98,12 +109,12 @@ func (a *API) handleReadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	content, err := a.Files.Read(r.Context(), name, path)
+	content, sum, err := a.Files.Read(r.Context(), name, path)
 	if err != nil {
 		writeFileEditError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"path": path, "content": content})
+	writeJSON(w, http.StatusOK, map[string]any{"path": path, "content": content, "sha256": sum})
 }
 
 // handleWriteFile serves PUT /api/v1/servers/{name}/file?path=… — replace a file's
@@ -149,6 +160,13 @@ func (a *API) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 			len(*body.Content), fileedit.MaxWriteBytes))
 		return
 	}
+	// The hash rides the Job's argv, so only its one legitimate shape is let
+	// through: 64 lowercase hex digits, exactly what a read returned.
+	if body.ExpectSHA256 != "" && !sha256Hex.MatchString(body.ExpectSHA256) {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
+			"expect_sha256 must be the 64-digit lowercase hex sha256 a read returned"))
+		return
+	}
 
 	// A write holds the world volume for its Job's lifetime (internal/maintenance);
 	// reads and listings do not, since a read-only mount cannot hurt a server
@@ -159,14 +177,17 @@ func (a *API) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
-	if err := a.Files.Write(r.Context(), name, path, *body.Content); err != nil {
+	sum, err := a.Files.Write(r.Context(), name, path, *body.Content, body.ExpectSHA256)
+	if err != nil {
 		writeFileEditError(w, r, err)
 		return
 	}
 
 	a.audit(r, "file.write", name+":"+path)
-	writeJSON(w, http.StatusOK, map[string]any{"path": path, "status": "written"})
+	writeJSON(w, http.StatusOK, map[string]any{"path": path, "status": "written", "sha256": sum})
 }
+
+var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // authorizeFileOp is the shared front half of all three file handlers — the gate
 // that decides whether this caller may touch this server's world at all. It
@@ -260,6 +281,10 @@ func writeFileEditError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_path", "%s", err.Error()))
 	case errors.Is(err, fileedit.ErrTooLarge):
 		writeError(w, r, newError(http.StatusRequestEntityTooLarge, "too_large", "%s", err.Error()))
+	case errors.Is(err, fileedit.ErrConflict):
+		writeError(w, r, newError(http.StatusConflict, "file_changed", "%s", err.Error()))
+	case errors.Is(err, fileedit.ErrNoSpace):
+		writeError(w, r, newError(http.StatusInsufficientStorage, "volume_full", "%s", err.Error()))
 	case errors.Is(err, context.DeadlineExceeded):
 		writeError(w, r, newError(http.StatusGatewayTimeout, "files_timeout",
 			"the file operation did not finish in time; retry shortly"))

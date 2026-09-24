@@ -19,7 +19,7 @@ import (
 // Like cmdRestore it deliberately holds NO database credentials and never calls
 // config.Load: felis-api made the authorization decision (the caller owns this
 // server, and the server is stopped so the RWO world volume is free); this process
-// is the unprivileged hands that touch bytes. Its entire input is the three flags
+// is the unprivileged hands that touch bytes. Its entire input is the flags
 // below plus, for a write, one environment variable. Every isolation guarantee
 // lives in the Pod spec (internal/fileedit/jobspec.go), and the path-containment
 // guarantee lives in fileedit.Execute, which resolves the path through os.Root and
@@ -37,6 +37,7 @@ func cmdFiles(args []string, stdout, stderr io.Writer) int {
 	op := fs.String("op", "", "operation: list, read, or write")
 	path := fs.String("path", "", "path to operate on, relative to the world root (empty = the root itself)")
 	worldsRoot := fs.String("worlds-root", "/data", "mount path of the world PVC; every path resolves under it")
+	expect := fs.String("expect-sha256", "", "write only: refuse unless the file's current SHA-256 (hex) is this")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -67,7 +68,7 @@ func cmdFiles(args []string, stdout, stderr io.Writer) int {
 		content = decoded
 	}
 
-	res, err := fileedit.Execute(*worldsRoot, *op, *path, content)
+	res, err := fileedit.Execute(*worldsRoot, *op, *path, content, *expect)
 	if err != nil {
 		// The operation could not be attempted — infrastructure, not caller fault.
 		fmt.Fprintf(stderr, "felis files: %v\n", err)

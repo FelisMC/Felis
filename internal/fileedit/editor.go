@@ -64,6 +64,12 @@ var (
 	// ErrTooLarge is a read of a file over MaxReadBytes or a write over
 	// MaxWriteBytes.
 	ErrTooLarge = errors.New("fileedit: file is too large for the editor")
+	// ErrConflict is a write whose expected hash no longer matches: the file
+	// changed after the caller read it.
+	ErrConflict = errors.New("fileedit: file changed since it was read")
+	// ErrNoSpace is a write the world volume had no room for; the file is
+	// unchanged.
+	ErrNoSpace = errors.New("fileedit: the world volume is full")
 )
 
 // Runner is the cluster-side half of one file operation: render and create the
@@ -181,7 +187,7 @@ type Editor struct {
 // List returns one directory's entries, resolved under the server's world root.
 // An empty path lists the world root itself.
 func (e *Editor) List(ctx context.Context, server, path string) ([]Entry, bool, error) {
-	res, err := e.run(ctx, server, OpList, path, nil)
+	res, err := e.run(ctx, server, OpList, path, nil, "")
 	if err != nil {
 		return nil, false, err
 	}
@@ -193,25 +199,31 @@ func (e *Editor) List(ctx context.Context, server, path string) ([]Entry, bool, 
 	return res.Entries, res.Truncated, nil
 }
 
-// Read returns a file's bytes, resolved under the server's world root.
-func (e *Editor) Read(ctx context.Context, server, path string) ([]byte, error) {
-	res, err := e.run(ctx, server, OpRead, path, nil)
+// Read returns a file's bytes, resolved under the server's world root, and the
+// SHA-256 of the file as it is on disk — the value to hand back as Write's expect.
+func (e *Editor) Read(ctx context.Context, server, path string) ([]byte, string, error) {
+	res, err := e.run(ctx, server, OpRead, path, nil, "")
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	// A zero-length file unmarshals Content as nil, which is a legitimate result,
 	// not an error — normalise so the caller never has to distinguish nil from empty.
 	if res.Content == nil {
 		res.Content = []byte{}
 	}
-	return res.Content, nil
+	return res.Content, res.SHA256, nil
 }
 
-// Write replaces a file's contents, creating it if absent (but never creating
-// parent directories — see the write helper in exec.go).
-func (e *Editor) Write(ctx context.Context, server, path string, content []byte) error {
-	_, err := e.run(ctx, server, OpWrite, path, content)
-	return err
+// Write atomically replaces a file's contents, creating it if absent (but never
+// creating parent directories — see the write helper in exec.go), and returns the
+// new SHA-256. A non-empty expect makes it conditional: ErrConflict if the file no
+// longer hashes to it.
+func (e *Editor) Write(ctx context.Context, server, path string, content []byte, expect string) (string, error) {
+	res, err := e.run(ctx, server, OpWrite, path, content, expect)
+	if err != nil {
+		return "", err
+	}
+	return res.SHA256, nil
 }
 
 // run is the shared body of all three operations: mint an op id, render the
@@ -221,7 +233,7 @@ func (e *Editor) Write(ctx context.Context, server, path string, content []byte)
 // That is not redundancy for its own sake: an oversized write would otherwise be
 // rejected by the API SERVER (etcd's object limit) as an opaque failure, long after
 // felis-api had committed to the request, instead of as a clean 413.
-func (e *Editor) run(ctx context.Context, server, op, path string, content []byte) (Result, error) {
+func (e *Editor) run(ctx context.Context, server, op, path string, content []byte, expect string) (Result, error) {
 	if op == OpWrite && len(content) > MaxWriteBytes {
 		return Result{}, fmt.Errorf("%w: content is %d bytes, the limit is %d",
 			ErrTooLarge, len(content), MaxWriteBytes)
@@ -246,6 +258,7 @@ func (e *Editor) run(ctx context.Context, server, op, path string, content []byt
 		Op:               op,
 		Path:             path,
 		Content:          content,
+		Expect:           expect,
 		WorldPVC:         naming.WorldPVCName(server),
 		Namespace:        cfg.Namespace,
 		ServiceAccount:   cfg.ServiceAccount,
@@ -284,6 +297,10 @@ func resultError(res Result) error {
 		return fmt.Errorf("%w: %s", ErrBadPath, res.Error)
 	case CodeTooLarge:
 		return fmt.Errorf("%w: %s", ErrTooLarge, res.Error)
+	case CodeConflict:
+		return fmt.Errorf("%w: %s", ErrConflict, res.Error)
+	case CodeNoSpace:
+		return fmt.Errorf("%w: %s", ErrNoSpace, res.Error)
 	default:
 		return fmt.Errorf("fileedit: file operation failed (%s): %s", res.Code, res.Error)
 	}

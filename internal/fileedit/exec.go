@@ -2,6 +2,9 @@ package fileedit
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +12,8 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"strings"
+	"syscall"
 	"time"
 
 	"felis.lolicon.best/internal/naming"
@@ -46,6 +51,14 @@ const (
 	CodeBadPath  = "bad_path"  // escapes the world root, is absolute, or is otherwise unopenable
 	CodeNotFound = "not_found" // resolves inside the root but nothing is there
 	CodeTooLarge = "too_large" // the file exceeds MaxReadBytes
+	// CodeConflict is a write whose expected hash no longer matches the file: it
+	// changed (or vanished) after the caller read it, so saving would silently
+	// discard someone else's edit.
+	CodeConflict = "conflict"
+	// CodeNoSpace is a write the volume had no room for. The file is unchanged
+	// (the write is atomic), so this is the caller's volume being full rather
+	// than a bad request.
+	CodeNoSpace = "no_space"
 )
 
 // ResultPrefix marks the single stdout line carrying the JSON Result. The Job's
@@ -119,6 +132,11 @@ type Result struct {
 	// client renders "showing first N" rather than silently implying the directory
 	// is smaller than it is.
 	Truncated bool `json:"truncated,omitempty"`
+	// SHA256 is the hex digest of the file's on-disk bytes: after a read, the file
+	// as read (before any redaction); after a write, the bytes written; on a
+	// conflict, the file as it is now. A client hands it back as the expected hash
+	// of its next write (see write).
+	SHA256 string `json:"sha256,omitempty"`
 }
 
 // Execute performs op on the file named by path, resolved inside root, and returns
@@ -145,7 +163,10 @@ type Result struct {
 // "<root>/etc/passwd" would turn an unambiguous escape attempt into a successful
 // read of a file the caller did not name, which is exactly the confusion this
 // editor must not have.
-func Execute(root, op, path string, content []byte) (Result, error) {
+//
+// expect is a write's precondition: when non-empty, the write lands only if the
+// file's current SHA-256 (hex) equals it. It is ignored by list and read.
+func Execute(root, op, path string, content []byte, expect string) (Result, error) {
 	r, err := os.OpenRoot(root)
 	if err != nil {
 		// The world mount itself is unopenable: infrastructure, not caller fault.
@@ -163,7 +184,7 @@ func Execute(root, op, path string, content []byte) (Result, error) {
 	case OpRead:
 		return read(r, path), nil
 	case OpWrite:
-		return write(r, path, content), nil
+		return write(r, path, content, expect), nil
 	default:
 		return Result{}, fmt.Errorf("unknown op %q", op)
 	}
@@ -268,7 +289,7 @@ func read(r *os.Root, name string) Result {
 	if err != nil {
 		return failure(err, name)
 	}
-	return Result{Content: redactSecretProps(name, b)}
+	return Result{Content: redactSecretProps(name, b), SHA256: digest(b)}
 }
 
 // propsPath is the server's main config file, and rconPasswordKey the one line in
@@ -314,16 +335,34 @@ func redactSecretProps(name string, content []byte) []byte {
 	return bytes.Join(lines, []byte("\n"))
 }
 
-// write replaces a file's contents. It truncates rather than appends, and it does
-// NOT create parent directories: every path this editor writes is an existing
-// config file being corrected, so an unexpected mkdir would more likely be a typo
-// materialising a stray directory in the world mount than an intent.
+// write replaces a file's contents. It does NOT create parent directories: every
+// path this editor writes is an existing config file being corrected, so an
+// unexpected mkdir would more likely be a typo materialising a stray directory in
+// the world mount than an intent. A missing file is still created, so a config
+// the server has not yet generated can be authored.
 //
-// O_CREATE is still allowed so a config file the server has not yet generated can
-// be authored. os.Root applies the same containment to the create as to an open,
-// so a symlink at the target pointing outside the root is refused rather than
-// followed — the classic "write through a planted symlink" escape.
-func write(r *os.Root, path string, content []byte) Result {
+// The replacement is atomic. The bytes go to a temporary sibling that is synced
+// and then renamed over the target, so a full disk, a Job killed at its deadline
+// or a crashed node leaves either the old file or the new one — never the
+// zero-length or half-written server.properties an in-place truncate would, which
+// is a server that no longer boots. The sibling keeps the target's mode and is
+// handed to the game uid before the rename, so the file the server finds is never
+// root's. On failure it is removed; only a kill between create and rename leaves
+// one behind, named ".<file>.felis-edit-<hex>" so no loader mistakes it for a
+// plugin jar or a config.
+//
+// expect, when set, is the SHA-256 the caller read the file at (Result.SHA256 of
+// its read). A file that has changed since — another manager saved it, or the
+// server rewrote it on its last run — is refused with CodeConflict instead of
+// being overwritten, which is how two people editing the same file find out.
+// The world lock (internal/maintenance) already serialises writes, so the check
+// and the rename cannot interleave with another write.
+//
+// os.Root applies the same containment to every step. A symlink at the target is
+// followed only while it stays inside the root (resolveLink), so a planted link
+// to a file outside is refused and the rename replaces the file the link names,
+// never the link itself.
+func write(r *os.Root, name string, content []byte, expect string) Result {
 	if len(content) > MaxWriteBytes {
 		// Defence in depth: felis-api already refuses an oversized write with a 413
 		// before rendering the Job. Re-checking here keeps the ceiling true even if
@@ -331,28 +370,171 @@ func write(r *os.Root, path string, content []byte) Result {
 		return Result{Code: CodeTooLarge, Error: fmt.Sprintf(
 			"content is %d bytes; the editor writes at most %d", len(content), MaxWriteBytes)}
 	}
-	f, err := r.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	target, res := resolveLink(r, name)
+	if res.Code != "" {
+		return res
+	}
+
+	mode := fs.FileMode(0o644)
+	info, err := r.Lstat(target)
+	switch {
+	case err == nil && info.IsDir():
+		return Result{Code: CodeBadPath, Error: fmt.Sprintf("%s is a directory, not a file", name)}
+	case err == nil && !info.Mode().IsRegular():
+		return Result{Code: CodeBadPath, Error: fmt.Sprintf("%s is not a regular file", name)}
+	case err == nil:
+		mode = info.Mode().Perm()
+	case !errors.Is(err, fs.ErrNotExist):
+		return failure(err, name)
+	}
+
+	if expect != "" {
+		if res := checkUnchanged(r, name, target, expect); res.Code != "" {
+			return res
+		}
+	}
+
+	var suffix [6]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return Result{Code: CodeBadPath, Error: fmt.Sprintf("generate a temporary name: %v", err)}
+	}
+	tmp := path.Join(path.Dir(target), "."+path.Base(target)+".felis-edit-"+hex.EncodeToString(suffix[:]))
+	f, err := r.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
-		return failure(err, path)
+		return writeFailure(err, name)
+	}
+	renamed := false
+	defer func() {
+		if !renamed {
+			_ = r.Remove(tmp)
+		}
+	}()
+	// Chmod explicitly: the create mode passed through the umask, and a file the
+	// owner had at 0664 or 0600 should come back the same.
+	if err := f.Chmod(mode); err != nil {
+		f.Close()
+		return writeFailure(err, name)
 	}
 	if _, err := f.Write(content); err != nil {
 		f.Close()
-		return failure(err, path)
+		return writeFailure(err, name)
 	}
-	// Close is where a buffered-write error surfaces, so its error is honoured
-	// rather than deferred-and-dropped: reporting success on a write that did not
-	// land would leave the caller believing a broken config was fixed.
+	// Sync before the rename, or a crash could leave the new name pointing at
+	// blocks that never reached the disk. Close is where a buffered-write error
+	// surfaces, so its error is honoured rather than deferred-and-dropped.
+	if err := syncWritten(f); err != nil {
+		f.Close()
+		return writeFailure(err, name)
+	}
 	if err := f.Close(); err != nil {
-		return failure(err, path)
+		return writeFailure(err, name)
 	}
-	// The Job runs as root, so a file it just created is root's. The server runs as
-	// the game uid and could read it (0644) but never rewrite it — a config the
-	// panel authored that Paper then fails to save. Best effort: the content has
-	// landed and reporting failure would lie, and the server's prepare-data
-	// initContainer re-owns anything left behind on its next start anyway.
-	_ = ownWritten(r, path)
+	// The Job runs as root, so the file it just created is root's. The server runs
+	// as the game uid and could read it but never rewrite it — a config the panel
+	// authored that Paper then fails to save. Best effort: the server's
+	// prepare-data initContainer re-owns anything left behind on its next start.
+	_ = ownWritten(r, tmp)
+	if err := r.Rename(tmp, target); err != nil {
+		return writeFailure(err, name)
+	}
+	renamed = true
+	// The rename lives in the directory; sync it so the new entry survives a crash
+	// too. Best effort: the content has landed and reporting failure would lie.
+	if d, err := r.Open(path.Dir(target)); err == nil {
+		_ = d.Sync()
+		d.Close()
+	}
+	return Result{SHA256: digest(content)}
+}
+
+// writeFailure is failure for the steps that move bytes, where a full volume is
+// the likely cause and deserves its own answer: the file is still whole, and the
+// fix is to free space, not to change the path.
+func writeFailure(err error, name string) Result {
+	if errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.EDQUOT) {
+		return Result{Code: CodeNoSpace, Error: fmt.Sprintf(
+			"the server's volume is full; %s was left unchanged", name)}
+	}
+	return failure(err, name)
+}
+
+// maxLinkHops bounds resolveLink, matching the kernel's own loop limit in spirit:
+// a link cycle is a bad path, not a hang.
+const maxLinkHops = 8
+
+// resolveLink follows symlinks at the final component of name and returns the
+// path of the file they lead to, relative to the root. An absolute link target is
+// refused (os.Root would refuse it anyway); a relative one is resolved against
+// the link's directory and must stay inside the root, which the next Lstat
+// through os.Root enforces.
+func resolveLink(r *os.Root, name string) (string, Result) {
+	cur := name
+	for range maxLinkHops {
+		info, err := r.Lstat(cur)
+		if err != nil || info.Mode()&fs.ModeSymlink == 0 {
+			// Missing (a new file) or not a link: the path names itself. Any other
+			// Lstat error surfaces from the caller's own Lstat of the same path.
+			return cur, Result{}
+		}
+		dest, err := r.Readlink(cur)
+		if err != nil {
+			return "", failure(err, name)
+		}
+		if path.IsAbs(dest) {
+			return "", Result{Code: CodeBadPath, Error: fmt.Sprintf(
+				"%s is a symbolic link to %s, outside the server's files", name, dest)}
+		}
+		cur = path.Join(path.Dir(cur), dest)
+		if cur == ".." || strings.HasPrefix(cur, "../") {
+			return "", Result{Code: CodeBadPath, Error: fmt.Sprintf(
+				"%s is a symbolic link leading outside the server's files", name)}
+		}
+	}
+	return "", Result{Code: CodeBadPath, Error: fmt.Sprintf("%s: too many levels of symbolic links", name)}
+}
+
+// checkUnchanged compares the file's current digest with expect. A file larger
+// than MaxReadBytes cannot be the one the caller read, so it is a conflict without
+// hashing it.
+func checkUnchanged(r *os.Root, name, target, expect string) Result {
+	conflict := func(now, why string) Result {
+		return Result{Code: CodeConflict, SHA256: now, Error: fmt.Sprintf(
+			"%s %s since it was opened; reload it, or save again to overwrite", name, why)}
+	}
+	f, err := r.Open(target)
+	if errors.Is(err, fs.ErrNotExist) {
+		return conflict("", "was deleted")
+	}
+	if err != nil {
+		return failure(err, name)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return failure(err, name)
+	}
+	if info.Size() > MaxReadBytes {
+		return conflict("", "has changed")
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, io.LimitReader(f, MaxReadBytes+1)); err != nil {
+		return failure(err, name)
+	}
+	if now := hex.EncodeToString(h.Sum(nil)); now != expect {
+		return conflict(now, "has changed")
+	}
 	return Result{}
 }
+
+// digest is the hex SHA-256 carried in Result.SHA256.
+func digest(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// syncWritten flushes the temporary sibling. A var so a test can fail it the way
+// a full disk would.
+var syncWritten = func(f *os.File) error { return f.Sync() }
 
 // ownWritten hands a written file to the game uid. os.Root.Chown follows a symlink
 // only within the root, so this can never re-own a file outside the mount. A var so

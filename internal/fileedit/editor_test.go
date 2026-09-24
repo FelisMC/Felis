@@ -63,15 +63,15 @@ func TestEditorRendersParams(t *testing.T) {
 	})
 
 	t.Run("read", func(t *testing.T) {
-		r := &fakeRunner{payload: mustPayload(t, Result{Content: []byte("motd=hi\n")})}
+		r := &fakeRunner{payload: mustPayload(t, Result{Content: []byte("motd=hi\n"), SHA256: "abc"})}
 		e := &Editor{Runner: r, Config: Config{Image: "img"}}
 
-		got, err := e.Read(context.Background(), "survival", "server.properties")
+		got, sum, err := e.Read(context.Background(), "survival", "server.properties")
 		if err != nil {
 			t.Fatalf("Read: %v", err)
 		}
-		if string(got) != "motd=hi\n" {
-			t.Fatalf("content = %q", got)
+		if string(got) != "motd=hi\n" || sum != "abc" {
+			t.Fatalf("content = %q sha256 = %q", got, sum)
 		}
 		if r.got[0].Op != OpRead || r.got[0].Path != "server.properties" {
 			t.Fatalf("params = %+v", r.got[0])
@@ -79,14 +79,15 @@ func TestEditorRendersParams(t *testing.T) {
 	})
 
 	t.Run("write", func(t *testing.T) {
-		r := &fakeRunner{payload: mustPayload(t, Result{})}
+		r := &fakeRunner{payload: mustPayload(t, Result{SHA256: "new"})}
 		e := &Editor{Runner: r, Config: Config{Image: "img"}}
 
-		if err := e.Write(context.Background(), "survival", "ops.json", []byte("[]")); err != nil {
+		sum, err := e.Write(context.Background(), "survival", "ops.json", []byte("[]"), "old")
+		if err != nil {
 			t.Fatalf("Write: %v", err)
 		}
-		if r.got[0].Op != OpWrite || string(r.got[0].Content) != "[]" {
-			t.Fatalf("params = %+v", r.got[0])
+		if r.got[0].Op != OpWrite || string(r.got[0].Content) != "[]" || r.got[0].Expect != "old" || sum != "new" {
+			t.Fatalf("params = %+v, sha256 = %q", r.got[0], sum)
 		}
 	})
 }
@@ -100,7 +101,7 @@ func TestEditorMintsAFreshOpID(t *testing.T) {
 	e := &Editor{Runner: r, Config: Config{Image: "img"}}
 
 	for range 3 {
-		if _, err := e.Read(context.Background(), "survival", "x"); err != nil {
+		if _, _, err := e.Read(context.Background(), "survival", "x"); err != nil {
 			t.Fatalf("Read: %v", err)
 		}
 	}
@@ -129,12 +130,14 @@ func TestEditorMapsResultCodes(t *testing.T) {
 		{"missing file", CodeNotFound, ErrNotFound},
 		{"escaping path", CodeBadPath, ErrBadPath},
 		{"oversized", CodeTooLarge, ErrTooLarge},
+		{"changed since read", CodeConflict, ErrConflict},
+		{"volume full", CodeNoSpace, ErrNoSpace},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			r := &fakeRunner{payload: mustPayload(t, Result{Code: tc.code, Error: "detail here"})}
 			e := &Editor{Runner: r, Config: Config{Image: "img"}}
-			_, err := e.Read(context.Background(), "survival", "x")
+			_, _, err := e.Read(context.Background(), "survival", "x")
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("err = %v, want %v", err, tc.want)
 			}
@@ -144,7 +147,7 @@ func TestEditorMapsResultCodes(t *testing.T) {
 	t.Run("an unknown code still fails", func(t *testing.T) {
 		r := &fakeRunner{payload: mustPayload(t, Result{Code: "from_the_future", Error: "?"})}
 		e := &Editor{Runner: r, Config: Config{Image: "img"}}
-		if _, err := e.Read(context.Background(), "survival", "x"); err == nil {
+		if _, _, err := e.Read(context.Background(), "survival", "x"); err == nil {
 			t.Fatal("an unrecognised failure code must not read as success")
 		}
 	})
@@ -152,7 +155,7 @@ func TestEditorMapsResultCodes(t *testing.T) {
 	t.Run("a malformed payload is an error, not an empty success", func(t *testing.T) {
 		r := &fakeRunner{payload: []byte("not json at all")}
 		e := &Editor{Runner: r, Config: Config{Image: "img"}}
-		if _, err := e.Read(context.Background(), "survival", "x"); err == nil {
+		if _, _, err := e.Read(context.Background(), "survival", "x"); err == nil {
 			t.Fatal("a malformed result must fail")
 		}
 	})
@@ -160,7 +163,7 @@ func TestEditorMapsResultCodes(t *testing.T) {
 	t.Run("a runner failure propagates", func(t *testing.T) {
 		r := &fakeRunner{err: errors.New("pod never scheduled")}
 		e := &Editor{Runner: r, Config: Config{Image: "img"}}
-		if _, err := e.Read(context.Background(), "survival", "x"); err == nil {
+		if _, _, err := e.Read(context.Background(), "survival", "x"); err == nil {
 			t.Fatal("a runner error must propagate")
 		}
 	})
@@ -173,7 +176,7 @@ func TestEditorRefusesOversizedWriteBeforeTheCluster(t *testing.T) {
 	r := &fakeRunner{payload: mustPayload(t, Result{})}
 	e := &Editor{Runner: r, Config: Config{Image: "img"}}
 
-	err := e.Write(context.Background(), "survival", "big.txt", make([]byte, MaxWriteBytes+1))
+	_, err := e.Write(context.Background(), "survival", "big.txt", make([]byte, MaxWriteBytes+1), "")
 	if !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("err = %v, want ErrTooLarge", err)
 	}
@@ -197,7 +200,7 @@ func TestEditorNormalisesEmptyResults(t *testing.T) {
 		t.Fatal("an empty directory must list as [], not nil")
 	}
 
-	content, err := e.Read(context.Background(), "survival", "empty.txt")
+	content, _, err := e.Read(context.Background(), "survival", "empty.txt")
 	if err != nil {
 		t.Fatalf("Read: %v", err)
 	}

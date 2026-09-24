@@ -23,10 +23,12 @@ type fakeFileEditor struct {
 	gotServer  string
 	gotPath    string
 	gotContent []byte
+	gotExpect  string
 
 	entries   []fileedit.Entry
 	truncated bool
 	content   []byte
+	sum       string
 }
 
 func (f *fakeFileEditor) List(_ context.Context, server, path string) ([]fileedit.Entry, bool, error) {
@@ -35,17 +37,20 @@ func (f *fakeFileEditor) List(_ context.Context, server, path string) ([]fileedi
 	return f.entries, f.truncated, f.err
 }
 
-func (f *fakeFileEditor) Read(_ context.Context, server, path string) ([]byte, error) {
+func (f *fakeFileEditor) Read(_ context.Context, server, path string) ([]byte, string, error) {
 	f.calls++
 	f.gotServer, f.gotPath = server, path
-	return f.content, f.err
+	return f.content, f.sum, f.err
 }
 
-func (f *fakeFileEditor) Write(_ context.Context, server, path string, content []byte) error {
+func (f *fakeFileEditor) Write(_ context.Context, server, path string, content []byte, expect string) (string, error) {
 	f.calls++
-	f.gotServer, f.gotPath, f.gotContent = server, path, content
-	return f.err
+	f.gotServer, f.gotPath, f.gotContent, f.gotExpect = server, path, content, expect
+	return f.sum, f.err
 }
+
+// testSum is a well-formed sha256 hex digest for the fake to hand out.
+var testSum = strings.Repeat("a", 64)
 
 // mkFiles builds an API whose "survival" server is STOPPED and owned by owner1,
 // with a wired fakeFileEditor — the state in which every file operation is
@@ -310,9 +315,10 @@ func TestFileEditorHandlers(t *testing.T) {
 		}
 	})
 
-	t.Run("read returns base64 content", func(t *testing.T) {
+	t.Run("read returns base64 content and its hash", func(t *testing.T) {
 		api, _, _, files := mkFiles()
 		files.content = []byte("motd=hello\n")
+		files.sum = testSum
 		api.External = staticExternal{p: owner}
 
 		w := do(api.ExternalHandler(), "GET", "/api/v1/servers/survival/file?path=server.properties", "", nil)
@@ -322,11 +328,12 @@ func TestFileEditorHandlers(t *testing.T) {
 		var resp struct {
 			Path    string `json:"path"`
 			Content []byte `json:"content"`
+			SHA256  string `json:"sha256"`
 		}
 		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 			t.Fatalf("body not JSON: %v", err)
 		}
-		if resp.Path != "server.properties" || string(resp.Content) != "motd=hello\n" {
+		if resp.Path != "server.properties" || string(resp.Content) != "motd=hello\n" || resp.SHA256 != testSum {
 			t.Fatalf("unexpected response %+v (%q)", resp, resp.Content)
 		}
 	})
@@ -358,6 +365,53 @@ func TestFileEditorHandlers(t *testing.T) {
 		if len(repo.audits) != 1 || repo.audits[0].Action != "file.write" ||
 			repo.audits[0].Actor != "owner1@example.net" {
 			t.Fatalf("write not audited as expected: %+v", repo.audits)
+		}
+	})
+
+	t.Run("write passes the expected hash through and returns the new one", func(t *testing.T) {
+		api, _, _, files := mkFiles()
+		files.sum = strings.Repeat("b", 64)
+		api.External = staticExternal{p: owner}
+		w := do(api.ExternalHandler(), "PUT", "/api/v1/servers/survival/file?path=server.properties",
+			`{"content":"aGk=","expect_sha256":"`+testSum+`"}`, jsonHeader)
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d (%s)", w.Code, w.Body.String())
+		}
+		if files.gotExpect != testSum {
+			t.Fatalf("executor got expect %q, want %q", files.gotExpect, testSum)
+		}
+		var resp struct {
+			SHA256 string `json:"sha256"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || resp.SHA256 != files.sum {
+			t.Fatalf("response sha256 = %q (%v), want %q", resp.SHA256, err, files.sum)
+		}
+	})
+
+	t.Run("a malformed expected hash -> 400 before the executor", func(t *testing.T) {
+		for _, bad := range []string{"abc", strings.Repeat("A", 64), strings.Repeat("a", 63) + " ", "--op=list"} {
+			api, _, _, files := mkFiles()
+			api.External = staticExternal{p: owner}
+			body, _ := json.Marshal(map[string]any{"content": []byte("hi"), "expect_sha256": bad})
+			w := do(api.ExternalHandler(), "PUT", "/api/v1/servers/survival/file?path=server.properties",
+				string(body), jsonHeader)
+			if w.Code != http.StatusBadRequest || files.calls != 0 {
+				t.Fatalf("expect %q: code = %d calls = %d, want 400 and no Job", bad, w.Code, files.calls)
+			}
+		}
+	})
+
+	t.Run("a stale write -> 409 file_changed, not audited", func(t *testing.T) {
+		api, repo, _, files := mkFiles()
+		files.err = fmt.Errorf("%w: server.properties has changed", fileedit.ErrConflict)
+		api.External = staticExternal{p: owner}
+		w := do(api.ExternalHandler(), "PUT", "/api/v1/servers/survival/file?path=server.properties",
+			`{"content":"aGk=","expect_sha256":"`+testSum+`"}`, jsonHeader)
+		if w.Code != http.StatusConflict || decodeErr(t, w) != "file_changed" {
+			t.Fatalf("code = %d body %s, want 409 file_changed", w.Code, w.Body.String())
+		}
+		if len(repo.audits) != 0 {
+			t.Fatalf("a refused write was audited: %+v", repo.audits)
 		}
 	})
 
@@ -457,6 +511,8 @@ func TestFileEditorErrorMapping(t *testing.T) {
 		{"escaping path", fmt.Errorf("%w: nope", fileedit.ErrBadPath), http.StatusBadRequest, "bad_path"},
 		{"missing file", fmt.Errorf("%w: nope", fileedit.ErrNotFound), http.StatusNotFound, "not_found"},
 		{"oversized file", fmt.Errorf("%w: nope", fileedit.ErrTooLarge), http.StatusRequestEntityTooLarge, "too_large"},
+		{"changed since read", fmt.Errorf("%w: nope", fileedit.ErrConflict), http.StatusConflict, "file_changed"},
+		{"volume full", fmt.Errorf("%w: nope", fileedit.ErrNoSpace), http.StatusInsufficientStorage, "volume_full"},
 		{"timeout", fmt.Errorf("waiting: %w", context.DeadlineExceeded), http.StatusGatewayTimeout, "files_timeout"},
 	}
 

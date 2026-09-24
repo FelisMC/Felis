@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
+  AlertTriangle,
   ArrowUp,
   ChevronRight,
   FileText,
@@ -139,29 +140,44 @@ export function ServerFiles() {
   }, [stopped, statusQ.reload]);
 
   // Editor state. `editable` false marks a binary file (rendered read-only).
+  // `sha256` is the hash the read returned: every save sends it back, so a file
+  // someone changed in the meantime is refused (409 file_changed) and `conflict`
+  // turns on instead of their edit being silently overwritten. `error` is a save
+  // failure, shown inside the dialog where the person is looking.
   const [open, setOpen] = useState<{
     path: string;
     text: string;
     original: string;
     editable: boolean;
+    sha256: string;
+    conflict: boolean;
+    error: string | null;
   } | null>(null);
   const [opening, setOpening] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [reloading, setReloading] = useState(false);
   const [stopping, setStopping] = useState(false);
+
+  async function readInto(p: string) {
+    const r = await api.readServerFile(name, p);
+    const text = decodeText(base64ToBytes(r.content ?? ""));
+    setOpen({
+      path: p,
+      text: text ?? "",
+      original: text ?? "",
+      editable: text !== null,
+      sha256: r.sha256 ?? "",
+      conflict: false,
+      error: null,
+    });
+  }
 
   async function openFile(entry: ServerFileEntry) {
     const p = joinPath(dir, entry.name);
     setOpening(p);
     setMsg(null);
     try {
-      const r = await api.readServerFile(name, p);
-      const text = decodeText(base64ToBytes(r.content ?? ""));
-      setOpen({
-        path: p,
-        text: text ?? "",
-        original: text ?? "",
-        editable: text !== null,
-      });
+      await readInto(p);
     } catch (e) {
       setMsg({ kind: "error", text: humanizeError(e) });
     } finally {
@@ -169,21 +185,42 @@ export function ServerFiles() {
     }
   }
 
-  async function handleSave() {
+  // reloadOpen resolves a conflict by taking the file as it is now.
+  async function reloadOpen() {
+    if (!open || reloading) return;
+    setReloading(true);
+    try {
+      await readInto(open.path);
+    } catch (e) {
+      setOpen({ ...open, error: humanizeError(e) });
+    } finally {
+      setReloading(false);
+    }
+  }
+
+  // handleSave writes the editor's text. `overwrite` drops the precondition,
+  // which is what "Overwrite anyway" on a conflict means.
+  async function handleSave(overwrite = false) {
     if (!open || saving) return;
     setSaving(true);
     setMsg(null);
+    setOpen({ ...open, error: null });
     try {
       await api.writeServerFile(
         name,
         open.path,
         bytesToBase64(new TextEncoder().encode(open.text)),
+        overwrite ? undefined : open.sha256 || undefined,
       );
       setMsg({ kind: "success", text: t("saved", { path: open.path }) });
       setOpen(null);
       void load(dir);
     } catch (e) {
-      setMsg({ kind: "error", text: humanizeError(e) });
+      if ((e as { code?: string }).code === "file_changed") {
+        setOpen({ ...open, conflict: true, error: null });
+      } else {
+        setOpen({ ...open, error: humanizeError(e) });
+      }
     } finally {
       setSaving(false);
     }
@@ -394,7 +431,7 @@ export function ServerFiles() {
       )}
 
       {/* File editor dialog */}
-      <Dialog open={open !== null} onOpenChange={(v) => !v && !saving && setOpen(null)}>
+      <Dialog open={open !== null} onOpenChange={(v) => !v && !saving && !reloading && setOpen(null)}>
         <DialogContent className="max-w-3xl">
           <DialogHeader>
             <DialogTitle className="break-all font-mono text-sm">
@@ -406,6 +443,51 @@ export function ServerFiles() {
           </DialogHeader>
           {open && (
             <>
+              {open.conflict && (
+                <div
+                  role="alert"
+                  className="grid gap-3 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs"
+                >
+                  <div className="flex items-start gap-2 text-amber-700 dark:text-amber-300">
+                    <AlertTriangle className="mt-px h-4 w-4 shrink-0" />
+                    <div>
+                      <p className="text-sm font-medium">{t("conflict_title")}</p>
+                      <p className="mt-0.5 text-foreground/80">{t("conflict_body")}</p>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2 pl-6">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void reloadOpen()}
+                      disabled={saving || reloading}
+                      title={t("conflict_reload_hint")}
+                    >
+                      {reloading ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <RefreshCw className="h-4 w-4" />
+                      )}
+                      {t("conflict_reload")}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      onClick={() => void handleSave(true)}
+                      disabled={saving || reloading || tooLarge}
+                      title={t("conflict_overwrite_hint")}
+                    >
+                      {saving ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Save className="h-4 w-4" />
+                      )}
+                      {t("conflict_overwrite")}
+                    </Button>
+                  </div>
+                </div>
+              )}
+              {open.error && <MessageLine kind="error" message={open.error} />}
               <textarea
                 value={open.text}
                 onChange={(e) => setOpen({ ...open, text: e.target.value })}
@@ -423,13 +505,13 @@ export function ServerFiles() {
                   <Button
                     variant="outline"
                     onClick={() => setOpen(null)}
-                    disabled={saving}
+                    disabled={saving || reloading}
                   >
                     {t("common:cancel")}
                   </Button>
                   <Button
-                    onClick={handleSave}
-                    disabled={saving || !open.editable || !dirty || tooLarge}
+                    onClick={() => void handleSave()}
+                    disabled={saving || reloading || open.conflict || !open.editable || !dirty || tooLarge}
                   >
                     {saving ? (
                       <Loader2 className="h-4 w-4 animate-spin" />

@@ -148,6 +148,32 @@ func TestFilesJobIsolation(t *testing.T) {
 	})
 }
 
+// TestFilesJobExpectArg: a write's precondition hash reaches the entrypoint as a
+// flag, and only a write carries one.
+func TestFilesJobExpectArg(t *testing.T) {
+	sum := strings.Repeat("a", 64)
+	for _, tc := range []struct {
+		op     string
+		expect string
+		want   bool
+	}{
+		{OpWrite, sum, true},
+		{OpWrite, "", false},
+		{OpRead, sum, false},
+	} {
+		p := testParams(tc.op)
+		p.Expect = tc.expect
+		job, err := FilesJob(p)
+		if err != nil {
+			t.Fatalf("FilesJob: %v", err)
+		}
+		args := strings.Join(job.Spec.Template.Spec.Containers[0].Args, " ")
+		if got := strings.Contains(args, "--expect-sha256 "+sum); got != tc.want {
+			t.Fatalf("op %s expect %q: args %q, want flag present = %v", tc.op, tc.expect, args, tc.want)
+		}
+	}
+}
+
 // TestFilesJobWorldMountIsReadOnlyExceptForWrite pins the guarantee that only a
 // write can mutate a world. For list and read the kernel refuses the write, not
 // merely the code — a defence that survives a bug in the entrypoint.

@@ -41,10 +41,13 @@ type JobParams struct {
 	Server string
 	// OpID is the per-invocation identifier that both names the Job and labels its
 	// Pod. See Editor.run for why every invocation gets a fresh one.
-	OpID     string
-	Op       string
-	Path     string
-	Content  []byte // OpWrite only
+	OpID    string
+	Op      string
+	Path    string
+	Content []byte // OpWrite only
+	// Expect is a write's precondition hash (see Execute); empty writes
+	// unconditionally.
+	Expect   string
 	WorldPVC string
 
 	Namespace      string
@@ -152,15 +155,21 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 	// code-review one.
 	readOnlyWorld := p.Op != OpWrite
 
+	args := []string{
+		"--op", p.Op,
+		"--path", p.Path,
+		"--worlds-root", p.WorldsRoot,
+	}
+	// The expected hash is a digest of content the caller already holds, not a
+	// secret, so it rides argv; only the content itself needs the env channel.
+	if p.Op == OpWrite && p.Expect != "" {
+		args = append(args, "--expect-sha256", p.Expect)
+	}
 	container := corev1.Container{
 		Name:    containerName,
 		Image:   p.Image,
 		Command: []string{felisBinaryPath, "files"},
-		Args: []string{
-			"--op", p.Op,
-			"--path", p.Path,
-			"--worlds-root", p.WorldsRoot,
-		},
+		Args:    args,
 		VolumeMounts: []corev1.VolumeMount{
 			{Name: worldVolume, MountPath: p.WorldsRoot, ReadOnly: readOnlyWorld},
 		},

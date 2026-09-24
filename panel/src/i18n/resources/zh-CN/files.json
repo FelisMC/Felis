@@ -19,5 +19,11 @@
   "saved": "已保存 {{path}}",
   "saving": "保存中…",
   "save": "保存",
-  "too_large": "超出编辑器 {{limit}} 上限。"
+  "too_large": "超出编辑器 {{limit}} 上限。",
+  "conflict_title": "文件已被其他人修改",
+  "conflict_body": "你打开这个文件之后，它被改过了（另一位管理者保存过，或者服务器上次运行时改写了它）。你的修改还在编辑框里，没有写入。",
+  "conflict_reload": "载入最新内容",
+  "conflict_reload_hint": "放弃你的修改，改看现在的文件",
+  "conflict_overwrite": "仍然覆盖",
+  "conflict_overwrite_hint": "用你的版本替换对方的修改"
 }

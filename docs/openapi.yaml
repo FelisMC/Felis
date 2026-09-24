@@ -1305,7 +1305,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '409':
-          description: Server is not stopped (not_stopped), or a restore, backup or file write already holds its world volume (maintenance_in_progress).
+          description: Server is not stopped (not_stopped), a restore, backup or file write already holds its world volume (maintenance_in_progress), or the file changed since expect_sha256 was read (file_changed).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -3244,10 +3244,16 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [path, content]
+                required: [path, content, sha256]
                 properties:
                   path: { type: string }
                   content: { type: string, format: byte, description: Base64-encoded file bytes. }
+                  sha256:
+                    type: string
+                    pattern: '^[0-9a-f]{64}$'
+                    description: >-
+                      SHA-256 of the file as stored (before the rcon.password redaction in
+                      server.properties). Send it back as expect_sha256 on the next write.
         '400':
           description: Missing path, invalid server name, or a path that escapes the world root.
           content:
@@ -3289,7 +3295,10 @@ paths:
         survive intact. Writes are capped at 256 KiB — the Job spec carries the content,
         and etcd bounds the object — so a larger body is 413. Same stopped-gate and
         os.Root containment as the read; a write through a symlink leaving the world
-        root is refused. Audited as file.write.
+        root is refused. The replacement is atomic (a synced temporary sibling renamed
+        over the file, keeping its mode), so a failed write leaves the old file whole.
+        With expect_sha256 the write lands only if the file still has that hash;
+        otherwise 409 file_changed. Audited as file.write.
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ accessJWT: [] }]
@@ -3309,6 +3318,13 @@ paths:
               required: [content]
               properties:
                 content: { type: string, format: byte, description: Base64-encoded file bytes. }
+                expect_sha256:
+                  type: string
+                  pattern: '^[0-9a-f]{64}$'
+                  description: >-
+                    The sha256 a read returned. When present, the write is refused with
+                    409 file_changed if the file has changed (or been deleted) since.
+                    Omit it to write unconditionally.
       responses:
         '200':
           description: File written.
@@ -3316,10 +3332,11 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [path, status]
+                required: [path, status, sha256]
                 properties:
                   path: { type: string }
                   status: { type: string, const: written }
+                  sha256: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 of the bytes written. }
         '400':
           description: Missing path, malformed body, invalid server name, or a path that escapes the world root.
           content:
@@ -3341,6 +3358,11 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '413':
           description: The content is larger than the editor writes.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '507':
+          description: The world volume has no room for the write (volume_full); the file is unchanged.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
