@@ -19,5 +19,12 @@
   "toggle_theme": "Toggle theme",
   "pagination_prev": "Previous",
   "pagination_next": "Next",
-  "pagination_of": "Page {{current}} of {{total}}"
+  "pagination_of": "Page {{current}} of {{total}}",
+  "crash_title": "This page hit an error",
+  "crash_body": "The panel ran into a problem rendering this page. Reloading usually fixes it; if it keeps happening, send the error details below to your admin.",
+  "crash_updated_title": "The panel was updated",
+  "crash_updated_body": "A new version of the panel was just released. Reload to open this page.",
+  "crash_reload": "Reload",
+  "crash_details": "Error details",
+  "crash_copy": "Copy error details"
 }

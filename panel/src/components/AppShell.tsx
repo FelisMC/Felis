@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { Cat, Globe, Sun, Moon, LogOut } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import * as SelectPrimitive from "@radix-ui/react-select";
@@ -9,6 +9,7 @@ import { visibleSections, type NavSection } from "@/lib/nav";
 import { Select, SelectContent, SelectItem } from "@/components/ui/select";
 import { useTheme } from "@/lib/theme";
 import { api } from "@/lib/api";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 function SectionGroup({ section, isFirst }: { section: NavSection; isFirst: boolean }) {
   const { t } = useTranslation("navigation");
@@ -138,6 +139,7 @@ function ThemeToggle() {
 
 export function AppShell() {
   const { isAdmin, isOwner } = useTier();
+  const { pathname } = useLocation();
   const { t, i18n } = useTranslation("navigation");
   // Sections are derived purely from is_admin and is_owner: User-Side always,
   // Admin-Side only for admins, Owner-Side only for the platform owner. Both
@@ -200,7 +202,11 @@ export function AppShell() {
         </header>
         <main className="flex flex-1 flex-col p-6">
           <div className="mx-auto flex w-full max-w-8xl flex-1 flex-col gap-6">
-            <Outlet />
+            {/* A crash on one page leaves the navigation usable; moving to
+                another route clears it. */}
+            <ErrorBoundary resetKey={pathname}>
+              <Outlet />
+            </ErrorBoundary>
           </div>
         </main>
       </div>

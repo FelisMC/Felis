@@ -1,4 +1,4 @@
-import { lazy, Suspense, useMemo } from "react";
+import { Suspense, useMemo } from "react";
 import { Link } from "react-router-dom";
 import {
   Activity,
@@ -20,13 +20,19 @@ import { Button } from "@/components/ui/button";
 import { Loading, ErrorState } from "@/components/States";
 import { StatCard } from "@/components/StatCard";
 import { PageHeader } from "@/components/PageHeader";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { FleetGrid } from "@/components/FleetGrid";
 import { api } from "@/lib/api";
 import { useAsync, useConfig } from "@/lib/hooks";
+import { lazyWithReload } from "@/lib/chunk";
+import { webglAvailable } from "@/lib/webgl";
 import type { Phase, ServerInfo, WhitelistImage } from "@/lib/types";
 
 // three.js is heavy and only the Dashboard renders it — split it into its own
 // async chunk so the rest of the panel doesn't pay for it on first load.
-const VoxelFleet = lazy(() =>
+// A failed chunk reloads the tab once (new deploy); after that the card falls
+// back to the flat grid instead of taking the page down.
+const VoxelFleet = lazyWithReload(() =>
   import("@/components/VoxelFleet").then((m) => ({ default: m.VoxelFleet })),
 );
 
@@ -426,9 +432,15 @@ function FleetView({
           </CardHeader>
           <CardContent className="flex-1 flex flex-col p-0 justify-between">
             <div className="flex-1 min-h-[220px] w-full bg-gradient-to-b from-transparent to-primary/5 border-b relative">
-              <Suspense fallback={<Loading label={t("loading_scene")} />}>
-                <VoxelFleet servers={servers} />
-              </Suspense>
+              <ErrorBoundary fallback={() => <FleetGrid servers={servers} reason="error" />}>
+                {webglAvailable() ? (
+                  <Suspense fallback={<Loading label={t("loading_scene")} />}>
+                    <VoxelFleet servers={servers} />
+                  </Suspense>
+                ) : (
+                  <FleetGrid servers={servers} reason="webgl" />
+                )}
+              </ErrorBoundary>
             </div>
             {/* 状态图例说明 + 指标统计 */}
             <div className="p-4 space-y-3 text-xs bg-muted/10">

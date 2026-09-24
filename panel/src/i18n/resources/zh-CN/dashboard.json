@@ -44,5 +44,8 @@
   "legend_unknown": "未知状态",
   "welcome_title": "欢迎使用 Felis 编排平台",
   "welcome_desc": "您已成功登录用户控制台。您可以在「我的服务器」页面查看并认领分配给您的专属节点，或者对其进行休眠、启动和控制台日志监控。",
-  "go_to_servers_btn": "操作我的服务器"
+  "go_to_servers_btn": "操作我的服务器",
+  "fleet_flat_webgl": "浏览器未启用 WebGL，已切换为平面视图。",
+  "fleet_flat_error": "3D 视图加载失败，已切换为平面视图。",
+  "fleet_flat_empty": "还没有服务器"
 }

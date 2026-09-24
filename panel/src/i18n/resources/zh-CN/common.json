@@ -19,5 +19,12 @@
   "toggle_theme": "切换主题",
   "pagination_prev": "上一页",
   "pagination_next": "下一页",
-  "pagination_of": "第 {{current}} / {{total}} 页"
+  "pagination_of": "第 {{current}} / {{total}} 页",
+  "crash_title": "这个页面出错了",
+  "crash_body": "面板渲染这个页面时遇到了问题。重新加载通常就能恢复；如果反复出现，请把下面的错误信息发给管理员。",
+  "crash_updated_title": "面板已更新",
+  "crash_updated_body": "面板刚发布了新版本，这个页面需要重新加载才能打开。",
+  "crash_reload": "重新加载",
+  "crash_details": "错误信息",
+  "crash_copy": "复制错误信息"
 }

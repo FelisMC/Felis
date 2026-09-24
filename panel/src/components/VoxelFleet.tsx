@@ -1,6 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { phaseColor } from "@/components/PhaseBadge";
+import { FleetGrid } from "@/components/FleetGrid";
+import { webglAvailable } from "@/lib/webgl";
 import type { ServerInfo } from "@/lib/types";
 
 // VoxelFleet renders the fleet as a grid of voxels, one per server, colored by
@@ -10,6 +12,8 @@ import type { ServerInfo } from "@/lib/types";
 //   • the render loop is paused while the tab is hidden (no background GPU burn);
 //   • everything is disposed on unmount (no context leak on route changes).
 // Raw three.js (not react-three-fiber) keeps the dependency/build surface minimal.
+// Without WebGL (acceleration off, some VMs and remote desktops) the renderer
+// cannot be created at all, so the card falls back to the flat FleetGrid.
 
 interface Props {
   servers: ServerInfo[];
@@ -18,7 +22,15 @@ interface Props {
 const STARTING = "Starting";
 
 export function VoxelFleet({ servers }: Props) {
+  const [flat, setFlat] = useState(() => !webglAvailable());
+  if (flat) return <FleetGrid servers={servers} reason="webgl" />;
+  return <VoxelScene servers={servers} onUnsupported={() => setFlat(true)} />;
+}
+
+function VoxelScene({ servers, onUnsupported }: Props & { onUnsupported: () => void }) {
   const mountRef = useRef<HTMLDivElement>(null);
+  const onUnsupportedRef = useRef(onUnsupported);
+  onUnsupportedRef.current = onUnsupported;
   // Latest servers without re-running the heavy setup effect on every poll.
   const serversRef = useRef(servers);
   serversRef.current = servers;
@@ -32,7 +44,16 @@ export function VoxelFleet({ servers }: Props) {
     camera.position.set(6, 5.5, 9);
     camera.lookAt(0, 0, 0);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    // The probe can pass while the real context still fails (blocklisted GPU,
+    // context limit reached); three throws then, and the card goes flat.
+    let renderer: THREE.WebGLRenderer;
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    } catch (err) {
+      console.warn("felis panel: WebGL renderer unavailable, showing the flat fleet", err);
+      onUnsupportedRef.current();
+      return;
+    }
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.domElement.style.position = "absolute";
     renderer.domElement.style.top = "0";
