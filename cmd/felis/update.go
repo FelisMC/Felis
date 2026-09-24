@@ -50,10 +50,13 @@ type updateTarget struct {
 // and even on the bootstrap path it re-images felis-api from the binary setup is already
 // running (FELIS_BOOTSTRAP_BINARY), which looks like an update and changes nothing.
 //
-// The URL is the same one-liner both READMEs hand out. While the repo is private it
+// The URL is the one-liner both READMEs hand out, read at a tag rather than main: the
+// script's release channel installs the newest release's binary, and main can carry
+// installer changes that binary was never tested with. installerRef picks the tag and
+// renderApplyGuidance substitutes it for {ref}. While the repo is private the URL
 // answers 404 (raw.githubusercontent.com hides private repos), which is why the trailer
 // below points at the README's token'd form for that case.
-const installerRerun = "curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap.sh | sudo bash"
+const installerRerun = "curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/{ref}/deploy/bootstrap.sh | sudo bash"
 
 // updateTargets is the selector table. panel and plugins both resolve to felis-api
 // because they are not separately versioned: the panel is compiled into the felis
@@ -258,7 +261,7 @@ func renderApplyGuidance(res updater.Result, selected map[string]bool, force boo
 			// component, and reinstalling the current release is a valid repair action.
 			fmt.Fprintf(&b, "  note: cannot tell whether %s is current — its latest version could not be discovered (see above); this reinstalls it either way\n", t.component)
 		}
-		fmt.Fprintf(&b, "  run: %s\n", t.command)
+		fmt.Fprintf(&b, "  run: %s\n", strings.ReplaceAll(t.command, "{ref}", installerRef(byComponent)))
 		offeredCommand = true
 	}
 	// Only explain the command when one was actually offered; a --mc-only run has
@@ -276,4 +279,32 @@ func renderApplyGuidance(res updater.Result, selected map[string]bool, force boo
 		b.WriteString("\nRe-running the installer applies everything above: it fetches the newest version on\nthe channel in effect and re-applies the bundle (release is the default). The channel\nis not persisted, so pass FELIS_VERSION_BOOTSTRAP=dev if this host tracks main. While\nthis repo is private, the one-liner above 404s without a token; the README's install\nsection has the token'd form that works. felis setup is not this path: on a completed\ninstall it opens the config console and installs nothing newer. Restart game servers\nafterwards.\n")
 	}
 	return b.String()
+}
+
+// installerRef is the git ref the installer re-run reads bootstrap.sh from: the newest
+// stable felis release when the feed answered, which is the release that script then
+// installs; else the release this host runs; main only when neither is a release tag.
+func installerRef(byComponent map[string]updates.Action) string {
+	a, ok := byComponent["felis-api"]
+	if !ok {
+		return "main"
+	}
+	if a.LatestKnown && isReleaseTag(a.Latest) {
+		return a.Latest.String()
+	}
+	if isReleaseTag(a.Current) {
+		return a.Current.String()
+	}
+	return "main"
+}
+
+// isReleaseTag reports whether v was read from a stable vX.Y.Z tag, the only refs
+// release.yml publishes a binary for.
+func isReleaseTag(v updates.Version) bool {
+	s := v.String()
+	if !strings.HasPrefix(s, "v") || v.IsPrerelease() {
+		return false
+	}
+	_, err := updates.Parse(s)
+	return err == nil
 }

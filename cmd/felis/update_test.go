@@ -167,3 +167,35 @@ func TestApplyGuidancePointsEveryComponentAtTheInstaller(t *testing.T) {
 		t.Fatalf("--mc offers no command; the trailer is a non-sequitur:\n%s", mc)
 	}
 }
+
+// The re-run reads bootstrap.sh at the tag whose binary it installs. main can carry
+// installer changes no release was tested with.
+func TestApplyGuidanceReadsTheInstallerAtTheReleaseTag(t *testing.T) {
+	v := func(s string) updates.Version {
+		t.Helper()
+		out, err := updates.Parse(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	cases := []struct {
+		name string
+		api  []updates.Action
+		want string
+	}{
+		{"latest known", []updates.Action{{Component: "felis-api", Kind: updates.ActionNotify, Current: v("v1.3.0"), Latest: v("v1.4.0"), LatestKnown: true}}, "/FelisMC/Felis/v1.4.0/deploy/bootstrap.sh"},
+		{"latest unknown", []updates.Action{{Component: "felis-api", Kind: updates.ActionNone, Current: v("v1.3.0")}}, "/FelisMC/Felis/v1.3.0/deploy/bootstrap.sh"},
+		{"prerelease latest", []updates.Action{{Component: "felis-api", Kind: updates.ActionNone, Current: v("v1.3.0"), Latest: v("v1.4.0-rc.1"), LatestKnown: true}}, "/FelisMC/Felis/v1.3.0/deploy/bootstrap.sh"},
+		{"nothing known", nil, "/FelisMC/Felis/main/deploy/bootstrap.sh"},
+	}
+	for _, c := range cases {
+		out := renderApplyGuidance(planResult(c.api), map[string]bool{"velocity": true, "panel": true}, true)
+		if !strings.Contains(out, c.want) {
+			t.Errorf("%s: want %q in:\n%s", c.name, c.want, out)
+		}
+		if strings.Contains(out, "{ref}") {
+			t.Errorf("%s: placeholder left in:\n%s", c.name, out)
+		}
+	}
+}
