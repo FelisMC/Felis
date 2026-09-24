@@ -14,7 +14,9 @@ package api
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -181,6 +183,10 @@ type API struct {
 	// X-Forwarded-For behind an operator proxy). Empty means the TCP peer.
 	ClientIPHeader string
 
+	// AccessLog receives one line per API request (observe.go). Nil logs logfmt
+	// to stderr.
+	AccessLog *slog.Logger
+
 	// Now is the clock, injectable for tests. Defaults to time.Now.
 	Now func() time.Time
 
@@ -200,6 +206,26 @@ type API struct {
 	authDoorBuckets *bucketSet
 	mailOnce        sync.Once
 	mailBuckets     *bucketSet
+
+	drainInit  sync.Once
+	drainClose sync.Once
+	drain      chan struct{}
+}
+
+// streamsClosing is closed once CloseStreams runs.
+func (a *API) streamsClosing() <-chan struct{} {
+	a.drainInit.Do(func() { a.drain = make(chan struct{}) })
+	return a.drain
+}
+
+// CloseStreams ends every log stream this API is relaying, now and from now on.
+// http.Server.Shutdown waits for handlers to return and cancels nothing, so a
+// console left open would hold the process until the pod's grace period ran out;
+// register this with RegisterOnShutdown. The EventSource on the other end
+// reconnects, and resumes from its Last-Event-ID on the next instance.
+func (a *API) CloseStreams() {
+	a.streamsClosing()
+	a.drainClose.Do(func() { close(a.drain) })
 }
 
 // panelURL returns the public player-console origin ("https://console.<root>"),
@@ -625,14 +651,14 @@ func (a *API) externalAPIRoutes() []apiRoute {
 // InternalHandler builds the internal-face http.Handler: service-token auth, no
 // Zero Trust (spec §14 red line). /healthz and /readyz are unauthenticated.
 func (a *API) InternalHandler() http.Handler {
-	return a.buildFace(a.internalAPIRoutes(), a.requireInternal)
+	return a.buildFace("internal", a.internalAPIRoutes(), a.requireInternal)
 }
 
 // ExternalHandler builds the external-face http.Handler: Access-JWT auth on every
 // /api/v1 route, with admin-tier routes additionally gated by the admin Access
 // path inside their handlers.
 func (a *API) ExternalHandler() http.Handler {
-	return a.buildFace(a.externalAPIRoutes(), a.requireExternal)
+	return a.buildFace("external", a.externalAPIRoutes(), a.requireExternal)
 }
 
 // buildFace assembles one face from its route table. Public routes are mounted
@@ -641,7 +667,7 @@ func (a *API) ExternalHandler() http.Handler {
 // adminOnly, and Owner routes in ownerOnly. Because both faces are built from the
 // same table the OpenAPI parity test reads, the served surface and the documented
 // surface cannot drift apart without failing the build.
-func (a *API) buildFace(routes []apiRoute, guard func(http.Handler) http.Handler) http.Handler {
+func (a *API) buildFace(face string, routes []apiRoute, guard func(http.Handler) http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	auth := http.NewServeMux()
 	for _, rt := range routes {
@@ -651,7 +677,7 @@ func (a *API) buildFace(routes []apiRoute, guard func(http.Handler) http.Handler
 			if rt.AuthDoor {
 				h = a.throttleAuthDoor(h)
 			}
-			mux.HandleFunc(pattern, h)
+			mux.HandleFunc(pattern, tagRoute(rt.Pattern, h))
 			continue
 		}
 		h := rt.h
@@ -667,22 +693,61 @@ func (a *API) buildFace(routes []apiRoute, guard func(http.Handler) http.Handler
 		if !rt.SetupAllowed {
 			h = a.requireOnboarded(h)
 		}
-		auth.HandleFunc(pattern, h)
+		auth.HandleFunc(pattern, tagRoute(rt.Pattern, h))
 	}
 	guarded := guard(auth)
 	mux.Handle("/api/v1/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, pattern := auth.Handler(r); pattern == "" {
-			http.NotFound(w, r)
+		_, pattern := auth.Handler(r)
+		if pattern == "" {
+			writeNoRoute(w, r, mux, auth)
 			return
 		}
+		// Named before the guard runs, so a refused request is counted under
+		// the route it asked for.
+		noteRoute(r, pattern)
 		guarded.ServeHTTP(w, r)
 	}))
-	return a.baseChain(mux)
+	top := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, pattern := mux.Handler(r); pattern == "" {
+			writeNoRoute(w, r, mux, auth)
+			return
+		}
+		mux.ServeHTTP(w, r)
+	})
+	return a.baseChain(face, top)
 }
 
-// baseChain wraps a handler in the cross-cutting middleware shared by both faces.
-func (a *API) baseChain(h http.Handler) http.Handler {
-	return withRequestID(withRecover(h))
+// baseChain wraps a handler in the cross-cutting middleware shared by both faces:
+// the request id, then the access log and metrics (which see the final status of
+// everything inside), the response security headers, the cross-site write fence,
+// the request-body read deadline, and panic recovery.
+func (a *API) baseChain(face string, h http.Handler) http.Handler {
+	return withRequestID(a.observe(face, withSecurityHeaders(rejectCrossSiteWrites(withBodyDeadline(withRecover(h))))))
+}
+
+// writeNoRoute answers a request no route took, in the API's error envelope: 405
+// with an Allow header when the path exists under other methods, 404 otherwise.
+// ServeMux's own answers are plain text and turn a wrong method on a guarded
+// route into a 404, since the guarded routes sit behind one catch-all.
+func writeNoRoute(w http.ResponseWriter, r *http.Request, muxes ...*http.ServeMux) {
+	var allow []string
+	for _, m := range []string{http.MethodGet, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		probe := r.Clone(r.Context())
+		probe.Method = m
+		for _, mux := range muxes {
+			if _, p := mux.Handler(probe); p != "" && p != "/api/v1/" {
+				allow = append(allow, m)
+				break
+			}
+		}
+	}
+	if len(allow) > 0 {
+		w.Header().Set("Allow", strings.Join(allow, ", "))
+		writeError(w, r, newError(http.StatusMethodNotAllowed, "method_not_allowed",
+			"%s is not allowed here; use %s", r.Method, strings.Join(allow, ", ")))
+		return
+	}
+	writeError(w, r, newError(http.StatusNotFound, "not_found", "no such endpoint"))
 }
 
 // requireOnboarded fences an authenticated route behind the setup-lockdown: a
@@ -734,6 +799,7 @@ type ctxKey int
 const (
 	ctxKeyRequestID ctxKey = iota
 	ctxKeyPrincipal
+	ctxKeyReqInfo
 )
 
 func requestIDFromContext(ctx context.Context) string {

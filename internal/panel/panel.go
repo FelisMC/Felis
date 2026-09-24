@@ -3,7 +3,9 @@ package panel
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"embed"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -119,6 +121,7 @@ func Handler(api http.Handler, rootDomain, panelHost, adminHost, version string)
 		build:         parseBuildVersion(version),
 		files:         files,
 		fileServer:    http.FileServer(http.FS(files)),
+		csp:           contentSecurityPolicy(files),
 	}
 }
 
@@ -130,9 +133,66 @@ type handler struct {
 	build         buildInfo
 	files         fs.FS
 	fileServer    http.Handler
+	csp           string
+}
+
+// inlineScript matches a <script> with no attributes: the pre-paint theme switch
+// in index.html, the one script the page runs inline.
+var inlineScript = regexp.MustCompile(`(?s)<script>(.*?)</script>`)
+
+// contentSecurityPolicy is the policy the console's pages are served under. The
+// bundle is same-origin, so scripts run only from 'self' plus, by hash, the inline
+// scripts index.html carries as built (hashed here, at start, so a rebuilt page
+// cannot drift from its policy). Styles allow inline: the UI library sets style
+// attributes and injects style tags. Images take data: and blob: for rendered
+// QR codes and downloads; every request the page makes goes to its own origin.
+func contentSecurityPolicy(files fs.FS) string {
+	scripts := "'self'"
+	if index, err := fs.ReadFile(files, "index.html"); err == nil {
+		for _, m := range inlineScript.FindAllSubmatch(index, -1) {
+			sum := sha256.Sum256(m[1])
+			scripts += " 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
+		}
+	}
+	return strings.Join([]string{
+		"default-src 'self'",
+		"script-src " + scripts,
+		"style-src 'self' 'unsafe-inline'",
+		"img-src 'self' data: blob:",
+		"font-src 'self' data:",
+		"connect-src 'self'",
+		"object-src 'none'",
+		"base-uri 'none'",
+		"form-action 'self'",
+		"frame-ancestors 'none'",
+	}, "; ")
+}
+
+// setPageHeaders marks every response the console serves: no framing (the
+// passkey and approval buttons must not sit under someone else's page), no
+// sniffing, no referrer carrying a setup token off the site, and HSTS when the
+// request came through a TLS edge. The API sets its own, stricter set on /api/.
+func (h *handler) setPageHeaders(w http.ResponseWriter, r *http.Request) {
+	hdr := w.Header()
+	hdr.Set("Content-Security-Policy", h.csp)
+	hdr.Set("X-Content-Type-Options", "nosniff")
+	hdr.Set("X-Frame-Options", "DENY")
+	hdr.Set("Referrer-Policy", "no-referrer")
+	hdr.Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+	// The tunnel reaches this listener over TLS too, so what the browser saw is
+	// the edge's X-Forwarded-Proto. A browser straight on the self-signed listener
+	// sends none, and HSTS over a certificate error is ignored (RFC 6797 §8.1).
+	if strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+		hdr.Set("Strict-Transport-Security", "max-age=31536000")
+	}
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || strings.HasPrefix(r.URL.Path, "/api/") {
+		h.api.ServeHTTP(w, r)
+		return
+	}
+	h.setPageHeaders(w, r)
 	// WeChat/QQ in-app browsers cannot run WebAuthn, so steer their document
 	// navigations to a "open in your system browser" interstitial before the SPA
 	// (which is built around passkey enrollment) ever loads. See webview.go.
@@ -140,8 +200,6 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
-	case r.URL.Path == "/healthz" || r.URL.Path == "/readyz" || strings.HasPrefix(r.URL.Path, "/api/"):
-		h.api.ServeHTTP(w, r)
 	case r.URL.Path == "/config.json":
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
@@ -153,8 +211,16 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Build:         h.build,
 		})
 	case h.hasStaticFile(r.URL.Path):
+		// Vite names every file under assets/ by its content hash, so a cached
+		// copy can never go stale; everything else revalidates.
+		if strings.HasPrefix(r.URL.Path, "/assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
 		h.fileServer.ServeHTTP(w, r)
 	default:
+		w.Header().Set("Cache-Control", "no-cache")
 		h.serveIndex(w, r)
 	}
 }

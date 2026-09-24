@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"mime"
 	"net/http"
 	"strings"
@@ -31,11 +32,17 @@ func requireJSONContentType(r *http.Request) error {
 }
 
 // decodeJSON strictly decodes a small request body into v, rejecting unknown
-// fields and trailing data so malformed callers fail fast with 400.
+// fields and trailing data so malformed callers fail fast with 400, and a body
+// past maxBodyBytes with 413.
 func decodeJSON(w http.ResponseWriter, r *http.Request, v any) error {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBodyBytes))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			return newError(http.StatusRequestEntityTooLarge, "too_large",
+				"request body is larger than %d bytes", tooBig.Limit)
+		}
 		return newError(http.StatusBadRequest, "bad_request", "invalid request body: %v", err)
 	}
 	if dec.More() {

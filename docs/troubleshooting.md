@@ -1238,6 +1238,26 @@ All four mandated metrics have real producers; scrape them when triaging:
 - `felis_reaper_worlds_deleted_total` — increments only after a world PVC is
   actually deleted post-backup (§10); a spike here means worlds crossed the 15d
   idle line — cross-check that join events are flowing (§10 risk vectors).
+- `felis_http_requests_total{face,method,route,code}` and
+  `felis_http_request_duration_seconds{face,route}` — every API request, by the
+  route pattern it matched (`/api/v1/servers/{name}/status`, never the raw
+  path; `unmatched` for a path no route serves). `face` is `internal` or
+  `external`. Log streams count as requests but stay out of the latency
+  histogram. A rise in `code=~"5.."` on one route narrows a failure to one
+  handler; `route="unmatched"` rising is someone scanning.
+- The Go runtime and process series (`go_*`, `process_*`) of `felis-api`:
+  goroutines, heap, open file descriptors. Goroutines that climb without
+  falling back usually mean streams or uploads that never end.
+
+The API also writes one access-log line per request to its log, in logfmt:
+`face`, `method`, `route`, `path`, `status`, `duration_ms`, `bytes`,
+`request_id` (the id in every error envelope) and `principal` (the user id,
+once signed in). Successful probes and scrapes are left out.
+
+```bash
+kubectl -n felis logs deploy/felis-api | grep 'msg=request' | grep 'status=5'
+kubectl -n felis logs deploy/felis-api | grep 'request_id=<id from the error>'
+```
 
 ### Scraping
 
@@ -1250,7 +1270,8 @@ annotated Service endpoints picks them up as is.
   `felis_build_info{component="operator"}`, and controller-runtime's
   `controller_runtime_reconcile_*` / `workqueue_*` series.
 - `felis-api` internal face `:8081/metrics` (Service `felis-api-internal`) —
-  `felis_build_info{component="api"}`,
+  `felis_build_info{component="api"}`, the `felis_http_*` request series, the
+  `go_*`/`process_*` runtime series,
   `felis_image_build_failures_total`, and the sign-in series of §17
   (`felis_mail_total`, `felis_rate_limited_total`,
   `felis_auth_otp_lockouts_total`, `felis_auth_failures_total`,

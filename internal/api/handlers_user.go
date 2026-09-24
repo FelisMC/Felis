@@ -176,7 +176,34 @@ func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 		a.writeLookupError(w, r, err)
 		return
 	}
+	// The internal face (no principal) is the platform itself. On the external
+	// face the full record (image, resources, endpoint) is the owner's and the
+	// staff's; anyone else signed in sees what the game's own server list shows.
+	if p := principalFromContext(r.Context()); p != nil {
+		rec, err := a.Repo.ServerByName(r.Context(), name)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			writeError(w, r, err)
+			return
+		}
+		if !a.isOwnerOrAdmin(p, rec) {
+			info = publicServerInfo(info)
+		}
+	}
 	writeJSON(w, http.StatusOK, info)
+}
+
+// publicServerInfo keeps the fields any signed-in caller may see of a server
+// that is not theirs.
+func publicServerInfo(s *ServerInfo) *ServerInfo {
+	return &ServerInfo{
+		Name:          s.Name,
+		Subdomain:     s.Subdomain,
+		DisplayName:   s.DisplayName,
+		Phase:         s.Phase,
+		Ready:         s.Ready,
+		PlayersOnline: s.PlayersOnline,
+		PlayersMax:    s.PlayersMax,
+	}
 }
 
 // handleMe returns the calling principal's own identity (spec §14 tiering). The

@@ -10,6 +10,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -415,15 +416,17 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	}
 	go reapRejectedContexts(ctx, submissions, stderr)
 
+	servers := []*http.Server{internalSrv, externalSrv}
+	if httpsSrv != nil {
+		servers = append(servers, httpsSrv)
+	}
+	for _, srv := range servers {
+		srv.RegisterOnShutdown(a.CloseStreams)
+	}
+
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		_ = internalSrv.Shutdown(shutdownCtx)
-		_ = externalSrv.Shutdown(shutdownCtx)
-		if httpsSrv != nil {
-			_ = httpsSrv.Shutdown(shutdownCtx)
-		}
+		shutdownServers(servers, apiShutdownGrace, stderr)
 		return 0
 	case err := <-errc:
 		if err != nil && err != http.ErrServerClosed {
@@ -443,7 +446,29 @@ const (
 	// apiIdleTimeout caps how long a kept-alive connection may sit idle between
 	// requests before the server closes it, bounding idle-connection exhaustion.
 	apiIdleTimeout = 120 * time.Second
+	// apiShutdownGrace is how long the listeners drain after SIGTERM. The pod gets
+	// the Kubernetes default of 30s before SIGKILL; this leaves the rest for the
+	// process to exit.
+	apiShutdownGrace = 20 * time.Second
 )
+
+// shutdownServers drains every listener at once under one deadline: in turn, a
+// slow first listener would spend the time the others needed. Log streams end
+// through RegisterOnShutdown (API.CloseStreams); what is still running when the
+// deadline passes is cut off with the process.
+func shutdownServers(servers []*http.Server, grace time.Duration, stderr io.Writer) {
+	ctx, cancel := context.WithTimeout(context.Background(), grace)
+	defer cancel()
+	var wg sync.WaitGroup
+	for _, srv := range servers {
+		wg.Go(func() {
+			if err := srv.Shutdown(ctx); err != nil {
+				fmt.Fprintf(stderr, "felis api: shutdown %s: %v\n", srv.Addr, err)
+			}
+		})
+	}
+	wg.Wait()
+}
 
 // newAPIServer builds an http.Server with hardened header/idle timeouts (gosec
 // G112) shared by all three felis-api listeners (internal, external, https).

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 
@@ -80,7 +81,11 @@ func (a *API) handleServerConsole(w http.ResponseWriter, r *http.Request) {
 	// Open the follow stream. Every error must be resolved HERE, into a normal JSON
 	// envelope, because relayLogStream commits the 200 + SSE headers and no error
 	// body can follow it.
-	src, err := a.Logs.StreamLogs(r.Context(), name)
+	ctx := r.Context()
+	if since, ok := logSinceFromRequest(r, a.now()); ok {
+		ctx = withLogSince(ctx, since)
+	}
+	src, err := a.Logs.StreamLogs(ctx, name)
 	switch {
 	case errors.Is(err, ErrConsoleUnavailable):
 		writeError(w, r, newError(http.StatusServiceUnavailable, "console_unavailable",
@@ -99,5 +104,35 @@ func (a *API) handleServerConsole(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.audit(r, "console.attach", name)
-	relayLogStream(w, r, src)
+	relayLogStream(w, r, src, a.streamRecheck(r, func(ctx context.Context, p *Principal) error {
+		rec, err := a.Repo.ServerByName(ctx, name)
+		switch {
+		case errors.Is(err, ErrNotFound):
+			return errForbidden // the server is gone, and the grant with it
+		case err != nil:
+			return nil
+		case !a.isOwnerOrAdmin(p, rec):
+			return errForbidden
+		}
+		return nil
+	}), a.streamsClosing())
+}
+
+// streamRecheck builds the streamGuard for an external-face stream: it re-runs the
+// authentication the stream opened with (the session may have been revoked or
+// expired, the account disabled), the op.console staff gate, and then allow for the
+// route's own rule. An unreachable session store is not a verdict (see streamGuard).
+func (a *API) streamRecheck(r *http.Request, allow func(ctx context.Context, p *Principal) error) streamGuard {
+	return func(ctx context.Context) error {
+		p, err := a.External.Authenticate(r)
+		switch {
+		case errors.Is(err, errAuthBackend):
+			return nil
+		case err != nil || p == nil:
+			return errUnauthorized
+		case hostIsAdminConsole(r, a.RootDomain, a.AdminHostname) && !p.IsAdmin():
+			return errForbidden
+		}
+		return allow(ctx, p)
+	}
 }

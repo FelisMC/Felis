@@ -1,11 +1,14 @@
 package panel
 
 import (
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 func TestHandlerServesPanelAndConfig(t *testing.T) {
@@ -84,5 +87,61 @@ func TestParseBuildVersionSplitsBothStampForms(t *testing.T) {
 					tc.raw, got.Release, got.Commit, got.Dev, tc.release, tc.commit, tc.dev)
 			}
 		})
+	}
+}
+
+// The console's pages go out under a CSP that admits the inline theme script by
+// its hash (and nothing else inline), cannot be framed, and cache by name:
+// hashed assets forever, the page itself never without revalidation.
+func TestHandlerSetsPageSecurityAndCacheHeaders(t *testing.T) {
+	h := Handler(http.NotFoundHandler(), "example.test", "", "", "v1.2.3")
+
+	w := httptest.NewRecorder()
+	// Through the tunnel: TLS to the origin as well, the edge's scheme in XFP.
+	r := httptest.NewRequest(http.MethodGet, "https://console.example.test/servers/survival", nil)
+	r.Header.Set("X-Forwarded-Proto", "https")
+	h.ServeHTTP(w, r)
+	csp := w.Header().Get("Content-Security-Policy")
+	for _, want := range []string{"script-src 'self'", "frame-ancestors 'none'", "object-src 'none'", "base-uri 'none'"} {
+		if !strings.Contains(csp, want) {
+			t.Errorf("CSP %q lacks %q", csp, want)
+		}
+	}
+	if strings.Contains(csp, "'unsafe-inline'") && !strings.Contains(csp, "style-src 'self' 'unsafe-inline'") {
+		t.Errorf("CSP %q allows inline outside styles", csp)
+	}
+	for k, want := range map[string]string{
+		"X-Frame-Options":           "DENY",
+		"X-Content-Type-Options":    "nosniff",
+		"Referrer-Policy":           "no-referrer",
+		"Strict-Transport-Security": "max-age=31536000",
+		"Cache-Control":             "no-cache",
+	} {
+		if got := w.Header().Get(k); got != want {
+			t.Errorf("%s = %q, want %q", k, got, want)
+		}
+	}
+
+	// Straight to the self-signed listener: no HSTS.
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodGet, "https://10.0.0.7:30443/", nil)
+	h.ServeHTTP(w, r)
+	if got := w.Header().Get("Strict-Transport-Security"); got != "" {
+		t.Errorf("HSTS on the self-signed listener: %q", got)
+	}
+}
+
+func TestContentSecurityPolicyHashesInlineScripts(t *testing.T) {
+	script := "\n      document.documentElement.classList.add(\"dark\");\n    "
+	files := fstest.MapFS{"index.html": {Data: []byte(
+		"<html><head><script>" + script + "</script>" +
+			`<script type="module" src="/assets/index.js"></script></head></html>`)}}
+	sum := sha256.Sum256([]byte(script))
+	want := "script-src 'self' 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "';"
+	if csp := contentSecurityPolicy(files); !strings.Contains(csp, want) {
+		t.Fatalf("CSP %q, want %q", csp, want)
+	}
+	if csp := contentSecurityPolicy(fstest.MapFS{}); !strings.Contains(csp, "script-src 'self';") {
+		t.Fatalf("CSP without an index = %q", csp)
 	}
 }

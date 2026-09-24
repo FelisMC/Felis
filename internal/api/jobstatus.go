@@ -17,8 +17,8 @@ type AsyncJob struct {
 	Kind       string    `json:"kind"`  // "backup" | "restore"
 	State      string    `json:"state"` // "running" | "succeeded" | "failed"
 	Message    string    `json:"message,omitempty"`
-	StartedAt  time.Time `json:"started_at,omitempty"`
-	FinishedAt time.Time `json:"finished_at,omitempty"`
+	StartedAt  time.Time `json:"started_at,omitzero"`
+	FinishedAt time.Time `json:"finished_at,omitzero"`
 }
 
 // JobStatusReader reads the newest backup/restore Jobs for a server, newest

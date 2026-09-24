@@ -21,7 +21,7 @@ const StaleAfter = 12 * time.Hour
 type Status struct {
 	LastAttempt time.Time `json:"last_attempt"`
 	// LastSuccess is the last run in which every step succeeded.
-	LastSuccess time.Time `json:"last_success,omitempty"`
+	LastSuccess time.Time `json:"last_success,omitzero"`
 	LastError   string    `json:"last_error,omitempty"`
 	Endpoint    string    `json:"endpoint"`
 	Bucket      string    `json:"bucket"`

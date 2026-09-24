@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -376,7 +377,7 @@ type interleaveWriter struct {
 
 func (b *interleaveWriter) Write(p []byte) (int, error) {
 	s := string(p)
-	if strings.HasPrefix(s, "data:") {
+	if strings.Contains(s, "\ndata:") {
 		b.sawData = true
 	}
 	if s == sseHeartbeat {
@@ -552,7 +553,7 @@ type firstDataWriter struct {
 
 func (b *firstDataWriter) Write(p []byte) (int, error) {
 	n, err := b.ResponseWriter.Write(p)
-	if strings.HasPrefix(string(p), "data:") {
+	if strings.Contains(string(p), "\ndata:") {
 		b.once.Do(func() { close(b.data) })
 	}
 	return n, err
@@ -687,7 +688,7 @@ func TestRelayLogStreamWriteDeadlineSeversStalledReader(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		relayLogStream(w, r, src)
+		relayLogStream(w, r, src, nil, nil)
 		close(done)
 	}()
 
@@ -762,7 +763,7 @@ func TestRelayLogStreamClearsWriteDeadlineOnReturn(t *testing.T) {
 	w := newDeadlineRecordWriter()
 	r := httptest.NewRequest("GET", "/api/v1/servers/survival/console", nil)
 
-	relayLogStream(w, r, src)
+	relayLogStream(w, r, src, nil, nil)
 
 	last, sawPositive := w.finalDeadline()
 	if !sawPositive {
@@ -773,5 +774,247 @@ func TestRelayLogStreamClearsWriteDeadlineOnReturn(t *testing.T) {
 	}
 	if !src.closed {
 		t.Fatal("relay returned without closing the source")
+	}
+}
+
+// switchExternal is an Authenticator a test can revoke mid-stream.
+type switchExternal struct {
+	mu  sync.Mutex
+	p   *Principal
+	err error
+}
+
+func (s *switchExternal) Authenticate(*http.Request) (*Principal, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.p, s.err
+}
+
+func (s *switchExternal) set(p *Principal, err error) {
+	s.mu.Lock()
+	s.p, s.err = p, err
+	s.mu.Unlock()
+}
+
+// vanishingServerRepo lets a test delete every server while a stream reads them.
+type vanishingServerRepo struct {
+	*fakeRepo
+	mu   sync.Mutex
+	gone bool
+}
+
+func (v *vanishingServerRepo) vanish() {
+	v.mu.Lock()
+	v.gone = true
+	v.mu.Unlock()
+}
+
+func (v *vanishingServerRepo) ServerByName(ctx context.Context, name string) (*ServerRecord, error) {
+	v.mu.Lock()
+	gone := v.gone
+	v.mu.Unlock()
+	if gone {
+		return nil, ErrNotFound
+	}
+	return v.fakeRepo.ServerByName(ctx, name)
+}
+
+func shrinkStreamTimers(t *testing.T, recheck, lifetime time.Duration) {
+	t.Helper()
+	origRecheck, origLife := streamRecheckEvery, streamMaxLifetime
+	streamRecheckEvery, streamMaxLifetime = recheck, lifetime
+	t.Cleanup(func() { streamRecheckEvery, streamMaxLifetime = origRecheck, origLife })
+}
+
+// A stream is authorized when it opens; a session revoked (or a server handed to
+// someone else) afterwards must not keep the console flowing. The relay re-asks
+// on a timer and ends with "event: revoked" once the answer changes.
+func TestServerConsoleStreamEndsWhenAccessIsWithdrawn(t *testing.T) {
+	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
+	stranger := &Principal{UserID: "someone", Email: "someone@example.net", Role: "user"}
+
+	for _, tc := range []struct {
+		name   string
+		revoke func(ext *switchExternal, repo *vanishingServerRepo)
+	}{
+		{"session revoked", func(ext *switchExternal, _ *vanishingServerRepo) { ext.set(nil, errUnauthorized) }},
+		{"caller no longer owns the server", func(ext *switchExternal, _ *vanishingServerRepo) { ext.set(stranger, nil) }},
+		{"server deleted", func(_ *switchExternal, repo *vanishingServerRepo) { repo.vanish() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			shrinkStreamTimers(t, 20*time.Millisecond, time.Hour)
+			repo := &vanishingServerRepo{fakeRepo: newFakeRepo()}
+			repo.byName["survival"] = &ServerRecord{Name: "survival", OwnerID: "owner1"}
+			ext := &switchExternal{p: owner}
+			a := newTestAPI(repo, newFakeCluster())
+			a.External = ext
+			started := make(chan struct{})
+			streamer := &fakeLogStreamer{srcFromCtx: func(ctx context.Context) io.ReadCloser {
+				return &ctxBlockingReadCloser{ctx: ctx, first: []byte("boot\n"), firstRead: started, closed: make(chan struct{})}
+			}}
+			a.Logs = streamer
+
+			done := make(chan *httptest.ResponseRecorder)
+			go func() { done <- do(a.ExternalHandler(), "GET", "/api/v1/servers/survival/console", "", nil) }()
+			<-started
+			tc.revoke(ext, repo)
+
+			select {
+			case w := <-done:
+				body := w.Body.String()
+				if !strings.Contains(body, "data: boot\n\n") || !strings.HasSuffix(body, sseRevoked) {
+					t.Fatalf("body = %q, want the boot line then %q", body, sseRevoked)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("the stream kept running after its grant was withdrawn")
+			}
+		})
+	}
+}
+
+// A store outage is no verdict on the caller: the stream keeps going (the lifetime
+// cap still bounds it), and it ends with a plain close, which EventSource answers by
+// reconnecting through the full auth path.
+func TestServerConsoleStreamOutlivesAnAuthOutageUntilItsLifetime(t *testing.T) {
+	shrinkStreamTimers(t, 10*time.Millisecond, 80*time.Millisecond)
+	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
+	repo := newFakeRepo()
+	repo.byName["survival"] = &ServerRecord{Name: "survival", OwnerID: "owner1"}
+	ext := &switchExternal{p: owner}
+	a := newTestAPI(repo, newFakeCluster())
+	a.External = ext
+	started := make(chan struct{})
+	a.Logs = &fakeLogStreamer{srcFromCtx: func(ctx context.Context) io.ReadCloser {
+		return &ctxBlockingReadCloser{ctx: ctx, first: []byte("boot\n"), firstRead: started, closed: make(chan struct{})}
+	}}
+
+	begun := time.Now()
+	done := make(chan *httptest.ResponseRecorder)
+	go func() { done <- do(a.ExternalHandler(), "GET", "/api/v1/servers/survival/console", "", nil) }()
+	<-started
+	ext.set(nil, errAuthBackend)
+
+	select {
+	case w := <-done:
+		if strings.Contains(w.Body.String(), "event: revoked") {
+			t.Fatalf("an auth outage revoked the stream: %q", w.Body.String())
+		}
+		if since := time.Since(begun); since < 80*time.Millisecond {
+			t.Fatalf("stream ended after %v, before its lifetime", since)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the stream outlived streamMaxLifetime")
+	}
+}
+
+// CloseStreams (registered with RegisterOnShutdown) ends an open console at
+// once, and a stream opened after it ends as soon as it starts.
+func TestServerConsoleStreamEndsOnCloseStreams(t *testing.T) {
+	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
+	repo := newFakeRepo()
+	repo.byName["survival"] = &ServerRecord{Name: "survival", OwnerID: "owner1"}
+	a := newTestAPI(repo, newFakeCluster())
+	a.External = staticExternal{p: owner}
+	var closed []chan struct{}
+	a.Logs = &fakeLogStreamer{srcFromCtx: func(ctx context.Context) io.ReadCloser {
+		c := make(chan struct{})
+		closed = append(closed, c)
+		return &ctxBlockingReadCloser{ctx: ctx, first: []byte("boot\n"), firstRead: make(chan struct{}), closed: c}
+	}}
+
+	open := func() chan *httptest.ResponseRecorder {
+		done := make(chan *httptest.ResponseRecorder, 1)
+		go func() { done <- do(a.ExternalHandler(), "GET", "/api/v1/servers/survival/console", "", nil) }()
+		return done
+	}
+	wait := func(done chan *httptest.ResponseRecorder, what string) {
+		t.Helper()
+		select {
+		case w := <-done:
+			if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "event: revoked") {
+				t.Fatalf("%s: code %d body %q, want a plain close", what, w.Code, w.Body.String())
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s: the stream did not end", what)
+		}
+	}
+
+	first := open()
+	select {
+	case <-first:
+		t.Fatal("the stream ended before CloseStreams")
+	case <-time.After(50 * time.Millisecond):
+	}
+	a.CloseStreams()
+	a.CloseStreams() // every listener's shutdown calls it
+	wait(first, "open stream")
+	wait(open(), "stream opened after CloseStreams")
+	for i, c := range closed {
+		select {
+		case <-c:
+		default:
+			t.Fatalf("source %d was never closed", i)
+		}
+	}
+}
+
+// A reconnecting EventSource sends back the id of the last line it saw; the
+// handler resumes the follow from that second instead of replaying the backlog.
+func TestServerConsoleStreamResumesFromLastEventID(t *testing.T) {
+	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
+	repo := newFakeRepo()
+	repo.byName["survival"] = &ServerRecord{Name: "survival", OwnerID: "owner1"}
+	a := newTestAPI(repo, newFakeCluster())
+	a.External = staticExternal{p: owner}
+	streamer := &fakeLogStreamer{src: &recordReadCloser{r: strings.NewReader("line\n")}}
+	a.Logs = streamer
+
+	last := a.now().Add(-2 * time.Minute).Truncate(time.Second)
+	w := do(a.ExternalHandler(), "GET", "/api/v1/servers/survival/console", "",
+		map[string]string{"Last-Event-ID": strconv.FormatInt(last.Unix(), 10)})
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d body %s", w.Code, w.Body.String())
+	}
+	if got, ok := logSinceFromContext(streamer.gotCtx); !ok || !got.Equal(last) {
+		t.Fatalf("streamer since = %v (%v), want %v", got, ok, last)
+	}
+	if !strings.Contains(w.Body.String(), "id: ") {
+		t.Fatalf("relayed lines carry no id for the next resume: %q", w.Body.String())
+	}
+}
+
+func TestLogSinceFromRequest(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	for _, tc := range []struct {
+		header string
+		want   time.Time
+		ok     bool
+	}{
+		{"", time.Time{}, false},
+		{"garbage", time.Time{}, false},
+		{strconv.FormatInt(now.Add(-time.Minute).Unix(), 10), now.Add(-time.Minute), true},
+		{strconv.FormatInt(now.Add(time.Minute).Unix(), 10), time.Time{}, false},
+		{strconv.FormatInt(now.Add(-2*maxResumeAge).Unix(), 10), time.Time{}, false},
+	} {
+		r := httptest.NewRequest("GET", "/", nil)
+		if tc.header != "" {
+			r.Header.Set("Last-Event-ID", tc.header)
+		}
+		got, ok := logSinceFromRequest(r, now)
+		if ok != tc.ok || !got.Equal(tc.want) {
+			t.Errorf("Last-Event-ID %q: got %v %v, want %v %v", tc.header, got, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+func TestPodLogOptionsTailOrResume(t *testing.T) {
+	opts := podLogOptions(context.Background(), "minecraft", 200)
+	if opts.TailLines == nil || *opts.TailLines != 200 || opts.SinceTime != nil || !opts.Follow {
+		t.Fatalf("fresh attach options = %+v, want a followed 200-line tail", opts)
+	}
+	since := time.Unix(1_800_000_000, 0)
+	opts = podLogOptions(withLogSince(context.Background(), since), "minecraft", 200)
+	if opts.TailLines != nil || opts.SinceTime == nil || !opts.SinceTime.Time.Equal(since) {
+		t.Fatalf("resume options = %+v, want sinceTime %v and no tail", opts, since)
 	}
 }

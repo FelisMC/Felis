@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"felis.lolicon.best/internal/api"
 	"felis.lolicon.best/internal/build"
@@ -94,6 +98,50 @@ func TestNewAPIServerSetsHardenedTimeouts(t *testing.T) {
 	}
 	if srv.ReadTimeout != 0 {
 		t.Errorf("ReadTimeout = %v, want 0 (unset) so a slow SSE attach is not capped", srv.ReadTimeout)
+	}
+}
+
+// Every listener drains at once, and the shutdown hook (API.CloseStreams in
+// cmdAPI) runs on each: two listeners each holding a request that ends when
+// the hook fires take one hook's worth of time, well inside the deadline.
+func TestShutdownServersDrainsListenersTogether(t *testing.T) {
+	release := make(chan struct{})
+	var hooks int32
+	started := make(chan struct{}, 2)
+	var servers []*http.Server
+	for range 2 {
+		srv := newAPIServer("", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			started <- struct{}{}
+			<-release
+		}))
+		srv.RegisterOnShutdown(func() {
+			if atomic.AddInt32(&hooks, 1) == 1 {
+				time.AfterFunc(100*time.Millisecond, func() { close(release) })
+			}
+		})
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv.Addr = l.Addr().String()
+		go func() { _ = srv.Serve(l) }()
+		go func() {
+			if resp, err := http.Get("http://" + srv.Addr); err == nil {
+				resp.Body.Close()
+			}
+		}()
+		servers = append(servers, srv)
+	}
+	<-started
+	<-started
+
+	begun := time.Now()
+	shutdownServers(servers, 5*time.Second, io.Discard)
+	if took := time.Since(begun); took > 2*time.Second {
+		t.Fatalf("shutdown took %v", took)
+	}
+	if got := atomic.LoadInt32(&hooks); got != 2 {
+		t.Fatalf("shutdown hook ran %d times, want once per listener", got)
 	}
 }
 

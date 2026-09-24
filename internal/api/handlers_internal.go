@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
@@ -24,7 +25,10 @@ func (a *API) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	}
 	for name, check := range checks {
 		if err := check(r.Context()); err != nil {
-			writeError(w, r, newError(http.StatusServiceUnavailable, "not_ready", "%s: %v", name, err))
+			// The cause goes to the log; the probe answer names only the dependency,
+			// so a driver error (hosts, users, SQL) never reaches a caller.
+			log.Printf("api: readyz: %s: %v (request_id=%s)", name, err, requestIDFromContext(r.Context()))
+			writeError(w, r, newError(http.StatusServiceUnavailable, "not_ready", "%s is unavailable", name))
 			return
 		}
 	}

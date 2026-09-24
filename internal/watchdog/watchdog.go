@@ -67,12 +67,12 @@ type Alert struct {
 	FirstSeen time.Time `json:"first_seen"`
 	// Notified is when the alert was last mailed, at NotifiedSeverity; zero
 	// while it is pending.
-	Notified         time.Time `json:"notified,omitempty"`
+	Notified         time.Time `json:"notified,omitzero"`
 	NotifiedSeverity Severity  `json:"notified_severity,omitempty"`
 	// ClearedAt is when a mailed alert was first seen gone. It is mailed as
 	// resolved only after staying gone for resolveAfter, so a value hovering at
 	// its threshold does not mail on every crossing.
-	ClearedAt time.Time `json:"cleared_at,omitempty"`
+	ClearedAt time.Time `json:"cleared_at,omitzero"`
 }
 
 // State is what the watchdog keeps between runs.

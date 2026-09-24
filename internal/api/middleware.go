@@ -5,9 +5,13 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"runtime/debug"
+	"strings"
+	"time"
 )
 
 // withRequestID assigns a request id (honoring a WELL-FORMED inbound X-Request-Id)
@@ -82,6 +86,128 @@ func withRecover(next http.Handler) http.Handler {
 		}()
 		next.ServeHTTP(w, r)
 	})
+}
+
+// withSecurityHeaders sets the response headers every API answer carries. The
+// API serves JSON, event streams and downloads, never a page, so its CSP allows
+// nothing and no frame may embed it. HSTS goes out on what the Cloudflare edge
+// served over HTTPS (viaTLSEdge).
+func withSecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+		if viaTLSEdge(r) {
+			h.Set("Strict-Transport-Security", "max-age=31536000")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// viaTLSEdge reports a request the Cloudflare edge took over HTTPS. The tunnel
+// reaches the origin over TLS as well (the self-signed NodePort listener), so
+// r.TLS says nothing about what the browser saw; the edge's X-Forwarded-Proto
+// does. A browser that comes straight to the self-signed listener sends no such
+// header, and would drop the policy anyway: HSTS that arrives over a certificate
+// error, or for an IP-literal host, is ignored (RFC 6797 §8.1).
+func viaTLSEdge(r *http.Request) bool {
+	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+// rejectCrossSiteWrites refuses a state-changing request a browser sent from
+// another site. The session cookie is SameSite=Lax, which keeps it off cross-site
+// POSTs but still sends it from a sibling subdomain (same-site), and a player's
+// server can serve pages under the install's root domain. Browsers say where a
+// request came from in Sec-Fetch-Site; one too old for that still sends Origin on
+// a POST. A request with neither is not from a browser (the plugins, the CLI) and
+// carries no ambient cookie to abuse.
+func rejectCrossSiteWrites(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead, http.MethodOptions:
+		default:
+			if !sameOriginRequest(r) {
+				writeError(w, r, newError(http.StatusForbidden, "cross_site",
+					"requests from another site may not change anything here"))
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func sameOriginRequest(r *http.Request) bool {
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "same-origin", "none":
+		return true
+	case "":
+	default: // same-site, cross-site
+		return false
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	return err == nil && u.Host != "" && strings.EqualFold(u.Host, r.Host)
+}
+
+// Request bodies get a read deadline that grows with what has arrived: bodyGrace
+// to get going, plus the time the bytes so far would take at bodyMinRate. A JSON
+// body (1 MiB at most) has well under a minute; a 1 GiB build context uploads as
+// long as it keeps averaging bodyMinRate; a client trickling a byte now and then
+// to hold a connection and a goroutine is cut off. The server sets no ReadTimeout
+// (it would cut the long SSE responses), so without this nothing bounded the body.
+// Vars only so a test can shrink them.
+var (
+	bodyGrace   = 30 * time.Second
+	bodyMinRate = float64(16 << 10) // bytes per second
+)
+
+func withBodyDeadline(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body == nil || r.Body == http.NoBody {
+			next.ServeHTTP(w, r)
+			return
+		}
+		rc := http.NewResponseController(w)
+		start := time.Now()
+		if err := rc.SetReadDeadline(start.Add(bodyGrace)); err != nil {
+			next.ServeHTTP(w, r) // a writer without deadlines (tests)
+			return
+		}
+		r.Body = &deadlineBody{ReadCloser: r.Body, rc: rc, start: start}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// deadlineBody moves the connection's read deadline as the body arrives, and
+// clears it once the body ends: from then on net/http reads the connection only
+// to notice a disconnect, and a deadline meant for the body would cancel the
+// request's context under a handler that is still working.
+type deadlineBody struct {
+	io.ReadCloser
+	rc    *http.ResponseController
+	start time.Time
+	read  int64
+	done  bool
+}
+
+func (b *deadlineBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	b.read += int64(n)
+	switch {
+	case b.done:
+	case err != nil:
+		b.done = true
+		_ = b.rc.SetReadDeadline(time.Time{})
+	case n > 0:
+		allowed := bodyGrace + time.Duration(float64(b.read)/bodyMinRate*float64(time.Second))
+		_ = b.rc.SetReadDeadline(b.start.Add(allowed))
+	}
+	return n, err
 }
 
 // requireInternal enforces service-token auth for the internal face. It never

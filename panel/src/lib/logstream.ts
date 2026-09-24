@@ -59,6 +59,7 @@ export interface EventSourceLike {
   onerror: ((ev: any) => void) | null;
   readyState: number;
   close(): void;
+  addEventListener(type: string, listener: (ev: any) => void): void;
 }
 
 /** Builds an EventSource for a URL (production: the browser ctor; tests: a fake). */
@@ -175,6 +176,14 @@ export class LogStreamController {
     this.es = es;
     es.onopen = () => this.setStatus("open");
     es.onmessage = (ev) => this.pushLine(ev.data);
+    // The server re-checks a running stream's grant (session still live, caller
+    // still owns the server) and sends "revoked" before it closes. That close is
+    // final: an auto-retry would only be refused again.
+    es.addEventListener("revoked", () => {
+      if (this.es !== es) return;
+      this.disconnect();
+      this.setStatus("ended");
+    });
     es.onerror = () => {
       // Native EventSource auto-reconnects on a transient drop (readyState
       // returns to CONNECTING); only a fatal response — non-200 / wrong

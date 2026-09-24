@@ -6,6 +6,7 @@ import (
 	"felis.lolicon.best/internal/metrics"
 
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -21,6 +22,12 @@ func newAPIMetricsHandler() http.Handler {
 	// A fresh registry cannot already hold a collector, so Register's
 	// AlreadyRegistered tolerance arm never triggers here.
 	_ = metrics.Register(reg)
+	// The request series (observe.go) and the runtime: goroutines, heap, GC and
+	// the process's fds and RSS, which is where a leaked stream or a slow
+	// connection pile-up shows first.
+	reg.MustRegister(httpRequestsTotal, httpRequestDuration,
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	return promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
 }
 

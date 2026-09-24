@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -1646,8 +1647,11 @@ func (okInternal) Authenticate(*http.Request) error { return nil }
 
 func newTestAPI(repo Repo, cl Cluster) *API {
 	return &API{Repo: repo, Cluster: cl, Internal: okInternal{}, RootDomain: testRoot,
-		Now: func() time.Time { return time.Unix(1_700_000_000, 0) }}
+		Now:       func() time.Time { return time.Unix(1_700_000_000, 0) },
+		AccessLog: discardLog}
 }
+
+var discardLog = slog.New(slog.NewTextHandler(io.Discard, nil))
 
 func do(h http.Handler, method, target, body string, headers map[string]string) *httptest.ResponseRecorder {
 	var r *http.Request

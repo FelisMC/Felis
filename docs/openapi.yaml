@@ -31,6 +31,28 @@ info:
     and the panel). Admin-tier external operations additionally require the admin
     Access path. See `x-felis-face` / `x-felis-tier` on each operation.
 
+    Behaviour every operation shares, and so not repeated under each:
+
+    * Every response carries `X-Request-Id` (a well-formed inbound one is kept),
+      `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`,
+      `Referrer-Policy: no-referrer` and `Content-Security-Policy: default-src 'none'`.
+      `Strict-Transport-Security` is added when the request came through the TLS
+      edge (`X-Forwarded-Proto: https`).
+    * A path no operation serves is `404 not_found`; a path served under other
+      methods is `405 method_not_allowed` with an `Allow` header.
+    * A POST/PUT/PATCH/DELETE a browser sends from another site (`Sec-Fetch-Site`
+      `same-site` or `cross-site`, or an `Origin` whose host is not the request's)
+      is `403 cross_site`, before authentication. Callers that send neither header
+      (the plugins, scripts) are unaffected.
+    * A JSON body over 1 MiB is `413 too_large`. A request body must keep arriving:
+      after 30 s it has to average 16 KiB/s or the connection is closed.
+    * Event streams (the console and build logs) tag each line with `id:` (unix
+      seconds); an EventSource that reconnects with `Last-Event-ID` within the hour
+      resumes from that second instead of the tailed backlog. The server re-checks
+      the caller every minute and ends the stream with `event: revoked` once the
+      session or the access is gone; a stream also closes after 30 minutes and on
+      server shutdown, and the client simply reconnects.
+
 servers:
   - url: https://api-internal.{root_domain}
     description: >-
@@ -1443,9 +1465,16 @@ paths:
       security: [{ accessJWT: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
+        - name: Last-Event-ID
+          in: header
+          required: false
+          description: The id of the last line received; resumes the stream from that second (within the hour).
+          schema: { type: string }
       responses:
         '200':
-          description: An event stream of log lines.
+          description: >-
+            An event stream of log lines (`id:` + `data:` per line, `:` comments as
+            keep-alives), ended by `event: revoked` when access is withdrawn.
           content:
             text/event-stream:
               schema: { type: string }
@@ -1871,7 +1900,11 @@ paths:
     get:
       tags: [servers]
       operationId: status
-      summary: Status of your own server.
+      summary: Status of a server; the full record for its owner and staff.
+      description: >-
+        Anyone signed in may ask. The owner and staff get the whole projection;
+        anyone else gets what the game's own server list shows: name, subdomain,
+        displayName, phase, ready, playersOnline and playersMax.
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ accessJWT: [] }]
@@ -1879,7 +1912,7 @@ paths:
         - { name: name, in: path, required: true, schema: { type: string } }
       responses:
         '200':
-          description: The server's status projection.
+          description: The server's status projection (trimmed for non-owners).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ServerInfo' }
@@ -4707,9 +4740,16 @@ paths:
       security: [{ accessJWT: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
+        - name: Last-Event-ID
+          in: header
+          required: false
+          description: The id of the last line received; resumes the stream from that second (within the hour).
+          schema: { type: string }
       responses:
         '200':
-          description: An event stream of build log lines.
+          description: >-
+            An event stream of build log lines (`id:` + `data:` per line), ended by
+            `event: revoked` when the caller is no longer staff.
           content:
             text/event-stream:
               schema: { type: string }

@@ -18,6 +18,7 @@ class FakeEventSource implements EventSourceLike {
   readyState = 0; // CONNECTING
   closed = false;
   readonly url: string;
+  private readonly listeners = new Map<string, Array<(ev: unknown) => void>>();
 
   constructor(url: string) {
     this.url = url;
@@ -26,6 +27,13 @@ class FakeEventSource implements EventSourceLike {
   close(): void {
     this.closed = true;
     this.readyState = 2; // CLOSED
+  }
+
+  addEventListener(type: string, listener: (ev: unknown) => void): void {
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+  }
+  emitEvent(type: string): void {
+    for (const fn of this.listeners.get(type) ?? []) fn({ data: "" });
   }
 
   // Test drivers mirroring what the browser would invoke.
@@ -180,5 +188,19 @@ describe("LogStreamController", () => {
     ctrl.clear();
     expect(ctrl.getSnapshot().lines).toHaveLength(0);
     expect(ctrl.getSnapshot().status).toBe("open");
+  });
+
+  it("ends for good when the server revokes the stream", () => {
+    const { factory, created } = makeFactory();
+    const ctrl = new LogStreamController({ url: "/api/v1/servers/s/console", factory });
+    ctrl.open();
+    const es = created[0];
+    es.emitOpen();
+    es.emitMessage("[12:00:00] [Server thread/INFO]: hello");
+    es.emitEvent("revoked");
+    expect(ctrl.getSnapshot().status).toBe("ended");
+    expect(es.closed).toBe(true);
+    expect(ctrl.getSnapshot().lines).toHaveLength(1);
+    expect(created).toHaveLength(1);
   });
 });

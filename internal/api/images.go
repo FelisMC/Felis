@@ -137,7 +137,11 @@ func (a *API) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
-	src, err := a.BuildLogs.StreamLogs(r.Context(), id)
+	ctx := r.Context()
+	if since, ok := logSinceFromRequest(r, a.now()); ok {
+		ctx = withLogSince(ctx, since)
+	}
+	src, err := a.BuildLogs.StreamLogs(ctx, id)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		writeError(w, r, newError(http.StatusNotFound, "not_found",
@@ -153,7 +157,12 @@ func (a *API) handleBuildLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.audit(r, "image.build.logs", id)
-	relayLogStream(w, r, src)
+	relayLogStream(w, r, src, a.streamRecheck(r, func(_ context.Context, p *Principal) error {
+		if !p.IsAdmin() {
+			return errForbidden
+		}
+		return nil
+	}), a.streamsClosing())
 }
 
 // handleCancelBuild cancels an in-flight build (admin-tier). A build that has
