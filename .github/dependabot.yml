@@ -1,0 +1,8 @@
+# The workflows pin every action to a commit SHA. This keeps those pins moving: Dependabot
+# reads the "# vX.Y.Z" comment next to each SHA and opens a PR that bumps both together.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

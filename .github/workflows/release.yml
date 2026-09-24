@@ -17,6 +17,16 @@
 # quietly ships a release whose panel is that placeholder. The Dockerfile runs the npm
 # build first, and is the same recipe bootstrap uses, so there is one way to build felis
 # rather than two that can drift.
+#
+# SHA256SUMS is a contract with bootstrap too: download_release_binary refuses a binary whose
+# hash is not listed there, BEFORE it runs it. A release without the file installs by source
+# build instead.
+#
+# Two jobs, so the write token never meets the test suite: `build` runs the tests, Gradle and
+# the Docker build (each of which executes third-party code) with a read-only token and hands
+# the binaries over as a workflow artifact; `publish` holds contents:write and runs only
+# pinned actions and gh. Every action is pinned to a commit SHA (the tag in the trailing
+# comment is for humans); .github/dependabot.yml proposes the bumps.
 name: release
 
 on:
@@ -24,15 +34,15 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: write # gh release create/upload
+  contents: read
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
 
@@ -45,23 +55,23 @@ jobs:
       # compile turns every install of that release into a failed bootstrap. JDK 21
       # gates the install-time plugins + codec/invite tests; JDK 17 gates the loader
       # mods (their vendored wrappers fetch their own Gradle).
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
           distribution: temurin
           java-version: '21'
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
         with:
           gradle-version: '8.14'
 
       - run: bash plugins/test.sh
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
           distribution: temurin
           java-version: '17'
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
 
       - run: bash plugins/test-mods.sh
 
@@ -70,7 +80,7 @@ jobs:
       # falls back to a slow source build. Neither stage is emulated: the Dockerfile pins
       # both build stages to $BUILDPLATFORM and the Go stage cross-compiles via TARGETARCH,
       # so the second architecture costs about a minute.
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Build the stamped binaries
         run: |
@@ -100,8 +110,67 @@ jobs:
           file ./felis-linux-arm64 | grep -q 'ARM aarch64' \
             || { echo "felis-linux-arm64 is not an arm64 ELF — TARGETARCH did not reach the go build"; exit 1; }
 
-      # --verify-tag refuses to invent a release for a tag that is not pushed. The upload
-      # fallback makes a re-run converge rather than failing on an existing release.
+      - name: Checksum the binaries
+        run: sha256sum felis-linux-amd64 felis-linux-arm64 | tee SHA256SUMS
+
+      # A CycloneDX SBOM per binary: the Go modules (and versions) linked into it, read
+      # from the build info the linker embeds.
+      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          file: felis-linux-amd64
+          format: cyclonedx-json
+          output-file: felis-linux-amd64.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          file: felis-linux-arm64
+          format: cyclonedx-json
+          output-file: felis-linux-arm64.cdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-assets
+          path: |
+            felis-linux-amd64
+            felis-linux-arm64
+            felis-linux-amd64.cdx.json
+            felis-linux-arm64.cdx.json
+            SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # gh release create/upload
+      id-token: write # the Sigstore certificate behind the provenance attestation
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-assets
+
+      # The artifact store sits between the two jobs, so check the handover too.
+      - run: sha256sum -c SHA256SUMS
+
+      # Signed SLSA provenance: which workflow run, commit and repository produced each
+      # binary. Check one with `gh attestation verify felis-linux-amd64 --repo FelisMC/Felis`.
+      # GitHub only stores attestations for private repositories on Enterprise Cloud, and a
+      # failure here would block the release, so a private repository skips the step and
+      # relies on SHA256SUMS alone.
+      - name: Attest build provenance
+        if: ${{ !github.event.repository.private }}
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: |
+            felis-linux-amd64
+            felis-linux-arm64
+
+      # --verify-tag refuses to invent a release for a tag that is not pushed.
       #
       # The prerelease flag has to be passed explicitly: the trigger glob is v*, so v1.2.3-rc1
       # lands here too, and gh does not read semver out of the tag name. Published as a full
@@ -109,13 +178,33 @@ jobs:
       # channel installs from and `felis update` polls — so every fresh install would get the
       # RC binary and every deployed felis-api would error on the felis component until a
       # stable tag was cut. Flagged, GitHub keeps latest pointing at the last stable release.
+      #
+      # A re-run (the release already exists) uploads only what is missing and never
+      # replaces a published asset: hosts may already have installed it, and their
+      # SHA256SUMS check would start failing against a swapped file. An asset that is
+      # there with different bytes stops the job; cut a new tag instead.
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
+          assets="felis-linux-amd64 felis-linux-arm64 felis-linux-amd64.cdx.json felis-linux-arm64.cdx.json SHA256SUMS"
           flags=""
           case "$GITHUB_REF_NAME" in *-*) flags="--prerelease" ;; esac
-          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes $flags \
-              ./felis-linux-amd64 ./felis-linux-arm64 \
-            || gh release upload "$GITHUB_REF_NAME" \
-                 ./felis-linux-amd64 ./felis-linux-arm64 --clobber
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            # shellcheck disable=SC2086 # word-splitting the list is the point
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes $flags $assets
+            exit 0
+          fi
+          # The REST payload's per-asset "digest" is GitHub's own sha256 of the stored file.
+          published="$(gh api "repos/${GH_REPO}/releases/tags/${GITHUB_REF_NAME}" --jq '.assets[] | "\(.name) \(.digest)"')"
+          for a in $assets; do
+            have="$(printf '%s\n' "$published" | awk -v n="$a" '$1 == n { print $2 }')"
+            want="sha256:$(sha256sum < "$a" | cut -d' ' -f1)"
+            if [ -z "$have" ]; then
+              gh release upload "$GITHUB_REF_NAME" "$a"
+            elif [ "$have" != "$want" ]; then
+              echo "::error::$a is already published with $have; this run built $want. Published assets are never replaced."
+              exit 1
+            fi
+          done

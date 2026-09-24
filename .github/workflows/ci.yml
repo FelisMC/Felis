@@ -30,9 +30,9 @@ jobs:
   go:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
 
@@ -48,7 +48,7 @@ jobs:
   shell:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # bootstrap.sh is the only thing that ever runs on a fresh host, and nothing here can
       # run it — it wants root, a package manager and k3s. Syntax plus the extracted-block
@@ -71,7 +71,7 @@ jobs:
   panel:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # The Dockerfile's `FROM node:<major>` is the only place the panel's Node version is
       # declared — there is no .nvmrc and no engines field. Reading it here rather than
@@ -84,7 +84,7 @@ jobs:
           [ -n "$version" ] || { echo "Dockerfile has no 'FROM ... node:<major>' line"; exit 1; }
           echo "version=${version}" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ steps.node.outputs.version }}
           cache: npm
@@ -102,18 +102,18 @@ jobs:
   plugins:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # The other jobs never touch the Java layer: the plugin jars were only ever
       # compiled by bootstrap on a live host, and the three test mains under
       # plugins/*/test were run by hand. JDK 21 plus the Gradle major the plugin
       # Dockerfiles pin (8.14) is that same toolchain, in CI.
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
           distribution: temurin
           java-version: '21'
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
         with:
           gradle-version: '8.14'
 
@@ -122,18 +122,18 @@ jobs:
   mods:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # The three loader mods (Minecraft 1.20.1 / 1.20.4, Java-17 lines) compile
       # through their vendored Gradle wrappers, which fetch their own Gradle. Until
       # this job nothing ever built them: no install path touches them, and their
       # gradlew scripts were committed without the exec bit, so the README's
       # one-liners failed on a fresh clone.
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
         with:
           distribution: temurin
           java-version: '17'
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
 
       - run: bash plugins/test-mods.sh
