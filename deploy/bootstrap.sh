@@ -400,6 +400,13 @@ ZYPPER_BACKGROUND_SERVICES=(
 PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 export PATH
 
+# BuildKit attaches a provenance attestation to every build by default, and it records the
+# build's start time. On Docker's containerd image store the image id is the digest of the
+# index that carries it, so an unchanged rebuild would get a new id each run: the login and
+# lobby pods would restart on every rerun, and each run would push another versioned tag.
+# Without it the id is the manifest digest, which an all-cached build reproduces.
+export BUILDX_NO_DEFAULT_ATTESTATIONS=1
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -3254,12 +3261,13 @@ EOF
 }
 
 deploy_bundle() {
-  local prev_api prev_operator
+  local prev_api prev_operator prev_gate
   export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
   write_felis_toml "${STATE_DIR}/felis.pod.toml" "${NODE_IP}"
 
   prev_api="$(deployment_image felis-api api)"
   prev_operator="$(deployment_image felis-operator operator)"
+  prev_gate="$(deployment_image registry registry-gate)"
   if [ -n "$prev_api" ] && [ "$prev_api" != "$FELIS_IMAGE" ]; then
     PREVIOUS_FELIS_IMAGE="$prev_api"
     printf '%s\n' "$prev_api" > "${STATE_DIR}/previous-felis-image"
@@ -3336,7 +3344,7 @@ deploy_bundle() {
     if [ -n "$size" ]; then manifest_args+=(--backup-storage "$size"); fi
   fi
   "$HOST_BIN" manifests "${manifest_args[@]}" | kube apply -f -
-  restart_existing_control_plane "$prev_api" "$prev_operator"
+  restart_existing_control_plane "$prev_api" "$prev_operator" "$prev_gate"
 
   log "waiting for control-plane rollouts"
   local d
@@ -3378,8 +3386,11 @@ deployment_image() {
 # version, or a FELIS_IMAGE the operator reuses). A Deployment whose image changed is rolling
 # from the apply already, and must not be restarted on top: the restart is a second template
 # change, so `rollout undo` would step back to the new image instead of the previous release.
+#
+# The registry pod runs the same binary in its registry-gate and registry-gc containers, so it
+# follows the same rule; the rollout wait below covers it before anything is pushed.
 restart_existing_control_plane() {
-  local prev_api="$1" prev_operator="$2"
+  local prev_api="$1" prev_operator="$2" prev_gate="${3:-}"
   # `if`, not `[ test ] && cmd`: as the LAST command of the function the and-list returns 1
   # when the test is false, which becomes the function's exit status and kills the whole
   # install under `set -Eeuo pipefail` — right after the bundle is applied and before the
@@ -3391,6 +3402,10 @@ restart_existing_control_plane() {
   if [ "$prev_operator" = "$FELIS_IMAGE" ]; then
     log "restarting felis-operator onto the rebuilt ${FELIS_IMAGE}"
     kube -n "$CONTROL_NS" rollout restart deployment/felis-operator
+  fi
+  if [ "$prev_gate" = "$FELIS_IMAGE" ]; then
+    log "restarting the registry's gate onto the rebuilt ${FELIS_IMAGE}"
+    kube -n "$CONTROL_NS" rollout restart deployment/registry
   fi
 }
 

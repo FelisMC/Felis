@@ -1366,9 +1366,9 @@ runs changed:
 | Component | Restarted when |
 |---|---|
 | `felis-velocity` (the proxy) | its unit, the JRE, `velocity.jar`, `velocity.toml`, the forwarding secret, the felis-link settings or a plugin jar changed, or it was not running. The fingerprint lives in `/etc/felis/velocity.fingerprint`; delete it to force a restart. |
-| login and lobby pods | the rebuilt limbo or lobby image has a new image ID (`/etc/felis/system-server-images`). Each restarts on its own. |
+| login and lobby pods | the rebuilt limbo or lobby image has a new image ID (`/etc/felis/system-server-images`). Each restarts on its own. The installer turns off BuildKit's default provenance attestation (`BUILDX_NO_DEFAULT_ATTESTATIONS=1`): it records the build time, which would give every rebuild a new ID. |
 | PostgreSQL | first install only (`listen_addresses` needs a restart). A rerun reloads the configuration, which keeps connections open. |
-| felis-api, felis-operator | the image tag changed (an upgrade), or a same-version rerun rebuilt it. |
+| felis-api, felis-operator, the registry pod (its gate and GC containers run the felis binary) | the image tag changed (an upgrade), or a same-version rerun rebuilt it. |
 
 **PostgreSQL across reruns.** On hosts without firewalld the installer loads an
 nftables table, `inet felis_postgres`, from `felis-postgres-firewall.service`:

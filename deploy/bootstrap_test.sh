@@ -1670,25 +1670,26 @@ expect "an explicit FELIS_IMAGE is used as given" "reg.example/felis:mine" \
 
 rsblock="$(awk '/^restart_existing_control_plane\(\) \{/,/^}/' "$BS")"
 [ -n "$rsblock" ] || { echo "FAIL: no restart_existing_control_plane found in $BS"; exit 1; }
-run_restart() { # prev-api prev-operator
+run_restart() { # prev-api prev-operator [prev-gate]
   FELIS_IMAGE=reg/felis/felis:v2 CONTROL_NS=felis bash -c '
     set -Eeuo pipefail
     log() { :; }
     kube() { printf "KUBE %s\n" "$*"; }
     '"$rsblock"'
-    restart_existing_control_plane "$1" "$2"
-    echo DONE' _ "$1" "$2"
+    restart_existing_control_plane "$1" "$2" "$3"
+    echo DONE' _ "$1" "$2" "${3:-}"
 }
 
-out="$(run_restart reg/felis/felis:v1 reg/felis/felis:v1)"
+out="$(run_restart reg/felis/felis:v1 reg/felis/felis:v1 reg/felis/felis:v1)"
 case "$out" in
   *"rollout restart"*) echo "FAIL an upgrade restarted the control plane on top of the apply's roll"; fails=$((fails + 1)) ;;
   *DONE*) echo "PASS an upgrade leaves the roll to the apply" ;;
   *) echo "FAIL restart_existing_control_plane died on an upgrade: $out"; fails=$((fails + 1)) ;;
 esac
-out="$(run_restart reg/felis/felis:v2 reg/felis/felis:v2)"
+out="$(run_restart reg/felis/felis:v2 reg/felis/felis:v2 reg/felis/felis:v2)"
 expect "a rerun of the same tag restarts felis-api onto the rebuilt image" "KUBE -n felis rollout restart deployment/felis-api" "$out"
 expect "a rerun of the same tag restarts felis-operator too" "KUBE -n felis rollout restart deployment/felis-operator" "$out"
+expect "a rerun of the same tag restarts the registry's gate too" "KUBE -n felis rollout restart deployment/registry" "$out"
 out="$(run_restart '' '')"
 case "$out" in
   *"rollout restart"*) echo "FAIL a first install restarted Deployments that did not exist"; fails=$((fails + 1)) ;;
@@ -1902,6 +1903,16 @@ expect "a v6 node address gets a v6 rule" "tcp dport 5432 ip6 saddr 2001:db8::7 
 rm -rf "$fwdir"
 
 
+# --- reproducible image ids ---------------------------------------------------------------
+# restart_existing_system_servers compares image ids across runs; a default BuildKit
+# provenance attestation (it carries a timestamp) would make every rebuild look new.
+attest_line="$(grep -n '^export BUILDX_NO_DEFAULT_ATTESTATIONS=1$' "$BS" | cut -d: -f1 | head -1)"
+build_line="$(grep -n '^  docker build ' "$BS" | cut -d: -f1 | head -1)"
+if [ -n "$attest_line" ] && [ -n "$build_line" ] && [ "$attest_line" -lt "$build_line" ]; then
+  echo "PASS default build attestations are off before the first docker build"
+else
+  echo "FAIL BUILDX_NO_DEFAULT_ATTESTATIONS=1 must be exported before the first docker build"; fails=$((fails + 1))
+fi
 
 
 # ---------------------------------------------------------------------------------------
