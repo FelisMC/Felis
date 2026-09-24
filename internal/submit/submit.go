@@ -125,6 +125,12 @@ var errContextTooLarge = fmt.Errorf("%w: build context exceeds the maximum allow
 // from errContextTooLarge's 400: the blob is fine, the allowance is spent.
 var errStorageQuota = fmt.Errorf("%w: the upload exceeds your remaining storage allowance", ErrQuotaExceeded)
 
+// ErrUploadsFull means the uploads store as a whole has no room: every user's
+// contexts together reached MaxStoredBytesTotal, or the filesystem under a local
+// store is close to full. No one's allowance is at fault, so the API answers 507
+// and an admin frees space by deleting reviewed submissions.
+var ErrUploadsFull = errors.New("the uploads store is full")
+
 const (
 	maxDisplayName  = 200
 	maxRejectReason = 1000
@@ -151,7 +157,28 @@ const (
 	// above users × this budget before raising it. Override per Manager via
 	// MaxStoredBytesPerUser.
 	defaultMaxStoredBytesPerUser = 2 << 30 // 2 GiB
+	// defaultMaxStoredBytesTotal caps what every user's stored contexts occupy
+	// together. The per-user budget alone lets enough accounts fill any volume,
+	// and on k3s local-path the uploads PVC's 5Gi is a label, not a limit: the
+	// directory sits on the node's disk beside the worlds and the database. Four
+	// GiB keeps a default install inside that PVC. Override per Manager via
+	// MaxStoredBytesTotal ([registry] user_uploads_max_bytes).
+	defaultMaxStoredBytesTotal = 4 << 30 // 4 GiB
 )
+
+// RejectedContextRetention is how long a rejected submission keeps its uploaded
+// context: long enough for the submitter to read the reason and an admin to look
+// again. ReapRejected then deletes the blob; the row stays as the record.
+// Approved contexts are kept, since they are what rebuilds the image after the
+// registry is lost (docs/troubleshooting.md §9).
+const RejectedContextRetention = 7 * 24 * time.Hour
+
+// RoomChecker is implemented by a Blobs that writes to a filesystem it shares
+// with the node. Before an upload, CheckRoom confirms that need more bytes still
+// leave the filesystem's floor free, and wraps ErrUploadsFull when they would not.
+type RoomChecker interface {
+	CheckRoom(need int64) error
+}
 
 // displayNameRE constrains the user-supplied label to a calm, single-line set:
 // it is the only free-form string a submission carries, and although JSON
@@ -318,6 +345,9 @@ type Manager struct {
 	// MaxStoredBytesPerUser overrides the per-user stored-context budget; 0 uses
 	// defaultMaxStoredBytesPerUser.
 	MaxStoredBytesPerUser int64
+	// MaxStoredBytesTotal overrides the budget for every user's stored contexts
+	// together; 0 uses defaultMaxStoredBytesTotal.
+	MaxStoredBytesTotal int64
 
 	Now   func() time.Time
 	IDGen func() string
@@ -342,6 +372,13 @@ func (m *Manager) maxStoredBytesPerUser() int64 {
 		return m.MaxStoredBytesPerUser
 	}
 	return defaultMaxStoredBytesPerUser
+}
+
+func (m *Manager) maxStoredBytesTotal() int64 {
+	if m.MaxStoredBytesTotal > 0 {
+		return m.MaxStoredBytesTotal
+	}
+	return defaultMaxStoredBytesTotal
 }
 
 func (m *Manager) now() time.Time {
@@ -487,7 +524,10 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Submission, e
 //     wrong-format or oversize upload is rejected as a 400 without persisting;
 //   - a user's stored contexts are budgeted (MaxStoredBytesPerUser): the write
 //     is capped at the remaining budget, so an upload that would exceed it is
-//     refused as a spent allowance (403) before the excess is persisted.
+//     refused as a spent allowance (403) before the excess is persisted;
+//   - so are everyone's together (MaxStoredBytesTotal), and a local store checks
+//     the filesystem keeps its free floor (RoomChecker): either refuses as
+//     ErrUploadsFull (507).
 //
 // A re-upload while still pending atomically supersedes the previous blob, so a
 // user can fix their pack before an admin reviews it. The upload hashes what it
@@ -531,19 +571,30 @@ func (m *Manager) UploadContext(ctx context.Context, id, submittedBy string, r i
 	// can overshoot by up to one blob per interleaved upload — each write still
 	// bounded by the single-blob cap — while the API's per-user upload
 	// reservation collapses the single-replica case.
-	used, err := m.storedBytes(ctx, submittedBy, id)
+	used, total, err := m.storedBytes(ctx, submittedBy, id)
 	if err != nil {
 		return nil, err
 	}
-	remaining := m.maxStoredBytesPerUser() - used
+	remaining, budgetErr := m.maxStoredBytesPerUser()-used, errStorageQuota
+	if left := m.maxStoredBytesTotal() - total; left < remaining {
+		remaining, budgetErr = left, fmt.Errorf("%w: every user's uploads together reached the %d-byte limit", ErrUploadsFull, m.maxStoredBytesTotal())
+	}
 	if remaining <= 0 {
-		return nil, errStorageQuota
+		return nil, budgetErr
 	}
 	limit, over := m.maxContextBytes(), errContextTooLarge
 	if remaining < limit {
 		// The budget binds before the single-blob cap: an upload tripping here is
-		// refused as a spent allowance, never as a malformed request.
-		limit, over = remaining, errStorageQuota
+		// refused as a spent allowance (or a full store), never as a malformed
+		// request.
+		limit, over = remaining, budgetErr
+	}
+	// The upload's size is unknown until it ends, so the room check assumes the
+	// most it may write.
+	if rc, ok := m.Blobs.(RoomChecker); ok {
+		if err := rc.CheckRoom(limit); err != nil {
+			return nil, err
+		}
 	}
 	h := sha256.New()
 	if _, err := m.Blobs.Put(ctx, id, io.TeeReader(&cappedReader{r: br, left: limit, over: over}, h)); err != nil {
@@ -563,31 +614,65 @@ func (m *Manager) UploadContext(ctx context.Context, id, submittedBy string, r i
 	return sub, nil
 }
 
-// storedBytes sums the stored-blob sizes of submittedBy's submissions, excluding
-// excludeID — the submission a pending re-upload is about to replace, whose
-// bytes must not be counted twice. Sizes are read from the blob store itself,
-// the same source of truth uploads/approval consult, so the sum cannot drift
-// from what is actually occupying the volume (including blobs uploaded before
-// any budget existed).
-func (m *Manager) storedBytes(ctx context.Context, submittedBy, excludeID string) (int64, error) {
-	subs, err := m.Store.ListSubmissionsBy(ctx, submittedBy)
+// storedBytes sums the stored-blob sizes of submittedBy's submissions (user) and
+// of everyone's (total), excluding excludeID — the submission a pending re-upload
+// is about to replace, whose bytes must not be counted twice. Sizes are read from
+// the blob store itself, the same source of truth uploads/approval consult, so
+// the sums cannot drift from what is actually occupying the volume (including
+// blobs uploaded before any budget existed).
+func (m *Manager) storedBytes(ctx context.Context, submittedBy, excludeID string) (user, total int64, err error) {
+	subs, err := m.Store.ListSubmissions(ctx)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	var total int64
 	for _, s := range subs {
 		if s.ID == excludeID {
 			continue
 		}
 		n, ok, err := m.Blobs.Size(ctx, s.ID)
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
-		if ok {
-			total += n
+		if !ok {
+			continue
+		}
+		total += n
+		if s.SubmittedBy == submittedBy {
+			user += n
 		}
 	}
-	return total, nil
+	return user, total, nil
+}
+
+// ReapRejected deletes the uploaded context of every submission rejected more
+// than olderThan ago, keeping the row. It returns how many blobs it deleted and
+// carries on past a blob it cannot delete, reporting the first such error.
+func (m *Manager) ReapRejected(ctx context.Context, olderThan time.Duration) (int, error) {
+	if m.Blobs == nil {
+		return 0, nil
+	}
+	subs, err := m.Store.ListSubmissions(ctx)
+	if err != nil {
+		return 0, err
+	}
+	cutoff := m.now().Add(-olderThan)
+	var reaped int
+	var firstErr error
+	for _, s := range subs {
+		if s.Status != StatusRejected || s.ReviewedAt == nil || s.ReviewedAt.After(cutoff) {
+			continue
+		}
+		_, ok, err := m.Blobs.Size(ctx, s.ID)
+		if err == nil && ok {
+			if err = m.Blobs.Delete(ctx, s.ID); err == nil {
+				reaped++
+			}
+		}
+		if err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("submit: reap the context of rejected submission %s: %w", s.ID, err)
+		}
+	}
+	return reaped, firstErr
 }
 
 // cappedReader passes through at most left bytes; the first byte beyond the limit

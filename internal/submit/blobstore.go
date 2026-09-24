@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"syscall"
 )
 
 // contextBlobName is the fixed object name of a submission's build context under
@@ -43,6 +44,39 @@ type LocalContextStore struct {
 	// Base is the directory (uploads PVC mount) submission contexts are written
 	// under. Each submission gets its own {Base}/{id}/ subdirectory.
 	Base string
+	// MinFree is the share of Base's filesystem an upload must leave free; 0 uses
+	// DefaultUploadsMinFree.
+	MinFree float64
+}
+
+// DefaultUploadsMinFree is the share of the uploads filesystem an upload must
+// leave free. On k3s local-path the uploads PVC is a directory on the node's
+// disk, beside the worlds and the database, and below about a tenth free the
+// kubelet starts evicting pods (the same floor backup.MinFreeAfter keeps).
+const DefaultUploadsMinFree = 0.10
+
+// CheckRoom refuses an upload of up to need bytes that could push Base's
+// filesystem below its free floor.
+func (s *LocalContextStore) CheckRoom(need int64) error {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(s.Base, &st); err != nil {
+		return fmt.Errorf("submit: measure the uploads store %s: %w", s.Base, err)
+	}
+	bsize := uint64(st.Bsize) // uint32 on darwin
+	total, avail := uint64(st.Blocks)*bsize, uint64(st.Bavail)*bsize
+	if total == 0 {
+		return nil
+	}
+	minFree := s.MinFree
+	if minFree <= 0 {
+		minFree = DefaultUploadsMinFree
+	}
+	floor := uint64(float64(total) * minFree)
+	if n := uint64(max(need, 0)); avail < n || avail-n < floor {
+		return fmt.Errorf("%w: %d MiB free of %d MiB, and an upload of up to %d MiB would leave less than %.0f%% free",
+			ErrUploadsFull, avail>>20, total>>20, n>>20, minFree*100)
+	}
+	return nil
 }
 
 // dir returns the per-submission directory, rejecting an id that could escape

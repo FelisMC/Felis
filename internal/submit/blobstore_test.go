@@ -156,3 +156,17 @@ func TestLocalContextStoreRejectsUnsafeID(t *testing.T) {
 		t.Fatal("an unsafe id wrote outside Base")
 	}
 }
+
+func TestLocalContextStoreCheckRoom(t *testing.T) {
+	s := &LocalContextStore{Base: t.TempDir(), MinFree: 1e-9}
+	if err := s.CheckRoom(1); err != nil {
+		t.Fatalf("CheckRoom(1 byte) = %v", err)
+	}
+	if err := s.CheckRoom(1 << 62); !errors.Is(err, ErrUploadsFull) {
+		t.Fatalf("CheckRoom(4 EiB) = %v, want ErrUploadsFull", err)
+	}
+	s.MinFree = 1
+	if err := s.CheckRoom(0); !errors.Is(err, ErrUploadsFull) {
+		t.Fatalf("CheckRoom with a 100%% floor = %v, want ErrUploadsFull", err)
+	}
+}

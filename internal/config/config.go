@@ -207,6 +207,11 @@ type RegistryConfig struct {
 	// archive (§19 WorldArchiver) and a build context (§16) are different artifacts
 	// with different lifecycles, so the two must not share a store binding.
 	UserUploadsContext string `toml:"user_uploads_context"`
+	// UserUploadsMaxBytes caps what every user's uploaded contexts may occupy
+	// together, as a quantity ("4Gi"). Each user also has a 2 GiB budget of their
+	// own; this bounds the sum, which on k3s local-path is the only bound, since
+	// the uploads PVC's size is not enforced there. Empty keeps 4Gi.
+	UserUploadsMaxBytes string `toml:"user_uploads_max_bytes"`
 	// S3 configures the object-store backend for user_uploads_context when it is an
 	// s3:// base (the alternative to a local uploads path). It mirrors
 	// ArchiveS3Config: Endpoint + Region locate the store and the *Ref fields NAME

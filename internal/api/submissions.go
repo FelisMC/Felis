@@ -377,8 +377,9 @@ var errSubmissionsUnavailable = newError(http.StatusServiceUnavailable, "submiss
 // writeSubmitError maps submit-package errors onto HTTP status codes. Only the
 // business sentinels are client-facing: a validation failure is 400, a missing
 // submission is 404, an already-reviewed submission is 409, a spent per-user
-// allowance is 403 (the same status the server-resource quota answers with), and
-// an unconfigured upload transport is 503 (the store this deployment set has no
+// allowance is 403 (the same status the server-resource quota answers with), a
+// full uploads store (every user's uploads together at their cap, or the volume
+// short of free space) is 507, and an unconfigured upload transport is 503 (the store this deployment set has no
 // implemented transport — an honest "not available here", not a client error). Everything
 // else — including a build.ErrInvalid raised by the pre-CAS build.Validate (a
 // platform registry/context MISCONFIGURATION, never client input, since every
@@ -402,6 +403,9 @@ func writeSubmitError(w http.ResponseWriter, r *http.Request, err error) {
 			"submission quota reached"))
 	case errors.Is(err, submit.ErrBlobNotFound):
 		writeError(w, r, newError(http.StatusNotFound, "not_found", "no context uploaded for this submission"))
+	case errors.Is(err, submit.ErrUploadsFull):
+		writeError(w, r, newError(http.StatusInsufficientStorage, "uploads_full",
+			"the uploads store is full; an admin has to delete reviewed submissions before new uploads fit"))
 	case errors.Is(err, submit.ErrUploadsUnavailable):
 		writeError(w, r, newError(http.StatusServiceUnavailable, "uploads_unavailable",
 			"modpack upload transport is not configured"))

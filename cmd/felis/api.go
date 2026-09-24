@@ -213,6 +213,13 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		ContextBaseURL: internalAPIBaseURL(),
 		Blobs:          blobs,
 	}
+	if v := cfg.Registry.UserUploadsMaxBytes; v != "" {
+		if n, err := parseByteSize(v); err != nil || n <= 0 {
+			fmt.Fprintf(stderr, "felis api: [registry] user_uploads_max_bytes %q is not a positive size such as 4Gi; keeping the default\n", v)
+		} else {
+			submissions.MaxStoredBytesTotal = n
+		}
+	}
 
 	// Restore subsystem (spec §7): the weak-SA restore Job mounts the target
 	// world PVC + the backup PVC and runs `felis restore`. It needs deployment-
@@ -404,6 +411,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	if pruner := registryPruner(cfg, builder.Store, a.Cluster, stderr); pruner != nil {
 		go pruner.Loop(ctx, registryPruneInterval)
 	}
+	go reapRejectedContexts(ctx, submissions, stderr)
 
 	select {
 	case <-ctx.Done():
@@ -615,6 +623,29 @@ func reconcileBuilds(ctx context.Context, b *build.Builder, stderr io.Writer) {
 			if _, err := b.SyncAll(ctx); err != nil {
 				fmt.Fprintf(stderr, "felis api: build reconcile: %v\n", err)
 			}
+		}
+	}
+}
+
+// reapRejectedContexts deletes, once an hour, the uploaded contexts of
+// submissions rejected more than submit.RejectedContextRetention ago. Without it a
+// rejected modpack keeps its bytes on the uploads store (and against its
+// submitter's budget) until an admin deletes the row.
+func reapRejectedContexts(ctx context.Context, m *submit.Manager, stderr io.Writer) {
+	t := time.NewTicker(time.Hour)
+	defer t.Stop()
+	for {
+		n, err := m.ReapRejected(ctx, submit.RejectedContextRetention)
+		if err != nil {
+			fmt.Fprintf(stderr, "felis api: reap rejected uploads: %v\n", err)
+		}
+		if n > 0 {
+			fmt.Fprintf(stderr, "felis api: deleted the uploaded contexts of %d rejected submission(s)\n", n)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
 		}
 	}
 }

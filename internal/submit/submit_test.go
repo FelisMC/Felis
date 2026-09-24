@@ -1167,3 +1167,109 @@ func keysOf(m map[string][]byte) []string {
 	}
 	return out
 }
+
+// Every user's contexts together are budgeted too: once they fill it, the next
+// upload is refused as a full store (507), whoever makes it and however little
+// of their own allowance they used.
+func TestUploadContextGlobalBudget(t *testing.T) {
+	m, _, _ := newManager()
+	fb := newFakeBlobs()
+	m.Blobs = fb
+	m.MaxStoredBytesPerUser = 100
+	m.MaxStoredBytesTotal = 10 // gzBody("x") is 5 bytes
+	ctx := context.Background()
+
+	for _, user := range []string{"user-1", "user-2"} {
+		sub, err := m.Create(ctx, CreateRequest{DisplayName: "P", SubmittedBy: user})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.UploadContext(ctx, sub.ID, user, strings.NewReader(gzBody("x"))); err != nil {
+			t.Fatalf("%s upload within the total = %v", user, err)
+		}
+	}
+	sub, err := m.Create(ctx, CreateRequest{DisplayName: "P", SubmittedBy: "user-3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = m.UploadContext(ctx, sub.ID, "user-3", strings.NewReader(gzBody("x")))
+	if !errors.Is(err, ErrUploadsFull) || errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("upload into a full store = %v, want ErrUploadsFull", err)
+	}
+	if _, ok := fb.stored[sub.ID]; ok {
+		t.Fatal("a refused upload must persist nothing")
+	}
+}
+
+type roomyBlobs struct {
+	*fakeBlobs
+	err  error
+	need int64
+}
+
+func (r *roomyBlobs) CheckRoom(need int64) error { r.need = need; return r.err }
+
+// A store on the node's filesystem is asked for room for the most the upload may
+// write before any of it is read.
+func TestUploadContextChecksRoom(t *testing.T) {
+	m, _, _ := newManager()
+	rb := &roomyBlobs{fakeBlobs: newFakeBlobs(), err: fmt.Errorf("%w: disk", ErrUploadsFull)}
+	m.Blobs = rb
+	m.MaxContextBytes = 1000
+	ctx := context.Background()
+	sub, err := m.Create(ctx, CreateRequest{DisplayName: "P", SubmittedBy: "user-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.UploadContext(ctx, sub.ID, "user-1", strings.NewReader(gzBody("x"))); !errors.Is(err, ErrUploadsFull) {
+		t.Fatalf("upload onto a full disk = %v, want ErrUploadsFull", err)
+	}
+	if rb.need != 1000 {
+		t.Fatalf("room asked for %d bytes, want the 1000-byte cap", rb.need)
+	}
+	rb.err = nil
+	if _, err := m.UploadContext(ctx, sub.ID, "user-1", strings.NewReader(gzBody("x"))); err != nil {
+		t.Fatalf("upload with room = %v", err)
+	}
+}
+
+// A rejected submission's context goes once the retention has passed; an approved
+// one stays (it rebuilds the image after a registry loss), and so do the rows.
+func TestReapRejected(t *testing.T) {
+	m, st, _ := newManager()
+	fb := newFakeBlobs()
+	m.Blobs = fb
+	ctx := context.Background()
+	ids := map[string]string{}
+	for _, name := range []string{"old-rejected", "new-rejected", "approved", "pending"} {
+		sub, err := m.Create(ctx, CreateRequest{DisplayName: name, SubmittedBy: "user-" + name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := m.UploadContext(ctx, sub.ID, "user-"+name, strings.NewReader(gzBody(name))); err != nil {
+			t.Fatal(err)
+		}
+		ids[name] = sub.ID
+	}
+	old, recent := testNow.Add(-8*24*time.Hour), testNow.Add(-time.Hour)
+	st.subs[ids["old-rejected"]].Status, st.subs[ids["old-rejected"]].ReviewedAt = StatusRejected, &old
+	st.subs[ids["new-rejected"]].Status, st.subs[ids["new-rejected"]].ReviewedAt = StatusRejected, &recent
+	st.subs[ids["approved"]].Status, st.subs[ids["approved"]].ReviewedAt = StatusApproved, &old
+
+	n, err := m.ReapRejected(ctx, RejectedContextRetention)
+	if err != nil || n != 1 {
+		t.Fatalf("ReapRejected = %d, %v; want 1", n, err)
+	}
+	for name, id := range ids {
+		_, kept := fb.stored[id]
+		if want := name != "old-rejected"; kept != want {
+			t.Errorf("%s context kept = %v, want %v", name, kept, want)
+		}
+		if _, ok := st.subs[id]; !ok {
+			t.Errorf("%s row deleted", name)
+		}
+	}
+	if n, err := m.ReapRejected(ctx, RejectedContextRetention); err != nil || n != 0 {
+		t.Fatalf("second ReapRejected = %d, %v; want 0", n, err)
+	}
+}
