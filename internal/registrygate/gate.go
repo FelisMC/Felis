@@ -95,6 +95,10 @@ func New(upstream *url.URL, tokens map[string]string, log *slog.Logger) *Gate {
 	g.health = &http.Client{Timeout: 3 * time.Second}
 	g.maint.now = time.Now
 	g.maint.quiet = DefaultQuiet
+	// A gate that just started cannot tell whether a push was mid-way through the
+	// previous one, and the installer pushes right after the registry rolls out:
+	// count the start as a write, so the first window waits for quiet too.
+	g.maint.lastWrite = g.maint.now()
 	return g
 }
 

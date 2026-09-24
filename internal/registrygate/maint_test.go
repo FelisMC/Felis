@@ -42,6 +42,7 @@ func newMaintGate(t *testing.T) (*Gate, *httptest.Server, *httptest.Server, *ups
 	}, nil)
 	clk := &clock{t: time.Date(2026, 9, 24, 3, 0, 0, 0, time.UTC)}
 	g.maint.now = clk.now
+	g.maint.lastWrite = time.Time{}
 	gs := httptest.NewServer(g)
 	t.Cleanup(gs.Close)
 	ms := httptest.NewServer(g.MaintHandler())
@@ -274,5 +275,23 @@ func TestManifestIndexListsUntaggedRevisions(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("index of %q = %d, want 400", bad, resp.StatusCode)
 		}
+	}
+}
+
+// A gate that just started grants no window before a quiet period has passed:
+// the installer pushes right after the registry rolls out.
+func TestReadOnlyWindowWaitsAfterStart(t *testing.T) {
+	up := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(up.Close)
+	target, _ := url.Parse(up.URL)
+	g := New(target, nil, nil)
+	ms := httptest.NewServer(g.MaintHandler())
+	t.Cleanup(ms.Close)
+	if code := post(t, ms, "/readonly?lease=60"); code != http.StatusConflict {
+		t.Fatalf("read-only window right after start = %d, want 409", code)
+	}
+	g.SetQuiet(0)
+	if code := post(t, ms, "/readonly?lease=60"); code != http.StatusOK {
+		t.Fatalf("read-only window once quiet = %d, want 200", code)
 	}
 }
