@@ -2,13 +2,18 @@ package api
 
 import (
 	"context"
+	"errors"
+	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	"felis.lolicon.best/internal/maintenance"
 	"felis.lolicon.best/internal/naming"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -20,6 +25,8 @@ import (
 type K8sCluster struct {
 	c         client.Client
 	namespace string
+	// now is injectable for the maintenance-lock tests; nil means time.Now.
+	now func() time.Time
 }
 
 // NewK8sCluster builds a Cluster over c, scoped to namespace.
@@ -142,18 +149,154 @@ func (k *K8sCluster) CreateServer(ctx context.Context, in CreateServerInput) err
 }
 
 // SetDesiredState patches spec.desiredState with a merge patch so concurrent
-// status writes by the operator are never clobbered (spec §9.1).
+// status writes by the operator are never clobbered (spec §9.1). A stop always
+// goes through. A start goes through start, which refuses while a maintenance
+// operation holds the world volume.
 func (k *K8sCluster) SetDesiredState(ctx context.Context, name string, state v1alpha1.DesiredState) error {
+	if state == v1alpha1.DesiredRunning {
+		return k.start(ctx, name)
+	}
 	var ms v1alpha1.MinecraftServer
-	if err := k.c.Get(ctx, types.NamespacedName{Namespace: k.namespace, Name: name}, &ms); err != nil {
-		if apierrors.IsNotFound(err) {
-			return ErrNotFound
-		}
+	if err := k.getServer(ctx, name, &ms); err != nil {
 		return err
 	}
 	patch := client.MergeFrom(ms.DeepCopy())
 	ms.Spec.DesiredState = state
 	return k.c.Patch(ctx, &ms, patch)
+}
+
+// start flips desiredState to Running unless a restore, backup or file write
+// holds the world volume (internal/maintenance), in which case it returns a
+// *MaintenanceBusyError. The patch carries the resourceVersion it checked
+// against, the same as AcquireMaintenance's: whichever of a racing wake and
+// admission writes second gets a conflict, re-reads, and sees the other.
+func (k *K8sCluster) start(ctx context.Context, name string) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var ms v1alpha1.MinecraftServer
+		if err := k.getServer(ctx, name, &ms); err != nil {
+			return err
+		}
+		kind, held, err := k.maintenanceHolder(ctx, &ms)
+		if err != nil {
+			return err
+		}
+		if held {
+			return &MaintenanceBusyError{Kind: kind}
+		}
+		patch := client.MergeFromWithOptions(ms.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		ms.Spec.DesiredState = v1alpha1.DesiredRunning
+		// A lock still on the object here no longer holds anything (Holder said
+		// so): drop it in the same write.
+		delete(ms.Annotations, maintenance.Annotation)
+		return k.c.Patch(ctx, &ms, patch)
+	})
+}
+
+// AcquireMaintenance admits one world-volume operation of the given kind: the
+// server must be fully stopped (desiredState Stopped, phase Stopped, and no game
+// pod left, so a pod still saving on its way down is waited out) and nothing else
+// may hold the volume. Admission writes the maintenance lock under the resourceVersion it
+// checked; the caller creates its Job and then calls ReleaseMaintenance, after
+// which the Job itself is the lock.
+func (k *K8sCluster) AcquireMaintenance(ctx context.Context, name, kind string) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var ms v1alpha1.MinecraftServer
+		if err := k.getServer(ctx, name, &ms); err != nil {
+			return err
+		}
+		desired := ms.Spec.DesiredState
+		if desired == "" {
+			desired = v1alpha1.DesiredStopped
+		}
+		if desired != v1alpha1.DesiredStopped || ms.Status.Ready || ms.Status.Phase != v1alpha1.PhaseStopped {
+			return ErrNotStopped
+		}
+		if up, err := k.gamePodExists(ctx, name); err != nil {
+			return err
+		} else if up {
+			return ErrNotStopped
+		}
+		holder, held, err := k.maintenanceHolder(ctx, &ms)
+		if err != nil {
+			return err
+		}
+		if held {
+			return &MaintenanceBusyError{Kind: holder}
+		}
+		patch := client.MergeFromWithOptions(ms.DeepCopy(), client.MergeFromWithOptimisticLock{})
+		if ms.Annotations == nil {
+			ms.Annotations = map[string]string{}
+		}
+		ms.Annotations[maintenance.Annotation] = maintenance.LockValue(kind, k.clock())
+		return k.c.Patch(ctx, &ms, patch)
+	})
+}
+
+// ReleaseMaintenance drops the admission lock. It is called once the Job exists
+// (or failed to be created); a lock that is never released stops holding after
+// maintenance.Grace on its own.
+func (k *K8sCluster) ReleaseMaintenance(ctx context.Context, name string) error {
+	var ms v1alpha1.MinecraftServer
+	if err := k.getServer(ctx, name, &ms); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if _, ok := ms.Annotations[maintenance.Annotation]; !ok {
+		return nil
+	}
+	patch := client.MergeFrom(ms.DeepCopy())
+	delete(ms.Annotations, maintenance.Annotation)
+	return k.c.Patch(ctx, &ms, patch)
+}
+
+// maintenanceHolder reads what holds ms's world volume right now. The Jobs are
+// listed through the same direct client as the object, so a Job created before
+// the lock was released is always visible here.
+func (k *K8sCluster) maintenanceHolder(ctx context.Context, ms *v1alpha1.MinecraftServer) (string, bool, error) {
+	var jobs batchv1.JobList
+	if err := k.c.List(ctx, &jobs, client.InNamespace(k.namespace),
+		client.MatchingLabels{maintenance.LabelServer: ms.Name}); err != nil {
+		return "", false, err
+	}
+	kind, held := maintenance.Holder(ms.Name, ms.Annotations, jobs.Items, k.clock())
+	return kind, held, nil
+}
+
+// gamePodComponent is the operator's component label value on a game server's
+// pod (internal/operator.ComponentValue; k8scluster_test pins the two).
+const gamePodComponent = "server"
+
+// gamePodExists reports whether the server's game pod still exists, terminating
+// or not. Phase Stopped is the operator's reading of the StatefulSet's replica
+// counts; the pod object itself is the ground truth for "is anything of the
+// server still running its preStop save against the volume".
+func (k *K8sCluster) gamePodExists(ctx context.Context, name string) (bool, error) {
+	var pods corev1.PodList
+	if err := k.c.List(ctx, &pods, client.InNamespace(k.namespace), client.MatchingLabels{
+		v1alpha1.LabelServer: name, v1alpha1.LabelComponent: gamePodComponent,
+	}); err != nil {
+		return false, err
+	}
+	return len(pods.Items) > 0, nil
+}
+
+func (k *K8sCluster) getServer(ctx context.Context, name string, ms *v1alpha1.MinecraftServer) error {
+	if err := k.c.Get(ctx, types.NamespacedName{Namespace: k.namespace, Name: name}, ms); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ErrNotFound
+		}
+		return err
+	}
+	return nil
+}
+
+func (k *K8sCluster) clock() time.Time {
+	if k.now != nil {
+		return k.now()
+	}
+	return time.Now()
 }
 
 // PatchServerSpec applies the admin-tier spec mutation (spec §7) with the same

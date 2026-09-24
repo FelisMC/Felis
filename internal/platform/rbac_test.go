@@ -188,6 +188,15 @@ func TestOperatorRole_ScopeExact(t *testing.T) {
 			t.Errorf("operator must NOT touch core/%s", res)
 		}
 	}
+	// The world-volume lock check lists Jobs uncached; it never writes one.
+	if !hasRule(op, groupBatch, "jobs", "list") {
+		t.Error("operator must have jobs:list (maintenance hold before scale-up)")
+	}
+	for _, v := range []string{"get", "watch", "create", "update", "patch", "delete"} {
+		if hasRule(op, groupBatch, "jobs", v) {
+			t.Errorf("operator must NOT have jobs:%s (list-only)", v)
+		}
+	}
 }
 
 // TestReaperRole_ScopeExact pins the reaper's two destructive powers and confirms

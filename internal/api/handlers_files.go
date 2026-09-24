@@ -7,6 +7,7 @@ import (
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/fileedit"
+	"felis.lolicon.best/internal/maintenance"
 	"felis.lolicon.best/internal/naming"
 )
 
@@ -148,6 +149,15 @@ func (a *API) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 			len(*body.Content), fileedit.MaxWriteBytes))
 		return
 	}
+
+	// A write holds the world volume for its Job's lifetime (internal/maintenance);
+	// reads and listings do not, since a read-only mount cannot hurt a server
+	// starting beside it.
+	release, ok := a.acquireWorld(w, r, name, maintenance.KindFileWrite, "stop the server before editing its files")
+	if !ok {
+		return
+	}
+	defer release()
 
 	if err := a.Files.Write(r.Context(), name, path, *body.Content); err != nil {
 		writeFileEditError(w, r, err)

@@ -14,6 +14,7 @@
   "console_unavailable": "Can't reach the server console right now — try again shortly.",
   "no_backup": "There's no restorable backup for this server yet.",
   "not_stopped": "Stop the server completely before restoring — a restore overwrites the live world volume.",
+  "maintenance_in_progress": "This server's world is busy with a restore, backup or file write — try again once it finishes, usually within a minute or two.",
   "no_world_volume": "This server has no world volume yet — start it once so it is created, then retry.",
   "restore_unavailable": "Restore isn't available right now — try again later.",
   "session_expired": "Your session expired — please sign in again.",

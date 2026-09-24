@@ -13,8 +13,10 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	"felis.lolicon.best/internal/maintenance"
 	"felis.lolicon.best/internal/metrics"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -37,6 +39,7 @@ const (
 	requeueStopping            = 5 * time.Second
 	requeueSecret              = 10 * time.Second
 	requeueIdleProbe           = 30 * time.Second
+	requeueMaintenance         = 5 * time.Second
 	defaultTimeoutSeconds      = 300
 	defaultReadinessTimeoutSec = 300
 )
@@ -69,6 +72,10 @@ type Reconciler struct {
 	// Now is injectable for deterministic timestamps in tests; defaults to
 	// metav1.Now.
 	Now func() metav1.Time
+	// Jobs reads the minecraft namespace's Jobs for the world-volume lock
+	// (internal/maintenance). It is the manager's uncached API reader, so the
+	// operator needs jobs:list and no Job informer. Nil skips the check.
+	Jobs client.Reader
 }
 
 func (r *Reconciler) now() metav1.Time {
@@ -111,6 +118,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 }
 
 func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.MinecraftServer) (ctrl.Result, error) {
+	if kind, held, err := r.maintenanceHold(ctx, server); err != nil {
+		return ctrl.Result{}, err
+	} else if held {
+		// Leave phase and the start anchor alone: nothing is starting yet, and a
+		// long restore must not be charged to the startup timeout.
+		server.Status.ObservedGeneration = server.Generation
+		r.setCondition(server, v1alpha1.ConditionReady, metav1.ConditionFalse, "MaintenanceInProgress",
+			"waiting for the "+kind+" on this server's world to finish before starting")
+		if err := r.patchStatus(ctx, server); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: requeueMaintenance}, nil
+	}
+
 	endpointAddress, err := r.ensureServices(ctx, server)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -281,6 +302,35 @@ func (r *Reconciler) reconcileStopped(ctx context.Context, server *v1alpha1.Mine
 
 	r.markStopped(server)
 	return ctrl.Result{}, r.patchStatus(ctx, server)
+}
+
+// maintenanceHold reports whether a restore, backup or file write holds the
+// server's world volume (internal/maintenance) while its pod is about to be
+// created. felis-api already refuses a wake in that state; this is the same rule
+// for a desiredState flipped by anything else (kubectl, a script), since a game
+// pod scheduled beside a restore Job boots on a half-extracted world. A server
+// whose StatefulSet is already scaled up is never held: its pod exists, and
+// stopping it here would only lose the players on it.
+func (r *Reconciler) maintenanceHold(ctx context.Context, server *v1alpha1.MinecraftServer) (string, bool, error) {
+	if r.Jobs == nil {
+		return "", false, nil
+	}
+	var sts appsv1.StatefulSet
+	err := r.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: server.Name}, &sts)
+	switch {
+	case apierrors.IsNotFound(err):
+	case err != nil:
+		return "", false, err
+	case sts.Spec.Replicas == nil || *sts.Spec.Replicas > 0 || sts.Status.Replicas > 0:
+		return "", false, nil
+	}
+	var jobs batchv1.JobList
+	if err := r.Jobs.List(ctx, &jobs, client.InNamespace(server.Namespace),
+		client.MatchingLabels{maintenance.LabelServer: server.Name}); err != nil {
+		return "", false, err
+	}
+	kind, held := maintenance.Holder(server.Name, server.Annotations, jobs.Items, r.now().Time)
+	return kind, held, nil
 }
 
 func (r *Reconciler) ensureServices(ctx context.Context, server *v1alpha1.MinecraftServer) (string, error) {

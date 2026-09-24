@@ -107,6 +107,9 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 		// injects into user servers. The Deployment passes it as FELIS_IMAGE (see
 		// platform.OperatorDeployment); absent, that injection is simply skipped.
 		FelisImage: os.Getenv("FELIS_IMAGE"),
+		// Uncached: the maintenance-lock check lists Jobs only when a server is
+		// about to start, which does not justify a namespace-wide Job informer.
+		Jobs: mgr.GetAPIReader(),
 	}
 	if err := r.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(stderr, "felis operator: setup controller: %v\n", err)

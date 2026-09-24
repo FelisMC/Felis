@@ -185,6 +185,7 @@ per-server cooldown → global running cap**. Map the API result:
 | HTTP | Code | Cause | Fix |
 |---|---|---|---|
 | `403` | `forbidden` | `autostartPolicy=allowlist` and UUID not allowlisted, or `ownerOnly` and caller is not owner | Add the UUID / claim the server / set `autostartPolicy=public` |
+| `409` | `maintenance_in_progress` | A restore, backup or file write holds the server's world volume (§3b) | Wait for the Job to finish |
 | `429` | (cooldown) | Wake retried within the 30s per-server `WakeCooldown` | Wait out the cooldown |
 | `503` | `at_capacity` | Global `MaxRunningServers` cap reached | Stop another server or raise the cap |
 
@@ -194,10 +195,53 @@ gate; the proxy polls `GET /api/v1/internal/servers/{name}/status` every ~2s and
 teleports when `ready=true`.
 
 The Velocity-side consumption of these codes (`403` → "You're not allowed to
-start «server»"; `429` → re-queue; other → "Couldn't start … Try again
+start «server»"; `409 maintenance_in_progress` → "«server» is under
+maintenance", not queued; `429` → re-queue; other → "Couldn't start … Try again
 shortly.") lives in the Java plugin and is **[CODE-ONLY]** — the codes it reacts
 to are produced by the Go-tested `authorizeWakeByUUID` / cooldown limiter, so
 grade the two halves separately.
+
+### 3b. Wake, restore, backup or file save refused with `maintenance_in_progress`
+
+A server's world volume is ReadWriteOnce, and on a single node RWO lets a game
+pod and a restore Job mount it side by side. So felis-api serialises them per
+server: a restore, a backup, or a file write takes the world, and until its Job
+finishes every wake (panel or join) and every other world operation on that
+server gets `409 maintenance_in_progress`. File reads and listings never hold
+it. The operator applies the same rule when `desiredState` is flipped to
+`Running` by anything other than felis-api: the StatefulSet is not scaled up,
+and the `Ready` condition reads `MaintenanceInProgress` until the Job ends.
+
+What holds the world, in order:
+
+1. An unfinished Job labelled `felis.lolicon.best/server=<name>` with
+   `app.kubernetes.io/managed-by` `felis-restore`, `felis-backup`, or
+   `felis-files` plus `felis.lolicon.best/files-mode=write`:
+
+   ```sh
+   kubectl -n minecraft get jobs -l felis.lolicon.best/server=<name>
+   ```
+
+   A Job that is genuinely wedged is ended by its own `activeDeadlineSeconds`;
+   deleting it by hand releases the world at once (`kubectl -n minecraft delete
+   job <job>`), at the cost of whatever it was writing.
+
+2. The admission lock `felis.lolicon.best/maintenance=<kind>@<RFC3339>` on the
+   MinecraftServer. felis-api sets it for the milliseconds between admitting an
+   operation and creating its Job; it holds for at most two minutes if felis-api
+   died in between, and the next wake clears a stale one. To drop it by hand:
+
+   ```sh
+   kubectl -n minecraft annotate minecraftserver <name> felis.lolicon.best/maintenance-
+   ```
+
+A restore, backup or file write refused with `409 not_stopped` although the
+panel shows `Stopped` means the game pod is still terminating (its preStop save
+can take a while); retry once `kubectl -n minecraft get pods -l
+felis.lolicon.best/server=<name>` shows nothing.
+
+[GO-TESTED: `internal/maintenance`, `k8scluster_maintenance_test.go`,
+`handlers_maintenance_test.go`, operator `maintenance_test.go`.]
 
 ---
 
@@ -947,7 +991,8 @@ installer built — only hand-built tags need a manual re-mirror.
 | RCON secret/auth/port errors | §1b, §1c |
 | Phase `Failed` | §2 |
 | Players land in lobby / wrong place | §3, §4 |
-| Wake refused / rate-limited (403/429/503) | §3a |
+| Wake refused / rate-limited (403/409/429/503) | §3a |
+| `maintenance_in_progress`; server won't start after a restore | §3b |
 | Routing disabled, offline-mode | §4 |
 | Panel 401/403; fails-closed; audience error | §5 |
 | Local password login rejected | §5c |

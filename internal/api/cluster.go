@@ -94,8 +94,18 @@ type Cluster interface {
 	// velocity registration pull (spec §7 GET /servers).
 	ListServers(ctx context.Context) ([]ServerInfo, error)
 	// SetDesiredState flips spec.desiredState — the only write the API performs
-	// against the CRD (spec §9.1). It is idempotent.
+	// against the CRD (spec §9.1). It is idempotent. Flipping to Running returns a
+	// *MaintenanceBusyError (errors.Is ErrMaintenanceInProgress) while a restore,
+	// backup or file write holds the world volume.
 	SetDesiredState(ctx context.Context, name string, state v1alpha1.DesiredState) error
+	// AcquireMaintenance admits one world-volume operation (internal/maintenance
+	// kind): ErrNotStopped unless the server is fully stopped, a
+	// *MaintenanceBusyError while another operation holds the volume. The check
+	// and the lock are one atomic write against a concurrent wake.
+	AcquireMaintenance(ctx context.Context, name, kind string) error
+	// ReleaseMaintenance drops the admission lock once the operation's Job exists
+	// (or could not be created). It is idempotent.
+	ReleaseMaintenance(ctx context.Context, name string) error
 	// CreateServer creates a MinecraftServer CRD from the validated form (spec
 	// §15). It returns ErrConflict if a server of that name already exists.
 	CreateServer(ctx context.Context, in CreateServerInput) error

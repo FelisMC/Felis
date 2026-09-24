@@ -79,7 +79,8 @@ public final class FelisApiClient {
      * wake pulls the domain-autostart lever for {@code name} on behalf of the
      * joining player (spec §9.1, §14). The reply (202) carries the current phase
      * and ready flag so the caller can decide whether to wait. A 403 (policy gate),
-     * 429 (cooldown), or 503 {@code at_capacity} (running cap) arrives as a
+     * 409 {@code maintenance_in_progress} (a restore, backup or file write holds the
+     * world), 429 (cooldown), or 503 {@code at_capacity} (running cap) arrives as a
      * LinkException the caller branches on.
      */
     public ServerView wake(String name, UUID mcUuid) throws LinkException {

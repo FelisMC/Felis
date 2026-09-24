@@ -16,12 +16,15 @@ import (
 // way. LabelOpID is the one addition: it is how felis-api finds THIS invocation's
 // Pod among any others, which matters here in a way it does not for restore —
 // file operations are interactive and repeated, so several may be in flight or
-// lingering inside their TTL at once.
+// lingering inside their TTL at once. LabelMode carries the operation so the
+// world-volume lock (internal/maintenance) can tell a write, which holds the
+// volume, from a read or listing, which does not.
 const (
 	LabelManagedBy = "app.kubernetes.io/managed-by"
 	LabelComponent = "app.kubernetes.io/component"
 	LabelServer    = "felis.lolicon.best/server"
 	LabelOpID      = "felis.lolicon.best/files-op"
+	LabelMode      = "felis.lolicon.best/files-mode"
 
 	managedByValue = "felis-files"
 	componentValue = "world-files"
@@ -80,6 +83,7 @@ func filesLabels(p JobParams) map[string]string {
 		LabelComponent: componentValue,
 		LabelServer:    p.Server,
 		LabelOpID:      p.OpID,
+		LabelMode:      p.Op,
 	}
 }
 

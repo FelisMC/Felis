@@ -705,6 +705,11 @@ export function humanizeError(e: unknown): string {
       return t("no_backup");
     case "not_stopped":
       return t("not_stopped");
+    // World-volume lock: a restore, backup or file write is running on this
+    // server's world, so a wake or a second world operation is refused until the
+    // Job finishes (internal/maintenance).
+    case "maintenance_in_progress":
+      return t("maintenance_in_progress");
     case "no_world_volume":
       return t("no_world_volume");
     case "restore_unavailable":

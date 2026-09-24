@@ -741,6 +741,11 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: A restore, backup or file write holds the server's world volume (maintenance_in_progress); nothing was started.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '429':
           description: Wake cooldown is still active for this server.
           content:
@@ -1193,7 +1198,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '409':
-          description: Server is not stopped (its world PVC is still mounted).
+          description: Server is not stopped (not_stopped), or a restore, backup or file write already holds its world volume (maintenance_in_progress).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -1228,6 +1233,11 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          description: A restore, backup or file write holds the server's world volume (maintenance_in_progress); nothing was started.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '429':
           description: Wake cooldown is still active.
           content:
@@ -2828,7 +2838,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '409':
-          description: Submission has already been reviewed.
+          description: Server is not stopped (not_stopped), or a restore, backup or file write already holds its world volume (maintenance_in_progress).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -2873,7 +2883,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '409':
-          description: Server is not stopped (its world PVC is still mounted).
+          description: Server is not stopped (not_stopped), or a restore, backup or file write already holds its world volume (maintenance_in_progress).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -3122,7 +3132,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '409':
-          description: Server is not stopped (its world PVC is still mounted).
+          description: Server is not stopped (not_stopped), or a restore, backup or file write already holds its world volume (maintenance_in_progress).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

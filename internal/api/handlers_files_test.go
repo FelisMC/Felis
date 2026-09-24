@@ -63,9 +63,9 @@ func mkFiles() (*API, *fakeRepo, *fakeCluster, *fakeFileEditor) {
 }
 
 // TestFileEditorStoppedGate is the gate this whole subsystem hinges on. The world
-// PVC is ReadWriteOnce, so a running server holds it and a file Job physically
-// cannot mount it — an ungated request would not fail cleanly, it would hang
-// waiting for a Pod that can never be scheduled. Every one of the three routes
+// PVC is ReadWriteOnce, but RWO is per node: on a single node a file Job mounts it
+// right beside a running server, and a write lands under a live world that the
+// server's next save overwrites or tears. Every one of the three routes
 // must therefore refuse a non-stopped server with 409 not_stopped BEFORE reaching
 // the executor, which is why each asserts calls == 0 as well as the status.
 func TestFileEditorStoppedGate(t *testing.T) {

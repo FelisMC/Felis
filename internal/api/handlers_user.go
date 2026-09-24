@@ -56,8 +56,10 @@ func (a *API) handleWake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Refused with 409 maintenance_in_progress while a restore, backup or file
+	// write holds the world volume: starting on a half-written world corrupts it.
 	if err := a.Cluster.SetDesiredState(r.Context(), name, v1alpha1.DesiredRunning); err != nil {
-		writeError(w, r, err)
+		a.writeLookupError(w, r, err)
 		return
 	}
 	// The wake actually flipped, so consume the per-server cooldown only now: a 503

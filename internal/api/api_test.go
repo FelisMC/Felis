@@ -1454,12 +1454,19 @@ type fakeCluster struct {
 	noWorld   map[string]bool              // server names modeled WITHOUT a world volume (never started / reaped)
 	createErr error
 	pingErr   error
+	// maintErr / wakeErr: what AcquireMaintenance / SetDesiredState(Running)
+	// return for a server (the world-volume lock, internal/maintenance).
+	maintErr map[string]error
+	wakeErr  map[string]error
+	acquired []string // "name:kind" per admitted AcquireMaintenance
+	released []string // names per ReleaseMaintenance
 }
 
 func newFakeCluster() *fakeCluster {
 	return &fakeCluster{byName: map[string]*ServerInfo{}, bySub: map[string]*ServerInfo{},
 		desired: map[string]v1alpha1.DesiredState{}, created: map[string]CreateServerInput{},
-		patched: map[string]ServerSpecPatch{}, noWorld: map[string]bool{}}
+		patched: map[string]ServerSpecPatch{}, noWorld: map[string]bool{},
+		maintErr: map[string]error{}, wakeErr: map[string]error{}}
 }
 func (c *fakeCluster) GetServer(_ context.Context, n string) (*ServerInfo, error) {
 	if s, ok := c.byName[n]; ok {
@@ -1483,7 +1490,21 @@ func (c *fakeCluster) WorldVolumeExists(_ context.Context, n string) (bool, erro
 }
 
 func (c *fakeCluster) SetDesiredState(_ context.Context, n string, s v1alpha1.DesiredState) error {
+	if err := c.wakeErr[n]; err != nil && s == v1alpha1.DesiredRunning {
+		return err
+	}
 	c.desired[n] = s
+	return nil
+}
+func (c *fakeCluster) AcquireMaintenance(_ context.Context, n, kind string) error {
+	if err := c.maintErr[n]; err != nil {
+		return err
+	}
+	c.acquired = append(c.acquired, n+":"+kind)
+	return nil
+}
+func (c *fakeCluster) ReleaseMaintenance(_ context.Context, n string) error {
+	c.released = append(c.released, n)
 	return nil
 }
 func (c *fakeCluster) CreateServer(_ context.Context, in CreateServerInput) error {

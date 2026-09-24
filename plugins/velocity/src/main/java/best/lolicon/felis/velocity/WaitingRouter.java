@@ -498,6 +498,20 @@ public final class WaitingRouter {
                             zh ? "你无权启动「" + serverName + "」。"
                                : "You're not allowed to start « " + serverName + " ».", NamedTextColor.RED));
                     return;
+                case 409:
+                    if ("maintenance_in_progress".equals(e.errorCode())) {
+                        // A restore, backup or file write owns the world right now and
+                        // the server will not start until it finishes (minutes at most),
+                        // so waiting here would only run into the queue timeout.
+                        player.sendMessage(Component.text(
+                                zh ? "「" + serverName + "」正在维护（回档、备份或改文件），请稍后再试。"
+                                   : "« " + serverName + " » is under maintenance (restore, backup or file edit)."
+                                     + " Please try again shortly.",
+                                NamedTextColor.YELLOW));
+                        return;
+                    }
+                    logWakeFailure(player, serverName, zh, e);
+                    return;
                 case 429:
                     break; // a wake is already in flight → join the existing wait
                 case 503:
@@ -513,13 +527,10 @@ public final class WaitingRouter {
                     }
                     // A 503 without the at_capacity code is a plain outage, not a
                     // capacity verdict — report it like any other failure.
-                    // fall through
+                    logWakeFailure(player, serverName, zh, e);
+                    return;
                 default:
-                    log.warn("Felis: wake {} failed (status={}): {}", serverName, e.statusCode(), e.getMessage());
-                    player.sendMessage(Component.text(
-                            zh ? "现在无法启动「" + serverName + "」。请稍后再试。"
-                               : "Couldn't start « " + serverName + " » right now. Try again shortly.",
-                            NamedTextColor.RED));
+                    logWakeFailure(player, serverName, zh, e);
                     return;
             }
         }
@@ -529,6 +540,14 @@ public final class WaitingRouter {
                 NamedTextColor.GRAY));
         waiting.put(id, new Waiter(
                 serverName, System.currentTimeMillis() + WAIT_TIMEOUT_MILLIS, fromMenu));
+    }
+
+    private void logWakeFailure(Player player, String serverName, boolean zh, LinkException e) {
+        log.warn("Felis: wake {} failed (status={}): {}", serverName, e.statusCode(), e.getMessage());
+        player.sendMessage(Component.text(
+                zh ? "现在无法启动「" + serverName + "」。请稍后再试。"
+                   : "Couldn't start « " + serverName + " » right now. Try again shortly.",
+                NamedTextColor.RED));
     }
 
     private void transfer(Player player, String serverName, RegisteredServer backend) {

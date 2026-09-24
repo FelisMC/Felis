@@ -153,8 +153,10 @@ func (a *API) handleInternalWake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A 409 maintenance_in_progress tells velocity nothing is coming up until the
+	// restore/backup/file write finishes, so it does not enqueue the player.
 	if err := a.Cluster.SetDesiredState(r.Context(), name, v1alpha1.DesiredRunning); err != nil {
-		writeError(w, r, err)
+		a.writeLookupError(w, r, err)
 		return
 	}
 	// Consume the shared per-server cooldown only after the wake flips, so a join
@@ -365,6 +367,8 @@ func (a *API) writeLookupError(w http.ResponseWriter, r *http.Request, err error
 		writeError(w, r, newError(http.StatusNotFound, "not_found", "not found"))
 	case errors.Is(err, ErrConflict):
 		writeError(w, r, newError(http.StatusConflict, "conflict", "conflict"))
+	case errors.Is(err, ErrMaintenanceInProgress), errors.Is(err, ErrNotStopped):
+		writeError(w, r, maintenanceError(err, "stop the server completely first"))
 	default:
 		writeError(w, r, err)
 	}

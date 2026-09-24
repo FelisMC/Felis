@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	"felis.lolicon.best/internal/maintenance"
 	"felis.lolicon.best/internal/naming"
 )
 
@@ -69,7 +70,10 @@ func (a *API) handleListBackups(w http.ResponseWriter, r *http.Request) {
 //	   re-claims a released server could otherwise resurrect user A's world (the
 //	   backup still carries former_owner=A), a data leak. Admin skips this check.
 //	⑦ stopped gate: the world PVC must be free, so restore is refused unless the
-//	   server is fully stopped.
+//	   server is fully stopped. The world-volume lock (internal/maintenance) then
+//	   makes that atomic against a wake and refuses a second restore, backup or
+//	   file write on the same world with 409 maintenance_in_progress until the
+//	   restore Job finishes.
 //	⑧ hand off to the Restorer. Restore is asynchronous (a restore Job, like an
 //	   image build Job), so success means "enqueued" and the handler answers 202.
 //
@@ -152,7 +156,9 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 	// Refuse unless the server is fully stopped — Ready means it is up, and any
 	// desiredState other than Stopped means it is up or coming up and still owns the
 	// RWO volume (spec §141 readiness is an RCON probe; DesiredStopped is the
-	// intent). This yields a specific 409 instead of a restore Job that cannot mount.
+	// intent). This is the early, readable refusal from a snapshot; acquireWorld
+	// below is the atomic one (RWO is per node, so on a single node a restore Job
+	// WOULD mount beside a running server).
 	info, err := a.Cluster.GetServer(r.Context(), name)
 	if err != nil {
 		a.writeLookupError(w, r, err)
@@ -186,6 +192,16 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// World-volume lock (internal/maintenance). The stopped gate above reads a
+	// snapshot; this is the atomic check, and it keeps a wake — the owner's, or a
+	// player's join through velocity — from booting the server on a half-extracted
+	// world until the restore Job has finished.
+	release, ok := a.acquireWorld(w, r, name, maintenance.KindRestore, "stop the server before restoring a backup")
+	if !ok {
+		return
+	}
+	defer release()
+
 	if err := a.Restorer.Restore(r.Context(), name, backup.BackupRef); err != nil {
 		// ErrNotFound (server vanished from the execution backend) → 404; else 500.
 		a.writeLookupError(w, r, err)
@@ -212,9 +228,10 @@ func (a *API) handleRestoreBackup(w http.ResponseWriter, r *http.Request) {
 //	② ServerByName — an unknown server is 404
 //	③ owner-or-admin, else 403 (an unowned server passes only for admin, so a
 //	   released world can still be snapshotted by an operator before disposal)
-//	④ stopped gate: the world PVC is RWO and held by a running server, so a backup
-//	   Job cannot double-mount it — refuse unless the server is fully stopped. This
-//	   also guarantees a quiescent, non-torn archive.
+//	④ stopped gate: refuse unless the server is fully stopped, so the archive is
+//	   quiescent and non-torn. The world-volume lock (internal/maintenance) keeps it
+//	   that way until the backup Job finishes: a wake meanwhile, or a second
+//	   restore/backup/file write, gets 409 maintenance_in_progress.
 //	⑤ hand off to the Backuper. Backup is asynchronous (a backup Job), so success
 //	   means "enqueued" and the handler answers 202.
 //
@@ -294,9 +311,10 @@ func (a *API) handleInternalBackup(w http.ResponseWriter, r *http.Request) {
 // (Principal vs trusted service token) and the audit actor/source — keeping the
 // security-critical stopped-gate single-sourced so the two faces cannot diverge.
 func (a *API) enqueueBackup(w http.ResponseWriter, r *http.Request, name string, rec *ServerRecord, actor, source string) {
-	// Stopped gate: the world PVC is RWO and held by a running server, so a backup
-	// Job cannot double-mount it (mirrors the restore gate). Ready means it is up;
-	// any desiredState other than Stopped means it owns the RWO volume.
+	// Stopped gate (mirrors the restore gate): Ready means it is up; any
+	// desiredState other than Stopped means it is up or coming up. RWO is per node,
+	// so on a single node the Job WOULD mount beside a live server and archive a
+	// torn world; acquireWorld below makes this check atomic.
 	info, err := a.Cluster.GetServer(r.Context(), name)
 	if err != nil {
 		a.writeLookupError(w, r, err)
@@ -328,6 +346,14 @@ func (a *API) enqueueBackup(w http.ResponseWriter, r *http.Request, name string,
 			"backup subsystem is not configured"))
 		return
 	}
+
+	// World-volume lock (internal/maintenance): a server woken mid-backup would
+	// leave a torn archive that a later restore makes permanent.
+	release, ok := a.acquireWorld(w, r, name, maintenance.KindBackup, "stop the server before backing up its world")
+	if !ok {
+		return
+	}
+	defer release()
 
 	if err := a.Backuper.Backup(r.Context(), name, rec.OwnerID); err != nil {
 		a.writeLookupError(w, r, err)

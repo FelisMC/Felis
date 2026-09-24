@@ -14,6 +14,7 @@
   "console_unavailable": "暂时无法连接服务器控制台，请稍后重试。",
   "no_backup": "这台服务器暂时没有可回档的备份。",
   "not_stopped": "回档会覆盖世界的实时存储卷，请先把服务器完全停止再回档。",
+  "maintenance_in_progress": "这台服务器的世界正在回档、备份或写入文件——等它完成后再试，通常不超过一两分钟。",
   "no_world_volume": "这台服务器还没有世界卷——先启动一次让它创建，然后再试。",
   "restore_unavailable": "回档功能当前不可用，请稍后再试。",
   "session_expired": "会话已过期——请重新登录。",

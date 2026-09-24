@@ -82,7 +82,25 @@ var (
 	// sentinels so the handler answers 429 (a transient "too busy, retry" — the cap self-clears
 	// as challenges expire), never a 400 that invites an immediate retry.
 	ErrTooManyDiscoverableChallenges = errors.New("too many discoverable login challenges in flight")
+	// ErrNotStopped means a world-volume operation was refused because the server is
+	// not fully stopped: desiredState is not Stopped, or its pod is still shutting
+	// down (phase Stopping) and holds the volume while it saves.
+	ErrNotStopped = errors.New("server is not stopped")
+	// ErrMaintenanceInProgress means another operation holds the server's world
+	// volume (internal/maintenance). Cluster methods return it wrapped in a
+	// *MaintenanceBusyError that names the holder.
+	ErrMaintenanceInProgress = errors.New("world maintenance in progress")
 )
+
+// MaintenanceBusyError names what holds a server's world volume. errors.Is
+// matches it against ErrMaintenanceInProgress.
+type MaintenanceBusyError struct{ Kind string }
+
+func (e *MaintenanceBusyError) Error() string {
+	return "world maintenance in progress: " + e.Kind
+}
+
+func (e *MaintenanceBusyError) Is(target error) bool { return target == ErrMaintenanceInProgress }
 
 // apiError is a handler-level error carrying an HTTP status and a stable,
 // machine-readable code. The error envelope matches the platform convention:

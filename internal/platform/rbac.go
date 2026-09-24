@@ -145,8 +145,11 @@ func APIBuildRole(p Params) *rbacv1.Role {
 // status (Status().Update — `update` only) and patches spec.desiredState to
 // Stopped for idle auto-stop (spec §8 — the one spec field it may write, using
 // the same merge patch as the reaper's Stop: without the grant the auto-stop
-// call fails closed with a 403), and reads RCON Secrets. It never touches pods,
-// PVCs, Events, or finalizers, so none appear here.
+// call fails closed with a 403), and reads RCON Secrets. Jobs are list-only,
+// through the manager's uncached API reader: before scaling a server up from zero
+// the operator checks that no restore/backup/file-write Job holds its world
+// (internal/maintenance). It never touches pods, PVCs, Events, or finalizers, so
+// none appear here.
 func OperatorRole(p Params) *rbacv1.Role {
 	p = p.withDefaults()
 	return role(p.MinecraftNamespace, "felis-operator", ComponentOperator, []rbacv1.PolicyRule{
@@ -161,6 +164,9 @@ func OperatorRole(p Params) *rbacv1.Role {
 		// did not already have. No update/delete — the password is written once and
 		// removed by garbage collection through its controller reference.
 		rule([]string{groupCore}, []string{"secrets"}, []string{"get", "list", "watch", "create"}),
+		// list only: an uncached List (no informer, so no watch) of the world-volume
+		// maintenance Jobs; the operator never creates or deletes a Job.
+		rule([]string{groupBatch}, []string{"jobs"}, []string{"list"}),
 	})
 }
 
