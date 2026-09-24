@@ -17,6 +17,7 @@ import (
 	"felis.lolicon.best/internal/build"
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/fileedit"
+	"felis.lolicon.best/internal/imagepin"
 	"felis.lolicon.best/internal/mail"
 	"felis.lolicon.best/internal/naming"
 	"felis.lolicon.best/internal/panel"
@@ -268,6 +269,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		BuildLogs:   api.NewK8sBuildLogStreamer(clientset, cfg.Registry.BuildNamespace),
 		Internal:    api.BearerTokenAuth{Token: token},
 		Builder:     builder,
+		Images:      imagePinner(cfg.Registry.URL),
 		Restorer:    restorer,
 		Backuper:    backuper,
 		JobStatus:   api.NewK8sJobStatus(cl, cfg.K8s.Namespace),
@@ -567,4 +569,14 @@ func mailLimit(perHour int) api.RateLimit {
 		perHour = config.DefaultMailPerHour
 	}
 	return api.RateLimit{Burst: max(perHour/4, 5), PerMinute: float64(perHour) / 60}
+}
+
+// imagePinner resolves a new server's image against the platform registry
+// through its in-cluster Service, the address its refs already spell. An install
+// without a registry has no platform-built images to pin.
+func imagePinner(registry string) api.ImagePinner {
+	if registry == "" {
+		return nil
+	}
+	return imagepin.Resolver{Registry: registry}
 }

@@ -234,11 +234,13 @@ func loginToInternalAPI(p Params) *networkingv1.NetworkPolicy {
 	}
 }
 
-// RegistryIngressPolicy fences the registry pod: only build pods reach its port.
-// Everything else that uses the registry runs on the node — containerd's pulls and
-// the installer's pushes both arrive through the loopback hostPort — and Kubernetes
-// never blocks resident-node traffic. Write authorization is the gate's job; this
-// policy keeps every other pod from even trying.
+// RegistryIngressPolicy fences the registry pod: only build pods and felis-api
+// reach its port. Build pods push what they build; felis-api reads a manifest
+// digest to pin a new server's image (internal/imagepin). Everything else that
+// uses the registry runs on the node — containerd's pulls and the installer's
+// pushes both arrive through the loopback hostPort — and Kubernetes never blocks
+// resident-node traffic. Write authorization is the gate's job (felis-api holds no
+// registry credential); this policy keeps every other pod from even trying.
 func RegistryIngressPolicy(p Params) *networkingv1.NetworkPolicy {
 	p = p.withDefaults()
 	tcp := corev1.ProtocolTCP
@@ -246,11 +248,22 @@ func RegistryIngressPolicy(p Params) *networkingv1.NetworkPolicy {
 	np := netpol("felis-registry-ingress", p.RegistryNamespace,
 		metav1.LabelSelector{MatchLabels: registryLabels()},
 		[]networkingv1.NetworkPolicyIngressRule{{
-			From: []networkingv1.NetworkPolicyPeer{{
-				NamespaceSelector: &metav1.LabelSelector{
-					MatchLabels: map[string]string{"kubernetes.io/metadata.name": p.BuildNamespace},
+			From: []networkingv1.NetworkPolicyPeer{
+				{
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"kubernetes.io/metadata.name": p.BuildNamespace},
+					},
 				},
-			}},
+				{
+					NamespaceSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{"kubernetes.io/metadata.name": p.ControlNamespace},
+					},
+					PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+						LabelPartOf:    controlPlanePartOf,
+						LabelComponent: ComponentAPI,
+					}},
+				},
+			},
 			Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: &port}},
 		}},
 	)

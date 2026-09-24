@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatBytes, formatRelative, formatAbsolute, isExpired } from "./format";
+import { formatBytes, formatRelative, formatAbsolute, isExpired, splitImageRef } from "./format";
 
 describe("formatBytes", () => {
   it("renders sub-KiB counts as plain bytes", () => {
@@ -73,5 +73,25 @@ describe("isExpired", () => {
   });
   it("is false for an unparseable input (never blocks on garbage)", () => {
     expect(isExpired("nope", now)).toBe(false);
+  });
+});
+
+describe("splitImageRef", () => {
+  const hex = "0123456789abcdef".repeat(4);
+
+  it("splits a pinned ref into its tag and a short build id", () => {
+    expect(splitImageRef(`registry.felis.svc:5000/felis/paper:demo@sha256:${hex}`)).toEqual({
+      tag: "registry.felis.svc:5000/felis/paper:demo",
+      digest: `sha256:${hex}`,
+      short: "0123456789ab",
+    });
+  });
+
+  it("leaves an unpinned ref whole", () => {
+    expect(splitImageRef("docker.io/itzg/minecraft-server:java21")).toEqual({
+      tag: "docker.io/itzg/minecraft-server:java21",
+      digest: "",
+      short: "",
+    });
   });
 });

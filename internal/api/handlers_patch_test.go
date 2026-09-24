@@ -75,7 +75,7 @@ func TestPatchServerAutostartPolicy(t *testing.T) {
 func TestPatchServerImageReAdmitted(t *testing.T) {
 	api, _, cl, _ := newPatchAPI()
 
-	w := patchSurvival(api, `{"image":"`+admittedImage+`"}`)
+	w := patchSurvival(api, `{"image":"`+admittedImage+`","confirmImageChange":true}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
 	}

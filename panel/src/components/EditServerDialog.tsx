@@ -20,6 +20,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, humanizeError } from "@/lib/api";
+import { splitImageRef } from "@/lib/format";
 import { useAsync } from "@/lib/hooks";
 import type { AutostartPolicy } from "@/lib/types";
 
@@ -34,6 +35,22 @@ function idleLabel(t: (key: string, opts?: Record<string, unknown>) => string, s
   if (seconds % 3600 === 0) return t("idle_stop_hours", { count: seconds / 3600 });
   if (seconds % 60 === 0) return t("idle_stop_minutes", { count: seconds / 60 });
   return t("idle_stop_seconds", { count: seconds });
+}
+
+/** ImageLabel shows an image ref as the tag it was picked by, plus the short id of
+ *  the build a pinned ref is locked to. */
+function ImageLabel({ imageRef, t }: { imageRef: string; t: (key: string, opts?: Record<string, unknown>) => string }) {
+  const { tag, short } = splitImageRef(imageRef);
+  return (
+    <>
+      {tag}
+      {short && (
+        <span className="ml-2 font-mono text-xs text-muted-foreground">
+          {t("edit_server_image_build", { id: short })}
+        </span>
+      )}
+    </>
+  );
 }
 
 function policyOptions(t: (key: string) => string): { value: AutostartPolicy; label: string }[] {
@@ -96,6 +113,9 @@ export function EditServerDialog({
 
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // An image change moves the world to another build for good, so saving one waits
+  // for this acknowledgement (the API refuses it with image_change_unconfirmed).
+  const [imageConfirmed, setImageConfirmed] = useState(false);
 
   // Sync form state when dialog opens or current values change from server status
   useEffect(() => {
@@ -109,11 +129,13 @@ export function EditServerDialog({
         idleStop: currentIdleStop,
       });
       setError(null);
+      setImageConfirmed(false);
     }
   }, [open, currentDisplayName, currentPolicy, currentImage, currentMemory, currentCpu, currentIdleStop]);
 
   function set<K extends keyof EditServerForm>(k: K, v: EditServerForm[K]) {
     setForm((f) => ({ ...f, [k]: v }));
+    if (k === "image") setImageConfirmed(false);
   }
 
   const enabledImages = (images.data ?? []).filter((i) => i.enabled);
@@ -127,7 +149,9 @@ export function EditServerDialog({
     form.cpu !== currentCpu ||
     form.idleStop !== currentIdleStop;
 
-  const canSubmit = hasChanges && !submitting;
+  const imageChanged = form.image !== currentImage;
+  const pinnedBuild = splitImageRef(currentImage).short;
+  const canSubmit = hasChanges && !submitting && (!imageChanged || imageConfirmed);
 
   async function submit() {
     setSubmitting(true);
@@ -141,8 +165,9 @@ export function EditServerDialog({
       if (form.autostartPolicy !== currentPolicy) {
         payload.autostartPolicy = form.autostartPolicy;
       }
-      if (form.image !== currentImage) {
+      if (imageChanged) {
         payload.image = form.image;
+        payload.confirmImageChange = imageConfirmed;
       }
       if (form.memory !== currentMemory) {
         payload.memory = form.memory;
@@ -222,7 +247,15 @@ export function EditServerDialog({
               <SelectContent>
                 {/* Fallback to display the current image even if not in the whitelist options list */}
                 {form.image && !enabledImages.some((img) => img.image_ref === form.image) && (
-                  <SelectItem value={form.image}>{form.image}</SelectItem>
+                  <SelectItem value={form.image}>
+                    <ImageLabel imageRef={form.image} t={t} />
+                  </SelectItem>
+                )}
+                {currentImage && form.image !== currentImage &&
+                  !enabledImages.some((img) => img.image_ref === currentImage) && (
+                  <SelectItem value={currentImage}>
+                    <ImageLabel imageRef={currentImage} t={t} />
+                  </SelectItem>
                 )}
                 {enabledImages.map((img) => (
                   <SelectItem key={img.image_ref} value={img.image_ref}>
@@ -231,6 +264,28 @@ export function EditServerDialog({
                 ))}
               </SelectContent>
             </Select>
+            {!imageChanged && pinnedBuild && (
+              <p className="text-xs text-muted-foreground">
+                {t("edit_server_image_pinned_hint", { id: pinnedBuild })}
+              </p>
+            )}
+            {imageChanged && (
+              <div className="grid gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
+                <p className="flex items-start gap-1.5 text-amber-700 dark:text-amber-300">
+                  <AlertTriangle className="mt-px h-3.5 w-3.5 shrink-0" />
+                  {t("edit_server_image_warning")}
+                </p>
+                <label className="flex cursor-pointer items-center gap-2 font-medium text-foreground">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 shrink-0 cursor-pointer accent-primary"
+                    checked={imageConfirmed}
+                    onChange={(e) => setImageConfirmed(e.target.checked)}
+                  />
+                  {t("edit_server_image_confirm")}
+                </label>
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-4">

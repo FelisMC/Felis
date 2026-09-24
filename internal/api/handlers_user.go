@@ -375,6 +375,13 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 			"image %q is not on the whitelist", body.Image))
 		return
 	}
+	// The spec keeps the digest the tag names now, not the tag: the world is
+	// created on this build and stays on it until an admin changes the image.
+	image, err := a.pinImage(r.Context(), body.Image)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
 
 	// Quota is intentionally NOT enforced here. §15 creates an UNOWNED server
 	// (owner_id NULL); the per-user quota is charged at claim time (spec §9.3 /
@@ -432,7 +439,7 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		Name:            body.Name,
 		Subdomain:       body.Subdomain,
 		DisplayName:     body.DisplayName,
-		Image:           body.Image,
+		Image:           image,
 		JavaMemory:      javaMemory,
 		StorageSize:     storage,
 		AutostartPolicy: policy,
@@ -613,11 +620,16 @@ func parsePositiveQuantity(s, field string) (resource.Quantity, error) {
 // the dual-write routing identity (name is the immutable object key; subdomain
 // would desync the Postgres alias) nor for the world PVC size (see below).
 type patchServerRequest struct {
-	DisplayName     *string          `json:"displayName,omitempty"`
-	AutostartPolicy *string          `json:"autostartPolicy,omitempty"`
-	Image           *string          `json:"image,omitempty"`
-	Memory          *string          `json:"memory,omitempty"`
-	Resources       *resourceRequest `json:"resources,omitempty"`
+	DisplayName     *string `json:"displayName,omitempty"`
+	AutostartPolicy *string `json:"autostartPolicy,omitempty"`
+	Image           *string `json:"image,omitempty"`
+	// ConfirmImageChange acknowledges that a new image opens the world with
+	// whatever Minecraft version it carries. Chunks a newer version has upgraded
+	// cannot be read by the older one again, so without it an image change that
+	// would actually move the server is refused (image_change_unconfirmed).
+	ConfirmImageChange bool             `json:"confirmImageChange,omitempty"`
+	Memory             *string          `json:"memory,omitempty"`
+	Resources          *resourceRequest `json:"resources,omitempty"`
 	// IdleStopSeconds sets idle auto-stop: 0 turns it off, otherwise the server
 	// stops after that many seconds with nobody online (60 to 86400).
 	IdleStopSeconds *int32 `json:"idleStopSeconds,omitempty"`
@@ -672,6 +684,8 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 	// so the response and audit name the real mutation.
 	var patch ServerSpecPatch
 	var changed []string
+	// imageFrom is the image a confirmed image change replaced, for the audit row.
+	var imageFrom string
 
 	if body.DisplayName != nil {
 		patch.DisplayName = body.DisplayName
@@ -730,8 +744,31 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 				"image %q is not on the whitelist", *body.Image))
 			return
 		}
-		patch.Image = body.Image
-		changed = append(changed, "image")
+		image, err := a.pinImage(r.Context(), *body.Image)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		info, err := a.Cluster.GetServer(r.Context(), name)
+		if err != nil {
+			a.writeLookupError(w, r, err)
+			return
+		}
+		// Re-picking the tag a server was created from resolves to that tag's
+		// newest build, which is as much a version move as picking another image.
+		// Only a pin that lands on exactly the current image is no change at all.
+		if image != info.Image {
+			if !body.ConfirmImageChange {
+				writeError(w, r, newError(http.StatusConflict, "image_change_unconfirmed",
+					"changing the image from %q to %q opens this world with the new image's Minecraft version, "+
+						"and chunks it upgrades cannot be opened by the old one again; back the world up first, "+
+						"then resend with confirmImageChange", info.Image, image))
+				return
+			}
+			patch.Image = &image
+			changed = append(changed, "image")
+			imageFrom = info.Image
+		}
 	}
 
 	// Memory and the resource overrides move together: resolveResources derives the
@@ -814,7 +851,11 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	a.audit(r, "server.patch", name)
+	if patch.Image != nil {
+		a.auditImageChange(r, name, imageFrom, *patch.Image)
+	} else {
+		a.audit(r, "server.patch", name)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name":    name,
 		"patched": changed,

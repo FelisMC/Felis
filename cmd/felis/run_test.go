@@ -43,6 +43,7 @@ func TestRunUnknownCommand(t *testing.T) {
 // decision rather than an oversight.
 var undocumentedCommands = map[string]bool{
 	"bootstrap-assets": true, "init-forwarding": true, "init-volume": true,
+	"pin-images": true,
 }
 
 // The usage text and the dispatch table must describe the same set of commands.

@@ -307,7 +307,7 @@ func TestLoginToInternalAPI_SelectsOnlyTheSystemLoginPod(t *testing.T) {
 // TestRegistryIngress_BuildNamespaceOnly pins who may dial the registry pod: build
 // pods, on the registry port. Game servers and the control plane never pull
 // through the Service — containerd pulls over the node's loopback hostPort.
-func TestRegistryIngress_BuildNamespaceOnly(t *testing.T) {
+func TestRegistryIngress_BuildNamespaceAndAPI(t *testing.T) {
 	p := testParams().withDefaults()
 	np := RegistryIngressPolicy(p)
 	if np.Namespace != p.RegistryNamespace {
@@ -319,13 +319,26 @@ func TestRegistryIngress_BuildNamespaceOnly(t *testing.T) {
 	if mapSelectorMatches(np.Spec.PodSelector.MatchLabels, APIDeployment(p).Spec.Template.Labels) {
 		t.Error("registry ingress must not also fence the api pod")
 	}
-	if len(np.Spec.Ingress) != 1 || len(np.Spec.Ingress[0].From) != 1 {
-		t.Fatalf("registry ingress shape = %+v, want one rule, one peer", np.Spec.Ingress)
+	if len(np.Spec.Ingress) != 1 || len(np.Spec.Ingress[0].From) != 2 {
+		t.Fatalf("registry ingress shape = %+v, want one rule, two peers", np.Spec.Ingress)
 	}
 	peer := np.Spec.Ingress[0].From[0]
 	if peer.PodSelector != nil || peer.IPBlock != nil || peer.NamespaceSelector == nil ||
 		peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != p.BuildNamespace {
 		t.Errorf("registry ingress peer = %+v, want the whole %s namespace", peer, p.BuildNamespace)
+	}
+	// The second peer is felis-api alone: it selects the api pod and not the
+	// operator's, both of which live in the control namespace.
+	api := np.Spec.Ingress[0].From[1]
+	if api.IPBlock != nil || api.NamespaceSelector == nil || api.PodSelector == nil ||
+		api.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != p.ControlNamespace {
+		t.Fatalf("registry ingress api peer = %+v, want pods in %s", api, p.ControlNamespace)
+	}
+	if !mapSelectorMatches(api.PodSelector.MatchLabels, APIDeployment(p).Spec.Template.Labels) {
+		t.Errorf("registry ingress api peer %v does not select the api pod", api.PodSelector)
+	}
+	if mapSelectorMatches(api.PodSelector.MatchLabels, OperatorDeployment(p).Spec.Template.Labels) {
+		t.Errorf("registry ingress api peer %v also selects the operator pod", api.PodSelector)
 	}
 	assertSinglePort(t, np.Spec.Ingress[0].Ports, int(p.RegistryPort))
 }

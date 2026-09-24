@@ -322,6 +322,9 @@ export const api = {
     displayName?: string;
     autostartPolicy?: AutostartPolicy;
     image?: string;
+    /** Required with an image that moves the server to another build: the world is
+     *  opened by that build's Minecraft version, which cannot be undone. */
+    confirmImageChange?: boolean;
     memory?: string;
     /** Idle auto-stop: 0 turns it off, else seconds empty before the stop (60–86400). */
     idleStopSeconds?: number;
@@ -701,6 +704,15 @@ export function humanizeError(e: unknown): string {
       return t("already_claimed");
     case "image_not_whitelisted":
       return t("image_not_whitelisted");
+    // Image pinning (internal/imagepin): a server runs the exact build its tag
+    // named when it was created or last changed, so the registry has to hold the
+    // tag, and moving a world to another build needs an explicit confirmation.
+    case "image_not_in_registry":
+      return t("image_not_in_registry");
+    case "registry_unavailable":
+      return t("registry_unavailable");
+    case "image_change_unconfirmed":
+      return t("image_change_unconfirmed");
     case "subdomain_taken":
       return t("subdomain_taken");
     case "already_exists":

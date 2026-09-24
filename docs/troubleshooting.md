@@ -1048,6 +1048,40 @@ installer built — only hand-built tags need a manual re-mirror.
 applied; when they are the problem, restore the `pre-migrate` bundle the upgrade
 took (§16, "Roll back an upgrade that broke the database").
 
+## 15b. Game images, pinned builds, and moving a world to a newer Minecraft
+
+The platform's game images live under mutable tags
+(`registry.felis.svc:5000/felis/paper:demo`): every installer run resolves the
+newest Paper/Limbo release and pushes the new build over the same tag. A server
+never follows that tag on its own. felis-api stores the image a server is
+created with pinned to the digest the tag named at that moment
+(`…/felis/paper:demo@sha256:…`), and the installer's `pin_user_server_images`
+step pins any older server still on a bare tag *before* it pushes the new
+builds. Kubernetes pulls a digest-qualified ref by the digest, so a pinned
+server wakes on exactly the build it was created on, however often the tag moves.
+
+Each installer run also pushes every game build under a tag no later run
+rewrites, `<Minecraft version>-<12 hex of the image id>`
+(`felis/paper:26.2-3f9c0a1b2c4d`). Whitelist one of those to create servers on a
+specific Minecraft version after `:demo` has moved on.
+
+Moving an existing world to a newer build is an explicit step: pick the image in
+the panel's **Edit server** dialog (re-picking the current tag moves it to that
+tag's newest build) and tick the backup confirmation. Over the API the same
+PATCH needs `"confirmImageChange": true`, or it is refused with `409
+image_change_unconfirmed`. Back the world up first: Minecraft upgrades chunks
+as it loads them, and the old version cannot open them again. The audit log keeps
+`image_from`/`image_to` for every change, so the exact previous build can be set
+back (it is admitted by its tag) together with a restore of the pre-upgrade
+backup.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Create/edit refused with `image_not_in_registry` | the whitelisted tag was never pushed to the internal registry, or was deleted | push or rebuild the image, then retry |
+| Create/edit refused with `registry_unavailable` | felis-api could not reach `registry.felis.svc:5000` | `kubectl -n felis get pods -l app.kubernetes.io/component=registry`; check the `felis-registry-ingress` NetworkPolicy still admits felis-api |
+| Installer warns `could not pin every user server` | the registry was down, or a server names a tag the registry lost | fix the registry, then `sudo felis pin-images` before starting those servers; a server whose tag is gone keeps its bare tag until an admin picks a new image |
+| A running server restarted during an installer re-run | it was pinned in place: the operator rolled it onto the pinned ref, the build it already ran | nothing; it happens once per server |
+
 ## 16. Control-plane database backups and disaster recovery
 
 The PostgreSQL database behind felis-api holds everything that is not a world:
@@ -1347,6 +1381,7 @@ for 10 seconds (the Free plan's limits).
 | Node out of disk; pods evicted / ImagePullBackOff | §13b |
 | Which metric to scrape | §14 |
 | Upgrade / roll back a bad control-plane image | §15 |
+| `image_change_unconfirmed` / `image_not_in_registry` / `registry_unavailable`; move a world to a newer Minecraft | §15b |
 | Database backup overdue / `FelisDBBackupStale` / panel shows 从未备份 | §16 |
 | `pre-migration backup failed, nothing applied` during an upgrade | §16 |
 | Undo a mistaken change / restore the control-plane database | §16 |

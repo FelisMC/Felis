@@ -641,7 +641,12 @@ paths:
       tags: [admin-servers]
       operationId: createServer
       summary: Create a server (admin).
-      description: Requires the admin Access path; the image must be whitelisted.
+      description: >-
+        Requires the admin Access path; the image must be whitelisted. An image in the
+        platform registry is stored pinned to the digest its tag names at creation
+        (name:tag@sha256:…), so a later push over the tag never moves the server;
+        400 image_not_in_registry when the registry lacks the tag, 503
+        registry_unavailable when it cannot be asked.
       x-felis-face: [external]
       x-felis-tier: admin
       security: [{ accessJWT: [] }]
@@ -4564,7 +4569,19 @@ paths:
               properties:
                 displayName: { type: string }
                 autostartPolicy: { type: string }
-                image: { type: string }
+                image:
+                  type: string
+                  description: >-
+                    Re-admitted against the whitelist (a pinned name:tag@sha256:… ref is
+                    admitted by its name:tag) and pinned like create does. A pin equal to
+                    the current image is no change; any other needs confirmImageChange.
+                confirmImageChange:
+                  type: boolean
+                  description: >-
+                    Acknowledges that the new image opens the world with its Minecraft
+                    version, whose chunk upgrades the old one cannot read. Without it an
+                    image that would move the server is refused with 409
+                    image_change_unconfirmed. The audit row records image_from/image_to.
                 memory: { type: string }
                 storage:
                   type: string
@@ -4601,6 +4618,10 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   /api/v1/images/build:
     post:

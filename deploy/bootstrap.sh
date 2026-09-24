@@ -1007,6 +1007,27 @@ pin_registry_images() {
   done
 }
 
+# pin_user_server_images fixes every user server still naming a tag in the platform
+# registry (felis/paper:demo) to the digest that tag names now. It has to run before
+# build_game_stack and push_images_to_registry put new builds under those tags: a
+# server left on the bare tag would boot the new build on its next wake and open its
+# world with a newer Minecraft version, and chunk upgrades cannot be undone. felis-api
+# pins every server it creates; this catches the ones created before it did. A fresh
+# install has no CRD, so nothing to pin; a running server restarts once onto the
+# build it already runs.
+pin_user_server_images() {
+  kube get crd minecraftservers.felis.lolicon.best >/dev/null 2>&1 || return 0
+  # The registry answers the lookups, and a k3s restart above may have left its pod
+  # still starting. A registry that never comes up fails the lookups below, loudly.
+  kube -n "$CONTROL_NS" rollout status deployment/registry --timeout=180s >/dev/null 2>&1 || true
+  if "$HOST_BIN" pin-images --namespace "$MINECRAFT_NS" \
+      --registry "$REGISTRY_URL" --endpoint "$REGISTRY_PUSH_HOST"; then
+    ok "user servers pinned to the builds they run"
+  else
+    warn "could not pin every user server listed above to its current build: each one still names a tag this run is about to point at a new build, so its next start may open its world with a newer Minecraft version. Pin it before starting it again: sudo felis pin-images (docs/troubleshooting.md §15b)"
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # 5. Source/binary + image build + containerd import
 # ---------------------------------------------------------------------------
@@ -2584,7 +2605,28 @@ push_images_to_registry() {
     [ -n "$img" ] || continue
     push_image_to_registry "$img"
   done
+  for img in "$FELIS_LIMBO_IMAGE" "$FELIS_LOBBY_IMAGE" "$FELIS_PAPER_IMAGE"; do
+    [ -n "$img" ] || continue
+    push_version_tag "$img"
+  done
   systemctl stop docker docker.socket 2>/dev/null || true
+}
+
+# push_version_tag mirrors a game image a second time under a tag no later run
+# rewrites: <Minecraft version>-<first 12 hex of the image id>, e.g.
+# felis/paper:26.2-3f9c0a1b2c4d. The :demo tag moves with every run, and servers are
+# pinned to the digest it named when they were created, so this is the readable name
+# for each build: an admin can whitelist it to create servers on that exact
+# Minecraft version long after :demo has moved on.
+push_version_tag() {
+  local ref="$1" id versioned
+  [ -n "${MC_VERSION:-}" ] || return 0
+  id="$(docker image inspect -f '{{.Id}}' "$ref" 2>/dev/null)" || return 0
+  id="${id#sha256:}"
+  versioned="${ref%:*}:${MC_VERSION}-${id:0:12}"
+  docker tag "$ref" "$versioned" || die "could not tag ${ref} as ${versioned} — is docker healthy?"
+  push_image_to_registry "$versioned"
+  docker rmi "$versioned" >/dev/null 2>&1 || true
 }
 
 # The login/lobby images use mutable :demo tags. Importing/pushing a replacement
@@ -3014,6 +3056,9 @@ main() {
   build_image
   # After build_image imported the felis image: the registry pod's gate runs it.
   pin_registry_images
+  # Before build_game_stack: the builds user servers run must be read off the
+  # registry's tags before new ones replace them.
+  pin_user_server_images
   build_game_stack
   install_postgres
   configure_postgres

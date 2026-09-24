@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"felis.lolicon.best/internal/build"
+	"felis.lolicon.best/internal/imagepin"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
@@ -251,4 +252,30 @@ func writeBuildError(w http.ResponseWriter, r *http.Request, err error) {
 	default:
 		writeError(w, r, err)
 	}
+}
+
+// ImagePinner resolves an image ref to the immutable form a server's spec keeps
+// (imagepin.Resolver). A ref it does not manage comes back unchanged.
+type ImagePinner interface {
+	Pin(ctx context.Context, ref string) (string, error)
+}
+
+// pinImage pins an admitted ref for a server spec. A tag the registry does not
+// hold is the caller's to fix (build or push it first); any other failure is the
+// registry being unreachable, and the server is not created or changed without a
+// pin, since an unpinned ref is exactly what lets a later push move its world.
+func (a *API) pinImage(ctx context.Context, ref string) (string, error) {
+	if a.Images == nil {
+		return ref, nil
+	}
+	pinned, err := a.Images.Pin(ctx, ref)
+	switch {
+	case errors.Is(err, imagepin.ErrNotFound):
+		return "", newError(http.StatusBadRequest, "image_not_in_registry",
+			"image %q is whitelisted but the registry does not hold it; build or push it first", ref)
+	case err != nil:
+		return "", newError(http.StatusServiceUnavailable, "registry_unavailable",
+			"could not resolve image %q to a digest: %v", ref, err)
+	}
+	return pinned, nil
 }

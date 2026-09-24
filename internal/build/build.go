@@ -543,8 +543,12 @@ func (b *Builder) RemoveImage(ctx context.Context, imageRef string) error {
 // image). A disabled row never admits. A wildcard whitelist entry
 // ("registry/foo:*") admits any concrete tag on that repo (imageMatches); the
 // caller always passes a concrete ref, never a wildcard. An empty ref is never
-// admitted.
+// admitted. A ref pinned to a digest (name:tag@sha256:…, what a server's spec
+// carries once created) is admitted by its name:tag: the digest only fixes which
+// build of that tag runs, so an admin can set a server back to the exact build an
+// earlier image change replaced.
 func (b *Builder) ImageAdmitted(ctx context.Context, imageRef string) (bool, error) {
+	imageRef, _, _ = strings.Cut(imageRef, "@")
 	if strings.TrimSpace(imageRef) == "" {
 		return false, nil
 	}

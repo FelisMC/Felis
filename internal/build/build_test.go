@@ -3,6 +3,7 @@ package build
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -548,6 +549,12 @@ func TestImageAdmitted(t *testing.T) {
 		{"registry.felis.svc:5000/unknown:1", false}, // not on the list
 		{"", false},    // empty ref
 		{"   ", false}, // blank ref
+		// A pinned ref is admitted by its name:tag, wildcard or exact.
+		{"registry.felis.svc:5000/exact:1@sha256:" + strings.Repeat("a", 64), true},
+		{"registry.felis.svc:5000/wild:99@sha256:" + strings.Repeat("b", 64), true},
+		{"registry.felis.svc:5000/exact:2@sha256:" + strings.Repeat("a", 64), false},
+		{"registry.felis.svc:5000/off:1@sha256:" + strings.Repeat("a", 64), false},
+		{"@sha256:" + strings.Repeat("a", 64), false},
 	}
 	for _, c := range cases {
 		got, err := b.ImageAdmitted(context.Background(), c.ref)

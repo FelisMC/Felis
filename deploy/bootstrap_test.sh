@@ -824,6 +824,7 @@ out="$(
   FELIS_IMAGE=a FELIS_LIMBO_IMAGE=b FELIS_LOBBY_IMAGE=c FELIS_PAPER_IMAGE=d bash -c '
     systemctl() { printf "SYSTEMCTL %s\n" "$*"; }
     push_image_to_registry() { printf "PUSH %s\n" "$1"; }
+    push_version_tag() { printf "VERSION %s\n" "$1"; }
     registry_docker_login() { printf "LOGIN\n"; }
     '"$wiblock"'
     push_images_to_registry'
@@ -836,6 +837,34 @@ stops="$(printf '%s\n' "$out" | grep -c 'SYSTEMCTL stop docker')"
 [ "$starts" = 1 ] && [ "$stops" = 1 ] && [ "$(printf '%s\n' "$out" | grep -c '^PUSH')" = 4 ] \
   && echo "PASS the batch wraps all four pushes in ONE docker start/stop" \
   || { echo "FAIL: expected 1 start / 1 stop / 4 pushes, got:"; printf '%s\n' "$out"; fails=$((fails + 1)); }
+[ "$(printf '%s\n' "$out" | grep '^VERSION' | tr '\n' ' ')" = "VERSION b VERSION c VERSION d " ] \
+  && echo "PASS the three game images, and only they, also get a version tag" \
+  || { echo "FAIL: expected version tags for b c d only, got:"; printf '%s\n' "$out"; fails=$((fails + 1)); }
+
+# Each game build is also mirrored under <MC version>-<image id>, a tag no later run
+# rewrites, so an admin can still name that exact build after :demo moves on.
+vtblock="$(awk '/^push_version_tag\(\) \{/,/^}/' "$BS")"
+[ -n "$vtblock" ] || { echo "FAIL: no push_version_tag found in $BS"; exit 1; }
+run_version_tag() { # MC_VERSION
+  MC_VERSION="$1" bash -c '
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    docker() {
+      case "$1" in
+        image) printf "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n" ;;
+        *) printf "DOCKER %s\n" "$*" ;;
+      esac
+    }
+    push_image_to_registry() { printf "PUSH %s\n" "$1"; }
+    '"$vtblock"'
+    push_version_tag registry.felis.svc:5000/felis/paper:demo'
+}
+out="$(run_version_tag 26.2)"
+expect "a game build is pushed under its version tag" "PUSH registry.felis.svc:5000/felis/paper:26.2-0123456789ab" "$out"
+expect "the version tag is created from the built image" "DOCKER tag registry.felis.svc:5000/felis/paper:demo registry.felis.svc:5000/felis/paper:26.2-0123456789ab" "$out"
+case "$(run_version_tag '')" in
+  *PUSH*) echo "FAIL: no Minecraft version, no version tag"; fails=$((fails + 1)) ;;
+  *) echo "PASS without a resolved Minecraft version no version tag is pushed" ;;
+esac
 
 # The registry refuses anonymous writes, and the platform token must never reach
 # docker's argv (ps) or root's ~/.docker: stdin into a throwaway --config dir.
@@ -887,6 +916,44 @@ expect "a previous felis tag is unpinned" "CTR ctr images label registry.felis.s
 case "$out" in
   *"limbo:demo io.cri"*) echo "FAIL: only the registry pod's images may be pinned or unpinned"; fails=$((fails + 1)) ;;
 esac
+
+# User servers still on a bare registry tag are pinned to the build it names BEFORE
+# this run builds and pushes new ones over it; a fresh install has nothing to pin.
+puiblock="$(awk '/^pin_user_server_images\(\) \{/,/^}/' "$BS")"
+[ -n "$puiblock" ] || { echo "FAIL: no pin_user_server_images found in $BS"; exit 1; }
+run_pin_user() { # crd-present(0/1) pin-exit
+  CALLS="$calls" CRD="$1" PIN_EXIT="$2" HOST_BIN=felis CONTROL_NS=felis MINECRAFT_NS=minecraft \
+    REGISTRY_URL=registry.felis.svc:5000 REGISTRY_PUSH_HOST=127.0.0.1:5000 bash -c '
+    ok() { printf "OK: %s\n" "$*"; }
+    warn() { printf "WARN: %s\n" "$*"; }
+    kube() {
+      case "$*" in
+        "get crd"*) [ "$CRD" = 1 ] ;;
+        *) printf "KUBE %s\n" "$*" >>"$CALLS" ;;
+      esac
+    }
+    felis() { printf "FELIS %s\n" "$*"; return "$PIN_EXIT"; }
+    '"$puiblock"'
+    pin_user_server_images'
+}
+calls="$(mktemp)"
+case "$(run_pin_user 0 0)" in
+  *FELIS*) echo "FAIL: without the CRD there is nothing to pin"; fails=$((fails + 1)) ;;
+  *) echo "PASS a fresh install skips pinning" ;;
+esac
+out="$(run_pin_user 1 0)$(printf '\n'; cat "$calls")"
+expect "pinning reaches the registry through its loopback hostPort" "FELIS pin-images --namespace minecraft --registry registry.felis.svc:5000 --endpoint 127.0.0.1:5000" "$out"
+expect "pinning waits for the registry first" "KUBE -n felis rollout status deployment/registry" "$out"
+out="$(run_pin_user 1 1)"
+expect "a failed pin warns with the consequence" "WARN: could not pin every user server" "$out"
+rm -f "$calls"
+
+mainblock="$(awk '/^main\(\) \{/,/^}/' "$BS")"
+line_of() { printf '%s\n' "$mainblock" | grep -n "^  $1\$" | head -n 1 | cut -d: -f1; }
+p="$(line_of pin_user_server_images)"; b="$(line_of build_game_stack)"; u="$(line_of push_images_to_registry)"
+[ -n "$p" ] && [ -n "$b" ] && [ -n "$u" ] && [ "$p" -lt "$b" ] && [ "$b" -lt "$u" ] \
+  && echo "PASS user servers are pinned before the game images are rebuilt and pushed" \
+  || { echo "FAIL: main must run pin_user_server_images before build_game_stack and push_images_to_registry (lines: $p $b $u)"; fails=$((fails + 1)); }
 
 # --- the registry's own image must not be re-pulled on every run --------------------------
 iblock="$(awk '/^import_registry_image\(\) \{/,/^}/' "$BS")"

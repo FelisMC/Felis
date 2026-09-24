@@ -63,3 +63,14 @@ export function isExpired(iso: string, now: number): boolean {
   const t = new Date(iso).getTime();
   return Number.isFinite(t) && t <= now;
 }
+
+/** splitImageRef separates a server's image into the tag it was chosen by and the
+ *  build it is pinned to. felis-api stores `name:tag@sha256:<hex>`; the digest is
+ *  64 hex characters no one reads, so `short` keeps the first 12, the length
+ *  `docker images` shows. A ref without a digest comes back with `short` empty. */
+export function splitImageRef(ref: string): { tag: string; digest: string; short: string } {
+  const at = ref.indexOf("@");
+  if (at < 0) return { tag: ref, digest: "", short: "" };
+  const digest = ref.slice(at + 1);
+  return { tag: ref.slice(0, at), digest, short: digest.replace(/^sha256:/, "").slice(0, 12) };
+}

@@ -33,6 +33,11 @@ type API struct {
 	// still exercised even before the subsystem is wired in.
 	Builder ImageBuilder
 
+	// Images pins a whitelisted image ref to the digest it names when a server is
+	// created or its image is changed (internal/imagepin), so a later push over
+	// the same tag never reaches an existing world. Nil stores refs as given.
+	Images ImagePinner
+
 	// Console is the synchronous RCON write channel (spec §8 写=RCON). It is
 	// wired in production (cmd/felis); a nil Console makes the command route report
 	// 503 rather than panic, so the ownership boundary is still exercised in tests.

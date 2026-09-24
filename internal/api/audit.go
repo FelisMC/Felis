@@ -64,6 +64,19 @@ func (a *API) audit(r *http.Request, action, target string) {
 	a.auditEntry(r, e)
 }
 
+// auditImageChange records a confirmed image change as server.patch with the
+// image it replaced and the one it set, so the audit log alone can say which
+// build a world ran before it was moved.
+func (a *API) auditImageChange(r *http.Request, server, from, to string) {
+	p := principalFromContext(r.Context())
+	e := AuditEntry{Actor: auditActor(p), Action: "server.patch", ServerName: server}
+	if p != nil {
+		e.ActorUserID = p.UserID
+	}
+	e.Payload = auditPayload(map[string]any{"image_from": from, "image_to": to})
+	a.auditEntry(r, e)
+}
+
 // auditAccount records an action a pre-session door took for the account it
 // resolved (u nil: none was). The username is the actor: the door has not yet
 // proven anything about the address.
