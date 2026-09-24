@@ -710,6 +710,30 @@ deadline for the whole start, applied on the RCON-probe branch.
 
 ---
 
+## 12b. A newer field never reaches an already-installed system server (`felis converge`)
+
+Provisioning is create-if-absent: `felis setup` never rewrites an existing
+`login`/`lobby` `MinecraftServer` beyond the config-derived env it owns, so a
+field the desired spec gained after your install sits absent forever — this is
+how a deployment ends up with a lobby that has no `spec.rcon` (a dead console
+and an online-player count that is always 0) and a login gate without
+`spec.startup.healthHTTPPort`. `felis converge` is the explicit pass that fills
+exactly those zero-valued fields (and re-adds a derived env key that is
+missing). It never overwrites a value that already holds one — an operator's
+RCON secretRef or tuning survives.
+
+```
+sudo felis converge
+```
+
+Run it **after the images are in place**. Enabling RCON, or the HTTP readiness
+gate, on a server whose image predates the listener would hold that server in
+`Starting` until the operator marks it `Failed` — that ordering is the reason
+this is a command you run rather than something setup does on every re-run.
+System servers that are already current report `already converged`.
+
+---
+
 ## 13. World PVC survives after I deleted the MinecraftServer
 
 This is expected. The world PVC is a StatefulSet `VolumeClaimTemplate`. There is

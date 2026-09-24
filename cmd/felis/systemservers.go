@@ -256,11 +256,31 @@ func buildSystemServerClient() (client.Client, error) {
 // setup can report it without the provisioner deciding on the output format.
 type systemServerOutcome struct {
 	name      string
-	created   bool   // true = we created it this run
-	updated   bool   // true = we refreshed an existing replica from the source
-	available bool   // true = the required object now exists
-	skipped   string // non-empty = why it was skipped (image unset / already exists)
-	err       error  // non-nil = create failed
+	created   bool     // true = we created it this run
+	updated   bool     // true = we refreshed an existing replica from the source
+	available bool     // true = the required object now exists
+	skipped   string   // non-empty = why it was skipped (image unset / already exists)
+	err       error    // non-nil = create failed
+	changes   []string // converge only: the fields this pass filled
+}
+
+// systemServerPlan is one system service in the provisioner's table: its name,
+// the image config gives it, and the pure builder for its desired CR.
+type systemServerPlan struct {
+	name  string
+	image string
+	build func(image, namespace string) (*v1alpha1.MinecraftServer, error)
+}
+
+// systemServerPlans is the single description of the login+lobby pair, shared by
+// ensureSystemServers (create-if-absent) and convergeSystemServers (field fill).
+func systemServerPlans(loginImage, lobbyImage, apiBaseURL, rootDomain, panelHostname string) []systemServerPlan {
+	return []systemServerPlan{
+		{name: naming.SystemLoginServer, image: loginImage, build: func(image, ns string) (*v1alpha1.MinecraftServer, error) {
+			return loginSystemServer(image, ns, apiBaseURL, rootDomain, panelHostname)
+		}},
+		{name: naming.SystemLobbyServer, image: lobbyImage, build: lobbySystemServer},
+	}
 }
 
 // ensureSystemServers idempotently creates the login and lobby system services.
@@ -271,17 +291,7 @@ type systemServerOutcome struct {
 // K8s client and namespace; this function performs no signal-handler or client
 // setup of its own.
 func ensureSystemServers(ctx context.Context, cl client.Client, namespace, loginImage, lobbyImage, apiBaseURL, rootDomain, panelHostname string) []systemServerOutcome {
-	type plan struct {
-		name  string
-		image string
-		build func(image, namespace string) (*v1alpha1.MinecraftServer, error)
-	}
-	plans := []plan{
-		{name: naming.SystemLoginServer, image: loginImage, build: func(image, ns string) (*v1alpha1.MinecraftServer, error) {
-			return loginSystemServer(image, ns, apiBaseURL, rootDomain, panelHostname)
-		}},
-		{name: naming.SystemLobbyServer, image: lobbyImage, build: lobbySystemServer},
-	}
+	plans := systemServerPlans(loginImage, lobbyImage, apiBaseURL, rootDomain, panelHostname)
 
 	outcomes := make([]systemServerOutcome, 0, len(plans))
 	for _, p := range plans {
@@ -381,12 +391,7 @@ var derivedSystemEnv = map[string]bool{
 // deliberate removal is indistinguishable from drift and re-adding it would fight the
 // operator every run.
 func refreshDerivedEnv(ctx context.Context, cl client.Client, existing, desired *v1alpha1.MinecraftServer) (bool, error) {
-	want := make(map[string]string, len(derivedSystemEnv))
-	for _, e := range desired.Spec.Env {
-		if derivedSystemEnv[e.Name] {
-			want[e.Name] = e.Value
-		}
-	}
+	want := derivedEnvWanted(desired)
 
 	changed := false
 	for i, e := range existing.Spec.Env {
@@ -402,6 +407,116 @@ func refreshDerivedEnv(ctx context.Context, cl client.Client, existing, desired 
 		return false, fmt.Errorf("refresh %s env: %w", existing.Name, err)
 	}
 	return true, nil
+}
+
+// derivedEnvWanted maps the derived env keys of desired onto their values.
+func derivedEnvWanted(desired *v1alpha1.MinecraftServer) map[string]string {
+	want := make(map[string]string, len(derivedSystemEnv))
+	for _, e := range desired.Spec.Env {
+		if derivedSystemEnv[e.Name] {
+			want[e.Name] = e.Value
+		}
+	}
+	return want
+}
+
+// convergeSystemServers is the explicit convergence pass over already-installed
+// system servers (#1). ensureSystemServers is create-if-absent by design — an
+// existing CR is left alone so a re-run cannot clobber an operator's edits — and
+// that leaves no path for a field the DESIRED spec gained after the install:
+// spec.rcon (the lobby's write channel), spec.startup.healthHTTPPort (the login
+// gate's readiness probe), or a config-derived env key that did not exist yet.
+// Such fields sit at their zero value forever while re-running setup reports
+// success, which is exactly the reported "configuration updates never reach an
+// installed deployment" symptom.
+//
+// This pass fills exactly those zero-value fields and the config-derived env keys,
+// and nothing else: a field already holding a non-zero value is the operator's and
+// is never overwritten. It is an explicit command rather than an implicit step of
+// setup because some fills need an ordering only the operator knows — enabling
+// RCON or the HTTP readiness gate on a server whose image predates the listener
+// would hold that server in Starting until it was marked Failed. Rebuild (or
+// upgrade) the images first, then run this.
+func convergeSystemServers(ctx context.Context, cl client.Client, namespace, loginImage, lobbyImage, apiBaseURL, rootDomain, panelHostname string) []systemServerOutcome {
+	outcomes := make([]systemServerOutcome, 0, 2)
+	for _, p := range systemServerPlans(loginImage, lobbyImage, apiBaseURL, rootDomain, panelHostname) {
+		if p.image == "" {
+			outcomes = append(outcomes, systemServerOutcome{name: p.name, skipped: "image not configured"})
+			continue
+		}
+		desired, err := p.build(p.image, namespace)
+		if err != nil {
+			outcomes = append(outcomes, systemServerOutcome{name: p.name, err: err})
+			continue
+		}
+
+		var existing v1alpha1.MinecraftServer
+		switch err := cl.Get(ctx, client.ObjectKeyFromObject(desired), &existing); {
+		case apierrors.IsNotFound(err):
+			outcomes = append(outcomes, systemServerOutcome{name: p.name,
+				skipped: "not present — run `sudo felis setup` first"})
+			continue
+		case err != nil:
+			outcomes = append(outcomes, systemServerOutcome{name: p.name, err: err})
+			continue
+		}
+		if existing.Labels[v1alpha1.LabelSystemRole] != p.name {
+			outcomes = append(outcomes, systemServerOutcome{name: p.name, err: fmt.Errorf(
+				"existing MinecraftServer %s/%s is not marked as the Felis %q system role; refusing to converge it",
+				namespace, p.name, p.name,
+			)})
+			continue
+		}
+
+		var changes []string
+		if existing.Spec.Rcon == (v1alpha1.RconSpec{}) && desired.Spec.Rcon != (v1alpha1.RconSpec{}) {
+			existing.Spec.Rcon = desired.Spec.Rcon
+			changes = append(changes, "spec.rcon")
+		}
+		if existing.Spec.Startup.HealthHTTPPort == 0 && desired.Spec.Startup.HealthHTTPPort != 0 {
+			existing.Spec.Startup.HealthHTTPPort = desired.Spec.Startup.HealthHTTPPort
+			changes = append(changes, "spec.startup.healthHTTPPort")
+		}
+		changes = append(changes, convergeDerivedEnv(&existing, desired)...)
+
+		if len(changes) == 0 {
+			outcomes = append(outcomes, systemServerOutcome{name: p.name, available: true, skipped: "already converged"})
+			continue
+		}
+		if err := cl.Update(ctx, &existing); err != nil {
+			outcomes = append(outcomes, systemServerOutcome{name: p.name, err: fmt.Errorf("converge %s: %w", p.name, err)})
+			continue
+		}
+		outcomes = append(outcomes, systemServerOutcome{name: p.name, available: true, updated: true, changes: changes})
+	}
+	return outcomes
+}
+
+// convergeDerivedEnv makes the config-derived env match the desired values: a key
+// whose value drifted is overwritten, and a key missing entirely is added. This is
+// the wider half of the same explicit pass — refreshDerivedEnv's present-only loop
+// can never introduce a NEW key, which is how a derived key added after an install
+// never reached it at all.
+func convergeDerivedEnv(existing, desired *v1alpha1.MinecraftServer) []string {
+	want := derivedEnvWanted(desired)
+	var changes []string
+	present := make(map[string]bool, len(existing.Spec.Env))
+	for i := range existing.Spec.Env {
+		e := &existing.Spec.Env[i]
+		present[e.Name] = true
+		if v, ok := want[e.Name]; ok && v != e.Value {
+			e.Value = v
+			changes = append(changes, "env "+e.Name)
+		}
+	}
+	for _, e := range desired.Spec.Env {
+		if !derivedSystemEnv[e.Name] || present[e.Name] {
+			continue
+		}
+		existing.Spec.Env = append(existing.Spec.Env, e)
+		changes = append(changes, "env "+e.Name)
+	}
+	return changes
 }
 
 // The login gate is a hard prerequisite of the Owner bind, so setup waits for it

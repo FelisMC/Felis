@@ -23,6 +23,7 @@ Commands:
   manifests         Render the control-plane RBAC + NetworkPolicy install bundle as YAML
   apply             Create a MinecraftServer CRD (direct K8s write; use -f server.json)
   setup             Run host bootstrap + first-run setup console (TUI; requires root/sudo)
+  converge          Fill in fields a newer desired spec added to already-installed system servers
   version           Print the build stamp of this binary
   update            Report which platform components have updates available
   breakGlass        Open the local break-glass emergency console (TUI; requires root/sudo)
@@ -52,6 +53,7 @@ var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"manifests":        cmdManifests,
 	"apply":            cmdApply,
 	"setup":            cmdSetup,
+	"converge":         cmdConverge,
 	"breakGlass":       cmdBreakGlass,
 	"bootstrap-assets": cmdBootstrapAssets,
 	"init-forwarding":  cmdInitForwarding,
