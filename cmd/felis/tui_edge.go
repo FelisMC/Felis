@@ -437,6 +437,10 @@ func (m *edgeModel) errorView() string {
 	if m.lastErr != nil {
 		b.WriteString(tuiHint.Render(m.lastErr.Error()) + "\n")
 	}
+	// Nothing done above is rolled back, and nothing needs to be: every step finds what an
+	// earlier attempt created (the tunnel, its DNS route, the Access app and policy) and
+	// carries on from it.
+	b.WriteString("\n" + tuiHint.Render("Retrying is safe: it reuses the tunnel, DNS record and Access app created so far instead of making duplicates.") + "\n")
 	b.WriteString("\n" + tuiAction("enter", "retry", "esc", "edit"))
 	return b.String()
 }
