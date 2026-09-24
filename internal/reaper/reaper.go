@@ -81,6 +81,16 @@ type Config struct {
 	WarnBefore     []time.Duration // §24: warn these long before the deadline (default 3d, 1d)
 	Retention      time.Duration   // §18: keep a backup this long after deletion (default 3mo≈90d)
 	MaxLocalBytes  int64           // §26: backup store soft cap; 0 = unlimited
+	// ManualRetention is how long an owner's on-demand backup is kept; it is
+	// a restore point for a world that still exists, so it goes sooner than a
+	// reaped world's only archive (default 30d).
+	ManualRetention time.Duration
+	// ManualKeep caps the on-demand backups kept per server; the backup Job
+	// removes the oldest beyond it (default 5).
+	ManualKeep int
+	// ManualCooldown is the shortest gap between two owner-requested backups
+	// of one server (default 10m); operators are not held to it.
+	ManualCooldown time.Duration
 	// RequireOffsite holds each deletion until the world's archive has its
 	// off-site copy ([offsite] configured; internal/offsite records the copy).
 	// The archive is written on the run that finds the world idle, and the
@@ -96,6 +106,10 @@ func DefaultConfig() Config {
 		WarnBefore:     []time.Duration{3 * Day, 1 * Day},
 		Retention:      90 * Day,
 		MaxLocalBytes:  0,
+
+		ManualRetention: 30 * Day,
+		ManualKeep:      5,
+		ManualCooldown:  10 * time.Minute,
 	}
 }
 
@@ -151,6 +165,7 @@ type StoredBackup struct {
 	ServerName string
 	BackupRef  string
 	SizeBytes  int64
+	Reason     string
 }
 
 // AuditRecord is a reaper-sourced audit_logs entry. The PG binding fills
@@ -190,9 +205,12 @@ type Store interface {
 	// PresentBackupBytes is the total size of status=present backups (§26 cap).
 	PresentBackupBytes(ctx context.Context) (int64, error)
 
-	// OldestPresentBackups lists status=present backups oldest-first, for
-	// early eviction when the store is full.
-	OldestPresentBackups(ctx context.Context) ([]StoredBackup, error)
+	// EvictableBackups lists the status=present backups that may go before
+	// their expiry when the store is full, in eviction order: on-demand
+	// backups first, then reaper archives that have an off-site copy, oldest
+	// first within each. A reaper archive without an off-site copy is the only
+	// copy of a deleted world and is never listed.
+	EvictableBackups(ctx context.Context) ([]StoredBackup, error)
 
 	// ListExpiredBackups lists status=present backups whose expires_at < now.
 	ListExpiredBackups(ctx context.Context, now time.Time) ([]StoredBackup, error)
@@ -450,10 +468,10 @@ func (r *Reaper) ensureCapacity(ctx context.Context, now time.Time, sum *Summary
 	if used < r.Cfg.MaxLocalBytes {
 		return true, nil
 	}
-	r.log().Warn("reaper: backup store at capacity, evicting oldest backups early",
+	r.log().Warn("reaper: backup store at capacity, evicting on-demand and off-site-copied backups early",
 		"used", used, "max", r.Cfg.MaxLocalBytes)
 
-	old, err := r.Store.OldestPresentBackups(ctx)
+	old, err := r.Store.EvictableBackups(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -474,6 +492,11 @@ func (r *Reaper) ensureCapacity(ctx context.Context, now time.Time, sum *Summary
 		}
 		used -= b.SizeBytes
 		sum.EvictedEarly++
+		r.log().Warn("reaper: backup evicted early", "id", b.ID, "server", b.ServerName, "reason", b.Reason, "bytes", b.SizeBytes)
+	}
+	if used >= r.Cfg.MaxLocalBytes {
+		r.log().Error("reaper: backup store still full; what remains are the only copies of reaped worlds, kept until they expire",
+			"used", used, "max", r.Cfg.MaxLocalBytes)
 	}
 	return used < r.Cfg.MaxLocalBytes, nil
 }

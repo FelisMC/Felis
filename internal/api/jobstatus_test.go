@@ -11,6 +11,9 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 type fakeJobStatus struct {
@@ -143,5 +146,60 @@ func TestJobToAsyncJob(t *testing.T) {
 	foreign := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{jobManagedByLabel: "someone-else"}}}
 	if _, ok := jobToAsyncJob(foreign); ok {
 		t.Fatal("foreign job must be dropped")
+	}
+}
+
+// TestLatestJobsExplainsFailures: a failed Job reports the error its container
+// exited on (the last line of the terminated message), newest pod first, and
+// keeps the condition text when no pod explains it.
+func TestLatestJobsExplainsFailures(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := clientgoscheme.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	labels := func(job string) map[string]string {
+		return map[string]string{jobServerLabel: "survival", jobManagedByLabel: jobManagedByBackup, "job-name": job}
+	}
+	at := func(min int) metav1.Time { return metav1.NewTime(time.Date(2026, 9, 24, 10, min, 0, 0, time.UTC)) }
+	failedJob := func(name string, min int) *batchv1.Job {
+		start := at(min)
+		return &batchv1.Job{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "minecraft", Labels: labels(name)},
+			Status: batchv1.JobStatus{StartTime: &start, Conditions: []batchv1.JobCondition{{
+				Type: batchv1.JobFailed, Status: corev1.ConditionTrue,
+				Reason: "BackoffLimitExceeded", Message: "Job has reached the specified backoff limit",
+			}}},
+		}
+	}
+	pod := func(name, job string, min int, exit int32, msg string) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "minecraft", Labels: labels(job), CreationTimestamp: at(min)},
+			Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{
+				Name: "backup", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: exit, Message: msg}},
+			}}},
+		}
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		failedJob("backup-survival-a", 1),
+		failedJob("backup-survival-b", 2),
+		pod("a-1", "backup-survival-a", 1, 1, "felis backup: first try\n"),
+		pod("a-2", "backup-survival-a", 3, 1,
+			"archiving survival\nfelis backup: backup: not enough free disk for the archive: the world is 2.0 GiB\n"),
+		pod("b-1", "backup-survival-b", 2, 0, "done"),
+	).Build()
+
+	jobs, err := NewK8sJobStatus(c, "minecraft").LatestJobs(context.Background(), "survival")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, j := range jobs {
+		got[j.Name] = j.Message
+	}
+	if want := "felis backup: backup: not enough free disk for the archive: the world is 2.0 GiB"; got["backup-survival-a"] != want {
+		t.Errorf("a: message = %q, want %q", got["backup-survival-a"], want)
+	}
+	if want := "Job has reached the specified backoff limit"; got["backup-survival-b"] != want {
+		t.Errorf("b: message = %q, want the condition text", got["backup-survival-b"])
 	}
 }

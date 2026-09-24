@@ -5,7 +5,7 @@
   "not_yours_title": "无权访问备份",
   "not_yours_body": "只有所有者或管理员才能查看并恢复该服务器的备份。",
   "latest_title": "最新备份",
-  "history_note": "历史备份在过期前均可用于恢复。到期后系统会自动清理，无需手动删除或管理。",
+  "history_note": "历史备份在过期前均可用于恢复，到期后自动清理。手动备份每台服务器只保留最近几份，新备份完成后会自动删除更早的手动备份。",
   "reason_inactive": "闲置自动回收",
   "reason_manual": "手动备份",
   "reason_label": "原因：{{reason}}",

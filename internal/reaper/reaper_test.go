@@ -193,17 +193,22 @@ func (s *fakeStore) PresentBackupBytes(context.Context) (int64, error) {
 	return total, nil
 }
 
-func (s *fakeStore) OldestPresentBackups(context.Context) ([]StoredBackup, error) {
+func (s *fakeStore) EvictableBackups(context.Context) ([]StoredBackup, error) {
 	var ps []*fakeBackup
 	for _, b := range s.backups {
-		if b.status == "present" {
+		if b.status == "present" && (b.reason != ReasonInactive || b.offsite) {
 			ps = append(ps, b)
 		}
 	}
-	sort.Slice(ps, func(i, j int) bool { return ps[i].createdAt.Before(ps[j].createdAt) })
+	sort.SliceStable(ps, func(i, j int) bool {
+		if ri, rj := ps[i].reason == ReasonInactive, ps[j].reason == ReasonInactive; ri != rj {
+			return rj
+		}
+		return ps[i].createdAt.Before(ps[j].createdAt)
+	})
 	out := make([]StoredBackup, 0, len(ps))
 	for _, b := range ps {
-		out = append(out, StoredBackup{ID: b.id, ServerName: b.server, BackupRef: b.ref, SizeBytes: b.size})
+		out = append(out, StoredBackup{ID: b.id, ServerName: b.server, BackupRef: b.ref, SizeBytes: b.size, Reason: b.reason})
 	}
 	return out, nil
 }
@@ -623,8 +628,8 @@ func TestCapacityEvictsOldestThenReaps(t *testing.T) {
 		Candidate{Name: "epsilon", OwnerID: "user-5", LastActiveAt: idleBy(20 * Day)})
 	// Two present backups of 75 each = 150 > 100. Oldest must be evicted first.
 	st.backups = []*fakeBackup{
-		{id: "old", server: "zzz", ref: "ref-old", size: 75, status: "present", createdAt: idleBy(40 * Day), expires: testNow.Add(30 * Day)},
-		{id: "new", server: "yyy", ref: "ref-new", size: 75, status: "present", createdAt: idleBy(5 * Day), expires: testNow.Add(60 * Day)},
+		{id: "old", server: "zzz", ref: "ref-old", reason: "manual", size: 75, status: "present", createdAt: idleBy(40 * Day), expires: testNow.Add(30 * Day)},
+		{id: "new", server: "yyy", ref: "ref-new", reason: "manual", size: 75, status: "present", createdAt: idleBy(5 * Day), expires: testNow.Add(60 * Day)},
 	}
 
 	sum := mustRun(t, r)
@@ -669,7 +674,7 @@ func TestCapacityStillFullSkipsReap(t *testing.T) {
 	r, st, cl, ar := newReaper(cfg,
 		Candidate{Name: "zeta", OwnerID: "user-6", LastActiveAt: idleBy(20 * Day)})
 	st.backups = []*fakeBackup{
-		{id: "stuck", server: "zzz", ref: "ref-stuck", size: 150, status: "present", createdAt: idleBy(40 * Day), expires: testNow.Add(30 * Day)},
+		{id: "stuck", server: "zzz", ref: "ref-stuck", reason: "manual", size: 150, status: "present", createdAt: idleBy(40 * Day), expires: testNow.Add(30 * Day)},
 	}
 	// The archive backend can't delete, so eviction cannot free space.
 	r.Archiver.(*fakeArchiver).deleteErr = errors.New("evict unavailable")
@@ -686,6 +691,50 @@ func TestCapacityStillFullSkipsReap(t *testing.T) {
 	}
 	if st.byName["zeta"].OwnerID != "user-6" {
 		t.Fatalf("ownership changed while store full")
+	}
+}
+
+// Eviction order: on-demand backups go first, then reaper archives that have an
+// off-site copy; the only copy of a reaped world is never evicted early, even
+// when that leaves the store full and the idle world waits.
+func TestCapacityEvictionOrderSparesSoleCopies(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.MaxLocalBytes = 100
+	r, st, _, _ := newReaper(cfg,
+		Candidate{Name: "theta", OwnerID: "user-8", LastActiveAt: idleBy(20 * Day)})
+	st.backups = []*fakeBackup{
+		{id: "sole", server: "gone1", ref: "ref-sole", reason: ReasonInactive, size: 60, status: "present", createdAt: idleBy(80 * Day), expires: testNow.Add(10 * Day)},
+		{id: "copied", server: "gone2", ref: "ref-copied", reason: ReasonInactive, offsite: true, size: 30, status: "present", createdAt: idleBy(70 * Day), expires: testNow.Add(20 * Day)},
+		{id: "man", server: "live", ref: "ref-man", reason: "manual", size: 30, status: "present", createdAt: idleBy(2 * Day), expires: testNow.Add(28 * Day)},
+	}
+	sum := mustRun(t, r)
+	status := map[string]string{}
+	for _, b := range st.backups {
+		status[b.id] = b.status
+	}
+	// 120 over a cap of 100: the on-demand backup (30) alone brings it to 90.
+	if status["man"] != "deleted" || status["copied"] != "present" || status["sole"] != "present" {
+		t.Fatalf("evicted %v; want only the on-demand backup", status)
+	}
+	if sum.EvictedEarly != 1 || sum.WorldsReaped != 1 {
+		t.Fatalf("summary = %+v, want 1 evicted, 1 reaped", sum)
+	}
+
+	// Over a cap of 50 with only reaper archives left: the copied one goes,
+	// the sole copy stays, the store is still full, and the idle world waits.
+	cfg.MaxLocalBytes = 50
+	r2, st2, cl2, _ := newReaper(cfg,
+		Candidate{Name: "iota", OwnerID: "user-9", LastActiveAt: idleBy(20 * Day)})
+	st2.backups = []*fakeBackup{
+		{id: "sole", server: "gone1", ref: "ref-sole", reason: ReasonInactive, size: 60, status: "present", createdAt: idleBy(80 * Day), expires: testNow.Add(10 * Day)},
+		{id: "copied", server: "gone2", ref: "ref-copied", reason: ReasonInactive, offsite: true, size: 30, status: "present", createdAt: idleBy(70 * Day), expires: testNow.Add(20 * Day)},
+	}
+	sum2 := mustRun(t, r2)
+	if st2.backups[0].status != "present" || st2.backups[1].status != "deleted" {
+		t.Fatalf("sole=%s copied=%s, want present/deleted", st2.backups[0].status, st2.backups[1].status)
+	}
+	if sum2.StoreFull != 1 || sum2.WorldsReaped != 0 || cl2.deletePVCCalls != 0 {
+		t.Fatalf("summary = %+v, deletes = %d: the world should wait while the store is full", sum2, cl2.deletePVCCalls)
 	}
 }
 

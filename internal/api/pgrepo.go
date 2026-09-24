@@ -747,6 +747,28 @@ func (p *PGRepo) BackupByID(ctx context.Context, id string) (*BackupRecord, erro
 	return &b, nil
 }
 
+// LastBackupRequest reads the newest backup.create audit row for the server
+// since the given time; the created_at index bounds the scan to that window.
+func (p *PGRepo) LastBackupRequest(ctx context.Context, serverName string, since time.Time) (time.Time, error) {
+	var at sql.NullTime
+	err := p.db.QueryRowContext(ctx,
+		`SELECT max(created_at) FROM audit_logs
+		 WHERE created_at >= $2 AND action = 'backup.create' AND server_name = $1`,
+		serverName, since).Scan(&at)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return at.Time, nil
+}
+
+// BackupStoreBytes sums size_bytes over the present world backups.
+func (p *PGRepo) BackupStoreBytes(ctx context.Context) (int64, error) {
+	var n int64
+	err := p.db.QueryRowContext(ctx,
+		`SELECT COALESCE(sum(size_bytes), 0) FROM world_backups WHERE status = 'present'`).Scan(&n)
+	return n, err
+}
+
 func (p *PGRepo) Audit(ctx context.Context, e AuditEntry) error {
 	// A nil Payload must land as SQL NULL, not the text "null"; a non-nil Payload is
 	// passed as a JSON text the jsonb column parses (same idiom as reaper.PGStore).

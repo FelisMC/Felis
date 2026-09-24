@@ -159,6 +159,10 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 		},
 	}
 
+	// The exit error reaches GET /servers/{name}/jobs through the terminated
+	// state (api.K8sJobStatus), in place of the Job's generic backoff text.
+	container.TerminationMessagePolicy = corev1.TerminationMessageFallbackToLogsOnError
+
 	name := p.JobName
 	if name == "" {
 		name = BackupJobName(p.Server)

@@ -1046,6 +1046,8 @@ region = "us-east-1"
 store = "tarLocal"
 local_path = "/stale/path"
 retention = "30d"
+manual_keep = 3
+manual_cooldown = "1h"
 
 [offsite]
 endpoint = "https://objects.example"
@@ -1076,6 +1078,8 @@ expect "a re-run carries the [registry.s3] uploads subtable" "[registry.s3]" "$o
 expect "the carried subtable keeps its keys" 'endpoint = "https://s3.example"' "$out"
 expect "url stays installer-owned" 'url = "registry.felis.svc:5000"' "$out"
 expect "a re-run carries the archive retention window" 'retention = "30d"' "$out"
+expect "a re-run carries the on-demand backup count" 'manual_keep = 3' "$out"
+expect "a re-run carries the on-demand backup cooldown" 'manual_cooldown = "1h"' "$out"
 expect "the archive mount stays installer-owned" 'local_path = "/a"' "$out"
 expect "a re-run keeps the off-site bucket, set apart from the next section" '[offsite]
 endpoint = "https://objects.example"

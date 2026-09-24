@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"flag"
@@ -52,8 +53,8 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis backup: archive store %q is not implemented in this build (only tarLocal)\n", cfg.Archive.Store)
 		return 1
 	}
-	// Reuse the reaper's retention derivation so an on-demand backup expires on the
-	// same clock as an inactivity backup — one retention policy, not two.
+	// The [archive] parse the reaper uses; an on-demand backup takes its
+	// manual_retention and manual_keep.
 	rcfg, err := reaperConfig(cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis backup: %v\n", err)
@@ -71,6 +72,13 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 	}
 
 	ctx := ctrl.SetupSignalHandler()
+
+	// The archive store shares the node's disk with every world and the
+	// database: an owner's backup must not be what tips it into eviction.
+	if err := backup.CheckRoom(cfg.Archive.LocalPath, *worldsRoot, backup.MinFreeAfter); err != nil {
+		fmt.Fprintf(stderr, "felis backup: %v\n", err)
+		return 1
+	}
 
 	ref, size, err := archiver.Archive(ctx, *server, naming.WorldPVCName(*server))
 	if err != nil {
@@ -92,9 +100,10 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 		BackupRef:   string(ref),
 		SizeBytes:   size,
 		Reason:      "manual",
-		ExpiresAt:   time.Now().Add(rcfg.Retention),
+		ExpiresAt:   time.Now().Add(rcfg.ManualRetention),
 	}
-	if err := reaper.NewPGStore(drv.DB()).InsertBackup(ctx, rec); err != nil {
+	st := reaper.NewPGStore(drv.DB())
+	if err := st.InsertBackup(ctx, rec); err != nil {
 		// The archive is written but unrecorded — an orphan the retention pass would
 		// never expire. Delete it so a failed backup leaves no leaked bytes, mirroring
 		// the reaper's archive-then-record atomicity.
@@ -107,7 +116,31 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 	}
 
 	fmt.Fprintf(stdout, "felis backup: server=%s archived %d bytes to %s (backup %s)\n", *server, size, ref, rec.ID)
+	pruneManualBackups(ctx, st, archiver, *server, rcfg.ManualKeep, stdout, stderr)
 	return 0
+}
+
+// pruneManualBackups keeps server's newest keep on-demand backups and removes
+// the rest, oldest first, so repeated backups of one world cannot fill the
+// shared archive store. The new backup is already recorded; a removal that
+// fails is reported and retried after the next backup.
+func pruneManualBackups(ctx context.Context, st *reaper.PGStore, archiver backup.WorldArchiver, server string, keep int, stdout, stderr io.Writer) {
+	excess, err := st.ExcessManualBackups(ctx, server, keep)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis backup: list older backups of %s: %v\n", server, err)
+		return
+	}
+	for _, b := range excess {
+		if err := archiver.Delete(ctx, backup.ArchiveRef(b.BackupRef)); err != nil {
+			fmt.Fprintf(stderr, "felis backup: remove older backup %s: %v\n", b.ID, err)
+			continue
+		}
+		if err := st.MarkBackupDeleted(ctx, b.ID, time.Now()); err != nil {
+			fmt.Fprintf(stderr, "felis backup: record the removal of %s: %v\n", b.ID, err)
+			continue
+		}
+		fmt.Fprintf(stdout, "felis backup: removed older backup %s of %s (keeping the newest %d)\n", b.ID, server, keep)
+	}
 }
 
 // newBackupID mints a world_backups primary key, matching the reaper's "bk-"+hex

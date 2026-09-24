@@ -297,6 +297,14 @@ type Repo interface {
 	// none matches. Like LatestBackup the returned BackupRecord carries the
 	// server-side backup_ref the restore path needs; the client never sees it.
 	BackupByID(ctx context.Context, id string) (*BackupRecord, error)
+	// LastBackupRequest returns when an on-demand backup of the server was last
+	// accepted (its newest backup.create audit row) at or after since, or the zero
+	// time when there was none. The since bound keeps the lookup inside the
+	// cooldown window the caller enforces.
+	LastBackupRequest(ctx context.Context, serverName string, since time.Time) (time.Time, error)
+	// BackupStoreBytes sums the sizes of every present world backup, the figure
+	// [archive] max_local_bytes caps.
+	BackupStoreBytes(ctx context.Context) (int64, error)
 	// SeedServer inserts the business-layer rows for a newly created server (spec
 	// §15): a servers row (owner_id NULL — claimed later, spec §9.3) and its
 	// subdomain alias, both idempotent. The resource cache (cpuMilli, memoryMB,

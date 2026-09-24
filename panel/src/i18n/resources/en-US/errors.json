@@ -19,6 +19,8 @@
   "not_stopped": "Stop the server completely before restoring — a restore overwrites the live world volume.",
   "maintenance_in_progress": "This server's world is busy with a restore, backup or file write — try again once it finishes, usually within a minute or two.",
   "no_world_volume": "This server has no world volume yet — start it once so it is created, then retry.",
+  "backup_cooldown": "This server was backed up moments ago, and manual backups have a cooldown — try again in a few minutes.",
+  "backup_store_full": "The backup store is full, so manual backups are paused — ask an administrator to free space.",
   "restore_unavailable": "Restore isn't available right now — try again later.",
   "session_expired": "Your session expired — please sign in again.",
   "forbidden": "You are not allowed to do that.",

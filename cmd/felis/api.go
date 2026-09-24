@@ -24,6 +24,7 @@ import (
 	"felis.lolicon.best/internal/panel"
 	"felis.lolicon.best/internal/passkey"
 	"felis.lolicon.best/internal/platform"
+	"felis.lolicon.best/internal/reaper"
 	"felis.lolicon.best/internal/restore"
 	"felis.lolicon.best/internal/store"
 	"felis.lolicon.best/internal/submit"
@@ -262,6 +263,15 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// agree on what local auth knows.
 	repo := api.NewPGRepo(drv.DB())
 
+	// The owner's on-demand backup levers come from [archive], the same keys the
+	// backup Job and the reaper read. A malformed key leaves the defaults in
+	// place here; the reaper Job fails on it and names it.
+	rcfg, err := reaperConfig(cfg)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis api: %v; using the default backup limits\n", err)
+		rcfg = reaper.DefaultConfig()
+	}
+
 	a := &api.API{
 		Repo:    repo,
 		Cluster: api.NewK8sCluster(cl, cfg.K8s.Namespace),
@@ -296,6 +306,10 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		AdminHostname: cfg.Auth.AdminHostname,
 		PanelHostname: cfg.Auth.PanelHostname,
 		WakeCooldown:  30 * time.Second,
+		// An owner may start one backup per server per manual_cooldown, and none
+		// while the store is at max_local_bytes (data-durability-9).
+		BackupCooldown: rcfg.ManualCooldown,
+		BackupStoreCap: rcfg.MaxLocalBytes,
 		// The user-modpack lane's per-user throttles: a create spaces out
 		// review-queue rows, an upload spaces out (up to 1 GiB) context streams.
 		// Separate keys, so the normal create→upload sequence stays immediate.

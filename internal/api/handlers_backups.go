@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/maintenance"
@@ -255,8 +257,47 @@ func (a *API) handleBackupNow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, errForbidden)
 		return
 	}
+	if !p.IsAdmin() {
+		if err := a.backupAllowance(r.Context(), name); err != nil {
+			writeError(w, r, err)
+			return
+		}
+	}
 
 	a.enqueueBackup(w, r, name, rec, auditActor(p), "external")
+}
+
+// backupAllowance rations an owner's on-demand backups (data-durability-9):
+// one per BackupCooldown per server, and none while the present backups fill
+// BackupStoreCap. The owner's older backups are pruned by the Job itself
+// ([archive] manual_keep), so these two gates bound the rate and the total.
+func (a *API) backupAllowance(ctx context.Context, name string) error {
+	if a.BackupCooldown > 0 {
+		now := a.now()
+		last, err := a.Repo.LastBackupRequest(ctx, name, now.Add(-a.BackupCooldown))
+		if err != nil {
+			return err
+		}
+		if !last.IsZero() {
+			wait := last.Add(a.BackupCooldown).Sub(now)
+			if wait > 0 {
+				return newError(http.StatusTooManyRequests, "backup_cooldown",
+					"a backup of this server was started %s ago; the next one can start in %s",
+					now.Sub(last).Round(time.Second), wait.Round(time.Second)).retryAfter(wait)
+			}
+		}
+	}
+	if a.BackupStoreCap > 0 {
+		used, err := a.Repo.BackupStoreBytes(ctx)
+		if err != nil {
+			return err
+		}
+		if used >= a.BackupStoreCap {
+			return newError(http.StatusInsufficientStorage, "backup_store_full",
+				"the backup store is full; ask an administrator to free space")
+		}
+	}
+	return nil
 }
 
 // handleInternalBackup is the internal-face backup trigger. The break-glass console

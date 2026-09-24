@@ -739,6 +739,12 @@ export function humanizeError(e: unknown): string {
       return t("maintenance_in_progress");
     case "no_world_volume":
       return t("no_world_volume");
+    // On-demand backup rationing (data-durability-9): one per server per
+    // cooldown, none while the shared backup store is at its cap.
+    case "backup_cooldown":
+      return t("backup_cooldown");
+    case "backup_store_full":
+      return t("backup_store_full");
     case "restore_unavailable":
       return t("restore_unavailable");
     // Server create/edit (spec §22): the portability regex + reservation list are

@@ -106,14 +106,28 @@ func (s *PGStore) PresentBackupBytes(ctx context.Context) (int64, error) {
 	return n, err
 }
 
-func (s *PGStore) OldestPresentBackups(ctx context.Context) ([]StoredBackup, error) {
-	const q = `SELECT id, server_name, backup_ref, size_bytes FROM world_backups
-		WHERE status = 'present' ORDER BY created_at ASC`
+func (s *PGStore) EvictableBackups(ctx context.Context) ([]StoredBackup, error) {
+	const q = `SELECT id, server_name, backup_ref, size_bytes, reason FROM world_backups
+		WHERE status = 'present' AND (reason <> 'inactive_15d' OR offsite_at IS NOT NULL)
+		ORDER BY reason = 'inactive_15d', created_at ASC`
 	return s.queryBackups(ctx, q)
 }
 
+// ExcessManualBackups lists server's present on-demand backups beyond the
+// newest keep, oldest first: what the backup Job removes after adding one.
+func (s *PGStore) ExcessManualBackups(ctx context.Context, server string, keep int) ([]StoredBackup, error) {
+	const q = `SELECT id, server_name, backup_ref, size_bytes, reason FROM world_backups
+		WHERE server_name = $1 AND status = 'present' AND reason = 'manual'
+		ORDER BY created_at DESC OFFSET $2`
+	out, err := s.queryBackups(ctx, q, server, keep)
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, err
+}
+
 func (s *PGStore) ListExpiredBackups(ctx context.Context, now time.Time) ([]StoredBackup, error) {
-	const q = `SELECT id, server_name, backup_ref, size_bytes FROM world_backups
+	const q = `SELECT id, server_name, backup_ref, size_bytes, reason FROM world_backups
 		WHERE status = 'present' AND expires_at < $1 ORDER BY expires_at ASC`
 	return s.queryBackups(ctx, q, now)
 }
@@ -127,7 +141,7 @@ func (s *PGStore) queryBackups(ctx context.Context, q string, args ...any) ([]St
 	var out []StoredBackup
 	for rows.Next() {
 		var b StoredBackup
-		if err := rows.Scan(&b.ID, &b.ServerName, &b.BackupRef, &b.SizeBytes); err != nil {
+		if err := rows.Scan(&b.ID, &b.ServerName, &b.BackupRef, &b.SizeBytes, &b.Reason); err != nil {
 			return nil, err
 		}
 		out = append(out, b)

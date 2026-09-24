@@ -8,11 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/reaper"
 )
 
@@ -46,6 +48,38 @@ func TestReportReaperRunFailsTheJob(t *testing.T) {
 // fail-closed miss. The stock local-path arm is derived from the live PVC's
 // volumeName — a name-based guess (glob) could tar a stale deleted PV's bytes and
 // then delete the current world, which is why it is read from the API instead.
+// TestReaperConfigManualKeys: the on-demand backup keys default to 30 days,
+// five per server and a ten-minute cooldown, accept overrides, and refuse
+// values that would keep nothing or throttle backwards.
+func TestReaperConfigManualKeys(t *testing.T) {
+	rc, err := reaperConfig(&config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc.ManualRetention != 30*reaper.Day || rc.ManualKeep != 5 || rc.ManualCooldown != 10*time.Minute {
+		t.Fatalf("defaults = %v / %d / %v", rc.ManualRetention, rc.ManualKeep, rc.ManualCooldown)
+	}
+	rc, err = reaperConfig(&config.Config{Archive: config.ArchiveConfig{
+		ManualRetention: "7d", ManualKeep: 2, ManualCooldown: "0s"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc.ManualRetention != 7*reaper.Day || rc.ManualKeep != 2 || rc.ManualCooldown != 0 {
+		t.Fatalf("overrides = %v / %d / %v", rc.ManualRetention, rc.ManualKeep, rc.ManualCooldown)
+	}
+	for _, bad := range []config.ArchiveConfig{
+		{ManualRetention: "0d"},
+		{ManualRetention: "soon"},
+		{ManualKeep: -1},
+		{ManualCooldown: "-5m"},
+		{ManualCooldown: "often"},
+	} {
+		if _, err := reaperConfig(&config.Config{Archive: bad}); err == nil {
+			t.Errorf("%+v was accepted", bad)
+		}
+	}
+}
+
 func TestResolveWorldDir(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

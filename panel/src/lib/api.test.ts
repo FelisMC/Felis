@@ -390,6 +390,12 @@ describe("api access-control wire shapes", () => {
     expect(humanizeError({ code: "not_running" })).toMatch(/running|wake/i);
     expect(humanizeError({ code: "console_unavailable" })).toMatch(/console/i);
   });
+
+  it("maps the backup rationing codes to their own copy", async () => {
+    const { humanizeError } = await import("./api");
+    expect(humanizeError({ code: "backup_cooldown" })).toMatch(/cooldown/i);
+    expect(humanizeError({ code: "backup_store_full" })).toMatch(/store is full/i);
+  });
 });
 
 describe("image whitelist and builds wire shapes", () => {

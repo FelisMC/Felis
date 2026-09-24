@@ -48,6 +48,9 @@ type fakeRepo struct {
 	resourceUpdates map[string]ResourceSpec
 	audits          []AuditEntry
 	failAudit       error // Audit fails with it (a store outage)
+	// backupRequested mirrors the newest backup.create audit row per server,
+	// stamped by Audit with the wall clock (LastBackupRequest).
+	backupRequested map[string]time.Time
 	joins           []string
 	// create-server seeding (spec §15)
 	seeded  map[string]bool   // name -> servers row exists
@@ -750,7 +753,30 @@ func (f *fakeRepo) Audit(_ context.Context, e AuditEntry) error {
 		return f.failAudit
 	}
 	f.audits = append(f.audits, e)
+	if e.Action == "backup.create" {
+		if f.backupRequested == nil {
+			f.backupRequested = map[string]time.Time{}
+		}
+		f.backupRequested[e.ServerName] = time.Now()
+	}
 	return nil
+}
+
+func (f *fakeRepo) LastBackupRequest(_ context.Context, serverName string, since time.Time) (time.Time, error) {
+	if at, ok := f.backupRequested[serverName]; ok && !at.Before(since) {
+		return at, nil
+	}
+	return time.Time{}, nil
+}
+
+func (f *fakeRepo) BackupStoreBytes(context.Context) (int64, error) {
+	var n int64
+	for _, b := range f.backups {
+		if b.view.Status == "present" {
+			n += b.view.SizeBytes
+		}
+	}
+	return n, nil
 }
 
 // AllBackups / BackupsForUser / LatestBackup mirror the PG queries' contract so

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"testing"
+	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 )
@@ -189,6 +191,78 @@ func TestBackupNow(t *testing.T) {
 		w := do(api.ExternalHandler(), "POST", "/api/v1/servers/X/backup", "", nil)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("code = %d, want 400", w.Code)
+		}
+	})
+
+	// data-durability-9: an owner's backups are rationed per server; an admin's
+	// are not.
+	t.Run("owner inside the cooldown -> 429 backup_cooldown with Retry-After", func(t *testing.T) {
+		api, _, _, backuper := mk()
+		api.BackupCooldown = 10 * time.Minute
+		api.Now = time.Now // the fake stamps backup.create audits with the wall clock
+		api.External = staticExternal{p: owner}
+		if w := do(api.ExternalHandler(), "POST", path, "", nil); w.Code != http.StatusAccepted {
+			t.Fatalf("first backup: code = %d (%s)", w.Code, w.Body.String())
+		}
+		w := do(api.ExternalHandler(), "POST", path, "", nil)
+		if w.Code != http.StatusTooManyRequests || decodeErr(t, w) != "backup_cooldown" {
+			t.Fatalf("second backup: code = %d body %s", w.Code, w.Body.String())
+		}
+		if ra, _ := strconv.Atoi(w.Header().Get("Retry-After")); ra < 590 || ra > 600 {
+			t.Fatalf("Retry-After = %q, want about 600", w.Header().Get("Retry-After"))
+		}
+		if backuper.calls != 1 {
+			t.Fatalf("backuper called %d times, want 1", backuper.calls)
+		}
+	})
+
+	t.Run("cooldown elapsed -> 202", func(t *testing.T) {
+		api, repo, _, _ := mk()
+		api.BackupCooldown = 10 * time.Minute
+		api.Now = time.Now
+		repo.backupRequested = map[string]time.Time{"survival": time.Now().Add(-11 * time.Minute)}
+		api.External = staticExternal{p: owner}
+		if w := do(api.ExternalHandler(), "POST", path, "", nil); w.Code != http.StatusAccepted {
+			t.Fatalf("code = %d (%s)", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("admin bypasses the cooldown and the store cap", func(t *testing.T) {
+		api, repo, _, backuper := mk()
+		api.BackupCooldown = 10 * time.Minute
+		api.BackupStoreCap = 100
+		api.Now = time.Now
+		repo.backupRequested = map[string]time.Time{"survival": time.Now()}
+		repo.backups = []fakeBackup{{view: BackupView{ID: "b1", ServerName: "other", Status: "present", SizeBytes: 500}}}
+		api.External = staticExternal{p: &Principal{UserID: "admin1", Email: "admin1@example.net",
+			Role: "admin", ViaAdminAccess: true}}
+		if w := do(api.ExternalHandler(), "POST", path, "", nil); w.Code != http.StatusAccepted {
+			t.Fatalf("code = %d (%s)", w.Code, w.Body.String())
+		}
+		if backuper.calls != 1 {
+			t.Fatal("the admin's backup did not start")
+		}
+	})
+
+	t.Run("owner with the store at its cap -> 507 backup_store_full", func(t *testing.T) {
+		api, repo, _, backuper := mk()
+		api.BackupStoreCap = 1000
+		repo.backups = []fakeBackup{
+			{view: BackupView{ID: "b1", ServerName: "other", Status: "present", SizeBytes: 600}},
+			{view: BackupView{ID: "b2", ServerName: "survival", Status: "present", SizeBytes: 400}},
+			{view: BackupView{ID: "b3", ServerName: "survival", Status: "deleted", SizeBytes: 9000}},
+		}
+		api.External = staticExternal{p: owner}
+		w := do(api.ExternalHandler(), "POST", path, "", nil)
+		if w.Code != http.StatusInsufficientStorage || decodeErr(t, w) != "backup_store_full" {
+			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
+		}
+		if backuper.calls != 0 {
+			t.Fatal("a full store still started a backup")
+		}
+		repo.backups[0].view.Status = "deleted"
+		if w := do(api.ExternalHandler(), "POST", path, "", nil); w.Code != http.StatusAccepted {
+			t.Fatalf("below the cap: code = %d (%s)", w.Code, w.Body.String())
 		}
 	})
 }

@@ -128,6 +128,14 @@ type API struct {
 	// on the wake lever). Zero disables throttling.
 	WakeCooldown time.Duration
 
+	// BackupCooldown spaces out an owner's on-demand backups of one server, and
+	// BackupStoreCap refuses them once the present backups reach [archive]
+	// max_local_bytes (data-durability-9): each archive lands on the node disk
+	// the worlds and the database share. Admins and the break-glass console are
+	// exempt. Zero disables each lever.
+	BackupCooldown time.Duration
+	BackupStoreCap int64
+
 	// SubmitCreateCooldown / SubmitUploadCooldown throttle the user-modpack
 	// submission lane per user: create bounds how quickly review-queue rows can
 	// appear, upload bounds how often a user may stream a (up to 1 GiB) build

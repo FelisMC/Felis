@@ -5,7 +5,7 @@
   "not_yours_title": "No permission to access backups",
   "not_yours_body": "Only the owner or an admin can view and restore this server's backups.",
   "latest_title": "Latest backup",
-  "history_note": "Historical backups can be used for restore before they expire. They are automatically cleaned up when they expire.",
+  "history_note": "Backups can be restored until they expire, then they are cleaned up automatically. Each server keeps only its most recent manual backups; older manual backups are removed once a new one finishes.",
   "reason_inactive": "Idle archive",
   "reason_manual": "Manual backup",
   "reason_label": "Reason: {{reason}}",

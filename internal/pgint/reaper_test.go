@@ -5,9 +5,11 @@ package pgint
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
+	"felis.lolicon.best/internal/api"
 	"felis.lolicon.best/internal/backup"
 	"felis.lolicon.best/internal/reaper"
 )
@@ -137,5 +139,97 @@ func TestReclaimRestartsReaperClock(t *testing.T) {
 	}
 	if owner.Valid || newest != ar.archived[0] {
 		t.Fatalf("owner = %v, newest backup = %q; want released and %q", owner, newest, ar.archived[0])
+	}
+}
+
+// TestManualBackupRationing pins the SQL behind data-durability-9: keep-N
+// pruning picks a server's oldest on-demand backups, capacity eviction takes
+// on-demand backups before copied reaper archives and never offers the only
+// copy of a reaped world, and the API's cooldown and store-size reads see the
+// rows the rest of the platform writes.
+func TestManualBackupRationing(t *testing.T) {
+	ctx := context.Background()
+	st := reaper.NewPGStore(db)
+	name := "ration-" + suffix(t)
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO servers (name, cached_cpu_milli, cached_memory_mb, cached_storage_mb) VALUES ($1, 100, 128, 1)`,
+		name); err != nil {
+		t.Fatalf("seed server: %v", err)
+	}
+	storeBefore, err := repo.BackupStoreBytes(ctx)
+	if err != nil {
+		t.Fatalf("BackupStoreBytes: %v", err)
+	}
+
+	now := time.Now()
+	insert := func(id, reason string, created time.Time, offsite bool, size int64) {
+		t.Helper()
+		var offsiteAt any
+		if offsite {
+			offsiteAt = created
+		}
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO world_backups (id, server_name, backup_ref, size_bytes, reason, status, created_at, expires_at, offsite_at)
+			 VALUES ($1, $2, $3, $4, $5, 'present', $6, $7, $8)`,
+			id, name, "/archives/"+id+".tar.gz", size, reason, created, created.Add(90*reaper.Day), offsiteAt); err != nil {
+			t.Fatalf("seed %s: %v", id, err)
+		}
+	}
+	sfx := suffix(t)
+	var manual []string
+	for i := 0; i < 7; i++ {
+		id := "bk-m" + string(rune('0'+i)) + "-" + sfx
+		manual = append(manual, id)
+		insert(id, "manual", now.Add(time.Duration(i-7)*time.Hour), false, 10)
+	}
+	sole := "bk-sole-" + sfx
+	copied := "bk-copied-" + sfx
+	insert(sole, "inactive_15d", now.Add(-100*reaper.Day), false, 1000)
+	insert(copied, "inactive_15d", now.Add(-50*reaper.Day), true, 100)
+
+	excess, err := st.ExcessManualBackups(ctx, name, 5)
+	if err != nil {
+		t.Fatalf("ExcessManualBackups: %v", err)
+	}
+	if len(excess) != 2 || excess[0].ID != manual[0] || excess[1].ID != manual[1] {
+		t.Fatalf("excess = %+v; want the two oldest manual backups, oldest first", excess)
+	}
+
+	all, err := st.EvictableBackups(ctx)
+	if err != nil {
+		t.Fatalf("EvictableBackups: %v", err)
+	}
+	var got []string
+	for _, b := range all {
+		if b.ServerName == name {
+			got = append(got, b.ID)
+		}
+	}
+	want := append(append([]string{}, manual...), copied)
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("eviction order = %v\nwant %v (manual oldest first, then the copied archive, never the sole copy)", got, want)
+	}
+
+	storeAfter, err := repo.BackupStoreBytes(ctx)
+	if err != nil {
+		t.Fatalf("BackupStoreBytes: %v", err)
+	}
+	if storeAfter-storeBefore != 7*10+1000+100 {
+		t.Fatalf("store grew by %d, want %d", storeAfter-storeBefore, 7*10+1000+100)
+	}
+
+	if at, err := repo.LastBackupRequest(ctx, name, now.Add(-10*time.Minute)); err != nil || !at.IsZero() {
+		t.Fatalf("before any request: LastBackupRequest = (%v, %v)", at, err)
+	}
+	if err := repo.Audit(ctx, api.AuditEntry{Actor: "owner@example.net", Source: "external",
+		Action: "backup.create", ServerName: name}); err != nil {
+		t.Fatalf("Audit: %v", err)
+	}
+	at, err := repo.LastBackupRequest(ctx, name, time.Now().Add(-10*time.Minute))
+	if err != nil || at.IsZero() || time.Since(at) > time.Minute {
+		t.Fatalf("after a request: LastBackupRequest = (%v, %v)", at, err)
+	}
+	if at, err := repo.LastBackupRequest(ctx, name, time.Now().Add(time.Minute)); err != nil || !at.IsZero() {
+		t.Fatalf("a request before since still counted: (%v, %v)", at, err)
 	}
 }

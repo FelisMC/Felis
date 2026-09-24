@@ -624,7 +624,8 @@ Registry manifest rendering is [GO-TESTED]; actual serving is
 The reaper is a **run-once daily CronJob batch**, not an operator controller. It
 reaps a world only when `now - last_active_at > 15d` (`inactive_15d`); the 15-day
 deadline is **hard-fixed in code** (only `warn_before` / `retention` /
-`max_local_bytes` are configurable from `felis.toml [archive]`).
+`max_local_bytes` and the on-demand backup keys `manual_retention` /
+`manual_keep` / `manual_cooldown` are configurable from `felis.toml [archive]`).
 
 ### What a "backup" contains
 
@@ -641,8 +642,13 @@ world growth) — do not size the archive PVC as if only world data were stored.
 The reap sequence (all [GO-TESTED] hermetically) preserves the world unless a
 **confirmed, DB-recorded backup exists**:
 
-1. `ensureCapacity` (only if `max_local_bytes > 0`) → store full ⇒ world
-   **preserved** (not deleted).
+1. `ensureCapacity` (only if `max_local_bytes > 0`) frees room by evicting
+   owners' on-demand backups first, oldest first, then reaper archives whose
+   off-site copy is confirmed. The only copy of a reaped world is never
+   evicted: it stays until `retention` expires it. Still full ⇒ world
+   **preserved** (not deleted), counted in `store_full=`. [GO-TESTED:
+   `TestCapacityEvictionOrderSparesSoleCopies`; PG-TESTED:
+   `TestManualBackupRationing`]
 2. `Archiver.Archive` fails ⇒ world **preserved**, PVC untouched.
 3. `InsertBackup` (DB) fails ⇒ the orphan archive is deleted, PVC **untouched**.
 4. With an `[offsite]` bucket configured (§16), the archive must also be in the
@@ -688,6 +694,26 @@ Job fails every day until the cause is fixed; after 26 hours the watchdog also
 reports `the world reaper has not succeeded for …`. [GO-TESTED:
 `TestReportReaperRunFailsTheJob`, `TestExpiryFailureFailsTheRun`,
 `TestCapacityStillFullSkipsReap`.]
+
+### On-demand backups ("Back up now")
+
+An owner's "Back up now" writes a `manual` backup into the same store and onto
+the same disk as the worlds and the database, so it is rationed:
+
+| Key | Default | Effect |
+|---|---|---|
+| `manual_retention` | `30d` | when a manual backup expires (reaper archives use `retention`) |
+| `manual_keep` | `5` | manual backups kept per server; after each backup the Job removes older ones and prints `removed older backup …` |
+| `manual_cooldown` | `10m` | one owner-started backup per server per window; the next one gets `429 backup_cooldown` with `Retry-After` (`0s` disables) |
+
+While the present backups add up to `max_local_bytes` or more, owners get
+`507 backup_store_full`. Admins and the break-glass console are exempt from the
+cooldown and the cap. Whoever starts it, the backup Job refuses to write an
+archive that would leave less than 10% of the archive filesystem free: it fails
+with `not enough free disk for the archive`. A failed backup or restore shows
+the error its container exited on under Recent operations on the server's
+backup page. [GO-TESTED: `TestBackupNow`, `TestCheckRoom`,
+`TestReaperConfigManualKeys`, `TestLatestJobsExplainsFailures`]
 
 ### Exemptions (world never reaped)
 
