@@ -13,7 +13,8 @@ import (
 
 const testDigest = "sha256:d2fcc09d2caa108678c540c99703db96d63038a5fc9e366402d7ef1712ec4d95"
 
-// fakeRegistry serves /v2/felis/paper/manifests/demo and 404s everything else.
+// fakeRegistry serves /v2/felis/paper/manifests/demo (and the same manifest by
+// its digest) and 404s everything else.
 func fakeRegistry(t *testing.T, header bool) (*httptest.Server, *[]string) {
 	t.Helper()
 	var seen []string
@@ -22,7 +23,7 @@ func fakeRegistry(t *testing.T, header bool) (*httptest.Server, *[]string) {
 		if !strings.Contains(r.Header.Get("Accept"), "application/vnd.oci.image.index.v1+json") {
 			t.Errorf("request without an OCI index Accept: %q", r.Header.Get("Accept"))
 		}
-		if r.URL.Path != "/v2/felis/paper/manifests/demo" {
+		if r.URL.Path != "/v2/felis/paper/manifests/demo" && r.URL.Path != "/v2/felis/paper/manifests/"+testDigest {
 			http.NotFound(w, r)
 			return
 		}
@@ -78,9 +79,9 @@ func TestPinLeavesOtherRefsAlone(t *testing.T) {
 	srv, seen := fakeRegistry(t, true)
 	r := resolverFor(srv)
 	for _, ref := range []string{
-		"registry.felis.svc:5000/felis/paper:demo@" + testDigest, // already pinned
-		"docker.io/itzg/minecraft-server:java21",                 // external
-		"registry.felis.svc:50000/felis/paper:demo",              // a different port is a different registry
+		"docker.io/itzg/minecraft-server:java21",               // external
+		"docker.io/itzg/minecraft-server:java21@" + testDigest, // external, pinned
+		"registry.felis.svc:50000/felis/paper:demo",            // a different port is a different registry
 	} {
 		got, err := r.Pin(context.Background(), ref)
 		if err != nil || got != ref {
@@ -89,6 +90,30 @@ func TestPinLeavesOtherRefsAlone(t *testing.T) {
 	}
 	if len(*seen) != 0 {
 		t.Errorf("requests = %v, want none", *seen)
+	}
+}
+
+// A pinned ref stays as it is, but only while the registry still holds that
+// manifest: the pruner deletes builds nothing references, and setting a server
+// back to one of them must fail here, not in ImagePullBackOff.
+func TestPinChecksAPinnedRefStillExists(t *testing.T) {
+	srv, seen := fakeRegistry(t, true)
+	r := resolverFor(srv)
+	ref := "registry.felis.svc:5000/felis/paper:demo@" + testDigest
+	got, err := r.Pin(context.Background(), ref)
+	if err != nil || got != ref {
+		t.Fatalf("Pin(%q) = %q, %v; want it unchanged", ref, got, err)
+	}
+	if want := "HEAD /v2/felis/paper/manifests/" + testDigest; len(*seen) != 1 || (*seen)[0] != want {
+		t.Errorf("requests = %v, want [%s]", *seen, want)
+	}
+
+	pruned := "registry.felis.svc:5000/felis/paper:demo@sha256:" + strings.Repeat("0", 64)
+	if _, err := r.Pin(context.Background(), pruned); !errors.Is(err, ErrNotFound) {
+		t.Errorf("pruned digest: err = %v, want ErrNotFound", err)
+	}
+	if _, err := r.Pin(context.Background(), "registry.felis.svc:5000/felis/paper:demo@sha256:nothex"); err == nil {
+		t.Error("malformed pinned ref accepted")
 	}
 }
 

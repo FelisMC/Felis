@@ -73,10 +73,23 @@ func (r Resolver) Covers(ref string) bool {
 	return r.Registry != "" && strings.HasPrefix(ref, r.Registry+"/")
 }
 
-// Pin returns ref with the digest its tag names now appended. A ref that already
-// carries a digest, or lives outside the registry, comes back unchanged.
+// Pin returns ref with the digest its tag names now appended. A ref outside the
+// registry comes back unchanged. A ref that already carries a digest comes back
+// unchanged once the registry confirms it still holds that manifest: the registry
+// pruner deletes builds nothing references, and a server set back to one of them
+// would otherwise sit in ImagePullBackOff.
 func (r Resolver) Pin(ctx context.Context, ref string) (string, error) {
-	if Pinned(ref) || !r.Covers(ref) {
+	if !r.Covers(ref) {
+		return ref, nil
+	}
+	if name, pinned, ok := strings.Cut(ref, "@"); ok {
+		repo, _ := splitTag(strings.TrimPrefix(name, r.Registry+"/"))
+		if repo == "" || !digestRE.MatchString(pinned) {
+			return "", fmt.Errorf("imagepin: %q is not a valid pinned reference", ref)
+		}
+		if _, err := r.digest(ctx, repo, pinned); err != nil {
+			return "", fmt.Errorf("imagepin: resolve %s: %w", ref, err)
+		}
 		return ref, nil
 	}
 	repo, tag := splitTag(strings.TrimPrefix(ref, r.Registry+"/"))

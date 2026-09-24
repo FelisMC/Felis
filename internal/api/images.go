@@ -270,6 +270,9 @@ func (a *API) pinImage(ctx context.Context, ref string) (string, error) {
 	}
 	pinned, err := a.Images.Pin(ctx, ref)
 	switch {
+	case errors.Is(err, imagepin.ErrNotFound) && imagepin.Pinned(ref):
+		return "", newError(http.StatusBadRequest, "image_not_in_registry",
+			"the registry no longer holds build %q (nothing referenced it, so it was pruned); pick a current tag", ref)
 	case errors.Is(err, imagepin.ErrNotFound):
 		return "", newError(http.StatusBadRequest, "image_not_in_registry",
 			"image %q is whitelisted but the registry does not hold it; build or push it first", ref)
