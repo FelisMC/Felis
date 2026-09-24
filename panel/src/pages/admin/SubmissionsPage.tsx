@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { ClipboardCheck, CheckCircle2, CircleSlash, ChevronDown, ChevronUp, Check, X, Loader2, Download } from "lucide-react";
+import { ClipboardCheck, CheckCircle2, CircleSlash, ChevronDown, ChevronUp, Check, X, Loader2, Download, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatCard } from "@/components/StatCard";
@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { MessageLine } from "@/components/MessageLine";
+import { InlineConfirm } from "@/components/InlineConfirm";
 import { Loading, ErrorState, EmptyState } from "@/components/States";
 import { Pagination } from "@/components/Pagination";
 import { api, humanizeError } from "@/lib/api";
@@ -43,8 +44,11 @@ export function SubmissionsPage() {
   
   // Pending actions (for button spinners)
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [busyType, setBusyType] = useState<"approve" | "reject" | null>(null);
+  const [busyType, setBusyType] = useState<"approve" | "reject" | "delete" | null>(null);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  // Delete arms the row (trash → confirm/cancel) before it fires; a row gone on
+  // one stray click would take its uploaded context with it.
+  const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
 
   // Search & Filtering State
   const [search, setSearch] = useState("");
@@ -118,6 +122,26 @@ export function SubmissionsPage() {
     setRejectReason("");
     setActionError(null);
     setRejectDialogOpen(true);
+  }
+
+  // Delete retires the submission outright — any status — along with its
+  // uploaded context: the lane's only lifecycle valve, the path that reclaims
+  // a rejected or consumed upload from the uploads PVC.
+  async function handleDelete(id: string) {
+    if (busyId) return;
+    setBusyId(id);
+    setBusyType("delete");
+    setActionError(null);
+    try {
+      await api.deleteSubmission(id);
+      setConfirmingDelete(null);
+      reload();
+    } catch (err) {
+      setActionError(humanizeError(err));
+    } finally {
+      setBusyId(null);
+      setBusyType(null);
+    }
   }
 
   async function handleRejectSubmit(e?: React.FormEvent) {
@@ -266,6 +290,7 @@ export function SubmissionsPage() {
                   const isExpanded = expandedId === sub.id;
                   const isBusyApprove = busyId === sub.id && busyType === "approve";
                   const isBusyReject = busyId === sub.id && busyType === "reject";
+                  const isBusyDelete = busyId === sub.id && busyType === "delete";
                   return (
                     <div key={sub.id} className="flex flex-col">
                       <div
@@ -306,10 +331,13 @@ export function SubmissionsPage() {
                           {formatRelative(sub.created_at, now, locale)}
                         </div>
 
-                        {/* Action buttons (only in table row if NOT pending, else show triggers) */}
+                        {/* Action buttons: approve/reject on pending rows, plus the
+                            two-step delete on every row — it is the only path that
+                            reclaims an upload from the uploads PVC. */}
                         <div className="col-span-1 text-right" onClick={(e) => e.stopPropagation()}>
-                          {sub.status === "pending_review" ? (
-                            <div className="flex items-center justify-end gap-1.5">
+                          <div className="flex items-center justify-end gap-1.5">
+                            {sub.status === "pending_review" && (
+                              <>
                               <Button
                                 size="icon"
                                 variant="outline"
@@ -338,12 +366,35 @@ export function SubmissionsPage() {
                                   <X className="h-3.5 w-3.5" />
                                 )}
                               </Button>
-                            </div>
-                          ) : (
-                            <span className="text-[10px] text-muted-foreground/60 font-medium">
-                              —
-                            </span>
-                          )}
+                              </>
+                            )}
+                            {confirmingDelete === sub.id ? (
+                              <InlineConfirm
+                                open={true}
+                                confirming={isBusyDelete}
+                                onConfirm={() => handleDelete(sub.id)}
+                                onCancel={() => setConfirmingDelete(null)}
+                                confirmLabel={t("delete_submission_confirm")}
+                                cancelLabel={t("delete_submission_cancel")}
+                                className="flex shrink-0 items-center gap-1"
+                              />
+                            ) : (
+                              <Button
+                                size="icon"
+                                variant="outline"
+                                className="h-7 w-7 text-destructive hover:text-destructive border-destructive/20 hover:bg-destructive/10 focus-visible:ring-destructive"
+                                onClick={() => setConfirmingDelete(sub.id)}
+                                disabled={!!busyId}
+                                title={t("delete_submission_btn")}
+                              >
+                                {isBusyDelete ? (
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                )}
+                              </Button>
+                            )}
+                          </div>
                         </div>
                       </div>
 

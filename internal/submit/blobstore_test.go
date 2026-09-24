@@ -109,6 +109,35 @@ func TestLocalContextStorePutOverwrites(t *testing.T) {
 	}
 }
 
+// Delete removes the blob and its id-namespaced directory, and is idempotent —
+// the retry-safety the withdraw/delete cleanup depends on.
+func TestLocalContextStoreDelete(t *testing.T) {
+	base := t.TempDir()
+	s := &LocalContextStore{Base: base}
+	ctx := context.Background()
+
+	if _, err := s.Put(ctx, "sub-abc", strings.NewReader("\x1f\x8bbytes")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := s.Delete(ctx, "sub-abc"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if ok, err := s.Exists(ctx, "sub-abc"); err != nil || ok {
+		t.Fatalf("Exists after Delete = (%v, %v), want (false, nil)", ok, err)
+	}
+	if _, err := os.Stat(filepath.Join(base, "sub-abc")); !os.IsNotExist(err) {
+		t.Fatalf("per-submission dir still present after Delete (err=%v)", err)
+	}
+	// Idempotent: deleting nothing is success, so a retried cleanup cannot fail.
+	if err := s.Delete(ctx, "sub-abc"); err != nil {
+		t.Fatalf("second Delete = %v, want nil (idempotent)", err)
+	}
+	// The same path guard as Put/Open.
+	if err := s.Delete(ctx, "../etc"); err == nil {
+		t.Fatal("Delete must reject an unsafe id")
+	}
+}
+
 func TestLocalContextStoreRejectsUnsafeID(t *testing.T) {
 	base := t.TempDir()
 	s := &LocalContextStore{Base: base}

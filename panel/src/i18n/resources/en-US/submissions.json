@@ -36,5 +36,9 @@
   "field_context_ref": "Context Reference",
   "field_image_ref": "Image Reference",
   "clear_btn": "Clear",
-  "file_hint": "Supports .tar.gz (max 1GB)"
+  "file_hint": "Supports .tar.gz (max 1GB)",
+  "withdraw_btn": "Withdraw",
+  "withdraw_hint": "Withdrawing deletes this submission and its uploaded context, freeing your pending slot and storage budget.",
+  "withdraw_confirm": "Withdraw",
+  "withdraw_cancel": "Cancel"
 }

@@ -25,6 +25,7 @@ type fakeBlobs struct {
 	putErr      error
 	existsErr   error
 	sizeErr     error
+	deleteErr   error
 	forceExists *bool // overrides the stored-map lookup for the approve-gate tests
 }
 
@@ -65,6 +66,15 @@ func (f *fakeBlobs) Size(_ context.Context, id string) (int64, bool, error) {
 	return int64(len(b)), true, nil
 }
 
+// Delete mirrors the real stores: idempotent, nothing stored is success.
+func (f *fakeBlobs) Delete(_ context.Context, id string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	delete(f.stored, id)
+	return nil
+}
+
 func (f *fakeBlobs) Open(_ context.Context, id string) (io.ReadCloser, error) {
 	b, ok := f.stored[id]
 	if !ok {
@@ -90,6 +100,7 @@ type fakeStore struct {
 	approveErr error
 	rejectErr  error
 	linkErr    error
+	deleteErr  error
 
 	linked []string // "id=buildID" recorder
 }
@@ -188,6 +199,29 @@ func (f *fakeStore) LinkBuild(_ context.Context, id, buildID string) error {
 	s.BuildID = buildID
 	f.linked = append(f.linked, id+"="+buildID)
 	return nil
+}
+
+func (f *fakeStore) DeleteSubmission(_ context.Context, id string) (bool, error) {
+	if f.deleteErr != nil {
+		return false, f.deleteErr
+	}
+	if _, ok := f.subs[id]; !ok {
+		return false, nil // concurrent delete won / nonexistent
+	}
+	delete(f.subs, id)
+	return true, nil
+}
+
+func (f *fakeStore) DeletePendingSubmission(_ context.Context, id, by string) (bool, error) {
+	if f.deleteErr != nil {
+		return false, f.deleteErr
+	}
+	s, ok := f.subs[id]
+	if !ok || s.SubmittedBy != by || s.Status != StatusPendingReview {
+		return false, nil
+	}
+	delete(f.subs, id)
+	return true, nil
 }
 
 // fakeBuilds records Submit calls and can inject a failure.
@@ -816,6 +850,155 @@ func TestCreatePendingCountFailureSurfaces(t *testing.T) {
 	_, err := m.Create(context.Background(), CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
 	if err == nil || errors.Is(err, ErrQuotaExceeded) {
 		t.Fatalf("err = %v, want the raw store failure", err)
+	}
+}
+
+// Withdraw retracts the submitter's own pending submission: the row AND its
+// uploaded context are gone — which is what frees the pending slot and the
+// storage budget for a fresh submission.
+func TestWithdrawDeletesRowAndBlob(t *testing.T) {
+	m, st, _ := newManager()
+	fb := newFakeBlobs()
+	m.Blobs = fb
+	ctx := context.Background()
+	seed, _ := m.Create(ctx, CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
+	if _, err := m.UploadContext(ctx, seed.ID, "user-1", strings.NewReader(gzBody("bytes"))); err != nil {
+		t.Fatalf("UploadContext: %v", err)
+	}
+
+	sub, err := m.Withdraw(ctx, seed.ID, "user-1")
+	if err != nil {
+		t.Fatalf("Withdraw: %v", err)
+	}
+	if sub.ID != seed.ID || sub.Status != StatusPendingReview {
+		t.Fatalf("withdrawn row = %+v, want the pending row back", sub)
+	}
+	if _, ok := st.subs[seed.ID]; ok {
+		t.Fatal("withdraw must delete the row")
+	}
+	if _, ok := fb.stored[seed.ID]; ok {
+		t.Fatal("withdraw must reap the uploaded context")
+	}
+}
+
+// Another user's id is invisible on the withdraw path (404, not 403), and
+// nothing is touched.
+func TestWithdrawNotOwnerIsNotFound(t *testing.T) {
+	m, st, _ := newManager()
+	fb := newFakeBlobs()
+	m.Blobs = fb
+	ctx := context.Background()
+	seed, _ := m.Create(ctx, CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
+	if _, err := m.UploadContext(ctx, seed.ID, "user-1", strings.NewReader(gzBody("x"))); err != nil {
+		t.Fatalf("UploadContext: %v", err)
+	}
+
+	if _, err := m.Withdraw(ctx, seed.ID, "user-2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+	if _, ok := st.subs[seed.ID]; !ok {
+		t.Fatal("a non-owner withdraw must not delete the row")
+	}
+	if _, ok := fb.stored[seed.ID]; !ok {
+		t.Fatal("a non-owner withdraw must not reap the context")
+	}
+}
+
+// A reviewed submission is frozen: the withdraw CAS refuses it (409), keeping
+// the context a running/queued build may still consume.
+func TestWithdrawReviewedIsAlreadyReviewed(t *testing.T) {
+	m, st, _ := newManager()
+	fb := newFakeBlobs()
+	m.Blobs = fb
+	ctx := context.Background()
+	seed, _ := m.Create(ctx, CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
+	if _, err := m.UploadContext(ctx, seed.ID, "user-1", strings.NewReader(gzBody("x"))); err != nil {
+		t.Fatalf("UploadContext: %v", err)
+	}
+	if _, err := m.Reject(ctx, seed.ID, "admin@example.net", "no"); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+
+	if _, err := m.Withdraw(ctx, seed.ID, "user-1"); !errors.Is(err, ErrAlreadyReviewed) {
+		t.Fatalf("err = %v, want ErrAlreadyReviewed", err)
+	}
+	if _, ok := st.subs[seed.ID]; !ok {
+		t.Fatal("a reviewed row must survive a withdraw attempt")
+	}
+	if _, ok := fb.stored[seed.ID]; !ok {
+		t.Fatal("a reviewed row's context must survive a withdraw attempt")
+	}
+}
+
+// The admin delete retires ANY status, reaping the context with it.
+func TestDeleteAnyStatusReapsContext(t *testing.T) {
+	m, st, _ := newManager()
+	fb := newFakeBlobs()
+	m.Blobs = fb
+	ctx := context.Background()
+	seed, _ := m.Create(ctx, CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
+	if _, err := m.UploadContext(ctx, seed.ID, "user-1", strings.NewReader(gzBody("x"))); err != nil {
+		t.Fatalf("UploadContext: %v", err)
+	}
+	if _, err := m.Reject(ctx, seed.ID, "admin@example.net", "no"); err != nil {
+		t.Fatalf("Reject: %v", err)
+	}
+
+	sub, err := m.Delete(ctx, seed.ID)
+	if err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if sub.Status != StatusRejected {
+		t.Fatalf("returned status = %q, want the row as it was before the delete", sub.Status)
+	}
+	if _, ok := st.subs[seed.ID]; ok {
+		t.Fatal("delete must remove the row")
+	}
+	if _, ok := fb.stored[seed.ID]; ok {
+		t.Fatal("delete must reap the context")
+	}
+}
+
+// Deleting an unknown id — including the second delete of one already gone —
+// is ErrNotFound (404), not a crash and not a silent success.
+func TestDeleteUnknownIsNotFound(t *testing.T) {
+	m, _, _ := newManager()
+	m.Blobs = newFakeBlobs()
+	if _, err := m.Delete(context.Background(), "sub-nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+// A deployment without an upload transport has no blobs to reap: delete still
+// retires the row.
+func TestDeleteWithoutTransport(t *testing.T) {
+	m, st, _ := newManager() // Blobs nil
+	ctx := context.Background()
+	seed, _ := m.Create(ctx, CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
+	if _, err := m.Delete(ctx, seed.ID); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, ok := st.subs[seed.ID]; ok {
+		t.Fatal("delete must remove the row even with no transport")
+	}
+}
+
+// A blob-cleanup failure after the row is gone must surface loudly (naming what
+// was left behind), never masquerade as success.
+func TestDeleteBlobCleanupFailureSurfaces(t *testing.T) {
+	m, st, _ := newManager()
+	fb := newFakeBlobs()
+	fb.deleteErr = errors.New("pvc read-only")
+	m.Blobs = fb
+	ctx := context.Background()
+	seed, _ := m.Create(ctx, CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
+
+	_, err := m.Delete(ctx, seed.ID)
+	if err == nil || !strings.Contains(err.Error(), "could not be deleted") {
+		t.Fatalf("err = %v, want the cleanup failure named", err)
+	}
+	if _, ok := st.subs[seed.ID]; ok {
+		t.Fatal("the row is deleted before the blob reap; it must stay deleted")
 	}
 }
 

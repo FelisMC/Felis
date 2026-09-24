@@ -57,14 +57,16 @@ func (s *PGStore) ListSubmissionsBy(ctx context.Context, submittedBy string) ([]
 	return s.querySubmissions(ctx, q, submittedBy)
 }
 
-// cas executes a compare-and-set UPDATE and reports whether THIS call moved the
-// row. The `status = 'pending_review'` guard is the actual CAS predicate and is
-// deliberately kept INLINE in each caller's query — it is security-visible, so a
-// reader auditing "can a non-pending row be flipped?" must see it next to the SET.
-// cas only folds the shared ExecContext + RowsAffected tail so the two reviewers
-// (approve, reject) cannot drift in how they report a lost race or a RowsAffected
-// error. n == 0 means a concurrent review already won the row — reported as
-// won=false (never an error), which the Manager maps to ErrAlreadyReviewed.
+// cas executes a single-statement compare-and-set — an UPDATE or DELETE whose
+// WHERE clause is the predicate — and reports whether THIS call moved a row. The
+// `status = 'pending_review'` guard is the actual CAS predicate in each caller's
+// query and is deliberately kept INLINE — it is security-visible, so a reader
+// auditing "can a non-pending row be flipped or deleted?" must see it next to the
+// SET or DELETE. cas only folds the shared ExecContext + RowsAffected tail so
+// the reviewers and deleters cannot drift in how they report a lost race or a
+// RowsAffected error. n == 0 means a concurrent actor already won the row —
+// reported as won=false (never an error), which the Manager maps to
+// ErrAlreadyReviewed / ErrNotFound.
 func (s *PGStore) cas(ctx context.Context, q string, args ...any) (bool, error) {
 	res, err := s.db.ExecContext(ctx, q, args...)
 	if err != nil {
@@ -105,6 +107,21 @@ func (s *PGStore) LinkBuild(ctx context.Context, id, buildID string) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// DeleteSubmission is the admin delete: any status, one row, no predicate beyond
+// the id. False means the id was already gone (a concurrent delete won).
+func (s *PGStore) DeleteSubmission(ctx context.Context, id string) (bool, error) {
+	const q = `DELETE FROM image_submissions WHERE id = $1`
+	return s.cas(ctx, q, id)
+}
+
+// DeletePendingSubmission is the withdraw CAS: owner + pending_review must both
+// still hold, so a reviewed submission can never be deleted through this path.
+func (s *PGStore) DeletePendingSubmission(ctx context.Context, id, submittedBy string) (bool, error) {
+	const q = `DELETE FROM image_submissions
+		WHERE id = $1 AND submitted_by = $2 AND status = 'pending_review'`
+	return s.cas(ctx, q, id, submittedBy)
 }
 
 func (s *PGStore) querySubmissions(ctx context.Context, q string, args ...any) ([]Submission, error) {

@@ -15,9 +15,10 @@ import (
 // error for a missing stat, so S3ContextStore's key derivation and not-found
 // handling are exercised without a live bucket.
 type fakeS3 struct {
-	objects map[string][]byte
-	putErr  error
-	statErr error // when set, StatObject returns it (e.g. auth rejected / bucket missing)
+	objects   map[string][]byte
+	putErr    error
+	statErr   error // when set, StatObject returns it (e.g. auth rejected / bucket missing)
+	removeErr error
 }
 
 func (f *fakeS3) PutObject(_ context.Context, bucket, object string, r io.Reader, _ int64, _ minio.PutObjectOptions) (minio.UploadInfo, error) {
@@ -43,6 +44,16 @@ func (f *fakeS3) StatObject(_ context.Context, bucket, object string, _ minio.St
 		return minio.ObjectInfo{Key: object, Size: int64(len(data))}, nil
 	}
 	return minio.ObjectInfo{}, minio.ErrorResponse{Code: "NoSuchKey", StatusCode: http.StatusNotFound}
+}
+
+// RemoveObject mirrors S3's idempotent DELETE: removing a key (absent or not)
+// succeeds unless removeErr injects a failure.
+func (f *fakeS3) RemoveObject(_ context.Context, bucket, object string, _ minio.RemoveObjectOptions) error {
+	if f.removeErr != nil {
+		return f.removeErr
+	}
+	delete(f.objects, bucket+"/"+object)
+	return nil
 }
 
 // fakeS3Object is the object handle fakeS3.GetObject yields: Stat mirrors
@@ -139,6 +150,32 @@ func TestS3ContextStorePutAndExists(t *testing.T) {
 	}
 	if ok, err := s.Exists(ctx, "sub-abc"); err != nil || !ok {
 		t.Fatalf("Exists after Put = (%v, %v), want (true, nil)", ok, err)
+	}
+}
+
+// Delete removes the derived object and is idempotent (S3 DELETE of an absent
+// key succeeds), so a retried cleanup after a partial failure cannot stick.
+func TestS3ContextStoreDelete(t *testing.T) {
+	fake := &fakeS3{}
+	s := &S3ContextStore{client: fake, bucket: "felis-uploads", prefix: "builds"}
+	ctx := context.Background()
+
+	if _, err := s.Put(ctx, "sub-abc", strings.NewReader("\x1f\x8bbytes")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if err := s.Delete(ctx, "sub-abc"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if ok, err := s.Exists(ctx, "sub-abc"); err != nil || ok {
+		t.Fatalf("Exists after Delete = (%v, %v), want (false, nil)", ok, err)
+	}
+	if err := s.Delete(ctx, "sub-abc"); err != nil {
+		t.Fatalf("second Delete = %v, want nil (idempotent)", err)
+	}
+	// A transport failure is surfaced, not swallowed.
+	fake.removeErr = errors.New("s3 unavailable")
+	if err := s.Delete(ctx, "sub-abc"); err == nil {
+		t.Fatal("Delete with a failing transport = nil, want error")
 	}
 }
 

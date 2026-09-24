@@ -20,27 +20,32 @@ import (
 // what the handler forwarded (the point of the owner-scoping checks: the
 // submitter and reviewer must come from the principal, never the body).
 type fakeSubmissions struct {
-	created    *submit.CreateRequest
-	createErr  error
-	uploadedID string
-	uploadedBy string
-	uploadedN  int64
-	uploadErr  error
-	listedBy   string
-	byResult   []submit.Submission
-	byErr      error
-	listed     []submit.Submission
-	listErr    error
-	approvedID string
-	approvedBy string
-	approveErr error
-	rejectedID string
-	rejectedBy string
-	rejectReas string
-	rejectErr  error
-	openedID   string
-	openBody   string
-	openErr    error
+	created     *submit.CreateRequest
+	createErr   error
+	uploadedID  string
+	uploadedBy  string
+	uploadedN   int64
+	uploadErr   error
+	listedBy    string
+	byResult    []submit.Submission
+	byErr       error
+	listed      []submit.Submission
+	listErr     error
+	approvedID  string
+	approvedBy  string
+	approveErr  error
+	rejectedID  string
+	rejectedBy  string
+	rejectReas  string
+	rejectErr   error
+	withdrawnID string
+	withdrawBy  string
+	withdrawErr error
+	deletedID   string
+	deleteErr   error
+	openedID    string
+	openBody    string
+	openErr     error
 }
 
 func (f *fakeSubmissions) Create(_ context.Context, req submit.CreateRequest) (*submit.Submission, error) {
@@ -86,6 +91,22 @@ func (f *fakeSubmissions) Reject(_ context.Context, id, reviewedBy, reason strin
 		return nil, f.rejectErr
 	}
 	return &submit.Submission{ID: id, Status: submit.StatusRejected, ReviewedBy: reviewedBy, RejectReason: reason}, nil
+}
+
+func (f *fakeSubmissions) Withdraw(_ context.Context, id, submittedBy string) (*submit.Submission, error) {
+	f.withdrawnID, f.withdrawBy = id, submittedBy
+	if f.withdrawErr != nil {
+		return nil, f.withdrawErr
+	}
+	return &submit.Submission{ID: id, SubmittedBy: submittedBy, Status: submit.StatusPendingReview}, nil
+}
+
+func (f *fakeSubmissions) Delete(_ context.Context, id string) (*submit.Submission, error) {
+	f.deletedID = id
+	if f.deleteErr != nil {
+		return nil, f.deleteErr
+	}
+	return &submit.Submission{ID: id, Status: submit.StatusRejected}, nil
 }
 
 // openErr injects the OpenContext outcome; the body recorder lets the internal
@@ -249,6 +270,69 @@ func TestUploadSubmissionContextWithoutServiceIs503(t *testing.T) {
 	}
 }
 
+// Withdraw retracts the caller's OWN pending submission: the submitter is the
+// principal (never the body), a reviewed submission is 409, and a foreign id is
+// 404 — the same posture as the upload route.
+func TestWithdrawSubmission(t *testing.T) {
+	t.Run("withdraws as the principal", func(t *testing.T) {
+		fs := &fakeSubmissions{}
+		w := do(appSubAPI(fs).ExternalHandler(), "DELETE", "/api/v1/me/submissions/sub-3", "", nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
+		}
+		if fs.withdrawnID != "sub-3" || fs.withdrawBy != "user-7" {
+			t.Fatalf("withdraw forwarded (%q, %q), want (sub-3, user-7)", fs.withdrawnID, fs.withdrawBy)
+		}
+	})
+	t.Run("reviewed submission is 409", func(t *testing.T) {
+		fs := &fakeSubmissions{withdrawErr: submit.ErrAlreadyReviewed}
+		w := do(appSubAPI(fs).ExternalHandler(), "DELETE", "/api/v1/me/submissions/sub-3", "", nil)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("code = %d, want 409 (%s)", w.Code, w.Body.String())
+		}
+		if got := decodeErr(t, w); got != "already_reviewed" {
+			t.Errorf("error code = %q, want already_reviewed", got)
+		}
+	})
+	t.Run("foreign or unknown id is 404", func(t *testing.T) {
+		fs := &fakeSubmissions{withdrawErr: submit.ErrNotFound}
+		w := do(appSubAPI(fs).ExternalHandler(), "DELETE", "/api/v1/me/submissions/sub-x", "", nil)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("code = %d, want 404 (%s)", w.Code, w.Body.String())
+		}
+	})
+	t.Run("no service is 503", func(t *testing.T) {
+		app := appSubAPI(nil)
+		app.Submissions = nil
+		w := do(app.ExternalHandler(), "DELETE", "/api/v1/me/submissions/sub-3", "", nil)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("code = %d, want 503 (%s)", w.Code, w.Body.String())
+		}
+	})
+}
+
+// The admin delete retires any submission and maps the lane's 404; the route's
+// admin gate itself is pinned by TestSubmissionAdminRoutesAreAdminOnly.
+func TestDeleteSubmissionAdmin(t *testing.T) {
+	t.Run("deletes the named row", func(t *testing.T) {
+		fs := &fakeSubmissions{}
+		w := do(adminSubAPI(fs).ExternalHandler(), "DELETE", "/api/v1/submissions/sub-8", "", nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
+		}
+		if fs.deletedID != "sub-8" {
+			t.Fatalf("delete forwarded id %q, want sub-8", fs.deletedID)
+		}
+	})
+	t.Run("unknown is 404", func(t *testing.T) {
+		fs := &fakeSubmissions{deleteErr: submit.ErrNotFound}
+		w := do(adminSubAPI(fs).ExternalHandler(), "DELETE", "/api/v1/submissions/sub-x", "", nil)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("code = %d, want 404 (%s)", w.Code, w.Body.String())
+		}
+	})
+}
+
 // The "my uploads" list scopes strictly to the principal's id — there is no
 // parameter that could widen it to another user's submissions.
 func TestMySubmissionsScopesToPrincipal(t *testing.T) {
@@ -343,6 +427,7 @@ func TestSubmissionAdminRoutesAreAdminOnly(t *testing.T) {
 		{"GET", "/api/v1/submissions", ""},
 		{"POST", "/api/v1/submissions/sub-1/approve", ""},
 		{"POST", "/api/v1/submissions/sub-1/reject", `{"reason":"no"}`},
+		{"DELETE", "/api/v1/submissions/sub-1", ""},
 		{"GET", "/api/v1/submissions/sub-1/context", ""},
 	}
 	for _, c := range cases {

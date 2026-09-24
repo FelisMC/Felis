@@ -149,5 +149,19 @@ func (s *LocalContextStore) Size(_ context.Context, id string) (int64, bool, err
 	}
 }
 
+// Delete removes everything stored for id — the blob plus its id-namespaced
+// directory (a stray temp file from an interrupted upload goes with it) — after
+// the submission row is gone. Idempotent: nothing stored is success.
+func (s *LocalContextStore) Delete(_ context.Context, id string) error {
+	dir, err := s.dir(id)
+	if err != nil {
+		return err
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("submit: remove context blob: %w", err)
+	}
+	return nil
+}
+
 // Compile-time proof that the filesystem store satisfies the Blobs transport.
 var _ Blobs = (*LocalContextStore)(nil)

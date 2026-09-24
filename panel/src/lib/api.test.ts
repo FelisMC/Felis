@@ -530,6 +530,28 @@ describe("image whitelist and builds wire shapes", () => {
       expect(humanizeError({ code: "submission_quota_exceeded" })).toMatch(/quota/i);
       expect(humanizeError({ code: "submission_cooldown" })).toMatch(/try again/i);
     });
+
+    it("withdrawSubmission DELETEs /me/submissions/{id}", async () => {
+      const sub = { id: "sub-4", status: "pending_review" };
+      const fetchSpy = fakeFetch(sub);
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.withdrawSubmission("sub-4");
+      expect(res).toEqual(sub);
+      const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toBe("/me/submissions/sub-4");
+      expect((opts as RequestInit).method).toBe("DELETE");
+    });
+
+    it("deleteSubmission DELETEs /submissions/{id}", async () => {
+      const sub = { id: "sub-5", status: "rejected" };
+      const fetchSpy = fakeFetch(sub);
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.deleteSubmission("sub-5");
+      expect(res).toEqual(sub);
+      const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toBe("/submissions/sub-5");
+      expect((opts as RequestInit).method).toBe("DELETE");
+    });
   });
 
   describe("updates maintenance window", () => {

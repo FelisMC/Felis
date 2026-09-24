@@ -11,6 +11,7 @@ import {
   CheckCircle,
   CircleSlash,
   ClipboardCheck,
+  Trash2,
 } from "lucide-react";
 import { SearchInput } from "@/components/SearchInput";
 import {
@@ -30,6 +31,7 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { MessageLine } from "@/components/MessageLine";
+import { InlineConfirm } from "@/components/InlineConfirm";
 import { Loading, ErrorState, EmptyState } from "@/components/States";
 import { Pagination } from "@/components/Pagination";
 import { StatCard } from "@/components/StatCard";
@@ -89,6 +91,12 @@ export function MySubmissionsPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitStep, setSubmitStep] = useState<"create" | "upload" | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Row action state: withdraw arms a row (trash → confirm/cancel) before it
+  // fires, and a failure lands in actionError above the list.
+  const [confirmingWithdraw, setConfirmingWithdraw] = useState<string | null>(null);
+  const [withdrawing, setWithdrawing] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -225,6 +233,23 @@ export function MySubmissionsPage() {
     }
   };
 
+  // Withdraw retracts a still-pending submission and its uploaded context,
+  // freeing the pending slot and the storage budget for a fresh submission.
+  async function handleWithdraw(id: string) {
+    if (withdrawing) return;
+    setWithdrawing(id);
+    setActionError(null);
+    try {
+      await api.withdrawSubmission(id);
+      setConfirmingWithdraw(null);
+      reload();
+    } catch (err) {
+      setActionError(humanizeError(err));
+    } finally {
+      setWithdrawing(null);
+    }
+  }
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -249,6 +274,9 @@ export function MySubmissionsPage() {
         }
         className="mb-6"
       />
+
+      {/* Row-action error (withdraw) */}
+      {actionError && <MessageLine kind="error" message={actionError} compact />}
 
       {/* Stats Cards Row */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
@@ -409,6 +437,35 @@ export function MySubmissionsPage() {
                               </div>
                             )}
                           </div>
+
+                          {sub.status === "pending_review" && (
+                            <div className="pt-2 border-t border-border/20 mt-2 flex flex-wrap items-center justify-between gap-2">
+                              <span className="text-[11px] text-muted-foreground/80">{t("withdraw_hint")}</span>
+                              {confirmingWithdraw === sub.id ? (
+                                <InlineConfirm
+                                  open={true}
+                                  confirming={withdrawing === sub.id}
+                                  onConfirm={() => handleWithdraw(sub.id)}
+                                  onCancel={() => setConfirmingWithdraw(null)}
+                                  confirmLabel={t("withdraw_confirm")}
+                                  cancelLabel={t("withdraw_cancel")}
+                                  className="flex shrink-0 items-center gap-1"
+                                />
+                              ) : (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="h-7 shrink-0 border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                                  onClick={() => setConfirmingWithdraw(sub.id)}
+                                  disabled={withdrawing !== null}
+                                  title={t("withdraw_hint")}
+                                >
+                                  <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+                                  {t("withdraw_btn")}
+                                </Button>
+                              )}
+                            </div>
+                          )}
 
                           {sub.status !== "pending_review" && (
                             <div className="pt-1 border-t border-border/20 mt-2 flex flex-col gap-1.5">

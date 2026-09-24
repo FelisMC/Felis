@@ -36,5 +36,9 @@
   "field_context_ref": "构建上下文引用",
   "field_image_ref": "目标镜像引用",
   "clear_btn": "清除",
-  "file_hint": "支持 .tar.gz 格式 (最大 1GB)"
+  "file_hint": "支持 .tar.gz 格式 (最大 1GB)",
+  "withdraw_btn": "撤回提交",
+  "withdraw_hint": "撤回会删除该提交及其已上传的构建上下文，并释放你的待审核名额与存储配额。",
+  "withdraw_confirm": "确认撤回",
+  "withdraw_cancel": "取消"
 }

@@ -1034,6 +1034,36 @@ func TestSubmitStoreContract(t *testing.T) {
 	if got, _ = s.GetSubmission(ctx, id); got.BuildID == "" {
 		t.Fatal("LinkBuild must persist build_id")
 	}
+
+	// Lifecycle: the withdraw CAS deletes ONLY the owner's still-pending row — a
+	// wrong owner or a reviewed row can never delete through it — and the admin
+	// path deletes any status, exactly once.
+	id2 := "sub-w-" + suffix(t)
+	if err := s.CreateSubmission(ctx, &submit.Submission{
+		ID: id2, SubmittedBy: u.ID, DisplayName: "withdraw me",
+		ContextRef: "s3://bucket/" + id2 + "/context.tar.gz",
+		Status:     submit.StatusPendingReview, CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateSubmission(2): %v", err)
+	}
+	if ok, err := s.DeletePendingSubmission(ctx, id2, "someone-else"); err != nil || ok {
+		t.Fatalf("withdraw by a non-owner = (%v, %v), want (false, nil)", ok, err)
+	}
+	if ok, err := s.DeletePendingSubmission(ctx, id, u.ID); err != nil || ok {
+		t.Fatalf("withdraw of a reviewed row = (%v, %v), want (false, nil)", ok, err)
+	}
+	if ok, err := s.DeletePendingSubmission(ctx, id2, u.ID); err != nil || !ok {
+		t.Fatalf("withdraw by the owner = (%v, %v), want (true, nil)", ok, err)
+	}
+	if _, err := s.GetSubmission(ctx, id2); !errors.Is(err, submit.ErrNotFound) {
+		t.Fatalf("withdrawn row still readable: %v", err)
+	}
+	if ok, err := s.DeleteSubmission(ctx, id); err != nil || !ok {
+		t.Fatalf("admin delete = (%v, %v), want (true, nil)", ok, err)
+	}
+	if ok, err := s.DeleteSubmission(ctx, id); err != nil || ok {
+		t.Fatalf("second admin delete = (%v, %v), want (false, nil)", ok, err)
+	}
 }
 
 // ---- builds --------------------------------------------------------------------

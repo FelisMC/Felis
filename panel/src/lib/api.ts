@@ -474,6 +474,10 @@ export const api = {
   rejectSubmission: (id: string, reason: string) =>
     request<Submission>("POST", `/submissions/${id}/reject`, { reason }),
 
+  // Retire a submission outright (row + uploaded context) — the review queue's
+  // lifecycle valve, the only way an upload is reclaimed from the PVC.
+  deleteSubmission: (id: string) => request<Submission>("DELETE", `/submissions/${id}`),
+
   // The reviewer's read path to the uploaded build context: the executed
   // Dockerfile lives inside the tarball, so approving without this would be
   // blind. The body is the attacker-supplied archive — download it, never
@@ -518,6 +522,10 @@ export const api = {
     requestRaw<Submission>("POST", `/me/submissions/${id}/context`, file, {
       "Content-Type": "application/x-gzip",
     }),
+
+  // Retract the caller's own pending submission (and its uploaded context), which
+  // frees their pending slot and storage budget. Reviewed submissions are frozen.
+  withdrawSubmission: (id: string) => request<Submission>("DELETE", `/me/submissions/${id}`),
 
   getUpdateWindow: () => request<UpdateWindow>("GET", "/updates/window"),
 

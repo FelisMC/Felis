@@ -43,6 +43,13 @@ type SubmissionService interface {
 	// Reject is the admin's other verdict: pending_review -> rejected with a
 	// required reason; it starts no build.
 	Reject(ctx context.Context, id, reviewedBy, reason string) (*submit.Submission, error)
+	// Withdraw retracts the caller's OWN pending submission: the row and its
+	// uploaded context are deleted. A reviewed submission is frozen (409) and a
+	// submission the caller does not own reads back as 404, like the upload route.
+	Withdraw(ctx context.Context, id, submittedBy string) (*submit.Submission, error)
+	// Delete retires any submission outright (the admin lifecycle valve): the row
+	// and its uploaded context are removed, any status.
+	Delete(ctx context.Context, id string) (*submit.Submission, error)
 	// OpenContext returns the stored build-context blob for the internal
 	// context-fetch route: the build Pod's initContainer cannot mount the uploads
 	// PVC across namespaces and holds no object-store credentials, so it streams
@@ -291,6 +298,48 @@ func (a *API) handleRejectSubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.audit(r, p.Email, "submission.reject", sub.ID)
+	writeJSON(w, http.StatusOK, sub)
+}
+
+// handleWithdrawSubmission retracts the caller's own pending submission
+// (app-tier): the row and its uploaded context are deleted, freeing the pending
+// slot and the storage budget for a fresh submission. The submitter is the
+// principal, never the body; a submission the caller does not own is reported as
+// 404, so this endpoint cannot probe or clear another user's uploads, and a
+// reviewed submission is 409 (its build may already be consuming the context).
+func (a *API) handleWithdrawSubmission(w http.ResponseWriter, r *http.Request) {
+	if a.Submissions == nil {
+		writeError(w, r, errSubmissionsUnavailable)
+		return
+	}
+	p := principalFromContext(r.Context())
+	sub, err := a.Submissions.Withdraw(r.Context(), r.PathValue("id"), p.UserID)
+	if err != nil {
+		writeSubmitError(w, r, err)
+		return
+	}
+	a.audit(r, p.Email, "submission.withdraw", sub.ID)
+	writeJSON(w, http.StatusOK, sub)
+}
+
+// handleDeleteSubmission retires any submission outright (admin-tier): the row
+// and its uploaded context are removed, any status. This is the lane's lifecycle
+// valve — the only path that reclaims a rejected or consumed upload from the
+// uploads PVC. The reviewer identity goes to the audit event, not the (now
+// nonexistent) row. Deleting an approved submission whose build is still running
+// fails that build's context fetch; the admin has explicitly chosen to retire it.
+func (a *API) handleDeleteSubmission(w http.ResponseWriter, r *http.Request) {
+	if a.Submissions == nil {
+		writeError(w, r, errSubmissionsUnavailable)
+		return
+	}
+	p := principalFromContext(r.Context())
+	sub, err := a.Submissions.Delete(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeSubmitError(w, r, err)
+		return
+	}
+	a.audit(r, p.Email, "submission.delete", sub.ID)
 	writeJSON(w, http.StatusOK, sub)
 }
 

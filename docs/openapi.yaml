@@ -4355,6 +4355,41 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /api/v1/me/submissions/{id}:
+    delete:
+      tags: [submissions]
+      operationId: withdrawSubmission
+      summary: Withdraw your own pending submission (user side; user-directed lane over §16).
+      description: >-
+        Retracts the caller's own submission while it is still pending review:
+        the row and its uploaded build context are deleted, freeing the pending
+        slot and the per-user storage budget for a fresh submission. A reviewed
+        submission is frozen (409 — its build may already be consuming the
+        context), and a submission the caller does not own reads back as 404, so
+        this endpoint cannot probe or clear another user's uploads.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The withdrawn submission, as it was before the deletion.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Submission' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Submission has already been reviewed and cannot be withdrawn.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
   # ------------------------------------------------------ external: admin ----
   /api/v1/servers/{name}:
     patch:
@@ -4748,5 +4783,37 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/submissions/{id}:
+    delete:
+      tags: [submissions]
+      operationId: deleteSubmission
+      summary: Retire a submission outright — row and uploaded context (admin; user-directed lane over §16).
+      description: >-
+        Removes the submission and its uploaded build context, any status — the
+        lane's only lifecycle valve, and the path that reclaims a rejected or
+        consumed upload from the uploads PVC. The reviewer identity is recorded
+        in the audit event, not on the (now deleted) row. Deleting an approved
+        submission whose build is still running fails that build's context
+        fetch; the admin has explicitly chosen to retire the artifact.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ accessJWT: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The deleted submission, as it was before the deletion.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Submission' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'

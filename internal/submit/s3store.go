@@ -21,6 +21,7 @@ type s3Client interface {
 	PutObject(ctx context.Context, bucket, object string, reader io.Reader, size int64, opts minio.PutObjectOptions) (minio.UploadInfo, error)
 	StatObject(ctx context.Context, bucket, object string, opts minio.StatObjectOptions) (minio.ObjectInfo, error)
 	GetObject(ctx context.Context, bucket, object string, opts minio.GetObjectOptions) (s3Object, error)
+	RemoveObject(ctx context.Context, bucket, object string, opts minio.RemoveObjectOptions) error
 }
 
 // s3Object is the handle GetObject yields: a stream whose Stat performs the HEAD
@@ -203,6 +204,20 @@ func (s *S3ContextStore) Size(ctx context.Context, id string) (int64, bool, erro
 		return 0, false, fmt.Errorf("submit: stat context blob: %w", err)
 	}
 	return info.Size, true, nil
+}
+
+// Delete removes the stored object for the withdrawn/deleted submission. S3's
+// DELETE is idempotent — removing an absent key succeeds — which is exactly the
+// contract the cleanup path needs on a retry.
+func (s *S3ContextStore) Delete(ctx context.Context, id string) error {
+	key, err := s.keyFor(id)
+	if err != nil {
+		return err
+	}
+	if err := s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{}); err != nil {
+		return fmt.Errorf("submit: remove context blob: %w", err)
+	}
+	return nil
 }
 
 // Open returns the stored context blob for id — the read side of the transport the

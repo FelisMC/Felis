@@ -203,6 +203,17 @@ type Store interface {
 	// (Approve surfaces that distinctly so remediation does not double-build; see
 	// the Approve ordering note and the package KNOWN-LIMITATION).
 	LinkBuild(ctx context.Context, id, buildID string) error
+	// DeleteSubmission removes a submission row outright — the admin delete path.
+	// Any status is deletable: the row is the business record and the caller has
+	// chosen to retire it. Reports whether a row was actually deleted; false
+	// means a concurrent delete won, which the Manager surfaces as ErrNotFound.
+	DeleteSubmission(ctx context.Context, id string) (bool, error)
+	// DeletePendingSubmission is the submitter's withdraw CAS: it deletes the row
+	// only while it is still owned by submittedBy AND still pending_review, so a
+	// concurrent approve/reject wins or loses cleanly and a reviewed submission
+	// can never be withdrawn out from under its build. Reports whether THIS call
+	// deleted the row.
+	DeletePendingSubmission(ctx context.Context, id, submittedBy string) (bool, error)
 }
 
 // Builds is the slice of the build subsystem the approval lane drives. An
@@ -235,6 +246,11 @@ type Blobs interface {
 	// store — never a recorded number that could drift from it (a re-upload
 	// supersedes the previous blob in place).
 	Size(ctx context.Context, id string) (int64, bool, error)
+	// Delete removes everything stored for id — the withdrawal/review-cleanup
+	// path. It is idempotent: deleting nothing is success, so a retried cleanup
+	// never fails on absence. Callers reap the blob only AFTER the row is gone
+	// (see Manager.deleteBlob), so a live row can never point at a reaped blob.
+	Delete(ctx context.Context, id string) error
 	// Open returns the stored blob's bytes for the internal context-fetch route
 	// the build Pod's initContainer dials (cmd/felis fetch-context). It returns an
 	// error wrapping ErrBlobNotFound when no blob exists, so the route can answer
@@ -709,6 +725,86 @@ func (m *Manager) Reject(ctx context.Context, id, reviewedBy, reason string) (*S
 	sub.RejectReason = reason
 	sub.ReviewedAt = &reviewedAt
 	return sub, nil
+}
+
+// Withdraw retracts the submitter's own pending submission: the row is deleted
+// (CAS-guarded on owner + pending_review, so a concurrent review can never be
+// undercut) and its uploaded context is reaped, freeing both the user's pending
+// slot and their storage budget for a fresh submission. Once reviewed the
+// context is frozen — an approved build may already be consuming it — so a
+// non-pending row reports ErrAlreadyReviewed, exactly like UploadContext, and
+// another user's id stays invisible (ErrNotFound), like every other owner-scoped
+// operation on the lane.
+func (m *Manager) Withdraw(ctx context.Context, id, submittedBy string) (*Submission, error) {
+	if strings.TrimSpace(submittedBy) == "" {
+		return nil, invalidf("submitter identity is required")
+	}
+	sub, err := m.Store.GetSubmission(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if sub.SubmittedBy != submittedBy {
+		return nil, ErrNotFound
+	}
+	if sub.Status != StatusPendingReview {
+		return nil, ErrAlreadyReviewed
+	}
+	won, err := m.Store.DeletePendingSubmission(ctx, id, submittedBy)
+	if err != nil {
+		return nil, err
+	}
+	if !won {
+		// A concurrent approve/reject (or delete) moved the row between the load
+		// and the CAS. The context must NOT be reaped: it belongs to the review
+		// outcome now.
+		return nil, ErrAlreadyReviewed
+	}
+	if err := m.deleteBlob(ctx, id); err != nil {
+		return nil, err
+	}
+	return sub, nil
+}
+
+// Delete retires any submission outright (the admin path): the row and its
+// stored context are both removed, any status. The reviewer identity is recorded
+// by the API's audit event, not on the row — the row no longer exists. Deleting
+// an approved submission whose build is still running can fail that build (its
+// context fetch answers 404); the admin has explicitly chosen to retire the
+// artifact. A concurrent delete reports ErrNotFound, the same outcome the
+// initial load would have given had it lost the race.
+func (m *Manager) Delete(ctx context.Context, id string) (*Submission, error) {
+	sub, err := m.Store.GetSubmission(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	deleted, err := m.Store.DeleteSubmission(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if !deleted {
+		return nil, ErrNotFound
+	}
+	if err := m.deleteBlob(ctx, id); err != nil {
+		return nil, err
+	}
+	return sub, nil
+}
+
+// deleteBlob reaps a submission's stored context after its row is gone. The row
+// is deleted FIRST (for Withdraw, under the status CAS), so a cleanup failure
+// here can never leave a live row pointing at a reaped blob — the failure mode
+// is the other direction: the row is retired and the blob is orphaned on the
+// uploads store, which the returned error names explicitly so the operator knows
+// exactly what is left behind. A deployment with no upload transport (Blobs nil)
+// has no blobs to reap.
+func (m *Manager) deleteBlob(ctx context.Context, id string) error {
+	if m.Blobs == nil {
+		return nil
+	}
+	if err := m.Blobs.Delete(ctx, id); err != nil {
+		return fmt.Errorf("submit: submission removed, but its uploaded context could not be deleted (it may remain on the uploads store): %w", err)
+	}
+	return nil
 }
 
 // List returns every submission, newest first (the admin review queue).

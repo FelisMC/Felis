@@ -518,6 +518,11 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// App-tier and owner-scoped (the id must belong to the principal), exactly
 		// like the create/list routes above.
 		{Method: "POST", Pattern: "/api/v1/me/submissions/{id}/context", h: a.handleUploadSubmissionContext},
+		// Withdraw the caller's OWN pending submission: the row and its uploaded
+		// context are deleted, freeing the pending slot and storage budget. Same
+		// owner-scoping as the upload route — a reviewed submission is frozen (409)
+		// and another user's id is invisible (404).
+		{Method: "DELETE", Pattern: "/api/v1/me/submissions/{id}", h: a.handleWithdrawSubmission},
 		// Admin (Zero-Trust) tier: create / mutate spec / image admission. These gate
 		// on Principal.IsAdmin() inside the handler via the adminOnly wrapper, so the
 		// boundary is exercised even where the body is a later-phase stub.
@@ -547,6 +552,10 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "GET", Pattern: "/api/v1/submissions", Admin: true, h: a.handleListSubmissions},
 		{Method: "POST", Pattern: "/api/v1/submissions/{id}/approve", Admin: true, h: a.handleApproveSubmission},
 		{Method: "POST", Pattern: "/api/v1/submissions/{id}/reject", Admin: true, h: a.handleRejectSubmission},
+		// Retire a submission outright (row + uploaded context), any status. The
+		// lane's lifecycle valve: without it, rejected/consumed uploads accumulated
+		// on the uploads PVC forever — there is no other delete path.
+		{Method: "DELETE", Pattern: "/api/v1/submissions/{id}", Admin: true, h: a.handleDeleteSubmission},
 		// The reviewer's read path to the uploaded blob: the executed Dockerfile
 		// lives inside it, so approval would otherwise be blind.
 		{Method: "GET", Pattern: "/api/v1/submissions/{id}/context", Admin: true, h: a.handleAdminSubmissionContext},
