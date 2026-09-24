@@ -505,7 +505,7 @@ func (o OffsiteConfig) validate() error {
 		return fmt.Errorf("config: [offsite] bucket %q must be a bare bucket name; put a key prefix in prefix", o.Bucket)
 	}
 	if strings.Contains(o.Prefix, "..") {
-		return fmt.Errorf("config: [offsite] prefix %q must not contain ..", o.Prefix)
+		return fmt.Errorf("config: [offsite] prefix %q must not contain \"..\"", o.Prefix)
 	}
 	if o.DBKeep < 1 {
 		return fmt.Errorf("config: [offsite] db_keep %d must be at least 1", o.DBKeep)

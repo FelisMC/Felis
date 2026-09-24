@@ -22,9 +22,9 @@
 # hash is not listed there, BEFORE it runs it. A release without the file installs by source
 # build instead.
 #
-# Two jobs, so the write token never meets the test suite: `build` runs the tests, Gradle and
-# the Docker build (each of which executes third-party code) with a read-only token and hands
-# the binaries over as a workflow artifact; `publish` holds contents:write and runs only
+# The write token never meets the test suite: `gates` (ci.yml) and `build` run the tests,
+# Gradle and the Docker build (each of which executes third-party code) with a read-only
+# token, and `build` hands the binaries over as a workflow artifact; `publish` holds contents:write and runs only
 # pinned actions and gh. Every action is pinned to a commit SHA (the tag in the trailing
 # comment is for humans); .github/dependabot.yml proposes the bumps.
 name: release
@@ -37,43 +37,19 @@ permissions:
   contents: read
 
 jobs:
+  # A tag that ships red is worse than a tag that fails to ship. These are ci.yml's gates,
+  # called rather than copied: Go (race, vet, staticcheck), govulncheck, the PostgreSQL
+  # contract suite, shellcheck and the bootstrap tests, the panel, and the Java layer the
+  # binary EMBEDS (bootstrap_asset.go ships the plugin sources, so a tag whose plugins do
+  # not compile turns every install of that release into a failed bootstrap).
+  gates:
+    uses: ./.github/workflows/ci.yml
+
   build:
+    needs: gates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
-        with:
-          go-version-file: go.mod
-
-      # A tag that ships red is worse than a tag that fails to ship.
-      - run: go vet ./...
-      - run: go test ./...
-
-      # The same reason, for the Java layer the binary EMBEDS: the release asset is
-      # the tree's plugin sources (bootstrap_asset.go), and a tag whose plugins don't
-      # compile turns every install of that release into a failed bootstrap. JDK 21
-      # gates the install-time plugins + codec/invite tests; JDK 17 gates the loader
-      # mods (their vendored wrappers fetch their own Gradle).
-      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
-        with:
-          gradle-version: '8.14'
-
-      - run: bash plugins/test.sh
-
-      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4.9.1
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4.4.3
-
-      - run: bash plugins/test-mods.sh
 
       # Both architectures, because bootstrap's default release channel DOWNLOADS these
       # rather than compiling on the target host — an arm64 host with no asset silently

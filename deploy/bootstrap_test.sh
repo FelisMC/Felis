@@ -164,7 +164,7 @@ ivblock="$(awk '/^install_velocity\(\) \{/,/^}/' "$BS")"
 run_velocity_choice() { # FELIS_GAME_STACK FELIS_VELOCITY_VERSION lock-version
   FELIS_GAME_STACK="$1" FELIS_VELOCITY_VERSION="$2" VELOCITY_VERSION="$3" VELOCITY_LATEST_MINOR=3.5.1 \
   VELOCITY_JAR_URL=https://fill-data.papermc.io/v1/objects/aaa/velocity-3.5.1-615.jar VELOCITY_JAR_SHA256=aaa \
-  FELIS_VELOCITY_FORK_JAR= bash -c '
+  FELIS_VELOCITY_FORK_JAR='' bash -c '
     set -Eeuo pipefail
     log() { :; }
     die() { printf "DIE: %s\n" "$*"; exit 1; }
@@ -993,23 +993,30 @@ rm -f "$mfile"
 pblock="$(awk '/^push_image_to_registry\(\) \{/,/^}/' "$BS")"
 [ -n "$pblock" ] || { echo "FAIL: no push_image_to_registry found in $BS"; exit 1; }
 
-run_push() { # ref [docker-push-exit]
-  REF="$1" PUSH_EXIT="${2:-0}" \
+pushdir="$(mktemp -d)"
+run_push() { # ref [failed-pushes-before-success] [registry-read-only]
+  REF="$1" PUSH_FAILS="${2:-0}" READONLY="${3:-0}" COUNT="$pushdir/count" \
   REGISTRY_URL=registry.felis.svc:5000 REGISTRY_PUSH_HOST=127.0.0.1:5000 REGISTRY_DOCKER_CONFIG=/cfg \
   bash -c '
     log() { printf "LOG: %s\n" "$*"; }
     warn() { printf "WARN: %s\n" "$*"; }
     die() { printf "DIE: %s\n" "$*"; exit 1; }
     ok() { :; }
+    sleep() { :; }
     systemctl() { :; }
+    registry_read_only() { [ "$READONLY" = 1 ]; }
     docker() {
       printf "DOCKER %s\n" "$*"
       case " $* " in
-        *" push "*) return "$PUSH_EXIT" ;;
+        *" push "*)
+          n="$(cat "$COUNT" 2>/dev/null || echo 0)"
+          echo $((n + 1)) > "$COUNT"
+          [ "$n" -ge "$PUSH_FAILS" ] ;;
       esac
     }
     '"$pblock"'
     push_image_to_registry "$REF"'
+  rm -f "$pushdir/count"
 }
 
 out="$(run_push registry.felis.svc:5000/felis/felis:demo)"
@@ -1025,6 +1032,16 @@ esac
 
 out="$(run_push registry.felis.svc:5000/felis/felis:demo 1)"
 expect "a failed push fails the install loudly" "DIE: could not mirror" "$out"
+out="$(run_push registry.felis.svc:5000/felis/felis:demo 2 1)"
+expect "a push refused during a GC window is retried" \
+  "WARN: the registry is read-only for garbage collection; retrying the push of 127.0.0.1:5000/felis/felis:demo in 30s (2/40)" "$out"
+case "$out" in
+  *DIE:*) echo "FAIL a push that succeeds after the GC window must not fail the install"; fails=$((fails + 1)) ;;
+  *) echo "PASS a push that succeeds after the GC window completes" ;;
+esac
+expect "a GC window that never ends still fails the install" "DIE: could not mirror" \
+  "$(run_push registry.felis.svc:5000/felis/felis:demo 99 1)"
+rm -rf "$pushdir"
 
 # docker must be started ONCE for the whole batch: a start/stop pair per image trips
 # systemd's start rate limit ("start-limit-hit" — observed live; the 4th image was never
@@ -1130,8 +1147,11 @@ expect "the running felis image is pinned" "CTR ctr images label registry.felis.
 expect "the registry image is pinned by digest" "CTR ctr images label docker.io/library/registry@${regdigest} io.cri-containerd.pinned=pinned" "$out"
 expect "a previous felis tag is unpinned" "CTR ctr images label registry.felis.svc:5000/felis/felis:v1 io.cri-containerd.pinned=" "$out"
 expect "the old registry:2 tag is unpinned" "CTR ctr images label docker.io/library/registry:2 io.cri-containerd.pinned=" "$out"
+# $'\n' is bash; this file runs under dash in CI.
+nl='
+'
 case "$out" in
-  *"registry@${regdigest} io.cri-containerd.pinned="$'\n'*) echo "FAIL: the current registry image must not be unpinned"; fails=$((fails + 1)) ;;
+  *"registry@${regdigest} io.cri-containerd.pinned=${nl}"*) echo "FAIL: the current registry image must not be unpinned"; fails=$((fails + 1)) ;;
 esac
 case "$out" in
   *"limbo:demo io.cri"*) echo "FAIL: only the registry pod's images may be pinned or unpinned"; fails=$((fails + 1)) ;;
@@ -1698,7 +1718,7 @@ printf 'JAVA_VERSION="25"\n' > "$vdir/jre/release"
 run_velocity_service() { # is-active(0|1)
   ACTIVE="$1" VELOCITY_SERVICE="$vdir/unit" VELOCITY_DIR="$vdir/v" JRE_DIR="$vdir/jre" \
   VELOCITY_FINGERPRINT="$vdir/fp" VELOCITY_USER=felis-velocity FELIS_GAME_PORT=25565 \
-  FELIS_LEGACY_FORWARDING_SERVERS= bash -c '
+  FELIS_LEGACY_FORWARDING_SERVERS='' bash -c '
     set -Eeuo pipefail
     ok() { printf "OK: %s\n" "$*"; }
     felis_internal_ip() { printf "10.43.0.9"; }
@@ -1880,6 +1900,8 @@ expect "the unit orders itself before PostgreSQL" "Before=network-pre.target pos
 run_pg_firewall 0 2001:db8::7 >/dev/null
 expect "a v6 node address gets a v6 rule" "tcp dport 5432 ip6 saddr 2001:db8::7 accept" "$(cat "$fwdir/pg.nft")"
 rm -rf "$fwdir"
+
+
 
 
 # ---------------------------------------------------------------------------------------

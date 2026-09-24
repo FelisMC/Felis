@@ -14,10 +14,14 @@
 # PR is what asks for the answer.
 name: ci
 
+#
+# release.yml calls this workflow (workflow_call) before it builds anything, so a tag passes
+# exactly these gates and there is one list of them.
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
@@ -43,7 +47,61 @@ jobs:
             echo "gofmt needed on:"; echo "$unformatted"; exit 1
           fi
       - run: go vet ./...
-      - run: go test ./...
+      # -race: felis-api and the operator are mostly goroutines (watchers, the
+      # registry pruner, the backup scheduler, the rate limiters).
+      - run: go test -race ./...
+      # The version is pinned here and bumped by hand; Dependabot does not read `go run`.
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@2026.2.1 ./...
+
+  # Separate from the go job so a newly published advisory reads as what it is. govulncheck
+  # exits non-zero only for vulnerable code this module can actually reach, standard
+  # library included: setup-go installs the newest patch of go.mod's Go line, so a finding
+  # there means the Dockerfile's golang digest (which ships the release) needs a bump too.
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+
+  # The business stores' SQL against a real PostgreSQL (internal/pgint): the unit suites run
+  # on fakes, and PGRepo drifted from them three times while those stayed green. 13 is the
+  # oldest server a supported distribution installs (EL9), 18 the newest (Arch).
+  pgint:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ['13', '18']
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_USER: felis
+          POSTGRES_PASSWORD: pgint
+          POSTGRES_DB: felis_pgint
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U felis -d felis_pgint"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+
+      - run: go test -race -tags pgint -count=1 ./internal/pgint/
+        env:
+          FELIS_TEST_PG_URL: postgres://felis:pgint@localhost:5432/felis_pgint?sslmode=disable
 
   shell:
     runs-on: ubuntu-latest
@@ -65,6 +123,16 @@ jobs:
               *) sh -n "$f" || exit 1 ;;
             esac
           done
+
+      # A pinned release rather than the runner image's copy, so a runner update cannot
+      # change what fails. Warnings and errors fail the job; style notes (info) do not.
+      - name: shellcheck
+        run: |
+          curl -fsSL -o shellcheck.tar.xz \
+            https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz
+          echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  shellcheck.tar.xz" | sha256sum -c
+          tar -xJf shellcheck.tar.xz
+          ./shellcheck-v0.11.0/shellcheck -S warning $(git ls-files '*.sh')
 
       - run: sh deploy/bootstrap_test.sh
 

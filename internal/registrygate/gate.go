@@ -81,13 +81,15 @@ type Gate struct {
 // New builds a Gate for upstream.
 func New(upstream *url.URL, tokens map[string]string, log *slog.Logger) *Gate {
 	g := &Gate{Tokens: tokens, Upstream: upstream, Log: log}
-	rp := httputil.NewSingleHostReverseProxy(upstream)
-	base := rp.Director
-	rp.Director = func(r *http.Request) {
-		base(r)
+	rp := &httputil.ReverseProxy{Rewrite: func(pr *httputil.ProxyRequest) {
+		pr.SetURL(upstream)
+		// The registry builds upload Location URLs from Host: keep the one the client
+		// dialled, not the loopback upstream.
+		pr.Out.Host = pr.In.Host
+		pr.SetXForwarded()
 		// The registry has no auth of its own; the credential stops here.
-		r.Header.Del("Authorization")
-	}
+		pr.Out.Header.Del("Authorization")
+	}}
 	// Blob uploads and pulls are streamed; flush as bytes arrive so a large layer
 	// pull is not buffered in the gate.
 	rp.FlushInterval = -1

@@ -54,7 +54,7 @@
 #                     digests are pinned; a rerun moves an installer-managed JRE to the
 #                     pinned build). Another feature version is checked against the
 #                     digest Adoptium's API publishes for it.
-#   FELIS_GO_VERSION  Go toolchain used to build the nano binary (default: 1.26.4)
+#   FELIS_GO_VERSION  Go toolchain used to build the nano binary (default: 1.26.8)
 #   FELIS_GO_SHA256   sha256 of that version's linux tarball for this host's architecture.
 #                     REQUIRED for a non-default FELIS_GO_VERSION; the default's is pinned.
 #   FELIS_K3S_VERSION k3s release a fresh install gets (default: v1.36.4+k3s1). An
@@ -214,9 +214,9 @@ FELIS_LEGACY_FORWARDING_SERVERS="${FELIS_LEGACY_FORWARDING_SERVERS:-legacy18}"
 # The Go tarball is unpacked and run as root, so the default version is pinned by the sha256
 # go.dev/dl publishes for each architecture install_go_toolchain handles. Move all three
 # together; any other FELIS_GO_VERSION has to bring its own FELIS_GO_SHA256.
-GO_PINNED_VERSION="1.26.4"
-GO_PINNED_SHA256_AMD64="1153d3d50e0ac764b447adfe05c2bcf08e889d42a02e0fe0259bd47f6733ad7f"
-GO_PINNED_SHA256_ARM64="ef758ae7c6cf9267c9c0ef080b8965f453d89ab2d25d9eb22de4405925238768"
+GO_PINNED_VERSION="1.26.8"
+GO_PINNED_SHA256_AMD64="d0f743b33e8d8945e6b1f432edd15785c70507121d6e2a723b21285eddf8b57b"
+GO_PINNED_SHA256_ARM64="211ffced9dcb9633a55eac6364816ec0ddd951389a740e88fa8b3337971bdda0"
 FELIS_GO_VERSION="${FELIS_GO_VERSION:-$GO_PINNED_VERSION}"
 FELIS_GO_SHA256="${FELIS_GO_SHA256:-}"
 # cloudflared runs as root on the edge, so it gets the same treatment: a pinned release and
@@ -1053,8 +1053,8 @@ install_k3s() {
 # registry-mirror restart below: both restart the agent, and a bootstrap that
 # proceeds early fails later with a misleading "not found"/timeout instead.
 wait_for_node_ready() {
-  local i
-  for i in $(seq 1 60); do
+  local _
+  for _ in $(seq 1 60); do
     if kube get nodes 2>/dev/null | grep -q ' Ready '; then
       ok "k3s node Ready"
       return 0
@@ -3731,7 +3731,8 @@ write_nano_config() {
   # own 0700: that directory holds secrets, and install_nano_service reports the lockout
   # rather than this widening it.
   if [ ! -d "$STATE_DIR" ]; then
-    mkdir -p -m 0755 "$STATE_DIR"
+    mkdir -p "$STATE_DIR"
+    chmod 0755 "$STATE_DIR"
   elif [ ! -e "$SECRETS_ENV" ] && [ ! -e "$BOOTSTRAP_DONE" ]; then
     chmod 0755 "$STATE_DIR"
   fi

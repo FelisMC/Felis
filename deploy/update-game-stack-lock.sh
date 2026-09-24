@@ -44,8 +44,11 @@ resolve_latest_game_jars
 log "resolving the newest Velocity ${VELOCITY_LATEST_MINOR} build"
 velocity="$(papermc_latest_jar velocity "$VELOCITY_LATEST_MINOR")" \
   || die "no Velocity build for ${VELOCITY_LATEST_MINOR}"
+# shellcheck disable=SC2034 # read back through ${!key} below
 VELOCITY_VERSION="$VELOCITY_LATEST_MINOR"
+# shellcheck disable=SC2034
 VELOCITY_JAR_URL="${velocity% *}"
+# shellcheck disable=SC2034
 VELOCITY_JAR_SHA256="${velocity##* }"
 
 tmp="$(mktemp)"
