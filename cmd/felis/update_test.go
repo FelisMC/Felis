@@ -199,3 +199,83 @@ func TestApplyGuidanceReadsTheInstallerAtTheReleaseTag(t *testing.T) {
 		}
 	}
 }
+
+// Every selector in the table is a flag: the FlagSet is built from the table.
+func TestUpdateSelectorsAreFlags(t *testing.T) {
+	var out, errb strings.Builder
+	if code := cmdUpdate([]string{"-h"}, &out, &errb); code != 2 {
+		t.Fatalf("-h exit = %d, want 2", code)
+	}
+	for _, target := range updateTargets {
+		if !strings.Contains(errb.String(), "-"+target.selector+"\n") {
+			t.Errorf("usage has no -%s flag:\n%s", target.selector, errb.String())
+		}
+	}
+}
+
+// k3s and cloudflared move only when the re-run is told to; PostgreSQL is the package
+// manager's, so its guidance carries no installer trailer.
+func TestApplyGuidanceForHostDependencies(t *testing.T) {
+	notify := func(c string) updater.Result {
+		return planResult([]updates.Action{{Component: c, Kind: updates.ActionNotify, LatestKnown: true}})
+	}
+	for _, sel := range []string{"k3s", "cloudflared"} {
+		out := renderApplyGuidance(notify(sel), map[string]bool{sel: true}, false)
+		if !strings.Contains(out, "sudo FELIS_UPGRADE_DEPS=1 bash") || !strings.Contains(out, "Re-running the installer") {
+			t.Errorf("--%s guidance must re-run the installer with FELIS_UPGRADE_DEPS=1:\n%s", sel, out)
+		}
+	}
+	jre := renderApplyGuidance(notify("jre"), map[string]bool{"jre": true}, false)
+	if !strings.Contains(jre, "| sudo bash") || strings.Contains(jre, "FELIS_UPGRADE_DEPS") {
+		t.Errorf("--jre guidance is the plain installer re-run:\n%s", jre)
+	}
+	pg := renderApplyGuidance(notify("postgresql"), map[string]bool{"postgres": true}, false)
+	if !strings.Contains(pg, "apt-get install --only-upgrade") || strings.Contains(pg, "Re-running the installer") {
+		t.Errorf("--postgres guidance is the package manager, without the installer trailer:\n%s", pg)
+	}
+}
+
+func TestRenderNotesHonoursSelectors(t *testing.T) {
+	notes := map[string]string{"postgresql": "PostgreSQL 13 reached end of life on 2025-11-13"}
+	if out := renderNotes(notes, nil); !strings.Contains(out, "postgresql") || !strings.Contains(out, "note: PostgreSQL 13 reached end of life") {
+		t.Errorf("unfiltered notes = %q", out)
+	}
+	if out := renderNotes(notes, map[string]bool{"postgres": true}); !strings.Contains(out, "end of life") {
+		t.Errorf("--postgres must show its note, got %q", out)
+	}
+	if out := renderNotes(notes, map[string]bool{"velocity": true}); out != "" {
+		t.Errorf("--velocity must not show the postgresql note, got %q", out)
+	}
+}
+
+// A source build's v0.0.0+g<commit> names no tag, so the installer one-liner has to
+// fall back to main instead of a 404ing ref.
+func TestInstallerRefNamesATag(t *testing.T) {
+	v := func(s string) updates.Version {
+		t.Helper()
+		x, err := updates.Parse(s)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return x
+	}
+	cases := []struct {
+		name string
+		api  updates.Action
+		want string
+	}{
+		{"newest release", updates.Action{Current: v("v1.2.0"), Latest: v("v1.3.0"), LatestKnown: true}, "v1.3.0"},
+		{"feed down, host on a release", updates.Action{Current: v("v1.2.0")}, "v1.2.0"},
+		{"source build", updates.Action{Current: v("v0.0.0+gunknown")}, "main"},
+		{"source build with commit", updates.Action{Current: v("v0.0.0+g1a2b3c4")}, "main"},
+		{"prerelease", updates.Action{Current: v("v1.3.0-rc.1")}, "main"},
+	}
+	for _, c := range cases {
+		if got := installerRef(map[string]updates.Action{"felis-api": c.api}); got != c.want {
+			t.Errorf("%s: installerRef = %q, want %q", c.name, got, c.want)
+		}
+	}
+	if got := installerRef(nil); got != "main" {
+		t.Errorf("no felis-api row: installerRef = %q, want main", got)
+	}
+}

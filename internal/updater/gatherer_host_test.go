@@ -104,3 +104,56 @@ func TestHostGathererUsesOwnBuildStamp(t *testing.T) {
 		t.Fatalf("version = %s, want 1.2.3", got)
 	}
 }
+
+// The JRE answers from its release file. Temurin's SEMANTIC_VERSION keeps the respin
+// component; JAVA_RUNTIME_VERSION's "-LTS" tail would read as a prerelease.
+func TestJREReleaseVersion(t *testing.T) {
+	dir := t.TempDir()
+	cases := map[string]string{
+		"JAVA_RUNTIME_VERSION=\"25.0.4.1+1-LTS\"\nJAVA_VERSION=\"25.0.4.1\"\nSEMANTIC_VERSION=\"25.0.4.1+1\"\n": "25.0.4.1+1",
+		"JAVA_VERSION=\"21.0.8\"\n": "21.0.8",
+	}
+	for body, want := range cases {
+		path := filepath.Join(dir, "release")
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		v, err := jreReleaseVersion(path)
+		if err != nil {
+			t.Fatalf("jreReleaseVersion(%q): %v", body, err)
+		}
+		if v.String() != want || v.IsPrerelease() {
+			t.Errorf("jreReleaseVersion(%q) = %s, want stable %s", body, v, want)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "release"), []byte("IMPLEMENTOR=\"x\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := jreReleaseVersion(filepath.Join(dir, "release")); err == nil {
+		t.Errorf("a release file without a version = %s, want an error", v)
+	}
+	if _, err := jreReleaseVersion(filepath.Join(dir, "missing")); err == nil {
+		t.Error("a missing release file must be an error")
+	}
+}
+
+// PostgreSQL answers from the server binary where it is on PATH, else from the client.
+func TestHostGathererPostgres(t *testing.T) {
+	for name, out := range map[string]map[string][]byte{
+		"server on PATH": {"postgres": []byte("postgres (PostgreSQL) 13.23\n"), "psql": []byte("psql (PostgreSQL) 12.1\n")},
+		"client only":    {"psql": []byte("psql (PostgreSQL) 13.23 (Ubuntu 13.23-1.pgdg24.04+1)\n")},
+	} {
+		g := hostGatherer{sys: sysGatherer{run: fakeCmd{out: out}}}
+		v, err := g.Current(context.Background(), Spec{Name: "postgresql"})
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if v.String() != "13.23" {
+			t.Errorf("%s: version = %s, want 13.23", name, v)
+		}
+	}
+	g := hostGatherer{sys: sysGatherer{run: fakeCmd{out: map[string][]byte{}}}}
+	if _, err := g.Current(context.Background(), Spec{Name: "postgresql"}); err == nil {
+		t.Error("no postgres and no psql must be an error")
+	}
+}

@@ -34,6 +34,8 @@ const updateTimeout = 60 * time.Second
 type updateTarget struct {
 	// selector is the flag name without dashes.
 	selector string
+	// help is the flag's usage line.
+	help string
 	// component is the updates planner's name for this piece, or "" when the planner
 	// deliberately does not track it (Minecraft, which is pinned).
 	component string
@@ -41,9 +43,11 @@ type updateTarget struct {
 	note string
 	// command is the exact, already-tested way to apply it.
 	command string
+	// installer marks a command that re-runs the installer, which the trailer explains.
+	installer bool
 }
 
-// installerRerun is the tested apply path for every planner-backed selector: re-run the
+// installerRerun is the tested apply path for every selector Felis installs: re-run the
 // installer. It is idempotent, and it is the only path that fetches a newer version --
 // `felis setup` skips its host-bootstrap phase on a completed install (all four install
 // markers already exist), so there it opens the config console and moves no component,
@@ -58,6 +62,10 @@ type updateTarget struct {
 // below points at the README's token'd form for that case.
 const installerRerun = "curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/{ref}/deploy/bootstrap.sh | sudo bash"
 
+// installerRerunDeps is the same re-run with FELIS_UPGRADE_DEPS=1, which lets it move an
+// installed k3s and cloudflared to the versions the release pins.
+const installerRerunDeps = "curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/{ref}/deploy/bootstrap.sh | sudo FELIS_UPGRADE_DEPS=1 bash"
+
 // updateTargets is the selector table. panel and plugins both resolve to felis-api
 // because they are not separately versioned: the panel is compiled into the felis
 // binary with //go:embed, and the plugin jars are built from this same repo in the
@@ -65,24 +73,62 @@ const installerRerun = "curl -fsSL https://raw.githubusercontent.com/FelisMC/Fel
 var updateTargets = []updateTarget{
 	{
 		selector:  "panel",
+		help:      "select the panel + control plane (felis-api)",
 		component: "felis-api",
 		note:      "the panel is embedded in the felis binary (//go:embed), so updating it means rebuilding the felis image and rolling felis-api",
 		command:   installerRerun,
+		installer: true,
 	},
 	{
 		selector:  "velocity",
+		help:      "select the Velocity proxy",
 		component: "velocity",
 		note:      "re-runs install_velocity: the build the release pins in deploy/game-stack.lock (FELIS_VELOCITY_VERSION=<minor> takes that minor's newest build instead), sha256-checked, atomic jar install, then restarts felis-velocity only if the jar or its config changed",
 		command:   installerRerun,
+		installer: true,
 	},
 	{
 		selector:  "plugins",
+		help:      "select the Felis plugin jars (velocity/paper/limbo)",
 		component: "felis-api",
 		note:      "felis-velocity.jar is a host-file swap, but felis-paper.jar and felis-limbo.jar are baked into the lobby/limbo images and need a rebuild + re-mirror into the in-cluster registry (the installer re-run does both)",
 		command:   installerRerun,
+		installer: true,
+	},
+	{
+		selector:  "k3s",
+		help:      "select k3s",
+		component: "k3s",
+		note:      "FELIS_UPGRADE_DEPS=1 moves k3s to the version the Felis release pins, which can trail the newest upstream; it moves one minor version at a time and refuses a larger jump. Running game servers keep running while k3s restarts",
+		command:   installerRerunDeps,
+		installer: true,
+	},
+	{
+		selector:  "cloudflared",
+		help:      "select cloudflared",
+		component: "cloudflared",
+		note:      "FELIS_UPGRADE_DEPS=1 swaps the binary for the sha256-pinned build the Felis release names and restarts cloudflared-felis; the panel's tunnel drops for a few seconds",
+		command:   installerRerunDeps,
+		installer: true,
+	},
+	{
+		selector:  "jre",
+		help:      "select the Temurin JRE Velocity runs on",
+		component: "jre",
+		note:      "the installer installs the Temurin build the Felis release pins (sha256-checked) and restarts felis-velocity when it changed; a newer upstream build reaches the host with a release that pins it",
+		command:   installerRerun,
+		installer: true,
+	},
+	{
+		selector:  "postgres",
+		help:      "select PostgreSQL",
+		component: "postgresql",
+		note:      "PostgreSQL comes from the distribution's packages, so a minor release is a package update followed by a restart (a few seconds without the API). A new major needs pg_upgrade first: docs/operations.md §4",
+		command:   "sudo dnf upgrade 'postgresql*' || sudo apt-get install --only-upgrade 'postgresql*'; sudo systemctl restart postgresql",
 	},
 	{
 		selector:  "mc",
+		help:      "select Minecraft (pinned; reported only)",
 		component: "", // never tracked: see the pin note below
 		note:      "Minecraft is pinned by policy (\"能不动的就别动\") and Felis never proposes a version change for it. A server's version is a property of that server's image — change it on the server, not through a platform update",
 		command:   "",
@@ -92,23 +138,24 @@ var updateTargets = []updateTarget{
 // cmdUpdate reports what can be updated and what is already current.
 //
 // Bare `felis update` prints the status of every tracked component. Selector flags
-// (--panel/--velocity/--mc/--plugins/--all) narrow that report to the components
+// (--panel/--velocity/--plugins/--k3s/--cloudflared/--jre/--postgres/--mc/--all) narrow that report to the components
 // they name AND print how to apply each one. --force additionally prints the apply
 // instruction for a selected component that is already up to date, for the
 // reinstall/repair case.
 //
 // It never applies anything and never mutates the node, so unlike setup/breakGlass
-// it needs no root. The versions it reads come from this host: k3s and cloudflared
-// answer `--version`, Velocity's version is read out of the installed jar's
-// manifest, and felis-api's is this binary's own build stamp — the same value
-// `felis version` prints, which is what the user asked to be the source of truth.
+// it needs no root. The versions it reads come from this host: k3s, cloudflared and
+// PostgreSQL answer `--version`, Velocity's version is read out of the installed jar's
+// manifest, the JRE's out of its release file, and felis-api's is this binary's own
+// build stamp — the same value `felis version` prints, which is what the user asked
+// to be the source of truth.
 func cmdUpdate(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	panel := fs.Bool("panel", false, "select the panel + control plane (felis-api)")
-	velocity := fs.Bool("velocity", false, "select the Velocity proxy")
-	mc := fs.Bool("mc", false, "select Minecraft (pinned; reported only)")
-	plugins := fs.Bool("plugins", false, "select the Felis plugin jars (velocity/paper/limbo)")
+	flags := map[string]*bool{}
+	for _, t := range updateTargets {
+		flags[t.selector] = fs.Bool(t.selector, false, t.help)
+	}
 	all := fs.Bool("all", false, "select every component above")
 	force := fs.Bool("force", false, "print the apply command for a selected component even when it is already up to date")
 	velocityJar := fs.String("velocity-jar", updater.DefaultVelocityJarPath, "path to the installed Velocity jar to read the current version from")
@@ -121,8 +168,8 @@ func cmdUpdate(args []string, stdout, stderr io.Writer) int {
 	}
 
 	selected := map[string]bool{}
-	for sel, on := range map[string]bool{"panel": *panel, "velocity": *velocity, "mc": *mc, "plugins": *plugins} {
-		if on || *all {
+	for sel, on := range flags {
+		if *on || *all {
 			selected[sel] = true
 		}
 	}
@@ -130,9 +177,10 @@ func cmdUpdate(args []string, stdout, stderr io.Writer) int {
 	ctx, cancel := context.WithTimeout(context.Background(), updateTimeout)
 	defer cancel()
 
+	src := updater.NewRoutingSource(updater.Topology())
 	rn := &updater.Runner{
 		Gatherer: updater.NewHostGatherer(resolvedVersion(), *velocityJar),
-		Source:   updater.NewRoutingSource(updater.Topology()),
+		Source:   src,
 		// Notifier and Applier stay nil on purpose: a human typing this command IS the
 		// notification, and nothing here applies. The zero Window below means every
 		// Scheduled component degrades to a notify, so the report can never claim an
@@ -145,6 +193,7 @@ func cmdUpdate(args []string, stdout, stderr io.Writer) int {
 	}
 
 	fmt.Fprint(stdout, renderUpdateReport(res, selected))
+	fmt.Fprint(stdout, renderNotes(src.Notes(), selected))
 	if len(selected) > 0 {
 		fmt.Fprint(stdout, renderApplyGuidance(res, selected, *force))
 	}
@@ -199,6 +248,23 @@ func renderUpdateReport(res updater.Result, selected map[string]bool) string {
 	return b.String()
 }
 
+// renderNotes prints what the release lookups learned beyond the versions (today: a
+// PostgreSQL major past its end of life), for the components the selectors show.
+func renderNotes(notes map[string]string, selected map[string]bool) string {
+	names := make([]string, 0, len(notes))
+	for name := range notes {
+		if len(selected) == 0 || selectedCovers(selected, name) {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	var b strings.Builder
+	for _, name := range names {
+		fmt.Fprintf(&b, "%-13s note: %s\n", name, notes[name])
+	}
+	return b.String()
+}
+
 // writeErrs appends one explanatory line per failed component, in a stable order so
 // the output does not shuffle between runs, honouring the active selector filter.
 func writeErrs(b *strings.Builder, label string, errs map[string]error, selected map[string]bool) {
@@ -234,7 +300,7 @@ func renderApplyGuidance(res updater.Result, selected map[string]bool, force boo
 	}
 
 	var b strings.Builder
-	var offeredCommand bool
+	var offeredInstaller bool
 	for _, t := range updateTargets {
 		if !selected[t.selector] {
 			continue
@@ -262,7 +328,7 @@ func renderApplyGuidance(res updater.Result, selected map[string]bool, force boo
 			fmt.Fprintf(&b, "  note: cannot tell whether %s is current — its latest version could not be discovered (see above); this reinstalls it either way\n", t.component)
 		}
 		fmt.Fprintf(&b, "  run: %s\n", strings.ReplaceAll(t.command, "{ref}", installerRef(byComponent)))
-		offeredCommand = true
+		offeredInstaller = offeredInstaller || t.installer
 	}
 	// Only explain the command when one was actually offered; a --mc-only run has
 	// nothing to run and the trailer would be a non-sequitur.
@@ -270,13 +336,13 @@ func renderApplyGuidance(res updater.Result, selected map[string]bool, force boo
 	// One trailer serves every selector now: setup is not an apply path at all on a
 	// completed install (shouldRunHostBootstrapBeforeConfig only enters the host
 	// bootstrap while an install marker is missing), so the installer re-run is the one
-	// worked path for all three components and there is no per-component exception left
+	// worked path for every component Felis installs and there is no per-component exception left
 	// to scope. Two caveats stay because following the advice without them bites real
 	// hosts: the channel is not persisted anywhere (a bare re-run on a main host quietly
 	// moves it onto releases), and the private repo's one-liner needs the read token
 	// back in the environment before it can resolve anything.
-	if offeredCommand {
-		b.WriteString("\nRe-running the installer applies everything above: it fetches the newest version on\nthe channel in effect and re-applies the bundle (release is the default). The channel\nis not persisted, so pass FELIS_VERSION_BOOTSTRAP=dev if this host tracks main. While\nthis repo is private, the one-liner above 404s without a token; the README's install\nsection has the token'd form that works. felis setup is not this path: on a completed\ninstall it opens the config console and installs nothing newer. Restart game servers\nafterwards.\n")
+	if offeredInstaller {
+		b.WriteString("\nRe-running the installer applies each installer command above: it fetches the newest version on\nthe channel in effect and re-applies the bundle (release is the default). The channel\nis not persisted, so pass FELIS_VERSION_BOOTSTRAP=dev if this host tracks main. While\nthis repo is private, the one-liner above 404s without a token; the README's install\nsection has the token'd form that works. felis setup is not this path: on a completed\ninstall it opens the config console and installs nothing newer. Restart game servers\nafterwards.\n")
 	}
 	return b.String()
 }
@@ -299,10 +365,11 @@ func installerRef(byComponent map[string]updates.Action) string {
 }
 
 // isReleaseTag reports whether v was read from a stable vX.Y.Z tag, the only refs
-// release.yml publishes a binary for.
+// release.yml publishes a binary for. A source build stamps v0.0.0+g<commit>, which
+// names no tag, so build metadata disqualifies a version too.
 func isReleaseTag(v updates.Version) bool {
 	s := v.String()
-	if !strings.HasPrefix(s, "v") || v.IsPrerelease() {
+	if !strings.HasPrefix(s, "v") || v.IsPrerelease() || strings.Contains(s, "+") {
 		return false
 	}
 	_, err := updates.Parse(s)

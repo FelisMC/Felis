@@ -6,9 +6,11 @@ import "felis.lolicon.best/internal/updates"
 type sourceKind int
 
 const (
-	sourceNone    sourceKind = iota // pinned components are never queried
-	sourceGitHub                    // GitHub Releases (Coord = "owner/repo")
-	sourcePaperMC                   // PaperMC Fill v3 (Coord = project id)
+	sourceNone     sourceKind = iota // pinned components are never queried
+	sourceGitHub                     // GitHub Releases (Coord = "owner/repo")
+	sourcePaperMC                    // PaperMC Fill v3 (Coord = project id)
+	sourceTemurin                    // adoptium/temurin<feature>-binaries, feature from Current
+	sourcePostgres                   // postgresql.org/versions.json, within Current's major
 )
 
 // Spec is one platform component's static update policy plus how to find its latest
@@ -40,6 +42,10 @@ type Spec struct {
 //   - velocity    — the proxy, but off-cluster on an admin-operated macvlan host, so
 //     NOT manageable: even under a schedule it can only ever be Notify. Its releases
 //     come from PaperMC (Fill v3), not GitHub.
+//   - jre         — the Temurin runtime Velocity runs on. The installer pins its patch
+//     build, so a newer build reaches a host through a Felis release: Notify only.
+//   - postgresql  — the control-plane database, from the distribution's packages.
+//     Notify only; a minor release is a package update, a major one a pg_upgrade.
 //
 // Minecraft is deliberately ABSENT: every MC server is Pinned and is appended to the
 // plan at runtime from the live fleet (integration), never force-tracked here.
@@ -56,5 +62,7 @@ func Topology() []Spec {
 		{Name: "k3s", Policy: updates.PolicyNotify, Manageable: false, Source: sourceGitHub, Coord: "k3s-io/k3s"},
 		{Name: "cloudflared", Policy: updates.PolicyScheduled, Manageable: true, Source: sourceGitHub, Coord: "cloudflare/cloudflared"},
 		{Name: "velocity", Policy: updates.PolicyNotify, Manageable: false, Source: sourcePaperMC, Coord: "velocity"},
+		{Name: "jre", Policy: updates.PolicyNotify, Manageable: false, Source: sourceTemurin},
+		{Name: "postgresql", Policy: updates.PolicyNotify, Manageable: false, Source: sourcePostgres},
 	}
 }

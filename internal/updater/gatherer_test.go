@@ -164,7 +164,16 @@ func TestSysGathererCurrentDispatch(t *testing.T) {
 		"felis-api":   {[3]int{1, 4, 0}, "1.4.0"},
 		"velocity":    {[3]int{3, 4, 0}, "3.4.0"},
 	}
+	// The JRE and PostgreSQL live on the host alone; hostGatherer answers them
+	// (gatherer_host_test.go), and here they must fail closed.
+	hostOnly := map[string]bool{"jre": true, "postgresql": true}
 	for _, spec := range Topology() {
+		if hostOnly[spec.Name] {
+			if v, err := g.Current(context.Background(), spec); err == nil {
+				t.Errorf("Current(%s) = %s from the system gatherer, want an error", spec.Name, v)
+			}
+			continue
+		}
 		w, ok := want[spec.Name]
 		if !ok {
 			t.Fatalf("Topology grew a component %q with no gather expectation — update this test", spec.Name)

@@ -60,10 +60,13 @@
 #   FELIS_GO_SHA256   sha256 of that version's linux tarball for this host's architecture.
 #                     REQUIRED for a non-default FELIS_GO_VERSION; the default's is pinned.
 #   FELIS_K3S_VERSION k3s release a fresh install gets (default: v1.36.4+k3s1). An
-#                     installed k3s is left alone.
+#                     installed k3s is left alone unless FELIS_UPGRADE_DEPS=1.
 #   FELIS_CLOUDFLARED_VERSION / FELIS_CLOUDFLARED_SHA256 cloudflared release installed
 #                     when none is present (default: 2026.9.1, digests pinned); the
 #                     sha256 is REQUIRED for any other version
+#   FELIS_UPGRADE_DEPS 1 moves an installed k3s and cloudflared to the versions above
+#                     (k3s one minor version at a time; neither is ever downgraded) and
+#                     restarts cloudflared-felis onto the new binary (default: 0)
 #   FELIS_REPO_URL    git URL to build from   (raw script mode only)
 #   FELIS_VERSION_BOOTSTRAP release|dev — which version to install (default: release).
 #                     release DOWNLOADS the prebuilt felis binary published for the newest
@@ -227,18 +230,20 @@ FELIS_GO_VERSION="${FELIS_GO_VERSION:-$GO_PINNED_VERSION}"
 FELIS_GO_SHA256="${FELIS_GO_SHA256:-}"
 # cloudflared runs as root on the edge, so it gets the same treatment: a pinned release and
 # the sha256 GitHub lists for each asset. A different FELIS_CLOUDFLARED_VERSION has to bring
-# its own FELIS_CLOUDFLARED_SHA256. install_cloudflared only runs when the binary is absent;
-# upgrading an installed one is `felis update`'s report plus a manual swap.
+# its own FELIS_CLOUDFLARED_SHA256. An installed binary is replaced only under
+# FELIS_UPGRADE_DEPS=1; `felis update --cloudflared` reports when that would change it.
 CLOUDFLARED_PINNED_VERSION="2026.9.1"
 CLOUDFLARED_PINNED_SHA256_AMD64="03f1f25d1cc93b9ad6c60569d44060bc4f17ed97075760ed8cfca4b12dcd68cc"
 CLOUDFLARED_PINNED_SHA256_ARM64="3d97437c71848bd8df68041e12436b484a661d95073ea1937f01a845ce88faa3"
 CLOUDFLARED_PINNED_SHA256_ARM="093ffa3638ab2b636de63c43a8c68f96a69cf71f9699dd8277a91b160b0f4fc0"
 FELIS_CLOUDFLARED_VERSION="${FELIS_CLOUDFLARED_VERSION:-$CLOUDFLARED_PINNED_VERSION}"
 FELIS_CLOUDFLARED_SHA256="${FELIS_CLOUDFLARED_SHA256:-}"
+CLOUDFLARED_BIN=/usr/local/bin/cloudflared
 # The k3s release a fresh install gets, and the tag its install script is read from. The
 # script checks the k3s binary against that release's sha256sum file, so pinning the tag
-# pins both. An installed k3s is never touched; see docs/troubleshooting.md for upgrades.
+# pins both. An installed k3s moves only under FELIS_UPGRADE_DEPS=1.
 FELIS_K3S_VERSION="${FELIS_K3S_VERSION:-v1.36.4+k3s1}"
+FELIS_UPGRADE_DEPS="${FELIS_UPGRADE_DEPS:-0}"
 # The in-cluster registry's image, by digest. It must equal platform.defaultRegistryImage
 # (internal/platform/identities.go, TestBootstrapPinsTheRegistryImage): the renderer puts
 # that ref in the Deployment, and this script caches and pins the same ref in containerd.
@@ -711,6 +716,16 @@ validate_settings() {
   esac
   [ "$(heap_megabytes "$FELIS_VELOCITY_XMX")" -ge 256 ] \
     || die "FELIS_VELOCITY_XMX must be a heap size of at least 256M, written <n>M or <n>G (got '${FELIS_VELOCITY_XMX}')"
+  case "$FELIS_UPGRADE_DEPS" in
+    0|1) ;;
+    *) die "FELIS_UPGRADE_DEPS must be 0 or 1 (got '${FELIS_UPGRADE_DEPS}')" ;;
+  esac
+}
+
+# version_newer reports whether version $1 sorts after $2 (a leading v is ignored).
+version_newer() {
+  local a="${1#v}" b="${2#v}"
+  [ "$a" != "$b" ] && [ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | tail -n 1)" = "$a" ]
 }
 
 # heap_megabytes prints a JVM heap size written <n>M or <n>G in megabytes, or 0 for any
@@ -908,9 +923,25 @@ install_base() {
 }
 
 install_cloudflared() {
-  if command -v cloudflared >/dev/null 2>&1; then
-    ok "cloudflared already installed"
-    return 0
+  local current="" path
+  if path="$(command -v cloudflared 2>/dev/null)"; then
+    current="$(cloudflared --version 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "version") { print $(i + 1); exit } }')"
+    if [ "$current" = "$FELIS_CLOUDFLARED_VERSION" ]; then
+      ok "cloudflared ${current} already installed"
+      return 0
+    fi
+    if [ "$FELIS_UPGRADE_DEPS" != 1 ]; then
+      ok "cloudflared ${current:-(version unreadable)} already installed; this release pins ${FELIS_CLOUDFLARED_VERSION} (FELIS_UPGRADE_DEPS=1 moves it)"
+      return 0
+    fi
+    if [ "$path" != "$CLOUDFLARED_BIN" ]; then
+      warn "cloudflared at ${path} was not installed by Felis; upgrade it the way it was installed"
+      return 0
+    fi
+    if [ -n "$current" ] && version_newer "$current" "$FELIS_CLOUDFLARED_VERSION"; then
+      ok "cloudflared ${current} is newer than the pinned ${FELIS_CLOUDFLARED_VERSION}; left as it is"
+      return 0
+    fi
   fi
   local machine arch url tmp want have
   machine="$(uname -m)"
@@ -932,9 +963,14 @@ install_cloudflared() {
     rm -f "$tmp"
     die "cloudflared-linux-${arch} ${FELIS_CLOUDFLARED_VERSION} hashes to ${have}, expected ${want}; refusing to install it"
   fi
-  install -m 0755 "$tmp" /usr/local/bin/cloudflared
+  install -m 0755 "$tmp" "$CLOUDFLARED_BIN"
   rm -f "$tmp"
   ok "cloudflared installed ($(cloudflared --version | head -n 1))"
+  # The running tunnel keeps the old binary mapped until it restarts.
+  if [ -n "$current" ] && systemctl is-active --quiet cloudflared-felis 2>/dev/null; then
+    systemctl restart cloudflared-felis
+    ok "cloudflared-felis restarted onto ${FELIS_CLOUDFLARED_VERSION}"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1060,16 +1096,19 @@ install_k3s() {
   configure_k3s_firewall
 
   if [ -x "$K3S_BIN" ]; then
-    ok "k3s already installed at ${K3S_BIN}"
+    local current
+    current="$("$K3S_BIN" --version 2>/dev/null | awk 'NR == 1 { print $3 }')"
+    if [ "$current" = "$FELIS_K3S_VERSION" ]; then
+      ok "k3s ${current} already installed at ${K3S_BIN}"
+    elif [ "$FELIS_UPGRADE_DEPS" != 1 ]; then
+      ok "k3s ${current:-(version unreadable)} already installed at ${K3S_BIN}; this release pins ${FELIS_K3S_VERSION} (FELIS_UPGRADE_DEPS=1 moves it)"
+    elif k3s_upgrade_allowed "$current" "$FELIS_K3S_VERSION"; then
+      log "upgrading k3s ${current} to ${FELIS_K3S_VERSION}; running pods keep running while it restarts"
+      run_k3s_installer
+    fi
   else
     log "installing k3s ${FELIS_K3S_VERSION} into ${K3S_BIN_DIR} (no traefik/servicelb/metrics-server)"
-    # The script from the release's own tag rather than get.k3s.io, which serves whatever
-    # master holds today. '+' is literal in a URL path, so the tag needs no escaping.
-    curl -sfL --retry 5 --retry-delay 2 "https://raw.githubusercontent.com/k3s-io/k3s/${FELIS_K3S_VERSION}/install.sh" | \
-      INSTALL_K3S_VERSION="$FELIS_K3S_VERSION" \
-      INSTALL_K3S_BIN_DIR="$K3S_BIN_DIR" \
-      INSTALL_K3S_EXEC="--disable traefik --disable servicelb --disable metrics-server --write-kubeconfig-mode 644" \
-      sh -
+    run_k3s_installer
   fi
 
   [ -x "$K3S_BIN" ] || die "k3s installation completed but ${K3S_BIN} is missing"
@@ -1078,6 +1117,37 @@ install_k3s() {
   export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
   log "waiting for the node to become Ready"
   wait_for_node_ready
+}
+
+# The script from the release's own tag rather than get.k3s.io, which serves whatever
+# master holds today. '+' is literal in a URL path, so the tag needs no escaping. On an
+# installed k3s the same script replaces the binary in place and restarts the service.
+run_k3s_installer() {
+  curl -sfL --retry 5 --retry-delay 2 "https://raw.githubusercontent.com/k3s-io/k3s/${FELIS_K3S_VERSION}/install.sh" | \
+    INSTALL_K3S_VERSION="$FELIS_K3S_VERSION" \
+    INSTALL_K3S_BIN_DIR="$K3S_BIN_DIR" \
+    INSTALL_K3S_EXEC="--disable traefik --disable servicelb --disable metrics-server --write-kubeconfig-mode 644" \
+    sh -
+}
+
+# k3s_upgrade_allowed decides whether an installed k3s ($1) may move to $2. Kubernetes
+# supports upgrading one minor version at a time, so a larger jump stops the install
+# before anything changed; a newer installed k3s is left as it is.
+k3s_upgrade_allowed() {
+  local current="$1" want="$2" cur_major cur_minor want_major want_minor rest
+  IFS=. read -r cur_major cur_minor rest <<<"${current#v}"
+  IFS=. read -r want_major want_minor rest <<<"${want#v}"
+  case "${cur_major}${cur_minor}${want_major}${want_minor}" in
+    ""|*[!0-9]*) die "cannot compare the installed k3s '${current}' with ${want}; upgrade it by hand (docs/operations.md §4)" ;;
+  esac
+  if version_newer "$current" "$want"; then
+    ok "k3s ${current} is newer than the pinned ${want}; left as it is"
+    return 1
+  fi
+  if [ "$cur_major" != "$want_major" ] || [ "$((want_minor - cur_minor))" -gt 1 ]; then
+    die "k3s ${current} -> ${want} skips a minor version, and Kubernetes upgrades one minor at a time. Rerun with FELIS_K3S_VERSION set to the newest v${cur_major}.$((cur_minor + 1)).x+k3sN release first (https://github.com/k3s-io/k3s/releases)"
+  fi
+  return 0
 }
 
 # Waits for the (single) node to report Ready. Shared by the k3s install and the

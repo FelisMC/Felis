@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"felis.lolicon.best/internal/updates"
@@ -91,10 +92,42 @@ type releaseResponse struct {
 // already excludes drafts and prereleases; the explicit re-checks are defense in depth so
 // an upstream change can never silently promote a prerelease into a scheduled apply.
 func (g github) latestStable(ctx context.Context, repo string) (updates.Version, error) {
+	tag, err := g.latestTag(ctx, repo)
+	if err != nil {
+		return updates.Version{}, err
+	}
+	return parseStableTag(repo, tag)
+}
+
+// latestTemurin returns the newest stable Temurin build of one JDK feature release.
+// Adoptium publishes each feature line from its own repository and tags every build
+// "jdk-<version>" ("jdk-25.0.4.1+1"); the prefix is the only thing Parse cannot take.
+func (g github) latestTemurin(ctx context.Context, feature int) (updates.Version, error) {
+	repo := fmt.Sprintf("adoptium/temurin%d-binaries", feature)
+	tag, err := g.latestTag(ctx, repo)
+	if err != nil {
+		return updates.Version{}, err
+	}
+	return parseStableTag(repo, strings.TrimPrefix(tag, "jdk-"))
+}
+
+func parseStableTag(repo, tag string) (updates.Version, error) {
+	v, err := updates.Parse(tag)
+	if err != nil {
+		return updates.Version{}, fmt.Errorf("github: parse tag %q for %s: %w", tag, repo, err)
+	}
+	if v.IsPrerelease() {
+		return updates.Version{}, fmt.Errorf("github: %s latest tag %q parses as a prerelease", repo, tag)
+	}
+	return v, nil
+}
+
+// latestTag fetches the tag of repo's /releases/latest.
+func (g github) latestTag(ctx context.Context, repo string) (string, error) {
 	url := fmt.Sprintf("%s/repos/%s/releases/latest", g.baseURL, repo)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return updates.Version{}, fmt.Errorf("github: build request for %s: %w", repo, err)
+		return "", fmt.Errorf("github: build request for %s: %w", repo, err)
 	}
 	ua := g.userAgent
 	if ua == "" {
@@ -108,7 +141,7 @@ func (g github) latestStable(ctx context.Context, repo string) (updates.Version,
 
 	resp, err := g.hc.Do(req)
 	if err != nil {
-		return updates.Version{}, fmt.Errorf("github: get %s: %w", repo, err)
+		return "", fmt.Errorf("github: get %s: %w", repo, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -117,27 +150,20 @@ func (g github) latestStable(ctx context.Context, repo string) (updates.Version,
 		// are the same status. Name both causes, and name the fix for the one an operator
 		// can act on.
 		if resp.StatusCode == http.StatusNotFound && g.token == "" {
-			return updates.Version{}, fmt.Errorf(
+			return "", fmt.Errorf(
 				"github: %s releases/latest returned HTTP 404 — either it has no published stable release, or it is private and %s is unset",
 				repo, tokenEnv)
 		}
-		return updates.Version{}, fmt.Errorf("github: %s releases/latest returned HTTP %d", repo, resp.StatusCode)
+		return "", fmt.Errorf("github: %s releases/latest returned HTTP %d", repo, resp.StatusCode)
 	}
 
 	var rr releaseResponse
 	if err := json.NewDecoder(resp.Body).Decode(&rr); err != nil {
-		return updates.Version{}, fmt.Errorf("github: decode %s: %w", repo, err)
+		return "", fmt.Errorf("github: decode %s: %w", repo, err)
 	}
 	if rr.Draft || rr.Prerelease {
-		return updates.Version{}, fmt.Errorf("github: %s releases/latest is unexpectedly draft/prerelease (tag %q)", repo, rr.TagName)
+		return "", fmt.Errorf("github: %s releases/latest is unexpectedly draft/prerelease (tag %q)", repo, rr.TagName)
 	}
 
-	v, err := updates.Parse(rr.TagName)
-	if err != nil {
-		return updates.Version{}, fmt.Errorf("github: parse tag %q for %s: %w", rr.TagName, repo, err)
-	}
-	if v.IsPrerelease() {
-		return updates.Version{}, fmt.Errorf("github: %s latest tag %q parses as a prerelease", repo, rr.TagName)
-	}
-	return v, nil
+	return rr.TagName, nil
 }

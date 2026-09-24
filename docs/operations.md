@@ -222,13 +222,36 @@ the version they were installed with unless noted:
 |---|---|---|
 | Velocity, Limbo, Paper, LuckPerms | follow `deploy/game-stack.lock` | rerun after a release that moves the lock (§15b) |
 | Temurin JRE | moves to the pinned patch build | rerun |
-| k3s | left alone | by hand, one minor version at a time: `curl -sfL https://get.k3s.io \| INSTALL_K3S_VERSION=<version> sh -` |
-| cloudflared | left alone | replace `/usr/local/bin/cloudflared` with the release binary, then `systemctl restart cloudflared-felis` |
-| PostgreSQL | the distribution's package | the package manager; a major version needs `pg_upgrade` first (the installer refuses to start a newer server on an older cluster) |
+| k3s | left alone | rerun with `FELIS_UPGRADE_DEPS=1`: moves to the pinned release through that tag's install script, one minor version at a time (a bigger jump stops before anything changes and names the release to go through), never backwards |
+| cloudflared | left alone | rerun with `FELIS_UPGRADE_DEPS=1`: swaps `/usr/local/bin/cloudflared` for the pinned, sha256-checked release and restarts `cloudflared-felis`; a cloudflared the distribution installed stays with its package manager |
+| PostgreSQL | the distribution's package | the package manager for a minor release; a major version needs `pg_upgrade` first (below) |
 | Docker, git, nftables | distribution packages | the package manager |
 
-`sudo felis update` reports Felis, Velocity, k3s and cloudflared against their newest
-releases.
+```sh
+curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap.sh \
+  | sudo FELIS_UPGRADE_DEPS=1 bash
+```
+
+`sudo felis update` reports Felis, Velocity, k3s, cloudflared, the JRE and PostgreSQL
+against their newest releases; `--k3s`, `--cloudflared`, `--jre` and `--postgres` narrow
+it to one. PostgreSQL is compared within its major, since a minor release is a package
+update, and a major past its end of life gets a note naming the current one.
+
+### PostgreSQL major versions [CODE-ONLY]
+
+The installer takes the major the distribution ships (13 on EL9) and never moves it. To
+go to a newer one, stop the writers, keep a dump, then use the distribution's upgrade
+path:
+
+```sh
+sudo k3s kubectl -n felis scale deploy/felis-api deploy/felis-operator --replicas=0
+sudo -u postgres pg_dumpall > /root/felis-pg-$(date +%F).sql
+# EL9: sudo systemctl stop postgresql; sudo dnf module switch-to postgresql:16
+#      sudo dnf install postgresql-upgrade; sudo postgresql-setup --upgrade
+# Debian/Ubuntu: sudo pg_upgradecluster <old-major> main
+sudo systemctl start postgresql
+sudo k3s kubectl -n felis scale deploy/felis-api deploy/felis-operator --replicas=1
+```
 
 ## 5. Disaster recovery
 

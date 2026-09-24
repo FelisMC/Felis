@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -38,6 +39,10 @@ import (
 // exists.
 const DefaultVelocityJarPath = "/opt/felis/velocity/velocity.jar"
 
+// DefaultJREReleasePath is the release file of the runtime deploy/bootstrap.sh
+// installs for Velocity (install_jre unpacks Temurin into /opt/felis/jre).
+const DefaultJREReleasePath = "/opt/felis/jre/release"
+
 // NewHostGatherer builds the VersionGatherer for `felis update` running on the node.
 // felisVersion is the CLI's own resolved build stamp; velocityJar is the installed
 // proxy jar (empty means DefaultVelocityJarPath). k3s and cloudflared keep the
@@ -50,6 +55,7 @@ func NewHostGatherer(felisVersion, velocityJar string) VersionGatherer {
 		sys:          sysGatherer{run: execRunner{}},
 		felisVersion: felisVersion,
 		velocityJar:  velocityJar,
+		jreRelease:   DefaultJREReleasePath,
 	}
 }
 
@@ -60,6 +66,7 @@ type hostGatherer struct {
 	sys          sysGatherer
 	felisVersion string
 	velocityJar  string
+	jreRelease   string
 }
 
 // Current implements VersionGatherer.
@@ -76,9 +83,45 @@ func (g hostGatherer) Current(ctx context.Context, spec Spec) (updates.Version, 
 		return v, nil
 	case "velocity":
 		return velocityJarVersion(g.velocityJar)
+	case "jre":
+		return jreReleaseVersion(g.jreRelease)
+	case "postgresql":
+		// The server binary is on PATH on the dnf family; Debian and Ubuntu keep it
+		// under /usr/lib/postgresql/<major>/bin and put only the client on PATH, which
+		// the distribution ships at the same version.
+		if v, err := g.sys.cliVersion(ctx, "postgres"); err == nil {
+			return v, nil
+		}
+		return g.sys.cliVersion(ctx, "psql")
 	default:
 		return g.sys.Current(ctx, spec)
 	}
+}
+
+// jreReleaseVersion reads the runtime's version from its release file. Temurin writes
+// SEMANTIC_VERSION="25.0.4.1+1"; JAVA_VERSION="25.0.4.1" is the fallback every JDK
+// build writes. JAVA_RUNTIME_VERSION is avoided: its "-LTS" tail reads as a prerelease.
+func jreReleaseVersion(path string) (updates.Version, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return updates.Version{}, fmt.Errorf("updater: read JRE release file: %w", err)
+	}
+	fields := map[string]string{}
+	for _, line := range strings.Split(string(raw), "\n") {
+		k, v, ok := strings.Cut(line, "=")
+		if ok {
+			fields[strings.TrimSpace(k)] = strings.Trim(strings.TrimSpace(v), `"`)
+		}
+	}
+	for _, key := range []string{"SEMANTIC_VERSION", "JAVA_VERSION"} {
+		if fields[key] == "" {
+			continue
+		}
+		if v, err := updates.Parse(fields[key]); err == nil {
+			return v, nil
+		}
+	}
+	return updates.Version{}, fmt.Errorf("updater: no SEMANTIC_VERSION or JAVA_VERSION in %s", path)
 }
 
 // velocityJarVersion reads the installed proxy's version out of the jar itself.

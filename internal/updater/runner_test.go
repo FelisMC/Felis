@@ -144,9 +144,10 @@ func TestRunnerWithRoutingSource(t *testing.T) {
 	// GitHub fixtures keyed by repo. The handler also mirrors GitHub's real gate: a
 	// UA-less request is refused.
 	ghBodies := map[string]string{
-		"/repos/FelisMC/Felis/releases/latest":          `{"tag_name":"1.5.0","prerelease":false,"draft":false}`,
-		"/repos/k3s-io/k3s/releases/latest":             k3sLatestFixture,
-		"/repos/cloudflare/cloudflared/releases/latest": cloudflaredLatestFixture,
+		"/repos/FelisMC/Felis/releases/latest":               `{"tag_name":"1.5.0","prerelease":false,"draft":false}`,
+		"/repos/k3s-io/k3s/releases/latest":                  k3sLatestFixture,
+		"/repos/cloudflare/cloudflared/releases/latest":      cloudflaredLatestFixture,
+		"/repos/adoptium/temurin25-binaries/releases/latest": temurinLatestFixture,
 	}
 	ghSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("User-Agent") == "" {
@@ -165,12 +166,17 @@ func TestRunnerWithRoutingSource(t *testing.T) {
 	rs := NewRoutingSource(Topology())
 	rs.paper = newTestPaperMC(paperSrv) // point PaperMC discovery at its httptest server
 	rs.gh = newTestGitHub(ghSrv)        // and GitHub discovery at its own
+	pgSrv := pgFixtureServer(postgresFeedFixture)
+	defer pgSrv.Close()
+	rs.pg = newTestPostgresFeed(pgSrv)
 
 	gath := fakeGatherer{cur: map[string]updates.Version{
 		"felis-api":   mustV(t, "1.4.0"),
 		"k3s":         mustV(t, "v1.35.6+k3s1"),
 		"cloudflared": mustV(t, "2026.5.0"),
 		"velocity":    mustV(t, "3.1.1"),
+		"jre":         mustV(t, "25.0.4+8"),
+		"postgresql":  mustV(t, "13.22"),
 	}}
 	rn := &Runner{Gatherer: gath, Source: rs}
 	res, err := rn.Run(context.Background(), now, updates.Window{})
@@ -184,13 +190,21 @@ func TestRunnerWithRoutingSource(t *testing.T) {
 		"felis-api", "1.5.0",
 		"k3s", "v1.36.2+k3s1",
 		"cloudflared", "2026.6.1",
+		"jre", "25.0.4.1+1",
+		"postgresql", "13.23",
 	} {
 		if !strings.Contains(res.Report, want) {
 			t.Errorf("report missing discovered %q; got:\n%s", want, res.Report)
 		}
 	}
-	// Both routes are wired now, so nothing degrades to a source error.
+	// Every route is wired, so nothing degrades to a source error.
 	if len(res.RunResult.SourceErrors) != 0 {
-		t.Errorf("expected no source errors with both routes wired, got %v", res.RunResult.SourceErrors)
+		t.Errorf("expected no source errors with every route wired, got %v", res.RunResult.SourceErrors)
+	}
+	if len(res.GatherErrors) != 0 {
+		t.Errorf("expected every component gathered, got %v", res.GatherErrors)
+	}
+	if note := rs.Notes()["postgresql"]; !strings.Contains(note, "end of life on 2025-11-13") || !strings.Contains(note, "current major is 18") {
+		t.Errorf("postgresql note = %q, want the EOL date and the current major", note)
 	}
 }

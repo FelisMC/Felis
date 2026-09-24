@@ -35,6 +35,9 @@ type Version struct {
 	Major int
 	Minor int
 	Patch int
+	// Revision is an optional fourth numeric component. Temurin numbers an emergency
+	// respin of a JDK update that way ("25.0.4.1+1"), and it orders after Patch.
+	Revision int
 	// Prerelease is the dot-separated identifier set after "-" (empty for a normal
 	// release). Its presence is what IsPrerelease reports and what makes this version
 	// sort below the same Major.Minor.Patch without a prerelease.
@@ -45,7 +48,8 @@ type Version struct {
 }
 
 // Parse reads a tolerant semantic version. It accepts an optional leading "v",
-// fills missing minor/patch with 0 (so "v2" and "2.0" parse), strips build
+// fills missing minor/patch with 0 (so "v2" and "2.0" parse), takes an optional
+// fourth numeric component (the JDK's "25.0.4.1"), strips build
 // metadata after "+" for ordering while preserving it in the raw string, and keeps
 // any "-prerelease" tail. It fails closed: an unparseable core (non-numeric
 // major/minor/patch) returns an error rather than a zero Version, so a garbled feed
@@ -71,10 +75,10 @@ func Parse(s string) (Version, error) {
 	}
 
 	parts := strings.Split(core, ".")
-	if len(parts) == 0 || len(parts) > 3 {
+	if len(parts) == 0 || len(parts) > 4 {
 		return Version{}, fmt.Errorf("updates: %q is not a dotted version", raw)
 	}
-	nums := make([]int, 3)
+	nums := make([]int, 4)
 	for i, p := range parts {
 		n, err := strconv.Atoi(strings.TrimSpace(p))
 		if err != nil {
@@ -85,7 +89,7 @@ func Parse(s string) (Version, error) {
 		}
 		nums[i] = n
 	}
-	v.Major, v.Minor, v.Patch = nums[0], nums[1], nums[2]
+	v.Major, v.Minor, v.Patch, v.Revision = nums[0], nums[1], nums[2], nums[3]
 	return v, nil
 }
 
@@ -101,6 +105,9 @@ func (v Version) String() string {
 		return v.raw
 	}
 	base := fmt.Sprintf("%d.%d.%d", v.Major, v.Minor, v.Patch)
+	if v.Revision != 0 {
+		base += fmt.Sprintf(".%d", v.Revision)
+	}
 	if v.Prerelease != "" {
 		return base + "-" + v.Prerelease
 	}
@@ -108,7 +115,7 @@ func (v Version) String() string {
 }
 
 // Compare returns -1, 0, or +1 as v sorts before, equal to, or after o, by SemVer
-// 2.0.0 precedence: numeric Major.Minor.Patch first, then — for an equal core — a
+// 2.0.0 precedence: numeric Major.Minor.Patch(.Revision) first, then — for an equal core — a
 // version WITH a prerelease sorts below one without, and two prereleases compare by
 // their dot-separated identifiers (numeric identifiers numerically, others
 // lexically; a numeric identifier always sorts below an alphanumeric one). Build
@@ -121,6 +128,9 @@ func (v Version) Compare(o Version) int {
 		return c
 	}
 	if c := cmpInt(v.Patch, o.Patch); c != 0 {
+		return c
+	}
+	if c := cmpInt(v.Revision, o.Revision); c != 0 {
 		return c
 	}
 	return comparePrerelease(v.Prerelease, o.Prerelease)

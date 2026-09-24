@@ -15,6 +15,8 @@ func TestTopologyEncodesPolicies(t *testing.T) {
 		"k3s":         {Name: "k3s", Policy: updates.PolicyNotify, Manageable: false, Source: sourceGitHub, Coord: "k3s-io/k3s"},
 		"cloudflared": {Name: "cloudflared", Policy: updates.PolicyScheduled, Manageable: true, Source: sourceGitHub, Coord: "cloudflare/cloudflared"},
 		"velocity":    {Name: "velocity", Policy: updates.PolicyNotify, Manageable: false, Source: sourcePaperMC, Coord: "velocity"},
+		"jre":         {Name: "jre", Policy: updates.PolicyNotify, Manageable: false, Source: sourceTemurin},
+		"postgresql":  {Name: "postgresql", Policy: updates.PolicyNotify, Manageable: false, Source: sourcePostgres},
 	}
 	got := Topology()
 	if len(got) != len(want) {

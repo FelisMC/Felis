@@ -9,12 +9,17 @@ import (
 
 // RoutingSource is the production updates.ReleaseSource. updates.Run calls a single
 // source for every non-pinned component, so this one dispatches each component to its
-// configured upstream by the topology: the PaperMC Fill API for Velocity, and the
-// GitHub Releases API for felis-api, k3s and cloudflared.
+// configured upstream by the topology: the PaperMC Fill API for Velocity, the GitHub
+// Releases API for felis-api, k3s, cloudflared and the Temurin JRE, and the
+// PostgreSQL project's release table for the database.
 type RoutingSource struct {
 	routes map[string]Spec
 	paper  paperMC
 	gh     github
+	pg     postgresFeed
+	// notes holds what a lookup learned beyond the version, keyed by component: today
+	// only an end-of-life PostgreSQL major. updates.Run calls Latest sequentially.
+	notes map[string]string
 }
 
 // NewRoutingSource builds the router from a topology. Pinned specs are indexed too
@@ -24,8 +29,12 @@ func NewRoutingSource(specs []Spec) *RoutingSource {
 	for _, s := range specs {
 		routes[s.Name] = s
 	}
-	return &RoutingSource{routes: routes, paper: newPaperMC(), gh: newGitHub()}
+	return &RoutingSource{routes: routes, paper: newPaperMC(), gh: newGitHub(), pg: newPostgresFeed(), notes: map[string]string{}}
 }
+
+// Notes returns what the last lookups learned beyond each version, keyed by
+// component, for the caller to print under the report.
+func (r *RoutingSource) Notes() map[string]string { return r.notes }
 
 // Latest implements updates.ReleaseSource. An unknown component name is an error, not
 // a silent zero, so a topology/route mismatch is loud.
@@ -39,6 +48,19 @@ func (r *RoutingSource) Latest(ctx context.Context, comp updates.Component) (upd
 		return r.paper.latestStable(ctx, spec.Coord)
 	case sourceGitHub:
 		return r.gh.latestStable(ctx, spec.Coord)
+	case sourceTemurin:
+		// The feature release the host runs picks the repository: a newer feature is a
+		// release decision (the installer's pin), never a patch to report.
+		return r.gh.latestTemurin(ctx, comp.Current.Major)
+	case sourcePostgres:
+		rel, err := r.pg.latest(ctx, comp.Current)
+		if err != nil {
+			return updates.Version{}, err
+		}
+		if rel.note != "" {
+			r.notes[comp.Name] = rel.note
+		}
+		return rel.latest, nil
 	case sourceNone:
 		// A pinned component (Run never reaches this, but be explicit and loud).
 		return updates.Version{}, fmt.Errorf("updater: %q is pinned and has no release source", comp.Name)

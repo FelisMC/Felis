@@ -21,6 +21,7 @@ func TestParseTolerant(t *testing.T) {
 		{"v2", 2, 0, 0, ""},                      // missing minor/patch fill 0
 		{"2.0", 2, 0, 0, ""},                     // missing patch fills 0
 		{"  v1.2.3  ", 1, 2, 3, ""},              // surrounding whitespace
+		{"25.0.4.1+1", 25, 0, 4, ""},             // Temurin respin: fourth component, see TestParseRevision
 	}
 	for _, c := range cases {
 		v, err := Parse(c.in)
@@ -38,11 +39,29 @@ func TestParseTolerant(t *testing.T) {
 // TestParseFailsClosed proves a garbled version is an error, never a silent 0.0.0
 // that would read as "older than everything" and trigger a spurious upgrade.
 func TestParseFailsClosed(t *testing.T) {
-	bad := []string{"", "   ", "vx.y.z", "1.2.x", "1.2.3.4", "abc", "-1.2.3", "1.-2.3"}
+	bad := []string{"", "   ", "vx.y.z", "1.2.x", "1.2.3.4.5", "1.2.3.x", "abc", "-1.2.3", "1.-2.3"}
 	for _, in := range bad {
 		if v, err := Parse(in); err == nil {
 			t.Errorf("Parse(%q) = %+v, want error", in, v)
 		}
+	}
+}
+
+// TestParseRevision covers the fourth component Temurin uses for an emergency respin
+// of a JDK update: it is read, kept in the report, and ordered after Patch.
+func TestParseRevision(t *testing.T) {
+	v, err := Parse("25.0.4.1+1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.Revision != 1 || v.String() != "25.0.4.1+1" {
+		t.Fatalf("Parse(25.0.4.1+1) = %+v (%s), want revision 1 and the raw string kept", v, v)
+	}
+	if got := (Version{Major: 25, Patch: 4, Revision: 1}).String(); got != "25.0.4.1" {
+		t.Fatalf("String() without raw = %q, want 25.0.4.1", got)
+	}
+	if got := (Version{Major: 25, Patch: 4}).String(); got != "25.0.4" {
+		t.Fatalf("String() of a three-part version = %q, want 25.0.4", got)
 	}
 }
 
@@ -65,6 +84,9 @@ func TestCompareAndAfter(t *testing.T) {
 		{"1.2.3-alpha", "1.2.3-beta", -1},   // alphanumeric lexical
 		{"1.2.3-rc.1", "1.2.3-rc.1.1", -1},  // longer identifier set is higher
 		{"1.2.3-1", "1.2.3-alpha", -1},      // numeric identifier sorts below alphanumeric
+		{"25.0.4.1+1", "25.0.4+8", 1},       // a respin is newer than the update it respins
+		{"25.0.4.1+1", "25.0.5+3", -1},      // and older than the next update
+		{"25.0.4", "25.0.4.0", 0},           // an absent revision is zero
 
 		// A dev build's own stamp, "<tag>+g<sha>", against the tag it is built past.
 		// It must read EQUAL, never newer: deploy/bootstrap.sh's dev channel stamps the

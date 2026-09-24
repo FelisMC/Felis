@@ -1320,8 +1320,8 @@ Two properties of the control plane matter when you do:
 | Download | Check |
 |---|---|
 | `felis-linux-<arch>` (release channel) | its sha256 must match the release's `SHA256SUMS`; a release without one, or a mismatch, is compiled from the same tag instead |
-| k3s (fresh install only) | the install script is read at `FELIS_K3S_VERSION`'s tag (default `v1.36.4+k3s1`), and it checks the binary against that release's sha256 list |
-| cloudflared (when absent) | release `FELIS_CLOUDFLARED_VERSION` (default `2026.9.1`) against a pinned sha256; another version needs `FELIS_CLOUDFLARED_SHA256` |
+| k3s (fresh install, or `FELIS_UPGRADE_DEPS=1`) | the install script is read at `FELIS_K3S_VERSION`'s tag (default `v1.36.4+k3s1`), and it checks the binary against that release's sha256 list |
+| cloudflared (when absent, or `FELIS_UPGRADE_DEPS=1`) | release `FELIS_CLOUDFLARED_VERSION` (default `2026.9.1`) against a pinned sha256; another version needs `FELIS_CLOUDFLARED_SHA256` |
 | Go toolchain (nano, source builds) | pinned sha256 per architecture; another version needs `FELIS_GO_SHA256` |
 | the registry image | pinned by digest (`registry:2.8.3@sha256:a3d8…`) |
 | Limbo, its spawn schematic, Paper, LuckPerms, Velocity | the builds and sha256s in `deploy/game-stack.lock`; each image build and the proxy install refuse a download that hashes differently (§15b) |

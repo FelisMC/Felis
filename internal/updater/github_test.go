@@ -17,7 +17,30 @@ import (
 const (
 	cloudflaredLatestFixture = `{"tag_name":"2026.6.1","prerelease":false,"draft":false,"name":"2026.6.1"}`
 	k3sLatestFixture         = `{"tag_name":"v1.36.2+k3s1","prerelease":false,"draft":false,"name":"v1.36.2+k3s1"}`
+	// adoptium/temurin25-binaries on 2026-09-25: an emergency respin, four components.
+	temurinLatestFixture = `{"tag_name":"jdk-25.0.4.1+1","prerelease":false,"draft":false,"name":"jdk-25.0.4.1+1"}`
 )
+
+// TestGitHubLatestTemurin reads the feature line's repository and drops the "jdk-"
+// prefix Adoptium tags every build with.
+func TestGitHubLatestTemurin(t *testing.T) {
+	var path string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		_, _ = w.Write([]byte(temurinLatestFixture))
+	}))
+	defer srv.Close()
+	v, err := newTestGitHub(srv).latestTemurin(context.Background(), 25)
+	if err != nil {
+		t.Fatalf("latestTemurin: %v", err)
+	}
+	if path != "/repos/adoptium/temurin25-binaries/releases/latest" {
+		t.Errorf("requested %s, want the temurin25-binaries repository", path)
+	}
+	if v.String() != "25.0.4.1+1" || v.Revision != 1 {
+		t.Errorf("version = %s (%+v), want 25.0.4.1+1 with revision 1", v, v)
+	}
+}
 
 func newTestGitHub(srv *httptest.Server) github {
 	return github{

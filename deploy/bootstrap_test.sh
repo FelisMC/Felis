@@ -783,17 +783,22 @@ cfsum="$(printf 'stand-in cloudflared\n' | sha256sum | cut -d' ' -f1)"
 run_cf() { # FELIS_CLOUDFLARED_VERSION pinned-amd64-digest [FELIS_CLOUDFLARED_SHA256]
   FELIS_CLOUDFLARED_VERSION="$1" CLOUDFLARED_PINNED_VERSION=2026.9.1 CLOUDFLARED_PINNED_SHA256_AMD64="$2" \
     CLOUDFLARED_PINNED_SHA256_ARM64=unused CLOUDFLARED_PINNED_SHA256_ARM=unused \
-    FELIS_CLOUDFLARED_SHA256="${3:-}" TMPDIR="$sdir" bash -c '
+    FELIS_CLOUDFLARED_SHA256="${3:-}" TMPDIR="$sdir" CLOUDFLARED_BIN=/usr/local/bin/cloudflared \
+    FELIS_UPGRADE_DEPS="${CF_UPGRADE:-0}" CF_PATH="${CF_PATH:-}" CF_HAVE="${CF_HAVE:-test}" \
+    CF_ACTIVE="${CF_ACTIVE:-0}" bash -c '
     die() { printf "DIE: %s\n" "$*"; exit 1; }
     log() { printf "LOG: %s\n" "$*"; }
     ok() { printf "OK: %s\n" "$*"; }
+    warn() { printf "WARN: %s\n" "$*"; }
     remember_temp() { :; }
-    command() { return 1; }
+    command() { [ -n "$CF_PATH" ] && [ "$1" = -v ] && [ "$2" = cloudflared ] && echo "$CF_PATH"; }
     uname() { echo x86_64; }
-    cloudflared() { echo "cloudflared version test"; }
+    cloudflared() { echo "cloudflared version ${CF_HAVE} (built 2026-01-01-0000 UTC)"; }
     curl() { printf "CURL: %s\n" "$*"; while [ "$#" -gt 1 ] && [ "$1" != "-o" ]; do shift; done
       printf "stand-in cloudflared\n" > "$2"; }
     install() { printf "INSTALL: %s\n" "$*"; }
+    systemctl() { case "$1" in is-active) [ "$CF_ACTIVE" = 1 ] ;; *) printf "SYSTEMCTL: %s\n" "$*" ;; esac; }
+    '"$(awk '/^version_newer\(\) \{/,/^}/' "$BS")"'
     '"$cfblock"'
     install_cloudflared'
 }
@@ -806,11 +811,67 @@ case "$out" in *INSTALL:*) echo "FAIL: a refused cloudflared must not be install
 expect "another cloudflared version needs its own digest" "DIE: no pinned sha256 for cloudflared 2027.1.0" "$(run_cf 2027.1.0 "$cfsum")"
 expect "another cloudflared version installs with its digest" "INSTALL: -m 0755" "$(run_cf 2027.1.0 deadbeef "$cfsum")"
 
+# An installed cloudflared moves only under FELIS_UPGRADE_DEPS=1, only when Felis put it
+# there, never backwards, and the running tunnel is restarted onto the new binary.
+out="$(CF_PATH=/usr/local/bin/cloudflared CF_HAVE=2026.9.1 run_cf 2026.9.1 "$cfsum")"
+expect "a cloudflared at the pin is left alone" "OK: cloudflared 2026.9.1 already installed" "$out"
+case "$out" in *CURL:*) echo "FAIL: a cloudflared at the pin must not be downloaded again"; fails=$((fails + 1)) ;; esac
+out="$(CF_PATH=/usr/local/bin/cloudflared CF_HAVE=2025.8.0 run_cf 2026.9.1 "$cfsum")"
+expect "an older cloudflared is reported without the flag" "this release pins 2026.9.1 (FELIS_UPGRADE_DEPS=1 moves it)" "$out"
+case "$out" in *CURL:*) echo "FAIL: an installed cloudflared must not move without FELIS_UPGRADE_DEPS=1"; fails=$((fails + 1)) ;; esac
+out="$(CF_UPGRADE=1 CF_ACTIVE=1 CF_PATH=/usr/local/bin/cloudflared CF_HAVE=2025.8.0 run_cf 2026.9.1 "$cfsum")"
+expect "FELIS_UPGRADE_DEPS=1 installs the pinned cloudflared over an older one" "INSTALL: -m 0755" "$out"
+expect "the running tunnel is restarted onto the new cloudflared" "SYSTEMCTL: restart cloudflared-felis" "$out"
+out="$(CF_UPGRADE=1 CF_PATH=/usr/local/bin/cloudflared CF_HAVE=2025.8.0 run_cf 2026.9.1 "$cfsum")"
+case "$out" in *SYSTEMCTL:*) echo "FAIL: a stopped cloudflared-felis must not be started by an upgrade"; fails=$((fails + 1)) ;; esac
+out="$(CF_UPGRADE=1 CF_PATH=/usr/bin/cloudflared CF_HAVE=2025.8.0 run_cf 2026.9.1 "$cfsum")"
+expect "a packaged cloudflared is left to its package manager" "WARN: cloudflared at /usr/bin/cloudflared was not installed by Felis" "$out"
+case "$out" in *CURL:*) echo "FAIL: a packaged cloudflared must not be overwritten"; fails=$((fails + 1)) ;; esac
+out="$(CF_UPGRADE=1 CF_PATH=/usr/local/bin/cloudflared CF_HAVE=2026.10.2 run_cf 2026.9.1 "$cfsum")"
+expect "a newer cloudflared is never downgraded" "cloudflared 2026.10.2 is newer than the pinned 2026.9.1" "$out"
+case "$out" in *CURL:*) echo "FAIL: a newer cloudflared must not be downgraded"; fails=$((fails + 1)) ;; esac
+
 # k3s: the install script is read from the pinned tag, and told the same version.
-kblock="$(awk '/^install_k3s\(\) \{/,/^}/' "$BS")"
+kblock="$(awk '/^run_k3s_installer\(\) \{/,/^}/' "$BS")"
 expect "k3s's install script comes from the pinned tag" 'raw.githubusercontent.com/k3s-io/k3s/${FELIS_K3S_VERSION}/install.sh' "$kblock"
 expect "k3s's install script is told the pinned version" 'INSTALL_K3S_VERSION="$FELIS_K3S_VERSION"' "$kblock"
 case "$kblock" in *"https://get.k3s.io"*) echo "FAIL: get.k3s.io serves master's script; read it from the pinned tag"; fails=$((fails + 1)) ;; esac
+
+# An installed k3s moves only under FELIS_UPGRADE_DEPS=1, one minor version at a time and
+# never backwards; the refusal names the release to go through first.
+kfake="$sdir/k3s"
+run_k3s() { # installed-version pinned-version [FELIS_UPGRADE_DEPS]
+  printf '#!/bin/sh\necho "k3s version %s (0123abcd)"\necho "go version go1.26"\n' "$1" > "$kfake"
+  chmod +x "$kfake"
+  K3S_BIN="$kfake" FELIS_K3S_VERSION="$2" FELIS_UPGRADE_DEPS="${3:-0}" bash -c '
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    log() { printf "LOG: %s\n" "$*"; }
+    ok() { printf "OK: %s\n" "$*"; }
+    configure_k3s_firewall() { :; }
+    run_k3s_installer() { printf "INSTALLER: %s\n" "$FELIS_K3S_VERSION"; }
+    systemctl() { :; }
+    wait_for_node_ready() { :; }
+    '"$(awk '/^version_newer\(\) \{/,/^}/' "$BS")"'
+    '"$(awk '/^k3s_upgrade_allowed\(\) \{/,/^}/' "$BS")"'
+    '"$(awk '/^install_k3s\(\) \{/,/^}/' "$BS")"'
+    install_k3s'
+}
+out="$(run_k3s v1.36.4+k3s1 v1.36.4+k3s1 1)"
+expect "a k3s at the pin is left alone" "OK: k3s v1.36.4+k3s1 already installed" "$out"
+case "$out" in *INSTALLER:*) echo "FAIL: a k3s at the pin must not be reinstalled"; fails=$((fails + 1)) ;; esac
+out="$(run_k3s v1.35.2+k3s1 v1.36.4+k3s1)"
+expect "an older k3s is reported without the flag" "this release pins v1.36.4+k3s1 (FELIS_UPGRADE_DEPS=1 moves it)" "$out"
+case "$out" in *INSTALLER:*) echo "FAIL: an installed k3s must not move without FELIS_UPGRADE_DEPS=1"; fails=$((fails + 1)) ;; esac
+expect "FELIS_UPGRADE_DEPS=1 moves k3s up one minor" "INSTALLER: v1.36.4+k3s1" "$(run_k3s v1.35.2+k3s1 v1.36.4+k3s1 1)"
+expect "FELIS_UPGRADE_DEPS=1 moves k3s to a newer patch" "INSTALLER: v1.36.4+k3s1" "$(run_k3s v1.36.1+k3s2 v1.36.4+k3s1 1)"
+out="$(run_k3s v1.34.6+k3s1 v1.36.4+k3s1 1)"
+expect "a k3s upgrade that skips a minor is refused" "DIE: k3s v1.34.6+k3s1 -> v1.36.4+k3s1 skips a minor version" "$out"
+expect "the refusal names the minor to go through first" "newest v1.35.x+k3sN release first" "$out"
+case "$out" in *INSTALLER:*) echo "FAIL: a skipping k3s upgrade must not run the installer"; fails=$((fails + 1)) ;; esac
+out="$(run_k3s v1.37.0+k3s1 v1.36.4+k3s1 1)"
+expect "a newer k3s is never downgraded" "OK: k3s v1.37.0+k3s1 is newer than the pinned v1.36.4+k3s1" "$out"
+case "$out" in *INSTALLER:*) echo "FAIL: a newer k3s must not be downgraded"; fails=$((fails + 1)) ;; esac
+expect "an unreadable k3s version stops the upgrade" "DIE: cannot compare the installed k3s 'dev'" "$(run_k3s dev v1.36.4+k3s1 1)"
 
 # --- a private repo without a token fails with the hint instead of prompting -------------
 # git asks for credentials on /dev/tty, where a piped install would sit waiting. Every
