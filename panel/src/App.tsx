@@ -1,6 +1,8 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { useEffect } from "react";
+import { BrowserRouter, Routes, Route, Navigate, useNavigate } from "react-router-dom";
 import { ThemeProvider } from "@/lib/theme";
 import { TierProvider } from "@/lib/tier";
+import { SETUP_REQUIRED_EVENT } from "@/lib/api";
 import { AppShell } from "@/components/AppShell";
 import { RequireAdmin } from "@/components/RequireAdmin";
 import { RequireAuth } from "@/components/RequireAuth";
@@ -23,6 +25,21 @@ import { UserDetailPage } from "@/pages/admin/UserDetailPage";
 import { MySubmissionsPage } from "@/pages/MySubmissionsPage";
 import { UpdatesPage } from "@/pages/admin/UpdatesPage";
 
+// SetupRequiredRedirect listens for the `403 setup_required` signal api.ts emits
+// when a session still owes forced onboarding (#8) and routes it to the wizard.
+// It must live inside the Router (it navigates) and outside RequireAuth (/setup
+// sits there too); the event fires from any protected call the app makes, so the
+// listener is always mounted by the time one arrives.
+function SetupRequiredRedirect() {
+  const navigate = useNavigate();
+  useEffect(() => {
+    const toSetup = () => navigate("/setup", { replace: true });
+    window.addEventListener(SETUP_REQUIRED_EVENT, toSetup);
+    return () => window.removeEventListener(SETUP_REQUIRED_EVENT, toSetup);
+  }, [navigate]);
+  return null;
+}
+
 // Three UX surfaces over two Zero-Trust tiers (DESIGN-WEB-3SIDES):
 //   /        User-Side    — app-tier, every authenticated principal
 //   /admin/* Admin-Side   — admin-tier, server & content administration
@@ -34,6 +51,7 @@ export default function App() {
     <ThemeProvider>
       <TierProvider>
         <BrowserRouter>
+        <SetupRequiredRedirect />
         <Routes>
           {/* Pre-app sign-in surface (spec §B, passwordless). It sits OUTSIDE
               RequireAuth — RequireAuth redirects here — and outside AppShell, so

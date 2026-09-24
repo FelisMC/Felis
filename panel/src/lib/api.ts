@@ -44,6 +44,21 @@ function isApiError(x: unknown): x is { error: { code: string; message: string }
   );
 }
 
+// A locked session — one that still owes the forced onboarding (passkey
+// enrollment) — gets `403 setup_required` from every protected route. Rendered as
+// a generic permission error that reads as "you may not do this", when the truth
+// is "one step remains and completing it unlocks the app" (#8). api.ts cannot
+// navigate (no router here), so it announces the code on a window event; the
+// App-shell listener routes the person to /setup, which resumes from the session
+// without needing a token. Non-browser callers keep the plain error.
+export const SETUP_REQUIRED_EVENT = "felis:setup-required";
+
+function announceSetupRequired(err: ApiError): void {
+  if (err.status !== 403 || err.code !== "setup_required") return;
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new Event(SETUP_REQUIRED_EVENT));
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const { apiBase } = await loadConfig();
   const res = await fetch(`${apiBase}${path}`, {
@@ -62,6 +77,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
       code: isApiError(parsed) ? parsed.error.code : "error",
       message: isApiError(parsed) ? parsed.error.message : res.statusText,
     };
+    announceSetupRequired(err);
     throw err;
   }
   return parsed as T;
@@ -90,6 +106,7 @@ async function requestRaw<T>(
       code: isApiError(parsed) ? parsed.error.code : "error",
       message: isApiError(parsed) ? parsed.error.message : res.statusText,
     };
+    announceSetupRequired(err);
     throw err;
   }
   return parsed as T;
@@ -501,6 +518,7 @@ export const api = {
         /* non-JSON error body (e.g. an ingress page): keep the status line */
       }
       const err: ApiError = { status: res.status, code, message };
+      announceSetupRequired(err);
       throw err;
     }
     const blob = await res.blob();

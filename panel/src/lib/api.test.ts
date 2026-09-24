@@ -12,7 +12,7 @@ vi.mock("./config", () => ({
 }));
 
 // Imported after the mock so api.ts picks up the mocked loadConfig.
-const { api } = await import("./api");
+const { api, SETUP_REQUIRED_EVENT } = await import("./api");
 
 function fakeFetch(body: unknown, init?: { ok?: boolean; status?: number }) {
   return vi.fn(async () => ({
@@ -661,6 +661,51 @@ describe("image whitelist and builds wire shapes", () => {
       const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
       expect(String(url)).toBe("/users/u1/passkeys");
       expect((opts as RequestInit).method).toBe("DELETE");
+    });
+  });
+
+  // #8: a locked session gets `403 setup_required` on every protected route. The
+  // panel must not render that as a permission error — it announces the code so
+  // App.tsx can route the person to /setup. These tests pin the announcement
+  // (fire on the exact code, stay silent on any other 403) because a regression
+  // here reappears as the confusing "无权执行此操作" report, with nothing failing.
+  describe("setup_required routing signal", () => {
+    it("emits SETUP_REQUIRED_EVENT for a 403 setup_required", async () => {
+      const target = new EventTarget();
+      vi.stubGlobal("window", target);
+      let hits = 0;
+      target.addEventListener(SETUP_REQUIRED_EVENT, () => {
+        hits += 1;
+      });
+      vi.stubGlobal(
+        "fetch",
+        fakeFetch(
+          {
+            error: {
+              code: "setup_required",
+              message: "passkey enrollment is required before this action is available",
+            },
+          },
+          { ok: false, status: 403 },
+        ),
+      );
+      await expect(api.me()).rejects.toMatchObject({ status: 403, code: "setup_required" });
+      expect(hits).toBe(1);
+    });
+
+    it("stays silent for an ordinary 403", async () => {
+      const target = new EventTarget();
+      vi.stubGlobal("window", target);
+      let hits = 0;
+      target.addEventListener(SETUP_REQUIRED_EVENT, () => {
+        hits += 1;
+      });
+      vi.stubGlobal(
+        "fetch",
+        fakeFetch({ error: { code: "forbidden", message: "no" } }, { ok: false, status: 403 }),
+      );
+      await expect(api.me()).rejects.toMatchObject({ status: 403, code: "forbidden" });
+      expect(hits).toBe(0);
     });
   });
 });
