@@ -131,9 +131,23 @@ func cmdReaper(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis reaper: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "felis reaper: evaluated=%d reaped=%d awaiting_offsite=%d warned=%d skipped=%d evicted=%d expired=%d\n",
-		sum.Evaluated, sum.WorldsReaped, sum.AwaitingOffsite, sum.Warned, sum.Skipped, sum.EvictedEarly, sum.BackupsExpired)
-	return 0
+	return reportReaperRun(sum, stdout, stderr)
+}
+
+// reportReaperRun prints the run's tally and turns a run that left work undone
+// into exit 1, so the Job fails and the watchdog's job-failed check (and the
+// FelisWorldJobFailed rule) reach the operator: a world that cannot be archived
+// is kept, and without this nobody would learn that it is never reaped.
+func reportReaperRun(sum reaper.Summary, stdout, stderr io.Writer) int {
+	fmt.Fprintf(stdout, "felis reaper: evaluated=%d reaped=%d awaiting_offsite=%d warned=%d skipped=%d store_full=%d evicted=%d expired=%d expire_failed=%d\n",
+		sum.Evaluated, sum.WorldsReaped, sum.AwaitingOffsite, sum.Warned, sum.Skipped, sum.StoreFull,
+		sum.EvictedEarly, sum.BackupsExpired, sum.ExpireFailed)
+	if !sum.Failed() {
+		return 0
+	}
+	fmt.Fprintf(stderr, "felis reaper: %d servers failed (%d kept because the backup store is full) and %d expired backups were not removed; the errors are above, and each is retried next run\n",
+		sum.Skipped, sum.StoreFull, sum.ExpireFailed)
+	return 1
 }
 
 // mailWarner delivers a pre-reap notice to the owner's verified email — the

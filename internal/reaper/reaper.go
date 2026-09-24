@@ -241,16 +241,29 @@ type Reaper struct {
 
 // Summary is the per-run tally (feeds §23 metrics).
 type Summary struct {
-	Evaluated      int
-	WorldsReaped   int
-	Warned         int
-	Skipped        int // exempt, CRD gone, or could not back up
+	Evaluated    int
+	WorldsReaped int
+	Warned       int
+	// Skipped are servers the run failed on (archive, store, cluster or
+	// capacity errors); their worlds are kept and retried next run. Exempt
+	// servers and rows whose CRD is gone are not counted.
+	Skipped int
+	// StoreFull are the Skipped servers kept because the backup store was at
+	// capacity and eviction could not make room.
+	StoreFull      int
 	EvictedEarly   int
 	BackupsExpired int
+	// ExpireFailed are expired backups the retention pass could not remove.
+	ExpireFailed int
 	// AwaitingOffsite are idle worlds that are archived and kept until the
 	// archive's off-site copy lands.
 	AwaitingOffsite int
 }
+
+// Failed reports whether the run left work undone: a server it could not
+// process, or an expired backup it could not remove. The world is safe either
+// way, but the run did not do its job and whoever operates it must hear.
+func (s Summary) Failed() bool { return s.Skipped > 0 || s.ExpireFailed > 0 }
 
 func (r *Reaper) now() time.Time {
 	if r.Now != nil {
@@ -281,7 +294,8 @@ func (r *Reaper) id() string {
 // retention pass over expired backups. It is idempotent and restart-safe, so a
 // Kubernetes CronJob can drive the daily cadence (spec §18). Per-server
 // failures are logged and counted as Skipped without aborting the batch; only
-// an inability to list servers is a hard error.
+// an inability to list servers is a hard error. Summary.Failed tells the
+// caller whether the run as a whole should report failure.
 func (r *Reaper) RunOnce(ctx context.Context) (Summary, error) {
 	var sum Summary
 
@@ -301,6 +315,9 @@ func (r *Reaper) RunOnce(ctx context.Context) (Summary, error) {
 		if err := r.evaluate(ctx, now, offs, c, &sum); err != nil {
 			r.log().Error("reaper: skipping server", "server", c.Name, "err", err)
 			sum.Skipped++
+			if errors.Is(err, errStoreFull) {
+				sum.StoreFull++
+			}
 		}
 	}
 
@@ -512,15 +529,18 @@ func (r *Reaper) expireBackups(ctx context.Context, now time.Time, sum *Summary)
 	exp, err := r.Store.ListExpiredBackups(ctx, now)
 	if err != nil {
 		r.log().Error("reaper: list expired backups", "err", err)
+		sum.ExpireFailed++
 		return
 	}
 	for _, b := range exp {
 		if err := r.Archiver.Delete(ctx, backup.ArchiveRef(b.BackupRef)); err != nil {
 			r.log().Error("reaper: delete expired archive", "id", b.ID, "err", err)
+			sum.ExpireFailed++
 			continue
 		}
 		if err := r.Store.MarkBackupDeleted(ctx, b.ID, now); err != nil {
 			r.log().Error("reaper: mark expired deleted", "id", b.ID, "err", err)
+			sum.ExpireFailed++
 			continue
 		}
 		sum.BackupsExpired++

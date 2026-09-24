@@ -675,8 +675,8 @@ func TestCapacityStillFullSkipsReap(t *testing.T) {
 	r.Archiver.(*fakeArchiver).deleteErr = errors.New("evict unavailable")
 
 	sum := mustRun(t, r)
-	if sum.WorldsReaped != 0 || sum.Skipped != 1 {
-		t.Fatalf("summary = %+v, want 0 reaped / 1 skipped (store full)", sum)
+	if sum.WorldsReaped != 0 || sum.Skipped != 1 || sum.StoreFull != 1 || !sum.Failed() {
+		t.Fatalf("summary = %+v, want 0 reaped / 1 skipped, store full, failed", sum)
 	}
 	if cl.deletePVCCalls != 0 {
 		t.Fatalf("world was deleted while the store was full")
@@ -711,6 +711,24 @@ func TestExpiredBackupsDeleted(t *testing.T) {
 	}
 	if byID["gone"] != "deleted" || byID["keep"] != "present" {
 		t.Fatalf("expiry hit wrong rows: %v", byID)
+	}
+}
+
+// An expired backup the backend cannot delete stays present and marks the run
+// failed, so the Job reports it instead of succeeding every day.
+func TestExpiryFailureFailsTheRun(t *testing.T) {
+	r, st, _, _ := newReaper(DefaultConfig())
+	st.backups = []*fakeBackup{
+		{id: "gone", server: "s1", ref: "ref-gone", size: 5, status: "present", createdAt: idleBy(120 * Day), expires: idleBy(1 * Day)},
+	}
+	r.Archiver.(*fakeArchiver).deleteErr = errors.New("permission denied")
+
+	sum := mustRun(t, r)
+	if sum.BackupsExpired != 0 || sum.ExpireFailed != 1 || !sum.Failed() {
+		t.Fatalf("summary = %+v, want 0 expired / 1 expire_failed, failed", sum)
+	}
+	if st.backups[0].status != "present" {
+		t.Fatalf("the undeleted archive's row was marked %s", st.backups[0].status)
 	}
 }
 

@@ -42,7 +42,7 @@ func (a *reclaimArchiver) Archive(_ context.Context, server, _ string) (backup.A
 }
 
 func (a *reclaimArchiver) Restore(context.Context, backup.ArchiveRef, string) error { return nil }
-func (a *reclaimArchiver) Delete(context.Context, backup.ArchiveRef) error        { return nil }
+func (a *reclaimArchiver) Delete(context.Context, backup.ArchiveRef) error          { return nil }
 
 // TestReclaimRestartsReaperClock: a world reaped weeks ago and claimed by a new
 // owner is not reaped again on the next run, and when it does go idle the reap

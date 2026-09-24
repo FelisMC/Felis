@@ -662,6 +662,33 @@ configured neither does a backup that exists on this disk only. [GO-TESTED:
 `awaiting_offsite` that stays above zero for more than a day means the copy is
 failing: `sudo felis offsite status` (§16).
 
+### A failed reaper Job
+
+Each run ends with one line:
+
+```
+felis reaper: evaluated=12 reaped=1 awaiting_offsite=0 warned=2 skipped=0 store_full=0 evicted=0 expired=3 expire_failed=0
+```
+
+`skipped` counts servers the run failed on (steps 1–3 above, or the cluster or
+the database answering with an error; exempt servers and rows whose CRD is gone
+are not counted), `store_full` the subset kept because the backup store is full,
+and `expire_failed` expired backups it could not remove. Any of them above zero
+makes the process exit 1: the worlds are safe, but the Job fails so the watchdog
+mails `world reaper Job … failed` and `FelisWorldJobFailed` fires. The Job retries
+twice (`backoffLimit`), each retry re-running the whole batch, which is safe
+because every step is idempotent. Read the error above the summary:
+
+```sh
+kubectl -n minecraft logs job/<the failed felis-reaper-… Job>
+```
+
+A server that fails every day keeps its world and is retried every day, so the
+Job fails every day until the cause is fixed; after 26 hours the watchdog also
+reports `the world reaper has not succeeded for …`. [GO-TESTED:
+`TestReportReaperRunFailsTheJob`, `TestExpiryFailureFailsTheRun`,
+`TestCapacityStillFullSkipsReap`.]
+
 ### Exemptions (world never reaped)
 
 - `spec.reaperExempt=true` → skipped entirely (system servers). [GO-TESTED

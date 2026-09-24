@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -11,7 +12,35 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	"felis.lolicon.best/internal/reaper"
 )
+
+// TestReportReaperRunFailsTheJob: a run that could not process a server, or
+// could not remove an expired backup, exits 1 so the Job shows as failed.
+func TestReportReaperRunFailsTheJob(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		sum  reaper.Summary
+		want int
+	}{
+		{"clean", reaper.Summary{Evaluated: 3, WorldsReaped: 1, AwaitingOffsite: 1}, 0},
+		{"server failed", reaper.Summary{Evaluated: 3, Skipped: 1}, 1},
+		{"store full", reaper.Summary{Evaluated: 3, Skipped: 1, StoreFull: 1}, 1},
+		{"expiry failed", reaper.Summary{Evaluated: 3, ExpireFailed: 2}, 1},
+	} {
+		var out, errb bytes.Buffer
+		if got := reportReaperRun(tc.sum, &out, &errb); got != tc.want {
+			t.Errorf("%s: exit %d, want %d", tc.name, got, tc.want)
+		}
+		if !strings.Contains(out.String(), "skipped=") || !strings.Contains(out.String(), "expire_failed=") {
+			t.Errorf("%s: summary line = %q", tc.name, out.String())
+		}
+		if (tc.want == 1) != (errb.Len() > 0) {
+			t.Errorf("%s: stderr = %q", tc.name, errb.String())
+		}
+	}
+}
 
 // TestResolveWorldDir pins the two world layouts the reaper must find, and the
 // fail-closed miss. The stock local-path arm is derived from the live PVC's
