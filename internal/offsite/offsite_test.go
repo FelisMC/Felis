@@ -392,6 +392,33 @@ func TestSyncDBKeepsNewest(t *testing.T) {
 	}
 }
 
+// TestSyncDBRanksWithTheBucket: an old local bundle (kept here by its label's
+// own retention) that newer bundles in the bucket outrank is not sent, so a
+// pass does not upload what it then prunes, and the next pass the same again.
+func TestSyncDBRanksWithTheBucket(t *testing.T) {
+	s, b := newSyncer(t, &fakeCatalog{})
+	writeFile(t, s.DBDir, "felis-db-20260910T030000Z-pre-migrate.tar", 50)
+	writeFile(t, s.DBDir, "felis-db-20260924T030000Z-daily.tar", 50)
+	b.objs["db/felis-db-20260923T030000Z-daily.tar.fenc"] = []byte("gone here, kept there")
+
+	for pass := 1; pass <= 2; pass++ {
+		res, err := s.Run(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := 0
+		if pass == 1 {
+			want = 1
+		}
+		if res.DBUploaded != want || res.DBPruned != 0 || res.RemoteDB != 2 {
+			t.Fatalf("pass %d: result = %+v, want %d uploaded, none pruned, 2 held", pass, res, want)
+		}
+	}
+	if _, ok := b.objs["db/felis-db-20260910T030000Z-pre-migrate.tar.fenc"]; ok {
+		t.Fatal("the outranked bundle was sent")
+	}
+}
+
 // TestFetchWorldsRestoresVolume: after a rebuild, every present archive the
 // volume lacks comes back byte for byte; ones already there are left alone.
 func TestFetchWorldsRestoresVolume(t *testing.T) {

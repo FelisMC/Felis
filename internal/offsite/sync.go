@@ -17,9 +17,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"syscall"
@@ -240,12 +242,32 @@ func (s *Syncer) syncDB(ctx context.Context, res *Result, fail func(string, ...a
 		fail("list %s in the bucket: %v", dbDir, err)
 		return
 	}
-	// Only the newest keep bundles are worth sending: older ones would be
-	// pruned again at the end of this very pass.
-	if len(local) > keep {
-		local = local[:keep]
+	// The bucket keeps the newest keep bundles of what it holds and what is
+	// here together. Local retention is per label, so an old pre-migrate
+	// bundle can outlive newer dailies here that the bucket still has:
+	// sending it would only see it pruned again at the end of this pass, and
+	// sent again on the next.
+	names := map[string]bool{}
+	for key := range remote {
+		name := strings.TrimSuffix(strings.TrimPrefix(key, dbDir), objExt)
+		if _, _, ok := dbbackup.ParseBundleName(name); ok && strings.HasSuffix(key, objExt) {
+			names[name] = true
+		}
 	}
 	for _, b := range local {
+		names[b.Name] = true
+	}
+	// Bundle names start with their UTC stamp, so reversed order is newest first.
+	ranked := slices.Sorted(maps.Keys(names))
+	slices.Reverse(ranked)
+	kept := map[string]bool{}
+	for _, name := range ranked[:min(keep, len(ranked))] {
+		kept[name] = true
+	}
+	for _, b := range local {
+		if !kept[b.Name] {
+			continue
+		}
 		key := DBKey(b.Name)
 		want := SealedSize(b.Size)
 		if size, ok := remote[key]; ok && size == want {
@@ -260,29 +282,25 @@ func (s *Syncer) syncDB(ctx context.Context, res *Result, fail func(string, ...a
 		res.BytesUploaded += b.Size
 		s.logf("copied database bundle %s (%s)", b.Name, HumanBytes(b.Size))
 	}
-
-	var names []string
-	for key := range remote {
-		name := strings.TrimSuffix(strings.TrimPrefix(key, dbDir), objExt)
-		if _, _, ok := dbbackup.ParseBundleName(name); ok && strings.HasSuffix(key, objExt) {
-			names = append(names, name)
-		}
-	}
-	// Bundle names start with their UTC stamp, so newest sorts last.
-	sort.Sort(sort.Reverse(sort.StringSlice(names)))
-	for i, name := range names {
-		if i < keep {
+	for _, name := range ranked {
+		key := DBKey(name)
+		if _, ok := remote[key]; !ok || kept[name] {
 			continue
 		}
-		if err := s.Bucket.Remove(ctx, DBKey(name)); err != nil {
+		if err := s.Bucket.Remove(ctx, key); err != nil {
 			fail("prune database bundle %s: %v", name, err)
 			continue
 		}
+		delete(remote, key)
 		res.DBPruned++
 	}
-	res.RemoteDB = min(len(names), keep)
-	if len(names) > 0 {
-		res.NewestDB = names[0]
+	for _, name := range ranked {
+		if _, ok := remote[DBKey(name)]; ok {
+			res.RemoteDB++
+			if res.NewestDB == "" {
+				res.NewestDB = name
+			}
+		}
 	}
 }
 
