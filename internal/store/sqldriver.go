@@ -3,8 +3,10 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib" // register the "pgx" database/sql driver
 )
 
@@ -56,10 +58,15 @@ func (d *PostgresDriver) EnsureVersionTable(ctx context.Context) error {
 	return err
 }
 
-// AppliedVersions reads the set of recorded versions.
+// AppliedVersions reads the set of recorded versions. A database that has never been
+// migrated has no schema_migrations table yet, which is an empty set.
 func (d *PostgresDriver) AppliedVersions(ctx context.Context) (map[int]struct{}, error) {
 	rows, err := d.db.QueryContext(ctx, "SELECT version FROM schema_migrations")
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "42P01" { // undefined_table
+			return map[int]struct{}{}, nil
+		}
 		return nil, err
 	}
 	defer rows.Close()

@@ -345,7 +345,9 @@ func openConfiguredSetup(ctx context.Context, cfgPath string) (*configuredSetup,
 	if err != nil {
 		return nil, &setupOpenError{stage: "load config", err: err}
 	}
-	drv, err := store.Open(ctx, cfg.Database.URL)
+	// Pending migrations are the preflight's to apply; a newer schema is a rolled-back
+	// binary, and nothing this console writes would match it.
+	drv, err := openStore(ctx, cfg.Database.URL, true)
 	if err != nil {
 		return nil, &setupOpenError{stage: "open database", err: err}
 	}

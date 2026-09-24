@@ -1385,6 +1385,24 @@ exists, so the database is upgraded only when you run `pg_upgrade` yourself.
 applied; when they are the problem, restore the `pre-migrate` bundle the upgrade
 took (§16, "Roll back an upgrade that broke the database").
 
+**Schema guard.** felis-api, the reaper, the off-site copy and `felis migrate up`
+compare the migrations the database records with the ones their build embeds, as
+sets. A database a newer release migrated stops them with `database schema is
+newer than this felis build: it records migration 0026, and this build knows
+migrations up to 0025`, so an undo across an upgrade that migrated shows up as
+felis-api in CrashLoopBackOff until the `pre-migrate` bundle is restored. A
+database still missing migrations stops felis-api, the reaper and the off-site
+copy with `database schema is behind this felis build` until `felis migrate up`
+runs; `felis setup`'s preflight applies them itself. [PG-TESTED]
+
+**A failed rerun and the host binary.** The installer replaces
+`/usr/local/bin/felis` early (the steps after it run the new binary) and keeps
+the old one as `felis.prev` until the new one is in use. A run that fails before
+the database migrations start puts the old binary back, so the host timers and
+`felis setup` keep matching the database and the control plane that are still
+running; a rerun continues from there. Once migrations have started, the new
+binary stays. [VM-VERIFIED]
+
 ## 15b. Game images, pinned builds, and moving a world to a newer Minecraft
 
 Each release pins the upstream builds it installs in `deploy/game-stack.lock`:

@@ -2005,6 +2005,37 @@ else
   echo "FAIL BUILDX_NO_DEFAULT_ATTESTATIONS=1 must be exported before the first docker build"; fails=$((fails + 1))
 fi
 
+# --- a failed run puts the previous host binary back until the new one is in use ----------
+hbdir="$(mktemp -d)"
+run_host_bin() { # exit-status in-use [no-previous]
+  rm -f "$hbdir"/felis*
+  [ -n "${3:-}" ] || { printf 'old\n' > "$hbdir/felis"; chmod 0755 "$hbdir/felis"; }
+  HOST_BIN="$hbdir/felis" bash -c '
+    set -e
+    warn() { printf "WARN: %s\n" "$*"; }
+    HOST_BIN_PREV=""; HOST_BIN_KEPT=0; HOST_BIN_IN_USE='"$2"'
+    '"$(awk '/^keep_previous_host_binary\(\) \{/,/^}/' "$BS")"'
+    '"$(awk '/^restore_previous_host_binary\(\) \{/,/^}/' "$BS")"'
+    keep_previous_host_binary
+    rm -f "$HOST_BIN"; printf "new\n" > "$HOST_BIN"; chmod 0755 "$HOST_BIN"
+    keep_previous_host_binary # a second replacement keeps the first original
+    restore_previous_host_binary '"$1"'
+    printf "BIN: %s\n" "$(cat "$HOST_BIN")"
+    [ -e "$HOST_BIN.prev" ] && echo "PREV LEFT" || true'
+}
+out="$(run_host_bin 1 0)"
+expect "a run that fails before the new binary is used restores the old one" "BIN: old" "$out"
+expect "the restore says so" "WARN: restored the previous felis binary" "$out"
+out="$(run_host_bin 1 1)"
+expect "a run that fails after migrations keeps the new binary" "BIN: new" "$out"
+out="$(run_host_bin 0 0)"
+expect "a successful run keeps the new binary" "BIN: new" "$out"
+case "$out" in *"PREV LEFT"*) echo "FAIL: the previous binary copy must be removed"; fails=$((fails + 1)) ;; esac
+out="$(run_host_bin 1 0 fresh)"
+expect "a first install has nothing to restore" "BIN: new" "$out"
+case "$out" in *WARN:*) echo "FAIL: a first install must not restore the binary it just installed"; fails=$((fails + 1)) ;; esac
+rm -rf "$hbdir"
+
 
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then

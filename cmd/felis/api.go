@@ -29,7 +29,6 @@ import (
 	"felis.lolicon.best/internal/reaper"
 	"felis.lolicon.best/internal/registryprune"
 	"felis.lolicon.best/internal/restore"
-	"felis.lolicon.best/internal/store"
 	"felis.lolicon.best/internal/submit"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -88,7 +87,9 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 
 	ctx := ctrl.SetupSignalHandler()
 
-	drv, err := store.Open(ctx, cfg.Database.URL)
+	// Before anything serves: an api on a schema it was not built for answers with
+	// errors, or writes rows the other version cannot read.
+	drv, err := openStore(ctx, cfg.Database.URL, false)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis api: open database: %v\n", err)
 		return 1

@@ -33,17 +33,9 @@ func applyMigrations(dbURL string) (int, error) {
 	if _, err := store.Up(ctx, drv, migrations); err != nil {
 		return 0, err
 	}
-	applied, err := drv.AppliedVersions(ctx)
+	s, err := store.ReadSchema(ctx, drv)
 	if err != nil {
 		return 0, err
 	}
-	return len(applied), nil
-}
-
-func totalMigrations() (int, error) {
-	migrations, err := store.LoadMigrations()
-	if err != nil {
-		return 0, err
-	}
-	return len(migrations), nil
+	return s.Applied, nil
 }

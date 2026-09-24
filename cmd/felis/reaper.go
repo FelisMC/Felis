@@ -19,7 +19,6 @@ import (
 	"felis.lolicon.best/internal/mail"
 	"felis.lolicon.best/internal/platform"
 	"felis.lolicon.best/internal/reaper"
-	"felis.lolicon.best/internal/store"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -71,7 +70,7 @@ func cmdReaper(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	drv, err := store.Open(ctx, cfg.Database.URL)
+	drv, err := openStore(ctx, cfg.Database.URL, false)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis reaper: open database: %v\n", err)
 		return 1

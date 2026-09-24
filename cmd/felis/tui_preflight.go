@@ -46,6 +46,7 @@ type pfDBMsg struct{ err error }
 type pfMigCheckMsg struct {
 	applied int
 	total   int
+	pending bool
 	err     error
 }
 
@@ -84,7 +85,7 @@ func (m *preflightModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.applied, m.total = msg.applied, msg.total
-		if msg.applied < msg.total {
+		if msg.pending {
 			m.state = pfApplyMig
 			return m, m.applyMigrations()
 		}
@@ -204,12 +205,14 @@ func (m *preflightModel) checkDB() tea.Cmd {
 
 func (m *preflightModel) checkMigrations() tea.Cmd {
 	return func() tea.Msg {
-		applied, err := countMigrations(m.dbURL)
-		if err != nil {
-			return pfMigCheckMsg{err: err}
+		// The sets, not their sizes: a database a newer release migrated can hold as
+		// many rows as this build has migrations, and must stop here rather than be
+		// "healed" by an older binary.
+		s, err := readSchema(m.dbURL)
+		if err == nil {
+			err = s.Newer()
 		}
-		total, err := totalMigrations()
-		return pfMigCheckMsg{applied: applied, total: total, err: err}
+		return pfMigCheckMsg{applied: s.Applied, total: s.Total, pending: len(s.Pending) > 0, err: err}
 	}
 }
 

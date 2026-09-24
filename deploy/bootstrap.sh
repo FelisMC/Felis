@@ -331,6 +331,12 @@ PANEL_TLS_CERT="${STATE_DIR}/panel-tls.crt"
 PANEL_TLS_KEY="${STATE_DIR}/panel-tls.key"
 SRC_DIR="/opt/felis/src"
 HOST_BIN="/usr/local/bin/felis"
+# The binary this run replaced (keep_previous_host_binary), and whether the new one has
+# been put to use: once migrations start, or the nano service restarts onto it, the old
+# one no longer matches what is running and a failed run keeps the new one.
+HOST_BIN_PREV=""
+HOST_BIN_KEPT=0
+HOST_BIN_IN_USE=0
 # Felis's own build toolchain, not /usr/local/go: install_go_toolchain replaces whatever
 # version sits here, and an operator's Go at the conventional path is not ours to swap.
 GOROOT_DIR="/opt/felis/go"
@@ -437,7 +443,8 @@ on_error() {
 }
 
 cleanup() {
-  local id path unit
+  local status=$? id path unit
+  restore_previous_host_binary "$status"
   for unit in "${PKG_TIMERS_TO_RESTORE[@]-}"; do
     [ -n "$unit" ] || continue
     systemctl start "$unit" >/dev/null 2>&1 || true
@@ -453,6 +460,36 @@ cleanup() {
   # A failed install leaves something broken the owners should hear about, so the
   # watchdog speaks again the moment the installer exits, however it exits.
   rm -f -- "$WATCHDOG_QUIET_FILE" 2>/dev/null || true
+}
+
+# keep_previous_host_binary copies the felis binary this run is about to replace, once. A
+# run that fails before the new binary is in use puts it back (restore_previous_host_binary):
+# until then the old binary, the old cluster and the unmigrated database still agree, while
+# a new binary left behind runs the host timers against a schema it was not built for, and
+# `felis setup` with it would migrate the database under the old control plane.
+keep_previous_host_binary() {
+  [ "$HOST_BIN_KEPT" = 0 ] || return 0
+  HOST_BIN_KEPT=1
+  [ -x "$HOST_BIN" ] || return 0
+  HOST_BIN_PREV="${HOST_BIN}.prev"
+  rm -f "$HOST_BIN_PREV"
+  cp "$HOST_BIN" "$HOST_BIN_PREV"
+}
+
+restore_previous_host_binary() { # exit-status
+  [ -n "$HOST_BIN_PREV" ] && [ -f "$HOST_BIN_PREV" ] || return 0
+  if [ "$1" -ne 0 ] && [ "$HOST_BIN_IN_USE" != 1 ]; then
+    # install(1) onto a fresh file, as everywhere else HOST_BIN is written (SELinux label).
+    rm -f "$HOST_BIN"
+    if install -m 0755 "$HOST_BIN_PREV" "$HOST_BIN"; then
+      command -v restorecon >/dev/null 2>&1 && restorecon "$HOST_BIN" >/dev/null 2>&1 || true
+      warn "restored the previous felis binary at ${HOST_BIN}; the database was not migrated, so rerunning the installer picks up where this run stopped"
+    else
+      warn "could not restore the previous felis binary; it is at ${HOST_BIN_PREV}"
+      return 0
+    fi
+  fi
+  rm -f -- "$HOST_BIN_PREV"
 }
 
 remember_temp() { TEMP_PATHS+=("$1"); }
@@ -1518,6 +1555,7 @@ download_release_binary() {
   # would carry the source SELinux label instead of type-transitioning to bin_t — see
   # build_nano_binary for the 203/EXEC this shape avoids. Same-directory staging does not
   # change that: install(1) still creates the destination and copies.
+  keep_previous_host_binary
   rm -f "$HOST_BIN"
   install -m 0755 "$tmp" "$HOST_BIN"
   rm -f "$tmp"
@@ -1652,6 +1690,7 @@ install_embedded_binary() {
   mkdir -p "$(dirname "$HOST_BIN")"
   if [ "$(readlink -f "$src")" != "$(readlink -f "$HOST_BIN" 2>/dev/null || true)" ]; then
     log "installing current felis binary onto the host (${HOST_BIN})"
+    keep_previous_host_binary
     install -m 0755 "$src" "$HOST_BIN"
   else
     ok "host binary already installed at ${HOST_BIN}"
@@ -1702,6 +1741,7 @@ build_image_from_source() {
   local cid
   cid="$(docker create "$FELIS_IMAGE")"
   remember_container "$cid"
+  keep_previous_host_binary
   docker cp "${cid}:/usr/local/bin/felis" "$HOST_BIN"
   docker rm "$cid" >/dev/null
   chmod 0755 "$HOST_BIN"
@@ -3095,6 +3135,8 @@ run_migrations() {
   # binary bundles the database into FELIS_DB_BACKUP_DIR first and refuses to migrate
   # if that fails; a fresh database has nothing to protect and is migrated directly.
   log "running database migrations (host binary -> 127.0.0.1)"
+  # From here the database may move forward, and the binary that moved it stays.
+  HOST_BIN_IN_USE=1
   "$HOST_BIN" migrate up -config "${STATE_DIR}/felis.host.toml" "${backup_flags[@]}"
   ok "migrations applied"
 }
@@ -3814,6 +3856,7 @@ build_nano_binary() {
   # cannot exec it and felis-nano dies with 203/EXEC. Creating the file fresh at the
   # destination lets the policy's type transition label it bin_t; restorecon is the belt.
   mkdir -p "$(dirname "$HOST_BIN")"
+  keep_previous_host_binary
   rm -f "$HOST_BIN"
   install -m 0755 "$staged" "$HOST_BIN"
   rm -f "$staged"
@@ -3956,6 +3999,7 @@ EOF
   systemctl enable felis-nano
   # restart, not `enable --now`: on a re-run the service is already active and --now would
   # leave the OLD binary running against the NEW unit. Converge means converge.
+  HOST_BIN_IN_USE=1
   systemctl restart felis-nano
   # restart returns as soon as the process is forked. A config the new binary rejects, or a
   # file it cannot open, only shows once it has exited and the unit sits in auto-restart.

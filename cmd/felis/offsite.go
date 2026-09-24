@@ -16,7 +16,6 @@ import (
 	"felis.lolicon.best/internal/dbbackup"
 	"felis.lolicon.best/internal/offsite"
 	"felis.lolicon.best/internal/platform"
-	"felis.lolicon.best/internal/store"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -242,7 +241,7 @@ func runOffsiteSync(cfg *config.Config, env *offsiteEnv, archiveDir, backupPVC, 
 		}
 		archiveDir = dir
 	}
-	drv, err := store.Open(ctx, cfg.Database.URL)
+	drv, err := openStore(ctx, cfg.Database.URL, false)
 	if err != nil {
 		return offsite.Result{}, fmt.Errorf("open database: %w", err)
 	}
@@ -536,7 +535,7 @@ func offsiteFetchWorlds(fs *flag.FlagSet, args []string, stdout, stderr io.Write
 			return 1
 		}
 	}
-	drv, err := store.Open(ctx, cfg.Database.URL)
+	drv, err := openStore(ctx, cfg.Database.URL, false)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis offsite fetch-worlds: open database: %v\n", err)
 		return 1

@@ -72,20 +72,14 @@ func parseDBURL(url string) (dbCfg, error) {
 	}, nil
 }
 
-func countMigrations(dbURL string) (int, error) {
+// readSchema lines the database's recorded migrations up with this build's.
+func readSchema(dbURL string) (store.Schema, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	drv, err := store.Open(ctx, dbURL)
 	if err != nil {
-		return 0, err
+		return store.Schema{}, err
 	}
 	defer drv.Close()
-	if err := drv.EnsureVersionTable(ctx); err != nil {
-		return 0, err
-	}
-	applied, err := drv.AppliedVersions(ctx)
-	if err != nil {
-		return 0, err
-	}
-	return len(applied), nil
+	return store.ReadSchema(ctx, drv)
 }

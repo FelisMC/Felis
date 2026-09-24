@@ -111,3 +111,26 @@ func hasPending(done map[int]struct{}, migrations []store.Migration) bool {
 	}
 	return false
 }
+
+// openStore opens the business database for a command that reads and writes its
+// tables, and refuses one whose schema this build was not written against: a newer
+// Felis migrated it (a rolled-back binary), or, unless allowPending, migrations this
+// build embeds have not run yet (a binary swapped in ahead of `felis migrate up`).
+func openStore(ctx context.Context, url string, allowPending bool) (*store.PostgresDriver, error) {
+	drv, err := store.Open(ctx, url)
+	if err != nil {
+		return nil, err
+	}
+	s, err := store.ReadSchema(ctx, drv)
+	if err == nil {
+		err = s.Err()
+		if allowPending {
+			err = s.Newer()
+		}
+	}
+	if err != nil {
+		drv.Close()
+		return nil, err
+	}
+	return drv, nil
+}

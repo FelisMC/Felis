@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -154,4 +155,51 @@ func itoa(v int) string {
 		buf[i] = '-'
 	}
 	return string(buf[i:])
+}
+
+func TestUpRefusesADatabaseANewerBuildMigrated(t *testing.T) {
+	d := &recordingDriver{already: map[int]struct{}{1: {}, 2: {}, 3: {}}}
+	ms := []store.Migration{
+		{Version: 1, Name: "a", SQL: "y"},
+		{Version: 2, Name: "b", SQL: "z"},
+	}
+	_, err := store.Up(context.Background(), d, ms)
+	if !errors.Is(err, store.ErrSchemaNewer) {
+		t.Fatalf("Up err = %v, want ErrSchemaNewer", err)
+	}
+	if !strings.Contains(err.Error(), "migration 0003") || !strings.Contains(err.Error(), "up to 0002") {
+		t.Errorf("error does not name the versions: %v", err)
+	}
+	if !d.unlocked {
+		t.Error("the advisory lock was not released")
+	}
+}
+
+func TestCompareSchemaSeparatesPendingFromUnknown(t *testing.T) {
+	ms := []store.Migration{{Version: 1}, {Version: 2}, {Version: 4}}
+	cases := []struct {
+		name    string
+		applied map[int]struct{}
+		pending []int
+		unknown []int
+		err     error
+	}{
+		{"current", map[int]struct{}{1: {}, 2: {}, 4: {}}, nil, nil, nil},
+		{"fresh", map[int]struct{}{}, []int{1, 2, 4}, nil, store.ErrSchemaBehind},
+		{"behind", map[int]struct{}{1: {}}, []int{2, 4}, nil, store.ErrSchemaBehind},
+		// Same row count as "current": a count comparison calls this up to date.
+		{"newer", map[int]struct{}{1: {}, 2: {}, 5: {}}, []int{4}, []int{5}, store.ErrSchemaNewer},
+	}
+	for _, c := range cases {
+		s := store.CompareSchema(c.applied, ms)
+		if fmt.Sprint(s.Pending) != fmt.Sprint(c.pending) || fmt.Sprint(s.Unknown) != fmt.Sprint(c.unknown) {
+			t.Errorf("%s: pending=%v unknown=%v, want %v %v", c.name, s.Pending, s.Unknown, c.pending, c.unknown)
+		}
+		if err := s.Err(); !errors.Is(err, c.err) || (c.err == nil && err != nil) {
+			t.Errorf("%s: Err() = %v, want %v", c.name, err, c.err)
+		}
+		if s.Total != 3 || s.Latest != 4 {
+			t.Errorf("%s: Total=%d Latest=%d, want 3 4", c.name, s.Total, s.Latest)
+		}
+	}
 }

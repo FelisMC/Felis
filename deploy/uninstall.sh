@@ -312,7 +312,7 @@ remove_host_files() {
     userdel "$VELOCITY_USER" >/dev/null 2>&1 || warn "could not remove the ${VELOCITY_USER} user"
   fi
   rm -rf "$OPT_DIR"
-  rm -f "$HOST_BIN" "${HOST_BIN}.new"
+  rm -f "$HOST_BIN" "${HOST_BIN}.new" "${HOST_BIN}.prev"
   remove_cloudflared_binary
   if [ "$PURGE" = 0 ]; then
     # What describes the removed install goes; what a reinstall reuses stays. Without

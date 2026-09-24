@@ -84,7 +84,8 @@ func LoadMigrations() ([]Migration, error) {
 
 // Up applies every pending migration in ascending order, exactly once, under
 // the advisory lock. It is safe to run concurrently from multiple replicas: the
-// lock serializes them and AppliedVersions makes the work idempotent.
+// lock serializes them and AppliedVersions makes the work idempotent. It refuses
+// (ErrSchemaNewer) a database that records a version this build does not embed.
 func Up(ctx context.Context, d Driver, migrations []Migration) (applied []int, err error) {
 	if err := d.Lock(ctx); err != nil {
 		return nil, fmt.Errorf("acquire migration lock: %w", err)
@@ -101,6 +102,12 @@ func Up(ctx context.Context, d Driver, migrations []Migration) (applied []int, e
 	done, err := d.AppliedVersions(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("read applied versions: %w", err)
+	}
+	// A version this build does not embed means a newer release migrated the database.
+	// Applying the older build's remaining steps on top would be a guess about a schema
+	// it never saw, so nothing runs.
+	if err := CompareSchema(done, migrations).Newer(); err != nil {
+		return nil, err
 	}
 
 	ordered := append([]Migration(nil), migrations...)
