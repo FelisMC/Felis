@@ -12,7 +12,7 @@ vi.mock("./config", () => ({
 }));
 
 // Imported after the mock so api.ts picks up the mocked loadConfig.
-const { api, SETUP_REQUIRED_EVENT, SESSION_EXPIRED_EVENT, CONNECTION_EVENT, humanizeError, isConnectionLost } =
+const { api, SETUP_REQUIRED_EVENT, SESSION_EXPIRED_EVENT, CONNECTION_EVENT, humanizeError, isConnectionLost, clientError } =
   await import("./api");
 
 function fakeFetch(body: unknown, init?: { ok?: boolean; status?: number }) {
@@ -921,5 +921,37 @@ describe("session and connection signals", () => {
     await api.myServers();
     expect(seen).toEqual([{ ok: false }, { ok: true }]);
     expect(isConnectionLost()).toBe(false);
+  });
+});
+
+// The API's generic codes carry an English developer message ("user not found",
+// "invalid request"); the panel words them itself so a Chinese UI never shows it.
+describe("copy for the generic server codes", () => {
+  it("names a missing record, a lost race and a refused format in the UI's words", () => {
+    expect(humanizeError({ status: 404, code: "not_found", message: "user not found" })).toMatch(/no longer exists/);
+    expect(humanizeError({ status: 409, code: "conflict", message: "conflict" })).toMatch(/changed in the meantime/);
+    expect(humanizeError({ status: 409, code: "restore_in_progress", message: "restore running" })).toMatch(
+      /still being restored/,
+    );
+    expect(humanizeError({ status: 415, code: "unsupported_media_type", message: "json only" })).toMatch(
+      /format the server does not accept/,
+    );
+  });
+
+  it("keeps the server's reason for a bad request, and never shows an empty one", () => {
+    expect(humanizeError({ status: 400, code: "bad_request", message: "mc_uuid is required" })).toBe(
+      "The request was not accepted: mc_uuid is required",
+    );
+    expect(humanizeError({ status: 400, code: "bad_request", message: "" })).toBe("Something went wrong.");
+  });
+
+  it("reads a full upload store as full, not as an outage", () => {
+    expect(humanizeError({ status: 507, code: "uploads_full", message: "" })).toMatch(/upload store is full/);
+  });
+
+  it("words a failure the panel caught itself from its code", () => {
+    const err = clientError("passkey_no_credential");
+    expect(err.status).toBe(0);
+    expect(humanizeError(err)).toBe("The browser returned no passkey. Try again.");
   });
 });

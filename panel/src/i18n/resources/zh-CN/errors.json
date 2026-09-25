@@ -84,5 +84,12 @@
   "network_error": "连不上 Felis：网络断开了，或者 Cloudflare Access 的登录已过期。刷新页面可以重新登录。",
   "upstream_unavailable": "服务暂时不可用（可能正在重启或升级），请稍后重试。",
   "bad_path_param": "链接里的名称无效，请从列表重新打开。",
-  "payload_too_large": "内容超过了入口允许的大小，没有发送成功。"
+  "payload_too_large": "内容超过了入口允许的大小，没有发送成功。",
+  "passkey_no_credential": "浏览器没有返回 Passkey，请重试。",
+  "not_found": "要找的内容已不存在，可能已被删除，请刷新后重试。",
+  "conflict": "期间状态已发生变化，请刷新后重试。",
+  "bad_request": "请求未被接受：{{detail}}",
+  "restore_in_progress": "这台服务器的世界正在恢复另一份备份，请等它完成后再试。",
+  "uploads_full": "上传存储已满，需要管理员删除已审核的提交后才能继续上传。",
+  "unsupported_media_type": "请求格式不被服务器接受，请刷新页面后重试。"
 }

@@ -42,14 +42,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Loading, ErrorState } from "@/components/States";
+import { Loading, ErrorState, NotFound } from "@/components/States";
 import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
 import { formatAbsolute } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import type { UserDetail, SessionView } from "@/lib/types";
+import type { ApiError, UserDetail, SessionView } from "@/lib/types";
 
 export function UserDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -64,8 +64,18 @@ export function UserDetailPage() {
   );
 
   if (loading && !user) return <Loading />;
+  if (error && (error as Partial<ApiError>).status === 404) {
+    return (
+      <NotFound
+        title={t("user_not_found_title")}
+        body={t("user_not_found_body")}
+        linkTo="/admin/users"
+        linkLabel={t("users_back_to_list")}
+      />
+    );
+  }
   if (error) return <ErrorState error={error} onRetry={reload} />;
-  if (!user) return <ErrorState error={new Error("user not found")} />;
+  if (!user) return <Loading />;
 
   return (
     <div className="space-y-6">
@@ -226,7 +236,11 @@ function EditProfileCard({ user, onSaved, isSelf }: { user: UserDetail; onSaved:
 }
 
 function LinkedAccountsCard({ user, onChanged }: { user: UserDetail; onChanged: () => void }) {
-  const { t } = useTranslation("admin");
+  const { t, i18n } = useTranslation("admin");
+  // The two sources the link form offers are named; anything else the server
+  // reports is shown as is.
+  const sourceLabel = (source: string) =>
+    source === "mojang" || source === "thirdparty" ? t(`users_link_source_${source}`) : source;
   const accounts = user.linked_accounts ?? [];
   const [unlinking, setUnlinking] = useState<string | null>(null);
   const [unlinkDlg, setUnlinkDlg] = useState<string | null>(null);
@@ -308,8 +322,8 @@ function LinkedAccountsCard({ user, onChanged }: { user: UserDetail; onChanged: 
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                     <SelectItem value="mojang">Mojang</SelectItem>
-                    <SelectItem value="thirdparty">Third-party Yggdrasil</SelectItem>
+                     <SelectItem value="mojang">{t("users_link_source_mojang")}</SelectItem>
+                    <SelectItem value="thirdparty">{t("users_link_source_thirdparty")}</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -331,7 +345,7 @@ function LinkedAccountsCard({ user, onChanged }: { user: UserDetail; onChanged: 
                 <div className="min-w-0 flex-1">
                   <span className="font-mono text-xs truncate block">{acc.mc_uuid}</span>
                   <div className="mt-0.5 text-xs text-muted-foreground">
-                    {acc.auth_source} &middot; {formatAbsolute(acc.verified_at, "en-US")}
+                    {sourceLabel(acc.auth_source)} &middot; {formatAbsolute(acc.verified_at, i18n.language)}
                   </div>
                 </div>
                 <Button
@@ -493,7 +507,7 @@ function QuotasCard({ userId }: { userId: string }) {
 }
 
 function SessionsCard({ userId, onChanged }: { userId: string; onChanged: () => void }) {
-  const { t } = useTranslation("admin");
+  const { t, i18n } = useTranslation("admin");
   const { data: sessions, error, loading, reload } = useAsync(
     () => api.listUserSessions(userId),
     [userId],
@@ -587,7 +601,7 @@ function SessionsCard({ userId, onChanged }: { userId: string; onChanged: () => 
                   </span>
                   <div className="mt-0.5 text-muted-foreground/70">
                     <Clock className="inline h-3 w-3 mr-0.5" />
-                    {t("users_session_expires")}: {formatAbsolute(s.expires_at, "en-US")}
+                    {t("users_session_expires")}: {formatAbsolute(s.expires_at, i18n.language)}
                   </div>
                 </div>
                 <Button

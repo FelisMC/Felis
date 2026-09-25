@@ -7,7 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { api, humanizeError, type SetupState } from "@/lib/api";
+import { api, clientError, humanizeError, type SetupState } from "@/lib/api";
 import { base64urlToBytes, bytesToBase64url } from "@/lib/utils";
 import { useTier } from "@/lib/tier";
 import { InlineError } from "@/components/MessageLine";
@@ -261,7 +261,7 @@ function PasskeyStep({
       })) as PublicKeyCredential;
 
       if (!credential) {
-        throw new Error("Failed to create credential");
+        throw clientError("passkey_no_credential");
       }
 
       const response = credential.response as AuthenticatorAttestationResponse;

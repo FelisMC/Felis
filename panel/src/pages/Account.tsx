@@ -9,7 +9,7 @@ import { Loading, ErrorState } from "@/components/States";
 import { ConfirmFooter } from "@/components/ConfirmFooter";
 import { MessageLine, InlineError } from "@/components/MessageLine";
 import { PageHeader } from "@/components/PageHeader";
-import { api, humanizeError } from "@/lib/api";
+import { api, clientError, humanizeError } from "@/lib/api";
 import { formatAbsolute } from "@/lib/format";
 import type { PasskeyCredential } from "@/lib/types";
 import { useAsync } from "@/lib/hooks";
@@ -150,7 +150,7 @@ export function Account() {
       })) as PublicKeyCredential;
 
       if (!credential) {
-        throw new Error("Failed to create credential");
+        throw clientError("passkey_no_credential");
       }
 
       const response = credential.response as AuthenticatorAttestationResponse;
@@ -673,7 +673,7 @@ function MigrationCard({ userId, hasPasskey }: { userId?: string; hasPasskey: bo
         })),
       };
       const credential = (await navigator.credentials.get({ publicKey })) as PublicKeyCredential;
-      if (!credential) throw new Error("Failed to get credential");
+      if (!credential) throw clientError("passkey_no_credential");
       const response = credential.response as AuthenticatorAssertionResponse;
       await api.migrateConfirmPasskeyFinish({
         id: credential.id,

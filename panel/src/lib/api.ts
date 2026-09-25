@@ -753,6 +753,12 @@ export function buildLogsStreamURL(apiBase: string, id: string): string {
   return `${apiBase}/images/build/${encodeURIComponent(id)}/logs`;
 }
 
+/** clientError is a failure the panel itself detects (no request was made),
+ *  shaped like a server error so humanizeError words it from the code. */
+export function clientError(code: string): ApiError {
+  return { status: 0, code, message: "" };
+}
+
 /** humanizeError turns the stable error code into a user-facing line. */
 export function humanizeError(e: unknown): string {
   const t = i18next.getFixedT(null, "errors");
@@ -966,6 +972,24 @@ export function humanizeError(e: unknown): string {
       return t("upstream_unavailable");
     case "bad_path_param":
       return t("bad_path_param");
+    case "passkey_no_credential":
+      return t("passkey_no_credential");
+    case "not_found":
+      return t("not_found");
+    case "conflict":
+      return t("conflict");
+    case "restore_in_progress":
+      return t("restore_in_progress");
+    // 507: named on its own so the 5xx fallback below does not call it an
+    // outage.
+    case "uploads_full":
+      return t("uploads_full");
+    case "unsupported_media_type":
+      return t("unsupported_media_type");
+    // The detail says which field was wrong; the server writes it in English,
+    // so it rides inside a localized sentence.
+    case "bad_request":
+      return err.message ? t("bad_request", { detail: err.message }) : t("generic");
     default:
       if (err.status === 401) return t("session_expired");
       if (err.status === 403) return t("forbidden");

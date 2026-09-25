@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useTier } from "@/lib/tier";
 import { loginReturnPath } from "@/lib/auth";
-import { api, humanizeError } from "@/lib/api";
+import { api, clientError, humanizeError } from "@/lib/api";
 import { loadConfig } from "@/lib/config";
 import { base64urlToBytes, bytesToBase64url } from "@/lib/utils";
 import { InlineError } from "@/components/MessageLine";
@@ -170,7 +170,7 @@ export function Login() {
         })) as PublicKeyCredential;
 
         if (!credential) {
-          throw new Error("Failed to get credential");
+          throw clientError("passkey_no_credential");
         }
 
         const response = credential.response as AuthenticatorAssertionResponse;
@@ -208,7 +208,7 @@ export function Login() {
         })) as PublicKeyCredential;
 
         if (!credential) {
-          throw new Error("Failed to get credential");
+          throw clientError("passkey_no_credential");
         }
 
         const response = credential.response as AuthenticatorAssertionResponse;

@@ -9,6 +9,11 @@ import { Login } from "./Login";
 const calls = vi.hoisted(() => ({
   authEmailStart: vi.fn(),
   authEmailVerify: vi.fn(),
+  authPasskeyDiscoverableBegin: vi.fn(),
+  authPasskeyDiscoverableFinish: vi.fn(),
+  authPasskeyLoginBegin: vi.fn(),
+  authPasskeyLoginFinish: vi.fn(),
+  credentialsGet: vi.fn(),
   refresh: vi.fn(),
 }));
 vi.mock("@/lib/tier", () => ({
@@ -22,7 +27,15 @@ vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
   return {
     ...actual,
-    api: { ...actual.api, authEmailStart: calls.authEmailStart, authEmailVerify: calls.authEmailVerify },
+    api: {
+      ...actual.api,
+      authEmailStart: calls.authEmailStart,
+      authEmailVerify: calls.authEmailVerify,
+      authPasskeyDiscoverableBegin: calls.authPasskeyDiscoverableBegin,
+      authPasskeyDiscoverableFinish: calls.authPasskeyDiscoverableFinish,
+      authPasskeyLoginBegin: calls.authPasskeyLoginBegin,
+      authPasskeyLoginFinish: calls.authPasskeyLoginFinish,
+    },
   };
 });
 
@@ -38,6 +51,9 @@ function renderLogin() {
 
 beforeEach(() => {
   for (const fn of Object.values(calls)) fn.mockReset();
+  // jsdom has no WebAuthn; the browser handing back nothing is what a
+  // dismissed or empty authenticator looks like to the page.
+  Object.defineProperty(navigator, "credentials", { value: { get: calls.credentialsGet }, configurable: true });
 });
 
 describe("Login", () => {
@@ -65,5 +81,22 @@ describe("Login", () => {
 
     await userEvent.click(screen.getByRole("button", { name: t("auth:otp_btn") }));
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("words an empty passkey answer in the UI language, with and without an email", async () => {
+    calls.credentialsGet.mockResolvedValue(null);
+    calls.authPasskeyDiscoverableBegin.mockResolvedValue({ login_id: "l1", publicKey: { challenge: "AAAA" } });
+    calls.authPasskeyLoginBegin.mockResolvedValue({ challenge: "AAAA" });
+    renderLogin();
+
+    await userEvent.click(screen.getByRole("button", { name: t("auth:passkey_btn") }));
+    expect((await screen.findByRole("alert")).textContent).toBe("The browser returned no passkey. Try again.");
+    expect(calls.authPasskeyDiscoverableFinish).not.toHaveBeenCalled();
+
+    await userEvent.type(screen.getByLabelText(t("auth:email_address")), "a@b.c");
+    await userEvent.click(screen.getByRole("button", { name: t("auth:passkey_btn") }));
+    await vi.waitFor(() => expect(calls.authPasskeyLoginBegin).toHaveBeenCalledWith("a@b.c"));
+    expect((await screen.findByRole("alert")).textContent).toBe("The browser returned no passkey. Try again.");
+    expect(calls.authPasskeyLoginFinish).not.toHaveBeenCalled();
   });
 });

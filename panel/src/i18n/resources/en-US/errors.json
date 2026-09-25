@@ -84,5 +84,12 @@
   "network_error": "Can't reach Felis: the network is down, or your Cloudflare Access sign-in expired. Reload the page to sign in again.",
   "upstream_unavailable": "The service is unavailable right now (it may be restarting or upgrading). Try again shortly.",
   "bad_path_param": "The name in this link is not valid. Open it again from the list.",
-  "payload_too_large": "That is larger than the entry proxy accepts, so it was not sent."
+  "payload_too_large": "That is larger than the entry proxy accepts, so it was not sent.",
+  "passkey_no_credential": "The browser returned no passkey. Try again.",
+  "not_found": "That no longer exists. It may have been deleted; refresh and try again.",
+  "conflict": "Something changed in the meantime. Refresh and try again.",
+  "bad_request": "The request was not accepted: {{detail}}",
+  "restore_in_progress": "Another backup is still being restored to this server's world. Try again once it finishes.",
+  "uploads_full": "The upload store is full. An admin has to delete reviewed submissions before new uploads fit.",
+  "unsupported_media_type": "The request was sent in a format the server does not accept. Reload the page and try again."
 }
