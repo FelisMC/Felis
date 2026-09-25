@@ -392,6 +392,13 @@ describe("api access-control wire shapes", () => {
     expect(humanizeError({ code: "console_unavailable" })).toMatch(/console/i);
   });
 
+  it("says a server name is held by a world volume left behind", async () => {
+    const { humanizeError } = await import("./api");
+    expect(humanizeError({ status: 409, code: "world_volume_exists" })).toBe(
+      "An earlier server with that name left its world volume behind. Choose another name, or ask the operator to delete the old volume.",
+    );
+  });
+
   it("says why a user change was refused for the caller's own or the owner account", async () => {
     const { humanizeError } = await import("./api");
     expect(humanizeError({ status: 403, code: "self_protected" })).toBe(

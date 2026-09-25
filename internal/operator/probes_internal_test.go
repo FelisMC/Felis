@@ -54,3 +54,17 @@ func TestGameContainerProbes(t *testing.T) {
 		t.Fatalf("login-gate startup = %+v", p)
 	}
 }
+
+// Deleting a server's StatefulSet, or scaling it to zero, keeps the world claim.
+func TestWorldClaimOutlivesTheStatefulSet(t *testing.T) {
+	srv := &v1alpha1.MinecraftServer{ObjectMeta: metav1.ObjectMeta{Name: "survival", Namespace: "minecraft"}}
+	srv.Spec.Image = "itzg/minecraft-server:java21"
+	sts, err := buildStatefulSet(srv, 1, "felis:test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := sts.Spec.PersistentVolumeClaimRetentionPolicy
+	if p == nil || p.WhenDeleted != "Retain" || p.WhenScaled != "Retain" {
+		t.Fatalf("retention policy = %+v, want Retain on delete and on scale", p)
+	}
+}

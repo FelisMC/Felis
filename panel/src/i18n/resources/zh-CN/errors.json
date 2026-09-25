@@ -12,6 +12,7 @@
   "image_change_unconfirmed": "更换镜像会让世界用新构建的 Minecraft 版本打开，区块升级后无法再用旧版本打开。请先备份世界，再勾选确认后保存。",
   "subdomain_taken": "该子域名已被占用。",
   "already_exists": "同名服务器已存在。",
+  "world_volume_exists": "同名的旧服务器留下了世界卷。请换一个名称，或请运维删除旧的世界卷。",
   "cooldown": "启动冷却中——请稍后再试。",
   "not_running": "服务器未在运行——请先启动它再管理访问权限。",
   "console_unavailable": "暂时无法连接服务器控制台，请稍后重试。",

@@ -910,6 +910,10 @@ export function humanizeError(e: unknown): string {
       return t("subdomain_taken");
     case "already_exists":
       return t("already_exists");
+    // A server deleted by hand left its world volume; the name stays taken so a
+    // new server cannot mount the old world.
+    case "world_volume_exists":
+      return t("world_volume_exists");
     case "cooldown":
       return t("cooldown");
     // Access control (spec §7): the server must be Running for any RCON-backed

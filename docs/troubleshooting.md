@@ -1157,17 +1157,28 @@ leaves it off; only servers it actually filled get a line.
 
 ## 13. World PVC survives after I deleted the MinecraftServer
 
-This is expected. The world PVC is a StatefulSet `VolumeClaimTemplate`. There is
-**no `persistentVolumeClaimRetentionPolicy` and no finalizer** anywhere in the
-operator. Deleting the `MinecraftServer` garbage-collects the StatefulSet, but
-StatefulSet deletion does **not** cascade to its template PVCs, and nothing else
-cleans them up. So the world PVC **always survives** server deletion. The
-**only** code that deletes a world PVC is the reaper, and only after a verified
-backup (§10). To reclaim a world PVC manually:
+This is expected. The world PVC is a StatefulSet `VolumeClaimTemplate`, and the
+operator sets the StatefulSet's `persistentVolumeClaimRetentionPolicy` to
+`Retain` on delete and on scale, explicitly rather than by the API default.
+There is no finalizer. Deleting the `MinecraftServer` garbage-collects the
+StatefulSet and keeps the claim, so a `MinecraftServer` that comes back under
+the same name mounts the same world. The **only** code that deletes a world PVC
+is the reaper, and only after a verified backup (§10).
+
+A kept claim holds the name: creating a new server with it answers
+`409 world_volume_exists`, since the new server would otherwise mount the old
+world and hand it to its new owner. List the world claims whose server is gone:
 
 ```
-kubectl get pvc -l app.kubernetes.io/name=<name>
-kubectl delete pvc <pvc>      # irreversible — the world is gone
+comm -23 \
+  <(kubectl -n minecraft get pvc -l felis.lolicon.best/server -o jsonpath='{range .items[*]}{.metadata.labels.felis\.lolicon\.best/server}{"\n"}{end}' | sort) \
+  <(kubectl -n minecraft get minecraftservers -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' | sort)
+```
+
+To reclaim one (take a backup first if the world may still matter):
+
+```
+kubectl -n minecraft delete pvc world-<name>-0      # irreversible — the world is gone
 ```
 
 `spec.storage.retainOnDelete` sat in the CRD and reached no controller. Spec

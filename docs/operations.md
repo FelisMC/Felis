@@ -39,6 +39,13 @@ cloudflared is left as it is, see §4):
 32-bit hosts are not supported: there is no k3s, JRE or Go build the installer will fetch
 for them.
 
+One node is the whole supported shape. A world volume is a ReadWriteOnce claim on the
+node's local-path storage, so a game server's pod is pinned to the node that first
+scheduled it and cannot move when that node fails; the operator and felis-api each run
+as a single replica without leader election, so an upgrade or a node restart pauses
+wakes and stops until their pod is back. Joining k3s agents to the cluster is untested
+and gains no failover.
+
 ## 2. Sizing
 
 ### What the platform itself uses

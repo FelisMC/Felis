@@ -1731,16 +1731,17 @@ func (f *fakeRestorer) Restore(_ context.Context, name, ref string) error {
 }
 
 type fakeCluster struct {
-	byName    map[string]*ServerInfo
-	bySub     map[string]*ServerInfo
-	list      []ServerInfo
-	listErr   error
-	desired   map[string]v1alpha1.DesiredState
-	created   map[string]CreateServerInput // name -> the validated input it was created from
-	patched   map[string]ServerSpecPatch   // name -> the validated spec patch it received
-	noWorld   map[string]bool              // server names modeled WITHOUT a world volume (never started / reaped)
-	createErr error
-	pingErr   error
+	byName      map[string]*ServerInfo
+	bySub       map[string]*ServerInfo
+	list        []ServerInfo
+	listErr     error
+	desired     map[string]v1alpha1.DesiredState
+	created     map[string]CreateServerInput // name -> the validated input it was created from
+	patched     map[string]ServerSpecPatch   // name -> the validated spec patch it received
+	noWorld     map[string]bool              // server names modeled WITHOUT a world volume (never started / reaped)
+	orphanWorld map[string]bool              // names with a world volume but no server (CR deleted by hand)
+	createErr   error
+	pingErr     error
 	// maintErr / wakeErr: what AcquireMaintenance / SetDesiredState(Running)
 	// return for a server (the world-volume lock, internal/maintenance).
 	maintErr map[string]error
@@ -1775,10 +1776,15 @@ func (c *fakeCluster) ListServers(_ context.Context) ([]ServerInfo, error) {
 }
 func (c *fakeCluster) Ping(_ context.Context) error { return c.pingErr }
 
-// WorldVolumeExists models the world PVC: present unless the test named the
-// server in noWorld (never started / already reaped).
+// WorldVolumeExists models the world PVC: a known server has one unless the test
+// named it in noWorld (never started / already reaped); an unknown name has one
+// only when named in orphanWorld (its CR was deleted by hand).
 func (c *fakeCluster) WorldVolumeExists(_ context.Context, n string) (bool, error) {
-	return !c.noWorld[n], nil
+	if c.orphanWorld[n] {
+		return true, nil
+	}
+	_, known := c.byName[n]
+	return known && !c.noWorld[n], nil
 }
 
 func (c *fakeCluster) SetDesiredState(_ context.Context, n string, s v1alpha1.DesiredState) error {

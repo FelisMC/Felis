@@ -320,6 +320,16 @@ func buildStatefulSet(server *v1alpha1.MinecraftServer, replicas int32, felisIma
 				},
 			},
 			VolumeClaimTemplates: []corev1.PersistentVolumeClaim{pvc},
+			// The world outlives its StatefulSet: deleting the CR (and with it,
+			// by owner reference, the StatefulSet) keeps the claim, so a CR that
+			// comes back under the same name mounts the same world. The reaper is
+			// the one path that deletes a world, after its final backup. Stated
+			// here although it is the API default, so the semantics never ride on
+			// a default.
+			PersistentVolumeClaimRetentionPolicy: &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
+				WhenDeleted: appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+				WhenScaled:  appsv1.RetainPersistentVolumeClaimRetentionPolicyType,
+			},
 		},
 	}
 	return sts, nil

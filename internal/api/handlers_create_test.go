@@ -274,6 +274,21 @@ func TestCreateServerRejections(t *testing.T) {
 				}
 			},
 		},
+		{
+			// A CR deleted by hand keeps its world volume; a new server of that
+			// name would mount it and inherit the old world.
+			name: "world volume left by a deleted server",
+			body: validCreateBody,
+			setup: func(_ *fakeRepo, cl *fakeCluster) {
+				cl.orphanWorld = map[string]bool{"survival": true}
+			},
+			wantCode: http.StatusConflict, wantErr: "world_volume_exists",
+			check: func(t *testing.T, repo *fakeRepo, _ *fakeCluster) {
+				if repo.seeded["survival"] {
+					t.Error("a create refused over a leftover volume must not seed a servers row")
+				}
+			},
+		},
 	}
 
 	for _, c := range cases {

@@ -12,6 +12,7 @@
   "image_change_unconfirmed": "Changing the image opens the world with the new build's Minecraft version, and upgraded chunks can't be opened by the old one again. Back the world up, tick the confirmation, then save.",
   "subdomain_taken": "That subdomain is already in use.",
   "already_exists": "A server with that name already exists.",
+  "world_volume_exists": "An earlier server with that name left its world volume behind. Choose another name, or ask the operator to delete the old volume.",
   "cooldown": "Wake is cooling down — try again shortly.",
   "not_running": "The server isn't running — wake it before managing access.",
   "console_unavailable": "Can't reach the server console right now — try again shortly.",

@@ -475,6 +475,20 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A server deleted outside the reaper (kubectl delete) leaves its world
+	// volume behind: the StatefulSet retains claims on delete. A new server of
+	// the same name would mount that claim and hand the old world to its new
+	// owner, so the name stays taken until an operator removes the volume.
+	switch exists, err := a.Cluster.WorldVolumeExists(r.Context(), body.Name); {
+	case err != nil:
+		writeError(w, r, err)
+		return
+	case exists:
+		writeError(w, r, newError(http.StatusConflict, "world_volume_exists",
+			"the world volume of an earlier server named %q still exists; delete it or choose another name", body.Name))
+		return
+	}
+
 	// Seed the business rows FIRST (servers + alias). ClaimServer needs the row,
 	// so a CRD-only server would be unclaimable. PG-first means a later CRD
 	// failure leaves a claimable ghost row — acceptable, not transactional.
