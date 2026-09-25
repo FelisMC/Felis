@@ -1498,7 +1498,7 @@ runs changed:
 | Component | Restarted when |
 |---|---|
 | `felis-velocity` (the proxy) | its unit, the JRE, `velocity.jar`, `velocity.toml`, the forwarding secret, the felis-link settings or a plugin jar changed, or it was not running. The fingerprint lives in `/etc/felis/velocity.fingerprint`; delete it to force a restart. |
-| login and lobby pods | the rebuilt limbo or lobby image has a new image ID (`/etc/felis/system-server-images`). Each restarts on its own. The installer turns off BuildKit's default provenance attestation (`BUILDX_NO_DEFAULT_ATTESTATIONS=1`): it records the build time, which would give every rebuild a new ID. |
+| login and lobby pods | the rebuilt limbo or lobby image has a new image ID (`/etc/felis/system-server-images`). The installer then pins that server's `spec.image` to the digest its tag names now (`felis pin-images --system login\|lobby`) and the operator rolls the pod onto it, each on its own; with the registry unreachable it recreates the pod instead. The installer turns off BuildKit's default provenance attestation (`BUILDX_NO_DEFAULT_ATTESTATIONS=1`): it records the build time, which would give every rebuild a new ID. |
 | PostgreSQL | first install only (`listen_addresses` needs a restart). A rerun reloads the configuration, which keeps connections open. |
 | felis-api, felis-operator, the registry pod (its gate and GC containers run the felis binary) | the image tag changed (an upgrade), or a same-version rerun rebuilt it. |
 
@@ -1565,6 +1565,9 @@ created with pinned to the digest the tag named at that moment
 step pins any older server still on a bare tag *before* it pushes the new
 builds. Kubernetes pulls a digest-qualified ref by the digest, so a pinned
 server wakes on exactly the build it was created on, however often the tag moves.
+The login and lobby servers are pinned the same way, by the installer, each time
+it moves them onto a new build, so `kubectl -n minecraft get minecraftserver login
+-o jsonpath='{.spec.image}'` names the build the login gate runs.
 
 Each installer run also pushes every game build under a tag no later run
 rewrites, `<Minecraft version>-<12 hex of the image id>`
@@ -1588,6 +1591,7 @@ build no server and no whitelist entry names is pruned after 24 hours, and the
 | Create/edit refused with `image_not_in_registry` | the whitelisted tag was never pushed to the internal registry, or was deleted | push or rebuild the image, then retry |
 | Create/edit refused with `registry_unavailable` | felis-api could not reach `registry.felis.svc:5000` | `kubectl -n felis get pods -l app.kubernetes.io/component=registry`; check the `felis-registry-ingress` NetworkPolicy still admits felis-api |
 | Installer warns `could not pin every user server` | the registry was down, or a server names a tag the registry lost | fix the registry, then `sudo felis pin-images` before starting those servers; a server whose tag is gone keeps its bare tag until an admin picks a new image |
+| Installer warns `could not pin the login system server` (or lobby) | the registry did not answer right after the push | the installer recreated the pod instead, which starts the new build only while `spec.image` names the bare tag; rerun the installer once `kubectl -n felis get pods -l app.kubernetes.io/component=registry` is Ready |
 | A running server restarted during an installer re-run | it was pinned in place: the operator rolled it onto the pinned ref, the build it already ran | nothing; it happens once per server |
 | Create/edit refused with `the registry no longer holds build …` | the image names a digest the pruner deleted: nothing referenced it for 24 hours (§9) | pick a current tag; whitelist the versioned tag of a build you want kept |
 

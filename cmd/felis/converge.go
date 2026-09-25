@@ -92,10 +92,20 @@ func convergeUserServerIdle(ctx context.Context, cl client.Client, namespace str
 		if ms.Labels[v1alpha1.LabelSystemRole] != "" || ms.Spec.Idle != (v1alpha1.IdleSpec{}) {
 			continue
 		}
-		patch := client.MergeFrom(ms.DeepCopy())
-		ms.Spec.Idle = v1alpha1.DefaultIdle()
-		if err := cl.Patch(ctx, ms, patch); err != nil {
+		// Re-checked on the copy each attempt reads: an idle setting the panel saved
+		// meanwhile is the user's, and the default must not land over it.
+		changed, err := patchOnConflictRetry(ctx, cl, ms, func() bool {
+			if ms.Spec.Idle != (v1alpha1.IdleSpec{}) {
+				return false
+			}
+			ms.Spec.Idle = v1alpha1.DefaultIdle()
+			return true
+		})
+		if err != nil {
 			out = append(out, systemServerOutcome{name: ms.Name, err: fmt.Errorf("converge %s: %w", ms.Name, err)})
+			continue
+		}
+		if !changed {
 			continue
 		}
 		out = append(out, systemServerOutcome{name: ms.Name, available: true, updated: true,

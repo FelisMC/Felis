@@ -3732,27 +3732,34 @@ push_version_tag() {
   docker rmi "$versioned" >/dev/null 2>&1 || true
 }
 
-# The login/lobby images use mutable :demo tags. Importing/pushing a replacement
-# updates containerd, but an existing StatefulSet template is byte-for-byte
-# unchanged and Kubernetes will not roll it. Recreate the two always-on system
-# pods so a convergent bootstrap actually starts the images it just built — but
-# only when the build changed: every player online is on one of these two, and a
-# rerun that rebuilt nothing has nothing to start. SYSTEM_SERVER_IMAGES records the
-# build each was last started on; it is written after the restarts, so a run that
-# died in between restarts them next time.
+# The login/lobby images are built under mutable :demo tags, and an existing
+# StatefulSet whose template still names that tag will not roll onto a new build by
+# itself. When a build changed, each system server is pinned to the digest its tag
+# names now (felis pin-images --system, after push_images_to_registry): the new ref
+# changes the template, the operator rolls the pod onto it, and the build each one
+# runs is written in its spec. A pin that fails (registry down) falls back to
+# recreating the pod, which picks the build up only while the spec names the bare
+# tag. Only a changed build does either: every player online is on one of these
+# two, and a rerun that rebuilt nothing has nothing to start. SYSTEM_SERVER_IMAGES
+# records the build each was last moved to; it is written after the loop, so a run
+# that died in between moves them next time.
 restart_existing_system_servers() {
   local name id pods next=""
   while read -r name id; do
     [ -n "$name" ] || continue
     next="${next}${name} ${id}"$'\n'
-    pods="$(kube -n "$MINECRAFT_NS" get pod \
-      -l "felis.lolicon.best/server=${name}" -o name 2>/dev/null || true)"
-    [ -n "$pods" ] || continue
     if [ -n "$id" ] && grep -qxF "${name} ${id}" "$SYSTEM_SERVER_IMAGES" 2>/dev/null; then
       ok "${name} system server already runs this build; left running"
       continue
     fi
-    log "restarting existing ${name} system server to pick up its imported image"
+    if "$HOST_BIN" pin-images --system "$name" --namespace "$MINECRAFT_NS" \
+        --registry "$REGISTRY_URL" --endpoint "$REGISTRY_PUSH_HOST"; then
+      continue
+    fi
+    pods="$(kube -n "$MINECRAFT_NS" get pod \
+      -l "felis.lolicon.best/server=${name}" -o name 2>/dev/null || true)"
+    [ -n "$pods" ] || continue
+    warn "could not pin the ${name} system server to its new build (above); restarting its pod, which starts the new build only if its spec.image still names the bare tag. Rerun the installer once the registry answers."
     kube -n "$MINECRAFT_NS" delete pod \
       -l "felis.lolicon.best/server=${name}" --wait=false
   done <<EOF

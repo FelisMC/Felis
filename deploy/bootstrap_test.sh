@@ -1866,12 +1866,15 @@ rm -rf "$vdir"
 ssblock="$(awk '/^restart_existing_system_servers\(\) \{/,/^}/' "$BS")"
 [ -n "$ssblock" ] || { echo "FAIL: no restart_existing_system_servers found in $BS"; exit 1; }
 sdir2="$(mktemp -d)"
-run_system_restart() { # limbo-id lobby-id pods(0|1)
-  LIMBO_IMAGE_ID="$1" LOBBY_IMAGE_ID="$2" PODS="$3" SYSTEM_SERVER_IMAGES="$sdir2/state" \
-  LOGIN_SERVER=login LOBBY_SERVER=lobby MINECRAFT_NS=minecraft bash -c '
+run_system_restart() { # limbo-id lobby-id pods(0|1) pin-exit
+  LIMBO_IMAGE_ID="$1" LOBBY_IMAGE_ID="$2" PODS="$3" PIN_EXIT="${4:-0}" SYSTEM_SERVER_IMAGES="$sdir2/state" \
+  LOGIN_SERVER=login LOBBY_SERVER=lobby MINECRAFT_NS=minecraft HOST_BIN=felis \
+  REGISTRY_URL=registry.felis.svc:5000 REGISTRY_PUSH_HOST=127.0.0.1:5000 bash -c '
     set -Eeuo pipefail
     ok() { printf "OK: %s\n" "$*"; }
+    warn() { printf "WARN: %s\n" "$*"; }
     log() { :; }
+    felis() { printf "FELIS %s\n" "$*"; return "$PIN_EXIT"; }
     kube() {
       case "$*" in
         *"get pod"*) [ "$PODS" = 1 ] && printf "pod/x-0\n" || true ;;
@@ -1882,27 +1885,32 @@ run_system_restart() { # limbo-id lobby-id pods(0|1)
     restart_existing_system_servers'
 }
 out="$(run_system_restart sha256:aaa sha256:bbb 1)"
-expect "an unrecorded login pod is restarted" "delete pod -l felis.lolicon.best/server=login" "$out"
-expect "an unrecorded lobby pod is restarted" "delete pod -l felis.lolicon.best/server=lobby" "$out"
+expect "an unrecorded login build is pinned through the loopback registry" "FELIS pin-images --system login --namespace minecraft --registry registry.felis.svc:5000 --endpoint 127.0.0.1:5000" "$out"
+expect "an unrecorded lobby build is pinned" "FELIS pin-images --system lobby " "$out"
+case "$out" in
+  *delete*) echo "FAIL a successful pin also deleted a pod; the operator rolls it"; fails=$((fails + 1)) ;;
+  *) echo "PASS a successful pin leaves the roll to the operator" ;;
+esac
 out="$(run_system_restart sha256:aaa sha256:bbb 1)"
 case "$out" in
-  *delete*) echo "FAIL an unchanged rebuild restarted a system server"; fails=$((fails + 1)) ;;
+  *FELIS*|*delete*) echo "FAIL an unchanged rebuild moved a system server: $out"; fails=$((fails + 1)) ;;
   *"already runs this build"*) echo "PASS an unchanged rebuild leaves the system servers running" ;;
   *) echo "FAIL restart_existing_system_servers died on an unchanged rebuild: $out"; fails=$((fails + 1)) ;;
 esac
-out="$(run_system_restart sha256:aaa sha256:ccc 1)"
-expect "a new lobby build restarts the lobby" "delete pod -l felis.lolicon.best/server=lobby" "$out"
+out="$(run_system_restart sha256:aaa sha256:ccc 1 1)"
+expect "a failed pin warns and names the way out" "WARN: could not pin the lobby system server" "$out"
+expect "a failed pin falls back to restarting the pod" "KUBE -n minecraft delete pod -l felis.lolicon.best/server=lobby" "$out"
 case "$out" in
-  *"server=login"*) echo "FAIL a new lobby build restarted the login gate too"; fails=$((fails + 1)) ;;
-  *) echo "PASS a new lobby build leaves the login gate running" ;;
+  *"server=login"*|*"--system login"*) echo "FAIL a new lobby build moved the login gate too"; fails=$((fails + 1)) ;;
+  *) echo "PASS a new lobby build leaves the login gate alone" ;;
 esac
 rm -f "$sdir2/state"
-out="$(run_system_restart sha256:aaa sha256:ccc 0)"
+out="$(run_system_restart sha256:aaa sha256:ddd 0 1)"
 case "$out" in
   *delete*) echo "FAIL a missing pod was deleted"; fails=$((fails + 1)) ;;
   *) echo "PASS no pod, nothing to restart" ;;
 esac
-expect "the builds are recorded even before the pods exist" "lobby sha256:ccc" "$(cat "$sdir2/state")"
+expect "the builds are recorded even before the pods exist" "lobby sha256:ddd" "$(cat "$sdir2/state")"
 rm -rf "$sdir2"
 
 pgblock="$(awk '/^configure_postgres\(\) \{/,/^}/' "$BS")"

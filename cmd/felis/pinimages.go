@@ -11,7 +11,9 @@ import (
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/imagepin"
+	"felis.lolicon.best/internal/naming"
 	"felis.lolicon.best/internal/platform"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -35,10 +37,15 @@ func cmdPinImages(args []string, stdout, stderr io.Writer) int {
 	namespace := fs.String("namespace", platform.DefaultMinecraftNamespace, "namespace the MinecraftServers live in")
 	registry := fs.String("registry", defaultRegistryURL, "registry host[:port] the image refs spell")
 	endpoint := fs.String("endpoint", "", "host[:port] to reach the registry at (default: 127.0.0.1 on the registry's port, its hostPort on this node)")
+	system := fs.String("system", "", "pin this system server ("+naming.SystemLoginServer+" or "+naming.SystemLobbyServer+") to the build its tag names now, instead of the user servers")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
 		}
+		return 2
+	}
+	if *system != "" && *system != naming.SystemLoginServer && *system != naming.SystemLobbyServer {
+		fmt.Fprintf(stderr, "felis pin-images: --system takes %s or %s, not %q\n", naming.SystemLoginServer, naming.SystemLobbyServer, *system)
 		return 2
 	}
 	if *endpoint == "" {
@@ -51,6 +58,9 @@ func cmdPinImages(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
+	if *system != "" {
+		return reportSystemPin(ctx, cl, *namespace, *system, imagepin.Resolver{Registry: *registry, Endpoint: *endpoint}, stdout, stderr)
+	}
 	outcomes, err := pinUserServerImages(ctx, cl, *namespace, imagepin.Resolver{Registry: *registry, Endpoint: *endpoint})
 	if meta.IsNoMatchError(err) {
 		fmt.Fprintln(stdout, "felis pin-images: no MinecraftServer CRD yet, so no server to pin")
@@ -77,6 +87,84 @@ func cmdPinImages(args []string, stdout, stderr io.Writer) int {
 	return exit
 }
 
+// reportSystemPin runs pinSystemServerImage for `felis pin-images --system` and
+// prints what it did. Only a failed pin exits non-zero: the installer falls back
+// to restarting the pod on its tag then.
+func reportSystemPin(ctx context.Context, cl client.Client, namespace, name string, r imagepin.Resolver, stdout, stderr io.Writer) int {
+	o, err := pinSystemServerImage(ctx, cl, namespace, name, r)
+	switch {
+	case meta.IsNoMatchError(err):
+		fmt.Fprintln(stdout, "felis pin-images: no MinecraftServer CRD yet, so no server to pin")
+		return 0
+	case err == nil && o.err != nil:
+		err = o.err
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "felis pin-images: %s: %v\n", name, err)
+		return 1
+	}
+	switch {
+	case o.updated:
+		fmt.Fprintf(stdout, "felis pin-images: %s: %s; the operator rolls it onto that build\n", name, strings.Join(o.changes, ", "))
+	default:
+		fmt.Fprintf(stdout, "felis pin-images: %s: %s\n", name, o.skipped)
+	}
+	return 0
+}
+
+// pinSystemServerImage fixes a system server to the build its image tag names now,
+// replacing the digest of an earlier build. The installer runs it after pushing a
+// rebuilt login or lobby image, and the operator rolls the StatefulSet onto the new
+// ref, so the build a system server runs is written in its spec and moves only when
+// a build did. An image outside the platform registry, or one naming no tag to
+// follow, is the admin's choice and is left alone; so is a server whose image an
+// admin retargets while this runs.
+func pinSystemServerImage(ctx context.Context, cl client.Client, namespace, name string, r imagepin.Resolver) (systemServerOutcome, error) {
+	var ms v1alpha1.MinecraftServer
+	if err := cl.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, &ms); err != nil {
+		if apierrors.IsNotFound(err) {
+			return systemServerOutcome{name: name, skipped: "not present yet; sudo felis setup creates it"}, nil
+		}
+		return systemServerOutcome{}, err
+	}
+	if ms.Labels[v1alpha1.LabelSystemRole] != name {
+		return systemServerOutcome{name: name, err: fmt.Errorf(
+			"MinecraftServer %s/%s is not marked as the Felis %q system server; left alone", namespace, name, name)}, nil
+	}
+	tagged := withoutDigest(ms.Spec.Image)
+	if !r.Covers(tagged) || !strings.Contains(tagged[strings.LastIndex(tagged, "/")+1:], ":") {
+		return systemServerOutcome{name: name, available: true, skipped: "runs " + ms.Spec.Image +
+			", which names no platform registry tag to follow; left alone"}, nil
+	}
+	pinned, err := r.Pin(ctx, tagged)
+	if err != nil {
+		return systemServerOutcome{name: name, err: fmt.Errorf("resolve %s: %w", tagged, err)}, nil
+	}
+	changed, err := patchOnConflictRetry(ctx, cl, &ms, func() bool {
+		if withoutDigest(ms.Spec.Image) != tagged || ms.Spec.Image == pinned {
+			return false
+		}
+		ms.Spec.Image = pinned
+		return true
+	})
+	if err != nil {
+		return systemServerOutcome{name: name, err: fmt.Errorf("patch %s: %w", name, err)}, nil
+	}
+	if !changed {
+		return systemServerOutcome{name: name, available: true, skipped: "already runs " + ms.Spec.Image}, nil
+	}
+	return systemServerOutcome{name: name, available: true, updated: true,
+		changes: []string{"spec.image pinned to " + pinned}}, nil
+}
+
+// withoutDigest drops the @sha256:… of a pinned ref, leaving the tag it came from.
+func withoutDigest(ref string) string {
+	if i := strings.Index(ref, "@"); i >= 0 {
+		return ref[:i]
+	}
+	return ref
+}
+
 // loopbackEndpoint is the registry's port on 127.0.0.1: the registry Deployment
 // binds it as a hostPort, and containerd's mirror and the installer's pushes use
 // the same address.
@@ -88,8 +176,9 @@ func loopbackEndpoint(registry string) string {
 }
 
 // pinUserServerImages patches spec.image of every user server whose image the
-// resolver covers and is not yet pinned. System servers are left on their tags:
-// the installer rebuilds and restarts them on purpose (restart_existing_system_servers).
+// resolver covers and is not yet pinned. System servers are the installer's to move:
+// it re-pins them with --system when it rolls them onto a new build
+// (restart_existing_system_servers).
 // A server that is already pinned, or runs an image from elsewhere, produces no
 // outcome, so a pinned fleet reports nothing. A running server restarts once as
 // the operator rolls its StatefulSet onto the pinned ref, which is the build it

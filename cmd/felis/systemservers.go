@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -392,21 +393,48 @@ var derivedSystemEnv = map[string]bool{
 // operator every run.
 func refreshDerivedEnv(ctx context.Context, cl client.Client, existing, desired *v1alpha1.MinecraftServer) (bool, error) {
 	want := derivedEnvWanted(desired)
-
-	changed := false
-	for i, e := range existing.Spec.Env {
-		if v, ok := want[e.Name]; ok && v != e.Value {
-			existing.Spec.Env[i].Value = v
-			changed = true
+	changed, err := patchOnConflictRetry(ctx, cl, existing, func() bool {
+		changed := false
+		for i, e := range existing.Spec.Env {
+			if v, ok := want[e.Name]; ok && v != e.Value {
+				existing.Spec.Env[i].Value = v
+				changed = true
+			}
 		}
-	}
-	if !changed {
-		return false, nil
-	}
-	if err := cl.Update(ctx, existing); err != nil {
+		return changed
+	})
+	if err != nil {
 		return false, fmt.Errorf("refresh %s env: %w", existing.Name, err)
 	}
-	return true, nil
+	return changed, nil
+}
+
+// patchOnConflictRetry applies mutate to obj and sends only the difference, as a
+// merge patch that carries the resourceVersion obj was read at. The operator writes
+// status and felis-api patches spec.idle on these same objects, so a write can land
+// between setup's read and its patch: the apiserver then answers 409, and this
+// re-reads obj and runs mutate again on the fresh copy, up to retry.DefaultRetry's
+// five attempts. The pinned resourceVersion is what keeps a list field such as
+// spec.env safe — a merge patch replaces a list whole, and without the lock an
+// entry added concurrently would be dropped. mutate reports whether it changed
+// anything; nothing is sent when it did not. obj holds the stored object after.
+func patchOnConflictRetry(ctx context.Context, cl client.Client, obj client.Object, mutate func() bool) (bool, error) {
+	key := client.ObjectKeyFromObject(obj)
+	changed, reread := false, false
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if reread {
+			if err := cl.Get(ctx, key, obj); err != nil {
+				return err
+			}
+		}
+		reread = true
+		base := obj.DeepCopyObject().(client.Object)
+		if changed = mutate(); !changed {
+			return nil
+		}
+		return cl.Patch(ctx, obj, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+	})
+	return changed, err
 }
 
 // derivedEnvWanted maps the derived env keys of desired onto their values.
@@ -469,22 +497,25 @@ func convergeSystemServers(ctx context.Context, cl client.Client, namespace, log
 		}
 
 		var changes []string
-		if existing.Spec.Rcon == (v1alpha1.RconSpec{}) && desired.Spec.Rcon != (v1alpha1.RconSpec{}) {
-			existing.Spec.Rcon = desired.Spec.Rcon
-			changes = append(changes, "spec.rcon")
-		}
-		if existing.Spec.Startup.HealthHTTPPort == 0 && desired.Spec.Startup.HealthHTTPPort != 0 {
-			existing.Spec.Startup.HealthHTTPPort = desired.Spec.Startup.HealthHTTPPort
-			changes = append(changes, "spec.startup.healthHTTPPort")
-		}
-		changes = append(changes, convergeDerivedEnv(&existing, desired)...)
-
-		if len(changes) == 0 {
-			outcomes = append(outcomes, systemServerOutcome{name: p.name, available: true, skipped: "already converged"})
+		changed, err := patchOnConflictRetry(ctx, cl, &existing, func() bool {
+			changes = nil
+			if existing.Spec.Rcon == (v1alpha1.RconSpec{}) && desired.Spec.Rcon != (v1alpha1.RconSpec{}) {
+				existing.Spec.Rcon = desired.Spec.Rcon
+				changes = append(changes, "spec.rcon")
+			}
+			if existing.Spec.Startup.HealthHTTPPort == 0 && desired.Spec.Startup.HealthHTTPPort != 0 {
+				existing.Spec.Startup.HealthHTTPPort = desired.Spec.Startup.HealthHTTPPort
+				changes = append(changes, "spec.startup.healthHTTPPort")
+			}
+			changes = append(changes, convergeDerivedEnv(&existing, desired)...)
+			return len(changes) > 0
+		})
+		if err != nil {
+			outcomes = append(outcomes, systemServerOutcome{name: p.name, err: fmt.Errorf("converge %s: %w", p.name, err)})
 			continue
 		}
-		if err := cl.Update(ctx, &existing); err != nil {
-			outcomes = append(outcomes, systemServerOutcome{name: p.name, err: fmt.Errorf("converge %s: %w", p.name, err)})
+		if !changed {
+			outcomes = append(outcomes, systemServerOutcome{name: p.name, available: true, skipped: "already converged"})
 			continue
 		}
 		outcomes = append(outcomes, systemServerOutcome{name: p.name, available: true, updated: true, changes: changes})
@@ -677,15 +708,21 @@ func ensureSecretReplica(ctx context.Context, cl client.Client, controlNamespace
 		if out := validate(&src, controlNamespace, ""); !out.available {
 			return out
 		}
-		if bytes.Equal(existing.Data[secretKey], src.Data[secretKey]) {
-			return validate(existing, minecraftNamespace, "already current")
-		}
-		if existing.Data == nil {
-			existing.Data = map[string][]byte{}
-		}
-		existing.Data[secretKey] = src.Data[secretKey]
-		if err := cl.Update(ctx, existing); err != nil {
+		changed, err := patchOnConflictRetry(ctx, cl, existing, func() bool {
+			if bytes.Equal(existing.Data[secretKey], src.Data[secretKey]) {
+				return false
+			}
+			if existing.Data == nil {
+				existing.Data = map[string][]byte{}
+			}
+			existing.Data[secretKey] = src.Data[secretKey]
+			return true
+		})
+		if err != nil {
 			return systemServerOutcome{name: name, err: err}
+		}
+		if !changed {
+			return validate(existing, minecraftNamespace, "already current")
 		}
 		return systemServerOutcome{name: name, updated: true, available: true}
 	}
