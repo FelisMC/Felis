@@ -140,8 +140,9 @@ message is the verbatim dial error:
   backend's `rcon.password`. Reconcile the two. [GO-TESTED that this maps to
   `RconNotReachable`.]
 - `connection refused` / `i/o timeout` → the backend has not opened the RCON
-  port yet, RCON is disabled in `server.properties`, or `spec.rcon.port`
-  (default 25575) is wrong. [INTEGRATION-ONLY for the live handshake.]
+  port yet, RCON is disabled in `server.properties`, or the image listens on a
+  port other than 25575 (the CRD accepts only that one for `spec.rcon.port`,
+  operations.md §4). [INTEGRATION-ONLY for the live handshake.]
 
 The per-probe timeout is a fixed 5s in code (`prober.go:45`, shortened further if
 the reconcile context has a nearer deadline). It is **not** derived from

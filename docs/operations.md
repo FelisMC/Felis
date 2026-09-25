@@ -44,7 +44,9 @@ node's local-path storage, so a game server's pod is pinned to the node that fir
 scheduled it and cannot move when that node fails; the operator and felis-api each run
 as a single replica without leader election, so an upgrade or a node restart pauses
 wakes and stops until their pod is back. Joining k3s agents to the cluster is untested
-and gains no failover.
+and gains no failover. A multi-node shape would need, at least, storage that can follow a
+pod to another node and leader election in felis-operator (controller-runtime's
+`LeaderElection`) so a second replica can stand by.
 
 ## 2. Sizing
 
@@ -260,6 +262,37 @@ sudo -u postgres pg_dumpall > /root/felis-pg-$(date +%F).sql
 sudo systemctl start postgresql
 sudo k3s kubectl -n felis scale deploy/felis-api deploy/felis-operator --replicas=1
 ```
+
+### The MinecraftServer CRD [VM-VERIFIED]
+
+Every rerun applies the CRD embedded in the `felis` binary (`felis bootstrap-assets crd`).
+It serves and stores the single version `v1alpha1`, and the apiserver refuses values the
+operator cannot act on:
+
+| Field | Accepted |
+|---|---|
+| `spec.rcon.port` | unset, `0` or `25575`: the allow-rcon NetworkPolicy opens only 25575, so any other port leaves the server unprobeable |
+| `spec.startup.timeoutSeconds`, `readinessTimeoutSeconds` | 0 – 86400 |
+| `spec.startup.healthHTTPPort` | 0 – 65535 |
+| `spec.lifecycle.terminationGracePeriodSeconds` | 0 – 3600 |
+| `spec.idle.emptySecondsBeforeStop` | 0 – 604800 (the panel caps it at 86400) |
+
+`0` means the operator's default throughout. An object stored before these rules keeps an
+out-of-range value until someone edits that field (CRD validation ratcheting). The operator
+reads a negative value as its default and an oversized one as written, so fix such a
+value by hand: `kubectl -n minecraft edit minecraftserver <name>`.
+
+**Moving to `v1beta1` (planned, not built).** The first breaking change to the spec ships as a new
+version, in this order, each step one release:
+
+1. The CRD serves `v1alpha1` and `v1beta1`, storage stays `v1alpha1`. While the two
+   schemas carry the same fields, `conversion.strategy: None` suffices; a renamed or
+   reshaped field needs a conversion webhook, which felis-operator would serve.
+2. Storage moves to `v1beta1`. The installer rewrites every object so etcd holds the new
+   version (`kubectl get minecraftservers -A -o json | kubectl replace -f -`), then sets
+   `status.storedVersions` of the CRD to `["v1beta1"]`.
+3. A later release stops serving `v1alpha1`. Felis itself reads through one Go type at a
+   time, so the operator and felis-api switch in the release that moves storage.
 
 ## 5. Disaster recovery
 

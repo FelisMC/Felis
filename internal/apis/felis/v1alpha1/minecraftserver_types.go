@@ -174,10 +174,17 @@ type MotdSpec struct {
 }
 
 // RconSpec configures RCON (spec §4 spec.rcon).
+//
+// The port stays the default: the allow-rcon NetworkPolicy (internal/platform
+// netpol.go) admits the operator and felis-api on 25575 only, so any other port
+// would leave the server unprobeable and stuck in Starting.
+// +kubebuilder:validation:XValidation:rule="!has(self.port) || self.port == 0 || self.port == 25575",message="the allow-rcon NetworkPolicy admits only port 25575; leave port unset"
 type RconSpec struct {
 	// Enabled must be true for readiness probing and graceful shutdown.
 	Enabled bool `json:"enabled,omitempty"`
 	// Port is the RCON TCP port (default 25575).
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
 	Port int32 `json:"port,omitempty"`
 	// SecretRef points at the Secret holding the RCON password.
 	SecretRef SecretKeyRef `json:"secretRef,omitempty"`
@@ -202,14 +209,20 @@ type StorageSpec struct {
 // then the time the server has to finish its own shutdown save after SIGTERM.
 type LifecycleSpec struct {
 	// TerminationGracePeriodSeconds is the pod grace period (default 300).
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=3600
 	TerminationGracePeriodSeconds int64 `json:"terminationGracePeriodSeconds,omitempty"`
 }
 
 // StartupSpec bounds the Starting phase (spec §5).
 type StartupSpec struct {
 	// TimeoutSeconds is the overall budget before the server is marked Failed.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=86400
 	TimeoutSeconds int32 `json:"timeoutSeconds,omitempty"`
 	// ReadinessTimeoutSeconds is the budget for the first successful RCON probe.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=86400
 	ReadinessTimeoutSeconds int32 `json:"readinessTimeoutSeconds,omitempty"`
 	// HealthHTTPPort, when > 0, switches the pod readiness probe from the default
 	// plain-TCP check on the game port to an HTTP GET on this container port. It
@@ -219,6 +232,8 @@ type StartupSpec struct {
 	// only after the first server tick. The operator's readiness path is otherwise
 	// unchanged — with rcon disabled, passing this probe (readyReplicas >= 1) is
 	// what marks the server Ready.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65535
 	HealthHTTPPort int32 `json:"healthHTTPPort,omitempty"`
 	// HealthHTTPPath is the path for the HTTP readiness probe (default "/healthz"
 	// when HealthHTTPPort is set).
@@ -246,7 +261,10 @@ type IdleSpec struct {
 	// AutoStopEnabled turns on idle auto-stop.
 	AutoStopEnabled bool `json:"autoStopEnabled,omitempty"`
 	// EmptySecondsBeforeStop is how long the server may sit empty before the
-	// operator scales it down.
+	// operator scales it down. The API caps what the panel sets well below the
+	// schema's week.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=604800
 	EmptySecondsBeforeStop int32 `json:"emptySecondsBeforeStop,omitempty"`
 }
 

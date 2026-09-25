@@ -101,6 +101,8 @@ spec:
                       EmptySecondsBeforeStop is how long the server may sit empty before the
                       operator scales it down.
                     format: int32
+                    maximum: 604800
+                    minimum: 0
                     type: integer
                 type: object
               image:
@@ -127,6 +129,8 @@ spec:
                     description: TerminationGracePeriodSeconds is the pod grace period
                       (default 300).
                     format: int64
+                    maximum: 3600
+                    minimum: 0
                     type: integer
                 type: object
               motd:
@@ -159,6 +163,8 @@ spec:
                   port:
                     description: Port is the RCON TCP port (default 25575).
                     format: int32
+                    maximum: 65535
+                    minimum: 0
                     type: integer
                   secretRef:
                     description: SecretRef points at the Secret holding the RCON password.
@@ -172,6 +178,10 @@ spec:
                     - name
                     type: object
                 type: object
+                x-kubernetes-validations:
+                - message: the allow-rcon NetworkPolicy admits only port 25575; leave
+                    port unset
+                  rule: '!has(self.port) || self.port == 0 || self.port == 25575'
               reaperExempt:
                 description: ReaperExempt opts this server out of the world reaper
                   entirely (spec §18).
@@ -250,16 +260,22 @@ spec:
                       (notably LOOHP/Limbo) where the felis-limbo plugin reports true
                       readiness only after the first server tick.
                     format: int32
+                    maximum: 65535
+                    minimum: 0
                     type: integer
                   readinessTimeoutSeconds:
                     description: ReadinessTimeoutSeconds is the budget for the first
                       successful RCON probe.
                     format: int32
+                    maximum: 86400
+                    minimum: 0
                     type: integer
                   timeoutSeconds:
                     description: TimeoutSeconds is the overall budget before the server
                       is marked Failed.
                     format: int32
+                    maximum: 86400
+                    minimum: 0
                     type: integer
                 type: object
               storage:

@@ -21,14 +21,11 @@ const gamePort = operator.GamePort
 // so the policy and the server container's default RCON port are one source of
 // truth.
 //
-// LIMITATION (honestly labeled, not verifiable without a cluster): RCON is
-// per-server overridable via spec.rcon.port (internal/operator.rconPort), but this
-// is one namespace-wide policy that can open only a single port. It opens the
-// default. A server that overrides spec.rcon.port to a non-default value would have
-// its RCON port denied by this fence, so the operator's readiness prober could not
-// reach it. The supported deployment keeps the default RCON port; a per-server-port
-// deployment would need per-server NetworkPolicies, deferred until a concrete need
-// exists.
+// This is one namespace-wide policy, so it opens a single port: the default. The
+// CRD holds spec.rcon.port to unset, 0 or 25575 with a CEL rule (RconSpec in
+// internal/apis/felis/v1alpha1), so no server can move RCON behind this fence and
+// leave the operator's readiness prober outside it. Per-server ports would need
+// per-server NetworkPolicies and a relaxed rule, together.
 const rconPort = operator.DefaultRconPort
 
 // serverPodSelector matches every operator-managed Minecraft server pod by the
