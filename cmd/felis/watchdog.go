@@ -28,7 +28,8 @@ const proxyFor = 3 * time.Minute
 
 // cmdWatchdog runs one pass of the platform watchdog (internal/watchdog): it
 // checks the cluster, PostgreSQL, the game proxy, the database backups and the
-// host, prints every finding, and mails the platform owners what came due.
+// host (disks, memory, its address and clock), prints every finding, and mails
+// the platform owners what came due.
 // deploy/bootstrap.sh runs it every two minutes from felis-watchdog.timer.
 func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("watchdog", flag.ContinueOnError)
@@ -39,6 +40,7 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 	backupDir := fs.String("backup-dir", "/var/lib/felis/db-backups", `control-plane database backups to check for freshness ("" skips the check)`)
 	diskPaths := fs.String("disk-paths", "/,/var/lib/rancher/k3s,/var/lib/postgresql,/var/lib/felis", "comma-separated paths whose filesystems must keep free space")
 	proxyAddr := fs.String("proxy-addr", "", `game proxy address to dial, e.g. 127.0.0.1:25565 ("" skips the check)`)
+	nodeIP := fs.String("node-ip", "", `the node address the install was made on, which must stay on this host ("" skips the check)`)
 	controlNS := fs.String("control-namespace", platform.DefaultControlNamespace, "namespace of the control plane")
 	offsiteStatus := fs.String("offsite-status", offsite.DefaultStatusFile, "the record `felis offsite sync` leaves, checked when [offsite] is configured")
 	toolsStatus := fs.String("build-tools-status", defaultBuildToolsStatus, "the record `felis mirror-build-tools` leaves, checked when builds scan against the registry's DB copy")
@@ -112,6 +114,12 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 	}
 	report.Findings = append(report.Findings, watchdog.DiskFindings(splitList(*diskPaths))...)
 	add(watchdog.MemoryFinding("/proc/meminfo"))
+	if *nodeIP != "" {
+		if held, err := watchdog.HostAddresses(); err == nil {
+			add(watchdog.AddressFinding(*nodeIP, held))
+		}
+	}
+	add(watchdog.ClockFinding(watchdog.ClockStatus()))
 
 	if len(report.Findings) == 0 {
 		fmt.Fprintln(stdout, "felis watchdog: every check passed")
