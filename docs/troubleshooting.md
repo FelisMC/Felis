@@ -374,6 +374,16 @@ the no-Zero-Trust face is never exposed on a node. On the control-plane node the
 break-glass console reaches it by resolving that Service's ClusterIP and dialing
 `:8081`.
 
+The face speaks plain HTTP, and the tokens cross it in the clear. That holds up because
+no hop leaves the node: the proxy runs on the node and dials the ClusterIP, and the
+login pod and the build Job are pods on the same node, so reading the traffic takes root
+there, which also reads the tokens from disk. Pods reach the face only where a policy
+opens it: `felis-login-to-internal-api` for the login pod and `felis-build-egress` for
+the build Job; `felis-server-egress` keeps every other game server (lobby included) off
+all private ranges, 8081 among them. A Velocity on another host would put the `velocity`
+token on the wire, which is one more reason the proxy belongs on the node (§1 of
+`docs/operations.md`); a multi-node shape would need TLS on this face first.
+
 - **Internal calls fail to *connect* (not 401)** → the `felis-api-internal` Service
   is missing or its selector no longer matches the api pods. `kubectl -n felis get
   svc felis-api-internal` must show a ClusterIP with 8081; a bare `felis-api` name
