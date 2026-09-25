@@ -4,7 +4,8 @@
 // previous manifest behind, a whitelist entry an admin removes keeps its image,
 // and each installer run adds a platform image.
 //
-// A manifest is kept when any of these hold:
+// A manifest is kept when any of these hold, and so is every manifest a kept
+// image index names (its per-platform images and attestations):
 //
 //   - an image reference the platform still depends on names it: a whitelist
 //     entry (by tag, by wildcard tag, or by digest), a server's spec (servers are
@@ -211,14 +212,38 @@ func Plan(indexes map[string]*registrygate.Index, refs []string, host string, no
 			}
 		}
 		for _, r := range idx.Revisions {
-			t := Target{repo, r.Digest}
-			if keep[t] || now.Sub(r.Pushed) < grace {
-				continue
+			if now.Sub(r.Pushed) < grace {
+				keep[Target{repo, r.Digest}] = true
 			}
-			out = append(out, t)
+		}
+		keepChildren(repo, idx, keep)
+		for _, r := range idx.Revisions {
+			if t := (Target{repo, r.Digest}); !keep[t] {
+				out = append(out, t)
+			}
 		}
 	}
 	return out
+}
+
+// keepChildren extends keep from each kept image index to the manifests it names:
+// the per-platform images and their attestations, which no ref spells but every
+// pull of the index fetches. An index can name another index, so it runs to a
+// fixed point.
+func keepChildren(repo string, idx *registrygate.Index, keep map[Target]bool) {
+	for grew := true; grew; {
+		grew = false
+		for _, r := range idx.Revisions {
+			if !keep[Target{repo, r.Digest}] {
+				continue
+			}
+			for _, c := range r.Children {
+				if t := (Target{repo, c}); !keep[t] {
+					keep[t], grew = true, true
+				}
+			}
+		}
+	}
 }
 
 // newestTagged returns the n most recently pushed distinct digests any tag in idx

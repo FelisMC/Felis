@@ -111,6 +111,40 @@ func TestPlanKeepsTheNewestTaggedPlatformImages(t *testing.T) {
 	}
 }
 
+// A BuildKit push stores an image index plus one untagged revision per platform
+// and per attestation, and a server's spec pins the index. The children must stay
+// with it: the VM's test-one lost its arm64 manifest this way and could no longer
+// pull the paper image it was pinned to.
+func TestPlanKeepsTheManifestsAKeptIndexNames(t *testing.T) {
+	withKids := func(r registrygate.Revision, kids ...string) registrygate.Revision {
+		for _, k := range kids {
+			r.Children = append(r.Children, dg(k))
+		}
+		return r
+	}
+	indexes := map[string]*registrygate.Index{
+		"felis/paper": {
+			Revisions: []registrygate.Revision{
+				// i: index pinned by a server, naming platform p and attestation q.
+				withKids(rev("i", 30*day), "p", "q"), rev("p", 30*day), rev("q", 30*day),
+				// j: an unused index; it goes with its children r and s.
+				withKids(rev("j", 40*day), "r", "s"), rev("r", 40*day), rev("s", 40*day),
+				// k: the newest tagged index names a nested index n, which names m.
+				withKids(rev("k", 2*day), "n"), withKids(rev("n", 2*day), "m"), rev("m", 2*day),
+				// o: a child of an index the registry no longer holds: goes.
+				rev("o", 50*day),
+			},
+			Tags: map[string]string{"demo": dg("k")},
+		},
+	}
+	refs := []string{host + "/felis/paper:demo@" + dg("i")}
+	got := targets(Plan(indexes, refs, host, now, day, 1))
+	want := []string{"felis/paper@j", "felis/paper@o", "felis/paper@r", "felis/paper@s"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("plan = %v, want %v", got, want)
+	}
+}
+
 func TestParseRef(t *testing.T) {
 	for _, c := range []struct {
 		ref, repo, tag, digest string
@@ -295,5 +329,75 @@ func TestRunThroughTheGate(t *testing.T) {
 	}
 	if len(deletes) != 1 || deletes[0] != want {
 		t.Fatalf("upstream deletes = %q, want [%q]", deletes, want)
+	}
+}
+
+// The gate reads an index's children off the blob store, so a pinned index keeps
+// its platform manifest end to end, and an unpinned one goes with it.
+func TestRunThroughTheGateKeepsAPinnedIndexWhole(t *testing.T) {
+	root := t.TempDir()
+	repoDir := filepath.Join(root, "docker/registry/v2/repositories/felis/paper/_manifests")
+	hexOf := func(c string) string { return strings.Repeat(c, 64) }
+	blob := func(hex, body string) {
+		dir := filepath.Join(root, "docker/registry/v2/blobs/sha256", hex[:2], hex)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "data"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []string{"1", "2", "3", "4"} {
+		dir := filepath.Join(repoDir, "revisions/sha256", hexOf(c))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "link"), []byte("sha256:"+hexOf(c)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	index := func(child string) string {
+		return `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[` +
+			`{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"sha256:` + hexOf(child) + `","size":2189,"platform":{"architecture":"arm64","os":"linux"}}]}`
+	}
+	blob(hexOf("1"), index("2")) // pinned index -> 2
+	blob(hexOf("2"), `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","layers":[]}`)
+	blob(hexOf("3"), index("4")) // unused index -> 4
+
+	var mu sync.Mutex
+	var deleted []string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v2/_catalog":
+			_, _ = w.Write([]byte(`{"repositories":["felis/paper"]}`))
+		case r.Method == http.MethodDelete:
+			mu.Lock()
+			deleted = append(deleted, r.URL.Path[strings.LastIndex(r.URL.Path, ":")+1:][:1])
+			mu.Unlock()
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(up.Close)
+	target, _ := url.Parse(up.URL)
+	g := registrygate.New(target, map[string]string{registrygate.PrincipalPrune: "prune-secret"}, nil)
+	g.DataDir = root
+	gate := httptest.NewServer(g)
+	t.Cleanup(gate.Close)
+
+	refs := func(context.Context) ([]string, error) {
+		return []string{host + "/felis/paper:demo@sha256:" + hexOf("1")}, nil
+	}
+	p := &Pruner{Registry: &Client{Endpoint: gate.URL, Token: "prune-secret"}, Host: host, Refs: refs,
+		Now: func() time.Time { return time.Now().Add(48 * time.Hour) }}
+	if _, err := p.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	sort.Strings(deleted)
+	if fmt.Sprint(deleted) != "[3 4]" {
+		t.Fatalf("deleted = %v, want [3 4]: the pinned index 1 and its platform manifest 2 stay", deleted)
 	}
 }

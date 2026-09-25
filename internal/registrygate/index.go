@@ -3,6 +3,7 @@ package registrygate
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"net/http"
 	"os"
@@ -15,7 +16,7 @@ import (
 
 // IndexPathPrefix serves the manifest index of one repository:
 //
-//	GET /felis/manifests/<repo>  {"revisions":[{"digest":…,"pushed":…}],"tags":{"<tag>":"<digest>"}}
+//	GET /felis/manifests/<repo>  {"revisions":[{"digest":…,"pushed":…,"children":[…]}],"tags":{"<tag>":"<digest>"}}
 //
 // The registry API can list a repository's tags but not its manifests, so a
 // manifest a tag moved off (every rebuild of :demo or :latest leaves one) is
@@ -39,6 +40,45 @@ type Index struct {
 type Revision struct {
 	Digest string    `json:"digest"`
 	Pushed time.Time `json:"pushed"`
+	// Children lists the manifests an image index (or Docker manifest list) names:
+	// one per platform, plus BuildKit's attestation manifests. Each is a revision
+	// of its own, untagged and never spelled in an image ref, yet a pull of the
+	// index fetches them, so whoever keeps the index must keep them too. Empty for
+	// a single-platform manifest.
+	Children []string `json:"children,omitempty"`
+}
+
+// maxManifestBytes caps how much of a revision's blob is read to find its
+// children. It is the registry's own limit on a pushed manifest.
+const maxManifestBytes = 4 << 20
+
+// manifestChildren reads a manifest blob off the filesystem driver's layout and
+// returns the digests it names when it is an index. A blob that is missing,
+// oversized or unparsable names nothing: a pull of it fails already, and the
+// pruner then treats it like any other revision.
+func manifestChildren(root, hex string) []string {
+	f, err := os.Open(filepath.Join(root, "docker", "registry", "v2", "blobs", "sha256", hex[:2], hex, "data"))
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	// The manifests array is what makes an index, whatever mediaType says (an OCI
+	// index may omit it); a single-platform manifest has layers and no manifests.
+	var m struct {
+		Manifests []struct {
+			Digest string `json:"digest"`
+		} `json:"manifests"`
+	}
+	if err := json.NewDecoder(io.LimitReader(f, maxManifestBytes)).Decode(&m); err != nil {
+		return nil
+	}
+	var out []string
+	for _, c := range m.Manifests {
+		if digestRE.MatchString(c.Digest) {
+			out = append(out, c.Digest)
+		}
+	}
+	return out
 }
 
 // repoNameRE is the distribution reference grammar for a repository path. Every
@@ -96,7 +136,8 @@ func ReadIndex(root, repo string) (*Index, error) {
 		if err != nil {
 			return nil, err
 		}
-		idx.Revisions = append(idx.Revisions, Revision{Digest: "sha256:" + e.Name(), Pushed: st.ModTime().UTC()})
+		idx.Revisions = append(idx.Revisions, Revision{Digest: "sha256:" + e.Name(), Pushed: st.ModTime().UTC(),
+			Children: manifestChildren(root, e.Name())})
 	}
 	sort.Slice(idx.Revisions, func(i, j int) bool { return idx.Revisions[i].Digest < idx.Revisions[j].Digest })
 
