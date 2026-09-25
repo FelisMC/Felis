@@ -13,6 +13,7 @@ import { api, clientError, humanizeError } from "@/lib/api";
 import { loadConfig } from "@/lib/config";
 import { base64urlToBytes, bytesToBase64url } from "@/lib/utils";
 import { InlineError } from "@/components/MessageLine";
+import { formatCountdown, opLoginDeadline, useOpLoginPoll } from "@/lib/opLoginPoll";
 
 // Login is the passwordless sign-in (spec §B). Passkey and email-OTP are the
 // primary doors; a first-time player arrives with an in-game Bind Code (/link);
@@ -44,7 +45,7 @@ export function Login() {
   // mailed code. request_id doubles as the handle an online admin approves.
   const [opEmail, setOpEmail] = useState("");
   const [opRequestId, setOpRequestId] = useState<string | null>(null);
-  const [opApproved, setOpApproved] = useState(false);
+  const [opDeadline, setOpDeadline] = useState<number | null>(null);
   const [opCode, setOpCode] = useState("");
   const [isOpHost, setIsOpHost] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -70,20 +71,10 @@ export function Login() {
     });
   }, []);
 
-  // Poll the op-login request until an in-game approval lands. Errors are
-  // swallowed on purpose: a transient failure just means we ask again.
-  useEffect(() => {
-    if (!opRequestId || opApproved) return;
-    const timer = setInterval(async () => {
-      try {
-        const s = await api.opLoginStatus(opRequestId);
-        if (s.approved) setOpApproved(true);
-      } catch {
-        // keep polling
-      }
-    }, 3000);
-    return () => clearInterval(timer);
-  }, [opRequestId, opApproved]);
+  // Polls until the in-game approval lands, the request's deadline passes, or the
+  // server refuses outright.
+  const opPoll = useOpLoginPoll(opRequestId, opDeadline);
+  const opApproved = opPoll.approved;
 
   // Don't flash the form while the boot /me is still in flight: a signed-in visitor
   // would briefly see a login form before being redirected away.
@@ -236,13 +227,15 @@ export function Login() {
     }
   }
 
-  async function handleOpStart(e: FormEvent) {
-    e.preventDefault();
+  async function handleOpStart(e?: FormEvent) {
+    e?.preventDefault();
     if (!opEmail.trim() || submitting) return;
     setSubmitting(true);
     setError(null);
     try {
       const res = await api.opLoginStart(opEmail.trim());
+      setOpCode("");
+      setOpDeadline(opLoginDeadline(res.expires_at, Date.now()));
       setOpRequestId(res.request_id);
     } catch (err) {
       setError(humanizeError(err));
@@ -538,15 +531,29 @@ export function Login() {
                 </p>
               </div>
 
-              {opApproved ? (
-                <p className="text-[11px] text-emerald-600 dark:text-emerald-400 leading-normal">
-                  {t("op_approved")}
+              {opPoll.expired ? (
+                <p
+                  role="alert"
+                  className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200 leading-normal"
+                >
+                  {t("op_expired")}
                 </p>
               ) : (
-                <p className="inline-flex items-center gap-2 text-[11px] text-muted-foreground leading-normal">
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                  {t("op_waiting")}
-                </p>
+                <div className="space-y-1">
+                  {opApproved ? (
+                    <p className="text-[11px] text-emerald-600 dark:text-emerald-400 leading-normal">
+                      {t("op_approved")}
+                    </p>
+                  ) : (
+                    <p className="inline-flex items-center gap-2 text-[11px] text-muted-foreground leading-normal">
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                      {t(opPoll.retrying ? "op_poll_retrying" : "op_waiting")}
+                    </p>
+                  )}
+                  <p className="text-[11px] text-muted-foreground/80 leading-normal">
+                    {t("op_expires_in", { time: formatCountdown(opPoll.remainingMs) })}
+                  </p>
+                </div>
               )}
 
               <div className="space-y-2">
@@ -560,37 +567,53 @@ export function Login() {
                   autoCapitalize="none"
                   autoCorrect="off"
                   spellCheck={false}
-                  disabled={submitting}
+                  disabled={submitting || opPoll.expired}
                   aria-invalid={error ? true : undefined}
                 />
               </div>
 
-              <InlineError message={error} />
+              <InlineError message={error ?? (opPoll.error ? humanizeError(opPoll.error) : null)} />
 
-              <Button
-                type="submit"
-                className="w-full"
-                disabled={submitting || !opCode.trim() || !opApproved}
-              >
-                {submitting ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    {t("signing_in")}
-                  </>
-                ) : (
-                  <>
-                    <ShieldCheck className="mr-2 h-4 w-4" />
-                    {t("otp_btn")}
-                  </>
-                )}
-              </Button>
+              {opPoll.expired ? (
+                <Button type="button" className="w-full" disabled={submitting} onClick={() => void handleOpStart()}>
+                  {submitting ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      {t("sending_otp")}
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck className="mr-2 h-4 w-4" />
+                      {t("op_request_again")}
+                    </>
+                  )}
+                </Button>
+              ) : (
+                <Button
+                  type="submit"
+                  className="w-full"
+                  disabled={submitting || !opCode.trim() || !opApproved}
+                >
+                  {submitting ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      {t("signing_in")}
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheck className="mr-2 h-4 w-4" />
+                      {t("otp_btn")}
+                    </>
+                  )}
+                </Button>
+              )}
 
               <div className="mt-4 text-center">
                 <button
                   type="button"
                   onClick={() => {
                     setOpRequestId(null);
-                    setOpApproved(false);
+                    setOpDeadline(null);
                     setOpCode("");
                     switchTab("op");
                   }}

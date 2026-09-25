@@ -139,7 +139,7 @@ const LOGIN_HINT_STYLE = `
 const LOGIN_HINT_SCRIPT = `
 (() => {
   const id = "felis-mock-login-hint";
-  const html = '<aside id="' + id + '" aria-label="Mock sign-in credentials"><strong>Mock sign-in (passwordless)</strong><div>Email OTP: any email / code <code>${MOCK_OTP_CODE}</code> (signs in as <code>owner</code>, admin)</div><div>Link code: <code>${MOCK_LINK_CODE}</code> (signs in as <code>linked</code>, user)</div><div>Passkey: any assertion is accepted (signs in as <code>owner</code>)</div></aside>';
+  const html = '<aside id="' + id + '" aria-label="Mock sign-in credentials"><strong>Mock sign-in (passwordless)</strong><div>Email OTP: any email / code <code>${MOCK_OTP_CODE}</code> (signs in as <code>owner</code>, admin)</div><div>Link code: <code>${MOCK_LINK_CODE}</code> (signs in as <code>linked</code>, user)</div><div>Passkey: any assertion is accepted (signs in as <code>owner</code>)</div><div>Operator: any email / code <code>${MOCK_OTP_CODE}</code>, approved ~9s later; an address starting <code>expire</code> lapses in 20s</div></aside>';
   const sync = () => {
     const existing = document.getElementById(id);
     if (location.pathname === "/login") {
@@ -444,6 +444,7 @@ function mockStartupMessage(): string {
     `    Email OTP: any email / code ${MOCK_OTP_CODE}  → owner (admin, linked)`,
     `    Link code: ${MOCK_LINK_CODE}                  → linked (user, linked)`,
     "    Passkey:   any assertion accepted     → owner (admin, linked)",
+    `    Op login:  any email / code ${MOCK_OTP_CODE}, approved ~9s later; an email starting "expire" lapses in 20s`,
     `  Reset state: curl -X POST http://127.0.0.1:5173${RESET_ROUTE}`,
     "",
   ].join("\n");
@@ -665,8 +666,47 @@ function sendCreateError(res: ServerResponse, code: CreateError): void {
   sendError(res, status, code, code);
 }
 
+// Op-login requests the mock has handed out. Nobody is in-game to vouch, so each
+// one approves itself a few seconds after start; an "expire…" address never does
+// and lapses quickly, to show the page's expiry path.
+const opLogins = new Map<string, { approveAt: number; expiresAt: number }>();
+
 async function handlePublic(ctx: RequestContext): Promise<boolean> {
+  const opStatus = route(ctx).match(/^GET auth\/op-login\/status\/(.+)$/);
+  if (opStatus) {
+    const req = opLogins.get(opStatus[1]);
+    const now = Date.now();
+    sendJSON(ctx.res, 200, { approved: !!req && now >= req.approveAt && now < req.expiresAt });
+    return true;
+  }
   switch (route(ctx)) {
+    case "POST auth/op-login/start": {
+      const body = await readJSON<{ email?: string }>(ctx.req);
+      if (!body.email || !body.email.includes("@")) {
+        sendError(ctx.res, 400, "bad_request", "email is required");
+        return true;
+      }
+      const lapses = body.email.startsWith("expire");
+      const id = `op-${opLogins.size + 1}`;
+      const now = Date.now();
+      const expiresAt = now + (lapses ? 20_000 : 600_000);
+      opLogins.set(id, { approveAt: lapses ? Infinity : now + 9_000, expiresAt });
+      sendJSON(ctx.res, 202, { request_id: id, expires_at: new Date(expiresAt).toISOString() });
+      return true;
+    }
+    case "POST auth/op-login/finish": {
+      const body = await readJSON<{ request_id?: string; code?: string }>(ctx.req);
+      const req = body.request_id ? opLogins.get(body.request_id) : undefined;
+      const now = Date.now();
+      if (!req || now < req.approveAt || now >= req.expiresAt || body.code !== MOCK_OTP_CODE) {
+        sendError(ctx.res, 400, "op_login_invalid", "operator login could not be completed");
+        return true;
+      }
+      opLogins.delete(body.request_id!);
+      setSessionCookie(ctx.res, "owner");
+      sendJSON(ctx.res, 200, { user_id: "mock-owner", role: "owner" });
+      return true;
+    }
     case "POST auth/bind": {
       const body = await readJSON<{ code?: string }>(ctx.req);
       const code = body.code?.trim().toUpperCase();
