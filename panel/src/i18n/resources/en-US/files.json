@@ -25,5 +25,9 @@
   "conflict_reload": "Load latest",
   "conflict_reload_hint": "Discard your edits and show the file as it is now",
   "conflict_overwrite": "Overwrite anyway",
-  "conflict_overwrite_hint": "Replace their change with your version"
+  "conflict_overwrite_hint": "Replace their change with your version",
+  "discard_prompt": "You have unsaved changes. Discard them?",
+  "discard": "Discard",
+  "keep_editing": "Keep editing",
+  "status_refresh_failed": "Could not refresh the server's status, so what you see may be out of date: {{reason}}"
 }

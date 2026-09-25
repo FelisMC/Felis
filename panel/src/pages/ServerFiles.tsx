@@ -17,6 +17,7 @@ import { BackLink } from "@/components/BackLink";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { MessageLine } from "@/components/MessageLine";
+import { InlineConfirm } from "@/components/InlineConfirm";
 import {
   Dialog,
   DialogContent,
@@ -28,7 +29,7 @@ import { PhaseBadge } from "@/components/PhaseBadge";
 import { Loading, ErrorState, NotYours, EmptyState } from "@/components/States";
 import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
-import { useAsync } from "@/lib/hooks";
+import { useAsync, useUnsavedGuard } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
 import { canManage, ownershipPending } from "@/lib/ownership";
 import { formatBytes, formatRelative } from "@/lib/format";
@@ -157,10 +158,30 @@ export function ServerFiles() {
   const [saving, setSaving] = useState(false);
   const [reloading, setReloading] = useState(false);
   const [stopping, setStopping] = useState(false);
+  // Closing an editor with unsaved text (Esc, the overlay, ✕, Cancel) asks
+  // first; leaving the page asks through the browser.
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const dirty = open !== null && open.editable && open.text !== open.original;
+  useUnsavedGuard(dirty);
+
+  function requestClose() {
+    if (saving || reloading) return;
+    if (dirty) {
+      setConfirmDiscard(true);
+      return;
+    }
+    setOpen(null);
+  }
+
+  function discardEdits() {
+    setConfirmDiscard(false);
+    setOpen(null);
+  }
 
   async function readInto(p: string) {
     const r = await api.readServerFile(name, p);
     const text = decodeText(base64ToBytes(r.content ?? ""));
+    setConfirmDiscard(false);
     setOpen({
       path: p,
       text: text ?? "",
@@ -213,6 +234,7 @@ export function ServerFiles() {
         overwrite ? undefined : open.sha256 || undefined,
       );
       setMsg({ kind: "success", text: t("saved", { path: open.path }) });
+      setConfirmDiscard(false);
       setOpen(null);
       void load(dir);
     } catch (e) {
@@ -249,7 +271,9 @@ export function ServerFiles() {
       </>
     );
   }
-  if (statusQ.error) {
+  // Only a failed first load replaces the page: a later poll that fails keeps
+  // the page (and an open editor) mounted and says so above the listing.
+  if (statusQ.error && !statusQ.data) {
     return (
       <>
         {back}
@@ -261,7 +285,6 @@ export function ServerFiles() {
 
   const now = Date.now();
   const segments = dir === "" ? [] : dir.split("/");
-  const dirty = open !== null && open.text !== open.original;
   const dirtyBytes = open ? new TextEncoder().encode(open.text).length : 0;
   const tooLarge = dirtyBytes > MAX_WRITE_BYTES;
 
@@ -288,6 +311,12 @@ export function ServerFiles() {
       ) : (
         <div className="space-y-4">
           {msg && <MessageLine kind={msg.kind} message={msg.text} />}
+          {statusQ.error != null && (
+            <MessageLine
+              kind="error"
+              message={t("status_refresh_failed", { reason: humanizeError(statusQ.error) })}
+            />
+          )}
           {!stopped ? (
             <Card>
               <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
@@ -431,7 +460,7 @@ export function ServerFiles() {
       )}
 
       {/* File editor dialog */}
-      <Dialog open={open !== null} onOpenChange={(v) => !v && !saving && !reloading && setOpen(null)}>
+      <Dialog open={open !== null} onOpenChange={(v) => !v && requestClose()}>
         <DialogContent className="max-w-3xl">
           <DialogHeader>
             <DialogTitle className="break-all font-mono text-sm">
@@ -501,26 +530,42 @@ export function ServerFiles() {
                     ? t("too_large", { limit: formatBytes(MAX_WRITE_BYTES) })
                     : formatBytes(dirtyBytes)}
                 </span>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    onClick={() => setOpen(null)}
-                    disabled={saving || reloading}
-                  >
-                    {t("common:cancel")}
-                  </Button>
-                  <Button
-                    onClick={() => void handleSave()}
-                    disabled={saving || reloading || open.conflict || !open.editable || !dirty || tooLarge}
-                  >
-                    {saving ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Save className="h-4 w-4" />
-                    )}
-                    {saving ? t("saving") : t("save")}
-                  </Button>
-                </div>
+                {confirmDiscard ? (
+                  <div role="alert" className="flex flex-wrap items-center justify-end gap-2">
+                    <span className="text-sm font-medium">{t("discard_prompt")}</span>
+                    <InlineConfirm
+                      open
+                      confirming={false}
+                      onConfirm={discardEdits}
+                      onCancel={() => setConfirmDiscard(false)}
+                      confirmLabel={t("discard")}
+                      cancelLabel={t("keep_editing")}
+                      size="default"
+                      className="flex items-center gap-2"
+                    />
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={requestClose}
+                      disabled={saving || reloading}
+                    >
+                      {t("common:cancel")}
+                    </Button>
+                    <Button
+                      onClick={() => void handleSave()}
+                      disabled={saving || reloading || open.conflict || !open.editable || !dirty || tooLarge}
+                    >
+                      {saving ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Save className="h-4 w-4" />
+                      )}
+                      {saving ? t("saving") : t("save")}
+                    </Button>
+                  </div>
+                )}
               </DialogFooter>
             </>
           )}

@@ -65,3 +65,19 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []): AsyncSt
 
   return { data, error, loading, reload };
 }
+
+/** useUnsavedGuard asks the browser to confirm leaving the page (reload, tab
+ *  close, typing another URL) while `dirty` holds, so unsaved edits are not
+ *  dropped without a prompt. */
+export function useUnsavedGuard(dirty: boolean): void {
+  useEffect(() => {
+    if (!dirty) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      // Older Chromium and Safari need returnValue set to show the prompt.
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [dirty]);
+}

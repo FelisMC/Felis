@@ -25,5 +25,9 @@
   "conflict_reload": "载入最新内容",
   "conflict_reload_hint": "放弃你的修改，改看现在的文件",
   "conflict_overwrite": "仍然覆盖",
-  "conflict_overwrite_hint": "用你的版本替换对方的修改"
+  "conflict_overwrite_hint": "用你的版本替换对方的修改",
+  "discard_prompt": "有未保存的修改，要放弃吗？",
+  "discard": "放弃修改",
+  "keep_editing": "继续编辑",
+  "status_refresh_failed": "刷新服务器状态失败，页面显示的可能不是最新状态：{{reason}}"
 }
