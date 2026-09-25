@@ -155,8 +155,9 @@ func APIBuildRole(p Params) *rbacv1.Role {
 // the operator checks that no restore/backup/file-write Job holds its world
 // (internal/maintenance). Pods are delete-only: a start that timed out is retried
 // by deleting its pod for the StatefulSet to recreate (bounded, three attempts;
-// internal/operator.recoverFailedStart). It never touches PVCs, Events, or
-// finalizers, so none appear here.
+// internal/operator.recoverFailedStart). Events are create/patch only, for the
+// timeline it records on each server. It never touches PVCs or finalizers, so
+// none appear here.
 func OperatorRole(p Params) *rbacv1.Role {
 	p = p.withDefaults()
 	return role(p.MinecraftNamespace, "felis-operator", ComponentOperator, []rbacv1.PolicyRule{
@@ -177,6 +178,10 @@ func OperatorRole(p Params) *rbacv1.Role {
 		// delete only, through the direct client: no read of pods is needed to
 		// remove the one named <server>-0.
 		rule([]string{groupCore}, []string{"pods"}, []string{"delete"}),
+		// The Events the reconciler records on MinecraftServers (phase changes,
+		// pod recreation, idle stop): the recorder creates one and patches its
+		// count when the same Event repeats.
+		rule([]string{groupCore}, []string{"events"}, []string{"create", "patch"}),
 	})
 }
 

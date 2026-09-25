@@ -120,8 +120,9 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 		Jobs: mgr.GetAPIReader(),
 		// Uncached too: RCON Secrets are read by name, so the Role grants
 		// secrets:get without the list/watch an informer would need.
-		Secrets: mgr.GetAPIReader(),
-		Watch:   watch,
+		Secrets:  mgr.GetAPIReader(),
+		Recorder: mgr.GetEventRecorderFor("felis-operator"),
+		Watch:    watch,
 	}
 	if err := r.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(stderr, "felis operator: setup controller: %v\n", err)

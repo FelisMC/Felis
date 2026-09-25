@@ -189,9 +189,18 @@ func TestOperatorRole_ScopeExact(t *testing.T) {
 		}
 	}
 	// Hard exclusions.
-	for _, res := range []string{"persistentvolumeclaims", "events"} {
-		if grantsResource(op, groupCore, res) {
-			t.Errorf("operator must NOT touch core/%s", res)
+	if grantsResource(op, groupCore, "persistentvolumeclaims") {
+		t.Error("operator must NOT touch core/persistentvolumeclaims")
+	}
+	// Events: the recorder creates one and patches its count on a repeat.
+	for _, v := range []string{"create", "patch"} {
+		if !hasRule(op, groupCore, "events", v) {
+			t.Errorf("operator must have events:%s (the server timeline)", v)
+		}
+	}
+	for _, v := range []string{"get", "list", "watch", "update", "delete", "deletecollection", "*"} {
+		if hasRule(op, groupCore, "events", v) {
+			t.Errorf("operator events rule must be create+patch only, found %s", v)
 		}
 	}
 	// RCON Secrets are read by name through the uncached reader and created once;

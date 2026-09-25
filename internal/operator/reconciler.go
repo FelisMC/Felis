@@ -26,10 +26,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 // Requeue cadences for the transient phases.
@@ -128,6 +130,10 @@ type Reconciler struct {
 	// mirror with the database URL among them) and grow with them. Nil falls back
 	// to the embedded client.
 	Secrets client.Reader
+	// Recorder puts an Event on the MinecraftServer at each phase change, pod
+	// recreation, idle stop and RCON Secret provision, so `kubectl describe`
+	// shows the timeline the status alone overwrites. Nil records none.
+	Recorder record.EventRecorder
 	// Watch records the passes in flight for the liveness probe. Nil skips it.
 	Watch *ReconcileWatch
 
@@ -188,10 +194,49 @@ func (r *Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	if desired == "" {
 		desired = v1alpha1.DesiredStopped
 	}
+	prevPhase, prevRestarts := server.Status.Phase, server.Status.AutoRestarts
+	var res ctrl.Result
+	var err error
 	if desired == v1alpha1.DesiredStopped {
-		return r.reconcileStopped(ctx, &server)
+		res, err = r.reconcileStopped(ctx, &server)
+	} else {
+		res, err = r.reconcileRunning(ctx, &server)
 	}
-	return r.reconcileRunning(ctx, &server)
+	if err == nil {
+		r.recordTransition(ctx, &server, prevPhase, prevRestarts)
+	}
+	return res, err
+}
+
+// recordTransition logs and records a pass that moved the server to another
+// phase, with the Ready condition's reason and message. Failing, a recreated
+// pod and a Running server falling back to Starting are Warnings.
+func (r *Reconciler) recordTransition(ctx context.Context, server *v1alpha1.MinecraftServer, prevPhase v1alpha1.Phase, prevRestarts int32) {
+	phase := server.Status.Phase
+	if phase == prevPhase {
+		return
+	}
+	reason, msg := string(phase), ""
+	if c := meta.FindStatusCondition(server.Status.Conditions, v1alpha1.ConditionReady); c != nil {
+		reason, msg = c.Reason, c.Message
+	}
+	eventType := corev1.EventTypeNormal
+	if phase == v1alpha1.PhaseFailed || server.Status.AutoRestarts > prevRestarts ||
+		(prevPhase == v1alpha1.PhaseRunning && phase == v1alpha1.PhaseStarting) {
+		eventType = corev1.EventTypeWarning
+	}
+	from := string(prevPhase)
+	if from == "" {
+		from = "New"
+	}
+	log.FromContext(ctx).Info("phase changed", "from", from, "to", phase, "reason", reason, "message", msg)
+	r.event(server, eventType, reason, fmt.Sprintf("%s → %s: %s", from, phase, msg))
+}
+
+func (r *Reconciler) event(server *v1alpha1.MinecraftServer, eventType, reason, msg string) {
+	if r.Recorder != nil {
+		r.Recorder.Event(server, eventType, reason, msg)
+	}
 }
 
 func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.MinecraftServer) (ctrl.Result, error) {
@@ -343,6 +388,9 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 				if err := r.Patch(ctx, server, patch); err != nil {
 					return ctrl.Result{}, err
 				}
+				msg := fmt.Sprintf("no players online for %ds; set desiredState to Stopped", server.Spec.Idle.EmptySecondsBeforeStop)
+				log.FromContext(ctx).Info("idle stop", "emptySeconds", server.Spec.Idle.EmptySecondsBeforeStop)
+				r.event(server, corev1.EventTypeNormal, "IdleStop", msg)
 				return ctrl.Result{}, nil
 			}
 		} else if server.Status.EmptySince != nil {
@@ -573,6 +621,8 @@ func (r *Reconciler) ensureRconSecret(ctx context.Context, server *v1alpha1.Mine
 		}
 		return "", err
 	}
+	log.FromContext(ctx).Info("provisioned the RCON password Secret", "secret", ref.Name)
+	r.event(server, corev1.EventTypeNormal, "RconSecretCreated", "created the RCON password Secret "+ref.Name)
 	return rconStamp([]byte(password)), nil
 }
 
