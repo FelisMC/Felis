@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"felis.lolicon.best/internal/build"
 	"felis.lolicon.best/internal/imagepin"
@@ -25,6 +26,8 @@ type ImageBuilder interface {
 	// GET doubles as the reconcile tick (idempotent on terminal builds).
 	Sync(ctx context.Context, id string) (*build.Build, error)
 	Cancel(ctx context.Context, id string) (*build.Build, error)
+	// ListBuilds pages the build history, newest first, with the match total.
+	ListBuilds(ctx context.Context, opts build.ListOpts) ([]build.Build, int, error)
 	ListImages(ctx context.Context) ([]build.Image, error)
 	AddExternalImage(ctx context.Context, imageRef, addedBy string) (*build.Image, error)
 	RemoveImage(ctx context.Context, imageRef string) error
@@ -76,6 +79,30 @@ func (a *API) handleBuildImage(w http.ResponseWriter, r *http.Request) {
 	}
 	a.audit(r, "image.build", bld.ImageRef)
 	writeJSON(w, http.StatusAccepted, bld)
+}
+
+// handleListBuilds pages the build history (admin-tier), newest first. The
+// panel lists from here, so a build started from another browser, or by another
+// admin, is still there to follow and to cancel.
+func (a *API) handleListBuilds(w http.ResponseWriter, r *http.Request) {
+	if a.Builder == nil {
+		writeError(w, r, errBuildUnavailable)
+		return
+	}
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	builds, total, err := a.Builder.ListBuilds(r.Context(), build.ListOpts{
+		Query: q.Get("query"), Limit: limit, Offset: offset,
+	})
+	if err != nil {
+		writeBuildError(w, r, err)
+		return
+	}
+	if builds == nil {
+		builds = []build.Build{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"builds": builds, "total": total})
 }
 
 // handleGetBuild returns a build, reconciling it against its Job first so

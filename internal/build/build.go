@@ -175,6 +175,20 @@ type Image struct {
 	AddedAt  time.Time `json:"added_at"`
 }
 
+// ListOpts selects a page of the build history. Query matches a build id or a
+// status exactly, or any part of the image ref, ignoring case; empty matches all.
+type ListOpts struct {
+	Query  string
+	Limit  int
+	Offset int
+}
+
+// DefaultListLimit and MaxListLimit bound one page of ListBuilds.
+const (
+	DefaultListLimit = 20
+	MaxListLimit     = 100
+)
+
 // Store is the business-layer persistence the Builder depends on (image_builds
 // + image_whitelist). It is an interface so the Builder is tested against an
 // in-memory fake; the Postgres implementation (pgStore) is integration-tested
@@ -191,6 +205,10 @@ type Store interface {
 	// ListUnfinishedBuilds returns builds still being reconciled (status pending
 	// or building), oldest first — the work list for SyncAll.
 	ListUnfinishedBuilds(ctx context.Context) ([]Build, error)
+	// ListBuilds returns one page of the build history, newest first, and how
+	// many builds match in all. The rows leave out the Dockerfile (up to
+	// MaxDockerfileBytes each); GetBuild has it.
+	ListBuilds(ctx context.Context, opts ListOpts) ([]Build, int, error)
 	// AdmitBuiltImage upserts an image_whitelist row with enabled=true and
 	// source=built (the scan-gate success path, spec §16). It records added_by.
 	AdmitBuiltImage(ctx context.Context, img Image) error
@@ -499,6 +517,20 @@ func (b *Builder) jobParams(bld *Build, cfg Config) JobParams {
 // Get returns a build by id, or ErrNotFound.
 func (b *Builder) Get(ctx context.Context, id string) (*Build, error) {
 	return b.Store.GetBuild(ctx, id)
+}
+
+// ListBuilds pages the build history for the admin panel, so every admin sees
+// every build (and can cancel a running one) from any browser. It reads rows as
+// stored: reconcileBuilds advances them in the background, and GET
+// /images/build/{id} reconciles one on demand.
+func (b *Builder) ListBuilds(ctx context.Context, opts ListOpts) ([]Build, int, error) {
+	opts.Query = strings.TrimSpace(opts.Query)
+	if opts.Limit <= 0 {
+		opts.Limit = DefaultListLimit
+	}
+	opts.Limit = min(opts.Limit, MaxListLimit)
+	opts.Offset = max(opts.Offset, 0)
+	return b.Store.ListBuilds(ctx, opts)
 }
 
 // Sync reconciles one non-terminal build against its Job phase — the scan-gate

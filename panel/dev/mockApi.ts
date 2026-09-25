@@ -322,6 +322,23 @@ function initialState(): MockState {
         created_at: new Date(Date.now() - 1800000).toISOString(),
         finished_at: new Date(Date.now() - 1700000).toISOString(),
       },
+      // Started by another admin: the list is the server's, so it shows here too.
+      {
+        id: "bld-3",
+        image_ref: "registry.felis.svc:5000/user-uploads/sub-9:latest",
+        status: "building",
+        requested_by: "admin2@mock.felis.local",
+        created_at: new Date(Date.now() - 300000).toISOString(),
+      },
+      // Older history, enough to need a second page.
+      ...Array.from({ length: 11 }, (_, i): Build => ({
+        id: `bld-old-${i + 1}`,
+        image_ref: `registry.felis.svc:5000/paper-1.21:r${i + 1}`,
+        status: i % 4 === 3 ? "cancelled" : "succeeded",
+        requested_by: i % 2 ? "admin2@mock.felis.local" : "owner@mock.felis.local",
+        created_at: new Date(Date.now() - (i + 2) * 86400000).toISOString(),
+        finished_at: new Date(Date.now() - (i + 2) * 86400000 + 240000).toISOString(),
+      })),
     ],
     passkeys: {
       owner: [
@@ -1389,7 +1406,19 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
       sendError(ctx.res, 403, "forbidden", "admin account required");
       return true;
     }
-    sendJSON(ctx.res, 200, { builds: ctx.state.builds });
+    // Same page and match as build.PGStore.ListBuilds: newest first, a query hits
+    // the id or status exactly or any part of the ref, and rows carry no Dockerfile.
+    const url = new URL(ctx.req.url ?? "/", "http://localhost");
+    const q = (url.searchParams.get("query") ?? "").trim().toLowerCase();
+    const limit = Math.min(Number(url.searchParams.get("limit")) || 20, 100);
+    const offset = Math.max(Number(url.searchParams.get("offset")) || 0, 0);
+    const matched = ctx.state.builds
+      .filter((b) => !q || b.id.toLowerCase() === q || b.status === q || b.image_ref.toLowerCase().includes(q))
+      .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
+    sendJSON(ctx.res, 200, {
+      builds: matched.slice(offset, offset + limit).map(({ dockerfile: _, ...b }) => b),
+      total: matched.length,
+    });
     return true;
   }
 

@@ -438,6 +438,17 @@ describe("image whitelist and builds wire shapes", () => {
     });
   });
 
+  it("listBuilds GETs one page of /images/build with the query", async () => {
+    const fetchSpy = fakeFetch({ builds: [{ id: "bld-2", image_ref: "x", status: "building" }], total: 41 });
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await api.listBuilds({ query: "paper 1.21", limit: 20, offset: 40 });
+    expect(res.total).toBe(41);
+    expect(res.builds.map((b) => b.id)).toEqual(["bld-2"]);
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(String(url)).toBe("/images/build?query=paper+1.21&limit=20&offset=40");
+    expect((opts as RequestInit).method).toBe("GET");
+  });
+
   it("getBuild GETs build status from /images/build/{id}", async () => {
     const fetchSpy = fakeFetch({ id: "bld-1", image_ref: "x", status: "building" });
     vi.stubGlobal("fetch", fetchSpy);

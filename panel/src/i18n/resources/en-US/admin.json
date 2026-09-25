@@ -231,5 +231,7 @@
   "search_no_results_hint": "Try a different search term or filter.",
   "submissions_search_placeholder": "Search modpack name or submitter...",
   "trigger_build_desc": "Enter the build parameters to launch a Kaniko pipeline job in an isolated namespace.",
-  "builds_search_placeholder": "Search build ID, image reference, or status..."
+  "builds_search_placeholder": "Search build ID, image reference, or status...",
+  "builds_refresh_failed": "Couldn't refresh the build list: {{reason}}",
+  "build_requested_by_you": "You"
 }

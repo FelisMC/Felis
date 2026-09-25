@@ -413,6 +413,19 @@ export const api = rejectingSync({
   buildImage: (req: { image_ref: string; dockerfile: string; context_ref: string; base_image?: string }) =>
     request<Build>("POST", "/images/build", req),
 
+  /** One page of the build history, newest first; rows leave out the Dockerfile. */
+  listBuilds: (params?: { query?: string; limit?: number; offset?: number }) => {
+    const sp = new URLSearchParams();
+    if (params?.query) sp.set("query", params.query);
+    if (params?.limit) sp.set("limit", String(params.limit));
+    if (params?.offset) sp.set("offset", String(params.offset));
+    const qs = sp.toString();
+    return request<{ builds: Build[]; total: number }>(
+      "GET",
+      `/images/build${qs ? `?${qs}` : ""}`,
+    ).then((r) => ({ builds: r.builds ?? [], total: r.total ?? 0 }));
+  },
+
   getBuild: (id: string) =>
     request<Build>("GET", urlPath`/images/build/${id}`),
 

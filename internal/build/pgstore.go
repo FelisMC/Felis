@@ -99,6 +99,30 @@ func (s *PGStore) ListUnfinishedBuilds(ctx context.Context) ([]Build, error) {
 	if err != nil {
 		return nil, err
 	}
+	return scanBuilds(rows)
+}
+
+// ListBuilds pages image_builds newest first. The id breaks created_at ties so
+// the pages neither repeat nor skip a row; the Dockerfile column is left empty.
+func (s *PGStore) ListBuilds(ctx context.Context, opts ListOpts) ([]Build, int, error) {
+	const match = ` WHERE $1::text = '' OR id = $1::text OR status::text = lower($1::text)
+		OR strpos(lower(image_ref), lower($1::text)) > 0`
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM image_builds`+match, opts.Query).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, image_ref, status, '', context_ref, base_image,
+			requested_by, job_name, log_ref, error, created_at, finished_at, context_digest
+		FROM image_builds`+match+` ORDER BY created_at DESC, id DESC LIMIT $2 OFFSET $3`,
+		opts.Query, opts.Limit, opts.Offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	out, err := scanBuilds(rows)
+	return out, total, err
+}
+
+func scanBuilds(rows *sql.Rows) ([]Build, error) {
 	defer rows.Close()
 	var out []Build
 	for rows.Next() {

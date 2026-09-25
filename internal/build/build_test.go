@@ -24,6 +24,7 @@ type fakeStore struct {
 	finished  []string // "id:status"
 	removeErr error
 	createErr error
+	listOpts  ListOpts
 }
 
 func newFakeStore() *fakeStore {
@@ -86,6 +87,18 @@ func (f *fakeStore) ListUnfinishedBuilds(_ context.Context) ([]Build, error) {
 		return out[i].ID < out[j].ID
 	})
 	return out, nil
+}
+
+func (f *fakeStore) ListBuilds(_ context.Context, opts ListOpts) ([]Build, int, error) {
+	f.listOpts = opts
+	var out []Build
+	for _, b := range f.builds {
+		out = append(out, *b)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID > out[j].ID })
+	total := len(out)
+	out = out[min(opts.Offset, total):min(opts.Offset+opts.Limit, total)]
+	return out, total, nil
 }
 
 func (f *fakeStore) AdmitBuiltImage(_ context.Context, img Image) error {
@@ -738,5 +751,28 @@ func TestRecommendedImageAdmittedLikeAnyOtherSource(t *testing.T) {
 	}
 	if admitted {
 		t.Error("a disabled recommended image must not be admitted; curation is not a disable bypass")
+	}
+}
+
+// ListBuilds keeps one page bounded whatever the query string asks for.
+func TestListBuildsBoundsThePage(t *testing.T) {
+	cases := []struct {
+		in   ListOpts
+		want ListOpts
+	}{
+		{ListOpts{}, ListOpts{Limit: DefaultListLimit}},
+		{ListOpts{Limit: 5, Offset: 40}, ListOpts{Limit: 5, Offset: 40}},
+		{ListOpts{Limit: 100000}, ListOpts{Limit: MaxListLimit}},
+		{ListOpts{Limit: -3, Offset: -7}, ListOpts{Limit: DefaultListLimit}},
+		{ListOpts{Query: "  paper \t"}, ListOpts{Query: "paper", Limit: DefaultListLimit}},
+	}
+	for _, c := range cases {
+		b, st, _ := newBuilder()
+		if _, _, err := b.ListBuilds(context.Background(), c.in); err != nil {
+			t.Fatalf("ListBuilds(%+v): %v", c.in, err)
+		}
+		if st.listOpts != c.want {
+			t.Errorf("ListBuilds(%+v) asked the store for %+v, want %+v", c.in, st.listOpts, c.want)
+		}
 	}
 }

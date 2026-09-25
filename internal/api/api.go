@@ -604,6 +604,7 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// is build-time RCE against the cluster, so submission requires the admin
 		// Zero-Trust path, not merely an authenticated session.
 		{Method: "POST", Pattern: "/api/v1/images/build", Admin: true, h: a.handleBuildImage},
+		{Method: "GET", Pattern: "/api/v1/images/build", Admin: true, h: a.handleListBuilds},
 		{Method: "GET", Pattern: "/api/v1/images/build/{id}", Admin: true, h: a.handleGetBuild},
 		{Method: "GET", Pattern: "/api/v1/images/build/{id}/logs", Admin: true, h: a.handleBuildLogs},
 		{Method: "POST", Pattern: "/api/v1/images/build/{id}/cancel", Admin: true, h: a.handleCancelBuild},

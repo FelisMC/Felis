@@ -231,5 +231,7 @@
   "search_no_results_hint": "尝试更换搜索词或筛选条件。",
   "submissions_search_placeholder": "搜索模组包名称或提交人...",
   "trigger_build_desc": "输入镜像构建参数，在隔离命名空间中启动 Kaniko 流水线任务。",
-  "builds_search_placeholder": "搜索构建 ID、镜像引用或状态..."
+  "builds_search_placeholder": "搜索构建 ID、镜像引用或状态...",
+  "builds_refresh_failed": "构建列表刷新失败：{{reason}}",
+  "build_requested_by_you": "你"
 }

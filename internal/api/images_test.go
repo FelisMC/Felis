@@ -30,6 +30,10 @@ type fakeBuilder struct {
 	lastBuildID string
 	admitted    map[string]bool
 	admitErr    error
+	builds      []build.Build
+	buildsTotal int
+	buildsErr   error
+	listOpts    build.ListOpts
 }
 
 func (f *fakeBuilder) Submit(_ context.Context, req build.Request) (*build.Build, error) {
@@ -67,6 +71,11 @@ func (f *fakeBuilder) Cancel(_ context.Context, id string) (*build.Build, error)
 		return nil, f.cancelErr
 	}
 	return &build.Build{ID: id, ImageRef: "registry.felis.svc:5000/x:1", Status: build.StatusCancelled}, nil
+}
+
+func (f *fakeBuilder) ListBuilds(_ context.Context, opts build.ListOpts) ([]build.Build, int, error) {
+	f.listOpts = opts
+	return f.builds, f.buildsTotal, f.buildsErr
 }
 
 func (f *fakeBuilder) ListImages(context.Context) ([]build.Image, error) {
@@ -110,6 +119,7 @@ func TestImageRoutesAreAdminOnly(t *testing.T) {
 		method, target, body string
 	}{
 		{"POST", "/api/v1/images/build", `{"image_ref":"registry.felis.svc:5000/x:1","dockerfile":"FROM x","context_ref":"c"}`},
+		{"GET", "/api/v1/images/build", ""},
 		{"GET", "/api/v1/images/build/bld-1", ""},
 		{"GET", "/api/v1/images/build/bld-1/logs", ""},
 		{"POST", "/api/v1/images/build/bld-1/cancel", ""},
@@ -204,6 +214,43 @@ func TestCancelTerminalBuildIs409(t *testing.T) {
 	w := do(api.ExternalHandler(), "POST", "/api/v1/images/build/bld-1/cancel", "", nil)
 	if w.Code != http.StatusConflict {
 		t.Fatalf("code = %d, want 409 (%s)", w.Code, w.Body.String())
+	}
+}
+
+func TestListBuilds(t *testing.T) {
+	fb := &fakeBuilder{
+		builds:      []build.Build{{ID: "bld-2", ImageRef: "registry.felis.svc:5000/x:2", Status: build.StatusBuilding}},
+		buildsTotal: 41,
+	}
+	api := adminAPI(fb)
+	w := do(api.ExternalHandler(), "GET", "/api/v1/images/build?query=paper&limit=20&offset=40", "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	if want := (build.ListOpts{Query: "paper", Limit: 20, Offset: 40}); fb.listOpts != want {
+		t.Errorf("forwarded %+v, want %+v", fb.listOpts, want)
+	}
+	var got struct {
+		Builds []build.Build `json:"builds"`
+		Total  int           `json:"total"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body not JSON: %v", err)
+	}
+	if got.Total != 41 || len(got.Builds) != 1 || got.Builds[0].ID != "bld-2" {
+		t.Fatalf("body = %s", w.Body.String())
+	}
+}
+
+// An empty history is an empty list, so the panel never has to handle null.
+func TestListBuildsEmptyIsAnArray(t *testing.T) {
+	api := adminAPI(&fakeBuilder{})
+	w := do(api.ExternalHandler(), "GET", "/api/v1/images/build", "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	if body := w.Body.String(); body != `{"builds":[],"total":0}`+"\n" {
+		t.Fatalf("body = %q", body)
 	}
 }
 

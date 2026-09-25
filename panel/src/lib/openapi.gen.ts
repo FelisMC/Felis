@@ -1714,7 +1714,11 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * List builds (admin), newest first.
+         * @description One page of the build history across every admin. Rows are read as stored (the reconcile loop advances them; GET /images/build/{id} reconciles one on demand) and leave out the Dockerfile, which GET /images/build/{id} returns.
+         */
+        get: operations["listBuilds"];
         put?: never;
         /** Submit an image build (admin). A build is build-time RCE against the cluster. */
         post: operations["buildImage"];
@@ -6447,6 +6451,37 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listBuilds: {
+        parameters: {
+            query?: {
+                /** @description Build id or status (exact), or part of the image ref; case-insensitive */
+                query?: string;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of builds plus how many match the query. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        builds: components["schemas"]["Build"][];
+                        total: number;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             503: components["responses"]["ServiceUnavailable"];
         };
     };

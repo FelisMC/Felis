@@ -1447,6 +1447,70 @@ func TestBuildStoreContract(t *testing.T) {
 	}
 }
 
+// ListBuilds pages newest first across every requester, finds a build by part of
+// its ref (any case), its id or its status, and leaves the Dockerfile out.
+func TestBuildStoreListBuilds(t *testing.T) {
+	ctx := context.Background()
+	s := build.NewPGStore(db)
+	tag := "list-" + suffix(t)
+	base := mustNow().Add(-time.Hour)
+	ids := make([]string, 3)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("bld-%s-%d", tag, i)
+		if err := s.CreateBuild(ctx, &build.Build{ID: ids[i],
+			ImageRef: fmt.Sprintf("registry.felis.svc:5000/%s/img:%d", tag, i), Status: build.StatusPending,
+			RequestedBy: fmt.Sprintf("admin%d@example.test", i), Dockerfile: "FROM scratch\n",
+			CreatedAt: base.Add(time.Duration(i) * time.Minute)}); err != nil {
+			t.Fatalf("CreateBuild(%d): %v", i, err)
+		}
+	}
+	idsOf := func(bs []build.Build) []string {
+		out := []string{}
+		for _, b := range bs {
+			out = append(out, b.ID)
+		}
+		return out
+	}
+
+	page, total, err := s.ListBuilds(ctx, build.ListOpts{Query: strings.ToUpper(tag), Limit: 2})
+	if err != nil {
+		t.Fatalf("ListBuilds: %v", err)
+	}
+	if got, want := idsOf(page), []string{ids[2], ids[1]}; total != 3 || fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("first page = %v of %d, want %v of 3", got, total, want)
+	}
+	if page[0].Dockerfile != "" || page[0].RequestedBy != "admin2@example.test" {
+		t.Fatalf("listed row = %+v, want no Dockerfile and the requester", page[0])
+	}
+	page, total, err = s.ListBuilds(ctx, build.ListOpts{Query: tag, Limit: 2, Offset: 2})
+	if err != nil || total != 3 || fmt.Sprint(idsOf(page)) != fmt.Sprint([]string{ids[0]}) {
+		t.Fatalf("second page = %v of %d (%v), want [%s] of 3", idsOf(page), total, err, ids[0])
+	}
+
+	page, total, err = s.ListBuilds(ctx, build.ListOpts{Query: ids[1], Limit: 10})
+	if err != nil || total != 1 || fmt.Sprint(idsOf(page)) != fmt.Sprint([]string{ids[1]}) {
+		t.Fatalf("by id = %v of %d (%v), want [%s]", idsOf(page), total, err, ids[1])
+	}
+
+	if err := s.FinishBuild(ctx, ids[0], build.StatusFailed, "trivy: CRITICAL", mustNow()); err != nil {
+		t.Fatalf("FinishBuild: %v", err)
+	}
+	page, _, err = s.ListBuilds(ctx, build.ListOpts{Query: "Failed", Limit: build.MaxListLimit})
+	if err != nil {
+		t.Fatalf("ListBuilds(status): %v", err)
+	}
+	found := false
+	for _, b := range page {
+		if b.Status != build.StatusFailed {
+			t.Fatalf("status query returned %s in state %s", b.ID, b.Status)
+		}
+		found = found || (b.ID == ids[0] && b.Error == "trivy: CRITICAL")
+	}
+	if !found {
+		t.Fatalf("status query missed %s: %v", ids[0], idsOf(page))
+	}
+}
+
 // ---- helpers -------------------------------------------------------------------
 
 func assertAttempts(t *testing.T, userID, purpose string, want int) {
