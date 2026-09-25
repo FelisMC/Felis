@@ -10,7 +10,9 @@
 #      round-trips every frame kind (spec §12), no server name can re-aim a
 #      felis-api request path, only the lobby and the login gate may drive
 #      felis:control (and each only with its own frames), the link-status outage
-#      fallback fails closed outside its window, /invite prompts cannot double-fire
+#      fallback fails closed outside its window, a proxy restarted during an API
+#      outage routes on the last saved server list (and only until a fetch
+#      succeeds), /invite prompts cannot double-fire
 #      or outlive their TTL, the invite card really is a green/red clickable
 #      prompt, and the op-login approval card names the account and leaves its
 #      name for the admin to type. InviteCardTest and OpApprovalCardTest need the
@@ -80,6 +82,14 @@ java -cp "$work/policy-classes" best.lolicon.felis.velocity.ControlPolicyTest
 
 echo "==> LinkGateTest (outage fallback + frame budget, velocity)"
 java -cp "$work/policy-classes" best.lolicon.felis.velocity.LinkGateTest
+
+echo "==> ServerListSourceTest (saved server list for a restart during an outage, velocity)"
+mkdir -p "$work/list-classes"
+javac -d "$work/list-classes" \
+  plugins/shared/src/main/java/best/lolicon/felis/link/*.java \
+  plugins/velocity/src/main/java/best/lolicon/felis/velocity/ServerListSource.java \
+  plugins/velocity/test/best/lolicon/felis/velocity/ServerListSourceTest.java
+java -cp "$work/list-classes" best.lolicon.felis.velocity.ServerListSourceTest
 
 echo "==> InviteBookTest (/invite prompt store, velocity)"
 mkdir -p "$work/velocity-classes"

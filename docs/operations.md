@@ -48,6 +48,28 @@ and gains no failover. A multi-node shape would need, at least, storage that can
 pod to another node and leader election in felis-operator (controller-runtime's
 `LeaderElection`) so a second replica can stand by.
 
+### While felis-api restarts
+
+An installer rerun that changes felis-api, a node restart or a crashed pod takes the API
+away until its new pod is ready: about 12 s on the reference VM (`kubectl rollout
+restart` to Available). Its Deployment keeps one replica with the Recreate strategy, so
+the old pod is gone before the new one starts. Two pods at once would be wrong for
+felis-api: the uploads volume is ReadWriteOnce, a chunked upload is serialized inside the
+process, and the build reconciler, restore settler, registry pruner, upload reapers and
+audit retention run in-process without leader election, so each would run twice. During
+the window:
+
+- Players already on a server stay there; game servers keep running.
+- A player leaving the login gate or joining a server by its address is admitted when
+  felis-api confirmed their link within the last 10 minutes; anyone else is told login
+  verification is temporarily unavailable.
+- The login gate retries a new login for up to 60 s and tells the player it is retrying,
+  so a restart shorter than that only delays the login.
+- Wakes, stops, `/link` and the panel wait for the API.
+- A Velocity restart in the window routes on
+  `/opt/felis/velocity/plugins/felis-link/last-servers.json`, the last server list the
+  API answered with, until a refresh succeeds (every 15 s).
+
 ## 2. Sizing
 
 ### What the platform itself uses

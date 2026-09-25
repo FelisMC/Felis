@@ -1,5 +1,8 @@
 package best.lolicon.felis.link;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -60,6 +63,66 @@ public final class ServerView {
                 str(o, "endpointAddress"),
                 intval(o, "playersOnline"),
                 intval(o, "playersMax"));
+    }
+
+    /**
+     * listFromJson reads the {@code {"servers":[...]}} envelope {@code GET /servers}
+     * answers with, which is also the shape of the proxy's saved server list. Entries
+     * that are not objects are skipped; text that is not such an envelope throws
+     * IllegalArgumentException.
+     */
+    public static List<ServerView> listFromJson(String text) {
+        Object root = Json.parse(text);
+        if (!(root instanceof Map)) {
+            throw new IllegalArgumentException("server list: not a JSON object");
+        }
+        return listFrom((Map<?, ?>) root);
+    }
+
+    static List<ServerView> listFrom(Map<?, ?> envelope) {
+        Object arr = envelope.get("servers");
+        List<ServerView> out = new ArrayList<>();
+        if (arr instanceof List) {
+            for (Object e : (List<?>) arr) {
+                if (e instanceof Map) {
+                    out.add(fromJson((Map<?, ?>) e));
+                }
+            }
+        }
+        return out;
+    }
+
+    /** listToJson renders views in the envelope {@link #listFromJson(String)} reads back. */
+    public static String listToJson(Collection<ServerView> views) {
+        StringBuilder b = new StringBuilder("{\"servers\":[");
+        boolean first = true;
+        for (ServerView v : views) {
+            if (!first) {
+                b.append(',');
+            }
+            first = false;
+            b.append('{');
+            field(b, "name", v.name, true);
+            field(b, "subdomain", v.subdomain, false);
+            field(b, "phase", v.phase, false);
+            b.append(",\"ready\":").append(v.ready);
+            field(b, "autostartPolicy", v.autostartPolicy, false);
+            field(b, "desiredState", v.desiredState, false);
+            field(b, "endpointMode", v.endpointMode, false);
+            field(b, "endpointAddress", v.endpointAddress, false);
+            b.append(",\"playersOnline\":").append(v.playersOnline);
+            b.append(",\"playersMax\":").append(v.playersMax);
+            b.append('}');
+        }
+        return b.append("]}").toString();
+    }
+
+    // field appends "key":"value", or "key":null for an absent value.
+    private static void field(StringBuilder b, String key, String value, boolean first) {
+        if (!first) {
+            b.append(',');
+        }
+        b.append(Json.quote(key)).append(':').append(value == null ? "null" : Json.quote(value));
     }
 
     public String name() {

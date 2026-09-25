@@ -70,6 +70,8 @@ import java.util.regex.Pattern;
 )
 public final class FelisVelocityPlugin {
     private static final Duration REGISTRATION_REFRESH = Duration.ofSeconds(15);
+    // The last server list felis-api answered with, for a restart during an API outage.
+    private static final String SERVER_LIST_FILE = "last-servers.json";
     private static final Duration WAIT_POLL = Duration.ofSeconds(2);
     private static final Duration INVITE_TTL = Duration.ofSeconds(120);
     // Long enough that spraying cards at a room is tedious, short enough that showing three
@@ -91,6 +93,7 @@ public final class FelisVelocityPlugin {
     private LinkClient linkClient;
     private FelisApiClient apiClient;
     private ServerRegistry registry;
+    private ServerListSource serverList;
     private WaitingRouter router;
     private boolean onlineMode;
     private boolean routingActive;
@@ -133,6 +136,7 @@ public final class FelisVelocityPlugin {
 
         this.apiClient = new FelisApiClient(config.linkConfig());
         this.registry = new ServerRegistry(proxy, logger, config.rootDomain());
+        this.serverList = new ServerListSource(apiClient::listServers, dataDirectory.resolve(SERVER_LIST_FILE));
         this.router = new WaitingRouter(proxy, logger, apiClient, registry, this,
                 config.loginServer(), config.lobbyServer());
         MotdResponder motd = new MotdResponder(registry);
@@ -213,14 +217,23 @@ public final class FelisVelocityPlugin {
         if (router != null) {
             router.pruneLinks();
         }
-        try {
-            List<ServerView> servers = apiClient.listServers();
-            registry.refresh(servers);
-        } catch (LinkException e) {
+        ServerListSource.Result r = serverList.next();
+        if (r.servers != null) {
+            registry.refresh(r.servers);
+        }
+        if (r.restored) {
+            logger.warn("Felis: felis-api is unreachable at startup (status={}): {}; routing to the {} backends "
+                            + "in the saved server list until it answers.",
+                    r.failure.statusCode(), r.failure.getMessage(), r.servers.size());
+        } else if (r.failure != null) {
             // Keep existing registrations on a control-plane blip (spec §11): a
             // transient failure must never deregister live backends.
             logger.warn("Felis: server list refresh failed (status={}): {}; keeping current registrations.",
-                    e.statusCode(), e.getMessage());
+                    r.failure.statusCode(), r.failure.getMessage());
+        }
+        if (r.fileError != null) {
+            logger.warn("Felis: saved server list {}: {}", r.failure == null ? "not written" : "not usable",
+                    r.fileError.toString());
         }
     }
 

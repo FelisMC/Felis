@@ -23,8 +23,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * the felis lifecycle views keyed by name + subdomain, and the registration of
  * each server's backend address as a Velocity {@link RegisteredServer}.
  *
- * <p>{@link #refresh(Collection)} is called only on a <em>successful</em> fetch
- * from felis-api, so a name's absence is a genuine removal. On an API failure the
+ * <p>{@link #refresh(Collection)} is called on a <em>successful</em> fetch from
+ * felis-api, so a name's absence is a genuine removal. On an API failure the
  * caller skips the refresh entirely and the previous registrations survive
  * untouched (spec §11 keep-old-on-failure) — a transient control-plane blip must
  * never deregister live backends out from under connected players.
@@ -32,7 +32,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>Every API-reported backend, including the system login and lobby, lives in
  * this registry. The generated {@code velocity.toml} contains a deliberately dead
  * login placeholder only so Velocity can validate {@code try = ["login"]}; the
- * first successful refresh replaces that placeholder with the live ClusterIP.
+ * first successful refresh replaces that placeholder with the live ClusterIP. A
+ * proxy that starts while felis-api is down refreshes once from the last list the
+ * API answered with instead ({@link ServerListSource}).
  */
 final class ServerRegistry {
     private static final int DEFAULT_PORT = 25565;

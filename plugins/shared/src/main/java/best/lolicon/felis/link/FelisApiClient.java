@@ -7,7 +7,6 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -57,17 +56,7 @@ public final class FelisApiClient {
 
     /** listServers returns the lifecycle view of every MinecraftServer (GET /servers). */
     public List<ServerView> listServers() throws LinkException {
-        Map<?, ?> obj = getObject("/api/v1/servers", 200);
-        Object arr = obj.get("servers");
-        List<ServerView> out = new ArrayList<>();
-        if (arr instanceof List) {
-            for (Object e : (List<?>) arr) {
-                if (e instanceof Map) {
-                    out.add(ServerView.fromJson((Map<?, ?>) e));
-                }
-            }
-        }
-        return out;
+        return ServerView.listFrom(getObject("/api/v1/servers", 200));
     }
 
     /** serverStatus reads one server's current lifecycle view (internal status). */
