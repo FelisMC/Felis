@@ -83,6 +83,9 @@ type fakeRepo struct {
 	// player email OTPs (spec §B2). Keyed by row id; the verify path scans for the
 	// newest live (user, purpose) just as the PG query does.
 	otps map[string]*fakeEmailOTP
+	// otpSeq orders codes by insertion (the PG created_at): a frozen test clock mints
+	// several codes at one instant, so time cannot tell the oldest apart.
+	otpSeq int
 	// otpBudget mirrors otp_failure_windows, keyed user|purpose.
 	otpBudget map[string]*fakeOTPBudget
 	// op-login requests (spec §B op-login). opLogins mirrors op_login_requests keyed
@@ -140,6 +143,9 @@ type fakePasskeyChallenge struct {
 	expiresAt   time.Time
 	consumed    bool
 	createdAt   time.Time
+	// challenge and source are set on email-first login rows only (migration 0029).
+	challenge string
+	source    string
 }
 
 // fakeDiscoverableChallenge mirrors a webauthn_discoverable_challenges row (task #40): no user
@@ -149,6 +155,7 @@ type fakeDiscoverableChallenge struct {
 	sessionData []byte
 	expiresAt   time.Time
 	consumed    bool
+	source      string
 }
 
 // fakeDataHold mirrors a player_data_holds row at the granularity the verifiable
@@ -177,10 +184,13 @@ func (f *fakeRepo) OTPLockedUntil(_ context.Context, userID, purpose string, now
 	return otpLockEnd(b.windowStart, b.failures, now), nil
 }
 
-// chargeOTP mirrors chargeOTPMismatch: one wrong guess on the code and the budget.
-func (f *fakeRepo) chargeOTP(live *fakeEmailOTP, now time.Time) error {
-	live.attempts++
-	key := live.userID + "|" + live.purpose
+// chargeOTP mirrors chargeOTPMismatch: one wrong guess on each open code and one on
+// the (user, purpose) budget.
+func (f *fakeRepo) chargeOTP(open []*fakeEmailOTP, userID, purpose string, now time.Time) error {
+	for _, o := range open {
+		o.attempts++
+	}
+	key := userID + "|" + purpose
 	b := f.otpBudget[key]
 	if b == nil || !b.windowStart.Add(otpFailureWindow).After(now) {
 		b = &fakeOTPBudget{windowStart: now}
@@ -206,6 +216,7 @@ type fakeEmailOTP struct {
 	expiresAt time.Time
 	consumed  bool
 	createdAt time.Time
+	seq       int
 }
 
 // fakeSession mirrors a sessions row: its owner, its expiry, and whether it has
@@ -403,12 +414,42 @@ func (f *fakeRepo) CreateEmailOTP(_ context.Context, id, userID, email, codeHash
 			delete(f.otps, k)
 		}
 	}
+	f.otpSeq++
 	f.otps[id] = &fakeEmailOTP{
 		id: id, userID: userID, email: email, codeHash: codeHash, purpose: purpose,
 		expiresAt: expiresAt, createdAt: expiresAt, // createdAt proxy: constant TTL ⇒ later expiry == later creation
+		seq: f.otpSeq,
 	}
 	return nil
 }
+
+// AddLoginEmailOTP mirrors PGRepo.AddLoginEmailOTP: the live codes of (user, purpose)
+// that expired at now go, then all but the newest otpLiveLoginCodes-1, and the new
+// code joins the rest.
+func (f *fakeRepo) AddLoginEmailOTP(_ context.Context, id, userID, email, codeHash, purpose string, now, expiresAt time.Time) error {
+	var live []*fakeEmailOTP
+	for k, o := range f.otps {
+		if o.userID != userID || o.purpose != purpose || o.consumed {
+			continue
+		}
+		if !o.expiresAt.After(now) {
+			delete(f.otps, k)
+			continue
+		}
+		live = append(live, o)
+	}
+	sort.Slice(live, func(i, j int) bool { return live[i].seq > live[j].seq })
+	for _, o := range live[min(len(live), otpLiveLoginCodes-1):] {
+		delete(f.otps, o.id)
+	}
+	f.otpSeq++
+	f.otps[id] = &fakeEmailOTP{
+		id: id, userID: userID, email: email, codeHash: codeHash, purpose: purpose,
+		expiresAt: expiresAt, createdAt: now, seq: f.otpSeq,
+	}
+	return nil
+}
+
 func (f *fakeRepo) VerifyEmailOTP(_ context.Context, userID, purpose, codeHash string, now time.Time) (string, error) {
 	var live *fakeEmailOTP
 	for _, o := range f.otps { // newest live (user, purpose)
@@ -432,7 +473,7 @@ func (f *fakeRepo) VerifyEmailOTP(_ context.Context, userID, purpose, codeHash s
 		return "", ErrOTPLocked
 	}
 	if live.codeHash != codeHash {
-		return "", f.chargeOTP(live, now) // a typo costs an attempt but does not consume the code
+		return "", f.chargeOTP([]*fakeEmailOTP{live}, userID, purpose, now) // a typo costs an attempt but does not consume the code
 	}
 	// A DIFFERENT verified holder of the same address → ErrEmailTaken, code left
 	// live — mirrors PGRepo's guard + the users_verified_email_unique index.
@@ -478,6 +519,44 @@ func (f *fakeRepo) CreatePasskeyChallenge(_ context.Context, id, userID, purpose
 	}
 	return nil
 }
+
+// AddPasskeyLoginChallenge / ConsumePasskeyLoginChallenge mirror PGRepo's email-first
+// login pair: begin reaps the account's spent login rows, refuses once source holds
+// maxLiveChallengesPerSource live login rows, and stores the challenge beside the
+// others; consume redeems the live row whose challenge the browser signed.
+func (f *fakeRepo) AddPasskeyLoginChallenge(_ context.Context, id, userID, purpose, source, challenge string, sessionData []byte, now, expiresAt time.Time) error {
+	fromSource := 0
+	for k, c := range f.passkeyChallenges {
+		if c.userID == userID && c.purpose == purpose && (c.consumed || !c.expiresAt.After(now)) {
+			delete(f.passkeyChallenges, k)
+			continue
+		}
+		if c.source == source && !c.consumed && c.expiresAt.After(now) {
+			fromSource++
+		}
+	}
+	if fromSource >= maxLiveChallengesPerSource {
+		return ErrTooManyPasskeyChallenges
+	}
+	f.passkeyChallenges[id] = &fakePasskeyChallenge{
+		id: id, userID: userID, purpose: purpose, sessionData: sessionData,
+		expiresAt: expiresAt, createdAt: now, challenge: challenge, source: source,
+	}
+	return nil
+}
+func (f *fakeRepo) ConsumePasskeyLoginChallenge(_ context.Context, userID, purpose, challenge string, now time.Time) ([]byte, error) {
+	for _, c := range f.passkeyChallenges {
+		if c.userID != userID || c.purpose != purpose || c.challenge != challenge || c.consumed {
+			continue
+		}
+		if !c.expiresAt.After(now) {
+			return nil, ErrPasskeyChallengeInvalid
+		}
+		c.consumed = true
+		return c.sessionData, nil
+	}
+	return nil, ErrPasskeyChallengeInvalid
+}
 func (f *fakeRepo) ConsumePasskeyChallengeByUser(_ context.Context, userID, purpose string, now time.Time) ([]byte, error) {
 	var live *fakePasskeyChallenge
 	for _, c := range f.passkeyChallenges { // newest live (user, purpose)
@@ -496,19 +575,28 @@ func (f *fakeRepo) ConsumePasskeyChallengeByUser(_ context.Context, userID, purp
 }
 
 // CreateDiscoverableChallenge / ConsumeDiscoverableChallenge mirror PGRepo's non-user-keyed
-// contract (task #40): begin reaps expired/consumed rows then stashes under the opaque handle,
-// and consume redeems by handle, single-use, expiry checked. discoverableFull forces the capped
-// path so the begin 429 branch is reachable without inserting thousands of rows.
-func (f *fakeRepo) CreateDiscoverableChallenge(_ context.Context, id string, sessionData []byte, now, expiresAt time.Time) error {
+// contract (task #40): begin reaps expired/consumed rows, refuses once source holds
+// maxLiveChallengesPerSource live rows, then stashes under the opaque handle; consume redeems
+// by handle, single-use, expiry checked. discoverableFull forces the global cap so the begin
+// 429 branch is reachable without inserting thousands of rows.
+func (f *fakeRepo) CreateDiscoverableChallenge(_ context.Context, id, source string, sessionData []byte, now, expiresAt time.Time) error {
 	if f.discoverableFull {
-		return ErrTooManyDiscoverableChallenges
+		return ErrTooManyPasskeyChallenges
 	}
+	fromSource := 0
 	for k, c := range f.discoverableChallenges { // reap (DELETE ... expires_at<=now OR consumed_at NOT NULL)
 		if c.consumed || !c.expiresAt.After(now) {
 			delete(f.discoverableChallenges, k)
+			continue
+		}
+		if c.source == source {
+			fromSource++
 		}
 	}
-	f.discoverableChallenges[id] = &fakeDiscoverableChallenge{sessionData: sessionData, expiresAt: expiresAt}
+	if fromSource >= maxLiveChallengesPerSource {
+		return ErrTooManyPasskeyChallenges
+	}
+	f.discoverableChallenges[id] = &fakeDiscoverableChallenge{sessionData: sessionData, expiresAt: expiresAt, source: source}
 	return nil
 }
 func (f *fakeRepo) ConsumeDiscoverableChallenge(_ context.Context, id string, now time.Time) ([]byte, error) {
@@ -624,6 +712,9 @@ type fakePasskeyVerifier struct {
 	// stashed SessionData round-trips and the existing credentials reach the verifier.
 	lastUser    PasskeyUser
 	lastSession []byte
+	// loginSession, when set, is the SessionData BeginLogin hands out in place of the
+	// per-user marker, so a test can tell two live login ceremonies apart at finish.
+	loginSession []byte
 	// discoverableUserHandle is the userHandle the fake feeds to FinishDiscoverableLogin's
 	// resolver, so a handler test drives the userHandle → UserByID → session-mint wiring for a
 	// chosen account (or an unknown handle, to exercise the resolve-fails branch).
@@ -656,6 +747,9 @@ func (v *fakePasskeyVerifier) BeginLogin(user PasskeyUser) (json.RawMessage, []b
 	opts := v.options
 	if opts == nil {
 		opts = json.RawMessage(`{"publicKey":{"challenge":"YXNzZXJ0"}}`)
+	}
+	if v.loginSession != nil {
+		return opts, v.loginSession, nil
 	}
 	return opts, []byte("login-session:" + user.ID), nil
 }
@@ -1473,36 +1567,40 @@ func (f *fakeRepo) UserByEmail(_ context.Context, email string) (*StaffUser, err
 	return nil, ErrNotFound
 }
 
-// ConsumeLoginEmailOTP mirrors PGRepo.ConsumeLoginEmailOTP: it redeems the newest
-// live code for (user, purpose) WITHOUT the identity side-effect (login already
-// resolved the userID via UserByEmail, so the address is settled). It charges an
-// attempt on a hash mismatch (exactly like VerifyEmailOTP) but never writes
-// users.email or runs the verified-email guard. A missing/expired/consumed code →
-// ErrOTPInvalid; a mismatch → ErrOTPInvalid too (and costs an attempt without
-// consuming); a locked code → ErrOTPLocked; a match → consumed, nil.
+// ConsumeLoginEmailOTP mirrors PGRepo.ConsumeLoginEmailOTP: every live (unconsumed,
+// unexpired) code of (user, purpose) is a candidate. Nothing live → ErrOTPInvalid;
+// the account lock next; every live code out of attempts → ErrOTPLocked; no match →
+// one attempt on each open code plus one budget failure, nothing consumed; a match
+// spends every live code. No identity side-effect (login already resolved the
+// userID via UserByEmail, so the address is settled).
 func (f *fakeRepo) ConsumeLoginEmailOTP(_ context.Context, userID, purpose, codeHash string, now time.Time) error {
-	var live *fakeEmailOTP
-	for _, o := range f.otps { // newest live (user, purpose), mirroring VerifyEmailOTP
-		if o.userID != userID || o.purpose != purpose || o.consumed {
+	var live, open []*fakeEmailOTP
+	matched := false
+	for _, o := range f.otps {
+		if o.userID != userID || o.purpose != purpose || o.consumed || !o.expiresAt.After(now) {
 			continue
 		}
-		if live == nil || o.createdAt.After(live.createdAt) {
-			live = o
+		live = append(live, o)
+		if o.attempts < otpMaxAttempts {
+			open = append(open, o)
+			matched = matched || o.codeHash == codeHash
 		}
 	}
-	if live == nil || !live.expiresAt.After(now) {
+	if len(live) == 0 {
 		return ErrOTPInvalid
 	}
 	if until, _ := f.OTPLockedUntil(context.Background(), userID, purpose, now); !until.IsZero() {
 		return &OTPAccountLockedError{Until: until}
 	}
-	if live.attempts >= otpMaxAttempts {
+	if len(open) == 0 {
 		return ErrOTPLocked
 	}
-	if live.codeHash != codeHash {
-		return f.chargeOTP(live, now) // a typo costs an attempt but does not consume the code
+	if !matched {
+		return f.chargeOTP(open, userID, purpose, now) // a typo costs an attempt but consumes nothing
 	}
-	live.consumed = true
+	for _, o := range live {
+		o.consumed = true
+	}
 	return nil
 }
 

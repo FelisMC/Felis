@@ -2128,8 +2128,11 @@ paths:
         matching challenge is stashed server-side and redeemed by finish. Mounted
         Public (no prior principal) and gated on local_auth_enabled. An unknown
         address and a known account with no enrolled passkey both return the SAME 400
-        no_passkey, so the door is not an existence oracle; a per-recipient cooldown
-        (shared shape with the email-OTP and op-login doors) throttles probing.
+        no_passkey, so the door is not an existence oracle; the per-address sign-in
+        rate limit bounds probing. Each begin stashes a ceremony of its own beside the
+        account's other live ones, so a begin by anyone who knows the address never
+        cancels its owner's. One network (an IPv4 address or IPv6 /48) holds at most 32
+        live login challenges (429 too_many_challenges past that).
       x-felis-face: [external]
       x-felis-tier: public
       security: []
@@ -2171,7 +2174,7 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '429':
           description: >-
-            A passkey login for this recipient was started too recently (otp_resend_cooldown);
+            This network already holds 32 live passkey login challenges (too_many_challenges);
             or this client address called the sign-in doors too often (rate_limited, with Retry-After).
           content:
             application/json:
@@ -2190,12 +2193,12 @@ paths:
       description: >-
         Second leg of the public passkey door: the caller returns the email (to
         re-select the account) and the raw navigator.credentials.get() assertion. The
-        stashed login challenge is consumed atomically and the assertion is verified
-        against it; on success a host-only felis_session cookie is minted. Both players
+        live login challenge whose value the assertion signed (response.clientDataJSON)
+        is consumed atomically and the assertion is verified against it; on success a host-only felis_session cookie is minted. Both players
         and staff may log in this way — a passkey is a two-factor authenticator
         (possession + user verification), strong enough to stand alone without the
         in-game approval op-login requires. Every failure mode (unknown address, no
-        live challenge, expired challenge, bad assertion) collapses into one uniform
+        live challenge for the signed value, expired challenge, bad assertion) collapses into one uniform
         passkey_login_invalid, so the door reveals nothing.
       x-felis-face: [external]
       x-felis-tier: public
@@ -2266,10 +2269,10 @@ paths:
         credential it holds for this RP and the account is revealed only by the
         userHandle inside the signed assertion at finish. The challenge cannot be
         user-keyed, so it is stashed under login_id in a non-user-keyed store and echoed
-        back at finish. Mounted Public and gated on local_auth_enabled. There is no
-        recipient or principal to key a per-caller cooldown on, so one client is bounded
-        by the per-address sign-in rate limit (429 rate_limited) and the table by a hard
-        global cap on live challenges (429 too_many_challenges). Inert for a credential until its owner
+        back at finish. Mounted Public and gated on local_auth_enabled. One client is
+        bounded by the per-address sign-in rate limit (429 rate_limited), one network
+        (an IPv4 address or IPv6 /48) to 32 live challenges, and the table by a hard
+        global cap of 16384 (both 429 too_many_challenges). Inert for a credential until its owner
         enrolls a resident passkey; email-OTP and username-first passkey remain the
         fallbacks, so no authenticator is ever locked out.
       x-felis-face: [external]
@@ -2315,9 +2318,9 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '429':
           description: >-
-            Too many discoverable logins are in flight server-wide (too_many_challenges;
-            the cap is global, so no per-recipient signal leaks); or this client address
-            called the sign-in doors too often (rate_limited, with Retry-After).
+            This network already holds 32 live discoverable challenges, or the store is at
+            its global cap (too_many_challenges); or this client address called the
+            sign-in doors too often (rate_limited, with Retry-After).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -2413,6 +2416,10 @@ paths:
         purpose. An address with no account returns the SAME 202 with no code minted,
         and the per-recipient cooldown is kept on that path too, so probing reveals
         nothing (existence is learnt only at the sanctioned /auth/options oracle).
+        One code is mailed per recipient per minute: a start inside that window gets
+        the same 202 (expires_at of the live code) and mails nothing. A start never
+        cancels the codes already mailed; the three newest live codes all work, and
+        signing in with one spends the rest.
         An account that spent its daily wrong-code budget (10 per 24h, across every
         code) also gets the same 202 and no mail until the window ends. Gated on
         local_auth_enabled.
@@ -2458,8 +2465,7 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '429':
           description: >-
-            A code for this recipient was requested too recently (otp_resend_cooldown);
-            or this client address called the sign-in doors too often (rate_limited, with Retry-After);
+            This client address called the sign-in doors too often (rate_limited, with Retry-After);
             or the install-wide mail budget is spent (mail_rate_limited, with Retry-After).
           content:
             application/json:
@@ -2539,7 +2545,10 @@ paths:
         op_login purpose, returning the request handle the browser polls. A non-staff
         or unknown address gets the SAME 202 with a random, non-persisted handle and no
         mail, so this never becomes a staff-enumeration oracle. A staff account that
-        spent its daily wrong-code budget gets the same neutral 202. Gated on
+        spent its daily wrong-code budget gets the same neutral 202. One code is mailed
+        per recipient per minute: a staff start inside that window opens a real request
+        but mails nothing, and the code already in the inbox finishes it. A start never
+        cancels the codes already mailed (the three newest live codes all work). Gated on
         local_auth_enabled.
       x-felis-face: [external]
       x-felis-tier: public
@@ -2583,8 +2592,7 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '429':
           description: >-
-            A code for this recipient was requested too recently (otp_resend_cooldown);
-            or this client address called the sign-in doors too often (rate_limited, with Retry-After);
+            This client address called the sign-in doors too often (rate_limited, with Retry-After);
             or the install-wide mail budget is spent (mail_rate_limited, with Retry-After).
           content:
             application/json:

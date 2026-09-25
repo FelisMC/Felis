@@ -375,6 +375,13 @@ type Repo interface {
 	// outstanding code per purpose — a re-request invalidates the earlier mail.
 	// expiresAt is the API clock + TTL so expiry is driven by one authoritative clock.
 	CreateEmailOTP(ctx context.Context, id, userID, email, codeHash, purpose string, expiresAt time.Time) error
+	// AddLoginEmailOTP persists a code for a PRE-SESSION login door (email login,
+	// op-login) beside the codes already mailed for (userID, purpose): it keeps the
+	// newest otpLiveLoginCodes live, dropping live codes that expired at now and the
+	// oldest beyond the allowance. Unlike CreateEmailOTP it never cancels a code
+	// because another start came in — anyone who knows an address can start a login
+	// for it, and ConsumeLoginEmailOTP accepts any live code.
+	AddLoginEmailOTP(ctx context.Context, id, userID, email, codeHash, purpose string, now, expiresAt time.Time) error
 	// VerifyEmailOTP redeems the newest live code for (userID, purpose) against
 	// codeHash, atomically (spec §B2). No live code, an expired one, or a consumed
 	// one → ErrOTPInvalid; an exhausted attempt budget → ErrOTPLocked; a spent
@@ -398,10 +405,13 @@ type Repo interface {
 	// address is stored unverified for a later Settings/SMTP flow to verify. An unknown
 	// userID returns ErrNotFound.
 	SetUserEmail(ctx context.Context, userID, email string) error
-	// ConsumeLoginEmailOTP redeems the newest live code for (userID, purpose) against
-	// codeHash for the PRE-SESSION email LOGIN door, with the SAME code lifecycle as
-	// VerifyEmailOTP (FOR UPDATE, expiry+lockout before hash compare, mismatch charges
-	// one attempt without consuming) but with NO identity side-effects: it neither
+	// ConsumeLoginEmailOTP redeems a code for (userID, purpose) against codeHash for
+	// the PRE-SESSION login doors and the step-up doors. Every live (unconsumed,
+	// unexpired at now) code is a candidate, since a login door keeps several. The
+	// lifecycle matches VerifyEmailOTP (FOR UPDATE, lockout before hash compare; all
+	// live codes out of attempts → ErrOTPLocked; a mismatch charges one attempt to each
+	// code still open plus one account failure, consuming nothing), and a match spends
+	// every live code of (userID, purpose). It has NO identity side-effects: it neither
 	// writes users.email nor runs the verified-email uniqueness guard. Login resolved
 	// userID via UserByEmail, which already requires email_verified, so the address is
 	// settled — re-proving control of a code this session must not re-touch the row.
@@ -464,19 +474,32 @@ type Repo interface {
 	// returns the stashed SessionData so finish can validate the attestation against
 	// it. No live challenge → ErrPasskeyChallengeInvalid. Single-use: a second finish
 	// for the same ceremony finds nothing live and fails. now is the API clock so
-	// expiry is testable. Bound to user_id — enrollment and username-first login both
-	// know the principal at begin; the usernameless from-zero door instead uses the
-	// non-user-keyed pair below.
+	// expiry is testable. Bound to user_id — enrollment and step-up know the principal
+	// at begin and only its holder can begin one; the public login doors use the
+	// challenge-matched and non-user-keyed pairs below.
 	ConsumePasskeyChallengeByUser(ctx context.Context, userID, purpose string, now time.Time) (sessionData []byte, err error)
+	// AddPasskeyLoginChallenge persists an email-first passkey LOGIN ceremony for
+	// (userID, purpose) beside the ones already live, recording challenge (the
+	// canonical base64url challenge handed to the browser) and source (the caller's
+	// network, see challengeSource). Anyone who knows an address can begin a login
+	// for it, so a begin never cancels another; it reaps the account's expired or
+	// consumed login rows and refuses with ErrTooManyPasskeyChallenges once source
+	// holds maxLiveChallengesPerSource live login challenges.
+	AddPasskeyLoginChallenge(ctx context.Context, id, userID, purpose, source, challenge string, sessionData []byte, now, expiresAt time.Time) error
+	// ConsumePasskeyLoginChallenge redeems the live login challenge of (userID,
+	// purpose) whose challenge is the one the browser signed, atomically and
+	// single-use, returning its SessionData. No such live row →
+	// ErrPasskeyChallengeInvalid.
+	ConsumePasskeyLoginChallenge(ctx context.Context, userID, purpose, challenge string, now time.Time) (sessionData []byte, err error)
 	// CreateDiscoverableChallenge persists a DISCOVERABLE ("usernameless") login ceremony
 	// (task #40, migration 0013), keyed by an opaque server-minted handle id — NOT a user,
-	// since a from-zero begin has no principal. In one transaction it reaps expired/consumed
-	// rows (the non-user-keyed analog of CreatePasskeyChallenge's supersede) and then, if the
-	// live count is at the hard cap, refuses with ErrTooManyDiscoverableChallenges rather than
-	// inserting — the cap, not the reap, bounds an adversarial begin-flood, since a burst
-	// inside the TTL leaves every fresh row live. now and expiresAt are both the API clock
-	// (now drives the reap; expiresAt = now + TTL drives liveness).
-	CreateDiscoverableChallenge(ctx context.Context, id string, sessionData []byte, now, expiresAt time.Time) error
+	// since a from-zero begin has no principal — and tagged with source (the caller's
+	// network, see challengeSource). In one transaction it reaps expired/consumed rows and
+	// then refuses with ErrTooManyPasskeyChallenges, rather than inserting, when source
+	// already holds maxLiveChallengesPerSource live rows or the table holds
+	// maxLiveDiscoverableChallenges. now and expiresAt are both the API clock (now drives
+	// the reap; expiresAt = now + TTL drives liveness).
+	CreateDiscoverableChallenge(ctx context.Context, id, source string, sessionData []byte, now, expiresAt time.Time) error
 	// ConsumeDiscoverableChallenge redeems the discoverable challenge under handle id,
 	// atomically and single-use (mirrors ConsumePasskeyChallengeByUser without the user key):
 	// it takes the row FOR UPDATE, checks expiry against now, stamps consumed_at, and returns

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -136,11 +137,10 @@ func TestPasskeyDiscoverableLoginVertical(t *testing.T) {
 	}
 }
 
-// TestPasskeyDiscoverableLoginBeginCapped pins the server-side volumetric bound: with the store
-// at its hard cap, begin answers 429 too_many_challenges and stashes nothing. This is the only
-// per-server brake on the usernameless begin (there is no recipient/principal to key a per-caller
-// cooldown on, so volumetric per-source limiting is delegated to the edge) — a reap alone cannot
-// bound a burst, since freshly-inserted rows are not yet expired.
+// TestPasskeyDiscoverableLoginBeginCapped pins the store-wide bound: with the store at its hard
+// cap, begin answers 429 too_many_challenges and stashes nothing. A reap alone cannot bound a
+// burst, since freshly-inserted rows are not yet expired; the per-source bound below keeps one
+// network from reaching this cap.
 func TestPasskeyDiscoverableLoginBeginCapped(t *testing.T) {
 	api, repo, _ := seedDiscoverableLoginAPI(t)
 	repo.discoverableFull = true
@@ -152,6 +152,35 @@ func TestPasskeyDiscoverableLoginBeginCapped(t *testing.T) {
 	}
 	if len(repo.discoverableChallenges) != 0 {
 		t.Errorf("a capped begin must stash nothing, got %d", len(repo.discoverableChallenges))
+	}
+}
+
+// TestPasskeyDiscoverableLoginBeginPerSourceCap: the usernameless begin has no account to key
+// on, so the store holds each network (IPv4 address, IPv6 /48) to 32 live challenges. The
+// begins come from 33 different /64s inside one /48, so the per-/64 auth-door bucket never
+// trips and only the /48 bound refuses the last; another network still begins.
+func TestPasskeyDiscoverableLoginBeginPerSourceCap(t *testing.T) {
+	api, repo, _ := seedDiscoverableLoginAPI(t)
+	api.ClientIPHeader = "CF-Connecting-IP"
+	eh := api.ExternalHandler()
+	from := func(ip string) *httptest.ResponseRecorder {
+		return do(eh, "POST", "/api/v1/auth/passkey/login/discoverable/begin", `{}`,
+			map[string]string{"Content-Type": "application/json", "CF-Connecting-IP": ip})
+	}
+	for i := 1; i <= 32; i++ {
+		if w := from(fmt.Sprintf("2001:db8:7:%x::1", i)); w.Code != http.StatusOK {
+			t.Fatalf("begin %d: code = %d, want 200 (%s)", i, w.Code, w.Body.String())
+		}
+	}
+	w := from("2001:db8:7:ff::1")
+	if w.Code != http.StatusTooManyRequests || decodeErr(t, w) != "too_many_challenges" {
+		t.Fatalf("33rd begin from the /48: code = %d body %s, want 429 too_many_challenges", w.Code, w.Body.String())
+	}
+	if len(repo.discoverableChallenges) != 32 {
+		t.Errorf("stashed = %d, want 32", len(repo.discoverableChallenges))
+	}
+	if w := from("2001:db8:8::1"); w.Code != http.StatusOK {
+		t.Fatalf("begin from another /48: code = %d, want 200 (%s)", w.Code, w.Body.String())
 	}
 }
 

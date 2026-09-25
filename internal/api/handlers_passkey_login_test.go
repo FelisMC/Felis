@@ -2,8 +2,10 @@ package api
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -23,8 +25,9 @@ import (
 //   - Anti-enumeration on finish: unknown email, no live challenge, expired challenge and
 //     a bad assertion all collapse to ONE passkey_login_invalid envelope, so the finish
 //     half is never an existence/state oracle.
-//   - Cooldown seals the accepted begin-side trade-off: has-passkey (200) vs no_passkey
-//     (400) is a status oracle, but one begin per recipient per window throttles probing.
+//   - Ceremonies coexist: finish picks the live challenge the browser signed, so a
+//     begin by someone else who knows the address never cancels the owner's, and each
+//     network holds a bounded number of live login challenges.
 //   - Staff admitted: unlike the email door's staff_account refusal, a passkey stands
 //     alone (possession + user-verification), so role=admin mints a session here.
 
@@ -57,12 +60,28 @@ func seedLoginPasskeyAPI(t *testing.T) (*API, *fakeRepo, *fakePasskeyVerifier) {
 // plantLoginChallenge seeds a stashed LOGIN-purpose challenge for u1 directly, so the
 // finish-side branches (expired, verification failure) are reachable under the frozen
 // clock without running begin first. Mirrors plantPasskeyChallenge, but scoped to
-// passkeyPurposeLogin so it is only ever consumed by the login door.
+// passkeyPurposeLogin so it is only ever consumed by the login door. Its challenge is
+// the one the fake verifier hands out by default, so loginAssertion("cred-1",
+// "YXNzZXJ0") answers it.
 func plantLoginChallenge(repo *fakeRepo, id string, expiresAt time.Time) {
 	repo.passkeyChallenges[id] = &fakePasskeyChallenge{
-		id: id, userID: "u1", purpose: passkeyPurposeLogin,
+		id: id, userID: "u1", purpose: passkeyPurposeLogin, challenge: "YXNzZXJ0", source: "192.0.2.1",
 		sessionData: []byte("login-session:u1"), expiresAt: expiresAt, createdAt: expiresAt,
 	}
+}
+
+// loginAssertion is the JSON a browser posts back from navigator.credentials.get(): the
+// credential id plus response.clientDataJSON, the base64url JSON that carries the signed
+// challenge.
+func loginAssertion(credID, challenge string) string {
+	clientData := base64.RawURLEncoding.EncodeToString(
+		[]byte(`{"type":"webauthn.get","challenge":"` + challenge + `","origin":"https://console.example.net"}`))
+	return `{"id":"` + credID + `","type":"public-key","response":{"clientDataJSON":"` + clientData + `"}}`
+}
+
+// finishBody is a username-first finish body answering challenge with cred-1.
+func finishBody(email, challenge string) string {
+	return `{"email":"` + email + `","assertion":` + loginAssertion("cred-1", challenge) + `}`
 }
 
 // TestPasskeyLoginVertical walks the whole returning-player slice across the external
@@ -105,8 +124,7 @@ func TestPasskeyLoginVertical(t *testing.T) {
 	// 2) finish — typed in yet another casing, proving the finish-side resolver is
 	// case-insensitive too — verifies the assertion and mints the session. The body
 	// carries NO challenge, only email+assertion.
-	w = do(eh, "POST", "/api/v1/auth/passkey/login/finish",
-		`{"email":"PLAYER@example.NET","assertion":{"id":"cred-1","type":"public-key"}}`, jsonHeader)
+	w = do(eh, "POST", "/api/v1/auth/passkey/login/finish", finishBody("PLAYER@example.NET", "YXNzZXJ0"), jsonHeader)
 	if w.Code != http.StatusOK {
 		t.Fatalf("finish: code = %d, want 200 (%s)", w.Code, w.Body.String())
 	}
@@ -144,8 +162,7 @@ func TestPasskeyLoginVertical(t *testing.T) {
 	}
 
 	// 3) single-use: the consumed challenge buys nothing a second time.
-	if w := do(eh, "POST", "/api/v1/auth/passkey/login/finish",
-		`{"email":"player@example.net","assertion":{"id":"cred-1","type":"public-key"}}`, jsonHeader); w.Code != http.StatusBadRequest || decodeErr(t, w) != "passkey_login_invalid" {
+	if w := do(eh, "POST", "/api/v1/auth/passkey/login/finish", finishBody("player@example.net", "YXNzZXJ0"), jsonHeader); w.Code != http.StatusBadRequest || decodeErr(t, w) != "passkey_login_invalid" {
 		t.Fatalf("replay of consumed challenge: code = %d body %s, want 400 passkey_login_invalid", w.Code, w.Body.String())
 	}
 }
@@ -153,8 +170,8 @@ func TestPasskeyLoginVertical(t *testing.T) {
 // TestPasskeyLoginBeginNoPasskey pins the begin-side anti-enumeration floor: an unknown
 // email and a KNOWN verified account that has enrolled no passkey answer the SAME
 // no_passkey envelope, so the two are indistinguishable. (The remaining has-passkey-vs-not
-// status split is the documented, accepted trade-off; the cooldown below makes probing
-// it impractical.) Neither path stashes a challenge, and both KEEP the reservation.
+// status split is the documented, accepted trade-off; the auth-door bucket bounds how
+// fast one address can probe it.) Neither path stashes a challenge.
 func TestPasskeyLoginBeginNoPasskey(t *testing.T) {
 	begin := func(eh http.Handler, email string) *httptest.ResponseRecorder {
 		return do(eh, "POST", "/api/v1/auth/passkey/login/begin", `{"email":"`+email+`"}`, jsonHeader)
@@ -184,26 +201,11 @@ func TestPasskeyLoginBeginNoPasskey(t *testing.T) {
 				len(repoU.passkeyChallenges), len(repoN.passkeyChallenges))
 		}
 	})
-
-	t.Run("the no_passkey path KEEPS the reservation so probing is throttled", func(t *testing.T) {
-		api, _, _ := seedLoginPasskeyAPI(t)
-		eh := api.ExternalHandler()
-		if w := begin(eh, "ghost@example.net"); w.Code != http.StatusBadRequest || decodeErr(t, w) != "no_passkey" {
-			t.Fatalf("first probe: code = %d body %s, want 400 no_passkey", w.Code, w.Body.String())
-		}
-		// Re-probing the same unknown address inside the window is throttled identically to
-		// a real begin — the response is not the only channel; the throttle is sealed too.
-		if w := begin(eh, "ghost@example.net"); w.Code != http.StatusTooManyRequests || decodeErr(t, w) != "otp_resend_cooldown" {
-			t.Fatalf("re-probe: code = %d body %s, want 429 otp_resend_cooldown", w.Code, w.Body.String())
-		}
-	})
 }
 
-// TestPasskeyLoginBeginVerifierError pins the reserve→rollback path: a BeginLogin failure
-// is a server-side fault, not a probe signal, so it answers passkey_login_failed AND
-// RELEASES the reservation — the immediate retry is admitted, not 429'd. Distinguishing
-// 400-not-429 on the retry is what proves the release: a kept reservation would 429 before
-// ever reaching BeginLogin.
+// TestPasskeyLoginBeginVerifierError pins the verifier-fault path: a BeginLogin failure is
+// a server-side fault, answered passkey_login_failed, stashing nothing, and the immediate
+// retry reaches the verifier again.
 func TestPasskeyLoginBeginVerifierError(t *testing.T) {
 	api, repo, v := seedLoginPasskeyAPI(t)
 	v.beginLoginErr = errors.New("no assertable credential")
@@ -216,7 +218,7 @@ func TestPasskeyLoginBeginVerifierError(t *testing.T) {
 		t.Errorf("a failed begin must stash no challenge, got %d", len(repo.passkeyChallenges))
 	}
 	if w := do(eh, "POST", "/api/v1/auth/passkey/login/begin", `{"email":"player@example.net"}`, jsonHeader); w.Code != http.StatusBadRequest || decodeErr(t, w) != "passkey_login_failed" {
-		t.Fatalf("retry after verifier error: code = %d body %s, want 400 passkey_login_failed (reservation must be released, not 429)", w.Code, w.Body.String())
+		t.Fatalf("retry after verifier error: code = %d body %s, want 400 passkey_login_failed", w.Code, w.Body.String())
 	}
 }
 
@@ -317,24 +319,33 @@ func TestPasskeyLoginGates(t *testing.T) {
 // directly: the frozen clock makes that the only deterministic route to that branch.
 func TestPasskeyLoginFinishRejections(t *testing.T) {
 	const finishPath = "/api/v1/auth/passkey/login/finish"
-	finish := func(eh http.Handler, email string) *httptest.ResponseRecorder {
-		return do(eh, "POST", finishPath,
-			`{"email":"`+email+`","assertion":{"id":"cred-1","type":"public-key"}}`, jsonHeader)
+	finish := func(eh http.Handler, email, assertion string) *httptest.ResponseRecorder {
+		if assertion == "" {
+			assertion = loginAssertion("cred-1", "YXNzZXJ0")
+		}
+		return do(eh, "POST", finishPath, `{"email":"`+email+`","assertion":`+assertion+`}`, jsonHeader)
 	}
 
 	cases := []struct {
-		name  string
-		email string
-		setup func(repo *fakeRepo, v *fakePasskeyVerifier)
+		name      string
+		email     string
+		assertion string // empty: cred-1 over the planted challenge
+		setup     func(repo *fakeRepo, v *fakePasskeyVerifier)
 	}{
-		{"unknown email", "ghost@example.net", func(repo *fakeRepo, v *fakePasskeyVerifier) {}},
-		{"known account, no live challenge", "player@example.net", func(repo *fakeRepo, v *fakePasskeyVerifier) {}},
-		{"expired challenge", "player@example.net", func(repo *fakeRepo, v *fakePasskeyVerifier) {
+		{"unknown email", "ghost@example.net", "", func(repo *fakeRepo, v *fakePasskeyVerifier) {}},
+		{"known account, no live challenge", "player@example.net", "", func(repo *fakeRepo, v *fakePasskeyVerifier) {}},
+		{"expired challenge", "player@example.net", "", func(repo *fakeRepo, v *fakePasskeyVerifier) {
 			plantLoginChallenge(repo, "ex", frozenNow.Add(-time.Second))
 		}},
-		{"assertion fails verification", "player@example.net", func(repo *fakeRepo, v *fakePasskeyVerifier) {
+		{"assertion fails verification", "player@example.net", "", func(repo *fakeRepo, v *fakePasskeyVerifier) {
 			plantLoginChallenge(repo, "live", frozenNow.Add(passkeyChallengeTTL))
 			v.failErr = errors.New("bad assertion")
+		}},
+		{"assertion signs a challenge nobody issued", "player@example.net", loginAssertion("cred-1", "bm9ib2R5"), func(repo *fakeRepo, v *fakePasskeyVerifier) {
+			plantLoginChallenge(repo, "live", frozenNow.Add(passkeyChallengeTTL))
+		}},
+		{"assertion without clientDataJSON", "player@example.net", `{"id":"cred-1","type":"public-key"}`, func(repo *fakeRepo, v *fakePasskeyVerifier) {
+			plantLoginChallenge(repo, "live", frozenNow.Add(passkeyChallengeTTL))
 		}},
 	}
 
@@ -342,7 +353,7 @@ func TestPasskeyLoginFinishRejections(t *testing.T) {
 	for _, c := range cases {
 		api, repo, v := seedLoginPasskeyAPI(t)
 		c.setup(repo, v)
-		w := finish(api.ExternalHandler(), c.email)
+		w := finish(api.ExternalHandler(), c.email, c.assertion)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("%s: code = %d, want 400 (%s)", c.name, w.Code, w.Body.String())
 		}
@@ -368,43 +379,106 @@ func TestPasskeyLoginFinishRejections(t *testing.T) {
 	}
 }
 
-// TestPasskeyLoginBeginRateLimited closes the unauthenticated probing/DoS vector on the
-// public door: one begin per recipient per window, keyed case-insensitively (a recased
-// retype is the same mailbox), recovering after the window elapses. This is what makes the
-// accepted has-passkey-vs-not status oracle impractical to farm.
-func TestPasskeyLoginBeginRateLimited(t *testing.T) {
-	begin := func(eh http.Handler, email string) *httptest.ResponseRecorder {
-		return do(eh, "POST", "/api/v1/auth/passkey/login/begin", `{"email":"`+email+`"}`, jsonHeader)
+// TestPasskeyLoginCeremoniesCoexist is the case of someone who knows the address and
+// begins logins for it while its owner signs in. Every begin stashes a ceremony of its
+// own; finish verifies against the one whose challenge the browser signed, so the
+// owner's earlier ceremony survives any number of later begins, and a stranger's
+// assertion over a challenge nobody issued consumes nothing.
+func TestPasskeyLoginCeremoniesCoexist(t *testing.T) {
+	api, repo, v := seedLoginPasskeyAPI(t)
+	eh := api.ExternalHandler()
+	begin := func(challenge, session string) {
+		t.Helper()
+		v.options = json.RawMessage(`{"publicKey":{"challenge":"` + challenge + `"}}`)
+		v.loginSession = []byte(session)
+		if w := do(eh, "POST", "/api/v1/auth/passkey/login/begin", `{"email":"player@example.net"}`, jsonHeader); w.Code != http.StatusOK {
+			t.Fatalf("begin %s: code = %d, want 200 (%s)", challenge, w.Code, w.Body.String())
+		}
+	}
+	finish := func(challenge string) *httptest.ResponseRecorder {
+		return do(eh, "POST", "/api/v1/auth/passkey/login/finish", finishBody("player@example.net", challenge), jsonHeader)
 	}
 
-	t.Run("same recipient is throttled, then recovers after the cooldown", func(t *testing.T) {
-		api, _, _ := seedLoginPasskeyAPI(t)
-		clock := frozenNow
-		api.Now = func() time.Time { return clock }
-		eh := api.ExternalHandler()
+	begin("b3duZXI", "owner-session")   // the owner's ceremony
+	begin("c3RyYW5nZXI", "later-begin") // someone else's begin right after
+	if len(repo.passkeyChallenges) != 2 {
+		t.Fatalf("live login challenges = %d, want 2 (a begin must not cancel another)", len(repo.passkeyChallenges))
+	}
 
-		if w := begin(eh, "player@example.net"); w.Code != http.StatusOK {
-			t.Fatalf("first begin: code = %d, want 200 (%s)", w.Code, w.Body.String())
-		}
-		if w := begin(eh, "player@example.net"); w.Code != http.StatusTooManyRequests || decodeErr(t, w) != "otp_resend_cooldown" {
-			t.Fatalf("immediate re-begin: code = %d body %s, want 429 otp_resend_cooldown", w.Code, w.Body.String())
-		}
-		clock = clock.Add(otpResendCooldown + time.Second)
-		if w := begin(eh, "player@example.net"); w.Code != http.StatusOK {
-			t.Fatalf("post-cooldown begin: code = %d, want 200 (%s)", w.Code, w.Body.String())
-		}
-	})
+	if w := finish("bm9ib2R5"); w.Code != http.StatusBadRequest || decodeErr(t, w) != "passkey_login_invalid" {
+		t.Fatalf("finish over an unissued challenge: code = %d body %s, want 400 passkey_login_invalid", w.Code, w.Body.String())
+	}
+	if w := finish("b3duZXI"); w.Code != http.StatusOK {
+		t.Fatalf("owner's finish after a later begin: code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	if string(v.lastSession) != "owner-session" {
+		t.Errorf("owner's finish verified against %q, want owner-session", v.lastSession)
+	}
+	if w := finish("c3RyYW5nZXI"); w.Code != http.StatusOK || string(v.lastSession) != "later-begin" {
+		t.Fatalf("later ceremony: code = %d session %q, want 200 later-begin", w.Code, v.lastSession)
+	}
+	if w := finish("b3duZXI"); w.Code != http.StatusBadRequest {
+		t.Fatalf("replay of the owner's challenge: code = %d, want 400", w.Code)
+	}
+}
 
-	t.Run("throttle key is case-insensitive", func(t *testing.T) {
-		api, _, _ := seedLoginPasskeyAPI(t)
-		eh := api.ExternalHandler()
-		if w := begin(eh, "Player@Example.NET"); w.Code != http.StatusOK {
-			t.Fatalf("first begin: code = %d, want 200 (%s)", w.Code, w.Body.String())
+// TestPasskeyLoginBeginPerSourceCap bounds the challenge store by network: 32 live login
+// challenges begun from one IPv6 /48 fill that network's allowance (429
+// too_many_challenges, nothing stashed), while a begin from another network still gets
+// its ceremony. The begins come from 33 different /64s inside the /48, so the per-/64
+// auth-door bucket never trips and only the /48 bound can refuse the last one.
+func TestPasskeyLoginBeginPerSourceCap(t *testing.T) {
+	api, repo, _ := seedLoginPasskeyAPI(t)
+	api.ClientIPHeader = "CF-Connecting-IP"
+	eh := api.ExternalHandler()
+	from := func(ip string) *httptest.ResponseRecorder {
+		return do(eh, "POST", "/api/v1/auth/passkey/login/begin", `{"email":"player@example.net"}`,
+			map[string]string{"Content-Type": "application/json", "CF-Connecting-IP": ip})
+	}
+	for i := 1; i <= 32; i++ {
+		if w := from(fmt.Sprintf("2001:db8:7:%x::1", i)); w.Code != http.StatusOK {
+			t.Fatalf("begin %d: code = %d, want 200 (%s)", i, w.Code, w.Body.String())
 		}
-		if w := begin(eh, "player@example.net"); w.Code != http.StatusTooManyRequests {
-			t.Fatalf("recased re-begin: code = %d, want 429 (key must be lowercased)", w.Code)
+	}
+	w := from("2001:db8:7:ff::1")
+	if w.Code != http.StatusTooManyRequests || decodeErr(t, w) != "too_many_challenges" {
+		t.Fatalf("33rd begin from the /48: code = %d body %s, want 429 too_many_challenges", w.Code, w.Body.String())
+	}
+	if len(repo.passkeyChallenges) != 32 {
+		t.Errorf("stashed = %d, want 32", len(repo.passkeyChallenges))
+	}
+	if w := from("2001:db8:8::1"); w.Code != http.StatusOK {
+		t.Fatalf("begin from another /48: code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	if w := from("203.0.113.9"); w.Code != http.StatusOK {
+		t.Fatalf("begin from an IPv4 address: code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+}
+
+// TestPasskeyChallengeCanonicalForm pins that the stored and the signed challenge compare
+// equal whatever padding each side used: go-webauthn accepts padded and unpadded
+// base64url, and a browser's clientDataJSON may arrive either way.
+func TestPasskeyChallengeCanonicalForm(t *testing.T) {
+	if got, err := optionsChallenge(json.RawMessage(`{"publicKey":{"challenge":"ZmFrZQ=="}}`)); err != nil || got != "ZmFrZQ" {
+		t.Errorf("optionsChallenge(padded) = %q, %v; want ZmFrZQ", got, err)
+	}
+	padded := base64.URLEncoding.EncodeToString([]byte(`{"challenge":"ZmFrZQ"}`)) // 22 bytes: ends in "=="
+	unpadded := base64.RawURLEncoding.EncodeToString([]byte(`{"challenge":"ZmFrZQ=="}`))
+	for name, cd := range map[string]string{"padded clientDataJSON": padded, "padded challenge": unpadded} {
+		got, err := assertionChallenge(json.RawMessage(`{"response":{"clientDataJSON":"` + cd + `"}}`))
+		if err != nil || got != "ZmFrZQ" {
+			t.Errorf("%s: assertionChallenge = %q, %v; want ZmFrZQ", name, got, err)
 		}
-	})
+	}
+	for name, a := range map[string]string{
+		"no response":         `{"id":"cred-1"}`,
+		"clientDataJSON junk": `{"response":{"clientDataJSON":"!!"}}`,
+		"empty challenge":     `{"response":{"clientDataJSON":"` + base64.RawURLEncoding.EncodeToString([]byte(`{"challenge":""}`)) + `"}}`,
+	} {
+		if got, err := assertionChallenge(json.RawMessage(a)); err == nil {
+			t.Errorf("%s: assertionChallenge = %q, want an error", name, got)
+		}
+	}
 }
 
 // TestPasskeyLoginAllowsStaff pins the deliberate contrast with the email door: that door
@@ -434,7 +508,7 @@ func TestPasskeyLoginAllowsStaff(t *testing.T) {
 		t.Fatalf("begin for staff: code = %d, want 200 (%s)", w.Code, w.Body.String())
 	}
 	w := do(eh, "POST", "/api/v1/auth/passkey/login/finish",
-		`{"email":"boss@example.net","assertion":{"id":"cred-a1","type":"public-key"}}`, jsonHeader)
+		`{"email":"boss@example.net","assertion":`+loginAssertion("cred-a1", "YXNzZXJ0")+`}`, jsonHeader)
 	if w.Code != http.StatusOK {
 		t.Fatalf("finish for staff: code = %d, want 200 (passkey admits staff) (%s)", w.Code, w.Body.String())
 	}
@@ -472,8 +546,7 @@ func TestPasskeyLoginFinishCloneRejected(t *testing.T) {
 	plantLoginChallenge(repo, "live", frozenNow.Add(passkeyChallengeTTL))
 	eh := api.ExternalHandler()
 
-	w := do(eh, "POST", "/api/v1/auth/passkey/login/finish",
-		`{"email":"player@example.net","assertion":{"id":"cred-1","type":"public-key"}}`, jsonHeader)
+	w := do(eh, "POST", "/api/v1/auth/passkey/login/finish", finishBody("player@example.net", "YXNzZXJ0"), jsonHeader)
 
 	if w.Code != http.StatusBadRequest || decodeErr(t, w) != "passkey_login_invalid" {
 		t.Fatalf("clone finish: code = %d body %s, want 400 passkey_login_invalid (opaque refusal)", w.Code, w.Body.String())

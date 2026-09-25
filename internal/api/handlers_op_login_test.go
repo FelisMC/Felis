@@ -212,8 +212,8 @@ func TestOpLoginOwnerAdmitted(t *testing.T) {
 
 // TestOpLoginStartNeutral pins the start-side anti-enumeration contract: op.console is
 // the STAFF door, so a non-admin account AND an unknown address both get a 202 carrying
-// a request_id + expires_at, mint/mail nothing, and still burn the per-recipient
-// cooldown — so neither the response nor the throttle tells a caller who is staff.
+// a request_id + expires_at and mint/mail nothing, and a re-probe inside the cooldown
+// does the same — so neither the response nor the throttle tells a caller who is staff.
 func TestOpLoginStartNeutral(t *testing.T) {
 	check := func(t *testing.T, seed func(*fakeRepo), email, wantReason, wantUser string) {
 		t.Helper()
@@ -248,9 +248,14 @@ func TestOpLoginStartNeutral(t *testing.T) {
 			repo.audits[0].ActorUserID != wantUser {
 			t.Errorf("neutral start audits = %+v, want one auth.op_login.failed %s by %q", repo.audits, wantReason, wantUser)
 		}
-		// The reservation is KEPT: re-probing the same address is throttled like a resend.
-		if w := startOp(eh, email); w.Code != http.StatusTooManyRequests || decodeErr(t, w) != "otp_resend_cooldown" {
-			t.Fatalf("re-probe: code = %d body %s, want 429 otp_resend_cooldown", w.Code, w.Body.String())
+		// Re-probing inside the window: the same 202 shape, still nothing behind it.
+		w = startOp(eh, email)
+		if b := acctBody(t, w); w.Code != http.StatusAccepted || b["request_id"] == "" || b["expires_at"] != "2023-11-14T22:23:20Z" {
+			t.Fatalf("re-probe: code = %d body %s, want 202 with a request_id and the first expiry", w.Code, w.Body.String())
+		}
+		if len(repo.opLogins) != 0 || len(repo.otps) != 0 || mailer.calls != 0 {
+			t.Errorf("re-probe must mint/mail nothing: reqs=%d otps=%d mails=%d",
+				len(repo.opLogins), len(repo.otps), mailer.calls)
 		}
 	}
 
@@ -262,6 +267,64 @@ func TestOpLoginStartNeutral(t *testing.T) {
 			repo.staff["p"] = &StaffUser{ID: "u9", Username: "p", Email: "player@example.net", Role: "user", EmailVerified: true}
 		}, "player@example.net", "not_staff", "u9")
 	})
+}
+
+// TestOpLoginStartByAStranger is the case of someone who knows a staff address and
+// keeps starting logins for it. Their start mails the code to the staff inbox; the
+// staff member's own start inside the cooldown still gets a request of its own
+// (nothing new mailed, same expiry as the live code), and that inbox code finishes
+// it. A start after the cooldown mails a second code without cancelling the first.
+func TestOpLoginStartByAStranger(t *testing.T) {
+	api, repo, mailer := seedOpLoginAPI(t)
+	clock := time.Unix(1_700_000_000, 0)
+	api.Now = func() time.Time { return clock }
+	eh := api.ExternalHandler()
+	ih := api.InternalHandler()
+	requestID := func(w *httptest.ResponseRecorder) string {
+		t.Helper()
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("start: code = %d, want 202 (%s)", w.Code, w.Body.String())
+		}
+		id, _ := acctBody(t, w)["request_id"].(string)
+		return id
+	}
+
+	strangers := requestID(startOp(eh, "op@example.net"))
+	inboxCode := mailer.code
+	clock = clock.Add(30 * time.Second)
+	w := startOp(eh, "op@example.net")
+	own := requestID(w)
+	if own == strangers || repo.opLogins[own] == nil {
+		t.Fatalf("own request %q must be a new, stored request beside the stranger's %q", own, strangers)
+	}
+	if b := acctBody(t, w); b["expires_at"] != "2023-11-14T22:23:20Z" {
+		t.Errorf("own start expires_at = %v, want 2023-11-14T22:23:20Z (the live code's)", b["expires_at"])
+	}
+	if mailer.calls != 1 || len(repo.otps) != 1 {
+		t.Fatalf("start inside the cooldown: mails=%d otps=%d, want 1/1", mailer.calls, len(repo.otps))
+	}
+	if w := approveOp(ih, own, opUUID); w.Code != http.StatusOK {
+		t.Fatalf("approve: code = %d (%s)", w.Code, w.Body.String())
+	}
+	if w := finishOp(eh, own, inboxCode); w.Code != http.StatusOK {
+		t.Fatalf("finish own request with the inbox code: code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+
+	// After the cooldown a start mails a second code; the first one still works.
+	clock = clock.Add(otpResendCooldown)
+	first := requestID(startOp(eh, "op@example.net"))
+	firstCode := mailer.code
+	clock = clock.Add(otpResendCooldown)
+	requestID(startOp(eh, "op@example.net"))
+	if mailer.calls != 3 {
+		t.Fatalf("mails = %d, want 3", mailer.calls)
+	}
+	if w := approveOp(ih, first, opUUID); w.Code != http.StatusOK {
+		t.Fatalf("approve: code = %d (%s)", w.Code, w.Body.String())
+	}
+	if w := finishOp(eh, first, firstCode); w.Code != http.StatusOK {
+		t.Fatalf("finish with the earlier code after a newer start: code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
 }
 
 // TestOpLoginStatusNeutral proves status is never an enumeration oracle: it returns

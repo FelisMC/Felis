@@ -264,3 +264,20 @@ func sourceKey(ip netip.Addr) string {
 		return p.String()
 	}
 }
+
+// challengeSource is the network a passkey login challenge is counted against
+// (maxLiveChallengesPerSource): IPv4 per host, IPv6 per /48. A /48 is what one site
+// is handed, so its holder cannot spread a flood of begins over the 65,536 /64s the
+// auth-door bucket would see as separate callers. An unparseable address shares one
+// key.
+func challengeSource(ip netip.Addr) string {
+	switch {
+	case !ip.IsValid():
+		return "unknown"
+	case ip.Is4():
+		return ip.String()
+	default:
+		p, _ := ip.Prefix(48)
+		return p.String()
+	}
+}

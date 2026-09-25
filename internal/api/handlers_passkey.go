@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -241,6 +243,61 @@ func unwrapPublicKey(options json.RawMessage) json.RawMessage {
 	return env.PublicKey
 }
 
+// optionsChallenge returns the challenge in go-webauthn's request options
+// ({"publicKey": {"challenge": ...}}) in canonical form: the value the browser will
+// sign into the assertion's clientDataJSON.
+func optionsChallenge(options json.RawMessage) (string, error) {
+	var env struct {
+		PublicKey struct {
+			Challenge string `json:"challenge"`
+		} `json:"publicKey"`
+	}
+	if err := json.Unmarshal(options, &env); err != nil {
+		return "", err
+	}
+	return canonicalChallenge(env.PublicKey.Challenge)
+}
+
+// assertionChallenge returns, in canonical form, the challenge a
+// navigator.credentials.get() result signed: response.clientDataJSON is base64url
+// JSON whose challenge member is that value. It only picks the ceremony to verify
+// against; the verifier checks the signature over the same bytes.
+func assertionChallenge(assertion json.RawMessage) (string, error) {
+	var body struct {
+		Response struct {
+			ClientDataJSON string `json:"clientDataJSON"`
+		} `json:"response"`
+	}
+	if err := json.Unmarshal(assertion, &body); err != nil {
+		return "", err
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(body.Response.ClientDataJSON, "="))
+	if err != nil {
+		return "", err
+	}
+	var clientData struct {
+		Challenge string `json:"challenge"`
+	}
+	if err := json.Unmarshal(raw, &clientData); err != nil {
+		return "", err
+	}
+	return canonicalChallenge(clientData.Challenge)
+}
+
+// canonicalChallenge decodes a base64url challenge, padded or not (go-webauthn
+// accepts both), and re-encodes it unpadded, so the stored and the signed forms
+// compare equal. An empty or undecodable challenge is an error.
+func canonicalChallenge(s string) (string, error) {
+	b, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(s, "="))
+	if err != nil {
+		return "", err
+	}
+	if len(b) == 0 {
+		return "", errors.New("empty challenge")
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
 // handlePasskeyRegisterBegin mints a credential-creation challenge for the caller
 // (spec §14, external app face). It loads the passkeys the caller has already bound so
 // the ceremony excludes them (one authenticator binds once), asks the verifier for the
@@ -461,12 +518,16 @@ type passkeyLoginBeginRequest struct {
 // (Public, pre-session). It resolves the typed email to an account, loads the
 // passkeys that account has bound, and asks the verifier for the assertion options
 // + opaque SessionData the browser needs for navigator.credentials.get(). The
-// SessionData is stashed under a short TTL, keyed to the user so the finish step
-// can consume it. Requires local sessions to be enabled (like the other pre-session
-// doors). A user with no bound passkey, an unknown email, and a real account with
-// passkeys are distinguished by status code (400 vs 200) — this is an accepted
-// enumeration trade-off (the /auth/options oracle is the sanctioned place to learn
-// existence), but the per-recipient cooldown below makes probing impractical.
+// SessionData is stashed under a short TTL beside the account's other live login
+// ceremonies, tagged with the challenge the browser will sign, so finish consumes
+// exactly the ceremony it answers: anyone who knows the address can begin a login for
+// it, and a begin never cancels the owner's. The store holds each network to
+// maxLiveChallengesPerSource live login challenges (429 too_many_challenges past it).
+// Requires local sessions to be enabled (like the other pre-session doors). A user
+// with no bound passkey, an unknown email, and a real account with passkeys are
+// distinguished by status code (400 vs 200) — this is an accepted enumeration
+// trade-off (the /auth/options oracle is the sanctioned place to learn existence);
+// volume per caller is bounded by the auth-door bucket.
 func (a *API) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request) {
 	if !localAuthEnabled(r.Context(), a.Repo) {
 		writeError(w, r, newError(http.StatusForbidden, "local_auth_disabled",
@@ -492,29 +553,9 @@ func (a *API) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Per-recipient cooldown reserved BEFORE any work, identical to the email-OTP and
-	// op-login doors: one winner per window, so a burst of probes is throttled. The
-	// key is namespaced apart from the other pre-session doors so they never perturb
-	// each other's throttle.
-	emailKey := "passkey:login:" + strings.ToLower(email)
-	lim := a.otpLimiter()
-	emailAt, ok := lim.reserve(emailKey, otpResendCooldown)
-	if !ok {
-		writeError(w, r, newError(http.StatusTooManyRequests, "otp_resend_cooldown",
-			"a passkey login was started recently; wait a moment before requesting another"))
-		return
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			lim.release(emailKey, emailAt)
-		}
-	}()
-
 	u, err := a.Repo.UserByEmail(r.Context(), email)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
-			committed = true // keep the reservation so probing is throttled
 			writeError(w, r, newError(http.StatusBadRequest, "no_passkey",
 				"no passkey enrolled for this account; use email or operator login"))
 			return
@@ -529,7 +570,6 @@ func (a *API) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(creds) == 0 {
-		committed = true
 		writeError(w, r, newError(http.StatusBadRequest, "no_passkey",
 			"no passkey enrolled for this account; use email or operator login"))
 		return
@@ -547,17 +587,26 @@ func (a *API) handlePasskeyLoginBegin(w http.ResponseWriter, r *http.Request) {
 			"could not start passkey login"))
 		return
 	}
+	challenge, err := optionsChallenge(options)
+	if err != nil {
+		writeError(w, r, fmt.Errorf("passkey login options carry no challenge: %w", err))
+		return
+	}
 	id, err := newPasskeyID()
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	expiresAt := a.now().Add(passkeyChallengeTTL)
-	if err := a.Repo.CreatePasskeyChallenge(r.Context(), id, u.ID, passkeyPurposeLogin, sessionData, expiresAt); err != nil {
+	now := a.now()
+	if err := a.Repo.AddPasskeyLoginChallenge(r.Context(), id, u.ID, passkeyPurposeLogin,
+		challengeSource(a.clientIP(r)), challenge, sessionData, now, now.Add(passkeyChallengeTTL)); err != nil {
+		if errors.Is(err, ErrTooManyPasskeyChallenges) {
+			writeError(w, r, errTooManyChallenges)
+			return
+		}
 		writeError(w, r, err)
 		return
 	}
-	committed = true
 	// go-webauthn wraps the assertion options as {"publicKey": {...}}; the panel's
 	// username-login flow reads them flat (options.challenge, options.allowCredentials),
 	// so strip the envelope. (Discoverable login keeps the envelope — see its handler.)
@@ -575,7 +624,8 @@ type passkeyLoginFinishRequest struct {
 
 // handlePasskeyLoginFinish verifies a passkey assertion and mints a session (Public,
 // pre-session). It resolves the email to the account, atomically consumes the
-// stashed login challenge (a missing or expired one → 400), verifies the assertion
+// stashed login challenge the assertion signed (clientDataJSON names it; a missing,
+// expired, or unnamed one → 400), verifies the assertion
 // against the SessionData, and mints a felis_session. Both players and staff may
 // log in this way — the passkey is a two-factor authenticator (possession +
 // biometric/PIN), strong enough to stand alone without the in-game approval the
@@ -623,7 +673,14 @@ func (a *API) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionData, err := a.Repo.ConsumePasskeyChallengeByUser(r.Context(), u.ID, passkeyPurposeLogin, a.now())
+	challenge, err := assertionChallenge(req.Assertion)
+	if err != nil {
+		a.authFailure(r, "passkey", "bad_assertion", u)
+		writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
+			"passkey login could not be completed; begin again"))
+		return
+	}
+	sessionData, err := a.Repo.ConsumePasskeyLoginChallenge(r.Context(), u.ID, passkeyPurposeLogin, challenge, a.now())
 	if err != nil {
 		if errors.Is(err, ErrPasskeyChallengeInvalid) {
 			a.authFailure(r, "passkey", "challenge_invalid", u)

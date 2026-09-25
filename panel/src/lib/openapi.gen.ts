@@ -93,7 +93,7 @@ export interface paths {
         put?: never;
         /**
          * Create a server (admin).
-         * @description Requires the admin Access path; the image must be whitelisted. An image in the platform registry is stored pinned to the digest its tag names at creation (name:tag@sha256:…), so a later push over the tag never moves the server; 400 image_not_in_registry when the registry lacks the tag, 503 registry_unavailable when it cannot be asked.
+         * @description Requires a staff session on the operator console host; the image must be whitelisted. An image in the platform registry is stored pinned to the digest its tag names at creation (name:tag@sha256:…), so a later push over the tag never moves the server; 400 image_not_in_registry when the registry lacks the tag, 503 registry_unavailable when it cannot be asked.
          */
         post: operations["createServer"];
         delete?: never;
@@ -677,7 +677,7 @@ export interface paths {
         put?: never;
         /**
          * Begin a passwordless passkey (WebAuthn) login (spec §14, §B).
-         * @description First leg of the public, pre-session passkey assertion door: the caller supplies the email that selects the account and, on success, receives the raw PublicKeyCredentialRequestOptions to hand to navigator.credentials.get(). The matching challenge is stashed server-side and redeemed by finish. Mounted Public (no prior principal) and gated on local_auth_enabled. An unknown address and a known account with no enrolled passkey both return the SAME 400 no_passkey, so the door is not an existence oracle; a per-recipient cooldown (shared shape with the email-OTP and op-login doors) throttles probing.
+         * @description First leg of the public, pre-session passkey assertion door: the caller supplies the email that selects the account and, on success, receives the raw PublicKeyCredentialRequestOptions to hand to navigator.credentials.get(). The matching challenge is stashed server-side and redeemed by finish. Mounted Public (no prior principal) and gated on local_auth_enabled. An unknown address and a known account with no enrolled passkey both return the SAME 400 no_passkey, so the door is not an existence oracle; the per-address sign-in rate limit bounds probing. Each begin stashes a ceremony of its own beside the account's other live ones, so a begin by anyone who knows the address never cancels its owner's. One network (an IPv4 address or IPv6 /48) holds at most 32 live login challenges (429 too_many_challenges past that).
          */
         post: operations["passkeyLoginBegin"];
         delete?: never;
@@ -697,7 +697,7 @@ export interface paths {
         put?: never;
         /**
          * Complete a passkey (WebAuthn) login and mint a session (spec §14, §B).
-         * @description Second leg of the public passkey door: the caller returns the email (to re-select the account) and the raw navigator.credentials.get() assertion. The stashed login challenge is consumed atomically and the assertion is verified against it; on success a host-only felis_session cookie is minted. Both players and staff may log in this way — a passkey is a two-factor authenticator (possession + user verification), strong enough to stand alone without the in-game approval op-login requires. Every failure mode (unknown address, no live challenge, expired challenge, bad assertion) collapses into one uniform passkey_login_invalid, so the door reveals nothing.
+         * @description Second leg of the public passkey door: the caller returns the email (to re-select the account) and the raw navigator.credentials.get() assertion. The live login challenge whose value the assertion signed (response.clientDataJSON) is consumed atomically and the assertion is verified against it; on success a host-only felis_session cookie is minted. Both players and staff may log in this way — a passkey is a two-factor authenticator (possession + user verification), strong enough to stand alone without the in-game approval op-login requires. Every failure mode (unknown address, no live challenge for the signed value, expired challenge, bad assertion) collapses into one uniform passkey_login_invalid, so the door reveals nothing.
          */
         post: operations["passkeyLoginFinish"];
         delete?: never;
@@ -717,7 +717,7 @@ export interface paths {
         put?: never;
         /**
          * Begin a usernameless (discoverable) passkey login (spec §14, §B, task
-         * @description First leg of the truly from-zero passkey door: unlike the email-first sibling above, the caller supplies NO identifier — the request has no body (only the application/json Content-Type is required as the cross-origin CSRF guard). The response is the WebAuthn PublicKeyCredentialRequestOptions with an EMPTY allowCredentials, plus an opaque login_id: the authenticator picks a resident credential it holds for this RP and the account is revealed only by the userHandle inside the signed assertion at finish. The challenge cannot be user-keyed, so it is stashed under login_id in a non-user-keyed store and echoed back at finish. Mounted Public and gated on local_auth_enabled. There is no recipient or principal to key a per-caller cooldown on, so one client is bounded by the per-address sign-in rate limit (429 rate_limited) and the table by a hard global cap on live challenges (429 too_many_challenges). Inert for a credential until its owner enrolls a resident passkey; email-OTP and username-first passkey remain the fallbacks, so no authenticator is ever locked out.
+         * @description First leg of the truly from-zero passkey door: unlike the email-first sibling above, the caller supplies NO identifier — the request has no body (only the application/json Content-Type is required as the cross-origin CSRF guard). The response is the WebAuthn PublicKeyCredentialRequestOptions with an EMPTY allowCredentials, plus an opaque login_id: the authenticator picks a resident credential it holds for this RP and the account is revealed only by the userHandle inside the signed assertion at finish. The challenge cannot be user-keyed, so it is stashed under login_id in a non-user-keyed store and echoed back at finish. Mounted Public and gated on local_auth_enabled. One client is bounded by the per-address sign-in rate limit (429 rate_limited), one network (an IPv4 address or IPv6 /48) to 32 live challenges, and the table by a hard global cap of 16384 (both 429 too_many_challenges). Inert for a credential until its owner enrolls a resident passkey; email-OTP and username-first passkey remain the fallbacks, so no authenticator is ever locked out.
          */
         post: operations["passkeyLoginDiscoverableBegin"];
         delete?: never;
@@ -757,7 +757,7 @@ export interface paths {
         put?: never;
         /**
          * Begin a passwordless email-OTP login — mail a one-time code (spec §B).
-         * @description Public, pre-session console door: the caller supplies an email and, if it resolves to a verified account, a one-time code is mailed under the login purpose. An address with no account returns the SAME 202 with no code minted, and the per-recipient cooldown is kept on that path too, so probing reveals nothing (existence is learnt only at the sanctioned /auth/options oracle). An account that spent its daily wrong-code budget (10 per 24h, across every code) also gets the same 202 and no mail until the window ends. Gated on local_auth_enabled.
+         * @description Public, pre-session console door: the caller supplies an email and, if it resolves to a verified account, a one-time code is mailed under the login purpose. An address with no account returns the SAME 202 with no code minted, and the per-recipient cooldown is kept on that path too, so probing reveals nothing (existence is learnt only at the sanctioned /auth/options oracle). One code is mailed per recipient per minute: a start inside that window gets the same 202 (expires_at of the live code) and mails nothing. A start never cancels the codes already mailed; the three newest live codes all work, and signing in with one spends the rest. An account that spent its daily wrong-code budget (10 per 24h, across every code) also gets the same 202 and no mail until the window ends. Gated on local_auth_enabled.
          */
         post: operations["loginEmailStart"];
         delete?: never;
@@ -797,7 +797,7 @@ export interface paths {
         put?: never;
         /**
          * Begin an op.console staff login — mail an OTP, open an approval request (spec §B).
-         * @description Public, pre-session first leg of the two-factor operator door: resolves the staff address, opens an op_login request, and mails a one-time code under the op_login purpose, returning the request handle the browser polls. A non-staff or unknown address gets the SAME 202 with a random, non-persisted handle and no mail, so this never becomes a staff-enumeration oracle. A staff account that spent its daily wrong-code budget gets the same neutral 202. Gated on local_auth_enabled.
+         * @description Public, pre-session first leg of the two-factor operator door: resolves the staff address, opens an op_login request, and mails a one-time code under the op_login purpose, returning the request handle the browser polls. A non-staff or unknown address gets the SAME 202 with a random, non-persisted handle and no mail, so this never becomes a staff-enumeration oracle. A staff account that spent its daily wrong-code budget gets the same neutral 202. One code is mailed per recipient per minute: a staff start inside that window opens a real request but mails nothing, and the code already in the inbox finishes it. A start never cancels the codes already mailed (the three newest live codes all work). Gated on local_auth_enabled.
          */
         post: operations["opLoginStart"];
         delete?: never;
@@ -935,7 +935,7 @@ export interface paths {
         };
         /**
          * The caller's own identity and tier (drives panel navigation).
-         * @description Returns the authenticated principal's user id, email, role and the server-computed is_admin (Principal.IsAdmin(): role admin reached via the admin Access path). The panel reads this once at boot to decide which surfaces to render. It is UX truth, not a security control — admin routes are independently gated server-side, so a hidden nav item never widens access.
+         * @description Returns the authenticated principal's user id, email, role and the server-computed is_admin (Principal.IsAdmin(): role admin reached on the operator console host). The panel reads this once at boot to decide which surfaces to render. It is UX truth, not a security control — admin routes are independently gated server-side, so a hidden nav item never widens access.
          */
         get: operations["me"];
         put?: never;
@@ -1598,7 +1598,7 @@ export interface paths {
         };
         /**
          * List the caller's own live sessions, marking the one this request came in on.
-         * @description Every device signed in to the caller's account, most recently seen first. A caller signed in through Cloudflare Access has no session of its own, so no entry is marked current.
+         * @description Every device signed in to the caller's account, most recently seen first, with the one this request came in on marked current.
          */
         get: operations["listMySessions"];
         put?: never;
@@ -3959,7 +3959,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description A passkey login for this recipient was started too recently (otp_resend_cooldown); or this client address called the sign-in doors too often (rate_limited, with Retry-After). */
+            /** @description This network already holds 32 live passkey login challenges (too_many_challenges); or this client address called the sign-in doors too often (rate_limited, with Retry-After). */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -4106,7 +4106,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Too many discoverable logins are in flight server-wide (too_many_challenges; the cap is global, so no per-recipient signal leaks); or this client address called the sign-in doors too often (rate_limited, with Retry-After). */
+            /** @description This network already holds 32 live discoverable challenges, or the store is at its global cap (too_many_challenges); or this client address called the sign-in doors too often (rate_limited, with Retry-After). */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -4255,7 +4255,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description A code for this recipient was requested too recently (otp_resend_cooldown); or this client address called the sign-in doors too often (rate_limited, with Retry-After); or the install-wide mail budget is spent (mail_rate_limited, with Retry-After). */
+            /** @description This client address called the sign-in doors too often (rate_limited, with Retry-After); or the install-wide mail budget is spent (mail_rate_limited, with Retry-After). */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -4383,7 +4383,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description A code for this recipient was requested too recently (otp_resend_cooldown); or this client address called the sign-in doors too often (rate_limited, with Retry-After); or the install-wide mail budget is spent (mail_rate_limited, with Retry-After). */
+            /** @description This client address called the sign-in doors too often (rate_limited, with Retry-After); or the install-wide mail budget is spent (mail_rate_limited, with Retry-After). */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -4691,9 +4691,9 @@ export interface operations {
                          * @enum {string}
                          */
                         role: "user" | "admin" | "owner";
-                        /** @description True only when role is admin or owner AND the request arrived via the admin Access path (Principal.IsAdmin()). */
+                        /** @description True only when role is admin or owner AND the request arrived on the operator console host (Principal.IsAdmin()). */
                         is_admin: boolean;
-                        /** @description True only for the Owner principal on the admin Access path (Principal.IsOwner()); gates owner-only panel surfaces. */
+                        /** @description True only for the Owner principal on the operator console host (Principal.IsOwner()); gates owner-only panel surfaces. */
                         is_owner: boolean;
                         /** @description Whether the account's email has been verified; the panel nudges unverified accounts through the email-OTP flow. */
                         email_verified: boolean;

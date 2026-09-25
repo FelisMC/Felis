@@ -87,14 +87,13 @@ var (
 	// guard and gets a 409 instead of a raw unique-violation 500. Distinct from
 	// ErrConflict so the message can name the cause (the email is spoken for).
 	ErrEmailTaken = errors.New("email already verified on another account")
-	// ErrTooManyDiscoverableChallenges means the non-user-keyed discoverable ("usernameless")
-	// login challenge store is at its hard cap of live rows (task #40, migration 0013).
-	// Unlike the user-keyed enrollment/login challenges — which self-bound via a per-user
-	// supersede — a from-zero begin has no principal to key a fair per-caller limit on, so the
-	// table is capped globally and a begin over the cap is refused. Distinct from the other
-	// sentinels so the handler answers 429 (a transient "too busy, retry" — the cap self-clears
-	// as challenges expire), never a 400 that invites an immediate retry.
-	ErrTooManyDiscoverableChallenges = errors.New("too many discoverable login challenges in flight")
+	// ErrTooManyPasskeyChallenges means a passkey login begin was refused because too many
+	// login challenges are live: the caller's source already holds its allowance
+	// (maxLiveChallengesPerSource), or the discoverable store is at its global cap
+	// (maxLiveDiscoverableChallenges). Distinct from the other sentinels so the handler
+	// answers 429 (a transient "too busy, retry" — both bounds clear as challenges expire),
+	// never a 400 that invites an immediate retry.
+	ErrTooManyPasskeyChallenges = errors.New("too many passkey login challenges in flight")
 	// ErrNotStopped means a world-volume operation was refused because the server is
 	// not fully stopped: desiredState is not Stopped, or its pod is still shutting
 	// down (phase Stopping) and holds the volume while it saves.

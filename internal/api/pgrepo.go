@@ -823,6 +823,38 @@ func (p *PGRepo) CreateEmailOTP(ctx context.Context, id, userID, email, codeHash
 	return tx.Commit()
 }
 
+// AddLoginEmailOTP stores a code for a pre-session login door beside the codes
+// already mailed for (user, purpose), keeping the newest otpLiveLoginCodes live:
+// it drops every unconsumed code outside the newest otpLiveLoginCodes-1 unexpired
+// ones (so expired codes go too), then inserts. It never cancels a code just because another start came in, so knowing
+// an address is not enough to keep its owner from holding a working code
+// (ConsumeLoginEmailOTP accepts any live one).
+func (p *PGRepo) AddLoginEmailOTP(ctx context.Context, id, userID, email, codeHash, purpose string, now, expiresAt time.Time) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM email_otps
+		 WHERE user_id = $1 AND purpose = $2 AND consumed_at IS NULL
+		   AND id NOT IN (
+		       SELECT id FROM email_otps
+		       WHERE user_id = $1 AND purpose = $2 AND consumed_at IS NULL AND expires_at > $3
+		       ORDER BY created_at DESC, id DESC LIMIT $4)`,
+		userID, purpose, now, otpLiveLoginCodes-1); err != nil {
+		return fmt.Errorf("trim live login codes: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO email_otps (id, user_id, email, code_hash, purpose, expires_at)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		id, userID, email, codeHash, purpose, expiresAt); err != nil {
+		return fmt.Errorf("insert otp: %w", err)
+	}
+	return tx.Commit()
+}
+
 // VerifyEmailOTP redeems the newest live code for (user, purpose) in one
 // transaction (spec §B2). The row is taken FOR UPDATE so a concurrent verify of the
 // same code cannot double-spend it. The branch order is deliberate: expiry and the
@@ -870,7 +902,7 @@ func (p *PGRepo) VerifyEmailOTP(ctx context.Context, userID, purpose, codeHash s
 		return "", ErrOTPLocked
 	}
 	if storedHash != codeHash {
-		return "", chargeOTPMismatch(ctx, tx, id, userID, purpose, now)
+		return "", chargeOTPMismatch(ctx, tx, userID, purpose, now)
 	}
 
 	// A DIFFERENT account may not also prove this address: the pre-session login
@@ -1280,25 +1312,109 @@ func (p *PGRepo) ConsumePasskeyChallengeByUser(ctx context.Context, userID, purp
 	return sessionData, nil
 }
 
+// maxLiveChallengesPerSource bounds the live login challenges one source (an IPv4
+// address or IPv6 /48, see challengeSource) holds in each login store. A ceremony
+// takes seconds and a challenge lives passkeyChallengeTTL, so a network with a few
+// dozen people signing in at once stays well inside it, while a flood of begins
+// fills its own allowance and leaves the other networks their sign-ins. The count
+// and the insert are not serialised, so a burst of truly concurrent begins can pass
+// it together; the per-source token bucket in front of the door caps that burst.
+const maxLiveChallengesPerSource = 32
+
+// AddPasskeyLoginChallenge stores an email-first login ceremony beside the ones
+// already live for (user, purpose); finish finds it by the challenge the browser
+// signed (ConsumePasskeyLoginChallenge), so a begin by anyone who knows the address
+// never cancels its owner's ceremony. It reaps the account's spent login rows,
+// refuses with ErrTooManyPasskeyChallenges once source holds
+// maxLiveChallengesPerSource live login challenges, then inserts.
+func (p *PGRepo) AddPasskeyLoginChallenge(ctx context.Context, id, userID, purpose, source, challenge string, sessionData []byte, now, expiresAt time.Time) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM webauthn_challenges
+		 WHERE user_id = $1 AND purpose = $2 AND (expires_at <= $3 OR consumed_at IS NOT NULL)`,
+		userID, purpose, now); err != nil {
+		return fmt.Errorf("reap login challenges: %w", err)
+	}
+	var fromSource int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT count(*) FROM webauthn_challenges
+		 WHERE source = $1 AND consumed_at IS NULL AND expires_at > $2`,
+		source, now).Scan(&fromSource); err != nil {
+		return fmt.Errorf("count login challenges: %w", err)
+	}
+	if fromSource >= maxLiveChallengesPerSource {
+		return ErrTooManyPasskeyChallenges
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO webauthn_challenges (id, user_id, purpose, session_data, expires_at, challenge, source)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		id, userID, purpose, sessionData, expiresAt, challenge, source); err != nil {
+		return fmt.Errorf("insert login challenge: %w", err)
+	}
+	return tx.Commit()
+}
+
+// ConsumePasskeyLoginChallenge redeems the live login challenge of (user, purpose)
+// whose challenge is the one the browser signed, single-use: the row is taken FOR
+// UPDATE, expiry is checked against now, consumed_at is stamped, and the stashed
+// SessionData is returned. No such live row → ErrPasskeyChallengeInvalid.
+func (p *PGRepo) ConsumePasskeyLoginChallenge(ctx context.Context, userID, purpose, challenge string, now time.Time) ([]byte, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+
+	var (
+		id          string
+		sessionData []byte
+		expiresAt   time.Time
+	)
+	switch err := tx.QueryRowContext(ctx,
+		`SELECT id, session_data, expires_at FROM webauthn_challenges
+		 WHERE user_id = $1 AND purpose = $2 AND challenge = $3 AND consumed_at IS NULL
+		 FOR UPDATE`,
+		userID, purpose, challenge).Scan(&id, &sessionData, &expiresAt); {
+	case errors.Is(err, sql.ErrNoRows):
+		return nil, ErrPasskeyChallengeInvalid
+	case err != nil:
+		return nil, err
+	}
+	if !expiresAt.After(now) {
+		return nil, ErrPasskeyChallengeInvalid
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE webauthn_challenges SET consumed_at = $2 WHERE id = $1`, id, now); err != nil {
+		return nil, fmt.Errorf("consume login challenge: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return sessionData, nil
+}
+
 // ---- discoverable ("usernameless") passkey login (task #40, migration 0013) ----
 
 // maxLiveDiscoverableChallenges hard-bounds the non-user-keyed discoverable-login challenge
-// store. webauthn_challenges self-bounds via a per-(user,purpose) supersede; a from-zero begin
-// has no such key, so the table is capped: once this many LIVE (unexpired, unconsumed) rows
-// exist, a new begin is refused (ErrTooManyDiscoverableChallenges → 429). The cap is generous —
-// a login challenge lives only passkeyChallengeTTL (5 min) and each row is ~1 KB — so real
-// concurrency never approaches it, while an abusive begin-flood is bounded to a few MB instead
-// of growing without limit. One client's volume is bounded before it gets here, by the
-// per-address token bucket in front of every public auth door (ratelimit.go).
-const maxLiveDiscoverableChallenges = 4096
+// store: once this many LIVE (unexpired, unconsumed) rows exist, a new begin is refused
+// (ErrTooManyPasskeyChallenges → 429). Each source is held to maxLiveChallengesPerSource
+// first, so filling the store takes this many / 32 distinct networks; a row is a few hundred
+// bytes, so the ceiling is a few MB.
+const maxLiveDiscoverableChallenges = 16384
 
 // CreateDiscoverableChallenge stashes a discoverable-login ceremony under an opaque handle,
 // bounding the table in one transaction (see the Repo interface for the full contract). It
-// reaps expired/consumed rows first — the non-user-keyed analog of CreatePasskeyChallenge's
-// supersede — then refuses over the cap rather than inserting. Because the reap ran first, the
-// COUNT is exactly the live-row count, so the cap bounds an adversarial begin-flood (which a
-// reap alone cannot: a burst inside the TTL leaves every fresh row live).
-func (p *PGRepo) CreateDiscoverableChallenge(ctx context.Context, id string, sessionData []byte, now, expiresAt time.Time) error {
+// reaps expired/consumed rows first, then refuses when source already holds
+// maxLiveChallengesPerSource live rows or the table holds maxLiveDiscoverableChallenges.
+// Because the reap ran first, the counts are exactly the live rows, so the bounds hold under
+// an adversarial begin-flood (which a reap alone cannot: a burst inside the TTL leaves every
+// fresh row live).
+func (p *PGRepo) CreateDiscoverableChallenge(ctx context.Context, id, source string, sessionData []byte, now, expiresAt time.Time) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -1310,18 +1426,19 @@ func (p *PGRepo) CreateDiscoverableChallenge(ctx context.Context, id string, ses
 		now); err != nil {
 		return fmt.Errorf("reap discoverable challenges: %w", err)
 	}
-	var live int
+	var live, fromSource int
 	if err := tx.QueryRowContext(ctx,
-		`SELECT count(*) FROM webauthn_discoverable_challenges`).Scan(&live); err != nil {
+		`SELECT count(*), count(*) FILTER (WHERE source = $1) FROM webauthn_discoverable_challenges`,
+		source).Scan(&live, &fromSource); err != nil {
 		return fmt.Errorf("count discoverable challenges: %w", err)
 	}
-	if live >= maxLiveDiscoverableChallenges {
-		return ErrTooManyDiscoverableChallenges
+	if fromSource >= maxLiveChallengesPerSource || live >= maxLiveDiscoverableChallenges {
+		return ErrTooManyPasskeyChallenges
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO webauthn_discoverable_challenges (id, session_data, expires_at)
-		 VALUES ($1, $2, $3)`,
-		id, sessionData, expiresAt); err != nil {
+		`INSERT INTO webauthn_discoverable_challenges (id, session_data, expires_at, source)
+		 VALUES ($1, $2, $3, $4)`,
+		id, sessionData, expiresAt, source); err != nil {
 		return fmt.Errorf("insert discoverable challenge: %w", err)
 	}
 	return tx.Commit()
@@ -2230,14 +2347,19 @@ func (p *PGRepo) UserByEmail(ctx context.Context, email string) (*StaffUser, err
 	return &u, nil
 }
 
-// ConsumeLoginEmailOTP redeems the live code for the PRE-SESSION email login door
-// with the SAME lifecycle as VerifyEmailOTP (FOR UPDATE, expiry + attempt cap
-// before the hash compare, a mismatch charges one attempt without consuming) but
-// with NO identity side-effects: it neither writes users.email nor runs the
-// verified-email uniqueness guard — login already resolved the userID via
-// UserByEmail, which requires email_verified, so the address is settled. Errors
-// are exactly ErrOTPInvalid / ErrOTPLocked (ErrEmailTaken is structurally
-// impossible here).
+// ConsumeLoginEmailOTP redeems a live code for the PRE-SESSION login doors (and
+// the step-up doors, which keep one code live) in one transaction. Every live,
+// unexpired code for (user, purpose) is taken FOR UPDATE, since a login door keeps
+// several (AddLoginEmailOTP). The branch order matches VerifyEmailOTP: nothing live
+// is ErrOTPInvalid; the account lock comes next; when every live code has used up
+// its attempts the answer is ErrOTPLocked; a code matching none charges one attempt
+// to each code still open and one failure to the account, and consumes nothing. A
+// match consumes that code and every other live one for (user, purpose): the
+// sign-in they were mailed for has happened. There are no identity side-effects:
+// it neither writes users.email nor runs the verified-email uniqueness guard —
+// login already resolved the userID via UserByEmail, which requires
+// email_verified, so the address is settled. Errors are exactly ErrOTPInvalid /
+// ErrOTPLocked / *OTPAccountLockedError.
 func (p *PGRepo) ConsumeLoginEmailOTP(ctx context.Context, userID, purpose, codeHash string, now time.Time) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2245,25 +2367,37 @@ func (p *PGRepo) ConsumeLoginEmailOTP(ctx context.Context, userID, purpose, code
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after commit
 
-	var (
-		id         string
-		storedHash string
-		attempts   int
-		expiresAt  time.Time
-	)
-	switch err := tx.QueryRowContext(ctx,
-		`SELECT id, code_hash, attempts, expires_at FROM email_otps
-		 WHERE user_id = $1 AND purpose = $2 AND consumed_at IS NULL
-		 ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
-		userID, purpose).Scan(&id, &storedHash, &attempts, &expiresAt); {
-	case errors.Is(err, sql.ErrNoRows):
-		// Nothing live: never minted, already consumed, or superseded.
-		return ErrOTPInvalid
-	case err != nil:
+	rows, err := tx.QueryContext(ctx,
+		`SELECT code_hash, attempts FROM email_otps
+		 WHERE user_id = $1 AND purpose = $2 AND consumed_at IS NULL AND expires_at > $3
+		 FOR UPDATE`,
+		userID, purpose, now)
+	if err != nil {
 		return err
 	}
-
-	if !expiresAt.After(now) {
+	var live, open int
+	matched := false
+	for rows.Next() {
+		var (
+			storedHash string
+			attempts   int
+		)
+		if err := rows.Scan(&storedHash, &attempts); err != nil {
+			rows.Close()
+			return err
+		}
+		live++
+		if attempts < otpMaxAttempts {
+			open++
+			matched = matched || storedHash == codeHash
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if live == 0 {
+		// Nothing live: never minted, already consumed, trimmed, or expired.
 		return ErrOTPInvalid
 	}
 	if until, err := otpLockedUntil(ctx, tx, userID, purpose, now, true); err != nil {
@@ -2271,15 +2405,17 @@ func (p *PGRepo) ConsumeLoginEmailOTP(ctx context.Context, userID, purpose, code
 	} else if !until.IsZero() {
 		return &OTPAccountLockedError{Until: until}
 	}
-	if attempts >= otpMaxAttempts {
+	if open == 0 {
 		return ErrOTPLocked
 	}
-	if storedHash != codeHash {
-		return chargeOTPMismatch(ctx, tx, id, userID, purpose, now)
+	if !matched {
+		return chargeOTPMismatch(ctx, tx, userID, purpose, now)
 	}
 
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE email_otps SET consumed_at = $2 WHERE id = $1`, id, now); err != nil {
+		`UPDATE email_otps SET consumed_at = $3
+		 WHERE user_id = $1 AND purpose = $2 AND consumed_at IS NULL`,
+		userID, purpose, now); err != nil {
 		return fmt.Errorf("consume otp: %w", err)
 	}
 	return tx.Commit()
@@ -2325,12 +2461,17 @@ func otpLockEnd(windowStart time.Time, failures int, now time.Time) time.Time {
 	return end
 }
 
-// chargeOTPMismatch records one wrong guess against the code and the account
-// budget, commits, and returns what the caller should answer: ErrOTPInvalid, or
-// the lock this guess just tripped. A window that has ended starts over at 1.
-func chargeOTPMismatch(ctx context.Context, tx *sql.Tx, codeID, userID, purpose string, now time.Time) error {
+// chargeOTPMismatch records one wrong guess against every live code of (user,
+// purpose) that still has attempts left and against the account budget, commits,
+// and returns what the caller should answer: ErrOTPInvalid, or the lock this guess
+// just tripped. The caller holds those codes FOR UPDATE, so the charged set is the
+// set it compared. A window that has ended starts over at 1.
+func chargeOTPMismatch(ctx context.Context, tx *sql.Tx, userID, purpose string, now time.Time) error {
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE email_otps SET attempts = attempts + 1 WHERE id = $1`, codeID); err != nil {
+		`UPDATE email_otps SET attempts = attempts + 1
+		 WHERE user_id = $1 AND purpose = $2 AND consumed_at IS NULL
+		   AND expires_at > $3 AND attempts < $4`,
+		userID, purpose, now, otpMaxAttempts); err != nil {
 		return fmt.Errorf("record otp attempt: %w", err)
 	}
 	var (

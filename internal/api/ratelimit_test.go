@@ -127,6 +127,26 @@ func TestSourceKeyGroupsIPv6By64(t *testing.T) {
 	}
 }
 
+// TestChallengeSource pins how passkey login challenges are grouped by network: an
+// IPv4 address stands alone, an IPv6 address counts toward its /48 (one site's
+// allocation, so hopping /64s inside it stays one source).
+func TestChallengeSource(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"203.0.113.9", "203.0.113.9"},
+		{"2001:db8:7:1::1", "2001:db8:7::/48"},
+		{"2001:db8:7:ffff:1:2:3:4", "2001:db8:7::/48"},
+		{"2001:db8:8::1", "2001:db8:8::/48"},
+	}
+	for _, c := range cases {
+		if got := challengeSource(netip.MustParseAddr(c.in)); got != c.want {
+			t.Errorf("challengeSource(%s) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	if got := challengeSource(netip.Addr{}); got != "unknown" {
+		t.Errorf("challengeSource(invalid) = %q, want unknown", got)
+	}
+}
+
 func TestAuthDoorsThrottlePerClientAddress(t *testing.T) {
 	api, _, _ := seedLoginEmailAPI(t)
 	api.AuthDoorLimit = RateLimit{Burst: 3, PerMinute: 3}

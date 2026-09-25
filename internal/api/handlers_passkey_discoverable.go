@@ -19,12 +19,17 @@ import (
 // and username-first passkey remain the fallbacks, so an authenticator that stored no resident
 // key is never locked out — only its from-zero convenience is unavailable.
 //
-// Anti-abuse divergence from the email-first door: that door reserves a per-recipient cooldown
-// (a.otpLimiter) keyed on the typed email. A usernameless begin has no recipient OR principal to
-// key a fair per-caller limit on, so one client is bounded by the per-address token bucket every
-// public auth door sits behind (throttleAuthDoor), and the table by a hard global cap on live
-// challenges enforced atomically in CreateDiscoverableChallenge (ErrTooManyDiscoverableChallenges
-// → 429).
+// Anti-abuse: a usernameless begin has no recipient OR principal to key a limit on, so one client
+// is bounded by the per-address token bucket every public auth door sits behind
+// (throttleAuthDoor), each network (IPv4 host or IPv6 /48, challengeSource) by
+// maxLiveChallengesPerSource live challenges, and the table by a global cap on live challenges;
+// CreateDiscoverableChallenge enforces both bounds atomically (ErrTooManyPasskeyChallenges →
+// 429). A flood from one network fills its own allowance and leaves every other network its
+// sign-ins.
+
+// errTooManyChallenges answers a passkey login begin over a challenge bound.
+var errTooManyChallenges = newError(http.StatusTooManyRequests, "too_many_challenges",
+	"too many passkey logins in progress from this network; try again in a few minutes")
 
 // handlePasskeyLoginDiscoverableBegin starts a usernameless assertion ceremony (Public,
 // pre-session). It has no request body — the whole point is that the caller supplies no
@@ -59,10 +64,9 @@ func (a *API) handlePasskeyLoginDiscoverableBegin(w http.ResponseWriter, r *http
 		return
 	}
 	now := a.now()
-	if err := a.Repo.CreateDiscoverableChallenge(r.Context(), id, sessionData, now, now.Add(passkeyChallengeTTL)); err != nil {
-		if errors.Is(err, ErrTooManyDiscoverableChallenges) {
-			writeError(w, r, newError(http.StatusTooManyRequests, "too_many_challenges",
-				"too many passkey logins in progress; try again shortly"))
+	if err := a.Repo.CreateDiscoverableChallenge(r.Context(), id, challengeSource(a.clientIP(r)), sessionData, now, now.Add(passkeyChallengeTTL)); err != nil {
+		if errors.Is(err, ErrTooManyPasskeyChallenges) {
+			writeError(w, r, errTooManyChallenges)
 			return
 		}
 		writeError(w, r, err)

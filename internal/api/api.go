@@ -962,7 +962,8 @@ func (c *cooldownLimiter) record(name string) {
 }
 
 // reserve atomically checks name's cooldown AND, if the window is open, records it
-// in the same critical section, returning the reservation time and true. Unlike
+// in the same critical section, returning the reservation time and true; inside the
+// window it returns the standing reservation's time and false. Unlike
 // allowed→record there is no gap between the check and the commit, so a burst of
 // truly concurrent callers yields exactly one winner. Use it where the throttle is
 // the SOLE defense and each admitted call has a non-idempotent side effect (an OTP
@@ -979,7 +980,7 @@ func (c *cooldownLimiter) reserve(name string, window time.Duration) (time.Time,
 	t := c.now()
 	c.noteWindow(window, t)
 	if last, ok := c.last[name]; ok && t.Sub(last) < window {
-		return time.Time{}, false
+		return last, false
 	}
 	c.last[name] = t
 	return t, true

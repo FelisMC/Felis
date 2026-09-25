@@ -57,6 +57,15 @@ const (
 	// use a passkey.
 	otpFailureBudget = 10
 	otpFailureWindow = 24 * time.Hour
+	// otpLiveLoginCodes is how many codes a pre-session login door (email login,
+	// op-login) keeps redeemable per (account, purpose). Anyone who knows an address
+	// can start a login for it, so a start never cancels the codes already mailed:
+	// with one mail per otpResendCooldown, every code stays good for at least
+	// otpLiveLoginCodes cooldowns (or its TTL), and a stranger's starts only add
+	// codes to the owner's inbox. A wrong guess is compared with every live code, so
+	// the daily blind-hit chance rises to otpFailureBudget*otpLiveLoginCodes/1e6
+	// (3e-5). Enforced in the Repo so the fake and PG agree.
+	otpLiveLoginCodes = 3
 )
 
 // OTPMailer delivers a one-time code to an email address. It is a seam, not a

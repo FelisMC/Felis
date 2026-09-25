@@ -65,6 +65,12 @@ type opLoginStartRequest struct {
 // unknown address yields the SAME 202 with a random, non-persisted handle and no mail,
 // so this never doubles as a staff-enumeration oracle (op.console's own Zero-Trust is
 // the edge gate; this app-layer neutrality covers the hostname-agnostic route).
+//
+// Anyone who knows a staff address can start a login for it, so a start never cancels
+// the codes already mailed (AddLoginEmailOTP), and a start inside the per-recipient
+// cooldown still gets a request of its own but mails nothing: the code mailed moments
+// ago is live and finishes it. A stranger's starts therefore only add codes to the
+// staff inbox and never keep its owner from signing in.
 func (a *API) handleOpLoginStart(w http.ResponseWriter, r *http.Request) {
 	if !localAuthEnabled(r.Context(), a.Repo) {
 		writeError(w, r, newError(http.StatusForbidden, "local_auth_disabled",
@@ -94,33 +100,32 @@ func (a *API) handleOpLoginStart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Per-recipient cooldown reserved BEFORE any work, identical to the console email
-	// door: one winner per window, and the neutral (non-staff) branch keeps the
-	// reservation too so probing an address is throttled exactly like a real send. The
-	// key is namespaced apart from the console door's "login:email:" so the two
+	// door: one mail per window, and the neutral (non-staff) branch keeps the
+	// reservation too so a probe holds the window exactly like a real send. The key is
+	// namespaced apart from the console door's "login:email:" so the two
 	// unauthenticated doors never perturb each other's throttle.
 	emailKey := "oplogin:email:" + strings.ToLower(email)
 	lim := a.otpLimiter()
-	emailAt, ok := lim.reserve(emailKey, otpResendCooldown)
-	if !ok {
-		writeError(w, r, newError(http.StatusTooManyRequests, "otp_resend_cooldown",
-			"a code was sent recently; wait a moment before requesting another"))
-		return
-	}
+	emailAt, fresh := lim.reserve(emailKey, otpResendCooldown)
 	committed := false
-	defer func() {
-		if !committed {
-			lim.release(emailKey, emailAt)
-		}
-	}()
+	if fresh {
+		defer func() {
+			if !committed {
+				lim.release(emailKey, emailAt)
+			}
+		}()
+	}
 
-	// Compute expiry once so the neutral and real branches return identical-shaped
-	// bodies and (real branch) the request row and its OTP are coterminous.
-	expiresAt := a.now().Add(otpTTL)
+	// Compute expiry once, from the reservation, so the neutral and real branches
+	// return identical bodies and the request row and its OTP are coterminous. Inside
+	// the cooldown the live code is the one the standing reservation mailed, so the
+	// request ends with it.
+	expiresAt := emailAt.Add(otpTTL)
 
 	// neutral returns the indistinguishable no-op success: a plausible but non-persisted
 	// handle that status(id) reads approved:false forever (no row, never approvable). It
-	// mints nothing and mails nothing, and KEEPS the reservation so probing is throttled
-	// exactly like a real send.
+	// mints nothing and mails nothing, and KEEPS the reservation so a probe holds the
+	// window exactly like a real send.
 	neutral := func() {
 		fakeID, err := newOTPID()
 		if err != nil {
@@ -172,6 +177,15 @@ func (a *API) handleOpLoginStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	if !fresh {
+		// Inside the cooldown: the code mailed with the standing reservation finishes
+		// this request too, and the mailbox still sees one code per window.
+		a.auditAccount(r, u, "auth.op_login.requested", "")
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"request_id": id, "expires_at": expiresAt.UTC(),
+		})
+		return
+	}
 	code, err := newEmailOTP()
 	if err != nil {
 		writeError(w, r, err)
@@ -184,7 +198,7 @@ func (a *API) handleOpLoginStart(w http.ResponseWriter, r *http.Request) {
 	}
 	// Mint+mail against the STORED staff address (UserByEmail matched case-insensitively);
 	// the request row snapshots the same address for its audit trail.
-	if err := a.Repo.CreateEmailOTP(r.Context(), otpID, u.ID, u.Email, otpCodeHash(code), otpPurposeOpLogin, expiresAt); err != nil {
+	if err := a.Repo.AddLoginEmailOTP(r.Context(), otpID, u.ID, u.Email, otpCodeHash(code), otpPurposeOpLogin, a.now(), expiresAt); err != nil {
 		writeError(w, r, err)
 		return
 	}

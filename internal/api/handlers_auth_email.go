@@ -60,6 +60,11 @@ type loginEmailStartRequest struct {
 // no code minted: the response never distinguishes the two, and the reservation is
 // kept on that path too so repeated probing of one address is throttled identically
 // to repeated sends.
+//
+// A start never cancels the codes already mailed (AddLoginEmailOTP keeps the newest
+// otpLiveLoginCodes live), and a start inside the cooldown answers the same 202 without
+// minting: the code mailed moments ago is still good. So anyone who knows an address
+// can only add codes to its owner's inbox, never keep the owner from signing in.
 func (a *API) handleLoginEmailStart(w http.ResponseWriter, r *http.Request) {
 	if !localAuthEnabled(r.Context(), a.Repo) {
 		writeError(w, r, newError(http.StatusForbidden, "local_auth_disabled",
@@ -98,8 +103,11 @@ func (a *API) handleLoginEmailStart(w http.ResponseWriter, r *http.Request) {
 	lim := a.otpLimiter()
 	emailAt, ok := lim.reserve(emailKey, otpResendCooldown)
 	if !ok {
-		writeError(w, r, newError(http.StatusTooManyRequests, "otp_resend_cooldown",
-			"a code was sent recently; wait a moment before requesting another"))
+		// A start for this address went through less than a cooldown ago, and the code
+		// it mailed (if the address has an account) is still live. Answer as that start
+		// did, expiry included, and mail nothing: the owner — or whoever typed the
+		// address — lands on the code screen and the code already in the inbox works.
+		writeJSON(w, http.StatusAccepted, map[string]any{"sent": true, "expires_at": emailAt.Add(otpTTL).UTC()})
 		return
 	}
 	committed := false
@@ -109,16 +117,17 @@ func (a *API) handleLoginEmailStart(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	// Compute the expiry once so the neutral (no-account) branch and the real-send
-	// branch return byte-identical bodies.
-	expiresAt := a.now().Add(otpTTL)
+	// Compute the expiry once, from the reservation, so the neutral (no-account)
+	// branch, the real-send branch and a start inside the window all return
+	// byte-identical bodies.
+	expiresAt := emailAt.Add(otpTTL)
 
 	u, err := a.Repo.UserByEmail(r.Context(), email)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		// No verified account for this address. Return the same 202 as a real send
-		// (no code minted) and KEEP the reservation, so probing an unknown address is
-		// throttled exactly like resending to a known one — the throttle reveals
+		// (no code minted) and KEEP the reservation, so a probe of an unknown address
+		// holds the window exactly like a send to a known one — the window reveals
 		// nothing, and the accepted /auth/options oracle is where existence is learnt.
 		committed = true
 		writeJSON(w, http.StatusAccepted, map[string]any{"sent": true, "expires_at": expiresAt.UTC()})
@@ -158,7 +167,7 @@ func (a *API) handleLoginEmailStart(w http.ResponseWriter, r *http.Request) {
 	// record. The login redeem (ConsumeLoginEmailOTP) never reads or writes this
 	// address, so the stored casing is authoritative and the row's email snapshot is
 	// purely for the audit trail.
-	if err := a.Repo.CreateEmailOTP(r.Context(), id, u.ID, u.Email, otpCodeHash(code), otpPurposeLogin, expiresAt); err != nil {
+	if err := a.Repo.AddLoginEmailOTP(r.Context(), id, u.ID, u.Email, otpCodeHash(code), otpPurposeLogin, a.now(), expiresAt); err != nil {
 		writeError(w, r, err)
 		return
 	}

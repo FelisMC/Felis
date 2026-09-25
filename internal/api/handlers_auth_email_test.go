@@ -152,8 +152,7 @@ func TestLoginEmailVertical(t *testing.T) {
 // TestLoginEmailStartNeutralOnUnknownAddress pins the start-side anti-enumeration
 // contract: an address with no verified account yields a 202 BYTE-IDENTICAL to a
 // real send (frozen clock ⇒ same expires_at), mints and mails nothing, audits
-// nothing — and still burns the cooldown window, so probing is throttled exactly
-// like sending.
+// nothing — and a re-probe inside the cooldown answers the same 202 a resend does.
 func TestLoginEmailStartNeutralOnUnknownAddress(t *testing.T) {
 	// A real send for comparison.
 	apiK, _, _ := seedLoginEmailAPI(t)
@@ -183,11 +182,13 @@ func TestLoginEmailStartNeutralOnUnknownAddress(t *testing.T) {
 		t.Errorf("neutral path must mint/mail/audit nothing, got otps=%d mails=%d audits=%d",
 			len(repoU.otps), mailerU.calls, len(repoU.audits))
 	}
-	// The reservation is KEPT on the neutral path: re-probing the same unknown
-	// address inside the window is throttled identically to a resend.
-	if w := do(ehU, "POST", "/api/v1/auth/email/start", `{"email":"ghost@example.net"}`, jsonHeader); w.Code != http.StatusTooManyRequests || decodeErr(t, w) != "otp_resend_cooldown" {
-		t.Fatalf("re-probe of unknown address: code = %d body %s, want 429 otp_resend_cooldown",
+	// Re-probing inside the window answers exactly as the first probe did.
+	if w := do(ehU, "POST", "/api/v1/auth/email/start", `{"email":"ghost@example.net"}`, jsonHeader); w.Code != http.StatusAccepted || w.Body.String() != wK.Body.String() {
+		t.Fatalf("re-probe of unknown address: code = %d body %s, want the same 202 as a real send",
 			w.Code, w.Body.String())
+	}
+	if len(repoU.otps) != 0 || mailerU.calls != 0 {
+		t.Errorf("re-probe must mint/mail nothing, got otps=%d mails=%d", len(repoU.otps), mailerU.calls)
 	}
 
 	// An UNVERIFIED account is indistinguishable from no account: UserByEmail only
@@ -278,13 +279,14 @@ func TestLoginEmailGates(t *testing.T) {
 // TestLoginEmailStartRateLimited closes the unauthenticated email-bomb vector on the
 // public door: one send per recipient per window, keyed case-insensitively, and
 // namespaced apart from the authenticated onboarding throttle so neither door can
-// starve the other.
+// starve the other. A start inside the window is answered like the one that sent,
+// so whoever asks lands on the code screen with the mail already in the inbox.
 func TestLoginEmailStartRateLimited(t *testing.T) {
 	start := func(eh http.Handler, email string) *httptest.ResponseRecorder {
 		return do(eh, "POST", "/api/v1/auth/email/start", `{"email":"`+email+`"}`, jsonHeader)
 	}
 
-	t.Run("same recipient is throttled, then recovers after the cooldown", func(t *testing.T) {
+	t.Run("a start inside the window mails nothing and keeps the first code", func(t *testing.T) {
 		api, repo, mailer := seedLoginEmailAPI(t)
 		clock := time.Unix(1_700_000_000, 0)
 		api.Now = func() time.Time { return clock }
@@ -293,28 +295,41 @@ func TestLoginEmailStartRateLimited(t *testing.T) {
 		if w := start(eh, "player@example.net"); w.Code != http.StatusAccepted {
 			t.Fatalf("first send: code = %d, want 202 (%s)", w.Code, w.Body.String())
 		}
-		if w := start(eh, "player@example.net"); w.Code != http.StatusTooManyRequests || decodeErr(t, w) != "otp_resend_cooldown" {
-			t.Fatalf("immediate resend: code = %d body %s, want 429 otp_resend_cooldown", w.Code, w.Body.String())
+		code := mailer.code
+		clock = clock.Add(30 * time.Second)
+		w := start(eh, "player@example.net")
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("resend inside the window: code = %d, want 202 (%s)", w.Code, w.Body.String())
+		}
+		// The expiry is the first code's, the one the inbox holds.
+		if b := acctBody(t, w); b["sent"] != true || b["expires_at"] != "2023-11-14T22:23:20Z" {
+			t.Errorf("resend body = %v, want sent:true expires_at:2023-11-14T22:23:20Z", b)
 		}
 		if mailer.calls != 1 || len(repo.otps) != 1 {
-			t.Errorf("throttled resend must not mint or mail: mails=%d otps=%d, want 1/1",
+			t.Errorf("resend inside the window must not mint or mail: mails=%d otps=%d, want 1/1",
 				mailer.calls, len(repo.otps))
 		}
-		clock = clock.Add(otpResendCooldown + time.Second)
-		if w := start(eh, "player@example.net"); w.Code != http.StatusAccepted {
-			t.Fatalf("post-cooldown send: code = %d, want 202 (%s)", w.Code, w.Body.String())
+		if w := do(eh, "POST", "/api/v1/auth/email/verify",
+			`{"email":"player@example.net","code":"`+code+`"}`, jsonHeader); w.Code != http.StatusOK {
+			t.Fatalf("first code after a resend: code = %d, want 200 (%s)", w.Code, w.Body.String())
+		}
+		clock = clock.Add(otpResendCooldown)
+		if w := start(eh, "player@example.net"); w.Code != http.StatusAccepted || mailer.calls != 2 {
+			t.Fatalf("post-cooldown send: code = %d mails = %d, want 202 and a second mail (%s)",
+				w.Code, mailer.calls, w.Body.String())
 		}
 	})
 
 	t.Run("throttle key is case-insensitive", func(t *testing.T) {
-		api, _, _ := seedLoginEmailAPI(t)
+		api, _, mailer := seedLoginEmailAPI(t)
 		eh := api.ExternalHandler()
 		if w := start(eh, "Player@Example.NET"); w.Code != http.StatusAccepted {
 			t.Fatalf("first send: code = %d, want 202 (%s)", w.Code, w.Body.String())
 		}
 		// A recased retype is the same mailbox: it must hit the same window.
-		if w := start(eh, "player@example.net"); w.Code != http.StatusTooManyRequests {
-			t.Fatalf("recased resend: code = %d, want 429 (key must be lowercased)", w.Code)
+		if w := start(eh, "player@example.net"); w.Code != http.StatusAccepted || mailer.calls != 1 {
+			t.Fatalf("recased resend: code = %d mails = %d, want 202 and no second mail (key must be lowercased)",
+				w.Code, mailer.calls)
 		}
 	})
 
@@ -337,6 +352,95 @@ func TestLoginEmailStartRateLimited(t *testing.T) {
 			t.Errorf("mailer calls = %d, want 2 (one per door)", mailer.calls)
 		}
 	})
+}
+
+// TestLoginStartsInsideTheWindowMatchExactly: with a clock that moves on every read,
+// a start inside the cooldown still answers with the very expires_at the first start
+// returned, on both email doors and for known and unknown addresses alike, so a
+// repeat start is indistinguishable from the first down to the nanosecond.
+func TestLoginStartsInsideTheWindowMatchExactly(t *testing.T) {
+	ticking := func(api *API) {
+		clock := time.Unix(1_700_000_000, 0)
+		api.Now = func() time.Time {
+			clock = clock.Add(time.Millisecond)
+			return clock
+		}
+	}
+	expiry := func(t *testing.T, w *httptest.ResponseRecorder) string {
+		t.Helper()
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("start: code = %d, want 202 (%s)", w.Code, w.Body.String())
+		}
+		e, _ := acctBody(t, w)["expires_at"].(string)
+		return e
+	}
+	for _, email := range []string{"player@example.net", "ghost@example.net"} {
+		api, _, _ := seedLoginEmailAPI(t)
+		ticking(api)
+		eh := api.ExternalHandler()
+		start := func() *httptest.ResponseRecorder {
+			return do(eh, "POST", "/api/v1/auth/email/start", `{"email":"`+email+`"}`, jsonHeader)
+		}
+		first, again := expiry(t, start()), expiry(t, start())
+		if first != "2023-11-14T22:23:20.001Z" || again != first {
+			t.Errorf("email door %s: expires_at %q then %q, want 2023-11-14T22:23:20.001Z twice", email, first, again)
+		}
+	}
+	for _, email := range []string{"op@example.net", "ghost@example.net"} {
+		api, _, _ := seedOpLoginAPI(t)
+		ticking(api)
+		eh := api.ExternalHandler()
+		first, again := expiry(t, startOp(eh, email)), expiry(t, startOp(eh, email))
+		if first != "2023-11-14T22:23:20.001Z" || again != first {
+			t.Errorf("op door %s: expires_at %q then %q, want 2023-11-14T22:23:20.001Z twice", email, first, again)
+		}
+	}
+}
+
+// TestLoginEmailStartKeepsEarlierCodes is the stranger-keeps-starting case: someone
+// who knows the address starts a login every cooldown. Each start adds a code to the
+// owner's inbox and never cancels one, so the owner's own code keeps working until
+// otpLiveLoginCodes newer ones exist; signing in spends every code still out.
+func TestLoginEmailStartKeepsEarlierCodes(t *testing.T) {
+	api, repo, mailer := seedLoginEmailAPI(t)
+	clock := time.Unix(1_700_000_000, 0)
+	api.Now = func() time.Time { return clock }
+	eh := api.ExternalHandler()
+	start := func() string {
+		t.Helper()
+		if w := do(eh, "POST", "/api/v1/auth/email/start", `{"email":"player@example.net"}`, jsonHeader); w.Code != http.StatusAccepted {
+			t.Fatalf("start: code = %d, want 202 (%s)", w.Code, w.Body.String())
+		}
+		code := mailer.code
+		clock = clock.Add(otpResendCooldown)
+		return code
+	}
+	verify := func(code string) *httptest.ResponseRecorder {
+		return do(eh, "POST", "/api/v1/auth/email/verify",
+			`{"email":"player@example.net","code":"`+code+`"}`, jsonHeader)
+	}
+
+	owner := start()
+	second := start()
+	third := start()
+	if mailer.calls != 3 || len(repo.otps) != 3 {
+		t.Fatalf("mails=%d otps=%d, want 3/3 (a start must not cancel earlier codes)", mailer.calls, len(repo.otps))
+	}
+	fourth := start()
+	if len(repo.otps) != 3 {
+		t.Fatalf("otps = %d after a fourth start, want 3 (the oldest goes)", len(repo.otps))
+	}
+	if w := verify(owner); w.Code != http.StatusBadRequest || decodeErr(t, w) != "invalid_code" {
+		t.Fatalf("code with three newer ones: code = %d body %s, want 400 invalid_code", w.Code, w.Body.String())
+	}
+	if w := verify(second); w.Code != http.StatusOK {
+		t.Fatalf("second code while two newer are live: code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	for name, code := range map[string]string{"third": third, "fourth": fourth} {
+		if w := verify(code); w.Code != http.StatusBadRequest || decodeErr(t, w) != "invalid_code" {
+			t.Errorf("%s code after the sign-in: code = %d body %s, want 400 invalid_code", name, w.Code, w.Body.String())
+		}
+	}
 }
 
 // TestLoginEmailVerifyRejections is the redeem-side failure matrix. The anchor case
