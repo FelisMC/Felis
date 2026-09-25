@@ -1,6 +1,7 @@
 package build
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -161,9 +162,10 @@ func TestBuildJobRequestsAreASchedulableFloor(t *testing.T) {
 }
 
 // kaniko builds the request's exact target into a tarball and never pushes;
-// trivy gates on that tarball with --exit-code 1 --severity CRITICAL; only then
-// does the push container publish it. An image that fails the scan is therefore
-// never in the registry, and the credential is never where the Dockerfile runs.
+// trivy reports on that tarball, trivy convert writes the SBOM, scan-gate rules
+// on the report; only then does the push container publish it. An image that
+// fails the scan is therefore never in the registry, and the credential is never
+// where the Dockerfile runs.
 func TestBuildJobScansBeforePush(t *testing.T) {
 	p := sampleJobParams()
 	job, err := BuildJob(p)
@@ -171,10 +173,10 @@ func TestBuildJobScansBeforePush(t *testing.T) {
 		t.Fatalf("BuildJob: %v", err)
 	}
 	inits := job.Spec.Template.Spec.InitContainers
-	if len(inits) != 3 || inits[0].Name != ContainerGate || inits[1].Name != ContainerKaniko || inits[2].Name != ContainerTrivy {
-		t.Fatalf("initContainers = %v, want [egress-gate kaniko trivy]", initNames(inits))
+	if got := strings.Join(initNames(inits), " "); got != "egress-gate kaniko trivy sbom scan-gate" {
+		t.Fatalf("initContainers = %s, want egress-gate kaniko trivy sbom scan-gate", got)
 	}
-	kaniko, trivy := inits[1], inits[2]
+	kaniko, trivy, sbom, gate := inits[1], inits[2], inits[3], inits[4]
 	for _, want := range []string{"--destination=" + p.ImageRef, "--no-push", "--tar-path=" + imageTarPath} {
 		if !hasArg(kaniko.Args, want) {
 			t.Errorf("kaniko args = %v, want %s", kaniko.Args, want)
@@ -194,19 +196,52 @@ func TestBuildJobScansBeforePush(t *testing.T) {
 		}
 	}
 
-	// The scan gate: a CRITICAL CVE must fail the Pod (and thus the Job) before
-	// the push container ever starts.
+	// The scan: trivy writes the whole report, unfiltered, for scan-gate to rule
+	// on and for the build to keep.
 	if !argPairPresent(trivy.Args, "--input", imageTarPath) {
 		t.Errorf("trivy must scan the built tarball, args=%v", trivy.Args)
 	}
 	if hasArg(trivy.Args, p.ImageRef) {
 		t.Errorf("trivy must not scan the registry ref (nothing is pushed yet), args=%v", trivy.Args)
 	}
-	if !argPairPresent(trivy.Args, "--exit-code", "1") {
-		t.Errorf("trivy must run with --exit-code 1, args=%v", trivy.Args)
+	if !argPairPresent(trivy.Args, "--format", "json") || !argPairPresent(trivy.Args, "--output", "/reports/trivy.json") {
+		t.Errorf("trivy must write its JSON report to /reports/trivy.json, args=%v", trivy.Args)
 	}
-	if !argPairPresent(trivy.Args, "--severity", "CRITICAL") {
-		t.Errorf("trivy must gate on --severity CRITICAL, args=%v", trivy.Args)
+	for _, filter := range []string{"--severity", "--exit-code", "--ignore-unfixed"} {
+		if hasArg(trivy.Args, filter) {
+			t.Errorf("trivy args = %v carry %s: the kept report must be complete, and scan-gate applies the policy", trivy.Args, filter)
+		}
+	}
+	if got := strings.Join(sbom.Args, " "); sbom.Image != p.TrivyImage ||
+		got != "convert --format cyclonedx --output /reports/sbom.cdx.json /reports/trivy.json" {
+		t.Errorf("sbom = %s %q, want the trivy image converting the report to CycloneDX", sbom.Image, got)
+	}
+	// The gate: a finding the policy blocks fails the Pod (and thus the Job)
+	// before the push container ever starts.
+	if got := strings.Join(gate.Args, " "); gate.Image != p.FelisImage ||
+		got != "scan-gate --report=/reports/trivy.json --sbom=/reports/sbom.cdx.json --fail-on=CRITICAL" {
+		t.Errorf("scan-gate = %s %q, want the platform image blocking on CRITICAL by default", gate.Image, got)
+	}
+	mounts := func(c corev1.Container) string {
+		var out []string
+		for _, m := range c.VolumeMounts {
+			out = append(out, fmt.Sprintf("%s:%s:%t", m.Name, m.MountPath, m.ReadOnly))
+		}
+		return strings.Join(out, " ")
+	}
+	for c, want := range map[*corev1.Container]string{
+		&kaniko: "image:/image:false",
+		&trivy:  "image:/image:true reports:/reports:false",
+		&sbom:   "reports:/reports:false",
+		&gate:   "reports:/reports:true",
+	} {
+		if got := mounts(*c); got != want {
+			t.Errorf("%s mounts %q, want %q", c.Name, got, want)
+		}
+	}
+	if gate.SecurityContext == nil || gate.SecurityContext.ReadOnlyRootFilesystem == nil || !*gate.SecurityContext.ReadOnlyRootFilesystem ||
+		gate.SecurityContext.RunAsNonRoot == nil || !*gate.SecurityContext.RunAsNonRoot {
+		t.Errorf("scan-gate must run non-root on a read-only root, got %+v", gate.SecurityContext)
 	}
 	// No DB repositories configured: Trivy keeps its own defaults.
 	if hasArg(trivy.Args, "--db-repository") || hasArg(trivy.Args, "--java-db-repository") {
@@ -254,6 +289,15 @@ func TestBuildJobScansBeforePush(t *testing.T) {
 	if imgVol == nil || imgVol.EmptyDir == nil || imgVol.EmptyDir.SizeLimit == nil {
 		t.Fatalf("image volume must be a size-limited emptyDir, got %#v", imgVol)
 	}
+	var reports *corev1.Volume
+	for i := range job.Spec.Template.Spec.Volumes {
+		if job.Spec.Template.Spec.Volumes[i].Name == "reports" {
+			reports = &job.Spec.Template.Spec.Volumes[i]
+		}
+	}
+	if reports == nil || reports.EmptyDir == nil || reports.EmptyDir.SizeLimit == nil || reports.EmptyDir.SizeLimit.String() != "512Mi" {
+		t.Fatalf("reports volume must be a 512Mi emptyDir, got %#v", reports)
+	}
 	for _, c := range []corev1.Container{trivy, push} {
 		ro := false
 		for _, m := range c.VolumeMounts {
@@ -264,6 +308,45 @@ func TestBuildJobScansBeforePush(t *testing.T) {
 		if !ro {
 			t.Errorf("%s must mount the image tarball read-only, got %v", c.Name, c.VolumeMounts)
 		}
+	}
+}
+
+// The scan policy reaches scan-gate verbatim.
+func TestBuildJobScanPolicyReachesScanGate(t *testing.T) {
+	p := sampleJobParams()
+	p.ScanFailOn = []string{"CRITICAL", "HIGH", "MEDIUM"}
+	p.ScanFailUnfixed = true
+	p.ScanAccept = []string{"CVE-2021-35515", "aws-access-key-id"}
+	job, err := BuildJob(p)
+	if err != nil {
+		t.Fatalf("BuildJob: %v", err)
+	}
+	gate := job.Spec.Template.Spec.InitContainers[4]
+	if got := strings.Join(gate.Args, " "); got != "scan-gate --report=/reports/trivy.json --sbom=/reports/sbom.cdx.json --fail-on=CRITICAL,HIGH,MEDIUM --fail-unfixed --accept=CVE-2021-35515,aws-access-key-id" {
+		t.Errorf("scan-gate args = %q", got)
+	}
+}
+
+// A failed step's last log lines become its termination message, which Sync
+// records as the build's error. scan-gate writes its own verdict there instead:
+// its log tail is the envelope's base64.
+func TestBuildJobStepsLeaveTheirLastLogLines(t *testing.T) {
+	p := sampleJobParams()
+	p.ContextRef = "http://felis-api-internal.felis.svc:8081/internal/v1/submissions/sub-1/context"
+	job, err := BuildJob(p)
+	if err != nil {
+		t.Fatalf("BuildJob: %v", err)
+	}
+	all := append([]corev1.Container{}, job.Spec.Template.Spec.InitContainers...)
+	all = append(all, job.Spec.Template.Spec.Containers...)
+	var got []string
+	for _, c := range all {
+		got = append(got, fmt.Sprintf("%s=%s", c.Name, c.TerminationMessagePolicy))
+	}
+	want := "egress-gate=FallbackToLogsOnError context-fetch=FallbackToLogsOnError kaniko=FallbackToLogsOnError " +
+		"trivy=FallbackToLogsOnError sbom=FallbackToLogsOnError scan-gate= push=FallbackToLogsOnError"
+	if strings.Join(got, " ") != want {
+		t.Errorf("termination message policies = %s\nwant %s", strings.Join(got, " "), want)
 	}
 }
 
@@ -423,9 +506,8 @@ func TestBuildJobFetchesHTTPContext(t *testing.T) {
 		t.Fatalf("BuildJob: %v", err)
 	}
 	inits := job.Spec.Template.Spec.InitContainers
-	if len(inits) != 4 || inits[0].Name != ContainerGate || inits[1].Name != ContainerFetch ||
-		inits[2].Name != ContainerKaniko || inits[3].Name != ContainerTrivy {
-		t.Fatalf("initContainers = %v, want [%s %s %s %s]", initNames(inits), ContainerGate, ContainerFetch, ContainerKaniko, ContainerTrivy)
+	if got := strings.Join(initNames(inits), " "); got != "egress-gate context-fetch kaniko trivy sbom scan-gate" {
+		t.Fatalf("initContainers = %s, want egress-gate context-fetch kaniko trivy sbom scan-gate", got)
 	}
 	fetch, kaniko := inits[1], inits[2]
 	if fetch.Image != p.FelisImage {
@@ -500,8 +582,8 @@ func TestBuildJobNativeContextNeedsNoFetch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildJob: %v", err)
 	}
-	if inits := job.Spec.Template.Spec.InitContainers; len(inits) != 3 || inits[1].Name != ContainerKaniko {
-		t.Errorf("a native ref must render just the gate, kaniko and trivy, got %v", initNames(inits))
+	if got := strings.Join(initNames(job.Spec.Template.Spec.InitContainers), " "); got != "egress-gate kaniko trivy sbom scan-gate" {
+		t.Errorf("a native ref must render no fetch step, got %s", got)
 	}
 	for _, v := range job.Spec.Template.Spec.Volumes {
 		if v.Name == contextVolume {
@@ -610,6 +692,15 @@ func TestBuildJobBoundsEphemeralStorage(t *testing.T) {
 		}
 		if c.Name == ContainerKaniko && lim.String() != defaultDiskLimit {
 			t.Errorf("kaniko ephemeral-storage limit = %s, want the default %s", lim.String(), defaultDiskLimit)
+		}
+		// Trivy holds its two DBs (2.8 GiB unpacked in 2026) plus a download and
+		// the scan's temporary files; the SBOM step writes one file; scan-gate's
+		// own log, the envelope of up to 9 MiB, counts against its cap.
+		if want, ok := map[string]string{"trivy": "8Gi", "sbom": "256Mi", "scan-gate": "64Mi"}[c.Name]; ok && lim.String() != want {
+			t.Errorf("%s ephemeral-storage limit = %s, want %s", c.Name, lim.String(), want)
+		}
+		if c.Name == ContainerTrivy && req.String() != "3Gi" {
+			t.Errorf("trivy ephemeral-storage request = %s, want 3Gi, the DBs' live size", req.String())
 		}
 	}
 	p.DiskLimit = "512Mi"

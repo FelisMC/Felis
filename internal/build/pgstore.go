@@ -3,11 +3,13 @@ package build
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"time"
 )
 
 // PGStore is the production Store backed by Postgres (spec §6, §16). It writes
-// the two tables of the build subsystem — image_builds and image_whitelist —
+// the tables of the build subsystem — image_builds, image_build_scans and
+// image_whitelist —
 // and is the *only* component that holds database credentials: the build Pod
 // never does (the weak-SA red line). The SQL here is exercised by integration
 // tests against a live database, not the hermetic build_test.go suite. Every
@@ -246,4 +248,41 @@ func (s *PGStore) RemoveImage(ctx context.Context, imageRef string) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// SaveScan upserts the scan record of a build. A re-read of the same pod writes
+// the same record, so Sync may retry freely.
+func (s *PGStore) SaveScan(ctx context.Context, sc Scan) error {
+	summary, err := json.Marshal(sc.Summary)
+	if err != nil {
+		return err
+	}
+	const q = `INSERT INTO image_build_scans
+		(build_id, blocked, summary, report_gz, sbom_gz, scanned_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (build_id) DO UPDATE
+		SET blocked = EXCLUDED.blocked, summary = EXCLUDED.summary,
+			report_gz = EXCLUDED.report_gz, sbom_gz = EXCLUDED.sbom_gz,
+			scanned_at = EXCLUDED.scanned_at`
+	_, err = s.db.ExecContext(ctx, q, sc.BuildID, sc.Summary.Blocked, summary, sc.ReportGz, sc.SBOMGz, sc.ScannedAt)
+	return err
+}
+
+func (s *PGStore) GetScan(ctx context.Context, buildID string) (*Scan, error) {
+	const q = `SELECT build_id, summary, report_gz, sbom_gz, scanned_at
+		FROM image_build_scans WHERE build_id = $1`
+	var (
+		sc      Scan
+		summary []byte
+	)
+	switch err := s.db.QueryRowContext(ctx, q, buildID).Scan(&sc.BuildID, &summary, &sc.ReportGz, &sc.SBOMGz, &sc.ScannedAt); {
+	case err == sql.ErrNoRows:
+		return nil, ErrNotFound
+	case err != nil:
+		return nil, err
+	}
+	if err := json.Unmarshal(summary, &sc.Summary); err != nil {
+		return nil, err
+	}
+	return &sc, nil
 }

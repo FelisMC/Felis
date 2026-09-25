@@ -1502,6 +1502,74 @@ func TestBuildStoreContract(t *testing.T) {
 	}
 }
 
+// A build's scan round-trips whole (the summary as jsonb, the documents as
+// bytea, a missing SBOM as NULL), a rescan replaces it, it cannot exist without
+// its build, and it goes when the build row does.
+func TestBuildStoreScans(t *testing.T) {
+	ctx := context.Background()
+	s := build.NewPGStore(db)
+	id := "bld-scan-" + suffix(t)
+	if err := s.CreateBuild(ctx, &build.Build{ID: id, ImageRef: "registry.felis.svc:5000/user-uploads/" + id + ":latest",
+		Status: build.StatusPending, RequestedBy: "pgint"}); err != nil {
+		t.Fatalf("CreateBuild: %v", err)
+	}
+	if _, err := s.GetScan(ctx, id); !errors.Is(err, build.ErrNotFound) {
+		t.Fatalf("scan before one was saved = %v, want ErrNotFound", err)
+	}
+	at := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
+	first := build.Scan{BuildID: id, ScannedAt: at, ReportGz: []byte{0x1f, 0x8b, 0x01}, Summary: build.ScanSummary{
+		Policy: build.ScanPolicy{FailOn: []string{"CRITICAL", "HIGH"}}, Blocked: true, Packages: 7,
+		Counts: map[string]int{"CRITICAL": 1}, BlockingCounts: map[string]int{"CRITICAL": 1},
+		Findings: []build.ScanFinding{{ID: "CVE-2024-0001", Kind: "vulnerability", Severity: "CRITICAL",
+			Package: "log4j-core", Installed: "2.14.1", Fixed: "2.17.1", Target: "mods/core.jar", Blocking: true}},
+		Omitted: []string{"sbom"},
+	}}
+	if err := s.SaveScan(ctx, first); err != nil {
+		t.Fatalf("SaveScan: %v", err)
+	}
+	got, err := s.GetScan(ctx, id)
+	if err != nil {
+		t.Fatalf("GetScan: %v", err)
+	}
+	if !got.ScannedAt.Equal(at) || string(got.ReportGz) != "\x1f\x8b\x01" || got.SBOMGz != nil {
+		t.Errorf("scan = at %v, report %x, sbom %x", got.ScannedAt, got.ReportGz, got.SBOMGz)
+	}
+	sum := got.Summary
+	if !sum.Blocked || sum.Packages != 7 || sum.Counts["CRITICAL"] != 1 || sum.BlockingCounts["CRITICAL"] != 1 ||
+		strings.Join(sum.Policy.FailOn, ",") != "CRITICAL,HIGH" || strings.Join(sum.Omitted, ",") != "sbom" ||
+		len(sum.Findings) != 1 || sum.Findings[0].Fixed != "2.17.1" || !sum.Findings[0].Blocking {
+		t.Errorf("summary = %+v", sum)
+	}
+	var blocked bool
+	if err := db.QueryRowContext(ctx, `SELECT blocked FROM image_build_scans WHERE build_id = $1`, id).Scan(&blocked); err != nil || !blocked {
+		t.Errorf("blocked column = %v (%v), want true", blocked, err)
+	}
+
+	rescan := build.Scan{BuildID: id, ScannedAt: at.Add(time.Hour), ReportGz: []byte{0x02}, SBOMGz: []byte{0x03},
+		Summary: build.ScanSummary{Policy: build.ScanPolicy{FailOn: []string{"CRITICAL"}}, Packages: 7,
+			Counts: map[string]int{}, BlockingCounts: map[string]int{}, Findings: []build.ScanFinding{}}}
+	if err := s.SaveScan(ctx, rescan); err != nil {
+		t.Fatalf("SaveScan (rescan): %v", err)
+	}
+	got, _ = s.GetScan(ctx, id)
+	if got.Summary.Blocked || !got.ScannedAt.Equal(at.Add(time.Hour)) || string(got.SBOMGz) != "\x03" || len(got.Summary.Findings) != 0 {
+		t.Errorf("rescan = %+v", got)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT blocked FROM image_build_scans WHERE build_id = $1`, id).Scan(&blocked); err != nil || blocked {
+		t.Errorf("blocked column after a passing rescan = %v (%v), want false", blocked, err)
+	}
+
+	if err := s.SaveScan(ctx, build.Scan{BuildID: "bld-none-" + suffix(t), ScannedAt: at}); err == nil {
+		t.Error("a scan saved for a build that does not exist")
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM image_builds WHERE id = $1`, id); err != nil {
+		t.Fatalf("delete build: %v", err)
+	}
+	if _, err := s.GetScan(ctx, id); !errors.Is(err, build.ErrNotFound) {
+		t.Errorf("scan after its build was deleted = %v, want ErrNotFound", err)
+	}
+}
+
 // ListBuilds pages newest first across every requester, finds a build by part of
 // its ref (any case), its id or its status, and leaves the Dockerfile out.
 func TestBuildStoreListBuilds(t *testing.T) {

@@ -1976,6 +1976,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/images/build/{id}/scan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The scan gate's verdict and findings for a build (admin). */
+        get: operations["getBuildScan"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/images/build/{id}/scan/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download a build's full Trivy JSON report (admin). */
+        get: operations["getBuildScanReport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/images/build/{id}/sbom": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download a build's CycloneDX SBOM (admin). */
+        get: operations["getBuildSBOM"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/images": {
         parameters: {
             query?: never;
@@ -2288,6 +2339,64 @@ export interface components {
              * @description Omitted until the build reaches a terminal status.
              */
             finished_at?: string;
+        };
+        /** @description What a build's scan gate kept (GET /api/v1/images/build/{id}/scan): its verdict under the policy it ran with, the listed findings, and which full documents can be downloaded. */
+        BuildScan: {
+            build_id: string;
+            /** Format: date-time */
+            scanned_at: string;
+            summary: components["schemas"]["ScanSummary"];
+            /** @description The full Trivy JSON report is kept (GET .../scan/report). */
+            has_report: boolean;
+            /** @description The CycloneDX SBOM is kept (GET .../sbom). */
+            has_sbom: boolean;
+        };
+        /** @description The verdict scan-gate reached on one Trivy report (internal/build ScanSummary). */
+        ScanSummary: {
+            policy: components["schemas"]["ScanPolicy"];
+            /** @description A finding blocked the image, so it was never pushed. */
+            blocked: boolean;
+            /** @description Packages Trivy found in the image. */
+            packages: number;
+            /** @description Every finding by severity (CRITICAL, HIGH, MEDIUM, LOW, UNKNOWN); a severity with none is absent. */
+            counts: {
+                [key: string]: number;
+            };
+            /** @description The findings the policy blocks on, by severity. */
+            blocking_counts: {
+                [key: string]: number;
+            };
+            /** @description Blocking findings first, then the rest, most severe first; at most 100. The downloadable report lists all of them. */
+            findings: components["schemas"]["ScanFinding"][];
+            /** @description Documents (report, sbom) too large to keep with the build. Omitted when none. */
+            omitted?: ("report" | "sbom")[];
+        };
+        /** @description Which findings block an image ([registry] scan_fail_on / scan_fail_unfixed / scan_accept). */
+        ScanPolicy: {
+            fail_on: ("CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "UNKNOWN")[];
+            /** @description A vulnerability with no fixed release blocks too. */
+            fail_unfixed: boolean;
+            /** @description Vulnerability ids and secret rule ids accepted as known risks; findings under them never block. Omitted when none. */
+            accept?: string[];
+        };
+        /** @description One vulnerability or leaked secret (internal/build ScanFinding). */
+        ScanFinding: {
+            /** @description The CVE/GHSA id, or the secret rule id. */
+            id: string;
+            /** @enum {string} */
+            kind: "vulnerability" | "secret";
+            /** @enum {string} */
+            severity: "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "UNKNOWN";
+            package?: string;
+            installed?: string;
+            /** @description The first release that fixes it. Omitted when none exists. */
+            fixed?: string;
+            /** @description The file or layer Trivy found it in. */
+            target: string;
+            title?: string;
+            blocking: boolean;
+            /** @description The policy accepts this id, so it never blocks. Omitted when false. */
+            accepted?: boolean;
         };
         /** @description One whitelisted image (internal/build Image). */
         Image: {
@@ -7496,6 +7605,108 @@ export interface operations {
             404: components["responses"]["NotFound"];
             /** @description Build already terminal. */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getBuildScan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The kept scan. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuildScan"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description No scan for this build (scan_not_found) — it has not reached the scan step, or it ran before builds kept their scans. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getBuildScanReport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The Trivy report (SchemaVersion 2), served as the attachment <id>-trivy.json. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description No scan for this build (scan_not_found), or the report was too large to keep (scan_document_not_kept). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getBuildSBOM: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The CycloneDX JSON SBOM, served as the attachment <id>.cdx.json. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.cyclonedx+json": Record<string, never>;
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description No scan for this build (scan_not_found), or the SBOM was too large to keep or its step failed (scan_document_not_kept). */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

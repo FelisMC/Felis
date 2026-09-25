@@ -6,6 +6,7 @@ import type {
   AutostartPolicy,
   BackupView,
   Build,
+  BuildScan,
   CreateServerRequest,
   FleetServer,
   Identity,
@@ -337,7 +338,7 @@ function initialState(): MockState {
         id: "bld-2",
         image_ref: "registry.felis.svc:5000/forge-broken:1.0",
         status: "failed",
-        error: "trivy found a CRITICAL CVE: CVE-2026-12345 in library/forge",
+        error: "the scan blocked the image: 1 CRITICAL, 1 HIGH (CVE-2026-12345, CVE-2025-24813)",
         requested_by: "owner@mock.felis.local",
         created_at: new Date(Date.now() - 1800000).toISOString(),
         finished_at: new Date(Date.now() - 1700000).toISOString(),
@@ -527,6 +528,57 @@ function server(
     owner,
     ...overrides,
   };
+}
+
+// mockScan is the scan build.Builder.Scan would keep for the seeded builds.
+function mockScan(b: Build): BuildScan | null {
+  const at = b.finished_at ?? b.created_at;
+  if (b.id === "bld-2") {
+    return {
+      build_id: b.id, scanned_at: at, has_report: true, has_sbom: false,
+      summary: {
+        policy: { fail_on: ["CRITICAL", "HIGH"], fail_unfixed: false, accept: ["CVE-2021-35515", "CVE-2025-67030"] },
+        blocked: true, packages: 214,
+        counts: { CRITICAL: 1, HIGH: 4, MEDIUM: 6, LOW: 2 },
+        blocking_counts: { CRITICAL: 1, HIGH: 1 },
+        omitted: ["sbom"],
+        findings: [
+          { id: "CVE-2026-12345", kind: "vulnerability", severity: "CRITICAL", package: "net.minecraftforge:forge",
+            installed: "47.1.0", fixed: "47.1.3", target: "libraries/net/minecraftforge/forge/47.1.0/forge.jar", blocking: true },
+          { id: "CVE-2025-24813", kind: "vulnerability", severity: "HIGH", package: "org.apache.tomcat.embed:tomcat-embed-core",
+            installed: "9.0.97", fixed: "9.0.99, 10.1.35", target: "mods/webmap-2.4.jar", blocking: true },
+          { id: "CVE-2021-35515", kind: "vulnerability", severity: "HIGH", package: "org.apache.commons:commons-compress",
+            installed: "1.5", fixed: "1.21", target: "paper/paper.jar", blocking: false, accepted: true },
+          { id: "CVE-2024-6763", kind: "vulnerability", severity: "HIGH", package: "org.eclipse.jetty:jetty-http",
+            installed: "9.4.53.v20231009", target: "mods/webmap-2.4.jar", blocking: false },
+          { id: "CVE-2023-2976", kind: "vulnerability", severity: "HIGH", package: "com.google.guava:guava",
+            installed: "31.1-jre", target: "libraries/com/google/guava/guava/31.1-jre/guava-31.1-jre.jar", blocking: false },
+          { id: "CVE-2024-47554", kind: "vulnerability", severity: "MEDIUM", package: "commons-io:commons-io",
+            installed: "2.11.0", fixed: "2.14.0", target: "libraries/commons-io/commons-io/2.11.0/commons-io-2.11.0.jar", blocking: false },
+          { id: "CVE-2020-8908", kind: "vulnerability", severity: "LOW", package: "com.google.guava:guava",
+            installed: "31.1-jre", fixed: "32.0.0-android", target: "libraries/com/google/guava/guava/31.1-jre/guava-31.1-jre.jar", blocking: false },
+        ],
+      },
+    };
+  }
+  if (b.id === "bld-1") {
+    return {
+      build_id: b.id, scanned_at: at, has_report: true, has_sbom: true,
+      summary: {
+        policy: { fail_on: ["CRITICAL"], fail_unfixed: false },
+        blocked: false, packages: 187,
+        counts: { MEDIUM: 1, LOW: 1 },
+        blocking_counts: {},
+        findings: [
+          { id: "CVE-2024-47554", kind: "vulnerability", severity: "MEDIUM", package: "commons-io:commons-io",
+            installed: "2.11.0", fixed: "2.14.0", target: "libraries/commons-io/commons-io/2.11.0/commons-io-2.11.0.jar", blocking: false },
+          { id: "CVE-2020-8908", kind: "vulnerability", severity: "LOW", package: "com.google.guava:guava",
+            installed: "31.1-jre", fixed: "32.0.0-android", target: "libraries/com/google/guava/guava/31.1-jre/guava-31.1-jre.jar", blocking: false },
+        ],
+      },
+    };
+  }
+  return null;
 }
 
 function sendJSON(res: ServerResponse, status: number, value: unknown): void {
@@ -1662,6 +1714,44 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
       return true;
     }
     sendJSON(ctx.res, 200, build);
+    return true;
+  }
+
+  // GET /api/v1/images/build/{id}/scan, /scan/report, /sbom (the kept scan). The
+  // seeded builds bld-1 (passed) and bld-2 (blocked) have one; the older history
+  // ran before builds kept their scans.
+  if (
+    is("GET", ctx) && ctx.parts[3] === "build" && ctx.parts[4] &&
+    ((ctx.parts[5] === "scan" && (ctx.parts.length === 6 || (ctx.parts[6] === "report" && ctx.parts.length === 7))) ||
+      (ctx.parts[5] === "sbom" && ctx.parts.length === 6))
+  ) {
+    if (!isAdmin(ctx.account.role)) {
+      sendError(ctx.res, 403, "forbidden", "admin account required");
+      return true;
+    }
+    const build = ctx.state.builds.find((b) => b.id === ctx.parts[4]);
+    const scan = build ? mockScan(build) : null;
+    if (!build || !scan) {
+      sendError(ctx.res, 404, "scan_not_found",
+        "this build has no scan: it has not reached the scan step, or it ran before builds kept their scans");
+      return true;
+    }
+    if (ctx.parts.length === 6 && ctx.parts[5] === "scan") {
+      sendJSON(ctx.res, 200, scan);
+      return true;
+    }
+    const sbom = ctx.parts[5] === "sbom";
+    if (sbom && !scan.has_sbom) {
+      sendError(ctx.res, 404, "scan_document_not_kept",
+        "this build's scan kept no SBOM: it was too large to keep, or the step that writes it failed");
+      return true;
+    }
+    ctx.res.statusCode = 200;
+    ctx.res.setHeader("Content-Type", sbom ? "application/vnd.cyclonedx+json" : "application/json");
+    ctx.res.setHeader("Content-Disposition", `attachment; filename="${build.id}${sbom ? ".cdx.json" : "-trivy.json"}"`);
+    ctx.res.end(JSON.stringify(sbom
+      ? { bomFormat: "CycloneDX", specVersion: "1.6", components: [] }
+      : { SchemaVersion: 2, ArtifactName: build.image_ref, Results: [] }, null, 2));
     return true;
   }
 

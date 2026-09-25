@@ -16,6 +16,10 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// scanIDPattern is build.scanIDPattern: the shape of a finding id scan-gate
+// takes in its comma-separated --accept flag.
+var scanIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
+
 // Config is the parsed felis.toml.
 type Config struct {
 	Server   ServerConfig   `toml:"server"`
@@ -220,6 +224,16 @@ type RegistryConfig struct {
 	// vulnerability DB: <url>/mirror/trivy-java-db:1 by default. Empty keeps that
 	// default.
 	TrivyJavaDBRepository string `toml:"trivy_java_db_repository"`
+	// ScanFailOn lists the severities that block a built image (CRITICAL, HIGH,
+	// MEDIUM, LOW, UNKNOWN). Empty keeps CRITICAL (build.DefaultScanFailOn).
+	ScanFailOn []string `toml:"scan_fail_on"`
+	// ScanFailUnfixed blocks on vulnerabilities that have no fixed release too.
+	// Off by default: the submitter cannot upgrade past them, and the build's
+	// scan report still lists them.
+	ScanFailUnfixed bool `toml:"scan_fail_unfixed"`
+	// ScanAccept lists vulnerability ids and secret rule ids accepted as known
+	// risks (build.ScanPolicy.Accept): still listed in the scan, never blocking.
+	ScanAccept []string `toml:"scan_accept"`
 	// UserUploadsContext is the object-store base under which a user-submitted
 	// modpack's Kaniko build context is pinned. It belongs to the §16 build
 	// subsystem's input domain (the build-context store), introduced by the
@@ -563,6 +577,22 @@ func (c *Config) Validate() error {
 	}
 	if n := c.Registry.MaxConcurrentBuilds; n < 0 || n > 6 {
 		return fmt.Errorf("config: [registry] max_concurrent_builds %d must be 1-6 (0 keeps 2)", n)
+	}
+	for i, sev := range c.Registry.ScanFailOn {
+		sev = strings.ToUpper(strings.TrimSpace(sev))
+		c.Registry.ScanFailOn[i] = sev
+		switch sev {
+		case "CRITICAL", "HIGH", "MEDIUM", "LOW", "UNKNOWN":
+		default:
+			return fmt.Errorf("config: [registry] scan_fail_on %q must be one of CRITICAL, HIGH, MEDIUM, LOW, UNKNOWN", sev)
+		}
+	}
+	for i, id := range c.Registry.ScanAccept {
+		id = strings.TrimSpace(id)
+		c.Registry.ScanAccept[i] = id
+		if !scanIDPattern.MatchString(id) {
+			return fmt.Errorf("config: [registry] scan_accept %q must be a vulnerability id or secret rule id (letters, digits, and . _ : -)", id)
+		}
 	}
 	// [smtp] is optional as a whole, but once a host is named the block must be
 	// deliverable: a From address (relays reject MAIL FROM:<>) and a sane port.

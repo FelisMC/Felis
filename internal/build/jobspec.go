@@ -27,16 +27,20 @@ const (
 
 // Container names within the build Pod. Kaniko is the initContainer that builds
 // the image into a tarball — its log IS the "build log" an admin watches (spec
-// §16); Trivy is the next initContainer, whose CRITICAL-CVE verdict gates both the
-// push and admission and is surfaced via the build status, not the log stream;
+// §16); Trivy then writes the full vulnerability report, SBOM converts it to
+// CycloneDX, and ScanGate applies the scan policy, whose verdict gates both the
+// push and admission and reaches felis-api through ScanGate's log (scan.go);
 // Push is the main container that publishes the scanned tarball. Exported so the
 // build-log streamer (internal/api.K8sBuildLogStreamer, spec §416 日志流复用 §8)
-// follows the same container this Job defines — one source of truth for the name.
+// and the outcome reader follow the same containers this Job defines — one source
+// of truth for the names.
 const (
-	ContainerGate   = "egress-gate"
-	ContainerKaniko = "kaniko"
-	ContainerTrivy  = "trivy"
-	ContainerPush   = "push"
+	ContainerGate     = "egress-gate"
+	ContainerKaniko   = "kaniko"
+	ContainerTrivy    = "trivy"
+	ContainerSBOM     = "sbom"
+	ContainerScanGate = "scan-gate"
+	ContainerPush     = "push"
 	// ContainerFetch is the initContainer that pulls a submission's build context
 	// from the felis-api internal face and extracts it into the shared emptyDir.
 	// It exists only for an http(s) ContextRef (see BuildJob); a ref Kaniko can
@@ -53,7 +57,19 @@ const (
 	imageVolume    = "image"
 	imageMountPath = "/image"
 	imageTarPath   = imageMountPath + "/image.tar"
+
+	// reportsVolume carries Trivy's JSON report and the CycloneDX SBOM from the
+	// scan steps to scan-gate. Kaniko never mounts it, so the Dockerfile cannot
+	// write a verdict of its own.
+	reportsVolume    = "reports"
+	reportsMountPath = "/reports"
+	trivyReportPath  = reportsMountPath + "/trivy.json"
+	sbomPath         = reportsMountPath + "/sbom.cdx.json"
 )
+
+// reportsSizeLimit bounds the report and SBOM of one image: a modpack's run to a
+// few MiB each.
+var reportsSizeLimit = resource.MustParse("512Mi")
 
 // imageSizeLimit bounds the built image tarball. A modpack image is typically a
 // JRE, a server jar and a few hundred MiB of mods; 10 GiB leaves ample room while
@@ -70,13 +86,19 @@ var contextSizeLimit = resource.MustParse("4Gi")
 // kaniko unpacks the base image into its own root filesystem, which no emptyDir
 // bound covers; it is also the largest limit in the pod, so it becomes the
 // pod-level cap the kubelet holds context + unpacked rootfs + image tarball to.
-// Trivy keeps its vulnerability and Java DBs (about 1.4 GiB live) in its layer.
-// The others write nothing but logs.
+// Trivy keeps its vulnerability and Java DBs in its layer: measured 2026-09-25 at
+// 1374 MiB and 1459 MiB unpacked, and each DB's compressed download sits next to
+// its unpacked copy until the unpack ends, so a 4Gi limit had the kubelet evict
+// the pod mid-download. Its request is the DBs' live size, and the limit leaves
+// room for their growth and the scan's own temporary files. The others write
+// nothing but logs.
 var (
 	gateDisk     = diskBounds{request: resource.MustParse("16Mi"), limit: resource.MustParse("64Mi")}
 	fetchDisk    = diskBounds{request: resource.MustParse("64Mi"), limit: resource.MustParse("256Mi")}
 	kanikoDiskRq = resource.MustParse("1Gi")
-	trivyDisk    = diskBounds{request: resource.MustParse("256Mi"), limit: resource.MustParse("4Gi")}
+	trivyDisk    = diskBounds{request: resource.MustParse("3Gi"), limit: resource.MustParse("8Gi")}
+	sbomDisk     = diskBounds{request: resource.MustParse("16Mi"), limit: resource.MustParse("256Mi")}
+	scanGateDisk = diskBounds{request: resource.MustParse("16Mi"), limit: resource.MustParse("64Mi")}
 	pushDisk     = diskBounds{request: resource.MustParse("16Mi"), limit: resource.MustParse("256Mi")}
 )
 
@@ -123,9 +145,14 @@ type JobParams struct {
 	TrivyJavaDBRepository string
 	KanikoImage           string
 	TrivyImage            string
-	Deadline              time.Duration
-	CPULimit              string
-	MemLimit              string
+	// ScanFailOn, ScanFailUnfixed and ScanAccept are the scan policy scan-gate
+	// applies (ScanPolicy). An empty ScanFailOn applies DefaultScanFailOn.
+	ScanFailOn      []string
+	ScanFailUnfixed bool
+	ScanAccept      []string
+	Deadline        time.Duration
+	CPULimit        string
+	MemLimit        string
 	// DiskLimit caps kaniko's ephemeral storage, and with it the pod's (see
 	// kanikoDiskRq). Empty applies defaultDiskLimit.
 	DiskLimit string
@@ -165,12 +192,16 @@ func buildLabels(p JobParams) map[string]string {
 //   - activeDeadlineSeconds + backoffLimit=0 + per-container CPU, memory and
 //     ephemeral-storage limits so a runaway or poisoned build cannot exhaust the
 //     node (spec §16);
-//   - the Trivy step runs with `--exit-code 1 --severity CRITICAL`, so a
-//     CRITICAL CVE fails the Pod and therefore the Job — the only retained
-//     automatic admission gate (spec §16).
+//   - Trivy writes its full report (no severity filter), trivy convert turns it
+//     into a CycloneDX SBOM, and scan-gate exits 1 when a finding matches the
+//     scan policy (HIGH and CRITICAL with a fixed release, by default), which
+//     fails the Pod and therefore the Job — the only retained automatic
+//     admission gate (spec §16). scan-gate's log carries the report and SBOM to
+//     felis-api, which keeps them on the build.
 //
 // Sequencing: kaniko builds with --no-push into a tarball, trivy scans that
-// tarball, and only then does the push container publish it. So:
+// tarball, scan-gate rules on the report, and only then does the push container
+// publish it. So:
 //
 //   - an image that fails the scan is never published — it used to be pushed to
 //     the final tag first and scanned after, overwriting whatever that tag held;
@@ -178,8 +209,8 @@ func buildLabels(p JobParams) map[string]string {
 //     the untrusted Dockerfile and holds no credential at all, and the registry
 //     refuses anonymous writes (internal/registrygate).
 //
-// The Pod succeeds only if kaniko built, trivy found no CRITICAL CVE, and the push
-// landed.
+// The Pod succeeds only if kaniko built, the scan found nothing the policy blocks,
+// and the push landed.
 func BuildJob(p JobParams) (*batchv1.Job, error) {
 	limits, err := resourceLimits(p.CPULimit, p.MemLimit)
 	if err != nil {
@@ -262,6 +293,9 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 			},
 		},
 		SecurityContext: gateSec,
+		// A failed step's last log lines become its termination message, which
+		// Sync records as the build's error (Outcome).
+		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 	}
 	initContainers := []corev1.Container{gate}
 	imageMount := corev1.VolumeMount{Name: imageVolume, MountPath: imageMountPath}
@@ -305,9 +339,10 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 					Key:                  naming.ServiceTokenSecretKey,
 				}},
 			}},
-			VolumeMounts:    []corev1.VolumeMount{{Name: contextVolume, MountPath: contextMountPath}},
-			Resources:       withDisk(limits, fetchDisk),
-			SecurityContext: fetchSec,
+			VolumeMounts:             []corev1.VolumeMount{{Name: contextVolume, MountPath: contextMountPath}},
+			Resources:                withDisk(limits, fetchDisk),
+			SecurityContext:          fetchSec,
+			TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 		}
 		initContainers = append(initContainers, fetch)
 		kanikoMounts = append(kanikoMounts, corev1.VolumeMount{Name: contextVolume, MountPath: contextMountPath, ReadOnly: true})
@@ -342,17 +377,21 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 			"--insecure-pull",
 			"--skip-tls-verify-pull",
 		},
-		VolumeMounts:    kanikoMounts,
-		Resources:       withDisk(limits, diskBounds{request: kanikoRq, limit: kanikoDisk}),
-		SecurityContext: kanikoSec,
+		VolumeMounts:             kanikoMounts,
+		Resources:                withDisk(limits, diskBounds{request: kanikoRq, limit: kanikoDisk}),
+		SecurityContext:          kanikoSec,
+		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 	}
 	initContainers = append(initContainers, kaniko)
 
+	// Trivy reports every severity and every package (--list-all-pkgs is its
+	// default for JSON), so the kept report is complete and doubles as the SBOM's
+	// source; it exits 0 on findings, and scan-gate applies the policy.
 	trivyArgs := []string{
 		"image",
 		"--input", imageTarPath,
-		"--exit-code", "1",
-		"--severity", "CRITICAL",
+		"--format", "json",
+		"--output", trivyReportPath,
 		"--no-progress",
 		"--insecure",
 	}
@@ -367,15 +406,57 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 	if p.TrivyJavaDBRepository != "" {
 		trivyArgs = append(trivyArgs, "--java-db-repository", p.TrivyJavaDBRepository)
 	}
+	reportsMount := corev1.VolumeMount{Name: reportsVolume, MountPath: reportsMountPath}
 	trivy := corev1.Container{
-		Name:            ContainerTrivy,
-		Image:           p.TrivyImage,
-		Args:            trivyArgs,
-		VolumeMounts:    []corev1.VolumeMount{{Name: imageVolume, MountPath: imageMountPath, ReadOnly: true}},
-		Resources:       withDisk(limits, trivyDisk),
-		SecurityContext: sec,
+		Name:  ContainerTrivy,
+		Image: p.TrivyImage,
+		Args:  trivyArgs,
+		VolumeMounts: []corev1.VolumeMount{
+			{Name: imageVolume, MountPath: imageMountPath, ReadOnly: true},
+			reportsMount,
+		},
+		Resources:                withDisk(limits, trivyDisk),
+		SecurityContext:          sec,
+		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 	}
-	initContainers = append(initContainers, trivy)
+	sbom := corev1.Container{
+		Name:                     ContainerSBOM,
+		Image:                    p.TrivyImage,
+		Args:                     []string{"convert", "--format", "cyclonedx", "--output", sbomPath, trivyReportPath},
+		VolumeMounts:             []corev1.VolumeMount{reportsMount},
+		Resources:                withDisk(limits, sbomDisk),
+		SecurityContext:          sec,
+		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
+	}
+	failOn := p.ScanFailOn
+	if len(failOn) == 0 {
+		failOn = DefaultScanFailOn
+	}
+	gateArgs := []string{"scan-gate", "--report=" + trivyReportPath, "--sbom=" + sbomPath,
+		"--fail-on=" + strings.Join(failOn, ",")}
+	if p.ScanFailUnfixed {
+		gateArgs = append(gateArgs, "--fail-unfixed")
+	}
+	if len(p.ScanAccept) > 0 {
+		gateArgs = append(gateArgs, "--accept="+strings.Join(p.ScanAccept, ","))
+	}
+	// scan-gate writes its own one-line verdict to the termination log; a log
+	// tail would be the envelope's base64.
+	scanGate := corev1.Container{
+		Name:            ContainerScanGate,
+		Image:           p.FelisImage,
+		Args:            gateArgs,
+		VolumeMounts:    []corev1.VolumeMount{{Name: reportsVolume, MountPath: reportsMountPath, ReadOnly: true}},
+		Resources:       withDisk(limits, scanGateDisk),
+		SecurityContext: gateSec,
+	}
+	initContainers = append(initContainers, trivy, sbom, scanGate)
+	podVolumes = append(podVolumes, corev1.Volume{
+		Name: reportsVolume,
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
+			SizeLimit: quantityPtr(reportsSizeLimit),
+		}},
+	})
 
 	// The publish step: the only container that holds the registry credential,
 	// read from a Secret the installer materializes in this namespace. It runs
@@ -401,9 +482,10 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 			secretEnv("FELIS_REGISTRY_USERNAME", naming.RegistryPushUsernameKey),
 			secretEnv("FELIS_REGISTRY_PASSWORD", naming.RegistryPushPasswordKey),
 		},
-		VolumeMounts:    []corev1.VolumeMount{{Name: imageVolume, MountPath: imageMountPath, ReadOnly: true}},
-		Resources:       withDisk(limits, pushDisk),
-		SecurityContext: pushSec,
+		VolumeMounts:             []corev1.VolumeMount{{Name: imageVolume, MountPath: imageMountPath, ReadOnly: true}},
+		Resources:                withDisk(limits, pushDisk),
+		SecurityContext:          pushSec,
+		TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
 	}
 
 	job := &batchv1.Job{

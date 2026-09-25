@@ -250,6 +250,52 @@ url = "`+url+`"
 	}
 }
 
+// The scan policy reaches the build Job as written, case aside, and a severity
+// Trivy does not use fails the load instead of every build.
+func TestLoadScanPolicy(t *testing.T) {
+	cfg, err := config.Load(writeTOML(t, `
+[server]
+root_domain = "mc.example.net"
+[database]
+url = "postgres://felis@db/felis"
+[registry]
+scan_fail_on = ["critical", " High "]
+scan_fail_unfixed = true
+scan_accept = [" CVE-2021-35515 ", "aws-access-key-id"]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(cfg.Registry.ScanFailOn, ","); got != "CRITICAL,HIGH" || !cfg.Registry.ScanFailUnfixed {
+		t.Errorf("scan policy = %q, unfixed %t", got, cfg.Registry.ScanFailUnfixed)
+	}
+	if got := strings.Join(cfg.Registry.ScanAccept, ","); got != "CVE-2021-35515,aws-access-key-id" {
+		t.Errorf("scan_accept = %q", got)
+	}
+	_, err = config.Load(writeTOML(t, `
+[server]
+root_domain = "mc.example.net"
+[database]
+url = "postgres://felis@db/felis"
+[registry]
+scan_accept = ["CVE-2021-35515,CVE-2025-67030"]
+`))
+	if err == nil || err.Error() != `config: [registry] scan_accept "CVE-2021-35515,CVE-2025-67030" must be a vulnerability id or secret rule id (letters, digits, and . _ : -)` {
+		t.Errorf("err = %v", err)
+	}
+	_, err = config.Load(writeTOML(t, `
+[server]
+root_domain = "mc.example.net"
+[database]
+url = "postgres://felis@db/felis"
+[registry]
+scan_fail_on = ["HIGH", "SEVERE"]
+`))
+	if err == nil || err.Error() != `config: [registry] scan_fail_on "SEVERE" must be one of CRITICAL, HIGH, MEDIUM, LOW, UNKNOWN` {
+		t.Errorf("err = %v", err)
+	}
+}
+
 // TestLoadAuthSourcesPreservesOrder pins the Felis-nano priority contract: the
 // [[auth_source]] array-of-tables decodes in file order (config order = priority), which
 // is why it is an array-of-tables and not a map. A map keyed by tag would load and pass

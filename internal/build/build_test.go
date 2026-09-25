@@ -27,6 +27,7 @@ type fakeStore struct {
 	listOpts  ListOpts
 
 	getManyCalls int
+	scans        map[string]Scan
 }
 
 func newFakeStore() *fakeStore {
@@ -131,6 +132,22 @@ func (f *fakeStore) ListImages(_ context.Context) ([]Image, error) {
 func (f *fakeStore) AddExternalImage(_ context.Context, img Image) error {
 	f.images[img.ImageRef] = img
 	return nil
+}
+
+func (f *fakeStore) SaveScan(_ context.Context, sc Scan) error {
+	if f.scans == nil {
+		f.scans = map[string]Scan{}
+	}
+	f.scans[sc.BuildID] = sc
+	return nil
+}
+
+func (f *fakeStore) GetScan(_ context.Context, id string) (*Scan, error) {
+	sc, ok := f.scans[id]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return &sc, nil
 }
 
 func (f *fakeStore) RemoveImage(_ context.Context, ref string) error {

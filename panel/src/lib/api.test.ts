@@ -548,6 +548,38 @@ describe("image whitelist and builds wire shapes", () => {
       expect(String(url)).toBe("/submissions/sub-1/context");
     });
 
+    it("getBuildScan GETs the kept scan, and downloadBuildScanDocument saves each document under its own name", async () => {
+      const fetchSpy = fakeFetch({ build_id: "bld-7", has_report: true, has_sbom: true });
+      vi.stubGlobal("fetch", fetchSpy);
+      await api.getBuildScan("bld-7");
+      expect(String((fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0][0])).toBe("/images/build/bld-7/scan");
+
+      const docFetch = vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: new Headers(),
+        blob: async () => new Blob(["{}"]),
+      })) as unknown as typeof fetch;
+      vi.stubGlobal("fetch", docFetch);
+      vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:doc");
+      vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+      const links: { href: string; download: string; click: () => void }[] = [];
+      vi.stubGlobal("document", {
+        createElement: () => {
+          const link = { href: "", download: "", click: vi.fn() };
+          links.push(link);
+          return link;
+        },
+      });
+      await api.downloadBuildScanDocument("bld-7", "report");
+      await api.downloadBuildScanDocument("bld-7", "sbom");
+      const urls = (docFetch as unknown as ReturnType<typeof vi.fn>).mock.calls.map(([u]) => String(u));
+      expect(urls).toEqual(["/images/build/bld-7/scan/report", "/images/build/bld-7/sbom"]);
+      expect(links.map((l) => l.download)).toEqual(["bld-7-trivy.json", "bld-7.cdx.json"]);
+      expect(links.every((l) => (l.click as ReturnType<typeof vi.fn>).mock.calls.length === 1)).toBe(true);
+    });
+
     it("rejectSubmission POSTs {reason} to /submissions/{id}/reject", async () => {
       const sub = { id: "sub-1", status: "rejected", reject_reason: "bad" };
       const fetchSpy = fakeFetch(sub);

@@ -1,10 +1,14 @@
 package api
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"felis.lolicon.best/internal/build"
 	"felis.lolicon.best/internal/imagepin"
@@ -36,6 +40,10 @@ type ImageBuilder interface {
 	// enabled — the §15 create-server form gate (admission is data-driven, never
 	// a free image string from the body).
 	ImageAdmitted(ctx context.Context, imageRef string) (bool, error)
+	// Scan reads what the build's scan gate kept: the verdict, the listed
+	// findings, and the gzipped Trivy report and CycloneDX SBOM. A build with no
+	// scan is build.ErrNotFound.
+	Scan(ctx context.Context, id string) (*build.Scan, error)
 }
 
 // buildImageRequest is the POST /images/build body (spec §16). The push target,
@@ -208,6 +216,91 @@ func (a *API) handleCancelBuild(w http.ResponseWriter, r *http.Request) {
 	}
 	a.audit(r, "image.build.cancel", bld.ImageRef)
 	writeJSON(w, http.StatusOK, bld)
+}
+
+// buildScanView is GET /images/build/{id}/scan: the scan gate's verdict and
+// listed findings, and which full documents the build keeps for download.
+type buildScanView struct {
+	BuildID   string            `json:"build_id"`
+	ScannedAt time.Time         `json:"scanned_at"`
+	Summary   build.ScanSummary `json:"summary"`
+	HasReport bool              `json:"has_report"`
+	HasSBOM   bool              `json:"has_sbom"`
+}
+
+// handleBuildScan returns the scan a build's scan gate kept (admin-tier). The
+// verdict is the gate's own, under the policy recorded with it, so a later
+// change to [registry] scan_fail_on never rewrites why an old build failed.
+func (a *API) handleBuildScan(w http.ResponseWriter, r *http.Request) {
+	scan, ok := a.buildScan(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, buildScanView{
+		BuildID: scan.BuildID, ScannedAt: scan.ScannedAt, Summary: scan.Summary,
+		HasReport: len(scan.ReportGz) > 0, HasSBOM: len(scan.SBOMGz) > 0,
+	})
+}
+
+// handleBuildScanReport downloads the build's full Trivy JSON report.
+func (a *API) handleBuildScanReport(w http.ResponseWriter, r *http.Request) {
+	a.serveScanDocument(w, r, "report", func(s *build.Scan) []byte { return s.ReportGz },
+		"application/json", "-trivy.json", "image.build.scan.report")
+}
+
+// handleBuildSBOM downloads the build's CycloneDX SBOM.
+func (a *API) handleBuildSBOM(w http.ResponseWriter, r *http.Request) {
+	a.serveScanDocument(w, r, "SBOM", func(s *build.Scan) []byte { return s.SBOMGz },
+		"application/vnd.cyclonedx+json", ".cdx.json", "image.build.sbom")
+}
+
+// buildScan reads the scan named by the request path. On failure the error
+// response is already written.
+func (a *API) buildScan(w http.ResponseWriter, r *http.Request) (*build.Scan, bool) {
+	if a.Builder == nil {
+		writeError(w, r, errBuildUnavailable)
+		return nil, false
+	}
+	scan, err := a.Builder.Scan(r.Context(), r.PathValue("id"))
+	switch {
+	case errors.Is(err, build.ErrNotFound):
+		writeError(w, r, newError(http.StatusNotFound, "scan_not_found",
+			"this build has no scan: it has not reached the scan step, or it ran before builds kept their scans"))
+		return nil, false
+	case err != nil:
+		writeBuildError(w, r, err)
+		return nil, false
+	}
+	return scan, true
+}
+
+// serveScanDocument sends one gzipped document of a build's scan as a
+// download. The bytes are the image's own (package names, file paths), so the
+// attachment disposition, with the nosniff every response carries, keeps a
+// browser from rendering them.
+func (a *API) serveScanDocument(w http.ResponseWriter, r *http.Request, what string,
+	doc func(*build.Scan) []byte, contentType, suffix, action string) {
+	scan, ok := a.buildScan(w, r)
+	if !ok {
+		return
+	}
+	gz := doc(scan)
+	if len(gz) == 0 {
+		writeError(w, r, newError(http.StatusNotFound, "scan_document_not_kept",
+			"this build's scan kept no %s: it was too large to keep, or the step that writes it failed", what))
+		return
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(gz))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	defer zr.Close()
+	a.audit(r, action, scan.BuildID)
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+scan.BuildID+suffix+`"`)
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, zr)
 }
 
 // handleListImages returns the image whitelist (spec §15: the create-server form

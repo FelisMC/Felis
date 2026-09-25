@@ -66,8 +66,9 @@ func (k *K8sJobs) JobPhase(ctx context.Context, jobName string) (JobPhase, error
 		case batchv1.JobComplete:
 			return JobSucceeded, nil
 		case batchv1.JobFailed:
-			// Covers a CRITICAL CVE (trivy --exit-code 1), a kaniko or push
-			// failure, and DeadlineExceeded — all are a rejected build.
+			// Covers a scan the policy blocked (scan-gate exits 1), a failed
+			// build, scan or push step, and DeadlineExceeded — all are a
+			// rejected build.
 			return JobFailed, nil
 		}
 	}

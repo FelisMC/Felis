@@ -479,12 +479,14 @@ internal registry.
 ### 8d. Build reaches `Failed` phase
 
 `reconcileBuilds` polls the Job; a Job reaching `Failed` is surfaced via
-`writeBuildError` (JobPhase→Failed). [GO-TESTED for the mapping.] The underlying
-cause — a kaniko build error, the **Trivy CRITICAL-CVE gate** failing the build
-(spec §16), or the final push — is in the Job's pod logs and is
-[INTEGRATION-ONLY]. The pod runs `egress-gate` (§8f), `context-fetch`, `kaniko`
-(builds a tarball, never pushes) and `trivy` (scans that tarball) as init
-containers, then `push` — so a CVE-rejected image never reaches the registry. Inspect every step:
+`writeBuildError` (JobPhase→Failed). [GO-TESTED for the mapping.] The
+build's error names the cause: the step that failed with the last lines of its
+output, the deadline, or the scan verdict (spec §16). The pod runs `egress-gate`
+(§8f), `context-fetch`, `kaniko` (builds a tarball, never pushes), `trivy`
+(writes the full JSON report of that tarball), `sbom` (converts the report to a
+CycloneDX SBOM) and `scan-gate` (applies the scan policy) as init containers,
+then `push` — so an image the scan blocks never reaches the registry. Inspect
+every step:
 
 ```
 kubectl logs -n felis-build job/<build-job> --all-containers --prefix
@@ -494,6 +496,54 @@ A `push` that fails with `403` means the target repository is under `felis/` or
 `mirror/` — the registry gate reserves those for the platform (§9); `401` means
 the `felis-registry-push` Secret in `felis-build` is missing or stale (re-run the
 installer).
+
+**The scan gate.** `scan-gate` blocks the image when a vulnerability or a
+leaked secret has a severity listed in `[registry] scan_fail_on` (§8e; default
+`CRITICAL`). A vulnerability with no fixed release is listed without
+blocking unless `scan_fail_unfixed = true`, since nothing can be upgraded to
+clear it. A blocked build ends with an error such as:
+
+```
+the scan blocked the image: 1 CRITICAL, 1 HIGH (CVE-2026-12345, CVE-2025-24813)
+```
+
+`HIGH` is opt-in because the platform's own `felis/paper` image carries five
+fixable HIGH findings inside upstream `paper.jar` (its bundled commons-compress
+1.5 and plexus-utils 3.5.1). Adding `HIGH` to `scan_fail_on` blocks every build
+`FROM` it until those ids are accepted as known risks in `scan_accept`:
+
+```toml
+scan_fail_on = ["CRITICAL", "HIGH"]
+scan_accept = ["CVE-2021-35515", "CVE-2021-35516", "CVE-2021-35517", "CVE-2021-36090", "CVE-2025-67030"]
+```
+
+An accepted id (a CVE, GHSA or similar advisory id, or a secret rule id such as
+`aws-access-key-id`) never blocks; its findings are still counted, listed and
+marked **Accepted** on the panel, and scan-gate's log names the accepted ids.
+Review the list whenever the base image is upgraded.
+
+felis-api keeps each finished build's scan: the verdict, up to 100 findings with
+the blocking ones first, the full Trivy report and the SBOM. On the panel,
+**Build Pipeline → Scan & logs** on a finished build shows them, with both files to download. The
+API serves the same data (admin only):
+
+| Endpoint | Returns |
+|---|---|
+| `GET /api/v1/images/build/{id}/scan` | the verdict and findings; `404 scan_not_found` for a build that stopped before the scan or ran before builds kept scans |
+| `GET /api/v1/images/build/{id}/scan/report` | the Trivy JSON report as `<id>-trivy.json` |
+| `GET /api/v1/images/build/{id}/sbom` | the CycloneDX SBOM as `<id>.cdx.json` |
+
+The report and SBOM travel to felis-api inside the scan-gate container's log, so
+one image gets at most 6 MiB of them compressed. Past that the gate drops the
+SBOM first, then the report, says so in its log, and the download answers
+`404 scan_document_not_kept`; the verdict and findings are always kept. A
+`scan-gate` exit 2 means the report was missing or unreadable; the build fails
+closed and the error says why.
+
+A scan reflects the vulnerability DB on the day of the build. An admitted image
+is not scanned again when the DB learns of a new CVE; to rescan it, start a new
+build of the same context (`POST /api/v1/images/build`), after
+`felis mirror-build-tools -only trivy-db` if the DB copy is old (§8e).
 
 ### 8e. Build Pods never start: executor images and the scan DBs
 
@@ -546,6 +596,9 @@ kaniko_image = ""                  # empty: the mirror/ copy above
 trivy_image = ""
 trivy_db_repository = ""
 trivy_java_db_repository = ""
+scan_fail_on = ["CRITICAL"]        # §8d: severities that block; any case; empty = CRITICAL
+scan_fail_unfixed = false          # §8d: true blocks on vulnerabilities with no fixed release too
+scan_accept = []                   # §8d: vulnerability or secret rule ids accepted as known risks; never block
 build_cpu_limit = "2"
 build_mem_limit = "4Gi"
 build_disk_limit = "12Gi"          # §8f
@@ -593,6 +646,7 @@ approved-but-hostile Dockerfile and the node is the pod around it:
 | User namespace | with `build_user_namespaces` on, root in the pod is an unprivileged uid on the node | below |
 | Sandbox runtime | optional `build_runtime_class` (gVisor, Kata) | below |
 | Credentials | the registry credential lives only in the `push` container; the service token only in `context-fetch` | jobspec |
+| Scan gate | the image's Trivy report is judged under `scan_fail_on` before `push` runs; a blocked or unreadable scan keeps the image out of the registry | `felis scan-gate`, §8d |
 | Resources | CPU, memory and ephemeral-storage limits per container; `activeDeadlineSeconds`; the context extraction stops at 4 GiB or 200 000 entries | jobspec, `felis fetch-context` |
 | Namespace backstop | `felis-build-limits` LimitRange gives any container without limits 1 CPU / 1 GiB / 1 GiB disk; `felis-build-quota` allows 8 running pods and no PVCs | bundle |
 | Concurrency | at most `[registry] max_concurrent_builds` (default 2, at most 6) builds run; later ones wait as `pending` (Queued) and start oldest first | `build.Builder` |

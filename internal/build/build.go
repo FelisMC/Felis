@@ -14,11 +14,13 @@
 // (jobspec.go) and are asserted by unit tests, since no cluster runs here.
 //
 // The Trivy gate is enforced as the build Pod's *exit code*: a kaniko
-// initContainer builds into a tarball (--no-push), a trivy initContainer scans it
-// with `--exit-code 1 --severity CRITICAL`, and only then does the push container
-// — the one holding the registry credential — publish it. Therefore "Job
-// Succeeded" is equivalent to "no CRITICAL CVE AND pushed", and a rejected image
-// never reaches the registry. felis-api observes the Job phase
+// initContainer builds into a tarball (--no-push), a trivy initContainer writes
+// the full report, and scan-gate exits 1 when a finding matches the scan policy
+// (ScanPolicy; HIGH and CRITICAL with a fixed release by default); only then does
+// the push container — the one holding the registry credential — publish it.
+// Therefore "Job Succeeded" is equivalent to "nothing the policy blocks AND
+// pushed", and a rejected image never reaches the registry. The report and a
+// CycloneDX SBOM come back through scan-gate's log and stay on the build (Scan). felis-api observes the Job phase
 // and performs the database writes — the build Pod itself never has database
 // credentials (the weak-SA red line). On success the image is admitted to
 // image_whitelist with enabled=true (recording added_by); on failure the build
@@ -215,6 +217,10 @@ type Store interface {
 	// AdmitBuiltImage upserts an image_whitelist row with enabled=true and
 	// source=built (the scan-gate success path, spec §16). It records added_by.
 	AdmitBuiltImage(ctx context.Context, img Image) error
+	// SaveScan stores the scan record of a build, replacing an earlier one.
+	SaveScan(ctx context.Context, s Scan) error
+	// GetScan loads a build's scan record, or ErrNotFound.
+	GetScan(ctx context.Context, buildID string) (*Scan, error)
 	// ListImages returns the image whitelist.
 	ListImages(ctx context.Context) ([]Image, error)
 	// AddExternalImage upserts an externally-pushed image (spec §15 external
@@ -236,6 +242,27 @@ type Jobs interface {
 	JobPhase(ctx context.Context, jobName string) (JobPhase, error)
 	// CancelBuildJob deletes the Job (and its pods), tolerating not-found.
 	CancelBuildJob(ctx context.Context, jobName string) error
+}
+
+// JobOutcomes reads what a finished build pod left behind. A nil JobOutcomes
+// keeps Sync to the Job phase alone.
+type JobOutcomes interface {
+	Outcome(ctx context.Context, buildID string) (Outcome, error)
+}
+
+// Outcome is what a finished build pod reports.
+type Outcome struct {
+	// FailedStep is the container whose non-zero exit ended the pod ("" when
+	// none did), with its exit code and termination message.
+	FailedStep string
+	ExitCode   int32
+	Message    string
+	// DeadlineExceeded is set when the Job ran past activeDeadlineSeconds.
+	DeadlineExceeded bool
+	// Scan is scan-gate's envelope, nil when the step never ran or its log held
+	// none; ScanErr then says why a log that should hold one did not.
+	Scan    *ScanEnvelope
+	ScanErr error
 }
 
 // Config parameterises the build subsystem from felis.toml (spec §24 [registry]
@@ -266,6 +293,12 @@ type Config struct {
 	// registry's copies (Tools).
 	KanikoImage string
 	TrivyImage  string
+	// ScanFailOn lists the severities that block an image; empty applies
+	// DefaultScanFailOn. ScanFailUnfixed blocks on findings with no fixed release
+	// too, and ScanAccept names finding ids that never block (ScanPolicy).
+	ScanFailOn      []string
+	ScanFailUnfixed bool
+	ScanAccept      []string
 	// Deadline caps a build's wall-clock (spec §16: activeDeadlineSeconds).
 	Deadline time.Duration
 	// MaxDockerfileBytes caps the uploaded Dockerfile (spec §16: context size
@@ -381,6 +414,9 @@ func (c Config) withDefaults() Config {
 	if c.MaxConcurrent > MaxConcurrentLimit {
 		c.MaxConcurrent = MaxConcurrentLimit
 	}
+	if len(c.ScanFailOn) == 0 {
+		c.ScanFailOn = DefaultScanFailOn
+	}
 	return c
 }
 
@@ -391,6 +427,9 @@ type Builder struct {
 	Store  Store
 	Jobs   Jobs
 	Config Config
+	// Outcomes reads a finished pod's failed step and scan envelope. Nil records
+	// a generic failure and keeps no scan.
+	Outcomes JobOutcomes
 
 	startMu sync.Mutex
 
@@ -508,6 +547,9 @@ func (b *Builder) jobParams(bld *Build, cfg Config) JobParams {
 		TrivyJavaDBRepository: cfg.TrivyJavaDBRepository,
 		KanikoImage:           cfg.KanikoImage,
 		TrivyImage:            cfg.TrivyImage,
+		ScanFailOn:            cfg.ScanFailOn,
+		ScanFailUnfixed:       cfg.ScanFailUnfixed,
+		ScanAccept:            cfg.ScanAccept,
 		Deadline:              cfg.Deadline,
 		CPULimit:              cfg.CPULimit,
 		MemLimit:              cfg.MemLimit,
@@ -558,10 +600,15 @@ func (b *Builder) ListBuilds(ctx context.Context, opts ListOpts) ([]Build, int, 
 // translation (spec §16). A terminal build is returned unchanged (idempotent).
 //
 //   - JobSucceeded → status=succeeded AND the image is admitted to the whitelist
-//     with enabled=true (trivy found no CRITICAL CVE and the push landed).
-//   - JobFailed / JobUnknown → status=failed, nothing admitted (a CRITICAL CVE
-//     surfaces here as a failed Job, since trivy runs with --exit-code 1).
+//     with enabled=true (the scan found nothing the policy blocks and the push
+//     landed).
+//   - JobFailed / JobUnknown → status=failed, nothing admitted. The error names
+//     what ended the pod: the scan verdict with the blocking finding ids, or the
+//     failed step and its last log lines (failureReason).
 //   - JobPending / JobRunning → no change.
+//
+// A finished pod's scan envelope is stored first (SaveScan), for a blocked build
+// and an admitted one alike.
 //
 // The image admission is performed by felis-api (this code path), never by the
 // build Pod, which holds no database credentials.
@@ -587,6 +634,24 @@ func (b *Builder) Sync(ctx context.Context, id string) (*Build, error) {
 	if err != nil {
 		return nil, err
 	}
+	if phase != JobSucceeded && phase != JobFailed && phase != JobUnknown {
+		return bld, nil // JobPending / JobRunning
+	}
+	var out Outcome
+	if b.Outcomes != nil && phase != JobUnknown {
+		if out, err = b.Outcomes.Outcome(ctx, bld.ID); err != nil {
+			return nil, err
+		}
+	}
+	if out.Scan != nil {
+		scan, err := newScan(bld.ID, out.Scan, b.now())
+		if err != nil {
+			return nil, err
+		}
+		if err := b.Store.SaveScan(ctx, scan); err != nil {
+			return nil, err
+		}
+	}
 	switch phase {
 	case JobSucceeded:
 		now := b.now()
@@ -604,11 +669,75 @@ func (b *Builder) Sync(ctx context.Context, id string) (*Build, error) {
 			return nil, err
 		}
 		return b.finishAt(ctx, bld, StatusSucceeded, "", now)
-	case JobFailed, JobUnknown:
-		return b.finish(ctx, bld, StatusFailed, "build job failed or scan found a CRITICAL CVE")
-	default: // JobPending / JobRunning
-		return bld, nil
+	case JobUnknown:
+		return b.finish(ctx, bld, StatusFailed, "the build job is gone: it was deleted before it finished")
+	default:
+		return b.finish(ctx, bld, StatusFailed, b.failureReason(out))
 	}
+}
+
+// stepNames words each build step for a failure message.
+var stepNames = map[string]string{
+	ContainerGate:     "the egress gate",
+	ContainerFetch:    "fetching the build context",
+	ContainerKaniko:   "the image build",
+	ContainerTrivy:    "the vulnerability scan",
+	ContainerSBOM:     "writing the SBOM",
+	ContainerScanGate: "the scan gate",
+	ContainerPush:     "the registry push",
+}
+
+// maxFailureMessage bounds the step message a failed build records.
+const maxFailureMessage = 600
+
+// failureReason is the error a failed build records: the scan verdict when the
+// policy blocked the image, the deadline when the Job ran out of time, or the
+// failed step with the tail of its termination message.
+func (b *Builder) failureReason(out Outcome) string {
+	switch {
+	case out.Scan != nil && out.Scan.Summary.Blocked:
+		return out.Scan.Summary.Reason()
+	case out.DeadlineExceeded:
+		return fmt.Sprintf("the build ran past its %s deadline", b.Config.withDefaults().Deadline)
+	case out.FailedStep == "":
+		return "the build job failed"
+	}
+	name := stepNames[out.FailedStep]
+	if name == "" {
+		name = "the " + out.FailedStep + " step"
+	}
+	msg := fmt.Sprintf("%s failed (exit %d)", name, out.ExitCode)
+	if tail := messageTail(out.Message); tail != "" {
+		msg += ": " + tail
+	}
+	if out.FailedStep == ContainerScanGate && out.ScanErr != nil {
+		msg += "; the scan report could not be read back: " + out.ScanErr.Error()
+	}
+	return msg
+}
+
+// messageTail keeps the last three non-empty lines of a termination message on
+// one line, tabs as spaces and other control characters removed, at most
+// maxFailureMessage bytes.
+func messageTail(m string) string {
+	var lines []string
+	for _, l := range strings.Split(m, "\n") {
+		if l = strings.TrimSpace(Printable(strings.ReplaceAll(strings.TrimRight(l, "\r"), "\t", " "))); l != "" {
+			lines = append(lines, l)
+		}
+	}
+	lines = lines[max(0, len(lines)-3):]
+	out := strings.Join(lines, " | ")
+	if len(out) > maxFailureMessage {
+		out = "…" + strings.ToValidUTF8(out[len(out)-maxFailureMessage:], "")
+	}
+	return out
+}
+
+// Scan returns a build's scan record, or ErrNotFound when the build has none
+// (it failed before the scan, or finished before scans were kept).
+func (b *Builder) Scan(ctx context.Context, id string) (*Scan, error) {
+	return b.Store.GetScan(ctx, id)
 }
 
 // SyncAll reconciles every running build, then starts queued builds oldest
@@ -713,9 +842,9 @@ func (b *Builder) finishAt(ctx context.Context, bld *Build, status Status, msg s
 	}
 	if status == StatusFailed {
 		// felis_image_build_failures_total (spec §23) counts builds that reached a
-		// failed terminal state — a kaniko failure or a CRITICAL CVE surfaced by
-		// trivy's --exit-code 1, observed here as the Sync JobFailed/JobUnknown
-		// verdict. Cancellations (StatusCancelled) are deliberately not failures.
+		// failed terminal state — a failed step or a finding the scan policy
+		// blocks on (scan-gate exits 1), observed here as the Sync
+		// JobFailed/JobUnknown verdict. Cancellations (StatusCancelled) are deliberately not failures.
 		// Incremented only after the failed status is persisted, so the counter
 		// never runs ahead of the store. (Submit's job-creation path records its
 		// failure outside finishAt and increments there.)

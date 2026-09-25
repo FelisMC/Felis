@@ -560,6 +560,93 @@ components:
           format: date-time
           description: Omitted until the build reaches a terminal status.
 
+    BuildScan:
+      type: object
+      description: >-
+        What a build's scan gate kept (GET /api/v1/images/build/{id}/scan): its
+        verdict under the policy it ran with, the listed findings, and which full
+        documents can be downloaded.
+      required: [build_id, scanned_at, summary, has_report, has_sbom]
+      properties:
+        build_id: { type: string }
+        scanned_at: { type: string, format: date-time }
+        summary: { $ref: '#/components/schemas/ScanSummary' }
+        has_report:
+          type: boolean
+          description: The full Trivy JSON report is kept (GET .../scan/report).
+        has_sbom:
+          type: boolean
+          description: The CycloneDX SBOM is kept (GET .../sbom).
+
+    ScanSummary:
+      type: object
+      description: The verdict scan-gate reached on one Trivy report (internal/build ScanSummary).
+      required: [policy, blocked, packages, counts, blocking_counts, findings]
+      properties:
+        policy: { $ref: '#/components/schemas/ScanPolicy' }
+        blocked:
+          type: boolean
+          description: A finding blocked the image, so it was never pushed.
+        packages:
+          type: integer
+          description: Packages Trivy found in the image.
+        counts:
+          type: object
+          description: Every finding by severity (CRITICAL, HIGH, MEDIUM, LOW, UNKNOWN); a severity with none is absent.
+          additionalProperties: { type: integer }
+        blocking_counts:
+          type: object
+          description: The findings the policy blocks on, by severity.
+          additionalProperties: { type: integer }
+        findings:
+          type: array
+          description: Blocking findings first, then the rest, most severe first; at most 100. The downloadable report lists all of them.
+          items: { $ref: '#/components/schemas/ScanFinding' }
+        omitted:
+          type: array
+          description: Documents (report, sbom) too large to keep with the build. Omitted when none.
+          items: { type: string, enum: [report, sbom] }
+
+    ScanPolicy:
+      type: object
+      description: Which findings block an image ([registry] scan_fail_on / scan_fail_unfixed / scan_accept).
+      required: [fail_on, fail_unfixed]
+      properties:
+        fail_on:
+          type: array
+          items: { type: string, enum: [CRITICAL, HIGH, MEDIUM, LOW, UNKNOWN] }
+        fail_unfixed:
+          type: boolean
+          description: A vulnerability with no fixed release blocks too.
+        accept:
+          type: array
+          items: { type: string }
+          description: Vulnerability ids and secret rule ids accepted as known risks; findings under them never block. Omitted when none.
+
+    ScanFinding:
+      type: object
+      description: One vulnerability or leaked secret (internal/build ScanFinding).
+      required: [id, kind, severity, target, blocking]
+      properties:
+        id:
+          type: string
+          description: The CVE/GHSA id, or the secret rule id.
+        kind: { type: string, enum: [vulnerability, secret] }
+        severity: { type: string, enum: [CRITICAL, HIGH, MEDIUM, LOW, UNKNOWN] }
+        package: { type: string }
+        installed: { type: string }
+        fixed:
+          type: string
+          description: The first release that fixes it. Omitted when none exists.
+        target:
+          type: string
+          description: The file or layer Trivy found it in.
+        title: { type: string }
+        blocking: { type: boolean }
+        accepted:
+          type: boolean
+          description: The policy accepts this id, so it never blocks. Omitted when false.
+
     Image:
       type: object
       description: One whitelisted image (internal/build Image).
@@ -5640,6 +5727,90 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           description: Build already terminal.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/images/build/{id}/scan:
+    get:
+      tags: [images]
+      operationId: getBuildScan
+      summary: The scan gate's verdict and findings for a build (admin).
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The kept scan.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BuildScan' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No scan for this build (scan_not_found) — it has not reached the scan step, or it ran before builds kept their scans.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/images/build/{id}/scan/report:
+    get:
+      tags: [images]
+      operationId: getBuildScanReport
+      summary: Download a build's full Trivy JSON report (admin).
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The Trivy report (SchemaVersion 2), served as the attachment <id>-trivy.json.
+          content:
+            application/json:
+              schema: { type: object }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No scan for this build (scan_not_found), or the report was too large to keep (scan_document_not_kept).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/images/build/{id}/sbom:
+    get:
+      tags: [images]
+      operationId: getBuildSBOM
+      summary: Download a build's CycloneDX SBOM (admin).
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The CycloneDX JSON SBOM, served as the attachment <id>.cdx.json.
+          content:
+            application/vnd.cyclonedx+json:
+              schema: { type: object }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No scan for this build (scan_not_found), or the SBOM was too large to keep or its step failed (scan_document_not_kept).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

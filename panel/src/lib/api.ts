@@ -5,6 +5,7 @@ import type {
   BackupView,
   BanlistResult,
   Build,
+  BuildScan,
   CreateServerRequest,
   CreateUserRequest,
   FleetServer,
@@ -453,6 +454,25 @@ export const api = rejectingSync({
 
   cancelBuild: (id: string) =>
     request<Build>("POST", urlPath`/images/build/${id}/cancel`),
+
+  /** What the build's scan gate kept; 404 scan_not_found before the scan step. */
+  getBuildScan: (id: string) =>
+    request<BuildScan>("GET", urlPath`/images/build/${id}/scan`),
+
+  /** Saves the build's full Trivy report or CycloneDX SBOM. The bytes name the
+   *  image's own packages and paths, so they are downloaded, never rendered. */
+  downloadBuildScanDocument: async (id: string, doc: "report" | "sbom") => {
+    const res = await fetchOK(
+      doc === "report" ? urlPath`/images/build/${id}/scan/report` : urlPath`/images/build/${id}/sbom`,
+      { method: "GET" },
+    );
+    const url = URL.createObjectURL(await res.blob());
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = doc === "report" ? `${id}-trivy.json` : `${id}.cdx.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  },
 
   createServer: (req: CreateServerRequest) =>
     request<{ name: string; subdomain: string; desiredState: string }>(

@@ -3002,7 +3002,7 @@ persisted_registry_block() {
     out="$(awk '
       /^[[:space:]]*\[/ { sect = $0; next }
       sect ~ /^[[:space:]]*\[registry\][[:space:]]*$/ &&
-        /^[[:space:]]*(kaniko_image|trivy_image|trivy_db_repository|trivy_java_db_repository|build_cpu_limit|build_mem_limit|build_disk_limit|build_user_namespaces|build_runtime_class|max_concurrent_builds|user_uploads_context|user_uploads_max_bytes|context_max_bytes)[[:space:]]*=/ { print }
+        /^[[:space:]]*(kaniko_image|trivy_image|trivy_db_repository|trivy_java_db_repository|build_cpu_limit|build_mem_limit|build_disk_limit|build_user_namespaces|build_runtime_class|max_concurrent_builds|scan_fail_on|scan_fail_unfixed|scan_accept|user_uploads_context|user_uploads_max_bytes|context_max_bytes)[[:space:]]*=/ { print }
       sect ~ /^[[:space:]]*\[registry\.s3\][[:space:]]*$/ && /^[[:space:]]*[A-Za-z_]+[[:space:]]*=/ {
         if (!s3hdr) { printf "[registry.s3]\n"; s3hdr = 1 }
         print

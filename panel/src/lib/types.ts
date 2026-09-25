@@ -310,6 +310,53 @@ export interface Build {
   context_digest?: string;
 }
 
+export type ScanSeverity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW" | "UNKNOWN";
+
+/** ScanFinding mirrors build.ScanFinding — one vulnerability or leaked secret. */
+export interface ScanFinding {
+  id: string;
+  kind: "vulnerability" | "secret";
+  severity: ScanSeverity;
+  package?: string;
+  installed?: string;
+  /** The first release that fixes it; absent when none exists. */
+  fixed?: string;
+  target: string;
+  title?: string;
+  blocking: boolean;
+  /** The policy accepts this id, so it never blocks; absent when false. */
+  accepted?: boolean;
+}
+
+/** ScanPolicy mirrors build.ScanPolicy ([registry] scan_fail_on / scan_fail_unfixed / scan_accept). */
+export interface ScanPolicy {
+  fail_on: ScanSeverity[];
+  fail_unfixed: boolean;
+  /** Finding ids accepted as known risks; absent when none. */
+  accept?: string[];
+}
+
+/** ScanSummary mirrors build.ScanSummary — the verdict scan-gate reached. */
+export interface ScanSummary {
+  policy: ScanPolicy;
+  blocked: boolean;
+  packages: number;
+  counts: Record<string, number>;
+  blocking_counts: Record<string, number>;
+  /** Blocking first, then most severe first; at most 100. */
+  findings: ScanFinding[];
+  omitted?: ("report" | "sbom")[];
+}
+
+/** BuildScan is GET /images/build/{id}/scan. */
+export interface BuildScan {
+  build_id: string;
+  scanned_at: string;
+  summary: ScanSummary;
+  has_report: boolean;
+  has_sbom: boolean;
+}
+
 export type SubmissionStatus = "pending_review" | "approved" | "rejected";
 
 /** Submission mirrors an image_submissions row (spec §6, migration 0002). */

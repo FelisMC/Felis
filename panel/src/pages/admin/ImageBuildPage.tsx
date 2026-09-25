@@ -28,6 +28,7 @@ import { Pagination } from "@/components/Pagination";
 import { api, buildLogsStreamURL, humanizeError } from "@/lib/api";
 import { formatRelative, formatAbsolute } from "@/lib/format";
 import { useAsync, useConfig } from "@/lib/hooks";
+import { BuildScanPanel } from "./BuildScanPanel";
 import { useTier } from "@/lib/tier";
 import type { Build, BuildStatus, Submission } from "@/lib/types";
 
@@ -522,11 +523,14 @@ export function ImageBuildPage() {
                       </div>
                     </div>
 
-                    {/* Inline SSE Log Console */}
+                    {/* The scan gate's verdict, then the inline SSE log console */}
                     {activeLogBuildId === b.id && (
-                      <div className="mt-3 h-[300px] flex flex-col">
-                        <LogConsole url={buildLogsStreamURL(config.apiBase, b.id)} />
-                      </div>
+                      <>
+                        <BuildScanPanel build={b} />
+                        <div className="mt-3 h-[300px] flex flex-col">
+                          <LogConsole url={buildLogsStreamURL(config.apiBase, b.id)} />
+                        </div>
+                      </>
                     )}
                   </li>
                 ))}

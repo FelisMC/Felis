@@ -1,11 +1,15 @@
 package api
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"felis.lolicon.best/internal/build"
 )
@@ -35,6 +39,8 @@ type fakeBuilder struct {
 	buildsTotal int
 	buildsErr   error
 	listOpts    build.ListOpts
+	scans       map[string]*build.Scan
+	scanErr     error
 }
 
 func (f *fakeBuilder) Submit(_ context.Context, req build.Request) (*build.Build, error) {
@@ -109,6 +115,16 @@ func (f *fakeBuilder) ImageAdmitted(_ context.Context, ref string) (bool, error)
 	return f.admitted[ref], nil
 }
 
+func (f *fakeBuilder) Scan(_ context.Context, id string) (*build.Scan, error) {
+	if f.scanErr != nil {
+		return nil, f.scanErr
+	}
+	if s, ok := f.scans[id]; ok {
+		return s, nil
+	}
+	return nil, build.ErrNotFound
+}
+
 func adminAPI(b ImageBuilder) *API {
 	api := newTestAPI(newFakeRepo(), newFakeCluster())
 	api.Builder = b
@@ -127,6 +143,9 @@ func TestImageRoutesAreAdminOnly(t *testing.T) {
 		{"GET", "/api/v1/images/build/bld-1", ""},
 		{"GET", "/api/v1/images/build/bld-1/logs", ""},
 		{"POST", "/api/v1/images/build/bld-1/cancel", ""},
+		{"GET", "/api/v1/images/build/bld-1/scan", ""},
+		{"GET", "/api/v1/images/build/bld-1/scan/report", ""},
+		{"GET", "/api/v1/images/build/bld-1/sbom", ""},
 		{"GET", "/api/v1/images", ""},
 		{"POST", "/api/v1/images", `{"image_ref":"registry.felis.svc:5000/x:1"}`},
 		{"DELETE", "/api/v1/images?ref=registry.felis.svc:5000/x:1", ""},
@@ -327,3 +346,123 @@ func TestImageRoutesWithoutBuilderAre503(t *testing.T) {
 
 // Compile-time proof that the production Builder satisfies the API interface.
 var _ ImageBuilder = (*build.Builder)(nil)
+
+func gzipped(t *testing.T, s string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write([]byte(s)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// scannedBuilder holds one blocked scan of bld-7 that kept its report but no
+// SBOM.
+func scannedBuilder(t *testing.T) *fakeBuilder {
+	return &fakeBuilder{scans: map[string]*build.Scan{"bld-7": {
+		BuildID:   "bld-7",
+		ScannedAt: time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC),
+		Summary: build.ScanSummary{
+			Policy:         build.ScanPolicy{FailOn: []string{"CRITICAL", "HIGH"}},
+			Blocked:        true,
+			Packages:       12,
+			Counts:         map[string]int{"CRITICAL": 1, "MEDIUM": 2},
+			BlockingCounts: map[string]int{"CRITICAL": 1},
+			Findings: []build.ScanFinding{{ID: "CVE-2024-0001", Kind: "vulnerability", Severity: "CRITICAL",
+				Package: "log4j-core", Installed: "2.14.1", Fixed: "2.17.1", Target: "mods/core.jar", Blocking: true}},
+		},
+		ReportGz: gzipped(t, `{"SchemaVersion":2,"Results":[]}`),
+	}}}
+}
+
+func TestBuildScanReturnsTheGateVerdict(t *testing.T) {
+	w := do(adminAPI(scannedBuilder(t)).ExternalHandler(), "GET", "/api/v1/images/build/bld-7/scan", "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d (%s)", w.Code, w.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	summary, _ := got["summary"].(map[string]any)
+	findings, _ := summary["findings"].([]any)
+	if got["build_id"] != "bld-7" || got["scanned_at"] != "2026-09-20T10:00:00Z" ||
+		got["has_report"] != true || got["has_sbom"] != false {
+		t.Errorf("view = %s", w.Body.String())
+	}
+	if summary["blocked"] != true || summary["packages"] != float64(12) || len(findings) != 1 {
+		t.Errorf("summary = %s", w.Body.String())
+	}
+	if f, _ := findings[0].(map[string]any); f["id"] != "CVE-2024-0001" || f["fixed"] != "2.17.1" || f["blocking"] != true {
+		t.Errorf("finding = %v", findings[0])
+	}
+	if _, leaked := got["report_gz"]; leaked {
+		t.Error("the scan view must not inline the report bytes")
+	}
+}
+
+func TestBuildScanMissingOrUnreadable(t *testing.T) {
+	w := do(adminAPI(scannedBuilder(t)).ExternalHandler(), "GET", "/api/v1/images/build/bld-8/scan", "", nil)
+	if w.Code != http.StatusNotFound || decodeErr(t, w) != "scan_not_found" {
+		t.Errorf("no scan: code %d, %s", w.Code, w.Body.String())
+	}
+	fb := scannedBuilder(t)
+	fb.scanErr = errors.New("database is down")
+	w = do(adminAPI(fb).ExternalHandler(), "GET", "/api/v1/images/build/bld-7/scan/report", "", nil)
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("store error: code %d, %s", w.Code, w.Body.String())
+	}
+	api := adminAPI(nil)
+	api.Builder = nil
+	w = do(api.ExternalHandler(), "GET", "/api/v1/images/build/bld-7/sbom", "", nil)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("no builder: code %d, %s", w.Code, w.Body.String())
+	}
+}
+
+func TestBuildScanDocumentsDownload(t *testing.T) {
+	fb := scannedBuilder(t)
+	api := adminAPI(fb)
+	w := do(api.ExternalHandler(), "GET", "/api/v1/images/build/bld-7/scan/report", "", nil)
+	if w.Code != http.StatusOK || w.Body.String() != `{"SchemaVersion":2,"Results":[]}` {
+		t.Fatalf("report: code %d, body %q", w.Code, w.Body.String())
+	}
+	for h, want := range map[string]string{
+		"Content-Type":           "application/json",
+		"Content-Disposition":    `attachment; filename="bld-7-trivy.json"`,
+		"X-Content-Type-Options": "nosniff",
+	} {
+		if got := w.Header().Get(h); got != want {
+			t.Errorf("report %s = %q, want %q", h, got, want)
+		}
+	}
+	audits := api.Repo.(*fakeRepo).audits
+	if len(audits) != 1 || audits[0].Action != "image.build.scan.report" || audits[0].ServerName != "bld-7" {
+		t.Errorf("audits = %+v", audits)
+	}
+
+	w = do(api.ExternalHandler(), "GET", "/api/v1/images/build/bld-7/sbom", "", nil)
+	if w.Code != http.StatusNotFound || decodeErr(t, w) != "scan_document_not_kept" {
+		t.Errorf("SBOM not kept: code %d, %s", w.Code, w.Body.String())
+	}
+	if len(api.Repo.(*fakeRepo).audits) != 1 {
+		t.Error("a download that sent nothing was audited")
+	}
+
+	fb.scans["bld-7"].SBOMGz = gzipped(t, `{"bomFormat":"CycloneDX","specVersion":"1.6"}`)
+	w = do(api.ExternalHandler(), "GET", "/api/v1/images/build/bld-7/sbom", "", nil)
+	if w.Code != http.StatusOK || w.Body.String() != `{"bomFormat":"CycloneDX","specVersion":"1.6"}` {
+		t.Fatalf("SBOM: code %d, body %q", w.Code, w.Body.String())
+	}
+	if w.Header().Get("Content-Type") != "application/vnd.cyclonedx+json" ||
+		w.Header().Get("Content-Disposition") != `attachment; filename="bld-7.cdx.json"` {
+		t.Errorf("SBOM headers = %v", w.Header())
+	}
+	if audits := api.Repo.(*fakeRepo).audits; audits[len(audits)-1].Action != "image.build.sbom" {
+		t.Errorf("audits = %+v", audits)
+	}
+}

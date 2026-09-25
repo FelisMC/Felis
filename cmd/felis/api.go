@@ -172,9 +172,10 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	buildCfg.FelisImage = os.Getenv("FELIS_IMAGE")
 	buildJobs := build.NewK8sJobs(cl, buildCfg)
 	builder := &build.Builder{
-		Store:  build.NewPGStore(drv.DB()),
-		Jobs:   buildJobs,
-		Config: buildCfg,
+		Store:    build.NewPGStore(drv.DB()),
+		Jobs:     buildJobs,
+		Config:   buildCfg,
+		Outcomes: build.NewK8sOutcomes(clientset, buildCfg),
 	}
 	go probeBuildUserNamespaces(ctx, buildJobs, buildCfg, stderr)
 
@@ -533,6 +534,9 @@ func buildConfig(cfg *config.Config) build.Config {
 		MaxConcurrent:         cfg.Registry.MaxConcurrentBuilds,
 		TrivyDBRepository:     cfg.Registry.TrivyDBRepository,
 		TrivyJavaDBRepository: cfg.Registry.TrivyJavaDBRepository,
+		ScanFailOn:            cfg.Registry.ScanFailOn,
+		ScanFailUnfixed:       cfg.Registry.ScanFailUnfixed,
+		ScanAccept:            cfg.Registry.ScanAccept,
 		// The submit lane's derived context URLs live here; the fetch step's
 		// service token goes nowhere else.
 		ContextOrigin: internalAPIBaseURL(),

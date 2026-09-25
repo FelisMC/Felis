@@ -23,6 +23,7 @@ Commands:
   files             List/read/write one file in a stopped server's world (internal Job entrypoint)
   egress-gate       Hold a build pod until its egress NetworkPolicy is enforced (internal Job entrypoint)
   fetch-context     Fetch and extract a submission's build context (internal Job entrypoint)
+  scan-gate         Apply the scan policy to a build's Trivy report and hand felis-api the report and SBOM (internal Job entrypoint)
   push-image        Push a scanned image tarball to the registry (internal Job entrypoint)
   mirror-build-tools Copy kaniko, trivy and Trivy's DBs into the registry (run by felis-build-tools.timer)
   registry-gate     Authorize registry writes in front of registry:2 (internal sidecar entrypoint)
@@ -61,6 +62,7 @@ var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"files":              cmdFiles,
 	"egress-gate":        cmdEgressGate,
 	"fetch-context":      cmdFetchContext,
+	"scan-gate":          cmdScanGate,
 	"push-image":         cmdPushImage,
 	"mirror-build-tools": cmdMirrorBuildTools,
 	"registry-gate":      cmdRegistryGate,
