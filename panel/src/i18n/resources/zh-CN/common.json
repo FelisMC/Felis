@@ -31,5 +31,7 @@
   "not_found_body": "链接里的名称不合法，或者这个页面不存在。",
   "connection_lost": "连不上 Felis：网络断开了，或者 Cloudflare Access 的登录已过期。网络恢复后会自动消失；Access 过期需要刷新页面重新登录。",
   "reload_page": "刷新页面",
+  "config_unavailable": "面板配置（/config.json）没有加载成功，这里显示的服务器地址和链接可能不对。刷新页面可重试。",
+  "build_dev": "开发版",
   "open_menu": "打开菜单"
 }

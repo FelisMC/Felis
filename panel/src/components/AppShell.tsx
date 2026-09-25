@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem } from "@/components/ui/select";
 import { useTheme } from "@/lib/theme";
 import { api, CONNECTION_EVENT, isConnectionLost } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { ConfigBanner, VersionBadge } from "@/components/RuntimeStatus";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 function SectionGroup({
@@ -225,6 +226,7 @@ function MobileNav({ sections }: { sections: NavSection[] }) {
           <div className="mt-auto border-t border-border/50 pt-3">
             {/* The strip's sign-out button grows to a thumb-sized target below md. */}
             <UserStrip />
+            <VersionBadge className="mt-2 flex justify-center" />
           </div>
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
@@ -264,14 +266,12 @@ export function AppShell() {
 
         <div className="mt-auto flex flex-col gap-2 border-t border-border/50 pt-2.5">
           {/* 1. Toggles & Meta */}
-          <div className="flex items-center justify-between px-1">
+          <div className="flex items-center justify-between gap-2 px-1">
             <div className="flex items-center gap-1.5">
               <LangToggle />
               <ThemeToggle />
             </div>
-            <span className="text-[10px] font-mono text-muted-foreground/40 select-none">
-              Felis v0.1.0
-            </span>
+            <VersionBadge />
           </div>
 
           {/* 2. Profile Card */}
@@ -286,6 +286,7 @@ export function AppShell() {
 
       <div className="flex min-w-0 flex-1 flex-col h-full overflow-y-auto">
         <ConnectionBanner />
+        <ConfigBanner />
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4 md:hidden">
           <div className="flex items-center gap-2">
             <MobileNav sections={sections} />

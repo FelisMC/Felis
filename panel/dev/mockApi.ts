@@ -2176,7 +2176,11 @@ export function mockApiPlugin(): Plugin {
         const parts = url.pathname.split("/").filter(Boolean);
 
         if (method === "GET" && url.pathname === "/config.json") {
-          sendJSON(res, 200, { apiBase: API_BASE, rootDomain: ROOT_DOMAIN });
+          sendJSON(res, 200, {
+            apiBase: API_BASE,
+            rootDomain: ROOT_DOMAIN,
+            build: { version: "v0.4.0+g1a2b3c4", release: "v0.4.0", commit: "1a2b3c4", dev: true },
+          });
           return;
         }
         if (parts[0] !== "api" || parts[1] !== "v1") {
