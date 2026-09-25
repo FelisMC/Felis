@@ -178,5 +178,7 @@
   "idle_stop_never": "从不",
   "idle_stop_seconds": "{{count}} 秒",
   "idle_stop_minutes": "{{count}} 分钟",
-  "idle_stop_hours": "{{count}} 小时"
+  "idle_stop_hours": "{{count}} 小时",
+  "stop_confirm_players": "{{count}} 名玩家在线，停服会断开他们。确定停止？",
+  "stop_confirm_unknown": "读不到在线人数，可能有玩家在线。确定停止？"
 }

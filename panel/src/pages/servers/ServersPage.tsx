@@ -3,7 +3,6 @@ import { Link } from "react-router-dom";
 import {
   Network,
   Play,
-  Square,
   Terminal,
   ExternalLink,
   RefreshCw,
@@ -33,6 +32,7 @@ import {
   SelectItem,
 } from "@/components/ui/select";
 import { PhaseBadge, PHASE_KEY, PHASE_COLOR } from "@/components/PhaseBadge";
+import { PowerButton } from "@/components/PowerButton";
 import { Loading, ErrorState, EmptyState } from "@/components/States";
 import { Pagination } from "@/components/Pagination";
 import { CreateServerDialog } from "@/components/CreateServerDialog";
@@ -78,6 +78,7 @@ interface UnifiedServer {
   autostartPolicy?: AutostartPolicy;
   playersOnline: number;
   playersMax: number;
+  playerCountUnknown?: boolean;
   owner?: string;
   endpointAddress?: string | null;
   claimable?: boolean;
@@ -139,6 +140,7 @@ export function ServersPage() {
         autostartPolicy: s.autostartPolicy,
         playersOnline: s.playersOnline ?? 0,
         playersMax: s.playersMax ?? 0,
+        playerCountUnknown: s.playerCountUnknown,
         owner: s.owned ? t("servers:owned_filter_mine") || "me" : undefined,
         claimable: s.claimable,
         owned: s.owned,
@@ -402,11 +404,11 @@ function ServerRow({
 }) {
   const { t } = useTranslation("ops");
   const { t: ts } = useTranslation("servers");
-  const [busy, setBusy] = useState<null | "wake" | "stop" | "claim">(null);
+  const [busy, setBusy] = useState<null | "claim">(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function act(kind: "wake" | "stop" | "claim", fn: () => Promise<unknown>) {
+  async function act(kind: "claim", fn: () => Promise<unknown>) {
     setBusy(kind);
     setError(null);
     try {
@@ -538,25 +540,13 @@ function ServerRow({
               </>
             ) : (
               <>
-                {live ? (
-                  <Button
-                    size="sm"
-                    variant="destructive"
-                    disabled={busy !== null}
-                    onClick={() => act("stop", () => api.stop(server.name))}
-                  >
-                    <Square /> {busy === "stop" ? ts("stopping") : ts("stop")}
-                  </Button>
-                ) : (
-                  <Button
-                    size="sm"
-                    variant="default"
-                    disabled={busy !== null}
-                    onClick={() => act("wake", () => api.wake(server.name))}
-                  >
-                    <Play /> {busy === "wake" ? ts("waking") : ts("wake")}
-                  </Button>
-                )}
+                <PowerButton
+                  name={server.name}
+                  live={live}
+                  playersOnline={server.playersOnline}
+                  playerCountUnknown={server.playerCountUnknown}
+                  onChanged={onChanged}
+                />
                 {(server.owned || isAdmin) && (
                   <Link to={`/servers/${server.name}`}>
                     <Button size="sm" variant="outline">

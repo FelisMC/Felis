@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { Play, Square, Hand, Users, ExternalLink, Terminal } from "lucide-react";
+import { Hand, Users, ExternalLink, Terminal } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { PhaseBadge } from "@/components/PhaseBadge";
+import { PowerButton } from "@/components/PowerButton";
 import { api, humanizeError } from "@/lib/api";
 import { hostFor, type RuntimeConfig } from "@/lib/config";
 import type { ServerInfo } from "@/lib/types";
@@ -18,11 +19,11 @@ interface Props {
 
 export function ServerCard({ server, cfg, onChanged }: Props) {
   const { t } = useTranslation("servers");
-  const [busy, setBusy] = useState<null | "wake" | "stop" | "claim">(null);
+  const [busy, setBusy] = useState<null | "claim">(null);
   const [error, setError] = useState<string | null>(null);
   const host = hostFor(server.subdomain, cfg);
 
-  async function act(kind: "wake" | "stop" | "claim", fn: () => Promise<unknown>) {
+  async function act(kind: "claim", fn: () => Promise<unknown>) {
     setBusy(kind);
     setError(null);
     try {
@@ -93,26 +94,15 @@ export function ServerCard({ server, cfg, onChanged }: Props) {
             <Hand /> {busy === "claim" ? t("claiming") : t("claim")}
           </Button>
         )}
-        {server.owned &&
-          (running || transitioning ? (
-            <Button
-              size="sm"
-              variant="destructive"
-              disabled={busy !== null}
-              onClick={() => act("stop", () => api.stop(server.name))}
-            >
-              <Square /> {busy === "stop" ? t("stopping") : t("stop")}
-            </Button>
-          ) : (
-            <Button
-              size="sm"
-              variant="default"
-              disabled={busy !== null}
-              onClick={() => act("wake", () => api.wake(server.name))}
-            >
-              <Play /> {busy === "wake" ? t("waking") : t("wake")}
-            </Button>
-          ))}
+        {server.owned && (
+          <PowerButton
+            name={server.name}
+            live={running || transitioning}
+            playersOnline={server.playersOnline}
+            playerCountUnknown={server.playerCountUnknown}
+            onChanged={onChanged}
+          />
+        )}
       </div>
     </Card>
   );

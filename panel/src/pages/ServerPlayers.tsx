@@ -84,7 +84,7 @@ export function ServerPlayers() {
       ) : !owned ? (
         <NotYours title={t("players_not_yours_title")} body={t("players_not_yours_body")} />
       ) : phase !== "Running" ? (
-        <NotRunning title={t("players_not_running_title")} body={t("players_not_running_body")} wakeLabel={t("wake")} onWake={() => api.wake(name).then(reload)} />
+        <NotRunning title={t("players_not_running_title")} body={t("players_not_running_body")} serverName={name} onWoken={reload} />
       ) : (
         <div className="space-y-4">
           {/* Ordered as a who-may-be-here gradient: who is on right now → who may

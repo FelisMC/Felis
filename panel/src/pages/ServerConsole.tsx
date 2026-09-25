@@ -3,7 +3,6 @@ import { Link, useParams } from "react-router-dom";
 import { Terminal, Moon, Shield, ShieldAlert, HelpCircle, Loader2, Users, Archive, FolderOpen, ChevronRight, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { BackLink } from "@/components/BackLink";
 import { PhaseBadge } from "@/components/PhaseBadge";
 import { PageHeader } from "@/components/PageHeader";
@@ -16,6 +15,7 @@ import { canManage } from "@/lib/ownership";
 import { hostFor } from "@/lib/config";
 import type { Phase, AutostartPolicy } from "@/lib/types";
 import { EditServerDialog } from "@/components/EditServerDialog";
+import { PowerButton } from "@/components/PowerButton";
 
 // notStreamingCopy explains why there is no live feed for a phase that has no
 // streamable pod. The read path only has something to relay once a pod is up, so
@@ -226,19 +226,13 @@ export function ServerConsole() {
             actions={
               <div className="flex items-center gap-2">
                 <PhaseBadge phase={data.phase} />
-                {streamable ? (
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={() => api.stop(name).then(reload)}
-                  >
-                    {t("stop")}
-                  </Button>
-                ) : (
-                  <Button variant="default" size="sm" onClick={() => api.wake(name).then(reload)}>
-                    {t("wake")}
-                  </Button>
-                )}
+                <PowerButton
+                  name={name}
+                  live={streamable || data.phase === "Stopping"}
+                  playersOnline={data.playersOnline}
+                  playerCountUnknown={data.playerCountUnknown}
+                  onChanged={reload}
+                />
               </div>
             }
             className="mb-6"

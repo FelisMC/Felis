@@ -325,7 +325,7 @@ export function ServerLuckPerms() {
       ) : !owned ? (
         <NotYours title={t("players_not_yours_title")} body={t("players_not_yours_body")} />
       ) : phase !== "Running" ? (
-        <NotRunning title={t("players_not_running_title")} body={t("players_not_running_body")} wakeLabel={t("wake")} onWake={() => api.wake(name).then(reload)} />
+        <NotRunning title={t("players_not_running_title")} body={t("players_not_running_body")} serverName={name} onWoken={reload} />
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 items-start">
           {/* Left Directory Sidebar: Single card for Search + Online Players */}

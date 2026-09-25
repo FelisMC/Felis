@@ -178,5 +178,8 @@
   "idle_stop_never": "Never",
   "idle_stop_seconds": "{{count}} s",
   "idle_stop_minutes": "{{count}} min",
-  "idle_stop_hours": "{{count}} h"
+  "idle_stop_hours": "{{count}} h",
+  "stop_confirm_players_one": "1 player is online and will be disconnected. Stop anyway?",
+  "stop_confirm_players_other": "{{count}} players are online and will be disconnected. Stop anyway?",
+  "stop_confirm_unknown": "The player count can't be read, so players may be online. Stop anyway?"
 }

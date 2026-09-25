@@ -1,7 +1,7 @@
 import { Loader2, AlertTriangle, Inbox, ShieldX, Construction, Moon, SearchX } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { Button } from "@/components/ui/button";
+import { PowerButton } from "@/components/PowerButton";
 import { humanizeError } from "@/lib/api";
 
 export function Loading({ label }: { label?: string }) {
@@ -136,11 +136,13 @@ export function NotYours({ title, body, linkTo = "/servers", linkLabel }: NotYou
 export interface NotRunningProps {
   title: string;
   body: string;
-  wakeLabel: string;
-  onWake: () => void;
+  /** The server to wake from here. */
+  serverName: string;
+  /** Called once the wake was accepted, so the page refetches its status. */
+  onWoken: () => void;
 }
 
-export function NotRunning({ title, body, wakeLabel, onWake }: NotRunningProps) {
+export function NotRunning({ title, body, serverName, onWoken }: NotRunningProps) {
   return (
     <div className="flex flex-col items-center justify-center gap-4 rounded-lg border border-dashed border-border bg-muted/20 py-16 text-center">
       <Moon className="h-8 w-8 text-muted-foreground/70" />
@@ -148,9 +150,7 @@ export function NotRunning({ title, body, wakeLabel, onWake }: NotRunningProps) 
         <p className="font-medium">{title}</p>
         <p className="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">{body}</p>
       </div>
-      <Button size="sm" onClick={onWake}>
-        {wakeLabel}
-      </Button>
+      <PowerButton name={serverName} live={false} onChanged={onWoken} className="items-center" />
     </div>
   );
 }
