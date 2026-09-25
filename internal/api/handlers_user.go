@@ -270,6 +270,9 @@ func (a *API) handleMyServers(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if servers == nil {
+		servers = []MyServerView{} // no servers is [], never null
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": servers})
 }
 

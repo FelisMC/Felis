@@ -409,7 +409,7 @@ func TestMySubmissionsCarriesBuildOutcome(t *testing.T) {
 // the whole list; any other lookup failure must surface, never be swallowed.
 func TestMySubmissionsBuildLookupSemantics(t *testing.T) {
 	// Missing row (ErrNotFound): 200 with no build fields.
-	fs := &fakeSubmissions{byResult: []submit.Submission{{ID: "sub-1", BuildID: "bld-gone"}}}
+	fs := &fakeSubmissions{byResult: []submit.Submission{{ID: "sub-1", Status: submit.StatusApproved, BuildID: "bld-gone"}}}
 	api := appSubAPI(fs)
 	api.Builder = &fakeBuilder{}
 	w := do(api.ExternalHandler(), "GET", "/api/v1/me/submissions", "", nil)
@@ -486,9 +486,9 @@ func TestSubmissionListsForwardThePage(t *testing.T) {
 // with no linked build asks nothing.
 func TestSubmissionPageLooksUpBuildsOnce(t *testing.T) {
 	fs := &fakeSubmissions{listed: []submit.Submission{
-		{ID: "sub-1", BuildID: "bld-1"},
-		{ID: "sub-2"},
-		{ID: "sub-3", BuildID: "bld-3"},
+		{ID: "sub-1", Status: submit.StatusApproved, BuildID: "bld-1"},
+		{ID: "sub-2", Status: submit.StatusPendingReview},
+		{ID: "sub-3", Status: submit.StatusApproved, BuildID: "bld-3"},
 	}}
 	fb := &fakeBuilder{getBuilds: map[string]*build.Build{
 		"bld-1": {ID: "bld-1", Status: build.StatusSucceeded},
@@ -518,7 +518,7 @@ func TestSubmissionPageLooksUpBuildsOnce(t *testing.T) {
 		t.Fatalf("outcomes = %+v", got.Submissions)
 	}
 
-	fs.listed = []submit.Submission{{ID: "sub-2"}}
+	fs.listed = []submit.Submission{{ID: "sub-2", Status: submit.StatusPendingReview}}
 	fb.getManyIDs = nil
 	if w := do(api.ExternalHandler(), "GET", "/api/v1/submissions", "", nil); w.Code != http.StatusOK {
 		t.Fatalf("unlinked page: code = %d", w.Code)

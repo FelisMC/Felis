@@ -43,6 +43,8 @@ type oasOp struct {
 	Faces   []string `json:"x-felis-face"`
 	Tier    string   `json:"x-felis-tier"`
 	Callers []string `json:"x-felis-callers"`
+	// Setup marks an operation a setup-lockdown session may still use.
+	Setup bool `json:"x-felis-setup-allowed"`
 }
 
 // oasFacet is the classification of one {method, path}: which face(s) serve it
@@ -52,6 +54,8 @@ type oasFacet struct {
 	tier  string
 	// callers is the internal route's caller set, empty elsewhere.
 	callers map[string]bool
+	// setup is the route's SetupAllowed: reachable during the setup lockdown.
+	setup bool
 }
 
 func TestOpenAPIMatchesServedRoutes(t *testing.T) {
@@ -83,6 +87,9 @@ func TestOpenAPIMatchesServedRoutes(t *testing.T) {
 		if s.tier != d.tier {
 			t.Errorf("%s: x-felis-tier mismatch — served %q, documented %q", key, s.tier, d.tier)
 		}
+		if s.setup != d.setup {
+			t.Errorf("%s: x-felis-setup-allowed mismatch — served %v, documented %v", key, s.setup, d.setup)
+		}
 		if !oasSameSet(s.callers, d.callers) {
 			t.Errorf("%s: x-felis-callers mismatch — served %v, documented %v",
 				key, oasSortedKeys(s.callers), oasSortedKeys(d.callers))
@@ -99,7 +106,7 @@ func oasServedFacets(t *testing.T) map[string]oasFacet {
 	t.Helper()
 	a := &API{}
 	out := map[string]oasFacet{}
-	add := func(method, pattern, face, tier string, callers ...Caller) {
+	add := func(method, pattern, face, tier string, setup bool, callers ...Caller) {
 		key := method + " " + pattern
 		f, ok := out[key]
 		if !ok {
@@ -113,6 +120,7 @@ func oasServedFacets(t *testing.T) map[string]oasFacet {
 			t.Fatalf("%s: route table assigns conflicting tiers %q and %q", key, f.tier, tier)
 		}
 		f.tier = tier
+		f.setup = f.setup || setup
 		out[key] = f
 	}
 	for _, rt := range a.internalAPIRoutes() {
@@ -120,7 +128,7 @@ func oasServedFacets(t *testing.T) map[string]oasFacet {
 		if rt.Public {
 			tier = "public"
 		}
-		add(rt.Method, rt.Pattern, "internal", tier, rt.Callers...)
+		add(rt.Method, rt.Pattern, "internal", tier, rt.SetupAllowed, rt.Callers...)
 	}
 	for _, rt := range a.externalAPIRoutes() {
 		var tier string
@@ -134,7 +142,7 @@ func oasServedFacets(t *testing.T) map[string]oasFacet {
 		default:
 			tier = "app"
 		}
-		add(rt.Method, rt.Pattern, "external", tier)
+		add(rt.Method, rt.Pattern, "external", tier, rt.SetupAllowed)
 	}
 	return out
 }
@@ -186,7 +194,7 @@ func oasDocumentedFacets(t *testing.T) map[string]oasFacet {
 			for _, c := range op.Callers {
 				callers[c] = true
 			}
-			out[key] = oasFacet{faces: faces, tier: op.Tier, callers: callers}
+			out[key] = oasFacet{faces: faces, tier: op.Tier, callers: callers, setup: op.Setup}
 		}
 	}
 	return out

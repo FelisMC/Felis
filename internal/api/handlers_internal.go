@@ -43,6 +43,9 @@ func (a *API) handleListServers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	if servers == nil {
+		servers = []ServerInfo{} // an empty fleet is [], never null
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": servers})
 }
 

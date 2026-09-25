@@ -1893,6 +1893,7 @@ func do(h http.Handler, method, target, body string, headers map[string]string) 
 	}
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
+	recordContract(r, body, w)
 	return w
 }
 

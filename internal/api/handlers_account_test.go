@@ -218,7 +218,7 @@ func TestLinkVerifyRejections(t *testing.T) {
 	t.Run("uuid linked to another user -> 409 already_linked", func(t *testing.T) {
 		repo := newFakeRepo()
 		repo.links[mcUUID] = "someone-else"
-		repo.linkCodes["FRESHCOD"] = fakeLinkCode{mcUUID: mcUUID, expiresAt: time.Unix(1_700_000_600, 0)}
+		repo.linkCodes["FRESHCOD"] = fakeLinkCode{mcUUID: mcUUID, authSource: "mojang", expiresAt: time.Unix(1_700_000_600, 0)}
 		w := do(mk(repo), "POST", "/api/v1/account/link/verify", `{"code":"FRESHCOD"}`, nil)
 		if w.Code != http.StatusConflict || decodeErr(t, w) != "already_linked" {
 			t.Fatalf("code = %d body %s", w.Code, w.Body.String())
@@ -238,7 +238,7 @@ func TestLinkVerifyIdempotent(t *testing.T) {
 	repo := newFakeRepo()
 	repo.links[mcUUID] = "u1" // already linked to THIS user
 	repo.linked["u1"] = true
-	repo.linkCodes["REVERIFYX"] = fakeLinkCode{mcUUID: mcUUID, expiresAt: time.Unix(1_700_000_600, 0)}
+	repo.linkCodes["REVERIFYX"] = fakeLinkCode{mcUUID: mcUUID, authSource: "mojang", expiresAt: time.Unix(1_700_000_600, 0)}
 
 	api := newTestAPI(repo, newFakeCluster())
 	api.External = staticExternal{p: user}
@@ -276,7 +276,7 @@ func TestLinkVerifyTakesOverDeletedLinkOnly(t *testing.T) {
 		t.Fatalf("UserByMCUUID(deleted link) = %v, want ErrNotFound (no in-game standing)", err)
 	}
 
-	repo.linkCodes["TAKEOVER"] = fakeLinkCode{mcUUID: mcGone, expiresAt: time.Unix(1_700_000_600, 0)}
+	repo.linkCodes["TAKEOVER"] = fakeLinkCode{mcUUID: mcGone, authSource: "mojang", expiresAt: time.Unix(1_700_000_600, 0)}
 	api := newTestAPI(repo, newFakeCluster())
 	api.External = staticExternal{p: user}
 	if w := do(api.ExternalHandler(), "POST", "/api/v1/account/link/verify", `{"code":"TAKEOVER"}`, nil); w.Code != http.StatusOK {

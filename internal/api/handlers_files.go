@@ -87,6 +87,9 @@ func (a *API) handleListFiles(w http.ResponseWriter, r *http.Request) {
 		writeFileEditError(w, r, err)
 		return
 	}
+	if entries == nil {
+		entries = []fileedit.Entry{} // an empty directory is [], never null
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"path": path, "entries": entries, "truncated": truncated,
 	})
@@ -113,6 +116,9 @@ func (a *API) handleReadFile(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeFileEditError(w, r, err)
 		return
+	}
+	if content == nil {
+		content = []byte{} // an empty file is "", never null
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"path": path, "content": content, "sha256": sum})
 }

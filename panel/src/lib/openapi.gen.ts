@@ -2396,6 +2396,69 @@ export interface components {
             };
             content?: never;
         };
+        /** @description An unexpected failure (internal); the details are in the server log under the request id. */
+        InternalError: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description A genuine service token for a caller this operation does not serve (wrong_caller). */
+        WrongCaller: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description A session of a player (not admin or owner) on the operator console host, refused before any handler (forbidden). */
+        StaffOnlyHost: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description The session belongs to an account still in first-run setup, which may use only the x-felis-setup-allowed operations until it has a durable sign-in (setup_required). */
+        SetupRequired: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description The JSON body is over 1 MiB (too_large). */
+        TooLarge: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description A body sent with a Content-Type other than application/json (unsupported_media_type). */
+        UnsupportedMediaType: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description The store this writes to is full — the backup archive (backup_store_full), the world volume (volume_full) or the upload area (uploads_full). */
+        InsufficientStorage: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
         /** @description Malformed or invalid request (validation, bad body, unknown field). */
         BadRequest: {
             headers: {
@@ -2850,6 +2913,15 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description The node is at its running-server cap (at_capacity). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     internalStatus: {
@@ -3101,6 +3173,15 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+            /** @description The linked account holds a staff role and is never reclaimed (protected_admin). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     checkUsernameBlacklist: {
@@ -3403,6 +3484,15 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description The node is at its running-server cap (at_capacity). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     stop: {
@@ -3559,8 +3649,26 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            /** @description Unknown server. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description Server not running. */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description This session already holds as many console streams as it may (too_many_streams). */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4119,7 +4227,7 @@ export interface operations {
                     "application/json": {
                         user_id: string;
                         /** @enum {string} */
-                        role: "user" | "admin";
+                        role: "owner" | "admin" | "user";
                     };
                 };
             };
@@ -4266,7 +4374,7 @@ export interface operations {
                     "application/json": {
                         user_id: string;
                         /** @enum {string} */
-                        role: "user" | "admin";
+                        role: "owner" | "admin" | "user";
                     };
                 };
             };
@@ -4405,7 +4513,7 @@ export interface operations {
                     "application/json": {
                         user_id: string;
                         /** @enum {string} */
-                        role: "user" | "admin";
+                        role: "owner" | "admin" | "user";
                     };
                 };
             };
@@ -4566,7 +4674,7 @@ export interface operations {
                     "application/json": {
                         user_id: string;
                         /** @enum {string} */
-                        role: "user" | "admin";
+                        role: "owner" | "admin" | "user";
                     };
                 };
             };
@@ -4625,7 +4733,7 @@ export interface operations {
                         user_id: string;
                         username: string;
                         /** @enum {string} */
-                        role: "user" | "admin";
+                        role: "owner" | "admin" | "user";
                         email: string;
                         email_verified: boolean;
                         has_passkey: boolean;
@@ -4682,7 +4790,7 @@ export interface operations {
                         user_id: string;
                         username: string;
                         /** @enum {string} */
-                        role: "user" | "admin";
+                        role: "owner" | "admin" | "user";
                         email: string;
                         email_verified: boolean;
                         has_passkey: boolean;
@@ -4814,6 +4922,15 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            /** @description The account settings could not be read (auth_unavailable). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     myServers: {
@@ -5003,6 +5120,15 @@ export interface operations {
                     };
                 };
             };
+            /** @description Malformed server name (bad_name) or request body. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             /** @description No matching backup. */
@@ -5050,6 +5176,15 @@ export interface operations {
                     };
                 };
             };
+            /** @description Malformed server name (bad_name). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             /** @description Unknown server. */
@@ -5070,7 +5205,17 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            /** @description Another backup of this server started within the cooldown (backup_cooldown). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             503: components["responses"]["ServiceUnavailable"];
+            507: components["responses"]["InsufficientStorage"];
         };
     };
     listServerJobs: {
@@ -5289,6 +5434,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+            507: components["responses"]["InsufficientStorage"];
         };
     };
     writeServerFile: {
@@ -5643,6 +5789,15 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            /** @description Unknown user. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     setQuotas: {
@@ -5677,6 +5832,15 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            /** @description Unknown user. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     listUserSessions: {
@@ -5837,6 +6001,15 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            /** @description Unknown user. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description UUID is already linked to a different user. */
             409: {
                 headers: {
@@ -6058,6 +6231,15 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            /** @description Another account already proved this address (email_taken); the code is not consumed. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             /** @description Too many incorrect attempts on this code (otp_locked), or the account's daily wrong-code budget is spent (otp_account_locked, with Retry-After). */
             429: {
                 headers: {
@@ -7230,6 +7412,15 @@ export interface operations {
                     "text/event-stream": string;
                 };
             };
+            /** @description Malformed build id (bad_request). The id becomes a label-selector value, so it is refused before any lookup. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
@@ -7405,6 +7596,7 @@ export interface operations {
                     "application/json": components["schemas"]["Submission"];
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
