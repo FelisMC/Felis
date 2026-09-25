@@ -227,7 +227,10 @@ func enrollCredential(t *testing.T, v *Verifier, rp virtualwebauthn.RelyingParty
 	if err != nil {
 		t.Fatalf("FinishRegistration: %v", err)
 	}
-	return api.PasskeyCredential{CredentialID: vc.CredentialID, PublicKey: vc.PublicKey, SignCount: vc.SignCount}
+	// The ceremony flags travel with the row exactly as PGRepo stores and reloads them
+	// (migration 0009), so a login test validates against what production would hold.
+	return api.PasskeyCredential{CredentialID: vc.CredentialID, PublicKey: vc.PublicKey, SignCount: vc.SignCount,
+		UserVerified: vc.UserVerified, BackupEligible: vc.BackupEligible, BackupState: vc.BackupState}
 }
 
 // TestLoginRoundTrip is the PARITY check for the assertion (login) half, deliberately
@@ -581,5 +584,59 @@ func TestEnrollmentRequestsResidentKey(t *testing.T) {
 	}
 	if got := doc.PublicKey.AuthenticatorSelection.ResidentKey; got != "preferred" {
 		t.Errorf("authenticatorSelection.residentKey = %q, want %q", got, "preferred")
+	}
+}
+
+// TestSyncedPasskeyLogsIn covers a passkey kept in a cloud keychain (iCloud Keychain,
+// Google Password Manager), which reports backup-eligible on every ceremony. go-webauthn
+// refuses an assertion whose BE flag differs from the stored credential's, so the stored
+// flags must reach it: dropped, every synced passkey would enroll and then never log in.
+// The asserted UV flag must come back too, for the handler's per-credential check.
+func TestSyncedPasskeyLogsIn(t *testing.T) {
+	for _, door := range []string{"username-first", "discoverable"} {
+		t.Run(door, func(t *testing.T) {
+			v := newTestVerifier(t)
+			rp := virtualRP()
+			authenticator := virtualwebauthn.NewAuthenticatorWithOptions(virtualwebauthn.AuthenticatorOptions{BackupEligible: true, BackupState: true})
+			cred := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+			stored := enrollCredential(t, v, rp, authenticator, cred)
+			if !stored.BackupEligible || !stored.BackupState {
+				t.Fatalf("enrollment recorded BE=%v BS=%v, want both true", stored.BackupEligible, stored.BackupState)
+			}
+
+			var va api.VerifiedAssertion
+			var err error
+			if door == "username-first" {
+				options, sessionData, berr := v.BeginLogin(testUser(stored))
+				if berr != nil {
+					t.Fatalf("BeginLogin: %v", berr)
+				}
+				opts, perr := virtualwebauthn.ParseAssertionOptions(string(options))
+				if perr != nil {
+					t.Fatalf("ParseAssertionOptions: %v", perr)
+				}
+				resp := virtualwebauthn.CreateAssertionResponse(rp, authenticator, cred, *opts)
+				va, err = v.FinishLogin(testUser(stored), sessionData, strings.NewReader(resp))
+			} else {
+				authenticator.Options.UserHandle = []byte(testUserID)
+				options, sessionData, berr := v.BeginDiscoverableLogin()
+				if berr != nil {
+					t.Fatalf("BeginDiscoverableLogin: %v", berr)
+				}
+				opts, perr := virtualwebauthn.ParseAssertionOptions(string(options))
+				if perr != nil {
+					t.Fatalf("ParseAssertionOptions: %v", perr)
+				}
+				resp := virtualwebauthn.CreateAssertionResponse(rp, authenticator, cred, *opts)
+				va, err = v.FinishDiscoverableLogin(func([]byte) (api.PasskeyUser, error) { return testUser(stored), nil },
+					sessionData, strings.NewReader(resp))
+			}
+			if err != nil {
+				t.Fatalf("finish: %v (a synced passkey must log in)", err)
+			}
+			if !va.UserVerified {
+				t.Error("va.UserVerified = false, want true (the authenticator verified the user)")
+			}
+		})
 	}
 }

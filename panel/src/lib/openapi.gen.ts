@@ -717,7 +717,7 @@ export interface paths {
         put?: never;
         /**
          * Complete a passkey (WebAuthn) login and mint a session (spec §14, §B).
-         * @description Second leg of the public passkey door: the caller returns the email (to re-select the account) and the raw navigator.credentials.get() assertion. The live login challenge whose value the assertion signed (response.clientDataJSON) is consumed atomically and the assertion is verified against it; on success a host-only felis_session cookie is minted. Both players and staff may log in this way — a passkey is a two-factor authenticator (possession + user verification), strong enough to stand alone without the in-game approval op-login requires. Every failure mode (unknown address, no live challenge for the signed value, expired challenge, bad assertion) collapses into one uniform passkey_login_invalid, so the door reveals nothing.
+         * @description Second leg of the public passkey door: the caller returns the email (to re-select the account) and the raw navigator.credentials.get() assertion. The live login challenge whose value the assertion signed (response.clientDataJSON) is consumed atomically and the assertion is verified against it; on success a host-only felis_session cookie is minted. Both players and staff may log in this way — a passkey is a two-factor authenticator (possession + user verification), strong enough to stand alone without the in-game approval op-login requires. User verification is checked per credential: the passkey must have verified the user when it was bound, and this assertion must verify the user now. Every failure mode (unknown address, no live challenge for the signed value, expired challenge, bad assertion, a credential or assertion without user verification, a cloned authenticator) collapses into one uniform passkey_login_invalid, so the door reveals nothing.
          */
         post: operations["passkeyLoginFinish"];
         delete?: never;
@@ -757,7 +757,7 @@ export interface paths {
         put?: never;
         /**
          * Complete a usernameless (discoverable) passkey login and mint a session (spec §14, §B, task
-         * @description Second leg of the from-zero door: the caller returns the opaque login_id from begin (the only link to the stashed challenge, since it is not user-keyed) and the raw navigator.credentials.get() assertion — and NOTHING that names an account. The stashed challenge is consumed atomically and the assertion is verified against it; the account is resolved from the authenticator-revealed userHandle (the account's stable id), never from anything the client supplied, and the session is minted for the account the assertion actually resolved AND verified to. Both players and staff may log in this way. Every failure mode — a missing/expired/consumed login_id, a bad assertion, AND a userHandle that resolves to no account — collapses into one uniform passkey_login_invalid, so the door reveals nothing (not even whether the handle was well-formed).
+         * @description Second leg of the from-zero door: the caller returns the opaque login_id from begin (the only link to the stashed challenge, since it is not user-keyed) and the raw navigator.credentials.get() assertion — and NOTHING that names an account. The stashed challenge is consumed atomically and the assertion is verified against it; the account is resolved from the authenticator-revealed userHandle (the account's stable id), never from anything the client supplied, and the session is minted for the account the assertion actually resolved AND verified to. Both players and staff may log in this way, with the same per-credential user-verification check as the username-first door. Every failure mode — a missing/expired/consumed login_id, a bad assertion, no user verification, a cloned authenticator, AND a userHandle that resolves to no account — collapses into one uniform passkey_login_invalid, so the door reveals nothing (not even whether the handle was well-formed).
          */
         post: operations["passkeyLoginDiscoverableFinish"];
         delete?: never;
@@ -1586,7 +1586,7 @@ export interface paths {
         put?: never;
         /**
          * Finish the passkey assertion and mark this session reauthed for 5 minutes.
-         * @description Verifies the assertion against the reauth challenge with the login door's clone check (a cloned authenticator is 400 passkey_login_invalid).
+         * @description Verifies the assertion against the reauth challenge with the login door's user-verification and clone checks (a credential or assertion without user verification, or a cloned authenticator, is 400 passkey_login_invalid).
          */
         post: operations["reauthPasskeyFinish"];
         delete?: never;
@@ -1780,7 +1780,7 @@ export interface paths {
         put?: never;
         /**
          * Finish the passkey assertion and confirm the migration (spec §B3 step-up).
-         * @description Verifies the WebAuthn assertion against the fresh migrate-purpose challenge and, like the login door, applies the authenticator sign-count clone check: a cloned authenticator is rejected fail-closed (400 passkey_login_invalid) and audited. On success the migration advances to confirmed with confirm_factor passkey.
+         * @description Verifies the WebAuthn assertion against the fresh migrate-purpose challenge and, like the login door, applies the per-credential user-verification check and the authenticator sign-count clone check: either refusal fails closed (400 passkey_login_invalid) and is audited. On success the migration advances to confirmed with confirm_factor passkey.
          */
         post: operations["migrateConfirmPasskeyFinish"];
         delete?: never;
@@ -4475,7 +4475,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description Invalid email or missing assertion (bad_request); or the login could not be completed — unknown address, no live or expired challenge, or a failed assertion, all uniform (passkey_login_invalid). */
+            /** @description Invalid email or missing assertion (bad_request); or the login could not be completed — unknown address, no live or expired challenge, a failed assertion, no user verification, or a cloned authenticator, all uniform (passkey_login_invalid). */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -4622,7 +4622,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description Missing login_id or assertion (bad_request); or the login could not be completed — no live/expired/consumed challenge, a failed assertion, or a userHandle that resolves to no account, all uniform (passkey_login_invalid). */
+            /** @description Missing login_id or assertion (bad_request); or the login could not be completed — no live/expired/consumed challenge, a failed assertion, no user verification, a cloned authenticator, or a userHandle that resolves to no account, all uniform (passkey_login_invalid). */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -6784,7 +6784,7 @@ export interface operations {
         };
         responses: {
             200: components["responses"]["Reauthed"];
-            /** @description Assertion invalid, challenge stale, or a cloned authenticator (passkey_login_invalid); no browser session (no_session). */
+            /** @description Assertion invalid, challenge stale, no user verification, or a cloned authenticator (passkey_login_invalid); no browser session (no_session). */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -7222,7 +7222,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description Assertion invalid, challenge stale, or a cloned authenticator was detected (passkey_login_invalid). */
+            /** @description Assertion invalid, challenge stale, no user verification, or a cloned authenticator was detected (passkey_login_invalid). */
             400: {
                 headers: {
                     [name: string]: unknown;

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 )
@@ -161,11 +162,11 @@ type VerifiedCredential struct {
 // and whether that counter regressed (a possible clone). Like VerifiedCredential it carries
 // no secret. SignCount is a raw ceremony fact, NOT a policy verdict; CloneWarning IS the
 // verifier's regression verdict, but the refuse-vs-allow decision is the handler's. Clone
-// policy therefore lives in one place with the stored counter (applyAssertionCounter, which
-// both login doors call). SignCount is legitimately 0 for authenticators that keep no counter.
+// policy therefore lives in one place with the stored counter (applyAssertion, which
+// every assertion door calls). SignCount is legitimately 0 for authenticators that keep no counter.
 //
-// applyAssertionCounter is that single consumer: it refuses a CloneWarning fail-closed and,
-// on success, advances the stored counter and stamps last_used_at. This is the stable seam
+// applyAssertion is that single consumer: it refuses an unverified user or a CloneWarning
+// fail-closed and, on success, advances the stored counter and stamps last_used_at. This is the stable seam
 // output the production adapter (internal/passkey) produces and its Oracle test asserts on,
 // so handler and adapter agree on shape without either reshaping the other.
 type VerifiedAssertion struct {
@@ -177,9 +178,10 @@ type VerifiedAssertion struct {
 	// assertion and structurally never raise it. The login handlers refuse it fail-closed.
 	CloneWarning bool
 	// UserVerified records that a PIN/biometric (not mere presence) was performed
-	// during the assertion ceremony. The verifier enforces UV=required at BeginLogin,
-	// so this is always true for a successful assertion; persisting it makes the
-	// guarantee auditable and survives a future policy that permits UV=preferred.
+	// during this assertion. The verifier asks for UV=required today, so a successful
+	// assertion carries it; applyAssertion checks it anyway, together with the
+	// credential's stored bind-time flag, so a later UV=preferred policy or a door that
+	// asks for less cannot let a presence-only assertion through.
 	UserVerified bool
 }
 
@@ -188,22 +190,40 @@ type VerifiedAssertion struct {
 var errPasskeyUnavailable = newError(http.StatusServiceUnavailable, "passkey_unavailable",
 	"passkey subsystem is not configured")
 
-// errPasskeyClonedAuthenticator is the internal signal from applyAssertionCounter that a
+// errPasskeyClonedAuthenticator is the internal signal from applyAssertion that a
 // verified assertion carried a clone warning (its signature counter did not advance past the
 // stored value). It never reaches the client verbatim: the login doors map it to the generic
 // passkey_login_invalid envelope — no clone oracle to a prober — and audit it distinctly.
 var errPasskeyClonedAuthenticator = errors.New("passkey assertion rejected: clone warning")
 
-// applyAssertionCounter is the single consumer of a verified assertion's signature-counter
-// facts, shared by the username-first (handlePasskeyLoginFinish) and discoverable
-// (handlePasskeyLoginDiscoverableFinish) login doors so clone policy lives in one place with
-// the stored counter. A CloneWarning fails closed with errPasskeyClonedAuthenticator;
-// otherwise it advances the stored counter to the asserted value and stamps last_used_at.
-// Counter-less/synced authenticators report 0 and never warn, so they pass through and simply
-// re-stamp 0 — the check gates only counter-keeping authenticators, where a rollback is the
-// meaningful clone signal. It runs BEFORE the session is minted, so a clone or a persist
-// failure denies the login rather than leaving an advanced counter with no session.
-func (a *API) applyAssertionCounter(ctx context.Context, va VerifiedAssertion) error {
+// errPasskeyUserNotVerified is the internal signal from applyAssertion that the assertion,
+// or the credential it came from, did not verify the user. Like the clone signal it is
+// answered with the opaque envelope and audited distinctly.
+var errPasskeyUserNotVerified = errors.New("passkey assertion rejected: user not verified")
+
+// applyAssertion is the single consumer of a verified assertion, shared by the
+// username-first and discoverable login doors and the step-up confirmation, so assertion
+// policy lives in one place with the stored credential. creds are the account's bound
+// passkeys the verifier checked the assertion against.
+//
+// Every one of those doors grants a session or confirms one, so each needs user
+// verification, per credential (migration 0009): the credential must have verified the
+// user when it was bound, and this assertion must have verified the user now. Either
+// missing fails closed with errPasskeyUserNotVerified. A credential bound presence-only
+// (a pre-0009 row, or a future UV=preferred enrollment) therefore cannot sign in; its
+// owner still has the email-code door.
+//
+// A CloneWarning fails closed with errPasskeyClonedAuthenticator; otherwise it advances
+// the stored counter to the asserted value and stamps last_used_at. Counter-less/synced
+// authenticators report 0 and never warn, so they pass through and simply re-stamp 0 — the
+// check gates only counter-keeping authenticators, where a rollback is the meaningful clone
+// signal. It runs BEFORE the session is minted, so a refusal or a persist failure denies
+// the login rather than leaving an advanced counter with no session.
+func (a *API) applyAssertion(ctx context.Context, va VerifiedAssertion, creds []PasskeyCredential) error {
+	bound := slices.IndexFunc(creds, func(c PasskeyCredential) bool { return c.CredentialID == va.CredentialID })
+	if !va.UserVerified || bound < 0 || !creds[bound].UserVerified {
+		return errPasskeyUserNotVerified
+	}
 	if va.CloneWarning {
 		return errPasskeyClonedAuthenticator
 	}
@@ -710,12 +730,11 @@ func (a *API) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 			"passkey login could not be completed; begin again"))
 		return
 	}
-	// Clone policy + counter advance, in one place shared with the discoverable door. A
-	// regressed counter is refused with the same opaque envelope (no clone oracle) but audited
-	// distinctly; a successful assertion advances the stored counter and stamps last_used_at.
-	if err := a.applyAssertionCounter(r.Context(), va); err != nil {
-		if errors.Is(err, errPasskeyClonedAuthenticator) {
-			a.passkeyCloneRejected(r, "passkey", u, va.CredentialID)
+	// UV + clone policy + counter advance, in one place shared with the discoverable door. A
+	// refusal is answered with the same opaque envelope (no oracle) but audited distinctly; a
+	// successful assertion advances the stored counter and stamps last_used_at.
+	if err := a.applyAssertion(r.Context(), va, creds); err != nil {
+		if a.passkeyAssertionRejected(r, "passkey", u, va.CredentialID, err) {
 			writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
 				"passkey login could not be completed; begin again"))
 			return

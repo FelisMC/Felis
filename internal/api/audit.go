@@ -134,17 +134,30 @@ func (a *API) authFailure(r *http.Request, door, reason string, u *StaffUser) {
 	a.auditEntry(r, e)
 }
 
-// passkeyCloneRejected records an assertion refused for a regressed signature
-// counter. It keeps its own action so a cloned authenticator stands out from
-// ordinary failures, and counts as a failure of its door. u nil: a signed-in
-// step-up, attributed to the caller.
-func (a *API) passkeyCloneRejected(r *http.Request, door string, u *StaffUser, credentialID string) {
-	metrics.AuthFailuresTotal.WithLabelValues(door, "clone_rejected").Inc()
-	if u == nil {
-		a.audit(r, "auth.passkey_clone_rejected", credentialID)
-		return
+// passkeyAssertionRejected records an assertion applyAssertion refused on policy: a
+// regressed signature counter (auth.passkey_clone_rejected) or a user the credential
+// or the assertion did not verify (auth.passkey_uv_rejected). Each keeps its own action
+// so it stands out from ordinary failures, and counts as a failure of its door. u nil:
+// a signed-in step-up, attributed to the caller. It reports false, recording nothing,
+// for any other error, which the caller answers as a fault.
+func (a *API) passkeyAssertionRejected(r *http.Request, door string, u *StaffUser, credentialID string, err error) bool {
+	var reason string
+	switch {
+	case errors.Is(err, errPasskeyClonedAuthenticator):
+		reason = "clone_rejected"
+	case errors.Is(err, errPasskeyUserNotVerified):
+		reason = "uv_rejected"
+	default:
+		return false
 	}
-	a.auditAccount(r, u, "auth.passkey_clone_rejected", credentialID)
+	metrics.AuthFailuresTotal.WithLabelValues(door, reason).Inc()
+	action := "auth.passkey_" + reason
+	if u == nil {
+		a.audit(r, action, credentialID)
+	} else {
+		a.auditAccount(r, u, action, credentialID)
+	}
+	return true
 }
 
 // isOTPRefusal reports whether err is a refused code (wrong, spent, or the

@@ -46,7 +46,7 @@ func seedLoginPasskeyAPI(t *testing.T) (*API, *fakeRepo, *fakePasskeyVerifier) {
 		Role: "user", EmailVerified: true,
 	}
 	repo.passkeyCreds["row1"] = PasskeyCredential{
-		ID: "row1", UserID: "u1", CredentialID: "cred-1", PublicKey: "k", CreatedAt: frozenNow,
+		ID: "row1", UserID: "u1", CredentialID: "cred-1", PublicKey: "k", UserVerified: true, CreatedAt: frozenNow,
 	}
 	v := &fakePasskeyVerifier{
 		options:   json.RawMessage(`{"publicKey":{"challenge":"YXNzZXJ0"}}`),
@@ -494,7 +494,7 @@ func TestPasskeyLoginAllowsStaff(t *testing.T) {
 		Role: "admin", EmailVerified: true,
 	}
 	repo.passkeyCreds["row1"] = PasskeyCredential{
-		ID: "row1", UserID: "a1", CredentialID: "cred-a1", PublicKey: "k", CreatedAt: frozenNow,
+		ID: "row1", UserID: "a1", CredentialID: "cred-a1", PublicKey: "k", UserVerified: true, CreatedAt: frozenNow,
 	}
 	v := &fakePasskeyVerifier{
 		options:   json.RawMessage(`{"publicKey":{"challenge":"YXNzZXJ0"}}`),
@@ -534,7 +534,7 @@ func TestPasskeyLoginFaceSeparation(t *testing.T) {
 }
 
 // TestPasskeyLoginFinishCloneRejected is the username-first mirror of the discoverable door's
-// clone refusal (task #40 item 5). Both doors share applyAssertionCounter, but each WIRES it
+// clone refusal (task #40 item 5). Both doors share applyAssertion, but each WIRES it
 // independently, so this proves the username-first finish also fails closed on a CloneWarning:
 // the same opaque passkey_login_invalid envelope (no clone oracle), no session minted, the stored
 // credential left untouched at its enrollment-time counter, and a distinct auth.passkey_clone_

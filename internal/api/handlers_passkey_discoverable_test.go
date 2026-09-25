@@ -44,7 +44,7 @@ func seedDiscoverableLoginAPI(t *testing.T) (*API, *fakeRepo, *fakePasskeyVerifi
 		Role: "user", EmailVerified: true,
 	}
 	repo.passkeyCreds["row1"] = PasskeyCredential{
-		ID: "row1", UserID: "u1", CredentialID: "cred-1", PublicKey: "k", CreatedAt: frozenNow,
+		ID: "row1", UserID: "u1", CredentialID: "cred-1", PublicKey: "k", UserVerified: true, CreatedAt: frozenNow,
 	}
 	v := &fakePasskeyVerifier{
 		options:                json.RawMessage(`{"publicKey":{"challenge":"ZGlzYw"}}`),

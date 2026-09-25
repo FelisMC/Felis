@@ -2528,9 +2528,12 @@ paths:
         is consumed atomically and the assertion is verified against it; on success a host-only felis_session cookie is minted. Both players
         and staff may log in this way — a passkey is a two-factor authenticator
         (possession + user verification), strong enough to stand alone without the
-        in-game approval op-login requires. Every failure mode (unknown address, no
-        live challenge for the signed value, expired challenge, bad assertion) collapses into one uniform
-        passkey_login_invalid, so the door reveals nothing.
+        in-game approval op-login requires. User verification is checked per
+        credential: the passkey must have verified the user when it was bound, and this
+        assertion must verify the user now. Every failure mode (unknown address, no
+        live challenge for the signed value, expired challenge, bad assertion, a
+        credential or assertion without user verification, a cloned authenticator)
+        collapses into one uniform passkey_login_invalid, so the door reveals nothing.
       x-felis-face: [external]
       x-felis-tier: public
       security: []
@@ -2563,8 +2566,9 @@ paths:
         '400':
           description: >-
             Invalid email or missing assertion (bad_request); or the login could not be
-            completed — unknown address, no live or expired challenge, or a failed
-            assertion, all uniform (passkey_login_invalid).
+            completed — unknown address, no live or expired challenge, a failed
+            assertion, no user verification, or a cloned authenticator, all uniform
+            (passkey_login_invalid).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -2674,10 +2678,12 @@ paths:
         verified against it; the account is resolved from the authenticator-revealed
         userHandle (the account's stable id), never from anything the client supplied,
         and the session is minted for the account the assertion actually resolved AND
-        verified to. Both players and staff may log in this way. Every failure mode — a
-        missing/expired/consumed login_id, a bad assertion, AND a userHandle that
-        resolves to no account — collapses into one uniform passkey_login_invalid, so
-        the door reveals nothing (not even whether the handle was well-formed).
+        verified to. Both players and staff may log in this way, with the same
+        per-credential user-verification check as the username-first door. Every failure
+        mode — a missing/expired/consumed login_id, a bad assertion, no user
+        verification, a cloned authenticator, AND a userHandle that resolves to no
+        account — collapses into one uniform passkey_login_invalid, so the door reveals
+        nothing (not even whether the handle was well-formed).
       x-felis-face: [external]
       x-felis-tier: public
       security: []
@@ -2713,8 +2719,9 @@ paths:
         '400':
           description: >-
             Missing login_id or assertion (bad_request); or the login could not be
-            completed — no live/expired/consumed challenge, a failed assertion, or a
-            userHandle that resolves to no account, all uniform (passkey_login_invalid).
+            completed — no live/expired/consumed challenge, a failed assertion, no user
+            verification, a cloned authenticator, or a userHandle that resolves to no
+            account, all uniform (passkey_login_invalid).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -4823,7 +4830,8 @@ paths:
       summary: Finish the passkey assertion and mark this session reauthed for 5 minutes.
       description: >
         Verifies the assertion against the reauth challenge with the login door's
-        clone check (a cloned authenticator is 400 passkey_login_invalid).
+        user-verification and clone checks (a credential or assertion without user
+        verification, or a cloned authenticator, is 400 passkey_login_invalid).
       x-felis-face: [external]
       x-felis-tier: app
       x-felis-setup-allowed: true
@@ -4843,7 +4851,7 @@ paths:
         '200':
           $ref: '#/components/responses/Reauthed'
         '400':
-          description: Assertion invalid, challenge stale, or a cloned authenticator (passkey_login_invalid); no browser session (no_session).
+          description: Assertion invalid, challenge stale, no user verification, or a cloned authenticator (passkey_login_invalid); no browser session (no_session).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -5226,9 +5234,10 @@ paths:
       summary: Finish the passkey assertion and confirm the migration (spec §B3 step-up).
       description: >
         Verifies the WebAuthn assertion against the fresh migrate-purpose challenge and,
-        like the login door, applies the authenticator sign-count clone check: a cloned
-        authenticator is rejected fail-closed (400 passkey_login_invalid) and audited. On
-        success the migration advances to confirmed with confirm_factor passkey.
+        like the login door, applies the per-credential user-verification check and the
+        authenticator sign-count clone check: either refusal fails closed (400
+        passkey_login_invalid) and is audited. On success the migration advances to
+        confirmed with confirm_factor passkey.
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ sessionCookie: [] }]
@@ -5254,7 +5263,7 @@ paths:
                 properties:
                   confirmed: { type: boolean, const: true }
         '400':
-          description: Assertion invalid, challenge stale, or a cloned authenticator was detected (passkey_login_invalid).
+          description: Assertion invalid, challenge stale, no user verification, or a cloned authenticator was detected (passkey_login_invalid).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

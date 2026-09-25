@@ -149,7 +149,7 @@ func TestMigrateForcePasskey(t *testing.T) {
 	repo := newFakeRepo()
 	repo.seedUser(UserView{ID: "u1", Username: "old", Email: "old@example.net", Role: "user"})
 	repo.links[uuid] = "u1"
-	repo.passkeyCreds["row1"] = PasskeyCredential{ID: "row1", UserID: "u1", CredentialID: "cred-1", PublicKey: "k", CreatedAt: frozenNow}
+	repo.passkeyCreds["row1"] = PasskeyCredential{ID: "row1", UserID: "u1", CredentialID: "cred-1", PublicKey: "k", UserVerified: true, CreatedAt: frozenNow}
 
 	mk, mailer, _ := migrateEnv(repo)
 	ih := mk(src).InternalHandler()
@@ -178,7 +178,7 @@ func TestMigratePasskeyConfirm(t *testing.T) {
 	repo := newFakeRepo()
 	repo.seedUser(UserView{ID: "u1", Username: "old", Email: "old@example.net", Role: "user"})
 	repo.links[uuid] = "u1"
-	repo.passkeyCreds["row1"] = PasskeyCredential{ID: "row1", UserID: "u1", CredentialID: "cred-1", PublicKey: "k", CreatedAt: frozenNow}
+	repo.passkeyCreds["row1"] = PasskeyCredential{ID: "row1", UserID: "u1", CredentialID: "cred-1", PublicKey: "k", UserVerified: true, CreatedAt: frozenNow}
 
 	mk, _, v := migrateEnv(repo)
 	ih := mk(src).InternalHandler()
@@ -227,7 +227,7 @@ func TestMigratePasskeyCloneRejected(t *testing.T) {
 	repo := newFakeRepo()
 	repo.seedUser(UserView{ID: "u1", Username: "old", Email: "old@example.net", Role: "user"})
 	repo.links[uuid] = "u1"
-	repo.passkeyCreds["row1"] = PasskeyCredential{ID: "row1", UserID: "u1", CredentialID: "cred-1", PublicKey: "k", CreatedAt: frozenNow}
+	repo.passkeyCreds["row1"] = PasskeyCredential{ID: "row1", UserID: "u1", CredentialID: "cred-1", PublicKey: "k", UserVerified: true, CreatedAt: frozenNow}
 
 	mk, _, v := migrateEnv(repo)
 	v.assertion = VerifiedAssertion{CredentialID: "cred-1", UserVerified: true, CloneWarning: true}

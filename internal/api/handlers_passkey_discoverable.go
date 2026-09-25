@@ -148,6 +148,7 @@ func (a *API) handlePasskeyLoginDiscoverableFinish(w http.ResponseWriter, r *htt
 	// the session below is minted for the account the assertion actually resolved AND verified to
 	// — not anything the client supplied (the body carries only a challenge handle).
 	var resolved *StaffUser
+	var resolvedCreds []PasskeyCredential
 	resolve := func(userHandle []byte) (PasskeyUser, error) {
 		u, err := a.Repo.UserByID(r.Context(), string(userHandle))
 		if err != nil {
@@ -164,7 +165,7 @@ func (a *API) handlePasskeyLoginDiscoverableFinish(w http.ResponseWriter, r *htt
 		if err != nil {
 			return PasskeyUser{}, err
 		}
-		resolved = u
+		resolved, resolvedCreds = u, creds
 		// Name/DisplayName are cosmetic at assertion time (nothing is shown to the user); use the
 		// stable username so a nil email never matters.
 		return PasskeyUser{ID: u.ID, Name: u.Username, DisplayName: u.Username, Credentials: creds}, nil
@@ -187,12 +188,11 @@ func (a *API) handlePasskeyLoginDiscoverableFinish(w http.ResponseWriter, r *htt
 			"passkey login could not be completed; begin again"))
 		return
 	}
-	// Same clone policy + counter advance as the username-first door (applyAssertionCounter): a
-	// regressed counter is refused with the identical opaque envelope but audited under the
-	// resolved account; a successful assertion advances the stored counter and stamps last_used_at.
-	if err := a.applyAssertionCounter(r.Context(), va); err != nil {
-		if errors.Is(err, errPasskeyClonedAuthenticator) {
-			a.passkeyCloneRejected(r, "passkey_discoverable", resolved, va.CredentialID)
+	// Same UV + clone policy + counter advance as the username-first door (applyAssertion): a
+	// refusal gets the identical opaque envelope but is audited under the resolved account; a
+	// successful assertion advances the stored counter and stamps last_used_at.
+	if err := a.applyAssertion(r.Context(), va, resolvedCreds); err != nil {
+		if a.passkeyAssertionRejected(r, "passkey_discoverable", resolved, va.CredentialID, err) {
 			writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
 				"passkey login could not be completed; begin again"))
 			return

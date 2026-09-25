@@ -329,13 +329,12 @@ func (a *API) finishStepUpPasskey(w http.ResponseWriter, r *http.Request, p *Pri
 		a.authFailure(r, door, "bad_assertion", nil)
 		return invalid()
 	}
-	// Same clone policy as the login door (applyAssertionCounter): a rolled-back
-	// counter fails closed with the opaque envelope, so a step-up never accepts an
-	// authenticator that login refuses. A clean assertion advances the stored
-	// sign-count, keeping the clone signal meaningful for the next login.
-	if err := a.applyAssertionCounter(r.Context(), va); err != nil {
-		if errors.Is(err, errPasskeyClonedAuthenticator) {
-			a.passkeyCloneRejected(r, door, nil, va.CredentialID)
+	// Same UV and clone policy as the login door (applyAssertion): an unverified
+	// user or a rolled-back counter fails closed with the opaque envelope, so a
+	// step-up never accepts an authenticator that login refuses. A clean assertion
+	// advances the stored sign-count, keeping the clone signal meaningful.
+	if err := a.applyAssertion(r.Context(), va, creds); err != nil {
+		if a.passkeyAssertionRejected(r, door, nil, va.CredentialID, err) {
 			return invalid()
 		}
 		writeError(w, r, err)

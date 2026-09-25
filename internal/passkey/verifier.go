@@ -210,11 +210,7 @@ func (v *Verifier) FinishLogin(user api.PasskeyUser, sessionData []byte, asserti
 	if err != nil {
 		return api.VerifiedAssertion{}, err
 	}
-	return api.VerifiedAssertion{
-		CredentialID: base64.RawURLEncoding.EncodeToString(cred.ID),
-		SignCount:    cred.Authenticator.SignCount,
-		CloneWarning: cred.Authenticator.CloneWarning,
-	}, nil
+	return verifiedAssertion(cred), nil
 }
 
 // BeginDiscoverableLogin starts a USERNAMELESS assertion ceremony (task #40): the caller is
@@ -273,11 +269,19 @@ func (v *Verifier) FinishDiscoverableLogin(resolveUser func(userHandle []byte) (
 	if err != nil {
 		return api.VerifiedAssertion{}, err
 	}
+	return verifiedAssertion(cred), nil
+}
+
+// verifiedAssertion reports a validated login. go-webauthn has replaced cred.Flags with
+// the flags of this assertion, so UserVerified says whether the user was verified now,
+// which the handler checks alongside the credential's stored bind-time flag.
+func verifiedAssertion(cred *webauthn.Credential) api.VerifiedAssertion {
 	return api.VerifiedAssertion{
 		CredentialID: base64.RawURLEncoding.EncodeToString(cred.ID),
 		SignCount:    cred.Authenticator.SignCount,
 		CloneWarning: cred.Authenticator.CloneWarning,
-	}, nil
+		UserVerified: cred.Flags.UserVerified,
+	}
 }
 
 // excludeDescriptors turns the principal's already-bound passkeys into the
@@ -353,6 +357,15 @@ func (w webauthnUser) WebAuthnCredentials() []webauthn.Credential {
 			cred.PublicKey = key
 		}
 		cred.Authenticator.SignCount = c.SignCount
+		// ValidateLogin refuses an assertion whose backup-eligible flag differs from the
+		// stored credential's. A synced passkey reports BE on every ceremony, so without
+		// the stored flags it would enroll and then never log in.
+		cred.Flags = webauthn.CredentialFlags{
+			UserPresent:    true,
+			UserVerified:   c.UserVerified,
+			BackupEligible: c.BackupEligible,
+			BackupState:    c.BackupState,
+		}
 		out = append(out, cred)
 	}
 	return out

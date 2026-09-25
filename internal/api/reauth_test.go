@@ -113,7 +113,7 @@ func TestGuardedChangesNeedARecentReauth(t *testing.T) {
 			t.Run(tc.name+"/"+g.name, func(t *testing.T) {
 				f := reauthFixture(t)
 				f.api.Mailer = &captureMailer{}
-				f.repo.passkeyCreds["a"] = PasskeyCredential{ID: "a", UserID: "u1", CredentialID: "c-a", CreatedAt: frozenNow}
+				f.repo.passkeyCreds["a"] = PasskeyCredential{ID: "a", UserID: "u1", CredentialID: "c-a", UserVerified: true, CreatedAt: frozenNow}
 				if tc.proof >= 0 {
 					f.setReauth(laptopTok, f.api.now().Add(-tc.proof))
 				}
@@ -172,7 +172,7 @@ func TestPasskeyAloneNeedsReauth(t *testing.T) {
 func TestAccessCallerNeedsNoReauth(t *testing.T) {
 	repo := newFakeRepo()
 	repo.staff["op"] = &StaffUser{ID: "u1", Username: "op", Role: "admin", Email: "op@example.net", EmailVerified: true}
-	repo.passkeyCreds["a"] = PasskeyCredential{ID: "a", UserID: "u1", CredentialID: "c-a", CreatedAt: frozenNow}
+	repo.passkeyCreds["a"] = PasskeyCredential{ID: "a", UserID: "u1", CredentialID: "c-a", UserVerified: true, CreatedAt: frozenNow}
 	api := newTestAPI(repo, newFakeCluster())
 	api.Passkey = &fakePasskeyVerifier{}
 	api.External = staticExternal{p: &Principal{UserID: "u1", Email: "op@example.net", Role: "admin", EmailVerified: true}}
@@ -203,7 +203,7 @@ func getReauthStatus(t *testing.T, f *sessionsFixture, tok string) reauthStatusB
 func TestReauthStatusNamesTheFactors(t *testing.T) {
 	f := reauthFixture(t)
 	f.api.Mailer = &captureMailer{}
-	f.repo.passkeyCreds["a"] = PasskeyCredential{ID: "a", UserID: "u1", CredentialID: "c-a", CreatedAt: frozenNow}
+	f.repo.passkeyCreds["a"] = PasskeyCredential{ID: "a", UserID: "u1", CredentialID: "c-a", UserVerified: true, CreatedAt: frozenNow}
 	f.repo.passkeyCreds["p"] = PasskeyCredential{ID: "p", UserID: "u3", CredentialID: "c-p", CreatedAt: frozenNow}
 
 	steve := getReauthStatus(t, f, laptopTok)
@@ -350,7 +350,7 @@ func TestReauthByEmailNeedsAVerifiedAddress(t *testing.T) {
 func TestReauthByPasskey(t *testing.T) {
 	f := reauthFixture(t)
 	pv := f.api.Passkey.(*fakePasskeyVerifier)
-	f.repo.passkeyCreds["a"] = PasskeyCredential{ID: "a", UserID: "u1", CredentialID: "c-a", SignCount: 4, CreatedAt: frozenNow}
+	f.repo.passkeyCreds["a"] = PasskeyCredential{ID: "a", UserID: "u1", CredentialID: "c-a", SignCount: 4, UserVerified: true, CreatedAt: frozenNow}
 	finish := func() int {
 		t.Helper()
 		if w := do(f.eh, "POST", "/api/v1/account/reauth/passkey/begin", "", asCookie(laptopTok)); w.Code != http.StatusOK {
@@ -367,7 +367,7 @@ func TestReauthByPasskey(t *testing.T) {
 		t.Fatalf("bad assertion = %d, want 400", code)
 	}
 	pv.failErr = nil
-	pv.assertion = VerifiedAssertion{CredentialID: "c-a", SignCount: 2, CloneWarning: true}
+	pv.assertion = VerifiedAssertion{CredentialID: "c-a", SignCount: 2, CloneWarning: true, UserVerified: true}
 	if code := finish(); code != http.StatusBadRequest {
 		t.Fatalf("cloned authenticator = %d, want 400", code)
 	}
@@ -375,7 +375,7 @@ func TestReauthByPasskey(t *testing.T) {
 		t.Fatal("a failed assertion marked the session")
 	}
 
-	pv.assertion = VerifiedAssertion{CredentialID: "c-a", SignCount: 5}
+	pv.assertion = VerifiedAssertion{CredentialID: "c-a", SignCount: 5, UserVerified: true}
 	if code := finish(); code != http.StatusOK {
 		t.Fatalf("finish = %d, want 200", code)
 	}
@@ -396,8 +396,8 @@ func TestReauthByPasskey(t *testing.T) {
 func TestReauthPasskeyChallengeIsItsOwnPurpose(t *testing.T) {
 	f := reauthFixture(t)
 	pv := f.api.Passkey.(*fakePasskeyVerifier)
-	pv.assertion = VerifiedAssertion{CredentialID: "c-a", SignCount: 5}
-	f.repo.passkeyCreds["a"] = PasskeyCredential{ID: "a", UserID: "u1", CredentialID: "c-a", CreatedAt: frozenNow}
+	pv.assertion = VerifiedAssertion{CredentialID: "c-a", SignCount: 5, UserVerified: true}
+	f.repo.passkeyCreds["a"] = PasskeyCredential{ID: "a", UserID: "u1", CredentialID: "c-a", UserVerified: true, CreatedAt: frozenNow}
 	if err := f.repo.CreatePasskeyChallenge(t.Context(), "m1", "u1", passkeyPurposeMigrate, []byte("s"), f.api.now().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
@@ -466,7 +466,7 @@ func onlyNotice(t *testing.T, m *noticeMailer) (to, subject, body string) {
 
 func TestRemovingAPasskeyMailsTheAccount(t *testing.T) {
 	f, mailer := noticeFixture(t)
-	f.repo.passkeyCreds["a"] = PasskeyCredential{ID: "a", UserID: "u1", CredentialID: "c-a", CreatedAt: frozenNow}
+	f.repo.passkeyCreds["a"] = PasskeyCredential{ID: "a", UserID: "u1", CredentialID: "c-a", UserVerified: true, CreatedAt: frozenNow}
 	if w := do(f.eh, "DELETE", "/api/v1/account/passkey/credentials/a", "", fromIP(asCookie(laptopTok))); w.Code != http.StatusNoContent {
 		t.Fatalf("delete = %d (%s)", w.Code, w.Body.String())
 	}
