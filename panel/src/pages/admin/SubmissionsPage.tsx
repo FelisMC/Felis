@@ -363,6 +363,7 @@ export function SubmissionsPage() {
                                 className="h-7 w-7 text-emerald-500 hover:text-emerald-600 border-emerald-500/20 hover:bg-emerald-500/10 focus-visible:ring-emerald-500"
                                 onClick={() => handleApprove(sub)}
                                 disabled={!!busyId || !approveDigest}
+                                aria-label={t("approve_btn")}
                                 title={approveDigest ? t("approve_btn") : t("approve_needs_context")}
                               >
                                 {isBusyApprove ? (
@@ -377,6 +378,7 @@ export function SubmissionsPage() {
                                 className="h-7 w-7 text-rose-500 hover:text-rose-600 border-rose-500/20 hover:bg-rose-500/10 focus-visible:ring-rose-500"
                                 onClick={() => openRejectDialog(sub.id)}
                                 disabled={!!busyId}
+                                aria-label={t("reject_btn")}
                                 title={t("reject_btn")}
                               >
                                 {isBusyReject ? (
@@ -404,6 +406,7 @@ export function SubmissionsPage() {
                                 className="h-7 w-7 text-destructive hover:text-destructive border-destructive/20 hover:bg-destructive/10 focus-visible:ring-destructive"
                                 onClick={() => setConfirmingDelete(sub.id)}
                                 disabled={!!busyId}
+                                aria-label={t("delete_submission_btn")}
                                 title={t("delete_submission_btn")}
                               >
                                 {isBusyDelete ? (

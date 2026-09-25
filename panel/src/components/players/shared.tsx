@@ -37,7 +37,7 @@ export function FeedbackLine({ fb }: { fb: Feedback }) {
   if (!fb) return null;
   return (
     <p
-      role="status"
+      role={fb.kind === "ok" ? "status" : "alert"}
       className={fb.kind === "ok" ? "text-xs text-emerald-500" : "text-xs text-destructive"}
     >
       {fb.msg}

@@ -117,11 +117,15 @@ function UserStrip() {
 }
 
 function LangToggle() {
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation("common");
 
   return (
     <Select value={i18n.language} onValueChange={(v) => i18n.changeLanguage(v)}>
-      <SelectPrimitive.Trigger className={FOOT_ICON_BTN}>
+      <SelectPrimitive.Trigger
+        className={FOOT_ICON_BTN}
+        aria-label={t("change_language")}
+        title={t("change_language")}
+      >
         <Globe className="h-4 w-4" />
       </SelectPrimitive.Trigger>
       <SelectContent align="start" className="min-w-[6rem]">

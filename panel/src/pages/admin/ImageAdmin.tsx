@@ -307,6 +307,7 @@ export function ImageAdmin() {
                         onClick={() => handleRemove(img.image_ref)}
                         disabled={deletingRef === img.image_ref}
                         className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                        aria-label={t("delete_image_tooltip")}
                         title={t("delete_image_tooltip")}
                       >
                         {deletingRef === img.image_ref ? (

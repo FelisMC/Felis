@@ -396,6 +396,7 @@ export function ServerFiles() {
                       variant="ghost"
                       onClick={() => void load(dir)}
                       disabled={listLoading}
+                      aria-label={t("refresh")}
                       title={t("refresh")}
                     >
                       <RefreshCw className={cn("h-4 w-4", listLoading && "animate-spin")} />

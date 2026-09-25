@@ -142,6 +142,8 @@
   "users_search_btn": "Search",
   "users_filter_role_all": "All Roles",
   "users_filter_status_all": "All Status",
+  "users_filter_role": "Filter by role",
+  "users_filter_status": "Filter by status",
   "users_status_active": "Active",
   "users_status_disabled": "Disabled",
   "users_role_admin": "Admin",

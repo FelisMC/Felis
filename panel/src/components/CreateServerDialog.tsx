@@ -24,6 +24,7 @@ import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { hostFor, type RuntimeConfig } from "@/lib/config";
 import type { AutostartPolicy, CreateServerRequest } from "@/lib/types";
+import { InlineError } from "@/components/MessageLine";
 
 // CreateServerDialog IS the §15 收口 ("structured form, not free YAML"): every
 // dangerous knob (hostNetwork, hostPath, arbitrary image, raw resource quantities)
@@ -154,9 +155,9 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
           </div>
 
           <div className="grid gap-2">
-            <Label>{t("create_server_image")}</Label>
+            <Label htmlFor="create-server-image">{t("create_server_image")}</Label>
             <Select value={form.image} onValueChange={(v) => set("image", v)}>
-              <SelectTrigger>
+              <SelectTrigger id="create-server-image">
                 <SelectValue
                   placeholder={
                     images.loading
@@ -179,9 +180,9 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
 
           <div className="grid grid-cols-2 gap-4">
             <div className="grid gap-2">
-              <Label>{t("create_server_memory")}</Label>
+              <Label htmlFor="create-server-memory">{t("create_server_memory")}</Label>
               <Select value={form.memory} onValueChange={(v) => set("memory", v)}>
-                <SelectTrigger>
+                <SelectTrigger id="create-server-memory">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -194,9 +195,9 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
               </Select>
             </div>
             <div className="grid gap-2">
-              <Label>{t("create_server_storage")}</Label>
+              <Label htmlFor="create-server-storage">{t("create_server_storage")}</Label>
               <Select value={form.storage} onValueChange={(v) => set("storage", v)}>
-                <SelectTrigger>
+                <SelectTrigger id="create-server-storage">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -211,12 +212,12 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
           </div>
 
           <div className="grid gap-2">
-            <Label>{t("create_server_policy")}</Label>
+            <Label htmlFor="create-server-policy">{t("create_server_policy")}</Label>
             <Select
               value={form.autostartPolicy}
               onValueChange={(v) => set("autostartPolicy", v as AutostartPolicy)}
             >
-              <SelectTrigger>
+              <SelectTrigger id="create-server-policy">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -229,7 +230,7 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
             </Select>
           </div>
 
-          {error && <p className="text-sm text-destructive">{error}</p>}
+          <InlineError message={error} />
         </div>
 
         <ConfirmFooter

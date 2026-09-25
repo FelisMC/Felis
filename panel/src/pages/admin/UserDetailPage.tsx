@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { MessageLine } from "@/components/MessageLine";
+import { MessageLine, InlineError } from "@/components/MessageLine";
 import { RoleBadge } from "@/components/RoleBadge";
 import { UserStatusBadge } from "@/components/UserStatusBadge";
 import {
@@ -167,16 +167,18 @@ function EditProfileCard({ user, onSaved, isSelf }: { user: UserDetail; onSaved:
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="space-y-1.5">
-          <Label className="text-xs font-semibold text-muted-foreground">{t("users_field_username")}</Label>
+          <Label htmlFor="user-detail-username" className="text-xs font-semibold text-muted-foreground">{t("users_field_username")}</Label>
           <Input
+            id="user-detail-username"
             value={username}
             onChange={(e) => setUsername(e.target.value)}
             className="h-9 text-sm"
           />
         </div>
         <div className="space-y-1.5">
-          <Label className="text-xs font-semibold text-muted-foreground">{t("users_field_email")}</Label>
+          <Label htmlFor="user-detail-email" className="text-xs font-semibold text-muted-foreground">{t("users_field_email")}</Label>
           <Input
+            id="user-detail-email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="user@example.com"
@@ -185,9 +187,9 @@ function EditProfileCard({ user, onSaved, isSelf }: { user: UserDetail; onSaved:
         </div>
         {!isSelf && (
           <div className="space-y-1.5">
-            <Label className="text-xs font-semibold text-muted-foreground">{t("users_field_role")}</Label>
+            <Label htmlFor="user-detail-role" className="text-xs font-semibold text-muted-foreground">{t("users_field_role")}</Label>
             <Select value={role} onValueChange={(v: "admin" | "user") => setRole(v)}>
-              <SelectTrigger className="h-9 text-sm">
+              <SelectTrigger id="user-detail-role" className="h-9 text-sm">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -290,8 +292,9 @@ function LinkedAccountsCard({ user, onChanged }: { user: UserDetail; onChanged: 
           <form onSubmit={handleAdd} className="space-y-3 rounded-md border border-border/50 bg-muted/20 p-3">
             <div className="flex gap-2">
               <div className="flex-1 space-y-1.5">
-                <Label className="text-[11px] font-semibold text-muted-foreground">Minecraft UUID</Label>
+                <Label htmlFor="user-detail-uuid" className="text-[11px] font-semibold text-muted-foreground">Minecraft UUID</Label>
                 <Input
+                  id="user-detail-uuid"
                   value={newUUID}
                   onChange={(e) => setNewUUID(e.target.value)}
                   placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
@@ -299,9 +302,9 @@ function LinkedAccountsCard({ user, onChanged }: { user: UserDetail; onChanged: 
                 />
               </div>
               <div className="w-28 space-y-1.5">
-                <Label className="text-[11px] font-semibold text-muted-foreground">{t("users_link_source")}</Label>
+                <Label htmlFor="user-detail-link-source" className="text-[11px] font-semibold text-muted-foreground">{t("users_link_source")}</Label>
                 <Select value={newSource} onValueChange={setNewSource}>
-                  <SelectTrigger className="h-8 text-xs">
+                  <SelectTrigger id="user-detail-link-source" className="h-8 text-xs">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -311,9 +314,7 @@ function LinkedAccountsCard({ user, onChanged }: { user: UserDetail; onChanged: 
                 </Select>
               </div>
             </div>
-            {err && (
-              <p className="text-xs text-destructive">{err}</p>
-            )}
+            <InlineError message={err} className="text-xs" />
             <Button type="submit" size="sm" disabled={adding || !newUUID.trim()} className="h-8 text-xs gap-1">
               {adding ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Link className="h-3.5 w-3.5" />}
               {t("users_link_confirm")}
@@ -339,6 +340,7 @@ function LinkedAccountsCard({ user, onChanged }: { user: UserDetail; onChanged: 
                   className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive shrink-0 mr-0.5"
                    disabled={unlinking === acc.mc_uuid}
                   onClick={() => setUnlinkDlg(acc.mc_uuid)}
+                  aria-label={t("users_unlink_tooltip")}
                   title={t("users_unlink_tooltip")}
                 >
                   {unlinking === acc.mc_uuid ? (
@@ -429,8 +431,9 @@ function QuotasCard({ userId }: { userId: string }) {
       <CardContent className="space-y-4">
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1.5">
-            <Label className="text-xs font-semibold text-muted-foreground">{t("users_quota_servers")}</Label>
+            <Label htmlFor="user-detail-quota-servers" className="text-xs font-semibold text-muted-foreground">{t("users_quota_servers")}</Label>
             <Input
+              id="user-detail-quota-servers"
               type="number"
               value={maxServers}
               onChange={(e) => setMaxServers(e.target.value)}
@@ -439,8 +442,9 @@ function QuotasCard({ userId }: { userId: string }) {
             />
           </div>
           <div className="space-y-1.5">
-            <Label className="text-xs font-semibold text-muted-foreground">{t("users_quota_cpu")}</Label>
+            <Label htmlFor="user-detail-quota-cpu" className="text-xs font-semibold text-muted-foreground">{t("users_quota_cpu")}</Label>
             <Input
+              id="user-detail-quota-cpu"
               type="number"
               value={maxCpu}
               onChange={(e) => setMaxCpu(e.target.value)}
@@ -449,8 +453,9 @@ function QuotasCard({ userId }: { userId: string }) {
             />
           </div>
           <div className="space-y-1.5">
-            <Label className="text-xs font-semibold text-muted-foreground">{t("users_quota_memory")}</Label>
+            <Label htmlFor="user-detail-quota-memory" className="text-xs font-semibold text-muted-foreground">{t("users_quota_memory")}</Label>
             <Input
+              id="user-detail-quota-memory"
               type="number"
               value={maxMem}
               onChange={(e) => setMaxMem(e.target.value)}
@@ -459,8 +464,9 @@ function QuotasCard({ userId }: { userId: string }) {
             />
           </div>
           <div className="space-y-1.5">
-            <Label className="text-xs font-semibold text-muted-foreground">{t("users_quota_storage")}</Label>
+            <Label htmlFor="user-detail-quota-storage" className="text-xs font-semibold text-muted-foreground">{t("users_quota_storage")}</Label>
             <Input
+              id="user-detail-quota-storage"
               type="number"
               value={maxStorage}
               onChange={(e) => setMaxStorage(e.target.value)}
@@ -590,6 +596,7 @@ function SessionsCard({ userId, onChanged }: { userId: string; onChanged: () => 
                   className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive shrink-0 ml-2 mr-0.5"
                   disabled={revoking === s.token_hash}
                   onClick={() => setRevokeOneDlg(s.token_hash)}
+                  aria-label={t("users_session_revoke_one")}
                   title={t("users_session_revoke_one")}
                 >
                   {revoking === s.token_hash ? (
@@ -788,7 +795,7 @@ function DangerDialogs({
               {user.disabled ? t("users_danger_enable_dlg_desc") : t("users_danger_disable_dlg_desc")}
             </DialogDescription>
           </DialogHeader>
-          {err && <p className="text-sm text-destructive">{err}</p>}
+          <InlineError message={err} />
           <ConfirmFooter onCancel={close} onConfirm={handleDisable} loading={loading} cancelLabel={t("common:cancel")} confirmLabel={user.disabled ? t("users_danger_enable_btn") : t("users_danger_disable_btn")} confirmVariant={user.disabled ? "default" : "destructive"} />
         </DialogContent>
       </Dialog>
@@ -805,7 +812,7 @@ function DangerDialogs({
               {t("users_danger_delete_dlg_desc")}
             </DialogDescription>
           </DialogHeader>
-          {err && <p className="text-sm text-destructive">{err}</p>}
+          <InlineError message={err} />
           <ConfirmFooter onCancel={close} onConfirm={handleDelete} loading={loading} cancelLabel={t("common:cancel")} confirmLabel={t("users_danger_delete_yes")} />
         </DialogContent>
       </Dialog>
@@ -822,7 +829,7 @@ function DangerDialogs({
               {t("users_danger_passkeys_dlg_desc")}
             </DialogDescription>
           </DialogHeader>
-          {err && <p className="text-sm text-destructive">{err}</p>}
+          <InlineError message={err} />
           <ConfirmFooter onCancel={close} onConfirm={handleUnbindPasskeys} loading={loading} cancelLabel={t("common:cancel")} confirmLabel={t("users_danger_passkeys_yes")} />
         </DialogContent>
       </Dialog>

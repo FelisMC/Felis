@@ -18,7 +18,7 @@ import { BackLink } from "@/components/BackLink";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ConfirmFooter } from "@/components/ConfirmFooter";
-import { MessageLine } from "@/components/MessageLine";
+import { MessageLine, InlineError } from "@/components/MessageLine";
 import {
   Dialog,
   DialogContent,
@@ -442,7 +442,7 @@ function RestoreControls({
           {step === "stopping" ? t("stopping") : t("restoring")}
         </div>
       )}
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      <InlineError message={error} />
 
       <ConfirmFooter
         onCancel={() => setOpen(false)}

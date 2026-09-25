@@ -19,7 +19,7 @@ export function ErrorState({ error, onRetry }: { error: unknown; onRetry?: () =>
   return (
     <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
       <AlertTriangle className="h-6 w-6 text-destructive" />
-      <p className="text-sm text-muted-foreground">{humanizeError(error)}</p>
+      <p role="alert" className="text-sm text-muted-foreground">{humanizeError(error)}</p>
       {onRetry && (
         <button
           onClick={onRetry}

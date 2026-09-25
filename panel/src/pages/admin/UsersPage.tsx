@@ -81,7 +81,7 @@ export function UsersPage() {
               />
             </div>
             <Select value={roleFilter} onValueChange={(v) => { setRoleFilter(v); setPage(0); }}>
-              <SelectTrigger className="h-9 w-[120px] text-sm">
+              <SelectTrigger className="h-9 w-[120px] text-sm" aria-label={t("users_filter_role")}>
                 <SelectValue placeholder={t("users_filter_role_all")} />
               </SelectTrigger>
               <SelectContent>
@@ -92,7 +92,7 @@ export function UsersPage() {
               </SelectContent>
             </Select>
             <Select value={disabledFilter} onValueChange={(v) => { setDisabledFilter(v); setPage(0); }}>
-              <SelectTrigger className="h-9 w-[130px] text-sm">
+              <SelectTrigger className="h-9 w-[130px] text-sm" aria-label={t("users_filter_status")}>
                 <SelectValue placeholder={t("users_filter_status_all")} />
               </SelectTrigger>
               <SelectContent>

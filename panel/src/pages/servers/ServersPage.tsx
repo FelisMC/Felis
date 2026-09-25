@@ -214,6 +214,7 @@ export function ServersPage() {
               size="sm"
               onClick={reload}
               disabled={loading}
+              aria-label={t("fleet_refresh")}
               title={t("fleet_refresh")}
             >
               <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
@@ -233,7 +234,7 @@ export function ServersPage() {
       ) : (
         <>
           {error && (
-            <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+            <div role="alert" className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
               <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
               {humanizeError(error)}
             </div>
@@ -317,7 +318,7 @@ export function ServersPage() {
                 setPage(1);
               }}
             >
-              <SelectTrigger className="w-44">
+              <SelectTrigger className="w-44" aria-label={t("fleet_filter_phase")}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

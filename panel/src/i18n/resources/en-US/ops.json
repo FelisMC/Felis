@@ -12,6 +12,7 @@
   "fleet_distribution": "Phase distribution",
   "fleet_search_placeholder": "Search name, subdomain or owner…",
   "fleet_filter_all": "All phases",
+  "fleet_filter_phase": "Filter by phase",
   "fleet_count": "{{count}} servers",
   "fleet_count_filtered": "{{shown}} / {{total}} servers",
   "fleet_col_status": "Status",

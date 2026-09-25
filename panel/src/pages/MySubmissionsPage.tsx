@@ -574,16 +574,20 @@ export function MySubmissionsPage() {
 
             {/* File Dropzone */}
             <div className="space-y-1.5">
-              <Label className="text-xs font-semibold text-foreground">
+              <Label htmlFor="submission-file" className="text-xs font-semibold text-foreground">
                 {t("file_label")} <span className="text-destructive">*</span>
               </Label>
 
+              {/* The real file input stays in the tab order (visually hidden),
+                  so a keyboard reaches the picker; the drop zone below shows
+                  its focus ring. */}
               <input
+                id="submission-file"
                 type="file"
                 ref={fileInputRef}
                 onChange={handleFileChange}
                 accept=".tar.gz"
-                className="hidden"
+                className="peer sr-only"
                 disabled={isSubmitting}
               />
 
@@ -594,7 +598,7 @@ export function MySubmissionsPage() {
                 onDrop={handleDrop}
                 onClick={() => !isSubmitting && fileInputRef.current?.click()}
                 className={cn(
-                  "flex flex-col items-center justify-center border border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors min-h-[140px]",
+                  "flex flex-col items-center justify-center border border-dashed rounded-lg p-6 text-center cursor-pointer transition-colors min-h-[140px] peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-background",
                   dragActive ? "border-primary bg-primary/5" : "border-border hover:bg-muted/30",
                   isSubmitting && "opacity-50 cursor-not-allowed",
                 )}

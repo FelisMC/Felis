@@ -23,6 +23,7 @@ import { api, humanizeError } from "@/lib/api";
 import { splitImageRef } from "@/lib/format";
 import { useAsync } from "@/lib/hooks";
 import type { AutostartPolicy } from "@/lib/types";
+import { InlineError } from "@/components/MessageLine";
 
 const MEMORY_OPTIONS = ["2Gi", "4Gi", "6Gi", "8Gi"];
 
@@ -231,9 +232,9 @@ export function EditServerDialog({
           </div>
 
           <div className="grid gap-2">
-            <Label>{t("create_server_image")}</Label>
+            <Label htmlFor="edit-server-image">{t("create_server_image")}</Label>
             <Select value={form.image} onValueChange={(v) => set("image", v)}>
-              <SelectTrigger>
+              <SelectTrigger id="edit-server-image">
                 <SelectValue
                   placeholder={
                     images.loading
@@ -290,9 +291,9 @@ export function EditServerDialog({
 
           <div className="grid grid-cols-2 gap-4">
             <div className="grid gap-2">
-              <Label>{t("create_server_memory")}</Label>
+              <Label htmlFor="edit-server-memory">{t("create_server_memory")}</Label>
               <Select value={form.memory} onValueChange={(v) => set("memory", v)}>
-                <SelectTrigger>
+                <SelectTrigger id="edit-server-memory">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -310,8 +311,8 @@ export function EditServerDialog({
             </div>
             <div className="grid gap-2">
               {/* Storage is immutable but displayed to maintain visual consistency */}
-              <Label>{t("create_server_storage")}</Label>
-              <Input value={currentStorage} disabled className="opacity-60 cursor-not-allowed select-none bg-muted" />
+              <Label htmlFor="edit-server-storage">{t("create_server_storage")}</Label>
+              <Input id="edit-server-storage" value={currentStorage} disabled className="opacity-60 cursor-not-allowed select-none bg-muted" />
             </div>
           </div>
 
@@ -326,12 +327,12 @@ export function EditServerDialog({
               />
             </div>
             <div className="grid gap-2">
-              <Label>{t("create_server_policy")}</Label>
+              <Label htmlFor="edit-server-policy">{t("create_server_policy")}</Label>
               <Select
                 value={form.autostartPolicy}
                 onValueChange={(v) => set("autostartPolicy", v as AutostartPolicy)}
               >
-                <SelectTrigger>
+                <SelectTrigger id="edit-server-policy">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -346,9 +347,9 @@ export function EditServerDialog({
           </div>
 
           <div className="grid gap-2">
-            <Label>{t("edit_server_idle")}</Label>
+            <Label htmlFor="edit-server-idle">{t("edit_server_idle")}</Label>
             <Select value={form.idleStop} onValueChange={(v) => set("idleStop", v)}>
-              <SelectTrigger>
+              <SelectTrigger id="edit-server-idle">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -372,7 +373,7 @@ export function EditServerDialog({
             )}
           </div>
 
-          {error && <p className="text-sm text-destructive">{error}</p>}
+          <InlineError message={error} />
         </div>
 
         <ConfirmFooter

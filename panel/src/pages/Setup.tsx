@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { api, humanizeError, type SetupState } from "@/lib/api";
 import { base64urlToBytes, bytesToBase64url } from "@/lib/utils";
 import { useTier } from "@/lib/tier";
+import { InlineError } from "@/components/MessageLine";
 
 // Setup is the Owner's first-run onboarding wizard (spec §B setup bootstrap). The
 // `felis setup` MC-bind flow prints https://op.console.<root>/setup?token=<raw> —
@@ -107,7 +108,7 @@ export function Setup() {
       <AuthLayout title={t("setup_invalid_title")} subtitle={t("setup_invalid_subtitle")}>
         <Card>
           <CardContent className="space-y-4 pt-6 text-sm">
-            <p className="text-muted-foreground">{fatal}</p>
+            <p role="alert" className="text-muted-foreground">{fatal}</p>
             <p className="text-muted-foreground">
               {t("setup_invalid_hint_prefix")}
               <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
@@ -206,7 +207,7 @@ function EmailStep({
             aria-invalid={error ? true : undefined}
           />
         </div>
-        {error && <p className="text-sm text-destructive">{error}</p>}
+        <InlineError message={error} />
         <Button type="submit" className="w-full" disabled={busy || !email.trim()}>
           {busy ? (
             <>
@@ -290,7 +291,7 @@ function PasskeyStep({
         <Fingerprint className="h-4 w-4 text-primary" /> {t("setup_passkey_step")}
       </div>
       <p className="text-sm text-muted-foreground">{t("setup_passkey_desc")}</p>
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      <InlineError message={error} />
       <Button className="w-full gap-2" onClick={enroll} disabled={busy}>
         {busy ? (
           <>

@@ -119,7 +119,8 @@ describe("Account passkey delete", () => {
     await userEvent.click(await screen.findByRole("button", deleteButton("Laptop")));
     await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: t("account:passkey_delete_confirm") }));
 
-    expect(await within(screen.getByRole("dialog")).findByText(t("errors:last_passkey"))).toBeTruthy();
+    const alert = await within(screen.getByRole("dialog")).findByRole("alert");
+    expect(alert.textContent).toBe(t("errors:last_passkey"));
     expect(mocks.passkeyList).toHaveBeenCalledTimes(2);
   });
 

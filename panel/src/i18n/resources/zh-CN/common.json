@@ -17,6 +17,7 @@
   "brand_tagline": "Kubernetes 原生的 Minecraft 管理平台",
   "page_title": "Felis · 控制台",
   "toggle_theme": "切换主题",
+  "change_language": "切换语言",
   "pagination_prev": "上一页",
   "pagination_next": "下一页",
   "pagination_of": "第 {{current}} / {{total}} 页",

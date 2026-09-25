@@ -112,7 +112,7 @@ export function OnlineSection({ name, defaultOpen = true }: { name: string; defa
             <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("log_connecting")}
           </div>
         ) : error ? (
-          <p className="text-xs text-destructive">{t("access_online_load_error")}</p>
+          <p role="alert" className="text-xs text-destructive">{t("access_online_load_error")}</p>
         ) : players.length === 0 ? (
           <div className="rounded-md border border-dashed border-border bg-muted/20 px-4 py-8 text-center">
             {namesUnavailable ? (

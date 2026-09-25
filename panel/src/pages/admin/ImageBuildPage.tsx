@@ -287,11 +287,11 @@ export function ImageBuildPage() {
             </DialogHeader>
             <form onSubmit={handleTrigger} className="space-y-4">
               <div className="space-y-1.5 p-3 rounded-lg border border-border bg-muted/20">
-                <Label className="text-xs font-semibold text-muted-foreground">
+                <Label htmlFor="build-import-submission" className="text-xs font-semibold text-muted-foreground">
                   {t("build_import_submission_label")}
                 </Label>
                 <Select onValueChange={handleSelectSubmission} disabled={triggering}>
-                  <SelectTrigger className="w-full text-xs h-9 bg-background [&>span]:flex [&>span]:w-full [&>span]:items-center [&>span]:justify-between [&>span]:gap-2 pr-2">
+                  <SelectTrigger id="build-import-submission" className="w-full text-xs h-9 bg-background [&>span]:flex [&>span]:w-full [&>span]:items-center [&>span]:justify-between [&>span]:gap-2 pr-2">
                     <SelectValue placeholder={t("build_import_submission_placeholder")} />
                   </SelectTrigger>
                   <SelectContent className="max-h-60 overflow-y-auto">

@@ -12,6 +12,7 @@ import { loginReturnPath } from "@/lib/auth";
 import { api, humanizeError } from "@/lib/api";
 import { loadConfig } from "@/lib/config";
 import { base64urlToBytes, bytesToBase64url } from "@/lib/utils";
+import { InlineError } from "@/components/MessageLine";
 
 // Login is the passwordless sign-in (spec §B). Passkey and email-OTP are the
 // primary doors; a first-time player arrives with an in-game Bind Code (/link);
@@ -351,7 +352,7 @@ export function Login() {
                   </div>
                 )}
 
-                {error && <p className="text-sm text-destructive">{error}</p>}
+                <InlineError message={error} />
 
                 {otpSent && (
                   <Button
@@ -440,7 +441,7 @@ export function Login() {
                   {t("bind_hint")}
                 </p>
               </div>
-              {error && <p className="text-sm text-destructive">{error}</p>}
+              <InlineError message={error} />
               <Button
                 type="submit"
                 className="w-full"
@@ -494,7 +495,7 @@ export function Login() {
                   {t("op_hint")}
                 </p>
               </div>
-              {error && <p className="text-sm text-destructive">{error}</p>}
+              <InlineError message={error} />
               <Button
                 type="submit"
                 className="w-full"
@@ -564,7 +565,7 @@ export function Login() {
                 />
               </div>
 
-              {error && <p className="text-sm text-destructive">{error}</p>}
+              <InlineError message={error} />
 
               <Button
                 type="submit"

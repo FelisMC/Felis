@@ -22,7 +22,7 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   projects: [
-    { name: "desktop", testMatch: /smoke\.spec\.ts/, use: { ...devices["Desktop Chrome"], channel: "chrome" } },
+    { name: "desktop", testMatch: /(smoke|a11y)\.spec\.ts/, use: { ...devices["Desktop Chrome"], channel: "chrome" } },
     {
       name: "mobile",
       testMatch: /mobile\.spec\.ts/,

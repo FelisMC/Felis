@@ -16,6 +16,7 @@ import { hostFor } from "@/lib/config";
 import type { Phase, AutostartPolicy } from "@/lib/types";
 import { EditServerDialog } from "@/components/EditServerDialog";
 import { PowerButton } from "@/components/PowerButton";
+import { InlineError } from "@/components/MessageLine";
 
 // notStreamingCopy explains why there is no live feed for a phase that has no
 // streamable pod. The read path only has something to relay once a pod is up, so
@@ -180,7 +181,7 @@ function CommandInput({ name }: { name: string }) {
         />
         {sending && <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0 text-zinc-500" />}
       </div>
-      {err && <p className="text-xs text-destructive">{err}</p>}
+      <InlineError message={err} className="text-xs" />
     </div>
   );
 }

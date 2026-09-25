@@ -343,6 +343,7 @@ export function ServerLuckPerms() {
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="Steve"
+                  aria-label={t("luckperms_player_lookup")}
                   className="pl-9 h-9 text-xs font-mono bg-background/50 border-input focus-visible:ring-primary/30"
                   autoComplete="off"
                   disabled={submitting}
@@ -434,7 +435,7 @@ export function ServerLuckPerms() {
 
                 {/* Operations Feedback */}
                 {formFeedback && (
-                  <div className={cn(
+                  <div role={formFeedback.kind === "ok" ? "status" : "alert"} className={cn(
                     "p-3 rounded-md text-xs whitespace-pre-wrap break-all border transition-all animate-in fade-in duration-200",
                     formFeedback.kind === "ok"
                       ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400"
@@ -471,6 +472,8 @@ export function ServerLuckPerms() {
                                   type="button"
                                   onClick={() => handleRemoveGroup(group)}
                                   disabled={submitting}
+                                  aria-label={t("luckperms_remove_group", { group })}
+                                  title={t("luckperms_remove_group", { group })}
                                   className="text-muted-foreground hover:text-destructive hover:bg-muted p-0.5 rounded transition-all focus:outline-none"
                                 >
                                   <Trash2 className="h-3.5 w-3.5" />
@@ -484,11 +487,12 @@ export function ServerLuckPerms() {
 
                         <div className="border-t border-border/50 pt-4 flex flex-col sm:flex-row gap-3 items-end">
                           <div className="grid gap-1.5 flex-1 w-full">
-                            <Label className="text-xs text-muted-foreground font-semibold">
+                            <Label htmlFor="lp-group-name" className="text-xs text-muted-foreground font-semibold">
                               {t("luckperms_group_name")}
                             </Label>
                             <div className="flex gap-2">
                               <Input
+                                id="lp-group-name"
                                 placeholder={t("luckperms_custom_group_placeholder")}
                                 value={groupNameInput}
                                 onChange={(e) => setGroupNameInput(e.target.value)}
@@ -500,7 +504,7 @@ export function ServerLuckPerms() {
                                 onValueChange={(v) => setGroupNameInput(v)}
                                 disabled={submitting}
                               >
-                                <SelectTrigger className="w-[120px] h-9 text-xs bg-background/50 border-input text-muted-foreground">
+                                <SelectTrigger className="w-[120px] h-9 text-xs bg-background/50 border-input text-muted-foreground" aria-label={t("luckperms_presets")}>
                                   <span>{t("luckperms_presets")}</span>
                                 </SelectTrigger>
                                 <SelectContent className="border-border">
@@ -596,6 +600,8 @@ export function ServerLuckPerms() {
                                           size="sm"
                                           disabled={submitting}
                                           onClick={() => handleRemovePermission(p.node, p.world)}
+                                          aria-label={t("luckperms_remove_perm", { node: p.node })}
+                                          title={t("luckperms_remove_perm", { node: p.node })}
                                           className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive hover:bg-muted rounded transition-all focus:outline-none"
                                         >
                                           <Trash2 className="h-3.5 w-3.5" />
@@ -640,7 +646,7 @@ export function ServerLuckPerms() {
                                   onValueChange={(v) => setPermNodeInput(v)}
                                   disabled={submitting}
                                 >
-                                  <SelectTrigger className="w-[100px] h-9 text-xs shrink-0 bg-background/50 border-input text-muted-foreground">
+                                  <SelectTrigger className="w-[100px] h-9 text-xs shrink-0 bg-background/50 border-input text-muted-foreground" aria-label={t("luckperms_presets")}>
                                     <span>{t("luckperms_presets")}</span>
                                   </SelectTrigger>
                                   <SelectContent className="border-border">
@@ -718,6 +724,7 @@ export function ServerLuckPerms() {
                       type="button"
                       onClick={clearHistory}
                       className="text-muted-foreground hover:text-destructive transition-colors focus:outline-none"
+                      aria-label={t("luckperms_clear_history")}
                       title={t("luckperms_clear_history")}
                     >
                       <Trash2 className="h-3.5 w-3.5" />

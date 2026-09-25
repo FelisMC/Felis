@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Loading, ErrorState } from "@/components/States";
 import { ConfirmFooter } from "@/components/ConfirmFooter";
-import { MessageLine } from "@/components/MessageLine";
+import { MessageLine, InlineError } from "@/components/MessageLine";
 import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
 import { formatAbsolute } from "@/lib/format";
@@ -361,7 +361,7 @@ export function Account() {
                   </div>
                 </li>
               )}
-              {emailError && <p className="text-sm text-destructive ml-9">{emailError}</p>}
+              <InlineError message={emailError} className="ml-9" />
             </ol>
           )}
         </CardContent>
@@ -405,7 +405,7 @@ export function Account() {
                       required
                     />
                   </div>
-                  {passkeyError && <p className="text-sm text-destructive">{passkeyError}</p>}
+                  <InlineError message={passkeyError} />
                 </div>
                 <DialogFooter>
                   <Button
@@ -613,7 +613,7 @@ function LinkForm({
                 {submitting ? t("verifying") : t("verify_btn")}
               </Button>
             </div>
-            {error && <p className="text-sm text-destructive">{error}</p>}
+            <InlineError message={error} />
           </form>
         </div>
       </li>
@@ -858,7 +858,7 @@ function MigrationCard({ userId, hasPasskey }: { userId?: string; hasPasskey: bo
               )
             )}
 
-            {err && <p className="text-sm text-destructive">{err}</p>}
+            <InlineError message={err} />
           </>
         )}
       </CardContent>

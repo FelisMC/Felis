@@ -95,10 +95,11 @@ export function CreateUserDialog({ onCreated }: Props) {
         <form onSubmit={handleSubmit} className="space-y-4">
           {/* Username */}
           <div className="space-y-1.5">
-            <Label className="text-xs font-semibold text-muted-foreground">
+            <Label htmlFor="create-user-username" className="text-xs font-semibold text-muted-foreground">
               {t("users_field_username")} *
             </Label>
             <Input
+              id="create-user-username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
               placeholder={t("users_create_username_placeholder")}
@@ -109,10 +110,11 @@ export function CreateUserDialog({ onCreated }: Props) {
 
           {/* Email */}
           <div className="space-y-1.5">
-            <Label className="text-xs font-semibold text-muted-foreground">
+            <Label htmlFor="create-user-email" className="text-xs font-semibold text-muted-foreground">
               {t("users_field_email")}
             </Label>
             <Input
+              id="create-user-email"
               type="email"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
@@ -123,11 +125,11 @@ export function CreateUserDialog({ onCreated }: Props) {
 
           {/* Role */}
           <div className="space-y-1.5">
-            <Label className="text-xs font-semibold text-muted-foreground">
+            <Label htmlFor="create-user-role" className="text-xs font-semibold text-muted-foreground">
               {t("users_field_role")}
             </Label>
             <Select value={role} onValueChange={(v: "user" | "admin") => setRole(v)}>
-              <SelectTrigger className="h-9 text-sm">
+              <SelectTrigger id="create-user-role" className="h-9 text-sm">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

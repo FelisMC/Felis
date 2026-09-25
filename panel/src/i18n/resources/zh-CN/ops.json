@@ -12,6 +12,7 @@
   "fleet_distribution": "状态分布",
   "fleet_search_placeholder": "搜索名称、域名或所有者…",
   "fleet_filter_all": "全部状态",
+  "fleet_filter_phase": "按状态筛选",
   "fleet_count": "共 {{count}} 台",
   "fleet_count_filtered": "{{shown}} / {{total}} 台",
   "fleet_col_status": "状态",

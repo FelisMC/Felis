@@ -17,6 +17,7 @@
   "brand_tagline": "K8s-native Minecraft orchestration",
   "page_title": "Felis · Console",
   "toggle_theme": "Toggle theme",
+  "change_language": "Language",
   "pagination_prev": "Previous",
   "pagination_next": "Next",
   "pagination_of": "Page {{current}} of {{total}}",

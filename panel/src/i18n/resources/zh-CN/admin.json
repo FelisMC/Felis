@@ -142,6 +142,8 @@
   "users_search_btn": "搜索",
   "users_filter_role_all": "全部角色",
   "users_filter_status_all": "全部状态",
+  "users_filter_role": "按角色筛选",
+  "users_filter_status": "按状态筛选",
   "users_status_active": "正常",
   "users_status_disabled": "已禁用",
   "users_role_admin": "管理员",
