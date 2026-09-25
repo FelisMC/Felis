@@ -5,6 +5,7 @@ import best.lolicon.felis.link.LinkCode;
 import best.lolicon.felis.link.LinkConfig;
 import best.lolicon.felis.link.LinkConfigLoader;
 import best.lolicon.felis.link.LinkException;
+import best.lolicon.felis.link.ModLinkPolicy;
 
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
@@ -66,6 +67,11 @@ public final class FelisFabricMod implements DedicatedServerModInitializer {
                 player = source.getPlayerOrException();
             } catch (CommandSyntaxException e) {
                 source.sendFailure(Component.literal("/link 只能由玩家执行 / /link can only be run by a player."));
+                return 0;
+            }
+            if (!source.getServer().usesAuthentication()) {
+                LOGGER.warn(ModLinkPolicy.OFFLINE_LOG);
+                source.sendFailure(Component.literal(ModLinkPolicy.OFFLINE_REPLY));
                 return 0;
             }
             requestAndReply(source.getServer(), player);

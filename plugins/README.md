@@ -1,7 +1,8 @@
 # Felis server-side plugins
 
 These are the in-cluster and edge plugins for Felis. The Velocity proxy and the three loader
-mods ship the in-game first leg of the §10 account-link flow: a player who is already online
+mods (these on a standalone online-mode server only, see the warning under the module table)
+ship the in-game first leg of the §10 account-link flow: a player who is already online
 (so Mojang has verified their UUID) runs `/link`; the plugin asks felis-api to
 mint a one-time code for that UUID and shows it in chat. The player then enters
 the code on the web console → **Account** page (the second leg), which binds the
@@ -39,6 +40,21 @@ checkout to build from. **The three loader mods are not in that set** — a fini
 no `felis-fabric`/`felis-forge`/`felis-neoforge` jar anywhere. They build from this checkout with
 the commands under [Building](#building) and are deployed by hand; the account-link flow they
 carry works, but nothing installs them for you.
+
+> **The loader mods are for a standalone server only.** Inside a Felis network the proxy's
+> `/link` already serves every backend and shadows a backend's own, so user game servers need
+> no mod. A mod answers `/link` only when its server runs `online-mode=true`: an offline-mode
+> server is either behind a proxy (whose `/link` applies) or cracked, where the UUID is
+> whatever the client claims.
+>
+> **The token a mod holds is a real credential.** It mints a link code for any UUID the mod
+> asks about, so whoever can read that server's files — its operator, any plugin or mod on
+> it, a copied backup — can bind a not-yet-linked player's Minecraft account to their own web
+> account. Put a mod only on a server whose operator you would trust with that, and give it
+> the `limbo` token: it opens the link-code, link-status and blacklist routes and nothing
+> else. The `velocity` token also approves op-logins and wakes or claims servers for any
+> player; it stays on the proxy host. `sudo felis rotate-token limbo` replaces a leaked
+> token (the login gate restarts onto the new value; copy it to the mod by hand).
 
 ## Architecture
 
@@ -232,8 +248,10 @@ Velocity), then set `api-base-url` and `service-token` — or provide
 precedence. The token is one of felis-api's per-caller internal tokens: the
 Velocity proxy uses the `velocity` token (Secret `felis/felis-service-token`), the
 login gate the `limbo` token (`felis-limbo-token`), and each serves only its own
-routes (a token on another caller's route gets `403 wrong_caller`). Treat it as a
-secret; `sudo felis rotate-token <caller>` replaces it.
+routes (a token on another caller's route gets `403 wrong_caller`). A loader mod
+takes the `limbo` token, on a standalone online-mode server only (see the warning
+under the module table). Treat it as a secret; `sudo felis rotate-token <caller>`
+replaces it.
 
 On **Velocity**, also set `root-domain` (and optionally `lobby-server`) in the
 same file to turn on §11 routing, and make sure `online-mode=true` in
