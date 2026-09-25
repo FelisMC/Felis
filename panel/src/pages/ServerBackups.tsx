@@ -137,8 +137,6 @@ function BackupRow({
             locale={locale}
             onReloadStatus={onReloadStatus}
             buttonVariant={isLatest ? "destructive" : "outline"}
-            buttonSize="sm"
-            layout="row"
           />
         ) : (
           <span className="text-xs text-muted-foreground/40 font-medium px-3 py-1.5">
@@ -263,14 +261,15 @@ function ChainNote({ job }: { job: ServerJob }) {
   return null;
 }
 
-/** RestoreControls is the restore ACTION on each unexpired backup row. Restore
- *  overwrites the world, so it hides behind a single button that opens a confirm
- *  dialog. The dialog states the full cost up front — the server is stopped (online
- *  players drop) and the current world is overwritten by THIS exact backup — and
- *  offers a safety snapshot, on by default: the backend first backs up the world as
- *  it is and restores only once that succeeded, which makes a wrong pick undoable.
- *  Turning it off brings back the irreversible wording. On confirm it runs the whole
- *  chain itself: stop → wait for Stopped → restore.
+/** RestoreControls is the restore button on each backup row that can still be
+ *  restored (the row renders a note in its place for a corrupt or expired one), and
+ *  any of them may be picked, not only the newest. Restore overwrites the world, so
+ *  the button opens a confirm dialog that states the full cost up front: the server is
+ *  stopped (online players drop) and the current world is overwritten by THIS exact
+ *  backup. It offers a safety snapshot, on by default: the backend first backs up the
+ *  world as it is and restores only once that succeeded, which makes a wrong pick
+ *  undoable. Turning it off brings back the irreversible wording. On confirm it runs
+ *  the whole chain itself: stop → wait for Stopped → restore.
  *  The backend refuses a restore unless the world volume is free (409 not_stopped), so
  *  stopping here means the user never has to detour to the console and come back. There
  *  is deliberately no type-the-name step: the friction that matters is owning the
@@ -280,8 +279,8 @@ function ChainNote({ job }: { job: ServerJob }) {
  *  status until Stopped is observed, giving up after ~60s with a retryable timeout — so
  *  restore only fires once the volume is provably free. While the chain runs the dialog
  *  is locked (no ✕, no dismiss) so a mid-flight close can't strand it. A 202 is
- *  terminal: the dialog closes and the card shows a "restore started" note instead of
- *  re-offering the trigger, so a second restore Job can't race the first. */
+ *  terminal: the dialog closes and the row shows a "restore started" note in place of
+ *  the button, so a second restore Job can't race the first. */
 const POLL_MS = 2500;
 const MAX_POLLS = 24; // ~60s ceiling before we stop waiting for Stopped
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -293,17 +292,13 @@ function RestoreControls({
   locale,
   onReloadStatus,
   buttonVariant = "destructive",
-  buttonSize = "sm",
-  layout = "card",
 }: {
   serverName: string;
   backup: BackupView;
   now: number;
   locale: string;
   onReloadStatus: () => void;
-  buttonVariant?: "destructive" | "outline" | "ghost" | "default";
-  buttonSize?: "default" | "sm" | "lg" | "icon";
-  layout?: "card" | "row";
+  buttonVariant?: "destructive" | "outline";
 }) {
   const { t } = useTranslation("backups");
   const [open, setOpen] = useState(false);
@@ -317,37 +312,11 @@ function RestoreControls({
   const [error, setError] = useState<string | null>(null);
   const [safety, setSafety] = useState(true);
 
-  if (backup.corrupt) {
-    if (layout === "row") return null;
-    return (
-      <p className="mt-4 border-t border-primary/20 pt-4 text-xs text-destructive">
-        {t("corrupt_cannot_restore")}
-      </p>
-    );
-  }
-
-  if (isExpired(backup.expires_at, now)) {
-    if (layout === "row") return null;
-    return (
-      <p className="mt-4 border-t border-primary/20 pt-4 text-xs text-destructive">
-        {t("expired_cannot_restore")}
-      </p>
-    );
-  }
-
   if (done) {
-    if (layout === "row") {
-      return (
-        <div className="flex items-center gap-1.5 text-xs text-emerald-500 font-medium">
-          <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-          <span>{t(done === "snapshot" ? "restore_snapshot_started_short" : "restore_started_short")}</span>
-        </div>
-      );
-    }
     return (
-      <div className="mt-4 flex items-start gap-2 border-t border-primary/20 pt-4 text-sm text-emerald-500">
-        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
-        <span>{t(done === "snapshot" ? "restore_snapshot_started" : "restore_started")}</span>
+      <div className="flex items-center gap-1.5 text-xs text-emerald-500 font-medium">
+        <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+        <span>{t(done === "snapshot" ? "restore_snapshot_started_short" : "restore_started_short")}</span>
       </div>
     );
   }
@@ -393,8 +362,8 @@ function RestoreControls({
 
   const trigger = (
     <DialogTrigger asChild>
-      <Button variant={buttonVariant} size={buttonSize}>
-        <RotateCcw className="h-4 w-4" /> {t(layout === "row" ? "restore_btn_short" : "restore_btn")}
+      <Button variant={buttonVariant} size="sm">
+        <RotateCcw className="h-4 w-4" /> {t("restore_btn_short")}
       </Button>
     </DialogTrigger>
   );
@@ -454,42 +423,24 @@ function RestoreControls({
     </DialogContent>
   );
 
-  if (layout === "row") {
-    return (
-      <Dialog
-        open={open}
-        onOpenChange={(next) => {
-          if (submitting) return;
-          if (next) setError(null);
-          setOpen(next);
-        }}
-      >
-        {trigger}
-        {dialogContent}
-      </Dialog>
-    );
-  }
-
   return (
-    <div className="mt-4 border-t border-primary/20 pt-4">
-      <Dialog
-        open={open}
-        onOpenChange={(next) => {
-          if (submitting) return; // locked while the stop→restore chain runs
-          if (next) setError(null); // fresh each open
-          setOpen(next);
-        }}
-      >
-        {trigger}
-        {dialogContent}
-      </Dialog>
-    </div>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (submitting) return; // locked while the stop→restore chain runs
+        if (next) setError(null); // fresh each open
+        setOpen(next);
+      }}
+    >
+      {trigger}
+      {dialogContent}
+    </Dialog>
   );
 }
 
 /** ServerBackups is the per-server backup surface (/servers/:name/backups): view the
- *  world archives kept for this server and (B2) roll the world back to the most
- *  recent one. It owns its own gating — ownership from /me/servers, since GET status
+ *  world archives kept for this server and (B2) roll the world back to any of them
+ *  that has not expired. It owns its own gating — ownership from /me/servers, since GET status
  *  never carries `owned` — but deliberately does NOT gate on readiness the way
  *  ServerPlayers does: backups are read from Postgres, not RCON, and a restore in
  *  fact requires the server to be STOPPED, so this page must work while it is asleep. */

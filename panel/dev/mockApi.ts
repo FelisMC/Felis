@@ -11,6 +11,7 @@ import type {
   Identity,
   MyServerView,
   Phase,
+  ServerJob,
   ServerStatus,
   WhitelistImage,
   Submission,
@@ -77,6 +78,8 @@ interface MockState {
   images: WhitelistImage[];
   access: Record<string, AccessState>;
   backups: BackupView[];
+  // Backup/restore Jobs by server, newest first. The mock finishes each at once.
+  jobs: Record<string, ServerJob[]>;
   builds: Build[];
   passkeys: Record<AccountID, { id: string; name: string; created_at: string }[]>;
   submissions: Submission[];
@@ -189,14 +192,23 @@ function sha256Hex(b: Buffer): string {
 }
 const RETENTION_DAYS = 90;
 
-function backup(server: string, daysAgo: number, sizeBytes: number, formerOwner: string): BackupView {
+let freshBackups = 0;
+
+function backup(
+  server: string,
+  daysAgo: number,
+  sizeBytes: number,
+  formerOwner: string,
+  reason = "inactive_15d",
+): BackupView {
   const created = Date.now() - daysAgo * DAY_MS;
   return {
-    id: `bk-${server}-${daysAgo}`,
+    // A seeded row is named by its age; one made now needs a sequence to stay unique.
+    id: daysAgo > 0 ? `bk-${server}-${daysAgo}` : `bk-${server}-now-${++freshBackups}`,
     server_name: server,
     former_owner: formerOwner,
     size_bytes: Math.round(sizeBytes),
-    reason: "inactive_15d",
+    reason,
     status: "present",
     created_at: new Date(created).toISOString(),
     expires_at: new Date(created + RETENTION_DAYS * DAY_MS).toISOString(),
@@ -210,6 +222,9 @@ function mockBackups(): BackupView[] {
     backup("survival", 45, 1.2 * GiB, "owner"),
     backup("survival", 88, 2.1 * GiB, "owner"), // ~2 days from expiry — exercises the urgency state
     backup("modded", 12, 0.6 * GiB, "owner"),
+    // The linked player's own server, so a player sees the restore rows too.
+    backup("lobby", 2, 0.8 * GiB, "linked", "manual"),
+    backup("lobby", 30, 0.7 * GiB, "linked"),
   ];
 }
 
@@ -304,6 +319,7 @@ function initialState(): MockState {
       },
     },
     backups: mockBackups(),
+    jobs: {},
     builds: [
       {
         id: "bld-1",
@@ -1805,6 +1821,18 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
   if (is("POST", ctx) && ctx.parts[4] === "restore-backup") {
     return await handleRestoreBackupMock(ctx, serverInfo);
   }
+  if (is("POST", ctx) && ctx.parts[4] === "backup") {
+    handleBackupNowMock(ctx, serverInfo);
+    return true;
+  }
+  if (is("GET", ctx) && ctx.parts[4] === "jobs") {
+    if (!canManage(ctx.account, serverInfo)) {
+      sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+      return true;
+    }
+    sendJSON(ctx.res, 200, { server: serverInfo.name, jobs: ctx.state.jobs[serverInfo.name] ?? [] });
+    return true;
+  }
   if (ctx.parts[4] === "access") {
     return handleAccessMock(ctx, serverInfo);
   }
@@ -1822,9 +1850,11 @@ async function handleRestoreBackupMock(ctx: SessionContext, serverInfo: MockServ
     return true;
   }
   let backupId: string | undefined;
+  let safety = true;
   try {
-    const body = await readJSON<{ backup_id?: string }>(ctx.req);
+    const body = await readJSON<{ backup_id?: string; safety_snapshot?: boolean }>(ctx.req);
     backupId = body.backup_id;
+    safety = body.safety_snapshot !== false;
   } catch (e) {
     // Ignore if body is empty or unparsable
   }
@@ -1857,8 +1887,51 @@ async function handleRestoreBackupMock(ctx: SessionContext, serverInfo: MockServ
     sendError(ctx.res, 409, "not_stopped", "stop the server before restoring a backup");
     return true;
   }
-  sendJSON(ctx.res, 202, { name: serverInfo.name, status: "restoring", backup_id: backup.id });
+  const now = new Date().toISOString();
+  const done = { state: "succeeded", started_at: now, finished_at: now };
+  const jobs: ServerJob[] = [{ name: `restore-${serverInfo.name}-${Date.now()}`, kind: "restore", ...done }];
+  if (safety) {
+    ctx.state.backups.unshift(backup(serverInfo.name, 0, 0.9 * GiB, ctx.account.id, "pre_restore"));
+    jobs.push({
+      name: `backup-${serverInfo.name}-${Date.now()}`,
+      kind: "backup",
+      ...done,
+      then_restore: "started",
+      restore_backup_id: backup.id,
+    });
+  }
+  ctx.state.jobs[serverInfo.name] = [...jobs, ...(ctx.state.jobs[serverInfo.name] ?? [])];
+  sendJSON(ctx.res, 202, {
+    name: serverInfo.name,
+    status: "restoring",
+    backup_id: backup.id,
+    safety_snapshot: safety,
+  });
   return true;
+}
+
+// handleBackupNowMock mirrors POST /servers/{name}/backup: owner-or-admin, then
+// the stopped gate (the world volume is RWO), then 202. The Job finishes at once.
+function handleBackupNowMock(ctx: SessionContext, serverInfo: MockServer): void {
+  if (!canManage(ctx.account, serverInfo)) {
+    sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+    return;
+  }
+  if (serverInfo.phase !== "Stopped") {
+    sendError(ctx.res, 409, "not_stopped", "stop the server before backing it up");
+    return;
+  }
+  const now = new Date().toISOString();
+  ctx.state.backups.unshift(backup(serverInfo.name, 0, 0.9 * GiB, ctx.account.id, "manual"));
+  const job: ServerJob = {
+    name: `backup-${serverInfo.name}-${Date.now()}`,
+    kind: "backup",
+    state: "succeeded",
+    started_at: now,
+    finished_at: now,
+  };
+  ctx.state.jobs[serverInfo.name] = [job, ...(ctx.state.jobs[serverInfo.name] ?? [])];
+  sendJSON(ctx.res, 202, { name: serverInfo.name, status: "backing_up" });
 }
 
 function accessFor(state: MockState, name: string): AccessState {
