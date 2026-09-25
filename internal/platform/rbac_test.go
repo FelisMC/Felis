@@ -194,6 +194,18 @@ func TestOperatorRole_ScopeExact(t *testing.T) {
 			t.Errorf("operator must NOT touch core/%s", res)
 		}
 	}
+	// RCON Secrets are read by name through the uncached reader and created once;
+	// no list/watch, so no informer mirrors the namespace's Secrets into it.
+	for _, v := range []string{"get", "create"} {
+		if !hasRule(op, groupCore, "secrets", v) {
+			t.Errorf("operator must have secrets:%s", v)
+		}
+	}
+	for _, v := range []string{"list", "watch", "update", "patch", "delete", "deletecollection", "*"} {
+		if hasRule(op, groupCore, "secrets", v) {
+			t.Errorf("operator secrets rule must be get+create only, found %s", v)
+		}
+	}
 	// Pods are delete-only: the bounded retry of a timed-out start.
 	if !hasRule(op, groupCore, "pods", "delete") {
 		t.Error("operator must have pods:delete (auto-restart of a timed-out start)")

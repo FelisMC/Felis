@@ -150,7 +150,7 @@ func APIBuildRole(p Params) *rbacv1.Role {
 // status (Status().Update — `update` only) and patches spec.desiredState to
 // Stopped for idle auto-stop (spec §8 — the one spec field it may write, using
 // the same merge patch as the reaper's Stop: without the grant the auto-stop
-// call fails closed with a 403), and reads RCON Secrets. Jobs are list-only,
+// call fails closed with a 403), and reads RCON Secrets by name, uncached. Jobs are list-only,
 // through the manager's uncached API reader: before scaling a server up from zero
 // the operator checks that no restore/backup/file-write Job holds its world
 // (internal/maintenance). Pods are delete-only: a start that timed out is retried
@@ -164,13 +164,13 @@ func OperatorRole(p Params) *rbacv1.Role {
 		rule([]string{groupFelis}, []string{"minecraftservers/status"}, []string{"update"}),
 		rule([]string{groupApps}, []string{"statefulsets"}, []string{"get", "list", "watch", "create", "update"}),
 		rule([]string{groupCore}, []string{"services"}, []string{"get", "list", "watch", "create", "update"}),
-		// create is here for the per-server RCON password Secret the operator
-		// provisions on first reconcile (internal/operator.ensureRconSecret). It is a
-		// smaller grant than it looks: this identity already holds get/list/watch on
-		// every Secret in this namespace, so being able to add one grants no read it
-		// did not already have. No update/delete — the password is written once and
+		// get by name, through the uncached API reader (Reconciler.Secrets), of the
+		// RCON password Secret a server's spec names; create for the one the operator
+		// provisions on first reconcile (internal/operator.ensureRconSecret). No
+		// list/watch, so there is no Secret informer and nothing enumerates the
+		// namespace's Secrets. No update/delete — the password is written once and
 		// removed by garbage collection through its controller reference.
-		rule([]string{groupCore}, []string{"secrets"}, []string{"get", "list", "watch", "create"}),
+		rule([]string{groupCore}, []string{"secrets"}, []string{"get", "create"}),
 		// list only: an uncached List (no informer, so no watch) of the world-volume
 		// maintenance Jobs; the operator never creates or deletes a Job.
 		rule([]string{groupBatch}, []string{"jobs"}, []string{"list"}),

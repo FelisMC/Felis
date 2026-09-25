@@ -122,6 +122,12 @@ type Reconciler struct {
 	// (internal/maintenance). It is the manager's uncached API reader, so the
 	// operator needs jobs:list and no Job informer. Nil skips the check.
 	Jobs client.Reader
+	// Secrets reads the RCON password Secrets, each by name. It is the manager's
+	// uncached API reader, so the operator holds secrets:get and no list or watch:
+	// a Secret informer would cache every Secret in the namespace (the felis-config
+	// mirror with the database URL among them) and grow with them. Nil falls back
+	// to the embedded client.
+	Secrets client.Reader
 	// Watch records the passes in flight for the liveness probe. Nil skips it.
 	Watch *ReconcileWatch
 
@@ -146,10 +152,9 @@ func (r *Reconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&v1alpha1.MinecraftServer{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&corev1.Service{}).
-		// Owns the Secrets too: the per-server RCON password is managed here,
-		// and a watch is what lets a deleted Secret be noticed at all (a quiet
-		// Running server otherwise produces no events).
-		Owns(&corev1.Secret{}).
+		// No Secret watch: a Running server is re-reconciled every
+		// requeueRunningProbe anyway, which recreates a deleted RCON Secret, and
+		// a stopped one gets it back on its next start.
 		WithOptions(controller.Options{MaxConcurrentReconciles: maxConcurrentReconciles}).
 		Complete(r)
 }
@@ -522,7 +527,7 @@ func (r *Reconciler) ensureRconSecret(ctx context.Context, server *v1alpha1.Mine
 		return "", fmt.Errorf("rcon.secretRef.name and .key are required when rcon is enabled")
 	}
 	var existing corev1.Secret
-	err := r.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: ref.Name}, &existing)
+	err := r.secretReader().Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: ref.Name}, &existing)
 	if err == nil {
 		if b, ok := existing.Data[ref.Key]; ok {
 			return rconStamp(b), nil
@@ -561,7 +566,7 @@ func (r *Reconciler) ensureRconSecret(ctx context.Context, server *v1alpha1.Mine
 		// value that would flip on the next reconcile and roll the pod twice.
 		if apierrors.IsAlreadyExists(err) {
 			var winner corev1.Secret
-			if gerr := r.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: ref.Name}, &winner); gerr != nil {
+			if gerr := r.secretReader().Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: ref.Name}, &winner); gerr != nil {
 				return "", gerr
 			}
 			return rconStamp(winner.Data[ref.Key]), nil
@@ -583,13 +588,20 @@ func randomRconPassword() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
+func (r *Reconciler) secretReader() client.Reader {
+	if r.Secrets != nil {
+		return r.Secrets
+	}
+	return r.Client
+}
+
 func (r *Reconciler) rconPassword(ctx context.Context, server *v1alpha1.MinecraftServer) (string, error) {
 	ref := server.Spec.Rcon.SecretRef
 	if ref.Name == "" || ref.Key == "" {
 		return "", fmt.Errorf("rcon.secretRef.name and .key are required when rcon is enabled")
 	}
 	var secret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: ref.Name}, &secret); err != nil {
+	if err := r.secretReader().Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: ref.Name}, &secret); err != nil {
 		return "", err
 	}
 	b, ok := secret.Data[ref.Key]

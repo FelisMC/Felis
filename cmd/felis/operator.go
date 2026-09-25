@@ -117,8 +117,11 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 		FelisImage: os.Getenv("FELIS_IMAGE"),
 		// Uncached: the maintenance-lock check lists Jobs only when a server is
 		// about to start, which does not justify a namespace-wide Job informer.
-		Jobs:  mgr.GetAPIReader(),
-		Watch: watch,
+		Jobs: mgr.GetAPIReader(),
+		// Uncached too: RCON Secrets are read by name, so the Role grants
+		// secrets:get without the list/watch an informer would need.
+		Secrets: mgr.GetAPIReader(),
+		Watch:   watch,
 	}
 	if err := r.SetupWithManager(mgr); err != nil {
 		fmt.Fprintf(stderr, "felis operator: setup controller: %v\n", err)

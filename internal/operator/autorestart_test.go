@@ -10,6 +10,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/operator"
@@ -181,4 +182,65 @@ func TestFailedServerRequeuesWhenTheRetryIsDue(t *testing.T) {
 	if res := reconcile(t, r, "survival"); res.RequeueAfter != 5*time.Minute {
 		t.Fatalf("spent requeue = %v, want 5m", res.RequeueAfter)
 	}
+}
+
+// noCachedSecrets stands in for the manager's cached client, which has no Secret
+// informer: any Secret read through it fails.
+type noCachedSecrets struct{ client.Client }
+
+func (c noCachedSecrets) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if _, ok := obj.(*corev1.Secret); ok {
+		return errors.New("secrets are not cached")
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+
+// RCON Secrets are provisioned and read through Reconciler.Secrets alone, so the
+// operator runs with secrets:get and no Secret informer.
+func TestRconSecretsAreReadThroughTheUncachedReader(t *testing.T) {
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 2, Max: 20}}, runningServer())
+	r.Client = noCachedSecrets{c}
+	r.Secrets = c
+	reconcile(t, r, "survival") // provisions survival-rcon
+	var secret corev1.Secret
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "minecraft", Name: "survival-rcon"}, &secret); err != nil {
+		t.Fatalf("rcon secret not provisioned: %v", err)
+	}
+	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival")
+	if s := getServer(t, c, "survival"); s.Status.Phase != v1alpha1.PhaseRunning || !s.Status.Ready {
+		t.Fatalf("phase=%s ready=%v, want Running ready", s.Status.Phase, s.Status.Ready)
+	}
+}
+
+// staleOnce answers the first Secret Get NotFound, like a reader that lost the
+// race to a concurrent create, then reads through.
+type staleOnce struct {
+	client.Reader
+	missed bool
+}
+
+func (s *staleOnce) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	if !s.missed {
+		s.missed = true
+		return apierrors.NewNotFound(corev1.Resource("secrets"), key.Name)
+	}
+	return s.Reader.Get(ctx, key, obj, opts...)
+}
+
+// Losing the create race re-reads the winner through the same uncached reader.
+func TestRconSecretCreateRaceRereadsUncached(t *testing.T) {
+	r, c := newReconciler(t, fakeProber{}, runningServer(), rconSecret())
+	r.Client = noCachedSecrets{c}
+	r.Secrets = &staleOnce{Reader: c}
+	reconcile(t, r, "survival")
+	var secret corev1.Secret
+	if err := c.Get(context.Background(), types.NamespacedName{Namespace: "minecraft", Name: "survival-rcon"}, &secret); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(secret.Data["password"]); got != "hunter2" {
+		t.Fatalf("password = %q, want the winner's hunter2", got)
+	}
+	// The pass went on to build the workload instead of parking on RconSecretUnavailable.
+	getSTS(t, c, "survival")
 }

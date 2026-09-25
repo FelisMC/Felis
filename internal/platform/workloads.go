@@ -540,8 +540,11 @@ func operatorMetricsService(p Params) *corev1.Service {
 // the felis-operator SA and carries controlPlanePodLabels(operator), the second
 // pod the allow-rcon peer admits (the readiness prober dials RCON). It takes NO
 // config Secret: the operator reads everything from flags + the in-cluster API,
-// so it never holds the database URL — a deliberately smaller attack surface than
-// the api. It watches the minecraft namespace (--namespace) while running in the
+// so it never loads the database URL — a deliberately smaller attack surface than
+// the api. Its secrets:get in the minecraft namespace is by name and uncached
+// (no list, no informer), yet namespaced RBAC cannot exclude a name, so a
+// compromised operator could still fetch the felis-config mirror the Jobs and
+// the reaper mount there. It watches the minecraft namespace (--namespace) while running in the
 // control namespace, exactly the split cmd/felis/operator.go documents.
 func OperatorDeployment(p Params) *appsv1.Deployment {
 	p = p.withDefaults()
