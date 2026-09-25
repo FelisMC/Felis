@@ -1225,6 +1225,24 @@ empty. A server whose idle stop an admin turned off keeps a duration on its
 spec (`autoStopEnabled: false`, `emptySecondsBeforeStop` set), so converge
 leaves it off; only servers it actually filled get a line.
 
+A **user** server created before every new server got RCON (`spec.rcon` wholly
+unset) has a dead console, always shows 0 online, and never idles out, since all
+three ride RCON. Plain `felis converge` lists each such server and changes
+nothing; `-user-rcon` turns RCON on for them with the block a server created
+today gets (the `<name>-rcon` Secret the operator provisions):
+
+```
+sudo felis converge -user-rcon
+kubectl -n minecraft get minecraftserver -o custom-columns=NAME:.metadata.name,RCON:.spec.rcon.enabled
+```
+
+It is opt-in for the reason above: the new start waits on the RCON probe, and a
+server whose image does not open the listener that `RCON_PASSWORD` asks for
+stays in `Starting` until it is marked `Failed`. Felis's own paper and lobby
+images open it; check a server running an image a user brought before filling
+it. A server whose RCON someone set, on or off, is never touched. The change
+applies at the server's next start.
+
 ---
 
 ## 13. World PVC survives after I deleted the MinecraftServer

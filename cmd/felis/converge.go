@@ -11,12 +11,14 @@ import (
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/config"
+	"felis.lolicon.best/internal/naming"
 	"felis.lolicon.best/internal/platform"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // cmdConverge is the explicit convergence pass over already-installed system
-// servers (#1), plus the idle-stop default for user servers that predate it. Provisioning is create-if-absent, so a field the desired spec
+// servers (#1), plus the idle-stop default for user servers that predate it, and
+// with -user-rcon their RCON block (#3). Provisioning is create-if-absent, so a field the desired spec
 // gained after an install (spec.rcon, spec.startup.healthHTTPPort, a derived env
 // key) never reaches the existing CR — and nothing says so. This command fills
 // exactly those zero-value fields; see convergeSystemServers for the full contract
@@ -29,6 +31,7 @@ func cmdConverge(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("converge", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", defaultSetupConfigPath, "path to felis.toml")
+	userRcon := fs.Bool("user-rcon", false, "also turn RCON on for user servers created before it was the default")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -59,6 +62,7 @@ func cmdConverge(args []string, stdout, stderr io.Writer) int {
 		defaultPanelHostname(cfg.Server.RootDomain, cfg.Auth.PanelHostname))
 
 	outcomes = append(outcomes, convergeUserServerIdle(context.Background(), cl, cfg.K8s.Namespace)...)
+	outcomes = append(outcomes, convergeUserServerRcon(context.Background(), cl, cfg.K8s.Namespace, *userRcon)...)
 
 	fmt.Fprintln(stdout, "felis converge: filling fields an installed server predates (operator-set values are never overwritten):")
 	exit := 0
@@ -110,6 +114,54 @@ func convergeUserServerIdle(ctx context.Context, cl client.Client, namespace str
 		}
 		out = append(out, systemServerOutcome{name: ms.Name, available: true, updated: true,
 			changes: []string{fmt.Sprintf("spec.idle (stop after %ds empty)", v1alpha1.DefaultEmptySecondsBeforeStop)}})
+	}
+	return out
+}
+
+// convergeUserServerRcon handles user servers created before RCON was part of every
+// new server (694e3cb): spec.rcon entirely unset. Such a server has a dead console,
+// reports nobody online, and never idles out, because all three ride RCON.
+//
+// Only with fill does it turn RCON on, with the same block CreateServer writes
+// today; without it each such server gets a line saying so. The fill is opt-in
+// because the operator gates readiness on the RCON probe: a server whose image does
+// not open the listener RCON_PASSWORD asks for would sit in Starting until it is
+// marked Failed. Felis's own paper and lobby images open it; an image a user brought
+// may not, and only the operator running this can tell. A server that already
+// carries any RCON setting (on or off) is left alone and produces no line.
+func convergeUserServerRcon(ctx context.Context, cl client.Client, namespace string, fill bool) []systemServerOutcome {
+	var list v1alpha1.MinecraftServerList
+	if err := cl.List(ctx, &list, client.InNamespace(namespace)); err != nil {
+		return []systemServerOutcome{{name: "user servers", err: fmt.Errorf("list servers: %w", err)}}
+	}
+	var out []systemServerOutcome
+	for i := range list.Items {
+		ms := &list.Items[i]
+		if ms.Labels[v1alpha1.LabelSystemRole] != "" || ms.Spec.Rcon != (v1alpha1.RconSpec{}) {
+			continue
+		}
+		if !fill {
+			out = append(out, systemServerOutcome{name: ms.Name, available: true,
+				skipped: "no RCON (console, online count and idle stop are off); once its image serves RCON, sudo felis converge -user-rcon turns it on"})
+			continue
+		}
+		changed, err := patchOnConflictRetry(ctx, cl, ms, func() bool {
+			if ms.Spec.Rcon != (v1alpha1.RconSpec{}) {
+				return false
+			}
+			ms.Spec.Rcon = v1alpha1.RconSpec{
+				Enabled:   true,
+				SecretRef: v1alpha1.SecretKeyRef{Name: naming.RconSecretName(ms.Name), Key: naming.RconSecretKey},
+			}
+			return true
+		})
+		if err != nil {
+			out = append(out, systemServerOutcome{name: ms.Name, err: fmt.Errorf("converge %s: %w", ms.Name, err)})
+			continue
+		}
+		if changed {
+			out = append(out, systemServerOutcome{name: ms.Name, available: true, updated: true, changes: []string{"spec.rcon"}})
+		}
 	}
 	return out
 }

@@ -229,3 +229,67 @@ func TestConvergeUserServerIdle(t *testing.T) {
 		t.Fatalf("second pass = %+v, want nothing to do", again)
 	}
 }
+
+// TestConvergeUserServerRcon reports a user server with no RCON block at all and
+// fills it only when asked, with the block CreateServer writes. RCON turned off on
+// purpose, a server with its own secret, and a system server stay as they are and
+// produce no line.
+func TestConvergeUserServerRcon(t *testing.T) {
+	scheme := newSystemServerScheme(t)
+	ctx := context.Background()
+	mk := func(name string, rcon v1alpha1.RconSpec, role string) *v1alpha1.MinecraftServer {
+		ms := &v1alpha1.MinecraftServer{}
+		ms.Name, ms.Namespace = name, "minecraft"
+		ms.Spec.Rcon = rcon
+		if role != "" {
+			ms.Labels = map[string]string{v1alpha1.LabelSystemRole: role}
+		}
+		return ms
+	}
+	own := v1alpha1.RconSpec{Enabled: true, Port: 25580, SecretRef: v1alpha1.SecretKeyRef{Name: "own", Key: "pw"}}
+	off := v1alpha1.RconSpec{SecretRef: v1alpha1.SecretKeyRef{Name: "rcon-off", Key: naming.RconSecretKey}}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		mk("demo", v1alpha1.RconSpec{}, ""),
+		mk("off", off, ""),
+		mk("own", own, ""),
+		mk(naming.SystemLobbyServer, v1alpha1.RconSpec{}, naming.SystemLobbyServer),
+	).Build()
+	get := func(name string) v1alpha1.RconSpec {
+		var ms v1alpha1.MinecraftServer
+		if err := cl.Get(ctx, client.ObjectKey{Namespace: "minecraft", Name: name}, &ms); err != nil {
+			t.Fatalf("get %s: %v", name, err)
+		}
+		return ms.Spec.Rcon
+	}
+
+	report := convergeUserServerRcon(ctx, cl, "minecraft", false)
+	if len(report) != 1 || report[0].name != "demo" || report[0].updated || report[0].err != nil ||
+		!strings.Contains(report[0].skipped, "-user-rcon") {
+		t.Fatalf("report = %+v, want one skipped line for demo naming -user-rcon", report)
+	}
+	if got := get("demo"); got != (v1alpha1.RconSpec{}) {
+		t.Fatalf("the report-only pass wrote demo's rcon: %+v", got)
+	}
+
+	filled := convergeUserServerRcon(ctx, cl, "minecraft", true)
+	if len(filled) != 1 || filled[0].name != "demo" || !filled[0].updated || filled[0].err != nil {
+		t.Fatalf("fill = %+v, want exactly one update for demo", filled)
+	}
+	want := map[string]v1alpha1.RconSpec{
+		"demo": {Enabled: true, SecretRef: v1alpha1.SecretKeyRef{
+			Name: naming.RconSecretName("demo"), Key: naming.RconSecretKey}},
+		"off":                    off,
+		"own":                    own,
+		naming.SystemLobbyServer: {},
+	}
+	for name, rcon := range want {
+		if got := get(name); got != rcon {
+			t.Errorf("%s rcon = %+v, want %+v", name, got, rcon)
+		}
+	}
+	for _, fill := range []bool{false, true} {
+		if again := convergeUserServerRcon(ctx, cl, "minecraft", fill); len(again) != 0 {
+			t.Fatalf("second pass (fill=%v) = %+v, want nothing to do", fill, again)
+		}
+	}
+}
