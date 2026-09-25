@@ -10,6 +10,7 @@ import org.slf4j.Logger;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
@@ -55,6 +56,7 @@ final class ServerRegistry {
     /** refresh reconciles registrations against a freshly fetched server list. */
     void refresh(Collection<ServerView> servers) {
         Set<String> seen = new HashSet<>();
+        Map<String, String> subdomains = new HashMap<>();
         for (ServerView v : servers) {
             String name = v.name();
             if (name == null || name.isEmpty()) {
@@ -64,7 +66,7 @@ final class ServerRegistry {
             byName.put(name, v);
             String sub = v.subdomain();
             if (sub != null && !sub.isEmpty()) {
-                subdomainToName.put(sub.toLowerCase(Locale.ROOT), name);
+                subdomains.put(sub.toLowerCase(Locale.ROOT), name);
             }
             ensureRegistered(v);
         }
@@ -75,7 +77,11 @@ final class ServerRegistry {
                 deregister(name);
             }
         }
-        subdomainToName.values().removeIf(n -> !seen.contains(n));
+        // The fetch is the whole truth for host routing too: a subdomain a server gave
+        // up (renamed, or gone with the server) stops routing, not only one another
+        // server took over.
+        subdomainToName.putAll(subdomains);
+        subdomainToName.keySet().retainAll(subdomains.keySet());
     }
 
     private void ensureRegistered(ServerView v) {

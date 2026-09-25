@@ -68,6 +68,42 @@ tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
 }
 
+// Routing self-tests: ServerRegistry and WaitingRouter run unchanged against the real
+// velocity-api types (faked with java.lang.reflect.Proxy, test/.../Fakes.java) and a
+// stub felis-api on a loopback port. They reuse the compile classpath, which dependency
+// verification has already checked, so they add no artifact. Kept out of `build` on
+// purpose: bootstrap runs `gradle clean build` on every install, and a test there would
+// only slow the install down. plugins/test.sh runs `./gradlew routingTest`.
+sourceSets {
+    routingTest {
+        java {
+            srcDir 'test'
+            include 'best/lolicon/felis/velocity/Fakes.java'
+            include 'best/lolicon/felis/velocity/ServerRegistryTest.java'
+            include 'best/lolicon/felis/velocity/WaitingRouterTest.java'
+            include 'best/lolicon/felis/velocity/ControlChannelTest.java'
+        }
+        compileClasspath += sourceSets.main.output + configurations.compileClasspath
+        runtimeClasspath += output + compileClasspath
+    }
+}
+
+def routingMains = ['ServerRegistryTest', 'WaitingRouterTest', 'ControlChannelTest']
+routingMains.each { name ->
+    tasks.register(name, JavaExec) {
+        group = 'verification'
+        description = "Runs the ${name} self-test main."
+        classpath = sourceSets.routingTest.runtimeClasspath
+        mainClass = "best.lolicon.felis.velocity.${name}"
+    }
+}
+
+tasks.register('routingTest') {
+    group = 'verification'
+    description = 'Runs the routing self-tests (ServerRegistry, WaitingRouter, ControlChannel).'
+    dependsOn routingMains
+}
+
 // Byte-identical jars from identical sources. deploy/bootstrap.sh restarts the proxy only when
 // a file it runs changed (velocity_fingerprint), and build-time timestamps in the jar would
 // make every rebuild look like a change and disconnect every player on each rerun.

@@ -312,8 +312,10 @@ plugins/neoforge/gradlew -p plugins/neoforge build
 
 The first build of each mod downloads and remaps/decompiles Minecraft, so it takes a few
 minutes; subsequent builds are fast. Jars land in each module's `build/libs`. CI runs
-both gates: `bash plugins/test.sh` (JDK 25 — the install-time plugins plus the
-codec/invite/server-list tests) and `bash plugins/test-mods.sh` (JDK 17 — the three
+both gates: `bash plugins/test.sh` (JDK 25 — the install-time plugins, the
+codec/invite/server-list tests, and the proxy routing tests that drive ServerRegistry,
+WaitingRouter and ControlChannel against the real velocity-api; run those alone with
+`plugins/velocity/gradlew -p plugins/velocity routingTest`) and `bash plugins/test-mods.sh` (JDK 17 — the three
 loader mods, via the wrappers above).
 
 ### Dependency verification

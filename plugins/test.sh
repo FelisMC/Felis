@@ -3,7 +3,7 @@
 #
 #     bash plugins/test.sh
 #
-# Two gates, both runnable on any machine with a JDK 25 (Gradle comes from each
+# Three gates, all runnable on any machine with a JDK 25 (Gradle comes from each
 # module's wrapper, sha256-pinned):
 #
 #   1. The hand-written, framework-free test mains under shared/test and
@@ -36,6 +36,15 @@
 #      compile break or a swapped artifact is a red check here instead of an
 #      install-time surprise. limbo compiles against the API release the login gate
 #      bundles: deploy/game-stack.lock's LIMBO_VERSION, which bootstrap passes too.
+#
+#   3. The velocity routing self-tests (`./gradlew routingTest`): ServerRegistry,
+#      WaitingRouter and ControlChannel run against the real velocity-api with a
+#      fake proxy and a stub felis-api — a refresh registers, moves and drops
+#      backends and lets go of a renamed subdomain, the login gate and host routing
+#      admit only linked players, each wake refusal reaches the player as its own
+#      message, felis:control acts only for the connection's player and holds its
+#      frame budget. They ride the module's verified dependency set, which is why
+#      they live in Gradle rather than in the javac mains above.
 #
 # No test framework: the mains are the same javac one-liners their javadocs document,
 # so a local run and CI run the same bytes.
@@ -167,6 +176,9 @@ for module in velocity paper; do
   echo "==> plugins/$module: ./gradlew --no-daemon build"
   ( cd "plugins/$module" && ./gradlew --no-daemon build )
 done
+
+echo "==> plugins/velocity: ./gradlew --no-daemon routingTest"
+( cd plugins/velocity && ./gradlew --no-daemon routingTest )
 
 limbo_version="$(sed -n 's/^LIMBO_VERSION=//p' deploy/game-stack.lock)"
 [ -n "$limbo_version" ] || { echo "deploy/game-stack.lock sets no LIMBO_VERSION" >&2; exit 1; }
