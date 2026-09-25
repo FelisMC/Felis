@@ -5,6 +5,7 @@ package pgint
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -284,4 +285,228 @@ func TestDiscoverableChallengeBounds(t *testing.T) {
 	if err := repo.CreateDiscoverableChallenge(ctx, "disc-full-"+suffix(t), "pgint-bulk-fresh", []byte("s"), now, now.Add(5*time.Minute)); !errors.Is(err, api.ErrTooManyPasskeyChallenges) {
 		t.Fatalf("begin with the table full = %v, want ErrTooManyPasskeyChallenges", err)
 	}
+}
+
+// ---- enrollment and step-up ceremonies (migration 0007) ---------------------------
+
+func challengeRows(t *testing.T, userID, purpose string) int {
+	t.Helper()
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM webauthn_challenges WHERE user_id = $1 AND purpose = $2`,
+		userID, purpose).Scan(&n); err != nil {
+		t.Fatalf("count challenges: %v", err)
+	}
+	return n
+}
+
+// An enrollment begin supersedes the account's earlier one for the same purpose and
+// sweeps the row its last finish spent, so (user, purpose) holds one row; finish is
+// single-use, dies at expires_at, and never crosses purposes or accounts.
+func TestPasskeyChallengeByUserContract(t *testing.T) {
+	ctx := context.Background()
+	u := newUser(t, "user", "pk-reg")
+	other := newUser(t, "user", "pk-reg-other")
+	const reg = "passkey_register"
+	t0 := mustNow().Truncate(time.Second)
+	begin := func(userID, purpose, session string, expiresAt time.Time) {
+		t.Helper()
+		if err := repo.CreatePasskeyChallenge(ctx, "reg-"+suffix(t), userID, purpose, []byte(session), expiresAt); err != nil {
+			t.Fatalf("CreatePasskeyChallenge(%s): %v", session, err)
+		}
+	}
+	finish := func(userID, purpose string, at time.Time) (string, error) {
+		sd, err := repo.ConsumePasskeyChallengeByUser(ctx, userID, purpose, at)
+		return string(sd), err
+	}
+
+	if _, err := finish(u.ID, reg, t0); !errors.Is(err, api.ErrPasskeyChallengeInvalid) {
+		t.Fatalf("finish with no begin = %v, want ErrPasskeyChallengeInvalid", err)
+	}
+	begin(u.ID, reg, "s1", t0.Add(5*time.Minute))
+	begin(other.ID, reg, "o1", t0.Add(5*time.Minute))
+	begin(u.ID, reg, "s2", t0.Add(5*time.Minute))
+	if n := challengeRows(t, u.ID, reg); n != 1 {
+		t.Fatalf("rows after two begins = %d, want 1", n)
+	}
+	if sd, err := finish(u.ID, reg, t0); err != nil || sd != "s2" {
+		t.Fatalf("finish = %q, %v; want s2", sd, err)
+	}
+	if _, err := finish(u.ID, reg, t0); !errors.Is(err, api.ErrPasskeyChallengeInvalid) {
+		t.Fatalf("replayed finish = %v, want ErrPasskeyChallengeInvalid", err)
+	}
+	if sd, err := finish(other.ID, reg, t0); err != nil || sd != "o1" {
+		t.Fatalf("other account's finish = %q, %v; want o1 (a begin never touches another account)", sd, err)
+	}
+
+	// The spent row goes with the next begin.
+	begin(u.ID, reg, "s3", t0.Add(5*time.Minute))
+	if n := challengeRows(t, u.ID, reg); n != 1 {
+		t.Fatalf("rows after finish then begin = %d, want 1", n)
+	}
+
+	// A step-up ceremony is its own door.
+	begin(u.ID, "reauth", "r1", t0.Add(5*time.Minute))
+	if n := challengeRows(t, u.ID, reg); n != 1 {
+		t.Fatalf("a reauth begin touched the enrollment row: %d rows, want 1", n)
+	}
+	if sd, err := finish(u.ID, "reauth", t0); err != nil || sd != "r1" {
+		t.Fatalf("reauth finish = %q, %v; want r1", sd, err)
+	}
+	if _, err := finish(u.ID, "reauth", t0); !errors.Is(err, api.ErrPasskeyChallengeInvalid) {
+		t.Fatalf("reauth replay = %v, want ErrPasskeyChallengeInvalid", err)
+	}
+
+	// Expiry: at expires_at the ceremony is dead; a second earlier it still redeems.
+	if _, err := finish(u.ID, reg, t0.Add(5*time.Minute)); !errors.Is(err, api.ErrPasskeyChallengeInvalid) {
+		t.Fatalf("finish at expires_at = %v, want ErrPasskeyChallengeInvalid", err)
+	}
+	if sd, err := finish(u.ID, reg, t0.Add(5*time.Minute-time.Second)); err != nil || sd != "s3" {
+		t.Fatalf("finish a second before expiry = %q, %v; want s3", sd, err)
+	}
+}
+
+// Begins that race for one (user, purpose) leave exactly one row, and finishes that
+// race for one ceremony redeem it once.
+func TestPasskeyChallengeByUserUnderConcurrency(t *testing.T) {
+	ctx := context.Background()
+	const reg = "passkey_register"
+	now := mustNow()
+	for round := 0; round < 5; round++ {
+		u := newUser(t, "user", "pk-race")
+		var wg sync.WaitGroup
+		errs := make([]error, 8)
+		for i := range errs {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				errs[i] = repo.CreatePasskeyChallenge(ctx, "race-"+suffix(t), u.ID, reg, []byte("s"), now.Add(5*time.Minute))
+			}(i)
+		}
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("round %d: begin %d: %v", round, i, err)
+			}
+		}
+		if n := challengeRows(t, u.ID, reg); n != 1 {
+			t.Fatalf("round %d: rows after 8 racing begins = %d, want 1", round, n)
+		}
+
+		won, lost := 0, 0
+		for i := range errs {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				_, errs[i] = repo.ConsumePasskeyChallengeByUser(ctx, u.ID, reg, now)
+			}(i)
+		}
+		wg.Wait()
+		for i, err := range errs {
+			switch {
+			case err == nil:
+				won++
+			case errors.Is(err, api.ErrPasskeyChallengeInvalid):
+				lost++
+			default:
+				t.Fatalf("round %d: finish %d: %v", round, i, err)
+			}
+		}
+		if won != 1 || lost != 7 {
+			t.Fatalf("round %d: racing finishes: %d redeemed, %d refused; want 1, 7", round, won, lost)
+		}
+	}
+}
+
+// Racing begins from one source still stop at 32 live challenges, in both login
+// stores: the count and the insert are one decision.
+func TestLoginChallengeSourceBoundUnderConcurrency(t *testing.T) {
+	ctx := context.Background()
+	now := mustNow()
+	race := func(t *testing.T, begin func(i int) error) (ok, refused int) {
+		t.Helper()
+		var wg sync.WaitGroup
+		errs := make([]error, 64)
+		for i := range errs {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				errs[i] = begin(i)
+			}(i)
+		}
+		wg.Wait()
+		for i, err := range errs {
+			switch {
+			case err == nil:
+				ok++
+			case errors.Is(err, api.ErrTooManyPasskeyChallenges):
+				refused++
+			default:
+				t.Fatalf("begin %d: %v", i, err)
+			}
+		}
+		return ok, refused
+	}
+
+	t.Run("discoverable", func(t *testing.T) {
+		source := "2001:db8:" + suffix(t)[:4] + "::/48"
+		t.Cleanup(func() {
+			db.Exec(`DELETE FROM webauthn_discoverable_challenges WHERE source = $1`, source) //nolint:errcheck
+		})
+		ok, refused := race(t, func(int) error {
+			return repo.CreateDiscoverableChallenge(ctx, "drace-"+suffix(t), source, []byte("s"), now, now.Add(5*time.Minute))
+		})
+		var stored int
+		if err := db.QueryRow(`SELECT count(*) FROM webauthn_discoverable_challenges WHERE source = $1`, source).Scan(&stored); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		if ok != 32 || refused != 32 || stored != 32 {
+			t.Fatalf("64 racing begins: %d stored, %d refused, %d rows; want 32, 32, 32", ok, refused, stored)
+		}
+	})
+
+	t.Run("email-first", func(t *testing.T) {
+		u := newUser(t, "user", "pk-login-race")
+		source := "203.0.113." + suffix(t)
+		ok, refused := race(t, func(int) error {
+			return repo.AddPasskeyLoginChallenge(ctx, "lrace-"+suffix(t), u.ID, "passkey_login", source, "c-"+suffix(t), []byte("s"), now, now.Add(5*time.Minute))
+		})
+		var stored int
+		if err := db.QueryRow(`SELECT count(*) FROM webauthn_challenges WHERE source = $1`, source).Scan(&stored); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		if ok != 32 || refused != 32 || stored != 32 {
+			t.Fatalf("64 racing begins: %d stored, %d refused, %d rows; want 32, 32, 32", ok, refused, stored)
+		}
+	})
+
+	t.Run("discoverable finish", func(t *testing.T) {
+		id := "dfin-" + suffix(t)
+		if err := repo.CreateDiscoverableChallenge(ctx, id, "pgint-fin-"+suffix(t), []byte("s"), now, now.Add(5*time.Minute)); err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		var wg sync.WaitGroup
+		errs := make([]error, 8)
+		for i := range errs {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				_, errs[i] = repo.ConsumeDiscoverableChallenge(ctx, id, now)
+			}(i)
+		}
+		wg.Wait()
+		won, lost := 0, 0
+		for i, err := range errs {
+			switch {
+			case err == nil:
+				won++
+			case errors.Is(err, api.ErrPasskeyChallengeInvalid):
+				lost++
+			default:
+				t.Fatalf("finish %d: %v", i, err)
+			}
+		}
+		if won != 1 || lost != 7 {
+			t.Fatalf("racing finishes: %d redeemed, %d refused; want 1, 7", won, lost)
+		}
+	})
 }

@@ -1247,6 +1247,9 @@ func (p *PGRepo) SetSetting(ctx context.Context, key string, value []byte) error
 // behind. That bounds the table at one row per (user, purpose): the begin→finish loop
 // nets zero growth, since each begin sweeps the consumed row the previous finish stamped.
 // (Deleting a consumed row is safe: it has already been redeemed and nothing reads it.)
+// Begins for one (user, purpose) take a transaction-scoped advisory lock first: without
+// it two racing begins each delete what the other has not committed yet and both insert,
+// leaving extra rows that only the next begin sweeps.
 // The opaque SessionData is held server-side so the client cannot forge the challenge
 // it must answer at finish.
 func (p *PGRepo) CreatePasskeyChallenge(ctx context.Context, id, userID, purpose string, sessionData []byte, expiresAt time.Time) error {
@@ -1256,6 +1259,11 @@ func (p *PGRepo) CreatePasskeyChallenge(ctx context.Context, id, userID, purpose
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after commit
 
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext('passkey-challenge:' || $1 || ':' || $2))`,
+		userID, purpose); err != nil {
+		return fmt.Errorf("lock passkey challenges: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM webauthn_challenges WHERE user_id = $1 AND purpose = $2`,
 		userID, purpose); err != nil {
@@ -1316,16 +1324,27 @@ func (p *PGRepo) ConsumePasskeyChallengeByUser(ctx context.Context, userID, purp
 // address or IPv6 /48, see challengeSource) holds in each login store. A ceremony
 // takes seconds and a challenge lives passkeyChallengeTTL, so a network with a few
 // dozen people signing in at once stays well inside it, while a flood of begins
-// fills its own allowance and leaves the other networks their sign-ins. The count
-// and the insert are not serialised, so a burst of truly concurrent begins can pass
-// it together; the per-source token bucket in front of the door caps that burst.
+// fills its own allowance and leaves the other networks their sign-ins. Each store's
+// begins from one source serialise on a transaction-scoped advisory lock
+// (lockChallengeSource), so racing begins cannot all pass one count.
 const maxLiveChallengesPerSource = 32
+
+// lockChallengeSource takes the advisory lock that makes a login store's per-source
+// count and insert one decision. store names the table, so the two stores' allowances
+// for one source never wait on each other. The lock is released at commit or rollback.
+func lockChallengeSource(ctx context.Context, tx *sql.Tx, store, source string) error {
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext($1 || ':' || $2))`, store, source); err != nil {
+		return fmt.Errorf("lock %s source: %w", store, err)
+	}
+	return nil
+}
 
 // AddPasskeyLoginChallenge stores an email-first login ceremony beside the ones
 // already live for (user, purpose); finish finds it by the challenge the browser
 // signed (ConsumePasskeyLoginChallenge), so a begin by anyone who knows the address
-// never cancels its owner's ceremony. It reaps the account's spent login rows,
-// refuses with ErrTooManyPasskeyChallenges once source holds
+// never cancels its owner's ceremony. Under the source's lock it reaps the account's
+// spent login rows, refuses with ErrTooManyPasskeyChallenges once source holds
 // maxLiveChallengesPerSource live login challenges, then inserts.
 func (p *PGRepo) AddPasskeyLoginChallenge(ctx context.Context, id, userID, purpose, source, challenge string, sessionData []byte, now, expiresAt time.Time) error {
 	tx, err := p.db.BeginTx(ctx, nil)
@@ -1334,6 +1353,9 @@ func (p *PGRepo) AddPasskeyLoginChallenge(ctx context.Context, id, userID, purpo
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after commit
 
+	if err := lockChallengeSource(ctx, tx, "webauthn_challenges", source); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM webauthn_challenges
 		 WHERE user_id = $1 AND purpose = $2 AND (expires_at <= $3 OR consumed_at IS NOT NULL)`,
@@ -1408,12 +1430,14 @@ func (p *PGRepo) ConsumePasskeyLoginChallenge(ctx context.Context, userID, purpo
 const maxLiveDiscoverableChallenges = 16384
 
 // CreateDiscoverableChallenge stashes a discoverable-login ceremony under an opaque handle,
-// bounding the table in one transaction (see the Repo interface for the full contract). It
-// reaps expired/consumed rows first, then refuses when source already holds
-// maxLiveChallengesPerSource live rows or the table holds maxLiveDiscoverableChallenges.
-// Because the reap ran first, the counts are exactly the live rows, so the bounds hold under
-// an adversarial begin-flood (which a reap alone cannot: a burst inside the TTL leaves every
-// fresh row live).
+// bounding the table in one transaction (see the Repo interface for the full contract).
+// Under the source's lock it reaps expired/consumed rows, then refuses when source already
+// holds maxLiveChallengesPerSource live rows or the table holds
+// maxLiveDiscoverableChallenges. Because the reap ran first, the counts are exactly the live
+// rows, so the bounds hold under an adversarial begin-flood (which a reap alone cannot: a
+// burst inside the TTL leaves every fresh row live). The per-source bound is exact; the
+// table bound can be passed by begins from different sources racing the same count, at
+// most one row per open connection, which leaves the few-MB ceiling where it was.
 func (p *PGRepo) CreateDiscoverableChallenge(ctx context.Context, id, source string, sessionData []byte, now, expiresAt time.Time) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1421,6 +1445,9 @@ func (p *PGRepo) CreateDiscoverableChallenge(ctx context.Context, id, source str
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after commit
 
+	if err := lockChallengeSource(ctx, tx, "webauthn_discoverable_challenges", source); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM webauthn_discoverable_challenges WHERE expires_at <= $1 OR consumed_at IS NOT NULL`,
 		now); err != nil {
@@ -2146,6 +2173,12 @@ func (p *PGRepo) LinkAccount(ctx context.Context, userID, mcUUID, authSource str
 // earlier unfinished migration for the source (so re-running /felis migrate restarts
 // cleanly, invalidating a prior outstanding code) and inserts a fresh 'initiated' row,
 // both under one transaction so the partial unique index never sees two live rows.
+//
+// Starts for one source serialise on a transaction-scoped advisory lock, so racing
+// starts each supersede the one before instead of tripping the unique index. The
+// liveness check rides on the INSERT, after the supersede: a redeem of this source holds
+// the code_issued row until it commits, the supersede waits on that row, and the INSERT's
+// fresh snapshot then sees the source retired (a check before the wait would not).
 func (p *PGRepo) StartMigration(ctx context.Context, id, sourceUserID string, now time.Time) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2153,28 +2186,31 @@ func (p *PGRepo) StartMigration(ctx context.Context, id, sourceUserID string, no
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after commit
 
-	// The source must be a live (non-deleted) account; a retired one can never
-	// re-initiate a migration.
-	var live bool
-	if err := tx.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL)`,
-		sourceUserID).Scan(&live); err != nil {
-		return err
+	if _, err := tx.ExecContext(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext('account-migration:' || $1))`, sourceUserID); err != nil {
+		return fmt.Errorf("lock migration source: %w", err)
 	}
-	if !live {
-		return ErrNotFound
-	}
-
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM account_migrations WHERE source_user_id = $1 AND state <> 'redeemed'`,
 		sourceUserID); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx,
+	// The source must be a live (non-deleted) account; a retired one can never
+	// re-initiate a migration.
+	res, err := tx.ExecContext(ctx,
 		`INSERT INTO account_migrations (id, source_user_id, state, created_at, updated_at)
-		 VALUES ($1, $2, 'initiated', $3, $3)`,
-		id, sourceUserID, now); err != nil {
+		 SELECT $1, $2, 'initiated', $3, $3
+		 WHERE EXISTS (SELECT 1 FROM users WHERE id = $2 AND deleted_at IS NULL)`,
+		id, sourceUserID, now)
+	if err != nil {
 		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
 	}
 	return tx.Commit()
 }
