@@ -300,6 +300,42 @@ journalctl -u felis-update-check -n 50 --no-pager
 sudo felis update --record   # record a fresh check now
 ```
 
+### Bringing an older install up to date [VM-VERIFIED]
+
+Three pieces of an install keep the shape they had on the day they were created, and
+neither `felis setup` nor `kubectl rollout restart` reaches them: the felis-api
+Deployment (an env var added later, such as `FELIS_SMTP_PASSWORD`, is absent until the
+Deployment is rendered again), the lobby image (built with whatever plugins the recipe
+had then; LuckPerms came later, and without it every permission change from the panel
+answers `luckperms_missing`), and the `MinecraftServer` specs (a field added later stays
+unset). Bring all three forward in this order, images first:
+
+```sh
+# 1. Rerun the installer: renders and applies the control-plane bundle, rebuilds and
+#    re-imports the login and lobby images, and recreates those two pods so they run
+#    the new images. The [smtp] relay the setup wizard wrote is carried forward.
+curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap.sh | sudo bash
+
+# 2. Fill the spec fields the system servers gained since (troubleshooting §12b), then
+#    RCON for user servers created before it was the default. -user-rcon waits on
+#    each server's image opening RCON; see §12b before running it.
+sudo felis converge
+sudo felis converge -user-rcon
+```
+
+Check each piece:
+
+```sh
+kubectl -n felis get deploy felis-api \
+  -o jsonpath='{.spec.template.spec.containers[0].env[*].name}' | tr ' ' '\n' | grep SMTP
+kubectl -n minecraft exec lobby-0 -- ls /data/plugins | grep -i luckperms
+kubectl -n minecraft get minecraftserver \
+  -o custom-columns=NAME:.metadata.name,RCON:.spec.rcon.enabled,IDLE:.spec.idle.autoStopEnabled
+```
+
+The env var only carries the password; mail still needs the relay itself, set in
+`felis setup` → email. A user server picks up its new RCON block at its next start.
+
 ### PostgreSQL major versions [CODE-ONLY]
 
 The installer takes the major the distribution ships (13 on EL9) and never moves it. To
