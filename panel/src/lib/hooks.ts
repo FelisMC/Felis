@@ -58,8 +58,10 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []): AsyncSt
 
   useEffect(() => {
     reload();
+    // Bumping the ticket on cleanup drops any response still in flight.
+    const tickets = seq;
     return () => {
-      seq.current++;
+      tickets.current++;
     };
   }, [reload]);
 

@@ -20,7 +20,7 @@ import type {
   QuotaView,
   ServerFileEntry,
   ServerJob,
-  ServerInfo,
+  MyServerView,
   ServerStatus,
   SessionView,
   UserDetail,
@@ -300,7 +300,7 @@ export const api = rejectingSync({
   me: () => request<Identity>("GET", "/me"),
 
   myServers: () =>
-    request<{ servers: ServerInfo[] }>("GET", "/me/servers").then((r) => r.servers ?? []),
+    request<{ servers: MyServerView[] }>("GET", "/me/servers").then((r) => r.servers ?? []),
 
   // fleet is the SysAdmin cockpit's fleet-wide read (admin-tier GET /fleet): every
   // server's CRD lifecycle view plus its owner. It 403s for a non-admin principal —

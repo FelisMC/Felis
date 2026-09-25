@@ -8,10 +8,10 @@ import { PhaseBadge } from "@/components/PhaseBadge";
 import { PowerButton } from "@/components/PowerButton";
 import { api, humanizeError } from "@/lib/api";
 import { hostFor, type RuntimeConfig } from "@/lib/config";
-import type { ServerInfo } from "@/lib/types";
+import type { MyServerView } from "@/lib/types";
 
 interface Props {
-  server: ServerInfo;
+  server: MyServerView;
   cfg: RuntimeConfig;
   /** Called after a successful mutation so the parent can refetch. */
   onChanged: () => void;
@@ -49,7 +49,7 @@ export function ServerCard({ server, cfg, onChanged }: Props) {
         <span className="truncate text-sm font-semibold text-foreground">
           {server.displayName || server.name}
         </span>
-        <PhaseBadge phase={server.phase} />
+        <PhaseBadge phase={server.phase ?? "Unknown"} />
       </div>
 
       {/* Info Row */}

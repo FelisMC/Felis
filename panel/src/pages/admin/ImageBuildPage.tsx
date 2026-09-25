@@ -202,7 +202,7 @@ export function ImageBuildPage() {
   }, [builds, search]);
 
   // Reset page when search changes
-  useMemo(() => {
+  useEffect(() => {
     setPage(1);
   }, [search]);
 

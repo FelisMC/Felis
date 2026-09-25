@@ -17,34 +17,52 @@ export type Phase =
 
 export type AutostartPolicy = "ownerOnly" | "public" | "allowlist";
 
-/** ServerInfo is the GET /me/servers row (wrapped under { servers: [...] }).
- *  Only this projection says whether the caller owns or may claim a server. */
-export interface ServerInfo {
+/** MyServerView is the GET /me/servers row (wrapped under { servers: [...] }).
+ *  Only this projection says whether the caller owns or may claim a server.
+ *  The live fields come from the CRD best-effort; desiredState, autostartPolicy
+ *  and playerCountUnknown are present on the caller's own rows only. */
+export interface MyServerView {
   name: string;
   subdomain: string;
-  displayName?: string;
-  phase: Phase;
-  desiredState?: "Running" | "Stopped";
-  playersOnline?: number;
-  playersMax?: number;
-  autostartPolicy?: AutostartPolicy;
-  /** Whether the caller may claim this server (unowned + linked + quota). */
-  claimable?: boolean;
   /** Whether the caller owns it. */
-  owned?: boolean;
+  owned: boolean;
+  /** Whether the caller may claim this server (unowned + linked + quota). */
+  claimable: boolean;
+  phase?: Phase;
+  playersOnline: number;
+  playersMax: number;
+  displayName?: string;
+  desiredState?: "Running" | "Stopped";
+  autostartPolicy?: AutostartPolicy;
+  /** True while the operator cannot read the player count; a stop may drop players. */
+  playerCountUnknown?: boolean;
+}
+
+/** ServerStatus is GET /servers/{name}/status (Go ServerInfo). It never carries
+ *  `owned` or `claimable`; owner-tier gates read /me/servers via lib/ownership.
+ *  A caller who does not own the server gets the public subset, so everything
+ *  past the counts may be absent. */
+export interface ServerStatus {
+  name: string;
+  subdomain: string;
+  phase: Phase;
+  ready: boolean;
+  autostartPolicy?: AutostartPolicy;
+  desiredState?: "Running" | "Stopped";
+  endpointMode?: string;
+  endpointAddress?: string;
+  playersOnline: number;
+  playersMax: number;
+  displayName?: string;
   image?: string;
   javaMemory?: string;
   storageSize?: string;
   cpu?: string;
   /** Seconds empty before idle auto-stop; 0 when the server never idles out. */
-  idleStopSeconds?: number;
+  idleStopSeconds: number;
   /** True while the operator cannot read the player count; idle stop waits. */
   playerCountUnknown?: boolean;
 }
-
-/** ServerStatus is GET /servers/{name}/status. It never carries `owned` or
- *  `claimable`; owner-tier gates read /me/servers via lib/ownership. */
-export type ServerStatus = Omit<ServerInfo, "owned" | "claimable">;
 
 /** WhitelistResult projects GET /servers/{name}/access/whitelist (spec §7 access).
  *  `players` is a BEST-EFFORT parse of the vanilla "whitelist list" reply done
@@ -82,7 +100,7 @@ export interface AccessResult {
 }
 
 /** PlayersResult projects GET /servers/{name}/access/players (spec §7 access), the
- *  ONLY source of WHO is online — ServerInfo.playersOnline carries the count alone.
+ *  ONLY source of WHO is online — MyServerView.playersOnline carries the count alone.
  *  `online`/`max` are the tally; `players` is a BEST-EFFORT parse of the vanilla
  *  "list" reply (parseListOutput) and, like the whitelist, can come back empty on a
  *  non-vanilla format while `output` (the raw RCON text, ground truth) still names
@@ -108,21 +126,11 @@ export interface KickResult {
  *  read (admin-tier). It mirrors the Go fleetServerView: the CRD lifecycle
  *  projection plus the owner joined read-only from Postgres for display.
  *
- *  It is a DISTINCT type from ServerInfo, not a reuse: /fleet emits the raw CRD
+ *  It is a DISTINCT type from MyServerView, not a reuse: /fleet emits the raw CRD
  *  shape — `ready` and the `endpoint*` runtime fields, with playersOnline/playersMax
- *  required — whereas ServerInfo is the /me/servers projection with them optional.
+ *  required — whereas MyServerView is the /me/servers projection.
  *  Sharing one interface would blur which fields each face actually guarantees. */
-export interface FleetServer {
-  name: string;
-  subdomain: string;
-  phase: Phase;
-  ready: boolean;
-  desiredState?: "Running" | "Stopped";
-  autostartPolicy?: AutostartPolicy;
-  endpointMode?: string;
-  endpointAddress?: string;
-  playersOnline: number;
-  playersMax: number;
+export interface FleetServer extends ServerStatus {
   /** Owner's display identity (email, or username when the address is absent).
    *  Empty/absent for an unclaimed server or when the best-effort owner lookup
    *  failed — the cockpit renders that as "unclaimed". */
@@ -191,7 +199,11 @@ export interface ServerJob {
 export interface WhitelistImage {
   image_ref: string;
   enabled: boolean;
-  source?: string;
+  source: string;
+  /** Set when the image came out of a panel build (build.Image BuildID). */
+  build_id?: string;
+  added_by: string;
+  added_at: string;
 }
 
 /** CreateServerRequest is the §15 structured form — the ONLY create path. */
@@ -288,6 +300,8 @@ export interface Build {
   error?: string;
   created_at: string;
   finished_at?: string;
+  /** sha256 of the build context the Job actually fetched. */
+  context_digest?: string;
 }
 
 export type SubmissionStatus = "pending_review" | "approved" | "rejected";
@@ -343,7 +357,8 @@ export interface DBBackupStatus {
 export interface UserView {
   id: string;
   username: string;
-  email: string;
+  /** Omitted for accounts created without one (bind-code / op-login only). */
+  email?: string;
   role: "admin" | "user" | "owner";
   disabled: boolean;
   email_verified: boolean;
@@ -359,8 +374,9 @@ export interface LinkedAccount {
 }
 
 export interface UserDetail extends UserView {
-  deleted_at?: string | null;
-  linked_accounts: LinkedAccount[];
+  deleted_at?: string;
+  /** Omitted when the user has no linked Minecraft account. */
+  linked_accounts?: LinkedAccount[];
 }
 
 /** CreateUserRequest mirrors handlers_users.go createUserRequest — passwordless:
@@ -398,12 +414,12 @@ export interface PasskeyCredential {
   name: string;
   aaguid?: string;
   created_at: string;
-  last_used_at?: string | null;
+  last_used_at?: string;
 }
 
 export interface SessionView {
   token_hash: string;
   created_at: string;
   expires_at: string;
-  revoked_at?: string | null;
+  revoked_at?: string;
 }

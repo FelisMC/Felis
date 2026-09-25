@@ -165,8 +165,37 @@ jobs:
       - run: npm test
         working-directory: panel
 
+      # `tsc -b`: tsconfig.json is a solution file (files: [] plus references), so a plain
+      # `tsc --noEmit` checked nothing and passed with type errors in the tree.
       - run: npm run typecheck
         working-directory: panel
+
+      # Rules of hooks and effect dependency lists, with --max-warnings 0.
+      - run: npm run lint
+        working-directory: panel
+
+      # openapi.gen.ts is generated from docs/openapi.yaml and checked in, so the
+      # compile-time parity in src/lib/types.parity.ts needs no generator in the build;
+      # a schema edit that was not regenerated fails here.
+      - name: openapi.gen.ts matches docs/openapi.yaml
+        working-directory: panel
+        run: |
+          npm run gen:api
+          git diff --exit-code -- src/lib/openapi.gen.ts
+
+      # Browser smoke over the mock-mode dev server, in the runner's installed Chrome
+      # (playwright.config.ts sets channel: chrome, so nothing is downloaded).
+      - run: npm run test:e2e
+        working-directory: panel
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          name: panel-playwright-report
+          path: |
+            panel/playwright-report
+            panel/test-results
+          retention-days: 7
 
   plugins:
     runs-on: ubuntu-latest

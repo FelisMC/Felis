@@ -746,7 +746,9 @@ func (f *fakeRepo) RecordJoin(_ context.Context, n, uuid string) error {
 	return nil
 }
 func (f *fakeRepo) MyServers(_ context.Context, u string) ([]MyServerView, error) {
-	return f.mine[u], nil
+	// Fresh rows per call, as PGRepo scans them: the handler joins live state
+	// into the slice it gets.
+	return append([]MyServerView(nil), f.mine[u]...), nil
 }
 func (f *fakeRepo) ServerOwners(_ context.Context) (map[string]string, error) {
 	if f.ownersErr != nil {
@@ -1535,6 +1537,7 @@ type fakeCluster struct {
 	byName    map[string]*ServerInfo
 	bySub     map[string]*ServerInfo
 	list      []ServerInfo
+	listErr   error
 	desired   map[string]v1alpha1.DesiredState
 	created   map[string]CreateServerInput // name -> the validated input it was created from
 	patched   map[string]ServerSpecPatch   // name -> the validated spec patch it received
@@ -1567,8 +1570,13 @@ func (c *fakeCluster) GetBySubdomain(_ context.Context, s string) (*ServerInfo, 
 	}
 	return nil, ErrNotFound
 }
-func (c *fakeCluster) ListServers(_ context.Context) ([]ServerInfo, error) { return c.list, nil }
-func (c *fakeCluster) Ping(_ context.Context) error                        { return c.pingErr }
+func (c *fakeCluster) ListServers(_ context.Context) ([]ServerInfo, error) {
+	if c.listErr != nil {
+		return nil, c.listErr
+	}
+	return c.list, nil
+}
+func (c *fakeCluster) Ping(_ context.Context) error { return c.pingErr }
 
 // WorldVolumeExists models the world PVC: present unless the test named the
 // server in noWorld (never started / already reaped).
@@ -1858,6 +1866,71 @@ func TestMeIdentity(t *testing.T) {
 				"without the admin Access path", got["is_admin"])
 		}
 	})
+}
+
+// TestMyServersJoinsLiveState proves /me/servers carries the live CRD fields the
+// panel renders: every row gets the display name, live phase and counts, and
+// only the caller's own rows get owner detail (desired state, autostart policy,
+// an unreadable player count), as the status route withholds them from others.
+// A cluster read failure keeps the Postgres rows with the cached phase.
+func TestMyServersJoinsLiveState(t *testing.T) {
+	repo := newFakeRepo()
+	repo.mine = map[string][]MyServerView{"u1": {
+		{Name: "mine", Subdomain: "mine", Owned: true, Phase: "Stopped"},
+		{Name: "open", Subdomain: "open", Claimable: true, Phase: "Stopped"},
+	}}
+	cl := newFakeCluster()
+	cl.list = []ServerInfo{
+		{Name: "mine", DisplayName: "My World", Phase: "Running", DesiredState: "Running",
+			AutostartPolicy: "ownerOnly", PlayersOnline: 2, PlayersMax: 20, PlayerCountUnknown: true},
+		{Name: "open", DisplayName: "Open World", Phase: "Running", DesiredState: "Running",
+			AutostartPolicy: "public", PlayersMax: 10, PlayerCountUnknown: true},
+	}
+	api := newTestAPI(repo, cl)
+	api.External = staticExternal{p: &Principal{UserID: "u1", Role: "user"}}
+
+	read := func() map[string]map[string]any {
+		t.Helper()
+		w := do(api.ExternalHandler(), "GET", "/api/v1/me/servers", "", nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d (%s)", w.Code, w.Body.String())
+		}
+		var body struct {
+			Servers []map[string]any `json:"servers"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]map[string]any{}
+		for _, s := range body.Servers {
+			out[s["name"].(string)] = s
+		}
+		return out
+	}
+
+	got := read()
+	mine, open := got["mine"], got["open"]
+	for k, want := range map[string]any{"displayName": "My World", "phase": "Running",
+		"desiredState": "Running", "autostartPolicy": "ownerOnly", "playerCountUnknown": true,
+		"playersOnline": float64(2), "playersMax": float64(20)} {
+		if mine[k] != want {
+			t.Errorf("own row %s = %v, want %v", k, mine[k], want)
+		}
+	}
+	if open["displayName"] != "Open World" || open["phase"] != "Running" || open["playersMax"] != float64(10) {
+		t.Errorf("claimable row public fields = %v", open)
+	}
+	for _, k := range []string{"desiredState", "autostartPolicy", "playerCountUnknown"} {
+		if _, ok := open[k]; ok {
+			t.Errorf("claimable row carries owner detail %s = %v", k, open[k])
+		}
+	}
+
+	cl.listErr = errors.New("apiserver down")
+	got = read()
+	if got["mine"]["phase"] != "Stopped" || got["mine"]["playersOnline"] != float64(0) {
+		t.Errorf("cluster down: own row = %v, want cached phase and 0 players", got["mine"])
+	}
 }
 
 // ---- fleet (SysAdmin cockpit read) ----

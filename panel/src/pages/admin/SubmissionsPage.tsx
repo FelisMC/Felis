@@ -34,7 +34,7 @@ export function SubmissionsPage() {
   const now = Date.now();
 
   const { data, error, loading, reload } = useAsync(() => api.listSubmissions(), []);
-  const submissions: Submission[] = data ?? [];
+  const submissions = useMemo<Submission[]>(() => data ?? [], [data]);
 
   // Dialog State
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);

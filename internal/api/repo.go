@@ -18,18 +18,24 @@ type ServerRecord struct {
 }
 
 // MyServerView is a row of GET /api/v1/me/servers: a server the caller owns,
-// may auto-start, or may claim. PlayersOnline/PlayersMax are NOT stored in
-// Postgres — handleMyServers joins them best-effort from the CRD status
-// (Cluster.ListServers) at read time, so a cluster hiccup renders 0/0, never
-// a 500.
+// may auto-start, or may claim. Everything after Claimable is NOT stored in
+// Postgres — handleMyServers joins it best-effort from the CRD status
+// (Cluster.ListServers) at read time, so a cluster hiccup renders 0/0 and the
+// cached phase, never a 500. DesiredState, AutostartPolicy and
+// PlayerCountUnknown are owner detail and stay empty on rows the caller does
+// not own, the same split publicServerInfo makes on the status route.
 type MyServerView struct {
-	Name          string `json:"name"`
-	Subdomain     string `json:"subdomain"`
-	Owned         bool   `json:"owned"`
-	Claimable     bool   `json:"claimable"`
-	Phase         string `json:"phase,omitempty"`
-	PlayersOnline int32  `json:"playersOnline"`
-	PlayersMax    int32  `json:"playersMax"`
+	Name               string `json:"name"`
+	Subdomain          string `json:"subdomain"`
+	Owned              bool   `json:"owned"`
+	Claimable          bool   `json:"claimable"`
+	Phase              string `json:"phase,omitempty"`
+	PlayersOnline      int32  `json:"playersOnline"`
+	PlayersMax         int32  `json:"playersMax"`
+	DisplayName        string `json:"displayName,omitempty"`
+	DesiredState       string `json:"desiredState,omitempty"`
+	AutostartPolicy    string `json:"autostartPolicy,omitempty"`
+	PlayerCountUnknown bool   `json:"playerCountUnknown,omitempty"`
 }
 
 // AuditEntry is one row written to audit_logs (spec §6). Actor is display text:

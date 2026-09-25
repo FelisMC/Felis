@@ -239,19 +239,34 @@ func (a *API) handleMyServers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	// Player counts are presentational and best-effort, mirroring handleFleet's
+	// The live fields are presentational and best-effort, mirroring handleFleet's
 	// owner join: the list exists for ownership/claim state, so a cluster hiccup
-	// must degrade to 0/0 counts, never 500 the whole list. The CRD status is the
-	// only source of live counts (spec §1) — Postgres never stores them.
+	// must degrade to 0/0 counts and the cached phase, never 500 the whole list.
+	// The CRD status is the only source of live state (spec §1) — Postgres never
+	// stores counts. Owner detail (desired state, autostart policy, whether the
+	// count is readable) joins only onto rows the caller owns; the panel needs
+	// playerCountUnknown there to ask before a stop that may drop players.
 	if infos, err := a.Cluster.ListServers(r.Context()); err == nil {
 		byName := make(map[string]ServerInfo, len(infos))
 		for _, s := range infos {
 			byName[s.Name] = s
 		}
 		for i := range servers {
-			if info, ok := byName[servers[i].Name]; ok {
-				servers[i].PlayersOnline = info.PlayersOnline
-				servers[i].PlayersMax = info.PlayersMax
+			info, ok := byName[servers[i].Name]
+			if !ok {
+				continue
+			}
+			v := &servers[i]
+			v.PlayersOnline = info.PlayersOnline
+			v.PlayersMax = info.PlayersMax
+			v.DisplayName = info.DisplayName
+			if info.Phase != "" {
+				v.Phase = info.Phase
+			}
+			if v.Owned {
+				v.DesiredState = info.DesiredState
+				v.AutostartPolicy = info.AutostartPolicy
+				v.PlayerCountUnknown = info.PlayerCountUnknown
 			}
 		}
 	}

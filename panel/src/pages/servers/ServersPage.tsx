@@ -43,7 +43,7 @@ import { useAsync, useConfig } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
 import { hostFor, type RuntimeConfig } from "@/lib/config";
 import { matchScore } from "@/lib/fuzzy";
-import type { AutostartPolicy, FleetServer, Phase, ServerInfo } from "@/lib/types";
+import type { AutostartPolicy, FleetServer, Phase, MyServerView } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const REFRESH_MS = 10_000;
@@ -72,6 +72,8 @@ const PAGE_SIZE = 6;
 interface UnifiedServer {
   name: string;
   subdomain: string;
+  /** The owner-chosen label; the list leads with it and keeps the name beside. */
+  displayName?: string;
   phase: Phase;
   ready: boolean;
   desiredState?: "Running" | "Stopped";
@@ -91,7 +93,10 @@ export function ServersPage() {
   const { isAdmin, identity } = useTier();
   const cfg = useConfig();
 
-  const fetchFn = useMemo(() => (isAdmin ? api.fleet : api.myServers), [isAdmin]);
+  const fetchFn = useMemo<() => Promise<FleetServer[] | MyServerView[]>>(
+    () => (isAdmin ? api.fleet : api.myServers),
+    [isAdmin],
+  );
   const { data, error, loading, reload } = useAsync(fetchFn, [fetchFn]);
 
   const [query, setQuery] = useState("");
@@ -117,6 +122,7 @@ export function ServersPage() {
     if (isAdmin) {
       return (data as FleetServer[]).map((s) => ({
         name: s.name,
+        displayName: s.displayName,
         subdomain: s.subdomain,
         phase: s.phase,
         ready: s.ready,
@@ -124,6 +130,7 @@ export function ServersPage() {
         autostartPolicy: s.autostartPolicy,
         playersOnline: s.playersOnline,
         playersMax: s.playersMax,
+        playerCountUnknown: s.playerCountUnknown,
         owner: s.owner,
         endpointAddress: s.endpointAddress,
         claimable: !s.owner,
@@ -131,15 +138,16 @@ export function ServersPage() {
         system: s.system,
       }));
     } else {
-      return (data as ServerInfo[]).map((s) => ({
+      return (data as MyServerView[]).map((s) => ({
         name: s.name,
+        displayName: s.displayName,
         subdomain: s.subdomain,
-        phase: s.phase,
+        phase: s.phase ?? "Unknown",
         ready: s.phase === "Running",
         desiredState: s.desiredState,
         autostartPolicy: s.autostartPolicy,
-        playersOnline: s.playersOnline ?? 0,
-        playersMax: s.playersMax ?? 0,
+        playersOnline: s.playersOnline,
+        playersMax: s.playersMax,
         playerCountUnknown: s.playerCountUnknown,
         owner: s.owned ? t("servers:owned_filter_mine") || "me" : undefined,
         claimable: s.claimable,
@@ -175,7 +183,7 @@ export function ServersPage() {
     const scored: { s: UnifiedServer; score: number }[] = [];
     for (const s of servers) {
       if (!phaseOk(s)) continue;
-      const score = matchScore([s.name, s.subdomain ?? "", s.owner ?? ""], terms);
+      const score = matchScore([s.name, s.displayName ?? "", s.subdomain ?? "", s.owner ?? ""], terms);
       if (score >= 0) scored.push({ s, score });
     }
     scored.sort((a, b) => b.score - a.score);
@@ -468,7 +476,7 @@ function ServerActions({
                 <DialogHeader>
                   <DialogTitle>{ts("claim_server_title")}</DialogTitle>
                   <DialogDescription>
-                    {ts("claim_server_desc", { name: server.name })}
+                    {ts("claim_server_desc", { name: server.displayName || server.name })}
                   </DialogDescription>
                 </DialogHeader>
                 <ConfirmFooter
@@ -593,7 +601,7 @@ function ServerRow({
     <tr className="border-b border-border/50 transition-colors last:border-0 hover:bg-muted/40">
       <td className="px-4 py-3 align-middle text-left">
         <div className="flex items-center gap-2">
-          <span className="font-medium text-foreground">{server.name}</span>
+          <ServerName server={server} />
           <PhaseBadge phase={server.phase} />
         </div>
         {host && <HostLink host={host} />}
@@ -648,7 +656,9 @@ function ServerMobileCard({
         <CardContent className="flex flex-1 flex-col gap-3 p-4">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <div className="truncate font-medium text-foreground">{server.name}</div>
+              <div className="flex min-w-0 items-baseline gap-2">
+                <ServerName server={server} />
+              </div>
               {host && <HostLink host={host} />}
             </div>
             <PhaseBadge phase={server.phase} />
@@ -687,3 +697,17 @@ function ServerMobileCard({
 }
 
 export default ServersPage;
+
+/** ServerName leads with the display name and keeps the server name beside it,
+ *  since the name is what the URL, the console and the subdomain use. */
+function ServerName({ server }: { server: UnifiedServer }) {
+  const label = server.displayName || server.name;
+  return (
+    <>
+      <span className="truncate font-medium text-foreground">{label}</span>
+      {label !== server.name && (
+        <span className="truncate font-mono text-xs text-muted-foreground">{server.name}</span>
+      )}
+    </>
+  );
+}

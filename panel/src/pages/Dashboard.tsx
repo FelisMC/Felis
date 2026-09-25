@@ -26,7 +26,7 @@ import { api } from "@/lib/api";
 import { useAsync, useConfig } from "@/lib/hooks";
 import { lazyWithReload } from "@/lib/chunk";
 import { webglAvailable } from "@/lib/webgl";
-import type { Phase, ServerInfo, WhitelistImage } from "@/lib/types";
+import type { Phase, MyServerView, WhitelistImage } from "@/lib/types";
 
 // three.js is heavy and only the Dashboard renders it — split it into its own
 // async chunk so the rest of the panel doesn't pay for it on first load.
@@ -95,7 +95,7 @@ function FleetView({
   images,
   isAdmin,
 }: {
-  servers: ServerInfo[];
+  servers: MyServerView[];
   counts: { total: number; running: number; players: number };
   linkStatus?: { linked: boolean };
   images: WhitelistImage[];

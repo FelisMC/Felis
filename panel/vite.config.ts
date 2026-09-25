@@ -23,6 +23,8 @@ export default defineConfig(async ({ mode }) => {
     },
     test: {
       setupFiles: ["./vitest.setup.ts"],
+      // e2e/*.spec.ts belong to Playwright (npm run test:e2e).
+      include: ["src/**/*.test.{ts,tsx}"],
     },
   };
 });

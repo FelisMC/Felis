@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { phaseColor } from "@/components/PhaseBadge";
 import { FleetGrid } from "@/components/FleetGrid";
 import { webglAvailable } from "@/lib/webgl";
-import type { ServerInfo } from "@/lib/types";
+import type { MyServerView } from "@/lib/types";
 
 // VoxelFleet renders the fleet as a grid of voxels, one per server, colored by
 // lifecycle phase — the 3D view of the same state machine the list shows (spec
@@ -16,7 +16,7 @@ import type { ServerInfo } from "@/lib/types";
 // cannot be created at all, so the card falls back to the flat FleetGrid.
 
 interface Props {
-  servers: ServerInfo[];
+  servers: MyServerView[];
 }
 
 const STARTING = "Starting";
@@ -86,7 +86,7 @@ function VoxelScene({ servers, onUnsupported }: Props & { onUnsupported: () => v
       voxels = [];
     }
 
-    function build(list: ServerInfo[]) {
+    function build(list: MyServerView[]) {
       clearVoxels();
       const n = Math.max(list.length, 1);
       const cols = Math.ceil(Math.sqrt(n));
@@ -96,7 +96,7 @@ function VoxelScene({ servers, onUnsupported }: Props & { onUnsupported: () => v
       const offZ = ((rows - 1) * spacing) / 2;
 
       list.forEach((s, i) => {
-        const color = new THREE.Color(phaseColor(s.phase));
+        const color = new THREE.Color(phaseColor(s.phase ?? "Unknown"));
         const material = new THREE.MeshStandardMaterial({
           color,
           roughness: 0.45,
@@ -189,6 +189,6 @@ function VoxelScene({ servers, onUnsupported }: Props & { onUnsupported: () => v
 /** sig is a cheap fingerprint of the fleet's renderable shape (order-independent
  *  per index): name+phase pairs. Player counts don't change the voxels, so they
  *  don't trigger a rebuild. */
-function sig(servers: ServerInfo[]): string {
+function sig(servers: MyServerView[]): string {
   return servers.map((s) => `${s.name}:${s.phase}`).join("|");
 }

@@ -13,3 +13,7 @@ dist/
 
 # Logs
 npm-debug.log*
+
+# Playwright output
+test-results/
+playwright-report/

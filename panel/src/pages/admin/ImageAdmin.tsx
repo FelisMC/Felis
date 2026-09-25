@@ -30,7 +30,7 @@ const PAGE_SIZE = 10;
 export function ImageAdmin() {
   const { t } = useTranslation("admin");
   const { data, error, loading, reload } = useAsync(() => api.listImages(), []);
-  const images = data ?? [];
+  const images = useMemo(() => data ?? [], [data]);
 
   // Form & Dialog State
   const [dialogOpen, setDialogOpen] = useState(false);

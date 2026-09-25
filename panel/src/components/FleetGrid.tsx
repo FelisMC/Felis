@@ -3,7 +3,7 @@ import { Info } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { PHASE_KEY, phaseColor } from "@/components/PhaseBadge";
 import { cn } from "@/lib/utils";
-import type { Phase, ServerInfo } from "@/lib/types";
+import type { Phase, MyServerView } from "@/lib/types";
 
 // FleetGrid is the flat stand-in for VoxelFleet when WebGL is unavailable or the
 // 3D chunk failed: the same square layout and phase palette seen from above, so
@@ -18,7 +18,7 @@ export function FleetGrid({
   servers,
   reason,
 }: {
-  servers: Pick<ServerInfo, "name" | "displayName" | "phase">[];
+  servers: Pick<MyServerView, "name" | "displayName" | "phase">[];
   reason: FleetGridReason;
 }) {
   const { t } = useTranslation(["dashboard", "servers"]);
@@ -36,8 +36,9 @@ export function FleetGrid({
           style={{ gridTemplateColumns: `repeat(${cols}, ${tile})`, gridAutoRows: tile }}
         >
           {servers.map((s) => {
-            const color = phaseColor(s.phase);
-            const label = `${s.displayName || s.name} · ${t(PHASE_KEY[s.phase] ?? PHASE_KEY.Unknown)}`;
+            const phase = s.phase ?? "Unknown";
+            const color = phaseColor(phase);
+            const label = `${s.displayName || s.name} · ${t(PHASE_KEY[phase] ?? PHASE_KEY.Unknown)}`;
             return (
               <Link
                 key={s.name}
@@ -46,7 +47,7 @@ export function FleetGrid({
                 aria-label={label}
                 className={cn(
                   "rounded-md ring-1 ring-inset ring-white/10 transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  TRANSIENT.has(s.phase) && "animate-pulse",
+                  TRANSIENT.has(phase) && "animate-pulse",
                 )}
                 style={{
                   backgroundColor: color,

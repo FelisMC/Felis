@@ -9,8 +9,9 @@ import type {
   CreateServerRequest,
   FleetServer,
   Identity,
+  MyServerView,
   Phase,
-  ServerInfo,
+  ServerStatus,
   WhitelistImage,
   Submission,
   UserView,
@@ -52,7 +53,7 @@ interface MockAccount {
   sessions?: SessionView[];
 }
 
-interface MockServer extends ServerInfo {
+interface MockServer extends ServerStatus {
   owner: AccountID | null;
 }
 
@@ -220,13 +221,9 @@ function initialState(): MockState {
       linked: account("linked", "user", true, true),
     },
     images: [
-      { image_ref: "registry.felis.svc:5000/paper-1.21:demo", enabled: true, source: "demo" },
-      { image_ref: "registry.felis.svc:5000/fabric-1.20.1:demo", enabled: true, source: "demo" },
-      {
-        image_ref: "registry.felis.svc:5000/forge-1.20.1:disabled",
-        enabled: false,
-        source: "demo",
-      },
+      whitelistImage("registry.felis.svc:5000/paper-1.21:demo", "recommended"),
+      whitelistImage("registry.felis.svc:5000/fabric-1.20.1:demo", "recommended"),
+      { ...whitelistImage("registry.felis.svc:5000/forge-1.20.1:disabled", "external"), enabled: false },
     ],
     servers: [
       server("survival", "Survival SMP", "Running", "owner", {
@@ -467,24 +464,28 @@ function account(
   };
 }
 
+function whitelistImage(image_ref: string, source: string): WhitelistImage {
+  return { image_ref, enabled: true, source, added_by: "owner", added_at: "2026-01-01T00:00:00Z" };
+}
+
 function server(
   name: string,
   displayName: string,
   phase: Phase,
   owner: AccountID | null,
-  overrides: Partial<ServerInfo> = {},
+  overrides: Partial<ServerStatus> = {},
 ): MockServer {
   return {
     name,
     subdomain: name,
     displayName,
     phase,
+    ready: phase === "Running",
     desiredState: phase === "Stopped" ? "Stopped" : "Running",
     playersOnline: phase === "Running" ? 1 : 0,
     playersMax: 20,
     autostartPolicy: "ownerOnly",
-    owned: false,
-    claimable: false,
+    idleStopSeconds: 900,
     owner,
     ...overrides,
   };
@@ -560,10 +561,10 @@ function canManage(accountInfo: MockAccount, serverInfo: MockServer): boolean {
   return isAdmin(accountInfo.role) || serverInfo.owner === accountInfo.id;
 }
 
-function visibleServers(state: MockState, accountInfo: MockAccount): ServerInfo[] {
+function visibleServers(state: MockState, accountInfo: MockAccount): MyServerView[] {
   return state.servers
     .filter((serverInfo) => canSee(accountInfo, serverInfo))
-    .map((serverInfo) => projectServer(serverInfo, accountInfo));
+    .map((serverInfo) => myServerView(serverInfo, accountInfo));
 }
 
 // fleetView projects the internal mock servers into the GET /fleet wire shape
@@ -574,35 +575,59 @@ function visibleServers(state: MockState, accountInfo: MockAccount): ServerInfo[
 // gated on Running, exactly as the real cluster reports them.
 function fleetView(state: MockState): FleetServer[] {
   return state.servers.map((s, i) => {
-    const ready = s.phase === "Running";
+    const { owner, ...wire } = s;
     return {
-      name: s.name,
-      subdomain: s.subdomain,
-      phase: s.phase,
-      ready,
-      desiredState: s.desiredState,
-      autostartPolicy: s.autostartPolicy,
+      ...wire,
       endpointMode: "domain",
-      endpointAddress: ready ? `10.43.0.${10 + i}:25565` : undefined,
-      playersOnline: ready ? s.playersOnline ?? 0 : 0,
-      playersMax: s.playersMax ?? 0,
-      owner: s.owner ? state.accounts[s.owner].email : "",
+      endpointAddress: s.ready ? `10.43.0.${10 + i}:25565` : undefined,
+      playersOnline: s.ready ? s.playersOnline : 0,
+      owner: owner ? state.accounts[owner].email : "",
     };
   });
 }
 
-function projectServer(serverInfo: MockServer, accountInfo: MockAccount): ServerInfo {
-  const { owner: _owner, ...wire } = serverInfo;
+// myServerView mirrors handleMyServers: ownership and claim state plus the live
+// fields, with owner detail (desired state, policy, unreadable count) only on
+// rows the caller owns.
+function myServerView(serverInfo: MockServer, accountInfo: MockAccount): MyServerView {
   const owned = canManage(accountInfo, serverInfo);
   return {
-    ...wire,
+    name: serverInfo.name,
+    subdomain: serverInfo.subdomain,
     owned,
     claimable: serverInfo.owner === null && accountInfo.linked && !owned,
+    phase: serverInfo.phase,
+    playersOnline: serverInfo.playersOnline,
+    playersMax: serverInfo.playersMax,
+    displayName: serverInfo.displayName,
+    ...(owned && {
+      desiredState: serverInfo.desiredState,
+      autostartPolicy: serverInfo.autostartPolicy,
+      playerCountUnknown: serverInfo.playerCountUnknown,
+    }),
+  };
+}
+
+// statusView mirrors handleServerStatus: the whole projection for the owner or
+// an admin, the public subset (publicServerInfo) for anyone else.
+function statusView(serverInfo: MockServer, accountInfo: MockAccount): ServerStatus {
+  const { owner: _owner, ...wire } = serverInfo;
+  if (canManage(accountInfo, serverInfo)) return wire;
+  return {
+    name: wire.name,
+    subdomain: wire.subdomain,
+    displayName: wire.displayName,
+    phase: wire.phase,
+    ready: wire.ready,
+    playersOnline: wire.playersOnline,
+    playersMax: wire.playersMax,
+    idleStopSeconds: 0,
   };
 }
 
 function setPhase(serverInfo: MockServer, phase: Phase): void {
   serverInfo.phase = phase;
+  serverInfo.ready = phase === "Running";
   serverInfo.desiredState = phase === "Stopped" ? "Stopped" : "Running";
   serverInfo.playersOnline = phase === "Running" ? Math.max(serverInfo.playersOnline ?? 0, 1) : 0;
 }
@@ -960,7 +985,7 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
     const filtered = allUsers.filter((u) => {
       return (
         u.username.toLowerCase().includes(search) ||
-        u.email.toLowerCase().includes(search)
+        (u.email ?? "").toLowerCase().includes(search)
       );
     });
 
@@ -1248,7 +1273,7 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
     if (img) {
       img.enabled = true;
     } else {
-      img = { image_ref: ref, enabled: true, source: "external" };
+      img = whitelistImage(ref, "external");
       ctx.state.images.unshift(img);
     }
     sendJSON(ctx.res, 201, img);
@@ -1309,7 +1334,7 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
         b.finished_at = new Date().toISOString();
         // Add to whitelist images
         if (!ctx.state.images.some((i) => i.image_ref === b.image_ref)) {
-          ctx.state.images.unshift({ image_ref: b.image_ref, enabled: true, source: "built" });
+          ctx.state.images.unshift({ ...whitelistImage(b.image_ref, "built"), build_id: b.id });
         }
       }
     }, 15000); // Succeeded after 15 seconds
@@ -1535,7 +1560,7 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
         b.status = "succeeded";
         b.finished_at = new Date().toISOString();
         if (!ctx.state.images.some((i) => i.image_ref === b.image_ref)) {
-          ctx.state.images.unshift({ image_ref: b.image_ref, enabled: true, source: "built" });
+          ctx.state.images.unshift({ ...whitelistImage(b.image_ref, "built"), build_id: b.id });
         }
       }
     }, 15000);
@@ -1660,9 +1685,7 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
   }
 
   if (is("GET", ctx) && ctx.parts[4] === "status") {
-    // The real status projection (api.ServerInfo) carries no owned/claimable.
-    const { owned: _o, claimable: _c, ...status } = projectServer(serverInfo, ctx.account);
-    sendJSON(ctx.res, 200, status);
+    sendJSON(ctx.res, 200, statusView(serverInfo, ctx.account));
     return true;
   }
   if (is("GET", ctx) && ctx.parts[4] === "console") {

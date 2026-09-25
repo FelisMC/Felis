@@ -128,17 +128,21 @@ export function ServerFiles() {
 
   // Load (and reload after a stop) only once the viewer is resolved as owner and
   // the server is fully stopped — both are hard server-side gates of every call.
+  // `dir` stays out of the list: load() itself moves it, and a navigation that
+  // re-ran this effect would fetch the same folder twice.
   useEffect(() => {
     if (owned && stopped) void load(dir);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [owned, stopped, load]);
 
   // While the server is not stopped, poll the phase so the first successful
   // stop flips the page from the notice to the listing without a manual reload.
+  const reloadStatus = statusQ.reload;
   useEffect(() => {
     if (stopped) return;
-    const id = setInterval(() => statusQ.reload(), 4000);
+    const id = setInterval(reloadStatus, 4000);
     return () => clearInterval(id);
-  }, [stopped, statusQ.reload]);
+  }, [stopped, reloadStatus]);
 
   // Editor state. `editable` false marks a binary file (rendered read-only).
   // `sha256` is the hash the read returned: every save sends it back, so a file

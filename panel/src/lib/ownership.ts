@@ -1,4 +1,4 @@
-import type { ServerInfo } from "./types";
+import type { MyServerView } from "./types";
 
 // Owner-tier pages (console extras, players, files, backups, LuckPerms) decide
 // who may act from GET /me/servers: the status projection never carries
@@ -7,7 +7,7 @@ import type { ServerInfo } from "./types";
 /** canManage reports whether the caller may use a server's owner-tier tools. */
 export function canManage(
   isAdmin: boolean,
-  mine: readonly ServerInfo[] | null | undefined,
+  mine: readonly MyServerView[] | null | undefined,
   name: string,
 ): boolean {
   return isAdmin || (mine ?? []).some((s) => s.name === name && s.owned === true);
@@ -18,7 +18,7 @@ export function canManage(
 export function ownershipPending(
   tierLoading: boolean,
   isAdmin: boolean,
-  mine: readonly ServerInfo[] | null | undefined,
+  mine: readonly MyServerView[] | null | undefined,
   mineError: unknown,
 ): boolean {
   return tierLoading || (!isAdmin && mine == null && !mineError);

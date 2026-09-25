@@ -303,7 +303,7 @@ components:
     ServerInfo:
       type: object
       description: Status projection of one server (internal/api/cluster.go ServerInfo).
-      required: [name, subdomain, phase, ready, playersOnline, playersMax]
+      required: [name, subdomain, phase, ready, playersOnline, playersMax, idleStopSeconds]
       properties:
         name: { type: string }
         subdomain: { type: string }
@@ -311,6 +311,7 @@ components:
         ready: { type: boolean }
         autostartPolicy:
           type: string
+          enum: [ownerOnly, public, allowlist]
           description: Present only when set; who may wake the server via domain-autostart.
         desiredState:
           type: string
@@ -333,6 +334,26 @@ components:
           type: boolean
           description: Present and true while the operator cannot read the player count over RCON; idle auto-stop waits until it can.
 
+    FleetServer:
+      description: One row of the fleet-wide admin read (internal/api/handlers_user.go fleetServerView).
+      allOf:
+        - $ref: '#/components/schemas/ServerInfo'
+        - type: object
+          properties:
+            owner:
+              type: string
+              description: >-
+                The owner's display identity (email, or username when the address is
+                absent). Absent for an unclaimed server or when the best-effort owner
+                lookup failed.
+            system:
+              type: boolean
+              description: >-
+                True for a platform-provisioned system service (the login gate, the
+                lobby). Their reserved names are rejected by every per-server route,
+                so the cockpit renders them read-only instead of offering actions
+                that would 400.
+
     MyServerView:
       type: object
       description: One row of the caller's server list (internal/api/repo.go MyServerView).
@@ -350,6 +371,20 @@ components:
           format: int32
           description: Best-effort from live CRD status; 0 when the cluster is unreachable.
         playersMax: { type: integer, format: int32 }
+        displayName:
+          type: string
+          description: From live CRD status; omitted when unset or the cluster is unreachable.
+        desiredState:
+          type: string
+          enum: [Running, Stopped]
+          description: Owned rows only, from live CRD status.
+        autostartPolicy:
+          type: string
+          enum: [ownerOnly, public, allowlist]
+          description: Owned rows only, from live CRD status.
+        playerCountUnknown:
+          type: boolean
+          description: Owned rows only. Present and true while the operator cannot read the player count, so a stop may disconnect players.
 
     BackupView:
       type: object
@@ -391,6 +426,9 @@ components:
           enum: [pending, building, succeeded, failed, cancelled]
         dockerfile: { type: string }
         context_ref: { type: string }
+        context_digest:
+          type: string
+          description: Lowercase hex sha256 of the context tarball the build was pinned to (the audit record). Omitted when the request named none.
         base_image: { type: string }
         requested_by: { type: string }
         job_name: { type: string }
@@ -398,9 +436,9 @@ components:
         error: { type: string }
         created_at: { type: string, format: date-time }
         finished_at:
-          type: [string, 'null']
+          type: string
           format: date-time
-          description: Null until the build reaches a terminal status.
+          description: Omitted until the build reaches a terminal status.
 
     Image:
       type: object
@@ -430,6 +468,9 @@ components:
         context_ref:
           type: string
           description: Platform-derived pinned build context; not user-supplied.
+        context_sha256:
+          type: string
+          description: Lowercase hex sha256 of the uploaded context tarball; omitted until one is uploaded. Approval must name it.
         status:
           type: string
           enum: [pending_review, approved, rejected]
@@ -456,9 +497,9 @@ components:
         reject_reason: { type: string }
         created_at: { type: string, format: date-time }
         reviewed_at:
-          type: [string, 'null']
+          type: string
           format: date-time
-          description: Null until an admin approves or rejects.
+          description: Omitted until an admin approves or rejects.
 
     UserView:
       type: object
@@ -478,7 +519,7 @@ components:
     UserDetail:
       type: object
       description: Full admin view of one user (internal/api/repo.go UserDetail).
-      required: [id, username, role, disabled, email_verified, server_count, created_at, updated_at, linked_accounts]
+      required: [id, username, role, disabled, email_verified, server_count, created_at, updated_at]
       properties:
         id: { type: string }
         username: { type: string }
@@ -490,11 +531,12 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         deleted_at:
-          type: [string, 'null']
+          type: string
           format: date-time
           description: Present only when soft-deleted.
         linked_accounts:
           type: array
+          description: Omitted when the user has no linked Minecraft account.
           items:
             type: object
             required: [mc_uuid, auth_source, verified_at]
@@ -523,8 +565,9 @@ components:
         created_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
         revoked_at:
-          type: [string, 'null']
+          type: string
           format: date-time
+          description: Present only once the session is revoked.
 
 paths:
   # ----------------------------------------------------------------- health ---
@@ -2922,24 +2965,7 @@ paths:
                 properties:
                   servers:
                     type: array
-                    items:
-                      allOf:
-                        - $ref: '#/components/schemas/ServerInfo'
-                        - type: object
-                          properties:
-                            owner:
-                              type: string
-                              description: >-
-                                The owner's display identity (email, or username when
-                                the address is absent). Absent for an unclaimed server
-                                or when the best-effort owner lookup failed.
-                            system:
-                              type: boolean
-                              description: >-
-                                True for a platform-provisioned system service (the login
-                                gate, the lobby). Their reserved names are rejected by
-                                every per-server route, so the cockpit renders them
-                                read-only instead of offering actions that would 400.
+                    items: { $ref: '#/components/schemas/FleetServer' }
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':

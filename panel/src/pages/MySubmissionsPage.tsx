@@ -79,7 +79,7 @@ export function MySubmissionsPage() {
 
   // Async API hook
   const { data, error: fetchError, loading, reload } = useAsync(() => api.listMySubmissions(), []);
-  const submissions: Submission[] = data ?? [];
+  const submissions = useMemo<Submission[]>(() => data ?? [], [data]);
 
   // Dialog State
   const [dialogOpen, setDialogOpen] = useState(false);
