@@ -142,21 +142,21 @@ func TestLoginSystemServerEnv(t *testing.T) {
 // namespace (create-if-absent), so the operator's secretKeyRef on the backend pod
 // resolves. It must not overwrite an existing replica, and must degrade gracefully
 // when the source is missing or the namespaces coincide. Exercised here with the
-// service token; setup runs it a second time for the Velocity forwarding secret.
+// Velocity forwarding secret, which setup replicates in this never-overwrite mode.
 func TestEnsureSecretReplica(t *testing.T) {
 	scheme := newSystemServerScheme(t)
 	ctx := context.Background()
 
 	srcSecret := func() *corev1.Secret {
 		return &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: naming.ServiceTokenSecretName, Namespace: "felis"},
+			ObjectMeta: metav1.ObjectMeta{Name: naming.ForwardingSecretName, Namespace: "felis"},
 			Type:       corev1.SecretTypeOpaque,
-			Data:       map[string][]byte{naming.ServiceTokenSecretKey: []byte("s3cr3t")},
+			Data:       map[string][]byte{naming.ForwardingSecretKey: []byte("s3cr3t")},
 		}
 	}
 	replicate := func(cl client.Client, controlNS, mcNS string) systemServerOutcome {
 		return ensureSecretReplica(ctx, cl, controlNS, mcNS,
-			naming.ServiceTokenSecretName, naming.ServiceTokenSecretKey, "service-token", "minecraft ns", false)
+			naming.ForwardingSecretName, naming.ForwardingSecretKey, "forwarding-secret", "minecraft ns", false)
 	}
 
 	t.Run("replicates when absent", func(t *testing.T) {
@@ -166,19 +166,19 @@ func TestEnsureSecretReplica(t *testing.T) {
 			t.Fatalf("outcome = %+v, want created", out)
 		}
 		var replica corev1.Secret
-		if err := cl.Get(ctx, client.ObjectKey{Namespace: "minecraft", Name: naming.ServiceTokenSecretName}, &replica); err != nil {
+		if err := cl.Get(ctx, client.ObjectKey{Namespace: "minecraft", Name: naming.ForwardingSecretName}, &replica); err != nil {
 			t.Fatalf("get replica: %v", err)
 		}
-		if string(replica.Data[naming.ServiceTokenSecretKey]) != "s3cr3t" {
-			t.Errorf("replica token = %q, want s3cr3t", replica.Data[naming.ServiceTokenSecretKey])
+		if string(replica.Data[naming.ForwardingSecretKey]) != "s3cr3t" {
+			t.Errorf("replica token = %q, want s3cr3t", replica.Data[naming.ForwardingSecretKey])
 		}
 	})
 
 	t.Run("does not overwrite existing replica", func(t *testing.T) {
 		existing := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: naming.ServiceTokenSecretName, Namespace: "minecraft"},
+			ObjectMeta: metav1.ObjectMeta{Name: naming.ForwardingSecretName, Namespace: "minecraft"},
 			Type:       corev1.SecretTypeOpaque,
-			Data:       map[string][]byte{naming.ServiceTokenSecretKey: []byte("rotated")},
+			Data:       map[string][]byte{naming.ForwardingSecretKey: []byte("rotated")},
 		}
 		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(srcSecret(), existing).Build()
 		out := replicate(cl, "felis", "minecraft")
@@ -186,11 +186,11 @@ func TestEnsureSecretReplica(t *testing.T) {
 			t.Fatalf("outcome = %+v, want skipped (not clobbered)", out)
 		}
 		var replica corev1.Secret
-		if err := cl.Get(ctx, client.ObjectKey{Namespace: "minecraft", Name: naming.ServiceTokenSecretName}, &replica); err != nil {
+		if err := cl.Get(ctx, client.ObjectKey{Namespace: "minecraft", Name: naming.ForwardingSecretName}, &replica); err != nil {
 			t.Fatalf("get replica: %v", err)
 		}
-		if string(replica.Data[naming.ServiceTokenSecretKey]) != "rotated" {
-			t.Error("existing replica was overwritten — a rotated token must survive")
+		if string(replica.Data[naming.ForwardingSecretKey]) != "rotated" {
+			t.Error("existing replica was overwritten — a hand-set value must survive")
 		}
 	})
 
@@ -204,22 +204,22 @@ func TestEnsureSecretReplica(t *testing.T) {
 
 	t.Run("rejects a source with an empty required key", func(t *testing.T) {
 		bad := srcSecret()
-		bad.Data[naming.ServiceTokenSecretKey] = nil
+		bad.Data[naming.ForwardingSecretKey] = nil
 		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(bad).Build()
 		out := replicate(cl, "felis", "minecraft")
-		if out.err != nil || out.created || out.available || !strings.Contains(out.skipped, naming.ServiceTokenSecretKey) {
+		if out.err != nil || out.created || out.available || !strings.Contains(out.skipped, naming.ForwardingSecretKey) {
 			t.Fatalf("outcome = %+v, want unavailable required key", out)
 		}
 	})
 
 	t.Run("rejects an existing replica with an empty required key", func(t *testing.T) {
 		bad := &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: naming.ServiceTokenSecretName, Namespace: "minecraft"},
+			ObjectMeta: metav1.ObjectMeta{Name: naming.ForwardingSecretName, Namespace: "minecraft"},
 			Data:       map[string][]byte{},
 		}
 		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(srcSecret(), bad).Build()
 		out := replicate(cl, "felis", "minecraft")
-		if out.err != nil || out.created || out.available || !strings.Contains(out.skipped, naming.ServiceTokenSecretKey) {
+		if out.err != nil || out.created || out.available || !strings.Contains(out.skipped, naming.ForwardingSecretKey) {
 			t.Fatalf("outcome = %+v, want unavailable existing replica", out)
 		}
 	})
@@ -245,7 +245,7 @@ func TestEnsureSecretReplica(t *testing.T) {
 		bad.Data = nil
 		cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(bad).Build()
 		out := replicate(cl, "felis", "felis")
-		if out.err != nil || out.available || !strings.Contains(out.skipped, naming.ServiceTokenSecretKey) {
+		if out.err != nil || out.available || !strings.Contains(out.skipped, naming.ForwardingSecretKey) {
 			t.Fatalf("outcome = %+v, want unavailable required key", out)
 		}
 	})
@@ -334,7 +334,7 @@ func TestEnsureSecretReplicaRefresh(t *testing.T) {
 
 func TestRequiredProvisioningError(t *testing.T) {
 	ready := []systemServerOutcome{
-		{name: "service-token (minecraft ns)", available: true},
+		{name: "limbo-token (minecraft ns)", available: true},
 		{name: "forwarding-secret (minecraft ns)", available: true},
 		{name: naming.SystemLoginServer, available: true},
 		{name: naming.SystemLobbyServer, skipped: "image not configured"},
@@ -347,6 +347,14 @@ func TestRequiredProvisioningError(t *testing.T) {
 	missing[1] = systemServerOutcome{name: "forwarding-secret (minecraft ns)", skipped: "source missing"}
 	if err := requiredProvisioningError(missing); err == nil || !strings.Contains(err.Error(), "forwarding-secret") {
 		t.Fatalf("missing forwarding secret = %v, want named error", err)
+	}
+
+	// The login gate cannot reach felis-api without its token, so setup must not
+	// report success while that replica is missing.
+	noToken := append([]systemServerOutcome(nil), ready...)
+	noToken[0] = systemServerOutcome{name: "limbo-token (minecraft ns)", skipped: "source missing"}
+	if err := requiredProvisioningError(noToken); err == nil || !strings.Contains(err.Error(), "limbo-token") {
+		t.Fatalf("missing limbo token = %v, want named error", err)
 	}
 
 	failed := append([]systemServerOutcome(nil), ready...)
@@ -661,4 +669,63 @@ func TestEnsureSystemServersRefreshesDerivedEnv(t *testing.T) {
 			}
 		}
 	})
+}
+
+// Setup's replicas carry each workload its own caller token and nothing more: the
+// login gate gets felis-limbo-token in the minecraft namespace, the build Jobs get
+// felis-build-token in the build namespace, a replica left stale by a rotation is
+// brought up to date, and the proxy's felis-service-token is copied nowhere.
+func TestProvisionSecretReplicasCarryCallerTokens(t *testing.T) {
+	scheme := newSystemServerScheme(t)
+	ctx := context.Background()
+	secret := func(ns, name, key, val string) *corev1.Secret {
+		return &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Type:       corev1.SecretTypeOpaque,
+			Data:       map[string][]byte{key: []byte(val)},
+		}
+	}
+	cl := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		secret("felis", "felis-service-token", "token", "proxy-tok"),
+		secret("felis", "felis-limbo-token", "token", "limbo-new"),
+		secret("felis", "felis-build-token", "token", "build-tok"),
+		secret("felis", "felis-ops-token", "token", "ops-tok"),
+		secret("felis", naming.ForwardingSecretName, naming.ForwardingSecretKey, "fwd"),
+		// What a rotation leaves behind before setup runs again.
+		secret("minecraft", "felis-limbo-token", "token", "limbo-old"),
+	).Build()
+
+	outcomes := provisionSecretReplicas(ctx, cl, "felis", "minecraft", "felis-build")
+	for _, o := range outcomes {
+		if o.err != nil {
+			t.Fatalf("%s: %v", o.name, o.err)
+		}
+	}
+
+	read := func(ns, name string) (string, bool) {
+		var s corev1.Secret
+		if err := cl.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &s); err != nil {
+			return "", false
+		}
+		return string(s.Data["token"]), true
+	}
+	if got, _ := read("minecraft", "felis-limbo-token"); got != "limbo-new" {
+		t.Errorf("minecraft/felis-limbo-token = %q, want the rotated limbo-new", got)
+	}
+	if got, _ := read("felis-build", "felis-build-token"); got != "build-tok" {
+		t.Errorf("felis-build/felis-build-token = %q, want build-tok", got)
+	}
+	for _, ns := range []string{"minecraft", "felis-build"} {
+		for _, name := range []string{"felis-service-token", "felis-ops-token"} {
+			if _, ok := read(ns, name); ok {
+				t.Errorf("%s/%s was replicated; only the control namespace holds it", ns, name)
+			}
+		}
+	}
+	if _, ok := read("minecraft", "felis-build-token"); ok {
+		t.Error("the build token was copied into the minecraft namespace")
+	}
+	if _, ok := read("felis-build", "felis-limbo-token"); ok {
+		t.Error("the limbo token was copied into the build namespace")
+	}
 }

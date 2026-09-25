@@ -605,6 +605,7 @@ func TestSubmissionRoutesWithoutServiceAre503(t *testing.T) {
 func TestInternalSubmissionContextRoute(t *testing.T) {
 	newAPI := func(s SubmissionService) *API {
 		api := newTestAPI(newFakeRepo(), newFakeCluster())
+		api.Internal = okInternal{caller: CallerBuild}
 		api.Submissions = s
 		return api
 	}

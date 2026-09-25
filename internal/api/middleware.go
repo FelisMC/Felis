@@ -210,16 +210,33 @@ func (b *deadlineBody) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// requireInternal enforces service-token auth for the internal face. It never
-// applies Zero Trust (spec §14 red line).
+// requireInternal enforces service-token auth for the internal face and stashes
+// the caller the token belongs to, which callersOnly checks against the route.
+// It never applies Zero Trust (spec §14 red line).
 func (a *API) requireInternal(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := a.Internal.Authenticate(r); err != nil {
+		caller, err := a.Internal.Authenticate(r)
+		if err != nil {
 			writeError(w, r, errUnauthorized)
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), ctxKeyCaller, caller)))
 	})
+}
+
+// callersOnly refuses an internal route to a caller it does not list: the token
+// is genuine, it just belongs to a machine this route does not serve.
+func callersOnly(callers []Caller, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		caller := callerFromContext(r.Context())
+		for _, c := range callers {
+			if c == caller {
+				next(w, r)
+				return
+			}
+		}
+		writeError(w, r, errWrongCaller)
+	}
 }
 
 // requireExternal enforces Access-JWT auth for the external face and stashes the

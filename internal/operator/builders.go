@@ -323,21 +323,22 @@ func buildEnv(server *v1alpha1.MinecraftServer) []corev1.EnvVar {
 	}
 	// The login system server is the ONE workload that authenticates to the
 	// felis-api internal face (its felis-limbo plugin mints bind codes and polls
-	// link status), so it — and only it — receives the service token. Injected
+	// link status), so it — and only it — receives a token: felis-limbo-token,
+	// which the api serves on those routes alone. Injected
 	// from a Secret in this namespace, never inlined into the CRD (the same
 	// discipline as RCON_PASSWORD above; the CRD's EnvVar type has no valueFrom
 	// precisely so a user server cannot mount an arbitrary secret). Require both
 	// the reserved name and the setup-owned system-role label: the label prevents
 	// a legacy user server named "login" from receiving the token after upgrade.
-	// The Secret must exist in this (minecraft) namespace; `felis setup` replicates
-	// it there from the control namespace before creating this server.
+	// The Secret must exist in this (minecraft) namespace; the installer applies it
+	// there and `felis setup` replicates it from the control namespace.
 	if server.Name == naming.SystemLoginServer &&
 		server.Labels[v1alpha1.LabelSystemRole] == naming.SystemLoginServer {
 		env = append(env, corev1.EnvVar{
 			Name: envServiceToken,
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: naming.ServiceTokenSecretName},
+					LocalObjectReference: corev1.LocalObjectReference{Name: naming.LimboTokenSecretName},
 					Key:                  naming.ServiceTokenSecretKey,
 				},
 			},

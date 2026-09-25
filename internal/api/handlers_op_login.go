@@ -430,7 +430,7 @@ func (a *API) handleOpLoginApprove(w http.ResponseWriter, r *http.Request) {
 	}
 	payload, _ := json.Marshal(map[string]string{"request_id": id, "approver_user_id": approverID})
 	a.auditEntry(r, AuditEntry{
-		Actor: approver.Username, ActorUserID: approverID, Source: "internal",
+		Actor: approver.Username, ActorUserID: approverID, Source: internalSource(r),
 		Action: "auth.op_login.approved", Payload: payload,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"approved": true})

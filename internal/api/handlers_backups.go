@@ -375,7 +375,7 @@ func (a *API) handleInternalBackup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	a.enqueueBackup(w, r, name, rec, actor, "internal")
+	a.enqueueBackup(w, r, name, rec, actor, internalSource(r))
 }
 
 // enqueueBackup is the shared tail of both backup faces: the RWO stopped-gate, the

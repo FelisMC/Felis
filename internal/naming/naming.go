@@ -55,16 +55,23 @@ func IsSystemServer(name string) bool {
 	return name == SystemLoginServer || name == SystemLobbyServer
 }
 
-// ServiceTokenSecretName / ServiceTokenSecretKey name the internal-API bearer
-// credential Secret (spec §7). They are one source of truth shared across
-// subsystems: the platform renderer wires this Secret into the felis-api
-// Deployment, and the operator injects it into the login system server's pod as
-// FELIS_SERVICE_TOKEN via a secretKeyRef (never a literal). The Secret itself is
-// provisioned out-of-band (deploy/bootstrap.sh) and, for the login gate, replicated
-// into the minecraft namespace by `felis setup`; these constants only name it.
+// ServiceTokenSecretName / ServiceTokenSecretKey name the proxy's internal-API
+// bearer credential Secret (spec §7); CallerTokens lists it with the tokens the
+// other internal callers hold. The Secrets are provisioned out-of-band
+// (deploy/bootstrap.sh) and replicated by `felis setup` into the namespace whose
+// pods mount them; these constants only name them.
 const (
 	ServiceTokenSecretName = "felis-service-token"
 	ServiceTokenSecretKey  = "token"
+	// LimboTokenSecretName is the login gate's token, replicated into the
+	// minecraft namespace; the operator injects it into the login pod only.
+	LimboTokenSecretName = "felis-limbo-token"
+	// BuildTokenSecretName is the build Job's token, replicated into the build
+	// namespace for the context-fetch initContainer.
+	BuildTokenSecretName = "felis-build-token"
+	// OpsTokenSecretName is the on-node console's token (`felis backup-now`); it
+	// stays in the control namespace.
+	OpsTokenSecretName = "felis-ops-token"
 	// EnvAPIBaseURL carries the internal-face base URL (platform.InternalAPIBaseURL)
 	// into a pod: the login gate dials it, and the api reads it to derive the build
 	// contexts' fetch URLs, so both sides name the same address for the same face.
@@ -208,4 +215,26 @@ func ValidateHostname(host, rootDomain string) error {
 		return fmt.Errorf("naming: invalid hostname label %q", label)
 	}
 	return nil
+}
+
+// CallerToken ties one internal-face caller (api.Caller) to the Secret holding
+// its token, the env var felis-api reads that token from, and the namespace a
+// replica of the Secret must reach for the caller's pods ("" when the caller
+// runs outside the cluster or in the control namespace).
+type CallerToken struct {
+	Caller string
+	Secret string
+	APIEnv string
+	// Replica names where the caller's pods run: "minecraft" or "build".
+	Replica string
+}
+
+// CallerTokens is every internal caller, one token each. felis-api refuses to
+// start when two share a value, so a token copied from one namespace opens only
+// the routes that caller is listed on.
+var CallerTokens = []CallerToken{
+	{Caller: "velocity", Secret: ServiceTokenSecretName, APIEnv: "FELIS_SERVICE_TOKEN"},
+	{Caller: "limbo", Secret: LimboTokenSecretName, APIEnv: "FELIS_LIMBO_TOKEN", Replica: "minecraft"},
+	{Caller: "build", Secret: BuildTokenSecretName, APIEnv: "FELIS_BUILD_TOKEN", Replica: "build"},
+	{Caller: "ops", Secret: OpsTokenSecretName, APIEnv: "FELIS_OPS_TOKEN"},
 }

@@ -588,15 +588,51 @@ func phaseOrPending(p v1alpha1.Phase) string {
 	return string(p)
 }
 
+// provisionSecretReplicas copies the Secrets workload pods mount from the control
+// namespace into the namespaces those pods run in. The proxy's felis-service-token
+// is not among them: it lives in the control namespace and on the host, and a copy
+// anywhere else would open every game route to whoever reads that namespace.
+func provisionSecretReplicas(ctx context.Context, cl client.Client, controlNS, minecraftNS, buildNS string) []systemServerOutcome {
+	return []systemServerOutcome{
+		// refresh=true for both caller tokens: the control namespace holds the
+		// current value and `felis rotate-token` replaces it there, so a replica
+		// that differs is stale and the login gate would be turned away with it.
+		ensureSecretReplica(ctx, cl, controlNS, minecraftNS,
+			naming.LimboTokenSecretName, naming.ServiceTokenSecretKey, "limbo-token", "minecraft ns", true),
+		ensureSecretReplica(ctx, cl, controlNS, minecraftNS,
+			naming.ForwardingSecretName, naming.ForwardingSecretKey, "forwarding-secret", "minecraft ns", false),
+		// refresh=true: felis-config is the rendered config, not a credential. The
+		// backup/restore/fileedit Jobs and the reaper mount this copy, so a re-run
+		// must update it when the control plane's render has moved on (a stale copy
+		// e.g. keeps an old database URL after a credential rotation).
+		ensureSecretReplica(ctx, cl, controlNS, minecraftNS,
+			"felis-config", "felis.toml", "config", "minecraft ns", true),
+		// The reaper's pre-reap warning emails authenticate with the same relay
+		// password felis-api uses; the reaper pod runs in the minecraft namespace,
+		// where a secretKeyRef resolves only against a local mirror. Skipped while
+		// the relay is not configured yet — the "configure email" screen refreshes
+		// both mirrors when it applies.
+		ensureSecretReplica(ctx, cl, controlNS, minecraftNS,
+			"felis-smtp", "password", "smtp", "minecraft ns", false),
+		// The build namespace needs the build token: the build Job's fetch
+		// initContainer reads the submission context from the internal face, and
+		// that is all this token opens. Best effort — a deployment that only
+		// installs the control plane simply never builds a user submission.
+		ensureSecretReplica(ctx, cl, controlNS, buildNS,
+			naming.BuildTokenSecretName, naming.ServiceTokenSecretKey, "build-token", "felis-build ns", true),
+	}
+}
+
 // ensureSecretReplica copies one Secret from the control namespace into a workload
 // namespace (minecraft — or the build namespace, whose fetch initContainer reads the
-// context from the felis-api internal face with the same token) so a pod can mount it
+// context from the felis-api internal face with the build token) so a pod can mount it
 // via secretKeyRef. A secretKeyRef is namespace-local, but those workloads do not run
 // beside the control plane — so without this replica the secretKeyRef would dangle and
 // wedge the pod in CreateContainerConfigError.
 //
-// Three Secrets need it, for different reasons: the service token (the login limbo and
-// the build Pod's context fetch — both authenticate to the felis-api internal face),
+// Several Secrets need it, for different reasons: the caller tokens of the login
+// limbo and the build Pod's context fetch (both authenticate to the felis-api
+// internal face, each with its own token),
 // the Velocity modern-forwarding secret (every backend — it is how a backend knows
 // a login really came from the proxy, and so that the player's UUID is Mojang-verified
 // rather than offline-derived), and the SMTP relay password (the reaper's pre-reap
@@ -609,12 +645,14 @@ func phaseOrPending(p v1alpha1.Phase) string {
 // copies only Type and Data — never labels/annotations/ownerRefs — so the replica
 // carries no accidental GC owner or managed-by lineage.
 //
-// refreshExisting switches the felis-config mirror to refresh-in-place: that Secret is
-// a rendered config, never a hand-rotated credential, and the workload Jobs that mount
-// it (backup/restore/fileedit) plus the reaper silently misbehave on a stale copy —
-// e.g. after a database credential rotation the control plane moves on while every
-// backup Job keeps failing auth. Credential Secrets keep the never-overwrite rule so a
-// rotated value survives; to rotate those, delete the replica and re-run setup.
+// refreshExisting switches a replica to refresh-in-place from the control namespace.
+// The felis-config mirror uses it because that Secret is a rendered config and the
+// workload Jobs that mount it (backup/restore/fileedit) plus the reaper silently
+// misbehave on a stale copy — e.g. after a database credential rotation the control
+// plane moves on while every backup Job keeps failing auth. The caller tokens use it
+// because `felis rotate-token` replaces them in the control namespace, which makes a
+// differing replica stale by definition. The forwarding and SMTP Secrets keep the
+// never-overwrite rule.
 func ensureSecretReplica(ctx context.Context, cl client.Client, controlNamespace, minecraftNamespace, secretName, secretKey, label, where string, refreshExisting bool) systemServerOutcome {
 	name := label + " (" + where + ")"
 	validate := func(secret *corev1.Secret, location, skipped string) systemServerOutcome {
@@ -712,7 +750,7 @@ func ensureSecretReplica(ctx context.Context, cl client.Client, controlNamespace
 
 func requiredProvisioningError(outcomes []systemServerOutcome) error {
 	required := map[string]struct{}{
-		"service-token (minecraft ns)":     {},
+		"limbo-token (minecraft ns)":       {},
 		"forwarding-secret (minecraft ns)": {},
 		naming.SystemLoginServer:           {},
 	}

@@ -2819,7 +2819,15 @@ load_or_make_secrets() {
     ok "reusing persisted secrets from ${SECRETS_ENV}"
   fi
   DB_PASSWORD="${DB_PASSWORD:-$(openssl rand -hex 24)}"
+  # One felis-api internal token per caller (naming.CallerTokens), so each is scoped
+  # to its own routes and a leak is contained to that caller: SERVICE_TOKEN is the
+  # proxy's (felis-link.properties), LIMBO_TOKEN the login gate's, BUILD_TOKEN what a
+  # build Job fetches its context with, OPS_TOKEN what `felis backup-now` presents.
+  # `felis rotate-token <caller>` rewrites the matching line here.
   SERVICE_TOKEN="${SERVICE_TOKEN:-$(openssl rand -hex 32)}"
+  LIMBO_TOKEN="${LIMBO_TOKEN:-$(openssl rand -hex 32)}"
+  BUILD_TOKEN="${BUILD_TOKEN:-$(openssl rand -hex 32)}"
+  OPS_TOKEN="${OPS_TOKEN:-$(openssl rand -hex 32)}"
   SESSION_SECRET="${SESSION_SECRET:-$(openssl rand -hex 32)}"
   # The Velocity modern-forwarding key. It is what makes a backend's UUID trustworthy:
   # the proxy does the Mojang handshake and HMACs the resulting profile with this key,
@@ -2840,6 +2848,9 @@ load_or_make_secrets() {
     cat > "$SECRETS_ENV" <<EOF
 DB_PASSWORD=${DB_PASSWORD}
 SERVICE_TOKEN=${SERVICE_TOKEN}
+LIMBO_TOKEN=${LIMBO_TOKEN}
+BUILD_TOKEN=${BUILD_TOKEN}
+OPS_TOKEN=${OPS_TOKEN}
 SESSION_SECRET=${SESSION_SECRET}
 FORWARDING_SECRET=${FORWARDING_SECRET}
 REGISTRY_PLATFORM_TOKEN=${REGISTRY_PLATFORM_TOKEN}
@@ -3475,13 +3486,19 @@ deploy_bundle() {
     kube create namespace "$ns" --dry-run=client -o yaml | kube apply -f -
   done
 
-  log "provisioning felis-config + felis-service-token + felis-forwarding-secret + registry credentials + panel TLS secrets (out-of-band, never in the bundle)"
+  log "provisioning felis-config + internal caller tokens + felis-forwarding-secret + registry credentials + panel TLS secrets (out-of-band, never in the bundle)"
   apply_felis_config_secrets
+  # felis-api mounts all four caller tokens from the control namespace. The login
+  # gate's and the build Job's are also applied into the namespace their pods run in
+  # (a secretKeyRef is namespace-local); applying them here rather than leaving it to
+  # `felis setup` means an upgrade has them in place before the new operator points
+  # the login pod at felis-limbo-token. The proxy's and the ops token stay here only.
   apply_literal_secret "$CONTROL_NS" felis-service-token token "$SERVICE_TOKEN"
-  # The build namespace needs the same token: the build Job's fetch initContainer
-  # streams a submission's build context from the felis-api internal face, and a
-  # secretKeyRef is namespace-local (a PVC cannot carry it across either).
-  apply_literal_secret "$BUILD_NS" felis-service-token token "$SERVICE_TOKEN"
+  apply_literal_secret "$CONTROL_NS" felis-limbo-token token "$LIMBO_TOKEN"
+  apply_literal_secret "$MINECRAFT_NS" felis-limbo-token token "$LIMBO_TOKEN"
+  apply_literal_secret "$CONTROL_NS" felis-build-token token "$BUILD_TOKEN"
+  apply_literal_secret "$BUILD_NS" felis-build-token token "$BUILD_TOKEN"
+  apply_literal_secret "$CONTROL_NS" felis-ops-token token "$OPS_TOKEN"
   # The forwarding key every backend verifies the proxy's handshake with. `felis setup`
   # replicates it into the minecraft namespace (ensureSecretReplica) before it creates
   # the pods that mount it; the operator injects it into EVERY backend, because Velocity's
@@ -3559,6 +3576,12 @@ deploy_bundle() {
       die "control-plane rollout did not complete: ${d}"
     fi
   done
+  # Before per-caller tokens the proxy's token was replicated into the workload
+  # namespaces for the login gate and the build Jobs. The new operator and api no
+  # longer reference those copies; leaving them would keep the proxy's credential
+  # readable from namespaces that have no business with it.
+  kube -n "$MINECRAFT_NS" delete secret felis-service-token --ignore-not-found
+  kube -n "$BUILD_NS" delete secret felis-service-token --ignore-not-found
 }
 
 # pvc_size <namespace> <claim> <wanted> <env name> prints the size to render the claim

@@ -364,8 +364,21 @@ is intended. [GO-TESTED for the session/QR-login logic.]
 ## 6. Internal API rejects Velocity / proxy callers (service-token)
 
 The internal face (`--internal-addr :8081`, routes under
-`/api/v1/internal/...`) is **never** Zero-Trust; it authenticates a single
-service token via `Authorization: Bearer <token>`, compared in constant time.
+`/api/v1/internal/...`) is **never** Zero-Trust; it authenticates a bearer token
+(`Authorization: Bearer <token>`, compared in constant time). Each internal caller
+has its own token, and each route serves only the callers listed for it
+(`x-felis-callers` in `docs/openapi.yaml`):
+
+| Caller | Secret (key `token`) | API env | Where the caller reads it | Routes |
+|---|---|---|---|---|
+| `velocity` (proxy felis-link) | `felis/felis-service-token` | `FELIS_SERVICE_TOKEN` | `service-token` in the host's `felis-link.properties` | server list, wake/claim/ready/status, join events, menu, op-login, migrate, reclaim, link codes, blacklist |
+| `limbo` (login gate) | `felis/felis-limbo-token`, replica in `minecraft` | `FELIS_LIMBO_TOKEN` | login pod env `FELIS_SERVICE_TOKEN` | link codes, link status, blacklist |
+| `build` (build Job fetch) | `felis/felis-build-token`, replica in `felis-build` | `FELIS_BUILD_TOKEN` | fetch initContainer env | submission build context |
+| `ops` (`felis backup-now`) | `felis/felis-ops-token` | `FELIS_OPS_TOKEN` | read from the Secret on each run | break-glass backup |
+
+The installer generates all four into `/etc/felis/secrets.env` (`SERVICE_TOKEN`,
+`LIMBO_TOKEN`, `BUILD_TOKEN`, `OPS_TOKEN`) and applies them on every run. The audit
+log records internal actions with the source `internal:<caller>`. [GO-TESTED]
 
 In-cluster it is reached through the ClusterIP Service `felis-api-internal` (port
 8081), which is separate from the external NodePort `felis-api` (443) precisely so
@@ -378,24 +391,42 @@ break-glass console reaches it by resolving that Service's ClusterIP and dialing
   svc felis-api-internal` must show a ClusterIP with 8081; a bare `felis-api` name
   serves only 443 and every internal call would hang/refuse.
 
-- **All internal calls 401** → the token is unset or wrong. The API reads env
-  `FELIS_SERVICE_TOKEN`. If unset, startup logs:
+- **One caller's calls all 401** → its token is unset or differs from the api's
+  copy. The api logs one line per unset token at startup:
 
   ```
-  felis api: warning: FELIS_SERVICE_TOKEN unset — internal face will reject all callers
+  felis api: warning: FELIS_LIMBO_TOKEN unset — the internal face turns the limbo caller away
   ```
 
-  and wires an empty token, which rejects **everyone** (no bypass). [GO-TESTED
-  for the constant-time compare / empty-token rejection.]
+  An unset token never matches anything (no bypass). Compare the caller's value
+  with its Secret, e.g. for the proxy:
 
-In-cluster, the token's source of truth is the Secret `felis-service-token`
-(key `token`), injected as `FELIS_SERVICE_TOKEN` on the API Deployment. Fix:
+  ```
+  kubectl -n felis get secret felis-service-token -o jsonpath='{.data.token}' | base64 -d
+  ```
 
-```
-kubectl get secret felis-service-token -o jsonpath='{.data.token}' | base64 -d
-```
+- **`403 wrong_caller`** → the token is valid but belongs to a caller that route
+  does not serve, e.g. the build token calling a proxy route. Configure the caller
+  with its own token from the table above.
 
-Ensure the proxy is configured with the identical value.
+- **api pods stuck in `CreateContainerConfigError`** → one of the four Secrets is
+  missing in `felis`. Re-run the installer; it applies them before the bundle.
+
+- **Two tokens with the same value** → `felis api` refuses to start with
+  `the X and Y tokens are the same value; each caller needs its own`, since a shared
+  value would make the caller ambiguous. Rotate one of them.
+
+### Rotating a token
+
+`sudo felis rotate-token <velocity|limbo|build|ops>` replaces one caller's token:
+it writes the new value to `secrets.env` (so a later installer run keeps it), the
+Secret and its replica, rolls felis-api so only the new value is accepted, then
+restarts the caller — the `felis-velocity` unit when the proxy runs on this host,
+or the login pod. Build Jobs and `felis backup-now` pick the new value up on their
+next run. The old value stops working as soon as felis-api has rolled; the caller
+is turned away for the few seconds until it restarts. For a proxy on another host,
+the command leaves the host alone and tells you to copy the new value from the
+Secret into that proxy's `felis-link.properties` and restart it. [GO-TESTED]
 
 ---
 

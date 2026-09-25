@@ -163,8 +163,10 @@ var (
 	// 503 "retry" instead of a 401 that reads as "log in again".
 	errAuthUnavailable = newError(http.StatusServiceUnavailable, "auth_unavailable",
 		"authentication is temporarily unavailable; retry shortly")
-	errForbidden  = newError(http.StatusForbidden, "forbidden", "not permitted")
-	errBadRequest = newError(http.StatusBadRequest, "bad_request", "invalid request")
+	errForbidden = newError(http.StatusForbidden, "forbidden", "not permitted")
+	// errWrongCaller: a valid internal token for a caller this route does not serve.
+	errWrongCaller = newError(http.StatusForbidden, "wrong_caller", "this token's caller may not use this route")
+	errBadRequest  = newError(http.StatusBadRequest, "bad_request", "invalid request")
 )
 
 // writeJSON writes v as an indented JSON body with the given status.

@@ -50,20 +50,18 @@ import (
 // kubernetes.io/hostname selector and PV node affinity) or the CronJob could
 // schedule on a node where the worlds-root is empty.
 const (
-	// configSecretName / serviceTokenSecretName are referenced BY NAME and NEVER
-	// rendered into the bundle: felis.toml carries the database URL (a credential)
-	// and the service token is a credential, so writing either into a checked-in
-	// manifest is a hard red line. The deployment provisions both Secrets
-	// out-of-band before applying these workloads.
+	// configSecretName and the caller token Secrets (naming.CallerTokens) are
+	// referenced BY NAME and NEVER rendered into the bundle: felis.toml carries the
+	// database URL (a credential) and each token is a credential, so writing any of
+	// them into a checked-in manifest is a hard red line. The deployment provisions
+	// these Secrets out-of-band before applying these workloads.
 	configSecretName = "felis-config"
 	configSecretKey  = "felis.toml"
 	configMountPath  = "/etc/felis"
 	configFilePath   = "/etc/felis/felis.toml"
 	felisBinaryPath  = "/usr/local/bin/felis"
-	// Single-sourced with the operator, which injects the same Secret into the
-	// login system server's pod (see internal/naming).
-	serviceTokenSecretName = naming.ServiceTokenSecretName
-	serviceTokenSecretKey  = naming.ServiceTokenSecretKey
+	// The key every caller token Secret stores its value under (internal/naming).
+	serviceTokenSecretKey = naming.ServiceTokenSecretKey
 
 	// Ports, single-sourced with the entrypoints (cmd/felis). The api external
 	// port must match server.listen in felis.toml (default 0.0.0.0:8080); that
@@ -323,8 +321,8 @@ func retentionEnabled(p Params) bool {
 // fence and is asserted in workloads_test.go.
 //
 // felis.toml is mounted read-only from a Secret (it carries the database URL, a
-// credential, so it must never be a ConfigMap); FELIS_SERVICE_TOKEN comes from a
-// second Secret by reference. FELIS_IMAGE is the felis image itself, so the
+// credential, so it must never be a ConfigMap); each internal caller's token
+// (naming.CallerTokens) comes from its own Secret by reference. FELIS_IMAGE is the felis image itself, so the
 // restore executor launches `felis restore` with the same image. FELIS_BACKUP_PVC
 // is rendered only when a backup PVC is named — otherwise the restore endpoint
 // degrades to 503 rather than enqueuing a Job that cannot mount its backup.
@@ -336,22 +334,29 @@ func retentionEnabled(p Params) bool {
 func APIDeployment(p Params) *appsv1.Deployment {
 	p = p.withDefaults()
 
-	env := []corev1.EnvVar{
-		{
-			Name: "FELIS_SERVICE_TOKEN",
+	var env []corev1.EnvVar
+	// Every internal caller's token, each from its own Secret. Required: the
+	// installer applies all four before this Deployment, and a missing one should
+	// stall the rollout on the old pods rather than start an api that turns that
+	// caller away.
+	for _, ct := range naming.CallerTokens {
+		env = append(env, corev1.EnvVar{
+			Name: ct.APIEnv,
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: serviceTokenSecretName},
+					LocalObjectReference: corev1.LocalObjectReference{Name: ct.Secret},
 					Key:                  serviceTokenSecretKey,
 				},
 			},
-		},
-		{Name: "FELIS_IMAGE", Value: p.FelisImage},
+		})
+	}
+	env = append(env,
+		corev1.EnvVar{Name: "FELIS_IMAGE", Value: p.FelisImage},
 		// The api's own internal-face base URL, so it derives the submission
 		// context URLs that build Pods fetch through it. Same value the login gate
 		// is handed; one address for one face.
-		{Name: naming.EnvAPIBaseURL, Value: InternalAPIBaseURL(p.ControlNamespace)},
-	}
+		corev1.EnvVar{Name: naming.EnvAPIBaseURL, Value: InternalAPIBaseURL(p.ControlNamespace)},
+	)
 	if p.BackupPVC != "" {
 		env = append(env, corev1.EnvVar{Name: "FELIS_BACKUP_PVC", Value: p.BackupPVC})
 	}

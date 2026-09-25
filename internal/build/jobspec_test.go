@@ -450,6 +450,11 @@ func TestBuildJobFetchesHTTPContext(t *testing.T) {
 	if fetchToken.Value != "" {
 		t.Error("fetch container must not carry a literal token")
 	}
+	// The build token reads a submission's context and nothing else; the proxy's
+	// felis-service-token must never be copied into the build namespace.
+	if ref := fetchToken.ValueFrom.SecretKeyRef; ref.Name != "felis-build-token" || ref.Key != "token" {
+		t.Errorf("fetch token reads %s/%s, want felis-build-token/token", ref.Name, ref.Key)
+	}
 	if len(kaniko.Env) != 0 {
 		t.Errorf("kaniko must carry no env (especially no token), got %v", kaniko.Env)
 	}

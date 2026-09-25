@@ -98,7 +98,13 @@ components:
     serviceToken:
       type: http
       scheme: bearer
-      description: Static service token presented by velocity / backend callers (internal face).
+      description: >-
+        Static per-caller token (internal face). Each machine holds its own —
+        velocity (felis-service-token), limbo (felis-limbo-token), build
+        (felis-build-token), ops (felis-ops-token) — and each operation lists the
+        callers it serves in x-felis-callers. A genuine token for a caller the
+        operation does not list is refused with 403 wrong_caller. `felis
+        rotate-token <caller>` replaces one.
     accessJWT:
       type: apiKey
       in: header
@@ -758,6 +764,7 @@ paths:
       summary: List all servers (velocity route table).
       x-felis-face: [internal]
       x-felis-tier: service
+      x-felis-callers: [velocity]
       security: [{ serviceToken: [] }]
       responses:
         '200':
@@ -838,6 +845,7 @@ paths:
       summary: Backend readiness callback — the server reports it is accepting players.
       x-felis-face: [internal]
       x-felis-tier: service
+      x-felis-callers: [velocity]
       security: [{ serviceToken: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
@@ -861,6 +869,7 @@ paths:
         the internal face (service token, no Zero Trust).
       x-felis-face: [internal]
       x-felis-tier: service
+      x-felis-callers: [build]
       security: [{ serviceToken: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
@@ -884,6 +893,7 @@ paths:
       summary: Player-join event by online-mode UUID (activity tracking / idle reset).
       x-felis-face: [internal]
       x-felis-tier: service
+      x-felis-callers: [velocity]
       security: [{ serviceToken: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
@@ -917,6 +927,7 @@ paths:
         server's autostartPolicy and the per-server wake cooldown.
       x-felis-face: [internal]
       x-felis-tier: service
+      x-felis-callers: [velocity]
       security: [{ serviceToken: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
@@ -968,6 +979,7 @@ paths:
       summary: Server status projection (velocity polls this after a wake).
       x-felis-face: [internal]
       x-felis-tier: service
+      x-felis-callers: [velocity]
       security: [{ serviceToken: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
@@ -992,6 +1004,7 @@ paths:
         binding the unowned server to the player's linked account.
       x-felis-face: [internal]
       x-felis-tier: service
+      x-felis-callers: [velocity]
       security: [{ serviceToken: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
@@ -1035,6 +1048,7 @@ paths:
       summary: Lobby menu projection — status plus the ownership-derived `claimable`.
       x-felis-face: [internal]
       x-felis-tier: service
+      x-felis-callers: [velocity]
       security: [{ serviceToken: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
@@ -1067,6 +1081,7 @@ paths:
       description: Internal-only — the code is born from a UUID the web never holds.
       x-felis-face: [internal]
       x-felis-tier: service
+      x-felis-callers: [velocity, limbo]
       security: [{ serviceToken: [] }]
       requestBody:
         required: true
@@ -1124,6 +1139,7 @@ paths:
         UUID it already holds, so no identity detail crosses back.
       x-felis-face: [internal]
       x-felis-tier: service
+      x-felis-callers: [velocity, limbo]
       security: [{ serviceToken: [] }]
       parameters:
         - { name: mc_uuid, in: path, required: true, schema: { type: string, format: uuid } }
@@ -1154,6 +1170,7 @@ paths:
         web credentials — so this endpoint starts a flow, it does not move anything.
       x-felis-face: [internal]
       x-felis-tier: service
+      x-felis-callers: [velocity]
       security: [{ serviceToken: [] }]
       requestBody:
         required: true
@@ -1203,6 +1220,7 @@ paths:
         never the contested name, so the genuine Mojang player always passes.
       x-felis-face: [internal]
       x-felis-tier: service
+      x-felis-callers: [velocity]
       security: [{ serviceToken: [] }]
       requestBody:
         required: true
@@ -1248,6 +1266,7 @@ paths:
         different UUID — is never on the list and always passes.
       x-felis-face: [internal]
       x-felis-tier: service
+      x-felis-callers: [velocity, limbo]
       security: [{ serviceToken: [] }]
       parameters:
         - { name: mc_uuid, in: path, required: true, schema: { type: string, format: uuid } }
@@ -1277,6 +1296,7 @@ paths:
         is secret to the operator crew.
       x-felis-face: [internal]
       x-felis-tier: service
+      x-felis-callers: [velocity]
       security: [{ serviceToken: [] }]
       responses:
         '200':
@@ -1314,6 +1334,7 @@ paths:
         factor distinct from the mailbox.
       x-felis-face: [internal]
       x-felis-tier: service
+      x-felis-callers: [velocity]
       security: [{ serviceToken: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
@@ -1368,6 +1389,7 @@ paths:
         and the action is audited to "break-glass".
       x-felis-face: [internal]
       x-felis-tier: service
+      x-felis-callers: [ops]
       security: [{ serviceToken: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }

@@ -119,9 +119,15 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 
 	metrics.SetBuildInfo("api", resolvedVersion())
 
-	token := os.Getenv("FELIS_SERVICE_TOKEN")
-	if token == "" {
-		fmt.Fprintln(stderr, "felis api: warning: FELIS_SERVICE_TOKEN unset — internal face will reject all callers")
+	internalAuth, err := internalCallerTokens(os.Getenv)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis api: internal face tokens: %v\n", err)
+		return 1
+	}
+	for _, ct := range naming.CallerTokens {
+		if internalAuth[api.Caller(ct.Caller)] == "" {
+			fmt.Fprintf(stderr, "felis api: warning: %s unset — the internal face turns the %s caller away\n", ct.APIEnv, ct.Caller)
+		}
 	}
 
 	// Email one-time codes go through the [smtp] relay when one is configured; the
@@ -299,7 +305,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		// Build-log stream (spec §16) is scoped to the BUILD namespace — the same
 		// value the Builder renders Jobs into — so it follows where build Pods run.
 		BuildLogs: api.NewK8sBuildLogStreamer(clientset, cfg.Registry.BuildNamespace),
-		Internal:  api.BearerTokenAuth{Token: token},
+		Internal:  internalAuth,
 		Builder:   builder,
 		Images:    imagePinner(cfg.Registry.URL),
 		Restorer:  restorer,
@@ -799,4 +805,15 @@ func imagePinner(registry string) api.ImagePinner {
 		return nil
 	}
 	return imagepin.Resolver{Registry: registry}
+}
+
+// internalCallerTokens reads each internal caller's token from the env var the
+// Deployment feeds it from (naming.CallerTokens). Two callers sharing a value
+// would make the caller ambiguous, so that refuses to start.
+func internalCallerTokens(getenv func(string) string) (api.CallerTokens, error) {
+	tokens := map[api.Caller]string{}
+	for _, ct := range naming.CallerTokens {
+		tokens[api.Caller(ct.Caller)] = strings.TrimSpace(getenv(ct.APIEnv))
+	}
+	return api.NewCallerTokens(tokens)
 }

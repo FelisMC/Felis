@@ -14,6 +14,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"log/slog"
 	"net/http"
@@ -352,6 +353,10 @@ type apiRoute struct {
 	// since the browser calls it every few seconds while it waits.
 	AuthDoor bool
 
+	// Callers lists the machines an internal-face route serves; every
+	// authenticated internal route names at least one, and external routes none.
+	Callers []Caller
+
 	h http.HandlerFunc
 }
 
@@ -359,6 +364,14 @@ type apiRoute struct {
 // service-token auth, never Zero Trust. It carries both health probes and the
 // metrics scrape.
 func (a *API) internalAPIRoutes() []apiRoute {
+	// Who may call what (Caller). The proxy drives the game-facing routes; the
+	// login gate only checks a joining player's bar and link and mints their bind
+	// code; the build Job only reads the context of the submission it builds; the
+	// on-node console only asks for a break-glass backup.
+	proxy := []Caller{CallerVelocity}
+	gate := []Caller{CallerVelocity, CallerLimbo}
+	build := []Caller{CallerBuild}
+	ops := []Caller{CallerOps}
 	return []apiRoute{
 		{Method: "GET", Pattern: "/healthz", Public: true, h: a.handleHealthz},
 		{Method: "GET", Pattern: "/readyz", Public: true, h: a.handleReadyz},
@@ -366,47 +379,47 @@ func (a *API) internalAPIRoutes() []apiRoute {
 		// no token, internal-only so it is never exposed off-cluster.
 		{Method: "GET", Pattern: "/metrics", Public: true, h: a.handleMetrics},
 
-		{Method: "GET", Pattern: "/api/v1/servers", h: a.handleListServers},
+		{Method: "GET", Pattern: "/api/v1/servers", Callers: proxy, h: a.handleListServers},
 		// The build Pod's context-fetch initContainer streams a submission's stored
 		// modpack through this route (build namespace cannot mount the uploads PVC).
-		{Method: "GET", Pattern: "/api/v1/internal/submissions/{id}/context", h: a.handleInternalSubmissionContext},
-		{Method: "POST", Pattern: "/api/v1/internal/servers/{name}/ready", h: a.handleReady},
-		{Method: "POST", Pattern: "/api/v1/internal/servers/{name}/join-event", h: a.handleJoinEvent},
+		{Method: "GET", Pattern: "/api/v1/internal/submissions/{id}/context", Callers: build, h: a.handleInternalSubmissionContext},
+		{Method: "POST", Pattern: "/api/v1/internal/servers/{name}/ready", Callers: proxy, h: a.handleReady},
+		{Method: "POST", Pattern: "/api/v1/internal/servers/{name}/join-event", Callers: proxy, h: a.handleJoinEvent},
 		// Domain-autostart (spec §9.1, §14): velocity drives the wake lever and polls
 		// status with its service token, identifying the joining player by online-mode
 		// UUID. These live on the internal face because velocity holds no web Principal;
 		// the external face keeps its own Principal-gated wake/status for the panel.
-		{Method: "POST", Pattern: "/api/v1/internal/servers/{name}/wake", h: a.handleInternalWake},
-		{Method: "GET", Pattern: "/api/v1/internal/servers/{name}/status", h: a.handleStatus},
+		{Method: "POST", Pattern: "/api/v1/internal/servers/{name}/wake", Callers: proxy, h: a.handleInternalWake},
+		{Method: "GET", Pattern: "/api/v1/internal/servers/{name}/status", Callers: proxy, h: a.handleStatus},
 		// Lobby `/menu` (spec §12): the felis-paper lobby is a pure UI face holding no
 		// token, so velocity drives these on its behalf — claim by online-mode UUID
 		// (the lobby's `Claim & Start`, separate from the autostartPolicy-gated wake)
 		// and the menu projection that adds the ownership-derived `claimable` the §11
 		// list/status views never carry.
-		{Method: "POST", Pattern: "/api/v1/internal/servers/{name}/claim", h: a.handleInternalClaim},
-		{Method: "GET", Pattern: "/api/v1/internal/servers/{name}/menu", h: a.handleInternalMenuStatus},
+		{Method: "POST", Pattern: "/api/v1/internal/servers/{name}/claim", Callers: proxy, h: a.handleInternalClaim},
+		{Method: "GET", Pattern: "/api/v1/internal/servers/{name}/menu", Callers: proxy, h: a.handleInternalMenuStatus},
 		// Account linking (spec §10): the in-game /link side mints a one-time code for a
 		// verified UUID. Internal-only — the code is born from an online-mode UUID the
 		// web never holds (account_link_codes has no user_id column).
-		{Method: "POST", Pattern: "/api/v1/internal/account/link/code", h: a.handleCreateLinkCode},
+		{Method: "POST", Pattern: "/api/v1/internal/account/link/code", Callers: gate, h: a.handleCreateLinkCode},
 		// QR scan-to-login completion poll (spec §B3 player game-login). After the player
 		// scans the QR-encoded code and the web verify writes the durable link, velocity
 		// polls this for the UUID it minted against and admits on {linked:true}. Read-only
 		// and keyed by the verified UUID (not the scanned code), so it consumes nothing
 		// and is safe to poll repeatedly.
-		{Method: "GET", Pattern: "/api/v1/internal/account/link/status/{mc_uuid}", h: a.handleLinkStatus},
+		{Method: "GET", Pattern: "/api/v1/internal/account/link/status/{mc_uuid}", Callers: gate, h: a.handleLinkStatus},
 		// Account migration (spec §B3 inherit), in-game side: /felis migrate puts the
 		// account linked to the running player's verified UUID into migrate mode. Internal
 		// only — the initiator is proven by online-mode auth, and the sensitive proof
 		// (step-up) still happens web-side before anything transfers.
-		{Method: "POST", Pattern: "/api/v1/internal/account/migrate/start", h: a.handleMigrateStart},
+		{Method: "POST", Pattern: "/api/v1/internal/account/migrate/start", Callers: proxy, h: a.handleMigrateStart},
 		// Username-collision reclaim (spec §B3): velocity records a Mojang-priority
 		// reclaim (bar the squatter UUID + stash its data for 30 days) and gates the
 		// limbo login by checking whether a connecting UUID was barred. Internal-only —
 		// velocity holds a service token, and the bar is keyed by UUID so the genuine
 		// Mojang player (same name, different UUID) always passes.
-		{Method: "POST", Pattern: "/api/v1/internal/player/reclaim", h: a.handleReclaimUsername},
-		{Method: "GET", Pattern: "/api/v1/internal/player/blacklist/{mc_uuid}", h: a.handleCheckBlacklist},
+		{Method: "POST", Pattern: "/api/v1/internal/player/reclaim", Callers: proxy, h: a.handleReclaimUsername},
+		{Method: "GET", Pattern: "/api/v1/internal/player/blacklist/{mc_uuid}", Callers: gate, h: a.handleCheckBlacklist},
 		// Felis-nano multi-source session verifier, behind player game-login. Velocity is
 		// pointed here with -Dmojang.sessionserver and issues the request itself; it speaks
 		// the vanilla sessionserver protocol and carries no token, so this is Public. It
@@ -419,13 +432,13 @@ func (a *API) internalAPIRoutes() []apiRoute {
 		// /felis web op approve. Internal face carries the pending queue and the
 		// approve action (service-token auth, no Principal); the public face carries
 		// the start/status/finish the staff member's browser drives.
-		{Method: "GET", Pattern: "/api/v1/internal/op-login/pending", h: a.handleOpLoginPending},
-		{Method: "POST", Pattern: "/api/v1/internal/op-login/{id}/approve", h: a.handleOpLoginApprove},
+		{Method: "GET", Pattern: "/api/v1/internal/op-login/pending", Callers: proxy, h: a.handleOpLoginPending},
+		{Method: "POST", Pattern: "/api/v1/internal/op-login/{id}/approve", Callers: proxy, h: a.handleOpLoginApprove},
 
 		// Break-glass backup (spec §B4 "Sync"): the on-node console POSTs here to
 		// snapshot a stopped world while the API is alive. Service-token auth (no
 		// Principal); the shared enqueueBackup tail enforces the RWO stopped-gate.
-		{Method: "POST", Pattern: "/api/v1/internal/servers/{name}/backup", h: a.handleInternalBackup},
+		{Method: "POST", Pattern: "/api/v1/internal/servers/{name}/backup", Callers: ops, h: a.handleInternalBackup},
 	}
 }
 
@@ -705,6 +718,12 @@ func (a *API) buildFace(face string, routes []apiRoute, guard func(http.Handler)
 			continue
 		}
 		h := rt.h
+		if (face == "internal") != (len(rt.Callers) > 0) {
+			panic(fmt.Sprintf("%s route %s %s: internal routes list their callers, external ones none", face, rt.Method, rt.Pattern))
+		}
+		if len(rt.Callers) > 0 {
+			h = callersOnly(rt.Callers, h)
+		}
 		if rt.Owner {
 			h = a.ownerOnly(rt.h)
 		}
@@ -832,6 +851,7 @@ const (
 	ctxKeyRequestID ctxKey = iota
 	ctxKeyPrincipal
 	ctxKeyReqInfo
+	ctxKeyCaller
 )
 
 func requestIDFromContext(ctx context.Context) string {
@@ -847,6 +867,21 @@ func principalFromContext(ctx context.Context) *Principal {
 		return v
 	}
 	return nil
+}
+
+// callerFromContext returns the internal-face caller, or "" off that face.
+func callerFromContext(ctx context.Context) Caller {
+	c, _ := ctx.Value(ctxKeyCaller).(Caller)
+	return c
+}
+
+// internalSource is the audit Source for an action taken on the internal face,
+// naming the caller whose token asked for it ("internal:velocity").
+func internalSource(r *http.Request) string {
+	if c := callerFromContext(r.Context()); c != "" {
+		return "internal:" + string(c)
+	}
+	return "internal"
 }
 
 // ---- per-key cooldown (wake + OTP) ----

@@ -1752,9 +1752,15 @@ type staticExternal struct {
 
 func (s staticExternal) Authenticate(*http.Request) (*Principal, error) { return s.p, s.err }
 
-type okInternal struct{}
+// okInternal admits every request as one caller, the proxy unless set.
+type okInternal struct{ caller Caller }
 
-func (okInternal) Authenticate(*http.Request) error { return nil }
+func (o okInternal) Authenticate(*http.Request) (Caller, error) {
+	if o.caller == "" {
+		return CallerVelocity, nil
+	}
+	return o.caller, nil
+}
 
 // ---- helpers ----
 
@@ -1798,7 +1804,7 @@ func decodeErr(t *testing.T, w *httptest.ResponseRecorder) string {
 
 func TestInternalFaceRequiresServiceToken(t *testing.T) {
 	api := newTestAPI(newFakeRepo(), newFakeCluster())
-	api.Internal = BearerTokenAuth{Token: "s3cr3t"}
+	api.Internal = CallerTokens{CallerVelocity: "s3cr3t"}
 	h := api.InternalHandler()
 
 	// no token -> 401
@@ -1817,7 +1823,7 @@ func TestInternalFaceRequiresServiceToken(t *testing.T) {
 
 func TestHealthzIsUnauthenticated(t *testing.T) {
 	api := newTestAPI(newFakeRepo(), newFakeCluster())
-	api.Internal = BearerTokenAuth{Token: "s3cr3t"}
+	api.Internal = CallerTokens{CallerVelocity: "s3cr3t"}
 	if w := do(api.InternalHandler(), "GET", "/healthz", "", nil); w.Code != http.StatusOK {
 		t.Fatalf("healthz code = %d, want 200", w.Code)
 	}
@@ -1829,7 +1835,7 @@ func TestReadyzPingsDependencies(t *testing.T) {
 	repo := newFakeRepo()
 	cl := newFakeCluster()
 	api := newTestAPI(repo, cl)
-	api.Internal = BearerTokenAuth{Token: "s3cr3t"}
+	api.Internal = CallerTokens{CallerVelocity: "s3cr3t"}
 
 	// Both healthy.
 	if w := do(api.InternalHandler(), "GET", "/readyz", "", nil); w.Code != http.StatusOK {

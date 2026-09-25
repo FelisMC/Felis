@@ -132,10 +132,13 @@ set them by hand:
   `spec.env` by `felis setup` (`cmd/felis` derives the internal API URL from the
   control namespace — the platform default `felis`; a renamed control namespace must
   be reflected by hand — and the root domain from `felis.toml`).
-- `FELIS_SERVICE_TOKEN` is a **secret**, so it is never written into the CRD. `felis
-  setup` replicates the `felis-service-token` Secret from the control namespace into
-  the minecraft namespace, and the operator injects it into the `login` pod (only)
-  via a `secretKeyRef`, keyed off the reserved `login` name. Until the token is
+- `FELIS_SERVICE_TOKEN` is a **secret**, so it is never written into the CRD. The
+  login gate has its own internal-API token, `felis-limbo-token`, which may only mint
+  link codes, poll link status and check the blacklist. The installer applies it into
+  the minecraft namespace (and `felis setup` refreshes that replica from the control
+  namespace), and the operator injects it into the `login` pod (only) as
+  `FELIS_SERVICE_TOKEN` via a `secretKeyRef`, keyed off the reserved `login` name.
+  `sudo felis rotate-token limbo` replaces it and restarts the pod. Until the token is
   present the plugin fail-safes to readiness-only, so the gate is never broken — it
   simply does not authenticate yet.
 - **Service:** the login pod dials `FELIS_API_BASE_URL`, which resolves to the

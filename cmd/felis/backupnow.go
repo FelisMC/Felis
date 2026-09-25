@@ -20,7 +20,7 @@ import (
 // backupnow is the break-glass "back up a world now" op (§B4 "Sync"). Unlike halt —
 // which writes the CRD directly — a backup needs felis-api's deployment coordinates
 // (FELIS_IMAGE / FELIS_BACKUP_PVC) to render the one-shot backup Job, so the console
-// cannot do it in-process. It POSTs the felis-api INTERNAL face (service-token auth)
+// cannot do it in-process. It POSTs the felis-api INTERNAL face (ops-token auth)
 // while the API is alive, and the API renders the Job and audits the action. This file
 // is the pure core (no bubbletea); tui_backupnow.go is the terminal glue.
 
@@ -33,7 +33,7 @@ type backupNowOutcome struct {
 
 // resolveInternalAPI reads the two things the on-node console needs to reach the
 // felis-api internal face: the felis-api-internal Service ClusterIP (the host's
-// resolver is not CoreDNS, so the cluster-DNS name is useless here) and the service
+// resolver is not CoreDNS, so the cluster-DNS name is useless here) and the ops
 // token. Both live in the control namespace.
 func resolveInternalAPI(ctx context.Context, cl client.Client, controlNamespace string) (baseURL, token string, err error) {
 	var svc corev1.Service
@@ -45,13 +45,14 @@ func resolveInternalAPI(ctx context.Context, cl client.Client, controlNamespace 
 		return "", "", fmt.Errorf("%s Service has no ClusterIP yet", platform.APIInternalServiceName)
 	}
 
+	// The console's own token, which the api serves on the backup route alone.
 	var sec corev1.Secret
-	if err := cl.Get(ctx, types.NamespacedName{Namespace: controlNamespace, Name: naming.ServiceTokenSecretName}, &sec); err != nil {
-		return "", "", fmt.Errorf("get %s Secret: %w", naming.ServiceTokenSecretName, err)
+	if err := cl.Get(ctx, types.NamespacedName{Namespace: controlNamespace, Name: naming.OpsTokenSecretName}, &sec); err != nil {
+		return "", "", fmt.Errorf("get %s Secret (re-run the installer to create it): %w", naming.OpsTokenSecretName, err)
 	}
 	token = string(sec.Data[naming.ServiceTokenSecretKey])
 	if token == "" {
-		return "", "", fmt.Errorf("secret %s has no %s key", naming.ServiceTokenSecretName, naming.ServiceTokenSecretKey)
+		return "", "", fmt.Errorf("secret %s has no %s key", naming.OpsTokenSecretName, naming.ServiceTokenSecretKey)
 	}
 
 	return fmt.Sprintf("http://%s:%d", ip, platform.APIInternalPort), token, nil

@@ -272,7 +272,7 @@ func TestBackupNow(t *testing.T) {
 // the stopped-gate / 503 / async-202 behaviour is proven there; here the focus is the
 // internal-face difference: no Principal (service-token auth), no owner gate — even a
 // server owned by someone else backs up (the on-node operator is trusted) — and the
-// audit is attributed to "break-glass"/"internal", not an email/"external".
+// audit is attributed to "break-glass"/"internal:ops", not an email/"external".
 func TestInternalBackup(t *testing.T) {
 	mk := func() (*API, *fakeRepo, *fakeCluster, *fakeBackuper) {
 		repo := newFakeRepo()
@@ -282,6 +282,7 @@ func TestInternalBackup(t *testing.T) {
 			Ready: false, DesiredState: string(v1alpha1.DesiredStopped)}
 		backuper := &fakeBackuper{}
 		api := newTestAPI(repo, cl)
+		api.Internal = okInternal{caller: CallerOps}
 		api.Backuper = backuper
 		return api, repo, cl, backuper
 	}
@@ -301,7 +302,7 @@ func TestInternalBackup(t *testing.T) {
 				backuper.calls, backuper.gotName, backuper.gotFormerOwn)
 		}
 		if len(repo.audits) != 1 || repo.audits[0].Action != "backup.create" ||
-			repo.audits[0].Actor != "break-glass" || repo.audits[0].Source != "internal" {
+			repo.audits[0].Actor != "break-glass" || repo.audits[0].Source != "internal:ops" {
 			t.Fatalf("audit not attributed to break-glass/internal: %+v", repo.audits)
 		}
 	})
@@ -312,7 +313,7 @@ func TestInternalBackup(t *testing.T) {
 		if w.Code != http.StatusAccepted {
 			t.Fatalf("code = %d, want 202 (%s)", w.Code, w.Body.String())
 		}
-		if len(repo.audits) != 1 || repo.audits[0].Actor != "alice" || repo.audits[0].Source != "internal" {
+		if len(repo.audits) != 1 || repo.audits[0].Actor != "alice" || repo.audits[0].Source != "internal:ops" {
 			t.Fatalf("audit actor should be the os_user, not break-glass: %+v", repo.audits)
 		}
 	})

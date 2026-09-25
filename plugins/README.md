@@ -229,8 +229,11 @@ Drop the matching jar into the server/proxy mods or plugins directory, start
 once to generate `config/felis-link.properties` (or `plugins/felis-link/…` on
 Velocity), then set `api-base-url` and `service-token` — or provide
 `FELIS_API_BASE_URL` and `FELIS_SERVICE_TOKEN` in the environment, which take
-precedence. The service token is the same one felis-api compares for its
-internal endpoints; treat it as a secret.
+precedence. The token is one of felis-api's per-caller internal tokens: the
+Velocity proxy uses the `velocity` token (Secret `felis/felis-service-token`), the
+login gate the `limbo` token (`felis-limbo-token`), and each serves only its own
+routes (a token on another caller's route gets `403 wrong_caller`). Treat it as a
+secret; `sudo felis rotate-token <caller>` replaces it.
 
 On **Velocity**, also set `root-domain` (and optionally `lobby-server`) in the
 same file to turn on §11 routing, and make sure `online-mode=true` in

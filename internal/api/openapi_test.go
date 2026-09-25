@@ -40,8 +40,9 @@ type oasDoc struct {
 }
 
 type oasOp struct {
-	Faces []string `json:"x-felis-face"`
-	Tier  string   `json:"x-felis-tier"`
+	Faces   []string `json:"x-felis-face"`
+	Tier    string   `json:"x-felis-tier"`
+	Callers []string `json:"x-felis-callers"`
 }
 
 // oasFacet is the classification of one {method, path}: which face(s) serve it
@@ -49,6 +50,8 @@ type oasOp struct {
 type oasFacet struct {
 	faces map[string]bool
 	tier  string
+	// callers is the internal route's caller set, empty elsewhere.
+	callers map[string]bool
 }
 
 func TestOpenAPIMatchesServedRoutes(t *testing.T) {
@@ -80,6 +83,10 @@ func TestOpenAPIMatchesServedRoutes(t *testing.T) {
 		if s.tier != d.tier {
 			t.Errorf("%s: x-felis-tier mismatch — served %q, documented %q", key, s.tier, d.tier)
 		}
+		if !oasSameSet(s.callers, d.callers) {
+			t.Errorf("%s: x-felis-callers mismatch — served %v, documented %v",
+				key, oasSortedKeys(s.callers), oasSortedKeys(d.callers))
+		}
 	}
 }
 
@@ -92,11 +99,14 @@ func oasServedFacets(t *testing.T) map[string]oasFacet {
 	t.Helper()
 	a := &API{}
 	out := map[string]oasFacet{}
-	add := func(method, pattern, face, tier string) {
+	add := func(method, pattern, face, tier string, callers ...Caller) {
 		key := method + " " + pattern
 		f, ok := out[key]
 		if !ok {
-			f = oasFacet{faces: map[string]bool{}}
+			f = oasFacet{faces: map[string]bool{}, callers: map[string]bool{}}
+		}
+		for _, c := range callers {
+			f.callers[string(c)] = true
 		}
 		f.faces[face] = true
 		if f.tier != "" && f.tier != tier {
@@ -110,7 +120,7 @@ func oasServedFacets(t *testing.T) map[string]oasFacet {
 		if rt.Public {
 			tier = "public"
 		}
-		add(rt.Method, rt.Pattern, "internal", tier)
+		add(rt.Method, rt.Pattern, "internal", tier, rt.Callers...)
 	}
 	for _, rt := range a.externalAPIRoutes() {
 		var tier string
@@ -172,7 +182,11 @@ func oasDocumentedFacets(t *testing.T) map[string]oasFacet {
 			if _, dup := out[key]; dup {
 				t.Errorf("%s: documented more than once", key)
 			}
-			out[key] = oasFacet{faces: faces, tier: op.Tier}
+			callers := map[string]bool{}
+			for _, c := range op.Callers {
+				callers[c] = true
+			}
+			out[key] = oasFacet{faces: faces, tier: op.Tier, callers: callers}
 		}
 	}
 	return out

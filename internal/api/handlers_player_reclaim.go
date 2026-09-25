@@ -99,7 +99,7 @@ func (a *API) handleReclaimUsername(w http.ResponseWriter, r *http.Request) {
 		payload, _ := json.Marshal(map[string]string{
 			"username": req.Username, "squatter_uuid": req.SquatterUUID, "reason": "protected_admin"})
 		a.auditEntry(r, AuditEntry{
-			Actor: "velocity", Source: "internal", Action: "player.reclaim.refused", Payload: payload,
+			Actor: "velocity", Source: internalSource(r), Action: "player.reclaim.refused", Payload: payload,
 		})
 		writeError(w, r, newError(http.StatusConflict, "protected_admin",
 			"that username belongs to a linked administrator on the login server and cannot be reclaimed"))
@@ -126,7 +126,7 @@ func (a *API) handleReclaimUsername(w http.ResponseWriter, r *http.Request) {
 	// internal since velocity, not a human, drives it.
 	payload, _ := json.Marshal(map[string]string{"username": req.Username, "squatter_uuid": req.SquatterUUID})
 	a.auditEntry(r, AuditEntry{
-		Actor: "velocity", Source: "internal", Action: "player.reclaim", Payload: payload,
+		Actor: "velocity", Source: internalSource(r), Action: "player.reclaim", Payload: payload,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"blacklisted":     true,

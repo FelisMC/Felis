@@ -211,7 +211,7 @@ func assertEq(t *testing.T, key string, got, want any) {
 func (f *fakeRepo) assertClaimAudit(t *testing.T, name string) {
 	t.Helper()
 	for _, e := range f.audits {
-		if e.Action == "claim" && e.ServerName == name && e.Actor == "velocity" && e.Source == "internal" {
+		if e.Action == "claim" && e.ServerName == name && e.Actor == "velocity" && e.Source == "internal:velocity" {
 			return
 		}
 	}

@@ -130,7 +130,7 @@ func TestReclaimProtectsAdminOnYggdrasil(t *testing.T) {
 		t.Fatalf("audits = %d, want 1 refusal row", len(repo.audits))
 	}
 	a := repo.audits[0]
-	if a.Action != "player.reclaim.refused" || a.Actor != "velocity" || a.Source != "internal" {
+	if a.Action != "player.reclaim.refused" || a.Actor != "velocity" || a.Source != "internal:velocity" {
 		t.Fatalf("audit = %+v, want player.reclaim.refused/velocity/internal", a)
 	}
 	var p map[string]string
@@ -278,7 +278,7 @@ func TestReclaimAudited(t *testing.T) {
 		t.Fatalf("audits = %d, want 1", len(repo.audits))
 	}
 	a := repo.audits[0]
-	if a.Action != "player.reclaim" || a.Actor != "velocity" || a.Source != "internal" {
+	if a.Action != "player.reclaim" || a.Actor != "velocity" || a.Source != "internal:velocity" {
 		t.Fatalf("audit = %+v, want player.reclaim/velocity/internal", a)
 	}
 	var p map[string]string

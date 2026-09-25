@@ -56,7 +56,7 @@ func (a *API) handleReady(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.auditEntry(r, AuditEntry{
-		Actor: "backend", Source: "internal", Action: "ready", ServerName: name,
+		Actor: "backend", Source: internalSource(r), Action: "ready", ServerName: name,
 	})
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -167,7 +167,7 @@ func (a *API) handleInternalWake(w http.ResponseWriter, r *http.Request) {
 	// untouched and the next join attempt is not also throttled.
 	a.limiter().record(name)
 	a.auditEntry(r, AuditEntry{
-		Actor: "velocity", Source: "internal", Action: "wake", ServerName: name,
+		Actor: "velocity", Source: internalSource(r), Action: "wake", ServerName: name,
 	})
 	writeJSON(w, http.StatusAccepted, map[string]any{
 		"name": name, "desiredState": "Running",
@@ -259,7 +259,7 @@ func (a *API) handleInternalClaim(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.auditEntry(r, AuditEntry{
-		Actor: "velocity", Source: "internal", Action: "claim", ServerName: name,
+		Actor: "velocity", Source: internalSource(r), Action: "claim", ServerName: name,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"name": name, "claimed": true})
 }

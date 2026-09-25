@@ -116,7 +116,7 @@ func (a *API) handleMigrateStart(w http.ResponseWriter, r *http.Request) {
 	// Internal-face event: attribute to the in-game initiator, Source 'internal'.
 	a.auditEntry(r, AuditEntry{
 		Actor:  "mc:" + mcUUID,
-		Source: "internal",
+		Source: internalSource(r),
 		Action: "account.migrate.start",
 	})
 	writeJSON(w, http.StatusCreated, map[string]any{"started": true, "state": "initiated"})

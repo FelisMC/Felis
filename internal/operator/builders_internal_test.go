@@ -227,9 +227,10 @@ func TestBuildStatefulSetAddsHealthPort(t *testing.T) {
 	}
 }
 
-// The login system server (and ONLY it) receives the service token, sourced from a
-// Secret via secretKeyRef — never a literal — so its felis-limbo plugin can
-// authenticate to the felis-api internal face.
+// The login system server (and ONLY it) receives the login gate's own token,
+// sourced from a Secret via secretKeyRef — never a literal — so its felis-limbo
+// plugin can authenticate to the felis-api internal face as the limbo caller. It
+// must not be the proxy's felis-service-token, which opens every game route.
 func TestBuildEnvInjectsServiceTokenForLogin(t *testing.T) {
 	s := &v1alpha1.MinecraftServer{}
 	s.Name = naming.SystemLoginServer
@@ -245,8 +246,8 @@ func TestBuildEnvInjectsServiceTokenForLogin(t *testing.T) {
 		t.Fatalf("%s must be sourced from a secretKeyRef", envServiceToken)
 	}
 	ref := tok.ValueFrom.SecretKeyRef
-	if ref.Name != naming.ServiceTokenSecretName || ref.Key != naming.ServiceTokenSecretKey {
-		t.Errorf("secretKeyRef = %s/%s, want %s/%s", ref.Name, ref.Key, naming.ServiceTokenSecretName, naming.ServiceTokenSecretKey)
+	if ref.Name != "felis-limbo-token" || ref.Key != "token" {
+		t.Errorf("secretKeyRef = %s/%s, want felis-limbo-token/token", ref.Name, ref.Key)
 	}
 }
 

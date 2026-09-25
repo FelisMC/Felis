@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"felis.lolicon.best/internal/naming"
 	"felis.lolicon.best/internal/platform"
 
 	corev1 "k8s.io/api/core/v1"
@@ -28,9 +27,15 @@ func internalAPIObjs(clusterIP, token string) []client.Object {
 			ObjectMeta: metav1.ObjectMeta{Name: platform.APIInternalServiceName, Namespace: bgControlNS},
 			Spec:       corev1.ServiceSpec{ClusterIP: clusterIP},
 		},
+		// The console presents the ops token; the proxy's felis-service-token sits
+		// beside it and must not be the one picked up.
 		&corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: naming.ServiceTokenSecretName, Namespace: bgControlNS},
-			Data:       map[string][]byte{naming.ServiceTokenSecretKey: []byte(token)},
+			ObjectMeta: metav1.ObjectMeta{Name: "felis-ops-token", Namespace: bgControlNS},
+			Data:       map[string][]byte{"token": []byte(token)},
+		},
+		&corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "felis-service-token", Namespace: bgControlNS},
+			Data:       map[string][]byte{"token": []byte("proxy-" + token)},
 		},
 	}
 }

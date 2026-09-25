@@ -71,11 +71,33 @@ func (p *Principal) IsOwner() bool {
 	return p != nil && p.Role == "owner" && p.ViaAdminAccess
 }
 
-// InternalAuth authenticates the internal face (velocity / backend callbacks):
-// a static service token presented as a Bearer credential. The internal face
-// is never wrapped in Zero Trust (spec §1.8, §14 red line).
+// Caller names the machine behind an internal-face token. Each caller holds a
+// token of its own and each internal route lists the callers it serves
+// (apiRoute.Callers), so a token copied out of one namespace opens only what
+// that caller needs: the build Job's token reads a submission's context and
+// nothing else, and only the proxy and the login gate can mint link codes.
+type Caller string
+
+const (
+	// CallerVelocity is the proxy's felis-link plugin (felis-service-token,
+	// written into felis-link.properties on the host).
+	CallerVelocity Caller = "velocity"
+	// CallerLimbo is the login gate's felis-limbo plugin (felis-limbo-token,
+	// injected into the login pod only).
+	CallerLimbo Caller = "limbo"
+	// CallerBuild is the build Job's context-fetch initContainer
+	// (felis-build-token in the build namespace).
+	CallerBuild Caller = "build"
+	// CallerOps is the on-node console, `felis backup-now` (felis-ops-token,
+	// control namespace only).
+	CallerOps Caller = "ops"
+)
+
+// InternalAuth authenticates the internal face: a per-caller static token
+// presented as a Bearer credential, answered with the caller it belongs to. The
+// internal face is never wrapped in Zero Trust (spec §1.8, §14 red line).
 type InternalAuth interface {
-	Authenticate(r *http.Request) error
+	Authenticate(r *http.Request) (Caller, error)
 }
 
 // ExternalAuth authenticates the external face (people / panel) and returns the
@@ -86,26 +108,45 @@ type ExternalAuth interface {
 	Authenticate(r *http.Request) (*Principal, error)
 }
 
-// BearerTokenAuth is the production InternalAuth: a constant-time comparison
-// against the configured service token. A zero token fails closed so a
-// misconfiguration can never silently disable internal-face auth.
-type BearerTokenAuth struct {
-	Token string
+// CallerTokens is the production InternalAuth: each caller's token, compared in
+// constant time. A caller with no token cannot authenticate, so a missing
+// Secret fails closed for that caller alone.
+type CallerTokens map[Caller]string
+
+// NewCallerTokens refuses a set that would make the caller ambiguous: two
+// callers sharing a value, which is also what an install whose callers all
+// still hold the one old service token would look like.
+func NewCallerTokens(tokens map[Caller]string) (CallerTokens, error) {
+	seen := map[string]Caller{}
+	for caller, tok := range tokens {
+		if tok == "" {
+			continue
+		}
+		if other, dup := seen[tok]; dup {
+			return nil, fmt.Errorf("the %s and %s tokens are the same value; each caller needs its own", other, caller)
+		}
+		seen[tok] = caller
+	}
+	return CallerTokens(tokens), nil
 }
 
-// Authenticate checks the Authorization: Bearer header against the token.
-func (b BearerTokenAuth) Authenticate(r *http.Request) error {
-	if b.Token == "" {
-		return fmt.Errorf("internal auth not configured")
-	}
+// Authenticate matches the Authorization: Bearer header against every caller's
+// token, comparing each so the time taken does not say which one matched.
+func (c CallerTokens) Authenticate(r *http.Request) (Caller, error) {
 	got := bearerToken(r)
 	if got == "" {
-		return fmt.Errorf("missing bearer token")
+		return "", fmt.Errorf("missing bearer token")
 	}
-	if subtle.ConstantTimeCompare([]byte(got), []byte(b.Token)) != 1 {
-		return fmt.Errorf("invalid service token")
+	var match Caller
+	for caller, tok := range c {
+		if tok != "" && subtle.ConstantTimeCompare([]byte(got), []byte(tok)) == 1 {
+			match = caller
+		}
 	}
-	return nil
+	if match == "" {
+		return "", fmt.Errorf("invalid service token")
+	}
+	return match, nil
 }
 
 // AccessVerifier is the production ExternalAuth: it parses a Cloudflare Access

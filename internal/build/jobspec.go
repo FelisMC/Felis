@@ -291,15 +291,17 @@ func BuildJob(p JobParams) (*batchv1.Job, error) {
 			Name:  ContainerFetch,
 			Image: p.FelisImage,
 			Args:  fetchArgs(p),
-			// The internal face is service-token gated, and the token is read from a
-			// Secret the installer materializes in THIS namespace (secretKeyRef is
-			// namespace-local). It is mounted into this initContainer only: the Kaniko
+			// The internal face is token gated, and the build caller's token
+			// (felis-build-token, which reads a submission's context and nothing
+			// else) is read from a Secret the installer materializes in THIS
+			// namespace (secretKeyRef is namespace-local). It is mounted into this
+			// initContainer only: the Kaniko
 			// container executes the untrusted Dockerfile and must never hold it, and
 			// pod containers share neither environment nor PID namespace.
 			Env: []corev1.EnvVar{{
 				Name: "FELIS_SERVICE_TOKEN",
 				ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{Name: naming.ServiceTokenSecretName},
+					LocalObjectReference: corev1.LocalObjectReference{Name: naming.BuildTokenSecretName},
 					Key:                  naming.ServiceTokenSecretKey,
 				}},
 			}},

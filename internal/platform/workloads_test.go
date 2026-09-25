@@ -233,13 +233,28 @@ func TestAPIDeployment_Wiring(t *testing.T) {
 	if v := envValue(c.Env, "FELIS_API_BASE_URL"); v != InternalAPIBaseURL(p.ControlNamespace) {
 		t.Errorf("FELIS_API_BASE_URL = %q, want %q", v, InternalAPIBaseURL(p.ControlNamespace))
 	}
-	// FELIS_SERVICE_TOKEN must come from a Secret, never a literal value.
-	tok := envVar(c.Env, "FELIS_SERVICE_TOKEN")
-	if tok == nil || tok.ValueFrom == nil || tok.ValueFrom.SecretKeyRef == nil {
-		t.Fatal("FELIS_SERVICE_TOKEN must be sourced from a secretKeyRef")
-	}
-	if tok.Value != "" {
-		t.Error("FELIS_SERVICE_TOKEN must not carry a literal value")
+	// Each internal caller's token comes from its own Secret, never a literal
+	// value, and none is optional: a missing Secret must hold the rollout back.
+	for env, secret := range map[string]string{
+		"FELIS_SERVICE_TOKEN": "felis-service-token",
+		"FELIS_LIMBO_TOKEN":   "felis-limbo-token",
+		"FELIS_BUILD_TOKEN":   "felis-build-token",
+		"FELIS_OPS_TOKEN":     "felis-ops-token",
+	} {
+		tok := envVar(c.Env, env)
+		if tok == nil || tok.ValueFrom == nil || tok.ValueFrom.SecretKeyRef == nil {
+			t.Fatalf("%s must be sourced from a secretKeyRef", env)
+		}
+		ref := tok.ValueFrom.SecretKeyRef
+		if ref.Name != secret || ref.Key != "token" {
+			t.Errorf("%s reads %s/%s, want %s/token", env, ref.Name, ref.Key, secret)
+		}
+		if ref.Optional != nil && *ref.Optional {
+			t.Errorf("%s is optional; the api must not start without it", env)
+		}
+		if tok.Value != "" {
+			t.Errorf("%s must not carry a literal value", env)
+		}
 	}
 
 	// felis.toml carries the DB URL, so its volume must be a Secret (NOT a

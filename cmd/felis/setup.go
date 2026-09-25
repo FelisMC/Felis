@@ -13,7 +13,6 @@ import (
 	"felis.lolicon.best/internal/api"
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/config"
-	"felis.lolicon.best/internal/naming"
 	"felis.lolicon.best/internal/platform"
 	"felis.lolicon.best/internal/store"
 )
@@ -216,18 +215,18 @@ func provisionSystemServers(ctx context.Context, cfg *config.Config, out io.Writ
 			"Re-run `sudo felis setup` on the control-plane host once the cluster is reachable", err)
 	}
 	// The login limbo authenticates to the felis-api INTERNAL face, so it needs the
-	// internal base URL, the root domain (to link players at the console), and the
-	// service token. The first two are plain env baked into the pod here; the token
-	// is a Secret the operator injects by reference — but a secretKeyRef is
-	// namespace-local, so first replicate the token Secret from the control namespace
-	// into the minecraft namespace where the login pod runs. The control namespace is
+	// internal base URL, the root domain (to link players at the console), and its
+	// own token (felis-limbo-token). The first two are plain env baked into the pod
+	// here; the token is a Secret the operator injects by reference — but a
+	// secretKeyRef is namespace-local, so first replicate the token Secret from the
+	// control namespace into the minecraft namespace where the login pod runs. The control namespace is
 	// the platform default (there is no felis.toml override for it); a deployment that
 	// renamed it must replicate the Secret by hand.
 	controlNS := platform.DefaultControlNamespace
 	apiBaseURL := platform.InternalAPIBaseURL(controlNS)
 	// These Secrets must land in the minecraft namespace before the pods that
-	// mount them are created: the service token (login authenticates to felis-api
-	// with it), the Velocity forwarding secret (every backend verifies the proxy's
+	// mount them are created: the login gate's token (login authenticates to
+	// felis-api with it), the Velocity forwarding secret (every backend verifies the proxy's
 	// signed handshake with it — without it the login gate would derive an OFFLINE
 	// UUID and the Owner would bind the wrong Minecraft identity), and felis-config
 	// (the on-demand BACKUP Job runs in the minecraft namespace and mounts it to
@@ -239,31 +238,7 @@ func provisionSystemServers(ctx context.Context, cfg *config.Config, out io.Writ
 	if buildNS == "" {
 		buildNS = platform.DefaultBuildNamespace
 	}
-	secretOutcomes := []systemServerOutcome{
-		ensureSecretReplica(ctx, cl, controlNS, cfg.K8s.Namespace,
-			naming.ServiceTokenSecretName, naming.ServiceTokenSecretKey, "service-token", "minecraft ns", false),
-		ensureSecretReplica(ctx, cl, controlNS, cfg.K8s.Namespace,
-			naming.ForwardingSecretName, naming.ForwardingSecretKey, "forwarding-secret", "minecraft ns", false),
-		// refresh=true: felis-config is the rendered config, not a credential. The
-		// backup/restore/fileedit Jobs and the reaper mount this copy, so a re-run
-		// must update it when the control plane's render has moved on (a stale copy
-		// e.g. keeps an old database URL after a credential rotation).
-		ensureSecretReplica(ctx, cl, controlNS, cfg.K8s.Namespace,
-			"felis-config", "felis.toml", "config", "minecraft ns", true),
-		// The reaper's pre-reap warning emails authenticate with the same relay
-		// password felis-api uses; the reaper pod runs in the minecraft namespace,
-		// where a secretKeyRef resolves only against a local mirror. Skipped while
-		// the relay is not configured yet — the "configure email" screen refreshes
-		// both mirrors when it applies.
-		ensureSecretReplica(ctx, cl, controlNS, cfg.K8s.Namespace,
-			"felis-smtp", "password", "smtp", "minecraft ns", false),
-		// The build namespace needs the same token: the build Job's fetch
-		// initContainer reads the submission context from the internal face. Best
-		// effort — a deployment that only installs the control plane simply never
-		// builds a user submission.
-		ensureSecretReplica(ctx, cl, controlNS, buildNS,
-			naming.ServiceTokenSecretName, naming.ServiceTokenSecretKey, "service-token", "felis-build ns", false),
-	}
+	secretOutcomes := provisionSecretReplicas(ctx, cl, controlNS, cfg.K8s.Namespace, buildNS)
 	outcomes := ensureSystemServers(ctx, cl, cfg.K8s.Namespace, cfg.Velocity.LoginImage, cfg.Velocity.LobbyImage, apiBaseURL, cfg.Server.RootDomain, defaultPanelHostname(cfg.Server.RootDomain, cfg.Auth.PanelHostname))
 	outcomes = append(secretOutcomes, outcomes...)
 	fmt.Fprintln(out, "\nfelis setup: login/lobby system servers (always-on, reaper-exempt):")
