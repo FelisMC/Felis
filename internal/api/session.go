@@ -12,14 +12,14 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 )
 
-// Local sessions (spec §B, passwordless). The remote face authenticates statelessly
-// with a Cloudflare-Access JWT and sets no cookie; the passwordless console login
-// (email-OTP / passkey / setup redeem), used on op.console when Zero Trust is not
-// configured (and as the demo's primary web login), needs a server-minted session.
+// Local sessions (spec §B, passwordless). Every sign-in door (email-OTP, passkey,
+// bind code, op-login, setup redeem) ends in a server-minted session, the external
+// face's only credential.
 // We store only the sha-256 of the opaque cookie value, mirroring how service tokens
 // are stored, so a database read never yields a usable cookie.
 
@@ -154,8 +154,13 @@ func clearSessionCookie(w http.ResponseWriter) {
 // operator console host. The session cookie is host-only, so a session minted on
 // the admin host is structurally unable to reach the player console. If older
 // configs omit [auth].admin_hostname, fall back to op.console.<root_domain>.
-// Local bootstrap may also use the node's private/loopback IP directly when
-// wildcard DNS is unavailable; that is treated as the local admin face.
+//
+// A bare IP counts only when the install names it: the address a
+// <ip>.nip.io / <ip>.sslip.io root domain embeds (what `felis setup` prints as
+// the local panel URL when wildcard DNS is unavailable), or an admin_hostname
+// set to an IP. The Host header is the client's to choose, so "any loopback or
+// private address" would let anyone who reaches the origin's port present
+// Host: 10.0.0.1 and be graded as the operator console.
 func hostIsAdminConsole(r *http.Request, rootDomain, adminHostname string) bool {
 	want := strings.TrimSpace(adminHostname)
 	if want == "" {
@@ -168,25 +173,41 @@ func hostIsAdminConsole(r *http.Request, rootDomain, adminHostname string) bool 
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
-	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
-		return ip.IsLoopback() || ip.IsPrivate()
+	if ip, err := netip.ParseAddr(strings.Trim(host, "[]")); err == nil {
+		ip = ip.Unmap()
+		if named, err := netip.ParseAddr(strings.Trim(want, "[]")); err == nil && named.Unmap() == ip {
+			return true
+		}
+		embedded, ok := rootDomainIP(rootDomain)
+		return ok && embedded == ip
 	}
 	return strings.EqualFold(strings.TrimSuffix(host, "."), strings.TrimSuffix(want, "."))
 }
 
-// SessionAuth is the composite ExternalAuth for the web face. It prefers a
-// local session cookie and otherwise delegates to the remote JWT
-// verifier, so both auth models coexist on one face:
+// rootDomainIP is the address a wildcard-DNS root domain spells out:
+// 10.0.0.5.nip.io and 10.0.0.5.sslip.io both name 10.0.0.5.
+func rootDomainIP(rootDomain string) (netip.Addr, bool) {
+	domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(rootDomain), "."))
+	for _, suffix := range []string{".nip.io", ".sslip.io"} {
+		if base, ok := strings.CutSuffix(domain, suffix); ok {
+			if ip, err := netip.ParseAddr(base); err == nil {
+				return ip.Unmap(), true
+			}
+		}
+	}
+	return netip.Addr{}, false
+}
+
+// SessionAuth is the ExternalAuth for the web face: the local session cookie
+// the sign-in doors mint. There is no other credential; Cloudflare Access, when
+// the install sits behind it, is enforced at the edge.
 //
-//   - No cookie  → delegate to Delegate (the Cloudflare-Access JWT path).
+//   - No cookie  → unauthenticated.
 //   - Cookie set → local auth MUST be enabled (a missing or non-true
 //     local_auth_enabled setting is treated as disabled — fail closed); the
-//     session hash must resolve to a live user. On any failure the request is
-//     rejected and does NOT fall through to the JWT delegate, so a stale or
-//     forged cookie can never be laundered into a JWT attempt.
+//     session hash must resolve to a live user.
 type SessionAuth struct {
 	Repo          Repo
-	Delegate      ExternalAuth
 	RootDomain    string
 	AdminHostname string
 	Now           func() time.Time
@@ -199,16 +220,12 @@ func (s SessionAuth) now() time.Time {
 	return time.Now()
 }
 
-// Authenticate resolves the caller from a session cookie or delegates to the JWT
-// verifier (see the type comment for the fail-closed rules).
+// Authenticate resolves the caller from the session cookie (see the type
+// comment for the fail-closed rules).
 func (s SessionAuth) Authenticate(r *http.Request) (*Principal, error) {
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil || cookie.Value == "" {
-		// No usable session cookie: this is the remote JWT path.
-		if s.Delegate == nil {
-			return nil, fmt.Errorf("external auth not configured")
-		}
-		return s.Delegate.Authenticate(r)
+		return nil, fmt.Errorf("no session")
 	}
 
 	ctx := r.Context()
@@ -220,7 +237,7 @@ func (s SessionAuth) Authenticate(r *http.Request) (*Principal, error) {
 		return nil, fmt.Errorf("%w: %v", errAuthBackend, err)
 	}
 	if !enabled {
-		// A cookie was presented but local auth is off: reject, never fall through.
+		// A cookie was presented but local auth is off: reject.
 		return nil, fmt.Errorf("local auth disabled")
 	}
 

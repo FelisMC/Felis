@@ -36,8 +36,8 @@ const (
 )
 
 // auditActor is the display name for a principal: an email only when something
-// vouches for it (an Access JWT, or a session whose address was verified), else
-// the username. A player can set their address to anyone's before verifying it,
+// vouches for it (a session whose address was verified, or an ExternalAuth other
+// than SessionAuth that resolved the principal itself), else the username. A player can set their address to anyone's before verifying it,
 // so an unverified email would let them sign rows as that person.
 func auditActor(p *Principal) string {
 	switch {

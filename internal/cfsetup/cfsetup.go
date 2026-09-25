@@ -2,9 +2,13 @@
 // configuration the felis breakGlass TUI can offer a SysAdmin (spec §14 Zero
 // Trust edge). It is deliberately "锦上添花" — icing, not a mandate: the platform
 // is domain-agnostic (every FQDN is composed from the configured root_domain) and
-// IdP-agnostic (felis-api validates ANY valid Cloudflare Access JWT `aud`, no
-// matter which identity provider — Google Workspace, Keycloak, Microsoft Entra —
-// fronts it). A SysAdmin who brings their own domain or a different Zero-Trust
+// IdP-agnostic (Access is enforced at the Cloudflare edge, whichever identity
+// provider — Google Workspace, Keycloak, Microsoft Entra — fronts it). felis-api
+// does not read the Access JWT: behind the edge a caller still signs in with a
+// local session, and its account and role come from the users table. The
+// application's `aud` is recorded in [auth] access_jwt_aud as the marker that
+// the install sits behind Cloudflare (it makes CF-Connecting-IP the client
+// address). A SysAdmin who brings their own domain or a different Zero-Trust
 // scheme is fully supported; this package only makes the common case easy.
 //
 // The split is honest about what this box can verify:
@@ -362,8 +366,8 @@ type Params struct {
 	OnProgress      func(string) // optional, called at each step for TUI display
 }
 
-// Result reports what Setup produced, including the Access `aud` the caller must
-// write into felis [auth] access_jwt_aud to make felis-api accept the new edge.
+// Result reports what Setup produced, including the Access `aud` the caller
+// records in felis [auth] access_jwt_aud (the behind-Cloudflare marker).
 type Result struct {
 	TunnelID        string
 	CredentialsFile string

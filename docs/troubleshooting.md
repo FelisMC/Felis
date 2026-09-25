@@ -304,45 +304,32 @@ point.
 
 ## 5. Web panel returns 401 / 403 (Zero-Trust / Cloudflare Access)
 
-The external face accepts either a Cloudflare Access JWT
-(`Cf-Access-Jwt-Assertion` header) **or** a local session cookie. The error
-envelope is always `{"error":{"code","message","request_id"}}`. [GO-TESTED.]
+The external face has one credential: the `felis_session` cookie the sign-in
+doors mint. Cloudflare Access, when the install sits behind it, is enforced at
+the Cloudflare edge only — felis-api does not read the `Cf-Access-Jwt-Assertion`
+header, so a request that reaches the origin some other way still has to sign in,
+and the account and its role always come from the `users` table. The edge setup
+fences the panel NodePort to loopback (the `felis_edge` nftables table), so every
+request reaches the API through cloudflared and Access stays in front of the
+operator console; check `nft list table inet felis_edge` if you doubt it. The error envelope is always
+`{"error":{"code","message","request_id"}}`. [GO-TESTED.]
 
-- **`401 unauthorized`** — not authenticated: no/invalid Access JWT and no valid
-  session. [GO-TESTED.]
+- **`401 unauthorized`** — no valid session cookie. [GO-TESTED.]
 - **`403 forbidden`** — authenticated but not permitted (e.g. a non-admin
-  principal hitting an admin route; `IsAdmin()` requires `role=admin` **and**
-  arrival via the admin Access audience/host). [GO-TESTED.]
+  principal hitting an admin route; `IsAdmin()` requires a staff role **and** a
+  request on the operator console host). [GO-TESTED.]
 
-### 5a. Every external request 401s on a fresh deploy
+### 5a. Staff routes 403 on a local IP URL
 
-The Access verifier is wired **fail-closed**: `Keyfunc` (the JWKS key function)
-is `nil` until deployment wiring supplies it. With a nil Keyfunc, **every** JWT
-verification fails, and startup logs:
-
-```
-felis api: external face fails closed (Access JWKS key function not configured)
-```
-
-[INTEGRATION-ONLY — the live JWKS path is a deployment point.] This is intended:
-the panel rejects all callers until JWKS is configured. Fix by wiring the
-Access JWKS key function for `cfg.Auth.AccessJWTAud`.
-
-### 5b. Token rejected with audience error
-
-```
-token audience does not include "<aud>"
-```
-
-The JWT's `aud` claim does not contain the configured `cfg.Auth.AccessJWTAud`
-(or the admin audience for admin routes). [GO-TESTED.] Confirm the Access
-application audience matches `cfg.Auth.AccessJWTAud`.
-
-**Trust-model note for operators:** verification is **expiration-required +
-audience + signing-key (JWKS)**. There is **no `iss` (issuer) check** anywhere in
-the verifier. Trust rests entirely on the audience claim plus the JWKS signing
-key. When documenting or auditing the trust boundary, do not assume issuer is
-validated — it is not.
+The operator console is recognised by the request's host: `admin_hostname`
+(default `op.console.<root_domain>`). A bare IP counts only when the install
+names it — the address a `<ip>.nip.io` / `<ip>.sslip.io` root domain embeds
+(the local panel URL `felis setup` prints), or an `admin_hostname` set to that
+IP. Any other address, loopback included, is served as the player console, so a
+staff account signed in at `https://127.0.0.1:30443` through an SSH tunnel gets
+403 on admin routes. Open the console by its hostname instead (an `/etc/hosts`
+entry or `curl --resolve` pointing it at the tunnel), or set
+`[auth] admin_hostname` to the IP you use. [GO-TESTED]
 
 ### 5c. Local-password login fails or is silently rejected
 
@@ -353,7 +340,7 @@ unparseable → treated as disabled). Symptoms:
 
 - Cookie present but login rejected with `local auth disabled` → the
   `local_auth_enabled` setting is false/absent. A present cookie under disabled
-  local-auth is **rejected outright**, not fallen through to the JWT path.
+  local-auth is **rejected outright**.
 - `invalid session: …` → bad/forged session hash.
 
 Fix: set `local_auth_enabled=true` in `platform_settings` if local password auth

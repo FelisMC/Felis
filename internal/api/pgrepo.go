@@ -782,8 +782,8 @@ func (p *PGRepo) Audit(ctx context.Context, e AuditEntry) error {
 	if len(e.Payload) > 0 {
 		payload = string(e.Payload)
 	}
-	// actor_user_id goes through a lookup so an id with no users row (an
-	// Access-JWT subject, a purged account) lands as NULL instead of failing
+	// actor_user_id goes through a lookup so an id with no users row (a purged
+	// account) lands as NULL instead of failing
 	// the foreign key and losing the row.
 	_, err := p.db.ExecContext(ctx,
 		`INSERT INTO audit_logs (actor, source, action, server_name, request_id, payload,

@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
-	"github.com/golang-jwt/jwt/v5"
 )
 
 const testRoot = "mc.example.net" // neutral; never a deployment domain
@@ -1743,8 +1742,8 @@ func (f *fakeConsole) RunCommand(_ context.Context, name, command string) (strin
 	return f.reply, nil
 }
 
-// staticExternal injects a fixed principal so handler logic is tested without
-// real JWT crypto (which is exercised separately in TestAccessVerifier).
+// staticExternal injects a fixed principal so handler logic is tested without a
+// session store.
 type staticExternal struct {
 	p   *Principal
 	err error
@@ -2600,8 +2599,6 @@ func TestErrorEnvelopeHasRequestID(t *testing.T) {
 	}
 }
 
-// ---- real AccessVerifier (JWT aud) ----
-
 func TestSessionAuthUsesConfiguredAdminHostname(t *testing.T) {
 	repo := newFakeRepo()
 	repo.settings[LocalAuthEnabledKey] = []byte("true")
@@ -2630,85 +2627,65 @@ func TestSessionAuthUsesConfiguredAdminHostname(t *testing.T) {
 		t.Fatalf("root-domain fallback host must not grant admin-path access when admin_hostname is configured")
 	}
 
+	// A private address the install never named is the player face, whatever the
+	// Host header claims.
 	r = httptest.NewRequest("GET", "https://10.211.55.4:30443/api/v1/me", nil)
 	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
 	p, err = auth.Authenticate(r)
 	if err != nil {
 		t.Fatalf("Authenticate private IP host: %v", err)
 	}
-	if !p.ViaAdminAccess {
-		t.Fatalf("private IP local panel should grant admin-path access, got %+v", p)
+	if p.ViaAdminAccess {
+		t.Fatalf("an unnamed private IP must not grant admin-path access, got %+v", p)
 	}
 }
-func TestAccessVerifier(t *testing.T) {
-	key := []byte("test-signing-key")
-	keyfunc := func(*jwt.Token) (any, error) { return key, nil }
-	v := AccessVerifier{Audience: "felis-app", AdminAudience: "felis-admin", Keyfunc: keyfunc}
 
-	sign := func(claims accessClaims) string {
-		tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-		s, err := tok.SignedString(key)
-		if err != nil {
-			t.Fatalf("sign: %v", err)
-		}
-		return s
+// The operator console by Host: the configured name, the op.console.<root>
+// fallback, and a bare IP only where the install names it (the nip.io/sslip.io
+// root domain's embedded address, or an IP admin_hostname).
+func TestHostIsAdminConsole(t *testing.T) {
+	cases := []struct {
+		name, host, root, admin string
+		want                    bool
+	}{
+		{"configured name", "op.console.mc.example.net", "mc.example.net", "op.console.mc.example.net", true},
+		{"configured name with port and case", "OP.Console.mc.example.net:30443", "mc.example.net", "op.console.mc.example.net", true},
+		{"fallback name", "op.console.mc.example.net", "mc.example.net", "", true},
+		{"player console", "console.mc.example.net", "mc.example.net", "", false},
+		{"nip.io embedded IP", "10.211.55.6:30443", "10.211.55.6.nip.io", "op.console.10.211.55.6.nip.io", true},
+		{"sslip.io embedded IP", "192.168.1.20", "192.168.1.20.sslip.io", "", true},
+		{"other private IP on a nip.io install", "10.211.55.7:30443", "10.211.55.6.nip.io", "", false},
+		{"loopback on a nip.io install", "127.0.0.1:30443", "10.211.55.6.nip.io", "", false},
+		{"loopback on a named domain", "127.0.0.1:30443", "mc.example.net", "", false},
+		{"private IP on a named domain", "10.0.0.5", "mc.example.net", "", false},
+		{"IPv6 ULA on a named domain", "[fd00::5]:30443", "mc.example.net", "", false},
+		{"admin_hostname set to an IP", "10.0.0.5:30443", "mc.example.net", "10.0.0.5", true},
+		{"admin_hostname IPv6", "[fd00::5]:30443", "mc.example.net", "fd00::5", true},
+		{"admin_hostname IPv6 on the default port", "[fd00::5]", "mc.example.net", "fd00::5", true},
+		{"another IP than admin_hostname's", "10.0.0.6", "mc.example.net", "10.0.0.5", false},
+		{"no domain configured", "10.0.0.5", "", "", false},
 	}
-	exp := jwt.NewNumericDate(time.Now().Add(time.Hour))
+	for _, tc := range cases {
+		r := httptest.NewRequest("GET", "/api/v1/me", nil)
+		r.Host = tc.host
+		if got := hostIsAdminConsole(r, tc.root, tc.admin); got != tc.want {
+			t.Errorf("%s: Host %q root %q admin %q = %v, want %v", tc.name, tc.host, tc.root, tc.admin, got, tc.want)
+		}
+	}
+}
 
-	t.Run("valid app token", func(t *testing.T) {
-		s := sign(accessClaims{Email: "u@example.net", RegisteredClaims: jwt.RegisteredClaims{
-			Subject: "u1", Audience: jwt.ClaimStrings{"felis-app"}, ExpiresAt: exp}})
-		r := httptest.NewRequest("GET", "/", nil)
-		r.Header.Set("Authorization", "Bearer "+s)
-		p, err := v.Authenticate(r)
-		if err != nil {
-			t.Fatalf("authenticate: %v", err)
-		}
-		if p.UserID != "u1" || p.Email != "u@example.net" || p.Role != "user" || p.ViaAdminAccess {
-			t.Fatalf("unexpected principal %+v", p)
-		}
-	})
-	t.Run("admin audience sets ViaAdminAccess", func(t *testing.T) {
-		s := sign(accessClaims{Role: "admin", RegisteredClaims: jwt.RegisteredClaims{
-			Subject: "a1", Audience: jwt.ClaimStrings{"felis-app", "felis-admin"}, ExpiresAt: exp}})
-		r := httptest.NewRequest("GET", "/", nil)
-		r.Header.Set("Cf-Access-Jwt-Assertion", s)
-		p, err := v.Authenticate(r)
-		if err != nil {
-			t.Fatalf("authenticate: %v", err)
-		}
-		if !p.IsAdmin() {
-			t.Fatalf("expected admin principal, got %+v", p)
-		}
-	})
-	t.Run("wrong audience rejected", func(t *testing.T) {
-		s := sign(accessClaims{RegisteredClaims: jwt.RegisteredClaims{
-			Subject: "u1", Audience: jwt.ClaimStrings{"someone-else"}, ExpiresAt: exp}})
-		r := httptest.NewRequest("GET", "/", nil)
-		r.Header.Set("Authorization", "Bearer "+s)
-		if _, err := v.Authenticate(r); err == nil {
-			t.Fatal("expected audience rejection")
-		}
-	})
-	t.Run("wrong signing key rejected", func(t *testing.T) {
-		tok := jwt.NewWithClaims(jwt.SigningMethodHS256, accessClaims{RegisteredClaims: jwt.RegisteredClaims{
-			Subject: "u1", Audience: jwt.ClaimStrings{"felis-app"}, ExpiresAt: exp}})
-		s, _ := tok.SignedString([]byte("attacker-key"))
-		r := httptest.NewRequest("GET", "/", nil)
-		r.Header.Set("Authorization", "Bearer "+s)
-		if _, err := v.Authenticate(r); err == nil {
-			t.Fatal("expected signature rejection")
-		}
-	})
-	t.Run("missing expiry rejected", func(t *testing.T) {
-		s := sign(accessClaims{RegisteredClaims: jwt.RegisteredClaims{
-			Subject: "u1", Audience: jwt.ClaimStrings{"felis-app"}}})
-		r := httptest.NewRequest("GET", "/", nil)
-		r.Header.Set("Authorization", "Bearer "+s)
-		if _, err := v.Authenticate(r); err == nil {
-			t.Fatal("expected missing-expiry rejection")
-		}
-	})
+// With no session cookie there is nothing to authenticate: a Cloudflare Access
+// assertion or a bearer JWT is not a credential felis-api accepts.
+func TestSessionAuthIgnoresAccessAssertions(t *testing.T) {
+	repo := newFakeRepo()
+	repo.settings[LocalAuthEnabledKey] = []byte("true")
+	auth := SessionAuth{Repo: repo, RootDomain: "mc.example.net"}
+	r := httptest.NewRequest("GET", "https://op.console.mc.example.net/api/v1/me", nil)
+	r.Header.Set("Cf-Access-Jwt-Assertion", "eyJhbGciOiJSUzI1NiJ9.eyJmZWxpc19yb2xlIjoib3duZXIifQ.sig")
+	r.Header.Set("Authorization", "Bearer eyJhbGciOiJSUzI1NiJ9.eyJmZWxpc19yb2xlIjoib3duZXIifQ.sig")
+	if p, err := auth.Authenticate(r); err == nil {
+		t.Fatalf("authenticated %+v without a session", p)
+	}
 }
 
 // TestSessionAuthOutageIs503Not401: a session-store outage must surface as 503

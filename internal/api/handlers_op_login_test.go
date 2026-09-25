@@ -543,7 +543,7 @@ func TestOpLoginGates(t *testing.T) {
 
 // TestOpLoginFaceSeparation enforces the two-face split: the three public browser legs
 // must 404 on the internal (service-token) face, and the two internal in-game legs must
-// 404 on the external (Access-JWT) face.
+// 404 on the external (session) face.
 func TestOpLoginFaceSeparation(t *testing.T) {
 	api, _, _ := seedOpLoginAPI(t)
 	eh, ih := api.ExternalHandler(), api.InternalHandler()

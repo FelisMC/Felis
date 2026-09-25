@@ -26,10 +26,11 @@ info:
   version: 4.1.0
   description: |
     Control plane for the Felis Minecraft orchestration platform. The same binary
-    exposes an internal face (service-token auth, for velocity / backend callbacks,
-    never Zero Trust) and an external face (Cloudflare Access JWT auth, for people
-    and the panel). Admin-tier external operations additionally require the admin
-    Access path. See `x-felis-face` / `x-felis-tier` on each operation.
+    exposes an internal face (per-caller service tokens, for velocity / backend
+    callbacks, never Zero Trust) and an external face (the felis_session cookie, for
+    people and the panel; Cloudflare Access, when present, is enforced at the edge).
+    Admin-tier external operations additionally require a staff session on the
+    operator console host. See `x-felis-face` / `x-felis-tier` on each operation.
 
     Behaviour every operation shares, and so not repeated under each:
 
@@ -63,8 +64,9 @@ servers:
         default: example.test
   - url: https://api.{root_domain}
     description: >-
-      External face. Cloudflare Access JWT auth on every /api/v1 route; admin-tier
-      routes additionally require the admin Access path.
+      External face. Session-cookie auth on every non-public /api/v1 route;
+      admin-tier routes additionally require a staff session on the operator
+      console host.
     variables:
       root_domain:
         default: example.test
@@ -105,14 +107,6 @@ components:
         callers it serves in x-felis-callers. A genuine token for a caller the
         operation does not list is refused with 403 wrong_caller. `felis
         rotate-token <caller>` replaces one.
-    accessJWT:
-      type: apiKey
-      in: header
-      name: Cf-Access-Jwt-Assertion
-      description: >-
-        Cloudflare Access JWT (external face). Admin-tier operations require the
-        token to have traversed the admin Access path; the handler additionally
-        asserts Principal.IsAdmin().
     sessionCookie:
       type: apiKey
       in: cookie
@@ -122,8 +116,10 @@ components:
         session doors — passkey login, email-OTP, bind code, and op-login
         finish — HttpOnly+Secure+SameSite=Lax and host-only, so an op.console
         session never reaches the player console. Only its sha-256 is
-        persisted. SessionAuth prefers this cookie and otherwise delegates to
-        accessJWT, so the two models coexist on one face.
+        persisted. It is the external face's only credential: Cloudflare
+        Access, when the install sits behind it, is enforced at the edge and
+        felis-api does not read the Access JWT. Admin-tier operations
+        additionally require a staff session on the operator console host.
 
   responses:
     NoContent:
@@ -785,14 +781,14 @@ paths:
       operationId: createServer
       summary: Create a server (admin).
       description: >-
-        Requires the admin Access path; the image must be whitelisted. An image in the
+        Requires a staff session on the operator console host; the image must be whitelisted. An image in the
         platform registry is stored pinned to the digest its tag names at creation
         (name:tag@sha256:…), so a later push over the tag never moves the server;
         400 image_not_in_registry when the registry lacks the tag, 503
         registry_unavailable when it cannot be asked.
       x-felis-face: [external]
       x-felis-tier: admin
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       requestBody:
         required: true
         content:
@@ -1444,7 +1440,7 @@ paths:
       summary: Wake your own server.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
       responses:
@@ -1482,7 +1478,7 @@ paths:
       summary: Stop your own server.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
       responses:
@@ -1510,7 +1506,7 @@ paths:
       summary: Claim an unowned server for your linked account.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
       responses:
@@ -1552,7 +1548,7 @@ paths:
       description: The RCON password is never accepted or returned (spec §286).
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -1598,7 +1594,7 @@ paths:
       summary: Stream the running pod's log over SSE (spec §8 read, §262). Owner/admin only.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
         - name: Last-Event-ID
@@ -1637,7 +1633,7 @@ paths:
         (spec §286).
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
       responses:
@@ -1676,7 +1672,7 @@ paths:
         (spec §286).
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -1720,7 +1716,7 @@ paths:
         The RCON password is never accepted or returned (spec §286).
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
       responses:
@@ -1762,7 +1758,7 @@ paths:
         (spec §286).
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
       responses:
@@ -1800,7 +1796,7 @@ paths:
         records intent). The RCON password is never accepted or returned (§286).
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -1844,7 +1840,7 @@ paths:
         never accepted or returned (spec §286).
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -1897,7 +1893,7 @@ paths:
         (spec §286).
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -1943,7 +1939,7 @@ paths:
         password is never accepted or returned (spec §286).
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -1989,7 +1985,7 @@ paths:
         is echoed back for anything the parser cannot represent.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
         - { name: player, in: path, required: true, schema: { type: string } }
@@ -2043,7 +2039,7 @@ paths:
         displayName, phase, ready, playersOnline and playersMax.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
       responses:
@@ -2870,14 +2866,13 @@ paths:
       summary: The caller's own identity and tier (drives panel navigation).
       description: >-
         Returns the authenticated principal's user id, email, role and the
-        server-computed is_admin (Principal.IsAdmin(): role admin reached via the
-        admin Access path). The panel reads this once at boot to decide which
+        server-computed is_admin (Principal.IsAdmin(): role admin reached on the operator console host). The panel reads this once at boot to decide which
         surfaces to render. It is UX truth, not a security control — admin routes
         are independently gated server-side, so a hidden nav item never widens
         access.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       responses:
         '200':
           description: The caller's identity.
@@ -2897,11 +2892,11 @@ paths:
                     type: boolean
                     description: >-
                       True only when role is admin or owner AND the request arrived
-                      via the admin Access path (Principal.IsAdmin()).
+                      on the operator console host (Principal.IsAdmin()).
                   is_owner:
                     type: boolean
                     description: >-
-                      True only for the Owner principal on the admin Access path
+                      True only for the Owner principal on the operator console host
                       (Principal.IsOwner()); gates owner-only panel surfaces.
                   email_verified:
                     type: boolean
@@ -2918,7 +2913,7 @@ paths:
       summary: List the servers the caller owns or may claim.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       responses:
         '200':
           description: The caller's server list.
@@ -2948,7 +2943,7 @@ paths:
         no behavior yet.
       x-felis-face: [external]
       x-felis-tier: admin
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       responses:
         '200':
           description: The current maintenance window (both ends null when unset).
@@ -2974,7 +2969,7 @@ paths:
         component degrades to notify.
       x-felis-face: [external]
       x-felis-tier: admin
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       requestBody:
         required: true
         content:
@@ -3007,7 +3002,7 @@ paths:
         max_age_seconds. Read-only: backups run on the host, never through the API.
       x-felis-face: [external]
       x-felis-tier: admin
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       responses:
         '200':
           description: The newest recorded backup and whether it is stale.
@@ -3034,7 +3029,7 @@ paths:
         for display — best-effort, so a Postgres blip degrades to owner-less rows.
       x-felis-face: [external]
       x-felis-tier: admin
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       responses:
         '200':
           description: Every server's status projection (fleet-wide), each with its owner.
@@ -3059,7 +3054,7 @@ paths:
       summary: List world backups (admin sees all; a user sees only worlds they formerly owned).
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       responses:
         '200':
           description: Visible backups.
@@ -3091,7 +3086,7 @@ paths:
         Pass safety_snapshot false to restore straight away.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -3154,7 +3149,7 @@ paths:
         asynchronously as a Job, so success is 202 (backing_up).
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
       responses:
@@ -3198,7 +3193,7 @@ paths:
         "running" | "succeeded" | "failed".
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
       responses:
@@ -3267,7 +3262,7 @@ paths:
         Listings are capped; truncated reports that the cap was hit.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
         - name: path
@@ -3336,7 +3331,7 @@ paths:
         subsequent save destroy the other half.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
         - name: path
@@ -3408,7 +3403,7 @@ paths:
         otherwise 409 file_changed. Audited as file.write.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
         - name: path
@@ -3492,7 +3487,7 @@ paths:
         first. Every route under /users gates on the admin Zero-Trust path.
       x-felis-face: [external]
       x-felis-tier: owner
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: query, in: query, required: false, schema: { type: string }, description: Substring match on username or email }
         - { name: role, in: query, required: false, schema: { type: string, enum: [admin, user] } }
@@ -3522,7 +3517,7 @@ paths:
       summary: Create a user (admin only).
       x-felis-face: [external]
       x-felis-tier: owner
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       requestBody:
         required: true
         content:
@@ -3562,7 +3557,7 @@ paths:
       summary: Get user detail (admin only).
       x-felis-face: [external]
       x-felis-tier: owner
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
@@ -3583,7 +3578,7 @@ paths:
       summary: Edit a user (admin only, cannot patch self).
       x-felis-face: [external]
       x-felis-tier: owner
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -3625,7 +3620,7 @@ paths:
       summary: Soft-delete a user — releases servers, revokes sessions (admin only, cannot delete self).
       x-felis-face: [external]
       x-felis-tier: owner
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
@@ -3659,7 +3654,7 @@ paths:
         immediate. Re-enabling simply clears the flag.
       x-felis-face: [external]
       x-felis-tier: owner
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -3700,7 +3695,7 @@ paths:
       summary: Get a user's quotas (admin only).
       x-felis-face: [external]
       x-felis-tier: owner
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
@@ -3719,7 +3714,7 @@ paths:
       summary: Set a user's quotas (admin only).
       x-felis-face: [external]
       x-felis-tier: owner
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -3753,7 +3748,7 @@ paths:
       summary: List a user's live sessions (admin only).
       x-felis-face: [external]
       x-felis-tier: owner
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
@@ -3778,7 +3773,7 @@ paths:
       summary: Revoke every live session of a user (admin only).
       x-felis-face: [external]
       x-felis-tier: owner
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
@@ -3803,7 +3798,7 @@ paths:
       summary: Revoke a single session of a user (admin only).
       x-felis-face: [external]
       x-felis-tier: owner
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
         - { name: hash, in: path, required: true, schema: { type: string } }
@@ -3844,7 +3839,7 @@ paths:
         no-op, not a 404.
       x-felis-face: [external]
       x-felis-tier: owner
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
@@ -3875,7 +3870,7 @@ paths:
         protection.
       x-felis-face: [external]
       x-felis-tier: owner
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -3919,7 +3914,7 @@ paths:
       summary: Remove a single Minecraft UUID binding from a user (admin only).
       x-felis-face: [external]
       x-felis-tier: owner
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
         - { name: mc_uuid, in: path, required: true, schema: { type: string, format: uuid } }
@@ -3951,7 +3946,7 @@ paths:
       summary: Report account-link status and in-game instructions (web side, spec §10).
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       responses:
         '200':
           description: Current link status.
@@ -3973,7 +3968,7 @@ paths:
       summary: Consume an in-game link code and bind the account.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       requestBody:
         required: true
         content:
@@ -4024,7 +4019,7 @@ paths:
         session must have reauthed within 5 minutes (403 reauth_required).
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       requestBody:
         required: true
         content:
@@ -4085,7 +4080,7 @@ paths:
         consumed, or mismatched code is a 400.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       requestBody:
         required: true
         content:
@@ -4135,7 +4130,7 @@ paths:
         must have reauthed within 5 minutes (403 reauth_required).
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       requestBody:
         required: true
         content:
@@ -4180,7 +4175,7 @@ paths:
         instance.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       responses:
         '200':
           description: "WebAuthn credential-creation options (the publicKey document)."
@@ -4214,7 +4209,7 @@ paths:
         configured.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       requestBody:
         required: true
         content:
@@ -4262,7 +4257,7 @@ paths:
         not need the WebAuthn verifier, so it succeeds even where begin/finish report 503.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       responses:
         '200':
           description: The caller's bound passkeys.
@@ -4294,7 +4289,7 @@ paths:
         (403 reauth_required).
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - name: id
           in: path
@@ -4333,7 +4328,7 @@ paths:
         op-login or a passkey).
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       responses:
         '200':
           description: Where the caller stands.
@@ -4361,7 +4356,7 @@ paths:
         bound to a fresh reauth-purpose challenge.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       responses:
         '200':
           description: WebAuthn assertion request options (PublicKeyCredentialRequestOptions) for navigator.credentials.get.
@@ -4388,7 +4383,7 @@ paths:
         clone check (a cloned authenticator is 400 passkey_login_invalid).
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       requestBody:
         required: true
         content:
@@ -4423,7 +4418,7 @@ paths:
         signing in again (403 staff_reauth).
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       responses:
         '202':
           description: Code minted and dispatched.
@@ -4471,7 +4466,7 @@ paths:
       summary: Redeem the reauth code and mark this session reauthed for 5 minutes.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       requestBody:
         required: true
         content:
@@ -4515,12 +4510,11 @@ paths:
       operationId: listMySessions
       summary: List the caller's own live sessions, marking the one this request came in on.
       description: >
-        Every device signed in to the caller's account, most recently seen first. A
-        caller signed in through Cloudflare Access has no session of its own, so no
-        entry is marked current.
+        Every device signed in to the caller's account, most recently seen first,
+        with the one this request came in on marked current.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       responses:
         '200':
           description: The caller's live sessions.
@@ -4547,7 +4541,7 @@ paths:
         a sign-out; the cookie is cleared and signed_out is true.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: hash, in: path, required: true, schema: { type: string } }
       responses:
@@ -4578,7 +4572,7 @@ paths:
       summary: Sign out every session of the caller except the one making this request.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       responses:
         '200':
           description: Other sessions revoked.
@@ -4607,7 +4601,7 @@ paths:
         caller has no live migration.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       responses:
         '200':
           description: The caller's live migration, or active:false.
@@ -4643,7 +4637,7 @@ paths:
         of band and never returned; requires a verified email on the account.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       responses:
         '202':
           description: Confirmation code minted and dispatched.
@@ -4695,7 +4689,7 @@ paths:
         unknown, expired, consumed, or mismatched code is a 400 invalid_code.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       requestBody:
         required: true
         content:
@@ -4753,7 +4747,7 @@ paths:
         the login door does, runs the clone-signal (sign-count) check before confirming.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       responses:
         '200':
           description: WebAuthn assertion request options (PublicKeyCredentialRequestOptions) for navigator.credentials.get.
@@ -4787,7 +4781,7 @@ paths:
         success the migration advances to confirmed with confirm_factor passkey.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       requestBody:
         required: true
         content:
@@ -4836,7 +4830,7 @@ paths:
         must exist and be neither disabled nor soft-deleted, and cannot be the source.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       requestBody:
         required: true
         content:
@@ -4890,7 +4884,7 @@ paths:
         keeps its own in-game identity and credentials; only server ownership moves.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       requestBody:
         required: true
         content:
@@ -4929,7 +4923,7 @@ paths:
       summary: Submit a modpack for admin review (user side; user-directed lane over §16). Starts no build.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       requestBody:
         required: true
         content:
@@ -4970,7 +4964,7 @@ paths:
       summary: List the caller's own modpack submissions with each linked build's outcome (user-directed lane over §16).
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       responses:
         '200':
           description: >-
@@ -5009,7 +5003,7 @@ paths:
         store has no implemented upload transport.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -5056,7 +5050,7 @@ paths:
         this endpoint cannot probe or clear another user's uploads.
       x-felis-face: [external]
       x-felis-tier: app
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
@@ -5085,7 +5079,7 @@ paths:
       summary: Mutate a server spec (admin). Storage is immutable.
       x-felis-face: [external]
       x-felis-tier: admin
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -5163,7 +5157,7 @@ paths:
         demand) and leave out the Dockerfile, which GET /images/build/{id} returns.
       x-felis-face: [external]
       x-felis-tier: admin
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: query, in: query, required: false, schema: { type: string }, description: 'Build id or status (exact), or part of the image ref; case-insensitive' }
         - { name: limit, in: query, required: false, schema: { type: integer, default: 20, maximum: 100 } }
@@ -5193,7 +5187,7 @@ paths:
       summary: Submit an image build (admin). A build is build-time RCE against the cluster.
       x-felis-face: [external]
       x-felis-tier: admin
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       requestBody:
         required: true
         content:
@@ -5242,7 +5236,7 @@ paths:
       summary: Get one build's status (admin).
       x-felis-face: [external]
       x-felis-tier: admin
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
@@ -5267,7 +5261,7 @@ paths:
       summary: Stream a build's Job log over SSE (admin, spec §16 / §416).
       x-felis-face: [external]
       x-felis-tier: admin
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
         - name: Last-Event-ID
@@ -5299,7 +5293,7 @@ paths:
       summary: Cancel a running build (admin).
       x-felis-face: [external]
       x-felis-tier: admin
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
@@ -5329,7 +5323,7 @@ paths:
       summary: List whitelisted images (admin).
       x-felis-face: [external]
       x-felis-tier: admin
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       responses:
         '200':
           description: The image whitelist.
@@ -5354,7 +5348,7 @@ paths:
       summary: Whitelist an externally-built image by reference (admin).
       x-felis-face: [external]
       x-felis-tier: admin
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       requestBody:
         required: true
         content:
@@ -5384,7 +5378,7 @@ paths:
       summary: Remove an image from the whitelist by reference (admin).
       x-felis-face: [external]
       x-felis-tier: admin
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: ref, in: query, required: true, schema: { type: string } }
       responses:
@@ -5408,7 +5402,7 @@ paths:
       summary: The admin review queue — every user's modpack submissions (admin; user-directed lane over §16).
       x-felis-face: [external]
       x-felis-tier: admin
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       responses:
         '200':
           description: All submissions, newest first.
@@ -5437,7 +5431,7 @@ paths:
         Approval is layered in front of the scan, never instead of it.
       x-felis-face: [external]
       x-felis-tier: admin
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
@@ -5475,7 +5469,7 @@ paths:
         deployment's context store has no implemented transport.
       x-felis-face: [external]
       x-felis-tier: admin
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:
@@ -5500,7 +5494,7 @@ paths:
       summary: Reject a submission with a required reason (admin; user-directed lane over §16). Starts no build.
       x-felis-face: [external]
       x-felis-tier: admin
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       requestBody:
@@ -5548,7 +5542,7 @@ paths:
         fetch; the admin has explicitly chosen to retire the artifact.
       x-felis-face: [external]
       x-felis-tier: admin
-      security: [{ accessJWT: [] }]
+      security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
       responses:

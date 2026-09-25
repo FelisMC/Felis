@@ -92,8 +92,8 @@ func (a *API) revokeOtherSessionsAfter(r *http.Request, change string) {
 	}
 }
 
-// callerSessionHash is the session the request authenticated with, or "" when it
-// authenticated some other way (a cookie beside an Access JWT names nothing).
+// callerSessionHash is the session the request authenticated with, or "" for a
+// principal that did not come from a session cookie.
 func callerSessionHash(r *http.Request, p *Principal) string {
 	if p == nil || !p.ViaSession {
 		return ""

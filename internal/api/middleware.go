@@ -239,8 +239,8 @@ func callersOnly(callers []Caller, next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// requireExternal enforces Access-JWT auth for the external face and stashes the
-// resolved Principal in the request context.
+// requireExternal authenticates the external face (SessionAuth in production)
+// and stashes the resolved Principal in the request context.
 func (a *API) requireExternal(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		p, err := a.External.Authenticate(r)

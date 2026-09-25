@@ -114,8 +114,10 @@ type VelocityConfig struct {
 	GamePort int `toml:"game_port"`
 }
 
-// AuthConfig is the [auth] table: the two privileged faces and the access-JWT
-// audience the API enforces.
+// AuthConfig is the [auth] table: the two privileged faces and the Cloudflare
+// Access application's audience. The API does not verify Access JWTs (Access is
+// enforced at the edge); a set audience marks the install as sitting behind
+// Cloudflare, which makes CF-Connecting-IP the client address.
 type AuthConfig struct {
 	AdminHostname string `toml:"admin_hostname"`
 	PanelHostname string `toml:"panel_hostname"`

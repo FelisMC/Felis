@@ -60,10 +60,8 @@ func authSourcesFromConfig(configured []config.AuthSourceConfig) []api.AuthSourc
 }
 
 // cmdAPI runs felis-api: two listeners, two middleware chains (spec §7). The
-// internal face (service token) is fully wired. The external face is wired but
-// fails closed until an Access JWKS key function is configured — the verifier's
-// audience logic is unit-tested (internal/api), the JWKS source is a deployment
-// integration point.
+// internal face authenticates per-caller service tokens; the external face
+// authenticates the local session cookie.
 func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("api", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -317,16 +315,11 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		Files:         files,
 		Submissions:   submissions,
 		Mailer:        mailer,
-		// The external face is fronted by SessionAuth: it prefers a local session
-		// cookie (minted by the passwordless doors) and otherwise delegates to the
-		// Cloudflare-Access JWT verifier, so both auth models coexist on one face. The
-		// delegate's Keyfunc is intentionally nil — the JWT path fails closed until a
-		// JWKS-backed key function is wired (deployment integration point) — while the
-		// local session path is live the moment `felis breakGlass` flips
-		// local_auth_enabled on.
+		// The external face authenticates the local session cookie the sign-in doors
+		// mint, live once `felis breakGlass` flips local_auth_enabled on. Cloudflare
+		// Access, when the install sits behind it, is enforced at the edge only.
 		External: api.SessionAuth{
 			Repo:          repo,
-			Delegate:      api.AccessVerifier{Audience: cfg.Auth.AccessJWTAud},
 			RootDomain:    cfg.Server.RootDomain,
 			AdminHostname: cfg.Auth.AdminHostname,
 		},
@@ -355,7 +348,6 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		ClientIPHeader: cfg.Auth.EffectiveClientIPHeader(),
 		MailLimit:      mailLimit(cfg.SMTP.MaxPerHour),
 	}
-	fmt.Fprintln(stderr, "felis api: external face fails closed (Access JWKS key function not configured)")
 	if a.ClientIPHeader != "" {
 		fmt.Fprintf(stderr, "felis api: sign-in rate limit keys on the %s header\n", a.ClientIPHeader)
 	} else {

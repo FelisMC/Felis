@@ -1,9 +1,10 @@
 // Package api implements felis-api: one binary serving two faces (spec §7).
 //
 // The internal face (velocity / backend callbacks) authenticates with a static
-// service token and is never wrapped in Zero Trust. The external face (people /
-// panel) authenticates with a Cloudflare Access JWT; admin-tier operations
-// additionally require the admin Access path (spec §14, graded by operation).
+// per-caller service token and is never wrapped in Zero Trust. The external face
+// (people / panel) authenticates the local session cookie; admin-tier operations
+// additionally require a staff session on the operator console host (spec §14,
+// graded by operation).
 //
 // Handlers depend on the Repo and Cluster interfaces, so the request routing,
 // dual-face auth, input validation and authorization are all unit-tested with
@@ -303,7 +304,7 @@ func (a *API) streamGate() *streamLimiter {
 }
 
 // streamKey identifies the principal a stream slot is charged to. It prefers the
-// stable user id and falls back to the email so a JWT principal without a user id is
+// stable user id and falls back to the email so a principal without a user id is
 // still bucketed by identity; an empty key (no authenticated identity, which the
 // external face's auth guard already precludes) shares one bucket, which is safe
 // because it is more restrictive, never less.
@@ -443,8 +444,8 @@ func (a *API) internalAPIRoutes() []apiRoute {
 }
 
 // externalAPIRoutes is the external face's served route table (spec §7, §14):
-// Cloudflare Access-JWT auth on every /api/v1 route; the Admin entries are
-// additionally gated on the admin Zero-Trust path. It exposes liveness only —
+// session auth on every non-public /api/v1 route; the Admin entries are
+// additionally gated on the operator console host. It exposes liveness only —
 // readiness is an internal concern.
 func (a *API) externalAPIRoutes() []apiRoute {
 	return []apiRoute{
@@ -691,9 +692,9 @@ func (a *API) InternalHandler() http.Handler {
 	return a.buildFace("internal", a.internalAPIRoutes(), a.requireInternal)
 }
 
-// ExternalHandler builds the external-face http.Handler: Access-JWT auth on every
-// /api/v1 route, with admin-tier routes additionally gated by the admin Access
-// path inside their handlers.
+// ExternalHandler builds the external-face http.Handler: session auth on every
+// non-public /api/v1 route, with admin-tier routes additionally gated on the
+// operator console host inside their handlers.
 func (a *API) ExternalHandler() http.Handler {
 	return a.buildFace("external", a.externalAPIRoutes(), a.requireExternal)
 }
