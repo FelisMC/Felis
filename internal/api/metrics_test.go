@@ -1,11 +1,14 @@
 package api
 
 import (
+	"database/sql"
 	"net/http"
 	"strings"
 	"testing"
 
 	"felis.lolicon.best/internal/metrics"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 // TestMetricsEndpoint locks the scrape surface: the internal face serves the
@@ -40,5 +43,28 @@ func TestMetricsEndpoint(t *testing.T) {
 
 	if w := do(a.ExternalHandler(), "GET", "/metrics", "", nil); w.Code != http.StatusNotFound {
 		t.Fatalf("external GET /metrics = %d, want 404 (metrics stay internal)", w.Code)
+	}
+}
+
+// The store pool's counts reach the internal scrape once registered.
+func TestMetricsEndpointCarriesTheStorePool(t *testing.T) {
+	pool, err := sql.Open("pgx", "postgres://felis@127.0.0.1:1/felis")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	pool.SetMaxOpenConns(7)
+	if err := RegisterStorePool(pool); err != nil {
+		t.Fatal(err)
+	}
+
+	w := do((&API{}).InternalHandler(), "GET", "/metrics", "", nil)
+	for _, want := range []string{
+		`go_sql_max_open_connections{db_name="felis"} 7`,
+		`go_sql_wait_count_total{db_name="felis"} 0`,
+	} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("metrics exposition missing %q", want)
+		}
 	}
 }

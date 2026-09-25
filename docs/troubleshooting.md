@@ -1317,6 +1317,14 @@ All four mandated metrics have real producers; scrape them when triaging:
 - The Go runtime and process series (`go_*`, `process_*`) of `felis-api`:
   goroutines, heap, open file descriptors. Goroutines that climb without
   falling back usually mean streams or uploads that never end.
+- `go_sql_*{db_name="felis"}` — the API's database pool. It is capped at 25
+  connections, and every connection runs with `statement_timeout=15s` and
+  `idle_in_transaction_session_timeout=60s` (a `[database] url` that sets
+  either keeps its own). `go_sql_in_use_connections` sitting at
+  `go_sql_max_open_connections` with `go_sql_wait_count_total` climbing means
+  requests are queueing for a connection: look for a slow query or a lock
+  (`SELECT pid, state, wait_event, query FROM pg_stat_activity`). A statement
+  cut off by the limit logs `canceling statement due to statement timeout`.
 
 The API also writes one access-log line per request to its log, in logfmt:
 `face`, `method`, `route`, `path`, `status`, `duration_ms`, `bytes`,
@@ -1340,7 +1348,7 @@ annotated Service endpoints picks them up as is.
   `controller_runtime_reconcile_*` / `workqueue_*` series.
 - `felis-api` internal face `:8081/metrics` (Service `felis-api-internal`) —
   `felis_build_info{component="api"}`, the `felis_http_*` request series, the
-  `go_*`/`process_*` runtime series,
+  `go_*`/`process_*` runtime series, the `go_sql_*` pool series,
   `felis_image_build_failures_total`, and the sign-in series of §17
   (`felis_mail_total`, `felis_rate_limited_total`,
   `felis_auth_otp_lockouts_total`, `felis_auth_failures_total`,

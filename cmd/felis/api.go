@@ -276,6 +276,9 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// the same store the auth handlers write to, so a login and the next request
 	// agree on what local auth knows.
 	repo := api.NewPGRepo(drv.DB())
+	if err := api.RegisterStorePool(drv.DB()); err != nil {
+		fmt.Fprintf(stderr, "felis api: store pool metrics unavailable: %v\n", err)
+	}
 
 	// The owner's on-demand backup levers come from [archive], the same keys the
 	// backup Job and the reaper read. A malformed key leaves the defaults in
