@@ -6,13 +6,15 @@
 //   - Graceful shutdown: Execute("save-all flush") right before the operator
 //     scales a server to zero.
 //
-// Multi-packet responses (a single command whose reply exceeds one ~4 KiB
-// packet) are not reassembled; Phase-1 commands ("list", "save-all", "stop")
-// always fit in one packet. This is intentional and documented rather than
-// silently truncating large replies.
+// A reply longer than one packet (Minecraft splits a command's output into
+// 4096-byte bodies: banlist, whitelist list, any console command) is
+// reassembled: once the reply begins, Execute sends an empty RESPONSE_VALUE
+// packet, which the server answers only after the whole reply ("Unknown
+// request 0" on vanilla and Paper), so that answer marks the end.
 package rcon
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -36,7 +38,17 @@ const authFailedID int32 = -1
 const (
 	minPacketLen = 10
 	maxPacketLen = 4096
+	// maxReplyPacketLen admits a full 4096-byte Minecraft reply body plus the
+	// id, type and two terminators.
+	maxReplyPacketLen = maxPacketLen + minPacketLen
+	// maxReplyBytes bounds one reassembled reply, so a server that never sends
+	// the end marker cannot grow it without limit.
+	maxReplyBytes = 1 << 20
 )
+
+// DefaultCommandTimeout bounds a command when neither the caller's context nor
+// SetDeadline gives one, so a hung server cannot hold a console request open.
+const DefaultCommandTimeout = 10 * time.Second
 
 // ErrAuthFailed is returned by Dial when the RCON password is rejected.
 var ErrAuthFailed = errors.New("rcon: authentication failed")
@@ -48,6 +60,9 @@ const DefaultPort = 25575
 type Conn struct {
 	conn  net.Conn
 	reqID int32
+	// deadline is the caller's SetDeadline, which a command honours in place
+	// of DefaultCommandTimeout.
+	deadline time.Time
 }
 
 // Dial opens a TCP connection to addr and authenticates with password. The
@@ -87,25 +102,76 @@ func Dial(addr, password string, timeout time.Duration) (*Conn, error) {
 }
 
 // SetDeadline sets an absolute deadline for subsequent Execute calls.
-func (c *Conn) SetDeadline(t time.Time) error { return c.conn.SetDeadline(t) }
+func (c *Conn) SetDeadline(t time.Time) error {
+	c.deadline = t
+	return c.conn.SetDeadline(t)
+}
 
 // Close closes the underlying connection.
 func (c *Conn) Close() error { return c.conn.Close() }
 
-// Execute runs a single command and returns the server's reply body.
+// Execute runs a single command and returns the server's whole reply.
 func (c *Conn) Execute(cmd string) (string, error) {
-	id := c.nextID()
+	return c.ExecuteContext(context.Background(), cmd)
+}
+
+// ExecuteContext runs a single command and returns the server's whole reply,
+// reassembled across packets. It gives up when ctx is done (cancelled or past
+// its deadline), and otherwise at the SetDeadline deadline, or after
+// DefaultCommandTimeout when none was set.
+func (c *Conn) ExecuteContext(ctx context.Context, cmd string) (string, error) {
+	dl := c.deadline
+	if dl.IsZero() {
+		dl = time.Now().Add(DefaultCommandTimeout)
+	}
+	if err := c.conn.SetDeadline(dl); err != nil {
+		return "", err
+	}
+	stop := context.AfterFunc(ctx, func() { _ = c.conn.SetDeadline(time.Unix(1, 0)) })
+	defer stop()
+
+	id, end := c.nextID(), c.nextID()
 	if err := writePacket(c.conn, id, typeExecCommand, cmd); err != nil {
-		return "", err
+		return "", c.ctxErr(ctx, err)
 	}
-	respID, _, body, err := readPacket(c.conn)
-	if err != nil {
-		return "", err
+	var reply []byte
+	sentEnd := false
+	for {
+		respID, _, body, err := readPacket(c.conn)
+		if err != nil {
+			return "", c.ctxErr(ctx, err)
+		}
+		switch {
+		case respID == id:
+			if len(reply)+len(body) > maxReplyBytes {
+				return "", fmt.Errorf("rcon: reply exceeds %d bytes", maxReplyBytes)
+			}
+			reply = append(reply, body...)
+			// The end marker goes out only once the reply has begun: Minecraft
+			// drops a connection whose read holds more than one packet, and it
+			// sends every fragment before it reads again, so the marker's answer
+			// follows the last one.
+			if !sentEnd {
+				if err := writePacket(c.conn, end, typeResponseValue, ""); err != nil {
+					return "", c.ctxErr(ctx, err)
+				}
+				sentEnd = true
+			}
+		case respID == end:
+			return string(reply), nil
+		default:
+			// A leftover from an earlier exchange (a server that answers the end
+			// marker twice); it belongs to no live request.
+		}
 	}
-	if respID != id {
-		return "", fmt.Errorf("rcon: response id mismatch: got %d want %d", respID, id)
+}
+
+// ctxErr prefers ctx's error when a cancellation is what cut the exchange.
+func (c *Conn) ctxErr(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
 	}
-	return body, nil
+	return err
 }
 
 // auth performs the SERVERDATA_AUTH handshake. Some servers emit an empty
@@ -161,23 +227,23 @@ func writePacket(w io.Writer, id, typ int32, body string) error {
 }
 
 // readPacket decodes one RCON packet.
-func readPacket(r io.Reader) (id, typ int32, body string, err error) {
+func readPacket(r io.Reader) (id, typ int32, body []byte, err error) {
 	var lenBuf [4]byte
 	if _, err = io.ReadFull(r, lenBuf[:]); err != nil {
-		return 0, 0, "", err
+		return 0, 0, nil, err
 	}
 	length := int32(binary.LittleEndian.Uint32(lenBuf[:]))
-	if length < minPacketLen || length > maxPacketLen {
-		return 0, 0, "", fmt.Errorf("rcon: invalid packet length %d", length)
+	if length < minPacketLen || length > maxReplyPacketLen {
+		return 0, 0, nil, fmt.Errorf("rcon: invalid packet length %d", length)
 	}
 	payload := make([]byte, length)
 	if _, err = io.ReadFull(r, payload); err != nil {
-		return 0, 0, "", err
+		return 0, 0, nil, err
 	}
 	id = int32(binary.LittleEndian.Uint32(payload[0:4]))
 	typ = int32(binary.LittleEndian.Uint32(payload[4:8]))
 	// Strip the two trailing null bytes from the body.
-	body = string(payload[8 : length-2])
+	body = payload[8 : length-2]
 	return id, typ, body, nil
 }
 

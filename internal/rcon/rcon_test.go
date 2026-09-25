@@ -1,10 +1,12 @@
 package rcon_test
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -19,6 +21,9 @@ type fakeRCON struct {
 	password string
 	replies  map[string]string
 	wg       sync.WaitGroup
+	// hang leaves every command unanswered; doubleEnd answers the end marker
+	// twice, as a Source-engine server does.
+	hang, doubleEnd bool
 }
 
 func startFakeRCON(t *testing.T, password string, replies map[string]string) *fakeRCON {
@@ -72,12 +77,41 @@ func (f *fakeRCON) handle(conn net.Conn) {
 				_ = writeFramePacket(conn, -1, 0, "")
 				continue
 			}
+			if f.hang {
+				continue
+			}
+			// Minecraft drops a connection whose read holds more than the one
+			// packet: a client that pipelines its next packet is cut off.
+			if pipelined(conn) {
+				return
+			}
+			// Minecraft splits a reply into 4096-byte bodies, even mid-rune.
 			reply := f.replies[body]
+			for len(reply) > 4096 {
+				_ = writeFramePacket(conn, id, 0, reply[:4096])
+				reply = reply[4096:]
+			}
 			_ = writeFramePacket(conn, id, 0, reply)
 		default:
-			_ = writeFramePacket(conn, id, 0, "")
+			if f.hang {
+				continue
+			}
+			_ = writeFramePacket(conn, id, 0, "Unknown request 0")
+			if f.doubleEnd {
+				_ = writeFramePacket(conn, id, 0, "")
+			}
 		}
 	}
+}
+
+// pipelined reports whether the client already sent more bytes behind the
+// packet just read.
+func pipelined(conn net.Conn) bool {
+	_ = conn.SetReadDeadline(time.Now().Add(30 * time.Millisecond))
+	defer conn.SetReadDeadline(time.Time{})
+	var b [1]byte
+	n, _ := conn.Read(b[:])
+	return n > 0
 }
 
 func writeFramePacket(w io.Writer, id, typ int32, body string) error {
@@ -176,5 +210,85 @@ func TestExecuteGracefulShutdownSequence(t *testing.T) {
 	}
 	if out, err := c.Execute("stop"); err != nil || out != "Stopping the server" {
 		t.Fatalf("stop = %q, %v", out, err)
+	}
+}
+
+func TestExecuteReassemblesALongReply(t *testing.T) {
+	// 3000 three-byte runes: 9000 bytes over three packets, split mid-rune.
+	long := strings.Repeat("封", 3000)
+	f := startFakeRCON(t, "pw", map[string]string{"banlist": long})
+	defer f.stop()
+	c, err := rcon.Dial(f.addr(), "pw", time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+	got, err := c.Execute("banlist")
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(got) != 9000 || got != long {
+		t.Fatalf("reply = %d bytes, want the 9000-byte original", len(got))
+	}
+}
+
+func TestExecuteSkipsALeftoverEndMarker(t *testing.T) {
+	f := startFakeRCON(t, "pw", map[string]string{"list": "There are 0 of a max of 20 players online", "seed": "Seed: [42]"})
+	f.doubleEnd = true
+	defer f.stop()
+	c, err := rcon.Dial(f.addr(), "pw", time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+	if got, err := c.Execute("list"); err != nil || got != "There are 0 of a max of 20 players online" {
+		t.Fatalf("first = %q, %v", got, err)
+	}
+	if got, err := c.Execute("seed"); err != nil || got != "Seed: [42]" {
+		t.Fatalf("second = %q, %v", got, err)
+	}
+}
+
+func TestExecuteContextGivesUpOnAHungServer(t *testing.T) {
+	f := startFakeRCON(t, "pw", nil)
+	f.hang = true
+	defer f.stop()
+	c, err := rcon.Dial(f.addr(), "pw", time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer c.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := c.ExecuteContext(ctx, "banlist"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("deadline: err = %v, want context.DeadlineExceeded", err)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("deadline: took %v", took)
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	start = time.Now()
+	if _, err := c.ExecuteContext(ctx, "banlist"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancel: err = %v, want context.Canceled", err)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("cancel: took %v", took)
+	}
+
+	// A caller's own SetDeadline bounds a context-free Execute.
+	if err := c.SetDeadline(time.Now().Add(150 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	start = time.Now()
+	var ne net.Error
+	if _, err := c.Execute("banlist"); !errors.As(err, &ne) || !ne.Timeout() {
+		t.Fatalf("set deadline: err = %v, want a timeout", err)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("set deadline: took %v", took)
 	}
 }

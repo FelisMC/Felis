@@ -101,7 +101,7 @@ func (k *K8sConsole) RunCommand(ctx context.Context, name, command string) (stri
 	}
 	defer conn.Close()
 
-	out, err := conn.Execute(command)
+	out, err := conn.ExecuteContext(ctx, command)
 	if err != nil {
 		return "", ErrConsoleUnavailable
 	}
