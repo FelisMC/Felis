@@ -1,12 +1,14 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"felis.lolicon.best/internal/config"
 )
 
-func TestContextMaxBytesFollowsTheEdge(t *testing.T) {
+func TestContextMaxBytes(t *testing.T) {
 	cases := []struct {
 		name    string
 		reg     config.RegistryConfig
@@ -15,10 +17,11 @@ func TestContextMaxBytesFollowsTheEdge(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "direct install keeps the package default", want: 0},
-		{name: "access audience means the Cloudflare edge", auth: config.AuthConfig{AccessJWTAud: "aud-1"}, want: 99614720},
-		{name: "CF-Connecting-IP header means the Cloudflare edge", auth: config.AuthConfig{ClientIPHeader: "cf-connecting-ip"}, want: 99614720},
-		{name: "an operator proxy keeps the package default", auth: config.AuthConfig{ClientIPHeader: "X-Forwarded-For"}, want: 0},
-		{name: "explicit value wins over the edge default", reg: config.RegistryConfig{ContextMaxBytes: "50Mi"}, auth: config.AuthConfig{AccessJWTAud: "aud-1"}, want: 52428800},
+		// The panel uploads in parts under the edge's 100 MB body limit, so the
+		// Cloudflare edge keeps the full default.
+		{name: "the Cloudflare edge keeps the package default", auth: config.AuthConfig{AccessJWTAud: "aud-1"}, want: 0},
+		{name: "CF-Connecting-IP keeps the package default", auth: config.AuthConfig{ClientIPHeader: "cf-connecting-ip"}, want: 0},
+		{name: "explicit value behind the edge", reg: config.RegistryConfig{ContextMaxBytes: "50Mi"}, auth: config.AuthConfig{AccessJWTAud: "aud-1"}, want: 52428800},
 		{name: "explicit value on a direct install", reg: config.RegistryConfig{ContextMaxBytes: "2Gi"}, want: 2147483648},
 		{name: "garbage is refused", reg: config.RegistryConfig{ContextMaxBytes: "lots"}, wantErr: true},
 		{name: "zero is refused", reg: config.RegistryConfig{ContextMaxBytes: "0"}, wantErr: true},
@@ -33,5 +36,22 @@ func TestContextMaxBytesFollowsTheEdge(t *testing.T) {
 				t.Fatalf("contextMaxBytes = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestUploadPartsDir(t *testing.T) {
+	if got := uploadPartsDir("/var/lib/felis/uploads"); got != "/var/lib/felis/uploads/.parts" {
+		t.Errorf("local store: parts dir = %q, want beside the contexts", got)
+	}
+	if got := uploadPartsDir("file:///srv/uploads"); got != "/srv/uploads/.parts" {
+		t.Errorf("file:// store: parts dir = %q, want /srv/uploads/.parts", got)
+	}
+	// This machine has no /var/lib/felis/uploads mount, so an s3:// store falls
+	// back to the temp dir.
+	if _, err := os.Stat("/var/lib/felis/uploads"); err == nil {
+		t.Skip("/var/lib/felis/uploads exists here")
+	}
+	if got := uploadPartsDir("s3://bucket/uploads"); got != filepath.Join(os.TempDir(), "felis-upload-parts") {
+		t.Errorf("s3 store without the uploads mount: parts dir = %q", got)
 	}
 }

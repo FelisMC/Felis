@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"felis.lolicon.best/internal/build"
+	"felis.lolicon.best/internal/submit"
 	"felis.lolicon.best/internal/updates"
 	"sigs.k8s.io/yaml"
 )
@@ -34,26 +35,27 @@ func TestOpenAPISchemasMatchWireStructs(t *testing.T) {
 	}
 
 	pairs := map[string]any{
-		"ServerInfo":        ServerInfo{},
-		"FleetServer":       fleetServerView{},
-		"MyServerView":      MyServerView{},
-		"BackupView":        BackupView{},
-		"Build":             build.Build{},
-		"Image":             build.Image{},
-		"BuildScan":         buildScanView{},
-		"ScanSummary":       build.ScanSummary{},
-		"ScanPolicy":        build.ScanPolicy{},
-		"ScanFinding":       build.ScanFinding{},
-		"Submission":        submissionView{},
-		"UserView":          UserView{},
-		"UserDetail":        UserDetail{},
-		"QuotaView":         QuotaView{},
-		"SessionView":       SessionView{},
-		"PasskeyCredential": passkeyCredentialView{},
-		"UpdateWindow":      updateWindow{},
-		"DBBackupStatus":    dbBackupView{},
-		"UpdateReport":      updateReportView{},
-		"UpdateComponent":   updates.ComponentStatus{},
+		"ServerInfo":            ServerInfo{},
+		"FleetServer":           fleetServerView{},
+		"MyServerView":          MyServerView{},
+		"BackupView":            BackupView{},
+		"Build":                 build.Build{},
+		"Image":                 build.Image{},
+		"BuildScan":             buildScanView{},
+		"ScanSummary":           build.ScanSummary{},
+		"ScanPolicy":            build.ScanPolicy{},
+		"ScanFinding":           build.ScanFinding{},
+		"Submission":            submissionView{},
+		"ContextUploadProgress": submit.UploadProgress{},
+		"UserView":              UserView{},
+		"UserDetail":            UserDetail{},
+		"QuotaView":             QuotaView{},
+		"SessionView":           SessionView{},
+		"PasskeyCredential":     passkeyCredentialView{},
+		"UpdateWindow":          updateWindow{},
+		"DBBackupStatus":        dbBackupView{},
+		"UpdateReport":          updateReportView{},
+		"UpdateComponent":       updates.ComponentStatus{},
 	}
 	for name, v := range pairs {
 		s, ok := doc.Components.Schemas[name]

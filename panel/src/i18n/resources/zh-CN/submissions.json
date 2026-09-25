@@ -40,9 +40,15 @@
   "field_context_sha256": "上下文 SHA-256",
   "field_context_sha256_hint": "平台收到的文件摘要，可用 sha256sum 与本地文件核对。审核通过的就是这份内容。",
   "clear_btn": "清除",
-  "file_hint": "支持 .tar.gz 格式 (最大 1GB)",
+  "file_hint": "支持 .tar.gz 格式，最大 {{limit}}",
   "withdraw_btn": "撤回提交",
   "withdraw_hint": "撤回会删除该提交及其已上传的构建上下文，并释放你的待审核名额与存储配额。",
   "withdraw_confirm": "确认撤回",
-  "withdraw_cancel": "取消"
+  "withdraw_cancel": "取消",
+  "upload_progress_label": "上传进度",
+  "upload_progress": "{{sent}} / {{total}}",
+  "pause_btn": "暂停",
+  "resume_btn": "继续上传",
+  "resume_hint": "“{{name}}”已保存，构建上下文已有 {{sent}} 传到服务器。再次提交即可从这里接着传。",
+  "restart_hint": "“{{name}}”已保存。新选的文件会从头上传。"
 }

@@ -38,6 +38,7 @@ import { StatCard } from "@/components/StatCard";
 import { PageHeader } from "@/components/PageHeader";
 import { SubmissionStatusBadge } from "@/components/SubmissionStatusBadge";
 import { api, humanizeError } from "@/lib/api";
+import { uploadContext } from "@/lib/contextUpload";
 import { useAsync } from "@/lib/hooks";
 import { formatRelative, formatAbsolute } from "@/lib/format";
 import type { BuildStatus, Submission, SubmissionStatus } from "@/lib/types";
@@ -89,6 +90,13 @@ export function MySubmissionsPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitStep, setSubmitStep] = useState<"create" | "upload" | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<{ sent: number; total: number } | null>(null);
+  // A submission whose upload stopped (a failure, or Pause): submitting again
+  // sends to it, carrying on from its staged bytes when the file is the same,
+  // instead of creating a second pending submission.
+  const [pending, setPending] = useState<{ id: string; name: string; file: File; sent: number } | null>(null);
+  const sentRef = useRef(0);
+  const abortRef = useRef<AbortController | null>(null);
 
   // Row action state: withdraw arms a row (trash → confirm/cancel) before it
   // fires, and a failure lands in actionError above the list.
@@ -185,7 +193,7 @@ export function MySubmissionsPage() {
       setFile(null);
       return;
     }
-    // The server's cap (95 MiB behind the Cloudflare edge); 1 GiB until it answers.
+    // The server's cap; 1 GiB until it answers.
     const maxBytes = contextLimit ?? DEFAULT_CONTEXT_LIMIT;
     if (selectedFile.size > maxBytes) {
       setError(t("error_file_size", { size: formatBytes(selectedFile.size), limit: formatBytes(maxBytes) }));
@@ -199,7 +207,7 @@ export function MySubmissionsPage() {
     e.preventDefault();
     setError(null);
 
-    const trimmedName = displayName.trim();
+    const trimmedName = pending ? pending.name : displayName.trim();
     if (!trimmedName) {
       setError(t("error_name_required"));
       return;
@@ -210,16 +218,32 @@ export function MySubmissionsPage() {
     }
 
     setIsSubmitting(true);
-    setSubmitStep("create");
-
+    let target = pending;
     try {
-      // 1. Create the submission metadata
-      const sub = await api.createSubmission(trimmedName);
+      if (!target) {
+        setSubmitStep("create");
+        const sub = await api.createSubmission(trimmedName);
+        target = { id: sub.id, name: trimmedName, file, sent: 0 };
+      }
 
-      // 2. Upload context file
+      // The context goes up in parts, so a large pack passes the edge's
+      // per-request cap and a dropped connection resumes instead of restarting.
       setSubmitStep("upload");
-      await api.uploadSubmissionContext(sub.id, file);
+      sentRef.current = 0;
+      setProgress({ sent: 0, total: file.size });
+      const controller = new AbortController();
+      abortRef.current = controller;
+      await uploadContext(target.id, file, {
+        resume: pending !== null && pending.file === file,
+        signal: controller.signal,
+        onProgress: (sent, total, stored) => {
+          // A stopped part is lost; the retry resumes from what the server holds.
+          sentRef.current = stored;
+          setProgress({ sent, total });
+        },
+      });
 
+      setPending(null);
       setDisplayName("");
       setFile(null);
       if (fileInputRef.current) {
@@ -228,12 +252,22 @@ export function MySubmissionsPage() {
       setDialogOpen(false);
       reload();
     } catch (err) {
-      setError(humanizeError(err));
+      if (target) {
+        // The submission exists (and is in the list now); keep it for the retry.
+        setPending({ ...target, file, sent: sentRef.current });
+        if (!pending) reload();
+      }
+      const paused = err instanceof DOMException && err.name === "AbortError";
+      setError(paused ? null : humanizeError(err));
     } finally {
+      abortRef.current = null;
       setIsSubmitting(false);
       setSubmitStep(null);
+      setProgress(null);
     }
   };
+
+  const percent = progress && progress.total > 0 ? Math.floor((progress.sent * 100) / progress.total) : 0;
 
   // Withdraw retracts a still-pending submission and its uploaded context,
   // freeing the pending slot and the storage budget for a fresh submission.
@@ -262,9 +296,12 @@ export function MySubmissionsPage() {
         actions={
           <Button
             onClick={() => {
-              setError(null);
-              setDisplayName("");
-              setFile(null);
+              // A stopped upload stays in the form so Submit carries it on.
+              if (!pending) {
+                setError(null);
+                setDisplayName("");
+                setFile(null);
+              }
               setDialogOpen(true);
             }}
             size="sm"
@@ -559,6 +596,14 @@ export function MySubmissionsPage() {
             {/* Error Banner */}
             {error && <MessageLine kind="error" message={error} compact />}
 
+            {pending && !isSubmitting && (
+              <p role="status" className="rounded-md border border-border bg-muted/40 p-2.5 text-xs text-muted-foreground">
+                {file === pending.file
+                  ? t("resume_hint", { name: pending.name, sent: formatBytes(pending.sent) })
+                  : t("restart_hint", { name: pending.name })}
+              </p>
+            )}
+
             {/* Display Name Input */}
             <div className="space-y-1.5">
               <Label htmlFor="displayName" className="text-xs font-semibold text-foreground">
@@ -567,9 +612,9 @@ export function MySubmissionsPage() {
               <Input
                 id="displayName"
                 placeholder={t("display_name_placeholder")}
-                value={displayName}
+                value={pending ? pending.name : displayName}
                 onChange={(e) => setDisplayName(e.target.value)}
-                disabled={isSubmitting}
+                disabled={isSubmitting || !!pending}
                 required
               />
             </div>
@@ -633,25 +678,56 @@ export function MySubmissionsPage() {
                   <>
                     <Upload className="h-8 w-8 text-muted-foreground/80 mb-2" />
                     <p className="text-xs font-medium text-foreground">{t("file_drag_hint")}</p>
-                    <p className="text-[10px] text-muted-foreground/70 mt-1">{t("file_hint")}</p>
+                    <p className="text-[10px] text-muted-foreground/70 mt-1">
+                      {t("file_hint", { limit: formatBytes(contextLimit ?? DEFAULT_CONTEXT_LIMIT, 0) })}
+                    </p>
                   </>
                 )}
               </div>
+
+              {progress && (
+                <div className="space-y-1.5 pt-1">
+                  <div
+                    role="progressbar"
+                    aria-label={t("upload_progress_label")}
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={percent}
+                    className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
+                  >
+                    <div
+                      className="h-full rounded-full bg-primary transition-[width] duration-300 ease-out"
+                      style={{ width: `${percent}%` }}
+                    />
+                  </div>
+                  <p className="flex justify-between text-[10px] text-muted-foreground tabular-nums">
+                    <span>{t("upload_progress", { sent: formatBytes(progress.sent), total: formatBytes(progress.total) })}</span>
+                    <span>{percent}%</span>
+                  </p>
+                </div>
+              )}
             </div>
 
             <DialogFooter className="gap-2 pt-2">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setDialogOpen(false)}
-                disabled={isSubmitting}
-                className="text-xs"
-              >
-                {t("common:cancel")}
-              </Button>
+              {submitStep === "upload" ? (
+                // Pausing keeps the staged parts; Submit carries on from them.
+                <Button type="button" variant="outline" onClick={() => abortRef.current?.abort()} className="text-xs">
+                  {t("pause_btn")}
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setDialogOpen(false)}
+                  disabled={isSubmitting}
+                  className="text-xs"
+                >
+                  {t("common:cancel")}
+                </Button>
+              )}
               <Button
                 type="submit"
-                disabled={isSubmitting || !displayName.trim() || !file}
+                disabled={isSubmitting || !(pending ? pending.name : displayName.trim()) || !file}
                 className="text-xs"
               >
                 {isSubmitting ? (
@@ -662,7 +738,7 @@ export function MySubmissionsPage() {
                 ) : (
                   <>
                     <Upload className="mr-1.5 h-4 w-4" />
-                    {t("submit_btn")}
+                    {pending && file === pending.file ? t("resume_btn") : t("submit_btn")}
                   </>
                 )}
               </Button>

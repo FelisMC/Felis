@@ -55,6 +55,35 @@ type fakeSubmissions struct {
 
 	approvedDigest string
 	openDigest     string
+
+	// The chunked upload: what the handler forwarded, and canned outcomes.
+	chunkID     string
+	chunkBy     string
+	partOffset  int64
+	partBody    string
+	progress    submit.UploadProgress
+	chunkErr    error
+	completeErr error
+}
+
+func (f *fakeSubmissions) UploadStatus(_ context.Context, id, submittedBy string) (submit.UploadProgress, error) {
+	f.chunkID, f.chunkBy = id, submittedBy
+	return f.progress, f.chunkErr
+}
+
+func (f *fakeSubmissions) UploadPart(_ context.Context, id, submittedBy string, offset int64, r io.Reader) (submit.UploadProgress, error) {
+	f.chunkID, f.chunkBy, f.partOffset = id, submittedBy, offset
+	b, _ := io.ReadAll(r)
+	f.partBody = string(b)
+	return f.progress, f.chunkErr
+}
+
+func (f *fakeSubmissions) CompleteUpload(_ context.Context, id, submittedBy string) (*submit.Submission, error) {
+	f.chunkID, f.chunkBy = id, submittedBy
+	if f.completeErr != nil {
+		return nil, f.completeErr
+	}
+	return &submit.Submission{ID: id, SubmittedBy: submittedBy, Status: submit.StatusPendingReview}, nil
 }
 
 func (f *fakeSubmissions) Create(_ context.Context, req submit.CreateRequest) (*submit.Submission, error) {

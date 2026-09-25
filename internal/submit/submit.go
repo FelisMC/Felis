@@ -64,6 +64,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"regexp"
 	"strings"
 	"time"
@@ -379,6 +380,13 @@ type Manager struct {
 	// MaxStoredBytesTotal overrides the budget for every user's stored contexts
 	// together; 0 uses defaultMaxStoredBytesTotal.
 	MaxStoredBytesTotal int64
+	// Parts stages chunked uploads (UploadPart, CompleteUpload). Nil leaves only
+	// the single-request UploadContext, and the chunked calls return
+	// ErrUploadsUnavailable.
+	Parts *PartStore
+	// PartMaxBytes overrides the cap on one chunked-upload part; 0 uses
+	// DefaultPartMaxBytes.
+	PartMaxBytes int64
 
 	Now   func() time.Time
 	IDGen func() string
@@ -392,6 +400,13 @@ func (m *Manager) maxContextBytes() int64 {
 		return m.MaxContextBytes
 	}
 	return defaultMaxContextBytes
+}
+
+func (m *Manager) partMaxBytes() int64 {
+	if m.PartMaxBytes > 0 {
+		return m.PartMaxBytes
+	}
+	return DefaultPartMaxBytes
 }
 
 func (m *Manager) maxPendingPerUser() int {
@@ -575,17 +590,9 @@ func (m *Manager) UploadContext(ctx context.Context, id, submittedBy string, r i
 	if m.Blobs == nil {
 		return nil, ErrUploadsUnavailable
 	}
-
-	sub, err := m.Store.GetSubmission(ctx, id)
+	sub, err := m.ownPending(ctx, id, submittedBy)
 	if err != nil {
 		return nil, err
-	}
-	if sub.SubmittedBy != submittedBy {
-		// Not the owner: invisible, so the endpoint cannot confirm the id exists.
-		return nil, ErrNotFound
-	}
-	if sub.Status != StatusPendingReview {
-		return nil, ErrAlreadyReviewed
 	}
 
 	// Sniff the gzip magic before touching the store so a wrong-format upload fails
@@ -595,33 +602,9 @@ func (m *Manager) UploadContext(ctx context.Context, id, submittedBy string, r i
 		return nil, invalidf("build context must be a gzip-compressed tarball (.tar.gz)")
 	}
 
-	// Per-user storage budget: sum the bytes this user's OTHER submissions
-	// already hold (excluding this id, whose blob a re-upload supersedes) and cap
-	// the write at whatever remains. cappedReader trips on the first byte past
-	// the limit, so the store never persists a blob that would exceed the budget
-	// (it removes its temp file on the copy error) and the failure surfaces as a
-	// 403, not a 500. The read-then-write pair is not atomic in this package: a
-	// burst that reaches two api replicas (or any direct caller of the Manager)
-	// can overshoot by up to one blob per interleaved upload — each write still
-	// bounded by the single-blob cap — while the API's per-user upload
-	// reservation collapses the single-replica case.
-	used, total, err := m.storedBytes(ctx, submittedBy, id)
+	limit, over, err := m.uploadLimit(ctx, submittedBy, id)
 	if err != nil {
 		return nil, err
-	}
-	remaining, budgetErr := m.maxStoredBytesPerUser()-used, errStorageQuota
-	if left := m.maxStoredBytesTotal() - total; left < remaining {
-		remaining, budgetErr = left, fmt.Errorf("%w: every user's uploads together reached the %d-byte limit", ErrUploadsFull, m.maxStoredBytesTotal())
-	}
-	if remaining <= 0 {
-		return nil, budgetErr
-	}
-	limit, over := m.maxContextBytes(), errContextTooLarge
-	if remaining < limit {
-		// The budget binds before the single-blob cap: an upload tripping here is
-		// refused as a spent allowance (or a full store), never as a malformed
-		// request.
-		limit, over = remaining, budgetErr
 	}
 	// The upload's size is unknown until it ends, so the room check assumes the
 	// most it may write.
@@ -648,12 +631,174 @@ func (m *Manager) UploadContext(ctx context.Context, id, submittedBy string, r i
 	return sub, nil
 }
 
+// ownPending loads id for an upload by submittedBy: another user's submission is
+// ErrNotFound (the endpoint cannot confirm the id exists), a reviewed one
+// ErrAlreadyReviewed.
+func (m *Manager) ownPending(ctx context.Context, id, submittedBy string) (*Submission, error) {
+	sub, err := m.Store.GetSubmission(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if sub.SubmittedBy != submittedBy {
+		return nil, ErrNotFound
+	}
+	if sub.Status != StatusPendingReview {
+		return nil, ErrAlreadyReviewed
+	}
+	return sub, nil
+}
+
+// uploadLimit is how many bytes id's context may hold, and the error an upload
+// past it fails with. Per-user storage budget: sum the bytes this user's OTHER
+// submissions already hold (excluding this id, whose blob a re-upload
+// supersedes) and cap the write at whatever remains. cappedReader trips on the
+// first byte past the limit, so the store never persists a blob that would
+// exceed the budget (it removes its temp file on the copy error) and the failure
+// surfaces as a 403, not a 500. The read-then-write pair is not atomic in this
+// package: a burst that reaches two api replicas (or any direct caller of the
+// Manager) can overshoot by up to one blob per interleaved upload — each write
+// still bounded by the single-blob cap — while the API's per-user upload
+// reservation collapses the single-replica case.
+func (m *Manager) uploadLimit(ctx context.Context, submittedBy, id string) (int64, error, error) {
+	used, total, err := m.storedBytes(ctx, submittedBy, id)
+	if err != nil {
+		return 0, nil, err
+	}
+	remaining, budgetErr := m.maxStoredBytesPerUser()-used, errStorageQuota
+	if left := m.maxStoredBytesTotal() - total; left < remaining {
+		remaining, budgetErr = left, fmt.Errorf("%w: every user's uploads together reached the %d-byte limit", ErrUploadsFull, m.maxStoredBytesTotal())
+	}
+	if remaining <= 0 {
+		return 0, nil, budgetErr
+	}
+	limit, over := m.maxContextBytes(), errContextTooLarge
+	if remaining < limit {
+		// The budget binds before the single-blob cap: an upload tripping here is
+		// refused as a spent allowance (or a full store), never as a malformed
+		// request.
+		limit, over = remaining, budgetErr
+	}
+	return limit, over, nil
+}
+
+// UploadProgress is where a chunked upload stands: Received bytes are staged,
+// the next part starts there and carries at most PartMaxBytes, and the whole
+// context may reach MaxContextBytes.
+type UploadProgress struct {
+	Received        int64 `json:"received"`
+	PartMaxBytes    int64 `json:"part_max_bytes"`
+	MaxContextBytes int64 `json:"max_context_bytes"`
+}
+
+func (m *Manager) chunked(ctx context.Context, id, submittedBy string) error {
+	if strings.TrimSpace(submittedBy) == "" {
+		return invalidf("submitter identity is required")
+	}
+	if m.Blobs == nil || m.Parts == nil {
+		return ErrUploadsUnavailable
+	}
+	_, err := m.ownPending(ctx, id, submittedBy)
+	return err
+}
+
+// UploadStatus reports how far the caller's chunked upload of id has come, so a
+// client that lost its connection resumes where the staged bytes end. Nothing
+// staged reads as Received 0.
+func (m *Manager) UploadStatus(ctx context.Context, id, submittedBy string) (UploadProgress, error) {
+	if err := m.chunked(ctx, id, submittedBy); err != nil {
+		return UploadProgress{}, err
+	}
+	n, _, err := m.Parts.Size(id)
+	if err != nil {
+		return UploadProgress{}, err
+	}
+	return UploadProgress{Received: n, PartMaxBytes: m.partMaxBytes(), MaxContextBytes: m.maxContextBytes()}, nil
+}
+
+// UploadPart appends one part of the caller's chunked upload of id, starting at
+// offset: 0 starts over, anything else must equal what is staged
+// (*OffsetMismatchError otherwise). The first part must open with the gzip
+// magic. A part is capped at PartMaxBytes (ErrPartTooLarge), and the staged
+// total at the same limit UploadContext applies to a whole context, with the
+// same errors, so a chunked upload cannot stage more than a single request could
+// store. Nothing reaches Blobs until CompleteUpload.
+func (m *Manager) UploadPart(ctx context.Context, id, submittedBy string, offset int64, r io.Reader) (UploadProgress, error) {
+	if err := m.chunked(ctx, id, submittedBy); err != nil {
+		return UploadProgress{}, err
+	}
+	if offset < 0 {
+		return UploadProgress{}, invalidf("offset must not be negative")
+	}
+	br := bufio.NewReader(r)
+	if offset == 0 {
+		if magic, err := br.Peek(2); err != nil || magic[0] != 0x1f || magic[1] != 0x8b {
+			return UploadProgress{}, invalidf("build context must be a gzip-compressed tarball (.tar.gz)")
+		}
+	}
+	limit, over, err := m.uploadLimit(ctx, submittedBy, id)
+	if err != nil {
+		return UploadProgress{}, err
+	}
+	left, partOver := m.partMaxBytes(), error(ErrPartTooLarge)
+	if room := limit - offset; room <= left {
+		left, partOver = max(room, 0), over
+	}
+	if err := m.Parts.CheckRoom(left); err != nil {
+		return UploadProgress{}, err
+	}
+	n, err := m.Parts.Append(id, offset, &cappedReader{r: br, left: left, over: partOver})
+	if err != nil {
+		return UploadProgress{}, err
+	}
+	return UploadProgress{Received: n, PartMaxBytes: m.partMaxBytes(), MaxContextBytes: m.maxContextBytes()}, nil
+}
+
+// CompleteUpload stores the caller's staged upload of id as its build context,
+// through UploadContext, so it meets every check a single-request upload does
+// (format, size, budget, room) and records the digest the same way. The staged
+// bytes are deleted once stored; after a failure they stay, for a retry or a
+// fresh start at offset 0, until the reaper takes them.
+func (m *Manager) CompleteUpload(ctx context.Context, id, submittedBy string) (*Submission, error) {
+	if err := m.chunked(ctx, id, submittedBy); err != nil {
+		return nil, err
+	}
+	release, err := m.Parts.hold(id)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	f, err := m.Parts.open(id)
+	if err != nil {
+		return nil, err
+	}
+	sub, err := m.UploadContext(ctx, id, submittedBy, f)
+	f.Close()
+	if err != nil {
+		return nil, err
+	}
+	if err := m.Parts.Delete(id); err != nil {
+		// Stored and recorded; the leftover copy only waits for the reaper.
+		log.Printf("submit: %v", err)
+	}
+	return sub, nil
+}
+
+// ReapStaleParts deletes every staged upload untouched for longer than olderThan.
+func (m *Manager) ReapStaleParts(olderThan time.Duration) (int, error) {
+	if m.Parts == nil {
+		return 0, nil
+	}
+	return m.Parts.Reap(m.now().Add(-olderThan))
+}
+
 // storedBytes sums the stored-blob sizes of submittedBy's submissions (user) and
 // of everyone's (total), excluding excludeID — the submission a pending re-upload
 // is about to replace, whose bytes must not be counted twice. Sizes are read from
 // the blob store itself, the same source of truth uploads/approval consult, so
 // the sums cannot drift from what is actually occupying the volume (including
-// blobs uploaded before any budget existed).
+// blobs uploaded before any budget existed). A staged chunked upload counts as
+// well, so parts spread over several pending submissions cannot hold more than
+// the budget allows.
 func (m *Manager) storedBytes(ctx context.Context, submittedBy, excludeID string) (user, total int64, err error) {
 	subs, err := m.Store.ListSubmissions(ctx)
 	if err != nil {
@@ -663,12 +808,16 @@ func (m *Manager) storedBytes(ctx context.Context, submittedBy, excludeID string
 		if s.ID == excludeID {
 			continue
 		}
-		n, ok, err := m.Blobs.Size(ctx, s.ID)
+		n, _, err := m.Blobs.Size(ctx, s.ID)
 		if err != nil {
 			return 0, 0, err
 		}
-		if !ok {
-			continue
+		if m.Parts != nil {
+			staged, _, err := m.Parts.Size(s.ID)
+			if err != nil {
+				return 0, 0, err
+			}
+			n += staged
 		}
 		total += n
 		if s.SubmittedBy == submittedBy {
@@ -976,6 +1125,11 @@ func (m *Manager) Delete(ctx context.Context, id string) (*Submission, error) {
 // exactly what is left behind. A deployment with no upload transport (Blobs nil)
 // has no blobs to reap.
 func (m *Manager) deleteBlob(ctx context.Context, id string) error {
+	if m.Parts != nil {
+		if err := m.Parts.Delete(id); err != nil {
+			return fmt.Errorf("submit: submission removed, but its unfinished upload could not be deleted: %w", err)
+		}
+	}
 	if m.Blobs == nil {
 		return nil
 	}

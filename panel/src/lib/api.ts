@@ -6,6 +6,7 @@ import type {
   BanlistResult,
   Build,
   BuildScan,
+  ContextUploadProgress,
   CreateServerRequest,
   CreateUserRequest,
   FleetServer,
@@ -148,22 +149,34 @@ async function fetchOK(path: string, init: RequestInit): Promise<Response> {
   reportConnection(true);
   if (res.ok) return res;
 
+  let text = "";
+  try {
+    text = await res.text();
+  } catch {
+    /* the body broke off; the status still says what happened */
+  }
+  throw failed(path, res.status, res.statusText, text);
+}
+
+// failed turns a non-2xx answer into the ApiError the callers see and announces
+// the codes the app shell acts on.
+function failed(path: string, status: number, statusText: string, text: string): ApiError {
   let parsed: unknown = null;
   try {
-    parsed = JSON.parse(await res.text());
+    parsed = JSON.parse(text);
   } catch {
     /* no body, or not JSON: an ingress or tunnel answered */
   }
   const err: ApiError = isApiError(parsed)
-    ? { status: res.status, code: parsed.error.code, message: parsed.error.message }
+    ? { status, code: parsed.error.code, message: parsed.error.message }
     : {
-        status: res.status,
-        code: res.status >= 500 ? "upstream_unavailable" : "error",
-        message: res.statusText,
+        status,
+        code: status >= 500 ? "upstream_unavailable" : "error",
+        message: statusText,
       };
   announceSetupRequired(err);
   announceSessionExpired(err, path);
-  throw err;
+  return err;
 }
 
 // send returns a 2xx response's parsed JSON body (null for an empty one).
@@ -204,6 +217,63 @@ function requestRaw<T>(
   headers?: Record<string, string>,
 ): Promise<T> {
   return send<T>(path, { method, headers, body });
+}
+
+// sendWithProgress sends body by XMLHttpRequest, the one browser API that
+// reports how much of a request body has gone out (fetch has no upload
+// progress), and settles the way send does: the parsed 2xx body, or the same
+// ApiError fetchOK would throw. onProgress gets the bytes of body sent so far;
+// signal aborts the request with an AbortError.
+async function sendWithProgress<T>(
+  method: string,
+  path: string,
+  body: Blob,
+  opts: { onProgress?: (sent: number) => void; signal?: AbortSignal } = {},
+): Promise<T> {
+  const { apiBase } = await loadConfig();
+  const { onProgress, signal } = opts;
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const onAbort = () => xhr.abort();
+    const settle = () => signal?.removeEventListener("abort", onAbort);
+    xhr.open(method, `${apiBase}${path}`);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    if (onProgress) xhr.upload.onprogress = (e) => onProgress(e.loaded);
+    xhr.onabort = () => {
+      settle();
+      reject(new DOMException("The upload was cancelled", "AbortError"));
+    };
+    xhr.onerror = () => {
+      settle();
+      reportConnection(false);
+      reject(networkError(new Error("the upload did not reach the API")));
+    };
+    xhr.onload = () => {
+      settle();
+      reportConnection(true);
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(failed(path, xhr.status, xhr.statusText, xhr.responseText));
+        return;
+      }
+      try {
+        resolve((xhr.responseText ? JSON.parse(xhr.responseText) : null) as T);
+      } catch {
+        const err: ApiError = {
+          status: xhr.status,
+          code: "upstream_unavailable",
+          message: "the response was not JSON",
+        };
+        reject(err);
+      }
+    };
+    if (signal?.aborted) {
+      reject(new DOMException("The upload was cancelled", "AbortError"));
+      return;
+    }
+    signal?.addEventListener("abort", onAbort);
+    xhr.send(body);
+  });
 }
 
 // rejectingSync turns a synchronous throw inside an api method (urlPath refusing
@@ -746,6 +816,27 @@ export const api = rejectingSync({
       "Content-Type": "application/x-gzip",
     }),
 
+  // A chunked context upload (lib/contextUpload.ts drives it): ask where the
+  // staged upload stands, send each part at its byte offset, then store it.
+  getContextUpload: (id: string) =>
+    request<ContextUploadProgress>("GET", urlPath`/me/submissions/${id}/context/upload`),
+
+  putContextPart: (
+    id: string,
+    offset: number,
+    part: Blob,
+    opts?: { onProgress?: (sent: number) => void; signal?: AbortSignal },
+  ) =>
+    sendWithProgress<ContextUploadProgress>(
+      "PUT",
+      urlPath`/me/submissions/${id}/context/upload` + `?offset=${offset}`,
+      part,
+      opts,
+    ),
+
+  completeContextUpload: (id: string) =>
+    request<Submission>("POST", urlPath`/me/submissions/${id}/context/upload/complete`),
+
   // Retract the caller's own pending submission (and its uploaded context), which
   // frees their pending slot and storage budget. Reviewed submissions are frozen.
   withdrawSubmission: (id: string) => request<Submission>("DELETE", urlPath`/me/submissions/${id}`),
@@ -1031,6 +1122,14 @@ export function humanizeError(e: unknown): string {
       return t("submissions_unavailable");
     case "uploads_unavailable":
       return t("uploads_unavailable");
+    // Chunked uploads: the client resumes on these by itself, so they surface
+    // only once its retries run out.
+    case "upload_busy":
+      return t("upload_busy");
+    case "upload_offset_mismatch":
+      return t("upload_offset_mismatch");
+    case "part_too_large":
+      return t("part_too_large");
     case "backup_unavailable":
       return t("backup_unavailable");
     // Account migration + the re-auth steps it depends on: every refusal below is

@@ -616,6 +616,13 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// App-tier and owner-scoped (the id must belong to the principal), exactly
 		// like the create/list routes above.
 		{Method: "POST", Pattern: "/api/v1/me/submissions/{id}/context", h: a.handleUploadSubmissionContext},
+		// The chunked form of that upload, for a context larger than one request
+		// carries through the edge (Cloudflare refuses bodies over 100 MB): GET
+		// reports the staged length (the resume point), PUT ?offset= appends one
+		// part, POST .../complete stores the staged whole. Same owner scoping.
+		{Method: "GET", Pattern: "/api/v1/me/submissions/{id}/context/upload", h: a.handleContextUploadStatus},
+		{Method: "PUT", Pattern: "/api/v1/me/submissions/{id}/context/upload", h: a.handleContextUploadPart},
+		{Method: "POST", Pattern: "/api/v1/me/submissions/{id}/context/upload/complete", h: a.handleContextUploadComplete},
 		// Withdraw the caller's OWN pending submission: the row and its uploaded
 		// context are deleted, freeing the pending slot and storage budget. Same
 		// owner-scoping as the upload route — a reviewed submission is frozen (409)

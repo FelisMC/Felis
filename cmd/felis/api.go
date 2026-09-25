@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -229,6 +230,9 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		ContextBaseURL: internalAPIBaseURL(),
 		Blobs:          blobs,
 	}
+	if blobs != nil {
+		submissions.Parts = &submit.PartStore{Dir: uploadPartsDir(contextBase)}
+	}
 	if v := cfg.Registry.UserUploadsMaxBytes; v != "" {
 		if n, err := parseByteSize(v); err != nil || n <= 0 {
 			fmt.Fprintf(stderr, "felis api: [registry] user_uploads_max_bytes %q is not a positive size such as 4Gi; keeping the default\n", v)
@@ -237,7 +241,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if n, err := contextMaxBytes(cfg); err != nil {
-		fmt.Fprintf(stderr, "felis api: [registry] context_max_bytes %q is not a positive size such as 95Mi; keeping the default\n", cfg.Registry.ContextMaxBytes)
+		fmt.Fprintf(stderr, "felis api: [registry] context_max_bytes %q is not a positive size such as 512Mi; keeping the default\n", cfg.Registry.ContextMaxBytes)
 	} else {
 		submissions.MaxContextBytes = n
 	}
@@ -700,9 +704,10 @@ func settleRestoreChains(ctx context.Context, a *api.API, stderr io.Writer) {
 }
 
 // reapRejectedContexts deletes, once an hour, the uploaded contexts of
-// submissions rejected more than submit.RejectedContextRetention ago. Without it a
-// rejected modpack keeps its bytes on the uploads store (and against its
-// submitter's budget) until an admin deletes the row.
+// submissions rejected more than submit.RejectedContextRetention ago, and the
+// chunked uploads left untouched for submit.StalePartRetention. Without it a
+// rejected modpack or an abandoned upload keeps its bytes on the uploads store
+// (and against its submitter's budget) until an admin deletes the row.
 func reapRejectedContexts(ctx context.Context, m *submit.Manager, stderr io.Writer) {
 	t := time.NewTicker(time.Hour)
 	defer t.Stop()
@@ -713,6 +718,13 @@ func reapRejectedContexts(ctx context.Context, m *submit.Manager, stderr io.Writ
 		}
 		if n > 0 {
 			fmt.Fprintf(stderr, "felis api: deleted the uploaded contexts of %d rejected submission(s)\n", n)
+		}
+		n, err = m.ReapStaleParts(submit.StalePartRetention)
+		if err != nil {
+			fmt.Fprintf(stderr, "felis api: reap abandoned uploads: %v\n", err)
+		}
+		if n > 0 {
+			fmt.Fprintf(stderr, "felis api: deleted %d abandoned chunked upload(s)\n", n)
 		}
 		select {
 		case <-ctx.Done():
@@ -886,20 +898,26 @@ func startServerCache(ctx context.Context, cfg *rest.Config, scheme *runtime.Sch
 	return c, inf.HasSynced, nil
 }
 
-// cloudflareContextMaxBytes is the per-upload cap behind the Cloudflare edge,
-// which refuses request bodies over 100 MB (the Free and Pro plan limit) with
-// its own 413 page before they reach the API. 95Mi leaves headroom under it, so
-// an oversized context meets the API's own JSON refusal instead.
-const cloudflareContextMaxBytes = "95Mi"
+// uploadPartsDir is where chunked uploads are staged: beside a local store's
+// contexts, so the room check and the budget see one disk and a staged upload
+// survives an API restart; for an s3:// store, on the uploads volume the
+// platform mounts either way, or the pod's /tmp when run by hand without it.
+func uploadPartsDir(contextBase string) string {
+	if isLocalUploadsPath(contextBase) {
+		return filepath.Join(strings.TrimPrefix(contextBase, "file://"), ".parts")
+	}
+	if fi, err := os.Stat(platform.UploadsLocalPath); err == nil && fi.IsDir() {
+		return filepath.Join(platform.UploadsLocalPath, ".parts")
+	}
+	return filepath.Join(os.TempDir(), "felis-upload-parts")
+}
 
-// contextMaxBytes resolves [registry] context_max_bytes, defaulting to
-// cloudflareContextMaxBytes behind the Cloudflare edge. 0 keeps the submit
-// package's own default (1 GiB).
+// contextMaxBytes resolves [registry] context_max_bytes. 0 keeps the submit
+// package's own default (1 GiB). The Cloudflare edge refuses a single request
+// body over 100 MB, which the panel's chunked upload stays under, so the edge
+// does not lower the cap.
 func contextMaxBytes(cfg *config.Config) (int64, error) {
 	v := cfg.Registry.ContextMaxBytes
-	if v == "" && cfg.Auth.BehindCloudflare() {
-		v = cloudflareContextMaxBytes
-	}
 	if v == "" {
 		return 0, nil
 	}

@@ -183,6 +183,12 @@ const DAY_MS = 86_400_000;
 // stand-in archive so the review page's download and digest check have bytes.
 const contextBlobs = new Map<string, Buffer>();
 
+// Staged chunked uploads by submission id, and the caps the mock reports. The
+// part cap is small so a modest test file already goes up in several parts.
+const stagedParts = new Map<string, Buffer>();
+const MOCK_PART_MAX = 256 * 1024;
+const MOCK_CONTEXT_MAX = 1024 * 1024 * 1024;
+
 function contextBlob(id: string): Buffer {
   let blob = contextBlobs.get(id);
   if (!blob) {
@@ -1850,10 +1856,98 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
     return true;
   }
 
-  // GET /api/v1/me/submissions/limits — the Cloudflare-edge default.
+  // GET /api/v1/me/submissions/limits — the 1 GiB default.
   if (isMeSubmissions && is("GET", ctx) && ctx.parts.length === 5 && ctx.parts[4] === "limits") {
-    sendJSON(ctx.res, 200, { max_context_bytes: 95 * 1024 * 1024 });
+    sendJSON(ctx.res, 200, { max_context_bytes: MOCK_CONTEXT_MAX });
     return true;
+  }
+
+  // DELETE /api/v1/me/submissions/{id} — withdraw a still-pending submission
+  // with its context and any staged upload.
+  if (isMeSubmissions && is("DELETE", ctx) && ctx.parts.length === 5) {
+    const id = ctx.parts[4];
+    const idx = ctx.state.submissions.findIndex((s) => s.id === id && s.submitted_by === ctx.account.email);
+    if (idx < 0) {
+      sendError(ctx.res, 404, "not_found", "submission not found");
+      return true;
+    }
+    const sub = ctx.state.submissions[idx];
+    if (sub.status !== "pending_review") {
+      sendError(ctx.res, 409, "already_reviewed", "submission has already been reviewed");
+      return true;
+    }
+    ctx.state.submissions.splice(idx, 1);
+    contextBlobs.delete(id);
+    stagedParts.delete(id);
+    sendJSON(ctx.res, 200, sub);
+    return true;
+  }
+
+  // The chunked upload: GET/PUT /api/v1/me/submissions/{id}/context/upload and
+  // POST .../upload/complete. Parts are staged in memory the way PartStore
+  // stages them on disk: the staged length is the resume point.
+  if (isMeSubmissions && ctx.parts[5] === "context" && ctx.parts[6] === "upload") {
+    const id = ctx.parts[4];
+    const sub = ctx.state.submissions.find((s) => s.id === id && s.submitted_by === ctx.account.email);
+    if (!sub) {
+      sendError(ctx.res, 404, "not_found", "submission not found");
+      return true;
+    }
+    if (sub.status !== "pending_review") {
+      sendError(ctx.res, 409, "already_reviewed", "submission has already been reviewed");
+      return true;
+    }
+    const staged = stagedParts.get(id) ?? Buffer.alloc(0);
+    const progress = (received: number) => ({
+      received,
+      part_max_bytes: MOCK_PART_MAX,
+      max_context_bytes: MOCK_CONTEXT_MAX,
+    });
+    if (is("GET", ctx) && ctx.parts.length === 7) {
+      sendJSON(ctx.res, 200, progress(staged.length));
+      return true;
+    }
+    if (is("PUT", ctx) && ctx.parts.length === 7) {
+      const raw = new URL(ctx.req.url ?? "/", "http://localhost").searchParams.get("offset");
+      const offset = raw === null || !/^\d+$/.test(raw) ? NaN : Number(raw);
+      if (Number.isNaN(offset)) {
+        sendError(ctx.res, 400, "bad_request", "offset must be the byte position the part starts at");
+        return true;
+      }
+      if (offset !== 0 && offset !== staged.length) {
+        sendError(ctx.res, 409, "upload_offset_mismatch", `the upload holds ${staged.length} bytes; send the part that starts there`);
+        return true;
+      }
+      const chunks: Buffer[] = [];
+      for await (const chunk of ctx.req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      const part = Buffer.concat(chunks);
+      if (part.length > MOCK_PART_MAX) {
+        sendError(ctx.res, 413, "part_too_large", "an upload part exceeds the part size limit");
+        return true;
+      }
+      if (offset === 0 && (part[0] !== 0x1f || part[1] !== 0x8b)) {
+        sendError(ctx.res, 400, "bad_request", "context must be a gzip-compressed tarball");
+        return true;
+      }
+      const next = Buffer.concat([offset === 0 ? Buffer.alloc(0) : staged, part]);
+      stagedParts.set(id, next);
+      // A local network finishes a part at once; the pause lets the progress
+      // bar be seen and paused.
+      await new Promise((r) => setTimeout(r, 250));
+      sendJSON(ctx.res, 200, progress(next.length));
+      return true;
+    }
+    if (is("POST", ctx) && ctx.parts.length === 8 && ctx.parts[7] === "complete") {
+      if (!stagedParts.has(id)) {
+        sendError(ctx.res, 400, "bad_request", "no upload in progress for this submission; send its parts first");
+        return true;
+      }
+      contextBlobs.set(id, staged);
+      sub.context_sha256 = sha256Hex(staged);
+      stagedParts.delete(id);
+      sendJSON(ctx.res, 200, sub);
+      return true;
+    }
   }
   // POST /api/v1/me/submissions
   if (isMeSubmissions && is("POST", ctx) && ctx.parts.length === 4) {

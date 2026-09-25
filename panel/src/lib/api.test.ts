@@ -1073,6 +1073,172 @@ describe("session and connection signals", () => {
   });
 });
 
+// A part of a chunked context upload goes by XMLHttpRequest for its upload
+// progress; its outcomes must read exactly like a fetch call's.
+class FakeXHR {
+  static last: FakeXHR | undefined;
+  method = "";
+  url = "";
+  withCredentials = false;
+  headers: Record<string, string> = {};
+  body: unknown = undefined;
+  status = 0;
+  statusText = "";
+  responseText = "";
+  aborted = false;
+  upload: { onprogress: ((e: { loaded: number }) => void) | null } = { onprogress: null };
+  onload: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  onabort: (() => void) | null = null;
+  constructor() {
+    FakeXHR.last = this;
+  }
+  open(method: string, url: string) {
+    this.method = method;
+    this.url = url;
+  }
+  setRequestHeader(k: string, v: string) {
+    this.headers[k] = v;
+  }
+  send(body: unknown) {
+    this.body = body;
+  }
+  abort() {
+    this.aborted = true;
+    this.onabort?.();
+  }
+  respond(status: number, body: string, statusText = "") {
+    this.status = status;
+    this.statusText = statusText;
+    this.responseText = body;
+    this.onload?.();
+  }
+}
+
+async function sentXHR(): Promise<FakeXHR> {
+  await vi.waitFor(() => expect(FakeXHR.last?.body).toBeDefined());
+  return FakeXHR.last as FakeXHR;
+}
+
+describe("chunked context upload", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    FakeXHR.last = undefined;
+    vi.stubGlobal("XMLHttpRequest", FakeXHR);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  const progress = { received: 12, part_max_bytes: 33554432, max_context_bytes: 1073741824 };
+
+  it("getContextUpload GETs where the staged upload stands", async () => {
+    const fetchSpy = fakeFetch({ received: 4, part_max_bytes: 33554432, max_context_bytes: 1073741824 });
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.getContextUpload("sub-3")).toEqual({ received: 4, part_max_bytes: 33554432, max_context_bytes: 1073741824 });
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(String(url)).toBe("/me/submissions/sub-3/context/upload");
+    expect((opts as RequestInit).method).toBe("GET");
+  });
+
+  it("completeContextUpload POSTs to store the staged upload", async () => {
+    const sub = { id: "sub-3", display_name: "new submission", status: "pending_review" };
+    const fetchSpy = fakeFetch(sub);
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.completeContextUpload("sub-3")).toEqual(sub);
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(String(url)).toBe("/me/submissions/sub-3/context/upload/complete");
+    expect((opts as RequestInit).method).toBe("POST");
+  });
+
+  it("putContextPart PUTs the part at its offset with the session cookie and reports progress", async () => {
+    const part = new Blob(["abcd"]);
+    const seen: number[] = [];
+    const done = api.putContextPart("sub-3", 8, part, { onProgress: (n) => seen.push(n) });
+    const xhr = await sentXHR();
+    expect(xhr.method).toBe("PUT");
+    expect(xhr.url).toBe("/me/submissions/sub-3/context/upload?offset=8");
+    expect(xhr.withCredentials).toBe(true);
+    expect(xhr.headers).toEqual({ "Content-Type": "application/octet-stream" });
+    expect(xhr.body).toBe(part);
+    xhr.upload.onprogress?.({ loaded: 3 });
+    xhr.respond(200, JSON.stringify(progress));
+    expect(await done).toEqual({ received: 12, part_max_bytes: 33554432, max_context_bytes: 1073741824 });
+    expect(seen).toEqual([3]);
+  });
+
+  it("putContextPart refuses a route value that is not one path segment", async () => {
+    await expect(api.putContextPart("..", 0, new Blob(["x"]))).rejects.toMatchObject({ code: "bad_path_param" });
+    expect(FakeXHR.last).toBeUndefined();
+  });
+
+  it("an API refusal reads as its code and message", async () => {
+    const done = api.putContextPart("sub-3", 8, new Blob(["abcd"]));
+    (await sentXHR()).respond(
+      409,
+      JSON.stringify({ error: { code: "upload_offset_mismatch", message: "the upload holds 4 bytes; send the part that starts there" } }),
+      "Conflict",
+    );
+    await expect(done).rejects.toEqual({
+      status: 409,
+      code: "upload_offset_mismatch",
+      message: "the upload holds 4 bytes; send the part that starts there",
+    });
+  });
+
+  it("a tunnel page in place of the API reads as upstream_unavailable", async () => {
+    const done = api.putContextPart("sub-3", 0, new Blob(["abcd"]));
+    (await sentXHR()).respond(524, "<html>A timeout occurred</html>", "");
+    await expect(done).rejects.toEqual({ status: 524, code: "upstream_unavailable", message: "" });
+  });
+
+  it("a 2xx that is not JSON reads as upstream_unavailable", async () => {
+    const done = api.putContextPart("sub-3", 0, new Blob(["abcd"]));
+    (await sentXHR()).respond(200, "<html>", "OK");
+    await expect(done).rejects.toEqual({ status: 200, code: "upstream_unavailable", message: "the response was not JSON" });
+  });
+
+  it("an expired session is announced like any protected call", async () => {
+    const target = new EventTarget();
+    vi.stubGlobal("window", target);
+    const seen: string[] = [];
+    target.addEventListener(SESSION_EXPIRED_EVENT, () => seen.push("expired"));
+    const done = api.putContextPart("sub-3", 0, new Blob(["abcd"]));
+    (await sentXHR()).respond(401, JSON.stringify({ error: { code: "unauthorized", message: "sign in" } }));
+    await expect(done).rejects.toMatchObject({ status: 401, code: "unauthorized" });
+    expect(seen).toEqual(["expired"]);
+  });
+
+  it("no response at all is a network error that marks the connection lost, until one gets through", async () => {
+    const lost = api.putContextPart("sub-3", 0, new Blob(["abcd"]));
+    (await sentXHR()).onerror?.();
+    await expect(lost).rejects.toEqual({ status: 0, code: "network_error", message: "the upload did not reach the API" });
+    expect(isConnectionLost()).toBe(true);
+
+    FakeXHR.last = undefined;
+    const back = api.putContextPart("sub-3", 0, new Blob(["abcd"]));
+    (await sentXHR()).respond(200, JSON.stringify(progress));
+    await back;
+    expect(isConnectionLost()).toBe(false);
+  });
+
+  it("pausing aborts the request in flight", async () => {
+    const controller = new AbortController();
+    const done = api.putContextPart("sub-3", 0, new Blob(["abcd"]), { signal: controller.signal });
+    const xhr = await sentXHR();
+    controller.abort();
+    expect(xhr.aborted).toBe(true);
+    await expect(done).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("a signal already paused sends nothing", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      api.putContextPart("sub-3", 0, new Blob(["abcd"]), { signal: controller.signal }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(FakeXHR.last?.body).toBeUndefined();
+  });
+});
+
 // The API's generic codes carry an English developer message ("user not found",
 // "invalid request"); the panel words them itself so a Chinese UI never shows it.
 describe("copy for the generic server codes", () => {

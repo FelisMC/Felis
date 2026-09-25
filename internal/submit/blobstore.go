@@ -58,16 +58,21 @@ const DefaultUploadsMinFree = 0.10
 // CheckRoom refuses an upload of up to need bytes that could push Base's
 // filesystem below its free floor.
 func (s *LocalContextStore) CheckRoom(need int64) error {
+	return checkRoom(s.Base, need, s.MinFree)
+}
+
+// checkRoom refuses need more bytes under dir when they could push its filesystem
+// below the minFree share (DefaultUploadsMinFree when 0), wrapping ErrUploadsFull.
+func checkRoom(dir string, need int64, minFree float64) error {
 	var st syscall.Statfs_t
-	if err := syscall.Statfs(s.Base, &st); err != nil {
-		return fmt.Errorf("submit: measure the uploads store %s: %w", s.Base, err)
+	if err := syscall.Statfs(dir, &st); err != nil {
+		return fmt.Errorf("submit: measure the uploads store %s: %w", dir, err)
 	}
 	bsize := uint64(st.Bsize) // uint32 on darwin
 	total, avail := uint64(st.Blocks)*bsize, uint64(st.Bavail)*bsize
 	if total == 0 {
 		return nil
 	}
-	minFree := s.MinFree
 	if minFree <= 0 {
 		minFree = DefaultUploadsMinFree
 	}

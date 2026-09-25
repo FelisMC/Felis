@@ -378,6 +378,15 @@ export interface Submission {
   context_sha256?: string;
 }
 
+/** ContextUploadProgress is where a chunked context upload stands: received is
+ *  how many bytes the server holds (the next part starts there), part_max_bytes
+ *  caps one part, max_context_bytes caps the whole context. */
+export interface ContextUploadProgress {
+  received: number;
+  part_max_bytes: number;
+  max_context_bytes: number;
+}
+
 /** SubmissionListParams picks one page of a submission list (server-side filter
  *  and paging; the scope is the endpoint, never a parameter). */
 export interface SubmissionListParams {

@@ -1856,7 +1856,7 @@ export interface paths {
         };
         /**
          * The per-upload build-context cap
-         * @description The effective [registry] context_max_bytes: 1 GiB by default, 95 MiB behind the Cloudflare edge (its proxy refuses bodies over 100 MB before they reach the API). The panel checks a file against it before upload.
+         * @description The effective [registry] context_max_bytes, 1 GiB by default. The panel checks a file against it before upload and sends the file through the chunked upload (/api/v1/me/submissions/{id}/context/upload), so the cap holds behind the Cloudflare edge too, whose proxy refuses a single body over 100 MB.
          */
         get: operations["submissionLimits"];
         put?: never;
@@ -1878,9 +1878,53 @@ export interface paths {
         put?: never;
         /**
          * Upload the modpack build context for your own pending submission (user side; user-directed lane over §16).
-         * @description The request body IS the raw gzip build context (context.tar.gz) — not JSON, not multipart — streamed to the platform-derived, id-namespaced location Kaniko reads via --context. The submitter is taken from the principal; a submission the caller does not own is reported as 404, so this endpoint cannot upload to or probe another user's submission. Only a pending_review submission accepts a context (409 otherwise); a wrong-format or oversize body is rejected with 400 (the per-upload cap is [registry] context_max_bytes: 1 GiB by default and 95 MiB behind the Cloudflare edge, whose proxy refuses bodies over 100 MB with its own HTML 413 before they reach the API; GET /api/v1/me/submissions/limits reports the effective cap so a client can check a file before sending it), and an upload that would push the caller past their per-user stored-context budget is refused with 403 before the excess is persisted. Returns 503 when the deployment's context store has no implemented upload transport.
+         * @description The request body IS the raw gzip build context (context.tar.gz) — not JSON, not multipart — streamed to the platform-derived, id-namespaced location Kaniko reads via --context. The submitter is taken from the principal; a submission the caller does not own is reported as 404, so this endpoint cannot upload to or probe another user's submission. Only a pending_review submission accepts a context (409 otherwise); a wrong-format or oversize body is rejected with 400 (the per-upload cap is [registry] context_max_bytes, 1 GiB by default; GET /api/v1/me/submissions/limits reports it so a client can check a file before sending it). This request carries the whole context, so behind the Cloudflare edge, whose proxy refuses bodies over 100 MB with its own HTML 413 before they reach the API, a larger context goes through the chunked upload at /api/v1/me/submissions/{id}/context/upload instead. An upload that would push the caller past their per-user stored-context budget is refused with 403 before the excess is persisted. Returns 503 when the deployment's context store has no implemented upload transport.
          */
         post: operations["uploadSubmissionContext"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/submissions/{id}/context/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Where your chunked context upload stands (the resume point).
+         * @description The chunked form of POST /api/v1/me/submissions/{id}/context, for a context larger than one request carries through the edge. received is how many bytes are staged: the next part starts there. A client reads it before the first part and again after a failed one. Nothing staged reads as 0. Same owner scoping as the single upload (404 for another user's submission, 409 once reviewed).
+         */
+        get: operations["getContextUpload"];
+        /**
+         * Append one part of your chunked context upload.
+         * @description The body is the part's raw bytes, at most part_max_bytes (32 MiB). offset is where they start: 0 starts the upload over, and anything else must equal the staged length, or the answer is 409 upload_offset_mismatch and the client reads GET for where to resume. The first part must open with the gzip magic (400). The staged total meets the same context cap (400) and storage budget (403) as a single upload. A part that breaks off is cut back off, so the staged bytes are always a prefix of the file. One request per upload at a time (409 upload_busy). Staged bytes untouched for 24 hours are deleted.
+         */
+        put: operations["putContextUploadPart"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/submissions/{id}/context/upload/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Store your staged chunked upload as the submission's build context.
+         * @description Runs every check of POST /api/v1/me/submissions/{id}/context on the staged bytes (format, cap, budget, room), records the digest the same way, and deletes the staged copy. Holds the same per-user upload cooldown (429) and writes the same submission.upload audit event. Nothing staged is 400. After a failure the staged bytes stay, for a retry.
+         */
+        post: operations["completeContextUpload"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2461,6 +2505,23 @@ export interface components {
             enabled: boolean;
             /** Format: date-time */
             added_at: string;
+        };
+        ContextUploadProgress: {
+            /**
+             * Format: int64
+             * @description Bytes staged so far; the next part starts here.
+             */
+            received: number;
+            /**
+             * Format: int64
+             * @description The most one part may carry.
+             */
+            part_max_bytes: number;
+            /**
+             * Format: int64
+             * @description The most the whole context may reach ([registry] context_max_bytes).
+             */
+            max_context_bytes: number;
         };
         /** @description One user-submitted modpack in the approval lane (internal/submit Submission — a user-directed extension over the §16 build subsystem). The user supplies only display_name; submitted_by comes from the principal and context_ref/image_ref/build_id/reviewed_by are platform-controlled, never client input. */
         Submission: {
@@ -7416,6 +7477,131 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             /** @description The upload would exceed the caller's per-user stored-context budget (submission_quota_exceeded). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            /** @description An upload was accepted within the per-user cooldown window (submission_cooldown). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    getContextUpload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The staged length and the limits a part and the whole must keep. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContextUploadProgress"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    putContextUploadPart: {
+        parameters: {
+            query: {
+                offset: number;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description The part is staged; received is the new length. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ContextUploadProgress"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            /** @description The staged total would exceed the caller's per-user stored-context budget (submission_quota_exceeded). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            /** @description The part is larger than part_max_bytes (part_too_large). */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+            /** @description The uploads store is full (uploads_full). */
+            507: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    completeContextUpload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Context stored; the submission (unchanged) is returned. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Submission"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            /** @description The context would exceed the caller's per-user stored-context budget (submission_quota_exceeded). */
             403: {
                 headers: {
                     [name: string]: unknown;

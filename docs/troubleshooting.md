@@ -606,7 +606,7 @@ build_user_namespaces = "auto"     # §8f: auto | on | off
 build_runtime_class = ""           # §8f: e.g. "gvisor"
 max_concurrent_builds = 2          # §8f: 1-6; later builds queue
 user_uploads_max_bytes = "4Gi"     # every user's uploaded contexts together; 507 uploads_full past it
-context_max_bytes = "95Mi"         # one uploaded context; empty = 1Gi, or 95Mi behind Cloudflare (edge caps bodies at 100 MB)
+context_max_bytes = "1Gi"          # one uploaded context; empty = 1Gi (sent in 32 MiB parts, so the Cloudflare edge's 100 MB body cap does not bind)
 ```
 
 Put them in **both** `/etc/felis/felis.host.toml` (host-side CLI) and
@@ -749,9 +749,14 @@ control namespace (or `--registry-namespace`):
   (`FELIS_UPLOADS_STORAGE`, 5Gi) and the world-archive PVC
   (`FELIS_BACKUP_STORAGE`, 10Gi) work the same way; re-running the installer
   keeps an existing claim's size and warns when the variable asks for another.
-  One uploaded context is capped by `context_max_bytes` (1Gi, or 95Mi behind
-  the Cloudflare edge, whose proxy answers its own 413 page for bodies over
-  100 MB; the panel checks the file against it before uploading).
+  One uploaded context is capped by `context_max_bytes` (1Gi; the panel checks
+  the file against it before uploading). The panel sends a context in parts of
+  at most 32 MiB, staged under `.parts/` on the uploads volume, so the
+  Cloudflare edge, which answers its own 413 page for request bodies over
+  100 MB, never sees a body that large; a dropped connection resumes from the
+  staged length, and a staged upload untouched for 24 hours is deleted. The
+  staged bytes count toward the budgets below. A script can still POST a whole
+  context in one body, which the edge caps at 100 MB.
   Uploaded build contexts are bounded by `user_uploads_max_bytes` (4Gi for all
   users together, §8e), 2 GiB per user, and 10% free space on the volume; past
   any of them an upload answers `507 uploads_full` or `403 submission_quota_exceeded`. A

@@ -36,6 +36,14 @@ type SubmissionService interface {
 	// submission at the platform-derived context ref. submittedBy is the principal,
 	// never the body, so a user can only upload to a submission they own.
 	UploadContext(ctx context.Context, id, submittedBy string, r io.Reader) (*submit.Submission, error)
+	// UploadStatus, UploadPart and CompleteUpload are the chunked form of
+	// UploadContext, for a context larger than one request carries through the
+	// edge (Cloudflare refuses bodies over 100 MB): parts are staged in order, the
+	// staged length is the resume point, and completion stores the whole through
+	// UploadContext's checks. Same owner scoping.
+	UploadStatus(ctx context.Context, id, submittedBy string) (submit.UploadProgress, error)
+	UploadPart(ctx context.Context, id, submittedBy string, offset int64, r io.Reader) (submit.UploadProgress, error)
+	CompleteUpload(ctx context.Context, id, submittedBy string) (*submit.Submission, error)
 	// ListBy returns one page of one user's submissions, newest first (the "my
 	// uploads" view). The scope is submittedBy, whatever opts says.
 	ListBy(ctx context.Context, submittedBy string, opts submit.ListOpts) (submit.Page, error)
@@ -173,26 +181,105 @@ func (a *API) handleUploadSubmissionContext(w http.ResponseWriter, r *http.Reque
 	// yields exactly one admitted stream per replica. The rollback keeps a failed
 	// upload (aborted transfer, wrong format, spent quota) from burning the
 	// window, so a legit retry after a genuine failure is not punished.
-	lim := a.submitLimiter()
-	reservedAt, ok := lim.reserve(submissionUploadKey+p.UserID, a.SubmitUploadCooldown)
+	commit, release, ok := a.reserveUpload(w, r, p.UserID)
 	if !ok {
-		writeError(w, r, newError(http.StatusTooManyRequests, "submission_cooldown",
-			"an upload was accepted recently; wait a moment before uploading again"))
 		return
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			lim.release(submissionUploadKey+p.UserID, reservedAt)
-		}
-	}()
+	defer release()
 	id := r.PathValue("id")
 	sub, err := a.Submissions.UploadContext(r.Context(), id, p.UserID, r.Body)
 	if err != nil {
 		writeSubmitError(w, r, err)
 		return
 	}
-	committed = true
+	commit()
+	a.audit(r, "submission.upload", sub.ID)
+	writeJSON(w, http.StatusOK, sub)
+}
+
+// reserveUpload claims the per-user upload cooldown for userID, answering 429
+// when an upload landed within it. commit keeps the reservation; release, run
+// deferred, gives it back unless commit ran.
+func (a *API) reserveUpload(w http.ResponseWriter, r *http.Request, userID string) (commit, release func(), ok bool) {
+	lim := a.submitLimiter()
+	reservedAt, ok := lim.reserve(submissionUploadKey+userID, a.SubmitUploadCooldown)
+	if !ok {
+		writeError(w, r, newError(http.StatusTooManyRequests, "submission_cooldown",
+			"an upload was accepted recently; wait a moment before uploading again"))
+		return nil, nil, false
+	}
+	committed := false
+	return func() { committed = true }, func() {
+		if !committed {
+			lim.release(submissionUploadKey+userID, reservedAt)
+		}
+	}, true
+}
+
+// handleContextUploadStatus reports how far the caller's chunked upload of a
+// submission has come (app-tier, owner-scoped like the single upload). The
+// panel reads it before the first part and again after a failed one, and sends
+// the next part from received.
+func (a *API) handleContextUploadStatus(w http.ResponseWriter, r *http.Request) {
+	if a.Submissions == nil {
+		writeError(w, r, errSubmissionsUnavailable)
+		return
+	}
+	p := principalFromContext(r.Context())
+	prog, err := a.Submissions.UploadStatus(r.Context(), r.PathValue("id"), p.UserID)
+	if err != nil {
+		writeSubmitError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, prog)
+}
+
+// handleContextUploadPart appends one part of the caller's chunked upload. The
+// body is the raw bytes; ?offset= is where they start: 0 starts over, anything
+// else must equal the staged length (409 upload_offset_mismatch otherwise). A
+// part is small enough for any edge, so no cooldown applies here: the staged
+// total is bounded by the context cap and the storage budget, and completion
+// holds the cooldown.
+func (a *API) handleContextUploadPart(w http.ResponseWriter, r *http.Request) {
+	if a.Submissions == nil {
+		writeError(w, r, errSubmissionsUnavailable)
+		return
+	}
+	offset, err := strconv.ParseInt(r.URL.Query().Get("offset"), 10, 64)
+	if err != nil {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
+			"offset must be the byte position the part starts at"))
+		return
+	}
+	p := principalFromContext(r.Context())
+	prog, err := a.Submissions.UploadPart(r.Context(), r.PathValue("id"), p.UserID, offset, r.Body)
+	if err != nil {
+		writeSubmitError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, prog)
+}
+
+// handleContextUploadComplete stores the caller's staged upload as the
+// submission's context. It holds the per-user upload cooldown and is audited
+// like the single upload, since this is where a context lands.
+func (a *API) handleContextUploadComplete(w http.ResponseWriter, r *http.Request) {
+	if a.Submissions == nil {
+		writeError(w, r, errSubmissionsUnavailable)
+		return
+	}
+	p := principalFromContext(r.Context())
+	commit, release, ok := a.reserveUpload(w, r, p.UserID)
+	if !ok {
+		return
+	}
+	defer release()
+	sub, err := a.Submissions.CompleteUpload(r.Context(), r.PathValue("id"), p.UserID)
+	if err != nil {
+		writeSubmitError(w, r, err)
+		return
+	}
+	commit()
 	a.audit(r, "submission.upload", sub.ID)
 	writeJSON(w, http.StatusOK, sub)
 }
@@ -431,6 +518,7 @@ var errSubmissionsUnavailable = newError(http.StatusServiceUnavailable, "submiss
 // server-side fault that collapses to 500 via writeError. The lane deliberately
 // does not surface those as 4xx: the client did nothing wrong.
 func writeSubmitError(w http.ResponseWriter, r *http.Request, err error) {
+	var mismatch *submit.OffsetMismatchError
 	switch {
 	case errors.Is(err, submit.ErrInvalid):
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "%s", err.Error()))
@@ -453,6 +541,15 @@ func writeSubmitError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, submit.ErrUploadsUnavailable):
 		writeError(w, r, newError(http.StatusServiceUnavailable, "uploads_unavailable",
 			"modpack upload transport is not configured"))
+	case errors.Is(err, submit.ErrUploadBusy):
+		writeError(w, r, newError(http.StatusConflict, "upload_busy",
+			"another request is still writing this upload; read where it stands and continue from there"))
+	case errors.As(err, &mismatch):
+		writeError(w, r, newError(http.StatusConflict, "upload_offset_mismatch",
+			"the upload holds %d bytes; send the part that starts there", mismatch.Received))
+	case errors.Is(err, submit.ErrPartTooLarge):
+		writeError(w, r, newError(http.StatusRequestEntityTooLarge, "part_too_large",
+			"the part is larger than part_max_bytes in the upload status"))
 	default:
 		writeError(w, r, err)
 	}

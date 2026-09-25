@@ -43,6 +43,7 @@ export type WireParity = [
   Holds<Parity<T.ScanFinding, S["ScanFinding"]>>,
   Holds<Parity<T.WhitelistImage, S["Image"]>>,
   Holds<Parity<T.Submission, S["Submission"]>>,
+  Holds<Parity<T.ContextUploadProgress, S["ContextUploadProgress"]>>,
   Holds<Parity<T.UserView, S["UserView"]>>,
   Holds<Parity<T.UserDetail, S["UserDetail"]>>,
   Holds<Parity<T.QuotaView, S["QuotaView"]>>,

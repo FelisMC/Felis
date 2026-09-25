@@ -40,9 +40,15 @@
   "field_context_sha256": "Context SHA-256",
   "field_context_sha256_hint": "The digest of the file the platform received; compare it with sha256sum of your local file. Approval binds exactly this content.",
   "clear_btn": "Clear",
-  "file_hint": "Supports .tar.gz (max 1GB)",
+  "file_hint": "Supports .tar.gz, up to {{limit}}",
   "withdraw_btn": "Withdraw",
   "withdraw_hint": "Withdrawing deletes this submission and its uploaded context, freeing your pending slot and storage budget.",
   "withdraw_confirm": "Withdraw",
-  "withdraw_cancel": "Cancel"
+  "withdraw_cancel": "Cancel",
+  "upload_progress_label": "Upload progress",
+  "upload_progress": "{{sent}} of {{total}}",
+  "pause_btn": "Pause",
+  "resume_btn": "Continue upload",
+  "resume_hint": "“{{name}}” is saved and {{sent}} of its build context is on the server. Submit again to continue from there.",
+  "restart_hint": "“{{name}}” is saved. The file you picked uploads from the start."
 }

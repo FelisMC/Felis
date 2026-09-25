@@ -704,6 +704,22 @@ components:
         enabled: { type: boolean }
         added_at: { type: string, format: date-time }
 
+    ContextUploadProgress:
+      type: object
+      required: [received, part_max_bytes, max_context_bytes]
+      properties:
+        received:
+          type: integer
+          format: int64
+          description: Bytes staged so far; the next part starts here.
+        part_max_bytes:
+          type: integer
+          format: int64
+          description: The most one part may carry.
+        max_context_bytes:
+          type: integer
+          format: int64
+          description: The most the whole context may reach ([registry] context_max_bytes).
     Submission:
       type: object
       description: >-
@@ -5448,9 +5464,11 @@ paths:
       security: [{ sessionCookie: [] }]
       summary: The per-upload build-context cap
       description: >-
-        The effective [registry] context_max_bytes: 1 GiB by default, 95 MiB
-        behind the Cloudflare edge (its proxy refuses bodies over 100 MB before
-        they reach the API). The panel checks a file against it before upload.
+        The effective [registry] context_max_bytes, 1 GiB by default. The
+        panel checks a file against it before upload and sends the file through
+        the chunked upload (/api/v1/me/submissions/{id}/context/upload), so the
+        cap holds behind the Cloudflare edge too, whose proxy refuses a single
+        body over 100 MB.
       responses:
         '200':
           description: The cap.
@@ -5477,10 +5495,12 @@ paths:
         this endpoint cannot upload to or probe another user's submission. Only a
         pending_review submission accepts a context (409 otherwise); a wrong-format
         or oversize body is rejected with 400 (the per-upload cap is [registry]
-        context_max_bytes: 1 GiB by default and 95 MiB behind the Cloudflare
-        edge, whose proxy refuses bodies over 100 MB with its own HTML 413
-        before they reach the API; GET /api/v1/me/submissions/limits reports
-        the effective cap so a client can check a file before sending it), and an upload that would push the
+        context_max_bytes, 1 GiB by default; GET /api/v1/me/submissions/limits
+        reports it so a client can check a file before sending it). This
+        request carries the whole context, so behind the Cloudflare edge, whose
+        proxy refuses bodies over 100 MB with its own HTML 413 before they reach
+        the API, a larger context goes through the chunked upload at
+        /api/v1/me/submissions/{id}/context/upload instead. An upload that would push the
         caller past their per-user stored-context budget is refused with 403
         before the excess is persisted. Returns 503 when the deployment's context
         store has no implemented upload transport.
@@ -5507,6 +5527,135 @@ paths:
         '403':
           description: >-
             The upload would exceed the caller's per-user stored-context budget
+            (submission_quota_exceeded).
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          description: >-
+            An upload was accepted within the per-user cooldown window
+            (submission_cooldown).
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/me/submissions/{id}/context/upload:
+    get:
+      tags: [submissions]
+      operationId: getContextUpload
+      summary: Where your chunked context upload stands (the resume point).
+      description: >-
+        The chunked form of POST /api/v1/me/submissions/{id}/context, for a
+        context larger than one request carries through the edge. received is
+        how many bytes are staged: the next part starts there. A client reads it
+        before the first part and again after a failed one. Nothing staged reads
+        as 0. Same owner scoping as the single upload (404 for another user's
+        submission, 409 once reviewed).
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The staged length and the limits a part and the whole must keep.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContextUploadProgress' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    put:
+      tags: [submissions]
+      operationId: putContextUploadPart
+      summary: Append one part of your chunked context upload.
+      description: >-
+        The body is the part's raw bytes, at most part_max_bytes (32 MiB).
+        offset is where they start: 0 starts the upload over, and anything else
+        must equal the staged length, or the answer is 409
+        upload_offset_mismatch and the client reads GET for where to resume. The
+        first part must open with the gzip magic (400). The staged total meets
+        the same context cap (400) and storage budget (403) as a single upload.
+        A part that breaks off is cut back off, so the staged bytes are always a
+        prefix of the file. One request per upload at a time (409 upload_busy).
+        Staged bytes untouched for 24 hours are deleted.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - { name: offset, in: query, required: true, schema: { type: integer, format: int64, minimum: 0 } }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        '200':
+          description: The part is staged; received is the new length.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ContextUploadProgress' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: >-
+            The staged total would exceed the caller's per-user stored-context
+            budget (submission_quota_exceeded).
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          description: The part is larger than part_max_bytes (part_too_large).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '507':
+          description: The uploads store is full (uploads_full).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/me/submissions/{id}/context/upload/complete:
+    post:
+      tags: [submissions]
+      operationId: completeContextUpload
+      summary: Store your staged chunked upload as the submission's build context.
+      description: >-
+        Runs every check of POST /api/v1/me/submissions/{id}/context on the
+        staged bytes (format, cap, budget, room), records the digest the same
+        way, and deletes the staged copy. Holds the same per-user upload
+        cooldown (429) and writes the same submission.upload audit event.
+        Nothing staged is 400. After a failure the staged bytes stay, for a
+        retry.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Context stored; the submission (unchanged) is returned.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Submission' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: >-
+            The context would exceed the caller's per-user stored-context budget
             (submission_quota_exceeded).
         '404':
           $ref: '#/components/responses/NotFound'
