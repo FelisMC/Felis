@@ -1,10 +1,12 @@
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ArrowDown, RotateCw, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useLogStream } from "@/lib/useLogStream";
-import type { LogLevel, StreamStatus } from "@/lib/logstream";
+import { chunkLines, sameChunk } from "@/lib/logchunks";
+import type { LogLevel, LogLine, StreamStatus } from "@/lib/logstream";
+import type { Segment } from "@/lib/mcformat";
 
 // Per-level tint. Plain/info are the default readable foreground; warn/error draw
 // the eye. Debug is dimmed so it recedes. The console body is a fixed dark
@@ -18,6 +20,37 @@ const LEVEL_CLASS: Record<LogLevel, string> = {
 };
 
 const PIN_THRESHOLD_PX = 24;
+
+function segmentStyle(s: Segment): CSSProperties | undefined {
+  const decoration = [s.underline && "underline", s.strike && "line-through"].filter(Boolean).join(" ");
+  if (!s.color && !s.bold && !s.italic && !decoration) return undefined;
+  return {
+    color: s.color,
+    fontWeight: s.bold ? 700 : undefined,
+    fontStyle: s.italic ? "italic" : undefined,
+    textDecorationLine: decoration || undefined,
+  };
+}
+
+// A chunk off screen is sized from its last layout, or before it has had one,
+// from 100 unwrapped lines of text-xs at leading-relaxed (19.5px each).
+const LogChunk = memo(function LogChunk({ lines }: { lines: LogLine[] }) {
+  return (
+    <div className="[content-visibility:auto] [contain-intrinsic-size:auto_1950px]">
+      {lines.map((line) => (
+        <div key={line.seq} className={cn("whitespace-pre-wrap break-all", LEVEL_CLASS[line.level])}>
+          {line.segments
+            ? line.segments.map((s, i) => (
+                <span key={i} style={segmentStyle(s)}>
+                  {s.text}
+                </span>
+              ))
+            : line.text || "\u00A0"}
+        </div>
+      ))}
+    </div>
+  );
+}, sameChunk);
 
 function StatusIndicator({ status }: { status: StreamStatus }) {
   const { t } = useTranslation("servers");
@@ -45,11 +78,13 @@ function StatusIndicator({ status }: { status: StreamStatus }) {
  *
  * UX follows modern log viewers: it follows the tail, but if you scroll up to
  * read history it stops yanking you down and offers a "Jump to latest" pill;
- * scrolling back to the bottom re-pins. The buffer is bounded by the controller.
+ * scrolling back to the bottom re-pins. The buffer is bounded by the controller,
+ * which also batches lines to one update per frame.
  */
 export function LogConsole({ url, className }: { url: string; className?: string }) {
   const { t } = useTranslation("servers");
   const { lines, status, clear, reconnect } = useLogStream(url);
+  const chunks = useMemo(() => chunkLines(lines), [lines]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pinned, setPinned] = useState(true);
 
@@ -113,11 +148,7 @@ export function LogConsole({ url, className }: { url: string; className?: string
                 : t("log_waiting")}
             </p>
           ) : (
-            lines.map((line) => (
-              <div key={line.seq} className={cn("whitespace-pre-wrap break-all", LEVEL_CLASS[line.level])}>
-                {line.text || "\u00A0"}
-              </div>
-            ))
+            chunks.map((chunk) => <LogChunk key={chunk.key} lines={chunk.lines} />)
           )}
         </div>
 

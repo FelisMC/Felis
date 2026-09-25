@@ -1629,6 +1629,10 @@ function streamBuildLogs(
     Connection: "keep-alive",
   });
   res.write(": connected\n\n");
+  // A modpack boot floods the console; the burst exercises the frame batching.
+  for (let n = 0; n < 400; n++) {
+    res.write(`data: [11:59:59] [main/INFO]: Loading mod ${n + 1}/400 (mock-mod-${n})\n\n`);
+  }
 
   const timer = setInterval(() => {
     if (i < lines.length) {
@@ -2129,6 +2133,8 @@ function streamConsole(
     "[12:00:02] [Server thread/WARN]: Mock world uses in-memory state only",
     "[12:00:03] [Server thread/INFO]: Preparing spawn area: 100%",
     "[12:00:04] [Server thread/INFO]: Done (4.123s)! For help, type \"help\"",
+    "[12:00:05] [Server thread/INFO]: [Essentials] §aReady§r — §6§lwelcome§r to §x§5§5§c§c§f§fFelis",
+    "[12:00:06] [Server thread/WARN]: \x1b[33mTPS dropped to 18.2\x1b[0m",
   ];
   let i = 0;
 
@@ -2138,6 +2144,10 @@ function streamConsole(
     Connection: "keep-alive",
   });
   res.write(": connected\n\n");
+  // A modpack boot floods the console; the burst exercises the frame batching.
+  for (let n = 0; n < 400; n++) {
+    res.write(`data: [11:59:59] [main/INFO]: Loading mod ${n + 1}/400 (mock-mod-${n})\n\n`);
+  }
 
   const timer = setInterval(() => {
     res.write(`data: ${lines[i % lines.length]}\n\n`);

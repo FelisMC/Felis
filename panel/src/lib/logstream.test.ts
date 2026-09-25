@@ -4,6 +4,7 @@ import {
   classifyLogLine,
   type EventSourceFactory,
   type EventSourceLike,
+  type FrameScheduler,
 } from "./logstream";
 
 // FakeEventSource drives the controller without a browser: Node has no
@@ -50,14 +51,34 @@ class FakeEventSource implements EventSourceLike {
   }
 }
 
-function makeFactory(): { factory: EventSourceFactory; created: FakeEventSource[] } {
+// ManualFrames stands in for requestAnimationFrame: queued callbacks run only
+// when the test says a frame has passed.
+class ManualFrames {
+  private queue: Array<() => void> = [];
+  schedule: FrameScheduler = (cb) => {
+    this.queue.push(cb);
+    return () => {
+      this.queue = this.queue.filter((f) => f !== cb);
+    };
+  };
+  get queued(): number {
+    return this.queue.length;
+  }
+  run(): void {
+    const due = this.queue;
+    this.queue = [];
+    due.forEach((f) => f());
+  }
+}
+
+function makeFactory(): { factory: EventSourceFactory; created: FakeEventSource[]; frames: ManualFrames } {
   const created: FakeEventSource[] = [];
   const factory: EventSourceFactory = (url) => {
     const es = new FakeEventSource(url);
     created.push(es);
     return es;
   };
-  return { factory, created };
+  return { factory, created, frames: new ManualFrames() };
 }
 
 describe("classifyLogLine", () => {
@@ -84,8 +105,8 @@ describe("classifyLogLine", () => {
 
 describe("LogStreamController", () => {
   it("transitions connecting -> open and appends classified lines", () => {
-    const { factory, created } = makeFactory();
-    const ctrl = new LogStreamController({ url: "/api/v1/servers/s/console", factory });
+    const { factory, created, frames } = makeFactory();
+    const ctrl = new LogStreamController({ url: "/api/v1/servers/s/console", factory, frame: frames.schedule });
     ctrl.open();
     expect(created).toHaveLength(1);
     expect(created[0].url).toBe("/api/v1/servers/s/console");
@@ -95,6 +116,7 @@ describe("LogStreamController", () => {
     expect(ctrl.getSnapshot().status).toBe("open");
 
     created[0].emitMessage("[12:00:00] [Server thread/WARN]: heads up");
+    frames.run();
     const { lines } = ctrl.getSnapshot();
     expect(lines).toHaveLength(1);
     expect(lines[0]).toMatchObject({ seq: 0, level: "warn" });
@@ -102,12 +124,13 @@ describe("LogStreamController", () => {
   });
 
   it("bounds the ring buffer, dropping the oldest lines", () => {
-    const { factory, created } = makeFactory();
-    const ctrl = new LogStreamController({ url: "/c", factory, maxLines: 2 });
+    const { factory, created, frames } = makeFactory();
+    const ctrl = new LogStreamController({ url: "/c", factory, maxLines: 2, frame: frames.schedule });
     ctrl.open();
     created[0].emitMessage("line0");
     created[0].emitMessage("line1");
     created[0].emitMessage("line2");
+    frames.run();
     const { lines } = ctrl.getSnapshot();
     expect(lines).toHaveLength(2);
     // Oldest dropped; the survivors keep their monotonic seq (1 then 2).
@@ -116,34 +139,38 @@ describe("LogStreamController", () => {
   });
 
   it("returns a stable snapshot reference between mutations", () => {
-    const { factory, created } = makeFactory();
-    const ctrl = new LogStreamController({ url: "/c", factory });
+    const { factory, created, frames } = makeFactory();
+    const ctrl = new LogStreamController({ url: "/c", factory, frame: frames.schedule });
     ctrl.open(); // status already 'connecting' -> no commit, snapshot stable
     const s1 = ctrl.getSnapshot();
     expect(ctrl.getSnapshot()).toBe(s1);
     created[0].emitMessage("x");
+    expect(ctrl.getSnapshot()).toBe(s1); // queued until the frame
+    frames.run();
     expect(ctrl.getSnapshot()).not.toBe(s1);
   });
 
   it("notifies subscribers on mutation and stops after unsubscribe", () => {
-    const { factory, created } = makeFactory();
-    const ctrl = new LogStreamController({ url: "/c", factory });
+    const { factory, created, frames } = makeFactory();
+    const ctrl = new LogStreamController({ url: "/c", factory, frame: frames.schedule });
     ctrl.open();
     let hits = 0;
     const unsub = ctrl.subscribe(() => {
       hits++;
     });
     created[0].emitOpen(); // commit
-    created[0].emitMessage("a"); // commit
+    created[0].emitMessage("a");
+    frames.run(); // commit
     expect(hits).toBe(2);
     unsub();
     created[0].emitMessage("b");
+    frames.run();
     expect(hits).toBe(2); // no further notifications
   });
 
   it("maps a transient drop to reconnecting and a fatal close to ended", () => {
-    const { factory, created } = makeFactory();
-    const ctrl = new LogStreamController({ url: "/c", factory });
+    const { factory, created, frames } = makeFactory();
+    const ctrl = new LogStreamController({ url: "/c", factory, frame: frames.schedule });
     ctrl.open();
     created[0].emitOpen();
     created[0].emitError(0); // readyState CONNECTING -> auto-retrying
@@ -153,8 +180,8 @@ describe("LogStreamController", () => {
   });
 
   it("ignores events after close (teardown linchpin)", () => {
-    const { factory, created } = makeFactory();
-    const ctrl = new LogStreamController({ url: "/c", factory });
+    const { factory, created, frames } = makeFactory();
+    const ctrl = new LogStreamController({ url: "/c", factory, frame: frames.schedule });
     ctrl.open();
     created[0].emitOpen();
     ctrl.close();
@@ -167,8 +194,8 @@ describe("LogStreamController", () => {
   });
 
   it("reconnect closes the old stream and dials a fresh one", () => {
-    const { factory, created } = makeFactory();
-    const ctrl = new LogStreamController({ url: "/c", factory });
+    const { factory, created, frames } = makeFactory();
+    const ctrl = new LogStreamController({ url: "/c", factory, frame: frames.schedule });
     ctrl.open();
     created[0].emitError(2); // ended
     ctrl.reconnect();
@@ -180,27 +207,108 @@ describe("LogStreamController", () => {
   });
 
   it("clear empties the buffer without disturbing status", () => {
-    const { factory, created } = makeFactory();
-    const ctrl = new LogStreamController({ url: "/c", factory });
+    const { factory, created, frames } = makeFactory();
+    const ctrl = new LogStreamController({ url: "/c", factory, frame: frames.schedule });
     ctrl.open();
     created[0].emitOpen();
     created[0].emitMessage("a");
+    frames.run();
+    created[0].emitMessage("b"); // still queued
     ctrl.clear();
+    frames.run();
     expect(ctrl.getSnapshot().lines).toHaveLength(0);
     expect(ctrl.getSnapshot().status).toBe("open");
   });
 
   it("ends for good when the server revokes the stream", () => {
-    const { factory, created } = makeFactory();
-    const ctrl = new LogStreamController({ url: "/api/v1/servers/s/console", factory });
+    const { factory, created, frames } = makeFactory();
+    const ctrl = new LogStreamController({ url: "/api/v1/servers/s/console", factory, frame: frames.schedule });
     ctrl.open();
     const es = created[0];
     es.emitOpen();
     es.emitMessage("[12:00:00] [Server thread/INFO]: hello");
-    es.emitEvent("revoked");
+    es.emitEvent("revoked"); // no frame ran: the status change carries the line
     expect(ctrl.getSnapshot().status).toBe("ended");
     expect(es.closed).toBe(true);
     expect(ctrl.getSnapshot().lines).toHaveLength(1);
     expect(created).toHaveLength(1);
+  });
+  it("delivers a burst of lines in one commit per frame", () => {
+    const { factory, created, frames } = makeFactory();
+    const ctrl = new LogStreamController({ url: "/c", factory, frame: frames.schedule });
+    ctrl.open();
+    created[0].emitOpen();
+    let hits = 0;
+    ctrl.subscribe(() => hits++);
+
+    for (let i = 0; i < 500; i++) created[0].emitMessage(`mod ${i}`);
+    expect(hits).toBe(0);
+    expect(frames.queued).toBe(1);
+
+    frames.run();
+    expect(hits).toBe(1);
+    expect(ctrl.getSnapshot().lines.map((l) => l.text)).toEqual(
+      Array.from({ length: 500 }, (_, i) => `mod ${i}`),
+    );
+
+    created[0].emitMessage("next");
+    expect(frames.queued).toBe(1);
+    frames.run();
+    expect(hits).toBe(2);
+    expect(ctrl.getSnapshot().lines.at(-1)?.seq).toBe(500);
+  });
+
+  it("keeps the queue bounded while no frame runs, as in a background tab", () => {
+    const { factory, created, frames } = makeFactory();
+    const ctrl = new LogStreamController({ url: "/c", factory, maxLines: 3, frame: frames.schedule });
+    ctrl.open();
+    for (let i = 0; i < 100; i++) created[0].emitMessage(`line${i}`);
+    expect((ctrl as unknown as { pending: unknown[] }).pending.length).toBeLessThan(6);
+
+    frames.run();
+    expect(ctrl.getSnapshot().lines.map((l) => l.text)).toEqual(["line97", "line98", "line99"]);
+  });
+
+  it("shows queued lines together with a status change", () => {
+    const { factory, created, frames } = makeFactory();
+    const ctrl = new LogStreamController({ url: "/c", factory, frame: frames.schedule });
+    ctrl.open();
+    created[0].emitOpen();
+    let hits = 0;
+    ctrl.subscribe(() => hits++);
+    created[0].emitMessage("Stopping server");
+    created[0].emitMessage("Saving chunks");
+    created[0].emitError(2);
+
+    expect(hits).toBe(1);
+    expect(ctrl.getSnapshot().status).toBe("ended");
+    expect(ctrl.getSnapshot().lines.map((l) => l.text)).toEqual(["Stopping server", "Saving chunks"]);
+    expect(frames.queued).toBe(0);
+  });
+
+  it("drops the queued frame on close", () => {
+    const { factory, created, frames } = makeFactory();
+    const ctrl = new LogStreamController({ url: "/c", factory, frame: frames.schedule });
+    ctrl.open();
+    created[0].emitMessage("late");
+    ctrl.close();
+    expect(frames.queued).toBe(0);
+    frames.run();
+    expect(ctrl.getSnapshot().lines).toHaveLength(0);
+  });
+
+  it("strips colour codes before classifying and keeps them as segments", () => {
+    const { factory, created, frames } = makeFactory();
+    const ctrl = new LogStreamController({ url: "/c", factory, frame: frames.schedule });
+    ctrl.open();
+    created[0].emitMessage("[12:00:00] [Server thread/§cERROR§r]: §eplugin§r failed");
+    created[0].emitMessage("[12:00:01] [Server thread/INFO]: plain");
+    frames.run();
+
+    const [colored, plain] = ctrl.getSnapshot().lines;
+    expect(colored.text).toBe("[12:00:00] [Server thread/ERROR]: plugin failed");
+    expect(colored.level).toBe("error");
+    expect(colored.segments?.find((s) => s.text === "plugin")?.color).toBe("#ffff55");
+    expect(plain.segments).toBeUndefined();
   });
 });
