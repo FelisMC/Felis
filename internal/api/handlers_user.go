@@ -296,15 +296,20 @@ func (a *API) handleFleet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	// Owner is presentational and best-effort. The cockpit exists for the lifecycle
-	// view, so a Postgres hiccup must degrade to owner-less rows, never 500 the whole
-	// fleet: a lookup error is swallowed and owners stays nil, leaving every row's
-	// Owner "" (a nil map reads as zero values).
-	owners, _ := a.Repo.ServerOwners(r.Context())
+	// Ownership is best-effort. The cockpit exists for the lifecycle view, so a
+	// Postgres hiccup must never 500 the whole fleet; the rows say the owner is
+	// unknown instead, and none offers a claim that may already be taken.
+	p := principalFromContext(r.Context())
+	owners, err := a.Repo.ServerOwners(r.Context())
+	unknown := err != nil
 	views := make([]fleetServerView, len(servers))
 	for i, s := range servers {
-		views[i] = fleetServerView{ServerInfo: s, Owner: owners[s.Name],
-			System: naming.IsSystemServer(s.Name)}
+		o, known := owners[s.Name]
+		system := naming.IsSystemServer(s.Name)
+		views[i] = fleetServerView{ServerInfo: s, Owner: o.Owner, System: system,
+			Owned:        o.OwnerID != "" && o.OwnerID == p.UserID,
+			Claimable:    known && o.OwnerID == "" && !system,
+			OwnerUnknown: unknown}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": views})
 }
@@ -316,9 +321,18 @@ func (a *API) handleFleet(w http.ResponseWriter, r *http.Request) {
 type fleetServerView struct {
 	ServerInfo
 	// Owner is the claiming user's display identity (email, or username when the
-	// address is absent), or "" when the server is unclaimed or the best-effort
-	// owner lookup failed — the cockpit renders "" as "unclaimed".
+	// address is absent), or "" when the server is unclaimed or the owner lookup
+	// failed (OwnerUnknown tells the two apart).
 	Owner string `json:"owner,omitempty"`
+	// Owned is true when the caller claimed this server, decided by account id so
+	// an owner without an email is still recognized.
+	Owned bool `json:"owned"`
+	// Claimable is true for a live, unclaimed, non-system server: the same rule
+	// ClaimServer enforces. It is false whenever ownership is unknown.
+	Claimable bool `json:"claimable"`
+	// OwnerUnknown is true when the best-effort owner lookup failed, so an empty
+	// Owner says nothing about whether the server is claimed.
+	OwnerUnknown bool `json:"ownerUnknown,omitempty"`
 	// System marks a platform-provisioned system service (the login gate and the
 	// lobby, naming.IsSystemServer). Their names are reserved, so every per-server
 	// API route rejects them — the cockpit must render them read-only rather than

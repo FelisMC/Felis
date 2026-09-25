@@ -609,29 +609,29 @@ func (p *PGRepo) MyServers(ctx context.Context, userID string) ([]MyServerView, 
 	return out, rows.Err()
 }
 
-// ServerOwners returns name -> owner display identity for every currently-owned,
-// non-deleted server (the SysAdmin cockpit's fleet read). The INNER JOIN drops
-// unclaimed servers (owner_id NULL) and the deleted_at filter drops soft-deleted
-// ones, so the map holds only servers that have a live owner — the cockpit reads a
-// missing key as "no owner". The display value prefers the recognizable email
-// (the same identity the audit log records as the human actor, §6) and falls back
-// to the never-NULL username when the address is absent.
-func (p *PGRepo) ServerOwners(ctx context.Context) (map[string]string, error) {
-	const q = `SELECT s.name, COALESCE(NULLIF(u.email, ''), u.username)
-		FROM servers s JOIN users u ON u.id = s.owner_id
+// ServerOwners returns name -> claim state for every non-deleted server (the
+// SysAdmin cockpit's fleet read). The LEFT JOIN keeps unclaimed servers (owner_id
+// NULL) with an empty OwnerID, and the deleted_at filter drops soft-deleted ones.
+// The display value prefers the recognizable email (the same identity the audit
+// log records as the human actor, §6) and falls back to the never-NULL username
+// when the address is absent.
+func (p *PGRepo) ServerOwners(ctx context.Context) (map[string]ServerOwnership, error) {
+	const q = `SELECT s.name, COALESCE(s.owner_id, ''), COALESCE(NULLIF(u.email, ''), u.username, '')
+		FROM servers s LEFT JOIN users u ON u.id = s.owner_id
 		WHERE s.deleted_at IS NULL`
 	rows, err := p.db.QueryContext(ctx, q)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := make(map[string]string)
+	out := make(map[string]ServerOwnership)
 	for rows.Next() {
-		var name, owner string
-		if err := rows.Scan(&name, &owner); err != nil {
+		var name string
+		var o ServerOwnership
+		if err := rows.Scan(&name, &o.OwnerID, &o.Owner); err != nil {
 			return nil, err
 		}
-		out[name] = owner
+		out[name] = o
 	}
 	return out, rows.Err()
 }

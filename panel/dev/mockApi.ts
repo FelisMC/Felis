@@ -590,8 +590,9 @@ function visibleServers(state: MockState, accountInfo: MockAccount): MyServerVie
 // the CRD field names (playersOnline/playersMax, ready, endpoint*) plus the
 // runtime `ready`/`endpoint*` fields, and the owner joined as the email
 // (COALESCE(email, username) server-side). Endpoint and live player counts are
-// gated on Running, exactly as the real cluster reports them.
-function fleetView(state: MockState): FleetServer[] {
+// gated on Running, exactly as the real cluster reports them. Ownership is
+// decided by account id for the caller, as the Go handler does.
+function fleetView(state: MockState, accountInfo: MockAccount): FleetServer[] {
   return state.servers.map((s, i) => {
     const { owner, ...wire } = s;
     return {
@@ -600,6 +601,8 @@ function fleetView(state: MockState): FleetServer[] {
       endpointAddress: s.ready ? `10.43.0.${10 + i}:25565` : undefined,
       playersOnline: s.ready ? s.playersOnline : 0,
       owner: owner ? state.accounts[owner].email : "",
+      owned: owner === accountInfo.id,
+      claimable: owner === null,
     };
   });
 }
@@ -903,7 +906,7 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
         sendError(ctx.res, 403, "forbidden", "admin account required");
         return true;
       }
-      sendJSON(ctx.res, 200, { servers: fleetView(ctx.state) });
+      sendJSON(ctx.res, 200, { servers: fleetView(ctx.state, ctx.account) });
       return true;
     case "GET backups":
       // Admin sees every archive; a user only worlds they formerly owned — mirrors

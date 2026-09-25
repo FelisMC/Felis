@@ -551,6 +551,54 @@ func TestClaimServerQuotaAtomicGate(t *testing.T) {
 	}
 }
 
+// The fleet read needs every live server's claim state: the owner's id to tell
+// the caller's own servers apart, the display name (email, else username), and
+// the unclaimed rows too, since only those may be claimed. A soft-deleted row is
+// gone.
+func TestServerOwnersJoin(t *testing.T) {
+	ctx := context.Background()
+	sfx := suffix(t)
+	withEmail, err := repo.CreateUser(ctx,
+		api.CreateUserInput{Username: "own-mail-" + sfx, Email: "own-" + sfx + "@example.test", Role: "user"}, "pgint")
+	if err != nil {
+		t.Fatalf("CreateUser with email: %v", err)
+	}
+	noEmail := newUser(t, "admin", "own-bare")
+	seed := func(name string, owner any, deleted bool) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO servers (name, owner_id, deleted_at, cached_cpu_milli, cached_memory_mb, cached_storage_mb)
+			 VALUES ($1, $2, CASE WHEN $3 THEN now() END, 100, 128, 1)`,
+			name, owner, deleted); err != nil {
+			t.Fatalf("seed server %s: %v", name, err)
+		}
+	}
+	mailed, bare, free, gone := "om-"+sfx, "ob-"+sfx, "of-"+sfx, "od-"+sfx
+	seed(mailed, withEmail.ID, false)
+	seed(bare, noEmail.ID, false)
+	seed(free, nil, false)
+	seed(gone, nil, true)
+
+	owners, err := repo.ServerOwners(ctx)
+	if err != nil {
+		t.Fatalf("ServerOwners: %v", err)
+	}
+	want := map[string]api.ServerOwnership{
+		mailed: {OwnerID: withEmail.ID, Owner: "own-" + sfx + "@example.test"},
+		bare:   {OwnerID: noEmail.ID, Owner: noEmail.Username},
+		free:   {},
+	}
+	for name, w := range want {
+		got, ok := owners[name]
+		if !ok || got != w {
+			t.Errorf("owners[%s] = %+v (present %v), want %+v", name, got, ok, w)
+		}
+	}
+	if o, ok := owners[gone]; ok {
+		t.Errorf("owners[%s] = %+v, want absent (soft-deleted)", gone, o)
+	}
+}
+
 // An admin email edit must not carry a verification over to an address nobody
 // proved: the verified flag is exactly what the pre-session login resolves on
 // (UserByEmail), and only VerifyEmailOTP may assert it — the same rationale as

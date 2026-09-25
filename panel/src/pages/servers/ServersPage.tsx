@@ -85,12 +85,14 @@ interface UnifiedServer {
   endpointAddress?: string | null;
   claimable?: boolean;
   owned?: boolean;
+  /** The fleet's owner lookup failed, so an absent owner proves nothing. */
+  ownerUnknown?: boolean;
   system?: boolean;
 }
 
 export function ServersPage() {
   const { t } = useTranslation(["ops", "servers"]);
-  const { isAdmin, identity } = useTier();
+  const { isAdmin } = useTier();
   const cfg = useConfig();
 
   const fetchFn = useMemo<() => Promise<FleetServer[] | MyServerView[]>>(
@@ -133,8 +135,9 @@ export function ServersPage() {
         playerCountUnknown: s.playerCountUnknown,
         owner: s.owner,
         endpointAddress: s.endpointAddress,
-        claimable: !s.owner,
-        owned: s.owner === identity?.email,
+        claimable: s.claimable,
+        owned: s.owned,
+        ownerUnknown: s.ownerUnknown,
         system: s.system,
       }));
     } else {
@@ -154,7 +157,7 @@ export function ServersPage() {
         owned: s.owned,
       }));
     }
-  }, [data, isAdmin, t, identity]);
+  }, [data, isAdmin, t]);
 
   const stats = useMemo(() => {
     const counts: Record<Phase, number> = {
@@ -352,10 +355,10 @@ export function ServersPage() {
             />
           ) : (
             <>
-              {/* Cards below xl (two per row from md); the table needs about
-                  1000px of content width for all its columns, which the page
-                  only has from xl beside the sidebar. */}
-              <ul className="grid gap-3 md:grid-cols-2 xl:hidden">
+              {/* Cards below 2xl (two per row from md); the admin table needs
+                  about 1100px of content width for all its columns, which the
+                  page only has from 2xl beside the sidebar. */}
+              <ul className="grid gap-3 md:grid-cols-2 2xl:hidden">
                 {paged.map((s) => (
                   <ServerMobileCard
                     key={s.name}
@@ -366,7 +369,7 @@ export function ServersPage() {
                   />
                 ))}
               </ul>
-              <Card className="hidden overflow-hidden border border-border/80 xl:block">
+              <Card className="hidden overflow-hidden border border-border/80 2xl:block">
                 <div className="overflow-x-auto">
                   <table className="w-full border-collapse text-sm">
                     <thead>
@@ -551,9 +554,21 @@ function OwnerLabel({ server }: { server: UnifiedServer }) {
     return (
       <span className="inline-flex min-w-0 max-w-full items-center gap-1.5 md:max-w-[13rem]">
         <UserRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        {server.owned && (
+          <span className="shrink-0 rounded-full border px-1.5 text-[10px] font-medium leading-4 text-foreground">
+            {t("fleet_owner_you")}
+          </span>
+        )}
         <span className="truncate" title={server.owner}>
           {server.owner}
         </span>
+      </span>
+    );
+  }
+  if (server.ownerUnknown) {
+    return (
+      <span className="text-xs text-muted-foreground/70" title={t("fleet_owner_unknown_hint")}>
+        {t("fleet_owner_unknown")}
       </span>
     );
   }

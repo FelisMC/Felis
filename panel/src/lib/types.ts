@@ -132,9 +132,15 @@ export interface KickResult {
  *  Sharing one interface would blur which fields each face actually guarantees. */
 export interface FleetServer extends ServerStatus {
   /** Owner's display identity (email, or username when the address is absent).
-   *  Empty/absent for an unclaimed server or when the best-effort owner lookup
-   *  failed — the cockpit renders that as "unclaimed". */
+   *  Empty/absent for an unclaimed server or when the owner lookup failed;
+   *  ownerUnknown tells the two apart. */
   owner?: string;
+  /** The caller claimed this server, decided by account id on the server. */
+  owned: boolean;
+  /** Live, unclaimed and not a system service; false while ownership is unknown. */
+  claimable: boolean;
+  /** The owner lookup failed: an absent owner says nothing about the claim. */
+  ownerUnknown?: boolean;
   /** True for a platform-provisioned system service (the login gate, the lobby).
    *  Their reserved names are rejected by every per-server route, so the cockpit
    *  renders them read-only instead of offering actions that would 400. */

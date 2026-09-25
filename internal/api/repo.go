@@ -38,6 +38,17 @@ type MyServerView struct {
 	PlayerCountUnknown bool   `json:"playerCountUnknown,omitempty"`
 }
 
+// ServerOwnership is one live server's claim state as the fleet read joins it.
+type ServerOwnership struct {
+	// OwnerID is the claiming account, "" while the server is unclaimed. The fleet
+	// compares it with the caller's id: an account without an email shows its
+	// username as Owner, so the display text cannot say whose server it is.
+	OwnerID string
+	// Owner is the claiming account's display identity (email, or username when
+	// the address is absent), "" while unclaimed.
+	Owner string
+}
+
 // AuditEntry is one row written to audit_logs (spec §6). Actor is display text:
 // a verified email or the username for people (auditActor), the component name
 // for internal callers. ActorUserID is the account that acted, the column to
@@ -286,15 +297,14 @@ type Repo interface {
 	RecordJoin(ctx context.Context, name, mcUUID string) error
 	// MyServers lists the servers a user owns or may claim.
 	MyServers(ctx context.Context, userID string) ([]MyServerView, error)
-	// ServerOwners maps each currently-owned server to its owner's display identity
-	// (email, or username when the address is absent), for the SysAdmin cockpit's
-	// fleet read. It is a READ-ONLY presentational join: owner stays authored in
-	// Postgres (§6 business authority) and is never written back to the CRD, so this
-	// does not breach §1's store-of-record split. Unclaimed and soft-deleted servers
-	// are simply absent from the map, so a missing key reads as "no owner". The
-	// cockpit treats it as best-effort — a lookup error degrades to owner-less rows
-	// rather than failing the fleet read — so callers may ignore the error.
-	ServerOwners(ctx context.Context) (map[string]string, error)
+	// ServerOwners maps every live server to its claim state, for the SysAdmin
+	// cockpit's fleet read. It is a READ-ONLY join: owner stays authored in Postgres
+	// (§6 business authority) and is never written back to the CRD, so this does not
+	// breach §1's store-of-record split. An unclaimed server is present with an empty
+	// OwnerID; a soft-deleted one, or a CRD with no business row, is absent, and
+	// cannot be claimed. The cockpit treats it as best-effort: a lookup error leaves
+	// ownership unknown rather than failing the fleet read.
+	ServerOwners(ctx context.Context) (map[string]ServerOwnership, error)
 	// AllBackups lists every present world backup, newest first (spec §7 GET
 	// /backups, admin scope). Expired/deleted rows are never returned.
 	AllBackups(ctx context.Context) ([]BackupView, error)

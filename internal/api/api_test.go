@@ -33,10 +33,10 @@ type fakeRepo struct {
 	// the account_links-bridged web view of the same data.
 	allowUUID map[string]map[string]bool
 	mine      map[string][]MyServerView
-	// owners mirrors the ServerOwners join (name -> owner display identity); only
-	// claimed servers appear. ownersErr forces the lookup to fail so a test can
-	// prove the fleet read degrades to owner-less rows rather than 500ing.
-	owners    map[string]string
+	// owners mirrors the ServerOwners join (name -> claim state); a live unclaimed
+	// server appears with an empty OwnerID. ownersErr forces the lookup to fail so
+	// a test can prove the fleet read degrades rather than 500ing.
+	owners    map[string]ServerOwnership
 	ownersErr error
 	claimOK   map[string]bool // name -> claim succeeds; absent name -> ErrNotFound
 	// claimQuotaRefuse simulates ClaimServer's atomic quota gate (audit #4)
@@ -255,7 +255,7 @@ func newFakeRepo() *fakeRepo {
 		linked: map[string]bool{}, quota: map[string]bool{},
 		allowlist: map[string]map[string]bool{}, allowUUID: map[string]map[string]bool{},
 		mine:    map[string][]MyServerView{},
-		owners:  map[string]string{},
+		owners:  map[string]ServerOwnership{},
 		claimOK: map[string]bool{}, claimQuotaRefuse: map[string]bool{},
 		serverResources: map[string]ResourceSpec{}, resourceUpdates: map[string]ResourceSpec{},
 		seeded: map[string]bool{}, aliases: map[string]string{},
@@ -750,7 +750,7 @@ func (f *fakeRepo) MyServers(_ context.Context, u string) ([]MyServerView, error
 	// into the slice it gets.
 	return append([]MyServerView(nil), f.mine[u]...), nil
 }
-func (f *fakeRepo) ServerOwners(_ context.Context) (map[string]string, error) {
+func (f *fakeRepo) ServerOwners(_ context.Context) (map[string]ServerOwnership, error) {
 	if f.ownersErr != nil {
 		return nil, f.ownersErr
 	}
@@ -1971,11 +1971,13 @@ func TestFleetAdminRead(t *testing.T) {
 	})
 
 	// fleetRow mirrors the on-the-wire fleetServerView: the lifecycle fields plus
-	// the presentational owner join. A server absent from ServerOwners (unclaimed)
-	// or a failed lookup must serialize owner as "" (omitempty drops it).
+	// the ownership join.
 	type fleetRow struct {
-		Name  string `json:"name"`
-		Owner string `json:"owner"`
+		Name         string `json:"name"`
+		Owner        string `json:"owner"`
+		Owned        bool   `json:"owned"`
+		Claimable    bool   `json:"claimable"`
+		OwnerUnknown bool   `json:"ownerUnknown"`
 	}
 	adminAPI := func(repo *fakeRepo) *API {
 		api := newTestAPI(repo, cl)
@@ -2042,33 +2044,66 @@ func TestFleetAdminRead(t *testing.T) {
 		}
 	})
 
-	t.Run("owner merges for claimed, absent for unclaimed", func(t *testing.T) {
+	t.Run("ownership comes from the account id", func(t *testing.T) {
 		repo := newFakeRepo()
-		// Only "survival" is claimed; "creative"/"skyblock" stay unowned.
-		repo.owners["survival"] = "alice@example.net"
-		byName := map[string]string{}
+		// The caller (a1) owns "survival" but has no email, so its display is the
+		// username; "creative" belongs to someone else; "skyblock" is unclaimed.
+		repo.owners["survival"] = ServerOwnership{OwnerID: "a1", Owner: "a1-username"}
+		repo.owners["creative"] = ServerOwnership{OwnerID: "u2", Owner: "alice@example.net"}
+		repo.owners["skyblock"] = ServerOwnership{}
+		byName := map[string]fleetRow{}
 		for _, r := range readFleet(t, adminAPI(repo)) {
-			byName[r.Name] = r.Owner
+			byName[r.Name] = r
 		}
-		if byName["survival"] != "alice@example.net" {
-			t.Fatalf("survival owner = %q, want alice@example.net", byName["survival"])
+		want := map[string]fleetRow{
+			"survival": {Name: "survival", Owner: "a1-username", Owned: true},
+			"creative": {Name: "creative", Owner: "alice@example.net"},
+			"skyblock": {Name: "skyblock", Claimable: true},
 		}
-		if byName["creative"] != "" {
-			t.Fatalf("creative owner = %q, want empty (unclaimed)", byName["creative"])
+		for name, w := range want {
+			if byName[name] != w {
+				t.Errorf("%s = %+v, want %+v", name, byName[name], w)
+			}
 		}
 	})
 
-	t.Run("owner lookup failure degrades to owner-less rows", func(t *testing.T) {
+	t.Run("a server without a business row cannot be claimed", func(t *testing.T) {
+		// A CRD the servers table does not know (or a soft-deleted row) answers a
+		// claim with 404, so the row must not offer one.
+		rows := readFleet(t, adminAPI(newFakeRepo()))
+		for _, r := range rows {
+			if r.Claimable || r.Owned || r.OwnerUnknown {
+				t.Errorf("%s = %+v, want no claim state (no business row)", r.Name, r)
+			}
+		}
+	})
+
+	t.Run("system services are never claimable", func(t *testing.T) {
+		sysCl := newFakeCluster()
+		sysCl.list = []ServerInfo{{Name: "lobby", Phase: "Running", Ready: true}}
 		repo := newFakeRepo()
-		repo.owners["survival"] = "alice@example.net" // would merge, but the lookup errors
+		repo.owners["lobby"] = ServerOwnership{}
+		api := newTestAPI(repo, sysCl)
+		api.External = staticExternal{p: &Principal{UserID: "a1", Email: "a1@example.net",
+			Role: "admin", ViaAdminAccess: true}}
+		rows := readFleet(t, api)
+		if len(rows) != 1 || rows[0].Claimable {
+			t.Fatalf("rows = %+v, want lobby present and not claimable", rows)
+		}
+	})
+
+	t.Run("owner lookup failure marks ownership unknown", func(t *testing.T) {
+		repo := newFakeRepo()
+		repo.owners["survival"] = ServerOwnership{OwnerID: "u2", Owner: "alice@example.net"} // would merge, but the lookup errors
+		repo.owners["skyblock"] = ServerOwnership{}
 		repo.ownersErr = fmt.Errorf("postgres unreachable")
 		rows := readFleet(t, adminAPI(repo)) // must still be 200, not 500
 		if len(rows) != 3 {
 			t.Fatalf("servers = %d, want 3 (a Postgres blip must not drop the fleet)", len(rows))
 		}
 		for _, r := range rows {
-			if r.Owner != "" {
-				t.Fatalf("%s owner = %q, want empty (owner lookup failed → degrade)", r.Name, r.Owner)
+			if r.Owner != "" || r.Claimable || r.Owned || !r.OwnerUnknown {
+				t.Fatalf("%s = %+v, want owner unknown and nothing to claim", r.Name, r)
 			}
 		}
 	})

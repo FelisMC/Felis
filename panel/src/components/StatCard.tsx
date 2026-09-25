@@ -32,7 +32,7 @@ export function StatCard({ icon: Icon, label, value, accentClass, accentColor, v
         <div className="min-w-0 flex-1">
           <div
             className={cn(
-              "text-xl sm:text-2xl font-bold font-mono leading-none truncate text-foreground",
+              "text-lg sm:text-2xl font-bold font-mono leading-none truncate text-foreground",
               valueClass,
             )}
             title={typeof value === "string" ? value : undefined}

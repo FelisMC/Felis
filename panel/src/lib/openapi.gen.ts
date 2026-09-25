@@ -2005,6 +2005,12 @@ export interface components {
         FleetServer: components["schemas"]["ServerInfo"] & {
             /** @description The owner's display identity (email, or username when the address is absent). Absent for an unclaimed server or when the best-effort owner lookup failed. */
             owner?: string;
+            /** @description True when the caller claimed this server, decided by account id so an owner without an email is still recognized. */
+            owned: boolean;
+            /** @description True for a live, unclaimed, non-system server, the same rule the claim route enforces. False whenever ownership is unknown. */
+            claimable: boolean;
+            /** @description Present and true when the owner lookup failed, so an absent owner says nothing about whether the server is claimed. */
+            ownerUnknown?: boolean;
             /** @description True for a platform-provisioned system service (the login gate, the lobby). Their reserved names are rejected by every per-server route, so the cockpit renders them read-only instead of offering actions that would 400. */
             system?: boolean;
         };

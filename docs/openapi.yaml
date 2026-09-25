@@ -339,6 +339,7 @@ components:
       allOf:
         - $ref: '#/components/schemas/ServerInfo'
         - type: object
+          required: [owned, claimable]
           properties:
             owner:
               type: string
@@ -346,6 +347,21 @@ components:
                 The owner's display identity (email, or username when the address is
                 absent). Absent for an unclaimed server or when the best-effort owner
                 lookup failed.
+            owned:
+              type: boolean
+              description: >-
+                True when the caller claimed this server, decided by account id so an
+                owner without an email is still recognized.
+            claimable:
+              type: boolean
+              description: >-
+                True for a live, unclaimed, non-system server, the same rule the claim
+                route enforces. False whenever ownership is unknown.
+            ownerUnknown:
+              type: boolean
+              description: >-
+                Present and true when the owner lookup failed, so an absent owner says
+                nothing about whether the server is claimed.
             system:
               type: boolean
               description: >-
