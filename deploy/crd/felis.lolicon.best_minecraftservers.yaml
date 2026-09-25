@@ -285,6 +285,13 @@ spec:
           status:
             description: MinecraftServerStatus is the observed state (spec §4 status.*).
             properties:
+              autoRestarts:
+                description: |-
+                  AutoRestarts counts how often the operator recreated the pod of a start
+                  that timed out (at most 3, with a doubling backoff); reaching Ready or
+                  stopping resets it.
+                format: int32
+                type: integer
               conditions:
                 description: Conditions are the standard metav1 conditions (Ready,
                   RconReached, ...).
@@ -361,6 +368,11 @@ spec:
                     description: Mode is "direct" or "fallback".
                     type: string
                 type: object
+              lastAutoRestartAt:
+                description: LastAutoRestartAt is when the operator last recreated
+                  the pod.
+                format: date-time
+                type: string
               liveMotd:
                 description: LiveMotd is the MOTD currently advertised for the active
                   phase.

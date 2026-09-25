@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
@@ -38,12 +39,25 @@ const (
 	// still answers 409 not_running: at 5s the observed lag after container-ready
 	// was 6~10s; 2s keeps wake-to-usable snappy without hammering a booting Java
 	// process (the probe only runs on this cadence while the server is unreachable).
-	requeueStarting            = 2 * time.Second
-	requeueStopping            = 5 * time.Second
-	requeueSecret              = 10 * time.Second
-	requeueIdleProbe           = 30 * time.Second
-	requeueMaintenance         = 5 * time.Second
-	defaultTimeoutSeconds      = 300
+	requeueStarting     = 2 * time.Second
+	requeueStopping     = 5 * time.Second
+	requeueSecret       = 10 * time.Second
+	requeueIdleProbe    = 30 * time.Second
+	requeueRunningProbe = 60 * time.Second
+	// requeueProbeRetry re-probes a Running server soon after a miss;
+	// runningProbeMissesBeforeDegrade consecutive misses demote it to Starting.
+	requeueProbeRetry               = 10 * time.Second
+	runningProbeMissesBeforeDegrade = 3
+	// requeueFailed paces a Failed server whose auto-restarts are spent; a
+	// StatefulSet or CR event still wakes it at once.
+	requeueFailed         = 5 * time.Minute
+	requeueMaintenance    = 5 * time.Second
+	defaultTimeoutSeconds = 300
+	// maxAutoRestarts bounds how often a timed-out start is retried by
+	// recreating its pod; autoRestartBaseBackoff is the first wait, doubling
+	// per attempt.
+	maxAutoRestarts            = 3
+	autoRestartBaseBackoff     = time.Minute
 	defaultReadinessTimeoutSec = 300
 )
 
@@ -110,6 +124,12 @@ type Reconciler struct {
 	Jobs client.Reader
 	// Watch records the passes in flight for the liveness probe. Nil skips it.
 	Watch *ReconcileWatch
+
+	// probeFailures counts consecutive failed RCON probes of a Running server,
+	// by UID. In memory: an operator restart forgets them, which only delays a
+	// degrade by a few probes.
+	probeMu       sync.Mutex
+	probeFailures map[types.UID]int
 }
 
 func (r *Reconciler) now() metav1.Time {
@@ -231,11 +251,14 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		r.markStarting(server, "PodNotReady", "waiting for pod TCP readiness")
 		if r.startupTimedOut(server) {
 			r.markFailed(server, "StartupTimeout", "pod did not become ready within startup timeout")
+			if err := r.recoverFailedStart(ctx, server, startupTimeout(server)); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 		if err := r.patchStatus(ctx, server); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{RequeueAfter: requeueStarting}, nil
+		return ctrl.Result{RequeueAfter: r.startingRequeue(server, startupTimeout(server))}, nil
 	}
 	if endpointAddress == "" {
 		r.markStarting(server, "ServiceAddressPending", "waiting for the client Service ClusterIP")
@@ -259,15 +282,24 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		}
 		pc, err := r.Prober.Probe(ctx, rconAddress(server), password)
 		if err != nil {
+			// One missed probe of a Running server is noise (a lag spike, a save);
+			// it keeps its status and endpoint until the misses run consecutive.
+			if server.Status.Phase == v1alpha1.PhaseRunning && r.noteProbeFailure(server) < runningProbeMissesBeforeDegrade {
+				return ctrl.Result{RequeueAfter: requeueProbeRetry}, nil
+			}
 			r.markStarting(server, "RconNotReachable", err.Error())
 			if r.readinessTimedOut(server) {
 				r.markFailed(server, "ReadinessTimeout", "RCON probe did not succeed within readiness timeout")
+				if err := r.recoverFailedStart(ctx, server, readinessTimeout(server)); err != nil {
+					return ctrl.Result{}, err
+				}
 			}
 			if perr := r.patchStatus(ctx, server); perr != nil {
 				return ctrl.Result{}, perr
 			}
-			return ctrl.Result{RequeueAfter: requeueStarting}, nil
+			return ctrl.Result{RequeueAfter: r.startingRequeue(server, readinessTimeout(server))}, nil
 		}
+		r.clearProbeFailures(server)
 		players = pc
 		// A tally that could not be read pauses idle auto-stop (below) instead of
 		// counting as an empty server; the condition says so, so a server that
@@ -332,7 +364,10 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		}
 		return ctrl.Result{RequeueAfter: requeueIdleProbe}, nil
 	}
-	return ctrl.Result{}, nil
+	// Without idle auto-stop nothing else wakes a Running server either: the
+	// player tally and the RCON check would only refresh on a StatefulSet or CR
+	// event. A slow cadence keeps Status.Players and readiness current.
+	return ctrl.Result{RequeueAfter: requeueRunningProbe}, nil
 }
 
 // idleStopApplies reports whether idle auto-stop is configured for server. A
@@ -644,6 +679,7 @@ func (r *Reconciler) markStarting(server *v1alpha1.MinecraftServer, reason, msg 
 }
 
 func (r *Reconciler) markRunningReady(server *v1alpha1.MinecraftServer, players PlayerCount, endpointAddress string) {
+	server.Status.AutoRestarts = 0
 	server.Status.Phase = v1alpha1.PhaseRunning
 	server.Status.Ready = true
 	server.Status.ObservedGeneration = server.Generation
@@ -689,6 +725,7 @@ func (r *Reconciler) markStopping(server *v1alpha1.MinecraftServer) {
 }
 
 func (r *Reconciler) markStopped(server *v1alpha1.MinecraftServer) {
+	server.Status.AutoRestarts = 0
 	server.Status.Phase = v1alpha1.PhaseStopped
 	server.Status.Ready = false
 	server.Status.ObservedGeneration = server.Generation
@@ -727,20 +764,83 @@ func (r *Reconciler) startupTimedOut(server *v1alpha1.MinecraftServer) bool {
 	if server.Status.StartRequestedAt == nil {
 		return false
 	}
-	timeout := time.Duration(server.Spec.Startup.TimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = defaultTimeoutSeconds * time.Second
+	return r.now().Time.Sub(server.Status.StartRequestedAt.Time) >= startupTimeout(server)
+}
+
+func startupTimeout(server *v1alpha1.MinecraftServer) time.Duration {
+	if t := time.Duration(server.Spec.Startup.TimeoutSeconds) * time.Second; t > 0 {
+		return t
 	}
-	return r.now().Time.Sub(server.Status.StartRequestedAt.Time) >= timeout
+	return defaultTimeoutSeconds * time.Second
 }
 
 func (r *Reconciler) readinessTimedOut(server *v1alpha1.MinecraftServer) bool {
 	if server.Status.StartRequestedAt == nil {
 		return false
 	}
-	timeout := time.Duration(server.Spec.Startup.ReadinessTimeoutSeconds) * time.Second
-	if timeout <= 0 {
-		timeout = defaultReadinessTimeoutSec * time.Second
+	return r.now().Time.Sub(server.Status.StartRequestedAt.Time) >= readinessTimeout(server)
+}
+
+func readinessTimeout(server *v1alpha1.MinecraftServer) time.Duration {
+	if t := time.Duration(server.Spec.Startup.ReadinessTimeoutSeconds) * time.Second; t > 0 {
+		return t
 	}
-	return r.now().Time.Sub(server.Status.StartRequestedAt.Time) >= timeout
+	return defaultReadinessTimeoutSec * time.Second
+}
+
+// startingRequeue paces a start: every 2s while Starting; once Failed, only
+// when the next auto-restart falls due, or every requeueFailed when the
+// attempts are spent.
+func (r *Reconciler) startingRequeue(server *v1alpha1.MinecraftServer, timeout time.Duration) time.Duration {
+	if server.Status.Phase != v1alpha1.PhaseFailed {
+		return requeueStarting
+	}
+	n := server.Status.AutoRestarts
+	if n >= maxAutoRestarts || server.Status.StartRequestedAt == nil {
+		return requeueFailed
+	}
+	wait := server.Status.StartRequestedAt.Add(timeout + autoRestartBaseBackoff<<n).Sub(r.now().Time)
+	return max(wait, requeueStarting)
+}
+
+func (r *Reconciler) noteProbeFailure(server *v1alpha1.MinecraftServer) int {
+	r.probeMu.Lock()
+	defer r.probeMu.Unlock()
+	if r.probeFailures == nil {
+		r.probeFailures = map[types.UID]int{}
+	}
+	r.probeFailures[server.UID]++
+	return r.probeFailures[server.UID]
+}
+
+func (r *Reconciler) clearProbeFailures(server *v1alpha1.MinecraftServer) {
+	r.probeMu.Lock()
+	defer r.probeMu.Unlock()
+	delete(r.probeFailures, server.UID)
+}
+
+// recoverFailedStart retries a start that timed out. Once a backoff past the
+// timeout has elapsed (1m, then 2m, then 4m), it deletes the pod so the
+// StatefulSet recreates it, counts the attempt in Status.AutoRestarts and
+// re-anchors the start timeouts. After maxAutoRestarts the server stays Failed
+// for a human; reaching Ready or stopping resets the count.
+func (r *Reconciler) recoverFailedStart(ctx context.Context, server *v1alpha1.MinecraftServer, timeout time.Duration) error {
+	n := server.Status.AutoRestarts
+	if n >= maxAutoRestarts || server.Status.StartRequestedAt == nil {
+		return nil
+	}
+	due := server.Status.StartRequestedAt.Add(timeout + autoRestartBaseBackoff<<n)
+	if r.now().Time.Before(due) {
+		return nil
+	}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: server.Name + "-0", Namespace: server.Namespace}}
+	if err := r.Delete(ctx, pod); client.IgnoreNotFound(err) != nil {
+		return err
+	}
+	now := r.now()
+	server.Status.AutoRestarts = n + 1
+	server.Status.LastAutoRestartAt = &now
+	server.Status.StartRequestedAt = nil
+	r.markStarting(server, "AutoRestart", fmt.Sprintf("start timed out; recreated the pod (attempt %d of %d)", n+1, maxAutoRestarts))
+	return nil
 }

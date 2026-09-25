@@ -237,8 +237,9 @@ func TestReconcileRunning_RconProbeGatesReadiness(t *testing.T) {
 	markPodReady(t, c, "survival")
 
 	res := reconcile(t, r, "survival") // pod ready + probe OK -> Running
-	if res.RequeueAfter != 0 {
-		t.Errorf("expected no requeue once Running, got %+v", res)
+	// Running re-probes on a slow cadence to keep players and readiness current.
+	if res.RequeueAfter != time.Minute {
+		t.Errorf("expected the 1m Running re-probe, got %+v", res)
 	}
 
 	server := getServer(t, c, "survival")
@@ -609,8 +610,8 @@ func TestIdleAutoStop_SystemServerNeverIdles(t *testing.T) {
 		t.Fatalf("system server: desiredState=%s emptySince=%v, want Running and no countdown",
 			server.Spec.DesiredState, server.Status.EmptySince)
 	}
-	if res.RequeueAfter != 0 {
-		t.Fatalf("RequeueAfter = %v, want none for a server that never idles", res.RequeueAfter)
+	if res.RequeueAfter != time.Minute {
+		t.Fatalf("RequeueAfter = %v, want only the 1m Running re-probe for a server that never idles", res.RequeueAfter)
 	}
 }
 
@@ -669,8 +670,8 @@ func TestNoIdleRequeueWhenDisabled(t *testing.T) {
 	markPodReady(t, c, "survival")
 	res := reconcile(t, r, "survival")
 
-	if res.RequeueAfter != 0 {
-		t.Fatalf("RequeueAfter = %v, want 0 when idle auto-stop is disabled", res.RequeueAfter)
+	if res.RequeueAfter != time.Minute {
+		t.Fatalf("RequeueAfter = %v, want only the 1m Running re-probe when idle auto-stop is disabled", res.RequeueAfter)
 	}
 }
 

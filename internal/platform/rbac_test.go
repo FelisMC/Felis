@@ -189,9 +189,18 @@ func TestOperatorRole_ScopeExact(t *testing.T) {
 		}
 	}
 	// Hard exclusions.
-	for _, res := range []string{"persistentvolumeclaims", "pods", "events"} {
+	for _, res := range []string{"persistentvolumeclaims", "events"} {
 		if grantsResource(op, groupCore, res) {
 			t.Errorf("operator must NOT touch core/%s", res)
+		}
+	}
+	// Pods are delete-only: the bounded retry of a timed-out start.
+	if !hasRule(op, groupCore, "pods", "delete") {
+		t.Error("operator must have pods:delete (auto-restart of a timed-out start)")
+	}
+	for _, v := range []string{"get", "list", "watch", "create", "update", "patch", "deletecollection", "*"} {
+		if hasRule(op, groupCore, "pods", v) {
+			t.Errorf("operator pods rule must be delete-only, found %s", v)
 		}
 	}
 	// The world-volume lock check lists Jobs uncached; it never writes one.

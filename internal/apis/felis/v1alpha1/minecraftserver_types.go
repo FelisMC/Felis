@@ -277,6 +277,12 @@ type MinecraftServerStatus struct {
 	// or the server stops, so the empty-duration counter starts fresh each time
 	// the server becomes unoccupied.
 	EmptySince *metav1.Time `json:"emptySince,omitempty"`
+	// AutoRestarts counts how often the operator recreated the pod of a start
+	// that timed out (at most 3, with a doubling backoff); reaching Ready or
+	// stopping resets it.
+	AutoRestarts int32 `json:"autoRestarts,omitempty"`
+	// LastAutoRestartAt is when the operator last recreated the pod.
+	LastAutoRestartAt *metav1.Time `json:"lastAutoRestartAt,omitempty"`
 	// ObservedGeneration is the spec generation this status reflects.
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 	// Conditions are the standard metav1 conditions (Ready, RconReached, ...).

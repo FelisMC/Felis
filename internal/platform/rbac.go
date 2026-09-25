@@ -153,8 +153,10 @@ func APIBuildRole(p Params) *rbacv1.Role {
 // call fails closed with a 403), and reads RCON Secrets. Jobs are list-only,
 // through the manager's uncached API reader: before scaling a server up from zero
 // the operator checks that no restore/backup/file-write Job holds its world
-// (internal/maintenance). It never touches pods, PVCs, Events, or finalizers, so
-// none appear here.
+// (internal/maintenance). Pods are delete-only: a start that timed out is retried
+// by deleting its pod for the StatefulSet to recreate (bounded, three attempts;
+// internal/operator.recoverFailedStart). It never touches PVCs, Events, or
+// finalizers, so none appear here.
 func OperatorRole(p Params) *rbacv1.Role {
 	p = p.withDefaults()
 	return role(p.MinecraftNamespace, "felis-operator", ComponentOperator, []rbacv1.PolicyRule{
@@ -172,6 +174,9 @@ func OperatorRole(p Params) *rbacv1.Role {
 		// list only: an uncached List (no informer, so no watch) of the world-volume
 		// maintenance Jobs; the operator never creates or deletes a Job.
 		rule([]string{groupBatch}, []string{"jobs"}, []string{"list"}),
+		// delete only, through the direct client: no read of pods is needed to
+		// remove the one named <server>-0.
+		rule([]string{groupCore}, []string{"pods"}, []string{"delete"}),
 	})
 }
 

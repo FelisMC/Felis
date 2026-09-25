@@ -1,6 +1,8 @@
 package operator
 
 import (
+	"time"
+
 	"fmt"
 	"strconv"
 
@@ -165,25 +167,50 @@ func servicePorts(server *v1alpha1.MinecraftServer) []corev1.ServicePort {
 // RCON-less loader's own "started" signal — not the mere fact that the game
 // socket is bound — gates readiness. Timings are identical across both modes.
 func readinessProbe(server *v1alpha1.MinecraftServer) *corev1.Probe {
-	probe := &corev1.Probe{
+	return &corev1.Probe{
+		ProbeHandler:        healthHandler(server),
 		InitialDelaySeconds: 20,
 		PeriodSeconds:       10,
 		FailureThreshold:    6,
 	}
+}
+
+// startupProbe holds liveness off until the server first answers. Its budget
+// outlasts the operator's startup timeout plus the first auto-restart backoff,
+// so a slow first world generation is the operator's to judge (a counted,
+// bounded pod restart) and never a kubelet restart loop.
+func startupProbe(server *v1alpha1.MinecraftServer) *corev1.Probe {
+	const period = 10
+	budget := startupTimeout(server) + autoRestartBaseBackoff
+	return &corev1.Probe{
+		ProbeHandler:     healthHandler(server),
+		PeriodSeconds:    period,
+		FailureThreshold: int32((budget+period*time.Second-1)/(period*time.Second)) + 1,
+	}
+}
+
+// livenessProbe restarts a server that stopped answering for two minutes: long
+// enough to ride out a world save or a lag spike.
+func livenessProbe(server *v1alpha1.MinecraftServer) *corev1.Probe {
+	return &corev1.Probe{
+		ProbeHandler:     healthHandler(server),
+		PeriodSeconds:    20,
+		TimeoutSeconds:   5,
+		FailureThreshold: 6,
+	}
+}
+
+// healthHandler is a plain TCP check on the game port, or an HTTP GET on the
+// loader's health endpoint when StartupSpec.HealthHTTPPort is set.
+func healthHandler(server *v1alpha1.MinecraftServer) corev1.ProbeHandler {
 	if hp := server.Spec.Startup.HealthHTTPPort; hp > 0 {
 		path := server.Spec.Startup.HealthHTTPPath
 		if path == "" {
 			path = "/healthz"
 		}
-		probe.ProbeHandler = corev1.ProbeHandler{
-			HTTPGet: &corev1.HTTPGetAction{Path: path, Port: intstr.FromInt32(hp)},
-		}
-		return probe
+		return corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: path, Port: intstr.FromInt32(hp)}}
 	}
-	probe.ProbeHandler = corev1.ProbeHandler{
-		TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(GamePort)},
-	}
-	return probe
+	return corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(GamePort)}}
 }
 
 // buildStatefulSet renders the workload for replicas in {0,1}. Its half of
@@ -217,6 +244,8 @@ func buildStatefulSet(server *v1alpha1.MinecraftServer, replicas int32, felisIma
 		// StartupSpec.HealthHTTPPort) that reports true readiness — used below when
 		// set.
 		ReadinessProbe: readinessProbe(server),
+		StartupProbe:   startupProbe(server),
+		LivenessProbe:  livenessProbe(server),
 		// The server runs untrusted plugins, so it keeps no capability and can never
 		// regain one. The root filesystem stays writable: an arbitrary Paper image
 		// may unpack its runtime or write temp files outside /data.
