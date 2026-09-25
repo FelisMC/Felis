@@ -188,7 +188,7 @@ func describeManifest(body []byte, mediaType string) (ImageManifest, error) {
 				return ImageManifest{}, err
 			}
 			if !slices.ContainsFunc(im.Blobs, func(b ImageBlob) bool { return b.Digest == d.Digest }) {
-				im.Blobs = append(im.Blobs, ImageBlob{Digest: d.Digest, Size: d.Size})
+				im.Blobs = append(im.Blobs, ImageBlob(d))
 			}
 		}
 	default:
