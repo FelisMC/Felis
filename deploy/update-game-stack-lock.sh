@@ -10,7 +10,10 @@
 # and hashed here; Paper and Velocity come from Fill's content-addressed URLs.
 #
 # Review the diff before committing: MC_VERSION moves the login gate's protocol, and the
-# lobby, plain-Paper image and every client follow it.
+# lobby, plain-Paper image and every client follow it. The plugins compile against these
+# same builds (paper-api, the Limbo API, velocity-api) with their checksums pinned in
+# plugins/*/gradle/verification-metadata.xml, so a moved build also moves those; go test .
+# names what is left to bring along.
 set -Eeuo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -70,4 +73,4 @@ if [ "$check" = 1 ]; then
   die "upstream has newer builds than game-stack.lock"
 fi
 cp "$tmp" "$LOCK"
-ok "game-stack.lock updated; run go test . and the bootstrap tests, then commit"
+ok "game-stack.lock updated; move plugins/paper's paper-api pin to the new Paper build and regenerate the plugins' gradle/verification-metadata.xml (plugins/README.md \"Dependency verification\"), run go test . and the bootstrap tests, then commit"

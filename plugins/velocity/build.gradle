@@ -25,9 +25,12 @@ def velocityApi = findProperty('velocityApi') ?: '3.5.1'
 // unreleased — zero published builds; only the snapshot exists), build with a JDK 25
 // toolchain and both knobs turned up:
 //
-//   gradle build -PvelocityApi=4.0.0-SNAPSHOT -PjavaTarget=25
+//   ./gradlew build -PvelocityApi=4.0.0-SNAPSHOT -PjavaTarget=25 --dependency-verification lenient
 //
-// That build is a CHECK, not an artifact — the jar we deploy is the default 21 one.
+// That build is a CHECK, not an artifact — the jar we deploy is the default 21 one. The
+// lenient flag is part of it: gradle/verification-metadata.xml pins the checksums of the
+// 3.5.1 graph, and a snapshot's bytes change with every publish, so strict verification
+// (the default) refuses it.
 def javaTarget = JavaVersion.toVersion(findProperty('javaTarget') ?: '21')
 
 java {

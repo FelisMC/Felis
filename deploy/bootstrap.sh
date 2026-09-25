@@ -372,6 +372,9 @@ SYSTEM_SERVER_IMAGES="${STATE_DIR}/system-server-images"
 PG_FIREWALL_RULES="${STATE_DIR}/postgres-firewall.nft"
 PG_FIREWALL_SERVICE="/etc/systemd/system/felis-postgres-firewall.service"
 JRE_DIR="/opt/felis/jre"
+# The gradle image the lobby and limbo Dockerfiles build their plugins in, digest
+# included; build_velocity_plugin runs the same one.
+PLUGIN_BUILD_IMAGE="gradle:9.8.0-jdk25@sha256:2b2fc1b1dfc3604a2acc916839f36eb5ee48fd7f232427fc5faca224c73bcb01"
 K3S_BIN_DIR="${K3S_BIN_DIR:-/usr/local/bin}"
 K3S_BIN="${K3S_BIN_DIR}/k3s"
 # k3s's containerd mirror config, written by configure_registry_mirror. A variable
@@ -2126,7 +2129,8 @@ atomic_install_file() {
 
 # build_velocity_plugin compiles plugins/velocity in the same gradle image the two
 # Dockerfiles use, and drops the jar where Velocity will look for it. Docker is the
-# toolchain here on purpose: the host needs no JDK and no gradle, only a JRE.
+# toolchain here on purpose: the host needs no JDK and no gradle, only a JRE. Gradle
+# checks every dependency against plugins/velocity/gradle/verification-metadata.xml.
 build_velocity_plugin() {
   log "building felis-velocity.jar (gradle in a container; the host gets no JDK)"
   prepare_velocity_layout
@@ -2134,7 +2138,7 @@ build_velocity_plugin() {
   docker run --rm \
     -v "${GAME_STACK_DIR}:/src:z" \
     -w /src/plugins/velocity \
-    gradle:8.14-jdk21 gradle --no-daemon clean build \
+    "$PLUGIN_BUILD_IMAGE" gradle --no-daemon clean build \
     || die "felis-velocity plugin build failed"
   local -a jars=( "${GAME_STACK_DIR}"/plugins/velocity/build/libs/felis-velocity-*.jar )
   [ "${#jars[@]}" -eq 1 ] && [ -f "${jars[0]}" ] \

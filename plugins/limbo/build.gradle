@@ -5,16 +5,11 @@ plugins {
 group = 'best.lolicon.felis'
 version = '0.1.0'
 
-// Build with a JDK 21 toolchain but emit portable Java 17 bytecode (options.release
-// below). Current LOOHP/Limbo releases ship Java 21 API classes (class-file major
-// 65), so the compiler JDK must be >= 21 to *read* them — a JDK 17 fails with
-// "wrong version 65.0, should be 61.0". Targeting release 17 keeps the plugin
-// loadable on any Limbo running Java 17+. See deploy/limbo/Dockerfile (21-jdk).
-java {
-    toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
-    }
-}
+// Emit portable Java 17 bytecode (options.release below) from whatever JDK runs Gradle.
+// Current LOOHP/Limbo releases ship Java 21 API classes (class-file major 65), so that
+// JDK must be >= 21 to *read* them — a JDK 17 fails with "wrong version 65.0, should be
+// 61.0". The plugin build image and CI both run JDK 25. Targeting release 17 keeps the
+// plugin loadable on any Limbo running Java 17+.
 
 repositories {
     mavenCentral()
@@ -38,11 +33,18 @@ sourceSets {
     }
 }
 
-// The Limbo API version this plugin compiles against. It is CODE-ONLY in this Go
-// repo (not built by CI); a deployer building the image passes the release that
-// matches the Limbo.jar they bundle, e.g. -PlimboVersion=0.7.11-ALPHA. Kept a
-// property so no specific build number is hardcoded into the tree.
-def limboVersion = project.findProperty('limboVersion') ?: '+'
+// The Limbo API version this plugin compiles against: the release the login-gate image
+// bundles, deploy/game-stack.lock's LIMBO_VERSION. deploy/bootstrap.sh passes it to the
+// image build and plugins/test.sh reads it from the lock, e.g.
+// -PlimboVersion=2026.0.3-ALPHA. It has no default: LOOHP's repository serves no
+// maven-metadata.xml, so a dynamic version cannot resolve, and a guessed one would
+// compile against an API the gate does not run. gradle/verification-metadata.xml holds
+// the checksum of the locked release, so a lock refresh regenerates it (see
+// plugins/README.md "Dependency verification").
+def limboVersion = project.findProperty('limboVersion')
+if (!limboVersion) {
+    throw new GradleException('pass -PlimboVersion=<LIMBO_VERSION from deploy/game-stack.lock>')
+}
 
 dependencies {
     // Limbo provides its own API at runtime (the plugin is loaded into the Limbo
@@ -52,7 +54,7 @@ dependencies {
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
-    // Portable output: read the Java 21 Limbo API with the JDK 21 toolchain above,
-    // but emit Java 17 bytecode so the plugin loads on any Limbo running Java 17+.
+    // Portable output: read the Java 21 Limbo API with a JDK >= 21, but emit Java 17
+    // bytecode so the plugin loads on any Limbo running Java 17+.
     options.release = 17
 }

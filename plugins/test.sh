@@ -3,7 +3,8 @@
 #
 #     bash plugins/test.sh
 #
-# Two gates, both runnable on any machine with a JDK 21 and Gradle:
+# Two gates, both runnable on any machine with a JDK 25 (Gradle comes from each
+# module's wrapper, sha256-pinned):
 #
 #   1. The hand-written, framework-free test mains under shared/test and
 #      velocity/test. They check what "compiles" cannot: the felis:control codec
@@ -22,14 +23,15 @@
 #      test of what we ship).
 #
 #   2. Production compile gates: the velocity/paper/limbo plugin jars — the three
-#      bootstrap bakes into the proxy and the game images — are built with the same
-#      Gradle major the plugin Dockerfiles pin, so a compile break is a red check
-#      here instead of an install-time surprise. limbo compiles against the API
-#      release bootstrap would bundle (resolved below, same source the installer
-#      reads), because the module's `+` default cannot resolve on its own.
+#      bootstrap bakes into the proxy and the game images — are built through each
+#      module's wrapper, the same Gradle the plugin build image runs, with every
+#      dependency checked against the module's gradle/verification-metadata.xml. A
+#      compile break or a swapped artifact is a red check here instead of an
+#      install-time surprise. limbo compiles against the API release the login gate
+#      bundles: deploy/game-stack.lock's LIMBO_VERSION, which bootstrap passes too.
 #
-# No test framework and no wrapper: the mains are the same javac one-liners their
-# javadocs document, so a local run and CI run the same bytes.
+# No test framework: the mains are the same javac one-liners their javadocs document,
+# so a local run and CI run the same bytes.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -121,24 +123,11 @@ java -cp "$work/opcard-classes:$adventure_api:$adventure_key:$examination_api" \
 # --- 2. production compile gates ------------------------------------------------
 
 for module in velocity paper; do
-  echo "==> gradle --no-daemon -p plugins/$module build"
-  gradle --no-daemon -p "plugins/$module" build
+  echo "==> plugins/$module: ./gradlew --no-daemon build"
+  ( cd "plugins/$module" && ./gradlew --no-daemon build )
 done
 
-# limbo is special: it compiles against the LOOHP/Limbo API release that the
-# installer bundles, and that release is published nowhere except the CI artifact
-# name (Limbo-<version>-<mc>.jar) — the same place deploy/bootstrap.sh reads it.
-# The module's `+` version default cannot resolve (LOOHP's repository serves no
-# maven-metadata.xml), so a bare `gradle -p plugins/limbo build` is never a valid
-# command; the version must come from here or from bootstrap.
-echo "==> resolving the newest LOOHP/Limbo CI build (for -PlimboVersion)"
-limbo_meta="$(curl -fsSL --retry 5 --retry-delay 2 \
-  https://ci.loohpjames.com/job/Limbo/lastSuccessfulBuild/api/json)" \
-  || { echo "cannot read the LOOHP/Limbo CI build metadata; the limbo gate cannot pick a version" >&2; exit 1; }
-limbo_file="$(printf '%s' "$limbo_meta" | grep -o 'Limbo-[0-9A-Za-z._-]*\.jar' || true)"
-limbo_file="${limbo_file%%$'\n'*}"
-[ -n "$limbo_file" ] || { echo "no Limbo jar in the LOOHP/Limbo CI artifact list" >&2; exit 1; }
-limbo_version="${limbo_file%.jar}"; limbo_version="${limbo_version%-*}"; limbo_version="${limbo_version#Limbo-}"
-[ -n "$limbo_version" ] || { echo "cannot parse the Limbo version out of ${limbo_file}" >&2; exit 1; }
-echo "==> gradle --no-daemon -p plugins/limbo build (Limbo ${limbo_version})"
-gradle --no-daemon -p plugins/limbo -PlimboVersion="$limbo_version" build
+limbo_version="$(sed -n 's/^LIMBO_VERSION=//p' deploy/game-stack.lock)"
+[ -n "$limbo_version" ] || { echo "deploy/game-stack.lock sets no LIMBO_VERSION" >&2; exit 1; }
+echo "==> plugins/limbo: ./gradlew --no-daemon -PlimboVersion=${limbo_version} build"
+( cd plugins/limbo && ./gradlew --no-daemon -PlimboVersion="$limbo_version" build )

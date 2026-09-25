@@ -5,15 +5,15 @@ plugins {
 group = 'best.lolicon.felis'
 version = '0.1.0'
 
-// Paper 1.21 runs on Java 21, and its API is published as a Java-21 artifact, so
-// this one module needs a Java-21 toolchain (the rest of the suite is 17). The
-// toolchain block makes that requirement explicit and self-enforcing: Gradle uses a
-// detected JDK 21 to compile, regardless of which JDK runs Gradle, and fails loudly
-// if none is present. The shared codec is plain Java-17 source, which 21 compiles
+// The lobby runs Paper 26.x, which needs Java 25, and paper-api 26.x is published as a
+// Java-25 artifact (its Gradle module metadata declares org.gradle.jvm.version = 25), so
+// this module compiles with a Java-25 toolchain. The toolchain block makes that explicit
+// and self-enforcing: Gradle uses a detected JDK 25 whichever JDK runs Gradle, and fails
+// loudly if none is present. The shared codec is plain Java-17 source, which 25 compiles
 // forward-compatibly.
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(21)
+        languageVersion = JavaLanguageVersion.of(25)
     }
 }
 
@@ -28,7 +28,13 @@ repositories {
 dependencies {
     // paper-api is compile-only (the server provides it at runtime). It pulls in
     // Bukkit + Adventure, which is all the lobby face needs.
-    compileOnly 'io.papermc.paper:paper-api:1.21.4-R0.1-SNAPSHOT'
+    //
+    // Pinned to the API of the exact server the lobby image bundles: deploy/game-stack.lock's
+    // PAPER_JAR_URL is paper-<mc>-<build>.jar, and PaperMC publishes that build's API as
+    // <mc>.build.<build>-<channel>. A release build, never a -SNAPSHOT, so the same sources
+    // compile against the same bytes every time (gradle/verification-metadata.xml checks
+    // them). deploy/bootstrap_test.sh fails when this and the lock drift apart.
+    compileOnly 'io.papermc.paper:paper-api:26.3.build.40-alpha'
 }
 
 // The lobby is a PURE UI face (spec §12): it speaks only the felis:control

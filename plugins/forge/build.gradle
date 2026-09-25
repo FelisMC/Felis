@@ -1,5 +1,7 @@
 plugins {
-    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+    // An exact release, never a range: a range resolves to whatever ForgeGradle published
+    // last, so the same sources could build differently from one day to the next.
+    id 'net.minecraftforge.gradle' version '6.0.54'
     id 'java'
 }
 

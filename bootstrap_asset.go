@@ -22,15 +22,17 @@ var bootstrapAssets embed.FS
 // developer's working tree carries gradle output (plugins/*/build, plugins/*/bin,
 // and for the modded loaders a decompiled Minecraft under build/) which would
 // otherwise be baked into every felis binary. Keep them explicit — add a source
-// directory here, never a parent.
+// directory here, never a parent. Each module's gradle/verification-metadata.xml rides
+// along, since Gradle builds unverified without it; the wrapper stays out, because the
+// image builds run the pinned build image's own gradle.
 //
 //go:embed deploy/game-stack.lock
 //go:embed deploy/limbo/Dockerfile deploy/limbo/entrypoint.sh
 //go:embed deploy/lobby/Dockerfile deploy/lobby/entrypoint.sh
 //go:embed deploy/paper/Dockerfile deploy/paper/entrypoint.sh
-//go:embed plugins/limbo/build.gradle plugins/limbo/settings.gradle plugins/limbo/src
-//go:embed plugins/paper/build.gradle plugins/paper/settings.gradle plugins/paper/src
-//go:embed plugins/velocity/build.gradle plugins/velocity/settings.gradle plugins/velocity/src
+//go:embed plugins/limbo/build.gradle plugins/limbo/settings.gradle plugins/limbo/src plugins/limbo/gradle/verification-metadata.xml
+//go:embed plugins/paper/build.gradle plugins/paper/settings.gradle plugins/paper/src plugins/paper/gradle/verification-metadata.xml
+//go:embed plugins/velocity/build.gradle plugins/velocity/settings.gradle plugins/velocity/src plugins/velocity/gradle/verification-metadata.xml
 //go:embed plugins/shared/src
 var gameStackAssets embed.FS
 

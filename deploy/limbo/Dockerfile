@@ -29,22 +29,26 @@
 #      overridable via FELIS_HEALTH_PORT) and returns 200 only after the first tick.
 
 # ---- build the felis-limbo plugin jar ----
-# gradle:*-jdk21 — an official Gradle image on JDK 21. JDK 21 is required because
-# current LOOHP/Limbo releases ship Java 21 API classes (class-file major 65); a
-# JDK 17 fails to read them with "wrong version 65.0, should be 61.0". The image
-# also provides the `gradle` binary (this tree vendors no Gradle wrapper).
-# build.gradle still targets release 17 bytecode so the plugin loads on Java 17+.
-FROM gradle:8.14-jdk21@sha256:5c4c0c4284de4a19951e82ac78f86dbcda2e136644bbfe159beba7ea3420cc80 AS plugin
+# The same pinned Gradle image as the lobby build (see deploy/lobby/Dockerfile). Its JDK
+# must be >= 21 because current LOOHP/Limbo releases ship Java 21 API classes
+# (class-file major 65); a JDK 17 fails to read them with "wrong version 65.0, should be
+# 61.0". build.gradle still targets release 17 bytecode so the plugin loads on Java 17+.
+FROM gradle:9.8.0-jdk25@sha256:2b2fc1b1dfc3604a2acc916839f36eb5ee48fd7f232427fc5faca224c73bcb01 AS plugin
 WORKDIR /src
 # Copy what the limbo module needs: its own tree plus the shared link core it
 # srcDir-includes (../shared/src/main/java → /src/plugins/shared/src/main/java), so
 # the account-link client + config loader compile straight into the jar.
 COPY plugins/limbo/ ./plugins/limbo/
 COPY plugins/shared/ ./plugins/shared/
-ARG LIMBO_VERSION=+
-RUN cd plugins/limbo \
-    && (test -x ./gradlew && ./gradlew --no-daemon -PlimboVersion="$LIMBO_VERSION" build \
-        || gradle --no-daemon -PlimboVersion="$LIMBO_VERSION" build) \
+# The Limbo API release to compile against: deploy/game-stack.lock's LIMBO_VERSION, which
+# bootstrap passes. Required — the API is checked against the checksum
+# plugins/limbo/gradle/verification-metadata.xml holds for that release.
+ARG LIMBO_VERSION
+RUN if [ -z "${LIMBO_VERSION:-}" ]; then \
+        echo "LIMBO_VERSION is required (deploy/game-stack.lock)" >&2; exit 1; \
+    fi \
+    && cd plugins/limbo \
+    && gradle --no-daemon -PlimboVersion="$LIMBO_VERSION" build \
     && cp build/libs/*.jar /felis-limbo.jar
 
 # ---- assemble the runtime ----

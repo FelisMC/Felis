@@ -12,7 +12,7 @@
 # Each module pins its own Gradle via its vendored wrapper (fabric/forge: 8.8,
 # neoforge: 8.14) and targets a Java-17 Minecraft line (1.20.1 / 1.20.4), so run
 # this on JDK 17. The plugin jars bootstrap installs are different modules with a
-# different gate: plugins/test.sh (JDK 21). The first run here downloads and
+# different gate: plugins/test.sh (JDK 25). The first run here downloads and
 # decompiles Minecraft (minutes); the Gradle caches make later runs much faster.
 set -euo pipefail
 

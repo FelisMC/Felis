@@ -25,16 +25,19 @@
 # Secret) and refuses to start without it: a lobby that cannot verify the proxy's signed
 # handshake would trust an offline, forgeable UUID.
 
-# ---- build the felis-paper plugin jar (Paper API is Java 21) ----
-# gradle:8.14-jdk21 — an official Gradle image on JDK 21 (this tree vendors no Gradle
-# wrapper, and a bare JDK image ships no `gradle`). JDK 21 matches the Paper API.
-FROM gradle:8.14-jdk21@sha256:5c4c0c4284de4a19951e82ac78f86dbcda2e136644bbfe159beba7ea3420cc80 AS plugin
+# ---- build the felis-paper plugin jar (Paper API is Java 25) ----
+# The official Gradle image on JDK 25, the Gradle version plugins/*/gradle/wrapper pins.
+# The limbo Dockerfile and bootstrap's velocity build use this same image, digest and all
+# (bootstrap_asset_test.go holds the three together). The image's own `gradle` runs the
+# build rather than the module's wrapper, which would download the same distribution
+# again on every image build. The build checks every dependency against
+# plugins/paper/gradle/verification-metadata.xml and fails on a mismatch.
+FROM gradle:9.8.0-jdk25@sha256:2b2fc1b1dfc3604a2acc916839f36eb5ee48fd7f232427fc5faca224c73bcb01 AS plugin
 WORKDIR /src
 COPY plugins/paper/ ./plugins/paper/
 COPY plugins/shared/ ./plugins/shared/
 RUN cd plugins/paper \
-    && (test -x ./gradlew && ./gradlew --no-daemon build \
-        || gradle --no-daemon build) \
+    && gradle --no-daemon build \
     && cp build/libs/*.jar /felis-paper.jar
 
 # ---- assemble the runtime ----

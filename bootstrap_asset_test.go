@@ -1,6 +1,7 @@
 package felis
 
 import (
+	"encoding/xml"
 	"io/fs"
 	"os"
 	"regexp"
@@ -210,17 +211,7 @@ func requireEmbedded(t *testing.T, path string) {
 // with a strict KEY=value parser that dies on anything unexpected, so a malformed lock is a
 // failed install on every host. Check the shipped copy the same way here.
 func TestGameStackLockIsComplete(t *testing.T) {
-	lock := map[string]string{}
-	for line := range strings.SplitSeq(readGameStackFile(t, "deploy/game-stack.lock"), "\n") {
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		k, v, ok := strings.Cut(line, "=")
-		if !ok {
-			t.Fatalf("not a KEY=value line: %q", line)
-		}
-		lock[k] = v
-	}
+	lock := gameStackLock(t)
 	m := regexp.MustCompile(`GAME_STACK_LOCK_KEYS="([^"]*)"`).FindStringSubmatch(BootstrapScript())
 	if m == nil {
 		t.Fatal("bootstrap.sh no longer declares GAME_STACK_LOCK_KEYS")
@@ -311,6 +302,189 @@ func TestDockerfileBaseImagesArePinnedByDigest(t *testing.T) {
 			t.Errorf("%s has no FROM line", name)
 		}
 	}
+}
+
+// The plugin jars are built in three places the installer controls — the lobby and limbo
+// image builds and bootstrap's Velocity build — and through each module's wrapper by a
+// developer or CI. A tag alone is whatever it points at on build day, and two Gradle
+// versions are two chances for a build to pass in one place and break in the other, so
+// all of them run one image, pinned by digest, whose Gradle is the wrappers' Gradle.
+func TestPluginBuildsRunOnePinnedGradle(t *testing.T) {
+	sources := map[string]string{
+		"deploy/lobby/Dockerfile": readGameStackFile(t, "deploy/lobby/Dockerfile"),
+		"deploy/limbo/Dockerfile": readGameStackFile(t, "deploy/limbo/Dockerfile"),
+		"deploy/bootstrap.sh":     BootstrapScript(),
+	}
+	anyRef := regexp.MustCompile(`gradle:[\w.-]+(@sha256:\w+)?`)
+	pinned := regexp.MustCompile(`^gradle:(\d+\.\d+(?:\.\d+)?)-jdk\d+@sha256:[0-9a-f]{64}$`)
+	images := map[string]bool{}
+	gradle := ""
+	for name, body := range sources {
+		refs := anyRef.FindAllString(body, -1)
+		if len(refs) == 0 {
+			t.Errorf("%s names no gradle image", name)
+		}
+		for _, ref := range refs {
+			m := pinned.FindStringSubmatch(ref)
+			if m == nil {
+				t.Errorf("%s: %s is not a gradle image pinned by digest", name, ref)
+				continue
+			}
+			images[ref] = true
+			gradle = m[1]
+		}
+	}
+	if len(images) != 1 {
+		t.Fatalf("the plugin builds use %d different gradle images, want one: %v", len(images), images)
+	}
+	// bootstrap names the image once and has to spend it where it builds the jar.
+	if !strings.Contains(BootstrapScript(), `"$PLUGIN_BUILD_IMAGE" gradle --no-daemon clean build`) {
+		t.Error("build_velocity_plugin does not build in $PLUGIN_BUILD_IMAGE")
+	}
+
+	for _, module := range []string{"velocity", "paper", "limbo"} {
+		props := wrapperProperties(t, module)
+		if want := "gradle-" + gradle + "-bin.zip"; !strings.HasSuffix(props["distributionUrl"], "/"+want) {
+			t.Errorf("plugins/%s wrapper runs %s; the image builds run Gradle %s", module, props["distributionUrl"], gradle)
+		}
+	}
+	// The mods are no part of the install, but a wrapper without a checksum runs whatever
+	// the download handed it.
+	for _, module := range []string{"velocity", "paper", "limbo", "fabric", "forge", "neoforge"} {
+		if sum := wrapperProperties(t, module)["distributionSha256Sum"]; !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(sum) {
+			t.Errorf("plugins/%s wrapper pins no distribution sha256 (got %q)", module, sum)
+		}
+	}
+}
+
+// Each plugin compiles against the API of the exact build the install runs, and Gradle
+// checks those bytes against the module's verification file. Nothing but this test ties
+// the three to deploy/game-stack.lock: a lock refresh that leaves them behind builds the
+// lobby against yesterday's API, or fails every image build on a checksum the file does
+// not have.
+func TestPluginApisAreTheLockedBuilds(t *testing.T) {
+	lock := gameStackLock(t)
+
+	// Paper: paper-<mc>-<build>.jar runs; paper-api <mc>.build.<build>-<channel> compiles.
+	jar := regexp.MustCompile(`/paper-([^/]+)-(\d+)\.jar$`).FindStringSubmatch(lock["PAPER_JAR_URL"])
+	if jar == nil {
+		t.Fatalf("PAPER_JAR_URL %s does not name paper-<mc>-<build>.jar", lock["PAPER_JAR_URL"])
+	}
+	dep := regexp.MustCompile(`compileOnly 'io\.papermc\.paper:paper-api:([^']+)'`).
+		FindStringSubmatch(readGameStackFile(t, "plugins/paper/build.gradle"))
+	if dep == nil {
+		t.Fatal("plugins/paper/build.gradle declares no paper-api dependency")
+	}
+	if !regexp.MustCompile(`^` + regexp.QuoteMeta(jar[1]+".build."+jar[2]) + `(-[a-z]+)?$`).MatchString(dep[1]) {
+		t.Errorf("paper-api %s is not the API of the locked server paper-%s-%s.jar", dep[1], jar[1], jar[2])
+	}
+	requireVerified(t, "paper", "io.papermc.paper", "paper-api", dep[1])
+
+	// Limbo: the lock's release, passed to the image build, which refuses to guess one.
+	limbo := lock["LIMBO_VERSION"]
+	if !strings.Contains(BootstrapScript(), `--build-arg LIMBO_VERSION="$LIMBO_VERSION"`) {
+		t.Error("bootstrap.sh does not pass the locked LIMBO_VERSION to the limbo image build")
+	}
+	dockerfile := readGameStackFile(t, "deploy/limbo/Dockerfile")
+	if !regexp.MustCompile(`(?m)^ARG LIMBO_VERSION$`).MatchString(dockerfile) ||
+		!strings.Contains(dockerfile, `if [ -z "${LIMBO_VERSION:-}" ]`) {
+		t.Error("deploy/limbo/Dockerfile does not require LIMBO_VERSION; a build without it would " +
+			"compile against a version nobody chose")
+	}
+	// LOOHP publishes the jar the login gate runs as the Limbo API artifact itself, so the
+	// checksum Gradle holds for it is the lock's: compiled-against and running are one file.
+	if got := requireVerified(t, "limbo", "com.loohp", "Limbo", limbo)["Limbo-"+limbo+".jar"]; got != lock["LIMBO_JAR_SHA256"] {
+		t.Errorf("verification-metadata.xml holds %q for Limbo-%s.jar; the login gate runs %s", got, limbo, lock["LIMBO_JAR_SHA256"])
+	}
+
+	// Velocity: the API default is the proxy the install runs.
+	api := regexp.MustCompile(`findProperty\('velocityApi'\) \?: '([^']+)'`).
+		FindStringSubmatch(readGameStackFile(t, "plugins/velocity/build.gradle"))
+	if api == nil {
+		t.Fatal("plugins/velocity/build.gradle has no velocityApi default")
+	}
+	if api[1] != lock["VELOCITY_VERSION"] {
+		t.Errorf("velocity-api defaults to %s; the install runs Velocity %s", api[1], lock["VELOCITY_VERSION"])
+	}
+	requireVerified(t, "velocity", "com.velocitypowered", "velocity-api", api[1])
+}
+
+// requireVerified asserts the module's shipped verification file checks metadata and
+// pins group:name:version, and returns that component's artifact sha256s by file name.
+func requireVerified(t *testing.T, module, group, name, version string) map[string]string {
+	t.Helper()
+	path := "plugins/" + module + "/gradle/verification-metadata.xml"
+	var doc struct {
+		VerifyMetadata bool `xml:"configuration>verify-metadata"`
+		Components     []struct {
+			Group     string `xml:"group,attr"`
+			Name      string `xml:"name,attr"`
+			Version   string `xml:"version,attr"`
+			Artifacts []struct {
+				Name   string `xml:"name,attr"`
+				SHA256 []struct {
+					Value string `xml:"value,attr"`
+				} `xml:"sha256"`
+			} `xml:"artifact"`
+		} `xml:"components>component"`
+	}
+	if err := xml.Unmarshal([]byte(readGameStackFile(t, path)), &doc); err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+	if !doc.VerifyMetadata {
+		t.Errorf("%s does not verify metadata; a swapped pom could redirect the graph", path)
+	}
+	for _, c := range doc.Components {
+		if c.Group != group || c.Name != name || c.Version != version {
+			continue
+		}
+		sums := map[string]string{}
+		for _, a := range c.Artifacts {
+			if len(a.SHA256) > 0 {
+				sums[a.Name] = a.SHA256[0].Value
+			}
+		}
+		if sums[name+"-"+version+".jar"] == "" {
+			t.Errorf("%s pins %s:%s:%s but no sha256 for its jar", path, group, name, version)
+		}
+		return sums
+	}
+	t.Errorf("%s has no checksum for %s:%s:%s; the build would refuse it", path, group, name, version)
+	return nil
+}
+
+// wrapperProperties reads a module's gradle-wrapper.properties off disk: the wrappers are
+// for developers and CI, and nothing embeds them.
+func wrapperProperties(t *testing.T, module string) map[string]string {
+	t.Helper()
+	b, err := os.ReadFile("plugins/" + module + "/gradle/wrapper/gradle-wrapper.properties")
+	if err != nil {
+		t.Fatal(err)
+	}
+	props := map[string]string{}
+	for line := range strings.SplitSeq(string(b), "\n") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(line), "="); ok && !strings.HasPrefix(k, "#") {
+			props[k] = strings.ReplaceAll(v, `\:`, ":")
+		}
+	}
+	return props
+}
+
+// gameStackLock parses the shipped deploy/game-stack.lock the way bootstrap.sh does.
+func gameStackLock(t *testing.T) map[string]string {
+	t.Helper()
+	lock := map[string]string{}
+	for line := range strings.SplitSeq(readGameStackFile(t, "deploy/game-stack.lock"), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			t.Fatalf("not a KEY=value line: %q", line)
+		}
+		lock[k] = v
+	}
+	return lock
 }
 
 func readGameStackFile(t *testing.T, name string) string {

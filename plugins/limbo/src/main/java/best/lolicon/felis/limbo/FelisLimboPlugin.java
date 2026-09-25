@@ -19,6 +19,7 @@ import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
 import net.kyori.adventure.inventory.Book;
+import net.kyori.adventure.key.Key;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
 import net.kyori.adventure.text.format.NamedTextColor;
@@ -99,6 +100,9 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
 
     private static final Logger LOG = Logger.getLogger("FelisLimbo");
     private static final String HEALTH_PATH = "/healthz";
+    // Limbo deprecated the String channel overload; its Key overload sends key.toString(),
+    // which for "felis:control" is the same channel string.
+    private static final Key CONTROL_CHANNEL = Key.key(Control.CHANNEL);
     private static final int DEFAULT_PORT = 8080;
 
     // Poll cadence and window. 20 ticks ≈ 1s at Limbo's tick rate; polling once a
@@ -392,7 +396,7 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
 
     private void sendRelease(Player player) {
         try {
-            player.sendPluginMessage(Control.CHANNEL, Control.encode(ControlFrame.loginRelease(player.getName())));
+            player.sendPluginMessage(CONTROL_CHANNEL, Control.encode(ControlFrame.loginRelease(player.getName())));
         } catch (IOException | RuntimeException e) {
             // The next attempt sends again; the window bounds how long we keep trying.
             LOG.warning("FelisLimbo: could not send the lobby release for " + player.getUniqueId()
