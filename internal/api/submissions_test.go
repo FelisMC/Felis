@@ -934,3 +934,27 @@ func TestUploadSubmissionContextRateLimited(t *testing.T) {
 		t.Fatalf("retry at the same instant after failure: code = %d, want 200 (%s)", w.Code, w.Body.String())
 	}
 }
+
+type limitedSubmissions struct {
+	*fakeSubmissions
+	limit int64
+}
+
+func (l limitedSubmissions) ContextLimit() int64 { return l.limit }
+
+// The panel reads the per-upload cap before sending a file; a lane that cannot
+// report one answers like any unwired submissions endpoint.
+func TestSubmissionLimitsReportsTheContextCap(t *testing.T) {
+	api := appSubAPI(&fakeSubmissions{})
+	api.Submissions = limitedSubmissions{&fakeSubmissions{}, 99614720}
+	w := do(api.ExternalHandler(), "GET", "/api/v1/me/submissions/limits", "", nil)
+	if w.Code != 200 || strings.TrimSpace(w.Body.String()) != `{"max_context_bytes":99614720}` {
+		t.Fatalf("limits = %d %s", w.Code, w.Body.String())
+	}
+
+	api.Submissions = nil
+	w = do(api.ExternalHandler(), "GET", "/api/v1/me/submissions/limits", "", nil)
+	if w.Code != 503 {
+		t.Fatalf("unwired limits = %d %s", w.Code, w.Body.String())
+	}
+}

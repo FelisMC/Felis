@@ -202,6 +202,23 @@ func (a *API) handleUploadSubmissionContext(w http.ResponseWriter, r *http.Reque
 // query to another user's uploads. Each row is enriched with its linked build's
 // outcome — this list is the only player-visible outlet for a build result, so
 // a failed build is not invisible to the person who submitted it.
+// SubmissionLimits is what one upload may carry, read before sending it.
+type SubmissionLimits struct {
+	MaxContextBytes int64 `json:"max_context_bytes"`
+}
+
+// handleSubmissionLimits reports the effective per-upload context cap
+// ([registry] context_max_bytes), so the panel can refuse an oversized file
+// before streaming it into the edge's own body limit.
+func (a *API) handleSubmissionLimits(w http.ResponseWriter, r *http.Request) {
+	l, ok := a.Submissions.(interface{ ContextLimit() int64 })
+	if !ok {
+		writeError(w, r, errSubmissionsUnavailable)
+		return
+	}
+	writeJSON(w, http.StatusOK, SubmissionLimits{MaxContextBytes: l.ContextLimit()})
+}
+
 func (a *API) handleMySubmissions(w http.ResponseWriter, r *http.Request) {
 	if a.Submissions == nil {
 		writeError(w, r, errSubmissionsUnavailable)

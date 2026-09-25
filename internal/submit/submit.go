@@ -384,6 +384,9 @@ type Manager struct {
 	IDGen func() string
 }
 
+// ContextLimit is the effective cap on one uploaded context.
+func (m *Manager) ContextLimit() int64 { return m.maxContextBytes() }
+
 func (m *Manager) maxContextBytes() int64 {
 	if m.MaxContextBytes > 0 {
 		return m.MaxContextBytes

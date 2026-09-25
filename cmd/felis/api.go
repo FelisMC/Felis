@@ -235,6 +235,11 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 			submissions.MaxStoredBytesTotal = n
 		}
 	}
+	if n, err := contextMaxBytes(cfg); err != nil {
+		fmt.Fprintf(stderr, "felis api: [registry] context_max_bytes %q is not a positive size such as 95Mi; keeping the default\n", cfg.Registry.ContextMaxBytes)
+	} else {
+		submissions.MaxContextBytes = n
+	}
 
 	// Restore subsystem (spec §7): the weak-SA restore Job mounts the target
 	// world PVC + the backup PVC and runs `felis restore`. It needs deployment-
@@ -875,4 +880,28 @@ func startServerCache(ctx context.Context, cfg *rest.Config, scheme *runtime.Sch
 		}
 	}()
 	return c, inf.HasSynced, nil
+}
+
+// cloudflareContextMaxBytes is the per-upload cap behind the Cloudflare edge,
+// which refuses request bodies over 100 MB (the Free and Pro plan limit) with
+// its own 413 page before they reach the API. 95Mi leaves headroom under it, so
+// an oversized context meets the API's own JSON refusal instead.
+const cloudflareContextMaxBytes = "95Mi"
+
+// contextMaxBytes resolves [registry] context_max_bytes, defaulting to
+// cloudflareContextMaxBytes behind the Cloudflare edge. 0 keeps the submit
+// package's own default (1 GiB).
+func contextMaxBytes(cfg *config.Config) (int64, error) {
+	v := cfg.Registry.ContextMaxBytes
+	if v == "" && cfg.Auth.BehindCloudflare() {
+		v = cloudflareContextMaxBytes
+	}
+	if v == "" {
+		return 0, nil
+	}
+	n, err := parseByteSize(v)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("not a positive size: %q", v)
+	}
+	return n, nil
 }

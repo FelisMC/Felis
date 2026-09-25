@@ -166,6 +166,13 @@ func (a AuthConfig) EffectiveClientIPHeader() string {
 	return ""
 }
 
+// BehindCloudflare reports whether requests reach the API through the
+// Cloudflare edge: an Access audience (set only by the edge setup) or
+// CF-Connecting-IP as the client address header.
+func (a AuthConfig) BehindCloudflare() bool {
+	return strings.EqualFold(a.EffectiveClientIPHeader(), "CF-Connecting-IP")
+}
+
 // K8sConfig is the [k8s] table.
 type K8sConfig struct {
 	Namespace   string `toml:"namespace"`
@@ -232,6 +239,11 @@ type RegistryConfig struct {
 	// own; this bounds the sum, which on k3s local-path is the only bound, since
 	// the uploads PVC's size is not enforced there. Empty keeps 4Gi.
 	UserUploadsMaxBytes string `toml:"user_uploads_max_bytes"`
+	// ContextMaxBytes caps one uploaded build context, as a quantity ("95Mi").
+	// Empty keeps 1Gi, except behind the Cloudflare edge (see BehindCloudflare),
+	// whose proxy refuses request bodies over 100 MB before they reach the API;
+	// there it keeps 95Mi, so the API's own 413 is what the uploader sees.
+	ContextMaxBytes string `toml:"context_max_bytes"`
 	// S3 configures the object-store backend for user_uploads_context when it is an
 	// s3:// base (the alternative to a local uploads path). It mirrors
 	// ArchiveS3Config: Endpoint + Region locate the store and the *Ref fields NAME
