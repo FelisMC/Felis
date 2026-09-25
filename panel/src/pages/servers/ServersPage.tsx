@@ -4,7 +4,6 @@ import {
   Network,
   Play,
   Terminal,
-  ExternalLink,
   RefreshCw,
   Server,
   Users,
@@ -37,11 +36,12 @@ import { Loading, ErrorState, EmptyState } from "@/components/States";
 import { Pagination } from "@/components/Pagination";
 import { CreateServerDialog } from "@/components/CreateServerDialog";
 import { StatCard } from "@/components/StatCard";
+import { CopyAddress } from "@/components/CopyAddress";
 import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync, useConfig } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
-import { hostFor, type RuntimeConfig } from "@/lib/config";
+import { joinAddress, type RuntimeConfig } from "@/lib/config";
 import { matchScore } from "@/lib/fuzzy";
 import type { AutostartPolicy, FleetServer, Phase, MyServerView } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -355,10 +355,11 @@ export function ServersPage() {
             />
           ) : (
             <>
-              {/* Cards below 2xl (two per row from md); the admin table needs
-                  about 1100px of content width for all its columns, which the
-                  page only has from 2xl beside the sidebar. */}
-              <ul className="grid gap-3 md:grid-cols-2 2xl:hidden">
+              {/* Cards until the table fits (two per row from md). The admin
+                  table needs about 1100px of content width for all its columns,
+                  which the page only has from 2xl beside the sidebar; the
+                  player's four columns fit from xl. */}
+              <ul className={cn("grid gap-3 md:grid-cols-2", isAdmin ? "2xl:hidden" : "xl:hidden")}>
                 {paged.map((s) => (
                   <ServerMobileCard
                     key={s.name}
@@ -369,7 +370,12 @@ export function ServersPage() {
                   />
                 ))}
               </ul>
-              <Card className="hidden overflow-hidden border border-border/80 2xl:block">
+              <Card
+                className={cn(
+                  "hidden overflow-hidden border border-border/80",
+                  isAdmin ? "2xl:block" : "xl:block",
+                )}
+              >
                 <div className="overflow-x-auto">
                   <table className="w-full border-collapse text-sm">
                     <thead>
@@ -378,7 +384,7 @@ export function ServersPage() {
                         {isAdmin && <th className="px-4 py-2.5 font-medium">{t("fleet_col_owner")}</th>}
                         <th className="px-4 py-2.5 font-medium">{t("fleet_col_players")}</th>
                         <th className="px-4 py-2.5 font-medium">{t("fleet_col_policy")}</th>
-                        <th className="px-4 py-2.5 font-medium">{t("fleet_col_endpoint")}</th>
+                        {isAdmin && <th className="px-4 py-2.5 font-medium">{t("fleet_col_endpoint")}</th>}
                         <th className="px-4 py-2.5 text-right font-medium">
                           {t("fleet_col_actions")}
                         </th>
@@ -526,20 +532,6 @@ function ServerActions({
   );
 }
 
-function HostLink({ host }: { host: string }) {
-  return (
-    <a
-      href={`https://${host}`}
-      target="_blank"
-      rel="noreferrer"
-      className="inline-flex min-w-0 max-w-full items-center gap-1 text-xs text-muted-foreground hover:text-foreground md:max-w-[15rem]"
-    >
-      <span className="truncate">{host}</span>
-      <ExternalLink className="h-3 w-3 shrink-0" />
-    </a>
-  );
-}
-
 function OwnerLabel({ server }: { server: UnifiedServer }) {
   const { t } = useTranslation("ops");
   const { t: ts } = useTranslation("servers");
@@ -611,7 +603,7 @@ function ServerRow({
   onChanged: () => void;
 }) {
   const { t } = useTranslation("ops");
-  const host = server.subdomain ? hostFor(server.subdomain, cfg) : "";
+  const address = server.subdomain ? joinAddress(server.subdomain, cfg) : "";
 
   return (
     <tr className="border-b border-border/50 transition-colors last:border-0 hover:bg-muted/40">
@@ -620,7 +612,7 @@ function ServerRow({
           <ServerName server={server} />
           <PhaseBadge phase={server.phase} />
         </div>
-        {host && <HostLink host={host} />}
+        {address && <CopyAddress address={address} className="md:max-w-[16rem]" />}
       </td>
       {isAdmin && (
         <td className="px-4 py-3 align-middle text-left">
@@ -639,9 +631,11 @@ function ServerRow({
           <span className="text-muted-foreground">—</span>
         )}
       </td>
-      <td className="px-4 py-3 align-middle text-left">
-        <EndpointLabel server={server} />
-      </td>
+      {isAdmin && (
+        <td className="px-4 py-3 align-middle text-left">
+          <EndpointLabel server={server} />
+        </td>
+      )}
       <td className="px-4 py-3 align-middle">
         <ServerActions server={server} isAdmin={isAdmin} onChanged={onChanged} />
       </td>
@@ -664,20 +658,22 @@ function ServerMobileCard({
   onChanged: () => void;
 }) {
   const { t } = useTranslation("ops");
-  const host = server.subdomain ? hostFor(server.subdomain, cfg) : "";
+  const address = server.subdomain ? joinAddress(server.subdomain, cfg) : "";
 
   return (
-    <li className="flex">
-      <Card className="flex flex-1 flex-col border border-border/80">
+    <li className="flex min-w-0">
+      <Card className="flex min-w-0 flex-1 flex-col border border-border/80">
         <CardContent className="flex flex-1 flex-col gap-3 p-4">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
+          <div className="space-y-1">
+            <div className="flex items-start justify-between gap-3">
               <div className="flex min-w-0 items-baseline gap-2">
                 <ServerName server={server} />
               </div>
-              {host && <HostLink host={host} />}
+              <PhaseBadge phase={server.phase} />
             </div>
-            <PhaseBadge phase={server.phase} />
+            {/* Its own line: the join address is what a player came for, so it
+                gets the card's full width rather than sharing it with the badge. */}
+            {address && <CopyAddress address={address} />}
           </div>
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
             {isAdmin && (
@@ -698,10 +694,14 @@ function ServerMobileCard({
                 <dd className="text-xs">{t(POLICY_KEY[server.autostartPolicy])}</dd>
               </>
             )}
-            <dt className="text-xs text-muted-foreground">{t("fleet_col_endpoint")}</dt>
-            <dd className="min-w-0">
-              <EndpointLabel server={server} />
-            </dd>
+            {isAdmin && (
+              <>
+                <dt className="text-xs text-muted-foreground">{t("fleet_col_endpoint")}</dt>
+                <dd className="min-w-0">
+                  <EndpointLabel server={server} />
+                </dd>
+              </>
+            )}
           </dl>
           <div className="mt-auto border-t border-border/50 pt-3">
             <ServerActions server={server} isAdmin={isAdmin} onChanged={onChanged} />

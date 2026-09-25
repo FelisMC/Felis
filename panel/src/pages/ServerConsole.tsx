@@ -12,7 +12,8 @@ import { api, consoleStreamURL, humanizeError } from "@/lib/api";
 import { useAsync, useConfig } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
 import { canManage } from "@/lib/ownership";
-import { hostFor } from "@/lib/config";
+import { joinAddress } from "@/lib/config";
+import { CopyAddress } from "@/components/CopyAddress";
 import type { Phase, AutostartPolicy } from "@/lib/types";
 import { EditServerDialog } from "@/components/EditServerDialog";
 import { PowerButton } from "@/components/PowerButton";
@@ -223,7 +224,7 @@ export function ServerConsole() {
           <PageHeader
             icon={Terminal}
             title={data.displayName || data.name}
-            subtitle={cfg ? hostFor(data.subdomain, cfg) : undefined}
+            subtitle={cfg ? <CopyAddress address={joinAddress(data.subdomain, cfg)} /> : undefined}
             actions={
               <div className="flex items-center gap-2">
                 <PhaseBadge phase={data.phase} />

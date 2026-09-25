@@ -34,5 +34,8 @@
   "reload_page": "刷新页面",
   "config_unavailable": "面板配置（/config.json）没有加载成功，这里显示的服务器地址和链接可能不对。刷新页面可重试。",
   "build_dev": "开发版",
-  "open_menu": "打开菜单"
+  "open_menu": "打开菜单",
+  "copy_address": "复制地址 {{address}}",
+  "address_copied": "已复制",
+  "address_copy_failed": "已选中，请用系统菜单复制"
 }

@@ -22,6 +22,8 @@ export interface RuntimeConfig {
   panelHostname?: string;
   /** Operator-console hostname (op.console.<root>), absent when unconfigured. */
   adminHostname?: string;
+  /** The public Minecraft port, absent when it is the default 25565. */
+  gamePort?: number;
   /** What the server runs, for the version badge. */
   build?: BuildInfo;
   /** /config.json could not be read, so these are build-time defaults and
@@ -34,6 +36,13 @@ const FALLBACK: RuntimeConfig = {
   rootDomain: import.meta.env.VITE_ROOT_DOMAIN ?? "localhost",
   fallback: true,
 };
+
+// A port that could not be dialed is dropped; the bare hostname is the safer guess.
+function parsePort(raw: unknown): number | undefined {
+  return Number.isInteger(raw) && (raw as number) > 0 && (raw as number) <= 65535
+    ? (raw as number)
+    : undefined;
+}
 
 function parseBuild(raw: unknown): BuildInfo | undefined {
   if (!raw || typeof raw !== "object") return undefined;
@@ -73,6 +82,7 @@ export async function loadConfig(): Promise<RuntimeConfig> {
       rootDomain: raw.rootDomain,
       panelHostname: raw.panelHostname,
       adminHostname: raw.adminHostname,
+      gamePort: parsePort(raw.gamePort),
       build: parseBuild(raw.build),
     };
   } catch (err) {
@@ -86,4 +96,11 @@ export async function loadConfig(): Promise<RuntimeConfig> {
  *  rootDomain — never a hardcoded domain (red line). */
 export function hostFor(subdomain: string, cfg: RuntimeConfig): string {
   return `${subdomain}.${cfg.rootDomain}`;
+}
+
+/** joinAddress is what a player types into Minecraft to reach a server: its
+ *  hostname, with the port only when the proxy listens off the default 25565. */
+export function joinAddress(subdomain: string, cfg: RuntimeConfig): string {
+  const host = hostFor(subdomain, cfg);
+  return cfg.gamePort && cfg.gamePort !== 25565 ? `${host}:${cfg.gamePort}` : host;
 }

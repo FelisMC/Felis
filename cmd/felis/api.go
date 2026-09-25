@@ -392,7 +392,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	externalHandler := panel.Handler(a.ExternalHandler(), cfg.Server.RootDomain,
 		defaultPanelHostname(cfg.Server.RootDomain, cfg.Auth.PanelHostname),
 		defaultAdminHostname(cfg.Server.RootDomain, cfg.Auth.AdminHostname),
-		resolvedVersion())
+		cfg.Velocity.GamePort, resolvedVersion())
 	internalSrv := newAPIServer(*internalAddr, a.InternalHandler())
 	externalSrv := newAPIServer(cfg.Server.Listen, externalHandler)
 

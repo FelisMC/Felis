@@ -18,7 +18,7 @@ func TestHandlerServesPanelAndConfig(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusTeapot)
 	})
-	h := Handler(api, "example.test", "console.example.test", "op.console.example.test", "v1.2.3")
+	h := Handler(api, "example.test", "console.example.test", "op.console.example.test", 0, "v1.2.3")
 
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -65,6 +65,27 @@ func TestHandlerServesPanelAndConfig(t *testing.T) {
 // carry. The "+g<sha>" form is what deploy/bootstrap.sh's dev channel links in, and
 // it is the one that regressed: before it was parsed, a dev build fell through to the
 // default case and the badge rendered the whole stamp as the release with no commit.
+// The SPA appends the public game port to the addresses players copy, so
+// /config.json carries it, except when a bare hostname already reaches the proxy.
+func TestHandlerPublishesNonDefaultGamePort(t *testing.T) {
+	for _, tc := range []struct{ in, want int }{{0, 0}, {25565, 0}, {25570, 25570}} {
+		h := Handler(http.NotFoundHandler(), "example.test", "", "", tc.in, "v1.2.3")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/config.json", nil))
+		var cfg map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
+			t.Fatalf("decode config: %v", err)
+		}
+		got, present := cfg["gamePort"]
+		switch {
+		case tc.want == 0 && present:
+			t.Errorf("game port %d: gamePort = %v, want absent", tc.in, got)
+		case tc.want != 0 && got != float64(tc.want):
+			t.Errorf("game port %d: gamePort = %v, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestParseBuildVersionSplitsBothStampForms(t *testing.T) {
 	for _, tc := range []struct {
 		raw     string
@@ -94,7 +115,7 @@ func TestParseBuildVersionSplitsBothStampForms(t *testing.T) {
 // its hash (and nothing else inline), cannot be framed, and cache by name:
 // hashed assets forever, the page itself never without revalidation.
 func TestHandlerSetsPageSecurityAndCacheHeaders(t *testing.T) {
-	h := Handler(http.NotFoundHandler(), "example.test", "", "", "v1.2.3")
+	h := Handler(http.NotFoundHandler(), "example.test", "", "", 0, "v1.2.3")
 
 	w := httptest.NewRecorder()
 	// Through the tunnel: TLS to the origin as well, the edge's scheme in XFP.

@@ -3091,6 +3091,8 @@ egress_mode = "${FELIS_EGRESS_MODE}"
 # into k3s by build_game_stack below, so setup never has to be told "build these first".
 login_image = "${FELIS_LIMBO_IMAGE}"
 lobby_image = "${FELIS_LOBBY_IMAGE}"
+# The public port players connect on; the panel shows it in server addresses.
+game_port = ${FELIS_GAME_PORT}
 
 [registry]
 url = "${REGISTRY_URL}"

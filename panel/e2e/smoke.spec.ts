@@ -24,7 +24,7 @@ test("a player sees their own server, can claim an unowned one, and has no admin
   await expect(own.getByRole("link", { name: t("servers:console") })).toBeVisible();
   await expect(own.getByRole("button", { name: t("servers:stop"), exact: true })).toBeVisible();
   const unowned = page.getByRole("row").filter({ hasText: "Claimable Node" });
-  await expect(unowned.getByRole("button", { name: t("servers:claim") })).toBeVisible();
+  await expect(unowned.getByRole("button", { name: t("servers:claim"), exact: true })).toBeVisible();
   await expect(unowned.getByRole("button", { name: t("servers:stop"), exact: true })).toHaveCount(0);
   await expect(page.getByRole("link", { name: t("navigation:admin_users") })).toHaveCount(0);
 

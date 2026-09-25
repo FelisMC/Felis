@@ -20,11 +20,13 @@ import (
 var static embed.FS
 
 type runtimeConfig struct {
-	APIBase       string    `json:"apiBase"`
-	RootDomain    string    `json:"rootDomain"`
-	PanelHostname string    `json:"panelHostname,omitempty"`
-	AdminHostname string    `json:"adminHostname,omitempty"`
-	Build         buildInfo `json:"build"`
+	APIBase       string `json:"apiBase"`
+	RootDomain    string `json:"rootDomain"`
+	PanelHostname string `json:"panelHostname,omitempty"`
+	AdminHostname string `json:"adminHostname,omitempty"`
+	// GamePort is the public Minecraft port, absent when it is the default 25565.
+	GamePort int       `json:"gamePort,omitempty"`
+	Build    buildInfo `json:"build"`
 }
 
 // buildInfo is the resolved build stamp the panel renders in its version badge.
@@ -107,8 +109,10 @@ func parseBuildVersion(raw string) buildInfo {
 // configured console.<root_domain> and op.console.<root_domain> hostnames (either
 // may be empty when that face is not deployed); they let the SPA detect which home
 // it is being served from by comparing location.host, so one bundle can render the
-// right surface (player console vs SysAdmin console) without a rebuild.
-func Handler(api http.Handler, rootDomain, panelHost, adminHost, version string) http.Handler {
+// right surface (player console vs SysAdmin console) without a rebuild. gamePort
+// is the public Minecraft port ([velocity] game_port), which the SPA appends to
+// the server addresses players copy; 0 or 25565 leaves them bare.
+func Handler(api http.Handler, rootDomain, panelHost, adminHost string, gamePort int, version string) http.Handler {
 	files, err := fs.Sub(static, "static")
 	if err != nil {
 		panic(err)
@@ -118,6 +122,7 @@ func Handler(api http.Handler, rootDomain, panelHost, adminHost, version string)
 		rootDomain:    rootDomain,
 		panelHostname: panelHost,
 		adminHostname: adminHost,
+		gamePort:      publicGamePort(gamePort),
 		build:         parseBuildVersion(version),
 		files:         files,
 		fileServer:    http.FileServer(http.FS(files)),
@@ -125,11 +130,24 @@ func Handler(api http.Handler, rootDomain, panelHost, adminHost, version string)
 	}
 }
 
+// defaultGamePort is the port a Minecraft client dials when the address has none.
+const defaultGamePort = 25565
+
+// publicGamePort is the port the SPA should print, or 0 when a bare hostname
+// already reaches the proxy.
+func publicGamePort(p int) int {
+	if p == defaultGamePort {
+		return 0
+	}
+	return p
+}
+
 type handler struct {
 	api           http.Handler
 	rootDomain    string
 	panelHostname string
 	adminHostname string
+	gamePort      int
 	build         buildInfo
 	files         fs.FS
 	fileServer    http.Handler
@@ -208,6 +226,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			RootDomain:    h.rootDomain,
 			PanelHostname: h.panelHostname,
 			AdminHostname: h.adminHostname,
+			GamePort:      h.gamePort,
 			Build:         h.build,
 		})
 	case h.hasStaticFile(r.URL.Path):

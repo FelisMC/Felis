@@ -105,3 +105,30 @@ describe("versionLabel", () => {
     expect(versionLabel({ version: "dev", release: "dev", dev: true })).toBe("dev");
   });
 });
+
+describe("joinAddress", () => {
+  const base = { apiBase: "/api/v1", rootDomain: "mc.example" };
+
+  it("is the bare hostname on the default port", async () => {
+    const { joinAddress } = await freshConfig();
+    expect(joinAddress("survival", base)).toBe("survival.mc.example");
+    expect(joinAddress("survival", { ...base, gamePort: 25565 })).toBe("survival.mc.example");
+  });
+
+  it("adds a port the proxy moved off the default", async () => {
+    const { joinAddress } = await freshConfig();
+    expect(joinAddress("survival", { ...base, gamePort: 25570 })).toBe("survival.mc.example:25570");
+  });
+
+  it("reads the port from config.json and drops one no client could dial", async () => {
+    serve({ apiBase: "/api/v1", rootDomain: "mc.example", gamePort: 25570 });
+    let mod = await freshConfig();
+    expect((await mod.loadConfig()).gamePort).toBe(25570);
+
+    for (const bad of [0, 70000, "25570", 1.5]) {
+      serve({ apiBase: "/api/v1", rootDomain: "mc.example", gamePort: bad });
+      mod = await freshConfig();
+      expect((await mod.loadConfig()).gamePort).toBeUndefined();
+    }
+  });
+});

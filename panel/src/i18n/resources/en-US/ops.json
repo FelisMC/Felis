@@ -20,7 +20,7 @@
   "fleet_col_owner": "Owner",
   "fleet_col_players": "Players",
   "fleet_col_policy": "Autostart",
-  "fleet_col_endpoint": "Endpoint",
+  "fleet_col_endpoint": "Internal address",
   "fleet_col_actions": "Actions",
   "fleet_unclaimed": "Unclaimed",
   "fleet_owner_you": "You",

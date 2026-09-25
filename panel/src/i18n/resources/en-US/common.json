@@ -34,5 +34,8 @@
   "reload_page": "Reload page",
   "config_unavailable": "The panel configuration (/config.json) did not load, so server addresses and links shown here may be wrong. Reload to try again.",
   "build_dev": "dev",
-  "open_menu": "Open menu"
+  "open_menu": "Open menu",
+  "copy_address": "Copy address {{address}}",
+  "address_copied": "Copied",
+  "address_copy_failed": "Selected — copy it from the menu"
 }

@@ -117,6 +117,25 @@ build_user_namespaces = "yes"
 	}
 }
 
+func TestLoadGamePort(t *testing.T) {
+	base := `
+[server]
+root_domain = "mc.example.net"
+[database]
+url = "postgres://felis@db/felis"
+[velocity]
+`
+	cfg, err := config.Load(writeTOML(t, base+"game_port = 25570\n"))
+	if err != nil || cfg.Velocity.GamePort != 25570 {
+		t.Fatalf("game_port 25570: cfg=%+v err=%v", cfg, err)
+	}
+	for _, bad := range []string{"-1", "65536"} {
+		if _, err := config.Load(writeTOML(t, base+"game_port = "+bad+"\n")); err == nil || !strings.Contains(err.Error(), "game_port") {
+			t.Errorf("game_port %s: err = %v, want it rejected", bad, err)
+		}
+	}
+}
+
 func TestLoadAppliesDefaults(t *testing.T) {
 	cfg, err := config.Load(writeTOML(t, `
 [server]

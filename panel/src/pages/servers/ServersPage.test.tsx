@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import type { FleetServer } from "@/lib/types";
+import type { FleetServer, MyServerView } from "@/lib/types";
 import { ServersPage } from "./ServersPage";
 
 const tier = vi.hoisted(() => ({ isAdmin: true, identity: { email: "admin@example.test" } }));
@@ -13,7 +13,7 @@ vi.mock("@/lib/config", async (importActual) => {
   const actual = await importActual<typeof import("@/lib/config")>();
   return {
     ...actual,
-    loadConfig: () => Promise.resolve({ apiBase: "/api/v1", rootDomain: "example.test" }),
+    loadConfig: () => Promise.resolve({ apiBase: "/api/v1", rootDomain: "example.test", gamePort: 25570 }),
   };
 });
 vi.mock("@/lib/api", async (importActual) => {
@@ -45,6 +45,7 @@ async function tableRow(name: string) {
 }
 
 beforeEach(() => {
+  tier.isAdmin = true;
   calls.fleet.mockReset();
   calls.myServers.mockReset();
 });
@@ -90,5 +91,51 @@ describe("ServersPage fleet ownership", () => {
     expect(survival.getByText("Unknown")).toBeTruthy();
     expect(survival.queryByText("Unclaimed")).toBeNull();
     expect(survival.queryByRole("button", { name: /Claim/ })).toBeNull();
+  });
+});
+
+describe("ServersPage addresses", () => {
+  it("offers a player the join address to copy and no internal address", async () => {
+    tier.isAdmin = false;
+    const mine: MyServerView = {
+      name: "survival",
+      subdomain: "survival",
+      owned: true,
+      claimable: false,
+      phase: "Running",
+      playersOnline: 3,
+      playersMax: 20,
+    };
+    calls.myServers.mockResolvedValue([mine]);
+    render(
+      <MemoryRouter>
+        <ServersPage />
+      </MemoryRouter>,
+    );
+
+    const table = await screen.findByRole("table");
+    expect(within(table).queryByText("Internal address")).toBeNull();
+    // The player's view has no endpoint, so a column for it could only say "Not running".
+    expect(within(table).queryByText("Not running")).toBeNull();
+    const survival = await tableRow("survival");
+    expect(survival.getByRole("button", { name: "Copy address survival.example.test:25570" })).toBeTruthy();
+    expect(survival.queryByRole("link", { name: /survival\.example\.test/ })).toBeNull();
+  });
+
+  it("keeps the proxy's internal address for admins", async () => {
+    calls.fleet.mockResolvedValue([
+      row("survival", { phase: "Running", ready: true, endpointAddress: "10.43.0.10:25565" }),
+    ]);
+    render(
+      <MemoryRouter>
+        <ServersPage />
+      </MemoryRouter>,
+    );
+
+    const table = await screen.findByRole("table");
+    expect(within(table).getByText("Internal address")).toBeTruthy();
+    const survival = await tableRow("survival");
+    expect(survival.getByText("10.43.0.10:25565")).toBeTruthy();
+    expect(survival.getByRole("button", { name: "Copy address survival.example.test:25570" })).toBeTruthy();
   });
 });

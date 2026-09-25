@@ -20,7 +20,7 @@
   "fleet_col_owner": "所有者",
   "fleet_col_players": "在线",
   "fleet_col_policy": "自启策略",
-  "fleet_col_endpoint": "连接地址",
+  "fleet_col_endpoint": "内部地址",
   "fleet_col_actions": "操作",
   "fleet_unclaimed": "未认领",
   "fleet_owner_you": "你",

@@ -108,6 +108,10 @@ type VelocityConfig struct {
 	// LobbyImage is the container image for the always-on "lobby" hub (Paper plus
 	// the felis-paper /menu plugin). Same skip-when-empty contract as LoginImage.
 	LobbyImage string `toml:"lobby_image"`
+	// GamePort is the public TCP port the proxy accepts players on (bootstrap's
+	// FELIS_GAME_PORT). The panel adds it to the server addresses players copy
+	// when it is not Minecraft's default; 0 means that default, 25565.
+	GamePort int `toml:"game_port"`
 }
 
 // AuthConfig is the [auth] table: the two privileged faces and the access-JWT
@@ -458,6 +462,9 @@ func (c *Config) Validate() error {
 	case "", "auto", "on", "off":
 	default:
 		return fmt.Errorf("config: [registry] build_user_namespaces %q must be auto, on or off", c.Registry.BuildUserNamespaces)
+	}
+	if p := c.Velocity.GamePort; p < 0 || p > 65535 {
+		return fmt.Errorf("config: [velocity] game_port %d must be 1-65535 (0 keeps 25565)", p)
 	}
 	if n := c.Registry.MaxConcurrentBuilds; n < 0 || n > 6 {
 		return fmt.Errorf("config: [registry] max_concurrent_builds %d must be 1-6 (0 keeps 2)", n)
