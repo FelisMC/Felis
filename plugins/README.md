@@ -24,15 +24,35 @@ The **Paper** module is different in kind: it is the §12 lobby UI face. It ship
 to Velocity, which is the only side that ever talks to felis-api. See
 **[Lobby menu](#lobby-menu-§12)** below.
 
-| Module             | Platform                    | Target                              | Jar                          | Built by the installer |
-| ------------------ | --------------------------- | ----------------------------------- | ---------------------------- | ---------------------- |
-| `velocity/`        | Velocity proxy plugin       | velocity-api 3.3.0-SNAPSHOT         | `felis-velocity-0.1.0.jar`   | yes                    |
-| `limbo/`           | LOOHP/Limbo plugin (login)  | Limbo API / Java 17 bytecode        | `felis-limbo-0.1.0.jar`      | yes                    |
-| `paper/`           | Paper server plugin (lobby) | paper-api 1.21.4-R0.1-SNAPSHOT      | `felis-paper-0.1.0.jar`      | yes                    |
-| `fabric/`          | Fabric server mod           | MC 1.20.1 / fabric-loader 0.16.x    | `felis-fabric-0.1.0.jar`     | no                     |
-| `forge/`           | Forge server mod            | MC 1.20.1 / Forge 47.3.0            | `felis-forge-0.1.0.jar`      | no                     |
-| `neoforge/`        | NeoForge server mod         | MC 1.20.4 / NeoForge 20.4.251       | `felis-neoforge-0.1.0.jar`   | no                     |
-| `shared/`          | *(not built on its own)*    | —                                   | source compiled into each    | source only            |
+| Module             | Platform                    | Compiles against                         | Jar                          | Built by the installer |
+| ------------------ | --------------------------- | ---------------------------------------- | ---------------------------- | ---------------------- |
+| `velocity/`        | Velocity proxy plugin       | velocity-api 3.5.1 (Java 21 bytecode)    | `felis-velocity-0.1.0.jar`   | yes                    |
+| `limbo/`           | LOOHP/Limbo plugin (login)  | Limbo API 2026.0.3-ALPHA (Java 17 bytecode) | `felis-limbo-0.1.0.jar`   | yes                    |
+| `paper/`           | Paper server plugin (lobby) | paper-api 26.3.build.40-alpha            | `felis-paper-0.1.0.jar`      | yes                    |
+| `fabric/`          | Fabric server mod           | MC 1.20.1 / fabric-loader 0.16.5 / fabric-api 0.92.2+1.20.1 | `felis-fabric-0.1.0.jar` | no          |
+| `forge/`           | Forge server mod            | MC 1.20.1 / Forge 47.3.0                 | `felis-forge-0.1.0.jar`      | no                     |
+| `neoforge/`        | NeoForge server mod         | MC 1.20.4 / NeoForge 20.4.251            | `felis-neoforge-0.1.0.jar`   | no                     |
+| `shared/`          | *(not built on its own)*    | —                                        | source compiled into each    | source only            |
+
+The installer's three versions are the builds `deploy/game-stack.lock` installs (Velocity
+`VELOCITY_VERSION`, Limbo `LIMBO_VERSION`, the Paper jar in `PAPER_JAR_URL`), and
+`go test .` fails when a pin and the lock drift apart; see
+[Dependency verification](#dependency-verification).
+
+### Minecraft versions
+
+| Module     | Runs on                                   | Minecraft                                        |
+| ---------- | ----------------------------------------- | ------------------------------------------------ |
+| `velocity` | the Felis proxy (Velocity 3.5.1)          | whatever clients the proxy accepts: 26.3 natively, older clients through the ViaVersion stack bootstrap installs |
+| `limbo`    | the Felis login gate (Limbo)              | 26.3 only — Limbo speaks exactly one protocol, the lock's `MC_VERSION` |
+| `paper`    | the Felis lobby (Paper 26.3)              | 26.3, the lock's `MC_VERSION`                    |
+| `fabric`   | a standalone Fabric server                | 1.20.1 (`fabric.mod.json` declares `~1.20.1`)    |
+| `forge`    | a standalone Forge server                 | 1.20.1 (`mods.toml` declares `[1.20.1,1.20.2)`)  |
+| `neoforge` | a standalone NeoForge server              | 1.20.4 (`mods.toml` declares `[1.20.4,1.20.5)`)  |
+
+The Felis network itself runs Minecraft 26.3. The loader mods target the older 1.20.x
+modding lines and belong on a standalone server outside the network; they load on no
+26.x server, and nothing in a Felis install loads them.
 
 "Built by the installer" is what `deploy/bootstrap.sh` produces, and it is the same set
 `bootstrap_asset.go` embeds into the felis binary for the TUI install path, which has no source
@@ -55,6 +75,29 @@ carry works, but nothing installs them for you.
 > else. The `velocity` token also approves op-logins and wakes or claims servers for any
 > player; it stays on the proxy host. `sudo felis rotate-token limbo` replaces a leaked
 > token (the login gate restarts onto the new value; copy it to the mod by hand).
+
+## Whose identity each path trusts
+
+Only the **Velocity path** is protected against a forged identity. The proxy runs
+`online-mode=true` (bootstrap writes it), so Velocity checks every login with Mojang, and
+everything downstream takes its identity from that login:
+
+- the proxy's own `/link`, `/felis` and `/invite` use the UUID of the verified connection;
+- the lobby's `felis:control` frames are attributed to the backend connection they arrived
+  on, and the `player` field a lobby writes is ignored (see
+  [Lobby menu](#lobby-menu-§12));
+- the login gate and the lobby run offline-mode behind the proxy and accept only logins
+  carrying Velocity's modern-forwarding signature (the shared forwarding secret), so a
+  client that bypasses the proxy cannot claim a UUID.
+
+A proxy started with `online-mode=false` refuses to route (it logs an error and turns
+routing off); its `/link` then sees only name-derived offline UUIDs, which never equal a
+Mojang account's.
+
+The **loader mods** are outside that protection. A mod trusts the UUID its own server
+reports (`getUUID()`), so it is exactly as trustworthy as that server: the mod refuses
+`/link` unless the server runs `online-mode=true`, and whoever operates the server holds
+a token that can mint a code for any UUID (see the warning above).
 
 ## Architecture
 
@@ -137,7 +180,7 @@ Velocity-only config keys (read from the same `felis-link.properties` / env as
 The `paper/` module is the lobby's player-facing face for §27 scenario 10
 (`/menu → plugin msg → velocity → api → 共用等待队列 → ready 后 Connect`). It runs
 on the Paper lobby server and gives players a chest GUI instead of a command
-line: `/menu` (alias `/server`) opens a grid of one tile per configured server,
+line: `/menu` (alias `/server`) opens a grid of one tile per server the proxy routes,
 and clicking a tile wakes, claims, or joins that backend.
 
 **Pure UI face.** The lobby holds no felis-api token, opens no HTTP connection,
@@ -161,11 +204,14 @@ best/lolicon/felis/paper/MenuHolder.class
 class ever grew a dependency on the API client, compilation would fail here
 rather than silently widen the lobby's reach.
 
-**Frames.** Upstream (lobby → velocity) carries `WakeRequest`, `ClaimRequest`,
-and `StatusQuery`; downstream (velocity → lobby) carries `StatusUpdate`,
-`TransferReady`, and `Error`. Opening the menu paints a grey "loading" tile per
-server and fires a `StatusQuery` for each; the proxy answers with `StatusUpdate`
-frames that repaint each tile by phase + ownership.
+**Frames.** Upstream (lobby → velocity) carries `ListRequest`, `WakeRequest`,
+`ClaimRequest` and `StatusQuery`; downstream (velocity → lobby) carries `ListUpdate`,
+`StatusUpdate`, `TransferReady` and `Error`. `/menu` sends a `ListRequest`, and the
+proxy answers with a `ListUpdate` naming every user server it routes, built from the
+registry it routes by, so a server created in the panel appears without anyone editing
+the lobby. The menu then paints a grey "loading" tile per server (45 per page, arrows
+in the bottom row) and fires a `StatusQuery` for each; the proxy answers with
+`StatusUpdate` frames that repaint each tile by phase + ownership.
 
 **Anti-spoof (§14).** The `player` field a lobby puts in a frame is **not**
 trusted. Velocity derives the acting player and UUID from the `ServerConnection`
@@ -190,7 +236,7 @@ policy failure surfaces to the player; readiness arrives as `TransferReady` just
 before the proxy Connects them.
 
 > **Status.** This slice is **code-complete and compile-verified** (paper jar
-> builds green on a Java-21 toolchain; the velocity end compiles the full shared
+> builds green on a Java-25 toolchain; the velocity end compiles the full shared
 > tree; the wire codec round-trips; the fabric/forge/neoforge mods compile through
 > their vendored wrappers and boot real dedicated servers with `/link` registered —
 > all of it gated by CI). It is **not** client-verified:
@@ -201,43 +247,80 @@ before the proxy Connects them.
 
 ## Building
 
-The platforms need different Gradle versions (a real, measured constraint, not a
-preference):
+Every module builds through its own vendored Gradle wrapper, and each wrapper pins its
+distribution's sha256 (`distributionSha256Sum`), so a tampered or swapped Gradle download
+fails before it runs. The platforms need different Gradle versions (a real, measured
+constraint):
 
-| Module      | Gradle      | Why                                                              |
-| ----------- | ----------- | --------------------------------------------------------------- |
-| `velocity`  | 9.5.1 (system) | plain `java` plugin — no loader Gradle plugin                |
-| `limbo`     | 9.5.1 (system), **JDK 21 toolchain** | plain `java` plugin; current LOOHP/Limbo releases ship class-file major 65, so the compiler JDK must be ≥ 21 to read them. It emits `release 17` bytecode, so the jar still loads on any Limbo running Java 17+ |
-| `fabric`    | 8.8 (wrapper)  | loom 1.7.4 uses `Problems.forNamespace`, removed in Gradle 9 |
-| `forge`     | 8.8 (wrapper)  | ForgeGradle 6 is Gradle-8-only                               |
-| `neoforge`  | 8.14 (wrapper) | NeoGradle 7.1.38 requires Gradle API ≥ 8.14                  |
-| `paper`     | 9.5.1 (system), **JDK 21 toolchain** | plain `java` plugin, but paper-api 1.21.4 is published for Java 21, so it declares a `JavaLanguageVersion.of(21)` toolchain — Gradle picks a detected JDK 21 to compile regardless of which JDK runs Gradle |
+| Module      | Gradle | JDK | Why                                                          |
+| ----------- | ------ | --- | ------------------------------------------------------------ |
+| `velocity`  | 9.8.0  | ≥ 21 runs it, emits Java 21 | plain `java` plugin; velocity-api 3.5.1 declares `jvm.version = 21` |
+| `paper`     | 9.8.0  | **25 toolchain** | paper-api 26.3 is published as a Java-25 artifact, so the module declares a `JavaLanguageVersion.of(25)` toolchain |
+| `limbo`     | 9.8.0  | ≥ 21 runs it, emits Java 17 | current LOOHP/Limbo releases ship class-file major 65, so the compiler JDK must be ≥ 21 to read them; `release 17` bytecode loads on any Limbo running Java 17+ |
+| `fabric`    | 8.8    | 17 | loom 1.7.4 uses `Problems.forNamespace`, removed in Gradle 9 |
+| `forge`     | 8.8    | 17 | ForgeGradle 6 is Gradle-8-only                               |
+| `neoforge`  | 8.14   | 17 | NeoGradle 7.1.38 requires Gradle API ≥ 8.14                  |
+
+The three plugins the installer bakes in (`velocity`, `paper`, `limbo`) are built with
+Gradle 9.8.0 everywhere: through the wrapper locally and in CI, and inside the image
+`gradle:9.8.0-jdk25@sha256:…` in the lobby and limbo Dockerfiles and bootstrap's
+Velocity build. `bootstrap_asset_test.go` fails when the image, its digest or the
+wrapper version drift apart.
 
 ```bash
-# Velocity — system Gradle is fine
-gradle -p plugins/velocity build
+# Velocity and Paper
+plugins/velocity/gradlew -p plugins/velocity build
+plugins/paper/gradlew    -p plugins/paper    build
 
-# Paper and limbo — system Gradle too, but both compile on a Java-21 toolchain (see table).
-# limbo also needs the LOOHP/Limbo API release it compiles against: the module's `+`
-# default cannot resolve (LOOHP's repository publishes no maven-metadata), so pass the
-# release that matches the Limbo.jar you bundle, exactly as deploy/bootstrap.sh does:
-gradle -p plugins/paper build
-gradle -p plugins/limbo build -PlimboVersion=<release, e.g. 2026.0.3-ALPHA>
+# limbo compiles against the LOOHP/Limbo API release the login gate bundles, which has
+# to be named: pass deploy/game-stack.lock's LIMBO_VERSION, exactly as bootstrap does.
+plugins/limbo/gradlew -p plugins/limbo build -PlimboVersion="$(sed -n 's/^LIMBO_VERSION=//p' deploy/game-stack.lock)"
 
-# Fabric / Forge / NeoForge — use the per-module wrapper. Nothing installs these; the jar you
-# want is the one this produces.
+# Fabric / Forge / NeoForge. Nothing installs these; the jar you want is the one this
+# produces.
 plugins/fabric/gradlew   -p plugins/fabric   build
 plugins/forge/gradlew    -p plugins/forge    build
 plugins/neoforge/gradlew -p plugins/neoforge build
 ```
 
-Requires JDK 17 — **except `paper` and `limbo`, which need a Java-21 toolchain available to
-Gradle** (paper-api 1.21.4 is a Java-21 artifact and the Limbo API is compiled to major 65; the
-rest of the suite is Java 17). The first build of each mod downloads and remaps/decompiles Minecraft, so it
-takes a few minutes; subsequent builds are fast. Jars land in each module's
-`build/libs`. CI runs both gates: `bash plugins/test.sh` (JDK 21 — the install-time
-plugins plus the codec/invite tests) and `bash plugins/test-mods.sh` (JDK 17 — the
-three loader mods, via the wrappers above).
+The first build of each mod downloads and remaps/decompiles Minecraft, so it takes a few
+minutes; subsequent builds are fast. Jars land in each module's `build/libs`. CI runs
+both gates: `bash plugins/test.sh` (JDK 25 — the install-time plugins plus the
+codec/invite/server-list tests) and `bash plugins/test-mods.sh` (JDK 17 — the three
+loader mods, via the wrappers above).
+
+### Dependency verification
+
+Every dependency version is exact: paper-api is the API of the Paper build
+`deploy/game-stack.lock` installs (`paper-26.3-40.jar` → `26.3.build.40-alpha`), limbo
+compiles against the lock's `LIMBO_VERSION`, velocity-api is the lock's
+`VELOCITY_VERSION`, and ForgeGradle is `6.0.54`. The installer's three modules also
+carry `gradle/verification-metadata.xml`, the sha256 of every artifact their build
+resolves, and Gradle refuses any artifact whose bytes differ. The Limbo API entry is
+the very jar the login gate runs (its sha256 equals the lock's `LIMBO_JAR_SHA256`).
+
+After `deploy/update-game-stack-lock.sh` moves Paper, Limbo or Velocity, bring the pins
+along and regenerate the checksums, then review the diff:
+
+```bash
+# 1. set paper-api in plugins/paper/build.gradle to the new build (paper-<mc>-<n>.jar → <mc>.build.<n>-<channel>)
+# 2. regenerate the three verification files (JDK 25) from an EMPTY Gradle home: with a
+#    warm cache Gradle skips the BOMs and parent POMs it already holds, and the image
+#    builds, which start empty, then refuse them
+rm -f plugins/{velocity,paper,limbo}/gradle/verification-metadata.xml
+export GRADLE_USER_HOME="$(mktemp -d)"
+plugins/velocity/gradlew -p plugins/velocity --write-verification-metadata sha256 build
+plugins/paper/gradlew    -p plugins/paper    --write-verification-metadata sha256 build
+plugins/limbo/gradlew    -p plugins/limbo    --write-verification-metadata sha256 build \
+  -PlimboVersion="$(sed -n 's/^LIMBO_VERSION=//p' deploy/game-stack.lock)"
+unset GRADLE_USER_HOME
+# 3. go test . fails until the pins, the checksums and the lock agree
+```
+
+The loader mods pin exact plugin and dependency versions and their wrappers' sha256,
+but carry no verification file: loom, ForgeGradle and NeoGradle fetch and remap
+Minecraft through their own downloaders (checked against Mojang's manifest hashes), and
+nothing installs these jars.
 
 ## Deploying
 
@@ -261,9 +344,11 @@ stays off (see **[Velocity routing](#velocity-routing-§11)**). The config dir i
 the 0.1 → 0.2 jar so existing config carries over).
 
 On the **Paper lobby** there is no token to set, because the lobby never talks to
-felis-api. Drop `felis-paper-…jar` into `plugins/`, start once to generate
-`plugins/FelisPaper/config.yml`, and list the felis server names (the CRD
-`metadata.name`, not the display title) you want as tiles under `servers:`. The
-lobby must sit behind the same Velocity proxy as the backends — it reaches the
-control plane only through the proxy's `felis:control` terminus — so it needs no
-`api-base-url` and no `service-token` of its own.
+felis-api, and no server list to keep: the menu shows the servers the proxy routes,
+which the proxy sends over `felis:control` (a `servers:` list left in
+`plugins/FelisPaper/config.yml` by an older version is ignored, and the plugin says so
+at startup). The lobby must sit behind the same Velocity proxy as the backends — it
+reaches the control plane only through the proxy's `felis:control` terminus — so it
+needs no `api-base-url` and no `service-token` of its own. The installer builds and
+bakes this jar into the lobby image; installing it by hand is for a lobby you run
+yourself.
