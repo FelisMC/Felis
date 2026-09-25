@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { deriveAuth, isUnauthorized } from "./auth";
+import { deriveAuth, isUnauthorized, loginReturnPath } from "./auth";
 import type { Identity } from "./types";
 
 // deriveAuth is the load-bearing auth decision: it decides who is bounced to /login
@@ -67,5 +67,18 @@ describe("deriveAuth", () => {
     const s = deriveAuth(partial, null, false);
     expect(s.isAdmin).toBe(false);
     expect(s.unauthenticated).toBe(false);
+  });
+});
+
+describe("loginReturnPath", () => {
+  it("returns an in-app path as given", () => {
+    expect(loginReturnPath("/servers/lobby/files?x=1")).toBe("/servers/lobby/files?x=1");
+    expect(loginReturnPath("/admin/users/abc")).toBe("/admin/users/abc");
+  });
+
+  it("falls back to the dashboard for anything that could leave the site or loop", () => {
+    for (const next of [null, "", "servers", "https://evil.test", "//evil.test", "/\\evil.test", "/\t/evil.test", "/login", "/login?next=/x", "/setup"]) {
+      expect(loginReturnPath(next), JSON.stringify(next)).toBe("/");
+    }
   });
 });

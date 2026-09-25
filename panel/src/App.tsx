@@ -7,6 +7,8 @@ import { AppShell } from "@/components/AppShell";
 import { RequireAdmin } from "@/components/RequireAdmin";
 import { RequireAuth } from "@/components/RequireAuth";
 import { RequireOwner } from "@/components/RequireOwner";
+import { ValidParam } from "@/components/ValidParam";
+import { SERVER_NAME_PARAM, USER_ID_PARAM } from "@/lib/params";
 import { Login } from "@/pages/Login";
 import { Setup } from "@/pages/Setup";
 import { Dashboard } from "@/pages/Dashboard";
@@ -70,11 +72,18 @@ export default function App() {
               {/* User-Side — app-tier */}
               <Route index element={<Dashboard />} />
               <Route path="servers" element={<ServersPage />} />
-              <Route path="servers/:name" element={<ServerConsole />} />
-              <Route path="servers/:name/players" element={<ServerPlayers />} />
-              <Route path="servers/:name/backups" element={<ServerBackups />} />
-              <Route path="servers/:name/files" element={<ServerFiles />} />
-              <Route path="servers/:name/luckperms" element={<ServerLuckPerms />} />
+              {/* A :name that is not a server name (a crafted link carrying
+                  "/", "?" or "..") renders "not found" before any request. */}
+              <Route
+                path="servers/:name"
+                element={<ValidParam param="name" pattern={SERVER_NAME_PARAM} />}
+              >
+                <Route index element={<ServerConsole />} />
+                <Route path="players" element={<ServerPlayers />} />
+                <Route path="backups" element={<ServerBackups />} />
+                <Route path="files" element={<ServerFiles />} />
+                <Route path="luckperms" element={<ServerLuckPerms />} />
+              </Route>
               <Route path="submissions" element={<MySubmissionsPage />} />
               <Route path="account" element={<Account />} />
 
@@ -90,7 +99,9 @@ export default function App() {
                 {/* Owner-gated: user management (one level above admin). */}
                 <Route element={<RequireOwner />}>
                   <Route path="users" element={<UsersPage />} />
-                  <Route path="users/:id" element={<UserDetailPage />} />
+                  <Route path="users/:id" element={<ValidParam param="id" pattern={USER_ID_PARAM} />}>
+                    <Route index element={<UserDetailPage />} />
+                  </Route>
                 </Route>
               </Route>
 

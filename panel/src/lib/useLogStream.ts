@@ -5,6 +5,7 @@ import {
   type StreamStatus,
   type LogLine,
 } from "./logstream";
+import { useTier } from "./tier";
 
 // browserEventSource is the production factory: a native EventSource with
 // credentials, so the Cloudflare Access cookie rides along exactly as api.ts's
@@ -45,6 +46,14 @@ export function useLogStream(url: string): UseLogStream {
   }, [controller]);
 
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
+
+  // EventSource reports a refused stream (a 401 included) only as an error, so
+  // an ended stream re-checks the session: an expired one takes the person to
+  // sign in, and otherwise the console shows the stream as ended.
+  const { revalidate } = useTier();
+  useEffect(() => {
+    if (snapshot.status === "ended") void revalidate();
+  }, [snapshot.status, revalidate]);
 
   const clear = useCallback(() => controller.clear(), [controller]);
   const reconnect = useCallback(() => controller.reconnect(), [controller]);

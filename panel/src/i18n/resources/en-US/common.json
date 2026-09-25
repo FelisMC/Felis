@@ -26,5 +26,9 @@
   "crash_updated_body": "A new version of the panel was just released. Reload to open this page.",
   "crash_reload": "Reload",
   "crash_details": "Error details",
-  "crash_copy": "Copy error details"
+  "crash_copy": "Copy error details",
+  "not_found_title": "Page not found",
+  "not_found_body": "The name in the link is not valid, or the page does not exist.",
+  "connection_lost": "Can't reach Felis: the network is down, or your Cloudflare Access sign-in expired. This clears by itself once the network is back; an expired Access sign-in needs a page reload.",
+  "reload_page": "Reload page"
 }

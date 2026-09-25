@@ -1,4 +1,4 @@
-import { Navigate, Outlet } from "react-router-dom";
+import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useTier } from "@/lib/tier";
@@ -7,7 +7,9 @@ import { useTier } from "@/lib/tier";
 // and everything under it). It encodes the three-way verdict from the tier model:
 //
 //   loading            → a full-screen spinner (never flash login during boot /me)
-//   unauthenticated    → /login   (a genuine 401: no/expired session)
+//   unauthenticated    → /login   (a genuine 401: no/expired session), carrying
+//                        the page to return to (?next=) and, when a session
+//                        ended under an open page, state.sessionEnded
 //   otherwise          → render the app (<Outlet/>)
 //
 // The "otherwise" branch deliberately includes the graded-Zero-Trust degraded case
@@ -15,8 +17,9 @@ import { useTier } from "@/lib/tier";
 // app still renders User-Side, exactly as before local auth existed. Only a true
 // 401 bounces to /login. Every admin route remains independently server-guarded.
 export function RequireAuth() {
-  const { loading, unauthenticated } = useTier();
+  const { loading, unauthenticated, sessionEnded } = useTier();
   const { t } = useTranslation("common");
+  const location = useLocation();
 
   if (loading) {
     return (
@@ -26,6 +29,10 @@ export function RequireAuth() {
       </div>
     );
   }
-  if (unauthenticated) return <Navigate to="/login" replace />;
+  if (unauthenticated) {
+    const back = location.pathname + location.search;
+    const to = back === "/" ? "/login" : `/login?next=${encodeURIComponent(back)}`;
+    return <Navigate to={to} replace state={sessionEnded ? { sessionEnded: true } : undefined} />;
+  }
   return <Outlet />;
 }

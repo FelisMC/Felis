@@ -50,3 +50,16 @@ export function deriveAuth(
     unauthenticated: !loading && identity === null && isUnauthorized(error),
   };
 }
+
+/** loginReturnPath reads the ?next= a sign-in redirect carried and returns the
+ *  in-app path to land on afterwards. Only a same-origin absolute path counts:
+ *  "//host" is a protocol-relative URL, and a browser reads a backslash as a
+ *  slash and drops tabs and newlines, so "/\host" or "/<tab>/host" would be one
+ *  too; the sign-in pages themselves would loop. Each falls back to the
+ *  dashboard. */
+export function loginReturnPath(next: string | null): string {
+  if (!next || !next.startsWith("/") || next.startsWith("//")) return "/";
+  if (/[\\\u0000-\u001f]/.test(next)) return "/";
+  if (/^\/(login|setup)(\/|\?|$)/.test(next)) return "/";
+  return next;
+}

@@ -1,4 +1,4 @@
-import { Loader2, AlertTriangle, Inbox, ShieldX, Construction, Moon } from "lucide-react";
+import { Loader2, AlertTriangle, Inbox, ShieldX, Construction, Moon, SearchX } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
@@ -63,6 +63,22 @@ export function NotAuthorized() {
         <p className="mt-1 text-sm text-muted-foreground">
           {t("not_authorized_body")}
         </p>
+      </div>
+      <Link to="/" className="text-sm font-medium text-primary hover:underline">
+        {t("back_to_dashboard")}
+      </Link>
+    </div>
+  );
+}
+
+export function NotFound() {
+  const { t } = useTranslation("common");
+  return (
+    <div className="mx-auto flex max-w-md flex-col items-center justify-center gap-3 py-24 text-center">
+      <SearchX className="h-8 w-8 text-muted-foreground" />
+      <div>
+        <p className="font-medium">{t("not_found_title")}</p>
+        <p className="mt-1 text-sm text-muted-foreground">{t("not_found_body")}</p>
       </div>
       <Link to="/" className="text-sm font-medium text-primary hover:underline">
         {t("back_to_dashboard")}

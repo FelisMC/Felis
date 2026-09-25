@@ -1,5 +1,5 @@
 import { useState, useEffect, type FormEvent } from "react";
-import { Navigate, useNavigate } from "react-router-dom";
+import { Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Loader2, KeyRound, Mail, Fingerprint, ShieldCheck } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { AuthLayout } from "@/components/AuthLayout";
@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useTier } from "@/lib/tier";
+import { loginReturnPath } from "@/lib/auth";
 import { api, humanizeError } from "@/lib/api";
 import { loadConfig } from "@/lib/config";
 import { base64urlToBytes, bytesToBase64url } from "@/lib/utils";
@@ -20,11 +21,17 @@ import { base64urlToBytes, bytesToBase64url } from "@/lib/utils";
 // re-evaluates and land on the dashboard.
 //
 // Reaching this page already-authenticated (e.g. typing /login while signed in)
-// short-circuits to the dashboard rather than showing the form.
+// short-circuits to the dashboard rather than showing the form. RequireAuth sends
+// a signed-out visitor here with ?next= (the page they were on) and, when their
+// session ended under an open page, state.sessionEnded, which shows why; after
+// signing in they land back on that page.
 export function Login() {
   const { loading, identity, refresh } = useTier();
   const navigate = useNavigate();
   const { t } = useTranslation("auth");
+  const [searchParams] = useSearchParams();
+  const next = loginReturnPath(searchParams.get("next"));
+  const sessionEnded = (useLocation().state as { sessionEnded?: boolean } | null)?.sessionEnded === true;
 
   const [activeTab, setActiveTab] = useState<"main" | "bind" | "op">("main");
   const [email, setEmail] = useState("");
@@ -89,7 +96,7 @@ export function Login() {
       </AuthLayout>
     );
   }
-  if (identity) return <Navigate to="/" replace />;
+  if (identity) return <Navigate to={next} replace />;
 
   async function handleBindSubmit(e: FormEvent) {
     e.preventDefault();
@@ -100,7 +107,7 @@ export function Login() {
     try {
       await api.bind(code);
       await refresh();
-      navigate("/", { replace: true });
+      navigate(next, { replace: true });
     } catch (err) {
       setError(humanizeError(err));
       setSubmitting(false);
@@ -130,7 +137,7 @@ export function Login() {
     try {
       await api.authEmailVerify(email.trim(), otpCode.trim());
       await refresh();
-      navigate("/", { replace: true });
+      navigate(next, { replace: true });
     } catch (err) {
       setError(humanizeError(err));
       setSubmitting(false);
@@ -220,7 +227,7 @@ export function Login() {
       }
 
       await refresh();
-      navigate("/", { replace: true });
+      navigate(next, { replace: true });
     } catch (err: any) {
       setError(humanizeError(err));
     } finally {
@@ -251,7 +258,7 @@ export function Login() {
     try {
       await api.opLoginFinish(opRequestId, opCode.trim());
       await refresh();
-      navigate("/", { replace: true });
+      navigate(next, { replace: true });
     } catch (err) {
       setError(humanizeError(err));
       setSubmitting(false);
@@ -268,6 +275,14 @@ export function Login() {
       title={t("login_title")}
       subtitle={t(isOpHost ? "login_subtitle_op" : "login_subtitle")}
     >
+      {sessionEnded && (
+        <p
+          role="status"
+          className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-800 dark:text-amber-200"
+        >
+          {t("session_ended_notice")}
+        </p>
+      )}
       <Card>
         <CardContent className="pt-6">
           {activeTab === "main" && (

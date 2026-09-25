@@ -79,5 +79,9 @@
   "too_many_streams": "同时打开的实时连接过多——请关闭一些页面后再试。",
   "protected_admin": "该名字属于已绑定的管理员账户，不能被认领。",
   "auth_unavailable": "登录服务当前不可用。",
-  "setup_token_invalid": "初始化令牌无效或已过期。"
+  "setup_token_invalid": "初始化令牌无效或已过期。",
+  "network_error": "连不上 Felis：网络断开了，或者 Cloudflare Access 的登录已过期。刷新页面可以重新登录。",
+  "upstream_unavailable": "服务暂时不可用（可能正在重启或升级），请稍后重试。",
+  "bad_path_param": "链接里的名称无效，请从列表重新打开。",
+  "payload_too_large": "内容超过了入口允许的大小，没有发送成功。"
 }

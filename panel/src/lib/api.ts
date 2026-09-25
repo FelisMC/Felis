@@ -38,12 +38,9 @@ import i18next from "i18next";
 // service token, and the RCON password is never requested (spec §8).
 
 function isApiError(x: unknown): x is { error: { code: string; message: string } } {
-  return (
-    typeof x === "object" &&
-    x !== null &&
-    "error" in x &&
-    typeof (x as { error: unknown }).error === "object"
-  );
+  if (typeof x !== "object" || x === null || !("error" in x)) return false;
+  const e = (x as { error: unknown }).error;
+  return typeof e === "object" && e !== null && typeof (e as { code?: unknown }).code === "string";
 }
 
 // A locked session — one that still owes the forced onboarding (passkey
@@ -61,57 +58,167 @@ function announceSetupRequired(err: ApiError): void {
   window.dispatchEvent(new Event(SETUP_REQUIRED_EVENT));
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+// A 401 from a protected route means the session ended under the page (it
+// expired, or an admin revoked it). TierProvider hears this and re-reads /me,
+// and RequireAuth then sends the person to /login with the page to come back
+// to. /me is left out because it is that re-read, and /auth/* because the
+// sign-in doors run without a session by design.
+export const SESSION_EXPIRED_EVENT = "felis:session-expired";
+
+function announceSessionExpired(err: ApiError, path: string): void {
+  if (err.status !== 401 || typeof window === "undefined") return;
+  if (path === "/me" || path.startsWith("/auth/")) return;
+  window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+}
+
+// CONNECTION_EVENT reports when requests stop reaching the API (detail.ok =
+// false) and when one gets through again (true). A fetch that rejects never
+// saw a response: the network is down, or Cloudflare Access redirected the
+// call to its cross-origin login page because the Access session expired,
+// which fetch reports as the same TypeError. AppShell shows a banner with a
+// reload, since only a full page load can go through the Access login.
+export const CONNECTION_EVENT = "felis:connection";
+let connectionLost = false;
+
+/** isConnectionLost reports whether the last call got no response. */
+export function isConnectionLost(): boolean {
+  return connectionLost;
+}
+
+function reportConnection(ok: boolean): void {
+  if (connectionLost === !ok) return;
+  connectionLost = !ok;
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent(CONNECTION_EVENT, { detail: { ok } }));
+}
+
+function networkError(e: unknown): ApiError {
+  return {
+    status: 0,
+    code: "network_error",
+    message: e instanceof Error ? e.message : String(e),
+  };
+}
+
+// urlPath builds an API path from literal text and route values, percent-
+// encoding each value as one path segment. Values come from router params and
+// form fields, and react-router hands params over decoded, so "%2F" arrives as
+// "/": interpolated raw, a crafted link could point a button at another
+// endpoint, carrying the viewer's cookie. encodeURIComponent covers "/", "?"
+// and "#"; "." and ".." survive it and fetch would still walk the path up, so
+// those and "" are refused before anything is sent.
+export function urlPath(strings: TemplateStringsArray, ...values: string[]): string {
+  let out = strings[0];
+  values.forEach((v, i) => {
+    const seg = String(v);
+    if (seg === "" || seg === "." || seg === "..") {
+      const err: ApiError = {
+        status: 0,
+        code: "bad_path_param",
+        message: `refusing ${JSON.stringify(seg)} as a path segment`,
+      };
+      throw err;
+    }
+    out += encodeURIComponent(seg) + strings[i + 1];
+  });
+  return out;
+}
+
+// fetchOK performs one call and returns the response when it is 2xx, else
+// throws an ApiError that always keeps the HTTP status. A body that is not the
+// API's JSON envelope (an HTML 502 or 524 page from the tunnel while the API
+// restarts, a bare 503 from the ingress) becomes `upstream_unavailable`, so the
+// setup and session branches still see the status and the person reads "try
+// again shortly" instead of a JSON parse error.
+async function fetchOK(path: string, init: RequestInit): Promise<Response> {
   const { apiBase } = await loadConfig();
-  const res = await fetch(`${apiBase}${path}`, {
+  let res: Response;
+  try {
+    res = await fetch(`${apiBase}${path}`, { ...init, credentials: "include" });
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") throw e;
+    reportConnection(false);
+    throw networkError(e);
+  }
+  reportConnection(true);
+  if (res.ok) return res;
+
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(await res.text());
+  } catch {
+    /* no body, or not JSON: an ingress or tunnel answered */
+  }
+  const err: ApiError = isApiError(parsed)
+    ? { status: res.status, code: parsed.error.code, message: parsed.error.message }
+    : {
+        status: res.status,
+        code: res.status >= 500 ? "upstream_unavailable" : "error",
+        message: res.statusText,
+      };
+  announceSetupRequired(err);
+  announceSessionExpired(err, path);
+  throw err;
+}
+
+// send returns a 2xx response's parsed JSON body (null for an empty one).
+async function send<T>(path: string, init: RequestInit): Promise<T> {
+  const res = await fetchOK(path, init);
+  let text: string;
+  try {
+    text = await res.text();
+  } catch (e) {
+    reportConnection(false);
+    throw networkError(e);
+  }
+  if (!text) return null as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    const err: ApiError = {
+      status: res.status,
+      code: "upstream_unavailable",
+      message: "the response was not JSON",
+    };
+    throw err;
+  }
+}
+
+function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  return send<T>(path, {
     method,
-    credentials: "include",
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
-
-  const text = await res.text();
-  const parsed: unknown = text ? JSON.parse(text) : null;
-
-  if (!res.ok) {
-    const err: ApiError = {
-      status: res.status,
-      code: isApiError(parsed) ? parsed.error.code : "error",
-      message: isApiError(parsed) ? parsed.error.message : res.statusText,
-    };
-    announceSetupRequired(err);
-    throw err;
-  }
-  return parsed as T;
 }
 
-async function requestRaw<T>(
+function requestRaw<T>(
   method: string,
   path: string,
   body: Blob,
   headers?: Record<string, string>,
 ): Promise<T> {
-  const { apiBase } = await loadConfig();
-  const res = await fetch(`${apiBase}${path}`, {
-    method,
-    credentials: "include",
-    headers,
-    body,
-  });
+  return send<T>(path, { method, headers, body });
+}
 
-  const text = await res.text();
-  const parsed: unknown = text ? JSON.parse(text) : null;
-
-  if (!res.ok) {
-    const err: ApiError = {
-      status: res.status,
-      code: isApiError(parsed) ? parsed.error.code : "error",
-      message: isApiError(parsed) ? parsed.error.message : res.statusText,
-    };
-    announceSetupRequired(err);
-    throw err;
+// rejectingSync turns a synchronous throw inside an api method (urlPath refusing
+// a segment) into a rejected promise, so every caller handles it the way it
+// handles any failed call.
+function rejectingSync<T extends Record<string, unknown>>(methods: T): T {
+  const out: Record<string, unknown> = {};
+  for (const [key, fn] of Object.entries(methods)) {
+    out[key] =
+      typeof fn === "function"
+        ? (...args: unknown[]) => {
+            try {
+              return fn(...args);
+            } catch (e) {
+              return Promise.reject(e);
+            }
+          }
+        : fn;
   }
-  return parsed as T;
+  return out as T;
 }
 
 // Setup bootstrap (spec §B). The one-time token from `felis setup` is redeemed for
@@ -127,7 +234,7 @@ export interface SetupState {
   setup_required: boolean;
 }
 
-export const api = {
+export const api = rejectingSync({
   // Session doors (spec §B). The product is passwordless: a session is minted only
   // by passkey, email-OTP, bind code, or the op-login vouch flow below. Every door
   // sets an HttpOnly cookie as a side effect and may 403 `local_auth_disabled` on a
@@ -168,7 +275,7 @@ export const api = {
     request<{ request_id: string; expires_at: string }>("POST", "/auth/op-login/start", { email }),
 
   opLoginStatus: (id: string) =>
-    request<{ approved: boolean }>("GET", `/auth/op-login/status/${encodeURIComponent(id)}`),
+    request<{ approved: boolean }>("GET", urlPath`/auth/op-login/status/${id}`),
 
   opLoginFinish: (request_id: string, code: string) =>
     request<{ user_id: string; role: string }>("POST", "/auth/op-login/finish", {
@@ -201,23 +308,23 @@ export const api = {
   fleet: () =>
     request<{ servers: FleetServer[] }>("GET", "/fleet").then((r) => r.servers ?? []),
 
-  status: (name: string) => request<ServerStatus>("GET", `/servers/${name}/status`),
+  status: (name: string) => request<ServerStatus>("GET", urlPath`/servers/${name}/status`),
 
   wake: (name: string) =>
-    request<{ name: string; desiredState: string }>("POST", `/servers/${name}/wake`),
+    request<{ name: string; desiredState: string }>("POST", urlPath`/servers/${name}/wake`),
 
   stop: (name: string) =>
-    request<{ name: string; desiredState: string }>("POST", `/servers/${name}/stop`),
+    request<{ name: string; desiredState: string }>("POST", urlPath`/servers/${name}/stop`),
 
   claim: (name: string) =>
-    request<{ name: string; claimed: boolean }>("POST", `/servers/${name}/claim`),
+    request<{ name: string; claimed: boolean }>("POST", urlPath`/servers/${name}/claim`),
 
   /** sendCommand runs one RCON command against a running server (spec §8 写=RCON).
    *  The backend strips a leading "/", rejects control characters (newline → 400)
    *  and caps the command at 1000 bytes. The reply is the server's plain-text
    *  response body. */
   sendCommand: (name: string, command: string) =>
-    request<{ output: string }>("POST", `/servers/${name}/command`, { command }),
+    request<{ output: string }>("POST", urlPath`/servers/${name}/command`, { command }),
 
   // Access control (spec §7 access). The backend translates these STRUCTURED fields
   // into RCON commands — every field is charset-validated server-side before it is
@@ -230,10 +337,10 @@ export const api = {
    *  Running server (the readiness gate covers the read, not just the writes), so
    *  callers must gate the fetch on phase === "Running". */
   accessWhitelistList: (name: string) =>
-    request<WhitelistResult>("GET", `/servers/${name}/access/whitelist`),
+    request<WhitelistResult>("GET", urlPath`/servers/${name}/access/whitelist`),
 
   accessWhitelist: (name: string, action: "add" | "remove", player: string) =>
-    request<AccessResult>("POST", `/servers/${name}/access/whitelist`, {
+    request<AccessResult>("POST", urlPath`/servers/${name}/access/whitelist`, {
       action,
       player,
     }),
@@ -242,10 +349,10 @@ export const api = {
    *  requires a Running server (the readiness gate covers the read too), so callers
    *  gate the fetch on phase === "Running". */
   accessBanList: (name: string) =>
-    request<BanlistResult>("GET", `/servers/${name}/access/ban`),
+    request<BanlistResult>("GET", urlPath`/servers/${name}/access/ban`),
 
   accessBan: (name: string, action: "ban" | "pardon", player: string) =>
-    request<AccessResult>("POST", `/servers/${name}/access/ban`, {
+    request<AccessResult>("POST", urlPath`/servers/${name}/access/ban`, {
       action,
       player,
     }),
@@ -254,10 +361,10 @@ export const api = {
    *  the count alone). Like accessWhitelistList this GET requires a Running server,
    *  so callers gate the fetch on phase === "Running". */
   accessPlayers: (name: string) =>
-    request<PlayersResult>("GET", `/servers/${name}/access/players`),
+    request<PlayersResult>("GET", urlPath`/servers/${name}/access/players`),
 
   accessKick: (name: string, player: string) =>
-    request<KickResult>("POST", `/servers/${name}/access/kick`, { player }),
+    request<KickResult>("POST", urlPath`/servers/${name}/access/kick`, { player }),
 
   accessLuckPermsInfo: (name: string, player: string) =>
     request<{
@@ -265,7 +372,7 @@ export const api = {
       groups: string[];
       permissions: { node: string; value: boolean; world?: string }[];
       output: string;
-    }>("GET", `/servers/${name}/access/luckperms/${player}`),
+    }>("GET", urlPath`/servers/${name}/access/luckperms/${player}`),
 
   accessPermission: (
     name: string,
@@ -277,7 +384,7 @@ export const api = {
   ) =>
     request<AccessResult & { node: string; value?: boolean; world?: string }>(
       "POST",
-      `/servers/${name}/access/permission`,
+      urlPath`/servers/${name}/access/permission`,
       { action, player, node, value, world }
     ),
 
@@ -289,7 +396,7 @@ export const api = {
   ) =>
     request<AccessResult & { group: string }>(
       "POST",
-      `/servers/${name}/access/group`,
+      urlPath`/servers/${name}/access/group`,
       { action, player, group }
     ),
 
@@ -306,10 +413,10 @@ export const api = {
     request<Build>("POST", "/images/build", req),
 
   getBuild: (id: string) =>
-    request<Build>("GET", `/images/build/${id}`),
+    request<Build>("GET", urlPath`/images/build/${id}`),
 
   cancelBuild: (id: string) =>
-    request<Build>("POST", `/images/build/${id}/cancel`),
+    request<Build>("POST", urlPath`/images/build/${id}/cancel`),
 
   createServer: (req: CreateServerRequest) =>
     request<{ name: string; subdomain: string; desiredState: string }>(
@@ -337,7 +444,7 @@ export const api = {
   }) =>
     request<{ name: string; desiredState: string }>(
       "PATCH",
-      `/servers/${name}`,
+      urlPath`/servers/${name}`,
       req,
     ),
 
@@ -368,7 +475,7 @@ export const api = {
     if (!safetySnapshot) body.safety_snapshot = false;
     return request<{ name: string; status: string; backup_id: string; safety_snapshot?: boolean }>(
       "POST",
-      `/servers/${name}/restore-backup`,
+      urlPath`/servers/${name}/restore-backup`,
       Object.keys(body).length ? body : undefined,
     );
   },
@@ -380,7 +487,7 @@ export const api = {
   // {name, status:"backing_up"}: the Job is enqueued, not done — watch
   // serverJobs for the outcome.
   backupNow: (name: string) =>
-    request<{ name: string; status: string }>("POST", `/servers/${name}/backup`),
+    request<{ name: string; status: string }>("POST", urlPath`/servers/${name}/backup`),
 
   // serverJobs lists the newest backup/restore Jobs of one server, newest first
   // (GET /servers/{name}/jobs). Owner-or-admin gated server-side; a Job's
@@ -389,7 +496,7 @@ export const api = {
   serverJobs: (name: string) =>
     request<{ server: string; jobs: ServerJob[] }>(
       "GET",
-      `/servers/${name}/jobs`,
+      urlPath`/servers/${name}/jobs`,
     ).then((r) => r.jobs ?? []),
 
   // Server file editor (spec §7). All three routes are owner-or-admin gated and
@@ -401,7 +508,7 @@ export const api = {
   listServerFiles: (name: string, path: string) =>
     request<{ path: string; entries: ServerFileEntry[]; truncated: boolean }>(
       "GET",
-      `/servers/${name}/files?path=${encodeURIComponent(path)}`,
+      urlPath`/servers/${name}/files` + `?path=${encodeURIComponent(path)}`,
     ),
 
   // readServerFile returns one file's bytes (base64) and the sha256 of the file
@@ -410,7 +517,7 @@ export const api = {
   readServerFile: (name: string, path: string) =>
     request<{ path: string; content: string; sha256: string }>(
       "GET",
-      `/servers/${name}/file?path=${encodeURIComponent(path)}`,
+      urlPath`/servers/${name}/file` + `?path=${encodeURIComponent(path)}`,
     ),
 
   // writeServerFile atomically replaces a file's contents (creating it if
@@ -421,7 +528,7 @@ export const api = {
   writeServerFile: (name: string, path: string, content: string, expectSha256?: string) =>
     request<{ path: string; status: string; sha256: string }>(
       "PUT",
-      `/servers/${name}/file?path=${encodeURIComponent(path)}`,
+      urlPath`/servers/${name}/file` + `?path=${encodeURIComponent(path)}`,
       expectSha256 ? { content, expect_sha256: expectSha256 } : { content },
     ),
 
@@ -456,7 +563,7 @@ export const api = {
     request<{ credentials: any[] }>("GET", "/account/passkey/credentials"),
 
   passkeyDelete: (id: string) =>
-    request<void>("DELETE", `/account/passkey/credentials/${id}`),
+    request<void>("DELETE", urlPath`/account/passkey/credentials/${id}`),
 
   // Account migration (spec §B3 inherit). Started in-game with /felis migrate; the
   // web side then drives: status → step-up confirm (passkey when enrolled, email-OTP
@@ -504,14 +611,14 @@ export const api = {
   // expectedDigest is the sha256 of the context the reviewer looked at; the API
   // refuses the approval (409 context_changed) when the upload has since changed.
   approveSubmission: (id: string, expectedDigest: string) =>
-    request<Submission>("POST", `/submissions/${id}/approve`, { expected_digest: expectedDigest }),
+    request<Submission>("POST", urlPath`/submissions/${id}/approve`, { expected_digest: expectedDigest }),
 
   rejectSubmission: (id: string, reason: string) =>
-    request<Submission>("POST", `/submissions/${id}/reject`, { reason }),
+    request<Submission>("POST", urlPath`/submissions/${id}/reject`, { reason }),
 
   // Retire a submission outright (row + uploaded context) — the review queue's
   // lifecycle valve, the only way an upload is reclaimed from the PVC.
-  deleteSubmission: (id: string) => request<Submission>("DELETE", `/submissions/${id}`),
+  deleteSubmission: (id: string) => request<Submission>("DELETE", urlPath`/submissions/${id}`),
 
   // The reviewer's read path to the uploaded build context: the executed
   // Dockerfile lives inside the tarball, so approving without this would be
@@ -520,27 +627,7 @@ export const api = {
   // Resolves to the sha256 the API vouched for while streaming these bytes (it
   // aborts the transfer on a mismatch), so the approval can name what was read.
   downloadSubmissionContext: async (id: string): Promise<string | null> => {
-    const { apiBase } = await loadConfig();
-    const res = await fetch(`${apiBase}/submissions/${id}/context`, {
-      method: "GET",
-      credentials: "include",
-    });
-    if (!res.ok) {
-      let code = "error";
-      let message = res.statusText;
-      try {
-        const parsed = JSON.parse(await res.text()) as unknown;
-        if (isApiError(parsed)) {
-          code = parsed.error.code;
-          message = parsed.error.message;
-        }
-      } catch {
-        /* non-JSON error body (e.g. an ingress page): keep the status line */
-      }
-      const err: ApiError = { status: res.status, code, message };
-      announceSetupRequired(err);
-      throw err;
-    }
+    const res = await fetchOK(urlPath`/submissions/${id}/context`, { method: "GET" });
     const digest = res.headers.get("X-Felis-Context-Sha256")?.trim().toLowerCase() || null;
     const blob = await res.blob();
     const url = URL.createObjectURL(blob);
@@ -559,13 +646,13 @@ export const api = {
     request<Submission>("POST", "/me/submissions", { display_name: displayName }),
 
   uploadSubmissionContext: (id: string, file: Blob) =>
-    requestRaw<Submission>("POST", `/me/submissions/${id}/context`, file, {
+    requestRaw<Submission>("POST", urlPath`/me/submissions/${id}/context`, file, {
       "Content-Type": "application/x-gzip",
     }),
 
   // Retract the caller's own pending submission (and its uploaded context), which
   // frees their pending slot and storage budget. Reviewed submissions are frozen.
-  withdrawSubmission: (id: string) => request<Submission>("DELETE", `/me/submissions/${id}`),
+  withdrawSubmission: (id: string) => request<Submission>("DELETE", urlPath`/me/submissions/${id}`),
 
   getUpdateWindow: () => request<UpdateWindow>("GET", "/updates/window"),
 
@@ -596,54 +683,54 @@ export const api = {
     ).then((r) => ({ users: r.users ?? [], total: r.total ?? 0 }));
   },
 
-  getUser: (id: string) => request<UserDetail>("GET", `/users/${id}`),
+  getUser: (id: string) => request<UserDetail>("GET", urlPath`/users/${id}`),
 
   createUser: (req: CreateUserRequest) =>
     request<UserView>("POST", "/users", req),
 
   patchUser: (id: string, patch: PatchUserRequest) =>
-    request<UserView>("PATCH", `/users/${id}`, patch),
+    request<UserView>("PATCH", urlPath`/users/${id}`, patch),
 
   deleteUser: (id: string) =>
-    request<{ deleted: boolean }>("DELETE", `/users/${id}`),
+    request<{ deleted: boolean }>("DELETE", urlPath`/users/${id}`),
 
   disableUser: (id: string, disabled: boolean) =>
-    request<{ id: string; disabled: boolean }>("POST", `/users/${id}/disable`, { disabled }),
+    request<{ id: string; disabled: boolean }>("POST", urlPath`/users/${id}/disable`, { disabled }),
 
-  getUserQuotas: (id: string) => request<QuotaView>("GET", `/users/${id}/quotas`),
+  getUserQuotas: (id: string) => request<QuotaView>("GET", urlPath`/users/${id}/quotas`),
 
   setUserQuotas: (id: string, quotas: QuotaInput) =>
-    request<QuotaView>("PUT", `/users/${id}/quotas`, quotas),
+    request<QuotaView>("PUT", urlPath`/users/${id}/quotas`, quotas),
 
   listUserSessions: (id: string) =>
-    request<{ sessions: SessionView[] }>("GET", `/users/${id}/sessions`).then((r) => r.sessions ?? []),
+    request<{ sessions: SessionView[] }>("GET", urlPath`/users/${id}/sessions`).then((r) => r.sessions ?? []),
 
   revokeUserSessions: (id: string) =>
-    request<{ ok: boolean }>("DELETE", `/users/${id}/sessions`),
+    request<{ ok: boolean }>("DELETE", urlPath`/users/${id}/sessions`),
 
   revokeUserSession: (id: string, hash: string) =>
-    request<{ ok: boolean }>("DELETE", `/users/${id}/sessions/${encodeURIComponent(hash)}`),
+    request<{ ok: boolean }>("DELETE", urlPath`/users/${id}/sessions/${hash}`),
 
   // unbindUserPasskeys severs EVERY passkey the user holds (owner-tier account
   // remediation for a lost or compromised authenticator). It is deliberately not
   // a lockout — the account keeps its other doors (email OTP, in-game op-login
   // re-enrollment). Unbinding an account that holds no passkeys is a 200 no-op.
   unbindUserPasskeys: (id: string) =>
-    request<{ ok: boolean }>("DELETE", `/users/${id}/passkeys`),
+    request<{ ok: boolean }>("DELETE", urlPath`/users/${id}/passkeys`),
 
   linkAccount: (id: string, mcUuid: string, authSource?: string) =>
     request<{ ok: boolean; mc_uuid: string; auth_source: string }>(
       "POST",
-      `/users/${id}/links`,
+      urlPath`/users/${id}/links`,
       { mc_uuid: mcUuid, auth_source: authSource ?? "mojang" },
     ),
 
   unlinkAccount: (id: string, mcUuid: string) =>
     request<{ ok: boolean; mc_uuid: string }>(
       "DELETE",
-      `/users/${id}/links/${encodeURIComponent(mcUuid)}`,
+      urlPath`/users/${id}/links/${mcUuid}`,
     ),
-};
+});
 
 /**
  * consoleStreamURL builds the §8 read-side SSE endpoint for a server. It mirrors
@@ -867,9 +954,20 @@ export function humanizeError(e: unknown): string {
       return t("auth_unavailable");
     case "setup_token_invalid":
       return t("setup_token_invalid");
+    // The request never got a response: the network is down, or Cloudflare
+    // Access sent it to its login page because the Access session expired.
+    case "network_error":
+      return t("network_error");
+    // A proxy or the tunnel answered for the API (it is restarting or down).
+    case "upstream_unavailable":
+      return t("upstream_unavailable");
+    case "bad_path_param":
+      return t("bad_path_param");
     default:
       if (err.status === 401) return t("session_expired");
       if (err.status === 403) return t("forbidden");
+      if (err.status === 413) return t("payload_too_large");
+      if (err.status !== undefined && err.status >= 500) return t("upstream_unavailable");
       return err.message ?? t("generic");
   }
 }

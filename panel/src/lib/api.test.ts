@@ -12,7 +12,8 @@ vi.mock("./config", () => ({
 }));
 
 // Imported after the mock so api.ts picks up the mocked loadConfig.
-const { api, SETUP_REQUIRED_EVENT } = await import("./api");
+const { api, SETUP_REQUIRED_EVENT, SESSION_EXPIRED_EVENT, CONNECTION_EVENT, humanizeError, isConnectionLost } =
+  await import("./api");
 
 function fakeFetch(body: unknown, init?: { ok?: boolean; status?: number }) {
   return vi.fn(async () => ({
@@ -782,5 +783,143 @@ describe("image whitelist and builds wire shapes", () => {
       await expect(api.me()).rejects.toMatchObject({ status: 403, code: "forbidden" });
       expect(hits).toBe(0);
     });
+  });
+});
+
+describe("path parameters", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.unstubAllGlobals());
+
+  function lastURL(spy: typeof fetch): string {
+    const calls = (spy as unknown as ReturnType<typeof vi.fn>).mock.calls;
+    return String(calls[calls.length - 1][0]);
+  }
+
+  it('encodes "/", "?" and "#" inside one segment', async () => {
+    const spy = fakeFetch({ player: "x", groups: [], permissions: [], output: "" });
+    vi.stubGlobal("fetch", spy);
+    await api.accessLuckPermsInfo("lobby", "a/b?c#d");
+    expect(lastURL(spy)).toBe("/servers/lobby/access/luckperms/a%2Fb%3Fc%23d");
+  });
+
+  it("keeps a decoded router param that climbs the path inside its segment", async () => {
+    // react-router decodes "..%2F..%2Fusers%2Fu1%3F" to this before a page sees it.
+    const spy = fakeFetch({ name: "x", desiredState: "Stopped" });
+    vi.stubGlobal("fetch", spy);
+    await api.stop("../../users/u1?");
+    expect(lastURL(spy)).toBe("/servers/..%2F..%2Fusers%2Fu1%3F/stop");
+  });
+
+  it("refuses dot segments and empty ones before sending anything", async () => {
+    const spy = fakeFetch({});
+    vi.stubGlobal("fetch", spy);
+    for (const bad of ["..", ".", ""]) {
+      await expect(api.stop(bad)).rejects.toMatchObject({ status: 0, code: "bad_path_param" });
+      await expect(api.deleteUser(bad)).rejects.toMatchObject({ code: "bad_path_param" });
+    }
+    expect(spy).not.toHaveBeenCalled();
+    expect(humanizeError({ status: 0, code: "bad_path_param" })).toMatch(/not valid/i);
+  });
+
+  it("does not encode a value twice", async () => {
+    const spy = fakeFetch({ ok: true });
+    vi.stubGlobal("fetch", spy);
+    await api.revokeUserSession("u1", "ab/cd");
+    expect(lastURL(spy)).toBe("/users/u1/sessions/ab%2Fcd");
+    await api.listServerFiles("lobby", "world/level.dat");
+    expect(lastURL(spy)).toBe("/servers/lobby/files?path=world%2Flevel.dat");
+  });
+});
+
+describe("responses that are not the API's JSON", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.unstubAllGlobals());
+
+  function htmlFetch(status: number, statusText: string) {
+    return vi.fn(async () => ({
+      ok: status >= 200 && status < 300,
+      status,
+      statusText,
+      text: async () => "<!DOCTYPE html><html><body>Bad gateway</body></html>",
+    })) as unknown as typeof fetch;
+  }
+
+  it("turns an HTML 502 page into upstream_unavailable with the status kept", async () => {
+    vi.stubGlobal("fetch", htmlFetch(502, "Bad Gateway"));
+    const err = await api.status("lobby").catch((e) => e);
+    expect(err).toMatchObject({ status: 502, code: "upstream_unavailable" });
+    expect(humanizeError(err)).toMatch(/unavailable/i);
+    expect(humanizeError(err)).not.toMatch(/JSON|DOCTYPE/);
+  });
+
+  it("keeps the status of an HTML 401 so the session branch still runs", async () => {
+    const target = new EventTarget();
+    vi.stubGlobal("window", target);
+    let expired = 0;
+    target.addEventListener(SESSION_EXPIRED_EVENT, () => (expired += 1));
+    vi.stubGlobal("fetch", htmlFetch(401, "Unauthorized"));
+    const err = await api.status("lobby").catch((e) => e);
+    expect(err).toMatchObject({ status: 401 });
+    expect(humanizeError(err)).toMatch(/session/i);
+    expect(expired).toBe(1);
+  });
+
+  it("refuses a 200 whose body is not JSON", async () => {
+    vi.stubGlobal("fetch", htmlFetch(200, "OK"));
+    await expect(api.me()).rejects.toMatchObject({ status: 200, code: "upstream_unavailable" });
+  });
+
+  it("maps an unknown 5xx code to the unavailable line", () => {
+    expect(humanizeError({ status: 500, code: "internal", message: "internal error" })).toMatch(/unavailable/i);
+    expect(humanizeError({ status: 413, code: "error", message: "Payload Too Large" })).toMatch(/larger/i);
+  });
+});
+
+describe("session and connection signals", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.unstubAllGlobals());
+
+  function listen(name: string) {
+    const target = new EventTarget();
+    vi.stubGlobal("window", target);
+    const seen: unknown[] = [];
+    target.addEventListener(name, (e) => seen.push((e as CustomEvent).detail ?? true));
+    return seen;
+  }
+
+  it("announces a 401 from a protected route", async () => {
+    const seen = listen(SESSION_EXPIRED_EVENT);
+    vi.stubGlobal("fetch", fakeFetch({ error: { code: "unauthorized", message: "x" } }, { ok: false, status: 401 }));
+    await expect(api.myServers()).rejects.toMatchObject({ status: 401 });
+    expect(seen).toHaveLength(1);
+  });
+
+  it("stays silent for /me and the sign-in doors", async () => {
+    const seen = listen(SESSION_EXPIRED_EVENT);
+    vi.stubGlobal("fetch", fakeFetch({ error: { code: "unauthorized", message: "x" } }, { ok: false, status: 401 }));
+    await expect(api.me()).rejects.toMatchObject({ status: 401 });
+    await expect(api.setupStatus()).rejects.toMatchObject({ status: 401 });
+    expect(seen).toHaveLength(0);
+  });
+
+  it("reports a fetch that got no response, and the next one that did", async () => {
+    const seen = listen(CONNECTION_EVENT);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("Failed to fetch");
+      }),
+    );
+    const err = await api.myServers().catch((e) => e);
+    expect(err).toMatchObject({ status: 0, code: "network_error" });
+    expect(humanizeError(err)).toMatch(/Cloudflare Access/);
+    await api.myServers().catch(() => {});
+    expect(seen).toEqual([{ ok: false }]);
+    expect(isConnectionLost()).toBe(true);
+
+    vi.stubGlobal("fetch", fakeFetch({ servers: [] }));
+    await api.myServers();
+    expect(seen).toEqual([{ ok: false }, { ok: true }]);
+    expect(isConnectionLost()).toBe(false);
   });
 });

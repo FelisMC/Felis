@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
-import { Cat, Globe, Sun, Moon, LogOut } from "lucide-react";
+import { Cat, Globe, Sun, Moon, LogOut, WifiOff } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import * as SelectPrimitive from "@radix-ui/react-select";
 import { cn } from "@/lib/utils";
@@ -8,7 +8,8 @@ import { useTier } from "@/lib/tier";
 import { visibleSections, type NavSection } from "@/lib/nav";
 import { Select, SelectContent, SelectItem } from "@/components/ui/select";
 import { useTheme } from "@/lib/theme";
-import { api } from "@/lib/api";
+import { api, CONNECTION_EVENT, isConnectionLost } from "@/lib/api";
+import { Button } from "@/components/ui/button";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 
 function SectionGroup({ section, isFirst }: { section: NavSection; isFirst: boolean }) {
@@ -137,6 +138,36 @@ function ThemeToggle() {
   );
 }
 
+// ConnectionBanner shows while API calls get no response at all (api.ts
+// CONNECTION_EVENT): the network is down, or Cloudflare Access sent the call to
+// its login page. It clears on the next call that gets through (the pages'
+// polling makes one soon); an expired Access sign-in only passes on a full page
+// load, hence the reload button.
+function ConnectionBanner() {
+  const { t } = useTranslation("common");
+  const [lost, setLost] = useState(isConnectionLost);
+  useEffect(() => {
+    const onChange = (e: Event) => setLost(!(e as CustomEvent<{ ok: boolean }>).detail.ok);
+    window.addEventListener(CONNECTION_EVENT, onChange);
+    return () => window.removeEventListener(CONNECTION_EVENT, onChange);
+  }, []);
+  if (!lost) return null;
+  return (
+    <div
+      role="alert"
+      className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-800 dark:text-amber-200"
+    >
+      <span className="flex min-w-0 items-center gap-2">
+        <WifiOff className="h-4 w-4 shrink-0" />
+        {t("connection_lost")}
+      </span>
+      <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
+        {t("reload_page")}
+      </Button>
+    </div>
+  );
+}
+
 export function AppShell() {
   const { isAdmin, isOwner } = useTier();
   const { pathname } = useLocation();
@@ -190,6 +221,7 @@ export function AppShell() {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col h-full overflow-y-auto">
+        <ConnectionBanner />
         <header className="flex h-14 items-center justify-between border-b border-border px-4 md:hidden">
           <div className="flex items-center gap-2">
             <Cat className="h-5 w-5 text-primary" />
