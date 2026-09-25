@@ -1307,52 +1307,58 @@ paths:
                     type: array
                     items:
                       type: object
-                      required: [request_id, username, email, created_at]
+                      required: [request_id, username, email, client_ip, created_at]
                       properties:
                         request_id: { type: string }
                         username: { type: string }
                         email: { type: string }
+                        client_ip:
+                          type: string
+                          description: Where start was called from; empty on requests from before this was recorded.
                         created_at: { type: string, format: date-time }
         '401':
           $ref: '#/components/responses/Unauthorized'
 
-  /api/v1/internal/op-login/{id}/approve:
-    post:
+  /api/v1/internal/op-login/{id}:
+    get:
       tags: [account-internal]
-      operationId: opLoginApprove
-      summary: Record an in-game admin's vouch for a pending op.console login (spec §B).
+      operationId: opLoginShow
+      summary: Show an in-game admin whose op.console login a request is (spec §B).
       description: >
-        Internal-only second factor: velocity submits the online-mode UUID of the
-        in-game admin running /felis web op approve. The API resolves it to a linked
-        role=admin account (else 403 not_admin) and flips the request approved. A
-        missing or no-longer-pending request is 404. Self-approval is allowed — an
-        online staff member vouching as their own admin identity is a genuine second
-        factor distinct from the mailbox.
+        Internal-only. velocity's /felis web op approve <code> reads this and shows the
+        admin the account, its address, and when and from where the sign-in was started,
+        then asks them to confirm by typing the account name (see approve). The
+        approver's online-mode UUID gets the same check as approve (a linked admin or
+        owner, else 403 not_admin), since the command runs for any player and a staff
+        address must not be readable by one. A request that is unknown, expired,
+        approved or consumed is 404.
       x-felis-face: [internal]
       x-felis-tier: service
       x-felis-callers: [velocity]
       security: [{ serviceToken: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [approver_uuid]
-              properties:
-                approver_uuid: { type: string, format: uuid }
+        - { name: approver_uuid, in: query, required: true, schema: { type: string, format: uuid } }
       responses:
         '200':
-          description: The vouch was recorded; the request is now approved.
+          description: The pending request and where it was started.
           content:
             application/json:
               schema:
                 type: object
-                required: [approved]
+                required: [request_id, username, email, client_ip, user_agent, created_at, expires_at]
                 properties:
-                  approved: { type: boolean, const: true }
+                  request_id: { type: string }
+                  username: { type: string }
+                  email: { type: string }
+                  client_ip:
+                    type: string
+                    description: Where start was called from; empty on requests from before this was recorded.
+                  user_agent:
+                    type: string
+                    description: The browser's User-Agent at start, up to 256 bytes; may be empty.
+                  created_at: { type: string, format: date-time }
+                  expires_at: { type: string, format: date-time }
         '400':
           description: approver_uuid is required (bad_request).
           content:
@@ -1367,6 +1373,74 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '404':
           description: No pending operator login with that id (op_login_not_found).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/internal/op-login/{id}/approve:
+    post:
+      tags: [account-internal]
+      operationId: opLoginApprove
+      summary: Record an in-game admin's vouch for a pending op.console login (spec §B).
+      description: >
+        Internal-only second factor: velocity submits the online-mode UUID of the
+        in-game admin running /felis web op approve <code> <username>, and the account
+        name they typed after seeing the request (GET /api/v1/internal/op-login/{id}).
+        The API resolves the UUID to a linked admin or owner account (else 403
+        not_admin), requires the typed name to match the request's account ignoring
+        case (else 409 op_login_mismatch, audited, request left pending) and flips the
+        request approved. A missing or no-longer-pending request is 404. Self-approval
+        is allowed — an online staff member vouching as their own admin identity is a
+        genuine second factor distinct from the mailbox.
+      x-felis-face: [internal]
+      x-felis-tier: service
+      x-felis-callers: [velocity]
+      security: [{ serviceToken: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [approver_uuid, username]
+              properties:
+                approver_uuid: { type: string, format: uuid }
+                username:
+                  type: string
+                  description: The account name the admin typed to confirm whose sign-in this is.
+      responses:
+        '200':
+          description: The vouch was recorded; the request is now approved.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [approved, username, email]
+                properties:
+                  approved: { type: boolean, const: true }
+                  username: { type: string }
+                  email: { type: string }
+        '400':
+          description: approver_uuid and username are required (bad_request).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The approver is not a linked administrator (not_admin).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          description: No pending operator login with that id (op_login_not_found).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: The typed name is not the request's account (op_login_mismatch).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

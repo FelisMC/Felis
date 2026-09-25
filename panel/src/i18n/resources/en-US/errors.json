@@ -83,6 +83,7 @@
   "no_session": "This only works in a browser signed in to Felis.",
   "op_login_invalid": "This operator sign-in couldn't be completed — restart the sign-in.",
   "op_login_not_found": "No pending operator sign-in with that id.",
+  "op_login_mismatch": "That operator sign-in is for a different account.",
   "too_many_streams": "Too many live streams are open — close some pages and try again.",
   "protected_admin": "That name belongs to a linked administrator and can't be reclaimed.",
   "auth_unavailable": "The sign-in service isn't available right now.",

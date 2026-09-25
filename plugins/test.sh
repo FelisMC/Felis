@@ -11,8 +11,10 @@
 #      felis-api request path, only the lobby and the login gate may drive
 #      felis:control (and each only with its own frames), the link-status outage
 #      fallback fails closed outside its window, /invite prompts cannot double-fire
-#      or outlive their TTL, and the invite card really is a green/red clickable
-#      prompt. InviteCardTest needs the adventure jars the velocity plugin compiles
+#      or outlive their TTL, the invite card really is a green/red clickable
+#      prompt, and the op-login approval card names the account and leaves its
+#      name for the admin to type. InviteCardTest and OpApprovalCardTest need the
+#      adventure jars the velocity plugin compiles
 #      against; they are fetched from Maven Central below, pinned by version and
 #      checked by digest (a test run against silently-substituted bytes is not a
 #      test of what we ship).
@@ -96,6 +98,15 @@ javac -cp "$adventure_api:$adventure_key:$examination_api" -d "$work/card-classe
   plugins/velocity/test/best/lolicon/felis/velocity/InviteCardTest.java
 java -cp "$work/card-classes:$adventure_api:$adventure_key:$examination_api" \
   best.lolicon.felis.velocity.InviteCardTest
+
+echo "==> OpApprovalCardTest (/felis web op approve card, velocity)"
+mkdir -p "$work/opcard-classes"
+javac -cp "$adventure_api:$adventure_key:$examination_api" -d "$work/opcard-classes" \
+  plugins/shared/src/main/java/best/lolicon/felis/link/*.java \
+  plugins/velocity/src/main/java/best/lolicon/felis/velocity/OpApprovalCard.java \
+  plugins/velocity/test/best/lolicon/felis/velocity/OpApprovalCardTest.java
+java -cp "$work/opcard-classes:$adventure_api:$adventure_key:$examination_api" \
+  best.lolicon.felis.velocity.OpApprovalCardTest
 
 # --- 2. production compile gates ------------------------------------------------
 

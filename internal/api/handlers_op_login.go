@@ -11,14 +11,15 @@ import (
 // sensitive tier. Unlike the console.<root_domain> player doors (email OTP / bind
 // code), a staff web session is never minted from a single factor. The flow is a
 // three-call state machine over op_login_requests (migration 0016), all Public
-// pre-session routes (the caller has no principal yet), plus two internal-face routes
-// for the in-game side (approve is driven by velocity's /felis command; pending has
-// no consumer yet — see handleOpLoginPending):
+// pre-session routes (the caller has no principal yet), plus internal-face routes
+// for the in-game side (show and approve are driven by velocity's /felis command;
+// pending has no consumer yet — see handleOpLoginPending):
 //
 //	POST /api/v1/auth/op-login/start            (public)   — mint a request + mail an OTP
 //	GET  /api/v1/auth/op-login/status/{id}      (public)   — poll until an admin approves
 //	POST /api/v1/auth/op-login/finish           (public)   — redeem code+approval → session
 //	GET  /api/v1/internal/op-login/pending      (internal) — list requests awaiting a vouch
+//	GET  /api/v1/internal/op-login/{id}         (internal) — who a request is for, shown to the admin
 //	POST /api/v1/internal/op-login/{id}/approve (internal) — an in-game admin vouches
 //
 // The two factors:
@@ -30,6 +31,9 @@ import (
 //     request via velocity's /felis command (internal approve). The API's own user
 //     table is the sole authority: only a UUID linked to a staff account may
 //     approve (velocity's command runs for any player and relies on this check).
+//     The admin first sees whose request it is (account, address, where it was
+//     started) and approves by typing that account's name, so a code relayed by a
+//     stranger ("please approve abc123") cannot be vouched for blind.
 //
 // finish mints the session only when BOTH have landed. Neither factor alone — a mailed
 // code without an approval, or an approval without the code — yields a session.
@@ -173,7 +177,14 @@ func (a *API) handleOpLoginStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	if err := a.Repo.CreateOpLoginRequest(r.Context(), id, u.ID, u.Email, expiresAt); err != nil {
+	origin := ""
+	if addr := a.clientIP(r); addr.IsValid() {
+		origin = addr.String()
+	}
+	if err := a.Repo.CreateOpLoginRequest(r.Context(), NewOpLoginRequest{
+		ID: id, UserID: u.ID, Email: u.Email, ExpiresAt: expiresAt,
+		ClientIP: origin, UserAgent: truncateUTF8(r.UserAgent(), maxSessionUserAgent),
+	}); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -375,26 +386,106 @@ func (a *API) handleOpLoginPending(w http.ResponseWriter, r *http.Request) {
 			"request_id": req.ID,
 			"username":   req.Username,
 			"email":      req.Email,
+			"client_ip":  req.ClientIP,
 			"created_at": req.CreatedAt.UTC(),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"pending": out})
 }
 
+// opLoginApprover resolves the in-game player running /felis web op approve to a
+// linked staff account (admin, or the owner superset). An unlinked UUID or a
+// non-staff player may never see or vouch for an op.console login; all refusals
+// share one 403 so a caller cannot tell "not linked" from "linked but not staff".
+func (a *API) opLoginApprover(r *http.Request, mcUUID string) (*StaffUser, error) {
+	notAdmin := newError(http.StatusForbidden, "not_admin", "only a linked administrator may approve an operator login")
+	approverID, err := a.Repo.UserByMCUUID(r.Context(), mcUUID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return nil, notAdmin
+	case err != nil:
+		return nil, err
+	}
+	approver, err := a.Repo.UserByID(r.Context(), approverID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return nil, notAdmin
+	case err != nil:
+		return nil, err
+	}
+	if !staffRole(approver.Role) {
+		return nil, notAdmin
+	}
+	return approver, nil
+}
+
+// pendingOpLogin loads a request an admin may still vouch for: pending, unconsumed
+// and unexpired. Anything else is the same 404 the approve race returns.
+func (a *API) pendingOpLogin(r *http.Request, id string) (*OpLoginRequest, error) {
+	notFound := newError(http.StatusNotFound, "op_login_not_found", "no pending operator login with that id")
+	req, err := a.Repo.OpLoginRequestByID(r.Context(), id)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return nil, notFound
+	case err != nil:
+		return nil, err
+	}
+	if req.Status != "pending" || req.Consumed || !req.ExpiresAt.After(a.now()) {
+		return nil, notFound
+	}
+	return req, nil
+}
+
+// handleOpLoginShow tells the in-game admin who a pending request is for before
+// they vouch (internal face): the account, its address, when and from where the
+// sign-in was started. velocity's /felis web op approve <code> renders this and
+// asks the admin to confirm by name. The approver UUID rides in the query and gets
+// the same staff check as approve, since velocity's command runs for any player and
+// a staff address must not be readable by one.
+func (a *API) handleOpLoginShow(w http.ResponseWriter, r *http.Request) {
+	approverUUID := strings.TrimSpace(r.URL.Query().Get("approver_uuid"))
+	if approverUUID == "" {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "approver_uuid is required"))
+		return
+	}
+	if _, err := a.opLoginApprover(r, approverUUID); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	req, err := a.pendingOpLogin(r, r.PathValue("id"))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"request_id": req.ID,
+		"username":   req.Username,
+		"email":      req.Email,
+		"client_ip":  req.ClientIP,
+		"user_agent": req.UserAgent,
+		"created_at": req.CreatedAt.UTC(),
+		"expires_at": req.ExpiresAt.UTC(),
+	})
+}
+
 // opLoginApproveRequest is the internal approve body: the online-mode UUID of the
-// in-game admin running /felis web op approve. The API resolves it to a linked account
-// and refuses unless that account is staff (admin or owner) — this check against the API's
-// authoritative user table is the only gate; velocity's command itself is unprivileged.
+// in-game admin running /felis web op approve, and the account name they typed to
+// confirm whose sign-in they are vouching for. The API resolves the UUID to a
+// linked account and refuses unless that account is staff (admin or owner) — this
+// check against the API's authoritative user table is the only gate; velocity's
+// command itself is unprivileged.
 type opLoginApproveRequest struct {
 	ApproverUUID string `json:"approver_uuid"`
+	Username     string `json:"username"`
 }
 
 // handleOpLoginApprove records an in-game admin's vouch for a pending staff login
 // (internal face), supplying the second factor. It resolves the approver UUID to a
-// linked staff account (admin or owner; else 403), then flips the request approved.
-// A missing or no-longer-pending request is 404. Self-approval is allowed: a staff
-// member online as their own admin identity supplies a genuine second factor
-// (in-game session control) distinct from the mailbox factor.
+// linked staff account (admin or owner; else 403), requires the typed username to
+// name the request's account (else 409, request left pending), then flips the
+// request approved. A missing or no-longer-pending request is 404. Self-approval is
+// allowed: a staff member online as their own admin identity supplies a genuine
+// second factor (in-game session control) distinct from the mailbox factor.
 func (a *API) handleOpLoginApprove(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var req opLoginApproveRequest
@@ -403,38 +494,33 @@ func (a *API) handleOpLoginApprove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	approverUUID := strings.TrimSpace(req.ApproverUUID)
-	if approverUUID == "" {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "approver_uuid is required"))
+	typed := strings.TrimSpace(req.Username)
+	if approverUUID == "" || typed == "" {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "approver_uuid and username are required"))
 		return
 	}
-	// Resolve the in-game approver to a linked account and require a staff role
-	// (admin, or the owner superset). An unlinked UUID or a non-staff player may
-	// never vouch for an op.console login. All three refusals share one response so
-	// a caller cannot tell "not linked" from "linked but not staff".
-	notAdmin := newError(http.StatusForbidden, "not_admin", "only a linked administrator may approve an operator login")
-	approverID, err := a.Repo.UserByMCUUID(r.Context(), approverUUID)
-	switch {
-	case errors.Is(err, ErrNotFound):
-		writeError(w, r, notAdmin)
-		return
-	case err != nil:
+	approver, err := a.opLoginApprover(r, approverUUID)
+	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	approver, err := a.Repo.UserByID(r.Context(), approverID)
-	switch {
-	case errors.Is(err, ErrNotFound):
-		writeError(w, r, notAdmin)
-		return
-	case err != nil:
+	loginReq, err := a.pendingOpLogin(r, id)
+	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	if !staffRole(approver.Role) {
-		writeError(w, r, notAdmin)
+	// Minecraft names are case-insensitive, and so is the name an admin retypes.
+	if !strings.EqualFold(typed, loginReq.Username) {
+		payload, _ := json.Marshal(map[string]string{"request_id": id, "typed_username": typed})
+		a.auditEntry(r, AuditEntry{
+			Actor: approver.Username, ActorUserID: approver.ID, Source: internalSource(r),
+			Action: "auth.op_login.approve_mismatch", Payload: payload,
+		})
+		writeError(w, r, newError(http.StatusConflict, "op_login_mismatch",
+			"that operator login is for a different account"))
 		return
 	}
-	switch err := a.Repo.ApproveOpLogin(r.Context(), id, approverID, a.now()); {
+	switch err := a.Repo.ApproveOpLogin(r.Context(), id, approver.ID, a.now()); {
 	case errors.Is(err, ErrNotFound):
 		writeError(w, r, newError(http.StatusNotFound, "op_login_not_found", "no pending operator login with that id"))
 		return
@@ -442,10 +528,15 @@ func (a *API) handleOpLoginApprove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	payload, _ := json.Marshal(map[string]string{"request_id": id, "approver_user_id": approverID})
+	payload, _ := json.Marshal(map[string]string{
+		"request_id": id, "approver_user_id": approver.ID,
+		"username": loginReq.Username, "client_ip": loginReq.ClientIP,
+	})
 	a.auditEntry(r, AuditEntry{
-		Actor: approver.Username, ActorUserID: approverID, Source: internalSource(r),
+		Actor: approver.Username, ActorUserID: approver.ID, Source: internalSource(r),
 		Action: "auth.op_login.approved", Payload: payload,
 	})
-	writeJSON(w, http.StatusOK, map[string]any{"approved": true})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"approved": true, "username": loginReq.Username, "email": loginReq.Email,
+	})
 }

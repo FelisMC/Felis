@@ -83,6 +83,7 @@
   "no_session": "只能在已登录 Felis 的浏览器中进行此操作。",
   "op_login_invalid": "本次管理员登录未能完成——请重新发起登录。",
   "op_login_not_found": "找不到该管理员登录请求。",
+  "op_login_mismatch": "该管理员登录请求属于另一个账户。",
   "too_many_streams": "同时打开的实时连接过多——请关闭一些页面后再试。",
   "protected_admin": "该名字属于已绑定的管理员账户，不能被认领。",
   "auth_unavailable": "登录服务当前不可用。",

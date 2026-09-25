@@ -350,6 +350,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/internal/op-login/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Show an in-game admin whose op.console login a request is (spec §B).
+         * @description Internal-only. velocity's /felis web op approve <code> reads this and shows the admin the account, its address, and when and from where the sign-in was started, then asks them to confirm by typing the account name (see approve). The approver's online-mode UUID gets the same check as approve (a linked admin or owner, else 403 not_admin), since the command runs for any player and a staff address must not be readable by one. A request that is unknown, expired, approved or consumed is 404.
+         */
+        get: operations["opLoginShow"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/internal/op-login/{id}/approve": {
         parameters: {
             query?: never;
@@ -361,7 +381,7 @@ export interface paths {
         put?: never;
         /**
          * Record an in-game admin's vouch for a pending op.console login (spec §B).
-         * @description Internal-only second factor: velocity submits the online-mode UUID of the in-game admin running /felis web op approve. The API resolves it to a linked role=admin account (else 403 not_admin) and flips the request approved. A missing or no-longer-pending request is 404. Self-approval is allowed — an online staff member vouching as their own admin identity is a genuine second factor distinct from the mailbox.
+         * @description Internal-only second factor: velocity submits the online-mode UUID of the in-game admin running /felis web op approve <code> <username>, and the account name they typed after seeing the request (GET /api/v1/internal/op-login/{id}). The API resolves the UUID to a linked admin or owner account (else 403 not_admin), requires the typed name to match the request's account ignoring case (else 409 op_login_mismatch, audited, request left pending) and flips the request approved. A missing or no-longer-pending request is 404. Self-approval is allowed — an online staff member vouching as their own admin identity is a genuine second factor distinct from the mailbox.
          */
         post: operations["opLoginApprove"];
         delete?: never;
@@ -3116,6 +3136,8 @@ export interface operations {
                             request_id: string;
                             username: string;
                             email: string;
+                            /** @description Where start was called from; empty on requests from before this was recorded. */
+                            client_ip: string;
                             /** Format: date-time */
                             created_at: string;
                         }[];
@@ -3125,33 +3147,37 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
         };
     };
-    opLoginApprove: {
+    opLoginShow: {
         parameters: {
-            query?: never;
+            query: {
+                approver_uuid: string;
+            };
             header?: never;
             path: {
                 id: string;
             };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": {
-                    /** Format: uuid */
-                    approver_uuid: string;
-                };
-            };
-        };
+        requestBody?: never;
         responses: {
-            /** @description The vouch was recorded; the request is now approved. */
+            /** @description The pending request and where it was started. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": {
-                        /** @constant */
-                        approved: true;
+                        request_id: string;
+                        username: string;
+                        email: string;
+                        /** @description Where start was called from; empty on requests from before this was recorded. */
+                        client_ip: string;
+                        /** @description The browser's User-Agent at start, up to 256 bytes; may be empty. */
+                        user_agent: string;
+                        /** Format: date-time */
+                        created_at: string;
+                        /** Format: date-time */
+                        expires_at: string;
                     };
                 };
             };
@@ -3176,6 +3202,79 @@ export interface operations {
             };
             /** @description No pending operator login with that id (op_login_not_found). */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    opLoginApprove: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: uuid */
+                    approver_uuid: string;
+                    /** @description The account name the admin typed to confirm whose sign-in this is. */
+                    username: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The vouch was recorded; the request is now approved. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        approved: true;
+                        username: string;
+                        email: string;
+                    };
+                };
+            };
+            /** @description approver_uuid and username are required (bad_request). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description The approver is not a linked administrator (not_admin). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description No pending operator login with that id (op_login_not_found). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The typed name is not the request's account (op_login_mismatch). */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

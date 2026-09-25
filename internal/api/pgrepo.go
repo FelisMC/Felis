@@ -2504,30 +2504,31 @@ func chargeOTPMismatch(ctx context.Context, tx *sql.Tx, userID, purpose string, 
 // CreateOpLoginRequest records a fresh pending op.console login attempt for a staff
 // account. It writes the SECOND factor only — the email-OTP is minted separately
 // under purpose 'op_login' — so a row here means this staff account is waiting for
-// an in-game admin to vouch. email is a snapshot for the audit trail.
-func (p *PGRepo) CreateOpLoginRequest(ctx context.Context, id, userID, email string, expiresAt time.Time) error {
+// an in-game admin to vouch. Email is a snapshot for the audit trail.
+func (p *PGRepo) CreateOpLoginRequest(ctx context.Context, req NewOpLoginRequest) error {
 	_, err := p.db.ExecContext(ctx,
-		`INSERT INTO op_login_requests (id, user_id, email, expires_at) VALUES ($1, $2, $3, $4)`,
-		id, userID, email, expiresAt)
+		`INSERT INTO op_login_requests (id, user_id, email, expires_at, client_ip, user_agent)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		req.ID, req.UserID, req.Email, req.ExpiresAt, req.ClientIP, req.UserAgent)
 	return err
 }
 
-// OpLoginRequestByID loads a request by its handle, or ErrNotFound. The status poll
-// and the finish path both use it; finish additionally checks Status=='approved',
-// !Consumed, and ExpiresAt>now before minting a session. Username is left empty (no
-// join needed here). Status is derived from approved_at: 'approved' once set, else
-// 'pending'.
+// OpLoginRequestByID loads a request by its handle, joined to its account's
+// username, or ErrNotFound. finish additionally checks Status=='approved',
+// !Consumed, and ExpiresAt>now before minting a session. Status is derived from
+// approved_at: 'approved' once set, else 'pending'.
 func (p *PGRepo) OpLoginRequestByID(ctx context.Context, id string) (*OpLoginRequest, error) {
-	const q = `SELECT id, user_id, email, expires_at, consumed_at, approved_at, approved_by
-		FROM op_login_requests WHERE id = $1`
+	const q = `SELECT r.id, r.user_id, u.username, r.email, r.expires_at, r.created_at,
+		       r.consumed_at, r.approved_at, r.client_ip, r.user_agent
+		FROM op_login_requests r JOIN users u ON u.id = r.user_id WHERE r.id = $1`
 	var (
 		r          OpLoginRequest
 		consumedAt sql.NullTime
 		approvedAt sql.NullTime
-		approvedBy sql.NullString
 	)
 	switch err := p.db.QueryRowContext(ctx, q, id).Scan(
-		&r.ID, &r.UserID, &r.Email, &r.ExpiresAt, &consumedAt, &approvedAt, &approvedBy); {
+		&r.ID, &r.UserID, &r.Username, &r.Email, &r.ExpiresAt, &r.CreatedAt,
+		&consumedAt, &approvedAt, &r.ClientIP, &r.UserAgent); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
 	case err != nil:
@@ -2549,7 +2550,8 @@ func (p *PGRepo) OpLoginRequestByID(ctx context.Context, id string) (*OpLoginReq
 // account; created_at orders the list and lets the prompt show how long a request
 // has been waiting.
 func (p *PGRepo) ListPendingOpLogins(ctx context.Context, now time.Time) ([]OpLoginRequest, error) {
-	const q = `SELECT r.id, r.user_id, u.username, r.email, r.expires_at, r.created_at
+	const q = `SELECT r.id, r.user_id, u.username, r.email, r.expires_at, r.created_at,
+		       r.client_ip, r.user_agent
 		FROM op_login_requests r JOIN users u ON u.id = r.user_id
 		WHERE r.consumed_at IS NULL AND r.approved_at IS NULL AND r.expires_at > $1
 		ORDER BY r.created_at`
@@ -2561,7 +2563,8 @@ func (p *PGRepo) ListPendingOpLogins(ctx context.Context, now time.Time) ([]OpLo
 	var out []OpLoginRequest
 	for rows.Next() {
 		var r OpLoginRequest
-		if err := rows.Scan(&r.ID, &r.UserID, &r.Username, &r.Email, &r.ExpiresAt, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.UserID, &r.Username, &r.Email, &r.ExpiresAt, &r.CreatedAt,
+			&r.ClientIP, &r.UserAgent); err != nil {
 			return nil, err
 		}
 		r.Status = "pending"

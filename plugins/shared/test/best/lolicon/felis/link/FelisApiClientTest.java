@@ -5,6 +5,7 @@ import com.sun.net.httpserver.HttpServer;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -28,20 +29,35 @@ public final class FelisApiClientTest {
 
     private static int checks;
     private static final List<String> seen = new CopyOnWriteArrayList<>();
+    private static final List<String> bodies = new CopyOnWriteArrayList<>();
 
     public static void main(String[] args) throws Exception {
         HttpServer stub = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         stub.createContext("/", exchange -> {
-            seen.add(exchange.getRequestMethod() + " " + exchange.getRequestURI().getRawPath());
+            String query = exchange.getRequestURI().getRawQuery();
+            seen.add(exchange.getRequestMethod() + " " + exchange.getRequestURI().getRawPath()
+                    + (query == null ? "" : "?" + query));
+            bodies.add(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
             String path = exchange.getRequestURI().getRawPath();
             String body;
             int status;
             if (path.endsWith("/wake")) {
                 status = 202;
                 body = "{\"name\":\"alpha\",\"phase\":\"Starting\",\"ready\":false}";
+            } else if (path.equals("/api/v1/internal/op-login/mismatch/approve")) {
+                status = 409;
+                body = "{\"error\":{\"code\":\"op_login_mismatch\",\"message\":\"that operator login is for a different account\"}}";
+            } else if (path.equals("/api/v1/internal/op-login/half/approve")) {
+                status = 200;
+                body = "{\"username\":\"op\"}";
             } else if (path.endsWith("/approve")) {
                 status = 200;
-                body = "{\"approved\":true}";
+                body = "{\"approved\":true,\"username\":\"op\",\"email\":\"Op@Example.NET\"}";
+            } else if (path.startsWith("/api/v1/internal/op-login/")) {
+                status = 200;
+                body = "{\"request_id\":\"0123abcd\",\"username\":\"op\",\"email\":\"Op@Example.NET\","
+                        + "\"client_ip\":\"203.0.113.9\",\"user_agent\":\"Firefox/140.0\","
+                        + "\"created_at\":\"2023-11-14T22:13:20Z\",\"expires_at\":\"2023-11-14T22:23:20Z\"}";
             } else {
                 status = 200;
                 body = "{\"name\":\"alpha\",\"phase\":\"Running\",\"ready\":true,\"claimable\":false}";
@@ -60,6 +76,8 @@ public final class FelisApiClientTest {
             wellFormedNamesReachTheirRoute(api);
             pathBendingNamesNeverLeaveTheClient(api);
             opaqueSegmentsArePercentEncoded(api);
+            opLoginShowNamesTheAccount(api);
+            opLoginApproveSendsTheTypedName(api);
         } finally {
             stub.stop(0);
         }
@@ -113,8 +131,53 @@ public final class FelisApiClientTest {
         expectRefused("dotdot", () -> FelisApiClient.segment(".."));
 
         seen.clear();
-        api.opLoginApprove("0123abcd", UUID.fromString("00000000-0000-0000-0000-000000000003"));
-        assertEq("approve route", List.of("POST /api/v1/internal/op-login/0123abcd/approve"), seen);
+        api.opLoginApprove("0123abcd", UUID.fromString("00000000-0000-0000-0000-000000000003"), "op");
+        api.opLoginShow("a/b", UUID.fromString("00000000-0000-0000-0000-000000000003"));
+        assertEq("op-login routes", List.of(
+                "POST /api/v1/internal/op-login/0123abcd/approve",
+                "GET /api/v1/internal/op-login/a%2Fb?approver_uuid=00000000-0000-0000-0000-000000000003"), seen);
+    }
+
+    // The in-game card is built from this view, so every field the admin reads has to
+    // come through.
+    private static void opLoginShowNamesTheAccount(FelisApiClient api) throws LinkException {
+        seen.clear();
+        OpLoginView v = api.opLoginShow("0123abcd", UUID.fromString("00000000-0000-0000-0000-000000000004"));
+        assertEq("show route", List.of(
+                "GET /api/v1/internal/op-login/0123abcd?approver_uuid=00000000-0000-0000-0000-000000000004"), seen);
+        assertEq("show request_id", "0123abcd", v.requestId());
+        assertEq("show username", "op", v.username());
+        assertEq("show email", "Op@Example.NET", v.email());
+        assertEq("show client_ip", "203.0.113.9", v.clientIp());
+        assertEq("show user_agent", "Firefox/140.0", v.userAgent());
+        assertEq("show created_at", Instant.parse("2023-11-14T22:13:20Z"), v.createdAt());
+    }
+
+    // The typed name is player input, so it has to arrive as one JSON string however
+    // it is spelled; the approved account comes back for the confirmation line.
+    private static void opLoginApproveSendsTheTypedName(FelisApiClient api) throws LinkException {
+        UUID approver = UUID.fromString("00000000-0000-0000-0000-000000000005");
+        bodies.clear();
+        OpLoginView v = api.opLoginApprove("0123abcd", approver, "o\"p\\");
+        assertEq("approve body", List.of(
+                "{\"approver_uuid\":\"00000000-0000-0000-0000-000000000005\",\"username\":\"o\\\"p\\\\\"}"), bodies);
+        assertEq("approved username", "op", v.username());
+        assertEq("approved email", "Op@Example.NET", v.email());
+
+        try {
+            api.opLoginApprove("mismatch", approver, "alice");
+            throw new AssertionError("a 409 approve was not refused");
+        } catch (LinkException e) {
+            assertEq("mismatch status", 409, e.statusCode());
+            assertEq("mismatch code", "op_login_mismatch", e.errorCode());
+        }
+        try {
+            api.opLoginApprove("half", approver, "op");
+            throw new AssertionError("a 200 without approved=true was accepted");
+        } catch (LinkException e) {
+            assertEq("half status", 200, e.statusCode());
+            assertEq("half code", "bad_response", e.errorCode());
+        }
     }
 
     // ---- harness ----

@@ -434,6 +434,7 @@ func (a *API) internalAPIRoutes() []apiRoute {
 		// approve action (service-token auth, no Principal); the public face carries
 		// the start/status/finish the staff member's browser drives.
 		{Method: "GET", Pattern: "/api/v1/internal/op-login/pending", Callers: proxy, h: a.handleOpLoginPending},
+		{Method: "GET", Pattern: "/api/v1/internal/op-login/{id}", Callers: proxy, h: a.handleOpLoginShow},
 		{Method: "POST", Pattern: "/api/v1/internal/op-login/{id}/approve", Callers: proxy, h: a.handleOpLoginApprove},
 
 		// Break-glass backup (spec §B4 "Sync"): the on-node console POSTs here to

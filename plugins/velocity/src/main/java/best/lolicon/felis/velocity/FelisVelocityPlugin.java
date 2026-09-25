@@ -4,6 +4,7 @@ import best.lolicon.felis.link.FelisApiClient;
 import best.lolicon.felis.link.LinkClient;
 import best.lolicon.felis.link.LinkCode;
 import best.lolicon.felis.link.LinkException;
+import best.lolicon.felis.link.OpLoginView;
 import best.lolicon.felis.link.ServerView;
 
 import com.google.inject.Inject;
@@ -28,6 +29,7 @@ import org.slf4j.Logger;
 
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -291,7 +293,8 @@ public final class FelisVelocityPlugin {
     //   /felis claim                  take ownership of the server I'm on
     //   /felis migrate                open a migration of my servers to another account
     //   /felis web                    where the web consoles live
-    //   /felis web op approve <code>  vouch for a pending op.console staff login (§B)
+    //   /felis web op approve <code>  show whose op.console staff login a code is (§B)
+    //   /felis web op approve <code> <account>  vouch for it, naming the account
     //
     // Two guards run before any subcommand that acts or reveals operational state:
     //
@@ -357,9 +360,16 @@ public final class FelisVelocityPlugin {
                                 .then(BrigadierCommand.literalArgumentBuilder("approve")
                                         .then(BrigadierCommand.requiredArgumentBuilder("code", StringArgumentType.word())
                                                 .executes(ctx -> {
-                                                    doOpApprove(ctx.getSource(), StringArgumentType.getString(ctx, "code"));
+                                                    doOpApprove(ctx.getSource(), StringArgumentType.getString(ctx, "code"), null);
                                                     return Command.SINGLE_SUCCESS;
-                                                })))))
+                                                })
+                                                .then(BrigadierCommand.requiredArgumentBuilder("account", StringArgumentType.word())
+                                                        .executes(ctx -> {
+                                                            doOpApprove(ctx.getSource(),
+                                                                    StringArgumentType.getString(ctx, "code"),
+                                                                    StringArgumentType.getString(ctx, "account"));
+                                                            return Command.SINGLE_SUCCESS;
+                                                        }))))))
                 .build();
         CommandMeta meta = commands.metaBuilder("felis").plugin(this).build();
         commands.register(meta, new BrigadierCommand(node));
@@ -447,7 +457,7 @@ public final class FelisVelocityPlugin {
         helpLine(source, "/felis web",
                 zh ? "网页控制台地址" : "where the web consoles live");
         helpLine(source, "/felis web op approve <code>",
-                zh ? "批准待处理的管理员登录" : "approve a pending operator sign-in");
+                zh ? "查看并批准待处理的管理员登录" : "review and approve a pending operator sign-in");
     }
 
     private void sendServerList(CommandSource source) {
@@ -641,8 +651,8 @@ public final class FelisVelocityPlugin {
             source.sendMessage(field(zh ? "管理员" : "operators", "https://" + adminHost));
         }
         source.sendMessage(Component.text(
-                zh ? "  管理员：/felis web op approve <code> 用于为待处理登录作担保"
-                   : "  operators: /felis web op approve <code> vouches for a pending sign-in",
+                zh ? "  管理员：/felis web op approve <code> 查看并批准待处理的登录"
+                   : "  operators: /felis web op approve <code> reviews a pending sign-in",
                 NamedTextColor.GRAY));
     }
 
@@ -661,12 +671,18 @@ public final class FelisVelocityPlugin {
                 NamedTextColor.GRAY));
         source.sendMessage(Component.text("  /felis web op approve <code>", NamedTextColor.WHITE));
         source.sendMessage(Component.text(
-                zh ? "即可为其担保——你必须是已绑定并在线的管理员。"
-                   : "to vouch for it — you must be an online, linked administrator.",
+                zh ? "查看这是谁的登录，确认后输入其账户名即可担保——你必须是已绑定并在线的管理员。"
+                   : "to see whose sign-in it is, then confirm with their account name to vouch for it"
+                     + " — you must be an online, linked administrator.",
                 NamedTextColor.GRAY));
     }
 
-    private void doOpApprove(CommandSource source, String codeArg) {
+    // doOpApprove is both halves of the in-game vouch. Without an account name it only
+    // shows whose sign-in the code belongs to (OpApprovalCard); with one it approves,
+    // and felis-api refuses unless the name is that request's account. The admin
+    // therefore always reads the account before vouching, and a code someone else
+    // relayed cannot be approved blind.
+    private void doOpApprove(CommandSource source, String codeArg, String accountArg) {
         Player player = requirePlayer(source);
         if (player == null || !ensureOutOfLimbo(player)) {
             return;
@@ -688,17 +704,35 @@ public final class FelisVelocityPlugin {
         }
         UUID approver = player.getUniqueId();
         String who = player.getUsername();
+        if (accountArg == null) {
+            async(() -> {
+                try {
+                    OpLoginView req = apiClient.opLoginShow(code, approver);
+                    long age = req.createdAt() == null ? -1
+                            : Math.max(0, Duration.between(req.createdAt(), Instant.now()).getSeconds());
+                    for (Component line : OpApprovalCard.lines(req, code, zh, age)) {
+                        player.sendMessage(line);
+                    }
+                } catch (LinkException e) {
+                    player.sendMessage(Component.text(opApproveError(e, code, zh), NamedTextColor.RED));
+                }
+            });
+            return;
+        }
+        String account = accountArg.trim();
         player.sendMessage(Component.text(
                 zh ? "正在批准管理员登录……" : "Approving operator sign-in…", NamedTextColor.GRAY));
         async(() -> {
             try {
-                apiClient.opLoginApprove(code, approver);
+                OpLoginView done = apiClient.opLoginApprove(code, approver, account);
                 player.sendMessage(Component.text(
-                        zh ? "已批准——对方现在可以完成登录了。"
-                           : "Approved — the operator can finish signing in now.", NamedTextColor.GREEN));
-                logger.info("Felis: op-login {} approved in-game by {} ({})", code, who, approver);
+                        zh ? "已批准 " + done.username() + "（" + done.email() + "）的登录——对方现在可以完成登录了。"
+                           : "Approved " + done.username() + " (" + done.email()
+                             + ") — they can finish signing in now.", NamedTextColor.GREEN));
+                logger.info("Felis: op-login {} for {} approved in-game by {} ({})",
+                        code, done.username(), who, approver);
             } catch (LinkException e) {
-                player.sendMessage(Component.text(opApproveError(e, zh), NamedTextColor.RED));
+                player.sendMessage(Component.text(opApproveError(e, code, zh), NamedTextColor.RED));
             }
         });
     }
@@ -1061,10 +1095,11 @@ public final class FelisVelocityPlugin {
         }
     }
 
-    // opApproveError maps the internal approve refusals to player-safe text. A 403 is
-    // the API's own admin re-check (defence in depth over the in-game gate); a 404
-    // means no live pending request carries that code.
-    private static String opApproveError(LinkException e, boolean zh) {
+    // opApproveError maps the internal show/approve refusals to player-safe text. A 403
+    // is the API's own admin re-check (defence in depth over the in-game gate); a 404
+    // means no live pending request carries that code; a 409 means the typed account
+    // is not the one the request is for.
+    private static String opApproveError(LinkException e, String code, boolean zh) {
         switch (e.statusCode()) {
             case 403:
                 return zh ? "只有已绑定的管理员才能批准管理员登录。"
@@ -1072,6 +1107,10 @@ public final class FelisVelocityPlugin {
             case 404:
                 return zh ? "没有携带该码的待处理管理员登录（可能已过期）。"
                           : "No pending operator sign-in with that code (it may have expired).";
+            case 409:
+                return zh ? "该登录属于另一个账户，未批准。运行 /felis web op approve " + code + " 查看是谁的登录。"
+                          : "That sign-in is for a different account, so it was not approved. Run /felis web op approve "
+                            + code + " to see whose it is.";
             case 0:
                 return zh ? "Felis 暂时不可用——请稍后再试。"
                           : "Felis is temporarily unavailable — please try again.";

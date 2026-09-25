@@ -186,18 +186,31 @@ type NewSession struct {
 
 // OpLoginRequest is one op.console staff-login attempt (spec §B op-login): the
 // durable second factor (in-game approval) that pairs with an email_otps code under
-// purpose 'op_login'. Username is populated only by ListPendingOpLogins (the join the
-// in-game admin needs to name who is waiting); Consumed reflects consumed_at, so the
-// finish path can refuse an already-spent request without a second query.
+// purpose 'op_login'. Username is joined from users so the in-game admin can name who
+// is waiting; Consumed reflects consumed_at, so the finish path can refuse an
+// already-spent request without a second query.
 type OpLoginRequest struct {
 	ID        string
 	UserID    string
-	Username  string // joined for the in-game pending list; "" elsewhere
+	Username  string
 	Email     string
 	Status    string // 'pending' | 'approved' | 'denied'
 	Consumed  bool   // consumed_at IS NOT NULL (single-use guard)
 	ExpiresAt time.Time
 	CreatedAt time.Time
+	// ClientIP and UserAgent say where start was called from; empty on rows
+	// from before migration 0030.
+	ClientIP  string
+	UserAgent string
+}
+
+// NewOpLoginRequest is the row op-login start writes. Email is a snapshot for the
+// audit trail; ClientIP and UserAgent describe the browser that asked, for the
+// in-game admin to check before vouching.
+type NewOpLoginRequest struct {
+	ID, UserID, Email   string
+	ClientIP, UserAgent string
+	ExpiresAt           time.Time
 }
 
 // MigrationView is the live account-migration for a source user (spec §B3 inherit,
@@ -429,16 +442,17 @@ type Repo interface {
 	// ---- op.console staff login: in-game approval state machine (spec §B op-login) ----
 
 	// CreateOpLoginRequest records a fresh pending op.console login attempt for a staff
-	// account (spec §B op-login). id is the opaque handle the browser polls; email is a
-	// snapshot for the audit trail. It writes the SECOND factor only — the email-OTP
-	// itself is minted separately under purpose 'op_login' (CreateEmailOTP) — so a row
-	// here means "this staff account is waiting for an in-game admin to vouch". expiresAt
-	// is the API clock + TTL so expiry is driven by one authoritative clock.
-	CreateOpLoginRequest(ctx context.Context, id, userID, email string, expiresAt time.Time) error
-	// OpLoginRequestByID loads a request by its handle, or ErrNotFound. The status poll
-	// and the finish path both use it: finish additionally checks Status=='approved',
-	// !Consumed, and ExpiresAt>now before it will mint a session, so a pending, spent, or
-	// expired request can never be exchanged. Username is left empty (no join needed here).
+	// account (spec §B op-login). ID is the opaque handle the browser polls. It writes
+	// the SECOND factor only — the email-OTP itself is minted separately under purpose
+	// 'op_login' (AddLoginEmailOTP) — so a row here means "this staff account is waiting
+	// for an in-game admin to vouch". ExpiresAt is the API clock + TTL so expiry is
+	// driven by one authoritative clock.
+	CreateOpLoginRequest(ctx context.Context, req NewOpLoginRequest) error
+	// OpLoginRequestByID loads a request by its handle, joined to its account's
+	// username, or ErrNotFound. The status poll, the finish path and the in-game
+	// approval all use it: finish additionally checks Status=='approved', !Consumed,
+	// and ExpiresAt>now before it will mint a session, so a pending, spent, or expired
+	// request can never be exchanged.
 	OpLoginRequestByID(ctx context.Context, id string) (*OpLoginRequest, error)
 	// ListPendingOpLogins returns the live (pending, unconsumed, unexpired at now)
 	// requests oldest-first, each joined to its staff username, for the in-game admin's

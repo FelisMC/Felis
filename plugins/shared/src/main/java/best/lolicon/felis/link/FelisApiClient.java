@@ -179,30 +179,49 @@ public final class FelisApiClient {
     }
 
     /**
-     * opLoginApprove records an in-game administrator's vouch for a pending op.console
-     * staff login — the second factor of the spec §B op-login door, supplied from
-     * Velocity's {@code /felis web op approve <code>}. It POSTs the approver's verified
-     * online-mode UUID to {@code POST /api/v1/internal/op-login/{id}/approve}; felis-api
-     * resolves that UUID to a linked account and refuses unless it is {@code role=admin}
-     * (403 {@code not_admin}), so this is defence in depth over Velocity's own in-game
-     * guard rather than the sole check. A {@code requestId} naming no live pending
-     * request is 404 {@code op_login_not_found}. Both arrive as branchable
-     * {@link LinkException}s; a 200 that does not affirm {@code approved:true} is a
-     * contract breach, not a refusal.
+     * opLoginShow reads whose op.console staff sign-in a pending request is — the first
+     * half of Velocity's {@code /felis web op approve <code>}, shown to the admin before
+     * they vouch. {@code GET /api/v1/internal/op-login/{id}?approver_uuid=<uuid>}:
+     * felis-api refuses unless the approver's verified UUID is linked to an admin or
+     * owner (403 {@code not_admin}), so a player who types the command learns nothing
+     * about a staff account. An id naming no live pending request is 404 {@code
+     * op_login_not_found}. Both arrive as branchable {@link LinkException}s.
      *
      * <p>{@code requestId} is interpolated into the request path. It is
      * percent-encoded here, and the Velocity command also validates its charset
      * before calling.
      */
-    public void opLoginApprove(String requestId, UUID approverUuid) throws LinkException {
+    public OpLoginView opLoginShow(String requestId, UUID approverUuid) throws LinkException {
         Objects.requireNonNull(requestId, "requestId");
         Objects.requireNonNull(approverUuid, "approverUuid");
-        String body = "{\"approver_uuid\":\"" + approverUuid + "\"}";
+        return OpLoginView.fromJson(getObject("/api/v1/internal/op-login/" + segment(requestId)
+                + "?approver_uuid=" + approverUuid, 200));
+    }
+
+    /**
+     * opLoginApprove records an in-game administrator's vouch for a pending op.console
+     * staff login — the second factor of the spec §B op-login door, supplied from
+     * Velocity's {@code /felis web op approve <code> <username>}. It POSTs the approver's
+     * verified online-mode UUID and the account name they typed after reading
+     * {@link #opLoginShow} to {@code POST /api/v1/internal/op-login/{id}/approve}.
+     * felis-api refuses unless the UUID is linked to an admin or owner (403 {@code
+     * not_admin}) and unless the name is the request's account (409 {@code
+     * op_login_mismatch}, request left pending). An id naming no live pending request is
+     * 404 {@code op_login_not_found}. All arrive as branchable {@link LinkException}s; a
+     * 200 that does not affirm {@code approved:true} is a contract breach, not a
+     * refusal. Returns the approved account's username and email.
+     */
+    public OpLoginView opLoginApprove(String requestId, UUID approverUuid, String username) throws LinkException {
+        Objects.requireNonNull(requestId, "requestId");
+        Objects.requireNonNull(approverUuid, "approverUuid");
+        Objects.requireNonNull(username, "username");
+        String body = "{\"approver_uuid\":\"" + approverUuid + "\",\"username\":" + Json.quote(username) + "}";
         Map<?, ?> res = postObject("/api/v1/internal/op-login/" + segment(requestId) + "/approve", body, 200);
         Object approved = res.get("approved");
         if (!(approved instanceof Boolean) || !((Boolean) approved)) {
             throw new LinkException(200, "bad_response", "approve returned 200 without approved=true");
         }
+        return OpLoginView.fromJson(res);
     }
 
     /**

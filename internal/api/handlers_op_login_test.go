@@ -58,9 +58,9 @@ func finishOp(eh http.Handler, id, code string) *httptest.ResponseRecorder {
 	return do(eh, "POST", "/api/v1/auth/op-login/finish",
 		`{"request_id":"`+id+`","code":"`+code+`"}`, jsonHeader)
 }
-func approveOp(ih http.Handler, id, approverUUID string) *httptest.ResponseRecorder {
+func approveOp(ih http.Handler, id, approverUUID, username string) *httptest.ResponseRecorder {
 	return do(ih, "POST", "/api/v1/internal/op-login/"+id+"/approve",
-		`{"approver_uuid":"`+approverUUID+`"}`, nil)
+		`{"approver_uuid":"`+approverUUID+`","username":"`+username+`"}`, nil)
 }
 
 // TestOpLoginVertical walks the whole two-factor slice end to end: start mails a code
@@ -126,7 +126,7 @@ func TestOpLoginVertical(t *testing.T) {
 	}
 
 	// 4) an in-game admin approves via the internal face.
-	if w := approveOp(ih, reqID, opUUID); w.Code != http.StatusOK {
+	if w := approveOp(ih, reqID, opUUID, "op"); w.Code != http.StatusOK {
 		t.Fatalf("approve: code = %d, want 200 (%s)", w.Code, w.Body.String())
 	}
 	if ab := acctBody(t, statusOp(eh, reqID)); ab["approved"] != true {
@@ -198,7 +198,7 @@ func TestOpLoginOwnerAdmitted(t *testing.T) {
 		t.Fatalf("owner start must mint a request + mail a code: req=%q mails=%d rows=%d",
 			reqID, mailer.calls, len(repo.opLogins))
 	}
-	if w := approveOp(ih, reqID, opUUID); w.Code != http.StatusOK {
+	if w := approveOp(ih, reqID, opUUID, "owner"); w.Code != http.StatusOK {
 		t.Fatalf("approve: code = %d (%s)", w.Code, w.Body.String())
 	}
 	w = finishOp(eh, reqID, mailer.code)
@@ -303,7 +303,7 @@ func TestOpLoginStartByAStranger(t *testing.T) {
 	if mailer.calls != 1 || len(repo.otps) != 1 {
 		t.Fatalf("start inside the cooldown: mails=%d otps=%d, want 1/1", mailer.calls, len(repo.otps))
 	}
-	if w := approveOp(ih, own, opUUID); w.Code != http.StatusOK {
+	if w := approveOp(ih, own, opUUID, "op"); w.Code != http.StatusOK {
 		t.Fatalf("approve: code = %d (%s)", w.Code, w.Body.String())
 	}
 	if w := finishOp(eh, own, inboxCode); w.Code != http.StatusOK {
@@ -319,7 +319,7 @@ func TestOpLoginStartByAStranger(t *testing.T) {
 	if mailer.calls != 3 {
 		t.Fatalf("mails = %d, want 3", mailer.calls)
 	}
-	if w := approveOp(ih, first, opUUID); w.Code != http.StatusOK {
+	if w := approveOp(ih, first, opUUID, "op"); w.Code != http.StatusOK {
 		t.Fatalf("approve: code = %d (%s)", w.Code, w.Body.String())
 	}
 	if w := finishOp(eh, first, firstCode); w.Code != http.StatusOK {
@@ -370,7 +370,7 @@ func TestOpLoginFinishUniform(t *testing.T) {
 		eh, ih := api.ExternalHandler(), api.InternalHandler()
 		reqID := acctBody(t, startOp(eh, "op@example.net"))["request_id"].(string)
 		code := mailer.code
-		if w := approveOp(ih, reqID, opUUID); w.Code != http.StatusOK {
+		if w := approveOp(ih, reqID, opUUID, "op"); w.Code != http.StatusOK {
 			t.Fatalf("approve: %d (%s)", w.Code, w.Body.String())
 		}
 		// Wrong code for a real, approved request.
@@ -403,7 +403,7 @@ func TestOpLoginFinishUniform(t *testing.T) {
 			}
 		}
 		// Approve, then the same code completes.
-		if w := approveOp(ih, reqID, opUUID); w.Code != http.StatusOK {
+		if w := approveOp(ih, reqID, opUUID, "op"); w.Code != http.StatusOK {
 			t.Fatalf("approve: %d (%s)", w.Code, w.Body.String())
 		}
 		if w := finishOp(eh, reqID, code); w.Code != http.StatusOK {
@@ -416,7 +416,7 @@ func TestOpLoginFinishUniform(t *testing.T) {
 		eh, ih := api.ExternalHandler(), api.InternalHandler()
 		reqID := acctBody(t, startOp(eh, "op@example.net"))["request_id"].(string)
 		code := mailer.code
-		if w := approveOp(ih, reqID, opUUID); w.Code != http.StatusOK {
+		if w := approveOp(ih, reqID, opUUID, "op"); w.Code != http.StatusOK {
 			t.Fatalf("approve: %d (%s)", w.Code, w.Body.String())
 		}
 		// Wrong code: refused, one attempt charged, request still approved+unconsumed.
@@ -454,7 +454,7 @@ func TestOpLoginApproveGate(t *testing.T) {
 	t.Run("unlinked approver UUID -> 403, request stays pending", func(t *testing.T) {
 		api, repo, _ := seedOpLoginAPI(t)
 		id := plantPending(repo)
-		if w := approveOp(api.InternalHandler(), id, "ffffffff-ffff-ffff-ffff-ffffffffffff"); w.Code != http.StatusForbidden || decodeErr(t, w) != "not_admin" {
+		if w := approveOp(api.InternalHandler(), id, "ffffffff-ffff-ffff-ffff-ffffffffffff", "op"); w.Code != http.StatusForbidden || decodeErr(t, w) != "not_admin" {
 			t.Fatalf("unlinked approver: code = %d body %s, want 403 not_admin", w.Code, w.Body.String())
 		}
 		if repo.opLogins[id].status != "pending" {
@@ -467,7 +467,7 @@ func TestOpLoginApproveGate(t *testing.T) {
 		id := plantPending(repo)
 		repo.staff["p"] = &StaffUser{ID: "u9", Username: "p", Email: "player@example.net", Role: "user", EmailVerified: true}
 		repo.links["bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"] = "u9"
-		if w := approveOp(api.InternalHandler(), id, "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"); w.Code != http.StatusForbidden || decodeErr(t, w) != "not_admin" {
+		if w := approveOp(api.InternalHandler(), id, "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "op"); w.Code != http.StatusForbidden || decodeErr(t, w) != "not_admin" {
 			t.Fatalf("non-admin approver: code = %d body %s, want 403 not_admin", w.Code, w.Body.String())
 		}
 	})
@@ -479,7 +479,7 @@ func TestOpLoginApproveGate(t *testing.T) {
 		repo.staff["boss"] = &StaffUser{ID: "b1", Username: "boss", Role: "owner"}
 		repo.links["cccccccc-cccc-cccc-cccc-cccccccccccc"] = "b1"
 		id := plantPending(repo)
-		if w := approveOp(api.InternalHandler(), id, "cccccccc-cccc-cccc-cccc-cccccccccccc"); w.Code != http.StatusOK {
+		if w := approveOp(api.InternalHandler(), id, "cccccccc-cccc-cccc-cccc-cccccccccccc", "op"); w.Code != http.StatusOK {
 			t.Fatalf("owner-role approver: code = %d body %s, want 200", w.Code, w.Body.String())
 		}
 	})
@@ -494,7 +494,7 @@ func TestOpLoginApproveGate(t *testing.T) {
 
 	t.Run("unknown request id -> 404", func(t *testing.T) {
 		api, _, _ := seedOpLoginAPI(t)
-		if w := approveOp(api.InternalHandler(), "nosuchrequest", opUUID); w.Code != http.StatusNotFound || decodeErr(t, w) != "op_login_not_found" {
+		if w := approveOp(api.InternalHandler(), "nosuchrequest", opUUID, "op"); w.Code != http.StatusNotFound || decodeErr(t, w) != "op_login_not_found" {
 			t.Fatalf("unknown request: code = %d body %s, want 404 op_login_not_found", w.Code, w.Body.String())
 		}
 	})
@@ -502,10 +502,10 @@ func TestOpLoginApproveGate(t *testing.T) {
 	t.Run("re-approving an approved request -> 404 (first approval stands)", func(t *testing.T) {
 		api, repo, _ := seedOpLoginAPI(t)
 		id := plantPending(repo)
-		if w := approveOp(api.InternalHandler(), id, opUUID); w.Code != http.StatusOK {
+		if w := approveOp(api.InternalHandler(), id, opUUID, "op"); w.Code != http.StatusOK {
 			t.Fatalf("first approve: code = %d, want 200 (%s)", w.Code, w.Body.String())
 		}
-		if w := approveOp(api.InternalHandler(), id, opUUID); w.Code != http.StatusNotFound {
+		if w := approveOp(api.InternalHandler(), id, opUUID, "op"); w.Code != http.StatusNotFound {
 			t.Fatalf("second approve: code = %d, want 404 (no longer pending)", w.Code)
 		}
 		if repo.opLogins[id].status != "approved" {
@@ -525,7 +525,7 @@ func TestOpLoginPendingList(t *testing.T) {
 	// Two pending (distinct createdAt so ordering is deterministic), one approved, one
 	// expired.
 	repo.opLogins["r2"] = &fakeOpLogin{id: "r2", userID: "a1", email: "op@example.net", status: "pending", expiresAt: future, createdAt: time.Unix(1_700_000_200, 0)}
-	repo.opLogins["r1"] = &fakeOpLogin{id: "r1", userID: "a1", email: "op@example.net", status: "pending", expiresAt: future, createdAt: time.Unix(1_700_000_100, 0)}
+	repo.opLogins["r1"] = &fakeOpLogin{id: "r1", userID: "a1", email: "op@example.net", status: "pending", expiresAt: future, createdAt: time.Unix(1_700_000_100, 0), clientIP: "198.51.100.7"}
 	repo.opLogins["ap"] = &fakeOpLogin{id: "ap", userID: "a1", email: "op@example.net", status: "approved", expiresAt: future, createdAt: time.Unix(1_700_000_150, 0)}
 	repo.opLogins["ex"] = &fakeOpLogin{id: "ex", userID: "a1", email: "op@example.net", status: "pending", expiresAt: time.Unix(1_699_999_999, 0), createdAt: time.Unix(1_700_000_050, 0)}
 
@@ -544,8 +544,8 @@ func TestOpLoginPendingList(t *testing.T) {
 	if first["request_id"] != "r1" || second["request_id"] != "r2" {
 		t.Errorf("order = [%v, %v], want [r1, r2] (oldest first)", first["request_id"], second["request_id"])
 	}
-	if first["username"] != "op" || first["email"] != "op@example.net" {
-		t.Errorf("row projection = %v, want username op / email op@example.net", first)
+	if first["username"] != "op" || first["email"] != "op@example.net" || first["client_ip"] != "198.51.100.7" {
+		t.Errorf("row projection = %v, want username op / email op@example.net / client_ip 198.51.100.7", first)
 	}
 }
 
@@ -625,7 +625,137 @@ func TestOpLoginFaceSeparation(t *testing.T) {
 	if w := do(eh, "GET", "/api/v1/internal/op-login/pending", "", nil); w.Code != http.StatusNotFound {
 		t.Errorf("pending on external face: code = %d, want 404", w.Code)
 	}
-	if w := do(eh, "POST", "/api/v1/internal/op-login/x/approve", `{"approver_uuid":"`+opUUID+`"}`, nil); w.Code != http.StatusNotFound {
+	if w := do(eh, "POST", "/api/v1/internal/op-login/x/approve", `{"approver_uuid":"`+opUUID+`","username":"op"}`, nil); w.Code != http.StatusNotFound {
 		t.Errorf("approve on external face: code = %d, want 404", w.Code)
+	}
+	if w := do(eh, "GET", "/api/v1/internal/op-login/x?approver_uuid="+opUUID, "", nil); w.Code != http.StatusNotFound {
+		t.Errorf("show on external face: code = %d, want 404", w.Code)
+	}
+}
+
+// showOp drives the in-game "who is this for" read.
+func showOp(ih http.Handler, id, approverUUID string) *httptest.ResponseRecorder {
+	return do(ih, "GET", "/api/v1/internal/op-login/"+id+"?approver_uuid="+approverUUID, "", nil)
+}
+
+// TestOpLoginShowsWhoIsWaiting pins what the in-game admin sees before vouching:
+// start records where the sign-in came from, and the show read returns the account,
+// its address and that origin to a linked staff approver only.
+func TestOpLoginShowsWhoIsWaiting(t *testing.T) {
+	api, repo, _ := seedOpLoginAPI(t)
+	eh, ih := api.ExternalHandler(), api.InternalHandler()
+
+	w := do(eh, "POST", "/api/v1/auth/op-login/start", `{"email":"op@example.net"}`,
+		map[string]string{"Content-Type": "application/json", "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) Firefox/140.0"})
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("start: code = %d (%s)", w.Code, w.Body.String())
+	}
+	reqID, _ := acctBody(t, w)["request_id"].(string)
+	row := repo.opLogins[reqID]
+	if row == nil || row.clientIP != "192.0.2.1" || row.userAgent != "Mozilla/5.0 (X11; Linux x86_64) Firefox/140.0" {
+		t.Fatalf("stored origin = %+v, want client 192.0.2.1 and the Firefox user agent", row)
+	}
+
+	w = showOp(ih, reqID, opUUID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("show: code = %d (%s)", w.Code, w.Body.String())
+	}
+	want := map[string]any{
+		"request_id": reqID,
+		"username":   "op",
+		"email":      "Op@Example.NET",
+		"client_ip":  "192.0.2.1",
+		"user_agent": "Mozilla/5.0 (X11; Linux x86_64) Firefox/140.0",
+		"expires_at": "2023-11-14T22:23:20Z",
+	}
+	got := acctBody(t, w)
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("show %s = %v, want %v", k, got[k], v)
+		}
+	}
+	if _, ok := got["created_at"].(string); !ok {
+		t.Errorf("show must carry created_at, got %v", got)
+	}
+
+	t.Run("refusals", func(t *testing.T) {
+		repo.staff["p"] = &StaffUser{ID: "u9", Username: "p", Email: "player@example.net", Role: "user", EmailVerified: true}
+		repo.links["bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"] = "u9"
+		repo.opLogins["old"] = &fakeOpLogin{id: "old", userID: "a1", email: "op@example.net", status: "pending",
+			expiresAt: time.Unix(1_699_999_999, 0), createdAt: time.Unix(1_699_999_400, 0)}
+		for _, tc := range []struct {
+			name, target string
+			code         int
+			errCode      string
+		}{
+			{"no approver", "/api/v1/internal/op-login/" + reqID, http.StatusBadRequest, "bad_request"},
+			{"unlinked approver", "/api/v1/internal/op-login/" + reqID + "?approver_uuid=ffffffff-ffff-ffff-ffff-ffffffffffff", http.StatusForbidden, "not_admin"},
+			{"linked player", "/api/v1/internal/op-login/" + reqID + "?approver_uuid=bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", http.StatusForbidden, "not_admin"},
+			{"unknown request", "/api/v1/internal/op-login/nosuchrequest?approver_uuid=" + opUUID, http.StatusNotFound, "op_login_not_found"},
+			{"expired request", "/api/v1/internal/op-login/old?approver_uuid=" + opUUID, http.StatusNotFound, "op_login_not_found"},
+		} {
+			w := do(ih, "GET", tc.target, "", nil)
+			if w.Code != tc.code || decodeErr(t, w) != tc.errCode {
+				t.Errorf("%s: code = %d body %s, want %d %s", tc.name, w.Code, w.Body.String(), tc.code, tc.errCode)
+			}
+			if strings.Contains(w.Body.String(), "Op@Example.NET") {
+				t.Errorf("%s: a refusal leaked the staff address: %s", tc.name, w.Body.String())
+			}
+		}
+	})
+
+	t.Run("an approved request is no longer shown", func(t *testing.T) {
+		if w := approveOp(ih, reqID, opUUID, "op"); w.Code != http.StatusOK {
+			t.Fatalf("approve: code = %d (%s)", w.Code, w.Body.String())
+		}
+		if w := showOp(ih, reqID, opUUID); w.Code != http.StatusNotFound || decodeErr(t, w) != "op_login_not_found" {
+			t.Fatalf("show after approval: code = %d body %s, want 404 op_login_not_found", w.Code, w.Body.String())
+		}
+	})
+}
+
+// TestOpLoginApproveNamesTheAccount pins the confirmation: the admin must type the
+// name of the account the request is for. A different name leaves the request
+// pending and is audited; the matching name (any case) approves, and the response
+// says whose sign-in was approved.
+func TestOpLoginApproveNamesTheAccount(t *testing.T) {
+	api, repo, _ := seedOpLoginAPI(t)
+	ih := api.InternalHandler()
+	repo.opLogins["r1"] = &fakeOpLogin{id: "r1", userID: "a1", email: "Op@Example.NET", status: "pending",
+		expiresAt: time.Unix(1_700_000_600, 0), createdAt: time.Unix(1_699_999_900, 0), clientIP: "203.0.113.50"}
+
+	if w := do(ih, "POST", "/api/v1/internal/op-login/r1/approve", `{"approver_uuid":"`+opUUID+`"}`, nil); w.Code != http.StatusBadRequest || decodeErr(t, w) != "bad_request" {
+		t.Fatalf("no username: code = %d body %s, want 400 bad_request", w.Code, w.Body.String())
+	}
+
+	w := approveOp(ih, "r1", opUUID, "alice")
+	if w.Code != http.StatusConflict || decodeErr(t, w) != "op_login_mismatch" {
+		t.Fatalf("wrong name: code = %d body %s, want 409 op_login_mismatch", w.Code, w.Body.String())
+	}
+	if repo.opLogins["r1"].status != "pending" {
+		t.Fatal("a mismatched approval must leave the request pending")
+	}
+	if n := len(repo.audits); n != 1 {
+		t.Fatalf("audits after mismatch = %d, want 1: %+v", n, repo.audits)
+	}
+	if a := repo.audits[0]; a.Action != "auth.op_login.approve_mismatch" || a.ActorUserID != "a1" ||
+		string(a.Payload) != `{"request_id":"r1","typed_username":"alice"}` {
+		t.Errorf("mismatch audit = %+v payload %s", a, a.Payload)
+	}
+
+	w = approveOp(ih, "r1", opUUID, "OP")
+	if w.Code != http.StatusOK {
+		t.Fatalf("matching name: code = %d body %s, want 200", w.Code, w.Body.String())
+	}
+	body := acctBody(t, w)
+	if body["approved"] != true || body["username"] != "op" || body["email"] != "Op@Example.NET" {
+		t.Errorf("approve body = %v, want approved:true username:op email:Op@Example.NET", body)
+	}
+	if repo.opLogins["r1"].status != "approved" {
+		t.Error("the matching name must approve the request")
+	}
+	if a := repo.audits[len(repo.audits)-1]; a.Action != "auth.op_login.approved" ||
+		string(a.Payload) != `{"approver_user_id":"a1","client_ip":"203.0.113.50","request_id":"r1","username":"op"}` {
+		t.Errorf("approved audit = %+v payload %s", a, a.Payload)
 	}
 }

@@ -1049,7 +1049,10 @@ func TestOpLoginStateMachine(t *testing.T) {
 	now := mustNow()
 	id := "opl-" + suffix(t)
 
-	if err := repo.CreateOpLoginRequest(ctx, id, staff.ID, "staff@example.net", now.Add(10*time.Minute)); err != nil {
+	if err := repo.CreateOpLoginRequest(ctx, api.NewOpLoginRequest{
+		ID: id, UserID: staff.ID, Email: "staff@example.net", ExpiresAt: now.Add(10 * time.Minute),
+		ClientIP: "203.0.113.9", UserAgent: "Mozilla/5.0 Firefox/140.0",
+	}); err != nil {
 		t.Fatalf("CreateOpLoginRequest: %v", err)
 	}
 	req, err := repo.OpLoginRequestByID(ctx, id)
@@ -1059,8 +1062,10 @@ func TestOpLoginStateMachine(t *testing.T) {
 	if req.Status != "pending" || req.Consumed {
 		t.Fatalf("fresh request = %+v, want pending+unconsumed", req)
 	}
-	if req.Username != "" {
-		t.Errorf("ByID must not join a username, got %q", req.Username)
+	// The in-game approval card reads all of this off ByID.
+	if req.Username != staff.Username || req.Email != "staff@example.net" ||
+		req.ClientIP != "203.0.113.9" || req.UserAgent != "Mozilla/5.0 Firefox/140.0" || req.CreatedAt.IsZero() {
+		t.Errorf("ByID = %+v, want username %q, the snapshot email, the start origin and a created_at", req, staff.Username)
 	}
 
 	// The pending list is what the in-game admin sees: it must name the staff
@@ -1075,8 +1080,8 @@ func TestOpLoginStateMachine(t *testing.T) {
 			continue
 		}
 		found = true
-		if p.Username != staff.Username {
-			t.Errorf("pending username = %q, want %q", p.Username, staff.Username)
+		if p.Username != staff.Username || p.ClientIP != "203.0.113.9" {
+			t.Errorf("pending username/client = %q/%q, want %q/203.0.113.9", p.Username, p.ClientIP, staff.Username)
 		}
 		if p.CreatedAt.IsZero() {
 			t.Error("pending created_at is zero")
@@ -1102,7 +1107,9 @@ func TestOpLoginStateMachine(t *testing.T) {
 
 	// An expired request is dead on every path.
 	oldID := "opl-old-" + suffix(t)
-	if err := repo.CreateOpLoginRequest(ctx, oldID, staff.ID, "staff@example.net", now.Add(-time.Minute)); err != nil {
+	if err := repo.CreateOpLoginRequest(ctx, api.NewOpLoginRequest{
+		ID: oldID, UserID: staff.ID, Email: "staff@example.net", ExpiresAt: now.Add(-time.Minute),
+	}); err != nil {
 		t.Fatalf("CreateOpLoginRequest (expired): %v", err)
 	}
 	pending, err = repo.ListPendingOpLogins(ctx, now)

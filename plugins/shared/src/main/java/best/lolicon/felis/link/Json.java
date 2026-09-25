@@ -25,6 +25,32 @@ final class Json {
         this.s = s;
     }
 
+    /**
+     * quote renders s as a JSON string literal, for the few request bodies that carry
+     * text a player typed. Quotes, backslashes and control characters are escaped.
+     */
+    static String quote(String s) {
+        StringBuilder b = new StringBuilder(s.length() + 2).append('"');
+        for (int k = 0; k < s.length(); k++) {
+            char c = s.charAt(k);
+            switch (c) {
+                case '"':
+                    b.append("\\\"");
+                    break;
+                case '\\':
+                    b.append("\\\\");
+                    break;
+                default:
+                    if (c < 0x20) {
+                        b.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        b.append(c);
+                    }
+            }
+        }
+        return b.append('"').toString();
+    }
+
     /** parse reads a single JSON value from text, rejecting trailing garbage. */
     static Object parse(String text) {
         Json p = new Json(text);

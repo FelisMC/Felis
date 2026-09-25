@@ -86,6 +86,7 @@ func TestInternalRoutesServeOnlyTheirCallers(t *testing.T) {
 		{"GET", "/api/v1/internal/player/blacklist/00000000-0000-0000-0000-000000000001", []Caller{CallerVelocity, CallerLimbo}},
 		{"POST", "/api/v1/internal/op-login/req-1/approve", []Caller{CallerVelocity}},
 		{"GET", "/api/v1/internal/op-login/pending", []Caller{CallerVelocity}},
+		{"GET", "/api/v1/internal/op-login/req-1", []Caller{CallerVelocity}},
 		{"POST", "/api/v1/internal/account/migrate/start", []Caller{CallerVelocity}},
 		{"POST", "/api/v1/internal/player/reclaim", []Caller{CallerVelocity}},
 		{"POST", "/api/v1/internal/servers/survival/wake", []Caller{CallerVelocity}},

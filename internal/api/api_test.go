@@ -263,6 +263,8 @@ type fakeOpLogin struct {
 	consumed  bool
 	expiresAt time.Time
 	createdAt time.Time
+	clientIP  string
+	userAgent string
 }
 
 // fakeSetupToken mirrors a setup_tokens row (spec §B setup): a one-time
@@ -1606,25 +1608,27 @@ func (f *fakeRepo) ConsumeLoginEmailOTP(_ context.Context, userID, purpose, code
 
 // CreateOpLoginRequest records a fresh pending op.console login attempt. status is
 // born 'pending'; createdAt orders the pending list (the PG ORDER BY created_at).
-func (f *fakeRepo) CreateOpLoginRequest(_ context.Context, id, userID, email string, expiresAt time.Time) error {
-	f.opLogins[id] = &fakeOpLogin{
-		id: id, userID: userID, email: email, status: "pending",
-		expiresAt: expiresAt, createdAt: expiresAt, // createdAt proxy: constant TTL ⇒ later expiry == later creation
+func (f *fakeRepo) CreateOpLoginRequest(_ context.Context, req NewOpLoginRequest) error {
+	f.opLogins[req.ID] = &fakeOpLogin{
+		id: req.ID, userID: req.UserID, email: req.Email, status: "pending",
+		expiresAt: req.ExpiresAt, createdAt: req.ExpiresAt, // createdAt proxy: constant TTL ⇒ later expiry == later creation
+		clientIP: req.ClientIP, userAgent: req.UserAgent,
 	}
 	return nil
 }
 
 // OpLoginRequestByID loads a request by handle, projecting the fake row into the
-// OpLoginRequest the status/finish paths read (Status, Consumed, ExpiresAt). Status
-// is the (approved_at, denied_at) projection the handler gates on.
+// OpLoginRequest the handlers read, with the username joined like the PG query.
+// Status is the (approved_at, denied_at) projection the handler gates on.
 func (f *fakeRepo) OpLoginRequestByID(_ context.Context, id string) (*OpLoginRequest, error) {
 	r, ok := f.opLogins[id]
 	if !ok {
 		return nil, ErrNotFound
 	}
 	return &OpLoginRequest{
-		ID: r.id, UserID: r.userID, Email: r.email, ExpiresAt: r.expiresAt,
-		Status: r.status, Consumed: r.consumed,
+		ID: r.id, UserID: r.userID, Username: f.usernameFor(r.userID), Email: r.email,
+		ExpiresAt: r.expiresAt, CreatedAt: r.createdAt, Status: r.status, Consumed: r.consumed,
+		ClientIP: r.clientIP, UserAgent: r.userAgent,
 	}, nil
 }
 
@@ -1644,8 +1648,7 @@ func (f *fakeRepo) ConsumeOpLoginRequest(_ context.Context, id string, now time.
 // ListPendingOpLogins returns the live (pending, unconsumed, unexpired) requests
 // oldest-first, mirroring the PG WHERE consumed_at IS NULL AND approved_at IS NULL
 // AND expires_at > now ORDER BY created_at. Username is joined from the staff map
-// (the in-game admin needs to name who is waiting), exactly as the repo.go contract
-// documents — ListPendingOpLogins is the ONLY path that populates Username.
+// (the in-game admin needs to name who is waiting).
 func (f *fakeRepo) ListPendingOpLogins(_ context.Context, now time.Time) ([]OpLoginRequest, error) {
 	var out []OpLoginRequest
 	for _, r := range f.opLogins {
@@ -1655,6 +1658,7 @@ func (f *fakeRepo) ListPendingOpLogins(_ context.Context, now time.Time) ([]OpLo
 		out = append(out, OpLoginRequest{
 			ID: r.id, UserID: r.userID, Username: f.usernameFor(r.userID),
 			Email: r.email, ExpiresAt: r.expiresAt, Status: "pending", CreatedAt: r.createdAt,
+			ClientIP: r.clientIP, UserAgent: r.userAgent,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -1690,9 +1694,8 @@ func (f *fakeRepo) ConsumeSetupToken(_ context.Context, tokenHash string, now ti
 	return tok.UserID, nil
 }
 
-// usernameFor joins a userID to its staff username (the ListPendingOpLogins
-// projection the in-game admin needs to name who is waiting). "" when the user is
-// gone — mirroring a missing JOIN row.
+// usernameFor joins a userID to its staff username (the op-login projection the
+// in-game admin needs to name who is waiting). "" when the user is gone.
 func (f *fakeRepo) usernameFor(userID string) string {
 	for _, u := range f.staff {
 		if u.ID == userID {
