@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { Cat, Globe, Sun, Moon, LogOut, WifiOff, Menu, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -13,6 +13,7 @@ import { api, CONNECTION_EVENT, isConnectionLost } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { ConfigBanner, VersionBadge } from "@/components/RuntimeStatus";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { Loading } from "@/components/States";
 
 function SectionGroup({
   section,
@@ -305,9 +306,13 @@ export function AppShell() {
         <main className="flex flex-1 flex-col p-4 md:p-6">
           <div className="mx-auto flex w-full max-w-8xl flex-1 flex-col gap-6">
             {/* A crash on one page leaves the navigation usable; moving to
-                another route clears it. */}
+                another route clears it. Pages load as their own chunks, so the
+                first visit to one shows a spinner here with the shell in place,
+                and a chunk gone after a deploy lands in the boundary. */}
             <ErrorBoundary resetKey={pathname}>
-              <Outlet />
+              <Suspense fallback={<Loading />}>
+                <Outlet />
+              </Suspense>
             </ErrorBoundary>
           </div>
         </main>

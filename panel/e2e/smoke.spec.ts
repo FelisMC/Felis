@@ -53,3 +53,23 @@ test("an admin reaches the user list", async ({ page, signIn }) => {
   await expect(page.getByRole("heading", { name: t("admin:users_title") })).toBeVisible();
   await expect(page.getByText("linked@mock.felis.local")).toBeVisible();
 });
+
+// Admin pages are chunks of their own, so a player never downloads them: every
+// page module is fetched by its name (/src/pages/admin/UsersPage.tsx under the
+// dev server, /assets/UsersPage-<hash>.js in a build).
+const ADMIN_PAGE = /\/(UsersPage|UserDetailPage|ImageAdmin|ImageBuildPage|SubmissionsPage|UpdatesPage)[.-]/;
+const ACCOUNT_PAGE = /\/Account[.-]/;
+
+test("a player's pages load on demand and never pull in the admin pages", async ({ page, signIn }) => {
+  const fetched: string[] = [];
+  page.on("request", (req) => fetched.push(new URL(req.url()).pathname));
+  await signIn("linked");
+  await page.goto("/servers");
+  await expect(page.getByRole("heading", { name: t("servers:my_servers_title") })).toBeVisible();
+  expect(fetched.filter((p) => ACCOUNT_PAGE.test(p))).toEqual([]);
+
+  await page.getByRole("link", { name: t("navigation:account"), exact: true }).click();
+  await expect(page).toHaveURL(/\/account$/);
+  await expect.poll(() => fetched.some((p) => ACCOUNT_PAGE.test(p))).toBe(true);
+  expect(fetched.filter((p) => ADMIN_PAGE.test(p))).toEqual([]);
+});

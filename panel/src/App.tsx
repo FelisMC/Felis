@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider } from "@/lib/theme";
 import { TierProvider } from "@/lib/tier";
@@ -6,25 +7,58 @@ import { RequireAdmin } from "@/components/RequireAdmin";
 import { RequireAuth } from "@/components/RequireAuth";
 import { RequireOwner } from "@/components/RequireOwner";
 import { SetupRequiredRedirect } from "@/components/SetupRequiredRedirect";
+import { Loading } from "@/components/States";
 import { ValidParam } from "@/components/ValidParam";
 import { SERVER_NAME_PARAM, USER_ID_PARAM } from "@/lib/params";
 import { Login } from "@/pages/Login";
-import { Setup } from "@/pages/Setup";
 import { Dashboard } from "@/pages/Dashboard";
-import { ServersPage } from "@/pages/servers/ServersPage";
-import { ServerConsole } from "@/pages/ServerConsole";
-import { ServerPlayers } from "@/pages/ServerPlayers";
-import { ServerBackups } from "@/pages/ServerBackups";
-import { ServerFiles } from "@/pages/ServerFiles";
-import { ServerLuckPerms } from "@/pages/ServerLuckPerms";
-import { Account } from "@/pages/Account";
-import { ImageAdmin } from "@/pages/admin/ImageAdmin";
-import { ImageBuildPage } from "@/pages/admin/ImageBuildPage";
-import { SubmissionsPage } from "@/pages/admin/SubmissionsPage";
-import { UsersPage } from "@/pages/admin/UsersPage";
-import { UserDetailPage } from "@/pages/admin/UserDetailPage";
-import { MySubmissionsPage } from "@/pages/MySubmissionsPage";
-import { UpdatesPage } from "@/pages/admin/UpdatesPage";
+import { lazyWithReload } from "@/lib/chunk";
+
+// Sign-in and the landing page ship in the entry bundle; every other page is
+// its own chunk, fetched the first time it is opened, so a phone opening the
+// panel never downloads the admin pages it cannot use. Vite names each chunk
+// after its page, and panel.go caches the hashed files for a year.
+const Setup = lazyWithReload(() => import("@/pages/Setup").then((m) => ({ default: m.Setup })));
+const ServersPage = lazyWithReload(() =>
+  import("@/pages/servers/ServersPage").then((m) => ({ default: m.ServersPage })),
+);
+const ServerConsole = lazyWithReload(() =>
+  import("@/pages/ServerConsole").then((m) => ({ default: m.ServerConsole })),
+);
+const ServerPlayers = lazyWithReload(() =>
+  import("@/pages/ServerPlayers").then((m) => ({ default: m.ServerPlayers })),
+);
+const ServerBackups = lazyWithReload(() =>
+  import("@/pages/ServerBackups").then((m) => ({ default: m.ServerBackups })),
+);
+const ServerFiles = lazyWithReload(() =>
+  import("@/pages/ServerFiles").then((m) => ({ default: m.ServerFiles })),
+);
+const ServerLuckPerms = lazyWithReload(() =>
+  import("@/pages/ServerLuckPerms").then((m) => ({ default: m.ServerLuckPerms })),
+);
+const Account = lazyWithReload(() => import("@/pages/Account").then((m) => ({ default: m.Account })));
+const MySubmissionsPage = lazyWithReload(() =>
+  import("@/pages/MySubmissionsPage").then((m) => ({ default: m.MySubmissionsPage })),
+);
+const ImageAdmin = lazyWithReload(() =>
+  import("@/pages/admin/ImageAdmin").then((m) => ({ default: m.ImageAdmin })),
+);
+const ImageBuildPage = lazyWithReload(() =>
+  import("@/pages/admin/ImageBuildPage").then((m) => ({ default: m.ImageBuildPage })),
+);
+const SubmissionsPage = lazyWithReload(() =>
+  import("@/pages/admin/SubmissionsPage").then((m) => ({ default: m.SubmissionsPage })),
+);
+const UsersPage = lazyWithReload(() =>
+  import("@/pages/admin/UsersPage").then((m) => ({ default: m.UsersPage })),
+);
+const UserDetailPage = lazyWithReload(() =>
+  import("@/pages/admin/UserDetailPage").then((m) => ({ default: m.UserDetailPage })),
+);
+const UpdatesPage = lazyWithReload(() =>
+  import("@/pages/admin/UpdatesPage").then((m) => ({ default: m.UpdatesPage })),
+);
 
 // Three UX surfaces over two Zero-Trust tiers (DESIGN-WEB-3SIDES):
 //   /        User-Side    — app-tier, every authenticated principal
@@ -46,7 +80,14 @@ export default function App() {
           {/* Owner first-run onboarding. Like /login it sits OUTSIDE RequireAuth:
               the visitor arrives from the `felis setup` link with no session, and
               redeeming the one-time token is what mints one. */}
-          <Route path="/setup" element={<Setup />} />
+          <Route
+            path="/setup"
+            element={
+              <Suspense fallback={<Loading />}>
+                <Setup />
+              </Suspense>
+            }
+          />
 
           {/* Everything else requires a session. RequireAuth gates the whole app:
               no/expired session → /login, transient /me failure → still renders
