@@ -114,6 +114,15 @@ type patchUserRequest struct {
 }
 
 // handlePatchUser is the admin-tier patch-user endpoint (PATCH /users/{id}).
+// The two refusals an admin meets on the user page get codes of their own, so
+// the panel can say why instead of a bare "not allowed": acting on your own
+// account (a slip that would lock you out), and changing the owner account,
+// which only the local break-glass console (sudo felis breakGlass) may do.
+const (
+	codeSelfProtected  = "self_protected"
+	codeOwnerProtected = "owner_protected"
+)
+
 func (a *API) handlePatchUser(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	id := r.PathValue("id")
@@ -137,7 +146,7 @@ func (a *API) handlePatchUser(w http.ResponseWriter, r *http.Request) {
 	// Self-demotion guard: an admin/owner may edit their own email or username,
 	// but must never downgrade themselves to a lower role.
 	if body.Role != nil && id == p.UserID && *body.Role != p.Role {
-		writeError(w, r, newError(http.StatusForbidden, "forbidden",
+		writeError(w, r, newError(http.StatusForbidden, codeSelfProtected,
 			"cannot change your own role"))
 		return
 	}
@@ -148,7 +157,7 @@ func (a *API) handlePatchUser(w http.ResponseWriter, r *http.Request) {
 	// UpdateUser then answers the real 404.
 	if body.Role != nil && *body.Role != "owner" {
 		if d, err := a.Repo.UserDetail(r.Context(), id); err == nil && d.Role == "owner" {
-			writeError(w, r, newError(http.StatusForbidden, "forbidden",
+			writeError(w, r, newError(http.StatusForbidden, codeOwnerProtected,
 				"the owner account's role cannot be changed from the panel"))
 			return
 		}
@@ -195,7 +204,7 @@ func (a *API) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if id == p.UserID {
-		writeError(w, r, newError(http.StatusForbidden, "forbidden",
+		writeError(w, r, newError(http.StatusForbidden, codeSelfProtected,
 			"cannot delete your own account"))
 		return
 	}
@@ -203,7 +212,7 @@ func (a *API) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	// Same owner protection as the role guard above: only break-glass retires the
 	// owner identity. A failed detail read falls through to the real 404.
 	if d, err := a.Repo.UserDetail(r.Context(), id); err == nil && d.Role == "owner" {
-		writeError(w, r, newError(http.StatusForbidden, "forbidden",
+		writeError(w, r, newError(http.StatusForbidden, codeOwnerProtected,
 			"the owner account cannot be deleted from the panel"))
 		return
 	}
@@ -231,7 +240,7 @@ func (a *API) handleDisableUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if id == p.UserID {
-		writeError(w, r, newError(http.StatusForbidden, "forbidden",
+		writeError(w, r, newError(http.StatusForbidden, codeSelfProtected,
 			"cannot disable your own account"))
 		return
 	}
@@ -249,7 +258,7 @@ func (a *API) handleDisableUser(w http.ResponseWriter, r *http.Request) {
 	// break-glass touches the owner identity. Re-enabling stays allowed.
 	if body.Disabled {
 		if d, err := a.Repo.UserDetail(r.Context(), id); err == nil && d.Role == "owner" {
-			writeError(w, r, newError(http.StatusForbidden, "forbidden",
+			writeError(w, r, newError(http.StatusForbidden, codeOwnerProtected,
 				"the owner account cannot be disabled from the panel"))
 			return
 		}

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import i18next from "i18next";
 import { UserDetailPage } from "./UserDetailPage";
@@ -35,9 +35,9 @@ const USER: UserDetail = {
   linked_accounts: [{ mc_uuid: "069a79f4-44e9-4726-a5be-fca90e38aaf5", auth_source: "thirdparty", verified_at: VERIFIED }],
 };
 
-function renderPage() {
+function renderPage(id = "u-1") {
   return render(
-    <MemoryRouter initialEntries={["/admin/users/u-1"]}>
+    <MemoryRouter initialEntries={[`/admin/users/${id}`]}>
       <Routes>
         <Route path="/admin/users/:id" element={<UserDetailPage />} />
       </Routes>
@@ -87,5 +87,69 @@ describe("UserDetailPage", () => {
 
     expect(await screen.findByText(`第三方 Yggdrasil · ${zhVerified}`)).toBeTruthy();
     expect(await screen.findByText(zhExpires, { exact: false })).toBeTruthy();
+  });
+
+  describe("danger zone for accounts the server protects", () => {
+    const SELF_REASON = "You can't disable or delete the account you're signed in with.";
+    const OWNER_REASON =
+      "The owner account can't be disabled or deleted from the panel. Only the host's break-glass console (sudo felis breakGlass) manages it.";
+
+    const button = (name: string) => screen.getByRole("button", { name }) as HTMLButtonElement;
+    const describedBy = (b: HTMLElement) =>
+      document.getElementById(b.getAttribute("aria-describedby") ?? "")?.textContent;
+
+    it("locks disable and delete on the signed-in owner's own row and says why", async () => {
+      calls.getUser.mockResolvedValue({ ...USER, id: "owner-1", username: "root", role: "owner" });
+      renderPage("owner-1");
+
+      expect(await screen.findByText(SELF_REASON)).toBeTruthy();
+      for (const name of ["Disable User", "Delete User"]) {
+        expect(button(name).disabled).toBe(true);
+        expect(describedBy(button(name))).toBe(SELF_REASON);
+        expect(button(name).parentElement?.getAttribute("title")).toBe(SELF_REASON);
+      }
+      expect(button("Unbind passkeys").disabled).toBe(false);
+      expect(screen.getByText("You can't change your own role.")).toBeTruthy();
+      expect(screen.queryByRole("combobox")).toBeNull();
+    });
+
+    it("locks disable and delete on another owner with the break-glass reason", async () => {
+      calls.getUser.mockResolvedValue({ ...USER, id: "owner-2", username: "co-owner", role: "owner" });
+      renderPage("owner-2");
+
+      expect(await screen.findByText(OWNER_REASON)).toBeTruthy();
+      expect(screen.queryByText(SELF_REASON)).toBeNull();
+      expect(button("Disable User").disabled).toBe(true);
+      expect(button("Delete User").disabled).toBe(true);
+      expect(describedBy(button("Delete User"))).toBe(OWNER_REASON);
+      expect(
+        screen.getByText(
+          "The owner's role is fixed. Only the host's break-glass console (sudo felis breakGlass) manages the owner.",
+        ),
+      ).toBeTruthy();
+      expect(screen.queryByRole("combobox")).toBeNull();
+    });
+
+    it("still lets a disabled owner be re-enabled", async () => {
+      calls.getUser.mockResolvedValue({ ...USER, id: "owner-2", role: "owner", disabled: true });
+      renderPage("owner-2");
+
+      expect((await screen.findByRole("button", { name: "Enable" }) as HTMLButtonElement).disabled).toBe(false);
+      expect(button("Enable").getAttribute("aria-describedby")).toBeNull();
+      expect(button("Delete User").disabled).toBe(true);
+    });
+
+    it("leaves every action open on an ordinary user", async () => {
+      calls.getUser.mockResolvedValue(USER);
+      renderPage();
+
+      expect((await screen.findByRole("button", { name: "Disable User" }) as HTMLButtonElement).disabled).toBe(false);
+      expect(button("Delete User").disabled).toBe(false);
+      expect(button("Delete User").parentElement?.getAttribute("title")).toBeNull();
+      expect(screen.queryByText(SELF_REASON)).toBeNull();
+      expect(screen.queryByText(OWNER_REASON)).toBeNull();
+      const role = screen.getByRole("combobox");
+      expect(within(role).getByText("User")).toBeTruthy();
+    });
   });
 });

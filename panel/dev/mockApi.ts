@@ -1170,7 +1170,16 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
           return true;
         }
         if (ctx.account.id === acc.id && body.role !== ctx.account.role) {
-          sendError(ctx.res, 403, "forbidden", "cannot change your own role");
+          sendError(ctx.res, 403, "self_protected", "cannot change your own role");
+          return true;
+        }
+        if (acc.role === "owner") {
+          sendError(
+            ctx.res,
+            403,
+            "owner_protected",
+            "the owner account's role cannot be changed from the panel"
+          );
           return true;
         }
         acc.role = body.role;
@@ -1196,7 +1205,11 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
     // DELETE /api/v1/users/{id}
     if (is("DELETE", ctx) && !subAction) {
       if (ctx.account.id === acc.id) {
-        sendError(ctx.res, 403, "forbidden", "cannot delete your own account");
+        sendError(ctx.res, 403, "self_protected", "cannot delete your own account");
+        return true;
+      }
+      if (acc.role === "owner") {
+        sendError(ctx.res, 403, "owner_protected", "the owner account cannot be deleted from the panel");
         return true;
       }
       const activeServers = ctx.state.servers.filter(
@@ -1226,10 +1239,14 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
     // POST /api/v1/users/{id}/disable
     if (is("POST", ctx) && subAction === "disable") {
       if (ctx.account.id === acc.id) {
-        sendError(ctx.res, 403, "forbidden", "cannot disable your own account");
+        sendError(ctx.res, 403, "self_protected", "cannot disable your own account");
         return true;
       }
       const body = await readJSON<{ disabled: boolean }>(ctx.req);
+      if (acc.role === "owner" && body.disabled) {
+        sendError(ctx.res, 403, "owner_protected", "the owner account cannot be disabled from the panel");
+        return true;
+      }
       acc.disabled = !!body.disabled;
       acc.updated_at = new Date().toISOString();
       sendJSON(ctx.res, 200, { id: `mock-${acc.id}`, disabled: acc.disabled });

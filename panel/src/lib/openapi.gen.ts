@@ -5205,7 +5205,15 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
+            /** @description Not an owner (forbidden); the caller's own account (self_protected); or the owner account (owner_protected), which only the host's break-glass console (sudo felis breakGlass) may remove. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             404: components["responses"]["NotFound"];
         };
     };
@@ -5241,7 +5249,15 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
+            /** @description Not an owner (forbidden); a change to the caller's own role (self_protected); or a role change on the owner account (owner_protected), which only the host's break-glass console (sudo felis breakGlass) may make. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             404: components["responses"]["NotFound"];
             /** @description Username conflict. */
             409: {
@@ -5284,7 +5300,15 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
+            /** @description Not an owner (forbidden); the caller's own account (self_protected); or disabling the owner account (owner_protected). Re-enabling the owner is allowed. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             404: components["responses"]["NotFound"];
         };
     };

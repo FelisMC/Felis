@@ -822,6 +822,12 @@ export function humanizeError(e: unknown): string {
       return t("passkey_unavailable");
     case "last_passkey":
       return t("last_passkey");
+    // User admin (internal/api/handlers_users.go): the caller's own account and
+    // the owner account are refused, each for its own reason.
+    case "self_protected":
+      return t("self_protected");
+    case "owner_protected":
+      return t("owner_protected");
     case "quota_exceeded":
       return t("quota_exceeded");
     case "already_claimed":

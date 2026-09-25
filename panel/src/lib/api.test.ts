@@ -392,6 +392,16 @@ describe("api access-control wire shapes", () => {
     expect(humanizeError({ code: "console_unavailable" })).toMatch(/console/i);
   });
 
+  it("says why a user change was refused for the caller's own or the owner account", async () => {
+    const { humanizeError } = await import("./api");
+    expect(humanizeError({ status: 403, code: "self_protected" })).toBe(
+      "You can't do that to the account you're signed in with.",
+    );
+    expect(humanizeError({ status: 403, code: "owner_protected" })).toBe(
+      "The owner account can't be demoted, disabled or deleted from the panel. Only the host's break-glass console (sudo felis breakGlass) manages it.",
+    );
+  });
+
   it("maps the backup rationing codes to their own copy", async () => {
     const { humanizeError } = await import("./api");
     expect(humanizeError({ code: "backup_cooldown" })).toMatch(/cooldown/i);

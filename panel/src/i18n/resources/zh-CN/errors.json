@@ -27,6 +27,8 @@
   "restore_unavailable": "回档功能当前不可用，请稍后再试。",
   "session_expired": "会话已过期——请重新登录。",
   "forbidden": "你无权执行此操作。",
+  "self_protected": "不能对当前登录的账号执行此操作。",
+  "owner_protected": "所有者账号不能在面板里降级、禁用或删除，只能在主机的应急控制台（sudo felis breakGlass）上管理。",
   "generic": "出了点问题，请稍后重试。",
   "otp_resend_cooldown": "验证码发送频繁，请稍后再试。",
   "otp_locked": "验证码错误次数过多，请重新获取验证码。",

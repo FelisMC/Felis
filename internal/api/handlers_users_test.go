@@ -25,11 +25,17 @@ func TestOwnerAccountProtectedFromPanelMutations(t *testing.T) {
 		if w.Code != http.StatusForbidden {
 			t.Fatalf("demote owner: code = %d body %s, want 403", w.Code, w.Body.String())
 		}
+		if got := decodeErr(t, w); got != "owner_protected" {
+			t.Fatalf("demote owner: error code = %q, want owner_protected", got)
+		}
 	})
 	t.Run("delete refused", func(t *testing.T) {
 		w := do(eh, "DELETE", "/api/v1/users/usr-owner2", "", nil)
 		if w.Code != http.StatusForbidden {
 			t.Fatalf("delete owner: code = %d body %s, want 403", w.Code, w.Body.String())
+		}
+		if got := decodeErr(t, w); got != "owner_protected" {
+			t.Fatalf("delete owner: error code = %q, want owner_protected", got)
 		}
 	})
 	t.Run("disable refused", func(t *testing.T) {
@@ -37,7 +43,31 @@ func TestOwnerAccountProtectedFromPanelMutations(t *testing.T) {
 		if w.Code != http.StatusForbidden {
 			t.Fatalf("disable owner: code = %d body %s, want 403", w.Code, w.Body.String())
 		}
+		if got := decodeErr(t, w); got != "owner_protected" {
+			t.Fatalf("disable owner: error code = %q, want owner_protected", got)
+		}
 	})
+	// The caller's own row is refused as self_protected even though it is also
+	// an owner: that is the reason the admin can act on.
+	for _, tc := range []struct{ name, method, path, body string }{
+		{"own role", "PATCH", "/api/v1/users/usr-root", `{"role":"admin"}`},
+		{"own delete", "DELETE", "/api/v1/users/usr-root", ""},
+		{"own disable", "POST", "/api/v1/users/usr-root/disable", `{"disabled":true}`},
+	} {
+		t.Run(tc.name+" refused as self", func(t *testing.T) {
+			var h map[string]string
+			if tc.body != "" {
+				h = jsonHeader
+			}
+			w := do(eh, tc.method, tc.path, tc.body, h)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("code = %d body %s, want 403", w.Code, w.Body.String())
+			}
+			if got := decodeErr(t, w); got != "self_protected" {
+				t.Fatalf("error code = %q, want self_protected", got)
+			}
+		})
+	}
 	t.Run("email edits on an owner stay allowed", func(t *testing.T) {
 		w := do(eh, "PATCH", "/api/v1/users/usr-owner2", `{"email":"root2@example.net"}`, jsonHeader)
 		if w.Code != http.StatusOK {

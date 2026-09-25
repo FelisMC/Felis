@@ -27,6 +27,8 @@
   "restore_unavailable": "Restore isn't available right now — try again later.",
   "session_expired": "Your session expired — please sign in again.",
   "forbidden": "You are not allowed to do that.",
+  "self_protected": "You can't do that to the account you're signed in with.",
+  "owner_protected": "The owner account can't be demoted, disabled or deleted from the panel. Only the host's break-glass console (sudo felis breakGlass) manages it.",
   "generic": "Something went wrong.",
   "otp_resend_cooldown": "Verification code requested too frequently, please try again later.",
   "otp_locked": "Too many incorrect attempts, please request a new verification code.",

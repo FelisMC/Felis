@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useId } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { MessageLine, InlineError } from "@/components/MessageLine";
 import { RoleBadge } from "@/components/RoleBadge";
@@ -20,6 +20,7 @@ import {
   X,
   AlertTriangle,
   Fingerprint,
+  Lock,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -86,7 +87,11 @@ export function UserDetailPage() {
         icon={(
           <div className={cn(
             "rounded-full p-2",
-            user.role === "admin" ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground",
+            user.role === "owner"
+              ? "bg-yellow-500/10 text-yellow-600"
+              : user.role === "admin"
+                ? "bg-primary/10 text-primary"
+                : "bg-muted text-muted-foreground",
           )}>
             <UserRound className="h-6 w-6" />
           </div>
@@ -130,7 +135,7 @@ export function UserDetailPage() {
       </div>
 
       {/* Danger zone */}
-      <DangerZone user={user} onChanged={reload} navigate={navigate} />
+      <DangerZone user={user} isSelf={identity?.user_id === id} onChanged={reload} navigate={navigate} />
     </div>
   );
 }
@@ -195,7 +200,17 @@ function EditProfileCard({ user, onSaved, isSelf }: { user: UserDetail; onSaved:
             className="h-9 text-sm"
           />
         </div>
-        {!isSelf && (
+        {/* Your own role and the owner's are what the server refuses to change
+            (self_protected / owner_protected), so they show read-only with why. */}
+        {isSelf || user.role === "owner" ? (
+          <div className="space-y-1.5">
+            <p className="text-xs font-semibold text-muted-foreground">{t("users_field_role")}</p>
+            <RoleBadge role={user.role} />
+            <p className="text-xs text-muted-foreground">
+              {isSelf ? t("users_role_locked_self") : t("users_role_locked_owner")}
+            </p>
+          </div>
+        ) : (
           <div className="space-y-1.5">
             <Label htmlFor="user-detail-role" className="text-xs font-semibold text-muted-foreground">{t("users_field_role")}</Label>
             <Select value={role} onValueChange={(v: "admin" | "user") => setRole(v)}>
@@ -653,15 +668,29 @@ function SessionsCard({ userId, onChanged }: { userId: string; onChanged: () => 
 
 function DangerZone({
   user,
+  isSelf,
   onChanged,
   navigate,
 }: {
   user: UserDetail;
+  isSelf: boolean;
   onChanged: () => void;
   navigate: (path: string) => void;
 }) {
   const { t } = useTranslation("admin");
   const [dlg, setDlg] = useState<"disable" | "delete" | "passkeys" | null>(null);
+  const reasonId = useId();
+
+  // The server refuses to disable or delete the caller's own account
+  // (self_protected) and the owner account (owner_protected); re-enabling a
+  // disabled owner is allowed. Say so before the confirm dialog, not after it.
+  const reason = isSelf
+    ? t("users_protected_self")
+    : user.role === "owner"
+      ? t("users_protected_owner")
+      : null;
+  const blocked = reason ? { reason, id: reasonId } : undefined;
+  const toggleBlocked = isSelf || (user.role === "owner" && !user.disabled);
 
   return (
     <Card className="border-destructive/30">
@@ -669,6 +698,15 @@ function DangerZone({
         <CardTitle className="text-base font-semibold text-destructive">{t("users_danger_zone")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-5">
+        {reason && (
+          <p
+            id={reasonId}
+            className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-800 dark:text-amber-300"
+          >
+            <Lock className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            {reason}
+          </p>
+        )}
         {/* Enable / Disable */}
         <DangerRow
           icon={user.disabled ? Power : PowerOff}
@@ -677,6 +715,7 @@ function DangerZone({
           btnLabel={user.disabled ? t("users_danger_enable_btn") : t("users_danger_disable_btn")}
           btnVariant={user.disabled ? "default" : "destructive"}
           onAction={() => setDlg("disable")}
+          blocked={toggleBlocked ? blocked : undefined}
         />
 
         {/* Delete user */}
@@ -687,6 +726,7 @@ function DangerZone({
           btnLabel={t("users_danger_delete_btn")}
           btnVariant="destructive"
           onAction={() => setDlg("delete")}
+          blocked={blocked}
         />
 
         {/* Unbind passkeys — credential remediation, not a lockout */}
@@ -712,6 +752,7 @@ function DangerRow({
   btnLabel,
   btnVariant,
   onAction,
+  blocked,
 }: {
   icon: typeof Power;
   title: string;
@@ -719,17 +760,34 @@ function DangerRow({
   btnLabel: string;
   btnVariant: "default" | "destructive" | "outline";
   onAction: () => void;
+  /** Why the server would refuse this, with the id of the line saying so. */
+  blocked?: { reason: string; id: string };
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border/50 bg-muted/20 p-4">
+    <div
+      className={cn(
+        "flex flex-wrap items-center justify-between gap-3 rounded-md border border-border/50 bg-muted/20 p-4",
+        blocked && "opacity-70",
+      )}
+    >
       <div>
         <p className="text-sm font-medium">{title}</p>
         <p className="text-xs text-muted-foreground mt-0.5">{desc}</p>
       </div>
-      <Button variant={btnVariant} size="sm" onClick={onAction} className="gap-1.5">
-        <Icon className="h-4 w-4" />
-        {btnLabel}
-      </Button>
+      {/* A disabled button gets no hover events, so the tooltip sits on a wrapper. */}
+      <span title={blocked?.reason} className={cn(blocked && "cursor-not-allowed")}>
+        <Button
+          variant={btnVariant}
+          size="sm"
+          onClick={onAction}
+          disabled={!!blocked}
+          aria-describedby={blocked?.id}
+          className="gap-1.5"
+        >
+          {blocked ? <Lock className="h-4 w-4" /> : <Icon className="h-4 w-4" />}
+          {btnLabel}
+        </Button>
+      </span>
     </div>
   );
 }
