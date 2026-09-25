@@ -18,6 +18,7 @@ import com.velocitypowered.api.command.CommandSource;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
+import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
 import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.Player;
@@ -34,6 +35,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Pattern;
 
 /**
@@ -78,6 +80,13 @@ public final class FelisVelocityPlugin {
     // friends around one after another is not. Sub-TTL on purpose: a sender may hold several
     // live invites, they just cannot post them all in one breath.
     private static final Duration INVITE_COOLDOWN = Duration.ofSeconds(30);
+    // felis-api calls in flight, and waiting, at most. A healthy call takes milliseconds,
+    // so this is far above what one proxy's players produce; it only binds while
+    // felis-api is slow, where 8 x the 10 s request timeout already means the 64th
+    // waiter hears back after about 80 s. Refusing past that beats a reply minutes late.
+    private static final int API_THREADS = 8;
+    private static final int API_QUEUE = 64;
+    private static final long BUSY_LOG_INTERVAL_MILLIS = 60_000L;
 
     private final ProxyServer proxy;
     private final Logger logger;
@@ -88,6 +97,8 @@ public final class FelisVelocityPlugin {
     // typing, and a bound on a client macro that would otherwise mint link codes or
     // fire claims as fast as it can send chat.
     private final FrameBudget commandBudget = new FrameBudget(5, 0.2, System::currentTimeMillis);
+    private final BoundedExecutor apiCalls;
+    private final AtomicLong lastBusyLog = new AtomicLong();
 
     private FelisVelocityConfig config;
     private LinkClient linkClient;
@@ -103,6 +114,8 @@ public final class FelisVelocityPlugin {
         this.proxy = proxy;
         this.logger = logger;
         this.dataDirectory = dataDirectory;
+        this.apiCalls = new BoundedExecutor("felis-api", API_THREADS, API_QUEUE,
+                t -> logger.error("Felis: a felis-api task failed", t));
     }
 
     @Subscribe
@@ -167,6 +180,11 @@ public final class FelisVelocityPlugin {
         commandBudget.forget(event.getPlayer().getUniqueId());
     }
 
+    @Subscribe
+    public void onProxyShutdown(ProxyShutdownEvent event) {
+        apiCalls.shutdown();
+    }
+
     // withinBudget spends one command token for the player, or tells them to slow down.
     private boolean withinBudget(Player player) {
         if (commandBudget.tryTake(player.getUniqueId())) {
@@ -178,13 +196,37 @@ public final class FelisVelocityPlugin {
         return false;
     }
 
-    /** async runs a task on Velocity's scheduler so felis-api I/O never blocks the proxy thread. */
-    void async(Runnable task) {
-        proxy.getScheduler().buildTask(this, task).schedule();
+    /**
+     * async runs a felis-api task off the proxy thread, on the bounded pool. It returns
+     * false, without running the task, when API_THREADS calls are already in flight and
+     * API_QUEUE more are waiting; the caller then answers "busy" in its own terms.
+     */
+    boolean async(Runnable task) {
+        if (apiCalls.submit(task)) {
+            return true;
+        }
+        long now = System.currentTimeMillis();
+        long last = lastBusyLog.get();
+        if (now - last >= BUSY_LOG_INTERVAL_MILLIS && lastBusyLog.compareAndSet(last, now)) {
+            logger.warn("Felis: felis-api is not keeping up ({} calls running, {} waiting); refusing new calls "
+                    + "until the queue drains.", apiCalls.running(), apiCalls.waiting());
+        }
+        return false;
     }
 
+    /** async for a task a player is waiting on: a refusal is told to them at once. */
+    void async(Player player, Runnable task) {
+        if (!async(task)) {
+            player.sendMessage(Component.text(
+                    zh(player) ? "服务器现在很忙，请过一会儿再试。"
+                               : "The network is busy right now — try again in a moment.",
+                    NamedTextColor.YELLOW));
+        }
+    }
+
+    // A run that falls due while the previous one is still going is skipped (SkipIfRunning).
     private void repeating(Duration interval, Runnable task) {
-        proxy.getScheduler().buildTask(this, task).delay(interval).repeat(interval).schedule();
+        proxy.getScheduler().buildTask(this, new SkipIfRunning(task)).delay(interval).repeat(interval).schedule();
     }
 
     /**
@@ -263,7 +305,7 @@ public final class FelisVelocityPlugin {
         boolean zh = zh(player);
         player.sendMessage(Component.text(
                 zh ? "正在获取绑定码……" : "Requesting a link code…", NamedTextColor.GRAY));
-        async(() -> {
+        async(player, () -> {
             try {
                 LinkCode code = linkClient.requestCode(player.getUniqueId());
                 player.sendMessage(Component.text(
@@ -583,7 +625,7 @@ public final class FelisVelocityPlugin {
         UUID uuid = player.getUniqueId();
         player.sendMessage(Component.text(
                 zh ? "正在认领「" + name + "」……" : "Claiming « " + name + " »…", NamedTextColor.GRAY));
-        async(() -> {
+        async(player, () -> {
             try {
                 apiClient.claim(name, uuid);
                 player.sendMessage(Component.text(
@@ -619,7 +661,7 @@ public final class FelisVelocityPlugin {
         String who = player.getUsername();
         player.sendMessage(Component.text(
                 zh ? "正在发起账户迁移……" : "Starting account migration…", NamedTextColor.GRAY));
-        async(() -> {
+        async(player, () -> {
             try {
                 apiClient.migrateStart(uuid);
                 String panelHost = config.panelHostname();
@@ -718,7 +760,7 @@ public final class FelisVelocityPlugin {
         UUID approver = player.getUniqueId();
         String who = player.getUsername();
         if (accountArg == null) {
-            async(() -> {
+            async(player, () -> {
                 try {
                     OpLoginView req = apiClient.opLoginShow(code, approver);
                     long age = req.createdAt() == null ? -1
@@ -735,7 +777,7 @@ public final class FelisVelocityPlugin {
         String account = accountArg.trim();
         player.sendMessage(Component.text(
                 zh ? "正在批准管理员登录……" : "Approving operator sign-in…", NamedTextColor.GRAY));
-        async(() -> {
+        async(player, () -> {
             try {
                 OpLoginView done = apiClient.opLoginApprove(code, approver, account);
                 player.sendMessage(Component.text(

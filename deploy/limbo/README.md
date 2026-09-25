@@ -58,6 +58,8 @@ Configuration (deployment inputs, never compiled in; env wins over a
 | `FELIS_LOBBY_SERVER`        | Velocity server name to transfer to  | `lobby` |
 | `FELIS_LOGIN_TIMEOUT_SECONDS` | login window (clamped 30–3600)     | `600` |
 | `FELIS_HEALTH_PORT`         | readiness port                        | `8080` |
+| `FELIS_API_CONNECT_TIMEOUT_SECONDS` | felis-api connect timeout (1–120) | `10` |
+| `FELIS_API_REQUEST_TIMEOUT_SECONDS` | felis-api call timeout (1–120)    | `10` |
 
 If the API config **or** the root domain is absent the login flow stays **OFF** and
 the plugin runs readiness-only (the same "load un-crippled" fail-safe the other

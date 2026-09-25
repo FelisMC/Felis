@@ -384,6 +384,9 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
                 case "invalid_server_name":
                     return zh ? "这台服务器已不存在。"
                               : "That server no longer exists.";
+                case "busy":
+                    return zh ? "Felis 现在很忙，请过一会儿再试。"
+                              : "Felis is busy right now — try again in a moment.";
                 case "transport_error":
                 case "interrupted":
                     return zh ? "Felis 暂时不可用，请稍后再试。"

@@ -343,7 +343,7 @@ public final class WaitingRouter {
                 || name.equalsIgnoreCase(lobbyServer)) {
             return; // system/static servers do not affect user-server activity
         }
-        plugin.async(() -> {
+        boolean taken = plugin.async(() -> {
             try {
                 api.reportJoin(name, id);
             } catch (LinkException e) {
@@ -353,6 +353,9 @@ public final class WaitingRouter {
                         id, name, e.statusCode(), e.getMessage());
             }
         });
+        if (!taken) {
+            log.warn("Felis: join-event for {} on {} dropped: the felis-api call queue is full", id, name);
+        }
     }
 
     /** tick drains the waiting queue; the plugin schedules it on the async pool. */
@@ -451,7 +454,7 @@ public final class WaitingRouter {
                        : "You're already on « " + serverName + " ».", NamedTextColor.YELLOW));
             return;
         }
-        plugin.async(() -> {
+        plugin.async(player, () -> {
             try {
                 if (!linked(id)) {
                     player.sendMessage(Component.text(

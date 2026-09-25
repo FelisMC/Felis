@@ -10,29 +10,39 @@ import java.util.Objects;
  * and are <em>never</em> compiled in. Keeping them out of source is what lets the
  * tree stay domain- and credential-free; each platform's config loader is
  * responsible for sourcing them.
+ *
+ * <p>Two timeouts bound each call: {@code connectTimeout} for opening the TCP
+ * connection and {@code requestTimeout} for the whole exchange once it is open. A
+ * felis-api that is gone fails fast on the first; one that is slow is cut off by the
+ * second, so a blocked call cannot hold a plugin thread indefinitely.
  */
 public final class LinkConfig {
     private final String apiBaseUrl;
     private final String serviceToken;
-    private final Duration timeout;
+    private final Duration connectTimeout;
+    private final Duration requestTimeout;
 
-    public LinkConfig(String apiBaseUrl, String serviceToken, Duration timeout) {
+    public LinkConfig(String apiBaseUrl, String serviceToken, Duration connectTimeout, Duration requestTimeout) {
         this.apiBaseUrl = stripTrailingSlash(Objects.requireNonNull(apiBaseUrl, "apiBaseUrl"));
         this.serviceToken = Objects.requireNonNull(serviceToken, "serviceToken");
-        this.timeout = Objects.requireNonNull(timeout, "timeout");
+        this.connectTimeout = Objects.requireNonNull(connectTimeout, "connectTimeout");
+        this.requestTimeout = Objects.requireNonNull(requestTimeout, "requestTimeout");
         if (this.apiBaseUrl.isEmpty()) {
             throw new IllegalArgumentException("apiBaseUrl is empty");
         }
         if (this.serviceToken.isEmpty()) {
             throw new IllegalArgumentException("serviceToken is empty");
         }
-        if (this.timeout.isZero() || this.timeout.isNegative()) {
-            throw new IllegalArgumentException("timeout must be positive");
+        if (this.connectTimeout.isZero() || this.connectTimeout.isNegative()) {
+            throw new IllegalArgumentException("connectTimeout must be positive");
+        }
+        if (this.requestTimeout.isZero() || this.requestTimeout.isNegative()) {
+            throw new IllegalArgumentException("requestTimeout must be positive");
         }
     }
 
     public LinkConfig(String apiBaseUrl, String serviceToken) {
-        this(apiBaseUrl, serviceToken, Duration.ofSeconds(10));
+        this(apiBaseUrl, serviceToken, Duration.ofSeconds(10), Duration.ofSeconds(10));
     }
 
     public String apiBaseUrl() {
@@ -43,8 +53,12 @@ public final class LinkConfig {
         return serviceToken;
     }
 
-    public Duration timeout() {
-        return timeout;
+    public Duration connectTimeout() {
+        return connectTimeout;
+    }
+
+    public Duration requestTimeout() {
+        return requestTimeout;
     }
 
     private static String stripTrailingSlash(String u) {

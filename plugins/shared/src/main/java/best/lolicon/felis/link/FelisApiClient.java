@@ -6,11 +6,14 @@ import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Pattern;
 
 /**
@@ -43,6 +46,11 @@ import java.util.regex.Pattern;
 public final class FelisApiClient {
     // Mirrors internal/naming.serverNameRE plus its no-leading/trailing-dash rule.
     private static final Pattern SERVER_NAME = Pattern.compile("^[a-z0-9][a-z0-9-]{1,30}[a-z0-9]$");
+    // Answers a second GET can outlive: felis-api restarting behind its Service, or a
+    // gateway with no ready endpoint.
+    private static final Set<Integer> RETRY_STATUSES = Set.of(502, 503, 504);
+    private static final int RETRY_PAUSE_MIN_MILLIS = 100;
+    private static final int RETRY_PAUSE_JITTER_MILLIS = 300;
 
     private final LinkConfig config;
     private final HttpClient http;
@@ -50,7 +58,7 @@ public final class FelisApiClient {
     public FelisApiClient(LinkConfig config) {
         this.config = Objects.requireNonNull(config, "config");
         this.http = HttpClient.newBuilder()
-                .connectTimeout(config.timeout())
+                .connectTimeout(config.connectTimeout())
                 .build();
     }
 
@@ -261,8 +269,34 @@ public final class FelisApiClient {
         return URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20");
     }
 
+    // getObject tries a GET a second time, after a jittered 100-400 ms pause, when the
+    // first attempt failed in a way a retry can fix: the connection was refused or
+    // reset (felis-api restarting, its pod moving) or the answer was 502/503/504. GETs
+    // only read, so repeating one is safe; POSTs (wake, claim, join-event, approvals)
+    // are never repeated, because the first attempt may have landed. A GET that timed
+    // out is not repeated either: felis-api is then slow rather than gone, and a second
+    // full wait would hold the caller twice as long while adding load to an API that
+    // is already behind. The jitter keeps a proxy's queued callers from retrying in
+    // one burst.
     private Map<?, ?> getObject(String path, int expect) throws LinkException {
         HttpRequest req = base(path).GET().build();
+        try {
+            HttpResponse<String> res = exchange(req);
+            if (!RETRY_STATUSES.contains(res.statusCode())) {
+                return expectObject(res, expect);
+            }
+        } catch (HttpTimeoutException e) {
+            throw transportError(e);
+        } catch (IOException e) {
+            // refused or reset: retried below
+        } catch (InterruptedException e) {
+            throw interrupted(e);
+        }
+        try {
+            Thread.sleep(RETRY_PAUSE_MIN_MILLIS + ThreadLocalRandom.current().nextInt(RETRY_PAUSE_JITTER_MILLIS + 1));
+        } catch (InterruptedException e) {
+            throw interrupted(e);
+        }
         return expectObject(send(req), expect);
     }
 
@@ -289,21 +323,35 @@ public final class FelisApiClient {
         }
         return HttpRequest.newBuilder()
                 .uri(uri)
-                .timeout(config.timeout())
+                .timeout(config.requestTimeout())
                 .header("Authorization", "Bearer " + config.serviceToken())
                 .header("Accept", "application/json");
     }
 
     private HttpResponse<String> send(HttpRequest req) throws LinkException {
         try {
-            return http.send(req, HttpResponse.BodyHandlers.ofString());
+            return exchange(req);
         } catch (IOException e) {
-            throw new LinkException(0, "transport_error",
-                    "could not reach felis-api: " + e.getMessage(), e);
+            throw transportError(e);
         } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new LinkException(0, "interrupted", "felis-api request interrupted", e);
+            throw interrupted(e);
         }
+    }
+
+    private HttpResponse<String> exchange(HttpRequest req) throws IOException, InterruptedException {
+        return http.send(req, HttpResponse.BodyHandlers.ofString());
+    }
+
+    // A refused connection arrives as a ConnectException with no message; the class
+    // name keeps the log line from reading "could not reach felis-api: null".
+    private static LinkException transportError(IOException e) {
+        String why = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+        return new LinkException(0, "transport_error", "could not reach felis-api: " + why, e);
+    }
+
+    private static LinkException interrupted(InterruptedException e) {
+        Thread.currentThread().interrupt();
+        return new LinkException(0, "interrupted", "felis-api request interrupted", e);
     }
 
     private Map<?, ?> expectObject(HttpResponse<String> res, int expect) throws LinkException {

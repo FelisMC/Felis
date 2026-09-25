@@ -10,7 +10,11 @@
 #      velocity/test. They check what "compiles" cannot: the felis:control codec
 #      round-trips every frame kind (spec §12), no server name can re-aim a
 #      felis-api request path, only the lobby and the login gate may drive
-#      felis:control (and each only with its own frames), the link-status outage
+#      felis:control (and each only with its own frames), a GET is retried once
+#      after a dropped reply or a 502/503/504 and a POST never, the request timeout
+#      cuts a slow call off, felis-link.properties timeouts are validated, the
+#      felis-api call pool refuses instead of growing and a repeating task never
+#      overlaps itself, the link-status outage
 #      fallback fails closed outside its window, a proxy restarted during an API
 #      outage routes on the last saved server list (and only until a fetch
 #      succeeds), /invite prompts cannot double-fire
@@ -71,6 +75,18 @@ javac -d "$work/shared-classes" \
   plugins/shared/test/best/lolicon/felis/link/FelisApiClientTest.java
 java -cp "$work/shared-classes" best.lolicon.felis.link.FelisApiClientTest
 
+echo "==> FelisApiClientRetryTest (which failures are retried, request timeout, shared)"
+javac -d "$work/shared-classes" \
+  plugins/shared/src/main/java/best/lolicon/felis/link/*.java \
+  plugins/shared/test/best/lolicon/felis/link/FelisApiClientRetryTest.java
+java -cp "$work/shared-classes" best.lolicon.felis.link.FelisApiClientRetryTest
+
+echo "==> LinkConfigLoaderTest (env/file precedence, template, timeouts, shared)"
+javac -d "$work/shared-classes" \
+  plugins/shared/src/main/java/best/lolicon/felis/link/*.java \
+  plugins/shared/test/best/lolicon/felis/link/LinkConfigLoaderTest.java
+java -cp "$work/shared-classes" best.lolicon.felis.link.LinkConfigLoaderTest
+
 echo "==> ControlPolicyTest (who may send what on felis:control, velocity)"
 mkdir -p "$work/policy-classes"
 javac -d "$work/policy-classes" \
@@ -92,6 +108,14 @@ javac -d "$work/list-classes" \
   plugins/velocity/src/main/java/best/lolicon/felis/velocity/ServerListSource.java \
   plugins/velocity/test/best/lolicon/felis/velocity/ServerListSourceTest.java
 java -cp "$work/list-classes" best.lolicon.felis.velocity.ServerListSourceTest
+
+echo "==> ApiPoolTest (bounded felis-api pool, non-overlapping repeats, velocity)"
+mkdir -p "$work/pool-classes"
+javac -d "$work/pool-classes" \
+  plugins/velocity/src/main/java/best/lolicon/felis/velocity/BoundedExecutor.java \
+  plugins/velocity/src/main/java/best/lolicon/felis/velocity/SkipIfRunning.java \
+  plugins/velocity/test/best/lolicon/felis/velocity/ApiPoolTest.java
+java -cp "$work/pool-classes" best.lolicon.felis.velocity.ApiPoolTest
 
 echo "==> InviteBookTest (/invite prompt store, velocity)"
 mkdir -p "$work/velocity-classes"

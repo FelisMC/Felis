@@ -120,7 +120,15 @@ so there is nothing to shade and each jar is self-contained.
 - `LinkConfigLoader` — reads `FELIS_API_BASE_URL` / `FELIS_SERVICE_TOKEN` (env
   wins) or a `felis-link.properties` file written as a commented template on
   first run. **The API URL and service token are deployment inputs and are never
-  compiled in.**
+  compiled in.** Two optional keys bound each call, in whole seconds from 1 to 120
+  (default 10): `connect-timeout-seconds` / `FELIS_API_CONNECT_TIMEOUT_SECONDS`
+  for opening the connection, `request-timeout-seconds` /
+  `FELIS_API_REQUEST_TIMEOUT_SECONDS` for the whole call. Anything else fails the
+  load with the key named.
+- `FelisApiClient` — the routing client. A GET that failed on a dropped
+  connection or a 502/503/504 is tried once more after a 100–400 ms jittered
+  pause; a GET that timed out, and every POST (wake, claim, join-event,
+  approvals), is never repeated.
 
 Threading: the command runs on the server thread; the HTTP call is dispatched to
 a daemon single-thread executor and the reply is hopped back onto the server
@@ -174,6 +182,15 @@ Velocity-only config keys (read from the same `felis-link.properties` / env as
 | `root-domain`  | `FELIS_ROOT_DOMAIN`  | Routing zone, e.g. `mc.example.net`. Unset → routing off. |
 | `login-server` | `FELIS_LOGIN_SERVER` | The system auth gate every fresh connection must pass. Defaults to `login`. |
 | `lobby-server` | `FELIS_LOBBY_SERVER` | The distinct post-auth holding server used while a backend wakes. Defaults to `lobby`; it must not equal `login-server`. |
+
+Load bounds on the proxy: felis-api calls run on a pool of 8 threads with 64
+waiting slots. Past that a call is refused at once — the player reads "busy", a
+lobby frame gets a `busy` error, and a dropped join-event is logged at warn —
+rather than piling up threads while felis-api is slow. The registration refresh
+(15 s) and the waiting-queue poll (2 s) skip a run that falls due while the last
+one is still going. Acting commands (`/link`, `/felis claim`, migrate, op
+approve) share a per-player budget of 5 then one per 5 s; felis:control frames
+from the lobby are metered per player and menu status answers are cached.
 
 ## Lobby menu (§12)
 

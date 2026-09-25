@@ -237,7 +237,7 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
             send(source, cached.frame);
             return;
         }
-        plugin.async(() -> {
+        boolean taken = plugin.async(() -> {
             try {
                 MenuStatus s = api.menuStatus(server);
                 ControlFrame frame = ControlFrame.statusUpdate(
@@ -248,6 +248,9 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
                 send(source, errorFrame(e, server));
             }
         });
+        if (!taken) {
+            send(source, busyFrame(server));
+        }
     }
 
     // A WakeRequest is the menu's Join/Wake button on a server the player owns: wake
@@ -262,7 +265,7 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
     // autostartPolicy gate). A claim refusal answers with Error and never wakes.
     private void handleClaim(ServerConnection source, Player player, String server) {
         UUID id = player.getUniqueId();
-        plugin.async(() -> {
+        boolean taken = plugin.async(() -> {
             try {
                 api.claim(server, id);
             } catch (LinkException e) {
@@ -274,6 +277,9 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
             // hop for the wake, which is fine from here.
             router.enqueueFromMenu(player, server);
         });
+        if (!taken) {
+            send(source, busyFrame(server));
+        }
     }
 
     /**
@@ -303,6 +309,12 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
                 ? "Felis 暂时不可用，请稍后再试 / Felis is temporarily unavailable — please try again."
                 : e.getMessage();
         return ControlFrame.error(code, message, server);
+    }
+
+    // busyFrame answers a frame whose felis-api call the bounded pool refused.
+    private static ControlFrame busyFrame(String server) {
+        return ControlFrame.error("busy",
+                "Felis 现在很忙，请稍后再试 / Felis is busy right now — please try again in a moment.", server);
     }
 
     private static final class CachedStatus {

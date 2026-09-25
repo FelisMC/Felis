@@ -40,7 +40,7 @@ public final class LinkClient {
     public LinkClient(LinkConfig config) {
         this.config = Objects.requireNonNull(config, "config");
         this.http = HttpClient.newBuilder()
-                .connectTimeout(config.timeout())
+                .connectTimeout(config.connectTimeout())
                 .build();
     }
 
@@ -50,7 +50,7 @@ public final class LinkClient {
         String body = "{\"mc_uuid\":\"" + mcUuid + "\"}";
         HttpRequest req = HttpRequest.newBuilder()
                 .uri(URI.create(config.apiBaseUrl() + PATH))
-                .timeout(config.timeout())
+                .timeout(config.requestTimeout())
                 .header("Authorization", "Bearer " + config.serviceToken())
                 .header("Content-Type", "application/json")
                 .header("Accept", "application/json")
