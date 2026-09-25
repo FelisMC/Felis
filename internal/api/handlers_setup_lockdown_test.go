@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -136,5 +137,35 @@ func TestAdvRequireOnboardedPredicate(t *testing.T) {
 				t.Fatalf("403 code = %q, want setup_required", errCode(w.Body.Bytes()))
 			}
 		})
+	}
+}
+
+// credsDown is a store whose passkey lookup fails, as during a Postgres outage.
+type credsDown struct{ *fakeRepo }
+
+func (credsDown) PasskeyCredentialsForUser(context.Context, string) ([]PasskeyCredential, error) {
+	return nil, errors.New("connection refused")
+}
+
+// A failed passkey lookup is an outage: the caller gets 503 auth_unavailable to
+// retry, never setup_required, which would send a player with a passkey off to
+// enroll another.
+func TestRequireOnboardedReportsAStoreOutage(t *testing.T) {
+	repo := newFakeRepo()
+	api := newTestAPI(repo, newFakeCluster())
+	api.Repo = credsDown{repo}
+	ran := false
+	h := api.requireOnboarded(func(http.ResponseWriter, *http.Request) { ran = true })
+
+	r := httptest.NewRequest("POST", "/api/v1/servers/demo2/wake", nil)
+	r = r.WithContext(context.WithValue(r.Context(), ctxKeyPrincipal,
+		&Principal{UserID: "has-pk", ViaSession: true, EmailVerified: false}))
+	w := httptest.NewRecorder()
+	h(w, r)
+	if ran {
+		t.Fatal("the handler ran although the onboarding check could not be made")
+	}
+	if w.Code != http.StatusServiceUnavailable || errCode(w.Body.Bytes()) != "auth_unavailable" {
+		t.Fatalf("got %d %s, want 503 auth_unavailable", w.Code, w.Body.String())
 	}
 }

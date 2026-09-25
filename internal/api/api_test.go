@@ -583,7 +583,7 @@ func (f *fakeRepo) DeleteAllPasskeyCredentialsForUser(_ context.Context, userID 
 func (f *fakeRepo) AdvanceCredentialSignCount(_ context.Context, credentialID string, newSignCount uint32, usedAt time.Time) error {
 	for id, c := range f.passkeyCreds {
 		if c.CredentialID == credentialID {
-			c.SignCount = newSignCount
+			c.SignCount = max(c.SignCount, newSignCount)
 			t := usedAt
 			c.LastUsedAt = &t
 			f.passkeyCreds[id] = c

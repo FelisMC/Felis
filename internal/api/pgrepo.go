@@ -1401,9 +1401,14 @@ func (p *PGRepo) PasskeyCredentialsForUser(ctx context.Context, userID string) (
 // last_used_at. credential_id is UNIQUE so exactly one row is touched; a missing row (the
 // credential was unbound mid-ceremony) affects zero rows and is a successful no-op, never an
 // error — the assertion is already cryptographically complete by the time this runs.
+//
+// The counter only moves forward: two assertions verified at once against the same stored
+// value land in either order, and the lower one must not overwrite the higher, or a clone
+// replaying the count in between would pass the next check.
 func (p *PGRepo) AdvanceCredentialSignCount(ctx context.Context, credentialID string, newSignCount uint32, usedAt time.Time) error {
 	_, err := p.db.ExecContext(ctx,
-		`UPDATE webauthn_credentials SET sign_count = $2, last_used_at = $3 WHERE credential_id = $1`,
+		`UPDATE webauthn_credentials SET sign_count = GREATEST(sign_count, $2), last_used_at = $3
+		  WHERE credential_id = $1`,
 		credentialID, int64(newSignCount), usedAt)
 	return err
 }
@@ -1738,31 +1743,35 @@ func (p *PGRepo) DeleteUser(ctx context.Context, userID, _ string) error {
 }
 
 // SetUserDisabled flips the disabled flag. Setting disabled→true additionally
-// revokes every live session so the account is immediately locked out.
+// revokes every live session so the account is immediately locked out. Both land
+// in one transaction: a disable whose revocation failed is rolled back and
+// reported, so the admin never reads "disabled" while a session still stands.
 func (p *PGRepo) SetUserDisabled(ctx context.Context, userID string, disabled bool) error {
-	// Guard: the user must exist and not be deleted.
-	var ok bool
-	if err := p.db.QueryRowContext(ctx,
-		`SELECT EXISTS(SELECT 1 FROM users WHERE id = $1 AND deleted_at IS NULL)`,
-		userID).Scan(&ok); err != nil {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
 		return err
 	}
-	if !ok {
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx,
+		`UPDATE users SET disabled = $2 WHERE id = $1 AND deleted_at IS NULL`, userID, disabled)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
 		return ErrNotFound
 	}
 
-	if _, err := p.db.ExecContext(ctx,
-		`UPDATE users SET disabled = $2 WHERE id = $1`, userID, disabled); err != nil {
-		return err
-	}
-
 	if disabled {
-		// Revoke every live session so the lockout is immediate.
-		_, _ = p.db.ExecContext(ctx,
+		if _, err := tx.ExecContext(ctx,
 			`UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`,
-			userID)
+			userID); err != nil {
+			return err
+		}
 	}
-	return nil
+	return tx.Commit()
 }
 
 // ---- quota admin ----

@@ -14,6 +14,7 @@ package api
 
 import (
 	"context"
+	"log"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -776,7 +777,15 @@ func (a *API) requireOnboarded(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p := principalFromContext(r.Context())
 		if p != nil && p.ViaSession && !p.EmailVerified {
-			creds, _ := a.Repo.PasskeyCredentialsForUser(r.Context(), p.UserID)
+			creds, err := a.Repo.PasskeyCredentialsForUser(r.Context(), p.UserID)
+			if err != nil {
+				// A store outage reads as retry-later; setup_required would send
+				// the caller off to enroll a passkey they may already have.
+				log.Printf("api: %s %s: onboarding check (request_id=%s): %v",
+					r.Method, r.URL.Path, requestIDFromContext(r.Context()), err)
+				writeError(w, r, errAuthUnavailable)
+				return
+			}
 			if len(creds) == 0 {
 				writeError(w, r, newError(http.StatusForbidden, "setup_required",
 					"passkey enrollment is required before this action is available"))
