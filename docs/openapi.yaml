@@ -3138,6 +3138,9 @@ paths:
       operationId: getUpdateWindow
       summary: Read the SysAdmin-set auto-update maintenance window (admin).
       description: >-
+        Advisory: Felis applies no update on its own. `felis update` on the
+        host reads this window, reports where now sits against it, and warns
+        before an apply outside it.
         The single platform-wide maintenance window during which Felis may apply a
         Scheduled component's update to itself (decision core internal/updates). An
         unset window — never set, or explicitly cleared — reads back as

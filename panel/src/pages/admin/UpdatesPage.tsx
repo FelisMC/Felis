@@ -208,6 +208,7 @@ export function UpdatesPage() {
           <CardTitle className="text-base font-semibold">{t("updates_set_title")}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-6 text-sm">
+          <p className="text-muted-foreground leading-relaxed">{t("updates_window_advisory")}</p>
           {/* Unset hint warning */}
           {windowStatus === "unset" && (
             <p className="text-muted-foreground bg-muted/15 border border-dashed border-border rounded-lg p-4 leading-relaxed">

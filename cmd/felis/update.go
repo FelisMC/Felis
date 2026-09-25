@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -9,6 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
+	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/updater"
 	"felis.lolicon.best/internal/updates"
 )
@@ -159,6 +164,7 @@ func cmdUpdate(args []string, stdout, stderr io.Writer) int {
 	all := fs.Bool("all", false, "select every component above")
 	force := fs.Bool("force", false, "print the apply command for a selected component even when it is already up to date")
 	velocityJar := fs.String("velocity-jar", updater.DefaultVelocityJarPath, "path to the installed Velocity jar to read the current version from")
+	cfgPath := fs.String("config", "/etc/felis/felis.toml", "path to felis.toml, read for the maintenance window the panel stores")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -192,9 +198,15 @@ func cmdUpdate(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
+	now := time.Now()
+	win, winErr := readUpdateWindow(ctx, *cfgPath)
+	fmt.Fprint(stdout, renderWindowLine(win, winErr, now))
 	fmt.Fprint(stdout, renderUpdateReport(res, selected))
 	fmt.Fprint(stdout, renderNotes(src.Notes(), selected))
 	if len(selected) > 0 {
+		if winErr == nil && !win.Start.IsZero() && !win.Contains(now) {
+			fmt.Fprint(stdout, "Warning: this is outside the maintenance window; the commands below take effect as soon as you run them.\n")
+		}
 		fmt.Fprint(stdout, renderApplyGuidance(res, selected, *force))
 	}
 	return 0
@@ -374,4 +386,57 @@ func isReleaseTag(v updates.Version) bool {
 	}
 	_, err := updates.Parse(s)
 	return err == nil
+}
+
+// updateWindowTimeout bounds the maintenance-window read, so an unreachable
+// database costs the report a line and never the report itself.
+const updateWindowTimeout = 3 * time.Second
+
+// readUpdateWindow reads the maintenance window the panel stores
+// (platform_settings "update_window"). Felis applies nothing on its own: this
+// command is the window's consumer, showing it and warning before an apply
+// outside it. A missing row is an unset window.
+func readUpdateWindow(ctx context.Context, cfgPath string) (updates.Window, error) {
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return updates.Window{}, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, updateWindowTimeout)
+	defer cancel()
+	conn, err := pgx.Connect(ctx, cfg.Database.URL)
+	if err != nil {
+		return updates.Window{}, err
+	}
+	defer conn.Close(context.Background())
+	var raw []byte
+	err = conn.QueryRow(ctx, `SELECT value FROM platform_settings WHERE key = 'update_window'`).Scan(&raw)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return updates.Window{}, nil
+	}
+	if err != nil {
+		return updates.Window{}, err
+	}
+	var w updates.Window
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return updates.Window{}, fmt.Errorf("stored window: %w", err)
+	}
+	return w, nil
+}
+
+// renderWindowLine is the report's first line: where now sits against the
+// maintenance window.
+func renderWindowLine(w updates.Window, err error, now time.Time) string {
+	const layout = "2006-01-02 15:04 MST"
+	switch {
+	case err != nil:
+		return fmt.Sprintf("Maintenance window: unknown (%v).\n", err)
+	case w.Start.IsZero() || w.End.IsZero():
+		return "Maintenance window: not set; apply whenever suits you.\n"
+	case w.Contains(now):
+		return fmt.Sprintf("Maintenance window: open now, until %s.\n", w.End.Local().Format(layout))
+	case now.Before(w.Start):
+		return fmt.Sprintf("Maintenance window: opens %s, until %s. Felis applies nothing on its own; run the apply commands inside it.\n", w.Start.Local().Format(layout), w.End.Local().Format(layout))
+	default:
+		return fmt.Sprintf("Maintenance window: ended %s; set a new one in the panel before applying.\n", w.End.Local().Format(layout))
+	}
 }

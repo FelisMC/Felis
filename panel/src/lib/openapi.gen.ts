@@ -992,7 +992,7 @@ export interface paths {
         };
         /**
          * Read the SysAdmin-set auto-update maintenance window (admin).
-         * @description The single platform-wide maintenance window during which Felis may apply a Scheduled component's update to itself (decision core internal/updates). An unset window — never set, or explicitly cleared — reads back as {start:null,end:null}. API+persistence only: nothing consumes the window until the INTEGRATION runner and executors are wired, so setting it changes no behavior yet.
+         * @description Advisory: Felis applies no update on its own. `felis update` on the host reads this window, reports where now sits against it, and warns before an apply outside it. The single platform-wide maintenance window during which Felis may apply a Scheduled component's update to itself (decision core internal/updates). An unset window — never set, or explicitly cleared — reads back as {start:null,end:null}. API+persistence only: nothing consumes the window until the INTEGRATION runner and executors are wired, so setting it changes no behavior yet.
          */
         get: operations["getUpdateWindow"];
         /**

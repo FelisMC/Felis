@@ -37,11 +37,10 @@ A grep across `*.md` and `*.go` returns both sets; only the Go ones are seams.
   control-plane Deployment image, and the Velocity jar inspection. Both are answered
   on the host path (see "Built" below), so this gap is specific to a caller that has
   a cluster client instead of the node.
-- `internal/api/handlers_updates.go:21,28` — the maintenance window persists and the
-  API serves it, but the in-cluster CronJob that would hand a real window to a runner
-  does not exist. `felis update` runs with a zero window, under which every
-  `Scheduled` component degrades to a notify, so no path can currently claim an
-  apply is under way.
+- `internal/api/handlers_updates.go` — the maintenance window is advisory: no
+  in-cluster runner applies updates. `felis update` reads the stored window, prints
+  where now sits against it and warns before an apply outside it; the runner itself
+  still runs with a zero window, so no path can claim an apply is under way.
 - `internal/submit/blobstore.go` — CLOSED 2026-09-22. The uploads PVC still cannot
   cross namespaces, so the transport went through the API instead of a mount: the
   derived context ref is now the internal-face URL

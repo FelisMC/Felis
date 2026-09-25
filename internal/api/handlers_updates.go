@@ -23,11 +23,10 @@ import (
 // A future need for per-component windows would layer keys on top; this is the
 // platform default.
 //
-// This slice is API + PERSISTENCE ONLY. Nothing consumes the stored window yet:
-// the runner, the ReleaseSource/Notifier/Applier executors and the scheduler
-// CronJob are all still INTEGRATION-ONLY (task #38 remainder). Setting a window
-// today changes no behavior until those land — it is the durable input they will
-// read. The Panel UI that drives these routes is out of scope (hands-off-frontend).
+// Felis applies no update on its own, so the window is advisory. Its consumer
+// is `felis update` on the host (cmd/felis/update.go readUpdateWindow), which
+// reads this row, prints where now sits against it, and warns before an apply
+// outside it. The panel's Updates page says the same.
 
 // updateWindowKey is the platform_settings key holding the maintenance window as
 // JSON {"start","end"} (RFC3339, or null when unset). It reuses the generic
