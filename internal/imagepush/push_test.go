@@ -207,19 +207,31 @@ func TestPushWaitsOutTheGCWindow(t *testing.T) {
 	maint := httptest.NewServer(g.MaintHandler())
 	t.Cleanup(maint.Close)
 	host := strings.TrimPrefix(gate.URL, "http://")
+	// The gate counts a write as finished only after its handler returns, which
+	// is just after the client already has the response, so a window opened
+	// right behind the last push can see it in flight for a moment and answer
+	// 409. The registry GC Job retries until it gets 200 (platform/workloads.go); so
+	// does this helper.
 	setReadOnly := func(on bool) {
 		t.Helper()
 		path := "/readwrite"
 		if on {
 			path = "/readonly?lease=600"
 		}
-		resp, err := http.Post(maint.URL+path, "text/plain", nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			t.Fatalf("POST %s = %d", path, resp.StatusCode)
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			resp, err := http.Post(maint.URL+path, "text/plain", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+			if !on || resp.StatusCode != http.StatusConflict || time.Now().After(deadline) {
+				t.Fatalf("POST %s = %d", path, resp.StatusCode)
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
 	}
 
