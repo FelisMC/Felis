@@ -6,8 +6,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Loading, ErrorState } from "@/components/States";
+import { ConfirmFooter } from "@/components/ConfirmFooter";
+import { MessageLine } from "@/components/MessageLine";
 import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
+import { formatAbsolute } from "@/lib/format";
+import type { PasskeyCredential } from "@/lib/types";
 import { useAsync } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
 import { base64urlToBytes, bytesToBase64url } from "@/lib/utils";
@@ -30,7 +34,7 @@ import {
 export function Account() {
   const status = useAsync(() => api.linkStatus(), []);
   const { identity, refresh } = useTier();
-  const { t } = useTranslation("account");
+  const { t, i18n } = useTranslation("account");
 
   // Email verification state
   const [emailInput, setEmailInput] = useState("");
@@ -93,7 +97,15 @@ export function Account() {
   const [registeringPasskey, setRegisteringPasskey] = useState(false);
   const [passkeyError, setPasskeyError] = useState<string | null>(null);
   const [registerDialogOpen, setRegisterDialogOpen] = useState(false);
-  const [deletingMap, setDeletingMap] = useState<Record<string, boolean>>({});
+  // Deleting a passkey goes through a confirm dialog that names it. The API
+  // refuses to remove the only passkey of an account whose email is unverified
+  // (it would be left with no way back in); the button mirrors that rule so the
+  // refusal is explained up front instead of after a round trip.
+  const [pendingDelete, setPendingDelete] = useState<PasskeyCredential | null>(null);
+  const [deletingPasskey, setDeletingPasskey] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const credentials = passkeys.data?.credentials ?? [];
+  const keepLastPasskey = credentials.length === 1 && !identity?.email_verified;
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -165,16 +177,30 @@ export function Account() {
     }
   }
 
-  async function handleDeletePasskey(id: string) {
-    if (deletingMap[id]) return;
-    setDeletingMap((prev) => ({ ...prev, [id]: true }));
+  function askDeletePasskey(cred: PasskeyCredential) {
+    setDeleteError(null);
+    setPendingDelete(cred);
+  }
+
+  async function confirmDeletePasskey() {
+    if (!pendingDelete || deletingPasskey) return;
+    setDeletingPasskey(true);
+    setDeleteError(null);
     try {
-      await api.passkeyDelete(id);
+      await api.passkeyDelete(pendingDelete.id);
+      setPendingDelete(null);
       await passkeys.reload();
     } catch (err) {
-      alert(humanizeError(err));
+      // Another device may have changed the list meanwhile: refresh it. A 404
+      // means the passkey is already gone, which is what was asked for.
+      void passkeys.reload();
+      if ((err as { code?: string }).code === "not_found") {
+        setPendingDelete(null);
+      } else {
+        setDeleteError(humanizeError(err));
+      }
     } finally {
-      setDeletingMap((prev) => ({ ...prev, [id]: false }));
+      setDeletingPasskey(false);
     }
   }
 
@@ -404,47 +430,82 @@ export function Account() {
             <Loading label={t("loading_passkeys")} />
           ) : passkeys.error ? (
             <ErrorState error={passkeys.error} onRetry={passkeys.reload} />
-          ) : !passkeys.data?.credentials || passkeys.data.credentials.length === 0 ? (
+          ) : credentials.length === 0 ? (
             <p className="text-xs text-muted-foreground py-2 italic">{t("no_passkeys")}</p>
           ) : (
-            <div className="border rounded-md divide-y bg-background/50">
-              {passkeys.data.credentials.map((cred: any) => (
-                <div key={cred.id} className="flex items-center justify-between p-3">
-                  <div className="space-y-1">
-                    <p className="font-medium text-foreground flex items-center gap-1.5">
-                      <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
-                      {cred.name}
-                    </p>
-                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                      <span>
-                        {t("created_at")}
-                        {new Date(cred.created_at).toLocaleString()}
-                      </span>
-                      <span>
-                        {t("last_used")}
-                        {cred.last_used_at ? new Date(cred.last_used_at).toLocaleString() : t("never")}
-                      </span>
+            <>
+              <ul className="border rounded-md divide-y bg-background/50">
+                {credentials.map((cred) => (
+                  <li key={cred.id} className="flex items-center justify-between gap-3 p-3">
+                    <div className="min-w-0 space-y-1">
+                      <p className="font-medium text-foreground flex items-center gap-1.5">
+                        <KeyRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <span className="truncate">{cred.name}</span>
+                      </p>
+                      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                        <span>
+                          {t("created_at")}
+                          {formatAbsolute(cred.created_at, i18n.language)}
+                        </span>
+                        <span>
+                          {t("last_used")}
+                          {cred.last_used_at ? formatAbsolute(cred.last_used_at, i18n.language) : t("never")}
+                        </span>
+                      </div>
                     </div>
-                  </div>
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    onClick={() => handleDeletePasskey(cred.id)}
-                    disabled={deletingMap[cred.id]}
-                    className="text-muted-foreground hover:text-destructive"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                </div>
-              ))}
-            </div>
+                    <Button
+                      size="icon"
+                      variant="ghost"
+                      onClick={() => askDeletePasskey(cred)}
+                      disabled={keepLastPasskey}
+                      aria-label={t("passkey_delete_aria", { name: cred.name })}
+                      title={keepLastPasskey ? t("passkey_last_hint") : t("passkey_delete_aria", { name: cred.name })}
+                      className="shrink-0 text-muted-foreground hover:text-destructive"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+              {keepLastPasskey && (
+                <p className="text-xs text-muted-foreground">{t("passkey_last_hint")}</p>
+              )}
+            </>
           )}
+          <Dialog
+            open={pendingDelete !== null}
+            onOpenChange={(open) => {
+              if (!open && !deletingPasskey) setPendingDelete(null);
+            }}
+          >
+            <DialogContent hideClose={deletingPasskey}>
+              <DialogHeader>
+                <DialogTitle>{t("passkey_delete_title")}</DialogTitle>
+                <DialogDescription>
+                  {pendingDelete &&
+                    t("passkey_delete_desc", {
+                      name: pendingDelete.name,
+                      created: formatAbsolute(pendingDelete.created_at, i18n.language),
+                    })}
+                </DialogDescription>
+              </DialogHeader>
+              {deleteError && <MessageLine kind="error" message={deleteError} />}
+              <ConfirmFooter
+                onCancel={() => setPendingDelete(null)}
+                onConfirm={() => void confirmDeletePasskey()}
+                loading={deletingPasskey}
+                disabled={deletingPasskey || keepLastPasskey}
+                cancelLabel={t("common:cancel")}
+                confirmLabel={t("passkey_delete_confirm")}
+              />
+            </DialogContent>
+          </Dialog>
         </CardContent>
       </Card>
 
       <MigrationCard
         userId={identity?.user_id}
-        hasPasskey={(passkeys.data?.credentials?.length ?? 0) > 0}
+        hasPasskey={credentials.length > 0}
       />
 
       <Card>

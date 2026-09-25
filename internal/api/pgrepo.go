@@ -1412,19 +1412,38 @@ func (p *PGRepo) AdvanceCredentialSignCount(ctx context.Context, credentialID st
 // only unbind their OWN credential. No matching (user, id) row → ErrNotFound via a zero
 // RowsAffected, so a stale or cross-user id cannot silently no-op as success.
 func (p *PGRepo) DeletePasskeyCredential(ctx context.Context, userID, id string) error {
-	res, err := p.db.ExecContext(ctx,
-		`DELETE FROM webauthn_credentials WHERE id = $1 AND user_id = $2`, id, userID)
+	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	n, err := res.RowsAffected()
-	if err != nil {
+	defer func() { _ = tx.Rollback() }()
+	// Lock the user row first: every delete for this user queues here, so the count
+	// below cannot go stale between the check and the DELETE.
+	var verified bool
+	switch err := tx.QueryRowContext(ctx,
+		`SELECT email_verified FROM users WHERE id = $1 FOR UPDATE`, userID).Scan(&verified); {
+	case errors.Is(err, sql.ErrNoRows):
+		return ErrNotFound
+	case err != nil:
 		return err
 	}
-	if n == 0 {
+	var mine, total int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT count(*) FILTER (WHERE id = $2), count(*) FROM webauthn_credentials WHERE user_id = $1`,
+		userID, id).Scan(&mine, &total); err != nil {
+		return err
+	}
+	if mine == 0 {
 		return ErrNotFound
 	}
-	return nil
+	if total == 1 && !verified {
+		return ErrLastPasskey
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM webauthn_credentials WHERE id = $1 AND user_id = $2`, id, userID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // DeleteAllPasskeyCredentialsForUser unbinds every passkey a user holds. Unlike the

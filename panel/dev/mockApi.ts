@@ -899,12 +899,19 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
     default:
       if (ctx.method === "DELETE" && ctx.parts[2] === "account" && ctx.parts[3] === "passkey" && ctx.parts[4] === "credentials" && ctx.parts[5]) {
         const id = ctx.parts[5];
-        if (ctx.state.passkeys[ctx.account.id]) {
-          const idx = ctx.state.passkeys[ctx.account.id].findIndex((k) => k.id === id);
-          if (idx >= 0) {
-            ctx.state.passkeys[ctx.account.id].splice(idx, 1);
-          }
+        const list = ctx.state.passkeys[ctx.account.id] ?? [];
+        const idx = list.findIndex((k) => k.id === id);
+        if (idx < 0) {
+          sendError(ctx.res, 404, "not_found", "passkey not found");
+          return true;
         }
+        // Same rule as the real API: the only passkey of an account without a
+        // verified email stays, or the account would have no way to sign in.
+        if (list.length === 1 && !ctx.account.emailVerified) {
+          sendError(ctx.res, 409, "last_passkey", "this is your only passkey and your email is not verified");
+          return true;
+        }
+        list.splice(idx, 1);
         ctx.res.statusCode = 204;
         ctx.res.end();
         return true;

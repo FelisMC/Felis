@@ -4142,7 +4142,9 @@ paths:
       description: >
         Removes a passkey scoped to the authenticated principal, so a caller can only
         unbind their OWN credential. An unknown or cross-user id is a 404; it never
-        silently no-ops as success.
+        silently no-ops as success. The account's only passkey cannot be removed while
+        its email is unverified (409 last_passkey): it is then the account's only
+        durable way in.
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ accessJWT: [] }]
@@ -4159,6 +4161,11 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           description: No such passkey for this caller.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: last_passkey — this is the only passkey and the email is unverified.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

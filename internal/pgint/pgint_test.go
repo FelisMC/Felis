@@ -722,6 +722,90 @@ func TestDeadAccountsAreLockedOutInPG(t *testing.T) {
 	}
 }
 
+// DeletePasskeyCredential keeps the last passkey of an account whose email is
+// unverified: removing it would leave no durable way in. The guard reads the count
+// under the user-row lock, so two concurrent deletes of an account's last two
+// passkeys resolve to exactly one delete and one ErrLastPasskey, never zero left.
+func TestLastPasskeyGuardInPG(t *testing.T) {
+	ctx := context.Background()
+	seed := func(t *testing.T, userID string) string {
+		t.Helper()
+		id := "cred-" + suffix(t)
+		if _, err := db.ExecContext(ctx,
+			`INSERT INTO webauthn_credentials (id, user_id, credential_id, public_key) VALUES ($1,$2,$3,'pk')`,
+			id, userID, "cid-"+suffix(t)); err != nil {
+			t.Fatalf("seed passkey: %v", err)
+		}
+		return id
+	}
+	count := func(t *testing.T, userID string) int {
+		t.Helper()
+		var n int
+		if err := db.QueryRowContext(ctx,
+			`SELECT count(*) FROM webauthn_credentials WHERE user_id = $1`, userID).Scan(&n); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		return n
+	}
+
+	for i := 0; i < 5; i++ {
+		u := newUser(t, "user", "lastpk")
+		a, b := seed(t, u.ID), seed(t, u.ID)
+		var wg sync.WaitGroup
+		errs := make([]error, 2)
+		for j, id := range []string{a, b} {
+			wg.Add(1)
+			go func(j int, id string) {
+				defer wg.Done()
+				errs[j] = repo.DeletePasskeyCredential(ctx, u.ID, id)
+			}(j, id)
+		}
+		wg.Wait()
+		ok, refused := 0, 0
+		for _, err := range errs {
+			switch {
+			case err == nil:
+				ok++
+			case errors.Is(err, api.ErrLastPasskey):
+				refused++
+			default:
+				t.Fatalf("concurrent delete: %v", err)
+			}
+		}
+		if ok != 1 || refused != 1 || count(t, u.ID) != 1 {
+			t.Fatalf("round %d: %d deleted, %d refused, %d left; want 1, 1, 1", i, ok, refused, count(t, u.ID))
+		}
+	}
+
+	u := newUser(t, "admin", "lastpk")
+	last := seed(t, u.ID)
+	if err := repo.DeletePasskeyCredential(ctx, u.ID, last); !errors.Is(err, api.ErrLastPasskey) {
+		t.Fatalf("last passkey, unverified: %v, want ErrLastPasskey", err)
+	}
+	if err := repo.DeletePasskeyCredential(ctx, u.ID, "cred-none-"+suffix(t)); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("unknown id: %v, want ErrNotFound", err)
+	}
+	other := newUser(t, "user", "lastpk")
+	if err := repo.DeletePasskeyCredential(ctx, other.ID, last); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("another user's passkey: %v, want ErrNotFound", err)
+	}
+
+	// A verified email is another door, so the last passkey may go.
+	now := mustNow()
+	if err := repo.CreateEmailOTP(ctx, "lp-"+suffix(t), u.ID, "lastpk-"+suffix(t)+"@example.net", "h", "onboard_email", now.Add(5*time.Minute)); err != nil {
+		t.Fatalf("CreateEmailOTP: %v", err)
+	}
+	if _, err := repo.VerifyEmailOTP(ctx, u.ID, "onboard_email", "h", now); err != nil {
+		t.Fatalf("VerifyEmailOTP: %v", err)
+	}
+	if err := repo.DeletePasskeyCredential(ctx, u.ID, last); err != nil {
+		t.Fatalf("last passkey, verified: %v", err)
+	}
+	if n := count(t, u.ID); n != 0 {
+		t.Fatalf("%d passkeys left after the allowed delete, want 0", n)
+	}
+}
+
 // VerifyLinkCode's takeover rule: a fresh in-game code (proof the caller holds the
 // UUID) lets a live account take over a link whose account was SOFT-DELETED — the
 // migrated-source case, whose retire keeps the link but kills the account — while a

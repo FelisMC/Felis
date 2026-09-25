@@ -459,7 +459,10 @@ type Repo interface {
 	PasskeyCredentialsForUser(ctx context.Context, userID string) ([]PasskeyCredential, error)
 	// DeletePasskeyCredential removes the passkey row id, scoped to userID so a caller
 	// can only unbind their OWN credential. No matching (user, id) row → ErrNotFound,
-	// so a stale or cross-user id cannot silently no-op as success.
+	// so a stale or cross-user id cannot silently no-op as success. When the row is
+	// the user's last passkey and their email is unverified it returns ErrLastPasskey
+	// and deletes nothing; the check and the delete hold the user row locked, so two
+	// concurrent deletes of a user's last two passkeys cannot both pass.
 	DeletePasskeyCredential(ctx context.Context, userID, id string) error
 	// DeleteAllPasskeyCredentialsForUser unbinds every passkey a user holds — the
 	// remediation that stops a passkey planted via a transiently-hijacked session from

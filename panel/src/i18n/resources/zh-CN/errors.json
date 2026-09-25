@@ -37,6 +37,7 @@
   "invalid_attestation": "无法验证此 Passkey，请重试。",
   "passkey_already_bound": "此 Passkey 已被其他账户绑定。",
   "passkey_unavailable": "Passkey 功能当前不可用。",
+  "last_passkey": "这是你唯一的 Passkey，邮箱也还没验证，不能删除。先验证邮箱或再注册一个 Passkey。",
   "passkey_not_allowed": "操作已被用户或浏览器取消。",
   "passkey_aborted": "Passkey 注册已被取消。",
   "bad_name": "服务器名称不合法：需为 3–32 位小写字母、数字或连字符，且不能使用保留名。",

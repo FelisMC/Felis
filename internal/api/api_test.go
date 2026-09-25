@@ -539,13 +539,30 @@ func (f *fakeRepo) PasskeyCredentialsForUser(_ context.Context, userID string) (
 }
 
 // DeletePasskeyCredential mirrors PGRepo: scoped to userID so a caller can only unbind
-// their OWN credential; no matching (user, id) row → ErrNotFound.
+// their OWN credential; no matching (user, id) row → ErrNotFound; the last passkey of
+// a user whose email is unverified (or who has no user row here) → ErrLastPasskey.
 func (f *fakeRepo) DeletePasskeyCredential(_ context.Context, userID, id string) error {
-	if c, ok := f.passkeyCreds[id]; ok && c.UserID == userID {
-		delete(f.passkeyCreds, id)
-		return nil
+	c, ok := f.passkeyCreds[id]
+	if !ok || c.UserID != userID {
+		return ErrNotFound
 	}
-	return ErrNotFound
+	total := 0
+	for _, other := range f.passkeyCreds {
+		if other.UserID == userID {
+			total++
+		}
+	}
+	verified := false
+	for _, u := range f.staff {
+		if u.ID == userID {
+			verified = u.EmailVerified
+		}
+	}
+	if total == 1 && !verified {
+		return ErrLastPasskey
+	}
+	delete(f.passkeyCreds, id)
+	return nil
 }
 
 // DeleteAllPasskeyCredentialsForUser mirrors PGRepo: unbind every passkey the user holds,

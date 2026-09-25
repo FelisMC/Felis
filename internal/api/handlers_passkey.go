@@ -400,6 +400,8 @@ func (a *API) handlePasskeyList(w http.ResponseWriter, r *http.Request) {
 // handlePasskeyDelete unbinds one of the caller's passkeys (spec §14, external app
 // face). The delete is scoped to the principal, so a caller can only remove their OWN
 // credential; an unknown or cross-user id → 404 (it never silently no-ops as success).
+// The last passkey of an account without a verified email → 409 last_passkey: it is
+// that account's only durable way in (ErrLastPasskey).
 func (a *API) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	id := r.PathValue("id")
@@ -410,6 +412,11 @@ func (a *API) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 	if err := a.Repo.DeletePasskeyCredential(r.Context(), p.UserID, id); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeError(w, r, newError(http.StatusNotFound, "not_found", "no such passkey"))
+			return
+		}
+		if errors.Is(err, ErrLastPasskey) {
+			writeError(w, r, newError(http.StatusConflict, "last_passkey",
+				"this is your only passkey and your email is not verified; add another passkey or verify an email first"))
 			return
 		}
 		writeError(w, r, err)

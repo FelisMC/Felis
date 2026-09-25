@@ -13,6 +13,7 @@ import type {
   LinkResult,
   LinkStatus,
   BindResult,
+  PasskeyCredential,
   PatchUserRequest,
   PlayersResult,
   QuotaInput,
@@ -560,7 +561,7 @@ export const api = rejectingSync({
     request<any>("POST", "/account/passkey/register/finish", { name, attestation }),
 
   passkeyList: () =>
-    request<{ credentials: any[] }>("GET", "/account/passkey/credentials"),
+    request<{ credentials: PasskeyCredential[] }>("GET", "/account/passkey/credentials"),
 
   passkeyDelete: (id: string) =>
     request<void>("DELETE", urlPath`/account/passkey/credentials/${id}`),
@@ -800,6 +801,8 @@ export function humanizeError(e: unknown): string {
       return t("passkey_already_bound");
     case "passkey_unavailable":
       return t("passkey_unavailable");
+    case "last_passkey":
+      return t("last_passkey");
     case "quota_exceeded":
       return t("quota_exceeded");
     case "already_claimed":

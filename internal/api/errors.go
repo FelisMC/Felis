@@ -57,6 +57,12 @@ var (
 	// finish endpoint exists; the ceremony state is gone (never begun, already
 	// consumed, or expired) — so handlers map it to 400, not 404.
 	ErrPasskeyChallengeInvalid = errors.New("passkey challenge invalid or expired")
+	// ErrLastPasskey means a passkey delete would remove the account's only one while
+	// its email is unverified. That passkey is then the account's only durable way
+	// in (setupRequired: no verified email and no passkey puts it back behind the
+	// setup gate, and a staff account has no other self-service door at all), so the
+	// delete is refused; handlers map it to 409 last_passkey.
+	ErrLastPasskey = errors.New("cannot remove the only passkey of an account without a verified email")
 	// ErrPlayerBindForbidden means a public Bind-Code redemption resolved to a STAFF
 	// account (admin or owner), which the player-console bootstrap refuses
 	// (console-tier access model). Staff authenticate at op.console behind Zero Trust,

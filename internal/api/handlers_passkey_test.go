@@ -46,6 +46,8 @@ func plantPasskeyChallenge(repo *fakeRepo, id string, expiresAt time.Time, sessi
 func TestPasskeyRegisterVertical(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	repo := newFakeRepo()
+	// A verified email keeps a door open, so step 5 may remove the only passkey.
+	repo.staff["u1"] = &StaffUser{ID: "u1", Username: "u1", Email: "u1@example.net", Role: "user", EmailVerified: true}
 	v := &fakePasskeyVerifier{
 		options: json.RawMessage(`{"publicKey":{"challenge":"Y2hhbGxlbmdl"}}`),
 		credential: VerifiedCredential{
@@ -291,6 +293,65 @@ func TestPasskeyDeleteScoping(t *testing.T) {
 	}
 	if _, ok := repo.passkeyCreds["row2"]; !ok {
 		t.Error("u2's credential must survive u1's failed delete")
+	}
+}
+
+// TestPasskeyDeleteLastGuard pins the last-passkey guard: without a verified email
+// the only passkey is the account's way in, so its delete is a 409 that leaves it
+// bound; a second passkey or a verified email lets the delete through.
+func TestPasskeyDeleteLastGuard(t *testing.T) {
+	cred := func(id string) PasskeyCredential {
+		return PasskeyCredential{ID: id, UserID: "u1", CredentialID: "c-" + id, CreatedAt: frozenNow}
+	}
+	for _, tc := range []struct {
+		name     string
+		verified bool
+		creds    []string
+		want     int
+	}{
+		{"only passkey, email unverified", false, []string{"a"}, http.StatusConflict},
+		{"only passkey, email verified", true, []string{"a"}, http.StatusNoContent},
+		{"two passkeys, email unverified", false, []string{"a", "b"}, http.StatusNoContent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, role := range []string{"user", "admin"} {
+				user := &Principal{UserID: "u1", Email: "u1@example.net", Role: role}
+				repo := newFakeRepo()
+				repo.staff["u1"] = &StaffUser{ID: "u1", Username: "u1", Email: "u1@example.net", Role: role, EmailVerified: tc.verified}
+				for _, id := range tc.creds {
+					repo.passkeyCreds[id] = cred(id)
+				}
+				eh := newPasskeyAPI(repo, &fakePasskeyVerifier{}, user)
+				w := do(eh, "DELETE", "/api/v1/account/passkey/credentials/a", "", nil)
+				if w.Code != tc.want {
+					t.Fatalf("%s: code = %d body %s, want %d", role, w.Code, w.Body.String(), tc.want)
+				}
+				_, kept := repo.passkeyCreds["a"]
+				if tc.want == http.StatusConflict {
+					if got := decodeErr(t, w); got != "last_passkey" {
+						t.Errorf("%s: error code = %q, want last_passkey", role, got)
+					}
+					if !kept {
+						t.Errorf("%s: a refused delete must leave the passkey bound", role)
+					}
+				} else if kept {
+					t.Errorf("%s: an allowed delete must remove the passkey", role)
+				}
+			}
+		})
+	}
+
+	// Removing one of two leaves the other as the last one, which is then guarded.
+	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
+	repo := newFakeRepo()
+	repo.staff["u1"] = &StaffUser{ID: "u1", Username: "u1", Email: "u1@example.net", Role: "user"}
+	repo.passkeyCreds["a"], repo.passkeyCreds["b"] = cred("a"), cred("b")
+	eh := newPasskeyAPI(repo, &fakePasskeyVerifier{}, user)
+	if w := do(eh, "DELETE", "/api/v1/account/passkey/credentials/a", "", nil); w.Code != http.StatusNoContent {
+		t.Fatalf("first delete: code = %d, want 204", w.Code)
+	}
+	if w := do(eh, "DELETE", "/api/v1/account/passkey/credentials/b", "", nil); w.Code != http.StatusConflict {
+		t.Fatalf("second delete: code = %d, want 409 (it is now the last one)", w.Code)
 	}
 }
 

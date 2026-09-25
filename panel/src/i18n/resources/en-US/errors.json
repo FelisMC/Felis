@@ -37,6 +37,7 @@
   "invalid_attestation": "Could not verify this Passkey, please try again.",
   "passkey_already_bound": "This Passkey is already bound to another account.",
   "passkey_unavailable": "Passkey subsystem is not available right now.",
+  "last_passkey": "This is your only passkey and your email is not verified, so it can't be removed. Verify an email or add another passkey first.",
   "passkey_not_allowed": "The operation was cancelled by the user or browser.",
   "passkey_aborted": "Passkey registration was aborted.",
   "bad_name": "That server name is invalid — use 3–32 lowercase letters, digits or dashes, and avoid reserved names.",

@@ -392,6 +392,15 @@ export interface QuotaInput {
   max_storage_gb?: number | null;
 }
 
+// One registered passkey as GET /account/passkey/credentials lists it.
+export interface PasskeyCredential {
+  id: string;
+  name: string;
+  aaguid?: string;
+  created_at: string;
+  last_used_at?: string | null;
+}
+
 export interface SessionView {
   token_hash: string;
   created_at: string;
