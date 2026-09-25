@@ -9,6 +9,7 @@ import type { SubmissionPage } from "@/lib/types";
 
 const calls = vi.hoisted(() => ({
   listMySubmissions: vi.fn(),
+  submissionLimits: vi.fn(),
 }));
 vi.mock("@/lib/config", () => ({ loadConfig: () => Promise.resolve({}) }));
 vi.mock("@/lib/api", async (importOriginal) => {
@@ -34,6 +35,8 @@ const PAGE: SubmissionPage = {
 
 beforeEach(() => {
   calls.listMySubmissions.mockReset();
+  calls.submissionLimits.mockReset();
+  calls.submissionLimits.mockResolvedValue({ max_context_bytes: 99614720 });
   // A filtered page matches fewer rows; the counts still cover everything.
   calls.listMySubmissions.mockImplementation(async ({ status }: { status?: string }) =>
     status ? { ...PAGE, total: 3 } : PAGE,
@@ -65,5 +68,20 @@ describe("MySubmissionsPage", () => {
     );
     expect(screen.getByRole("button", { name: "All Statuses (14)" })).toBeTruthy();
     await vi.waitFor(() => expect(screen.queryByText(/^Page \d+ of/)).toBeNull());
+  });
+
+  it("refuses a file over the server's per-upload cap before sending it", async () => {
+    render(
+      <MemoryRouter>
+        <MySubmissionsPage />
+      </MemoryRouter>,
+    );
+    await screen.findByText("Create Above and Beyond");
+    await vi.waitFor(() => expect(calls.submissionLimits).toHaveBeenCalled());
+    const pack = new File(["x"], "pack.tar.gz", { type: "application/gzip" });
+    Object.defineProperty(pack, "size", { value: 125829120 });
+    await userEvent.click(screen.getByRole("button", { name: "Submit New Modpack" }));
+    await userEvent.upload(await screen.findByLabelText(/Build Context/), pack);
+    expect(await screen.findByText("The file is 120 MB; one upload may be at most 95 MB.")).toBeTruthy();
   });
 });

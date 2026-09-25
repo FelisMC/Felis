@@ -1735,6 +1735,11 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
     return true;
   }
 
+  // GET /api/v1/me/submissions/limits — the Cloudflare-edge default.
+  if (isMeSubmissions && is("GET", ctx) && ctx.parts.length === 5 && ctx.parts[4] === "limits") {
+    sendJSON(ctx.res, 200, { max_context_bytes: 95 * 1024 * 1024 });
+    return true;
+  }
   // POST /api/v1/me/submissions
   if (isMeSubmissions && is("POST", ctx) && ctx.parts.length === 4) {
     const body = await readJSON<{ display_name?: string }>(ctx.req);

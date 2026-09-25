@@ -32,7 +32,7 @@
   "search_no_results_hint": "Try a different search term or filter.",
   "search_placeholder": "Search submissions...",
   "error_file_type": "Please upload a valid .tar.gz file.",
-  "error_file_size": "File exceeds the allowed size limit.",
+  "error_file_size": "The file is {{size}}; one upload may be at most {{limit}}.",
   "error_name_required": "Display name is required.",
   "error_file_required": "Build context file is required.",
   "field_context_ref": "Context Reference",

@@ -714,6 +714,8 @@ export const api = rejectingSync({
   },
 
   listMySubmissions: (params?: SubmissionListParams) => submissionPage("/me/submissions", params),
+  /** The per-upload context cap, checked before a file is sent. */
+  submissionLimits: () => request<{ max_context_bytes: number }>("GET", "/me/submissions/limits"),
 
   createSubmission: (displayName: string) =>
     request<Submission>("POST", "/me/submissions", { display_name: displayName }),

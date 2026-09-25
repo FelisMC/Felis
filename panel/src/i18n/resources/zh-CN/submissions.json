@@ -32,7 +32,7 @@
   "search_no_results_hint": "尝试更换搜索词或筛选条件。",
   "search_placeholder": "搜索提交记录...",
   "error_file_type": "请上传有效的 .tar.gz 压缩文件。",
-  "error_file_size": "文件超过了允许的大小限制。",
+  "error_file_size": "文件大小为 {{size}}，单次上传最多 {{limit}}。",
   "error_name_required": "必须填写显示名称。",
   "error_file_required": "必须上传构建上下文文件。",
   "field_context_ref": "构建上下文引用",

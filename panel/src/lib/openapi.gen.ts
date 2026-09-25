@@ -1827,6 +1827,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/submissions/limits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The per-upload build-context cap
+         * @description The effective [registry] context_max_bytes: 1 GiB by default, 95 MiB behind the Cloudflare edge (its proxy refuses bodies over 100 MB before they reach the API). The panel checks a file against it before upload.
+         */
+        get: operations["submissionLimits"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/submissions/{id}/context": {
         parameters: {
             query?: never;
@@ -1838,7 +1858,7 @@ export interface paths {
         put?: never;
         /**
          * Upload the modpack build context for your own pending submission (user side; user-directed lane over §16).
-         * @description The request body IS the raw gzip build context (context.tar.gz) — not JSON, not multipart — streamed to the platform-derived, id-namespaced location Kaniko reads via --context. The submitter is taken from the principal; a submission the caller does not own is reported as 404, so this endpoint cannot upload to or probe another user's submission. Only a pending_review submission accepts a context (409 otherwise); a wrong-format or oversize body is rejected with 400, and an upload that would push the caller past their per-user stored-context budget is refused with 403 before the excess is persisted. Returns 503 when the deployment's context store has no implemented upload transport.
+         * @description The request body IS the raw gzip build context (context.tar.gz) — not JSON, not multipart — streamed to the platform-derived, id-namespaced location Kaniko reads via --context. The submitter is taken from the principal; a submission the caller does not own is reported as 404, so this endpoint cannot upload to or probe another user's submission. Only a pending_review submission accepts a context (409 otherwise); a wrong-format or oversize body is rejected with 400 (the per-upload cap is [registry] context_max_bytes: 1 GiB by default and 95 MiB behind the Cloudflare edge, whose proxy refuses bodies over 100 MB with its own HTML 413 before they reach the API; GET /api/v1/me/submissions/limits reports the effective cap so a client can check a file before sending it), and an upload that would push the caller past their per-user stored-context budget is refused with 403 before the excess is persisted. Returns 503 when the deployment's context store has no implemented upload transport.
          */
         post: operations["uploadSubmissionContext"];
         delete?: never;
@@ -7156,6 +7176,30 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    submissionLimits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The cap. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: int64 */
+                        max_context_bytes: number;
+                    };
+                };
             };
             503: components["responses"]["ServiceUnavailable"];
         };

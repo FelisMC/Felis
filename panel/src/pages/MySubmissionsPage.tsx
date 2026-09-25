@@ -44,6 +44,7 @@ import type { BuildStatus, Submission, SubmissionStatus } from "@/lib/types";
 
 const PAGE_SIZE = 10;
 const SEARCH_DEBOUNCE_MS = 300;
+const DEFAULT_CONTEXT_LIMIT = 1024 * 1024 * 1024;
 
 // The linked build's outcome as shown in a row's expanded details. Colors mirror
 // the admin build page; the labels are player-facing, so they come from this
@@ -167,6 +168,12 @@ export function MySubmissionsPage() {
     validateAndSetFile(selectedFile);
   };
 
+  const [contextLimit, setContextLimit] = useState<number | null>(null);
+  useEffect(() => {
+    // A failed read keeps the 1 GiB default; the server still refuses past its cap.
+    api.submissionLimits().then((l) => setContextLimit(l.max_context_bytes), () => undefined);
+  }, []);
+
   const validateAndSetFile = (selectedFile: File | null) => {
     setError(null);
     if (!selectedFile) {
@@ -178,9 +185,10 @@ export function MySubmissionsPage() {
       setFile(null);
       return;
     }
-    const maxBytes = 1024 * 1024 * 1024; // 1 GiB limit
+    // The server's cap (95 MiB behind the Cloudflare edge); 1 GiB until it answers.
+    const maxBytes = contextLimit ?? DEFAULT_CONTEXT_LIMIT;
     if (selectedFile.size > maxBytes) {
-      setError(t("error_file_size"));
+      setError(t("error_file_size", { size: formatBytes(selectedFile.size), limit: formatBytes(maxBytes) }));
       setFile(null);
       return;
     }
