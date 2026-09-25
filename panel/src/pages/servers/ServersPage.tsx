@@ -232,7 +232,7 @@ export function ServersPage() {
           )}
 
           {/* Stats Cards in a full grid row */}
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
             <StatCard icon={Server} label={t("fleet_stat_total")} value={stats.total} />
             <StatCard
               icon={Play}
@@ -343,13 +343,25 @@ export function ServersPage() {
             />
           ) : (
             <>
-              {/* Clean Table Card */}
-              <Card className="overflow-hidden border border-border/80">
+              {/* Cards below xl (two per row from md); the table needs about
+                  1000px of content width for all its columns, which the page
+                  only has from xl beside the sidebar. */}
+              <ul className="grid gap-3 md:grid-cols-2 xl:hidden">
+                {paged.map((s) => (
+                  <ServerMobileCard
+                    key={s.name}
+                    server={s}
+                    cfg={cfg}
+                    isAdmin={isAdmin}
+                    onChanged={reload}
+                  />
+                ))}
+              </ul>
+              <Card className="hidden overflow-hidden border border-border/80 xl:block">
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[56rem] border-collapse text-sm">
+                  <table className="w-full border-collapse text-sm">
                     <thead>
-                      <tr className="border-b border-border bg-muted/40 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
-                        <th className="px-4 py-2.5 font-medium">{t("fleet_col_status")}</th>
+                      <tr className="whitespace-nowrap border-b border-border bg-muted/40 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
                         <th className="px-4 py-2.5 font-medium">{t("fleet_col_server")}</th>
                         {isAdmin && <th className="px-4 py-2.5 font-medium">{t("fleet_col_owner")}</th>}
                         <th className="px-4 py-2.5 font-medium">{t("fleet_col_players")}</th>
@@ -391,18 +403,19 @@ export function ServersPage() {
   );
 }
 
-function ServerRow({
+// ServerActions is the action cluster of one server — claim, start/stop, console —
+// shared by the desktop table row and the phone card so both offer the same things.
+function ServerActions({
   server,
-  cfg,
   isAdmin,
   onChanged,
+  className,
 }: {
   server: UnifiedServer;
-  cfg: RuntimeConfig;
   isAdmin: boolean;
   onChanged: () => void;
+  className?: string;
 }) {
-  const { t } = useTranslation("ops");
   const { t: ts } = useTranslation("servers");
   const [busy, setBusy] = useState<null | "claim">(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -421,152 +434,255 @@ function ServerRow({
     }
   }
 
-  const live = isLive(server.phase);
-  const host = server.subdomain ? hostFor(server.subdomain, cfg) : "";
-  const endpoint = server.ready && server.endpointAddress ? server.endpointAddress : null;
+  if (server.system) {
+    // A system service carries a reserved name that every per-server route
+    // rejects, so offer no actions — just the honest label.
+    return (
+      <span className="text-xs text-muted-foreground/70" title={ts("system_service_hint")}>
+        {ts("system_service")}
+      </span>
+    );
+  }
 
+  const live = isLive(server.phase);
   return (
-    <>
-      <tr className="border-b border-border/50 transition-colors last:border-0 hover:bg-muted/40">
-        <td className="px-4 py-3 align-middle text-left">
-          <PhaseBadge phase={server.phase} />
-        </td>
-        <td className="px-4 py-3 align-middle text-left">
-          <div className="font-medium text-foreground">{server.name}</div>
-          {host && (
-            <a
-              href={`https://${host}`}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+    <div className={cn("flex flex-col items-end gap-1", className)}>
+      <div className="flex flex-wrap items-start justify-end gap-2 xl:flex-nowrap">
+        {server.claimable && !server.owned ? (
+          <>
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={busy !== null}
+              onClick={() => setConfirmOpen(true)}
+              className="text-primary hover:text-primary hover:bg-primary/5 border-primary/20"
             >
-              {host}
-              <ExternalLink className="h-3 w-3" />
-            </a>
-          )}
-        </td>
-        {isAdmin && (
-          <td className="px-4 py-3 align-middle text-left">
-            {server.system ? (
-              <span className="text-xs text-muted-foreground/70" title={ts("system_service_hint")}>
-                {ts("system_service")}
-              </span>
-            ) : server.owner ? (
-              <span className="inline-flex max-w-[16rem] items-center gap-1.5 truncate">
-                <UserRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                <span className="truncate" title={server.owner}>
-                  {server.owner}
-                </span>
-              </span>
-            ) : (
-              <span className="text-xs text-muted-foreground/70">{t("fleet_unclaimed")}</span>
-            )}
-          </td>
-        )}
-        <td className="px-4 py-3 align-middle tabular-nums text-left">
-          {live ? (
-            <span className="inline-flex items-center gap-1.5">
-              <Users className="h-3.5 w-3.5 text-muted-foreground" />
-              {server.playersOnline}
-              <span className="text-muted-foreground">/ {server.playersMax}</span>
-            </span>
-          ) : (
-            <span className="text-muted-foreground">—</span>
-          )}
-        </td>
-        <td className="px-4 py-3 align-middle text-left">
-          {server.autostartPolicy ? (
-            <span className="text-xs text-muted-foreground">
-              {t(POLICY_KEY[server.autostartPolicy])}
-            </span>
-          ) : (
-            <span className="text-muted-foreground">—</span>
-          )}
-        </td>
-        <td className="px-4 py-3 align-middle text-left">
-          {endpoint ? (
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
-              {endpoint}
-            </code>
-          ) : (
-            <span className="text-xs text-muted-foreground/70">{t("fleet_endpoint_idle")}</span>
-          )}
-        </td>
-        <td className="px-4 py-3 align-middle">
-          <div className="flex items-center justify-end gap-2">
-            {server.system ? (
-              // A system service carries a reserved name that every per-server route
-              // rejects, so offer no actions — just the honest label.
-              <span className="text-xs text-muted-foreground/70" title={ts("system_service_hint")}>
-                {ts("system_service")}
-              </span>
-            ) : server.claimable && !server.owned ? (
-              <>
-                <Button
-                  size="sm"
-                  variant="outline"
+              <Hand /> {ts("claim")}
+            </Button>
+            <Button size="sm" variant="outline" disabled>
+              <Terminal /> {ts("console")}
+            </Button>
+
+            <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+              <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle>{ts("claim_server_title")}</DialogTitle>
+                  <DialogDescription>
+                    {ts("claim_server_desc", { name: server.name })}
+                  </DialogDescription>
+                </DialogHeader>
+                <ConfirmFooter
+                  onCancel={() => setConfirmOpen(false)}
+                  onConfirm={async () => {
+                    await act("claim", () => api.claim(server.name));
+                    setConfirmOpen(false);
+                  }}
                   disabled={busy !== null}
-                  onClick={() => setConfirmOpen(true)}
-                  className="text-primary hover:text-primary hover:bg-primary/5 border-primary/20"
-                >
-                  <Hand /> {ts("claim")}
-                </Button>
-                <Button size="sm" variant="outline" disabled>
+                  loading={busy === "claim"}
+                  cancelLabel={ts("access_cancel")}
+                  confirmLabel={ts("claim")}
+                  confirmVariant="default"
+                />
+              </DialogContent>
+            </Dialog>
+          </>
+        ) : (
+          <>
+            <PowerButton
+              name={server.name}
+              live={live}
+              playersOnline={server.playersOnline}
+              playerCountUnknown={server.playerCountUnknown}
+              onChanged={onChanged}
+            />
+            {(server.owned || isAdmin) && (
+              <Link to={`/servers/${server.name}`}>
+                <Button size="sm" variant="outline">
                   <Terminal /> {ts("console")}
                 </Button>
+              </Link>
+            )}
+          </>
+        )}
+      </div>
+      {error && (
+        <p role="alert" className="max-w-xs text-right text-xs text-destructive">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
 
-                <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-                  <DialogContent className="sm:max-w-md">
-                    <DialogHeader>
-                      <DialogTitle>{ts("claim_server_title")}</DialogTitle>
-                      <DialogDescription>
-                        {ts("claim_server_desc", { name: server.name })}
-                      </DialogDescription>
-                    </DialogHeader>
-                    <ConfirmFooter
-                      onCancel={() => setConfirmOpen(false)}
-                      onConfirm={async () => {
-                        await act("claim", () => api.claim(server.name));
-                        setConfirmOpen(false);
-                      }}
-                      disabled={busy !== null}
-                      loading={busy === "claim"}
-                      cancelLabel={ts("access_cancel")}
-                      confirmLabel={ts("claim")}
-                      confirmVariant="default"
-                    />
-                  </DialogContent>
-                </Dialog>
-              </>
-            ) : (
+function HostLink({ host }: { host: string }) {
+  return (
+    <a
+      href={`https://${host}`}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex min-w-0 max-w-full items-center gap-1 text-xs text-muted-foreground hover:text-foreground md:max-w-[15rem]"
+    >
+      <span className="truncate">{host}</span>
+      <ExternalLink className="h-3 w-3 shrink-0" />
+    </a>
+  );
+}
+
+function OwnerLabel({ server }: { server: UnifiedServer }) {
+  const { t } = useTranslation("ops");
+  const { t: ts } = useTranslation("servers");
+  if (server.system) {
+    return (
+      <span className="text-xs text-muted-foreground/70" title={ts("system_service_hint")}>
+        {ts("system_service")}
+      </span>
+    );
+  }
+  if (server.owner) {
+    return (
+      <span className="inline-flex min-w-0 max-w-full items-center gap-1.5 md:max-w-[13rem]">
+        <UserRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+        <span className="truncate" title={server.owner}>
+          {server.owner}
+        </span>
+      </span>
+    );
+  }
+  return <span className="text-xs text-muted-foreground/70">{t("fleet_unclaimed")}</span>;
+}
+
+function PlayersLabel({ server }: { server: UnifiedServer }) {
+  if (!isLive(server.phase)) return <span className="text-muted-foreground">—</span>;
+  return (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap tabular-nums">
+      <Users className="h-3.5 w-3.5 text-muted-foreground" />
+      {server.playersOnline}
+      <span className="text-muted-foreground">/ {server.playersMax}</span>
+    </span>
+  );
+}
+
+function EndpointLabel({ server }: { server: UnifiedServer }) {
+  const { t } = useTranslation("ops");
+  const endpoint = server.ready && server.endpointAddress ? server.endpointAddress : null;
+  if (!endpoint) {
+    return <span className="text-xs text-muted-foreground/70">{t("fleet_endpoint_idle")}</span>;
+  }
+  return (
+    <code className="break-all rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground xl:whitespace-nowrap xl:break-normal">
+      {endpoint}
+    </code>
+  );
+}
+
+function ServerRow({
+  server,
+  cfg,
+  isAdmin,
+  onChanged,
+}: {
+  server: UnifiedServer;
+  cfg: RuntimeConfig;
+  isAdmin: boolean;
+  onChanged: () => void;
+}) {
+  const { t } = useTranslation("ops");
+  const host = server.subdomain ? hostFor(server.subdomain, cfg) : "";
+
+  return (
+    <tr className="border-b border-border/50 transition-colors last:border-0 hover:bg-muted/40">
+      <td className="px-4 py-3 align-middle text-left">
+        <div className="flex items-center gap-2">
+          <span className="font-medium text-foreground">{server.name}</span>
+          <PhaseBadge phase={server.phase} />
+        </div>
+        {host && <HostLink host={host} />}
+      </td>
+      {isAdmin && (
+        <td className="px-4 py-3 align-middle text-left">
+          <OwnerLabel server={server} />
+        </td>
+      )}
+      <td className="px-4 py-3 align-middle text-left">
+        <PlayersLabel server={server} />
+      </td>
+      <td className="px-4 py-3 align-middle text-left">
+        {server.autostartPolicy ? (
+          <span className="whitespace-nowrap text-xs text-muted-foreground">
+            {t(POLICY_KEY[server.autostartPolicy])}
+          </span>
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        )}
+      </td>
+      <td className="px-4 py-3 align-middle text-left">
+        <EndpointLabel server={server} />
+      </td>
+      <td className="px-4 py-3 align-middle">
+        <ServerActions server={server} isAdmin={isAdmin} onChanged={onChanged} />
+      </td>
+    </tr>
+  );
+}
+
+// ServerMobileCard is one server below xl, where the table's columns would not
+// fit: name and phase on top, the facts as a short list, the actions at the
+// bottom within thumb reach.
+function ServerMobileCard({
+  server,
+  cfg,
+  isAdmin,
+  onChanged,
+}: {
+  server: UnifiedServer;
+  cfg: RuntimeConfig;
+  isAdmin: boolean;
+  onChanged: () => void;
+}) {
+  const { t } = useTranslation("ops");
+  const host = server.subdomain ? hostFor(server.subdomain, cfg) : "";
+
+  return (
+    <li className="flex">
+      <Card className="flex flex-1 flex-col border border-border/80">
+        <CardContent className="flex flex-1 flex-col gap-3 p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="truncate font-medium text-foreground">{server.name}</div>
+              {host && <HostLink host={host} />}
+            </div>
+            <PhaseBadge phase={server.phase} />
+          </div>
+          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
+            {isAdmin && (
               <>
-                <PowerButton
-                  name={server.name}
-                  live={live}
-                  playersOnline={server.playersOnline}
-                  playerCountUnknown={server.playerCountUnknown}
-                  onChanged={onChanged}
-                />
-                {(server.owned || isAdmin) && (
-                  <Link to={`/servers/${server.name}`}>
-                    <Button size="sm" variant="outline">
-                      <Terminal /> {ts("console")}
-                    </Button>
-                  </Link>
-                )}
+                <dt className="text-xs text-muted-foreground">{t("fleet_col_owner")}</dt>
+                <dd className="min-w-0">
+                  <OwnerLabel server={server} />
+                </dd>
               </>
             )}
+            <dt className="text-xs text-muted-foreground">{t("fleet_col_players")}</dt>
+            <dd>
+              <PlayersLabel server={server} />
+            </dd>
+            {server.autostartPolicy && (
+              <>
+                <dt className="text-xs text-muted-foreground">{t("fleet_col_policy")}</dt>
+                <dd className="text-xs">{t(POLICY_KEY[server.autostartPolicy])}</dd>
+              </>
+            )}
+            <dt className="text-xs text-muted-foreground">{t("fleet_col_endpoint")}</dt>
+            <dd className="min-w-0">
+              <EndpointLabel server={server} />
+            </dd>
+          </dl>
+          <div className="mt-auto border-t border-border/50 pt-3">
+            <ServerActions server={server} isAdmin={isAdmin} onChanged={onChanged} />
           </div>
-        </td>
-      </tr>
-      {error && (
-        <tr className="bg-destructive/5">
-          <td colSpan={isAdmin ? 7 : 6} className="px-4 py-1.5 text-xs text-destructive text-left">
-            {error}
-          </td>
-        </tr>
-      )}
-    </>
+        </CardContent>
+      </Card>
+    </li>
   );
 }
 

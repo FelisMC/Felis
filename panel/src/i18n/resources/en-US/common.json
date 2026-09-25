@@ -30,5 +30,6 @@
   "not_found_title": "Page not found",
   "not_found_body": "The name in the link is not valid, or the page does not exist.",
   "connection_lost": "Can't reach Felis: the network is down, or your Cloudflare Access sign-in expired. This clears by itself once the network is back; an expired Access sign-in needs a page reload.",
-  "reload_page": "Reload page"
+  "reload_page": "Reload page",
+  "open_menu": "Open menu"
 }

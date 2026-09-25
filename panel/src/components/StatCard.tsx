@@ -14,23 +14,25 @@ export interface StatCardProps {
   valueClass?: string;
 }
 
-const DEFAULT_ICON_CONTAINER = "rounded-md p-2 bg-muted/30 text-muted-foreground";
+const DEFAULT_ICON_CONTAINER = "shrink-0 rounded-md p-1.5 sm:p-2 bg-muted/30 text-muted-foreground";
 
 export function StatCard({ icon: Icon, label, value, accentClass, accentColor, valueClass }: StatCardProps) {
   const containerStyle = accentColor ? { backgroundColor: `${accentColor}26`, color: accentColor } : undefined;
   return (
     <Card>
-      <CardContent className="flex items-center gap-3 p-4">
+      {/* Two cards share a phone's width, so padding, icon and figure step down
+          below sm to keep a value like "50 / 240" whole. */}
+      <CardContent className="flex items-center gap-2.5 p-3 sm:gap-3 sm:p-4">
         <div
           className={cn(DEFAULT_ICON_CONTAINER, !accentColor && accentClass)}
           style={containerStyle}
         >
-          <Icon className="h-5 w-5" />
+          <Icon className="h-4 w-4 sm:h-5 sm:w-5" />
         </div>
         <div className="min-w-0 flex-1">
           <div
             className={cn(
-              "text-2xl font-bold font-mono leading-none truncate text-foreground",
+              "text-xl sm:text-2xl font-bold font-mono leading-none truncate text-foreground",
               valueClass,
             )}
             title={typeof value === "string" ? value : undefined}

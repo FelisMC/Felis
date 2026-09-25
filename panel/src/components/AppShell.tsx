@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
-import { Cat, Globe, Sun, Moon, LogOut, WifiOff } from "lucide-react";
+import { Cat, Globe, Sun, Moon, LogOut, WifiOff, Menu, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import * as SelectPrimitive from "@radix-ui/react-select";
+import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { cn } from "@/lib/utils";
 import { useTier } from "@/lib/tier";
 import { visibleSections, type NavSection } from "@/lib/nav";
@@ -12,7 +13,15 @@ import { api, CONNECTION_EVENT, isConnectionLost } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 
-function SectionGroup({ section, isFirst }: { section: NavSection; isFirst: boolean }) {
+function SectionGroup({
+  section,
+  isFirst,
+  onNavigate,
+}: {
+  section: NavSection;
+  isFirst: boolean;
+  onNavigate?: () => void;
+}) {
   const { t } = useTranslation("navigation");
 
   return (
@@ -34,6 +43,7 @@ function SectionGroup({ section, isFirst }: { section: NavSection; isFirst: bool
           key={item.to}
           to={item.to}
           end={item.end}
+          onClick={onNavigate}
           className={({ isActive }) =>
             cn(
               "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
@@ -95,7 +105,7 @@ function UserStrip() {
         type="button"
         onClick={signOut}
         disabled={signingOut || !identity}
-        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-background hover:text-destructive border border-transparent hover:border-border/50 focus:outline-none transition-all active:scale-95 disabled:opacity-50"
+        className="flex h-10 w-10 md:h-7 md:w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-background hover:text-destructive border border-transparent hover:border-border/50 focus:outline-none transition-all active:scale-95 disabled:opacity-50"
         aria-label={t("sign_out")}
         title={t("sign_out")}
       >
@@ -168,6 +178,60 @@ function ConnectionBanner() {
   );
 }
 
+// MobileNav is the phone-width way into every page: the sidebar is md-only, so
+// below md a menu button opens the same sections (and the same sign-out strip)
+// as a drawer from the left. Following a link closes it; so does a route change
+// from anywhere else (back button, a link inside the page).
+function MobileNav({ sections }: { sections: NavSection[] }) {
+  const { t } = useTranslation("common");
+  const { pathname } = useLocation();
+  const [open, setOpen] = useState(false);
+  useEffect(() => setOpen(false), [pathname]);
+
+  return (
+    <DialogPrimitive.Root open={open} onOpenChange={setOpen}>
+      <DialogPrimitive.Trigger
+        className={FOOT_ICON_BTN}
+        aria-label={t("open_menu")}
+        title={t("open_menu")}
+      >
+        <Menu className="h-4 w-4" />
+      </DialogPrimitive.Trigger>
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 md:hidden" />
+        <DialogPrimitive.Content
+          aria-describedby={undefined}
+          className="fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col border-r border-border bg-card p-4 shadow-xl duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:slide-out-to-left data-[state=open]:slide-in-from-left md:hidden"
+        >
+          <div className="mb-5 flex items-center justify-between px-2">
+            <DialogPrimitive.Title className="flex items-center gap-2 text-lg font-semibold tracking-tight">
+              <Cat className="h-6 w-6 text-primary" />
+              {t("brand_name")}
+            </DialogPrimitive.Title>
+            <DialogPrimitive.Close className={FOOT_ICON_BTN} aria-label={t("close_sr")}>
+              <X className="h-4 w-4" />
+            </DialogPrimitive.Close>
+          </div>
+          <nav className="flex flex-col overflow-y-auto">
+            {sections.map((section, i) => (
+              <SectionGroup
+                key={section.id}
+                section={section}
+                isFirst={i === 0}
+                onNavigate={() => setOpen(false)}
+              />
+            ))}
+          </nav>
+          <div className="mt-auto border-t border-border/50 pt-3">
+            {/* The strip's sign-out button grows to a thumb-sized target below md. */}
+            <UserStrip />
+          </div>
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
+  );
+}
+
 export function AppShell() {
   const { isAdmin, isOwner } = useTier();
   const { pathname } = useLocation();
@@ -222,8 +286,9 @@ export function AppShell() {
 
       <div className="flex min-w-0 flex-1 flex-col h-full overflow-y-auto">
         <ConnectionBanner />
-        <header className="flex h-14 items-center justify-between border-b border-border px-4 md:hidden">
+        <header className="flex h-14 shrink-0 items-center justify-between border-b border-border px-4 md:hidden">
           <div className="flex items-center gap-2">
+            <MobileNav sections={sections} />
             <Cat className="h-5 w-5 text-primary" />
             <span className="font-semibold">{t("common:brand_name")}</span>
           </div>
@@ -232,7 +297,7 @@ export function AppShell() {
             <ThemeToggle />
           </div>
         </header>
-        <main className="flex flex-1 flex-col p-6">
+        <main className="flex flex-1 flex-col p-4 md:p-6">
           <div className="mx-auto flex w-full max-w-8xl flex-1 flex-col gap-6">
             {/* A crash on one page leaves the navigation usable; moving to
                 another route clears it. */}

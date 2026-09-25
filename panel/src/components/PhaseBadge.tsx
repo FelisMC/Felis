@@ -55,7 +55,7 @@ export function phaseVariant(phase: Phase): BadgeVariant {
 export function PhaseBadge({ phase }: { phase: Phase }) {
   const { t } = useTranslation();
   return (
-    <Badge variant={phaseVariant(phase)} className="gap-1.5">
+    <Badge variant={phaseVariant(phase)} className="gap-1.5 whitespace-nowrap">
       <span
         className={cn(
           "h-1.5 w-1.5 rounded-full",

@@ -38,6 +38,8 @@ import { formatBytes, formatRelative, formatAbsolute, isExpired } from "@/lib/fo
 import { cn } from "@/lib/utils";
 import type { BackupView, ServerJob } from "@/lib/types";
 
+const CELL = "whitespace-nowrap md:px-4 md:py-3.5";
+
 /** BackupRow is one backup in the table, with its own restore action. `isLatest`
  *  marks the row a restore with no pick recovers: the newest one that is not
  *  corrupt, which is what the backend's LatestBackup selects. Under the reason it
@@ -72,9 +74,12 @@ function BackupRow({
       ? t("reason_pre_restore")
       : t("reason_label", { reason: b.reason });
 
+  // Below md the row stops being a table row: the when/why block takes the full
+  // width, size and expiry follow on one line and the restore button sits at the
+  // right, so a phone never has to scroll sideways to reach it.
   return (
-    <tr className="hover:bg-muted/30 transition-colors">
-      <td className="px-4 py-3 whitespace-nowrap">
+    <tr className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-3 transition-colors hover:bg-muted/30 md:table-row md:p-0">
+      <td className="w-full md:w-auto md:px-4 md:py-3 md:whitespace-nowrap">
         <div className="flex flex-col gap-0.5">
           <div className="flex items-center gap-2">
             <span
@@ -96,19 +101,19 @@ function BackupRow({
           <IntegrityNote b={b} now={now} locale={locale} />
         </div>
       </td>
-      <td className="px-4 py-3.5 whitespace-nowrap text-muted-foreground">
+      <td className={cn(CELL, "text-muted-foreground")}>
         <span className="flex items-center gap-1.5">
           <HardDrive className="h-3.5 w-3.5 shrink-0" />
           {formatBytes(b.size_bytes)}
         </span>
       </td>
-      <td className="px-4 py-3.5 whitespace-nowrap">
+      <td className={CELL}>
         <span className={cn("text-muted-foreground", expired && "font-medium text-destructive")}>
           {expired ? t("expired") : t("expires_in", { when: formatRelative(b.expires_at, now, locale) })}
         </span>
       </td>
       {showOwner && (
-        <td className="px-4 py-3.5 whitespace-nowrap text-muted-foreground">
+        <td className={cn(CELL, "min-w-0 text-muted-foreground")}>
           {b.former_owner ? (
             <span className="flex items-center gap-1">
               <UserMinus className="h-3 w-3 shrink-0" />
@@ -119,7 +124,7 @@ function BackupRow({
           )}
         </td>
       )}
-      <td className="px-4 py-3.5 whitespace-nowrap text-right">
+      <td className={cn(CELL, "ml-auto text-right")}>
         {b.corrupt ? (
           <span className="text-xs text-destructive/70 font-medium px-3 py-1.5">
             {t("corrupt_short")}
@@ -644,8 +649,8 @@ export function ServerBackups() {
             <>
               <Card className="overflow-hidden">
                 <div className="overflow-x-auto">
-                  <table className="w-full border-collapse text-sm">
-                    <thead>
+                  <table className="block w-full border-collapse text-sm md:table">
+                    <thead className="hidden md:table-header-group">
                       <tr className="border-b border-border bg-muted/40 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
                         <th className="px-4 py-2.5 font-medium">{t("col_created")}</th>
                         <th className="px-4 py-2.5 font-medium">{t("col_size")}</th>
@@ -654,7 +659,7 @@ export function ServerBackups() {
                         <th className="px-4 py-2.5 text-right font-medium">{t("col_actions")}</th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-border">
+                    <tbody className="block divide-y divide-border md:table-row-group">
                       {all.map((b) => (
                         <BackupRow
                           key={b.id}
