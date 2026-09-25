@@ -39,6 +39,23 @@ cloudflared is left as it is, see §4):
 32-bit hosts are not supported: there is no k3s, JRE or Go build the installer will fetch
 for them.
 
+Two things the host must keep for as long as the install lives:
+
+- **Its address.** The install is bound to the IPv4 address it was made on (the
+  database connection string, `pg_hba.conf`, the network policies, the panel
+  certificate and the default nip.io domain all carry it). Give the host a static
+  address or a DHCP reservation before installing; the installer warns when the address
+  is a lease, and the watchdog reports `host-address` when the host loses it
+  (troubleshooting §13c). The k3s node name is pinned at install time, so a hostname
+  change is harmless.
+- **A synchronized clock.** The installer turns NTP on (chrony where nothing else can)
+  and the watchdog reports a clock that stays unsynchronized. Allow outbound UDP 123,
+  or set `FELIS_MANAGE_TIME_SYNC=0` on a host whose clock is kept another way.
+
+The installer also makes the system journal persistent (capped at
+`FELIS_JOURNAL_MAX_USE`, default 1G; `FELIS_MANAGE_JOURNAL=0` skips it) and writes the
+admin kubeconfig `/etc/rancher/k3s/k3s.yaml` root-only: run `sudo k3s kubectl`.
+
 One node is the whole supported shape. A world volume is a ReadWriteOnce claim on the
 node's local-path storage, so a game server's pod is pinned to the node that first
 scheduled it and cannot move when that node fails; the operator and felis-api each run

@@ -8,7 +8,9 @@ see to the code path that emitted it.
 
 ## How to read this document
 
-Each entry is **symptom → likely cause → where to look → fix**. Signals are
+Each entry is **symptom → likely cause → where to look → fix**. The `kubectl`
+commands run as root on the node (`sudo -i`, or `sudo k3s kubectl …`): the admin
+kubeconfig `/etc/rancher/k3s/k3s.yaml` is readable by root only (§13c). Signals are
 graded for how far the in-repo Go test suite proves the behaviour:
 
 - **[GO-TESTED]** — a hermetic `*_test.go` exercises this exact path; the
@@ -1331,6 +1333,48 @@ the registry), or for a single image
 deliberate second copy on the node; treat it as the recovery path, not as free
 space.
 
+## 13c. The host's address, name or clock changed
+
+An install is bound to the address it was made on. `bootstrap.sh` writes that
+address into the database connection string, `pg_hba.conf`, the network
+policies, the panel certificate and the default `<ip>.nip.io` root domain, and
+nothing re-addresses a live install. When the host loses the address (a DHCP
+lease that came back different, a moved VM), felis-api cannot reach PostgreSQL
+and the panel stops answering on its old name. The watchdog reports it as
+`host-address` (critical, after 5 minutes). The installer warns at install time
+when the address is a DHCP lease.
+
+Remedy: give the host its old address back, either as a DHCP reservation on
+the router or as a static address (`nmcli con mod <con> ipv4.method manual
+ipv4.addresses <ip>/<prefix> ipv4.gateway <gw> ipv4.dns <dns> && nmcli con up
+<con>` on Rocky), then restart felis-api (`sudo k3s kubectl -n felis rollout restart
+deploy/felis-api`) and the proxy (`sudo systemctl restart felis-velocity`). Moving an install
+to a new address is a reinstall onto a restored backup (docs/operations.md §5).
+
+The node **name** is pinned. Every local-path volume (worlds, registry,
+uploads, backups) is bound to its node by name, and k3s takes the name from the
+hostname unless told otherwise, so renaming the host used to bring k3s back as
+a second, empty node with every volume Pending on the old one. The installer
+pins the name in `/etc/rancher/k3s/config.yaml.d/50-felis.yaml`
+(`node-name:`); a hostname change is then harmless. Check the pin with `sudo
+k3s kubectl get node -o jsonpath='{.items[0].metadata.annotations.k3s\.io/node-args}'`.
+That file also sets `write-kubeconfig-mode: "0600"`: the admin kubeconfig
+`/etc/rancher/k3s/k3s.yaml` is cluster-admin and readable by root only, so
+use `sudo k3s kubectl` (or `sudo -E kubectl`).
+
+The **clock** must be kept by NTP. Sign-in codes and sessions expire by it,
+S3 refuses off-site uploads signed more than 15 minutes off, and certificate
+checks fail on a clock far off. The installer turns NTP on (`timedatectl
+set-ntp true`, installing chrony where there is no client to enable) unless
+`FELIS_MANAGE_TIME_SYNC=0`. The watchdog reports an unsynchronized clock as
+`clock` (warning, after 30 minutes). Check with `timedatectl` (want `System
+clock synchronized: yes` and `NTP service: active`) and `chronyc sources`;
+a firewall that drops outbound UDP 123 keeps it unsynchronized.
+
+The system journal is persistent (`/etc/systemd/journald.conf.d/50-felis.conf`,
+capped by `FELIS_JOURNAL_MAX_USE`, default 1G), so `journalctl -b -1` shows the
+boot before a reboot.
+
 ---
 
 ## 14. Health alerts, and metrics for diagnosis (spec §23)
@@ -1359,6 +1403,8 @@ Every two minutes the host checks:
 | Newest control-plane database backup over 26h old, or none (§16) | 10 min | critical |
 | A watched filesystem below 15% free (below 5%: critical) | 15 min (5 min) | warning |
 | Host memory available below 10% | 15 min | warning |
+| The host no longer holds the address the install was made on (§13c) | 5 min | critical |
+| The system clock is not synchronized by NTP (§13c) | 30 min | warning |
 
 How it mails:
 
@@ -1388,8 +1434,9 @@ A healthy run logs `every check passed`. Otherwise it logs one line per
 finding, and the mail's subject once one is sent.
 
 A `-dry-run` from a shell uses the command's defaults, and those do not include
-the game-proxy check. The unit carries `-proxy-addr 127.0.0.1:<game port>` and
-the disk list the install chose. `systemctl cat felis-watchdog` shows both.
+the game-proxy or the address check. The unit carries `-proxy-addr
+127.0.0.1:<game port>`, `-node-ip <install address>` and the disk list the
+install chose. `systemctl cat felis-watchdog` shows them.
 
 ### Metrics
 

@@ -104,6 +104,13 @@
 #                     registry, uploads and world-archive PVCs request on first install
 #                     (defaults: 10Gi, 5Gi, 10Gi). An existing claim keeps its size; on
 #                     k3s local-path the number is not enforced, see troubleshooting §9
+#   FELIS_MANAGE_TIME_SYNC 0 leaves the host's clock alone; by default the installer
+#                     turns NTP on (installing chrony when nothing can) and waits for it
+#                     to synchronize (default: 1)
+#   FELIS_MANAGE_JOURNAL 0 leaves journald alone; by default the installer makes the
+#                     system journal persistent so logs survive a reboot (default: 1)
+#   FELIS_JOURNAL_MAX_USE the persistent journal's size cap, journald's SystemMaxUse
+#                     written <n>K|M|G (default: 1G)
 #   PKG_LOCK_TIMEOUT seconds to wait for package-manager locks (default: 900)
 #   APT_LOCK_TIMEOUT legacy alias for PKG_LOCK_TIMEOUT
 set -Eeuo pipefail
@@ -245,6 +252,9 @@ CLOUDFLARED_BIN=/usr/local/bin/cloudflared
 # pins both. An installed k3s moves only under FELIS_UPGRADE_DEPS=1.
 FELIS_K3S_VERSION="${FELIS_K3S_VERSION:-v1.36.4+k3s1}"
 FELIS_UPGRADE_DEPS="${FELIS_UPGRADE_DEPS:-0}"
+FELIS_MANAGE_TIME_SYNC="${FELIS_MANAGE_TIME_SYNC:-1}"
+FELIS_MANAGE_JOURNAL="${FELIS_MANAGE_JOURNAL:-1}"
+FELIS_JOURNAL_MAX_USE="${FELIS_JOURNAL_MAX_USE:-1G}"
 # The in-cluster registry's image, by digest. It must equal platform.defaultRegistryImage
 # (internal/platform/identities.go, TestBootstrapPinsTheRegistryImage): the renderer puts
 # that ref in the Deployment, and this script caches and pins the same ref in containerd.
@@ -381,6 +391,17 @@ K3S_BIN="${K3S_BIN_DIR}/k3s"
 # (not just the literal path) so bootstrap_test.sh can point the writer at a
 # scratch file.
 K3S_REGISTRIES_FILE="/etc/rancher/k3s/registries.yaml"
+# The installer's k3s settings (write_k3s_config), a drop-in k3s reads after any
+# config.yaml the operator keeps. The unit, the admin kubeconfig and the kubelet's
+# client certificate are variables for the same reason as the file above.
+K3S_CONFIG_DROPIN="/etc/rancher/k3s/config.yaml.d/50-felis.yaml"
+K3S_UNIT_FILE="/etc/systemd/system/k3s.service"
+K3S_KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
+K3S_KUBELET_CERT="/var/lib/rancher/k3s/agent/client-kubelet.crt"
+# ensure_persistent_journal's drop-in, and the directory journald creates once it
+# stores the journal persistently.
+JOURNALD_DROPIN="/etc/systemd/journald.conf.d/50-felis.conf"
+JOURNAL_DIR="/var/log/journal"
 APT_LOCK_FILES=(
   /var/lib/dpkg/lock-frontend
   /var/lib/dpkg/lock
@@ -500,6 +521,10 @@ restore_previous_host_binary() { # exit-status
 
 remember_temp() { TEMP_PATHS+=("$1"); }
 remember_container() { DOCKER_CONTAINERS+=("$1"); }
+# Gives a file the SELinux label its path calls for, on hosts that have SELinux. It
+# repairs files earlier installers wrote under /tmp and moved into place, which kept
+# user_tmp_t (a confined daemon is then denied them).
+restore_label() { if command -v restorecon >/dev/null 2>&1; then restorecon "$1" || true; fi; }
 
 trap 'on_error "$LINENO" "$?"' ERR
 trap cleanup EXIT
@@ -768,6 +793,20 @@ validate_settings() {
     0|1) ;;
     *) die "FELIS_UPGRADE_DEPS must be 0 or 1 (got '${FELIS_UPGRADE_DEPS}')" ;;
   esac
+  case "$FELIS_MANAGE_TIME_SYNC" in
+    0|1) ;;
+    *) die "FELIS_MANAGE_TIME_SYNC must be 0 or 1 (got '${FELIS_MANAGE_TIME_SYNC}')" ;;
+  esac
+  case "$FELIS_MANAGE_JOURNAL" in
+    0|1) ;;
+    *) die "FELIS_MANAGE_JOURNAL must be 0 or 1 (got '${FELIS_MANAGE_JOURNAL}')" ;;
+  esac
+  # Stripping the unit off a size with none leaves it whole, which the first arm catches.
+  local journal_n="${FELIS_JOURNAL_MAX_USE%[KMG]}"
+  case "$journal_n" in
+    "$FELIS_JOURNAL_MAX_USE"|""|0*|*[!0-9]*)
+      die "FELIS_JOURNAL_MAX_USE must be written <n>K, <n>M or <n>G (got '${FELIS_JOURNAL_MAX_USE}')" ;;
+  esac
 }
 
 # version_newer reports whether version $1 sorts after $2 (a leading v is ignored).
@@ -895,6 +934,20 @@ detect_node_ip() {
   fi
 }
 
+# warn_dynamic_node_ip warns when NODE_IP is a DHCP lease. The address is written into
+# the database connection string, pg_hba, the network policies, the panel certificate
+# and the default nip.io domain, and nothing re-addresses a live install, so a lease
+# that later comes back different takes the whole platform down (the watchdog then
+# reports host-address). `ip -o addr` marks a leased address "dynamic".
+warn_dynamic_node_ip() {
+  if ip -4 -o addr show 2>/dev/null | awk -v ip="$NODE_IP" '
+      { split($4, a, "/"); if (a[1] == ip && / dynamic /) found = 1 }
+      END { exit !found }'; then
+    warn "${NODE_IP} is a DHCP lease, and the install is bound to this address. Give the host a"
+    warn "DHCP reservation or a static address before it changes (docs/operations.md §1)."
+  fi
+}
+
 pkg_install() {
   case "$PKG" in
     apt) apt_get install -y "$@" ;;
@@ -951,6 +1004,88 @@ ensure_swap() {
   swapon /swapfile
   grep -q '^/swapfile ' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
   ok "2 GiB swap active"
+}
+
+# ensure_time_sync turns NTP on. A drifting clock breaks things far from their cause:
+# sign-in codes and sessions expire early or late, S3 refuses off-site uploads signed
+# more than 15 minutes off, and certificate checks fail. Rocky's minimal image ships
+# chronyd disabled (the test host reported NTP=no), so the installer enables whatever
+# timedatectl manages and installs chrony only when there is nothing to enable. It
+# waits half a minute for the first synchronization and then carries on: the watchdog
+# keeps reporting an unsynchronized clock.
+ensure_time_sync() {
+  if [ "$FELIS_MANAGE_TIME_SYNC" = 0 ]; then
+    log "FELIS_MANAGE_TIME_SYNC=0: leaving time synchronization to the operator"
+    return 0
+  fi
+  if ! command -v timedatectl >/dev/null 2>&1; then
+    warn "timedatectl not found; make sure an NTP client keeps this host's clock (docs/operations.md §1)"
+    return 0
+  fi
+  if [ "$(timedatectl show -p NTP --value 2>/dev/null)" != yes ]; then
+    # set-ntp fails with "NTP not supported" when no NTP unit is installed at all
+    # (Debian's minimal image splits systemd-timesyncd into its own package).
+    if ! timedatectl set-ntp true 2>/dev/null; then
+      log "no NTP client to enable; installing chrony"
+      pkg_install chrony
+      if ! timedatectl set-ntp true; then
+        warn "could not turn NTP on; set up time synchronization by hand (docs/troubleshooting.md §13c)"
+        return 0
+      fi
+    fi
+    log "turned NTP time synchronization on"
+  fi
+  local _
+  for _ in $(seq 1 15); do
+    if [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = yes ]; then
+      ok "system clock synchronized by NTP"
+      return 0
+    fi
+    sleep 2
+  done
+  warn "the system clock is not synchronized yet; check 'timedatectl' (docs/troubleshooting.md §13c)"
+}
+
+# ensure_persistent_journal keeps the system journal across reboots. Rocky's journald
+# stores it under /run unless /var/log/journal exists, and its minimal image does not
+# create that directory, so a reboot (the moment an operator most needs to know what
+# came before it) erased every log. journald creates JOURNAL_DIR itself once it runs
+# with Storage=persistent, so the directory is the proof the drop-in took: journald is
+# restarted when the drop-in changed, or when it is current and the directory is still
+# missing.
+ensure_persistent_journal() {
+  if [ "$FELIS_MANAGE_JOURNAL" = 0 ]; then
+    log "FELIS_MANAGE_JOURNAL=0: leaving journald as it is"
+    return 0
+  fi
+  local file="$JOURNALD_DROPIN" tmp
+  mkdir -p "$(dirname "$file")"
+  # Made beside its destination so the file is born with that directory's SELinux
+  # label. A file made under /tmp keeps user_tmp_t through the mv, and journald was
+  # denied it on the test host ("Failed to open configuration file ... Permission
+  # denied"). journald reads only *.conf, so the temporary name is never loaded.
+  tmp="$(mktemp "${file}.XXXXXX")"
+  remember_temp "$tmp"
+  printf '[Journal]\nStorage=persistent\nSystemMaxUse=%s\n' "$FELIS_JOURNAL_MAX_USE" > "$tmp"
+  if [ -f "$file" ] && cmp -s "$tmp" "$file"; then
+    rm -f "$tmp"
+    if [ -d "$JOURNAL_DIR" ]; then
+      ok "system journal already persistent (capped at ${FELIS_JOURNAL_MAX_USE})"
+      return 0
+    fi
+    log "journald has not taken up ${file}; restarting it"
+  else
+    chmod 0644 "$tmp"
+    mv "$tmp" "$file"
+  fi
+  restore_label "$file"
+  systemctl restart systemd-journald
+  journalctl --flush >/dev/null 2>&1 || true
+  if [ -d "$JOURNAL_DIR" ]; then
+    ok "system journal is persistent under ${JOURNAL_DIR} (capped at ${FELIS_JOURNAL_MAX_USE})"
+  else
+    warn "journald did not create ${JOURNAL_DIR}, so logs still end at a reboot; see: journalctl -u systemd-journald"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1142,7 +1277,11 @@ configure_k3s_firewall() {
 
 install_k3s() {
   configure_k3s_firewall
+  # Before the installer runs: a fresh k3s reads the drop-in on its first start.
+  K3S_RESTART_NEEDED=0
+  write_k3s_config
 
+  local installer_ran=0
   if [ -x "$K3S_BIN" ]; then
     local current
     current="$("$K3S_BIN" --version 2>/dev/null | awk 'NR == 1 { print $3 }')"
@@ -1153,18 +1292,112 @@ install_k3s() {
     elif k3s_upgrade_allowed "$current" "$FELIS_K3S_VERSION"; then
       log "upgrading k3s ${current} to ${FELIS_K3S_VERSION}; running pods keep running while it restarts"
       run_k3s_installer
+      installer_ran=1
     fi
   else
     log "installing k3s ${FELIS_K3S_VERSION} into ${K3S_BIN_DIR} (no traefik/servicelb/metrics-server)"
     run_k3s_installer
+    installer_ran=1
   fi
 
   [ -x "$K3S_BIN" ] || die "k3s installation completed but ${K3S_BIN} is missing"
+  strip_k3s_kubeconfig_mode_flag
 
   systemctl enable --now k3s
-  export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+  # The installer restarts k3s itself; otherwise a changed drop-in or unit takes a
+  # restart to load. Pods keep running across it (k3s leaves the containers be).
+  if [ "$K3S_RESTART_NEEDED" = 1 ] && [ "$installer_ran" = 0 ]; then
+    log "restarting k3s to load its new settings (${K3S_CONFIG_DROPIN})"
+    systemctl restart k3s
+  fi
+  export KUBECONFIG="$K3S_KUBECONFIG"
   log "waiting for the node to become Ready"
   wait_for_node_ready
+  # k3s applies write-kubeconfig-mode as it writes the file; this covers a k3s that
+  # has not rewritten it since the mode changed.
+  chmod 0600 "$K3S_KUBECONFIG"
+}
+
+# k3s_node_name prints the name this node must keep. Every local-path volume (worlds,
+# registry, uploads, backups) is bound to its node by name, and k3s takes the name from
+# the hostname on every start, so a renamed host came back as a second, empty node with
+# every volume stuck Pending on the old one. Precedence: the name already pinned; else
+# the name the node registered under, which its kubelet client certificate carries as
+# system:node:<name> and which is readable with k3s stopped; else, where k3s has never
+# run, the lowercased hostname k3s itself would pick. It prints nothing when k3s has run
+# but neither source can be read: pinning a guess there would rename the node.
+k3s_node_name() {
+  local name=""
+  if [ -f "$K3S_CONFIG_DROPIN" ]; then
+    name="$(awk -F'"' '/^node-name:/ { print $2; exit }' "$K3S_CONFIG_DROPIN")"
+  fi
+  if [ -z "$name" ] && [ -f "$K3S_KUBELET_CERT" ]; then
+    # OpenSSL 3 prints "CN=system:node:x", 1.1 "CN = system:node:x", older "/CN=...".
+    # An unreadable certificate leaves the name empty (and warned about), not a failed run.
+    name="$(openssl x509 -in "$K3S_KUBELET_CERT" -noout -subject 2>/dev/null |
+      sed -n 's/.*CN *= *system:node:\([^,/]*\).*/\1/p' || true)"
+  elif [ -z "$name" ] && [ ! -x "$K3S_BIN" ]; then
+    name="$(uname -n | tr '[:upper:]' '[:lower:]')"
+  fi
+  printf '%s' "$name"
+}
+
+# write_k3s_config writes the installer's k3s settings to K3S_CONFIG_DROPIN and sets
+# K3S_RESTART_NEEDED when they changed, since k3s reads the file only as it starts.
+# write-kubeconfig-mode keeps the admin kubeconfig root-only: it is cluster-admin, and
+# installs before this passed 644, which let every local account read it, felis-velocity
+# (the account the internet-facing proxy runs as) included.
+write_k3s_config() {
+  local file="$K3S_CONFIG_DROPIN" name tmp
+  name="$(k3s_node_name)"
+  mkdir -p "$(dirname "$file")"
+  # Beside its destination for the directory's SELinux label (ensure_persistent_journal
+  # has the story); k3s loads only *.yaml and *.yml from the directory.
+  tmp="$(mktemp "${file}.XXXXXX")"
+  remember_temp "$tmp"
+  {
+    echo "# Written by the Felis installer (deploy/bootstrap.sh); a rerun rewrites it."
+    echo 'write-kubeconfig-mode: "0600"'
+    if [ -n "$name" ]; then
+      printf 'node-name: "%s"\n' "$name"
+    fi
+  } > "$tmp"
+  if [ -z "$name" ]; then
+    warn "could not read this node's k3s name, so it is not pinned; a hostname change would orphan every volume"
+  fi
+  if [ -f "$file" ] && cmp -s "$tmp" "$file"; then
+    rm -f "$tmp"
+    restore_label "$file"
+    ok "k3s settings already current${name:+ (node name ${name})}"
+    return 0
+  fi
+  chmod 0600 "$tmp"
+  mv "$tmp" "$file"
+  K3S_RESTART_NEEDED=1
+  log "wrote ${file}${name:+ (node name pinned to ${name})}"
+}
+
+# A command-line flag outranks every config file, and k3s's installer writes
+# INSTALL_K3S_EXEC into the unit's ExecStart one quoted word per line, so installs from
+# before the drop-in keep "'--write-kubeconfig-mode' \" followed by "'644' \" there.
+# This drops both lines (or the single --write-kubeconfig-mode=<mode> spelling). An
+# upgrade through run_k3s_installer rewrites the unit without them anyway.
+strip_k3s_kubeconfig_mode_flag() {
+  local unit="$K3S_UNIT_FILE" tmp
+  [ -f "$unit" ] && grep -q -- '--write-kubeconfig-mode' "$unit" || return 0
+  tmp="$(mktemp)"
+  remember_temp "$tmp"
+  awk '
+    skip { skip = 0; next }
+    index($0, "--write-kubeconfig-mode") { if (index($0, "=") == 0) skip = 1; next }
+    { print }
+  ' "$unit" > "$tmp"
+  # Rewritten in place, so the unit keeps its owner, mode and SELinux label.
+  cat "$tmp" > "$unit"
+  rm -f "$tmp"
+  systemctl daemon-reload
+  K3S_RESTART_NEEDED=1
+  log "dropped --write-kubeconfig-mode from ${unit}; the admin kubeconfig becomes root-only"
 }
 
 # The script from the release's own tag rather than get.k3s.io, which serves whatever
@@ -1174,7 +1407,7 @@ run_k3s_installer() {
   curl -sfL --retry 5 --retry-delay 2 "https://raw.githubusercontent.com/k3s-io/k3s/${FELIS_K3S_VERSION}/install.sh" | \
     INSTALL_K3S_VERSION="$FELIS_K3S_VERSION" \
     INSTALL_K3S_BIN_DIR="$K3S_BIN_DIR" \
-    INSTALL_K3S_EXEC="--disable traefik --disable servicelb --disable metrics-server --write-kubeconfig-mode 644" \
+    INSTALL_K3S_EXEC="--disable traefik --disable servicelb --disable metrics-server" \
     sh -
 }
 
@@ -3321,7 +3554,7 @@ After=network-online.target k3s.service postgresql.service
 
 [Service]
 Type=oneshot
-ExecStart=${HOST_BIN} watchdog -config ${STATE_DIR}/felis.host.toml -state ${WATCHDOG_STATE} -quiet-file ${WATCHDOG_QUIET_FILE} -backup-dir ${FELIS_DB_BACKUP_DIR} -proxy-addr 127.0.0.1:${FELIS_GAME_PORT} -disk-paths ${disks}
+ExecStart=${HOST_BIN} watchdog -config ${STATE_DIR}/felis.host.toml -state ${WATCHDOG_STATE} -quiet-file ${WATCHDOG_QUIET_FILE} -backup-dir ${FELIS_DB_BACKUP_DIR} -proxy-addr 127.0.0.1:${FELIS_GAME_PORT} -disk-paths ${disks}${NODE_IP:+ -node-ip ${NODE_IP}}
 TimeoutStartSec=3min
 Nice=5
 PrivateTmp=yes
@@ -4204,8 +4437,11 @@ main() {
   quiet_watchdog
   pause_package_background_timers
   detect_node_ip
+  warn_dynamic_node_ip
   ensure_swap
   install_base
+  ensure_time_sync
+  ensure_persistent_journal
   # Right after install_base because it is the first point curl exists, and well before
   # docker and k3s: a missing FELIS_GITHUB_TOKEN or an unpublished release should cost
   # the operator seconds, not a k3s install they then have to unwind. This is purely

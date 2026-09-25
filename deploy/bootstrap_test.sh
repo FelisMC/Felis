@@ -850,9 +850,12 @@ run_k3s() { # installed-version pinned-version [FELIS_UPGRADE_DEPS]
     log() { printf "LOG: %s\n" "$*"; }
     ok() { printf "OK: %s\n" "$*"; }
     configure_k3s_firewall() { :; }
+    write_k3s_config() { :; }
+    strip_k3s_kubeconfig_mode_flag() { :; }
     run_k3s_installer() { printf "INSTALLER: %s\n" "$FELIS_K3S_VERSION"; }
     systemctl() { :; }
     wait_for_node_ready() { :; }
+    chmod() { :; }
     '"$(awk '/^version_newer\(\) \{/,/^}/' "$BS")"'
     '"$(awk '/^k3s_upgrade_allowed\(\) \{/,/^}/' "$BS")"'
     '"$(awk '/^install_k3s\(\) \{/,/^}/' "$BS")"'
@@ -1566,8 +1569,8 @@ qblock="$(awk '/^quiet_watchdog\(\) \{/,/^}/' "$BS")"
 [ -n "$qblock" ] || { echo "FAIL: no quiet_watchdog found in $BS"; exit 1; }
 
 tdir="$(mktemp -d)"
-run_watchdog_timer() { # $1: exit status of the first run, $2: FELIS_WORLDS_HOST_PATH
-  FIRST="$1" FELIS_WORLDS_HOST_PATH="$2" WATCHDOG_SERVICE="$tdir/felis-watchdog.service" WATCHDOG_TIMER="$tdir/felis-watchdog.timer" \
+run_watchdog_timer() { # $1: exit status of the first run, $2: FELIS_WORLDS_HOST_PATH, $3: NODE_IP
+  FIRST="$1" FELIS_WORLDS_HOST_PATH="$2" NODE_IP="${3:-}" WATCHDOG_SERVICE="$tdir/felis-watchdog.service" WATCHDOG_TIMER="$tdir/felis-watchdog.timer" \
     WATCHDOG_STATE="$tdir/watchdog/state.json" WATCHDOG_QUIET_FILE=/run/felis/watchdog-quiet-until \
     FELIS_DB_BACKUP_DIR=/var/lib/felis/db-backups FELIS_ARCHIVE_LOCAL_PATH=/var/lib/felis/archives FELIS_GAME_PORT=25577 \
     HOST_BIN=/usr/local/bin/felis STATE_DIR=/etc/felis bash -c '
@@ -1598,6 +1601,14 @@ fi
 
 out="$(run_watchdog_timer 0 /srv/worlds)"
 expect "a custom worlds root is watched for free space" "-disk-paths /,/var/lib/rancher/k3s,/var/lib/postgresql,/var/lib/felis,/srv/worlds," "$(cat "$tdir/felis-watchdog.service")"
+case "$unit" in
+  *-node-ip*) echo "FAIL without a node address the watchdog must not check one"; fails=$((fails + 1)) ;;
+  *) echo "PASS without a node address the watchdog checks none" ;;
+esac
+out="$(run_watchdog_timer 0 "" 10.211.55.6)"
+expect "the watchdog checks the host still holds the install's address" \
+  "-disk-paths /,/var/lib/rancher/k3s,/var/lib/postgresql,/var/lib/felis,/var/lib/felis/archives,/var/lib/felis/db-backups -node-ip 10.211.55.6
+" "$(cat "$tdir/felis-watchdog.service")"
 
 out="$(run_watchdog_timer 1 "")"
 expect "a failed first watchdog run shows its log" "JOURNAL: parse /etc/felis/felis.host.toml" "$out"
@@ -2182,6 +2193,347 @@ out="$(PATH="$rrdir:$PATH" bash -c '
 expect "the install's apt runs keep needrestart from restarting services" \
   "NEEDRESTART_SUSPEND=1 -o DPkg::Lock::Timeout=5 install -y postgresql" "$out"
 rm -rf "$rrdir"
+
+# --- host hardening: k3s settings, clock, journal, the node address ----------------------
+
+kcblock="$(awk '/^k3s_node_name\(\) \{/,/^}/' "$BS")
+$(awk '/^write_k3s_config\(\) \{/,/^}/' "$BS")"
+case "$kcblock" in
+  *'k3s_node_name() {'*'write_k3s_config() {'*) ;;
+  *) echo "FAIL: k3s_node_name / write_k3s_config not found in $BS"; exit 1 ;;
+esac
+[ "$(printf '%s\n' "$kcblock" | wc -l)" -lt 60 ] \
+  || { echo "FAIL: the extracted k3s settings blocks ran past their closing braces"; exit 1; }
+
+kdir="$(mktemp -d)"
+# The kubelet client certificate a k3s agent holds: k3s issues it with exactly this subject.
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
+  -keyout "$kdir/kubelet.key" -out "$kdir/kubelet.crt" \
+  -subj "/O=system:nodes/CN=system:node:localhost.localdomain" >/dev/null 2>&1
+printf '#!/bin/sh\n' > "$kdir/k3s"; chmod +x "$kdir/k3s"
+
+run_k3s_config() { # $1: kubelet cert path, $2: k3s binary path, $3: hostname, $4: openssl subject stub ("" = real openssl)
+  CERT="$1" BIN="$2" HOSTNAME_STUB="$3" SUBJECT="${4:-}" DROPIN="$kdir/config.yaml.d/50-felis.yaml" bash -c '
+    set -Eeuo pipefail
+    ok() { echo "OK: $*"; }; log() { echo "LOG: $*"; }; warn() { echo "WARN: $*"; }
+    remember_temp() { :; }
+    restore_label() { echo "RELABEL: $*"; }
+    mktemp() { local p; p="$(command mktemp "$@")"; echo "MKTEMP: $(dirname "$p")" >&2; echo "$p"; }
+    uname() { echo "$HOSTNAME_STUB"; }
+    if [ -n "$SUBJECT" ]; then openssl() { echo "$SUBJECT"; }; fi
+    K3S_CONFIG_DROPIN="$DROPIN" K3S_KUBELET_CERT="$CERT" K3S_BIN="$BIN"
+    '"$kcblock"'
+    K3S_RESTART_NEEDED=0
+    write_k3s_config
+    echo "RESTART=$K3S_RESTART_NEEDED"' 2>&1
+}
+dropin="$kdir/config.yaml.d/50-felis.yaml"
+
+out="$(run_k3s_config "$kdir/none.crt" "$kdir/none" Rocky-Box)"
+expect "a fresh host pins the hostname k3s would take, lowercased" 'node-name: "rocky-box"' "$(cat "$dropin")"
+expect "the admin kubeconfig is root-only" 'write-kubeconfig-mode: "0600"' "$(cat "$dropin")"
+expect "a new drop-in asks for a k3s restart" "RESTART=1" "$out"
+if [ "$(printf '%s\n' "$out" | sed -n 's/^MKTEMP: //p' | sort -u)" = "$kdir/config.yaml.d" ]; then
+  echo "PASS the k3s drop-in is made beside itself, never under /tmp"
+else
+  echo "FAIL temporary files for the k3s drop-in were made in: $(printf '%s\n' "$out" | sed -n 's/^MKTEMP: //p')"; fails=$((fails + 1))
+fi
+if [ "$(stat -c %a "$dropin" 2>/dev/null || stat -f %Lp "$dropin")" = 600 ]; then
+  echo "PASS the k3s drop-in is root-only"
+else
+  echo "FAIL the k3s drop-in must be 0600"; fails=$((fails + 1))
+fi
+
+out="$(run_k3s_config "$kdir/none.crt" "$kdir/none" Rocky-Box)"
+expect "an unchanged drop-in is left alone" "RESTART=0" "$out"
+expect "an unchanged drop-in says so" 'OK: k3s settings already current (node name rocky-box)' "$out"
+expect "an unchanged drop-in is still relabelled (one an earlier installer moved in from /tmp)" "RELABEL: $dropin" "$out"
+if [ "$(ls "$kdir/config.yaml.d")" = "50-felis.yaml" ]; then
+  echo "PASS no temporary file is left beside the k3s drop-in"
+else
+  echo "FAIL config.yaml.d holds: $(ls "$kdir/config.yaml.d")"; fails=$((fails + 1))
+fi
+
+rm -f "$dropin"
+out="$(run_k3s_config "$kdir/kubelet.crt" "$kdir/k3s" renamed-host)"
+expect "an installed node keeps the name it registered under, whatever the hostname says now" \
+  'node-name: "localhost.localdomain"' "$(cat "$dropin")"
+
+out="$(run_k3s_config "$kdir/kubelet.crt" "$kdir/k3s" renamed-host)"
+expect "the certificate's name, once pinned, restarts nothing on a rerun" "RESTART=0" "$out"
+
+printf '# old\nwrite-kubeconfig-mode: "0600"\nnode-name: "first-name"\n' > "$dropin"
+out="$(run_k3s_config "$kdir/kubelet.crt" "$kdir/k3s" renamed-host)"
+expect "a pinned name outranks the certificate" 'node-name: "first-name"' "$(cat "$dropin")"
+
+# The three spellings of -subject: OpenSSL 1.1, and the slash form of 1.0 and LibreSSL.
+rm -f "$dropin"
+run_k3s_config "$kdir/kubelet.crt" "$kdir/k3s" x 'subject=O = system:nodes, CN = system:node:node-a' >/dev/null
+expect "OpenSSL 1.1's subject is read" 'node-name: "node-a"' "$(cat "$dropin")"
+rm -f "$dropin"
+run_k3s_config "$kdir/kubelet.crt" "$kdir/k3s" x 'subject= /O=system:nodes/CN=system:node:node-b' >/dev/null
+expect "the slash-form subject is read" 'node-name: "node-b"' "$(cat "$dropin")"
+
+rm -f "$dropin"
+out="$(run_k3s_config "$kdir/none.crt" "$kdir/k3s" renamed-host)"
+case "$(cat "$dropin")" in
+  *node-name*) echo "FAIL an installed k3s whose name cannot be read must not be pinned to the hostname"; fails=$((fails + 1)) ;;
+  *) echo "PASS an installed k3s whose name cannot be read is not pinned to a guess" ;;
+esac
+expect "an unpinned name is a warning" "WARN: could not read this node's k3s name" "$out"
+rm -f "$dropin"
+printf 'half-written\n' > "$kdir/broken.crt"
+out="$(run_k3s_config "$kdir/broken.crt" "$kdir/k3s" renamed-host)"
+expect "a certificate openssl cannot parse is a warning, not a failed install" "WARN: could not read this node's k3s name" "$out"
+expect "and the drop-in is still written" 'write-kubeconfig-mode: "0600"' "$(cat "$dropin")"
+
+sblock="$(awk '/^strip_k3s_kubeconfig_mode_flag\(\) \{/,/^}/' "$BS")"
+[ -n "$sblock" ] || { echo "FAIL: no strip_k3s_kubeconfig_mode_flag found in $BS"; exit 1; }
+# ExecStart as k3s's installer writes it (copied off an install made with the old flag).
+tab="$(printf '\t')"
+cat > "$kdir/k3s.service" <<EOF
+ExecStartPre=-/sbin/modprobe overlay
+ExecStart=/usr/local/bin/k3s \\
+    server \\
+${tab}'--disable' \\
+${tab}'metrics-server' \\
+${tab}'--write-kubeconfig-mode' \\
+${tab}'644' \\
+
+EOF
+run_strip() {
+  UNIT="$kdir/k3s.service" bash -c '
+    set -Eeuo pipefail
+    log() { echo "LOG: $*"; }
+    remember_temp() { :; }
+    systemctl() { echo "SYSTEMCTL: $*"; }
+    K3S_UNIT_FILE="$UNIT"
+    '"$sblock"'
+    K3S_RESTART_NEEDED=0
+    strip_k3s_kubeconfig_mode_flag
+    echo "RESTART=$K3S_RESTART_NEEDED"' 2>&1
+}
+out="$(run_strip)"
+want="ExecStartPre=-/sbin/modprobe overlay
+ExecStart=/usr/local/bin/k3s \\
+    server \\
+${tab}'--disable' \\
+${tab}'metrics-server' \\
+"
+if [ "$(cat "$kdir/k3s.service"; echo x)" = "${want}
+x" ]; then
+  echo "PASS the old kubeconfig-mode flag and its value leave the k3s unit, the rest stays"
+else
+  echo "FAIL the stripped unit is:"; cat "$kdir/k3s.service"; fails=$((fails + 1))
+fi
+expect "a rewritten unit is reloaded" "SYSTEMCTL: daemon-reload" "$out"
+expect "a rewritten unit asks for a k3s restart" "RESTART=1" "$out"
+out="$(run_strip)"
+expect "a unit without the flag is left alone" "RESTART=0" "$out"
+case "$out" in *daemon-reload*) echo "FAIL a unit without the flag must not be reloaded"; fails=$((fails + 1)) ;; esac
+printf "ExecStart=/usr/local/bin/k3s \\\\\n    server \\\\\n\t'--write-kubeconfig-mode=644' \\\\\n\t'--disable' \\\\\n\t'traefik' \\\\\n" > "$kdir/k3s.service"
+run_strip >/dev/null
+expect "the one-word spelling goes too, and only that word" "$(printf "    server \\\\\n\t'--disable' \\\\\n\t'traefik' \\\\")" "$(cat "$kdir/k3s.service")"
+case "$(cat "$kdir/k3s.service")" in *kubeconfig-mode*) echo "FAIL the one-word flag is still in the unit"; fails=$((fails + 1)) ;; esac
+
+case "$(awk '/^run_k3s_installer\(\) \{/,/^}/' "$BS")" in
+  *write-kubeconfig-mode*) echo "FAIL the k3s installer must not be told a kubeconfig mode; the drop-in holds it"; fails=$((fails + 1)) ;;
+  *INSTALL_K3S_EXEC=*) echo "PASS the k3s installer leaves the kubeconfig mode to the drop-in" ;;
+  *) echo "FAIL: no run_k3s_installer found in $BS"; fails=$((fails + 1)) ;;
+esac
+
+iblock="$(awk '/^install_k3s\(\) \{/,/^}/' "$BS")"
+[ -n "$iblock" ] || { echo "FAIL: no install_k3s found in $BS"; exit 1; }
+iblock="$iblock
+$(awk '/^version_newer\(\) \{/,/^}/' "$BS")
+$(awk '/^k3s_upgrade_allowed\(\) \{/,/^}/' "$BS")"
+run_install_k3s() { # $1: installed version ("" = none), $2: drop-in changed (0|1), $3: FELIS_UPGRADE_DEPS
+  INSTALLED="$1" CHANGED="$2" UPGRADE="${3:-0}" KDIR="$kdir" bash -c '
+    set -Eeuo pipefail
+    ok() { echo "OK: $*"; }; log() { echo "LOG: $*"; }; warn() { echo "WARN: $*"; }
+    die() { echo "DIE: $*"; exit 1; }
+    FELIS_K3S_VERSION=v1.36.4+k3s1 FELIS_UPGRADE_DEPS="$UPGRADE" K3S_BIN_DIR="$KDIR" K3S_BIN="$KDIR/k3s-under-test"
+    K3S_CONFIG_DROPIN=/etc/rancher/k3s/config.yaml.d/50-felis.yaml K3S_KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+    rm -f "$K3S_BIN"
+    if [ -n "$INSTALLED" ]; then printf "#!/bin/sh\necho \"k3s version %s (abc)\"\n" "$INSTALLED" > "$K3S_BIN"; chmod +x "$K3S_BIN"; fi
+    configure_k3s_firewall() { :; }
+    write_k3s_config() { [ "$CHANGED" = 0 ] || K3S_RESTART_NEEDED=1; }
+    strip_k3s_kubeconfig_mode_flag() { :; }
+    run_k3s_installer() { echo "INSTALLER"; printf "#!/bin/sh\n" > "$K3S_BIN"; command chmod +x "$K3S_BIN"; }
+    systemctl() { echo "SYSTEMCTL: $*"; }
+    wait_for_node_ready() { echo "READY"; }
+    chmod() { echo "CHMOD: $*"; }
+    '"$iblock"'
+    install_k3s' 2>&1
+}
+out="$(run_install_k3s v1.36.4+k3s1 1)"
+expect "new k3s settings on a running k3s restart it" "SYSTEMCTL: restart k3s" "$out"
+expect "the admin kubeconfig is made root-only once the node is up" "READY
+CHMOD: 0600 /etc/rancher/k3s/k3s.yaml" "$out"
+out="$(run_install_k3s v1.36.4+k3s1 0)"
+case "$out" in *"restart k3s"*) echo "FAIL unchanged k3s settings must not restart k3s"; fails=$((fails + 1)) ;; *) echo "PASS unchanged k3s settings restart nothing" ;; esac
+out="$(run_install_k3s "" 1)"
+expect "a fresh host runs the k3s installer and waits for the node" "INSTALLER
+SYSTEMCTL: enable --now k3s" "$out"
+expect "a fresh host's kubeconfig is made root-only too" "CHMOD: 0600 /etc/rancher/k3s/k3s.yaml" "$out"
+case "$out" in *"restart k3s"*) echo "FAIL the k3s installer already started k3s on the new settings; no second restart"; fails=$((fails + 1)) ;; *) echo "PASS a fresh k3s is not restarted a second time" ;; esac
+out="$(run_install_k3s v1.35.2+k3s1 1 1)"
+expect "an upgrade runs the k3s installer" "INSTALLER" "$out"
+case "$out" in *"restart k3s"*) echo "FAIL the upgrade already restarted k3s on the new settings; no second restart"; fails=$((fails + 1)) ;; *) echo "PASS an upgraded k3s is not restarted a second time" ;; esac
+rm -rf "$kdir"
+
+jblock="$(awk '/^ensure_persistent_journal\(\) \{/,/^}/' "$BS")"
+[ -n "$jblock" ] || { echo "FAIL: no ensure_persistent_journal found in $BS"; exit 1; }
+jdir="$(mktemp -d)"
+jcalls="$(mktemp)"
+run_journal() { # $1: FELIS_JOURNAL_MAX_USE, $2: FELIS_MANAGE_JOURNAL, $3: a journald restart creates the journal directory (1|0)
+  MAXUSE="$1" MANAGE="${2:-1}" MAKES="${3:-1}" DROPIN="$jdir/journald.conf.d/50-felis.conf" JDIR="$jdir/journal" \
+    JCALLS="$jcalls" bash -c '
+    set -Eeuo pipefail
+    ok() { echo "OK: $*"; }; log() { echo "LOG: $*"; }; warn() { echo "WARN: $*"; }
+    remember_temp() { :; }
+    # Where each temporary file lands, on stderr: stdout is the path the caller captures.
+    mktemp() { local p; p="$(command mktemp "$@")"; echo "MKTEMP: $(dirname "$p")" >&2; echo "$p"; }
+    restore_label() { echo "RELABEL: $*"; }
+    # journald creates the directory as it starts with Storage=persistent.
+    systemctl() { echo "SYSTEMCTL: $*"; [ "$MAKES" = 0 ] || mkdir -p "$JDIR"; }
+    journalctl() { echo "JOURNALCTL: $*" >> "$JCALLS"; }
+    FELIS_JOURNAL_MAX_USE="$MAXUSE" FELIS_MANAGE_JOURNAL="$MANAGE" JOURNALD_DROPIN="$DROPIN" JOURNAL_DIR="$JDIR"
+    '"$jblock"'
+    ensure_persistent_journal' 2>&1
+}
+out="$(run_journal 1G)"
+if [ "$(cat "$jdir/journald.conf.d/50-felis.conf")" = "[Journal]
+Storage=persistent
+SystemMaxUse=1G" ]; then
+  echo "PASS the journal is made persistent and capped"
+else
+  echo "FAIL journald drop-in:"; echo "$out"; fails=$((fails + 1))
+fi
+expect "a new journald drop-in restarts journald" "SYSTEMCTL: restart systemd-journald" "$out"
+jmode="$(stat -c %a "$jdir/journald.conf.d/50-felis.conf" 2>/dev/null || stat -f %Lp "$jdir/journald.conf.d/50-felis.conf")"
+if [ "$jmode" = 644 ]; then
+  echo "PASS the journald drop-in is readable like the rest of /etc/systemd (systemd-analyze cat-config)"
+else
+  echo "FAIL the journald drop-in is mode $jmode, want 644"; fails=$((fails + 1))
+fi
+expect "the drop-in gets its directory's SELinux label before journald reads it" "RELABEL: $jdir/journald.conf.d/50-felis.conf
+SYSTEMCTL: restart systemd-journald" "$out"
+expect "the runtime journal is flushed to disk" "JOURNALCTL: --flush" "$(cat "$jcalls")"
+# A file made under /tmp and moved into place keeps user_tmp_t, which journald is denied.
+if [ "$(printf '%s\n' "$out" | sed -n 's/^MKTEMP: //p' | sort -u)" = "$jdir/journald.conf.d" ]; then
+  echo "PASS the journald drop-in is made beside itself, never under /tmp"
+else
+  echo "FAIL temporary files for the journald drop-in were made in: $(printf '%s\n' "$out" | sed -n 's/^MKTEMP: //p')"; fails=$((fails + 1))
+fi
+expect "the journal directory journald made is the proof" "OK: system journal is persistent under $jdir/journal" "$out"
+if [ "$(ls "$jdir/journald.conf.d")" = "50-felis.conf" ]; then
+  echo "PASS no temporary file is left beside the journald drop-in"
+else
+  echo "FAIL journald.conf.d holds: $(ls "$jdir/journald.conf.d")"; fails=$((fails + 1))
+fi
+out="$(run_journal 1G)"
+case "$out" in *restart*) echo "FAIL a current drop-in journald has taken up must not restart it"; fails=$((fails + 1)) ;; *) echo "PASS a current, working drop-in restarts nothing" ;; esac
+rmdir "$jdir/journal"
+out="$(run_journal 1G)"
+expect "a current drop-in journald never took up (no journal directory) restarts it" "LOG: journald has not taken up" "$out"
+expect "and that restart happens" "SYSTEMCTL: restart systemd-journald" "$out"
+rmdir "$jdir/journal"
+out="$(run_journal 1G 1 0)"
+expect "a journald that still stores nothing on disk is a warning" "WARN: journald did not create $jdir/journal" "$out"
+out="$(run_journal 4G)"
+expect "a new cap is written" "SystemMaxUse=4G" "$(cat "$jdir/journald.conf.d/50-felis.conf")"
+expect "a new cap restarts journald" "SYSTEMCTL: restart systemd-journald" "$out"
+rm -rf "$jdir"
+out="$(run_journal 1G 0)"
+if [ -e "$jdir/journald.conf.d/50-felis.conf" ]; then
+  echo "FAIL FELIS_MANAGE_JOURNAL=0 must leave journald alone"; fails=$((fails + 1))
+else
+  echo "PASS FELIS_MANAGE_JOURNAL=0 leaves journald alone"
+fi
+rm -f "$jcalls"
+
+tblock="$(awk '/^ensure_time_sync\(\) \{/,/^}/' "$BS")"
+[ -n "$tblock" ] || { echo "FAIL: no ensure_time_sync found in $BS"; exit 1; }
+run_time() { # $1: NTP now, $2: set-ntp works before chrony (0|1), $3: synchronizes (0|1), $4: FELIS_MANAGE_TIME_SYNC
+  NTP="$1" SETWORKS="$2" SYNCS="$3" MANAGE="${4:-1}" bash -c '
+    set -Eeuo pipefail
+    ok() { echo "OK: $*"; }; log() { echo "LOG: $*"; }; warn() { echo "WARN: $*"; }
+    sleep() { :; }
+    pkg_install() { echo "PKG: $*"; SETWORKS=1; }
+    timedatectl() {
+      case "$*" in
+        "show -p NTP --value") echo "$NTP" ;;
+        "show -p NTPSynchronized --value") [ "$SYNCS" = 1 ] && echo yes || echo no ;;
+        "set-ntp true") echo "TIMEDATECTL: set-ntp true"; [ "$SETWORKS" = 1 ] || { echo "Failed to set ntp: NTP not supported" >&2; return 1; } ;;
+        *) echo "TIMEDATECTL?: $*" ;;
+      esac
+    }
+    FELIS_MANAGE_TIME_SYNC="$MANAGE"
+    '"$tblock"'
+    ensure_time_sync' 2>&1
+}
+out="$(run_time no 1 1)"
+expect "NTP is turned on where it is off" "TIMEDATECTL: set-ntp true" "$out"
+expect "a synchronized clock is reported" "OK: system clock synchronized by NTP" "$out"
+case "$out" in *PKG:*) echo "FAIL chrony must not be installed where timedatectl has a client to enable"; fails=$((fails + 1)) ;; esac
+case "$out" in *WARN:*) echo "FAIL a synchronized clock must not warn"; fails=$((fails + 1)) ;; esac
+out="$(run_time no 0 1)"
+expect "with no NTP client to enable, chrony is installed" "PKG: chrony" "$out"
+expect "and NTP is turned on after it" "PKG: chrony
+TIMEDATECTL: set-ntp true" "$out"
+out="$(run_time yes 1 1)"
+case "$out" in *set-ntp*) echo "FAIL NTP already on must not be set again"; fails=$((fails + 1)) ;; *) echo "PASS NTP already on is left as it is" ;; esac
+out="$(run_time yes 1 0)"
+expect "a clock that does not synchronize is a warning, not a stop" "WARN: the system clock is not synchronized yet" "$out"
+out="$(run_time no 1 1 0)"
+case "$out" in *TIMEDATECTL*) echo "FAIL FELIS_MANAGE_TIME_SYNC=0 must leave the clock alone"; fails=$((fails + 1)) ;; *) echo "PASS FELIS_MANAGE_TIME_SYNC=0 leaves the clock alone" ;; esac
+
+dblock="$(awk '/^warn_dynamic_node_ip\(\) \{/,/^}/' "$BS")"
+[ -n "$dblock" ] || { echo "FAIL: no warn_dynamic_node_ip found in $BS"; exit 1; }
+run_dyn() { # $1: NODE_IP, $2: `ip -4 -o addr show` output
+  NODE_IP="$1" ADDRS="$2" bash -c '
+    set -Eeuo pipefail
+    warn() { echo "WARN: $*"; }
+    ip() { printf "%s\n" "$ADDRS"; }
+    '"$dblock"'
+    warn_dynamic_node_ip; echo done' 2>&1
+}
+# `ip -4 -o addr show` lines as iproute2 prints them (the leased one is off the test host).
+lo='1: lo    inet 127.0.0.1/8 scope host lo\       valid_lft forever preferred_lft forever'
+leased='2: enp0s5    inet 10.211.55.6/24 brd 10.211.55.255 scope global dynamic noprefixroute enp0s5\       valid_lft 1459sec preferred_lft 1459sec'
+static='2: enp0s5    inet 10.211.55.6/24 brd 10.211.55.255 scope global noprefixroute enp0s5\       valid_lft forever preferred_lft forever'
+other='3: wlan0    inet 192.168.1.20/24 brd 192.168.1.255 scope global dynamic wlan0\       valid_lft 3000sec preferred_lft 3000sec'
+out="$(run_dyn 10.211.55.6 "$lo
+$leased")"
+expect "a leased node address is a warning" "WARN: 10.211.55.6 is a DHCP lease" "$out"
+out="$(run_dyn 10.211.55.6 "$lo
+$static
+$other")"
+case "$out" in *WARN*) echo "FAIL a static node address must not warn because another interface is leased"; fails=$((fails + 1)) ;; *) echo "PASS a static node address does not warn" ;; esac
+out="$(run_dyn 10.211.55.60 "$leased")"
+case "$out" in *WARN*) echo "FAIL a different address with the same prefix is not the node's"; fails=$((fails + 1)) ;; *) echo "PASS only the node's own address is judged" ;; esac
+
+vsnip="$(awk '/local journal_n=/,/^  esac/' "$BS")"
+[ -n "$vsnip" ] || { echo "FAIL: no FELIS_JOURNAL_MAX_USE check found in $BS"; exit 1; }
+check_max_use() {
+  FELIS_JOURNAL_MAX_USE="$1" bash -c '
+    die() { echo "DIE: $*"; exit 1; }
+    f() {
+    '"$vsnip"'
+    }
+    f; echo accepted' 2>&1
+}
+for v in 1G 512M 900K; do
+  expect "journal cap $v is accepted" "accepted" "$(check_max_use "$v")"
+done
+for v in 1g G 01G 1.5G 1GB 2T 1024 ""; do
+  expect "journal cap '$v' is refused" "DIE: FELIS_JOURNAL_MAX_USE must be written" "$(check_max_use "$v")"
+done
+
+order="$(awk '/^main\(\) \{/,/^}/' "$BS" | grep -nE '^[[:space:]]*(detect_node_ip|warn_dynamic_node_ip|install_base|ensure_time_sync|ensure_persistent_journal|install_k3s)$' | sed 's/^[0-9]*:[[:space:]]*//' | tr '\n' ' ')"
+expect "main checks the address, then turns on NTP and the journal once packages install, before k3s" \
+  "detect_node_ip warn_dynamic_node_ip install_base ensure_time_sync ensure_persistent_journal install_k3s " "$order"
 
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then
