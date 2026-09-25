@@ -13,6 +13,8 @@ import {
   Box,
   Hand,
   LayoutDashboard,
+  Loader2,
+  RefreshCw,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -22,8 +24,9 @@ import { StatCard } from "@/components/StatCard";
 import { PageHeader } from "@/components/PageHeader";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { FleetGrid } from "@/components/FleetGrid";
-import { api } from "@/lib/api";
-import { useAsync, useConfig } from "@/lib/hooks";
+import { api, humanizeError } from "@/lib/api";
+import { useAsync, useConfig, type AsyncState } from "@/lib/hooks";
+import { useTier } from "@/lib/tier";
 import { lazyWithReload } from "@/lib/chunk";
 import { webglAvailable } from "@/lib/webgl";
 import type { Phase, MyServerView, WhitelistImage } from "@/lib/types";
@@ -38,52 +41,123 @@ const VoxelFleet = lazyWithReload(() =>
 
 export function Dashboard() {
   const cfg = useConfig();
-  const { data: servers, error: serversErr, loading: serversLoading, reload: reloadServers } = useAsync(() => api.myServers(), []);
-  const { data: linkData, error: linkErr, loading: linkLoading } = useAsync(() => api.linkStatus(), []);
-  const { data: identity, error: meErr, loading: meLoading } = useAsync(() => api.me(), []);
-  
-  // 仅对管理员加载镜像白名单列表，防止普通用户请求 403 报错
-  const { data: imagesData } = useAsync(() => {
-    if (identity?.is_admin) {
-      return api.listImages();
-    }
-    return Promise.resolve([]);
-  }, [identity]);
+  const { isAdmin } = useTier();
+  const servers = useAsync(() => api.myServers(), []);
+  const link = useAsync(() => api.linkStatus(), []);
+  // Only admins may list the image whitelist (a user would get a 403).
+  const images = useAsync(() => (isAdmin ? api.listImages() : Promise.resolve([])), [isAdmin]);
 
   const { t } = useTranslation("dashboard");
 
   const counts = useMemo(() => {
-    const list = servers ?? [];
+    const list = servers.data ?? [];
     const by = (p: Phase) => list.filter((s) => s.phase === p).length;
     return {
       total: list.length,
       running: by("Running"),
       players: list.reduce((n, s) => n + (s.playersOnline ?? 0), 0),
     };
-  }, [servers]);
+  }, [servers.data]);
 
-  const loading = serversLoading || linkLoading || meLoading;
-  const error = serversErr || linkErr || meErr;
-
+  // The page stands on the server list alone. Link status and the image
+  // counts are side cards: when they fail only their card degrades, and each
+  // offers its own retry.
   return (
     <>
       <PageHeader icon={LayoutDashboard} title={t("title")} subtitle={t("subtitle")} />
 
-      {loading && !servers ? (
+      {servers.loading && !servers.data ? (
         <Loading />
-      ) : error ? (
-        <ErrorState error={error} onRetry={reloadServers} />
+      ) : servers.error ? (
+        <ErrorState error={servers.error} onRetry={servers.reload} />
       ) : !cfg ? (
         <Loading />
       ) : (
         <FleetView
-          servers={servers ?? []}
+          servers={servers.data ?? []}
           counts={counts}
-          linkStatus={linkData || undefined}
-          images={imagesData || []}
-          isAdmin={!!identity?.is_admin}
+          link={link}
+          images={images.error ? null : images.data}
+          isAdmin={isAdmin}
         />
       )}
+    </>
+  );
+}
+
+function LinkCard({ link }: { link: AsyncState<{ linked: boolean }> }) {
+  const { t } = useTranslation("dashboard");
+
+  if (link.error) {
+    return (
+      <>
+        <div role="alert" className="space-y-1 max-w-xl">
+          <div className="flex items-center gap-2 text-muted-foreground font-semibold text-sm">
+            <AlertTriangle className="h-5 w-5 shrink-0" />
+            <span>{t("link_status_failed")}</span>
+          </div>
+          <p className="text-xs text-muted-foreground leading-relaxed">{humanizeError(link.error)}</p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="shrink-0 w-full sm:w-auto text-xs gap-1.5"
+          onClick={link.reload}
+          disabled={link.loading}
+        >
+          <RefreshCw className={link.loading ? "h-3 w-3 animate-spin" : "h-3 w-3"} />
+          {t("common:try_again")}
+        </Button>
+      </>
+    );
+  }
+
+  if (!link.data) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        {t("link_status_checking")}
+      </div>
+    );
+  }
+
+  if (link.data.linked) {
+    return (
+      <>
+        <div className="space-y-1 max-w-xl">
+          <div className="flex items-center gap-2 text-green-600 dark:text-green-400 font-semibold text-sm">
+            <CheckCircle className="h-5 w-5 shrink-0" />
+            <span>{t("account_linked_title")}</span>
+          </div>
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            {t("account_linked_desc")}
+          </p>
+        </div>
+        <Link to="/account" className="shrink-0 w-full sm:w-auto">
+          <Button variant="outline" size="sm" className="w-full text-xs">
+            {t("manage_game_character")}
+          </Button>
+        </Link>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <div className="space-y-1 max-w-xl">
+        <div className="flex items-center gap-2 text-amber-600 dark:text-amber-500 font-semibold text-sm">
+          <AlertTriangle className="h-5 w-5 shrink-0 animate-bounce" />
+          <span>{t("account_unlinked_title")}</span>
+        </div>
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          {t("account_unlinked_desc")}
+        </p>
+      </div>
+      <Link to="/account" className="shrink-0 w-full sm:w-auto">
+        <Button variant="default" size="sm" className="w-full text-xs">
+          {t("go_link")} <ArrowRight className="h-3 w-3 ml-1" />
+        </Button>
+      </Link>
     </>
   );
 }
@@ -91,14 +165,15 @@ export function Dashboard() {
 function FleetView({
   servers,
   counts,
-  linkStatus,
+  link,
   images,
   isAdmin,
 }: {
   servers: MyServerView[];
   counts: { total: number; running: number; players: number };
-  linkStatus?: { linked: boolean };
-  images: WhitelistImage[];
+  link: AsyncState<{ linked: boolean }>;
+  /** null while the whitelist loads or when it cannot be read: its counts show a dash. */
+  images: WhitelistImage[] | null;
   isAdmin: boolean;
 }) {
   const { t } = useTranslation("dashboard");
@@ -140,14 +215,11 @@ function FleetView({
     : 0;
 
   // 2. 自建与外部镜像真实统计
-  const builtImagesCount = useMemo(() => 
-    images.filter((img) => img.source === "built" || !img.source).length, 
-    [images]
-  );
-  const externalImagesCount = useMemo(() => 
-    images.filter((img) => img.source === "external").length, 
-    [images]
-  );
+  const imageCount = (keep: (img: WhitelistImage) => boolean) =>
+    images ? images.filter(keep).length : "—";
+  const totalImagesCount = imageCount(() => true);
+  const builtImagesCount = imageCount((img) => img.source === "built" || !img.source);
+  const externalImagesCount = imageCount((img) => img.source === "external");
 
   // 3. 我拥有及可认领服务器真实统计
   const ownedServersCount = useMemo(() => 
@@ -200,41 +272,7 @@ function FleetView({
           {/* 1. 游戏角色绑定 Banner */}
           <Card className="overflow-hidden">
             <CardContent className="p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-              {linkStatus?.linked ? (
-                <>
-                  <div className="space-y-1 max-w-xl">
-                    <div className="flex items-center gap-2 text-green-600 dark:text-green-400 font-semibold text-sm">
-                      <CheckCircle className="h-5 w-5 shrink-0" />
-                      <span>{t("account_linked_title")}</span>
-                    </div>
-                    <p className="text-xs text-muted-foreground leading-relaxed">
-                      {t("account_linked_desc")}
-                    </p>
-                  </div>
-                  <Link to="/account" className="shrink-0 w-full sm:w-auto">
-                    <Button variant="outline" size="sm" className="w-full text-xs">
-                      {t("manage_game_character")}
-                    </Button>
-                  </Link>
-                </>
-              ) : (
-                <>
-                  <div className="space-y-1 max-w-xl">
-                    <div className="flex items-center gap-2 text-amber-600 dark:text-amber-500 font-semibold text-sm">
-                      <AlertTriangle className="h-5 w-5 shrink-0 animate-bounce" />
-                      <span>{t("account_unlinked_title")}</span>
-                    </div>
-                    <p className="text-xs text-muted-foreground leading-relaxed">
-                      {t("account_unlinked_desc")}
-                    </p>
-                  </div>
-                  <Link to="/account" className="shrink-0 w-full sm:w-auto">
-                    <Button variant="default" size="sm" className="w-full text-xs">
-                      {t("go_link")} <ArrowRight className="h-3 w-3 ml-1" />
-                    </Button>
-                  </Link>
-                </>
-              )}
+              <LinkCard link={link} />
             </CardContent>
           </Card>
 
@@ -291,7 +329,7 @@ function FleetView({
                   <div className="flex items-center gap-3 p-3 rounded-lg border bg-accent/5 text-xs text-muted-foreground">
                     <ShieldCheck className="h-4.5 w-4.5 text-primary shrink-0" />
                     <div>
-                      <span className="font-semibold text-foreground mr-1">{images.length}</span>
+                      <span className="font-semibold text-foreground mr-1">{totalImagesCount}</span>
                       {t("images_count")}{t("images_security_note")}
                     </div>
                   </div>
@@ -313,7 +351,7 @@ function FleetView({
                         <ShieldCheck className="h-3.5 w-3.5 text-primary" />
                         <span className="text-[11px] font-medium">{t("spec_images_total")}</span>
                       </div>
-                      <div className="text-xl font-bold font-mono text-foreground leading-none mt-1.5">{images.length}</div>
+                      <div className="text-xl font-bold font-mono text-foreground leading-none mt-1.5">{totalImagesCount}</div>
                     </div>
 
                     {/* 集群内自建镜像 */}

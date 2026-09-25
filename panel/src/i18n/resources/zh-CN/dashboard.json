@@ -16,6 +16,8 @@
   "account_unlinked_title": "未关联游戏角色",
   "account_unlinked_desc": "您需要关联 Minecraft 角色才能认领或操作服务器。请立即前往个人中心绑定。",
   "go_link": "前往绑定",
+  "link_status_checking": "正在确认是否已关联游戏角色…",
+  "link_status_failed": "暂时无法获取绑定状态",
   "system_specs": "系统实例与镜像指标",
   "spec_images_total": "支持镜像总数",
   "spec_images_built": "集群自建镜像",

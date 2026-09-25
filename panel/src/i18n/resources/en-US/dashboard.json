@@ -16,6 +16,8 @@
   "account_unlinked_title": "Account Unlinked",
   "account_unlinked_desc": "You must link a Minecraft character to claim or operate servers. Go to Account to bind now.",
   "go_link": "Bind Now",
+  "link_status_checking": "Checking whether a game character is linked…",
+  "link_status_failed": "Link status unavailable",
   "system_specs": "Specs & Metrics",
   "spec_images_total": "Whitelisted Images",
   "spec_images_built": "Built Locally",
