@@ -598,6 +598,46 @@ url = "postgres://felis@db/felis"
 	}
 }
 
+// TestSMTPRequireTLS pins when mail may go out in the clear: only to a relay
+// on this host unless require_tls says otherwise, and an explicit value wins
+// in both directions. The key is read from felis.toml, not only set in code.
+func TestSMTPRequireTLS(t *testing.T) {
+	load := func(smtp string) config.SMTPConfig {
+		t.Helper()
+		cfg, err := config.Load(writeTOML(t, `
+[server]
+root_domain = "mc.example.net"
+[database]
+url = "postgres://felis@db/felis"
+[smtp]
+from = "felis@example.net"
+`+smtp))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		return cfg.SMTP
+	}
+	cases := []struct {
+		smtp string
+		want bool
+	}{
+		{`host = "smtp.example.net"`, true},
+		{`host = "10.0.0.5"`, true},
+		{`host = "localhost"`, false},
+		{`host = "LocalHost"`, false},
+		{`host = "127.0.0.1"`, false},
+		{`host = "127.0.0.53"`, false},
+		{`host = "::1"`, false},
+		{"host = \"smtp.example.net\"\nrequire_tls = false", false},
+		{"host = \"127.0.0.1\"\nrequire_tls = true", true},
+	}
+	for _, c := range cases {
+		if got := load(c.smtp).TLSRequired(); got != c.want {
+			t.Errorf("%q: TLSRequired = %v, want %v", c.smtp, got, c.want)
+		}
+	}
+}
+
 // TestLoadRejectsSMTPWithoutFrom guards the deliverability rule: naming a relay
 // host commits the block to being sendable, so a missing/invalid From fails at
 // load rather than at the first OTP a player is waiting on.

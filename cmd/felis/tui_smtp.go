@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"felis.lolicon.best/internal/config"
-	"felis.lolicon.best/internal/mail"
 	"felis.lolicon.best/internal/platform"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -311,24 +310,22 @@ func applySMTPConfig(ctx context.Context, in smtpInputs) error {
 	if err != nil {
 		return fmt.Errorf("port %q is not a number", in.port)
 	}
-	relay := &mail.SMTP{Host: in.host, Port: port, From: in.from, Username: in.username, Password: in.password}
-	if err := relay.Ping(ctx); err != nil {
+	var prev config.SMTPConfig
+	if cur, err := config.Load(hostSetupConfigPath); err == nil {
+		prev = cur.SMTP
+	}
+	// Ping under the posture felis api will send with, so a relay without
+	// STARTTLS is turned down here rather than at a player's first code.
+	if err := smtpRelay(setupSMTPConfig(in, port, prev), in.password).Ping(ctx); err != nil {
 		return err
 	}
 
-	smtpCfg := config.SMTPConfig{
-		Host:        in.host,
-		Port:        port,
-		From:        in.from,
-		Username:    in.username,
-		PasswordRef: platform.SMTPPasswordEnv,
-	}
 	for _, path := range []string{hostSetupConfigPath, podSetupConfigPath} {
 		cfg, err := config.Load(path)
 		if err != nil {
 			return err
 		}
-		cfg.SMTP = smtpCfg
+		cfg.SMTP = setupSMTPConfig(in, port, cfg.SMTP)
 		if err := writeConfig(path, cfg); err != nil {
 			return err
 		}
@@ -349,6 +346,22 @@ func applySMTPConfig(ctx context.Context, in smtpInputs) error {
 		return err
 	}
 	return kubectl(ctx, "-n", "felis", "rollout", "status", "deployment/felis-api", "--timeout=180s")
+}
+
+// setupSMTPConfig is the [smtp] block this screen writes: the relay it just
+// proved, plus the keys only an operator sets by hand (require_tls,
+// max_per_hour), carried over from the block it replaces so reconfiguring the
+// relay does not quietly reset them.
+func setupSMTPConfig(in smtpInputs, port int, prev config.SMTPConfig) config.SMTPConfig {
+	return config.SMTPConfig{
+		Host:        in.host,
+		Port:        port,
+		From:        in.from,
+		Username:    in.username,
+		PasswordRef: platform.SMTPPasswordEnv,
+		MaxPerHour:  prev.MaxPerHour,
+		RequireTLS:  prev.RequireTLS,
+	}
 }
 
 // smtpSecretManifest renders the felis-smtp Secret for the given namespace, the

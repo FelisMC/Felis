@@ -59,8 +59,8 @@ type AuthSourceConfig struct {
 
 // SMTPConfig is the [smtp] table: the outbound mail relay felis-api delivers
 // email one-time codes through (onboarding, email login, op-login). It is
-// OPTIONAL — an empty host means "no mailer", and felis-api falls back to
-// logging each code server-side (the pre-SMTP bootstrap posture). Only the
+// OPTIONAL — an empty host means "no mailer": every door that mails a code
+// answers 503 mail_unavailable and sign-in is by passkey only. Only the
 // coordinates live here; the password follows the tree's credential rule
 // (ArchiveS3Config, RegistryS3Config): PasswordRef NAMES the environment
 // variable felis-api reads it from — the secret itself is never written into
@@ -79,6 +79,27 @@ type SMTPConfig struct {
 	// so a flood cannot spend the relay's quota and get the account suspended.
 	// 0 means DefaultMailPerHour. Size it to the relay's own limit.
 	MaxPerHour int `toml:"max_per_hour"`
+	// RequireTLS refuses to send through a relay on a port other than 465 that
+	// does not offer STARTTLS. Unset, it is on for every relay except one on
+	// this host (see TLSRequired). A code sent in the clear can be read by
+	// anyone on the path, and a relay's STARTTLS offer can be stripped by
+	// anyone who can rewrite the conversation.
+	RequireTLS *bool `toml:"require_tls,omitempty"`
+}
+
+// TLSRequired reports whether mail may go to this relay only over TLS: the
+// explicit require_tls when set, otherwise true unless the relay is this
+// host (localhost or a loopback address), where the path never leaves the
+// machine.
+func (c SMTPConfig) TLSRequired() bool {
+	if c.RequireTLS != nil {
+		return *c.RequireTLS
+	}
+	if strings.EqualFold(c.Host, "localhost") {
+		return false
+	}
+	ip := net.ParseIP(c.Host)
+	return ip == nil || !ip.IsLoopback()
 }
 
 // DefaultMailPerHour is the install-wide mail cap when smtp.max_per_hour is

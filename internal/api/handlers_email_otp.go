@@ -68,10 +68,9 @@ const (
 	otpLiveLoginCodes = 3
 )
 
-// OTPMailer delivers a one-time code to an email address. It is a seam, not a
-// dependency: the demo ships without SMTP, so a nil Mailer logs the code
-// server-side instead of mailing it (a KNOWN-LIMITATION, never a code returned to
-// the client). Production wires a real sender.
+// OTPMailer delivers a one-time code to an email address. felis api wires the
+// [smtp] relay (internal/mail); with none configured it stays nil and every door
+// that mails a code answers 503 mail_unavailable before minting one.
 type OTPMailer interface {
 	SendOTP(ctx context.Context, email, code string) error
 }
@@ -138,6 +137,12 @@ func (a *API) handleEmailOTPStart(w http.ResponseWriter, r *http.Request) {
 	email := strings.TrimSpace(req.Email)
 	if !looksLikeEmail(email) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "a valid email is required"))
+		return
+	}
+	// No relay (or a spent budget) is said before asking for a re-verification
+	// the player could not then use.
+	if err := a.checkMailBudget(); err != nil {
+		writeError(w, r, err)
 		return
 	}
 	// Gate the start: the verify only redeems a code minted here.
@@ -274,16 +279,17 @@ func (a *API) handleEmailOTPVerify(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"verified": true, "email": email})
 }
 
-// deliverOTP hands the code to the configured Mailer, or — when none is wired (the
-// demo) — logs it server-side as a KNOWN-LIMITATION. The code is logged ONLY in the
-// no-mailer fallback and ONLY to the server log; it is never put in an HTTP response.
+// deliverOTP hands the code to the configured Mailer. The code goes nowhere
+// else: never into a response and never into a log, since anyone who can read
+// the API's logs could otherwise sign in as any player. The doors refuse a
+// relay-less install before minting (checkMailBudget); the nil check here only
+// keeps a future caller that skips that check from minting a code no one gets.
 //
 // Every real send spends one token of the install-wide mail budget (mailGate);
 // a spent budget is a 429 mail_rate_limited and nothing reaches the relay.
 func (a *API) deliverOTP(ctx context.Context, email, code string) error {
 	if a.Mailer == nil {
-		log.Printf("email-otp: no Mailer configured; code for %s is %s (KNOWN-LIMITATION: demo has no SMTP)", email, code)
-		return nil
+		return errMailUnavailable()
 	}
 	if ok, wait := a.mailGate().take(mailGateKey); !ok {
 		metrics.MailTotal.WithLabelValues("otp", "throttled").Inc()

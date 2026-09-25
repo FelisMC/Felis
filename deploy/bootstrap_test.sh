@@ -350,6 +350,7 @@ listen = "0.0.0.0:8080"
   from = "felis@example.net"
   username = "relay-user"
   password_ref = "smtp-password"
+  require_tls = false
 
 # Third-party Yggdrasil sources federated by the hasJoined multiplexer. Mojang is
 # always the code-owned identity anchor (premium-first), prepended in Go; sources here
@@ -367,6 +368,7 @@ out="$(run_smtp "$smtp_dir")"
 expect "a configured [smtp] relay is carried" 'host = "mail.example"' "$out"
 expect "its port survives the carry" 'port = 587' "$out"
 expect "its credentials reference survives" 'password_ref = "smtp-password"' "$out"
+expect "an operator's require_tls survives" 'require_tls = false' "$out"
 case "$out" in
   *"#"*)
     echo "FAIL: the carry hoards comment lines:"; printf '%s\n' "$out"; fails=$((fails + 1)) ;;

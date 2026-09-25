@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -92,6 +93,34 @@ func TestNoticeShape(t *testing.T) {
 // probe stopping short of end-of-DATA reports a green relay that cannot send.
 func fakeRelay(t *testing.T, dataVerdict string) (string, int) {
 	t.Helper()
+	return startRelay(t, &relayOpts{dataVerdict: dataVerdict})
+}
+
+// relayOpts shapes a fake relay: its end-of-DATA verdict, whether its EHLO
+// offers STARTTLS (it cannot complete one: it answers 220 and hangs up), and
+// the commands it received, in order.
+type relayOpts struct {
+	dataVerdict string
+	starttls    bool
+
+	mu   sync.Mutex
+	seen []string
+}
+
+func (o *relayOpts) record(cmd string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.seen = append(o.seen, cmd)
+}
+
+func (o *relayOpts) commands() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.seen...)
+}
+
+func startRelay(t *testing.T, opts *relayOpts) (string, int) {
+	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -103,7 +132,7 @@ func fakeRelay(t *testing.T, dataVerdict string) (string, int) {
 			if err != nil {
 				return
 			}
-			go serveFakeRelay(conn, dataVerdict)
+			go serveFakeRelay(conn, opts)
 		}
 	}()
 	host, portStr, err := net.SplitHostPort(ln.Addr().String())
@@ -117,18 +146,28 @@ func fakeRelay(t *testing.T, dataVerdict string) (string, int) {
 	return host, port
 }
 
-func serveFakeRelay(conn net.Conn, dataVerdict string) {
+func serveFakeRelay(conn net.Conn, opts *relayOpts) {
 	defer conn.Close()
 	br := bufio.NewReader(conn)
 	io.WriteString(conn, "220 fake ESMTP\r\n")
 	for {
 		line, err := br.ReadString('\n')
 		if err != nil {
+			opts.record("<closed>")
 			return
 		}
-		switch cmd := strings.ToUpper(strings.TrimSpace(line)); {
+		cmd := strings.ToUpper(strings.TrimSpace(line))
+		if f := strings.Fields(cmd); len(f) > 0 {
+			opts.record(f[0])
+		}
+		switch {
+		case strings.HasPrefix(cmd, "EHLO") && opts.starttls:
+			io.WriteString(conn, "250-fake\r\n250 STARTTLS\r\n")
 		case strings.HasPrefix(cmd, "EHLO"), strings.HasPrefix(cmd, "HELO"):
 			io.WriteString(conn, "250 fake\r\n")
+		case strings.HasPrefix(cmd, "STARTTLS"):
+			io.WriteString(conn, "220 ready\r\n")
+			return
 		case strings.HasPrefix(cmd, "MAIL FROM"), strings.HasPrefix(cmd, "RCPT TO"):
 			io.WriteString(conn, "250 2.1.0 Ok\r\n")
 		case strings.HasPrefix(cmd, "DATA"):
@@ -142,7 +181,7 @@ func serveFakeRelay(conn net.Conn, dataVerdict string) {
 					break
 				}
 			}
-			io.WriteString(conn, dataVerdict+"\r\n")
+			io.WriteString(conn, opts.dataVerdict+"\r\n")
 		case strings.HasPrefix(cmd, "QUIT"):
 			io.WriteString(conn, "221 bye\r\n")
 			return
@@ -197,5 +236,68 @@ func TestSendOTPSurfacesEndOfDataRefusal(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "550") {
 		t.Errorf("want the relay's refusal surfaced, got: %v", err)
+	}
+}
+
+// TestRequireTLSRefusesPlaintextRelay: with RequireTLS a relay that offers no
+// STARTTLS gets nothing past EHLO — no sender, no recipient, no code — and the
+// operator is told which relay and which knob.
+func TestRequireTLSRefusesPlaintextRelay(t *testing.T) {
+	relay := &relayOpts{dataVerdict: "250 2.0.0 Ok"}
+	host, port := startRelay(t, relay)
+	s := &SMTP{Host: host, Port: port, From: "noreply@example.net", RequireTLS: true}
+
+	err := s.SendOTP(context.Background(), "player@example.org", "042137")
+	if err == nil {
+		t.Fatal("SendOTP sent a code through a relay without STARTTLS")
+	}
+	for _, want := range []string{"does not offer STARTTLS", host + ":" + strconv.Itoa(port), "require_tls = false"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+	// The client hangs up instead of leaving the connection to the garbage
+	// collector; the relay sees that shortly after SendOTP returns.
+	deadline := time.Now().Add(2 * time.Second)
+	for len(relay.commands()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := strings.Join(relay.commands(), " "); got != "EHLO <closed>" {
+		t.Errorf("relay received %q, want EHLO and then the connection closed", got)
+	}
+	if err := s.Ping(context.Background()); err == nil || !strings.Contains(err.Error(), "does not offer STARTTLS") {
+		t.Errorf("Ping = %v, want the STARTTLS refusal", err)
+	}
+}
+
+// TestPlaintextRelayAllowedWithoutRequireTLS: require_tls = false (or a relay
+// on this host) keeps the old opportunistic posture and the code is delivered.
+func TestPlaintextRelayAllowedWithoutRequireTLS(t *testing.T) {
+	relay := &relayOpts{dataVerdict: "250 2.0.0 Ok"}
+	host, port := startRelay(t, relay)
+	s := &SMTP{Host: host, Port: port, From: "noreply@example.net"}
+
+	if err := s.SendOTP(context.Background(), "player@example.org", "042137"); err != nil {
+		t.Fatalf("SendOTP: %v", err)
+	}
+	if got := strings.Join(relay.commands(), " "); got != "EHLO MAIL RCPT DATA QUIT" {
+		t.Errorf("relay received %q, want EHLO MAIL RCPT DATA QUIT", got)
+	}
+}
+
+// TestRequireTLSTakesAnOfferedStartTLS: when the relay does offer STARTTLS the
+// client goes for it rather than refusing; this fake then hangs up mid-upgrade,
+// so the failure is the upgrade's own.
+func TestRequireTLSTakesAnOfferedStartTLS(t *testing.T) {
+	relay := &relayOpts{dataVerdict: "250 2.0.0 Ok", starttls: true}
+	host, port := startRelay(t, relay)
+	s := &SMTP{Host: host, Port: port, From: "noreply@example.net", RequireTLS: true}
+
+	err := s.SendOTP(context.Background(), "player@example.org", "042137")
+	if err == nil || !strings.HasPrefix(err.Error(), "smtp: starttls:") {
+		t.Fatalf("SendOTP = %v, want the STARTTLS upgrade failure", err)
+	}
+	if got := strings.Join(relay.commands(), " "); got != "EHLO STARTTLS" {
+		t.Errorf("relay received %q, want EHLO STARTTLS", got)
 	}
 }

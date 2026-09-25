@@ -140,7 +140,8 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// Email one-time codes go through the [smtp] relay when one is configured; the
 	// password is read from the env var password_ref names (default SMTPPasswordEnv,
 	// injected from the felis-smtp Secret). No [smtp] host ⇒ mailer stays nil and
-	// deliverOTP logs each code server-side (the pre-SMTP bootstrap posture).
+	// every door that mails a code answers 503 mail_unavailable: a code that is
+	// not mailed is never written anywhere else either.
 	var mailer api.OTPMailer
 	if cfg.SMTP.Host != "" {
 		passRef := cfg.SMTP.PasswordRef
@@ -151,15 +152,12 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		if cfg.SMTP.Username != "" && password == "" {
 			fmt.Fprintf(stderr, "felis api: warning: [smtp] username is set but credentials env %s is empty — OTP sends will fail AUTH\n", passRef)
 		}
-		mailer = &mail.SMTP{
-			Host:     cfg.SMTP.Host,
-			Port:     cfg.SMTP.Port,
-			From:     cfg.SMTP.From,
-			Username: cfg.SMTP.Username,
-			Password: password,
+		mailer = smtpRelay(cfg.SMTP, password)
+		if !cfg.SMTP.TLSRequired() {
+			fmt.Fprintf(stderr, "felis api: warning: [smtp] %s may be sent codes without TLS (require_tls off or a relay on this host)\n", cfg.SMTP.Host)
 		}
 	} else {
-		fmt.Fprintln(stderr, "felis api: [smtp] not configured — email one-time codes are logged, not mailed")
+		fmt.Fprintln(stderr, "felis api: [smtp] not configured — email sign-in and verification are off (503 mail_unavailable); sign in with a passkey, or run felis setup to add a relay")
 	}
 
 	// Build subsystem (spec §16): the weak-SA build Job runs in the configured
@@ -823,4 +821,18 @@ func internalCallerTokens(getenv func(string) string) (api.CallerTokens, error) 
 		tokens[api.Caller(ct.Caller)] = strings.TrimSpace(getenv(ct.APIEnv))
 	}
 	return api.NewCallerTokens(tokens)
+}
+
+// smtpRelay is the relay [smtp] names, with the resolved password and the TLS
+// posture config.SMTPConfig.TLSRequired picks. felis api, the reaper and the
+// watchdog all send through it, so none can drift to a weaker posture.
+func smtpRelay(c config.SMTPConfig, password string) *mail.SMTP {
+	return &mail.SMTP{
+		Host:       c.Host,
+		Port:       c.Port,
+		From:       c.From,
+		Username:   c.Username,
+		Password:   password,
+		RequireTLS: c.TLSRequired(),
+	}
 }

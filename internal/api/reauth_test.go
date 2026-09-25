@@ -202,6 +202,7 @@ func getReauthStatus(t *testing.T, f *sessionsFixture, tok string) reauthStatusB
 
 func TestReauthStatusNamesTheFactors(t *testing.T) {
 	f := reauthFixture(t)
+	f.api.Mailer = &captureMailer{}
 	f.repo.passkeyCreds["a"] = PasskeyCredential{ID: "a", UserID: "u1", CredentialID: "c-a", CreatedAt: frozenNow}
 	f.repo.passkeyCreds["p"] = PasskeyCredential{ID: "p", UserID: "u3", CredentialID: "c-p", CreatedAt: frozenNow}
 
@@ -225,6 +226,30 @@ func TestReauthStatusNamesTheFactors(t *testing.T) {
 	steve = getReauthStatus(t, f, laptopTok)
 	if steve.Needed || steve.Until == nil || !steve.Until.Equal(proved.Add(reauthWindow)) {
 		t.Fatalf("after a proof status = %+v, want not needed until %v", steve, proved.Add(reauthWindow))
+	}
+}
+
+// TestReauthWithoutMailRelay: with no [smtp] relay a verified email is no way in
+// (the email and op-login doors answer 503), so it is neither offered as a factor
+// nor guarded; a passkey still is, and the email start door says why it cannot help.
+func TestReauthWithoutMailRelay(t *testing.T) {
+	f := reauthFixture(t)
+	f.repo.passkeyCreds["p"] = PasskeyCredential{ID: "p", UserID: "u3", CredentialID: "c-p", CreatedAt: frozenNow}
+
+	steve := getReauthStatus(t, f, laptopTok)
+	if steve.Needed || len(steve.Factors) != 0 {
+		t.Fatalf("email-only player status = %+v, want not needed and no factors", steve)
+	}
+	pam := getReauthStatus(t, f, opTok)
+	if !pam.Needed || strings.Join(pam.Factors, ",") != "passkey" {
+		t.Fatalf("operator with a passkey status = %+v, want needed with passkey only", pam)
+	}
+	w := do(f.eh, "POST", "/api/v1/account/reauth/email/start", "", asCookie(laptopTok))
+	if code, _ := errEnvelope(t, w); w.Code != http.StatusServiceUnavailable || code != "mail_unavailable" {
+		t.Fatalf("email start = %d %s, want 503 mail_unavailable", w.Code, w.Body.String())
+	}
+	if n := len(f.repo.otps); n != 0 {
+		t.Errorf("a refused start minted %d codes", n)
 	}
 }
 

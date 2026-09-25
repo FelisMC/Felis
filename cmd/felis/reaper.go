@@ -16,7 +16,6 @@ import (
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/backup"
 	"felis.lolicon.best/internal/config"
-	"felis.lolicon.best/internal/mail"
 	"felis.lolicon.best/internal/platform"
 	"felis.lolicon.best/internal/reaper"
 	corev1 "k8s.io/api/core/v1"
@@ -126,13 +125,7 @@ func cmdReaper(args []string, stdout, stderr io.Writer) int {
 				}
 				return email, nil
 			},
-			notifier: &mail.SMTP{
-				Host:     cfg.SMTP.Host,
-				Port:     cfg.SMTP.Port,
-				From:     cfg.SMTP.From,
-				Username: cfg.SMTP.Username,
-				Password: password,
-			},
+			notifier: smtpRelay(cfg.SMTP, password),
 		}
 	} else {
 		fmt.Fprintln(stderr, "felis reaper: [smtp] not configured — pre-reap warnings are logged and NOT marked sent")

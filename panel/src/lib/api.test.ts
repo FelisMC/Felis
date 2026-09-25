@@ -402,6 +402,13 @@ describe("api access-control wire shapes", () => {
     );
   });
 
+  it("says email codes are off when the install has no mail relay", async () => {
+    const { humanizeError } = await import("./api");
+    expect(humanizeError({ status: 503, code: "mail_unavailable" })).toBe(
+      "This server can't send email codes because no mail relay is set up. Sign in with a passkey, or ask the server operator to configure email.",
+    );
+  });
+
   it("maps the backup rationing codes to their own copy", async () => {
     const { humanizeError } = await import("./api");
     expect(humanizeError({ code: "backup_cooldown" })).toMatch(/cooldown/i);

@@ -6,10 +6,12 @@
 // notice (SendNotice).
 //
 // TLS posture: port 465 dials implicit TLS; any other port dials plaintext and
-// upgrades via STARTTLS when the relay advertises it. AUTH is attempted only
-// when a username is configured, and net/smtp's PlainAuth itself refuses to
-// send credentials over an unencrypted connection — a relay that offers no
-// TLS can carry unauthenticated mail but can never be handed the password.
+// upgrades via STARTTLS. With RequireTLS set (the default for any relay not on
+// this host, config.SMTPConfig.TLSRequired) a relay that does not offer
+// STARTTLS is refused before a single address or code is sent, so a relay
+// without TLS, or a path that strips the offer, fails loudly. AUTH is
+// attempted only when a username is configured, and net/smtp's PlainAuth
+// itself refuses to send credentials over an unencrypted connection.
 package mail
 
 import (
@@ -38,6 +40,9 @@ type SMTP struct {
 	From     string
 	Username string
 	Password string
+	// RequireTLS refuses a relay on a port other than 465 that does not offer
+	// STARTTLS. Callers set it from config.SMTPConfig.TLSRequired.
+	RequireTLS bool
 }
 
 // SendOTP mails code to email as a small bilingual plain-text message. It is
@@ -172,6 +177,10 @@ func (s *SMTP) connect(ctx context.Context) (*smtp.Client, error) {
 				c.Close()
 				return nil, fmt.Errorf("smtp: starttls: %w", err)
 			}
+		} else if s.RequireTLS {
+			c.Close()
+			return nil, fmt.Errorf("smtp: %s does not offer STARTTLS, so mail to it would cross the network unencrypted; "+
+				"use port 465 or a relay with STARTTLS, or set [smtp] require_tls = false for a relay you reach over a trusted link", addr)
 		}
 	}
 	if s.Username != "" {

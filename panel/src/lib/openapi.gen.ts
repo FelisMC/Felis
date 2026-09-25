@@ -2488,6 +2488,15 @@ export interface components {
                 "application/json": components["schemas"]["Error"];
             };
         };
+        /** @description This install has no [smtp] relay (code mail_unavailable), so no code was minted or sent. The public doors answer it before resolving the address, so it is the same for every address. Sign in with a passkey, or have the operator configure email with felis setup. */
+        MailUnavailable: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
         /** @description This client address called the public sign-in doors faster than the per-address limit allows (code rate_limited); Retry-After gives the seconds until the next call is admitted. The address is the visitor header the install's edge writes ([auth] client_ip_header: CF-Connecting-IP behind the Cloudflare tunnel), else the TCP peer; IPv6 clients share one limit per /64. */
         RateLimited: {
             headers: {
@@ -3963,7 +3972,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The login methods available for the address, in a deterministic order (passkey before email_otp). An empty array means no verified account. */
+            /** @description The login methods available for the address, in a deterministic order (passkey before email_otp). email_otp is offered only when the install has a mail relay, passkey only when a verifier is wired and the account has a credential. An empty array means no verified account, or none of its methods is available on this install. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -4364,6 +4373,7 @@ export interface operations {
                 };
             };
             502: components["responses"]["MailUndeliverable"];
+            503: components["responses"]["MailUnavailable"];
         };
     };
     loginEmailVerify: {
@@ -4492,6 +4502,7 @@ export interface operations {
                 };
             };
             502: components["responses"]["MailUndeliverable"];
+            503: components["responses"]["MailUnavailable"];
         };
     };
     opLoginStatus: {
@@ -5960,7 +5971,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Code minted and dispatched (or logged server-side when no mailer is wired). */
+            /** @description Code minted and mailed. */
             202: {
                 headers: {
                     [name: string]: unknown;
@@ -5995,6 +6006,7 @@ export interface operations {
                 };
             };
             502: components["responses"]["MailUndeliverable"];
+            503: components["responses"]["MailUnavailable"];
         };
     };
     emailOtpVerify: {
@@ -6388,6 +6400,7 @@ export interface operations {
                 };
             };
             502: components["responses"]["MailUndeliverable"];
+            503: components["responses"]["MailUnavailable"];
         };
     };
     reauthEmailVerify: {
@@ -6614,6 +6627,7 @@ export interface operations {
                 };
             };
             502: components["responses"]["MailUndeliverable"];
+            503: components["responses"]["MailUnavailable"];
         };
     };
     migrateConfirmOtpVerify: {

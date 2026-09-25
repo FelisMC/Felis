@@ -192,6 +192,15 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
+    MailUnavailable:
+      description: >
+        This install has no [smtp] relay (code mail_unavailable), so no code was minted
+        or sent. The public doors answer it before resolving the address, so it is the
+        same for every address. Sign in with a passkey, or have the operator configure
+        email with felis setup.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
     RateLimited:
       description: >
         This client address called the public sign-in doors faster than the per-address
@@ -2162,7 +2171,10 @@ paths:
         '200':
           description: >-
             The login methods available for the address, in a deterministic order
-            (passkey before email_otp). An empty array means no verified account.
+            (passkey before email_otp). email_otp is offered only when the install has
+            a mail relay, passkey only when a verifier is wired and the account has a
+            credential. An empty array means no verified account, or none of its methods
+            is available on this install.
           content:
             application/json:
               schema:
@@ -2546,6 +2558,8 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '502':
           $ref: '#/components/responses/MailUndeliverable'
+        '503':
+          $ref: '#/components/responses/MailUnavailable'
 
   /api/v1/auth/email/verify:
     post:
@@ -2673,6 +2687,8 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '502':
           $ref: '#/components/responses/MailUndeliverable'
+        '503':
+          $ref: '#/components/responses/MailUnavailable'
 
   /api/v1/auth/op-login/status/{id}:
     get:
@@ -4113,7 +4129,7 @@ paths:
                 email: { type: string, format: email }
       responses:
         '202':
-          description: Code minted and dispatched (or logged server-side when no mailer is wired).
+          description: Code minted and mailed.
           content:
             application/json:
               schema:
@@ -4142,6 +4158,8 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '502':
           $ref: '#/components/responses/MailUndeliverable'
+        '503':
+          $ref: '#/components/responses/MailUnavailable'
 
   /api/v1/account/email/verify:
     post:
@@ -4540,6 +4558,8 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '502':
           $ref: '#/components/responses/MailUndeliverable'
+        '503':
+          $ref: '#/components/responses/MailUnavailable'
 
   /api/v1/account/reauth/email/verify:
     post:
@@ -4757,6 +4777,8 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '502':
           $ref: '#/components/responses/MailUndeliverable'
+        '503':
+          $ref: '#/components/responses/MailUnavailable'
 
   /api/v1/account/migrate/confirm/otp/verify:
     post:

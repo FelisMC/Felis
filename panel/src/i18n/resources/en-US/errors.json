@@ -50,6 +50,7 @@
   "bad_idle_stop": "Idle stop must be between 1 minute and 24 hours, or Never.",
   "email_taken": "That email is already verified on another account — sign in with it or use another address.",
   "mail_undeliverable": "The verification email could not be delivered — try again later, or ask the operator to check the mail relay.",
+  "mail_unavailable": "This server can't send email codes because no mail relay is set up. Sign in with a passkey, or ask the server operator to configure email.",
   "bad_path": "That path is invalid — use a relative path inside the world directory.",
   "too_large": "That is larger than the size limit.",
   "files_timeout": "The file operation timed out — try again shortly.",

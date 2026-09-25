@@ -14,8 +14,9 @@ import (
 // It is the deliberate counter-slice to the anti-enumeration login doors
 // (handlers_auth_email.go, handlers_passkey.go): those refuse to disclose whether an
 // address has an account precisely because THIS endpoint is the one sanctioned place
-// existence is revealed. An empty methods array means "no (verified) account". That
-// makes it a mass-enumeration surface by design — an accepted product decision, the
+// existence is revealed. An empty methods array means "no (verified) account, or
+// none of its methods is available on this install". That makes it a
+// mass-enumeration surface by design — an accepted product decision, the
 // same one the email door's header records. The handler sends no mail and mutates
 // nothing, so a per-recipient cooldown would merely block a legitimate retry; what
 // bounds enumeration is the per-client-address token bucket shared by every public
@@ -87,8 +88,12 @@ func (a *API) handleAuthOptions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// Email-OTP login works for any resolved verified account (UserByEmail resolves only
-	// email_verified rows), so it is always on offer.
-	methods = append(methods, "email_otp")
+	// email_verified rows), so it is on offer whenever a relay can mail the code; with
+	// none the email door answers 503 mail_unavailable, so it is left out like an
+	// unwired passkey verifier.
+	if a.Mailer != nil {
+		methods = append(methods, "email_otp")
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"methods": methods})
 }

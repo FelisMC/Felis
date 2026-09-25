@@ -212,12 +212,21 @@ func errMailRateLimited(wait time.Duration) *apiError {
 		"this server is sending too much mail right now; try again shortly").retryAfter(wait)
 }
 
-// checkMailBudget is the public doors' pre-resolution check: it refuses every
-// address alike while the budget is spent, so the refusal says nothing about
-// whether the address has an account.
+// errMailUnavailable answers a door that would mail a code on an install with
+// no [smtp] relay. The code is never minted, so it cannot turn up anywhere.
+func errMailUnavailable() *apiError {
+	return newError(http.StatusServiceUnavailable, "mail_unavailable",
+		"this server has no mail relay configured, so it cannot send codes; sign in with a passkey or ask the server operator to set up email")
+}
+
+// checkMailBudget runs before a door mints a code: with no relay it refuses
+// with mail_unavailable, and while the install-wide budget is spent with
+// mail_rate_limited. The public doors call it before resolving the address, so
+// either refusal is the same for every address and says nothing about whether
+// it has an account.
 func (a *API) checkMailBudget() error {
 	if a.Mailer == nil {
-		return nil
+		return errMailUnavailable()
 	}
 	if ok, wait := a.mailGate().peek(mailGateKey); !ok {
 		metrics.MailTotal.WithLabelValues("otp", "throttled").Inc()

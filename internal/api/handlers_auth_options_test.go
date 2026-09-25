@@ -22,7 +22,8 @@ import (
 //     door would immediately 503.
 
 // seedAuthOptionsAPI wires the discovery door: local sessions enabled, a verified player
-// (u1) and a verified staff account (a1), and a passkey verifier wired by default.
+// (u1) and a verified staff account (a1), and a passkey verifier and a mail relay wired
+// by default.
 // Callers seed passkey credentials per-test to set the credential state.
 func seedAuthOptionsAPI(t *testing.T) (*API, *fakeRepo) {
 	t.Helper()
@@ -32,6 +33,7 @@ func seedAuthOptionsAPI(t *testing.T) (*API, *fakeRepo) {
 	repo.staff["boss"] = &StaffUser{ID: "a1", Username: "boss", Email: "boss@example.net", Role: "admin", EmailVerified: true}
 	api := newTestAPI(repo, newFakeCluster())
 	api.Passkey = &fakePasskeyVerifier{}
+	api.Mailer = &captureMailer{}
 	return api, repo
 }
 
@@ -125,6 +127,22 @@ func TestAuthOptionsDoesNotRevealStaffness(t *testing.T) {
 					wPlayer.Body.String(), wStaff.Body.String())
 			}
 		})
+	}
+}
+
+// TestAuthOptionsEmailRequiresMailRelay: with no [smtp] relay the email door answers
+// 503 mail_unavailable, so options leaves email_otp out; an account with a passkey is
+// still offered it, and one without is offered nothing.
+func TestAuthOptionsEmailRequiresMailRelay(t *testing.T) {
+	api, repo := seedAuthOptionsAPI(t)
+	api.Mailer = nil
+	repo.passkeyCreds["a"] = PasskeyCredential{ID: "a", UserID: "a1", CredentialID: "c-a1", PublicKey: "k", CreatedAt: frozenNow}
+	eh := api.ExternalHandler()
+	if w := do(eh, "POST", authOptionsPath, `{"email":"boss@example.net"}`, jsonHeader); w.Body.String() != `{"methods":["passkey"]}`+"\n" {
+		t.Errorf("passkey account body = %q, want only passkey", w.Body.String())
+	}
+	if w := do(eh, "POST", authOptionsPath, `{"email":"player@example.net"}`, jsonHeader); w.Body.String() != `{"methods":[]}`+"\n" {
+		t.Errorf("email-only account body = %q, want no methods", w.Body.String())
 	}
 }
 

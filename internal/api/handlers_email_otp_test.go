@@ -139,15 +139,15 @@ func TestWithRecoverLogsPanicStack(t *testing.T) {
 	}
 }
 
-// TestEmailOTPStartValidation covers the mint-side input gate and the no-mailer
-// fallback (the demo path): a malformed address never mints, and a nil Mailer still
-// persists a code (logged server-side) so the verify flow stays exercisable.
+// TestEmailOTPStartValidation covers the mint-side input gate and the no-relay
+// refusal: a malformed address never mints, and with no Mailer the start answers
+// 503 mail_unavailable without minting, so no code exists to leak anywhere.
 func TestEmailOTPStartValidation(t *testing.T) {
 	user := &Principal{UserID: "u1", Email: "u1@example.net", Role: "user"}
 	mk := func(repo *fakeRepo) http.Handler {
 		api := newTestAPI(repo, newFakeCluster())
 		api.External = staticExternal{p: user}
-		return api.ExternalHandler() // no Mailer wired → demo fallback
+		return api.ExternalHandler() // no Mailer wired
 	}
 
 	bad := map[string]string{
@@ -174,16 +174,50 @@ func TestEmailOTPStartValidation(t *testing.T) {
 		})
 	}
 
-	t.Run("no mailer still persists a code (demo fallback)", func(t *testing.T) {
+	t.Run("no mailer refuses without minting", func(t *testing.T) {
 		repo := newFakeRepo()
 		w := do(mk(repo), "POST", "/api/v1/account/email/start", `{"email":"player@example.net"}`, nil)
-		if w.Code != http.StatusAccepted {
-			t.Fatalf("code = %d, want 202 (%s)", w.Code, w.Body.String())
+		code, msg := errEnvelope(t, w)
+		if w.Code != http.StatusServiceUnavailable || code != "mail_unavailable" {
+			t.Fatalf("code = %d %s, want 503 mail_unavailable", w.Code, w.Body.String())
 		}
-		if len(repo.otps) != 1 {
-			t.Fatalf("want exactly 1 persisted code, got %d", len(repo.otps))
+		if msg != "this server has no mail relay configured, so it cannot send codes; sign in with a passkey or ask the server operator to set up email" {
+			t.Errorf("message = %q", msg)
+		}
+		if len(repo.otps) != 0 {
+			t.Fatalf("a refused start minted %d codes", len(repo.otps))
 		}
 	})
+
+	// No relay is said before a re-verification the player could not use.
+	t.Run("no mailer is said before reauth", func(t *testing.T) {
+		repo := newFakeRepo()
+		repo.passkeyCreds["p"] = PasskeyCredential{ID: "p", UserID: "u1", CredentialID: "c-p", CreatedAt: frozenNow}
+		api := newTestAPI(repo, newFakeCluster())
+		api.External = staticExternal{p: &Principal{UserID: "u1", Email: "u1@example.net", Role: "user", ViaSession: true}}
+		w := do(api.ExternalHandler(), "POST", "/api/v1/account/email/start", `{"email":"player@example.net"}`, nil)
+		if code, _ := errEnvelope(t, w); w.Code != http.StatusServiceUnavailable || code != "mail_unavailable" {
+			t.Fatalf("code = %d %s, want 503 mail_unavailable", w.Code, w.Body.String())
+		}
+	})
+}
+
+// TestDeliverOTPWithoutMailer: a caller that reaches deliverOTP with no relay gets
+// the 503, and the code is written nowhere, the log included.
+func TestDeliverOTPWithoutMailer(t *testing.T) {
+	var logged strings.Builder
+	old := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(old) })
+	api := newTestAPI(newFakeRepo(), newFakeCluster())
+	err := api.deliverOTP(context.Background(), "player@example.net", "042137")
+	var ae *apiError
+	if !errors.As(err, &ae) || ae.status != http.StatusServiceUnavailable || ae.code != "mail_unavailable" {
+		t.Fatalf("deliverOTP = %v, want 503 mail_unavailable", err)
+	}
+	if strings.Contains(logged.String(), "042137") {
+		t.Errorf("the code reached the log: %s", logged.String())
+	}
 }
 
 // TestEmailOTPStartRateLimited closes the email-bomb vector: handleEmailOTPStart is

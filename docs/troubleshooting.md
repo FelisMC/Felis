@@ -1947,11 +1947,12 @@ Skips the pre-migration snapshot (`migrate up -no-backup`). The installer warns
 loudly when it is set. Use it only when the snapshot cannot work and you have
 another backup, e.g. an external database newer than the host's `pg_dump`.
 
-## 17. Sign-in refused with 429, mail budget, account code locks, failed sign-ins
+## 17. Sign-in refused: 429 limits, no mail relay, account code locks, failed sign-ins
 
 The public sign-in doors (`/api/v1/auth/*` except logout and the op-login
 status poll) have three limits of their own. Each answers 429 with a
-`Retry-After` header and a distinct error code.
+`Retry-After` header and a distinct error code. The doors that mail a code
+also answer 503 `mail_unavailable` on an install with no mail relay.
 
 ### `rate_limited`: one address called the doors too often
 
@@ -1990,6 +1991,33 @@ raise `max_per_hour` to what your relay allows.
 `FelisMailDeliveryFailing` is the other half: the relay itself refused mail
 (`felis_mail_total{result="failed"}`, 502 `mail_undeliverable` to the caller).
 The relay's reason is in the `felis-api` log.
+
+### `mail_unavailable`: no mail relay
+
+With no `[smtp]` section every door that mails a code answers 503
+`mail_unavailable` before minting one: email sign-in, op.console sign-in,
+email verification, and the email step-up for sensitive changes and
+migration. The public doors answer before looking up the address, so every
+address gets the same reply. Sign-in is by passkey only, and a verified email
+stops counting as a way into the account (it is no longer offered as a
+re-verification factor). Codes are never logged: `felis api` says at start
+`[smtp] not configured`. Run `felis setup` and configure email to open the
+doors.
+
+### Relay refused for lacking TLS
+
+A relay on port 465 is spoken to over TLS from the first byte. On any other
+port Felis upgrades with STARTTLS, and when the relay does not offer it the
+send fails with `smtp: <host>:<port> does not offer STARTTLS` (502
+`mail_undeliverable` to the caller, the full text in the `felis-api` log, and
+the same error on the `felis setup` email screen). Without TLS anyone on the
+path reads the codes, and anyone who can rewrite the conversation can strip
+the STARTTLS offer, so this is the default for every relay except one on this
+host (`localhost`, `127.0.0.0/8`, `::1`). Use port 465 or a relay that offers
+STARTTLS. For a relay you reach over a link you trust, set
+`require_tls = false` under `[smtp]` in `/etc/felis/felis.toml` and
+`/etc/felis/felis.pod.toml`; installer re-runs and the setup email screen keep
+it. `felis api` warns at start whenever codes may go out without TLS.
 
 ### `otp_account_locked`: ten wrong codes in 24 hours
 

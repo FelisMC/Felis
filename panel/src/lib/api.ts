@@ -941,6 +941,9 @@ export function humanizeError(e: unknown): string {
       return t("email_taken");
     case "mail_undeliverable":
       return t("mail_undeliverable");
+    // No [smtp] relay at all: every door that mails a code refuses before minting.
+    case "mail_unavailable":
+      return t("mail_unavailable");
     // File editor (spec §7): path/size refusals from the sandboxed job, plus the
     // subsystem being unwired.
     case "bad_path":

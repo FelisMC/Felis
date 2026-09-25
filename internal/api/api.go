@@ -101,10 +101,10 @@ type API struct {
 	Submissions SubmissionService
 
 	// Mailer delivers player email one-time codes (spec §B2 onboarding). It is
-	// optional: when nil the email-OTP start route mints and persists the code but
-	// logs it server-side instead of mailing it (a KNOWN-LIMITATION — the demo has no
-	// SMTP), so the verify flow is still exercised end-to-end. Production wires a real
-	// sender. The code is never returned to the client on either path.
+	// optional: when nil (no [smtp] relay) every door that mails a code answers 503
+	// mail_unavailable before minting one, auth options stops offering email_otp,
+	// and a verified email stops counting as a reauth factor. The code is never
+	// returned to the client or logged.
 	Mailer OTPMailer
 
 	// Passkey verifies WebAuthn credential-creation ceremonies (spec §14 / Phase 6

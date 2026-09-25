@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/config"
-	"felis.lolicon.best/internal/mail"
 	"felis.lolicon.best/internal/offsite"
 	"felis.lolicon.best/internal/platform"
 	"felis.lolicon.best/internal/store"
@@ -245,7 +244,7 @@ func sendAlert(ctx context.Context, cfg *config.Config, state *watchdog.State, s
 	if ref := cfg.SMTP.PasswordRef; ref != "" && os.Getenv(ref) != "" {
 		password = os.Getenv(ref)
 	}
-	relay := &mail.SMTP{Host: cfg.SMTP.Host, Port: cfg.SMTP.Port, From: cfg.SMTP.From, Username: cfg.SMTP.Username, Password: password}
+	relay := smtpRelay(cfg.SMTP, password)
 	var errs []error
 	for _, to := range state.Recipients {
 		if err := relay.SendNotice(ctx, to, subject, body); err != nil {

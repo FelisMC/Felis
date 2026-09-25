@@ -116,12 +116,11 @@ worth revisiting.
 
 ## Wired since the marker was written
 
-- `internal/api/handlers_email_otp.go:54,223,227` and `internal/api/api.go:84` —
-  SMTP shipped on
-  2026-07-20 (`internal/mail`, wired at `cmd/felis/api.go:264`). The nil-`Mailer`
-  branch that logs the code server-side is a runtime fallback for an install with no
-  `[smtp]` section, not an unbuilt feature. The comments are accurate; the reading
-  "Felis cannot send mail" is not.
+- `internal/api/handlers_email_otp.go` and `internal/api/api.go` — SMTP shipped on
+  2026-07-20 (`internal/mail`, wired in `cmd/felis/api.go`). An install with no
+  `[smtp]` section leaves the `Mailer` nil, and every door that mails a code answers
+  503 `mail_unavailable`; codes are never logged. The reading "Felis cannot send
+  mail" is stale.
 - `internal/config/config.go:117` — was stale. It described the upload transport as a
   deferred integration after both backends had shipped (`LocalContextStore`,
   `S3ContextStore`, selected in `cmd/felis/api.go` by the shape of the configured

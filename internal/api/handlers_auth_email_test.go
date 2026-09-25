@@ -815,3 +815,33 @@ func TestDeadAccountsCannotLogInOrKeepSessions(t *testing.T) {
 		t.Error("refused redeem consumed the code; re-enabling the account must stay retryable within TTL")
 	}
 }
+
+// TestPublicMailDoorsWithoutRelay: with no [smtp] relay both public doors that mail
+// a code answer 503 mail_unavailable before the address is looked up, so a known
+// address, a staff address and an unknown one get the same answer, no code or
+// op-login request is minted, and no cooldown is spent for when a relay is added.
+func TestPublicMailDoorsWithoutRelay(t *testing.T) {
+	api, repo, _ := seedLoginEmailAPI(t)
+	repo.staff["op"] = &StaffUser{ID: "a1", Username: "op", Email: "op@example.net", Role: "admin", EmailVerified: true}
+	api.Mailer = nil
+	eh := api.ExternalHandler()
+
+	for _, door := range []string{"/api/v1/auth/email/start", "/api/v1/auth/op-login/start"} {
+		for _, email := range []string{"player@example.net", "op@example.net", "ghost@example.net"} {
+			w := do(eh, "POST", door, `{"email":"`+email+`"}`, jsonHeader)
+			code, msg := errEnvelope(t, w)
+			if w.Code != http.StatusServiceUnavailable || code != "mail_unavailable" ||
+				msg != "this server has no mail relay configured, so it cannot send codes; sign in with a passkey or ask the server operator to set up email" {
+				t.Errorf("%s %s = %d %s, want 503 mail_unavailable", door, email, w.Code, w.Body.String())
+			}
+		}
+	}
+	if len(repo.otps) != 0 || len(repo.opLogins) != 0 {
+		t.Fatalf("refused starts minted %d codes and %d op-login requests", len(repo.otps), len(repo.opLogins))
+	}
+
+	api.Mailer = &captureMailer{}
+	if w := do(eh, "POST", "/api/v1/auth/email/start", `{"email":"player@example.net"}`, jsonHeader); w.Code != http.StatusAccepted {
+		t.Fatalf("start once a relay is wired = %d (%s), want 202", w.Code, w.Body.String())
+	}
+}
