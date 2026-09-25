@@ -2031,6 +2031,33 @@ A failed audit write does not fail the action; it logs `audit: lost ...` in
 `felis-api` and counts in `felis_audit_write_failures_total`
 (`FelisAuditWriteFailing`). The cause is almost always PostgreSQL (§16).
 
+### How long rows are kept
+
+`felis-api` prunes the database a minute after it starts and every 6 hours
+after that, and logs `retention: pruned spent rows` with a count per table:
+
+| Rows | Deleted |
+|---|---|
+| sessions | 30 days after they expired or were signed out |
+| email codes, passkey challenges, setup links, op-login requests | 30 days after they expired or were used |
+| `/felis link` bind codes | 30 days after they expired |
+| account migrations that never completed | 30 days after their last step (completed ones stay) |
+| wrong-code windows (`otp_failure_windows`) | 30 days after they began |
+| `audit_logs` | once older than `[audit] retention` |
+
+`[audit] retention` defaults to `365d`; it takes days (`90d`), months of 30
+days (`18mo`) or `forever`, and refuses anything under `30d`. The daily
+`felis db backup` bundles (§16) still hold the rows for as long as the bundles
+are kept. To keep audit rows past the retention, export them before they go:
+
+```sh
+sudo felis db audit-export -until 2026-01-01 -out /root/audit-2025.jsonl
+```
+
+`-since` and `-until` take a day (UTC midnight) or an RFC 3339 instant; the
+window is `[since, until)`. Each line is one row as JSON, oldest first. The
+file is created `0600` and an existing file is never overwritten.
+
 ### Optional: a Cloudflare rate limiting rule in front
 
 The limits above live in the API, so they hold on any edge. Behind Cloudflare
@@ -2080,3 +2107,4 @@ for 10 seconds (the Free plan's limits).
 | Right code refused; `otp_account_locked` / `FelisOTPAccountLocked` | §17 |
 | `FelisSignInFailures` / who is guessing, from where | §17 |
 | `FelisAuditWriteFailing` | §17 |
+| How long sessions, codes and audit rows are kept; export audit rows | §17 |

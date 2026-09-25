@@ -317,27 +317,9 @@ func resolveWorldDir(ctx context.Context, cl client.Client, namespace, worldsRoo
 	}
 }
 
-// parseSpanDuration parses the human spans used in felis.toml's [archive] table:
-// "3mo" (months≈30d), "15d" (days), or any time.ParseDuration unit ("12h").
-func parseSpanDuration(s string) (time.Duration, error) {
-	s = strings.TrimSpace(s)
-	switch {
-	case strings.HasSuffix(s, "mo"):
-		n, err := strconv.Atoi(strings.TrimSuffix(s, "mo"))
-		if err != nil {
-			return 0, err
-		}
-		return time.Duration(n) * 30 * 24 * time.Hour, nil
-	case strings.HasSuffix(s, "d"):
-		n, err := strconv.Atoi(strings.TrimSuffix(s, "d"))
-		if err != nil {
-			return 0, err
-		}
-		return time.Duration(n) * 24 * time.Hour, nil
-	default:
-		return time.ParseDuration(s)
-	}
-}
+// parseSpanDuration parses the human spans used in felis.toml's [archive] table
+// (config.ParseSpan).
+func parseSpanDuration(s string) (time.Duration, error) { return config.ParseSpan(s) }
 
 // parseByteSize parses a Kubernetes-style quantity ("200Gi", "10G") into bytes.
 // An empty string means unlimited (0).

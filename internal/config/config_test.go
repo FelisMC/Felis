@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"felis.lolicon.best/internal/config"
 )
@@ -692,6 +693,53 @@ prefix = "site-a"
 	} {
 		if _, err := config.Load(writeTOML(t, head+"[offsite]\n"+body+"\n")); err == nil {
 			t.Errorf("%s: loaded", name)
+		}
+	}
+}
+
+// TestAuditRetention: [audit] retention resolves to a year when unset, to 0 for
+// "forever", and to the named span otherwise; a span under 30 days or one that
+// does not parse fails at load.
+func TestAuditRetention(t *testing.T) {
+	const head = `
+[server]
+root_domain = "mc.example.net"
+[database]
+url = "postgres://felis@db/felis"
+`
+	const day = 24 * time.Hour
+	for _, tc := range []struct {
+		name, table string
+		want        time.Duration
+	}{
+		{"unset", "", 365 * day},
+		{"empty", "[audit]\nretention = \"\"\n", 365 * day},
+		{"forever", "[audit]\nretention = \"forever\"\n", 0},
+		{"days", "[audit]\nretention = \"90d\"\n", 90 * day},
+		{"months", "[audit]\nretention = \"18mo\"\n", 540 * day},
+		{"hours", "[audit]\nretention = \"720h\"\n", 30 * day},
+		{"exactly the minimum", "[audit]\nretention = \"30d\"\n", 30 * day},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := config.Load(writeTOML(t, head+tc.table))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			got, err := cfg.Audit.RetentionPeriod()
+			if err != nil || got != tc.want {
+				t.Fatalf("RetentionPeriod = %v, %v; want %v", got, err, tc.want)
+			}
+		})
+	}
+	for _, tc := range []struct{ value, wantErr string }{
+		{"29d", `config: [audit] retention "29d" is shorter than the 30d minimum`},
+		{"719h", `config: [audit] retention "719h" is shorter than the 30d minimum`},
+		{"a year", `config: [audit] retention "a year" must be a span such as 365d or 18mo, or forever`},
+		{"Forever", `config: [audit] retention "Forever" must be a span such as 365d or 18mo, or forever`},
+	} {
+		_, err := config.Load(writeTOML(t, head+"[audit]\nretention = \""+tc.value+"\"\n"))
+		if err == nil || err.Error() != tc.wantErr {
+			t.Errorf("retention %q: err = %v, want %q", tc.value, err, tc.wantErr)
 		}
 	}
 }

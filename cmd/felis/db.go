@@ -15,6 +15,7 @@ import (
 
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/dbbackup"
+	"felis.lolicon.best/internal/retention"
 )
 
 const dbUsage = `usage:
@@ -24,6 +25,7 @@ const dbUsage = `usage:
   felis db verify  [-dir dir] <bundle>
   felis db list    [-dir dir]
   felis db check   [-dir dir] [-max-age 26h]
+  felis db audit-export [-config path] [-since date] [-until date] [-out file]
 `
 
 // defaultKeep is how many bundles of a label a backup leaves behind. Manual
@@ -58,6 +60,8 @@ func cmdDB(args []string, stdout, stderr io.Writer) int {
 		return dbList(fs, dir, rest, stdout, stderr)
 	case "check":
 		return dbCheck(fs, dir, rest, stdout, stderr)
+	case "audit-export":
+		return dbAuditExport(fs, rest, stdout, stderr)
 	case "-h", "--help", "help":
 		fmt.Fprint(stdout, dbUsage)
 		return 0
@@ -260,6 +264,88 @@ func dbList(fs *flag.FlagSet, dir *string, args []string, stdout, stderr io.Writ
 		fmt.Fprintf(stdout, "%-50s %-12s %10s  %s ago\n", b.Name, b.Label, humanBytes(b.Size), dbbackup.Age(now.Sub(b.Created)))
 	}
 	return 0
+}
+
+// dbAuditExport writes audit rows to a file (or stdout) as JSON lines, so an
+// install can keep them past [audit] retention, after which felis-api deletes them.
+func dbAuditExport(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
+	cfgPath := fs.String("config", "/etc/felis/felis.toml", "path to felis.toml")
+	sinceFlag := fs.String("since", "", "first day (or RFC 3339 instant) to export, inclusive; empty starts at the oldest row")
+	untilFlag := fs.String("until", "", "day (or RFC 3339 instant) to stop before, exclusive; empty runs to the newest row")
+	out := fs.String("out", "", "file to write (created 0600, never overwritten); empty writes to stdout")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprint(stderr, dbUsage)
+		return 2
+	}
+	since, err := parseExportBound(*sinceFlag)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis db audit-export: -since: %v\n", err)
+		return 2
+	}
+	until, err := parseExportBound(*untilFlag)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis db audit-export: -until: %v\n", err)
+		return 2
+	}
+	if !since.IsZero() && !until.IsZero() && !until.After(since) {
+		fmt.Fprintf(stderr, "felis db audit-export: -until %s is not after -since %s\n", *untilFlag, *sinceFlag)
+		return 2
+	}
+	url, err := dbDatabaseURL(*cfgPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis db audit-export: %v\n", err)
+		return 1
+	}
+	w := stdout
+	var f *os.File
+	if *out != "" {
+		if f, err = os.OpenFile(*out, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600); err != nil {
+			fmt.Fprintf(stderr, "felis db audit-export: %v\n", err)
+			return 1
+		}
+		w = f
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+	n, err := exportAudit(ctx, url, since, until, w)
+	if f != nil {
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "felis db audit-export: %v (%d rows written)\n", err, n)
+		return 1
+	}
+	fmt.Fprintf(stderr, "felis db audit-export: %d audit rows written\n", n)
+	return 0
+}
+
+func exportAudit(ctx context.Context, url string, since, until time.Time, w io.Writer) (int, error) {
+	drv, err := openStore(ctx, url, false)
+	if err != nil {
+		return 0, fmt.Errorf("open database: %w", err)
+	}
+	defer drv.Close()
+	return retention.ExportAudit(ctx, drv.DB(), since, until, w)
+}
+
+// parseExportBound reads a -since/-until value: a day (midnight UTC) or an
+// RFC 3339 instant; empty is an open bound.
+func parseExportBound(v string) (time.Time, error) {
+	if v == "" {
+		return time.Time{}, nil
+	}
+	if t, err := time.Parse(time.DateOnly, v); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t.UTC(), nil
+	}
+	return time.Time{}, fmt.Errorf("%q is neither a day (2026-01-31) nor an RFC 3339 instant (2026-01-31T12:00:00Z)", v)
 }
 
 func humanBytes(n int64) string {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"felis.lolicon.best/internal/store"
 )
@@ -146,6 +147,39 @@ func TestPreMigrateBackupOnlyGuardsAPopulatedDatabase(t *testing.T) {
 		}
 		if path != "" {
 			t.Errorf("%s: path = %q", tc.name, path)
+		}
+	}
+}
+
+// audit-export takes a day or an RFC 3339 instant for each bound, and refuses a
+// malformed or inverted window before it opens the config or the database.
+func TestAuditExportBounds(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"", "0001-01-01T00:00:00Z"},
+		{"2026-01-31", "2026-01-31T00:00:00Z"},
+		{"2026-01-31T12:30:00+08:00", "2026-01-31T04:30:00Z"},
+	} {
+		got, err := parseExportBound(tc.in)
+		if err != nil || got.Format(time.RFC3339) != tc.want {
+			t.Errorf("parseExportBound(%q) = %v, %v; want %s", tc.in, got, err, tc.want)
+		}
+	}
+	if _, err := parseExportBound("31/01/2026"); err == nil || err.Error() != `"31/01/2026" is neither a day (2026-01-31) nor an RFC 3339 instant (2026-01-31T12:00:00Z)` {
+		t.Errorf("parseExportBound(31/01/2026) err = %v", err)
+	}
+	for _, tc := range []struct {
+		args    []string
+		wantErr string
+	}{
+		{[]string{"db", "audit-export", "-since", "yesterday"}, `felis db audit-export: -since: "yesterday" is neither`},
+		{[]string{"db", "audit-export", "-until", "2026-13-01"}, `felis db audit-export: -until: "2026-13-01" is neither`},
+		{[]string{"db", "audit-export", "-since", "2026-02-01", "-until", "2026-02-01"}, "felis db audit-export: -until 2026-02-01 is not after -since 2026-02-01"},
+		{[]string{"db", "audit-export", "extra"}, "felis db audit-export [-config path]"},
+	} {
+		var out, errBuf bytes.Buffer
+		code := run(append(tc.args, "-config", "/nonexistent/felis.toml"), &out, &errBuf)
+		if code != 2 || !strings.Contains(errBuf.String(), tc.wantErr) {
+			t.Errorf("%v: exit %d, stderr %q; want 2 and %q", tc.args, code, errBuf.String(), tc.wantErr)
 		}
 	}
 }

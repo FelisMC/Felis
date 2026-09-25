@@ -30,6 +30,7 @@ import (
 	"felis.lolicon.best/internal/reaper"
 	"felis.lolicon.best/internal/registryprune"
 	"felis.lolicon.best/internal/restore"
+	"felis.lolicon.best/internal/retention"
 	"felis.lolicon.best/internal/submit"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
@@ -82,6 +83,14 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintf(stderr, "felis api: %v\n", err)
 		return 1
+	}
+
+	// Load already refused a malformed [audit] retention.
+	auditRetention, _ := cfg.Audit.RetentionPeriod()
+	if auditRetention == 0 {
+		fmt.Fprintln(stdout, "felis api: audit rows are kept forever ([audit] retention = \"forever\")")
+	} else {
+		fmt.Fprintf(stdout, "felis api: audit rows older than %d days are deleted ([audit] retention; export them first with felis db audit-export)\n", int(auditRetention/(24*time.Hour)))
 	}
 
 	ctx := ctrl.SetupSignalHandler()
@@ -421,6 +430,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		go pruner.Loop(ctx, registryPruneInterval)
 	}
 	go reapRejectedContexts(ctx, submissions, stderr)
+	go retention.Loop(ctx, drv.DB(), retention.Policy{Audit: auditRetention}, retentionInterval, slog.Default())
 
 	servers := []*http.Server{internalSrv, externalSrv}
 	if httpsSrv != nil {
@@ -697,6 +707,11 @@ func reapRejectedContexts(ctx context.Context, m *submit.Manager, stderr io.Writ
 		}
 	}
 }
+
+// retentionInterval spaces the runs that delete spent sign-in rows and audit rows
+// past [audit] retention. The rows are spent for weeks before they go, so a few
+// runs a day keep the tables flat.
+const retentionInterval = 6 * time.Hour
 
 // registryPruneInterval spaces the registry pruner's runs. The registry-gc
 // sidecar sweeps once a day, so pruning more often only changes which sweep frees

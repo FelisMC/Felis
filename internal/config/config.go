@@ -9,7 +9,9 @@ import (
 	"net"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -25,6 +27,7 @@ type Config struct {
 	Archive  ArchiveConfig  `toml:"archive"`
 	Offsite  OffsiteConfig  `toml:"offsite"`
 	SMTP     SMTPConfig     `toml:"smtp"`
+	Audit    AuditConfig    `toml:"audit"`
 	// AuthSources is the [[auth_source]] array-of-tables: the third-party Yggdrasil
 	// roots the Felis-nano hasJoined multiplexer federates over, in priority order
 	// (config order = priority, so array-of-tables not a map — a map would lose order
@@ -254,6 +257,63 @@ type ArchiveS3Config struct {
 	Bucket       string `toml:"bucket"`
 	AccessKeyRef string `toml:"access_key_ref"`
 	SecretKeyRef string `toml:"secret_key_ref"`
+}
+
+// AuditConfig is the [audit] table. Retention is how long felis-api keeps audit
+// rows before deleting them ("365d", "18mo", or "forever" to keep every row);
+// empty means DefaultAuditRetention. Export what must outlive it with
+// `felis db audit-export` first.
+type AuditConfig struct {
+	Retention string `toml:"retention"`
+}
+
+// DefaultAuditRetention keeps a year of audit rows; MinAuditRetention is the
+// shortest an install may set, since the manual-backup cooldown and an incident
+// investigation both read recent rows.
+const (
+	DefaultAuditRetention = 365 * 24 * time.Hour
+	MinAuditRetention     = 30 * 24 * time.Hour
+)
+
+// RetentionPeriod resolves Retention: 0 keeps every row.
+func (a AuditConfig) RetentionPeriod() (time.Duration, error) {
+	switch v := strings.TrimSpace(a.Retention); v {
+	case "":
+		return DefaultAuditRetention, nil
+	case "forever":
+		return 0, nil
+	default:
+		d, err := ParseSpan(v)
+		if err != nil {
+			return 0, fmt.Errorf("config: [audit] retention %q must be a span such as 365d or 18mo, or forever", a.Retention)
+		}
+		if d < MinAuditRetention {
+			return 0, fmt.Errorf("config: [audit] retention %q is shorter than the 30d minimum", a.Retention)
+		}
+		return d, nil
+	}
+}
+
+// ParseSpan parses the human spans felis.toml uses for retention periods:
+// "3mo" (months of 30 days), "15d" (days), or any time.ParseDuration unit ("12h").
+func ParseSpan(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	switch {
+	case strings.HasSuffix(s, "mo"):
+		n, err := strconv.Atoi(strings.TrimSuffix(s, "mo"))
+		if err != nil {
+			return 0, err
+		}
+		return time.Duration(n) * 30 * 24 * time.Hour, nil
+	case strings.HasSuffix(s, "d"):
+		n, err := strconv.Atoi(strings.TrimSuffix(s, "d"))
+		if err != nil {
+			return 0, err
+		}
+		return time.Duration(n) * 24 * time.Hour, nil
+	default:
+		return time.ParseDuration(s)
+	}
 }
 
 // OffsiteConfig is the [offsite] table: the S3-compatible bucket, away from
@@ -486,6 +546,9 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("config: [smtp] max_per_hour %d must be positive (0 means the default %d)", c.SMTP.MaxPerHour, DefaultMailPerHour)
 	}
 	if err := c.Offsite.validate(); err != nil {
+		return err
+	}
+	if _, err := c.Audit.RetentionPeriod(); err != nil {
 		return err
 	}
 	if h := c.Auth.ClientIPHeader; strings.ContainsAny(h, " :\t\r\n") {
