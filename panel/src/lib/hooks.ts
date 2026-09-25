@@ -25,12 +25,33 @@ export interface AsyncState<T> {
   reload: () => void;
 }
 
+export interface AsyncOptions {
+  /** Keep showing the last result while new deps load, for a list whose deps
+   *  are its filter or page: the old rows stay put (each still acts on its own
+   *  item) instead of blanking to a spinner on every keystroke. */
+  keepPrevious?: boolean;
+}
+
+interface Settled<T> {
+  /** The producer this result came from; a new one means new deps. */
+  run: () => Promise<T>;
+  data: T | null;
+  error: unknown;
+  loading: boolean;
+}
+
 /** useAsync runs an async producer on mount and on demand, guarding against
- *  setState-after-unmount and out-of-order responses. */
-export function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []): AsyncState<T> {
-  const [data, setData] = useState<T | null>(null);
-  const [error, setError] = useState<unknown>(null);
-  const [loading, setLoading] = useState(true);
+ *  setState-after-unmount and out-of-order responses. A reload with the same
+ *  deps (polling, after a mutation) keeps the current data while it runs. New
+ *  deps start from nothing: the result of /servers/a is never shown as
+ *  /servers/b, whose buttons already act on b, not even for the one render
+ *  before the new request starts. */
+export function useAsync<T>(
+  fn: () => Promise<T>,
+  deps: unknown[] = [],
+  { keepPrevious = false }: AsyncOptions = {},
+): AsyncState<T> {
+  const [settled, setSettled] = useState<Settled<T> | null>(null);
   const seq = useRef(0);
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -38,23 +59,23 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []): AsyncSt
 
   const reload = useCallback(() => {
     const ticket = ++seq.current;
-    setLoading(true);
-    setError(null);
+    setSettled((s) => ({
+      run,
+      data: s?.run === run || keepPrevious ? (s?.data ?? null) : null,
+      error: null,
+      loading: true,
+    }));
     run().then(
       (d) => {
-        if (ticket === seq.current) {
-          setData(d);
-          setLoading(false);
-        }
+        if (ticket === seq.current) setSettled({ run, data: d, error: null, loading: false });
       },
       (e) => {
         if (ticket === seq.current) {
-          setError(e);
-          setLoading(false);
+          setSettled((s) => ({ run, data: s?.data ?? null, error: e, loading: false }));
         }
       },
     );
-  }, [run]);
+  }, [run, keepPrevious]);
 
   useEffect(() => {
     reload();
@@ -65,7 +86,15 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[] = []): AsyncSt
     };
   }, [reload]);
 
-  return { data, error, loading, reload };
+  // Checked at render: between new deps and the effect that reloads them the
+  // state still holds the old producer's result.
+  const current = settled?.run === run;
+  return {
+    data: current || keepPrevious ? (settled?.data ?? null) : null,
+    error: current ? settled.error : null,
+    loading: current ? settled.loading : true,
+    reload,
+  };
 }
 
 /** useUnsavedGuard asks the browser to confirm leaving the page (reload, tab

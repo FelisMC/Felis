@@ -161,7 +161,7 @@ export function ImageBuildPage() {
     error: listError,
     loading: loadingBuilds,
     reload: reloadBuilds,
-  } = useAsync(listBuilds, [listBuilds]);
+  } = useAsync(listBuilds, [listBuilds], { keepPrevious: true });
   const builds = useMemo(() => buildPage?.builds ?? [], [buildPage]);
   const total = buildPage?.total ?? 0;
 

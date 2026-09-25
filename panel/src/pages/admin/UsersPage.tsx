@@ -53,7 +53,7 @@ export function UsersPage() {
     [query, roleFilter, disabledFilter, page],
   );
 
-  const { data, error, loading, reload } = useAsync(fetchUsers, [fetchUsers]);
+  const { data, error, loading, reload } = useAsync(fetchUsers, [fetchUsers], { keepPrevious: true });
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
