@@ -1,15 +1,17 @@
 import { useState, useMemo } from "react";
-import { Boxes, CheckCircle2, CircleSlash, Plus, Trash2, Loader2, Wrench } from "lucide-react";
+import { Boxes, CheckCircle2, CircleSlash, Plus, Trash2, Wrench } from "lucide-react";
 import { SearchInput } from "@/components/SearchInput";
 import { StatCard } from "@/components/StatCard";
 import { PageHeader } from "@/components/PageHeader";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ConfirmFooter } from "@/components/ConfirmFooter";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   Dialog,
   DialogContent,
@@ -27,6 +29,19 @@ import { useAsync } from "@/lib/hooks";
 
 const PAGE_SIZE = 10;
 
+// image_whitelist.source is plain text (build.Source* in Go); the values Felis
+// writes itself get a name in the UI language, anything else shows as stored.
+const SOURCE_KEYS: Record<string, string> = {
+  built: "image_source_built",
+  external: "image_source_external",
+  recommended: "image_source_recommended",
+};
+
+function sourceLabel(source: string, t: TFunction): string {
+  const key = SOURCE_KEYS[source];
+  return key ? t(key) : source;
+}
+
 export function ImageAdmin() {
   const { t } = useTranslation("admin");
   const { data, error, loading, reload } = useAsync(() => api.listImages(), []);
@@ -37,7 +52,7 @@ export function ImageAdmin() {
   const [newImageRef, setNewImageRef] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [deletingRef, setDeletingRef] = useState<string | null>(null);
+  const [removeRef, setRemoveRef] = useState<string | null>(null);
 
   // Search & Filtering State
   const [search, setSearch] = useState("");
@@ -64,7 +79,9 @@ export function ImageAdmin() {
       list = list.filter(
         (img) =>
           img.image_ref.toLowerCase().includes(q) ||
-          (img.source && img.source.toLowerCase().includes(q))
+          (img.source &&
+            (img.source.toLowerCase().includes(q) ||
+              sourceLabel(img.source, t).toLowerCase().includes(q)))
       );
     }
 
@@ -76,7 +93,7 @@ export function ImageAdmin() {
     }
 
     return list;
-  }, [images, search, statusFilter]);
+  }, [images, search, statusFilter, t]);
 
   // Reset page when filter changes
   const lastFilterKey = `${search}-${statusFilter}`;
@@ -109,16 +126,8 @@ export function ImageAdmin() {
   }
 
   async function handleRemove(imageRef: string) {
-    if (!confirm(t("delete_confirm"))) return;
-    setDeletingRef(imageRef);
-    try {
-      await api.removeImage(imageRef);
-      reload();
-    } catch (err) {
-      alert(humanizeError(err));
-    } finally {
-      setDeletingRef(null);
-    }
+    await api.removeImage(imageRef);
+    reload();
   }
 
   return (
@@ -279,7 +288,7 @@ export function ImageAdmin() {
                     <div className="col-span-2 py-1">
                       {img.source ? (
                         <Badge variant="outline" className="text-[10px] px-1.5 py-0 font-medium capitalize">
-                          {img.source}
+                          {sourceLabel(img.source, t)}
                         </Badge>
                       ) : (
                         <span className="text-muted-foreground/60">—</span>
@@ -304,17 +313,12 @@ export function ImageAdmin() {
                       <Button
                         variant="ghost"
                         size="icon"
-                        onClick={() => handleRemove(img.image_ref)}
-                        disabled={deletingRef === img.image_ref}
+                        onClick={() => setRemoveRef(img.image_ref)}
                         className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
                         aria-label={t("delete_image_tooltip")}
                         title={t("delete_image_tooltip")}
                       >
-                        {deletingRef === img.image_ref ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <Trash2 className="h-3.5 w-3.5" />
-                        )}
+                        <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </div>
                   </div>
@@ -336,6 +340,20 @@ export function ImageAdmin() {
           )}
         </CardContent>
       </Card>
+
+      <ConfirmDialog
+        open={removeRef !== null}
+        onOpenChange={(o) => !o && setRemoveRef(null)}
+        title={t("delete_image_title")}
+        description={
+          <>
+            {t("delete_image_desc")}{" "}
+            <code className="break-all font-mono text-foreground">{removeRef}</code>
+          </>
+        }
+        confirmLabel={t("delete_image_confirm")}
+        onConfirm={() => handleRemove(removeRef!)}
+      />
     </div>
   );
 }

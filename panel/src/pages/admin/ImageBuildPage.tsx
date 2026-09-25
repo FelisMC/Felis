@@ -1,5 +1,5 @@
 import { useEffect, useState, useMemo, Fragment } from "react";
-import { Cpu, Terminal, Loader2, XCircle, AlertCircle, Plus, ChevronDown } from "lucide-react";
+import { Cpu, Terminal, XCircle, AlertCircle, Plus, ChevronDown } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { SearchInput } from "@/components/SearchInput";
 import { Card, CardContent } from "@/components/ui/card";
@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ConfirmFooter } from "@/components/ConfirmFooter";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import {
   Dialog,
   DialogContent,
@@ -123,7 +124,7 @@ export function ImageBuildPage() {
   const [builds, setBuilds] = useState<Build[]>([]);
   const [loadingBuilds, setLoadingBuilds] = useState(true);
   const [activeLogBuildId, setActiveLogBuildId] = useState<string | null>(null);
-  const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [cancelBuild, setCancelBuild] = useState<Build | null>(null);
 
   // Search & Pagination State
   const [search, setSearch] = useState("");
@@ -247,16 +248,8 @@ export function ImageBuildPage() {
 
   // Cancel build handler
   const handleCancel = async (id: string) => {
-    if (!confirm(t("cancel_confirm"))) return;
-    setCancellingId(id);
-    try {
-      await api.cancelBuild(id);
-      fetchBuilds(buildIds);
-    } catch (err) {
-      alert(humanizeError(err));
-    } finally {
-      setCancellingId(null);
-    }
+    await api.cancelBuild(id);
+    fetchBuilds(buildIds);
   };
 
   if (!config) {
@@ -525,15 +518,10 @@ export function ImageBuildPage() {
                                 <Button
                                   variant="ghost"
                                   size="sm"
-                                  onClick={() => handleCancel(b.id)}
-                                  disabled={cancellingId === b.id}
+                                  onClick={() => setCancelBuild(b)}
                                   className="h-7 px-2 text-[11px] gap-1 font-semibold text-rose-500 hover:text-rose-600 hover:bg-rose-500/10 transition-colors"
                                 >
-                                  {cancellingId === b.id ? (
-                                    <Loader2 className="h-3 w-3 animate-spin" />
-                                  ) : (
-                                    <XCircle className="h-3 w-3" />
-                                  )}
+                                  <XCircle className="h-3 w-3" />
                                   {t("cancel_build_btn")}
                                 </Button>
                               )}
@@ -590,6 +578,21 @@ export function ImageBuildPage() {
           )}
         </CardContent>
       </Card>
+
+      <ConfirmDialog
+        open={cancelBuild !== null}
+        onOpenChange={(o) => !o && setCancelBuild(null)}
+        title={t("cancel_build_title")}
+        description={
+          <>
+            {t("cancel_build_desc")}{" "}
+            <code className="break-all font-mono text-foreground">{cancelBuild?.image_ref}</code>
+          </>
+        }
+        cancelLabel={t("cancel_build_keep")}
+        confirmLabel={t("cancel_build_confirm")}
+        onConfirm={() => handleCancel(cancelBuild!.id)}
+      />
     </div>
   );
 }
