@@ -597,3 +597,51 @@ func TestParseBanlistOutput(t *testing.T) {
 		}
 	}
 }
+
+// TestLuckPermsMissingIsAConflict: on a server without LuckPerms every lp command
+// is answered by the server's unknown-command reply, and each LuckPerms door must
+// say so (409 luckperms_missing) with no audit of a change that never happened (#4).
+// The replies are what the servers send: Paper 1.21's captured live from a paper
+// server over RCON, and a Spigot one colored the way its console renders it. The
+// empty reply LuckPerms itself gives (it answers after RCON has flushed) and an
+// LP message that mentions "unknown command" mid-line both stay successes.
+func TestLuckPermsMissingIsAConflict(t *testing.T) {
+	doors := []struct{ name, method, path, body string }{
+		{"permission", "POST", "/api/v1/servers/survival/access/permission", `{"action":"set","player":"Steve","node":"essentials.fly"}`},
+		{"group", "POST", "/api/v1/servers/survival/access/group", `{"action":"add","player":"Steve","group":"vip"}`},
+		{"info", "GET", "/api/v1/servers/survival/access/luckperms/Steve", ""},
+	}
+	replies := []struct {
+		name    string
+		reply   string
+		missing bool
+	}{
+		{"paper", "Unknown or incomplete command. See below for error\nlp user Steve permission info<--[HERE]", true},
+		{"older vanilla", "Unknown or incomplete command, see below for error\nlp user Steve<--[HERE]", true},
+		{"spigot colored", "§fUnknown command. Type \"/help\" for help.", true},
+		{"luckperms silent", "", false},
+		{"luckperms message", "§7[§b§lL§3§lP§7]§r §7Another command is being executed; unknown command queue", false},
+	}
+	for _, d := range doors {
+		for _, rp := range replies {
+			t.Run(d.name+"/"+rp.name, func(t *testing.T) {
+				api, repo, _, console := mkAccess(t)
+				api.External = staticExternal{p: accessOwner}
+				console.reply = rp.reply
+				w := do(api.ExternalHandler(), d.method, d.path, d.body, nil)
+				if !rp.missing {
+					if w.Code != http.StatusOK {
+						t.Fatalf("code = %d (%s), want 200", w.Code, w.Body.String())
+					}
+					return
+				}
+				if w.Code != http.StatusConflict || decodeErr(t, w) != "luckperms_missing" {
+					t.Fatalf("code = %d (%s), want 409 luckperms_missing", w.Code, w.Body.String())
+				}
+				if len(repo.audits) != 0 {
+					t.Fatalf("audited a change LuckPerms never made: %+v", repo.audits)
+				}
+			})
+		}
+	}
+}

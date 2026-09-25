@@ -84,7 +84,7 @@ export function ServerLuckPerms() {
   const [searchQuery, setSearchQuery] = useState("");
 
   // LuckPerms Profile data for selected player
-  const { data: lpInfo, loading: lpLoading, reload: reloadLp } = useAsync(
+  const { data: lpInfo, error: lpError, loading: lpLoading, reload: reloadLp } = useAsync(
     () => selectedPlayer ? api.accessLuckPermsInfo(name, selectedPlayer) : Promise.resolve(null),
     [name, selectedPlayer]
   );
@@ -425,6 +425,14 @@ export function ServerLuckPerms() {
                       {lpInfo.output}
                     </pre>
                   </details>
+                )}
+
+                {/* A read that failed (no LuckPerms on the server, console down) says
+                    why here; the panels below would otherwise sit empty with no cause. */}
+                {lpError && (
+                  <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/10 p-3 text-xs text-destructive">
+                    {humanizeError(lpError)}
+                  </div>
                 )}
 
                 {lpSilent && (

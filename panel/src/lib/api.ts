@@ -1035,6 +1035,8 @@ export function humanizeError(e: unknown): string {
       return t("not_running");
     case "console_unavailable":
       return t("console_unavailable");
+    case "luckperms_missing":
+      return t("luckperms_missing");
     // World restore (spec §7 restore-backup): the world volume must be free, so a
     // running/starting server 409s not_stopped; no present backup 404s no_backup;
     // the restore subsystem may be unwired (503 restore_unavailable).

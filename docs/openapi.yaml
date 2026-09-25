@@ -2249,7 +2249,10 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: Server not running.
+          description: >-
+            not_running (the server is not running) or luckperms_missing (the
+            server answered the lp command as unknown: LuckPerms is not installed,
+            and nothing changed).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -2293,7 +2296,10 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: Server not running.
+          description: >-
+            not_running (the server is not running) or luckperms_missing (the
+            server answered the lp command as unknown: LuckPerms is not installed,
+            and nothing changed).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -2349,7 +2355,10 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: Server not running.
+          description: >-
+            not_running (the server is not running) or luckperms_missing (the
+            server answered the lp command as unknown: LuckPerms is not installed,
+            and nothing changed).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

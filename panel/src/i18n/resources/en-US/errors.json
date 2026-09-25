@@ -16,6 +16,7 @@
   "cooldown": "Wake is cooling down — try again shortly.",
   "not_running": "The server isn't running — wake it before managing access.",
   "console_unavailable": "Can't reach the server console right now — try again shortly.",
+  "luckperms_missing": "LuckPerms isn't installed on this server, so permission and group changes have no effect. For the lobby, ask the operator to re-run the installer; any other server needs the LuckPerms plugin added first.",
   "no_backup": "There's no restorable backup for this server yet.",
   "backup_corrupt": "This backup failed its read-back check and can't be restored intact — pick another backup.",
   "not_stopped": "Stop the server completely before restoring — a restore overwrites the live world volume.",

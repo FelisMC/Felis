@@ -57,7 +57,31 @@ var (
 		"invalid world (allowed: letters, digits, _ -)")
 	errInvalidGroup = newError(http.StatusBadRequest, "bad_request",
 		"invalid group (allowed: letters, digits, _ -)")
+	errLuckPermsMissing = newError(http.StatusConflict, "luckperms_missing",
+		"LuckPerms is not installed on this server, so permission and group changes have no effect; "+
+			"the lobby gets it back by re-running the installer, another server needs the LuckPerms plugin added")
 )
+
+// unknownCommandRe matches the server's reply to a command no plugin registered,
+// after color stripping. Brigadier servers (Paper, vanilla 1.13+) answer
+// "Unknown or incomplete command. See below for error" (older builds: ", see
+// below"), Spigot and legacy Bukkit "Unknown command. Type "/help" for help.".
+// With LuckPerms installed an lp command never gets this: LuckPerms answers
+// asynchronously, after RCON has flushed the reply, so the body is empty.
+var unknownCommandRe = regexp.MustCompile(`(?i)^\s*unknown (or incomplete )?command\b`)
+
+// issueLuckPermsCommand runs an lp command through issueAccessCommand and turns
+// the reply of a server without LuckPerms into 409 luckperms_missing (#4). Without
+// it that reply went back as a success whose output nobody reads, and the change
+// silently did nothing.
+func (a *API) issueLuckPermsCommand(w http.ResponseWriter, r *http.Request, name, command string) (string, bool) {
+	out, ok := a.issueAccessCommand(w, r, name, command)
+	if ok && unknownCommandRe.MatchString(lpColorRe.ReplaceAllString(out, "")) {
+		writeError(w, r, errLuckPermsMissing)
+		return "", false
+	}
+	return out, ok
+}
 
 // issueAccessCommand is the shared spine of every §7 access mutation: resolve the
 // named server, enforce owner-or-admin, require readiness, and run ONE
@@ -350,7 +374,7 @@ func (a *API) handleAccessPermission(w http.ResponseWriter, r *http.Request) {
 		cmd += " world=" + body.World
 	}
 
-	out, ok := a.issueAccessCommand(w, r, name, cmd)
+	out, ok := a.issueLuckPermsCommand(w, r, name, cmd)
 	if !ok {
 		return
 	}
@@ -393,7 +417,7 @@ func (a *API) handleAccessGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, ok := a.issueAccessCommand(w, r, name, "lp user "+body.Player+" parent "+body.Action+" "+body.Group)
+	out, ok := a.issueLuckPermsCommand(w, r, name, "lp user "+body.Player+" parent "+body.Action+" "+body.Group)
 	if !ok {
 		return
 	}
@@ -435,7 +459,7 @@ func (a *API) handleAccessLuckPermsInfo(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	out, ok := a.issueAccessCommand(w, r, name, "lp user "+player+" permission info")
+	out, ok := a.issueLuckPermsCommand(w, r, name, "lp user "+player+" permission info")
 	if !ok {
 		return
 	}

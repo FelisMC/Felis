@@ -4189,7 +4189,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            /** @description Server not running. */
+            /** @description not_running (the server is not running) or luckperms_missing (the server answered the lp command as unknown: LuckPerms is not installed, and nothing changed). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4226,7 +4226,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            /** @description Server not running. */
+            /** @description not_running (the server is not running) or luckperms_missing (the server answered the lp command as unknown: LuckPerms is not installed, and nothing changed). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4274,7 +4274,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            /** @description Server not running. */
+            /** @description not_running (the server is not running) or luckperms_missing (the server answered the lp command as unknown: LuckPerms is not installed, and nothing changed). */
             409: {
                 headers: {
                     [name: string]: unknown;
