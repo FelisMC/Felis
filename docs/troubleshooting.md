@@ -1580,7 +1580,7 @@ along). One bundle is `felis-db-<UTC stamp>-<label>.tar`:
 |---|---|
 | `MANIFEST.json` | version, schema version, `pg_dump --version`, sha256 of every member |
 | `db.dump` | `pg_dump --format=custom` of the `felis` database |
-| `state/etc/felis/...` | `secrets.env` (DB password, session/forwarding secrets, registry tokens), `felis.host.toml`, `felis.pod.toml`, the `felis.toml` symlink, the panel TLS pair. `bootstrap.done` is left out on purpose |
+| `state/etc/felis/...` | every file in `/etc/felis`: `secrets.env` (DB password, session/forwarding secrets, registry tokens), `felis.host.toml`, `felis.pod.toml`, the `felis.toml` symlink, `offsite.env` (bucket credentials and encryption key), the panel TLS pair, and the installer's own markers (`system-server-images`, `velocity.fingerprint`). `bootstrap.done` is left out on purpose |
 | `k8s/minecraftservers.json` | every MinecraftServer, status and server-side metadata stripped, ready for `kubectl apply` (best effort: when the cluster did not answer, the manifest records why) |
 
 next to a `.sha256` sidecar in `sha256sum` format. **A bundle contains the
@@ -1678,6 +1678,52 @@ Do **not** run `felis migrate up` here: the host binary is already the new
 release and would re-apply the migrations you are rolling back. Re-run the
 older installer version to bring the host binary back in line.
 
+### Whole-host disaster recovery: what comes back, and from where
+
+When the host (or its disk) is gone, everything Felis needs comes back from the
+off-site bucket (next sections) plus a fresh install. What the host holds:
+
+| Data | On the host | In the bucket | Brought back by | Lost at most |
+|---|---|---|---|---|
+| Control-plane database (accounts, passkeys, ownership, quotas, audit, submissions, the `world_backups` index) | PostgreSQL | every bundle, copied within the hour of being written | `fetch-db`, `db restore` | changes since the newest bundle: up to a day plus an hour with the daily timer |
+| Host state (`/etc/felis`: secrets, both `felis.toml` copies, `offsite.env`, panel TLS pair) | `/etc/felis` | inside every bundle | `tar -x` of the bundle's `state/` | as the database |
+| MinecraftServer objects | k3s | inside every bundle (`k8s/minecraftservers.json`) | `kubectl apply` | as the database |
+| World archives (reaper, "Back up now", pre-restore snapshots) | `felis-backups` volume | each one within the hour | `fetch-worlds` | archives written in the last hour |
+| Live worlds | `world-*` volumes under `/var/lib/rancher/k3s/storage` | **only as their archives** | a restore from the newest archive (§10) | everything since that world's newest archive |
+| User images | `registry` volume | hourly; image lists kept 14 days | `fetch-images` | images pushed in the last hour |
+| Submission uploads (modpacks awaiting or past review) | `felis-uploads` volume | hourly; upload lists kept 14 days | `fetch-uploads` | uploads of the last hour |
+| Platform images, Velocity, the JRE, build tools | registry, `/opt/felis` | not copied | the installer builds and pushes them again | nothing |
+| k3s itself (its token, CA, datastore, Secrets, Deployments) | `/var/lib/rancher/k3s` | not copied | the installer makes a new single-node cluster and renders every Secret and Deployment from `/etc/felis` | nothing: no Felis data lives only there |
+
+**Live worlds are the gap.** A world's current state exists only in its
+volume; the bucket holds the archives the reaper, an owner's "Back up now" or
+a pre-restore snapshot wrote. A world that was never archived comes back as a
+server with an empty world. Tell owners to back up before anything they would
+hate to lose, and treat the newest archive's age (the server's backup page) as
+that world's recovery point.
+
+For a smaller database loss window, give the installer a tighter
+`FELIS_DB_BACKUP_TIME` (any systemd calendar, e.g. `*-*-* 00/6:30:00` for
+every 6 hours) with a matching `FELIS_DB_BACKUP_KEEP`, on every installer
+run; the hourly off-site copy picks each bundle up within the hour.
+
+How long a rebuild takes is mostly transfer time. The installer on a blank
+host builds and pushes every platform image, so it runs longer than an upgrade
+and depends on the host's network; the database restore takes seconds to
+minutes; the three fetches move what `sudo felis offsite status` reports the
+bucket holding (images, uploads, world archives) at the bucket's bandwidth,
+and each skips what is already in place, so an interrupted one resumes. Write
+those sizes down with the bucket's download rate and you have the recovery
+time for your install. A whole-host rehearsal on a spare machine, once per
+release, is the way to know it for sure.
+
+The order below matters: the state goes in before the installer so it reuses
+the old secrets and bucket; the images go back before the database so the
+servers the database restores find the digests they pin, inside the pruner's
+24-hour grace; the MinecraftServers go back with the database that names their
+owners; the worlds come last because a restore needs a server to restore
+into.
+
 ### Rebuild on a new host (the old one is gone)
 
 This needs the off-site copy (next section) or a bundle you copied off the old
@@ -1720,9 +1766,11 @@ host yourself, plus the off-site encryption key if the copy is in the bucket.
    older one; `felis offsite list` shows them) through the registry's loopback
    port as the platform principal, verifying every manifest and layer against
    its digest, and pushes only what the registry lacks. The pruner counts a
-   restored image as freshly pushed and keeps it for 24 hours; finish the next
-   step within that window so the restored servers and whitelist entries keep
-   naming it.
+   restored image as freshly pushed and keeps it for 24 hours; finish the
+   database step within that window so the restored servers and whitelist
+   entries keep naming it. When the new host's hourly copy has already recorded
+   its still-empty registry, `fetch-images` refuses that newest list and names
+   the version to pass with `-at`; `fetch-uploads` does the same.
 5. Put the submission uploads back:
 
    ```
@@ -1754,6 +1802,21 @@ host yourself, plus the off-site encryption key if the copy is in the bucket.
    nothing has used it yet (a short-lived `felis-bind-felis-backups-*` pod). It
    lists any it could not find in the bucket. Restore a world from its archive
    as usual (§10, §13).
+
+Check the rebuild before letting players in:
+
+```
+sudo felis db check                     # the database answers and has a fresh bundle
+kubectl get minecraftservers -A         # every server the bundle held
+kubectl -n minecraft get pods           # servers pull their pinned images (no ImagePullBackOff)
+sudo felis offsite status               # the hourly copy runs from this host again
+```
+
+Point the panel and game hostnames at the new host (DNS, or the tunnel in
+front of it). In the panel: sign in with an old account (accounts and passkeys
+come back with the database), open a restored server's backup page and confirm
+its archives are listed, restore the newest one, start the server and join
+it.
 
 ### Keep a copy somewhere else
 
