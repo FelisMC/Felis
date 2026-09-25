@@ -197,7 +197,7 @@ func (a *API) handlePasskeyLoginDiscoverableFinish(w http.ResponseWriter, r *htt
 		return
 	}
 
-	if err := a.startSession(w, r, resolved.ID); err != nil {
+	if err := a.startSession(w, r, resolved.ID, provenSignIn); err != nil {
 		writeError(w, r, err)
 		return
 	}

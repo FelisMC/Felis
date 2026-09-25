@@ -1114,10 +1114,11 @@ func (p *PGRepo) InsertOperator(ctx context.Context, id, username, email string)
 // CreateSession records a minted session by the sha-256 of its cookie value
 // (spec §B). Only the hash is stored, mirroring tokens.
 func (p *PGRepo) CreateSession(ctx context.Context, s NewSession) error {
+	reauth := sql.NullTime{Time: s.ReauthAt, Valid: !s.ReauthAt.IsZero()}
 	_, err := p.db.ExecContext(ctx,
-		`INSERT INTO sessions (token_hash, user_id, expires_at, user_agent, client_ip)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		s.TokenHash, s.UserID, s.ExpiresAt, s.UserAgent, s.ClientIP)
+		`INSERT INTO sessions (token_hash, user_id, expires_at, user_agent, client_ip, reauth_at)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		s.TokenHash, s.UserID, s.ExpiresAt, s.UserAgent, s.ClientIP, reauth)
 	return err
 }
 
@@ -1136,16 +1137,20 @@ const sessionLive = `s.revoked_at IS NULL AND s.expires_at > $2
 // SessionUser resolves a live session hash to its user, or ErrNotFound.
 func (p *PGRepo) SessionUser(ctx context.Context, tokenHash string, now time.Time) (*SessionedUser, error) {
 	const q = `SELECT u.id, u.username, COALESCE(u.email, ''), u.role::text, COALESCE(u.email_verified, false),
-			s.last_seen_at
+			s.last_seen_at, s.reauth_at
 		FROM sessions s JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = $1 AND ` + sessionLive
 	var u SessionedUser
+	var reauth sql.NullTime
 	switch err := p.db.QueryRowContext(ctx, q, tokenHash, now, now.Add(-staffSessionIdle)).Scan(
-		&u.ID, &u.Username, &u.Email, &u.Role, &u.EmailVerified, &u.LastSeenAt); {
+		&u.ID, &u.Username, &u.Email, &u.Role, &u.EmailVerified, &u.LastSeenAt, &reauth); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
 	case err != nil:
 		return nil, err
+	}
+	if reauth.Valid {
+		u.ReauthAt = reauth.Time
 	}
 	return &u, nil
 }
@@ -1155,6 +1160,14 @@ func (p *PGRepo) TouchSession(ctx context.Context, tokenHash string, now time.Ti
 	_, err := p.db.ExecContext(ctx,
 		`UPDATE sessions SET last_seen_at = $2 WHERE token_hash = $1 AND last_seen_at < $2`,
 		tokenHash, now)
+	return err
+}
+
+// MarkSessionReauth records a proven factor on a live session.
+func (p *PGRepo) MarkSessionReauth(ctx context.Context, tokenHash string, at time.Time) error {
+	_, err := p.db.ExecContext(ctx,
+		`UPDATE sessions SET reauth_at = $2 WHERE token_hash = $1 AND revoked_at IS NULL`,
+		tokenHash, at)
 	return err
 }
 

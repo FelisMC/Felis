@@ -125,7 +125,7 @@ func (a *API) handleBindRedeem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.startSession(w, r, userID); err != nil {
+	if err := a.startSession(w, r, userID, bindCodeSignIn); err != nil {
 		writeError(w, r, err)
 		return
 	}

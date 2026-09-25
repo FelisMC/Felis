@@ -253,6 +253,10 @@ func (a *API) handlePasskeyRegisterBegin(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	p := principalFromContext(r.Context())
+	// Gate the begin: the finish only consumes the challenge minted here.
+	if !a.requireReauth(w, r, p) {
+		return
+	}
 	creds, err := a.Repo.PasskeyCredentialsForUser(r.Context(), p.UserID)
 	if err != nil {
 		writeError(w, r, err)
@@ -356,6 +360,11 @@ func (a *API) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Request
 		return
 	}
 	a.audit(r, "account.passkey.registered", cred.ID)
+	// The session just showed an authenticator now bound to the account, the
+	// same strength as a passkey reauth, so the next guarded step of a first-time
+	// setup (verifying an email) runs without asking again.
+	a.markReauthQuietly(r)
+	a.notifyPasskeyAdded(r, p)
 	writeJSON(w, http.StatusCreated, passkeyView(cred))
 }
 
@@ -409,6 +418,9 @@ func (a *API) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "credential id is required"))
 		return
 	}
+	if !a.requireReauth(w, r, p) {
+		return
+	}
 	if err := a.Repo.DeletePasskeyCredential(r.Context(), p.UserID, id); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeError(w, r, newError(http.StatusNotFound, "not_found", "no such passkey"))
@@ -424,6 +436,7 @@ func (a *API) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	a.audit(r, "account.passkey.removed", id)
 	a.revokeOtherSessionsAfter(r, "passkey removal")
+	a.notifyPasskeyRemoved(r, p)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -654,7 +667,7 @@ func (a *API) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.startSession(w, r, u.ID); err != nil {
+	if err := a.startSession(w, r, u.ID, provenSignIn); err != nil {
 		writeError(w, r, err)
 		return
 	}

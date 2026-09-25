@@ -35,7 +35,9 @@ func newSessionsFixture(t *testing.T) *sessionsFixture {
 	api.External = SessionAuth{Repo: repo, RootDomain: testRoot, Now: api.now}
 	now := api.now()
 	for tok, s := range map[string]*fakeSession{
-		laptopTok: {userID: "u1", lastSeen: now.Add(-10 * time.Minute), userAgent: "Firefox on Linux", clientIP: "203.0.113.5"},
+		// The laptop signed in by a proving door a minute ago, so the guarded
+		// changes below run without a reauth (reauth_test.go covers the gate).
+		laptopTok: {userID: "u1", lastSeen: now.Add(-10 * time.Minute), userAgent: "Firefox on Linux", clientIP: "203.0.113.5", reauthAt: now.Add(-time.Minute)},
 		phoneTok:  {userID: "u1", lastSeen: now.Add(-2 * time.Hour), userAgent: "Safari on iPhone", clientIP: "198.51.100.7"},
 		alexTok:   {userID: "u2", lastSeen: now.Add(-time.Minute)},
 	} {

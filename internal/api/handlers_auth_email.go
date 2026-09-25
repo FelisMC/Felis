@@ -271,7 +271,7 @@ func (a *API) handleLoginEmailVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.startSession(w, r, u.ID); err != nil {
+	if err := a.startSession(w, r, u.ID, provenSignIn); err != nil {
 		writeError(w, r, err)
 		return
 	}

@@ -9,9 +9,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useTier } from "@/lib/tier";
 import { loginReturnPath } from "@/lib/auth";
-import { api, clientError, humanizeError } from "@/lib/api";
+import { api, humanizeError } from "@/lib/api";
 import { loadConfig } from "@/lib/config";
-import { base64urlToBytes, bytesToBase64url } from "@/lib/utils";
+import { requestAssertion } from "@/lib/passkey";
 import { InlineError } from "@/components/MessageLine";
 import { formatCountdown, opLoginDeadline, useOpLoginPoll } from "@/lib/opLoginPoll";
 
@@ -143,41 +143,10 @@ export function Login() {
 
     const identifier = email.trim();
     try {
-      let assertion: any;
       if (!identifier) {
         // Discoverable (Usernameless) passkey login
         const options = await api.authPasskeyDiscoverableBegin();
-        const publicKey: PublicKeyCredentialRequestOptions = {
-          ...options.publicKey,
-          challenge: base64urlToBytes(options.publicKey.challenge),
-          allowCredentials: options.publicKey.allowCredentials?.map((cred: any) => ({
-            ...cred,
-            id: base64urlToBytes(cred.id),
-          })),
-        };
-
-        const credential = (await navigator.credentials.get({
-          publicKey,
-        })) as PublicKeyCredential;
-
-        if (!credential) {
-          throw clientError("passkey_no_credential");
-        }
-
-        const response = credential.response as AuthenticatorAssertionResponse;
-        assertion = {
-          id: credential.id,
-          rawId: bytesToBase64url(credential.rawId),
-          type: credential.type,
-          response: {
-            clientDataJSON: bytesToBase64url(response.clientDataJSON),
-            authenticatorData: bytesToBase64url(response.authenticatorData),
-            signature: bytesToBase64url(response.signature),
-            userHandle: response.userHandle ? bytesToBase64url(response.userHandle) : null,
-          },
-        };
-
-        await api.authPasskeyDiscoverableFinish(options.login_id, assertion);
+        await api.authPasskeyDiscoverableFinish(options.login_id, await requestAssertion(options.publicKey));
       } else {
         // Email-first passkey login
         if (!identifier.includes("@")) {
@@ -185,37 +154,7 @@ export function Login() {
         }
 
         const options = await api.authPasskeyLoginBegin(identifier);
-        const publicKey: PublicKeyCredentialRequestOptions = {
-          ...options,
-          challenge: base64urlToBytes(options.challenge),
-          allowCredentials: options.allowCredentials?.map((cred: any) => ({
-            ...cred,
-            id: base64urlToBytes(cred.id),
-          })),
-        };
-
-        const credential = (await navigator.credentials.get({
-          publicKey,
-        })) as PublicKeyCredential;
-
-        if (!credential) {
-          throw clientError("passkey_no_credential");
-        }
-
-        const response = credential.response as AuthenticatorAssertionResponse;
-        assertion = {
-          id: credential.id,
-          rawId: bytesToBase64url(credential.rawId),
-          type: credential.type,
-          response: {
-            clientDataJSON: bytesToBase64url(response.clientDataJSON),
-            authenticatorData: bytesToBase64url(response.authenticatorData),
-            signature: bytesToBase64url(response.signature),
-            userHandle: response.userHandle ? bytesToBase64url(response.userHandle) : null,
-          },
-        };
-
-        await api.authPasskeyLoginFinish(identifier, assertion);
+        await api.authPasskeyLoginFinish(identifier, await requestAssertion(options));
       }
 
       await refresh();

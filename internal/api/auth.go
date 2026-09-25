@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -41,6 +42,9 @@ type Principal struct {
 	// passed Zero Trust at the edge, so the local-email-verification gate is not
 	// the right boundary for them.
 	ViaSession bool
+	// ReauthAt is when the holder of the session last proved a factor of the
+	// account; zero for a session that never did and for a JWT caller.
+	ReauthAt time.Time
 }
 
 // staffRole reports whether a stored user role carries staff standing: admin,

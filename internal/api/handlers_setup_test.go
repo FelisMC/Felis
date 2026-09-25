@@ -83,7 +83,7 @@ func TestSetEmailClearsVerified(t *testing.T) {
 	repo.staff["u"] = &StaffUser{ID: "u1", Username: "u", Role: "admin", Email: "old@x.test", EmailVerified: true}
 
 	api := newTestAPI(repo, newFakeCluster())
-	api.External = staticExternal{p: &Principal{UserID: "u1", Role: "admin", ViaSession: true, EmailVerified: true}}
+	api.External = staticExternal{p: &Principal{UserID: "u1", Role: "admin", ViaSession: true, EmailVerified: true, ReauthAt: frozenNow}}
 	h := api.ExternalHandler()
 
 	w := do(h, "POST", "/api/v1/account/email", `{"email":"new@x.test"}`, jsonHeader)

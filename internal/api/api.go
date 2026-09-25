@@ -560,6 +560,16 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "POST", Pattern: "/api/v1/account/passkey/register/finish", SetupAllowed: true, h: a.handlePasskeyRegisterFinish},
 		{Method: "GET", Pattern: "/api/v1/account/passkey/credentials", SetupAllowed: true, h: a.handlePasskeyList},
 		{Method: "DELETE", Pattern: "/api/v1/account/passkey/credentials/{id}", SetupAllowed: true, h: a.handlePasskeyDelete},
+		// Reauth (reauth.go): the fresh proof that passkey enrollment and removal and an
+		// email change require once the account has a factor. Status says whether one
+		// is needed and how to give it; the pairs below take a passkey assertion or an
+		// email code and mark the caller's session. SetupAllowed like the routes they
+		// unlock.
+		{Method: "GET", Pattern: "/api/v1/account/reauth", SetupAllowed: true, h: a.handleReauthStatus},
+		{Method: "POST", Pattern: "/api/v1/account/reauth/passkey/begin", SetupAllowed: true, h: a.handleReauthPasskeyBegin},
+		{Method: "POST", Pattern: "/api/v1/account/reauth/passkey/finish", SetupAllowed: true, h: a.handleReauthPasskeyFinish},
+		{Method: "POST", Pattern: "/api/v1/account/reauth/email/start", SetupAllowed: true, h: a.handleReauthEmailStart},
+		{Method: "POST", Pattern: "/api/v1/account/reauth/email/verify", SetupAllowed: true, h: a.handleReauthEmailVerify},
 		// The caller's own sessions (handlers_account_sessions.go): list every signed-in
 		// device and sign out one or all the others. App-tier and scoped to the caller
 		// inside the handler, like the passkey routes above.

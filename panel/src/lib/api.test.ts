@@ -1015,4 +1015,16 @@ describe("copy for the generic server codes", () => {
     expect(err.status).toBe(0);
     expect(humanizeError(err)).toBe("The browser returned no passkey. Try again.");
   });
+
+  it("words the re-authentication refusals", () => {
+    expect(humanizeError({ status: 403, code: "reauth_required", message: "raw" })).toBe(
+      "Confirm it's you first: this change needs your Passkey or an email code from the last few minutes.",
+    );
+    expect(humanizeError({ status: 403, code: "staff_reauth", message: "raw" })).toBe(
+      "Operator accounts confirm with a Passkey or by signing in again.",
+    );
+    expect(humanizeError({ status: 400, code: "no_session", message: "raw" })).toBe(
+      "This only works in a browser signed in to Felis.",
+    );
+  });
 });

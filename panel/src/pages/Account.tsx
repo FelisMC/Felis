@@ -14,8 +14,10 @@ import { formatAbsolute } from "@/lib/format";
 import type { PasskeyCredential } from "@/lib/types";
 import { useAsync } from "@/lib/hooks";
 import { AccountSessionsCard } from "@/pages/AccountSessions";
+import { isReauthCancelled, isReauthRequired, useReauth } from "@/components/ReauthDialog";
 import { useTier } from "@/lib/tier";
 import { base64urlToBytes, bytesToBase64url } from "@/lib/utils";
+import { requestAssertion } from "@/lib/passkey";
 import {
   Dialog,
   DialogContent,
@@ -36,8 +38,12 @@ export function Account() {
   const status = useAsync(() => api.linkStatus(), []);
   const { identity, refresh } = useTier();
   const { t, i18n } = useTranslation("account");
+  // Adding or removing a passkey and changing the email ask for a fresh proof
+  // of a factor first (ReauthDialog).
+  const reauth = useReauth();
 
-  // Email verification state
+  // Email verification state. A verified address is changed through the same
+  // two steps, opened with changingEmail.
   const [emailInput, setEmailInput] = useState("");
   const [otpCodeInput, setOtpCodeInput] = useState("");
   const [emailSending, setEmailSending] = useState(false);
@@ -46,6 +52,7 @@ export function Account() {
   const [emailSent, setEmailSent] = useState(false);
   const [sentEmailAddress, setSentEmailAddress] = useState("");
   const [initializedEmail, setInitializedEmail] = useState(false);
+  const [changingEmail, setChangingEmail] = useState(false);
 
   useEffect(() => {
     if (identity?.email && !initializedEmail) {
@@ -61,14 +68,28 @@ export function Account() {
     setEmailSending(true);
     setEmailError(null);
     try {
-      await api.emailStart(trimmed);
+      await reauth.guard(() => api.emailStart(trimmed));
       setEmailSent(true);
       setSentEmailAddress(trimmed);
     } catch (err) {
-      setEmailError(humanizeError(err));
+      if (!isReauthCancelled(err)) setEmailError(humanizeError(err));
     } finally {
       setEmailSending(false);
     }
+  }
+
+  function startChangeEmail() {
+    setChangingEmail(true);
+    setEmailInput("");
+    setEmailSent(false);
+    setOtpCodeInput("");
+    setEmailError(null);
+  }
+
+  function cancelChangeEmail() {
+    setChangingEmail(false);
+    setEmailSent(false);
+    setEmailError(null);
   }
 
   async function verifyEmailOtp(e: FormEvent) {
@@ -80,6 +101,11 @@ export function Account() {
     try {
       await api.emailVerify(trimmedCode);
       await refresh();
+      if (changingEmail) {
+        // Replacing a verified address signs the other devices out.
+        setChangingEmail(false);
+        setSessionsVersion((v) => v + 1);
+      }
       setEmailSent(false);
       setEmailInput("");
       setOtpCodeInput("");
@@ -97,6 +123,7 @@ export function Account() {
   const [passkeyNickname, setPasskeyNickname] = useState("");
   const [registeringPasskey, setRegisteringPasskey] = useState(false);
   const [passkeyError, setPasskeyError] = useState<string | null>(null);
+  const [passkeyNotice, setPasskeyNotice] = useState<string | null>(null);
   const [registerDialogOpen, setRegisterDialogOpen] = useState(false);
   // Deleting a passkey goes through a confirm dialog that names it. The API
   // refuses to remove the only passkey of an account whose email is unverified
@@ -118,6 +145,7 @@ export function Account() {
     setRegisterDialogOpen(false);
     setPasskeyNickname("");
     setPasskeyError(null);
+    setPasskeyNotice(null);
     setRegisteringPasskey(false);
   }
 
@@ -127,12 +155,22 @@ export function Account() {
     if (!name || registeringPasskey) return;
     setRegisteringPasskey(true);
     setPasskeyError(null);
+    setPasskeyNotice(null);
 
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
     try {
-      const options = await api.passkeyRegisterBegin();
+      let options;
+      try {
+        options = await api.passkeyRegisterBegin();
+      } catch (err) {
+        if (!isReauthRequired(err)) throw err;
+        // The browser lets navigator.credentials.create run only right after a
+        // click, which the confirmation used up: the user presses Continue again.
+        if (await reauth.confirm()) setPasskeyNotice(t("reauth_done_continue"));
+        return;
+      }
       const publicKey: PublicKeyCredentialCreationOptions = {
         ...options,
         challenge: base64urlToBytes(options.challenge),
@@ -189,12 +227,13 @@ export function Account() {
     setDeletingPasskey(true);
     setDeleteError(null);
     try {
-      await api.passkeyDelete(pendingDelete.id);
+      await reauth.guard(() => api.passkeyDelete(pendingDelete.id));
       setPendingDelete(null);
       // The server signed the other devices out along with the passkey.
       setSessionsVersion((v) => v + 1);
       await passkeys.reload();
     } catch (err) {
+      if (isReauthCancelled(err)) return;
       // Another device may have changed the list meanwhile: refresh it. A 404
       // means the passkey is already gone, which is what was asked for.
       void passkeys.reload();
@@ -290,17 +329,20 @@ export function Account() {
           </CardTitle>
         </CardHeader>
         <CardContent className="text-sm">
-          {identity?.email_verified ? (
+          {identity?.email_verified && !changingEmail ? (
             <div className="space-y-3">
               <div className="flex items-center gap-2 font-medium text-foreground">
                 <CheckCircle2 className="h-4 w-4 text-emerald-500" />
                 {t("email_verified")}
               </div>
               <p className="text-muted-foreground">{t("email_desc")}</p>
-              <div className="flex items-center gap-2 text-muted-foreground">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground">
                 <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
                   {identity.email}
                 </code>
+                <Button variant="link" size="sm" onClick={startChangeEmail} className="h-auto p-0 font-normal">
+                  {t("change_email")}
+                </Button>
               </div>
             </div>
           ) : (
@@ -309,7 +351,7 @@ export function Account() {
                 <StepBadge n={1} />
                 <div className="w-full space-y-2">
                   <p className="font-medium text-foreground">{t("email_step1")}</p>
-                  <p className="text-muted-foreground">{t("email_step1_desc")}</p>
+                  <p className="text-muted-foreground">{t(changingEmail ? "email_change_desc" : "email_step1_desc")}</p>
                   {!emailSent ? (
                     <form onSubmit={sendEmailOtp} className="flex gap-2 max-w-md">
                       <Input
@@ -324,6 +366,11 @@ export function Account() {
                       <Button type="submit" disabled={emailSending || !emailInput}>
                         {emailSending ? t("sending_code") : t("send_code")}
                       </Button>
+                      {changingEmail && (
+                        <Button type="button" variant="ghost" onClick={cancelChangeEmail} disabled={emailSending}>
+                          {t("common:cancel")}
+                        </Button>
+                      )}
                     </form>
                   ) : (
                     <div className="flex items-center gap-2 text-emerald-600 font-medium dark:text-emerald-400">
@@ -409,6 +456,7 @@ export function Account() {
                       required
                     />
                   </div>
+                  {passkeyNotice && <MessageLine kind="success" message={passkeyNotice} />}
                   <InlineError message={passkeyError} />
                 </div>
                 <DialogFooter>
@@ -518,6 +566,8 @@ export function Account() {
         onSignOut={() => void signOut()}
         signingOut={signingOut}
       />
+
+      {reauth.dialog}
     </>
   );
 }
@@ -654,29 +704,7 @@ function MigrationCard({ userId, hasPasskey }: { userId?: string; hasPasskey: bo
   function confirmWithPasskey() {
     void run(async () => {
       const options = await api.migrateConfirmPasskeyBegin();
-      const pk = options.publicKey;
-      const publicKey: PublicKeyCredentialRequestOptions = {
-        ...pk,
-        challenge: base64urlToBytes(pk.challenge),
-        allowCredentials: pk.allowCredentials?.map((cred: any) => ({
-          ...cred,
-          id: base64urlToBytes(cred.id),
-        })),
-      };
-      const credential = (await navigator.credentials.get({ publicKey })) as PublicKeyCredential;
-      if (!credential) throw clientError("passkey_no_credential");
-      const response = credential.response as AuthenticatorAssertionResponse;
-      await api.migrateConfirmPasskeyFinish({
-        id: credential.id,
-        rawId: bytesToBase64url(credential.rawId),
-        type: credential.type,
-        response: {
-          clientDataJSON: bytesToBase64url(response.clientDataJSON),
-          authenticatorData: bytesToBase64url(response.authenticatorData),
-          signature: bytesToBase64url(response.signature),
-          userHandle: response.userHandle ? bytesToBase64url(response.userHandle) : null,
-        },
-      });
+      await api.migrateConfirmPasskeyFinish(await requestAssertion(options.publicKey));
       await mig.reload();
     });
   }

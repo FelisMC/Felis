@@ -1363,7 +1363,7 @@ export interface paths {
         put?: never;
         /**
          * Mint and deliver an email one-time code for the caller (web onboarding, spec §B2).
-         * @description Generates a one-time code bound to the authenticated principal and the supplied address, persists only its hash, and delivers it out of band. The code is never returned in the response. A re-request supersedes the prior unconsumed code.
+         * @description Generates a one-time code bound to the authenticated principal and the supplied address, persists only its hash, and delivers it out of band. The code is never returned in the response. A re-request supersedes the prior unconsumed code. Once the account has a passkey or a verified email, the session must have reauthed within 5 minutes (403 reauth_required).
          */
         post: operations["emailOtpStart"];
         delete?: never;
@@ -1383,7 +1383,7 @@ export interface paths {
         put?: never;
         /**
          * Redeem an email one-time code and mark the caller's email verified (spec §B2).
-         * @description Consumes a previously delivered code for the authenticated principal. On success the user's email is written and email_verified is set true. When the new address replaces a different verified one, every other session of the caller is signed out: sign-in codes now go to the new address, so a session opened through the old one ends. Too many incorrect attempts lock the code (429 otp_locked); 10 wrong codes in 24h, counted across every code, lock the account's email-code door until the window ends (429 otp_account_locked with Retry-After). An unknown, expired, consumed, or mismatched code is a 400.
+         * @description Consumes a previously delivered code for the authenticated principal. On success the user's email is written and email_verified is set true. When the new address replaces a different verified one, every other session of the caller is signed out: sign-in codes now go to the new address, so a session opened through the old one ends; the old address is mailed a notice with the new one masked. A verified code also counts as a reauth for this session. Too many incorrect attempts lock the code (429 otp_locked); 10 wrong codes in 24h, counted across every code, lock the account's email-code door until the window ends (429 otp_account_locked with Retry-After). An unknown, expired, consumed, or mismatched code is a 400.
          */
         post: operations["emailOtpVerify"];
         delete?: never;
@@ -1403,7 +1403,7 @@ export interface paths {
         put?: never;
         /**
          * Record the caller's email WITHOUT verifying it (setup bootstrap, spec §B2).
-         * @description Writes the supplied address to the authenticated principal's user row and clears email_verified (already false for a fresh Owner). The setup bootstrap has no SMTP, so the Owner cannot receive an emailed code; a later Settings/SMTP flow proves control of the address via /account/email/verify.
+         * @description Writes the supplied address to the authenticated principal's user row and clears email_verified (already false for a fresh Owner). The setup bootstrap has no SMTP, so the Owner cannot receive an emailed code; a later Settings/SMTP flow proves control of the address via /account/email/verify. Clearing a verified address strips a factor, so once the account has one the session must have reauthed within 5 minutes (403 reauth_required).
          */
         post: operations["setEmail"];
         delete?: never;
@@ -1423,7 +1423,7 @@ export interface paths {
         put?: never;
         /**
          * Begin a passkey (WebAuthn) registration ceremony for the caller (spec §14, Phase 6 bind).
-         * @description Mints a credential-creation challenge bound to the authenticated principal, stashes the server-side ceremony state under a short TTL, and returns the WebAuthn publicKey creation options for navigator.credentials.create(). The challenge is never echoed by the client. Enrollment only — passkey login is a deferred slice. 503 when the WebAuthn verifier is not configured on this instance.
+         * @description Mints a credential-creation challenge bound to the authenticated principal, stashes the server-side ceremony state under a short TTL, and returns the WebAuthn publicKey creation options for navigator.credentials.create(). The challenge is never echoed by the client. Once the account has a passkey or a verified email, the session must have reauthed within 5 minutes (403 reauth_required). 503 when the WebAuthn verifier is not configured on this instance.
          */
         post: operations["passkeyRegisterBegin"];
         delete?: never;
@@ -1443,7 +1443,7 @@ export interface paths {
         put?: never;
         /**
          * Finish a passkey registration ceremony and bind the credential (spec §14, Phase 6 bind).
-         * @description Consumes the caller's live registration challenge (single-use), verifies the authenticator's attestation against the server-stashed ceremony state, and persists the public credential. A missing or expired ceremony is a 400; an attestation that fails verification is a 400; a credential already bound to any account is a 409. 503 when the WebAuthn verifier is not configured.
+         * @description Consumes the caller's live registration challenge (single-use), verifies the authenticator's attestation against the server-stashed ceremony state, and persists the public credential. A missing or expired ceremony is a 400; an attestation that fails verification is a 400; a credential already bound to any account is a 409. The verified email is mailed a notice, and the ceremony counts as a reauth for this session. 503 when the WebAuthn verifier is not configured.
          */
         post: operations["passkeyRegisterFinish"];
         delete?: never;
@@ -1484,9 +1484,106 @@ export interface paths {
         post?: never;
         /**
          * Unbind one of the caller's passkeys (spec §14, Phase 6 bind).
-         * @description Removes a passkey scoped to the authenticated principal, so a caller can only unbind their OWN credential. An unknown or cross-user id is a 404; it never silently no-ops as success. The account's only passkey cannot be removed while its email is unverified (409 last_passkey): it is then the account's only durable way in. Removing a passkey signs out every other session of the caller, so a session opened with that passkey ends with it.
+         * @description Removes a passkey scoped to the authenticated principal, so a caller can only unbind their OWN credential. An unknown or cross-user id is a 404; it never silently no-ops as success. The account's only passkey cannot be removed while its email is unverified (409 last_passkey): it is then the account's only durable way in. Removing a passkey signs out every other session of the caller, so a session opened with that passkey ends with it, and mails the verified email a notice. The session must have reauthed within 5 minutes (403 reauth_required).
          */
         delete: operations["passkeyDelete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/account/reauth": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Say whether a passkey or email change needs a reauth first, and how to give one.
+         * @description needed is true when the account has a passkey or a verified email and this session has not proven one within the last 5 minutes. until is when the current proof stops counting. factors lists the ways this caller can reauth, best first: passkey (an enrolled passkey), email (a player's verified address), sign_in (an operator signs out and back in through op-login or a passkey).
+         */
+        get: operations["reauthStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/account/reauth/passkey/begin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Begin a passkey assertion that reauths this session.
+         * @description Returns WebAuthn assertion request options over the caller's own passkeys, bound to a fresh reauth-purpose challenge.
+         */
+        post: operations["reauthPasskeyBegin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/account/reauth/passkey/finish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Finish the passkey assertion and mark this session reauthed for 5 minutes.
+         * @description Verifies the assertion against the reauth challenge with the login door's clone check (a cloned authenticator is 400 passkey_login_invalid).
+         */
+        post: operations["reauthPasskeyFinish"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/account/reauth/email/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mail a reauth code to the caller's verified address.
+         * @description For players with a verified email. Operators reauth with a passkey or by signing in again (403 staff_reauth).
+         */
+        post: operations["reauthEmailStart"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/account/reauth/email/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Redeem the reauth code and mark this session reauthed for 5 minutes. */
+        post: operations["reauthEmailVerify"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2332,6 +2429,29 @@ export interface components {
         };
         /** @description A required subsystem (builder / console / logs / restorer / repo / cluster) is not wired or reachable. */
         ServiceUnavailable: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["Error"];
+            };
+        };
+        /** @description This session is reauthed until the returned time. */
+        Reauthed: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": {
+                    /** @constant */
+                    ok: true;
+                    /** Format: date-time */
+                    until: string;
+                };
+            };
+        };
+        /** @description reauth_required: this change adds, removes or moves a way into the account, and the account has a passkey or a verified email, so the session must have proven one of them within the last 5 minutes. Signing in by passkey, email code, op-login or the setup token counts; a bind-code sign-in does not. GET /api/v1/account/reauth lists the factors that can give the proof, then retry the change. */
+        ReauthRequired: {
             headers: {
                 [name: string]: unknown;
             };
@@ -5765,6 +5885,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReauthRequired"];
             /** @description Resend requested before the cooldown elapsed (otp_resend_cooldown); or the account spent its daily wrong-code budget (otp_account_locked, with Retry-After); or the install-wide mail budget is spent (mail_rate_limited, with Retry-After). */
             429: {
                 headers: {
@@ -5865,6 +5986,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReauthRequired"];
         };
     };
     passkeyRegisterBegin: {
@@ -5886,6 +6008,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReauthRequired"];
             /** @description Passkey subsystem is not configured. */
             503: {
                 headers: {
@@ -5997,6 +6120,7 @@ export interface operations {
                 content?: never;
             };
             401: components["responses"]["Unauthorized"];
+            403: components["responses"]["ReauthRequired"];
             /** @description No such passkey for this caller. */
             404: {
                 headers: {
@@ -6008,6 +6132,211 @@ export interface operations {
             };
             /** @description last_passkey — this is the only passkey and the email is unverified. */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    reauthStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Where the caller stands. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        needed: boolean;
+                        /** Format: date-time */
+                        until?: string;
+                        factors: ("passkey" | "email" | "sign_in")[];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    reauthPasskeyBegin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description WebAuthn assertion request options (PublicKeyCredentialRequestOptions) for navigator.credentials.get. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description The caller has no enrolled passkey (no_passkey), or no browser session to mark (no_session). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    reauthPasskeyFinish: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description The navigator.credentials.get() PublicKeyCredential assertion. */
+                    assertion: Record<string, never>;
+                };
+            };
+        };
+        responses: {
+            200: components["responses"]["Reauthed"];
+            /** @description Assertion invalid, challenge stale, or a cloned authenticator (passkey_login_invalid); no browser session (no_session). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    reauthEmailStart: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Code minted and dispatched. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        sent: true;
+                        /** Format: date-time */
+                        expires_at: string;
+                    };
+                };
+            };
+            /** @description No browser session to mark (no_session). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Operators cannot reauth by email (staff_reauth). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The account has no verified email (no_step_up_factor). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Resend requested before the cooldown elapsed (otp_resend_cooldown); or the account's daily wrong-code budget is spent (otp_account_locked, with Retry-After); or the install-wide mail budget is spent (mail_rate_limited, with Retry-After). */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            502: components["responses"]["MailUndeliverable"];
+        };
+    };
+    reauthEmailVerify: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    code: string;
+                };
+            };
+        };
+        responses: {
+            200: components["responses"]["Reauthed"];
+            /** @description Invalid or expired code (invalid_code), or no browser session (no_session). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Operators cannot reauth by email (staff_reauth). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The account has no verified email (no_step_up_factor). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Too many incorrect attempts on this code (otp_locked), or the account's daily wrong-code budget is spent (otp_account_locked, with Retry-After). */
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

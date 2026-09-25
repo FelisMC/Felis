@@ -81,7 +81,7 @@ func (a *API) handleSetupRedeem(w http.ResponseWriter, r *http.Request) {
 
 	// Mint the session — a regular felis_session; the lockdown is a product-level
 	// restriction the frontend enforces until email is verified / a passkey is bound.
-	if err := a.startSession(w, r, u.ID); err != nil {
+	if err := a.startSession(w, r, u.ID, provenSignIn); err != nil {
 		writeError(w, r, err)
 		return
 	}

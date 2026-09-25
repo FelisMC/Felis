@@ -89,5 +89,20 @@
   "migration_redeem_placeholder": "Transfer code",
   "migration_redeeming": "Redeeming…",
   "migration_redeem_btn": "Redeem",
-  "migration_redeemed": "Migration complete — {{count}} server(s) moved to this account."
+  "migration_redeemed": "Migration complete — {{count}} server(s) moved to this account.",
+  "reauth_title": "Confirm it's you",
+  "reauth_desc": "Adding or removing a passkey and changing the email need a fresh check with a way in you already have. The check lasts 5 minutes.",
+  "reauth_checking": "Checking how you can confirm…",
+  "reauth_passkey_btn": "Use a passkey",
+  "reauth_passkey_waiting": "Waiting for your passkey…",
+  "reauth_or": "or",
+  "reauth_email_btn": "Email a code to {{email}}",
+  "reauth_code_label": "Code sent to {{email}}",
+  "reauth_confirm_btn": "Confirm",
+  "reauth_confirming": "Confirming…",
+  "reauth_resend": "Send another code",
+  "reauth_sign_in_desc": "Operator accounts can also sign out and sign in again. A fresh sign-in counts for 5 minutes.",
+  "reauth_sign_in_btn": "Sign out and sign in again",
+  "reauth_done_continue": "Confirmed. Press Continue to add the passkey.",
+  "email_change_desc": "Enter the new address and we'll send it a code. Once it's verified, sign-in codes go there, the old address gets a notice, and your other devices are signed out."
 }

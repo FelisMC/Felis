@@ -157,6 +157,27 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/Error' }
+    Reauthed:
+      description: This session is reauthed until the returned time.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [ok, until]
+            properties:
+              ok: { type: boolean, const: true }
+              until: { type: string, format: date-time }
+    ReauthRequired:
+      description: >
+        reauth_required: this change adds, removes or moves a way into the account,
+        and the account has a passkey or a verified email, so the session must have
+        proven one of them within the last 5 minutes. Signing in by passkey, email
+        code, op-login or the setup token counts; a bind-code sign-in does not.
+        GET /api/v1/account/reauth lists the factors that can give the proof, then
+        retry the change.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
     MailUndeliverable:
       description: >
         The configured SMTP relay refused the message (code mail_undeliverable), so no
@@ -3977,7 +3998,8 @@ paths:
         Generates a one-time code bound to the authenticated principal and the
         supplied address, persists only its hash, and delivers it out of band. The
         code is never returned in the response. A re-request supersedes the prior
-        unconsumed code.
+        unconsumed code. Once the account has a passkey or a verified email, the
+        session must have reauthed within 5 minutes (403 reauth_required).
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ accessJWT: [] }]
@@ -4008,6 +4030,8 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ReauthRequired'
         '429':
           description: >-
             Resend requested before the cooldown elapsed (otp_resend_cooldown); or the
@@ -4030,7 +4054,9 @@ paths:
         success the user's email is written and email_verified is set true. When the
         new address replaces a different verified one, every other session of the
         caller is signed out: sign-in codes now go to the new address, so a session
-        opened through the old one ends. Too many
+        opened through the old one ends; the old address is mailed a notice with the
+        new one masked. A verified code also counts as a reauth for this session.
+        Too many
         incorrect attempts lock the code (429 otp_locked); 10 wrong codes in 24h,
         counted across every code, lock the account's email-code door until the
         window ends (429 otp_account_locked with Retry-After). An unknown, expired,
@@ -4082,7 +4108,9 @@ paths:
         Writes the supplied address to the authenticated principal's user row and
         clears email_verified (already false for a fresh Owner). The setup bootstrap
         has no SMTP, so the Owner cannot receive an emailed code; a later Settings/SMTP
-        flow proves control of the address via /account/email/verify.
+        flow proves control of the address via /account/email/verify. Clearing a
+        verified address strips a factor, so once the account has one the session
+        must have reauthed within 5 minutes (403 reauth_required).
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ accessJWT: [] }]
@@ -4112,6 +4140,8 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ReauthRequired'
 
   /api/v1/account/passkey/register/begin:
     post:
@@ -4122,8 +4152,10 @@ paths:
         Mints a credential-creation challenge bound to the authenticated principal,
         stashes the server-side ceremony state under a short TTL, and returns the
         WebAuthn publicKey creation options for navigator.credentials.create(). The
-        challenge is never echoed by the client. Enrollment only — passkey login is a
-        deferred slice. 503 when the WebAuthn verifier is not configured on this instance.
+        challenge is never echoed by the client. Once the account has a passkey or a
+        verified email, the session must have reauthed within 5 minutes (403
+        reauth_required). 503 when the WebAuthn verifier is not configured on this
+        instance.
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ accessJWT: [] }]
@@ -4137,6 +4169,8 @@ paths:
                 description: Opaque WebAuthn PublicKeyCredentialCreationOptions, passed verbatim to the browser.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ReauthRequired'
         '503':
           description: Passkey subsystem is not configured.
           content:
@@ -4153,7 +4187,9 @@ paths:
         authenticator's attestation against the server-stashed ceremony state, and
         persists the public credential. A missing or expired ceremony is a 400; an
         attestation that fails verification is a 400; a credential already bound to any
-        account is a 409. 503 when the WebAuthn verifier is not configured.
+        account is a 409. The verified email is mailed a notice, and the ceremony
+        counts as a reauth for this session. 503 when the WebAuthn verifier is not
+        configured.
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ accessJWT: [] }]
@@ -4231,7 +4267,9 @@ paths:
         silently no-ops as success. The account's only passkey cannot be removed while
         its email is unverified (409 last_passkey): it is then the account's only
         durable way in. Removing a passkey signs out every other session of the
-        caller, so a session opened with that passkey ends with it.
+        caller, so a session opened with that passkey ends with it, and mails the
+        verified email a notice. The session must have reauthed within 5 minutes
+        (403 reauth_required).
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ accessJWT: [] }]
@@ -4246,6 +4284,8 @@ paths:
           description: Passkey unbound.
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/ReauthRequired'
         '404':
           description: No such passkey for this caller.
           content:
@@ -4253,6 +4293,196 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '409':
           description: last_passkey — this is the only passkey and the email is unverified.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/account/reauth:
+    get:
+      tags: [account]
+      operationId: reauthStatus
+      summary: Say whether a passkey or email change needs a reauth first, and how to give one.
+      description: >
+        needed is true when the account has a passkey or a verified email and this
+        session has not proven one within the last 5 minutes. until is when the
+        current proof stops counting. factors lists the ways this caller can
+        reauth, best first: passkey (an enrolled passkey), email (a player's
+        verified address), sign_in (an operator signs out and back in through
+        op-login or a passkey).
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      responses:
+        '200':
+          description: Where the caller stands.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [needed, factors]
+                properties:
+                  needed: { type: boolean }
+                  until: { type: string, format: date-time }
+                  factors:
+                    type: array
+                    items: { type: string, enum: [passkey, email, sign_in] }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /api/v1/account/reauth/passkey/begin:
+    post:
+      tags: [account]
+      operationId: reauthPasskeyBegin
+      summary: Begin a passkey assertion that reauths this session.
+      description: >
+        Returns WebAuthn assertion request options over the caller's own passkeys,
+        bound to a fresh reauth-purpose challenge.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      responses:
+        '200':
+          description: WebAuthn assertion request options (PublicKeyCredentialRequestOptions) for navigator.credentials.get.
+          content:
+            application/json:
+              schema: { type: object, description: Opaque WebAuthn PublicKeyCredentialRequestOptions. }
+        '400':
+          description: The caller has no enrolled passkey (no_passkey), or no browser session to mark (no_session).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/account/reauth/passkey/finish:
+    post:
+      tags: [account]
+      operationId: reauthPasskeyFinish
+      summary: Finish the passkey assertion and mark this session reauthed for 5 minutes.
+      description: >
+        Verifies the assertion against the reauth challenge with the login door's
+        clone check (a cloned authenticator is 400 passkey_login_invalid).
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assertion]
+              properties:
+                assertion:
+                  type: object
+                  description: The navigator.credentials.get() PublicKeyCredential assertion.
+      responses:
+        '200':
+          $ref: '#/components/responses/Reauthed'
+        '400':
+          description: Assertion invalid, challenge stale, or a cloned authenticator (passkey_login_invalid); no browser session (no_session).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/account/reauth/email/start:
+    post:
+      tags: [account]
+      operationId: reauthEmailStart
+      summary: Mail a reauth code to the caller's verified address.
+      description: >
+        For players with a verified email. Operators reauth with a passkey or by
+        signing in again (403 staff_reauth).
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      responses:
+        '202':
+          description: Code minted and dispatched.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sent, expires_at]
+                properties:
+                  sent: { type: boolean, const: true }
+                  expires_at: { type: string, format: date-time }
+        '400':
+          description: No browser session to mark (no_session).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Operators cannot reauth by email (staff_reauth).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: The account has no verified email (no_step_up_factor).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: >-
+            Resend requested before the cooldown elapsed (otp_resend_cooldown); or the
+            account's daily wrong-code budget is spent (otp_account_locked, with
+            Retry-After); or the install-wide mail budget is spent
+            (mail_rate_limited, with Retry-After).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '502':
+          $ref: '#/components/responses/MailUndeliverable'
+
+  /api/v1/account/reauth/email/verify:
+    post:
+      tags: [account]
+      operationId: reauthEmailVerify
+      summary: Redeem the reauth code and mark this session reauthed for 5 minutes.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ accessJWT: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        '200':
+          $ref: '#/components/responses/Reauthed'
+        '400':
+          description: Invalid or expired code (invalid_code), or no browser session (no_session).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Operators cannot reauth by email (staff_reauth).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: The account has no verified email (no_step_up_factor).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: >-
+            Too many incorrect attempts on this code (otp_locked), or the account's
+            daily wrong-code budget is spent (otp_account_locked, with Retry-After).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

@@ -187,3 +187,59 @@ func TestRevokeOtherUserSessionsKeepsOne(t *testing.T) {
 		t.Fatalf("revoke-others keeping nothing = %d, %v; want 1", n, err)
 	}
 }
+
+// reauth_at: a proven sign-in stores the proof, a bind-code sign-in stores
+// none, SessionUser reads it back, and a reauth marks only a live session.
+func TestSessionReauthProof(t *testing.T) {
+	ctx := context.Background()
+	now := mustNow()
+	u := newUser(t, "user", "reauth")
+
+	unproven := newSession(t, u.ID, "unproven", now.Add(time.Hour))
+	su, err := repo.SessionUser(ctx, unproven, now)
+	if err != nil {
+		t.Fatalf("SessionUser: %v", err)
+	}
+	if !su.ReauthAt.IsZero() {
+		t.Fatalf("ReauthAt = %v on a session with no proof, want zero", su.ReauthAt)
+	}
+
+	proven := "proven-" + suffix(t)
+	signedIn := now.Add(-time.Minute)
+	if err := repo.CreateSession(ctx, api.NewSession{
+		TokenHash: proven, UserID: u.ID, ExpiresAt: now.Add(time.Hour), ReauthAt: signedIn,
+	}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if su, err = repo.SessionUser(ctx, proven, now); err != nil || !sameMicro(su.ReauthAt, signedIn) {
+		t.Fatalf("SessionUser = %+v, %v; want ReauthAt %v", su, err, signedIn)
+	}
+
+	if err := repo.MarkSessionReauth(ctx, unproven, now); err != nil {
+		t.Fatalf("MarkSessionReauth: %v", err)
+	}
+	if su, err = repo.SessionUser(ctx, unproven, now); err != nil || !sameMicro(su.ReauthAt, now) {
+		t.Fatalf("after a mark SessionUser = %+v, %v; want ReauthAt %v", su, err, now)
+	}
+	// The other session keeps its own proof.
+	if su, _ = repo.SessionUser(ctx, proven, now); !sameMicro(su.ReauthAt, signedIn) {
+		t.Fatalf("marking one session moved another's proof to %v", su.ReauthAt)
+	}
+
+	if err := repo.RevokeSession(ctx, proven); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.MarkSessionReauth(ctx, proven, now.Add(time.Minute)); err != nil {
+		t.Fatalf("marking a revoked session: %v", err)
+	}
+	var stored time.Time
+	if err := db.QueryRow(`SELECT reauth_at FROM sessions WHERE token_hash = $1`, proven).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if !sameMicro(stored, signedIn) {
+		t.Fatalf("a revoked session's reauth_at moved to %v", stored)
+	}
+	if err := repo.MarkSessionReauth(ctx, "no-such-"+suffix(t), now); err != nil {
+		t.Fatalf("marking an absent session: %v", err)
+	}
+}

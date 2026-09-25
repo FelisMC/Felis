@@ -165,6 +165,9 @@ type SessionedUser struct {
 	// LastSeenAt is when the session last authenticated a request, as last
 	// recorded by TouchSession (so up to sessionTouchEvery stale).
 	LastSeenAt time.Time
+	// ReauthAt is when the holder last proved a factor of the account (see
+	// requireReauth); zero when the session never did.
+	ReauthAt time.Time
 }
 
 // NewSession is one session to record at sign-in: the sha-256 of the opaque
@@ -176,6 +179,9 @@ type NewSession struct {
 	ExpiresAt time.Time
 	UserAgent string
 	ClientIP  string
+	// ReauthAt is set when the sign-in itself proved a factor (passkey, email
+	// code, op-login, setup token); zero for a bind-code sign-in.
+	ReauthAt time.Time
 }
 
 // OpLoginRequest is one op.console staff-login attempt (spec §B op-login): the
@@ -596,6 +602,9 @@ type Repo interface {
 	// never moves last_seen_at backwards, and touching an absent session is not
 	// an error.
 	TouchSession(ctx context.Context, tokenHash string, now time.Time) error
+	// MarkSessionReauth records that the holder of a live session proved a factor
+	// at the given time. Marking an absent or revoked session is not an error.
+	MarkSessionReauth(ctx context.Context, tokenHash string, at time.Time) error
 	// RevokeSession marks a session revoked (logout). It is idempotent: revoking an
 	// absent or already-revoked session is not an error.
 	RevokeSession(ctx context.Context, tokenHash string) error

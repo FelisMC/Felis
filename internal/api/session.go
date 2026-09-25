@@ -66,17 +66,35 @@ func hashCookie(value string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// signInProof says whether the sign-in minting a session proved a factor of the
+// account. A proven sign-in counts as a fresh reauth, so the new session may add
+// a passkey or change the email straight away (requireReauth).
+type signInProof bool
+
+const (
+	// provenSignIn: a passkey, an email code, op-login or the setup token.
+	provenSignIn signInProof = true
+	// bindCodeSignIn: the in-game identity alone, which never unlocks the
+	// account's other factors.
+	bindCodeSignIn signInProof = false
+)
+
 // startSession mints a session for userID and sets its cookie. Every sign-in door
 // ends here, so every session records the device it was minted for.
-func (a *API) startSession(w http.ResponseWriter, r *http.Request, userID string) error {
+func (a *API) startSession(w http.ResponseWriter, r *http.Request, userID string, proof signInProof) error {
 	token, err := newSessionToken()
 	if err != nil {
 		return err
 	}
-	expires := a.now().Add(sessionTTL)
+	now := a.now()
+	expires := now.Add(sessionTTL)
 	ip := ""
 	if addr := a.clientIP(r); addr.IsValid() {
 		ip = addr.String()
+	}
+	var reauth time.Time
+	if proof == provenSignIn {
+		reauth = now
 	}
 	if err := a.Repo.CreateSession(r.Context(), NewSession{
 		TokenHash: hashCookie(token),
@@ -84,6 +102,7 @@ func (a *API) startSession(w http.ResponseWriter, r *http.Request, userID string
 		ExpiresAt: expires,
 		UserAgent: truncateUTF8(r.UserAgent(), maxSessionUserAgent),
 		ClientIP:  ip,
+		ReauthAt:  reauth,
 	}); err != nil {
 		return err
 	}
@@ -227,6 +246,7 @@ func (s SessionAuth) Authenticate(r *http.Request) (*Principal, error) {
 		ViaAdminAccess: staffRole(u.Role) && hostIsAdminConsole(r, s.RootDomain, s.AdminHostname),
 		EmailVerified:  u.EmailVerified,
 		ViaSession:     true,
+		ReauthAt:       u.ReauthAt,
 	}, nil
 }
 

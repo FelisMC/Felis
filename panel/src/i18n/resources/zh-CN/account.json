@@ -88,5 +88,20 @@
   "migration_redeem_placeholder": "转移码",
   "migration_redeeming": "兑换中…",
   "migration_redeem_btn": "兑换",
-  "migration_redeemed": "迁移完成——已有 {{count}} 台服务器转移至本账户。"
+  "migration_redeemed": "迁移完成——已有 {{count}} 台服务器转移至本账户。",
+  "reauth_title": "确认是你本人",
+  "reauth_desc": "添加或删除 Passkey、修改邮箱前，需要用你已有的登录方式再验证一次，验证后 5 分钟内有效。",
+  "reauth_checking": "正在查看可用的验证方式…",
+  "reauth_passkey_btn": "用 Passkey 验证",
+  "reauth_passkey_waiting": "等待 Passkey…",
+  "reauth_or": "或",
+  "reauth_email_btn": "发送验证码到 {{email}}",
+  "reauth_code_label": "验证码已发送到 {{email}}",
+  "reauth_confirm_btn": "确认",
+  "reauth_confirming": "确认中…",
+  "reauth_resend": "重新发送验证码",
+  "reauth_sign_in_desc": "管理员账户也可以退出后重新登录，重新登录后 5 分钟内视为已验证。",
+  "reauth_sign_in_btn": "退出并重新登录",
+  "reauth_done_continue": "已确认。点“继续”添加 Passkey。",
+  "email_change_desc": "输入新邮箱，我们会向新地址发送验证码。验证通过后登录验证码改发到新邮箱，旧邮箱会收到通知，其它设备会退出登录。"
 }

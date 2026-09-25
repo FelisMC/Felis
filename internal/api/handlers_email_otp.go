@@ -131,6 +131,10 @@ func (a *API) handleEmailOTPStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "a valid email is required"))
 		return
 	}
+	// Gate the start: the verify only redeems a code minted here.
+	if !a.requireReauth(w, r, p) {
+		return
+	}
 	// Atomically reserve the cooldown on both the caller and the recipient BEFORE
 	// minting, so a burst of truly concurrent starts yields exactly one winner. Here
 	// the throttle is the sole defense and each admitted send is a real, non-idempotent
@@ -249,10 +253,14 @@ func (a *API) handleEmailOTPVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.audit(r, "account.email.verified", "")
+	// Proving the address is an email reauth.
+	a.markReauthQuietly(r)
 	// Replacing a verified address moves where sign-in codes go, so a session
-	// opened through the old one ends. A first verification retires nothing.
+	// opened through the old one ends, and the old mailbox hears about it. A
+	// first verification retires nothing.
 	if p.EmailVerified && !strings.EqualFold(p.Email, email) {
 		a.revokeOtherSessionsAfter(r, "email change")
+		a.notifyEmailChanged(r, p.Email, email)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"verified": true, "email": email})
 }
@@ -318,6 +326,11 @@ func (a *API) handleSetEmail(w http.ResponseWriter, r *http.Request) {
 	email := strings.TrimSpace(req.Email)
 	if !looksLikeEmail(email) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "a valid email is required"))
+		return
+	}
+	// Recording an address unverifies the current one, which would strip the
+	// account's email factor and with it the reauth that guards adding a passkey.
+	if !a.requireReauth(w, r, p) {
 		return
 	}
 	if err := a.Repo.SetUserEmail(r.Context(), p.UserID, email); err != nil {

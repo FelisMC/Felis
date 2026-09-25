@@ -75,10 +75,12 @@ type fakeRepo struct {
 	// failSessionUser / failGetSetting force those reads to fail with a generic
 	// (non-ErrNotFound) error, simulating a store outage for the 503 auth path.
 	failSessionUser error
-	// failTouchSession / failRevokeOthers force those session writes to fail.
+	// failTouchSession / failRevokeOthers / failMarkReauth force those session
+	// writes to fail.
 	failTouchSession error
 	failRevokeOthers error
-	failGetSetting  error
+	failMarkReauth   error
+	failGetSetting   error
 	// player email OTPs (spec §B2). Keyed by row id; the verify path scans for the
 	// newest live (user, purpose) just as the PG query does.
 	otps map[string]*fakeEmailOTP
@@ -220,6 +222,8 @@ type fakeSession struct {
 	userAgent string
 	clientIP  string
 	touches   int
+	// reauthAt is reauth_at: when the session last proved a factor; zero = never.
+	reauthAt time.Time
 }
 
 // fakeBackup mirrors a world_backups row: the client-facing view plus the
@@ -904,7 +908,16 @@ func (f *fakeRepo) CreateSession(_ context.Context, ns NewSession) error {
 	now := ns.ExpiresAt.Add(-sessionTTL)
 	f.sessions[ns.TokenHash] = &fakeSession{
 		userID: ns.UserID, expiresAt: ns.ExpiresAt, createdAt: now, lastSeen: now,
-		userAgent: ns.UserAgent, clientIP: ns.ClientIP,
+		userAgent: ns.UserAgent, clientIP: ns.ClientIP, reauthAt: ns.ReauthAt,
+	}
+	return nil
+}
+func (f *fakeRepo) MarkSessionReauth(_ context.Context, tokenHash string, at time.Time) error {
+	if f.failMarkReauth != nil {
+		return f.failMarkReauth
+	}
+	if s, ok := f.sessions[tokenHash]; ok && !s.revoked {
+		s.reauthAt = at
 	}
 	return nil
 }
@@ -951,7 +964,7 @@ func (f *fakeRepo) SessionUser(_ context.Context, tokenHash string, now time.Tim
 	}
 	return &SessionedUser{
 		ID: u.ID, Username: u.Username, Email: u.Email, Role: u.Role,
-		EmailVerified: u.EmailVerified, LastSeenAt: s.lastSeenAt(now),
+		EmailVerified: u.EmailVerified, LastSeenAt: s.lastSeenAt(now), ReauthAt: s.reauthAt,
 	}, nil
 }
 func (f *fakeRepo) TouchSession(_ context.Context, tokenHash string, now time.Time) error {

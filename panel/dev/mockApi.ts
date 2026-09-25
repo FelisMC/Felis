@@ -52,6 +52,10 @@ interface MockAccount {
   updated_at?: string;
   quota?: QuotaView;
   sessions?: SessionView[];
+  // Until when this browser's session counts as re-authenticated (ms epoch),
+  // and the address an email-change code was last sent to.
+  reauthUntil?: number;
+  pendingEmail?: string;
 }
 
 interface MockServer extends ServerStatus {
@@ -568,6 +572,41 @@ function setSessionCookie(res: ServerResponse, accountID: string): void {
   res.setHeader("Set-Cookie", `${SESSION_COOKIE}=${accountID}; Path=/; SameSite=Lax`);
 }
 
+// signInProven opens a session through a door that proved a factor (email code,
+// passkey, operator login), which like the real API counts as a re-auth.
+function signInProven(ctx: RequestContext, accountID: AccountID): void {
+  setSessionCookie(ctx.res, accountID);
+  const acc = ctx.state.accounts[accountID];
+  if (acc) acc.reauthUntil = Date.now() + REAUTH_MS;
+}
+
+const REAUTH_MS = 5 * 60_000;
+
+/** reauthFactors mirrors reauthState: a passkey, an email code to a verified
+ *  address (users) or a fresh sign-in (operators). None → nothing to re-prove. */
+function reauthFactors(state: MockState, acc: MockAccount): string[] {
+  const hasPasskey = (state.passkeys[acc.id] ?? []).length > 0;
+  if (!hasPasskey && !acc.emailVerified) return [];
+  const factors = hasPasskey ? ["passkey"] : [];
+  if (acc.role !== "user") factors.push("sign_in");
+  else if (acc.emailVerified) factors.push("email");
+  return factors;
+}
+
+/** refusedForReauth answers 403 reauth_required, as the real API does, for a
+ *  change to how the account signs in without a recent proof. */
+function refusedForReauth(ctx: SessionContext): boolean {
+  const acc = ctx.account;
+  if (reauthFactors(ctx.state, acc).length === 0 || (acc.reauthUntil ?? 0) > Date.now()) return false;
+  sendError(ctx.res, 403, "reauth_required", "confirm it's you first: this change needs your passkey or email code from the last few minutes");
+  return true;
+}
+
+function markReauth(ctx: SessionContext): void {
+  ctx.account.reauthUntil = Date.now() + REAUTH_MS;
+  sendJSON(ctx.res, 200, { ok: true, until: new Date(ctx.account.reauthUntil).toISOString() });
+}
+
 function clearSessionCookie(res: ServerResponse): void {
   res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`);
 }
@@ -784,7 +823,7 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
         return true;
       }
       opLogins.delete(body.request_id!);
-      setSessionCookie(ctx.res, "owner");
+      signInProven(ctx, "owner");
       sendJSON(ctx.res, 200, { user_id: "mock-owner", role: "owner" });
       return true;
     }
@@ -828,7 +867,7 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
         sendError(ctx.res, 400, "bad_request", "login_id and assertion are required");
         return true;
       }
-      setSessionCookie(ctx.res, "owner");
+      signInProven(ctx, "owner");
       sendJSON(ctx.res, 200, {
         user_id: "mock-owner",
         role: "owner"
@@ -857,7 +896,7 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
         sendError(ctx.res, 400, "bad_request", "email and assertion are required");
         return true;
       }
-      setSessionCookie(ctx.res, "owner");
+      signInProven(ctx, "owner");
       sendJSON(ctx.res, 200, {
         user_id: "mock-owner",
         role: "owner"
@@ -879,7 +918,7 @@ async function handlePublic(ctx: RequestContext): Promise<boolean> {
         sendError(ctx.res, 400, "invalid_code", "email code is invalid or expired");
         return true;
       }
-      setSessionCookie(ctx.res, "owner");
+      signInProven(ctx, "owner");
       sendJSON(ctx.res, 200, {
         user_id: "mock-owner",
         role: "owner"
@@ -993,6 +1032,8 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
         sendError(ctx.res, 400, "bad_request", "invalid email");
         return true;
       }
+      if (refusedForReauth(ctx)) return true;
+      ctx.account.pendingEmail = body.email.trim();
       sendJSON(ctx.res, 202, { sent: true, expires_at: new Date(Date.now() + 600000).toISOString() });
       return true;
     }
@@ -1002,11 +1043,22 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
         sendError(ctx.res, 400, "invalid_code", "email code is invalid or expired");
         return true;
       }
+      const next = ctx.account.pendingEmail ?? ctx.account.email;
+      // Like the real API: replacing a verified address signs the other devices
+      // out, and proving a code counts as a re-auth.
+      if (ctx.account.emailVerified && next.toLowerCase() !== ctx.account.email.toLowerCase()) {
+        const here = thisSessionHash(ctx.account);
+        ctx.account.sessions = accountSessions(ctx.account).filter((s) => s.token_hash === here);
+      }
+      ctx.account.email = next;
+      ctx.account.pendingEmail = undefined;
       ctx.account.emailVerified = true;
+      ctx.account.reauthUntil = Date.now() + REAUTH_MS;
       sendJSON(ctx.res, 200, { verified: true, email: ctx.account.email });
       return true;
     }
     case "POST account/passkey/register/begin": {
+      if (refusedForReauth(ctx)) return true;
       sendJSON(ctx.res, 200, {
         challenge: "c29tZV9jaGFsbGVuZ2VfZGF0YQ",
         rp: { name: "Felis Dev" },
@@ -1034,12 +1086,68 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
         ctx.state.passkeys[ctx.account.id] = [];
       }
       ctx.state.passkeys[ctx.account.id].unshift(newCred);
+      ctx.account.reauthUntil = Date.now() + REAUTH_MS;
       sendJSON(ctx.res, 201, newCred);
       return true;
     }
     case "GET account/passkey/credentials": {
       const list = ctx.state.passkeys[ctx.account.id] ?? [];
       sendJSON(ctx.res, 200, { credentials: list });
+      return true;
+    }
+    case "GET account/reauth": {
+      const factors = reauthFactors(ctx.state, ctx.account);
+      const until = ctx.account.reauthUntil ?? 0;
+      if (factors.length === 0) sendJSON(ctx.res, 200, { needed: false, factors });
+      else if (until > Date.now()) sendJSON(ctx.res, 200, { needed: false, until: new Date(until).toISOString(), factors });
+      else sendJSON(ctx.res, 200, { needed: true, factors });
+      return true;
+    }
+    case "POST account/reauth/passkey/begin": {
+      const list = ctx.state.passkeys[ctx.account.id] ?? [];
+      if (list.length === 0) {
+        sendError(ctx.res, 409, "no_passkey", "no passkey enrolled; confirm with an email code instead");
+        return true;
+      }
+      sendJSON(ctx.res, 200, {
+        publicKey: {
+          challenge: "c29tZV9yZWF1dGhfY2hhbGxlbmdl",
+          rpId: "dev.felis.localhost",
+          allowCredentials: list.map(() => ({ type: "public-key", id: "cGstMQ" })),
+          userVerification: "preferred",
+          timeout: 60000,
+        },
+      });
+      return true;
+    }
+    case "POST account/reauth/passkey/finish": {
+      const body = await readJSON<{ assertion?: unknown }>(ctx.req);
+      if (!body.assertion) {
+        sendError(ctx.res, 400, "bad_request", "assertion is required");
+        return true;
+      }
+      markReauth(ctx);
+      return true;
+    }
+    case "POST account/reauth/email/start": {
+      if (ctx.account.role !== "user") {
+        sendError(ctx.res, 403, "staff_reauth", "operators confirm with a passkey or by signing in again");
+        return true;
+      }
+      if (!ctx.account.emailVerified) {
+        sendError(ctx.res, 409, "no_step_up_factor", "no verified email to send a code to");
+        return true;
+      }
+      sendJSON(ctx.res, 202, { sent: true, expires_at: new Date(Date.now() + 600000).toISOString() });
+      return true;
+    }
+    case "POST account/reauth/email/verify": {
+      const body = await readJSON<{ code?: string }>(ctx.req);
+      if (body.code?.trim() !== MOCK_OTP_CODE) {
+        sendError(ctx.res, 400, "invalid_code", "email code is invalid or expired");
+        return true;
+      }
+      markReauth(ctx);
       return true;
     }
     case "GET account/migrate":
@@ -1076,6 +1184,8 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
         return true;
       }
       if (ctx.method === "DELETE" && ctx.parts[2] === "account" && ctx.parts[3] === "passkey" && ctx.parts[4] === "credentials" && ctx.parts[5]) {
+        // The real API asks for the re-auth before it looks the passkey up.
+        if (refusedForReauth(ctx)) return true;
         const id = ctx.parts[5];
         const list = ctx.state.passkeys[ctx.account.id] ?? [];
         const idx = list.findIndex((k) => k.id === id);

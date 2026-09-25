@@ -43,7 +43,7 @@ func TestAuditCannotBeSignedWithAnotherPersonsEmail(t *testing.T) {
 	repo.settings[LocalAuthEnabledKey] = []byte("true")
 	repo.staff["owner"] = &StaffUser{ID: "u1", Username: "owner", Email: "owner@example.net", Role: "owner", EmailVerified: true}
 	repo.staff["mallory"] = &StaffUser{ID: "u2", Username: "mallory", Email: "mallory@example.net", Role: "user", EmailVerified: true}
-	repo.sessions[hashCookie("tok")] = &fakeSession{userID: "u2", expiresAt: time.Unix(1_700_000_000, 0).Add(time.Hour)}
+	repo.sessions[hashCookie("tok")] = &fakeSession{userID: "u2", expiresAt: frozenNow.Add(time.Hour), reauthAt: frozenNow}
 	api := newTestAPI(repo, newFakeCluster())
 	api.External = SessionAuth{Repo: repo, RootDomain: testRoot, Now: api.now}
 	api.ClientIPHeader = "CF-Connecting-IP"

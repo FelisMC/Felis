@@ -590,6 +590,26 @@ export const api = rejectingSync({
   revokeMyOtherSessions: () =>
     request<{ revoked: number }>("POST", "/account/sessions/revoke-others"),
 
+  // Re-authentication. Adding or removing a passkey and changing the email are
+  // refused with 403 reauth_required unless this session proved a factor in the
+  // last few minutes. Status names the factors that can prove it: "passkey",
+  // "email" (a code to the verified address) or "sign_in" (operators sign in
+  // again). Like the migrate begin, the passkey begin returns the raw
+  // {"publicKey": {...}} document.
+  reauthStatus: () =>
+    request<{ needed: boolean; until?: string; factors: string[] }>("GET", "/account/reauth"),
+
+  reauthPasskeyBegin: () => request<any>("POST", "/account/reauth/passkey/begin"),
+
+  reauthPasskeyFinish: (assertion: any) =>
+    request<{ ok: boolean; until: string }>("POST", "/account/reauth/passkey/finish", { assertion }),
+
+  reauthEmailStart: () =>
+    request<{ sent: boolean; expires_at: string }>("POST", "/account/reauth/email/start"),
+
+  reauthEmailVerify: (code: string) =>
+    request<{ ok: boolean; until: string }>("POST", "/account/reauth/email/verify", { code }),
+
   // Account migration (spec §B3 inherit). Started in-game with /felis migrate; the
   // web side then drives: status → step-up confirm (passkey when enrolled, email-OTP
   // otherwise) → issue-code (source names the target account and reads the one-time
@@ -982,6 +1002,13 @@ export function humanizeError(e: unknown): string {
       return t("passkey_login_invalid");
     case "too_many_challenges":
       return t("too_many_challenges");
+    // Re-authentication before a change to how the account signs in.
+    case "reauth_required":
+      return t("reauth_required");
+    case "staff_reauth":
+      return t("staff_reauth");
+    case "no_session":
+      return t("no_session");
     // Operator-login approvals, live streams, and the remaining auth doors.
     case "op_login_invalid":
       return t("op_login_invalid");

@@ -1,11 +1,9 @@
 package api
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -25,7 +23,9 @@ import (
 //	                                         email-OTP — advancing to 'confirmed'. Mere
 //	                                         session possession is never enough; a stolen
 //	                                         session cannot read the mailbox nor present the
-//	                                         authenticator.
+//	                                         authenticator, and cannot enroll one of its own
+//	                                         without a recent proof of an existing factor
+//	                                         (reauth.go).
 //	3. web      issue code + name target  → handleMigrateIssueCode: the source names the
 //	                                         target account by id and mints a one-time code
 //	                                         ('code_issued').
@@ -205,54 +205,7 @@ func (a *API) handleMigrateConfirmOTPStart(w http.ResponseWriter, r *http.Reques
 	}
 	// Per-recipient cooldown, namespaced apart from the other OTP doors so they never
 	// perturb each other's throttle.
-	if until, err := a.Repo.OTPLockedUntil(r.Context(), p.UserID, otpPurposeMigrate, a.now()); err != nil {
-		writeError(w, r, err)
-		return
-	} else if !until.IsZero() {
-		writeOTPAccountLocked(w, r, until, a.now())
-		return
-	}
-	emailKey := "migrate:confirm:" + strings.ToLower(p.Email)
-	lim := a.otpLimiter()
-	emailAt, ok := lim.reserve(emailKey, otpResendCooldown)
-	if !ok {
-		writeError(w, r, newError(http.StatusTooManyRequests, "otp_resend_cooldown",
-			"a code was sent recently; wait a moment before requesting another"))
-		return
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			lim.release(emailKey, emailAt)
-		}
-	}()
-	code, err := newEmailOTP()
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	id, err := newOTPID()
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	expiresAt := a.now().Add(otpTTL)
-	if err := a.Repo.CreateEmailOTP(r.Context(), id, p.UserID, p.Email, otpCodeHash(code), otpPurposeMigrate, expiresAt); err != nil {
-		writeError(w, r, err)
-		return
-	}
-	if err := a.deliverOTP(r.Context(), p.Email, code); err != nil {
-		writeError(w, r, err)
-		return
-	}
-	committed = true
-	a.audit(r, "account.migrate.confirm_otp_sent", "")
-	writeJSON(w, http.StatusAccepted, map[string]any{"sent": true, "expires_at": expiresAt.UTC()})
-}
-
-// migrateConfirmOTPVerifyRequest is the OTP step-up verify body: the code from the email.
-type migrateConfirmOTPVerifyRequest struct {
-	Code string `json:"code"`
+	a.startStepUpOTP(w, r, p, otpPurposeMigrate, "migrate:confirm:", "account.migrate.confirm_otp_sent")
 }
 
 // handleMigrateConfirmOTPVerify redeems the migration step-up code and, on a match,
@@ -260,7 +213,7 @@ type migrateConfirmOTPVerifyRequest struct {
 // is the login-door one (no identity side-effect): the address is already proven.
 func (a *API) handleMigrateConfirmOTPVerify(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
-	var req migrateConfirmOTPVerifyRequest
+	var req stepUpOTPVerifyRequest
 	if err := decodeJSON(w, r, &req); err != nil {
 		writeError(w, r, err)
 		return
@@ -273,25 +226,7 @@ func (a *API) handleMigrateConfirmOTPVerify(w http.ResponseWriter, r *http.Reque
 	if _, ok := a.requireInitiatedMigration(w, r, p.UserID); !ok {
 		return
 	}
-	var lock *OTPAccountLockedError
-	err := a.Repo.ConsumeLoginEmailOTP(r.Context(), p.UserID, otpPurposeMigrate, otpCodeHash(code), a.now())
-	if isOTPRefusal(err) {
-		a.authFailure(r, "migrate_confirm", otpFailureReason(err), nil)
-	}
-	switch {
-	case errors.As(err, &lock):
-		a.noteOTPLock(r, err, p.UserID, otpPurposeMigrate)
-		writeOTPAccountLocked(w, r, lock.Until, a.now())
-		return
-	case errors.Is(err, ErrOTPLocked):
-		writeError(w, r, newError(http.StatusTooManyRequests, "otp_locked",
-			"too many incorrect attempts; request a new code"))
-		return
-	case errors.Is(err, ErrOTPInvalid):
-		writeError(w, r, newError(http.StatusBadRequest, "invalid_code", "email code is invalid or expired"))
-		return
-	case err != nil:
-		writeError(w, r, err)
+	if !a.verifyStepUpOTP(w, r, p, otpPurposeMigrate, "migrate_confirm", code) {
 		return
 	}
 	if err := a.Repo.ConfirmMigration(r.Context(), p.UserID, "email_otp", a.now()); err != nil {
@@ -307,17 +242,6 @@ func (a *API) handleMigrateConfirmOTPVerify(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]any{"confirmed": true})
 }
 
-// migratePasskeyUser builds the PasskeyUser the assertion ceremony needs for the
-// already-logged-in source (contrast the login door, which resolves it from a typed
-// email). The credential set must be identical between begin and finish.
-func migratePasskeyUser(p *Principal, creds []PasskeyCredential) PasskeyUser {
-	name := p.Email
-	if name == "" {
-		name = p.UserID
-	}
-	return PasskeyUser{ID: p.UserID, Name: name, DisplayName: name, Credentials: creds}
-}
-
 // handleMigrateConfirmPasskeyBegin starts a fresh passkey assertion bound to the
 // migration step-up (spec §B3, external app face). Unlike the login door it needs no
 // email — the caller is already authenticated — so it scopes the challenge to the
@@ -331,39 +255,8 @@ func (a *API) handleMigrateConfirmPasskeyBegin(w http.ResponseWriter, r *http.Re
 	if _, ok := a.requireInitiatedMigration(w, r, p.UserID); !ok {
 		return
 	}
-	creds, err := a.Repo.PasskeyCredentialsForUser(r.Context(), p.UserID)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	if len(creds) == 0 {
-		writeError(w, r, newError(http.StatusBadRequest, "no_passkey",
-			"no passkey enrolled; confirm the migration with an email code"))
-		return
-	}
-	options, sessionData, err := a.Passkey.BeginLogin(migratePasskeyUser(p, creds))
-	if err != nil {
-		writeError(w, r, newError(http.StatusBadRequest, "passkey_login_failed",
-			"could not start passkey confirmation"))
-		return
-	}
-	id, err := newPasskeyID()
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	expiresAt := a.now().Add(passkeyChallengeTTL)
-	if err := a.Repo.CreatePasskeyChallenge(r.Context(), id, p.UserID, passkeyPurposeMigrate, sessionData, expiresAt); err != nil {
-		writeError(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, options)
-}
-
-// migrateConfirmPasskeyFinishRequest is the assertion the browser produced, captured
-// as raw bytes so the exact response reaches the verifier without re-encoding.
-type migrateConfirmPasskeyFinishRequest struct {
-	Assertion json.RawMessage `json:"assertion"`
+	a.beginStepUpPasskey(w, r, p, passkeyPurposeMigrate,
+		"no passkey enrolled; confirm the migration with an email code")
 }
 
 // handleMigrateConfirmPasskeyFinish verifies the migration step-up assertion and, on
@@ -375,7 +268,7 @@ func (a *API) handleMigrateConfirmPasskeyFinish(w http.ResponseWriter, r *http.R
 		writeError(w, r, errPasskeyUnavailable)
 		return
 	}
-	var req migrateConfirmPasskeyFinishRequest
+	var req stepUpPasskeyFinishRequest
 	if err := decodeJSON(w, r, &req); err != nil {
 		writeError(w, r, err)
 		return
@@ -387,42 +280,7 @@ func (a *API) handleMigrateConfirmPasskeyFinish(w http.ResponseWriter, r *http.R
 	if _, ok := a.requireInitiatedMigration(w, r, p.UserID); !ok {
 		return
 	}
-	sessionData, err := a.Repo.ConsumePasskeyChallengeByUser(r.Context(), p.UserID, passkeyPurposeMigrate, a.now())
-	if err != nil {
-		if errors.Is(err, ErrPasskeyChallengeInvalid) {
-			a.authFailure(r, "migrate_passkey", "challenge_invalid", nil)
-			writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
-				"passkey confirmation could not be completed; begin again"))
-			return
-		}
-		writeError(w, r, err)
-		return
-	}
-	creds, err := a.Repo.PasskeyCredentialsForUser(r.Context(), p.UserID)
-	if err != nil {
-		writeError(w, r, err)
-		return
-	}
-	va, err := a.Passkey.FinishLogin(migratePasskeyUser(p, creds), sessionData, bytes.NewReader(req.Assertion))
-	if err != nil {
-		a.authFailure(r, "migrate_passkey", "bad_assertion", nil)
-		writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
-			"passkey confirmation could not be completed; begin again"))
-		return
-	}
-	// Same clone policy as the login door (applyAssertionCounter): a rolled-back counter
-	// fails closed with the opaque envelope and advances nothing, so the migrate step-up is
-	// never a weaker sibling that would accept an authenticator login refuses. A clean
-	// assertion advances the stored sign-count, keeping the clone signal meaningful for the
-	// next login.
-	if err := a.applyAssertionCounter(r.Context(), va); err != nil {
-		if errors.Is(err, errPasskeyClonedAuthenticator) {
-			a.passkeyCloneRejected(r, "migrate_passkey", nil, va.CredentialID)
-			writeError(w, r, newError(http.StatusBadRequest, "passkey_login_invalid",
-				"passkey confirmation could not be completed; begin again"))
-			return
-		}
-		writeError(w, r, err)
+	if !a.finishStepUpPasskey(w, r, p, passkeyPurposeMigrate, "migrate_passkey", req.Assertion) {
 		return
 	}
 	if err := a.Repo.ConfirmMigration(r.Context(), p.UserID, "passkey", a.now()); err != nil {
