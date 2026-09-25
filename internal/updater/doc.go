@@ -51,5 +51,7 @@
 //     Notifier (SMTP + in-game) and Applier (control-plane image bump, cloudflared swap)
 //     — the CLI passes nil for both on purpose, so it reports and never applies — the
 //     in-cluster CronJob entry point, and the runtime append of the live Pinned
-//     Minecraft fleet.
+//     Minecraft fleet. The scheduled check runs on the host instead:
+//     felis-update-check.timer runs `felis update --record`, which stores the report
+//     under updates.StatusKey for the panel's Updates page.
 package updater

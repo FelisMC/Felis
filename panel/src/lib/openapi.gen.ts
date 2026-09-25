@@ -1027,6 +1027,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/updates/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The newest recorded version check of every tracked component (admin).
+         * @description What `felis update --record` last stored in platform_settings; the installer's felis-update-check.timer runs it daily on the host, where the installed versions are readable. report is null before the first check; stale is true then, and whenever the check is older than max_age_seconds. Read-only: Felis applies no update on its own.
+         */
+        get: operations["getUpdateReport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/fleet": {
         parameters: {
             query?: never;
@@ -2192,6 +2212,40 @@ export interface components {
              * @description The freshness limit (26h), shared with `felis db check` and FelisDBBackupStale.
              */
             max_age_seconds: number;
+        };
+        /** @description The newest version check the host recorded (internal/api/handlers_updates.go updateReportView; the record is internal/updates StatusReport, written by `felis update --record`, which felis-update-check.timer runs daily). */
+        UpdateReport: {
+            /** @description Null until the first check has been recorded (internal/updates StatusReport). */
+            report: {
+                /** Format: date-time */
+                checked_at: string;
+                /** @description Version of the felis binary that ran the check. */
+                felis: string;
+                components: components["schemas"]["UpdateComponent"][];
+            } | null;
+            /** @description True when there is no record or it is older than max_age_seconds. */
+            stale: boolean;
+            /**
+             * Format: int64
+             * @description The freshness limit (26h).
+             */
+            max_age_seconds: number;
+        };
+        /** @description One component's line. available has a newer stable release (latest); unknown means the release feed could not be read and unreadable that the installed version could not, both with error; pinned never changes by policy. */
+        UpdateComponent: {
+            name: string;
+            /** @description Installed version; omitted when unreadable. */
+            current?: string;
+            /** @description The newer stable release; present only when state is available. */
+            latest?: string;
+            /** @enum {string} */
+            state: "current" | "available" | "unknown" | "unreadable" | "pinned";
+            /** @description The `felis update --<selector>` flag that prints how to apply it; omitted when none. */
+            selector?: string;
+            /** @description What the release lookup learned beyond the version; omitted when none. */
+            note?: string;
+            /** @description Why a version is missing; omitted otherwise. */
+            error?: string;
         };
         /** @description Display projection of one bound passkey (internal/api/handlers_passkey.go passkeyCredentialView). Carries no secret — the public key is never returned. */
         PasskeyCredential: {
@@ -5150,6 +5204,28 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DBBackupStatus"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    getUpdateReport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The newest recorded check and whether it is stale. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpdateReport"];
                 };
             };
             401: components["responses"]["Unauthorized"];

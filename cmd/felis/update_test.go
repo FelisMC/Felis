@@ -1,9 +1,11 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"felis.lolicon.best/internal/updater"
 	"felis.lolicon.best/internal/updates"
@@ -277,5 +279,55 @@ func TestInstallerRefNamesATag(t *testing.T) {
 	}
 	if got := installerRef(nil); got != "main" {
 		t.Errorf("no felis-api row: installerRef = %q, want main", got)
+	}
+}
+
+func mustVersion(t *testing.T, s string) updates.Version {
+	t.Helper()
+	v, err := updates.Parse(s)
+	if err != nil {
+		t.Fatalf("parse %q: %v", s, err)
+	}
+	return v
+}
+
+// The record the panel shows keeps every component with a state that cannot be
+// mistaken: a feed failure is "unknown" with its reason, an unreadable install is
+// listed after the plan, and each row carries the selector that prints its apply.
+func TestBuildStatusReport(t *testing.T) {
+	res := planResult([]updates.Action{
+		{Component: "felis-api", Current: mustVersion(t, "v0.4.0"), Latest: mustVersion(t, "v0.5.0"), LatestKnown: true, Kind: updates.ActionNotify},
+		{Component: "velocity", Current: mustVersion(t, "3.4.0"), Latest: mustVersion(t, "3.4.0"), LatestKnown: true, Kind: updates.ActionNone},
+		{Component: "k3s", Current: mustVersion(t, "v1.36.2+k3s1"), Kind: updates.ActionNone},
+		{Component: "cloudflared", Current: mustVersion(t, "2026.6.1"), Latest: mustVersion(t, "2026.9.0"), LatestKnown: true, Kind: updates.ActionApply},
+		{Component: "mc-lobby", Current: mustVersion(t, "1.21.4"), Kind: updates.ActionPinned},
+	})
+	res.RunResult.SourceErrors["k3s"] = errors.New("github: HTTP 403")
+	res.GatherErrors["postgresql"] = errors.New("psql: not found")
+	res.GatherErrors["jre"] = errors.New("release file missing")
+	notes := map[string]string{"postgresql": "PostgreSQL 13 is past its end of life", "velocity": "pinned minor 3.4"}
+	now := time.Date(2026, 9, 25, 3, 4, 5, 0, time.FixedZone("CST", 8*3600))
+
+	b, err := json.Marshal(buildStatusReport(res, notes, "v0.4.0", now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"checked_at":"2026-09-24T19:04:05Z","felis":"v0.4.0","components":[` +
+		`{"name":"felis-api","current":"v0.4.0","latest":"v0.5.0","state":"available","selector":"panel"},` +
+		`{"name":"velocity","current":"3.4.0","state":"current","selector":"velocity","note":"pinned minor 3.4"},` +
+		`{"name":"k3s","current":"v1.36.2+k3s1","state":"unknown","selector":"k3s","error":"github: HTTP 403"},` +
+		`{"name":"cloudflared","current":"2026.6.1","latest":"2026.9.0","state":"available","selector":"cloudflared"},` +
+		`{"name":"mc-lobby","current":"1.21.4","state":"pinned"},` +
+		`{"name":"jre","state":"unreadable","selector":"jre","error":"release file missing"},` +
+		`{"name":"postgresql","state":"unreadable","selector":"postgres","note":"PostgreSQL 13 is past its end of life","error":"psql: not found"}]}`
+	if string(b) != want {
+		t.Errorf("status report =\n%s\nwant\n%s", b, want)
+	}
+
+	// Nothing tracked still records an empty list, so the panel can tell "checked,
+	// nothing to show" from a report that never arrived.
+	b, _ = json.Marshal(buildStatusReport(planResult(nil), nil, "v0.4.0", now))
+	if !strings.Contains(string(b), `"components":[]`) {
+		t.Errorf("an empty check = %s, want an empty components list", b)
 	}
 }

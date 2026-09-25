@@ -422,6 +422,38 @@ export interface DBBackupStatus {
   max_age_seconds: number;
 }
 
+// ---- Component version check (internal/api/handlers_updates.go updateReportView) ----
+
+export type UpdateComponentState = "current" | "available" | "unknown" | "unreadable" | "pinned";
+
+export interface UpdateComponent {
+  name: string;
+  /** Installed version; absent when unreadable. */
+  current?: string;
+  /** The newer stable release; present only when state is available. */
+  latest?: string;
+  state: UpdateComponentState;
+  /** The `felis update --<selector>` flag that prints how to apply it. */
+  selector?: string;
+  note?: string;
+  /** Why a version is missing (unknown / unreadable). */
+  error?: string;
+}
+
+export interface UpdateStatusReport {
+  checked_at: string;
+  felis: string;
+  components: UpdateComponent[];
+}
+
+export interface UpdateReport {
+  /** Null until the host's felis-update-check.timer has recorded a check. */
+  report: UpdateStatusReport | null;
+  /** True when there is no record or it is older than max_age_seconds. */
+  stale: boolean;
+  max_age_seconds: number;
+}
+
 // ---- User admin types (internal/api/repo.go UserView, UserDetail, QuotaView, SessionView) ----
 
 export interface UserView {

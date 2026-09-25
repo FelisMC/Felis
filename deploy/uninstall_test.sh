@@ -206,6 +206,13 @@ expect "a purge wants the word purge" "not confirmed" "$out"
 out="$(CONFIRM_TTY="$root/no-tty/x" FELIS_UNINSTALL_SOURCED=1 bash -c '. "$0"; confirm; echo WENT ON' "$US" 2>&1)"
 expect "with no terminal it asks for --yes" "no terminal to confirm on; re-run with --yes" "$out"
 
+# Every unit the installer writes is one the uninstaller removes: a timer left behind
+# keeps firing a felis binary that is gone.
+units="$(awk '/^FELIS_UNITS=\(/ { f = 1; next } f && /^\)/ { f = 0 } f' "$US")"
+for u in $(sed -n 's|^[A-Z_]*="/etc/systemd/system/\([^"]*\)"$|\1|p' "$(dirname "$US")/bootstrap.sh"); do
+  expect "the uninstaller removes $u" " $u" " $(printf '%s' "$units" | tr '\n' ' ')"
+done
+
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"
 else

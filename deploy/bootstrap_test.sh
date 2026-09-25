@@ -1530,6 +1530,34 @@ expect "a failed first backup shows its log" "JOURNAL: pg_dump: connection refus
 expect "a failed first backup is a loud warning" "WARN: the first database backup failed" "$out"
 rm -rf "$tdir"
 
+ublock="$(awk '/^install_update_check_timer\(\) \{/,/^}/' "$BS")"
+[ -n "$ublock" ] || { echo "FAIL: no install_update_check_timer found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$ublock" | wc -l)" -lt 60 ] \
+  || { echo "FAIL: the extracted block is not install_update_check_timer -- did its closing brace move?"; exit 1; }
+udir="$(mktemp -d)"
+out="$(UPDATE_CHECK_SERVICE="$udir/felis-update-check.service" UPDATE_CHECK_TIMER="$udir/felis-update-check.timer" \
+  HOST_BIN=/usr/local/bin/felis STATE_DIR=/etc/felis bash -c '
+  ok() { printf "OK: %s\n" "$*"; }; warn() { printf "WARN: %s\n" "$*"; }
+  systemctl() { printf "SYSTEMCTL: %s\n" "$*"; }
+  '"$ublock"'
+  install_update_check_timer' 2>&1)"
+unit="$(cat "$udir/felis-update-check.service")"
+timer="$(cat "$udir/felis-update-check.timer")"
+expect "the version check records its result for the panel" \
+  "ExecStart=/usr/local/bin/felis update --record -config /etc/felis/felis.host.toml" "$unit"
+expect "the version check is a oneshot" "Type=oneshot" "$unit"
+expect "the version check runs daily" "OnCalendar=*-*-* 05:30:00" "$timer"
+expect "a missed check catches up at boot" "Persistent=true" "$timer"
+expect "the version check timer is enabled" "SYSTEMCTL: enable --now felis-update-check.timer" "$out"
+expect "the first check runs without holding up the install" "SYSTEMCTL: start --no-block felis-update-check.service" "$out"
+expect "the install says where the result shows" "OK: version check: daily; the panel's Updates page" "$out"
+rm -rf "$udir"
+order="$(awk '/^main\(\) \{/,/^}/' "$BS" | grep -nE '^[[:space:]]*(install_velocity|install_update_check_timer)$' | tr '\n' ' ')"
+case "$order" in
+  *install_velocity*install_update_check_timer*) echo "PASS the version check is installed after the proxy it reads" ;;
+  *) echo "FAIL the version check must be installed after install_velocity: $order"; fails=$((fails + 1)) ;;
+esac
+
 wblock="$(awk '/^install_watchdog_timer\(\) \{/,/^}/' "$BS")"
 [ -n "$wblock" ] || { echo "FAIL: no install_watchdog_timer found in $BS"; exit 1; }
 [ "$(printf '%s\n' "$wblock" | wc -l)" -lt 60 ] \

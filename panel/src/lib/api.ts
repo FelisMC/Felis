@@ -33,6 +33,7 @@ import type {
   SubmissionPage,
   UpdateWindow,
   DBBackupStatus,
+  UpdateReport,
 } from "./types";
 import { loadConfig } from "./config";
 import i18next from "i18next";
@@ -755,6 +756,7 @@ export const api = rejectingSync({
 
   // Freshness of the host's control-plane database backup (felis-db-backup.timer).
   getDBBackup: () => request<DBBackupStatus>("GET", "/platform/db-backup"),
+  getUpdateReport: () => request<UpdateReport>("GET", "/updates/report"),
 
   // ---- User admin (admin-tier, spec §7 user admin) ----
 

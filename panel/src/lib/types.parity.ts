@@ -50,4 +50,6 @@ export type WireParity = [
   Holds<Parity<T.PasskeyCredential, S["PasskeyCredential"]>>,
   Holds<Parity<T.UpdateWindow, S["UpdateWindow"]>>,
   Holds<Parity<T.DBBackupStatus, S["DBBackupStatus"]>>,
+  Holds<Parity<T.UpdateReport, S["UpdateReport"]>>,
+  Holds<Parity<T.UpdateComponent, S["UpdateComponent"]>>,
 ];

@@ -50,8 +50,8 @@ FELIS_CRD="minecraftservers.felis.lolicon.best"
 # Every unit the installer and `felis setup` write. Timers first, so none fires into a
 # service that is already gone.
 FELIS_UNITS=(
-  felis-db-backup.timer felis-watchdog.timer felis-offsite.timer felis-build-tools.timer
-  felis-db-backup.service felis-watchdog.service felis-offsite.service felis-build-tools.service
+  felis-db-backup.timer felis-watchdog.timer felis-offsite.timer felis-build-tools.timer felis-update-check.timer
+  felis-db-backup.service felis-watchdog.service felis-offsite.service felis-build-tools.service felis-update-check.service
   felis-velocity.service felis-nano.service cloudflared-felis.service
   felis-postgres-firewall.service
 )

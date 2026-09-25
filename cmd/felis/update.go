@@ -165,6 +165,7 @@ func cmdUpdate(args []string, stdout, stderr io.Writer) int {
 	force := fs.Bool("force", false, "print the apply command for a selected component even when it is already up to date")
 	velocityJar := fs.String("velocity-jar", updater.DefaultVelocityJarPath, "path to the installed Velocity jar to read the current version from")
 	cfgPath := fs.String("config", "/etc/felis/felis.toml", "path to felis.toml, read for the maintenance window the panel stores")
+	record := fs.Bool("record", false, "also store this check for the panel's Updates page (felis-update-check.timer runs it daily)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -209,7 +210,91 @@ func cmdUpdate(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprint(stdout, renderApplyGuidance(res, selected, *force))
 	}
+	if *record {
+		// A fresh context: the discovery pass may have spent most of updateTimeout.
+		rctx, rcancel := context.WithTimeout(context.Background(), updateWindowTimeout)
+		defer rcancel()
+		if err := recordUpdateStatus(rctx, *cfgPath, buildStatusReport(res, src.Notes(), resolvedVersion(), now)); err != nil {
+			fmt.Fprintf(stderr, "felis update: record the check for the panel: %v\n", err)
+			return 1
+		}
+		fmt.Fprint(stdout, "Recorded this check for the panel's Updates page.\n")
+	}
 	return 0
+}
+
+// buildStatusReport turns one run into the record the panel shows: every planned
+// component in plan order, then each component whose installed version could not
+// be read, by name. A component the feed could not answer for is StateUnknown with
+// the reason, never StateCurrent: the panel must not call a component current when
+// nobody could check.
+func buildStatusReport(res updater.Result, notes map[string]string, felis string, now time.Time) updates.StatusReport {
+	selectorOf := map[string]string{}
+	for _, t := range updateTargets {
+		if t.component != "" && selectorOf[t.component] == "" {
+			selectorOf[t.component] = t.selector
+		}
+	}
+	rep := updates.StatusReport{CheckedAt: now.UTC(), Felis: felis, Components: []updates.ComponentStatus{}}
+	for _, a := range res.RunResult.Plan {
+		cs := updates.ComponentStatus{
+			Name:     a.Component,
+			Current:  a.Current.String(),
+			Selector: selectorOf[a.Component],
+			Note:     notes[a.Component],
+		}
+		switch {
+		case a.Kind == updates.ActionPinned:
+			cs.State = updates.StatePinned
+		case a.Kind == updates.ActionNotify || a.Kind == updates.ActionApply:
+			cs.State = updates.StateAvailable
+			cs.Latest = a.Latest.String()
+		case a.LatestKnown:
+			cs.State = updates.StateCurrent
+		default:
+			cs.State = updates.StateUnknown
+			if err := res.RunResult.SourceErrors[a.Component]; err != nil {
+				cs.Error = err.Error()
+			}
+		}
+		rep.Components = append(rep.Components, cs)
+	}
+	names := make([]string, 0, len(res.GatherErrors))
+	for name := range res.GatherErrors {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		rep.Components = append(rep.Components, updates.ComponentStatus{
+			Name:     name,
+			State:    updates.StateUnreadable,
+			Selector: selectorOf[name],
+			Note:     notes[name],
+			Error:    res.GatherErrors[name].Error(),
+		})
+	}
+	return rep
+}
+
+// recordUpdateStatus upserts rep into platform_settings[updates.StatusKey], the
+// row the API serves to the panel's Updates page.
+func recordUpdateStatus(ctx context.Context, cfgPath string, rep updates.StatusReport) error {
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return err
+	}
+	v, err := json.Marshal(rep)
+	if err != nil {
+		return err
+	}
+	conn, err := pgx.Connect(ctx, cfg.Database.URL)
+	if err != nil {
+		return err
+	}
+	defer conn.Close(context.Background())
+	_, err = conn.Exec(ctx, `INSERT INTO platform_settings (key, value) VALUES ($1, $2::jsonb)
+		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, updates.StatusKey, string(v))
+	return err
 }
 
 // renderUpdateReport renders the component status table. With no selectors it shows

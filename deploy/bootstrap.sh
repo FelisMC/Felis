@@ -346,6 +346,8 @@ DB_BACKUP_SERVICE="/etc/systemd/system/felis-db-backup.service"
 DB_BACKUP_TIMER="/etc/systemd/system/felis-db-backup.timer"
 WATCHDOG_SERVICE="/etc/systemd/system/felis-watchdog.service"
 WATCHDOG_TIMER="/etc/systemd/system/felis-watchdog.timer"
+UPDATE_CHECK_SERVICE="/etc/systemd/system/felis-update-check.service"
+UPDATE_CHECK_TIMER="/etc/systemd/system/felis-update-check.timer"
 WATCHDOG_STATE="/var/lib/felis/watchdog/state.json"
 OFFSITE_ENV="${STATE_DIR}/offsite.env"
 OFFSITE_SERVICE="/etc/systemd/system/felis-offsite.service"
@@ -3262,6 +3264,46 @@ summary_offsite() {
 # memory, and mails the owners (their verified addresses, over the [smtp] relay) what
 # has stayed wrong long enough to matter. It runs on the host so a k3s that is down is
 # still reported. The first run happens now, so a broken unit shows up in this install.
+# The daily version check. Felis applies no update on its own; `felis update --record`
+# compares what this host runs with the newest upstream releases and stores the result,
+# which the panel's Updates page shows with the command that applies each update. It runs
+# on the host because that is where the installed versions are readable. The first check
+# runs in the background: it waits on the release feeds, and nothing in the install
+# depends on it.
+install_update_check_timer() {
+  cat > "$UPDATE_CHECK_SERVICE" <<EOF
+[Unit]
+Description=Felis component version check (felis update --record)
+After=network-online.target postgresql.service k3s.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${HOST_BIN} update --record -config ${STATE_DIR}/felis.host.toml
+TimeoutStartSec=5min
+Nice=10
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=full
+EOF
+  cat > "$UPDATE_CHECK_TIMER" <<EOF
+[Unit]
+Description=Daily Felis component version check
+
+[Timer]
+OnCalendar=*-*-* 05:30:00
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now felis-update-check.timer
+  systemctl start --no-block felis-update-check.service
+  ok "version check: daily; the panel's Updates page shows what has a newer release (journalctl -u felis-update-check)"
+}
+
 install_watchdog_timer() {
   local disks="/,/var/lib/rancher/k3s,/var/lib/postgresql,/var/lib/felis" path
   for path in "$FELIS_WORLDS_HOST_PATH" "$FELIS_ARCHIVE_LOCAL_PATH" "$FELIS_DB_BACKUP_DIR"; do
@@ -4216,6 +4258,8 @@ main() {
   install_db_backup_timer
   # After the backup timer: its first bundle is part of the first copy.
   install_offsite_timer
+  # After install_velocity: the check reads the installed proxy jar's version.
+  install_update_check_timer
   # Last: its first run should see the platform as this install leaves it.
   install_watchdog_timer
   mark_bootstrap_done

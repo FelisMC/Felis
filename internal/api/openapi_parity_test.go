@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"felis.lolicon.best/internal/build"
+	"felis.lolicon.best/internal/updates"
 	"sigs.k8s.io/yaml"
 )
 
@@ -51,6 +52,8 @@ func TestOpenAPISchemasMatchWireStructs(t *testing.T) {
 		"PasskeyCredential": passkeyCredentialView{},
 		"UpdateWindow":      updateWindow{},
 		"DBBackupStatus":    dbBackupView{},
+		"UpdateReport":      updateReportView{},
+		"UpdateComponent":   updates.ComponentStatus{},
 	}
 	for name, v := range pairs {
 		s, ok := doc.Components.Schemas[name]

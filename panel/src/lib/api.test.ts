@@ -699,6 +699,19 @@ describe("image whitelist and builds wire shapes", () => {
     });
   });
 
+  describe("component version check", () => {
+    it("getUpdateReport GETs /updates/report and keeps a null report", async () => {
+      const report = { report: null, stale: true, max_age_seconds: 93600 };
+      const fetchSpy = fakeFetch(report);
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.getUpdateReport();
+      expect(res).toEqual({ report: null, stale: true, max_age_seconds: 93600 });
+      const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toBe("/updates/report");
+      expect((opts as RequestInit).method).toBe("GET");
+    });
+  });
+
   describe("backup now and server jobs wire shapes", () => {
     it("backupNow POSTs to /servers/{name}/backup with no body and parses the 202", async () => {
       const fetchSpy = fakeFetch({ name: "survival", status: "backing_up" }, { status: 202 });

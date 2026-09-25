@@ -14,6 +14,7 @@ import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { formatAbsolute } from "@/lib/format";
 import { DBBackupCard } from "./DBBackupCard";
+import { UpdateReportCard } from "./UpdateReportCard";
 
 function toLocalDatetimeString(dateOrStr: Date | string | null | undefined): string {
   if (!dateOrStr) return "";
@@ -169,6 +170,9 @@ export function UpdatesPage() {
 
       {/* Control-plane database backup freshness (read-only, host timer) */}
       <DBBackupCard />
+
+      {/* Installed vs newest upstream versions (read-only, host timer) */}
+      <UpdateReportCard />
 
       {/* Stats Cards Row */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">

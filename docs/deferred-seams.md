@@ -28,7 +28,10 @@ A grep across `*.md` and `*.go` returns both sets; only the Go ones are seams.
 
 - `internal/updates/seams.go:32` — `Notifier`. `internal/mail` sends OTP over SMTP,
   but nothing adapts it to this interface and no in-game channel exists. `felis
-  update` passes nil deliberately: a human typing the command is the notification.
+  update` passes nil deliberately. The notification is the panel instead:
+  `felis-update-check.timer` runs `felis update --record` daily on the host, which
+  stores the report under `platform_settings.update_report`, and **Admin → Updates →
+  Component versions** shows it with the command that applies each update.
 - `internal/updates/seams.go:43` — `Applier`. Nothing applies an update anywhere. A
   nil applier is not silent — `Run` records `errNoApplier` against every planned
   apply, so a mis-scheduled apply is loud rather than lost.

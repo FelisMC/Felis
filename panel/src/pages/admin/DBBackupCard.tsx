@@ -24,7 +24,7 @@ const LABEL_KEY: Record<DBBackupLabel, string> = {
 
 const FIX_COMMANDS = ["sudo felis db backup", "journalctl -u felis-db-backup -n 50 --no-pager"];
 
-function CopyCommand({ command }: { command: string }) {
+export function CopyCommand({ command }: { command: string }) {
   const { t } = useTranslation("admin");
   const [copied, setCopied] = useState(false);
   async function copy() {

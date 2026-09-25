@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"time"
+
+	"felis.lolicon.best/internal/updates"
 )
 
 // SysAdmin-set maintenance window for the auto-update subsystem (task #38; the
@@ -114,4 +116,42 @@ func (a *API) handleSetUpdateWindow(w http.ResponseWriter, r *http.Request) {
 	}
 	a.audit(r, "updates.window_set", "")
 	writeJSON(w, http.StatusOK, body)
+}
+
+// updateReportView is the wire shape of the newest version check. Report is null
+// until felis-update-check.timer (or `felis update --record`) has run once; Stale
+// is true for a missing report too, so the panel has one flag for "the versions
+// shown are not today's".
+type updateReportView struct {
+	Report        *updates.StatusReport `json:"report"`
+	Stale         bool                  `json:"stale"`
+	MaxAgeSeconds int64                 `json:"max_age_seconds"`
+}
+
+// handleGetUpdateReport returns the newest recorded version check (admin-tier).
+// The check runs on the host, where the installed versions are readable, and
+// records itself in platform_settings[updates.StatusKey]. Only a missing key
+// reads as "never checked"; any other store error is a 500.
+func (a *API) handleGetUpdateReport(w http.ResponseWriter, r *http.Request) {
+	view := updateReportView{Stale: true, MaxAgeSeconds: int64(updates.StatusStaleAfter.Seconds())}
+	raw, err := a.Repo.GetSetting(r.Context(), updates.StatusKey)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeJSON(w, http.StatusOK, view)
+		return
+	case err != nil:
+		writeError(w, r, err)
+		return
+	}
+	var rep updates.StatusReport
+	if err := json.Unmarshal(raw, &rep); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if rep.Components == nil {
+		rep.Components = []updates.ComponentStatus{}
+	}
+	view.Report = &rep
+	view.Stale = a.now().Sub(rep.CheckedAt) > updates.StatusStaleAfter
+	writeJSON(w, http.StatusOK, view)
 }

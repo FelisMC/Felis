@@ -247,6 +247,20 @@ against their newest releases; `--k3s`, `--cloudflared`, `--jre` and `--postgres
 it to one. PostgreSQL is compared within its major, since a minor release is a package
 update, and a major past its end of life gets a note naming the current one.
 
+The installer also sets up `felis-update-check.timer`, which runs `felis update --record`
+once a day around 05:30 (and at boot after a missed run). `--record` stores the result
+in `platform_settings`, and the panel's **Admin → Updates → Component versions** card
+shows it: each component's installed and newest version, and for the ones with a newer
+release the `sudo felis update --<component>` line that prints how to apply it. Felis
+applies nothing on its own; the installer re-run above is the apply path. The card turns
+red when the newest record is older than 26 hours, meaning the timer stopped:
+
+```sh
+systemctl list-timers felis-update-check.timer
+journalctl -u felis-update-check -n 50 --no-pager
+sudo felis update --record   # record a fresh check now
+```
+
 ### PostgreSQL major versions [CODE-ONLY]
 
 The installer takes the major the distribution ships (13 on EL9) and never moves it. To

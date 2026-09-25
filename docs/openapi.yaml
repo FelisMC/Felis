@@ -383,6 +383,51 @@ components:
           format: int64
           description: The freshness limit (26h), shared with `felis db check` and FelisDBBackupStale.
 
+    UpdateReport:
+      type: object
+      description: >
+        The newest version check the host recorded (internal/api/handlers_updates.go
+        updateReportView; the record is internal/updates StatusReport, written by
+        `felis update --record`, which felis-update-check.timer runs daily).
+      required: [report, stale, max_age_seconds]
+      properties:
+        report:
+          type: object
+          nullable: true
+          description: >
+            Null until the first check has been recorded (internal/updates
+            StatusReport).
+          required: [checked_at, felis, components]
+          properties:
+            checked_at: { type: string, format: date-time }
+            felis: { type: string, description: Version of the felis binary that ran the check. }
+            components:
+              type: array
+              items: { $ref: '#/components/schemas/UpdateComponent' }
+        stale:
+          type: boolean
+          description: True when there is no record or it is older than max_age_seconds.
+        max_age_seconds:
+          type: integer
+          format: int64
+          description: The freshness limit (26h).
+
+    UpdateComponent:
+      type: object
+      description: >
+        One component's line. available has a newer stable release (latest);
+        unknown means the release feed could not be read and unreadable that the
+        installed version could not, both with error; pinned never changes by policy.
+      required: [name, state]
+      properties:
+        name: { type: string }
+        current: { type: string, description: Installed version; omitted when unreadable. }
+        latest: { type: string, description: The newer stable release; present only when state is available. }
+        state: { type: string, enum: [current, available, unknown, unreadable, pinned] }
+        selector: { type: string, description: 'The `felis update --<selector>` flag that prints how to apply it; omitted when none.' }
+        note: { type: string, description: What the release lookup learned beyond the version; omitted when none. }
+        error: { type: string, description: Why a version is missing; omitted otherwise. }
+
     PasskeyCredential:
       type: object
       description: >
@@ -3303,6 +3348,32 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/DBBackupStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /api/v1/updates/report:
+    get:
+      tags: [admin-updates]
+      operationId: getUpdateReport
+      summary: The newest recorded version check of every tracked component (admin).
+      description: >-
+        What `felis update --record` last stored in platform_settings; the
+        installer's felis-update-check.timer runs it daily on the host, where the
+        installed versions are readable. report is null before the first check;
+        stale is true then, and whenever the check is older than max_age_seconds.
+        Read-only: Felis applies no update on its own.
+      x-felis-face: [external]
+      x-felis-tier: admin
+      security: [{ sessionCookie: [] }]
+      responses:
+        '200':
+          description: The newest recorded check and whether it is stale.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateReport'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':

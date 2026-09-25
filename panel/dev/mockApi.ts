@@ -1011,6 +1011,31 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       });
       return true;
     }
+    case "GET updates/report": {
+      if (!isAdmin(ctx.account.role)) {
+        sendError(ctx.res, 403, "forbidden", "admin account required");
+        return true;
+      }
+      // Last night's timer run: one update waiting, one feed unreachable, one
+      // install unreadable, so the card shows every state it has.
+      sendJSON(ctx.res, 200, {
+        report: {
+          checked_at: new Date(Date.now() - 7 * 3600 * 1000).toISOString(),
+          felis: "v0.4.0",
+          components: [
+            { name: "felis-api", current: "v0.4.0", latest: "v0.5.1", state: "available", selector: "panel" },
+            { name: "velocity", current: "3.4.0-SNAPSHOT+b528", state: "current", selector: "velocity" },
+            { name: "k3s", current: "v1.36.2+k3s1", state: "current", selector: "k3s" },
+            { name: "cloudflared", current: "2026.6.1", latest: "2026.9.0", state: "available", selector: "cloudflared" },
+            { name: "jre", current: "21.0.8+9", state: "unknown", selector: "jre", error: "adoptium: GET https://api.adoptium.net/v3/assets/latest/21/hotspot: context deadline exceeded" },
+            { name: "postgresql", current: "13.22", state: "current", selector: "postgres", note: "PostgreSQL 13 reached its end of life on 2025-11-13; plan a major upgrade (docs/operations.md §4)" },
+          ],
+        },
+        stale: false,
+        max_age_seconds: 26 * 3600,
+      });
+      return true;
+    }
     case "GET updates/window":
       if (!isAdmin(ctx.account.role)) {
         sendError(ctx.res, 403, "forbidden", "admin account required");

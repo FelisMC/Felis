@@ -46,7 +46,7 @@ for unit in k3s postgresql felis-velocity; do
 done
 # A release may predate a timer; what this commit installs has them all.
 if [ "$phase" != release ]; then
-  for timer in felis-db-backup.timer felis-watchdog.timer; do
+  for timer in felis-db-backup.timer felis-watchdog.timer felis-update-check.timer; do
     check "${timer} is scheduled" systemctl is-enabled --quiet "$timer"
   done
 fi
