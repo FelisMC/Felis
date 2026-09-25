@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -28,6 +29,17 @@ const (
 	sessionCookieName = "felis_session"
 	// sessionTTL bounds a local session. Staff re-authenticate after it.
 	sessionTTL = 12 * time.Hour
+	// staffSessionIdle ends a staff session that has authenticated no request for
+	// this long; a player session has only sessionTTL. Any authenticated request
+	// counts, a panel tab's background refresh included, so what this ends is a
+	// session left behind in a closed tab or on a machine that went to sleep.
+	staffSessionIdle = 30 * time.Minute
+	// sessionTouchEvery is how stale a session's last_seen_at may grow before a
+	// request advances it: an active session costs one write a minute, not one per
+	// request, and the idle limit is honored to within this.
+	sessionTouchEvery = time.Minute
+	// maxSessionUserAgent caps the User-Agent a session keeps to name its device.
+	maxSessionUserAgent = 256
 )
 
 // LocalAuthEnabledKey is the platform_settings key that gates whether
@@ -52,6 +64,41 @@ func newSessionToken() (string, error) {
 func hashCookie(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(sum[:])
+}
+
+// startSession mints a session for userID and sets its cookie. Every sign-in door
+// ends here, so every session records the device it was minted for.
+func (a *API) startSession(w http.ResponseWriter, r *http.Request, userID string) error {
+	token, err := newSessionToken()
+	if err != nil {
+		return err
+	}
+	expires := a.now().Add(sessionTTL)
+	ip := ""
+	if addr := a.clientIP(r); addr.IsValid() {
+		ip = addr.String()
+	}
+	if err := a.Repo.CreateSession(r.Context(), NewSession{
+		TokenHash: hashCookie(token),
+		UserID:    userID,
+		ExpiresAt: expires,
+		UserAgent: truncateUTF8(r.UserAgent(), maxSessionUserAgent),
+		ClientIP:  ip,
+	}); err != nil {
+		return err
+	}
+	setSessionCookie(w, token, expires)
+	return nil
+}
+
+// currentSessionHash is the storage key of the session cookie r carries, or ""
+// when it carries none.
+func currentSessionHash(r *http.Request) string {
+	c, err := r.Cookie(sessionCookieName)
+	if err != nil || c.Value == "" {
+		return ""
+	}
+	return hashCookie(c.Value)
 }
 
 // setSessionCookie writes the session cookie: HttpOnly + Secure + SameSite=Lax,
@@ -158,12 +205,19 @@ func (s SessionAuth) Authenticate(r *http.Request) (*Principal, error) {
 		return nil, fmt.Errorf("local auth disabled")
 	}
 
-	u, err := s.Repo.SessionUser(ctx, hashCookie(cookie.Value), s.now())
+	hash, now := hashCookie(cookie.Value), s.now()
+	u, err := s.Repo.SessionUser(ctx, hash, now)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		return nil, fmt.Errorf("invalid session: %w", err)
 	case err != nil:
 		return nil, fmt.Errorf("%w: %v", errAuthBackend, err)
+	}
+	if now.Sub(u.LastSeenAt) >= sessionTouchEvery {
+		// A failed touch costs at most an early idle sign-out, so the request goes on.
+		if err := s.Repo.TouchSession(ctx, hash, now); err != nil {
+			log.Printf("api: record session activity (request_id=%s): %v", requestIDFromContext(ctx), err)
+		}
 	}
 	return &Principal{
 		UserID:         u.ID,

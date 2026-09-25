@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import i18next from "i18next";
 import { UserDetailPage } from "./UserDetailPage";
@@ -10,6 +11,8 @@ const calls = vi.hoisted(() => ({
   getUser: vi.fn(),
   getUserQuotas: vi.fn(),
   listUserSessions: vi.fn(),
+  revokeUserSession: vi.fn(),
+  revokeUserSessions: vi.fn(),
 }));
 vi.mock("@/lib/tier", () => ({
   useTier: () => ({ loading: false, identity: { user_id: "owner-1", role: "owner" }, isAdmin: true, isOwner: true }),
@@ -76,7 +79,14 @@ describe("UserDetailPage", () => {
   it("names the auth source and writes dates in the UI language", async () => {
     calls.getUser.mockResolvedValue(USER);
     calls.listUserSessions.mockResolvedValue([
-      { token_hash: "abcdef0123456789abcdef0123456789", created_at: VERIFIED, expires_at: EXPIRES },
+      {
+        token_hash: "abcdef0123456789abcdef0123456789",
+        created_at: VERIFIED,
+        expires_at: EXPIRES,
+        last_seen_at: VERIFIED,
+        user_agent: "",
+        client_ip: "",
+      },
     ]);
     await i18next.changeLanguage("zh-CN");
     renderPage();
@@ -87,6 +97,83 @@ describe("UserDetailPage", () => {
 
     expect(await screen.findByText(`第三方 Yggdrasil · ${zhVerified}`)).toBeTruthy();
     expect(await screen.findByText(zhExpires, { exact: false })).toBeTruthy();
+  });
+
+  describe("sessions card", () => {
+    const seen = new Date(Date.now() - 2 * 3_600_000).toISOString();
+    const phone = {
+      token_hash: "h-phone",
+      created_at: VERIFIED,
+      expires_at: EXPIRES,
+      last_seen_at: seen,
+      user_agent:
+        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36",
+      client_ip: "198.51.100.9",
+    };
+    const pc = { ...phone, token_hash: "h-pc", user_agent: "Mozilla/5.0 (X11; Linux x86_64; rv:130.0) Firefox/130.0", client_ip: "" };
+
+    it("names each device with its address and last activity", async () => {
+      calls.getUser.mockResolvedValue(USER);
+      calls.listUserSessions.mockResolvedValue([phone, pc]);
+      renderPage();
+
+      const label = await screen.findByText("Chrome on Android");
+      const row = label.closest("div.rounded-md") as HTMLElement;
+      expect(label.getAttribute("title")).toBe(phone.user_agent);
+      expect(within(row).getByText("198.51.100.9")).toBeTruthy();
+      expect(within(row).getByText("Active 2 hours ago")).toBeTruthy();
+      expect(screen.getByText("Firefox on Linux")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Revoke the session on Chrome on Android" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Revoke the session on Firefox on Linux" })).toBeTruthy();
+    });
+
+    it("closes the confirmation and refreshes when the session had already ended", async () => {
+      calls.getUser.mockResolvedValue(USER);
+      calls.listUserSessions.mockResolvedValueOnce([phone, pc]).mockResolvedValue([pc]);
+      calls.revokeUserSession.mockRejectedValue({ status: 404, code: "session_not_found", message: "gone" });
+      renderPage();
+
+      await userEvent.click(await screen.findByRole("button", { name: "Revoke the session on Chrome on Android" }));
+      await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Revoke" }));
+
+      expect(calls.revokeUserSession).toHaveBeenCalledWith("u-1", "h-phone");
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      await waitFor(() => expect(screen.queryByText("Chrome on Android")).toBeNull());
+      expect(screen.queryByText("That session has already ended.")).toBeNull();
+    });
+
+    it("shows why a revoke failed for any other reason", async () => {
+      calls.getUser.mockResolvedValue(USER);
+      calls.listUserSessions.mockResolvedValue([phone]);
+      calls.revokeUserSession.mockRejectedValue({ status: 409, code: "test", message: "backend refused" });
+      renderPage();
+
+      await userEvent.click(await screen.findByRole("button", { name: "Revoke the session on Chrome on Android" }));
+      await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Revoke" }));
+
+      // Inside the dialog: the modal hides the card behind it.
+      const dialog = screen.getByRole("dialog");
+      expect((await within(dialog).findByRole("alert")).textContent).toBe("backend refused");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      expect(screen.getByText("Chrome on Android")).toBeTruthy();
+
+      // Asking again starts clean, without the last attempt's failure.
+      await userEvent.click(screen.getByRole("button", { name: "Revoke the session on Chrome on Android" }));
+      expect(within(screen.getByRole("dialog")).queryByRole("alert")).toBeNull();
+    });
+
+    it("shows why revoking every session failed inside the confirmation", async () => {
+      calls.getUser.mockResolvedValue(USER);
+      calls.listUserSessions.mockResolvedValue([phone]);
+      calls.revokeUserSessions.mockRejectedValue({ status: 409, code: "test", message: "backend refused" });
+      renderPage();
+
+      await userEvent.click(await screen.findByRole("button", { name: "Revoke All" }));
+      const dialog = screen.getByRole("dialog");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Revoke" }));
+
+      expect((await within(dialog).findByRole("alert")).textContent).toBe("backend refused");
+    });
   });
 
   describe("danger zone for accounts the server protects", () => {

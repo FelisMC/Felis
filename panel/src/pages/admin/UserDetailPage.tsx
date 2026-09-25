@@ -48,7 +48,8 @@ import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
-import { formatAbsolute } from "@/lib/format";
+import { deviceLabel } from "@/lib/device";
+import { formatAbsolute, formatRelative } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { ApiError, UserDetail, SessionView } from "@/lib/types";
 
@@ -533,6 +534,7 @@ function SessionsCard({ userId, onChanged }: { userId: string; onChanged: () => 
   const [revokeAllDlg, setRevokeAllDlg] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
+  const now = Date.now();
 
   async function handleRevokeOne() {
     if (!revokeOneDlg) return;
@@ -545,7 +547,14 @@ function SessionsCard({ userId, onChanged }: { userId: string; onChanged: () => 
       await reload();
       onChanged();
     } catch (e) {
-      setErr(humanizeError(e));
+      // Already over (expired, or the user signed it out meanwhile): the list
+      // is stale, and the session is gone as asked.
+      if ((e as { code?: string }).code === "session_not_found") {
+        setRevokeOneDlg(null);
+        reload();
+      } else {
+        setErr(humanizeError(e));
+      }
     } finally {
       setRevoking(null);
     }
@@ -580,7 +589,10 @@ function SessionsCard({ userId, onChanged }: { userId: string; onChanged: () => 
           size="sm"
           className="gap-1 text-xs text-destructive hover:text-destructive hover:bg-destructive/10"
           disabled={!sessions || sessions.length === 0 || revokingAll}
-          onClick={() => setRevokeAllDlg(true)}
+          onClick={() => {
+            setErr(null);
+            setRevokeAllDlg(true);
+          }}
         >
           {revokingAll ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -591,9 +603,6 @@ function SessionsCard({ userId, onChanged }: { userId: string; onChanged: () => 
         </Button>
       </CardHeader>
       <CardContent>
-        {err && (
-          <MessageLine kind="error" message={err} />
-        )}
         {ok && (
           <MessageLine kind="success" message={ok} />
         )}
@@ -605,18 +614,29 @@ function SessionsCard({ userId, onChanged }: { userId: string; onChanged: () => 
           <p className="text-sm text-muted-foreground">{t("users_no_sessions")}</p>
         ) : (
           <div className="space-y-2 max-h-[350px] overflow-y-auto">
-            {sessions.map((s: SessionView) => (
+            {sessions.map((s: SessionView) => {
+              const device = deviceLabel(s.user_agent, t);
+              return (
               <div
                 key={s.token_hash}
                 className="flex items-center justify-between rounded-md border border-border/50 bg-muted/20 pl-3 pr-1 py-2 text-xs"
               >
                 <div className="min-w-0 flex-1">
-                  <span className="font-mono text-[11px] text-muted-foreground truncate block">
-                    {s.token_hash.slice(0, 20)}...
+                  <span
+                    className="block truncate font-medium text-foreground"
+                    title={s.user_agent || undefined}
+                  >
+                    {device}
                   </span>
-                  <div className="mt-0.5 text-muted-foreground/70">
-                    <Clock className="inline h-3 w-3 mr-0.5" />
-                    {t("users_session_expires")}: {formatAbsolute(s.expires_at, i18n.language)}
+                  <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-muted-foreground/70">
+                    {s.client_ip && <span className="font-mono">{s.client_ip}</span>}
+                    <span title={formatAbsolute(s.last_seen_at, i18n.language)}>
+                      {t("account:session_active", { when: formatRelative(s.last_seen_at, now, i18n.language) })}
+                    </span>
+                    <span>
+                      <Clock className="inline h-3 w-3 mr-0.5" />
+                      {t("users_session_expires")}: {formatAbsolute(s.expires_at, i18n.language)}
+                    </span>
                   </div>
                 </div>
                 <Button
@@ -624,9 +644,12 @@ function SessionsCard({ userId, onChanged }: { userId: string; onChanged: () => 
                   size="sm"
                   className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive shrink-0 ml-2 mr-0.5"
                   disabled={revoking === s.token_hash}
-                  onClick={() => setRevokeOneDlg(s.token_hash)}
-                  aria-label={t("users_session_revoke_one")}
-                  title={t("users_session_revoke_one")}
+                  onClick={() => {
+                    setErr(null);
+                    setRevokeOneDlg(s.token_hash);
+                  }}
+                  aria-label={t("users_session_revoke_device", { device })}
+                  title={t("users_session_revoke_device", { device })}
                 >
                   {revoking === s.token_hash ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -635,31 +658,57 @@ function SessionsCard({ userId, onChanged }: { userId: string; onChanged: () => 
                   )}
                 </Button>
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </CardContent>
     </Card>
 
-    {/* Revoke one confirmation dialog */}
-    <Dialog open={!!revokeOneDlg} onOpenChange={() => setRevokeOneDlg(null)}>
+    {/* Revoke one confirmation dialog. A failure is shown inside it: the
+        modal hides the card behind it. */}
+    <Dialog
+      open={!!revokeOneDlg}
+      onOpenChange={(open) => {
+        if (!open && !revoking) setRevokeOneDlg(null);
+      }}
+    >
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{t("users_session_revoke_one_dlg_title")}</DialogTitle>
           <DialogDescription>{t("users_session_revoke_one_dlg_desc")}</DialogDescription>
         </DialogHeader>
-        <ConfirmFooter onCancel={() => setRevokeOneDlg(null)} onConfirm={handleRevokeOne} cancelLabel={t("common:cancel")} confirmLabel={t("users_session_revoke_confirm")} />
+        {err && <MessageLine kind="error" message={err} />}
+        <ConfirmFooter
+          onCancel={() => setRevokeOneDlg(null)}
+          onConfirm={() => void handleRevokeOne()}
+          loading={revoking !== null}
+          cancelLabel={t("common:cancel")}
+          confirmLabel={t("users_session_revoke_confirm")}
+        />
       </DialogContent>
     </Dialog>
 
     {/* Revoke all confirmation dialog */}
-    <Dialog open={revokeAllDlg} onOpenChange={setRevokeAllDlg}>
+    <Dialog
+      open={revokeAllDlg}
+      onOpenChange={(open) => {
+        if (!open && !revokingAll) setRevokeAllDlg(false);
+      }}
+    >
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{t("users_session_revoke_all_dlg_title")}</DialogTitle>
           <DialogDescription>{t("users_session_revoke_all_dlg_desc")}</DialogDescription>
         </DialogHeader>
-        <ConfirmFooter onCancel={() => setRevokeAllDlg(false)} onConfirm={handleRevokeAll} cancelLabel={t("common:cancel")} confirmLabel={t("users_session_revoke_confirm")} />
+        {err && <MessageLine kind="error" message={err} />}
+        <ConfirmFooter
+          onCancel={() => setRevokeAllDlg(false)}
+          onConfirm={() => void handleRevokeAll()}
+          loading={revokingAll}
+          cancelLabel={t("common:cancel")}
+          confirmLabel={t("users_session_revoke_confirm")}
+        />
       </DialogContent>
     </Dialog>
     </>

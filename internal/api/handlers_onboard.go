@@ -125,17 +125,10 @@ func (a *API) handleBindRedeem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := newSessionToken()
-	if err != nil {
+	if err := a.startSession(w, r, userID); err != nil {
 		writeError(w, r, err)
 		return
 	}
-	expires := a.now().Add(sessionTTL)
-	if err := a.Repo.CreateSession(r.Context(), hashCookie(token), userID, expires); err != nil {
-		writeError(w, r, err)
-		return
-	}
-	setSessionCookie(w, token, expires)
 	// The in-game code proved the Minecraft account; it names the actor.
 	a.auditEntry(r, AuditEntry{Actor: "mc:" + mcUUID, ActorUserID: userID, Action: "account.bind_redeem"})
 	writeJSON(w, http.StatusOK, map[string]any{

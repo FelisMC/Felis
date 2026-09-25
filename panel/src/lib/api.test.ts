@@ -852,6 +852,46 @@ describe("path parameters", () => {
   });
 });
 
+describe("the caller's own sessions", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.unstubAllGlobals());
+
+  function call(spy: typeof fetch, i = 0): [string, string | undefined] {
+    const [url, opts] = (spy as unknown as ReturnType<typeof vi.fn>).mock.calls[i];
+    return [String(url), (opts as RequestInit).method];
+  }
+
+  it("lists, revokes one and revokes the rest at /account/sessions", async () => {
+    const row = {
+      token_hash: "h1",
+      created_at: "2026-09-01T00:00:00Z",
+      expires_at: "2026-10-01T00:00:00Z",
+      last_seen_at: "2026-09-24T00:00:00Z",
+      user_agent: "UA",
+      client_ip: "192.0.2.1",
+      current: true,
+    };
+    let spy = fakeFetch({ sessions: [row] });
+    vi.stubGlobal("fetch", spy);
+    expect(await api.listMySessions()).toEqual([row]);
+    expect(call(spy)).toEqual(["/account/sessions", "GET"]);
+
+    spy = fakeFetch({ ok: true, signed_out: false });
+    vi.stubGlobal("fetch", spy);
+    expect(await api.revokeMySession("a/b")).toEqual({ ok: true, signed_out: false });
+    expect(call(spy)).toEqual(["/account/sessions/a%2Fb", "DELETE"]);
+
+    spy = fakeFetch({ revoked: 2 });
+    vi.stubGlobal("fetch", spy);
+    expect(await api.revokeMyOtherSessions()).toEqual({ revoked: 2 });
+    expect(call(spy)).toEqual(["/account/sessions/revoke-others", "POST"]);
+  });
+
+  it("says a session that is already gone has ended", () => {
+    expect(humanizeError({ status: 404, code: "session_not_found" })).toBe("That session has already ended.");
+  });
+});
+
 describe("responses that are not the API's JSON", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.unstubAllGlobals());

@@ -560,6 +560,12 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "POST", Pattern: "/api/v1/account/passkey/register/finish", SetupAllowed: true, h: a.handlePasskeyRegisterFinish},
 		{Method: "GET", Pattern: "/api/v1/account/passkey/credentials", SetupAllowed: true, h: a.handlePasskeyList},
 		{Method: "DELETE", Pattern: "/api/v1/account/passkey/credentials/{id}", SetupAllowed: true, h: a.handlePasskeyDelete},
+		// The caller's own sessions (handlers_account_sessions.go): list every signed-in
+		// device and sign out one or all the others. App-tier and scoped to the caller
+		// inside the handler, like the passkey routes above.
+		{Method: "GET", Pattern: "/api/v1/account/sessions", h: a.handleListMySessions},
+		{Method: "DELETE", Pattern: "/api/v1/account/sessions/{hash}", h: a.handleRevokeMySession},
+		{Method: "POST", Pattern: "/api/v1/account/sessions/revoke-others", h: a.handleRevokeMyOtherSessions},
 		// Account migration (spec §B3 inherit), web side. App-tier, principal-scoped: the
 		// SOURCE drives status → step-up confirm (passkey forced when enrolled, else
 		// email-OTP) → issue-code+name-target; the TARGET drives redeem as itself. Not

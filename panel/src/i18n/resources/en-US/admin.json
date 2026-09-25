@@ -197,7 +197,7 @@
   "users_no_sessions": "No active sessions.",
   "users_session_expires": "Expires",
   "users_sessions_revoke_all": "Revoke All",
-  "users_session_revoke_one": "Revoke this session",
+  "users_session_revoke_device": "Revoke the session on {{device}}",
   "users_sessions_revoked": "All sessions revoked.",
   "users_session_revoke_one_dlg_title": "Revoke Session",
   "users_session_revoke_one_dlg_desc": "Are you sure you want to revoke this session? The user will be logged out from this device immediately.",

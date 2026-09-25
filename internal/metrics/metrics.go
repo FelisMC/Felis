@@ -105,7 +105,10 @@ var (
 	}, []string{"door", "reason"})
 
 	// SessionsRevokedTotal counts sessions ended before expiry, by who ended
-	// them: logout (the holder) or admin (the owner revoking a user's sessions).
+	// them: logout (the holder signing out), self (the holder ending sessions
+	// from their session list), security (the other sessions ended when the
+	// holder removes a passkey or changes email) or admin (the owner revoking a
+	// user's sessions).
 	SessionsRevokedTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: namespace,
 		Name:      "sessions_revoked_total",

@@ -423,6 +423,7 @@ func (a *API) handlePasskeyDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.audit(r, "account.passkey.removed", id)
+	a.revokeOtherSessionsAfter(r, "passkey removal")
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -653,17 +654,10 @@ func (a *API) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := newSessionToken()
-	if err != nil {
+	if err := a.startSession(w, r, u.ID); err != nil {
 		writeError(w, r, err)
 		return
 	}
-	expires := a.now().Add(sessionTTL)
-	if err := a.Repo.CreateSession(r.Context(), hashCookie(token), u.ID, expires); err != nil {
-		writeError(w, r, err)
-		return
-	}
-	setSessionCookie(w, token, expires)
 	a.auditAccount(r, u, "auth.passkey_login", "")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user_id": u.ID,

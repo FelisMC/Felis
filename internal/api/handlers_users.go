@@ -387,7 +387,12 @@ func (a *API) handleRevokeUserSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.Repo.RevokeSession(r.Context(), tokenHash); err != nil {
+	if err := a.Repo.RevokeUserSession(r.Context(), id, tokenHash); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, r, newError(http.StatusNotFound, "session_not_found",
+				"that session has already ended or does not belong to this user"))
+			return
+		}
 		writeError(w, r, err)
 		return
 	}

@@ -1113,33 +1113,49 @@ func (p *PGRepo) InsertOperator(ctx context.Context, id, username, email string)
 
 // CreateSession records a minted session by the sha-256 of its cookie value
 // (spec §B). Only the hash is stored, mirroring tokens.
-func (p *PGRepo) CreateSession(ctx context.Context, tokenHash, userID string, expiresAt time.Time) error {
+func (p *PGRepo) CreateSession(ctx context.Context, s NewSession) error {
 	_, err := p.db.ExecContext(ctx,
-		`INSERT INTO sessions (token_hash, user_id, expires_at) VALUES ($1, $2, $3)`,
-		tokenHash, userID, expiresAt)
+		`INSERT INTO sessions (token_hash, user_id, expires_at, user_agent, client_ip)
+		 VALUES ($1, $2, $3, $4, $5)`,
+		s.TokenHash, s.UserID, s.ExpiresAt, s.UserAgent, s.ClientIP)
 	return err
 }
 
-// SessionUser resolves a live (unrevoked, unexpired at now) session hash to its
-// user, or ErrNotFound.
+// sessionLive is the condition every reader of live sessions shares, over
+// sessions s JOIN users u, with $2 = now and $3 = the staff idle cutoff (now
+// minus staffSessionIdle). The disabled/deleted filter is the belt to the doors'
+// braces: even a session minted for an account that was alive a moment ago stops
+// authenticating the instant the account is disabled or soft-deleted, so every
+// authenticated route is fail-closed regardless of which door minted the cookie
+// (audit #33). A staff session also dies after sitting idle; a player's lasts
+// to its expiry.
+const sessionLive = `s.revoked_at IS NULL AND s.expires_at > $2
+	AND u.disabled = false AND u.deleted_at IS NULL
+	AND (u.role = 'user' OR s.last_seen_at > $3)`
+
+// SessionUser resolves a live session hash to its user, or ErrNotFound.
 func (p *PGRepo) SessionUser(ctx context.Context, tokenHash string, now time.Time) (*SessionedUser, error) {
-	// The disabled/deleted filter is the belt to the doors' braces: even a session
-	// minted for an account that was alive a moment ago stops authenticating the
-	// instant the account is disabled or soft-deleted, so every authenticated route
-	// is fail-closed regardless of which door minted the cookie (audit #33).
-	const q = `SELECT u.id, u.username, COALESCE(u.email, ''), u.role::text, COALESCE(u.email_verified, false)
+	const q = `SELECT u.id, u.username, COALESCE(u.email, ''), u.role::text, COALESCE(u.email_verified, false),
+			s.last_seen_at
 		FROM sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > $2
-		  AND u.disabled = false AND u.deleted_at IS NULL`
+		WHERE s.token_hash = $1 AND ` + sessionLive
 	var u SessionedUser
-	switch err := p.db.QueryRowContext(ctx, q, tokenHash, now).Scan(
-		&u.ID, &u.Username, &u.Email, &u.Role, &u.EmailVerified); {
+	switch err := p.db.QueryRowContext(ctx, q, tokenHash, now, now.Add(-staffSessionIdle)).Scan(
+		&u.ID, &u.Username, &u.Email, &u.Role, &u.EmailVerified, &u.LastSeenAt); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
 	case err != nil:
 		return nil, err
 	}
 	return &u, nil
+}
+
+// TouchSession advances a session's last_seen_at to now, never backwards.
+func (p *PGRepo) TouchSession(ctx context.Context, tokenHash string, now time.Time) error {
+	_, err := p.db.ExecContext(ctx,
+		`UPDATE sessions SET last_seen_at = $2 WHERE token_hash = $1 AND last_seen_at < $2`,
+		tokenHash, now)
+	return err
 }
 
 // RevokeSession marks a session revoked (logout). Idempotent: a missing or
@@ -1870,12 +1886,13 @@ func (p *PGRepo) SetQuotas(ctx context.Context, userID string, qi QuotaInput, se
 
 // ---- session admin ----
 
-// ListUserSessions returns every live session for a user, newest first.
+// ListUserSessions returns every live session for a user, most recently seen first.
 func (p *PGRepo) ListUserSessions(ctx context.Context, userID string, now time.Time) ([]SessionView, error) {
-	const q = `SELECT token_hash, created_at, expires_at, revoked_at
-		FROM sessions WHERE user_id = $1 AND (revoked_at IS NULL OR revoked_at > $2) AND expires_at > $2
-		ORDER BY created_at DESC`
-	rows, err := p.db.QueryContext(ctx, q, userID, now)
+	const q = `SELECT s.token_hash, s.created_at, s.expires_at, s.last_seen_at, s.user_agent, s.client_ip
+		FROM sessions s JOIN users u ON u.id = s.user_id
+		WHERE s.user_id = $1 AND ` + sessionLive + `
+		ORDER BY s.last_seen_at DESC, s.created_at DESC`
+	rows, err := p.db.QueryContext(ctx, q, userID, now, now.Add(-staffSessionIdle))
 	if err != nil {
 		return nil, err
 	}
@@ -1883,7 +1900,7 @@ func (p *PGRepo) ListUserSessions(ctx context.Context, userID string, now time.T
 	var out []SessionView
 	for rows.Next() {
 		var s SessionView
-		if err := rows.Scan(&s.TokenHash, &s.CreatedAt, &s.ExpiresAt, &s.RevokedAt); err != nil {
+		if err := rows.Scan(&s.TokenHash, &s.CreatedAt, &s.ExpiresAt, &s.LastSeenAt, &s.UserAgent, &s.ClientIP); err != nil {
 			return nil, err
 		}
 		out = append(out, s)
@@ -1897,6 +1914,41 @@ func (p *PGRepo) RevokeAllUserSessions(ctx context.Context, userID string) error
 		`UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`,
 		userID)
 	return err
+}
+
+// RevokeUserSession revokes one unexpired session of userID, or reports
+// ErrNotFound when the hash names no such session. The user_id condition is what
+// keeps a hash from one account from ending a session of another.
+func (p *PGRepo) RevokeUserSession(ctx context.Context, userID, tokenHash string) error {
+	res, err := p.db.ExecContext(ctx,
+		`UPDATE sessions SET revoked_at = now()
+		 WHERE token_hash = $1 AND user_id = $2 AND revoked_at IS NULL AND expires_at > now()`,
+		tokenHash, userID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// RevokeOtherUserSessions revokes every unexpired session of userID but
+// keepTokenHash, returning how many it ended.
+func (p *PGRepo) RevokeOtherUserSessions(ctx context.Context, userID, keepTokenHash string) (int, error) {
+	res, err := p.db.ExecContext(ctx,
+		`UPDATE sessions SET revoked_at = now()
+		 WHERE user_id = $1 AND token_hash <> $2 AND revoked_at IS NULL AND expires_at > now()`,
+		userID, keepTokenHash)
+	if err != nil {
+		return 0, err
+	}
+	n, err := res.RowsAffected()
+	return int(n), err
 }
 
 // ---- account-link admin ----

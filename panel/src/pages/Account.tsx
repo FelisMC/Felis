@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, type FormEvent } from "react";
-import { ArrowRightLeft, CheckCircle2, Link2, LogOut, ShieldCheck, UserRound, Mail, Fingerprint, Trash2, KeyRound } from "lucide-react";
+import { ArrowRightLeft, CheckCircle2, Link2, UserRound, Mail, Fingerprint, Trash2, KeyRound } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import { api, clientError, humanizeError } from "@/lib/api";
 import { formatAbsolute } from "@/lib/format";
 import type { PasskeyCredential } from "@/lib/types";
 import { useAsync } from "@/lib/hooks";
+import { AccountSessionsCard } from "@/pages/AccountSessions";
 import { useTier } from "@/lib/tier";
 import { base64urlToBytes, bytesToBase64url } from "@/lib/utils";
 import {
@@ -102,6 +103,7 @@ export function Account() {
   // (it would be left with no way back in); the button mirrors that rule so the
   // refusal is explained up front instead of after a round trip.
   const [pendingDelete, setPendingDelete] = useState<PasskeyCredential | null>(null);
+  const [sessionsVersion, setSessionsVersion] = useState(0);
   const [deletingPasskey, setDeletingPasskey] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const credentials = passkeys.data?.credentials ?? [];
@@ -189,6 +191,8 @@ export function Account() {
     try {
       await api.passkeyDelete(pendingDelete.id);
       setPendingDelete(null);
+      // The server signed the other devices out along with the passkey.
+      setSessionsVersion((v) => v + 1);
       await passkeys.reload();
     } catch (err) {
       // Another device may have changed the list meanwhile: refresh it. A 404
@@ -508,25 +512,12 @@ export function Account() {
         hasPasskey={credentials.length > 0}
       />
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <ShieldCheck className="h-4 w-4 text-primary" /> {t("session")}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4 text-sm text-muted-foreground">
-          <p>{t("session_desc")}</p>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={signOut}
-            disabled={signingOut}
-          >
-            <LogOut className="mr-2 h-4 w-4" />
-            {signingOut ? t("signing_out") : t("sign_out")}
-          </Button>
-        </CardContent>
-      </Card>
+      <AccountSessionsCard
+        version={sessionsVersion}
+        staff={identity !== null && identity.role !== "user"}
+        onSignOut={() => void signOut()}
+        signingOut={signingOut}
+      />
     </>
   );
 }

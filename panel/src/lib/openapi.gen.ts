@@ -1383,7 +1383,7 @@ export interface paths {
         put?: never;
         /**
          * Redeem an email one-time code and mark the caller's email verified (spec §B2).
-         * @description Consumes a previously delivered code for the authenticated principal. On success the user's email is written and email_verified is set true. Too many incorrect attempts lock the code (429 otp_locked); 10 wrong codes in 24h, counted across every code, lock the account's email-code door until the window ends (429 otp_account_locked with Retry-After). An unknown, expired, consumed, or mismatched code is a 400.
+         * @description Consumes a previously delivered code for the authenticated principal. On success the user's email is written and email_verified is set true. When the new address replaces a different verified one, every other session of the caller is signed out: sign-in codes now go to the new address, so a session opened through the old one ends. Too many incorrect attempts lock the code (429 otp_locked); 10 wrong codes in 24h, counted across every code, lock the account's email-code door until the window ends (429 otp_account_locked with Retry-After). An unknown, expired, consumed, or mismatched code is a 400.
          */
         post: operations["emailOtpVerify"];
         delete?: never;
@@ -1484,9 +1484,66 @@ export interface paths {
         post?: never;
         /**
          * Unbind one of the caller's passkeys (spec §14, Phase 6 bind).
-         * @description Removes a passkey scoped to the authenticated principal, so a caller can only unbind their OWN credential. An unknown or cross-user id is a 404; it never silently no-ops as success. The account's only passkey cannot be removed while its email is unverified (409 last_passkey): it is then the account's only durable way in.
+         * @description Removes a passkey scoped to the authenticated principal, so a caller can only unbind their OWN credential. An unknown or cross-user id is a 404; it never silently no-ops as success. The account's only passkey cannot be removed while its email is unverified (409 last_passkey): it is then the account's only durable way in. Removing a passkey signs out every other session of the caller, so a session opened with that passkey ends with it.
          */
         delete: operations["passkeyDelete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/account/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the caller's own live sessions, marking the one this request came in on.
+         * @description Every device signed in to the caller's account, most recently seen first. A caller signed in through Cloudflare Access has no session of its own, so no entry is marked current.
+         */
+        get: operations["listMySessions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/account/sessions/{hash}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Sign out one of the caller's sessions.
+         * @description Scoped to the caller: a hash that is not one of the caller's live sessions is a 404 whoever it belongs to. Revoking the session the request came in on is a sign-out; the cookie is cleared and signed_out is true.
+         */
+        delete: operations["revokeMySession"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/account/sessions/revoke-others": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Sign out every session of the caller except the one making this request. */
+        post: operations["revokeMyOtherSessions"];
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -2185,8 +2242,9 @@ export interface components {
             max_memory_mb?: number | null;
             max_storage_gb?: number | null;
         };
-        /** @description One live session of a user visible to an admin (internal/api/repo.go SessionView). */
+        /** @description One live session, as the account holder and an admin see it (internal/api/repo.go SessionView). */
         SessionView: {
+            /** @description The sha-256 of the session cookie; the id the revoke routes take. */
             token_hash: string;
             /** Format: date-time */
             created_at: string;
@@ -2194,9 +2252,20 @@ export interface components {
             expires_at: string;
             /**
              * Format: date-time
+             * @description When the session last authenticated a request, recorded at most once a minute. A staff session idle for 30 minutes stops authenticating and leaves the list.
+             */
+            last_seen_at: string;
+            /** @description The browser's User-Agent at sign-in (at most 256 bytes; empty when none was sent). */
+            user_agent: string;
+            /** @description The address the sign-in came from (empty when unknown). */
+            client_ip: string;
+            /**
+             * Format: date-time
              * @description Present only once the session is revoked.
              */
             revoked_at?: string;
+            /** @description On the holder's own list only, true on the session the request came in on. Absent otherwise. */
+            current?: boolean;
         };
     };
     responses: {
@@ -5381,7 +5450,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Live (unrevoked, unexpired) sessions, newest first. */
+            /** @description Live sessions, most recently seen first. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -5449,6 +5518,15 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+            /** @description session_not_found — the hash is not a live session of this user (another user's, already ended, or unknown). Nothing is revoked. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     unbindUserPasskeys: {
@@ -5937,6 +6015,90 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+        };
+    };
+    listMySessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's live sessions. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        sessions: components["schemas"]["SessionView"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    revokeMySession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                hash: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Session revoked. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        ok: true;
+                        /** @description True when the revoked session was the caller's own, which is now signed out. */
+                        signed_out: boolean;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description session_not_found — not a live session of the caller. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    revokeMyOtherSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Other sessions revoked. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @description How many sessions were signed out. */
+                        revoked: number;
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
         };
     };
     migrateStatus: {

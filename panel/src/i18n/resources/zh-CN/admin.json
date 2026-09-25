@@ -197,7 +197,7 @@
   "users_no_sessions": "无活跃会话。",
   "users_session_expires": "过期时间",
   "users_sessions_revoke_all": "全部撤销",
-  "users_session_revoke_one": "单独撤销",
+  "users_session_revoke_device": "吊销 {{device}} 上的会话",
   "users_sessions_revoked": "所有会话已撤销。",
   "users_session_revoke_one_dlg_title": "撤销会话",
   "users_session_revoke_one_dlg_desc": "确定撤销此会话吗？用户将立即从该设备登出。",

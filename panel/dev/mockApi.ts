@@ -572,6 +572,51 @@ function clearSessionCookie(res: ServerResponse): void {
   res.setHeader("Set-Cookie", `${SESSION_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`);
 }
 
+// thisSessionHash is the session the mock cookie stands for: one per account,
+// so the account page can mark "This device".
+function thisSessionHash(acc: MockAccount): string {
+  return `mock-this-${acc.id}`;
+}
+
+/** accountSessions seeds, on first read, the browsers an account is signed in
+ *  on: this one, a phone seen yesterday and a PC idle for a week. */
+function accountSessions(acc: MockAccount): SessionView[] {
+  if (!acc.sessions) {
+    const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+    const until = new Date(Date.now() + 30 * 86_400_000).toISOString();
+    acc.sessions = [
+      {
+        token_hash: thisSessionHash(acc),
+        created_at: ago(3 * 86_400_000),
+        expires_at: until,
+        last_seen_at: ago(0),
+        user_agent:
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+        client_ip: "2001:db8::1",
+      },
+      {
+        token_hash: `mock-phone-${acc.id}`,
+        created_at: ago(9 * 86_400_000),
+        expires_at: until,
+        last_seen_at: ago(20 * 3_600_000),
+        user_agent:
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 17_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Mobile/15E148 Safari/604.1",
+        client_ip: "203.0.113.24",
+      },
+      {
+        token_hash: `mock-pc-${acc.id}`,
+        created_at: ago(20 * 86_400_000),
+        expires_at: until,
+        last_seen_at: ago(7 * 86_400_000),
+        user_agent:
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.2739.42",
+        client_ip: "198.51.100.7",
+      },
+    ];
+  }
+  return acc.sessions;
+}
+
 function identity(accountInfo: MockAccount): Identity {
   return {
     user_id: `mock-${accountInfo.id}`,
@@ -997,7 +1042,39 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       sendJSON(ctx.res, 200, { credentials: list });
       return true;
     }
+    case "GET account/migrate":
+      // No migration pending: the real API's answer until one is started in-game.
+      sendJSON(ctx.res, 200, { active: false });
+      return true;
+    case "GET account/sessions": {
+      const here = thisSessionHash(ctx.account);
+      const sessions = accountSessions(ctx.account)
+        .map((s) => (s.token_hash === here ? { ...s, last_seen_at: new Date().toISOString(), current: true } : s))
+        .sort((a, b) => b.last_seen_at.localeCompare(a.last_seen_at));
+      sendJSON(ctx.res, 200, { sessions });
+      return true;
+    }
+    case "POST account/sessions/revoke-others": {
+      const here = thisSessionHash(ctx.account);
+      const before = accountSessions(ctx.account);
+      ctx.account.sessions = before.filter((s) => s.token_hash === here);
+      sendJSON(ctx.res, 200, { revoked: before.length - ctx.account.sessions.length });
+      return true;
+    }
     default:
+      if (ctx.method === "DELETE" && ctx.parts[2] === "account" && ctx.parts[3] === "sessions" && ctx.parts[4]) {
+        const hash = ctx.parts[4];
+        const list = accountSessions(ctx.account);
+        if (!list.some((s) => s.token_hash === hash)) {
+          sendError(ctx.res, 404, "session_not_found", "that session has already ended or is not one of yours");
+          return true;
+        }
+        ctx.account.sessions = list.filter((s) => s.token_hash !== hash);
+        const signedOut = hash === thisSessionHash(ctx.account);
+        if (signedOut) clearSessionCookie(ctx.res);
+        sendJSON(ctx.res, 200, { ok: true, signed_out: signedOut });
+        return true;
+      }
       if (ctx.method === "DELETE" && ctx.parts[2] === "account" && ctx.parts[3] === "passkey" && ctx.parts[4] === "credentials" && ctx.parts[5]) {
         const id = ctx.parts[5];
         const list = ctx.state.passkeys[ctx.account.id] ?? [];
@@ -1013,6 +1090,9 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
           return true;
         }
         list.splice(idx, 1);
+        // Like the real API, removing a passkey signs the other devices out.
+        const here = thisSessionHash(ctx.account);
+        ctx.account.sessions = accountSessions(ctx.account).filter((s) => s.token_hash === here);
         ctx.res.statusCode = 204;
         ctx.res.end();
         return true;
@@ -1285,25 +1365,19 @@ async function handleUserRoute(ctx: SessionContext): Promise<boolean> {
 
     // GET /api/v1/users/{id}/sessions
     if (is("GET", ctx) && subAction === "sessions") {
-      if (!acc.sessions) {
-        acc.sessions = [
-          {
-            token_hash: "mock-token-hash-1",
-            created_at: new Date(Date.now() - 3600000).toISOString(),
-            expires_at: new Date(Date.now() + 3600000 * 24).toISOString(),
-          }
-        ];
-      }
-      sendJSON(ctx.res, 200, { sessions: acc.sessions });
+      sendJSON(ctx.res, 200, { sessions: accountSessions(acc) });
       return true;
     }
 
     // DELETE /api/v1/users/{id}/sessions/{hash} — revoke single session
     if (is("DELETE", ctx) && subAction === "sessions" && ctx.parts[5]) {
       const hash = ctx.parts[5];
-      if (acc.sessions) {
-        acc.sessions = acc.sessions.filter((s) => s.token_hash !== hash);
+      const list = accountSessions(acc);
+      if (!list.some((s) => s.token_hash === hash)) {
+        sendError(ctx.res, 404, "session_not_found", "that session has already ended or does not belong to this user");
+        return true;
       }
+      acc.sessions = list.filter((s) => s.token_hash !== hash);
       sendJSON(ctx.res, 200, { ok: true });
       return true;
     }

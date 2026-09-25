@@ -271,17 +271,10 @@ func (a *API) handleLoginEmailVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := newSessionToken()
-	if err != nil {
+	if err := a.startSession(w, r, u.ID); err != nil {
 		writeError(w, r, err)
 		return
 	}
-	expires := a.now().Add(sessionTTL)
-	if err := a.Repo.CreateSession(r.Context(), hashCookie(token), u.ID, expires); err != nil {
-		writeError(w, r, err)
-		return
-	}
-	setSessionCookie(w, token, expires)
 	a.auditAccount(r, u, "auth.login_email", "")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user_id": u.ID,

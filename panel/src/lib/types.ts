@@ -427,5 +427,13 @@ export interface SessionView {
   token_hash: string;
   created_at: string;
   expires_at: string;
+  /** When the session last authenticated a request (recorded at most once a minute). */
+  last_seen_at: string;
+  /** The browser's User-Agent at sign-in; empty when none was sent. */
+  user_agent: string;
+  /** The address the sign-in came from; empty when unknown. */
+  client_ip: string;
   revoked_at?: string;
+  /** On the holder's own list only: the session this request came in on. */
+  current?: boolean;
 }

@@ -197,17 +197,10 @@ func (a *API) handlePasskeyLoginDiscoverableFinish(w http.ResponseWriter, r *htt
 		return
 	}
 
-	token, err := newSessionToken()
-	if err != nil {
+	if err := a.startSession(w, r, resolved.ID); err != nil {
 		writeError(w, r, err)
 		return
 	}
-	expires := a.now().Add(sessionTTL)
-	if err := a.Repo.CreateSession(r.Context(), hashCookie(token), resolved.ID, expires); err != nil {
-		writeError(w, r, err)
-		return
-	}
-	setSessionCookie(w, token, expires)
 	a.auditAccount(r, resolved, "auth.passkey_login_discoverable", "")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user_id": resolved.ID,

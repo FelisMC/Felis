@@ -249,6 +249,11 @@ func (a *API) handleEmailOTPVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.audit(r, "account.email.verified", "")
+	// Replacing a verified address moves where sign-in codes go, so a session
+	// opened through the old one ends. A first verification retires nothing.
+	if p.EmailVerified && !strings.EqualFold(p.Email, email) {
+		a.revokeOtherSessionsAfter(r, "email change")
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"verified": true, "email": email})
 }
 

@@ -75,6 +75,9 @@ type fakeRepo struct {
 	// failSessionUser / failGetSetting force those reads to fail with a generic
 	// (non-ErrNotFound) error, simulating a store outage for the 503 auth path.
 	failSessionUser error
+	// failTouchSession / failRevokeOthers force those session writes to fail.
+	failTouchSession error
+	failRevokeOthers error
 	failGetSetting  error
 	// player email OTPs (spec §B2). Keyed by row id; the verify path scans for the
 	// newest live (user, purpose) just as the PG query does.
@@ -210,6 +213,13 @@ type fakeSession struct {
 	userID    string
 	expiresAt time.Time
 	revoked   bool
+	// lastSeen is last_seen_at; zero reads as "seen at the moment it is asked
+	// about", so a literal session in a test is fresh unless it says otherwise.
+	lastSeen  time.Time
+	createdAt time.Time
+	userAgent string
+	clientIP  string
+	touches   int
 }
 
 // fakeBackup mirrors a world_backups row: the client-facing view plus the
@@ -889,36 +899,97 @@ func (f *fakeRepo) UpsertOwner(_ context.Context, id, username, email string) er
 	}
 	return nil
 }
-func (f *fakeRepo) CreateSession(_ context.Context, tokenHash, userID string, expiresAt time.Time) error {
-	f.sessions[tokenHash] = &fakeSession{userID: userID, expiresAt: expiresAt}
+func (f *fakeRepo) CreateSession(_ context.Context, ns NewSession) error {
+	// The API clock minted ExpiresAt, so this is the sign-in time on that clock.
+	now := ns.ExpiresAt.Add(-sessionTTL)
+	f.sessions[ns.TokenHash] = &fakeSession{
+		userID: ns.UserID, expiresAt: ns.ExpiresAt, createdAt: now, lastSeen: now,
+		userAgent: ns.UserAgent, clientIP: ns.ClientIP,
+	}
 	return nil
 }
+
+// liveSession mirrors PGRepo's sessionLive: unrevoked, unexpired, its account
+// alive, and a staff session seen within staffSessionIdle.
+func (f *fakeRepo) liveSession(s *fakeSession, now time.Time) (*StaffUser, bool) {
+	if s.revoked || !s.expiresAt.After(now) {
+		return nil, false
+	}
+	for _, u := range f.staff {
+		if u.ID != s.userID {
+			continue
+		}
+		if f.seededDead(u.ID) {
+			return nil, false
+		}
+		if u.Role != "user" && !s.lastSeenAt(now).After(now.Add(-staffSessionIdle)) {
+			return nil, false
+		}
+		return u, true
+	}
+	return nil, false
+}
+
+func (s *fakeSession) lastSeenAt(now time.Time) time.Time {
+	if s.lastSeen.IsZero() {
+		return now
+	}
+	return s.lastSeen
+}
+
 func (f *fakeRepo) SessionUser(_ context.Context, tokenHash string, now time.Time) (*SessionedUser, error) {
 	if f.failSessionUser != nil {
 		return nil, f.failSessionUser
 	}
 	s, ok := f.sessions[tokenHash]
-	if !ok || s.revoked || !s.expiresAt.After(now) {
+	if !ok {
 		return nil, ErrNotFound
 	}
-	for _, u := range f.staff {
-		if u.ID == s.userID {
-			if f.seededDead(u.ID) {
-				return nil, ErrNotFound
-			}
-			return &SessionedUser{
-				ID: u.ID, Username: u.Username, Email: u.Email, Role: u.Role,
-				EmailVerified: u.EmailVerified,
-			}, nil
-		}
+	u, ok := f.liveSession(s, now)
+	if !ok {
+		return nil, ErrNotFound
 	}
-	return nil, ErrNotFound
+	return &SessionedUser{
+		ID: u.ID, Username: u.Username, Email: u.Email, Role: u.Role,
+		EmailVerified: u.EmailVerified, LastSeenAt: s.lastSeenAt(now),
+	}, nil
+}
+func (f *fakeRepo) TouchSession(_ context.Context, tokenHash string, now time.Time) error {
+	if f.failTouchSession != nil {
+		return f.failTouchSession
+	}
+	if s, ok := f.sessions[tokenHash]; ok && s.lastSeen.Before(now) {
+		s.lastSeen = now
+		s.touches++
+	}
+	return nil
 }
 func (f *fakeRepo) RevokeSession(_ context.Context, tokenHash string) error {
 	if s, ok := f.sessions[tokenHash]; ok {
 		s.revoked = true
 	}
 	return nil
+}
+func (f *fakeRepo) RevokeUserSession(_ context.Context, userID, tokenHash string) error {
+	s, ok := f.sessions[tokenHash]
+	if !ok || s.userID != userID || s.revoked {
+		return ErrNotFound
+	}
+	s.revoked = true
+	return nil
+}
+func (f *fakeRepo) RevokeOtherUserSessions(_ context.Context, userID, keepTokenHash string) (int, error) {
+	if f.failRevokeOthers != nil {
+		return 0, f.failRevokeOthers
+	}
+	n := 0
+	for hash, s := range f.sessions {
+		if s.userID == userID && hash != keepTokenHash && !s.revoked {
+			s.revoked = true
+			n++
+		}
+	}
+	return n, nil
 }
 func (f *fakeRepo) GetSetting(_ context.Context, key string) ([]byte, error) {
 	if f.failGetSetting != nil {
@@ -1331,10 +1402,14 @@ func (f *fakeRepo) SetQuotas(_ context.Context, userID string, qi QuotaInput, _ 
 func (f *fakeRepo) ListUserSessions(_ context.Context, userID string, now time.Time) ([]SessionView, error) {
 	var out []SessionView
 	for hash, s := range f.sessions {
-		if s.userID == userID && !s.revoked && s.expiresAt.After(now) {
-			out = append(out, SessionView{TokenHash: hash, CreatedAt: time.Now(), ExpiresAt: s.expiresAt})
+		if _, live := f.liveSession(s, now); live && s.userID == userID {
+			out = append(out, SessionView{
+				TokenHash: hash, CreatedAt: s.createdAt, ExpiresAt: s.expiresAt,
+				LastSeenAt: s.lastSeenAt(now), UserAgent: s.userAgent, ClientIP: s.clientIP,
+			})
 		}
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LastSeenAt.After(out[j].LastSeenAt) })
 	return out, nil
 }
 

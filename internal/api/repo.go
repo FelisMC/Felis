@@ -162,6 +162,20 @@ type SessionedUser struct {
 	Email         string
 	Role          string
 	EmailVerified bool
+	// LastSeenAt is when the session last authenticated a request, as last
+	// recorded by TouchSession (so up to sessionTouchEvery stale).
+	LastSeenAt time.Time
+}
+
+// NewSession is one session to record at sign-in: the sha-256 of the opaque
+// cookie value, its owner, its absolute expiry, and the device it was minted for,
+// so the account's session list can tell the holder which sign-in is which.
+type NewSession struct {
+	TokenHash string
+	UserID    string
+	ExpiresAt time.Time
+	UserAgent string
+	ClientIP  string
 }
 
 // OpLoginRequest is one op.console staff-login attempt (spec §B op-login): the
@@ -569,16 +583,30 @@ type Repo interface {
 	// re-asserted, so a reset is idempotent and a pre-0011 'admin' Owner row is
 	// promoted. The account is passwordless by design.
 	UpsertOwner(ctx context.Context, id, username, email string) error
-	// CreateSession records a minted session: the sha-256 of the opaque cookie
-	// value, its owner, and its expiry (spec §B sessions). Only the hash is stored,
-	// mirroring tokens, so a database read never yields a usable cookie.
-	CreateSession(ctx context.Context, tokenHash, userID string, expiresAt time.Time) error
-	// SessionUser resolves a live (unrevoked, unexpired at now) session hash to its
-	// user, or ErrNotFound. It is the cookie half of SessionAuth.
+	// CreateSession records a minted session (spec §B sessions). Only the hash of
+	// the cookie is stored, mirroring tokens, so a database read never yields a
+	// usable cookie. The session counts as seen at creation.
+	CreateSession(ctx context.Context, s NewSession) error
+	// SessionUser resolves a live session hash to its user, or ErrNotFound. Live
+	// means unrevoked, unexpired at now, its account neither disabled nor deleted,
+	// and — for a staff account — seen within staffSessionIdle of now. It is the
+	// cookie half of SessionAuth.
 	SessionUser(ctx context.Context, tokenHash string, now time.Time) (*SessionedUser, error)
+	// TouchSession records that the session authenticated a request at now. It
+	// never moves last_seen_at backwards, and touching an absent session is not
+	// an error.
+	TouchSession(ctx context.Context, tokenHash string, now time.Time) error
 	// RevokeSession marks a session revoked (logout). It is idempotent: revoking an
 	// absent or already-revoked session is not an error.
 	RevokeSession(ctx context.Context, tokenHash string) error
+	// RevokeUserSession revokes one live session of userID. A hash that is not a
+	// live session of that user — another user's, already revoked, expired or
+	// unknown — is ErrNotFound and changes nothing.
+	RevokeUserSession(ctx context.Context, userID, tokenHash string) error
+	// RevokeOtherUserSessions revokes every live session of userID except
+	// keepTokenHash (every one when keepTokenHash is empty) and reports how many
+	// it ended.
+	RevokeOtherUserSessions(ctx context.Context, userID, keepTokenHash string) (int, error)
 
 	// ConsumeSetupToken atomically marks a one-time setup token consumed and returns
 	// its user_id, or ErrNotFound when the token is absent, already consumed, or
@@ -633,8 +661,8 @@ type Repo interface {
 
 	// ---- session admin (admin-only) ----
 
-	// ListUserSessions returns every live (unrevoked, unexpired at now) session
-	// for a user, newest first. An empty list is not an error.
+	// ListUserSessions returns every live session for a user (live as SessionUser
+	// defines it), most recently seen first. An empty list is not an error.
 	ListUserSessions(ctx context.Context, userID string, now time.Time) ([]SessionView, error)
 	// RevokeAllUserSessions marks every live session of userID revoked.
 	// Revoking zero sessions is not an error.
@@ -773,10 +801,16 @@ type ResourceSpec struct {
 	StorageMB int // storage in megabytes (e.g. 10240 = 10 GiB)
 }
 
-// SessionView is one live session row visible to an admin.
+// SessionView is one live session row, as the account holder and an admin see
+// it. Current is set only on the holder's own list, on the session making the
+// request.
 type SessionView struct {
-	TokenHash string     `json:"token_hash"`
-	CreatedAt time.Time  `json:"created_at"`
-	ExpiresAt time.Time  `json:"expires_at"`
-	RevokedAt *time.Time `json:"revoked_at,omitempty"`
+	TokenHash  string     `json:"token_hash"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	LastSeenAt time.Time  `json:"last_seen_at"`
+	UserAgent  string     `json:"user_agent"`
+	ClientIP   string     `json:"client_ip"`
+	RevokedAt  *time.Time `json:"revoked_at,omitempty"`
+	Current    bool       `json:"current,omitempty"`
 }

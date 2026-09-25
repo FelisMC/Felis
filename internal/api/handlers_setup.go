@@ -81,17 +81,10 @@ func (a *API) handleSetupRedeem(w http.ResponseWriter, r *http.Request) {
 
 	// Mint the session — a regular felis_session; the lockdown is a product-level
 	// restriction the frontend enforces until email is verified / a passkey is bound.
-	sessionToken, err := newSessionToken()
-	if err != nil {
+	if err := a.startSession(w, r, u.ID); err != nil {
 		writeError(w, r, err)
 		return
 	}
-	expires := now.Add(sessionTTL)
-	if err := a.Repo.CreateSession(r.Context(), hashCookie(sessionToken), u.ID, expires); err != nil {
-		writeError(w, r, err)
-		return
-	}
-	setSessionCookie(w, sessionToken, expires)
 
 	// Report the setup state so the SPA knows which wizard steps remain.
 	creds, _ := a.Repo.PasskeyCredentialsForUser(r.Context(), u.ID)

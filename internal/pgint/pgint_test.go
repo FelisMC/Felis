@@ -125,7 +125,7 @@ func TestSessionLifecycle(t *testing.T) {
 	hash := "tok-" + suffix(t)
 	expires := mustNow().Add(time.Hour)
 
-	if err := repo.CreateSession(ctx, hash, u.ID, expires); err != nil {
+	if err := repo.CreateSession(ctx, api.NewSession{TokenHash: hash, UserID: u.ID, ExpiresAt: expires}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	su, err := repo.SessionUser(ctx, hash, mustNow())
@@ -369,7 +369,7 @@ func TestAuditAttributionContract(t *testing.T) {
 
 	// The session principal carries the username the rows are signed with.
 	hash := "audit-sess-" + suffix(t)
-	if err := repo.CreateSession(ctx, hash, u.ID, mustNow().Add(time.Hour)); err != nil {
+	if err := repo.CreateSession(ctx, api.NewSession{TokenHash: hash, UserID: u.ID, ExpiresAt: mustNow().Add(time.Hour)}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	su, err := repo.SessionUser(ctx, hash, mustNow())
@@ -697,7 +697,7 @@ func TestDeadAccountsAreLockedOutInPG(t *testing.T) {
 		t.Fatalf("alive UserByEmail: %v", err)
 	}
 	hash := "h-" + suffix(t)
-	if err := repo.CreateSession(ctx, hash, u.ID, now.Add(time.Hour)); err != nil {
+	if err := repo.CreateSession(ctx, api.NewSession{TokenHash: hash, UserID: u.ID, ExpiresAt: now.Add(time.Hour)}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	if _, err := repo.SessionUser(ctx, hash, now); err != nil {
@@ -750,7 +750,7 @@ func TestDeadAccountsAreLockedOutInPG(t *testing.T) {
 		t.Fatalf("deleted UserByEmail = %v, want ErrNotFound", err)
 	}
 	hash2 := "h2-" + suffix(t)
-	if err := repo.CreateSession(ctx, hash2, u.ID, now.Add(time.Hour)); err != nil {
+	if err := repo.CreateSession(ctx, api.NewSession{TokenHash: hash2, UserID: u.ID, ExpiresAt: now.Add(time.Hour)}); err != nil {
 		t.Fatalf("CreateSession (deleted): %v", err)
 	}
 	if _, err := repo.SessionUser(ctx, hash2, now); !errors.Is(err, api.ErrNotFound) {

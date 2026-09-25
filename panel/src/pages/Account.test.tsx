@@ -4,12 +4,13 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import i18next from "i18next";
-import type { Identity, PasskeyCredential } from "@/lib/types";
+import type { Identity, PasskeyCredential, SessionView } from "@/lib/types";
 import { Account } from "./Account";
 
 const mocks = vi.hoisted(() => ({
   passkeyList: vi.fn(),
   passkeyDelete: vi.fn(),
+  listMySessions: vi.fn(),
   identity: null as Identity | null,
 }));
 
@@ -23,6 +24,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
       migrateStatus: () => Promise.resolve({ active: false }),
       passkeyList: mocks.passkeyList,
       passkeyDelete: mocks.passkeyDelete,
+      listMySessions: mocks.listMySessions,
     },
   };
 });
@@ -35,6 +37,13 @@ const deleteButton = (name: string) => ({ name: t("account:passkey_delete_aria",
 
 const laptop: PasskeyCredential = { id: "pk-1", name: "Laptop", created_at: "2026-03-01T10:00:00Z" };
 const phone: PasskeyCredential = { id: "pk-2", name: "Phone", created_at: "2026-04-01T10:00:00Z" };
+
+function session(hash: string, userAgent: string, current?: boolean): SessionView {
+  const now = new Date().toISOString();
+  return { token_hash: hash, created_at: now, expires_at: now, last_seen_at: now, user_agent: userAgent, client_ip: "", current };
+}
+const thisMac = session("h-mac", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/128.0.0.0 Safari/537.36", true);
+const otherPC = session("h-pc", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Firefox/130.0");
 
 function identity(emailVerified: boolean): Identity {
   return {
@@ -58,6 +67,8 @@ function renderAccount() {
 beforeEach(() => {
   mocks.passkeyList.mockReset();
   mocks.passkeyDelete.mockReset();
+  mocks.listMySessions.mockReset();
+  mocks.listMySessions.mockResolvedValue([thisMac]);
   mocks.identity = identity(true);
 });
 
@@ -136,5 +147,34 @@ describe("Account passkey delete", () => {
     await waitFor(() => expect(screen.queryByRole("button", deleteButton("Laptop"))).toBeNull());
     expect(screen.getByRole("button", deleteButton("Phone"))).toBeTruthy();
     expect(screen.queryByText("passkey not found")).toBeNull();
+  });
+
+  it("refreshes the device list, since removing a passkey signs the other devices out", async () => {
+    mocks.passkeyList.mockResolvedValueOnce({ credentials: [laptop, phone] }).mockResolvedValue({ credentials: [phone] });
+    mocks.passkeyDelete.mockResolvedValue(undefined);
+    mocks.listMySessions.mockReset();
+    mocks.listMySessions.mockResolvedValueOnce([thisMac, otherPC]).mockResolvedValue([thisMac]);
+    renderAccount();
+
+    expect(await screen.findByText("Firefox on Windows")).toBeTruthy();
+    await userEvent.click(await screen.findByRole("button", deleteButton("Laptop")));
+    expect(within(screen.getByRole("dialog")).getByText(/Your other devices are signed out too\./)).toBeTruthy();
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: t("account:passkey_delete_confirm") }));
+
+    await waitFor(() => expect(screen.queryByText("Firefox on Windows")).toBeNull());
+    expect(screen.getByText("Chrome on macOS")).toBeTruthy();
+    expect(mocks.listMySessions).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves the device list alone when the removal is refused", async () => {
+    mocks.passkeyList.mockResolvedValue({ credentials: [laptop, phone] });
+    mocks.passkeyDelete.mockRejectedValue({ status: 409, code: "last_passkey", message: "raw" });
+    renderAccount();
+
+    await userEvent.click(await screen.findByRole("button", deleteButton("Laptop")));
+    await userEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: t("account:passkey_delete_confirm") }));
+    await within(screen.getByRole("dialog")).findByRole("alert");
+
+    expect(mocks.listMySessions).toHaveBeenCalledTimes(1);
   });
 });

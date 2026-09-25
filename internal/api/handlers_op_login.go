@@ -326,17 +326,10 @@ func (a *API) handleOpLoginFinish(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, newError(http.StatusForbidden, "staff_account", "that account is not an operator"))
 		return
 	}
-	token, err := newSessionToken()
-	if err != nil {
+	if err := a.startSession(w, r, u.ID); err != nil {
 		writeError(w, r, err)
 		return
 	}
-	expires := now.Add(sessionTTL)
-	if err := a.Repo.CreateSession(r.Context(), hashCookie(token), u.ID, expires); err != nil {
-		writeError(w, r, err)
-		return
-	}
-	setSessionCookie(w, token, expires)
 	a.auditAccount(r, u, "auth.op_login", "")
 	writeJSON(w, http.StatusOK, map[string]any{"user_id": u.ID, "role": u.Role})
 }

@@ -579,6 +579,17 @@ export const api = rejectingSync({
   passkeyDelete: (id: string) =>
     request<void>("DELETE", urlPath`/account/passkey/credentials/${id}`),
 
+  // The caller's own sessions: every browser signed in to the account, the one
+  // making the request marked current. Revoking the current one is a sign-out.
+  listMySessions: () =>
+    request<{ sessions: SessionView[] }>("GET", "/account/sessions").then((r) => r.sessions ?? []),
+
+  revokeMySession: (hash: string) =>
+    request<{ ok: boolean; signed_out: boolean }>("DELETE", urlPath`/account/sessions/${hash}`),
+
+  revokeMyOtherSessions: () =>
+    request<{ revoked: number }>("POST", "/account/sessions/revoke-others"),
+
   // Account migration (spec §B3 inherit). Started in-game with /felis migrate; the
   // web side then drives: status → step-up confirm (passkey when enrolled, email-OTP
   // otherwise) → issue-code (source names the target account and reads the one-time
@@ -828,6 +839,8 @@ export function humanizeError(e: unknown): string {
       return t("self_protected");
     case "owner_protected":
       return t("owner_protected");
+    case "session_not_found":
+      return t("session_not_found");
     case "quota_exceeded":
       return t("quota_exceeded");
     case "already_claimed":
