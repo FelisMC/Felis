@@ -1054,7 +1054,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List world backups (admin sees all; a user sees only worlds they formerly owned). */
+        /**
+         * List world backups (admin sees all; a user sees only worlds they formerly owned).
+         * @description One page of the present backups in the caller's scope, newest first. server narrows the page to one server's backups inside that scope; it never widens it.
+         */
         get: operations["listBackups"];
         put?: never;
         post?: never;
@@ -4933,14 +4936,19 @@ export interface operations {
     };
     listBackups: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Only this server's backups */
+                server?: string;
+                limit?: number;
+                offset?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Visible backups. */
+            /** @description A page of visible backups plus how many match. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -4948,9 +4956,11 @@ export interface operations {
                 content: {
                     "application/json": {
                         backups: components["schemas"]["BackupView"][];
+                        total: number;
                     };
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
         };
     };
@@ -6888,14 +6898,20 @@ export interface operations {
     };
     mySubmissions: {
         parameters: {
-            query?: never;
+            query?: {
+                status?: "pending_review" | "approved" | "rejected";
+                /** @description Part of the id, the submitter or the display name; case-insensitive */
+                query?: string;
+                limit?: number;
+                offset?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description The caller's submissions, newest first; rows with a linked build additionally carry build_status/build_error so the submitter can see whether their build succeeded or failed (and why). */
+            /** @description One page of the caller's submissions, newest first; rows with a linked build additionally carry build_status/build_error so the submitter can see whether their build succeeded or failed (and why). */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -6903,9 +6919,18 @@ export interface operations {
                 content: {
                     "application/json": {
                         submissions: components["schemas"]["Submission"][];
+                        /** @description How many submissions match status and query in all. */
+                        total: number;
+                        /** @description How many of the scope's submissions sit in each status, whatever status and query say. */
+                        counts: {
+                            pending_review: number;
+                            approved: number;
+                            rejected: number;
+                        };
                     };
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             503: components["responses"]["ServiceUnavailable"];
         };
@@ -7322,14 +7347,20 @@ export interface operations {
     };
     listSubmissions: {
         parameters: {
-            query?: never;
+            query?: {
+                status?: "pending_review" | "approved" | "rejected";
+                /** @description Part of the id, the submitter or the display name; case-insensitive */
+                query?: string;
+                limit?: number;
+                offset?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description All submissions, newest first. */
+            /** @description One page of every user's submissions, newest first. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -7337,9 +7368,18 @@ export interface operations {
                 content: {
                     "application/json": {
                         submissions: components["schemas"]["Submission"][];
+                        /** @description How many submissions match status and query in all. */
+                        total: number;
+                        /** @description How many of the scope's submissions sit in each status, whatever status and query say. */
+                        counts: {
+                            pending_review: number;
+                            approved: number;
+                            rejected: number;
+                        };
                     };
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             503: components["responses"]["ServiceUnavailable"];

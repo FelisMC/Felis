@@ -198,6 +198,9 @@ type Store interface {
 	CreateBuild(ctx context.Context, b *Build) error
 	// GetBuild loads one build, or ErrNotFound.
 	GetBuild(ctx context.Context, id string) (*Build, error)
+	// GetBuilds loads the builds among ids that exist, in no particular order and
+	// without their Dockerfile — one query for a whole list's worth of lookups.
+	GetBuilds(ctx context.Context, ids []string) ([]Build, error)
 	// SetBuildJob records the Job name and advances status to building.
 	SetBuildJob(ctx context.Context, id, jobName string) error
 	// FinishBuild sets a terminal status, an optional error, and finished_at.
@@ -517,6 +520,24 @@ func (b *Builder) jobParams(bld *Build, cfg Config) JobParams {
 // Get returns a build by id, or ErrNotFound.
 func (b *Builder) Get(ctx context.Context, id string) (*Build, error) {
 	return b.Store.GetBuild(ctx, id)
+}
+
+// GetMany returns the builds among ids that exist, keyed by id, read as stored
+// (no reconcile) and without their Dockerfile. An id with no row is absent from
+// the map.
+func (b *Builder) GetMany(ctx context.Context, ids []string) (map[string]Build, error) {
+	out := make(map[string]Build, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	builds, err := b.Store.GetBuilds(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for _, bld := range builds {
+		out[bld.ID] = bld
+	}
+	return out, nil
 }
 
 // ListBuilds pages the build history for the admin panel, so every admin sees

@@ -84,8 +84,9 @@ type ServerSpecPatch struct {
 // so handlers are tested against a fake; the controller-runtime implementation
 // (k8sCluster) is integration-tested only — it requires a live cluster.
 type Cluster interface {
-	// Ping verifies the K8s API and CRD informer are healthy — used by /readyz
-	// (spec §7) to confirm the lifecycle store is reachable and synced.
+	// Ping verifies the K8s API is reachable and the MinecraftServer cache has
+	// synced — used by /readyz (spec §7), so a replica serves the fleet reads only
+	// once it holds the whole fleet.
 	Ping(ctx context.Context) error
 
 	// GetServer reads one MinecraftServer's lifecycle view, or ErrNotFound.

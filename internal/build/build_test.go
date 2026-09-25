@@ -25,6 +25,8 @@ type fakeStore struct {
 	removeErr error
 	createErr error
 	listOpts  ListOpts
+
+	getManyCalls int
 }
 
 func newFakeStore() *fakeStore {
@@ -47,6 +49,17 @@ func (f *fakeStore) GetBuild(_ context.Context, id string) (*Build, error) {
 	}
 	cp := *b
 	return &cp, nil
+}
+
+func (f *fakeStore) GetBuilds(_ context.Context, ids []string) ([]Build, error) {
+	f.getManyCalls++
+	var out []Build
+	for _, id := range ids {
+		if b, ok := f.builds[id]; ok {
+			out = append(out, *b)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeStore) SetBuildJob(_ context.Context, id, jobName string) error {
@@ -774,5 +787,30 @@ func TestListBuildsBoundsThePage(t *testing.T) {
 		if st.listOpts != c.want {
 			t.Errorf("ListBuilds(%+v) asked the store for %+v, want %+v", c.in, st.listOpts, c.want)
 		}
+	}
+}
+
+// GetMany answers a whole list's lookups with one store read, keys the rows by
+// id, leaves an unknown id out, and asks nothing of the store for an empty list.
+func TestGetManyIsOneRead(t *testing.T) {
+	b, st, _ := newBuilder()
+	st.builds["bld-1"] = &Build{ID: "bld-1", Status: StatusFailed, Error: "scan found a CRITICAL CVE"}
+	st.builds["bld-2"] = &Build{ID: "bld-2", Status: StatusSucceeded}
+	got, err := b.GetMany(context.Background(), []string{"bld-1", "bld-2", "bld-gone"})
+	if err != nil {
+		t.Fatalf("GetMany: %v", err)
+	}
+	if st.getManyCalls != 1 {
+		t.Fatalf("store reads = %d, want 1", st.getManyCalls)
+	}
+	if len(got) != 2 || got["bld-1"].Status != StatusFailed || got["bld-1"].Error != "scan found a CRITICAL CVE" ||
+		got["bld-2"].Status != StatusSucceeded {
+		t.Fatalf("GetMany = %+v, want bld-1 failed and bld-2 succeeded", got)
+	}
+	if _, ok := got["bld-gone"]; ok {
+		t.Fatal("an unknown id must be absent")
+	}
+	if got, err := b.GetMany(context.Background(), nil); err != nil || len(got) != 0 || st.getManyCalls != 1 {
+		t.Fatalf("GetMany(nil) = %v, %v with %d reads; want an empty map and no read", got, err, st.getManyCalls)
 	}
 }

@@ -342,7 +342,7 @@ func TestBackupReadBack(t *testing.T) {
 		t.Fatalf("BackupByID(intact) = (%+v, %v); want not Corrupt", b, err)
 	}
 
-	views, err := repo.AllBackups(ctx)
+	views, _, err := repo.AllBackups(ctx, api.BackupListOpts{Server: name, Limit: api.MaxBackupListLimit})
 	if err != nil {
 		t.Fatalf("AllBackups: %v", err)
 	}

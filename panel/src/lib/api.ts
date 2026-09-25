@@ -28,6 +28,8 @@ import type {
   WhitelistImage,
   WhitelistResult,
   Submission,
+  SubmissionListParams,
+  SubmissionPage,
   UpdateWindow,
   DBBackupStatus,
 } from "./types";
@@ -220,6 +222,26 @@ function rejectingSync<T extends Record<string, unknown>>(methods: T): T {
         : fn;
   }
   return out as T;
+}
+
+// submissionPage reads one page of a submission list. Filtering and paging run on
+// the server; a status count the API left out reads as zero.
+function submissionPage(path: string, params?: SubmissionListParams): Promise<SubmissionPage> {
+  const sp = new URLSearchParams();
+  if (params?.status) sp.set("status", params.status);
+  if (params?.query) sp.set("query", params.query);
+  if (params?.limit) sp.set("limit", String(params.limit));
+  if (params?.offset) sp.set("offset", String(params.offset));
+  const qs = sp.toString();
+  return request<Partial<SubmissionPage>>("GET", `${path}${qs ? `?${qs}` : ""}`).then((r) => ({
+    submissions: r.submissions ?? [],
+    total: r.total ?? 0,
+    counts: {
+      pending_review: r.counts?.pending_review ?? 0,
+      approved: r.counts?.approved ?? 0,
+      rejected: r.counts?.rejected ?? 0,
+    },
+  }));
 }
 
 // Setup bootstrap (spec §B). The one-time token from `felis setup` is redeemed for
@@ -464,12 +486,19 @@ export const api = rejectingSync({
 
   // World backups (spec §7). listBackups is the app-tier read: an admin sees every
   // present backup, a user only the backups of worlds they formerly owned — the
-  // scope is decided server-side from the principal, not by any client filter, so a
-  // user cannot widen it. Only present (restorable) rows come back, newest first;
-  // there is no per-server backups endpoint, so the panel filters by server_name
-  // client-side and the first matching row is the one a restore would recover.
-  listBackups: () =>
-    request<{ backups: BackupView[] }>("GET", "/backups").then((r) => r.backups ?? []),
+  // scope is decided server-side from the principal, so a user cannot widen it.
+  // server narrows the page to one server inside that scope. Only present
+  // (restorable) rows come back, newest first, one page at a time with the total.
+  listBackups: (params?: { server?: string; limit?: number; offset?: number }) => {
+    const sp = new URLSearchParams();
+    if (params?.server) sp.set("server", params.server);
+    if (params?.limit) sp.set("limit", String(params.limit));
+    if (params?.offset) sp.set("offset", String(params.offset));
+    const qs = sp.toString();
+    return request<{ backups: BackupView[]; total: number }>("GET", `/backups${qs ? `?${qs}` : ""}`).then(
+      (r) => ({ backups: r.backups ?? [], total: r.total ?? 0 }),
+    );
+  },
 
   // restoreBackup starts an ASYNC restore of a server's world from a backup
   // (spec §7 POST restore-backup). It accepts an optional backupId in the body: when
@@ -650,8 +679,8 @@ export const api = rejectingSync({
       { code },
     ),
 
-  listSubmissions: () =>
-    request<{ submissions: Submission[] }>("GET", "/submissions").then((r) => r.submissions ?? []),
+  // The admin review queue, one page at a time (see submissionPage).
+  listSubmissions: (params?: SubmissionListParams) => submissionPage("/submissions", params),
 
   // expectedDigest is the sha256 of the context the reviewer looked at; the API
   // refuses the approval (409 context_changed) when the upload has since changed.
@@ -684,8 +713,7 @@ export const api = rejectingSync({
     return digest;
   },
 
-  listMySubmissions: () =>
-    request<{ submissions: Submission[] }>("GET", "/me/submissions").then((r) => r.submissions ?? []),
+  listMySubmissions: (params?: SubmissionListParams) => submissionPage("/me/submissions", params),
 
   createSubmission: (displayName: string) =>
     request<Submission>("POST", "/me/submissions", { display_name: displayName }),

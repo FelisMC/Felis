@@ -18,6 +18,7 @@ type fakeBuilder struct {
 	submitErr   error
 	getBuilds   map[string]*build.Build
 	getErr      error
+	getManyIDs  [][]string // one entry per GetMany call
 	syncErr     error
 	cancelErr   error
 	addedRef    string
@@ -46,15 +47,18 @@ func (f *fakeBuilder) Submit(_ context.Context, req build.Request) (*build.Build
 		RequestedBy: req.RequestedBy}, nil
 }
 
-func (f *fakeBuilder) Get(_ context.Context, id string) (*build.Build, error) {
-	f.lastBuildID = id
+func (f *fakeBuilder) GetMany(_ context.Context, ids []string) (map[string]build.Build, error) {
+	f.getManyIDs = append(f.getManyIDs, ids)
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
-	if b, ok := f.getBuilds[id]; ok {
-		return b, nil
+	out := map[string]build.Build{}
+	for _, id := range ids {
+		if b, ok := f.getBuilds[id]; ok {
+			out[id] = *b
+		}
 	}
-	return nil, build.ErrNotFound
+	return out, nil
 }
 
 func (f *fakeBuilder) Sync(_ context.Context, id string) (*build.Build, error) {

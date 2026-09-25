@@ -8,8 +8,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 
-	"felis.lolicon.best/internal/build"
 	"felis.lolicon.best/internal/submit"
 )
 
@@ -36,10 +36,12 @@ type SubmissionService interface {
 	// submission at the platform-derived context ref. submittedBy is the principal,
 	// never the body, so a user can only upload to a submission they own.
 	UploadContext(ctx context.Context, id, submittedBy string, r io.Reader) (*submit.Submission, error)
-	// ListBy returns one user's submissions, newest first (the "my uploads" view).
-	ListBy(ctx context.Context, submittedBy string) ([]submit.Submission, error)
-	// List returns every submission, newest first (the admin review queue).
-	List(ctx context.Context) ([]submit.Submission, error)
+	// ListBy returns one page of one user's submissions, newest first (the "my
+	// uploads" view). The scope is submittedBy, whatever opts says.
+	ListBy(ctx context.Context, submittedBy string, opts submit.ListOpts) (submit.Page, error)
+	// List returns one page of every submission, newest first (the admin review
+	// queue).
+	List(ctx context.Context, opts submit.ListOpts) (submit.Page, error)
 	// Approve is the admin gate: it claims pending_review -> approved (CAS) and the
 	// winner starts the SAME Trivy-gated build as an admin's direct build.
 	// expectedDigest is the context sha256 the reviewer inspected; a row whose
@@ -206,17 +208,12 @@ func (a *API) handleMySubmissions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := principalFromContext(r.Context())
-	subs, err := a.Submissions.ListBy(r.Context(), p.UserID)
+	page, err := a.Submissions.ListBy(r.Context(), p.UserID, submissionListOpts(r))
 	if err != nil {
 		writeSubmitError(w, r, err)
 		return
 	}
-	views, err := a.submissionViews(r.Context(), subs)
-	if err != nil {
-		writeSubmitError(w, r, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"submissions": views})
+	a.writeSubmissionPage(w, r, page)
 }
 
 // handleListSubmissions is the admin review queue: every submission across all
@@ -228,17 +225,42 @@ func (a *API) handleListSubmissions(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, errSubmissionsUnavailable)
 		return
 	}
-	subs, err := a.Submissions.List(r.Context())
+	page, err := a.Submissions.List(r.Context(), submissionListOpts(r))
 	if err != nil {
 		writeSubmitError(w, r, err)
 		return
 	}
-	views, err := a.submissionViews(r.Context(), subs)
+	a.writeSubmissionPage(w, r, page)
+}
+
+// submissionListOpts reads the page a submission list asks for: ?status= (exact),
+// ?query= (id, submitter or name), ?limit= and ?offset=. An unparsable number
+// reads as absent and the submit layer settles the bounds. Scope is never read
+// from the request: each handler supplies it.
+func submissionListOpts(r *http.Request) submit.ListOpts {
+	q := r.URL.Query()
+	limit, _ := strconv.Atoi(q.Get("limit"))
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	return submit.ListOpts{
+		Status: submit.Status(q.Get("status")), Query: q.Get("query"),
+		Limit: limit, Offset: offset,
+	}
+}
+
+// writeSubmissionPage renders one page: the enriched rows, how many match in all,
+// and the scope's count in each status (every status present, zero or not, so the
+// panel's summary cards never read a missing key).
+func (a *API) writeSubmissionPage(w http.ResponseWriter, r *http.Request, page submit.Page) {
+	views, err := a.submissionViews(r.Context(), page.Submissions)
 	if err != nil {
 		writeSubmitError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"submissions": views})
+	counts := map[string]int{}
+	for _, st := range []submit.Status{submit.StatusPendingReview, submit.StatusApproved, submit.StatusRejected} {
+		counts[string(st)] = page.Counts[st]
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"submissions": views, "total": page.Total, "counts": counts})
 }
 
 // submissionView is one submission row enriched with its linked build's
@@ -251,29 +273,34 @@ type submissionView struct {
 	BuildError  string `json:"build_error,omitempty"`
 }
 
-// submissionViews enriches each submission with its linked build's status via a
-// read-only Builder.Get — deliberately never Sync, because the 15s reconcile
-// loop owns state advance and rendering a list must not touch the cluster. A
-// submission with no linked build (never approved, or approved before the
-// hand-off could record the id), no Builder wired, or a build row that is gone
-// (ErrNotFound) renders without the extra fields; any other store failure is
-// returned so the handler reports it rather than silently dropping the outcome.
+// submissionViews enriches each submission with its linked build's status via
+// one read-only Builder.GetMany for the whole page — deliberately never Sync,
+// because the 15s reconcile loop owns state advance and rendering a list must not
+// touch the cluster. A submission with no linked build (never approved, or
+// approved before the hand-off could record the id), no Builder wired, or a build
+// row that is gone renders without the extra fields; a store failure is returned
+// so the handler reports it rather than silently dropping the outcome.
 func (a *API) submissionViews(ctx context.Context, subs []submit.Submission) ([]submissionView, error) {
 	views := make([]submissionView, len(subs))
+	var ids []string
 	for i, s := range subs {
 		views[i] = submissionView{Submission: s}
-		if a.Builder == nil || s.BuildID == "" {
-			continue
+		if s.BuildID != "" {
+			ids = append(ids, s.BuildID)
 		}
-		bld, err := a.Builder.Get(ctx, s.BuildID)
-		if errors.Is(err, build.ErrNotFound) {
-			continue
+	}
+	if a.Builder == nil || len(ids) == 0 {
+		return views, nil
+	}
+	builds, err := a.Builder.GetMany(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range views {
+		if bld, ok := builds[views[i].BuildID]; ok {
+			views[i].BuildStatus = string(bld.Status)
+			views[i].BuildError = bld.Error
 		}
-		if err != nil {
-			return nil, err
-		}
-		views[i].BuildStatus = string(bld.Status)
-		views[i].BuildError = bld.Error
 	}
 	return views, nil
 }

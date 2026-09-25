@@ -1009,13 +1009,21 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
       sendJSON(ctx.res, 200, { servers: fleetView(ctx.state, ctx.account) });
       return true;
     case "GET backups":
-      // Admin sees every archive; a user only worlds they formerly owned — mirrors
-      // AllBackups vs BackupsForUser. The panel filters by server_name client-side.
-      sendJSON(ctx.res, 200, {
-        backups: ctx.state.backups.filter(
-          (b) => isAdmin(ctx.account.role) || b.former_owner === ctx.account.id,
-        ),
-      });
+      {
+        // Admin sees every archive; a user only worlds they formerly owned — mirrors
+        // AllBackups vs BackupsForUser. server narrows inside that scope, and rows
+        // come a page at a time, newest first, with the matching total.
+        const url = new URL(ctx.req.url ?? "/", "http://localhost");
+        const server = url.searchParams.get("server") ?? "";
+        const limit = Math.min(Number(url.searchParams.get("limit")) || 20, 100);
+        const offset = Math.max(Number(url.searchParams.get("offset")) || 0, 0);
+        const matched = ctx.state.backups
+          .filter((b) => b.status === "present")
+          .filter((b) => isAdmin(ctx.account.role) || b.former_owner === ctx.account.id)
+          .filter((b) => !server || b.server_name === server)
+          .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
+        sendJSON(ctx.res, 200, { backups: matched.slice(offset, offset + limit), total: matched.length });
+      }
       return true;
     case "POST servers":
       await createServerRoute(ctx);
@@ -1698,6 +1706,23 @@ async function handleImageRoute(ctx: SessionContext): Promise<boolean> {
   return false;
 }
 
+// The same page as submit.PGStore.PageSubmissions: counts cover the whole scope,
+// status and query (id, submitter or name, any part) narrow the rows, newest first.
+function submissionPageOf(ctx: SessionContext, scope: Submission[]) {
+  const url = new URL(ctx.req.url ?? "/", "http://localhost");
+  const status = url.searchParams.get("status") ?? "";
+  const q = (url.searchParams.get("query") ?? "").trim().toLowerCase();
+  const limit = Math.min(Number(url.searchParams.get("limit")) || 20, 100);
+  const offset = Math.max(Number(url.searchParams.get("offset")) || 0, 0);
+  const counts = { pending_review: 0, approved: 0, rejected: 0 };
+  for (const s of scope) counts[s.status] += 1;
+  const matched = scope
+    .filter((s) => !status || s.status === status)
+    .filter((s) => !q || [s.id, s.submitted_by, s.display_name].some((f) => f.toLowerCase().includes(q)))
+    .sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
+  return { submissions: matched.slice(offset, offset + limit), total: matched.length, counts };
+}
+
 async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
   const isAdminSubmissions = ctx.parts[2] === "submissions";
   const isMeSubmissions = ctx.parts[2] === "me" && ctx.parts[3] === "submissions";
@@ -1706,7 +1731,7 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
   // GET /api/v1/me/submissions
   if (isMeSubmissions && is("GET", ctx) && ctx.parts.length === 4) {
     const userSubs = ctx.state.submissions.filter((s) => s.submitted_by === ctx.account.email);
-    sendJSON(ctx.res, 200, { submissions: userSubs });
+    sendJSON(ctx.res, 200, submissionPageOf(ctx, userSubs));
     return true;
   }
 
@@ -1790,7 +1815,7 @@ async function handleSubmissionRoute(ctx: SessionContext): Promise<boolean> {
       sendError(ctx.res, 403, "forbidden", "admin account required");
       return true;
     }
-    sendJSON(ctx.res, 200, { submissions: ctx.state.submissions });
+    sendJSON(ctx.res, 200, submissionPageOf(ctx, ctx.state.submissions));
     return true;
   }
 

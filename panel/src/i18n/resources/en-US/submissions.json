@@ -28,6 +28,8 @@
   "build_status_cancelled": "Cancelled",
   "no_submissions_title": "No Submissions Found",
   "no_submissions_hint": "You haven't submitted any modpacks yet.",
+  "search_no_results": "No matches",
+  "search_no_results_hint": "Try a different search term or filter.",
   "search_placeholder": "Search submissions...",
   "error_file_type": "Please upload a valid .tar.gz file.",
   "error_file_size": "File exceeds the allowed size limit.",

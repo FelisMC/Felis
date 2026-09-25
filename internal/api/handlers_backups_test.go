@@ -83,6 +83,76 @@ func TestListBackups(t *testing.T) {
 		}
 	})
 
+	admin := &Principal{UserID: "admin1", Role: "admin", ViaAdminAccess: true}
+	total := func(t *testing.T, w *httptest.ResponseRecorder) int {
+		t.Helper()
+		var resp struct {
+			Total *int `json:"total"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || resp.Total == nil {
+			t.Fatalf("body carries no total: %v (%s)", err, w.Body.String())
+		}
+		return *resp.Total
+	}
+
+	t.Run("server filter narrows inside the scope, never past it", func(t *testing.T) {
+		api := mk()
+		api.External = staticExternal{p: admin}
+		w := do(api.ExternalHandler(), "GET", "/api/v1/backups?server=beta", "", nil)
+		if got := ids(list(t, w)); !got["b2"] || len(got) != 1 || total(t, w) != 1 {
+			t.Fatalf("admin ?server=beta = %v (total %d), want {b2} of 1", got, total(t, w))
+		}
+		api.External = staticExternal{p: &Principal{UserID: "owner1", Role: "user"}}
+		w = do(api.ExternalHandler(), "GET", "/api/v1/backups?server=beta", "", nil)
+		if got := ids(list(t, w)); len(got) != 0 || total(t, w) != 0 {
+			t.Fatalf("owner1 ?server=beta = %v (total %d), want nothing: beta's backup is owner2's", got, total(t, w))
+		}
+	})
+
+	t.Run("pages newest first with the match total", func(t *testing.T) {
+		api := mk()
+		api.External = staticExternal{p: admin}
+		w := do(api.ExternalHandler(), "GET", "/api/v1/backups?limit=1", "", nil)
+		if vs := list(t, w); len(vs) != 1 || vs[0].ID != "b2" || total(t, w) != 2 {
+			t.Fatalf("?limit=1 = %+v (total %d), want [b2] of 2", vs, total(t, w))
+		}
+		w = do(api.ExternalHandler(), "GET", "/api/v1/backups?limit=1&offset=1", "", nil)
+		if vs := list(t, w); len(vs) != 1 || vs[0].ID != "b1" {
+			t.Fatalf("?limit=1&offset=1 = %+v, want [b1]", vs)
+		}
+	})
+
+	t.Run("page bounds", func(t *testing.T) {
+		cases := []struct {
+			query string
+			want  BackupListOpts
+		}{
+			{"", BackupListOpts{Limit: 20}},
+			{"?limit=5000&offset=-3", BackupListOpts{Limit: 100}},
+			{"?limit=x&offset=40&server=alpha", BackupListOpts{Server: "alpha", Limit: 20, Offset: 40}},
+		}
+		for _, c := range cases {
+			repo := newFakeRepo()
+			api := newTestAPI(repo, newFakeCluster())
+			api.External = staticExternal{p: admin}
+			if w := do(api.ExternalHandler(), "GET", "/api/v1/backups"+c.query, "", nil); w.Code != http.StatusOK {
+				t.Fatalf("%q: code = %d (%s)", c.query, w.Code, w.Body.String())
+			}
+			if repo.backupListOpts != c.want {
+				t.Errorf("%q asked the repo for %+v, want %+v", c.query, repo.backupListOpts, c.want)
+			}
+		}
+	})
+
+	t.Run("malformed server name is a 400", func(t *testing.T) {
+		api := mk()
+		api.External = staticExternal{p: admin}
+		w := do(api.ExternalHandler(), "GET", "/api/v1/backups?server=Bad%20Name", "", nil)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "bad_name") {
+			t.Fatalf("code = %d (%s), want 400 bad_name", w.Code, w.Body.String())
+		}
+	})
+
 	t.Run("backup_ref never serialized", func(t *testing.T) {
 		api := mk()
 		api.External = staticExternal{p: &Principal{UserID: "admin1", Role: "admin", ViaAdminAccess: true}}

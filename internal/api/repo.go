@@ -95,6 +95,22 @@ type BackupView struct {
 	SkippedEntries int        `json:"skipped_entries,omitempty"`
 }
 
+// BackupListOpts selects a page of the backups list. Server narrows it to one
+// server's backups (the server's Backups page); empty lists every server in the
+// caller's scope. The scope itself is never an option: it is which Repo method
+// runs.
+type BackupListOpts struct {
+	Server string
+	Limit  int
+	Offset int
+}
+
+// DefaultBackupListLimit and MaxBackupListLimit bound one page of backups.
+const (
+	DefaultBackupListLimit = 20
+	MaxBackupListLimit     = 100
+)
+
 // BackupRecord is the server-side view of a backup used to drive a restore (spec
 // §466). It carries the opaque backup_ref the Restorer needs and the former_owner
 // the restore authorization compares against — neither is ever serialized to the
@@ -338,14 +354,16 @@ type Repo interface {
 	// cannot be claimed. The cockpit treats it as best-effort: a lookup error leaves
 	// ownership unknown rather than failing the fleet read.
 	ServerOwners(ctx context.Context) (map[string]ServerOwnership, error)
-	// AllBackups lists every present world backup, newest first (spec §7 GET
-	// /backups, admin scope). Expired/deleted rows are never returned.
-	AllBackups(ctx context.Context) ([]BackupView, error)
-	// BackupsForUser lists the present world backups of worlds the user formerly
-	// owned, newest first (spec §7 GET /backups, former_owner scope). The
-	// former_owner column is stamped when the world is archived at release time, so
-	// a user sees their own released worlds even after the server is re-seeded.
-	BackupsForUser(ctx context.Context, userID string) ([]BackupView, error)
+	// AllBackups lists one page of every present world backup, newest first, and
+	// how many match in all (spec §7 GET /backups, admin scope). Expired/deleted
+	// rows are never returned.
+	AllBackups(ctx context.Context, opts BackupListOpts) ([]BackupView, int, error)
+	// BackupsForUser lists one page of the present world backups of worlds the
+	// user formerly owned, newest first, and how many match in all (spec §7 GET
+	// /backups, former_owner scope). The former_owner column is stamped when the
+	// world is archived at release time, so a user sees their own released worlds
+	// even after the server is re-seeded.
+	BackupsForUser(ctx context.Context, userID string, opts BackupListOpts) ([]BackupView, int, error)
 	// LatestBackup returns the most recent present backup for a server, or
 	// ErrNotFound when none exists (spec §466 restore). The returned BackupRecord
 	// carries the server-side backup_ref + former_owner the restore path needs; the

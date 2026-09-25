@@ -36,6 +36,16 @@ func (s *PGStore) GetBuild(ctx context.Context, id string) (*Build, error) {
 	return s.scanBuild(s.db.QueryRowContext(ctx, q, id))
 }
 
+func (s *PGStore) GetBuilds(ctx context.Context, ids []string) ([]Build, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, image_ref, status, '', context_ref, base_image,
+			requested_by, job_name, log_ref, error, created_at, finished_at, context_digest
+		FROM image_builds WHERE id = ANY($1::text[])`, ids)
+	if err != nil {
+		return nil, err
+	}
+	return scanBuilds(rows)
+}
+
 func (s *PGStore) scanBuild(row *sql.Row) (*Build, error) {
 	var (
 		b                                   Build

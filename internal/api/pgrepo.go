@@ -670,32 +670,39 @@ func (p *PGRepo) SeedServer(ctx context.Context, name, subdomain string, cpuMill
 	return tx.Commit()
 }
 
-// AllBackups lists every present world backup, newest first (spec §7 GET
-// /backups, admin scope; world_backups in §22). Only status='present' rows are
-// listed — an expired or deleted backup is gone (spec §466).
-func (p *PGRepo) AllBackups(ctx context.Context) ([]BackupView, error) {
-	const q = `SELECT id, server_name, COALESCE(former_owner, ''), COALESCE(size_bytes, 0),
-		reason, status, created_at, expires_at, corrupt_at IS NOT NULL, verified_at, skipped_entries
-		FROM world_backups WHERE status = 'present' ORDER BY created_at DESC`
-	rows, err := p.db.QueryContext(ctx, q)
-	if err != nil {
-		return nil, err
-	}
-	return scanBackupViews(rows)
+// AllBackups lists one page of every present world backup, newest first (spec
+// §7 GET /backups, admin scope; world_backups in §22). Only status='present' rows
+// are listed — an expired or deleted backup is gone (spec §466).
+func (p *PGRepo) AllBackups(ctx context.Context, opts BackupListOpts) ([]BackupView, int, error) {
+	return p.pageBackups(ctx, ``, opts)
 }
 
-// BackupsForUser lists the present world backups of worlds the user formerly
-// owned, newest first (spec §7 GET /backups, former_owner scope). A NULL
+// BackupsForUser lists one page of the present world backups of worlds the user
+// formerly owned, newest first (spec §7 GET /backups, former_owner scope). A NULL
 // former_owner never matches a user id, so orphaned backups stay admin-only.
-func (p *PGRepo) BackupsForUser(ctx context.Context, userID string) ([]BackupView, error) {
-	const q = `SELECT id, server_name, COALESCE(former_owner, ''), COALESCE(size_bytes, 0),
-		reason, status, created_at, expires_at, corrupt_at IS NOT NULL, verified_at, skipped_entries
-		FROM world_backups WHERE status = 'present' AND former_owner = $1 ORDER BY created_at DESC`
-	rows, err := p.db.QueryContext(ctx, q, userID)
-	if err != nil {
-		return nil, err
+func (p *PGRepo) BackupsForUser(ctx context.Context, userID string, opts BackupListOpts) ([]BackupView, int, error) {
+	return p.pageBackups(ctx, ` AND former_owner = $2`, opts, userID)
+}
+
+// pageBackups counts and reads one page of present backups under the caller's
+// scope clause, whose parameters follow the server filter ($1). id breaks
+// created_at ties so a page boundary never repeats or skips a row.
+func (p *PGRepo) pageBackups(ctx context.Context, scope string, opts BackupListOpts, scopeArgs ...any) ([]BackupView, int, error) {
+	match := ` FROM world_backups WHERE status = 'present' AND ($1::text = '' OR server_name = $1::text)` + scope
+	args := append([]any{opts.Server}, scopeArgs...)
+	var total int
+	if err := p.db.QueryRowContext(ctx, `SELECT count(*)`+match, args...).Scan(&total); err != nil {
+		return nil, 0, err
 	}
-	return scanBackupViews(rows)
+	n := len(args)
+	rows, err := p.db.QueryContext(ctx, fmt.Sprintf(`SELECT id, server_name, COALESCE(former_owner, ''), COALESCE(size_bytes, 0),
+		reason, status, created_at, expires_at, corrupt_at IS NOT NULL, verified_at, skipped_entries%s
+		ORDER BY created_at DESC, id DESC LIMIT $%d OFFSET $%d`, match, n+1, n+2), append(args, opts.Limit, opts.Offset)...)
+	if err != nil {
+		return nil, 0, err
+	}
+	out, err := scanBackupViews(rows)
+	return out, total, err
 }
 
 // scanBackupViews drains a world_backups result set into BackupViews. backup_ref

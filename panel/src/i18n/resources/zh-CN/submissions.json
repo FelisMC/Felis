@@ -28,6 +28,8 @@
   "build_status_cancelled": "已取消",
   "no_submissions_title": "暂无提交记录",
   "no_submissions_hint": "您还没有提交过任何模组包。",
+  "search_no_results": "无匹配结果",
+  "search_no_results_hint": "尝试更换搜索词或筛选条件。",
   "search_placeholder": "搜索提交记录...",
   "error_file_type": "请上传有效的 .tar.gz 压缩文件。",
   "error_file_size": "文件超过了允许的大小限制。",

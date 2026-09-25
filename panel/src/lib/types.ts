@@ -331,6 +331,23 @@ export interface Submission {
   context_sha256?: string;
 }
 
+/** SubmissionListParams picks one page of a submission list (server-side filter
+ *  and paging; the scope is the endpoint, never a parameter). */
+export interface SubmissionListParams {
+  status?: SubmissionStatus;
+  query?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/** SubmissionPage is one page of a submission list: total counts the rows that
+ *  match status and query, counts the scope's rows per status regardless. */
+export interface SubmissionPage {
+  submissions: Submission[];
+  total: number;
+  counts: Record<SubmissionStatus, number>;
+}
+
 export interface UpdateWindow {
   start: string | null;
   end: string | null;

@@ -36,7 +36,9 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -300,7 +302,12 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		rcfg = reaper.DefaultConfig()
 	}
 
-	cluster := api.NewK8sCluster(cl, cfg.K8s.Namespace)
+	serverCache, serversSynced, err := startServerCache(ctx, restCfg, scheme, cfg.K8s.Namespace, stderr)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis api: MinecraftServer cache: %v\n", err)
+		return 1
+	}
+	cluster := api.NewK8sCluster(cl, cfg.K8s.Namespace).WithServerCache(serverCache, serversSynced)
 	jobStatus := api.NewK8sJobStatus(cl, cfg.K8s.Namespace)
 	a := &api.API{
 		Repo:    repo,
@@ -835,4 +842,37 @@ func smtpRelay(c config.SMTPConfig, password string) *mail.SMTP {
 		Password:   password,
 		RequireTLS: c.TLSRequired(),
 	}
+}
+
+// startServerCache starts the informer that serves the api's fleet-wide
+// MinecraftServer reads (api.K8sCluster.WithServerCache): one watch on the
+// namespace instead of a full List per velocity pull, fleet page and wake. It
+// caches MinecraftServers only — ReaderFailOnMissingInformer turns any other read
+// through it into an error rather than a new informer the api's Role cannot back —
+// indexes spec.subdomain for GetBySubdomain, and drops managedFields to keep the
+// copy small. It returns without waiting: the reads block until the first list
+// lands and /readyz reports not-ready until then.
+func startServerCache(ctx context.Context, cfg *rest.Config, scheme *runtime.Scheme, namespace string, stderr io.Writer) (cache.Cache, func() bool, error) {
+	c, err := cache.New(cfg, cache.Options{
+		Scheme:                      scheme,
+		DefaultNamespaces:           map[string]cache.Config{namespace: {}},
+		DefaultTransform:            cache.TransformStripManagedFields(),
+		ReaderFailOnMissingInformer: true,
+	})
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := c.IndexField(ctx, &v1alpha1.MinecraftServer{}, api.SubdomainIndex, api.SubdomainOf); err != nil {
+		return nil, nil, fmt.Errorf("index %s: %w", api.SubdomainIndex, err)
+	}
+	inf, err := c.GetInformer(ctx, &v1alpha1.MinecraftServer{})
+	if err != nil {
+		return nil, nil, err
+	}
+	go func() {
+		if err := c.Start(ctx); err != nil {
+			fmt.Fprintf(stderr, "felis api: MinecraftServer cache stopped: %v\n", err)
+		}
+	}()
+	return c, inf.HasSynced, nil
 }

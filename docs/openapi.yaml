@@ -3150,21 +3150,32 @@ paths:
       tags: [backups]
       operationId: listBackups
       summary: List world backups (admin sees all; a user sees only worlds they formerly owned).
+      description: >-
+        One page of the present backups in the caller's scope, newest first.
+        server narrows the page to one server's backups inside that scope; it
+        never widens it.
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: server, in: query, required: false, schema: { type: string }, description: 'Only this server''s backups' }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 20, maximum: 100 } }
+        - { name: offset, in: query, required: false, schema: { type: integer, default: 0 } }
       responses:
         '200':
-          description: Visible backups.
+          description: A page of visible backups plus how many match.
           content:
             application/json:
               schema:
                 type: object
-                required: [backups]
+                required: [backups, total]
                 properties:
                   backups:
                     type: array
                     items: { $ref: '#/components/schemas/BackupView' }
+                  total: { type: integer }
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -5069,21 +5080,41 @@ paths:
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: status, in: query, required: false, schema: { type: string, enum: [pending_review, approved, rejected] } }
+        - { name: query, in: query, required: false, schema: { type: string }, description: 'Part of the id, the submitter or the display name; case-insensitive' }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 20, maximum: 100 } }
+        - { name: offset, in: query, required: false, schema: { type: integer, default: 0 } }
       responses:
         '200':
           description: >-
-            The caller's submissions, newest first; rows with a linked build
-            additionally carry build_status/build_error so the submitter can see
-            whether their build succeeded or failed (and why).
+            One page of the caller's submissions, newest first; rows with a
+            linked build additionally carry build_status/build_error so the
+            submitter can see whether their build succeeded or failed (and why).
           content:
             application/json:
               schema:
                 type: object
-                required: [submissions]
+                required: [submissions, total, counts]
                 properties:
                   submissions:
                     type: array
                     items: { $ref: '#/components/schemas/Submission' }
+                  total:
+                    type: integer
+                    description: How many submissions match status and query in all.
+                  counts:
+                    type: object
+                    description: >-
+                      How many of the scope's submissions sit in each status,
+                      whatever status and query say.
+                    required: [pending_review, approved, rejected]
+                    properties:
+                      pending_review: { type: integer }
+                      approved: { type: integer }
+                      rejected: { type: integer }
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '503':
@@ -5507,18 +5538,38 @@ paths:
       x-felis-face: [external]
       x-felis-tier: admin
       security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: status, in: query, required: false, schema: { type: string, enum: [pending_review, approved, rejected] } }
+        - { name: query, in: query, required: false, schema: { type: string }, description: 'Part of the id, the submitter or the display name; case-insensitive' }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 20, maximum: 100 } }
+        - { name: offset, in: query, required: false, schema: { type: integer, default: 0 } }
       responses:
         '200':
-          description: All submissions, newest first.
+          description: One page of every user's submissions, newest first.
           content:
             application/json:
               schema:
                 type: object
-                required: [submissions]
+                required: [submissions, total, counts]
                 properties:
                   submissions:
                     type: array
                     items: { $ref: '#/components/schemas/Submission' }
+                  total:
+                    type: integer
+                    description: How many submissions match status and query in all.
+                  counts:
+                    type: object
+                    description: >-
+                      How many of the scope's submissions sit in each status,
+                      whatever status and query say.
+                    required: [pending_review, approved, rejected]
+                    properties:
+                      pending_review: { type: integer }
+                      approved: { type: integer }
+                      rejected: { type: integer }
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':

@@ -105,14 +105,16 @@ export function ImageBuildPage() {
   useEffect(() => {
     if (dialogOpen) {
       setLoadingSubmissions(true);
-      api.listSubmissions()
-        .then(setSubmissions)
+      // The newest page is what a build is picked from; a non-owner only ever
+      // sees approved rows, so the server narrows to those.
+      api.listSubmissions({ status: isOwner ? undefined : "approved", limit: 100 })
+        .then((p) => setSubmissions(p.submissions))
         .catch(() => {})
         .finally(() => {
           setLoadingSubmissions(false);
         });
     }
-  }, [dialogOpen]);
+  }, [dialogOpen, isOwner]);
 
   const handleSelectSubmission = (subId: string) => {
     if (!subId || subId.startsWith("_")) return;

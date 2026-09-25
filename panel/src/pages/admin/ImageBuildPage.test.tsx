@@ -140,7 +140,7 @@ describe("ImageBuildPage list", () => {
         close() {}
       },
     );
-    calls.listSubmissions.mockResolvedValue([]);
+    calls.listSubmissions.mockResolvedValue({ submissions: [], total: 0, counts: { pending_review: 0, approved: 0, rejected: 0 } });
     calls.listBuilds.mockResolvedValue(page([MINE], 25));
     const fresh: Build = { ...RUNNING, id: "b-new", image_ref: "registry.felis.svc:5000/fresh:1", requested_by: "owner@example.test" };
     calls.buildImage.mockResolvedValue(fresh);

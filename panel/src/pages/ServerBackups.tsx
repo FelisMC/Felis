@@ -30,6 +30,7 @@ import {
 import { PhaseBadge } from "@/components/PhaseBadge";
 import { Loading, ErrorState, EmptyState, NotYours } from "@/components/States";
 import { PageHeader } from "@/components/PageHeader";
+import { Pagination } from "@/components/Pagination";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
@@ -37,6 +38,8 @@ import { canManage, ownershipPending } from "@/lib/ownership";
 import { formatBytes, formatRelative, formatAbsolute, isExpired } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { BackupView, ServerJob } from "@/lib/types";
+
+const BACKUP_PAGE_SIZE = 20;
 
 const CELL = "whitespace-nowrap md:px-4 md:py-3.5";
 
@@ -453,7 +456,14 @@ export function ServerBackups() {
     () => (isAdmin ? Promise.resolve([]) : api.myServers()),
     [isAdmin, name],
   );
-  const backupsQ = useAsync(() => api.listBackups(), []);
+  // Only this server's backups, a page at a time; the API sorts them newest first.
+  const [page, setPage] = useState(1);
+  useEffect(() => setPage(1), [name]);
+  const backupsQ = useAsync(
+    () => api.listBackups({ server: name, limit: BACKUP_PAGE_SIZE, offset: (page - 1) * BACKUP_PAGE_SIZE }),
+    [name, page],
+    { keepPrevious: true },
+  );
 
   // Ownership resolves from /me/servers for a non-admin (status carries no `owned`).
   // While it is pending show the header with a spinner rather than flashing the list
@@ -536,13 +546,13 @@ export function ServerBackups() {
 
   const now = Date.now();
   const locale = i18n.language;
-  // The global list, narrowed to this server. Already created_at-descending from the
-  // API, but re-sorted defensively; the newest backup that is not corrupt is the
-  // one a restore with no pick recovers.
-  const all = (backupsQ.data ?? [])
-    .filter((b) => b.server_name === name)
+  // This page of the server's backups. Already created_at-descending from the API,
+  // but re-sorted defensively; the newest backup that is not corrupt is the one a
+  // restore with no pick recovers, and it sits on the first page.
+  const all = [...(backupsQ.data?.backups ?? [])]
     .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
-  const latestID = all.find((b) => !b.corrupt)?.id;
+  const total = backupsQ.data?.total ?? 0;
+  const latestID = page === 1 ? all.find((b) => !b.corrupt)?.id : undefined;
 
   const header = (
     <PageHeader
@@ -630,6 +640,10 @@ export function ServerBackups() {
                   </table>
                 </div>
               </Card>
+
+              {total > BACKUP_PAGE_SIZE && (
+                <Pagination page={page} pageSize={BACKUP_PAGE_SIZE} total={total} onChange={setPage} />
+              )}
 
               <Card className="border-dashed bg-transparent shadow-none">
                 <CardContent className="p-4 text-xs text-muted-foreground">

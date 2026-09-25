@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Upload,
@@ -43,6 +43,7 @@ import { formatRelative, formatAbsolute } from "@/lib/format";
 import type { BuildStatus, Submission, SubmissionStatus } from "@/lib/types";
 
 const PAGE_SIZE = 10;
+const SEARCH_DEBOUNCE_MS = 300;
 
 // The linked build's outcome as shown in a row's expanded details. Colors mirror
 // the admin build page; the labels are player-facing, so they come from this
@@ -77,10 +78,6 @@ export function MySubmissionsPage() {
   const locale = i18n.language;
   const now = Date.now();
 
-  // Async API hook
-  const { data, error: fetchError, loading, reload } = useAsync(() => api.listMySubmissions(), []);
-  const submissions = useMemo<Submission[]>(() => data ?? [], [data]);
-
   // Dialog State
   const [dialogOpen, setDialogOpen] = useState(false);
 
@@ -100,53 +97,50 @@ export function MySubmissionsPage() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Search & Filtering State
+  // Search & Filtering State: the server filters and pages, the search box
+  // settles for a moment before it asks.
   const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | SubmissionStatus>("all");
   const [page, setPage] = useState(1);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setQuery(search.trim());
+      setPage(1);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [search]);
 
-  // Filtered & Paginated Submissions
-  const filteredSubmissions = useMemo(() => {
-    let list = [...submissions];
+  const listMine = useCallback(
+    () =>
+      api.listMySubmissions({
+        status: statusFilter === "all" ? undefined : statusFilter,
+        query: query || undefined,
+        limit: PAGE_SIZE,
+        offset: (page - 1) * PAGE_SIZE,
+      }),
+    [statusFilter, query, page],
+  );
+  const { data, error: fetchError, loading, reload } = useAsync(listMine, [listMine], { keepPrevious: true });
+  const submissions = useMemo<Submission[]>(() => data?.submissions ?? [], [data]);
+  const matching = data?.total ?? 0;
 
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      list = list.filter(
-        (s) =>
-          s.display_name.toLowerCase().includes(q) ||
-          s.id.toLowerCase().includes(q),
-      );
-    }
-
-    if (statusFilter !== "all") {
-      list = list.filter((s) => s.status === statusFilter);
-    }
-
-    return list;
-  }, [submissions, search, statusFilter]);
-
-  // Reset page when filter changes
-  const lastFilterKey = `${search}-${statusFilter}`;
-  const [prevFilterKey, setPrevFilterKey] = useState(lastFilterKey);
-  if (prevFilterKey !== lastFilterKey) {
-    setPage(1);
-    setPrevFilterKey(lastFilterKey);
-  }
-
-  const paginatedSubmissions = useMemo(() => {
-    const start = (page - 1) * PAGE_SIZE;
-    return filteredSubmissions.slice(start, start + PAGE_SIZE);
-  }, [filteredSubmissions, page]);
-
-  // Stats
+  // The cards and filter chips count everything this player submitted, whatever is filtered.
   const stats = useMemo(() => {
-    const total = submissions.length;
-    const pending = submissions.filter((s) => s.status === "pending_review").length;
-    const approved = submissions.filter((s) => s.status === "approved").length;
-    const rejected = submissions.filter((s) => s.status === "rejected").length;
-    return { total, pending, approved, rejected };
-  }, [submissions]);
+    const c = data?.counts ?? { pending_review: 0, approved: 0, rejected: 0 };
+    return {
+      total: c.pending_review + c.approved + c.rejected,
+      pending: c.pending_review,
+      approved: c.approved,
+      rejected: c.rejected,
+    };
+  }, [data]);
+  const filtering = query !== "" || statusFilter !== "all";
+  // A withdraw can empty the last page; step back to the one that now is.
+  useEffect(() => {
+    if (data && data.submissions.length === 0 && page > 1) setPage(Math.max(1, Math.ceil(data.total / PAGE_SIZE)));
+  }, [data, page]);
 
   // Drag and drop event handlers
   const handleDrag = (e: React.DragEvent) => {
@@ -361,11 +355,11 @@ export function MySubmissionsPage() {
             <div className="py-12"><Loading /></div>
           ) : fetchError ? (
             <div className="py-12"><ErrorState error={fetchError} onRetry={reload} /></div>
-          ) : filteredSubmissions.length === 0 ? (
+          ) : submissions.length === 0 ? (
             <div className="p-4 border-b-0">
               <EmptyState
-                title={t("no_submissions_title")}
-                hint={t("no_submissions_hint")}
+                title={filtering ? t("search_no_results") : t("no_submissions_title")}
+                hint={filtering ? t("search_no_results_hint") : t("no_submissions_hint")}
               />
             </div>
           ) : (
@@ -379,7 +373,7 @@ export function MySubmissionsPage() {
 
               {/* Table Rows */}
               <div className="divide-y divide-border/60">
-                {paginatedSubmissions.map((sub) => {
+                {submissions.map((sub) => {
                   const isExpanded = expandedId === sub.id;
                   return (
                     <div key={sub.id} className="flex flex-col">
@@ -528,11 +522,11 @@ export function MySubmissionsPage() {
               </div>
 
               {/* Pagination Footer */}
-              {filteredSubmissions.length > PAGE_SIZE && (
+              {matching > PAGE_SIZE && (
                 <div className="p-4 border-t">
                   <Pagination
                     page={page}
-                    total={filteredSubmissions.length}
+                    total={matching}
                     pageSize={PAGE_SIZE}
                     onChange={setPage}
                   />

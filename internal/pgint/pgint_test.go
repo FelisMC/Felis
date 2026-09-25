@@ -1330,12 +1330,12 @@ func TestSubmitStoreContract(t *testing.T) {
 	if _, err := s.GetSubmission(ctx, "missing-"+suffix(t)); !errors.Is(err, submit.ErrNotFound) {
 		t.Fatalf("missing submission = %v, want ErrNotFound", err)
 	}
-	byUser, err := s.ListSubmissionsBy(ctx, u.ID)
+	byUser, err := s.PageSubmissions(ctx, submit.ListOpts{SubmittedBy: u.ID, Limit: submit.MaxListLimit})
 	if err != nil {
-		t.Fatalf("ListSubmissionsBy: %v", err)
+		t.Fatalf("PageSubmissions: %v", err)
 	}
-	if !containsSubmission(byUser, id) {
-		t.Fatal("ListSubmissionsBy must return the caller's submission")
+	if !containsSubmission(byUser.Submissions, id) {
+		t.Fatal("PageSubmissions must return the caller's submission")
 	}
 	if all, err := s.ListSubmissions(ctx); err != nil || !containsSubmission(all, id) {
 		t.Fatalf("ListSubmissions: (%v, %v), want the submission present", all, err)

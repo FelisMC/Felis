@@ -104,7 +104,8 @@ type fakeStore struct {
 	linkErr    error
 	deleteErr  error
 
-	linked []string // "id=buildID" recorder
+	linked   []string // "id=buildID" recorder
+	pageOpts ListOpts // the last PageSubmissions call
 
 	// beforeApprove runs between the Manager's read and its CAS, the window a
 	// concurrent re-upload lands in.
@@ -151,14 +152,19 @@ func (f *fakeStore) ListSubmissions(_ context.Context) ([]Submission, error) {
 	return out, nil
 }
 
-func (f *fakeStore) ListSubmissionsBy(_ context.Context, by string) ([]Submission, error) {
-	var out []Submission
+// PageSubmissions records the options the Manager settled on and scopes by
+// submitter; the SQL filters and paging are pgint's to prove.
+func (f *fakeStore) PageSubmissions(_ context.Context, opts ListOpts) (Page, error) {
+	f.pageOpts = opts
+	page := Page{Counts: map[Status]int{}}
 	for _, s := range f.subs {
-		if s.SubmittedBy == by {
-			out = append(out, *s)
+		if opts.SubmittedBy == "" || s.SubmittedBy == opts.SubmittedBy {
+			page.Submissions = append(page.Submissions, *s)
+			page.Counts[s.Status]++
 		}
 	}
-	return out, nil
+	page.Total = len(page.Submissions)
+	return page, nil
 }
 
 func (f *fakeStore) ApproveSubmission(_ context.Context, id, reviewedBy, imageRef, digest string, at time.Time) (bool, error) {
@@ -618,15 +624,49 @@ func TestListBy(t *testing.T) {
 	if _, err := m.Create(context.Background(), CreateRequest{DisplayName: "B", SubmittedBy: "user-2"}); err != nil {
 		t.Fatal(err)
 	}
-	mine, err := m.ListBy(context.Background(), "user-1")
+	// The scope is the argument: a SubmittedBy smuggled into opts cannot widen it.
+	mine, err := m.ListBy(context.Background(), "user-1", ListOpts{SubmittedBy: "user-2"})
 	if err != nil {
 		t.Fatalf("ListBy: %v", err)
 	}
-	if len(mine) != 1 || mine[0].SubmittedBy != "user-1" {
+	if len(mine.Submissions) != 1 || mine.Submissions[0].SubmittedBy != "user-1" || mine.Total != 1 {
 		t.Fatalf("ListBy scoped wrong: %+v", mine)
 	}
-	if _, err := m.ListBy(context.Background(), ""); !errors.Is(err, ErrInvalid) {
+	if _, err := m.ListBy(context.Background(), "", ListOpts{}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("empty submitter err = %v, want ErrInvalid", err)
+	}
+}
+
+// List is the whole lane whatever opts names, and both lists settle the page the
+// same way: a missing limit takes the default, an oversized one the cap, a
+// negative offset zero, and the query loses its padding.
+func TestListPagingOptions(t *testing.T) {
+	m, st, _ := newManager()
+	for _, by := range []string{"user-1", "user-2"} {
+		if _, err := m.Create(context.Background(), CreateRequest{DisplayName: "P", SubmittedBy: by}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	all, err := m.List(context.Background(), ListOpts{SubmittedBy: "user-1", Query: "  pack  ", Offset: -5})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if all.Total != 2 {
+		t.Fatalf("List total = %d, want 2 (the admin queue ignores a submitter in opts)", all.Total)
+	}
+	want := ListOpts{Query: "pack", Limit: 20, Offset: 0}
+	if st.pageOpts != want {
+		t.Fatalf("List settled %+v, want %+v", st.pageOpts, want)
+	}
+	if _, err := m.ListBy(context.Background(), "user-2", ListOpts{Limit: 5000, Offset: 40, Status: StatusApproved}); err != nil {
+		t.Fatalf("ListBy: %v", err)
+	}
+	want = ListOpts{SubmittedBy: "user-2", Status: StatusApproved, Limit: 100, Offset: 40}
+	if st.pageOpts != want {
+		t.Fatalf("ListBy settled %+v, want %+v", st.pageOpts, want)
+	}
+	if _, err := m.List(context.Background(), ListOpts{Status: "building"}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unknown status err = %v, want ErrInvalid", err)
 	}
 }
 

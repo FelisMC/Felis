@@ -34,6 +34,9 @@ type fakeSubmissions struct {
 	byErr       error
 	listed      []submit.Submission
 	listErr     error
+	listOpts    submit.ListOpts // the last List or ListBy options
+	pageTotal   int
+	pageCounts  map[submit.Status]int
 	approvedID  string
 	approvedBy  string
 	approveErr  error
@@ -74,13 +77,14 @@ func (f *fakeSubmissions) UploadContext(_ context.Context, id, submittedBy strin
 	return &submit.Submission{ID: id, SubmittedBy: submittedBy, Status: submit.StatusPendingReview}, nil
 }
 
-func (f *fakeSubmissions) ListBy(_ context.Context, submittedBy string) ([]submit.Submission, error) {
-	f.listedBy = submittedBy
-	return f.byResult, f.byErr
+func (f *fakeSubmissions) ListBy(_ context.Context, submittedBy string, opts submit.ListOpts) (submit.Page, error) {
+	f.listedBy, f.listOpts = submittedBy, opts
+	return submit.Page{Submissions: f.byResult, Total: f.pageTotal, Counts: f.pageCounts}, f.byErr
 }
 
-func (f *fakeSubmissions) List(_ context.Context) ([]submit.Submission, error) {
-	return f.listed, f.listErr
+func (f *fakeSubmissions) List(_ context.Context, opts submit.ListOpts) (submit.Page, error) {
+	f.listOpts = opts
+	return submit.Page{Submissions: f.listed, Total: f.pageTotal, Counts: f.pageCounts}, f.listErr
 }
 
 func (f *fakeSubmissions) Approve(_ context.Context, id, reviewedBy, expectedDigest string) (*submit.Submission, error) {
@@ -353,12 +357,14 @@ func TestMySubmissionsScopesToPrincipal(t *testing.T) {
 	if fs.listedBy != "user-7" {
 		t.Errorf("ListBy scoped to %q, want the principal id user-7", fs.listedBy)
 	}
-	var got map[string][]submit.Submission
+	var got struct {
+		Submissions []submit.Submission `json:"submissions"`
+	}
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("body not JSON: %v", err)
 	}
-	if len(got["submissions"]) != 1 {
-		t.Fatalf("submissions = %d, want 1", len(got["submissions"]))
+	if len(got.Submissions) != 1 {
+		t.Fatalf("submissions = %d, want 1", len(got.Submissions))
 	}
 }
 
@@ -424,6 +430,104 @@ func TestMySubmissionsBuildLookupSemantics(t *testing.T) {
 	}
 }
 
+// Both lists forward the page the panel asked for and answer with the match total
+// and every status count — zero included, so a summary card never reads a missing
+// key. A number that does not parse reads as absent (the submit layer then applies
+// its default); the scope never comes from the query string.
+func TestSubmissionListsForwardThePage(t *testing.T) {
+	fs := &fakeSubmissions{
+		listed:     []submit.Submission{{ID: "sub-1", Status: submit.StatusApproved}},
+		pageTotal:  41,
+		pageCounts: map[submit.Status]int{submit.StatusApproved: 30, submit.StatusPendingReview: 11},
+	}
+	w := do(adminSubAPI(fs).ExternalHandler(), "GET",
+		"/api/v1/submissions?status=approved&query=pack&limit=5&offset=10", "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	want := submit.ListOpts{Status: "approved", Query: "pack", Limit: 5, Offset: 10}
+	if fs.listOpts != want {
+		t.Fatalf("admin list forwarded %+v, want %+v", fs.listOpts, want)
+	}
+	var got struct {
+		Submissions []submit.Submission `json:"submissions"`
+		Total       int                 `json:"total"`
+		Counts      map[string]int      `json:"counts"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body not JSON: %v", err)
+	}
+	if len(got.Submissions) != 1 || got.Total != 41 {
+		t.Fatalf("page = %d rows, total %d; want 1 row, total 41", len(got.Submissions), got.Total)
+	}
+	wantCounts := map[string]int{"pending_review": 11, "approved": 30, "rejected": 0}
+	if len(got.Counts) != 3 || got.Counts["pending_review"] != 11 || got.Counts["approved"] != 30 {
+		t.Fatalf("counts = %v, want %v", got.Counts, wantCounts)
+	}
+	if n, ok := got.Counts["rejected"]; !ok || n != 0 {
+		t.Fatalf("counts = %v, want rejected present as 0", got.Counts)
+	}
+
+	fs = &fakeSubmissions{}
+	w = do(appSubAPI(fs).ExternalHandler(), "GET", "/api/v1/me/submissions?limit=many&offset=3&status=rejected", "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("mine: code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	want = submit.ListOpts{Status: "rejected", Offset: 3}
+	if fs.listOpts != want || fs.listedBy != "user-7" {
+		t.Fatalf("mine forwarded %+v for %q, want %+v for user-7", fs.listOpts, fs.listedBy, want)
+	}
+	if !strings.Contains(w.Body.String(), `"submissions":[]`) {
+		t.Fatalf("an empty page must render an empty array: %s", w.Body.String())
+	}
+}
+
+// A page's build outcomes come from one lookup naming every linked build; a page
+// with no linked build asks nothing.
+func TestSubmissionPageLooksUpBuildsOnce(t *testing.T) {
+	fs := &fakeSubmissions{listed: []submit.Submission{
+		{ID: "sub-1", BuildID: "bld-1"},
+		{ID: "sub-2"},
+		{ID: "sub-3", BuildID: "bld-3"},
+	}}
+	fb := &fakeBuilder{getBuilds: map[string]*build.Build{
+		"bld-1": {ID: "bld-1", Status: build.StatusSucceeded},
+		"bld-3": {ID: "bld-3", Status: build.StatusFailed, Error: "scan found a CRITICAL CVE"},
+	}}
+	api := adminSubAPI(fs)
+	api.Builder = fb
+	w := do(api.ExternalHandler(), "GET", "/api/v1/submissions", "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	if len(fb.getManyIDs) != 1 || strings.Join(fb.getManyIDs[0], ",") != "bld-1,bld-3" {
+		t.Fatalf("build lookups = %v, want one naming bld-1,bld-3", fb.getManyIDs)
+	}
+	var got struct {
+		Submissions []struct {
+			ID          string `json:"id"`
+			BuildStatus string `json:"build_status"`
+			BuildError  string `json:"build_error"`
+		} `json:"submissions"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body not JSON: %v", err)
+	}
+	if got.Submissions[0].BuildStatus != "succeeded" || got.Submissions[1].BuildStatus != "" ||
+		got.Submissions[2].BuildStatus != "failed" || got.Submissions[2].BuildError != "scan found a CRITICAL CVE" {
+		t.Fatalf("outcomes = %+v", got.Submissions)
+	}
+
+	fs.listed = []submit.Submission{{ID: "sub-2"}}
+	fb.getManyIDs = nil
+	if w := do(api.ExternalHandler(), "GET", "/api/v1/submissions", "", nil); w.Code != http.StatusOK {
+		t.Fatalf("unlinked page: code = %d", w.Code)
+	}
+	if len(fb.getManyIDs) != 0 {
+		t.Fatalf("a page with no linked build looked up %v", fb.getManyIDs)
+	}
+}
+
 // Every /submissions route is admin-tier: a plain user is rejected before the
 // handler runs.
 func TestSubmissionAdminRoutesAreAdminOnly(t *testing.T) {
@@ -460,12 +564,14 @@ func TestListSubmissionsAdmin(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
 	}
-	var got map[string][]submit.Submission
+	var got struct {
+		Submissions []submit.Submission `json:"submissions"`
+	}
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("body not JSON: %v", err)
 	}
-	if len(got["submissions"]) != 2 {
-		t.Fatalf("submissions = %d, want 2", len(got["submissions"]))
+	if len(got.Submissions) != 2 {
+		t.Fatalf("submissions = %d, want 2", len(got.Submissions))
 	}
 	// The admin queue carries the same build outcome enrichment.
 	if !strings.Contains(w.Body.String(), `"build_status":"succeeded"`) {

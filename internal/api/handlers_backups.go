@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,17 +30,39 @@ func errNoWorldVolume() error {
 // query runs (AllBackups vs BackupsForUser) — there is no client-supplied filter
 // a user could widen, so "a user cannot see another's backups" is a property of
 // the query, not of request parsing.
+//
+// What the request may choose is the page: ?server= narrows the list to one
+// server (inside the caller's scope, never beyond it), ?limit= and ?offset= page
+// it, and the answer carries how many match in all.
 func (a *API) handleListBackups(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
+	q := r.URL.Query()
+	opts := BackupListOpts{Server: q.Get("server")}
+	// Format only: a system server's reserved name is still a server whose
+	// backups an admin may list.
+	if opts.Server != "" {
+		if err := naming.ValidateSystemServerName(opts.Server); err != nil {
+			writeError(w, r, newError(http.StatusBadRequest, "bad_name", "invalid server name: %v", err))
+			return
+		}
+	}
+	opts.Limit, _ = strconv.Atoi(q.Get("limit"))
+	opts.Offset, _ = strconv.Atoi(q.Get("offset"))
+	if opts.Limit <= 0 {
+		opts.Limit = DefaultBackupListLimit
+	}
+	opts.Limit = min(opts.Limit, MaxBackupListLimit)
+	opts.Offset = max(opts.Offset, 0)
 
 	var (
 		backups []BackupView
+		total   int
 		err     error
 	)
 	if p.IsAdmin() {
-		backups, err = a.Repo.AllBackups(r.Context())
+		backups, total, err = a.Repo.AllBackups(r.Context(), opts)
 	} else {
-		backups, err = a.Repo.BackupsForUser(r.Context(), p.UserID)
+		backups, total, err = a.Repo.BackupsForUser(r.Context(), p.UserID, opts)
 	}
 	if err != nil {
 		writeError(w, r, err)
@@ -48,7 +71,7 @@ func (a *API) handleListBackups(w http.ResponseWriter, r *http.Request) {
 	if backups == nil {
 		backups = []BackupView{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"backups": backups})
+	writeJSON(w, http.StatusOK, map[string]any{"backups": backups, "total": total})
 }
 
 // handleRestoreBackup starts restoring a server's world from a backup (spec §7

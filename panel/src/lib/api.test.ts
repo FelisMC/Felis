@@ -487,15 +487,24 @@ describe("image whitelist and builds wire shapes", () => {
   });
 
   describe("submissions", () => {
-    it("listSubmissions GETs from /submissions", async () => {
+    it("listSubmissions GETs a page from /submissions", async () => {
       const submissions = [{ id: "sub-1", display_name: "test", status: "pending_review" }];
-      const fetchSpy = fakeFetch({ submissions });
+      const fetchSpy = fakeFetch({ submissions, total: 31, counts: { pending_review: 4, approved: 27, rejected: 0 } });
       vi.stubGlobal("fetch", fetchSpy);
       const res = await api.listSubmissions();
-      expect(res).toEqual(submissions);
+      expect(res).toEqual({ submissions, total: 31, counts: { pending_review: 4, approved: 27, rejected: 0 } });
       const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
       expect(String(url)).toBe("/submissions");
       expect((opts as RequestInit).method).toBe("GET");
+    });
+
+    it("listSubmissions puts the filter and page on the query string", async () => {
+      const fetchSpy = fakeFetch({ submissions: [], total: 0, counts: {} });
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.listSubmissions({ status: "approved", query: "sky block", limit: 10, offset: 20 });
+      expect(res).toEqual({ submissions: [], total: 0, counts: { pending_review: 0, approved: 0, rejected: 0 } });
+      const [url] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toBe("/submissions?status=approved&query=sky+block&limit=10&offset=20");
     });
 
     it("approveSubmission POSTs to /submissions/{id}/approve", async () => {
@@ -544,14 +553,14 @@ describe("image whitelist and builds wire shapes", () => {
       expect(JSON.parse((opts as RequestInit).body as string)).toEqual({ reason: "bad" });
     });
 
-    it("listMySubmissions GETs from /me/submissions", async () => {
+    it("listMySubmissions GETs a page from /me/submissions", async () => {
       const submissions = [{ id: "sub-2", display_name: "my test", status: "pending_review" }];
-      const fetchSpy = fakeFetch({ submissions });
+      const fetchSpy = fakeFetch({ submissions, total: 1, counts: { pending_review: 1, approved: 0, rejected: 2 } });
       vi.stubGlobal("fetch", fetchSpy);
-      const res = await api.listMySubmissions();
-      expect(res).toEqual(submissions);
+      const res = await api.listMySubmissions({ status: "rejected", offset: 10 });
+      expect(res).toEqual({ submissions, total: 1, counts: { pending_review: 1, approved: 0, rejected: 2 } });
       const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
-      expect(String(url)).toBe("/me/submissions");
+      expect(String(url)).toBe("/me/submissions?status=rejected&offset=10");
       expect((opts as RequestInit).method).toBe("GET");
     });
 
@@ -661,6 +670,26 @@ describe("image whitelist and builds wire shapes", () => {
       expect(String(url)).toBe("/servers/survival/backup");
       expect((opts as RequestInit).method).toBe("POST");
       expect((opts as RequestInit).body).toBeUndefined();
+    });
+
+    it("listBackups asks for one server's page and keeps the total", async () => {
+      const backup = { id: "bk1", server_name: "survival", status: "present", created_at: "2026-09-01T00:00:00Z" };
+      const fetchSpy = fakeFetch({ backups: [backup], total: 45 });
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.listBackups({ server: "survival", limit: 20, offset: 40 });
+      expect(res).toEqual({ backups: [backup], total: 45 });
+      const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toBe("/backups?server=survival&limit=20&offset=40");
+      expect((opts as RequestInit).method).toBe("GET");
+    });
+
+    it("listBackups with no filter reads /backups and fills an empty page", async () => {
+      const fetchSpy = fakeFetch({});
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.listBackups();
+      expect(res).toEqual({ backups: [], total: 0 });
+      const [url] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toBe("/backups");
     });
 
     it("restoreBackup sends backup_id, and safety_snapshot only when turned off", async () => {

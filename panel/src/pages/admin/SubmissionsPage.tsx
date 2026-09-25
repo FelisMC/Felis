@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ClipboardCheck, CheckCircle2, CircleSlash, ChevronDown, ChevronUp, Check, X, Loader2, Download, Trash2, ShieldCheck, TriangleAlert } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
@@ -27,14 +27,12 @@ import { formatRelative, formatAbsolute } from "@/lib/format";
 import type { ApiError, Submission, SubmissionStatus } from "@/lib/types";
 
 const PAGE_SIZE = 10;
+const SEARCH_DEBOUNCE_MS = 300;
 
 export function SubmissionsPage() {
   const { t, i18n } = useTranslation("admin");
   const locale = i18n.language;
   const now = Date.now();
-
-  const { data, error, loading, reload } = useAsync(() => api.listSubmissions(), []);
-  const submissions = useMemo<Submission[]>(() => data ?? [], [data]);
 
   // Dialog State
   const [rejectDialogOpen, setRejectDialogOpen] = useState(false);
@@ -54,56 +52,51 @@ export function SubmissionsPage() {
   // one stray click would take its uploaded context with it.
   const [confirmingDelete, setConfirmingDelete] = useState<string | null>(null);
 
-  // Search & Filtering State
+  // Search, filter and paging all run on the server: the queue can hold any
+  // number of uploads, so the page reads one screenful and the counts beside it.
+  // The search goes out a moment after typing stops and starts from page one.
   const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | SubmissionStatus>("all");
   const [page, setPage] = useState(1);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setQuery(search.trim());
+      setPage(1);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [search]);
 
-  // Stats
+  const listSubmissions = useCallback(
+    () =>
+      api.listSubmissions({
+        status: statusFilter === "all" ? undefined : statusFilter,
+        query: query || undefined,
+        limit: PAGE_SIZE,
+        offset: (page - 1) * PAGE_SIZE,
+      }),
+    [statusFilter, query, page],
+  );
+  const { data, error, loading, reload } = useAsync(listSubmissions, [listSubmissions], { keepPrevious: true });
+  const submissions = useMemo<Submission[]>(() => data?.submissions ?? [], [data]);
+  const matching = data?.total ?? 0;
+
+  // The cards and filter chips count the whole queue, whatever is filtered.
   const stats = useMemo(() => {
-    const total = submissions.length;
-    const pending = submissions.filter((s) => s.status === "pending_review").length;
-    const approved = submissions.filter((s) => s.status === "approved").length;
-    const rejected = submissions.filter((s) => s.status === "rejected").length;
-    return { total, pending, approved, rejected };
-  }, [submissions]);
-
-  // Filtered & Paginated Submissions
-  const filteredSubmissions = useMemo(() => {
-    let list = [...submissions];
-
-    // 1. Search Filter
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      list = list.filter(
-        (s) =>
-          s.display_name.toLowerCase().includes(q) ||
-          s.submitted_by.toLowerCase().includes(q) ||
-          s.id.toLowerCase().includes(q),
-      );
-    }
-
-    // 2. Status Filter
-    if (statusFilter !== "all") {
-      list = list.filter((s) => s.status === statusFilter);
-    }
-
-    return list;
-  }, [submissions, search, statusFilter]);
-
-  // Reset page when filter changes
-  const lastFilterKey = `${search}-${statusFilter}`;
-  const [prevFilterKey, setPrevFilterKey] = useState(lastFilterKey);
-  if (prevFilterKey !== lastFilterKey) {
-    setPage(1);
-    setPrevFilterKey(lastFilterKey);
-  }
-
-  const paginatedSubmissions = useMemo(() => {
-    const start = (page - 1) * PAGE_SIZE;
-    return filteredSubmissions.slice(start, start + PAGE_SIZE);
-  }, [filteredSubmissions, page]);
+    const c = data?.counts ?? { pending_review: 0, approved: 0, rejected: 0 };
+    return {
+      total: c.pending_review + c.approved + c.rejected,
+      pending: c.pending_review,
+      approved: c.approved,
+      rejected: c.rejected,
+    };
+  }, [data]);
+  const filtering = query !== "" || statusFilter !== "all";
+  // A review or delete can empty the last page; step back to the one that now is.
+  useEffect(() => {
+    if (data && data.submissions.length === 0 && page > 1) setPage(Math.max(1, Math.ceil(data.total / PAGE_SIZE)));
+  }, [data, page]);
 
   async function handleApprove(sub: Submission) {
     const digest = reviewedDigests[sub.id] ?? sub.context_sha256;
@@ -283,11 +276,11 @@ export function SubmissionsPage() {
             <div className="py-12"><Loading /></div>
           ) : error ? (
             <div className="py-12"><ErrorState error={error} onRetry={reload} /></div>
-          ) : filteredSubmissions.length === 0 ? (
+          ) : submissions.length === 0 ? (
             <div className="p-4 border-b-0">
               <EmptyState
-                title={search.trim() || statusFilter !== "all" ? t("search_no_results") : t("no_submissions_title")}
-                hint={search.trim() || statusFilter !== "all" ? t("search_no_results_hint") : t("no_submissions_hint")}
+                title={filtering ? t("search_no_results") : t("no_submissions_title")}
+                hint={filtering ? t("search_no_results_hint") : t("no_submissions_hint")}
               />
             </div>
           ) : (
@@ -303,7 +296,7 @@ export function SubmissionsPage() {
 
               {/* Table Body */}
               <div className="divide-y divide-border select-text">
-                {paginatedSubmissions.map((sub) => {
+                {submissions.map((sub) => {
                   const isExpanded = expandedId === sub.id;
                   const isBusyApprove = busyId === sub.id && busyType === "approve";
                   const isBusyReject = busyId === sub.id && busyType === "reject";
@@ -511,12 +504,12 @@ export function SubmissionsPage() {
               </div>
 
               {/* Pagination */}
-              {filteredSubmissions.length > PAGE_SIZE && (
+              {matching > PAGE_SIZE && (
                 <div className="p-4 border-t">
                   <Pagination
                     page={page}
                     pageSize={PAGE_SIZE}
-                    total={filteredSubmissions.length}
+                    total={matching}
                     onChange={setPage}
                   />
                 </div>

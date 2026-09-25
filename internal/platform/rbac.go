@@ -87,8 +87,11 @@ func ControlPlaneRBAC(p Params) RBAC {
 // follow). It also Gets the world PVC before backup/restore
 // (internal/api.k8scluster.WorldVolumeExists) so a never-started or reaped
 // world is refused up front instead of leaving a Job Pending on a missing
-// claim. felis-api uses a DIRECT client, so it needs no list/watch beyond the
-// explicit List calls — and the PVC grant is get-only, mirroring that.
+// claim. felis-api reads the fleet (velocity's pull, the fleet page, the wake
+// cap) from an informer cache of minecraftservers, hence watch on that one
+// resource; everything else goes through a DIRECT client, so it needs no
+// list/watch beyond the explicit List calls — and the PVC grant is get-only,
+// mirroring that.
 //
 // The read-side grant is deliberately minimal: pods:list + pods/log:get, NOT
 // pods:get — the streamer lists pods by the server label then reads the chosen
@@ -98,7 +101,7 @@ func ControlPlaneRBAC(p Params) RBAC {
 func APIMinecraftRole(p Params) *rbacv1.Role {
 	p = p.withDefaults()
 	return role(p.MinecraftNamespace, "felis-api", ComponentAPI, []rbacv1.PolicyRule{
-		rule([]string{groupFelis}, []string{"minecraftservers"}, []string{"get", "list", "create", "patch"}),
+		rule([]string{groupFelis}, []string{"minecraftservers"}, []string{"get", "list", "watch", "create", "patch"}),
 		rule([]string{groupCore}, []string{"secrets"}, []string{"get"}),
 		// get-only: WorldVolumeExists does a single direct Get of the world PVC;
 		// nothing in felis-api lists or deletes PVCs.

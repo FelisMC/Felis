@@ -17,11 +17,12 @@ import (
 // admin-tier (Zero Trust), enforced by adminOnly before these handlers run.
 type ImageBuilder interface {
 	Submit(ctx context.Context, req build.Request) (*build.Build, error)
-	// Get reads one build row without reconciling it — the read-only lookup the
-	// submission views use to surface a build's outcome to its submitter (the
-	// /images/build routes are admin-tier). State advance belongs to the
-	// reconcile loop (Sync/SyncAll), so a list render never touches the cluster.
-	Get(ctx context.Context, id string) (*build.Build, error)
+	// GetMany reads the build rows among ids without reconciling them, keyed by
+	// id — the one read-only lookup a submission list makes to surface each
+	// build's outcome to its submitter (the /images/build routes are admin-tier).
+	// State advance belongs to the reconcile loop (Sync/SyncAll), so a list render
+	// never touches the cluster. An id with no row is absent from the map.
+	GetMany(ctx context.Context, ids []string) (map[string]build.Build, error)
 	// Sync reconciles a build against its Job and returns the current view, so a
 	// GET doubles as the reconcile tick (idempotent on terminal builds).
 	Sync(ctx context.Context, id string) (*build.Build, error)

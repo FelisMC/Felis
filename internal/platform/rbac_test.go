@@ -107,7 +107,8 @@ func TestAPIRole_CreatesJobsInBothNamespaces(t *testing.T) {
 // what it must NOT have: no status writes, no delete.
 func TestAPIRole_MinecraftPowersExact(t *testing.T) {
 	mc := roleByName(t, ControlPlaneRBAC(testParams()).Roles, "felis-api")
-	for _, v := range []string{"get", "list", "create", "patch"} {
+	// watch backs the informer cache the fleet reads come from.
+	for _, v := range []string{"get", "list", "watch", "create", "patch"} {
 		if !hasRule(mc, groupFelis, "minecraftservers", v) {
 			t.Errorf("felis-api must have minecraftservers:%s", v)
 		}
@@ -120,6 +121,11 @@ func TestAPIRole_MinecraftPowersExact(t *testing.T) {
 	}
 	if !hasRule(mc, groupCore, "secrets", "get") {
 		t.Error("felis-api must read RCON secrets (secrets:get) for console writes")
+	}
+	// The informer cache covers minecraftservers only; RCON secrets stay a direct
+	// Get by name, so no watch or list ever mirrors every secret into felis-api.
+	if hasRule(mc, groupCore, "secrets", "list") || hasRule(mc, groupCore, "secrets", "watch") {
+		t.Error("felis-api must NOT list or watch secrets (RCON reads are a direct Get by name)")
 	}
 	// WorldVolumeExists (backup/restore pre-gate) does a single direct PVC Get;
 	// nothing in felis-api lists or deletes claims.

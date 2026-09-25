@@ -23,11 +23,36 @@ import (
 // — the app-tier desiredState lever, the admin-tier create, and the admin-tier
 // spec patch — each via a merge patch. It is integration-tested against a live
 // cluster, not the hermetic api_test.go suite.
+//
+// The fleet-wide reads (ListServers, GetBySubdomain) come from servers, an
+// informer cache of MinecraftServers, when one is wired (WithServerCache): velocity's
+// registration pull, the fleet page and every wake's running-cap count would each
+// be a full List against the apiserver otherwise. Everything that reads one server
+// to act on it — GetServer, and the read-modify-write behind every patch — stays on
+// the direct client c, so a write never works from a copy the watch has not caught
+// up with yet.
 type K8sCluster struct {
 	c         client.Client
 	namespace string
+	// servers serves the fleet-wide reads; nil means c.
+	servers client.Reader
+	// synced reports whether servers has its first full list; nil means no cache.
+	synced func() bool
 	// now is injectable for the maintenance-lock tests; nil means time.Now.
 	now func() time.Time
+}
+
+// SubdomainIndex is the field index GetBySubdomain matches on in the server cache.
+// The cache must register it with SubdomainOf.
+const SubdomainIndex = "spec.subdomain"
+
+// SubdomainOf is the SubdomainIndex extractor.
+func SubdomainOf(o client.Object) []string {
+	ms, ok := o.(*v1alpha1.MinecraftServer)
+	if !ok || ms.Spec.Subdomain == "" {
+		return nil
+	}
+	return []string{ms.Spec.Subdomain}
 }
 
 // NewK8sCluster builds a Cluster over c, scoped to namespace.
@@ -35,7 +60,27 @@ func NewK8sCluster(c client.Client, namespace string) *K8sCluster {
 	return &K8sCluster{c: c, namespace: namespace}
 }
 
+// WithServerCache serves ListServers and GetBySubdomain from servers, an informer
+// cache of MinecraftServers in the namespace that indexes SubdomainIndex. synced
+// reports whether its first list has landed; Ping fails until it has.
+func (k *K8sCluster) WithServerCache(servers client.Reader, synced func() bool) *K8sCluster {
+	k.servers, k.synced = servers, synced
+	return k
+}
+
+func (k *K8sCluster) fleet() client.Reader {
+	if k.servers != nil {
+		return k.servers
+	}
+	return k.c
+}
+
+// Ping checks the apiserver with a one-item list on the direct client and, when a
+// server cache is wired, that its informer has synced.
 func (k *K8sCluster) Ping(ctx context.Context) error {
+	if k.synced != nil && !k.synced() {
+		return errors.New("MinecraftServer cache has not synced")
+	}
 	var list v1alpha1.MinecraftServerList
 	return k.c.List(ctx, &list, client.InNamespace(k.namespace), client.Limit(1))
 }
@@ -87,9 +132,16 @@ func (k *K8sCluster) PodImages(ctx context.Context) ([]string, error) {
 	return images, nil
 }
 
+// GetBySubdomain looks the subdomain up in the cache's index. Without a cache it
+// lists the namespace, since a CRD field selector is not something the apiserver
+// serves.
 func (k *K8sCluster) GetBySubdomain(ctx context.Context, subdomain string) (*ServerInfo, error) {
 	var list v1alpha1.MinecraftServerList
-	if err := k.c.List(ctx, &list, client.InNamespace(k.namespace)); err != nil {
+	opts := []client.ListOption{client.InNamespace(k.namespace)}
+	if k.servers != nil {
+		opts = append(opts, client.MatchingFields{SubdomainIndex: subdomain})
+	}
+	if err := k.fleet().List(ctx, &list, opts...); err != nil {
 		return nil, err
 	}
 	for i := range list.Items {
@@ -102,7 +154,7 @@ func (k *K8sCluster) GetBySubdomain(ctx context.Context, subdomain string) (*Ser
 
 func (k *K8sCluster) ListServers(ctx context.Context) ([]ServerInfo, error) {
 	var list v1alpha1.MinecraftServerList
-	if err := k.c.List(ctx, &list, client.InNamespace(k.namespace)); err != nil {
+	if err := k.fleet().List(ctx, &list, client.InNamespace(k.namespace)); err != nil {
 		return nil, err
 	}
 	out := make([]ServerInfo, 0, len(list.Items))

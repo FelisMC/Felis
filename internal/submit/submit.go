@@ -210,6 +210,34 @@ type Submission struct {
 	ContextSHA256 string `json:"context_sha256,omitempty"`
 }
 
+// ListOpts selects a page of submissions, newest first. SubmittedBy scopes it to
+// one user (the "my uploads" view); empty is the admin queue across all users.
+// Status matches exactly; Query matches any part of the id, the submitter or the
+// display name, ignoring case. Empty filters match everything.
+type ListOpts struct {
+	SubmittedBy string
+	Status      Status
+	Query       string
+	Limit       int
+	Offset      int
+}
+
+// Page is one page of submissions plus what a list header shows: Total is how
+// many match the filters in all (for the pager), Counts how many of the scope's
+// submissions sit in each status regardless of Status and Query (for the summary
+// cards, which must not shrink as the reviewer narrows the list).
+type Page struct {
+	Submissions []Submission
+	Total       int
+	Counts      map[Status]int
+}
+
+// DefaultListLimit and MaxListLimit bound one page of submissions.
+const (
+	DefaultListLimit = 20
+	MaxListLimit     = 100
+)
+
 // Store is the business-layer persistence the Manager depends on. It is an
 // interface so the Manager is tested against an in-memory fake; the Postgres
 // implementation (PGStore) is integration-tested only.
@@ -222,10 +250,13 @@ type Store interface {
 	CreateSubmission(ctx context.Context, s *Submission, maxPending int) (int, error)
 	// GetSubmission loads one submission, or ErrNotFound.
 	GetSubmission(ctx context.Context, id string) (*Submission, error)
-	// ListSubmissions returns every submission, newest first (admin queue).
+	// ListSubmissions returns every submission, newest first — the full scan the
+	// storage budget and the rejected-blob reaper need. Lists shown to a person
+	// go through PageSubmissions.
 	ListSubmissions(ctx context.Context) ([]Submission, error)
-	// ListSubmissionsBy returns one user's submissions, newest first.
-	ListSubmissionsBy(ctx context.Context, submittedBy string) ([]Submission, error)
+	// PageSubmissions returns one page of submissions, newest first, with the
+	// match total and the scope's per-status counts (see Page).
+	PageSubmissions(ctx context.Context, opts ListOpts) (Page, error)
 	// ApproveSubmission atomically flips pending_review -> approved, recording the
 	// derived image_ref, the reviewer and reviewed_at. It reports whether THIS
 	// call won the transition: false means a concurrent review already moved the
@@ -951,17 +982,36 @@ func (m *Manager) deleteBlob(ctx context.Context, id string) error {
 	return nil
 }
 
-// List returns every submission, newest first (the admin review queue).
-func (m *Manager) List(ctx context.Context) ([]Submission, error) {
-	return m.Store.ListSubmissions(ctx)
+// List returns one page of every user's submissions, newest first (the admin
+// review queue). opts.SubmittedBy is ignored: the queue is the whole lane.
+func (m *Manager) List(ctx context.Context, opts ListOpts) (Page, error) {
+	opts.SubmittedBy = ""
+	return m.page(ctx, opts)
 }
 
-// ListBy returns one user's submissions, newest first (the "my uploads" view).
-func (m *Manager) ListBy(ctx context.Context, submittedBy string) ([]Submission, error) {
+// ListBy returns one page of one user's submissions, newest first (the "my
+// uploads" view). The scope is the submittedBy argument, never opts.
+func (m *Manager) ListBy(ctx context.Context, submittedBy string, opts ListOpts) (Page, error) {
 	if strings.TrimSpace(submittedBy) == "" {
-		return nil, invalidf("submitter identity is required")
+		return Page{}, invalidf("submitter identity is required")
 	}
-	return m.Store.ListSubmissionsBy(ctx, submittedBy)
+	opts.SubmittedBy = submittedBy
+	return m.page(ctx, opts)
+}
+
+func (m *Manager) page(ctx context.Context, opts ListOpts) (Page, error) {
+	switch opts.Status {
+	case "", StatusPendingReview, StatusApproved, StatusRejected:
+	default:
+		return Page{}, invalidf("unknown status %q", opts.Status)
+	}
+	opts.Query = strings.TrimSpace(opts.Query)
+	if opts.Limit <= 0 {
+		opts.Limit = DefaultListLimit
+	}
+	opts.Limit = min(opts.Limit, MaxListLimit)
+	opts.Offset = max(opts.Offset, 0)
+	return m.Store.PageSubmissions(ctx, opts)
 }
 
 // Compile-time proof that the production build subsystem satisfies Builds.

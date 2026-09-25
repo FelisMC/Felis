@@ -63,7 +63,8 @@ type fakeRepo struct {
 	// the value copied from the consumed code at verify (migration 0005).
 	linkAuthSource map[string]string
 	// world backups (spec §7, §22). A nil slice lists empty.
-	backups []fakeBackup
+	backups        []fakeBackup
+	backupListOpts BackupListOpts // the last AllBackups or BackupsForUser options
 	// session auth (spec §B, passwordless). staff is keyed by username (the login key);
 	// sessions by token_hash; settings by key. They mirror the PG contract so the
 	// hermetic tests exercise the same fail-closed semantics the integration impl
@@ -912,23 +913,31 @@ func (f *fakeRepo) BackupStoreBytes(context.Context) (int64, error) {
 // the hermetic tests can't pass against a too-lenient fake: only status='present'
 // rows are visible, the user scope is the former_owner column, and LatestBackup
 // is the newest present row for a server (or ErrNotFound).
-func (f *fakeRepo) AllBackups(_ context.Context) ([]BackupView, error) {
-	var out []BackupView
-	for _, b := range f.backups {
-		if b.view.Status == "present" {
-			out = append(out, b.view)
-		}
-	}
-	return out, nil
+func (f *fakeRepo) AllBackups(_ context.Context, opts BackupListOpts) ([]BackupView, int, error) {
+	return f.pageBackups("", opts)
 }
-func (f *fakeRepo) BackupsForUser(_ context.Context, userID string) ([]BackupView, error) {
-	var out []BackupView
+func (f *fakeRepo) BackupsForUser(_ context.Context, userID string, opts BackupListOpts) ([]BackupView, int, error) {
+	if userID == "" { // an empty id is no former owner; "" below means every owner
+		return nil, 0, nil
+	}
+	return f.pageBackups(userID, opts)
+}
+
+// pageBackups filters like the PG query (present, in scope, on the server) and
+// pages newest first, recording the options it was asked for.
+func (f *fakeRepo) pageBackups(owner string, opts BackupListOpts) ([]BackupView, int, error) {
+	f.backupListOpts = opts
+	var match []BackupView
 	for _, b := range f.backups {
-		if b.view.Status == "present" && b.view.FormerOwner == userID {
-			out = append(out, b.view)
+		if b.view.Status == "present" && (owner == "" || b.view.FormerOwner == owner) &&
+			(opts.Server == "" || b.view.ServerName == opts.Server) {
+			match = append(match, b.view)
 		}
 	}
-	return out, nil
+	sort.SliceStable(match, func(i, j int) bool { return match[i].CreatedAt.After(match[j].CreatedAt) })
+	lo := min(opts.Offset, len(match))
+	hi := min(lo+opts.Limit, len(match))
+	return match[lo:hi], len(match), nil
 }
 func (f *fakeRepo) LatestBackup(_ context.Context, serverName string) (*BackupRecord, error) {
 	var latest *fakeBackup

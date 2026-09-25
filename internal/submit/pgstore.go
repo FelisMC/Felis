@@ -73,10 +73,39 @@ func (s *PGStore) ListSubmissions(ctx context.Context) ([]Submission, error) {
 	return s.querySubmissions(ctx, q)
 }
 
-func (s *PGStore) ListSubmissionsBy(ctx context.Context, submittedBy string) ([]Submission, error) {
-	const q = `SELECT ` + submissionColumns + `
-		FROM image_submissions WHERE submitted_by = $1 ORDER BY created_at DESC`
-	return s.querySubmissions(ctx, q, submittedBy)
+// PageSubmissions reads the scope's status counts, the filtered total and one
+// page. id breaks created_at ties so a page boundary never repeats or skips a row.
+func (s *PGStore) PageSubmissions(ctx context.Context, opts ListOpts) (Page, error) {
+	page := Page{Counts: map[Status]int{}}
+	rows, err := s.db.QueryContext(ctx, `SELECT status, count(*) FROM image_submissions
+		WHERE $1::text = '' OR submitted_by = $1::text GROUP BY status`, opts.SubmittedBy)
+	if err != nil {
+		return Page{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var st string
+		var n int
+		if err := rows.Scan(&st, &n); err != nil {
+			return Page{}, err
+		}
+		page.Counts[Status(st)] = n
+	}
+	if err := rows.Err(); err != nil {
+		return Page{}, err
+	}
+	const match = ` WHERE ($1::text = '' OR submitted_by = $1::text)
+		AND ($2::text = '' OR status::text = $2::text)
+		AND ($3::text = '' OR strpos(lower(id), lower($3::text)) > 0
+			OR strpos(lower(submitted_by), lower($3::text)) > 0
+			OR strpos(lower(display_name), lower($3::text)) > 0)`
+	args := []any{opts.SubmittedBy, string(opts.Status), opts.Query}
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM image_submissions`+match, args...).Scan(&page.Total); err != nil {
+		return Page{}, err
+	}
+	page.Submissions, err = s.querySubmissions(ctx, `SELECT `+submissionColumns+` FROM image_submissions`+match+`
+		ORDER BY created_at DESC, id DESC LIMIT $4 OFFSET $5`, append(args, opts.Limit, opts.Offset)...)
+	return page, err
 }
 
 // cas executes a single-statement compare-and-set — an UPDATE or DELETE whose
