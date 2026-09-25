@@ -349,13 +349,20 @@ public final class WaitingRouter {
             } catch (LinkException e) {
                 // A lost join-event leaves the reaper blind to real activity and skips
                 // the allowlist append, so it is an operator-visible failure.
+                plugin.stats().count(ProxyStats.Event.JOIN_EVENT_FAILED);
                 log.warn("Felis: join-event for {} on {} failed (status={}): {}",
                         id, name, e.statusCode(), e.getMessage());
             }
         });
         if (!taken) {
+            plugin.stats().count(ProxyStats.Event.JOIN_EVENT_DROPPED);
             log.warn("Felis: join-event for {} on {} dropped: the felis-api call queue is full", id, name);
         }
+    }
+
+    /** waitingCount is how many players are parked for a backend right now. */
+    int waitingCount() {
+        return waiting.size();
     }
 
     /** tick drains the waiting queue; the plugin schedules it on the async pool. */
@@ -556,6 +563,7 @@ public final class WaitingRouter {
     private void transfer(Player player, String serverName, RegisteredServer backend) {
         player.createConnectionRequest(backend).connect().whenComplete((result, err) -> {
             if (err != null || (result != null && !result.isSuccessful())) {
+                plugin.stats().count(ProxyStats.Event.TRANSFER_FAILED);
                 log.warn("Felis: transfer of {} to {} failed: {}", player.getUniqueId(), serverName,
                         err != null ? err.toString() : result.getStatus());
                 player.sendMessage(Component.text(

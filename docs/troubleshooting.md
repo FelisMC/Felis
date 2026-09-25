@@ -1439,6 +1439,36 @@ kubectl -n felis logs deploy/felis-api | grep 'msg=request' | grep 'status=5'
 kubectl -n felis logs deploy/felis-api | grep 'request_id=<id from the error>'
 ```
 
+The plugins' calls are the `face="internal"` series, one route per call: a
+failing join-event, wake or link-status poll shows up as its own route.
+
+```promql
+sum by (route, code) (rate(felis_http_requests_total{face="internal", route="/api/v1/internal/servers/{name}/join-event"}[5m]))
+sum by (route, code) (rate(felis_http_requests_total{face="internal", route="/api/v1/internal/servers/{name}/wake"}[5m]))
+histogram_quantile(0.95, sum by (le, route) (rate(felis_http_request_duration_seconds_bucket{face="internal"}[5m])))
+```
+
+A call that never reached felis-api (refused, reset, timed out) is missing from
+those series; the caller counts it. The proxy logs one line per active 10 minutes
+with felis-api as it saw it plus its own failures, and `/felis` at the proxy
+console prints the totals since start:
+
+```bash
+journalctl -u felis-velocity | grep 'Felis: last 10 min'
+# Felis: last 10 min: felis-api calls=412 (no answer=0, 4xx=3, 5xx=0, retried=0), avg=18 ms, max=240 ms,
+#   busy refusals=0, join-events failed=0, join-events dropped=0, transfers failed=0,
+#   server-list refreshes failed=0, waiting now=0
+journalctl -u felis-velocity | grep 'server list refresh'
+kubectl -n minecraft logs login-0 | grep 'link status poll'
+```
+
+`no answer` rising with a flat `felis_http_requests_total` means the path to the
+internal face is broken (NetworkPolicy, Service, the api Pod down); `busy
+refusals` or `join-events dropped` above zero means felis-api is slower than the
+proxy's pool of 8 threads can absorb. A refresh or link-status outage warns when it
+starts, every 5 minutes while it lasts with the failure count, and at info when
+it recovers.
+
 ### Scraping
 
 The series come from two processes. Both Services carry the

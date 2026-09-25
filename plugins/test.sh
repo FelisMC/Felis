@@ -14,7 +14,10 @@
 #      after a dropped reply or a 502/503/504 and a POST never, the request timeout
 #      cuts a slow call off, felis-link.properties timeouts are validated, the
 #      felis-api call pool refuses instead of growing and a repeating task never
-#      overlaps itself, the link-status outage
+#      overlaps itself, every felis-api attempt is counted by outcome and the
+#      periodic health line reports only a window's own counts (and stays quiet
+#      when idle), an outage is logged when it starts, every few minutes while it
+#      lasts and when it ends, the link-status outage
 #      fallback fails closed outside its window, a proxy restarted during an API
 #      outage routes on the last saved server list (and only until a fetch
 #      succeeds), /invite prompts cannot double-fire
@@ -87,6 +90,12 @@ javac -d "$work/shared-classes" \
   plugins/shared/test/best/lolicon/felis/link/LinkConfigLoaderTest.java
 java -cp "$work/shared-classes" best.lolicon.felis.link.LinkConfigLoaderTest
 
+echo "==> OutageTrackerTest (outage start / reminder / recovery log decisions, shared)"
+javac -d "$work/shared-classes" \
+  plugins/shared/src/main/java/best/lolicon/felis/link/*.java \
+  plugins/shared/test/best/lolicon/felis/link/OutageTrackerTest.java
+java -cp "$work/shared-classes" best.lolicon.felis.link.OutageTrackerTest
+
 echo "==> ControlPolicyTest (who may send what on felis:control, velocity)"
 mkdir -p "$work/policy-classes"
 javac -d "$work/policy-classes" \
@@ -116,6 +125,14 @@ javac -d "$work/pool-classes" \
   plugins/velocity/src/main/java/best/lolicon/felis/velocity/SkipIfRunning.java \
   plugins/velocity/test/best/lolicon/felis/velocity/ApiPoolTest.java
 java -cp "$work/pool-classes" best.lolicon.felis.velocity.ApiPoolTest
+
+echo "==> ProxyStatsTest (proxy failure counters and the periodic health line, velocity)"
+mkdir -p "$work/stats-classes"
+javac -d "$work/stats-classes" \
+  plugins/shared/src/main/java/best/lolicon/felis/link/*.java \
+  plugins/velocity/src/main/java/best/lolicon/felis/velocity/ProxyStats.java \
+  plugins/velocity/test/best/lolicon/felis/velocity/ProxyStatsTest.java
+java -cp "$work/stats-classes" best.lolicon.felis.velocity.ProxyStatsTest
 
 echo "==> InviteBookTest (/invite prompt store, velocity)"
 mkdir -p "$work/velocity-classes"

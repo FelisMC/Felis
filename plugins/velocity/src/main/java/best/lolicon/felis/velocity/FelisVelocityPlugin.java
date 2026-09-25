@@ -5,6 +5,7 @@ import best.lolicon.felis.link.LinkClient;
 import best.lolicon.felis.link.LinkCode;
 import best.lolicon.felis.link.LinkException;
 import best.lolicon.felis.link.OpLoginView;
+import best.lolicon.felis.link.OutageTracker;
 import best.lolicon.felis.link.ServerView;
 
 import com.google.inject.Inject;
@@ -87,6 +88,10 @@ public final class FelisVelocityPlugin {
     private static final int API_THREADS = 8;
     private static final int API_QUEUE = 64;
     private static final long BUSY_LOG_INTERVAL_MILLIS = 60_000L;
+    // One health line per window (ProxyStats.line), and a reminder at most this often
+    // while the server-list refresh keeps failing.
+    private static final Duration STATS_INTERVAL = Duration.ofMinutes(10);
+    private static final long REFRESH_OUTAGE_REPEAT_MILLIS = 5 * 60_000L;
 
     private final ProxyServer proxy;
     private final Logger logger;
@@ -99,6 +104,9 @@ public final class FelisVelocityPlugin {
     private final FrameBudget commandBudget = new FrameBudget(5, 0.2, System::currentTimeMillis);
     private final BoundedExecutor apiCalls;
     private final AtomicLong lastBusyLog = new AtomicLong();
+    private final ProxyStats stats = new ProxyStats();
+    private final OutageTracker refreshOutage =
+            new OutageTracker(REFRESH_OUTAGE_REPEAT_MILLIS, System::currentTimeMillis);
 
     private FelisVelocityConfig config;
     private LinkClient linkClient;
@@ -169,6 +177,7 @@ public final class FelisVelocityPlugin {
         refreshRegistrations();
         repeating(REGISTRATION_REFRESH, this::refreshRegistrations);
         repeating(WAIT_POLL, router::tick);
+        repeating(STATS_INTERVAL, this::logStats);
 
         this.routingActive = true;
         logger.info("Felis routing ready: rootDomain={}, login={}, lobby={}. /link, /felis and /invite registered.",
@@ -205,6 +214,7 @@ public final class FelisVelocityPlugin {
         if (apiCalls.submit(task)) {
             return true;
         }
+        stats.count(ProxyStats.Event.POOL_REFUSED);
         long now = System.currentTimeMillis();
         long last = lastBusyLog.get();
         if (now - last >= BUSY_LOG_INTERVAL_MILLIS && lastBusyLog.compareAndSet(last, now)) {
@@ -212,6 +222,20 @@ public final class FelisVelocityPlugin {
                     + "until the queue drains.", apiCalls.running(), apiCalls.waiting());
         }
         return false;
+    }
+
+    /** stats is the proxy's failure counters, for the health line and /felis. */
+    ProxyStats stats() {
+        return stats;
+    }
+
+    // logStats writes the periodic health line; an idle window writes nothing.
+    private void logStats() {
+        String line = ProxyStats.line(STATS_INTERVAL.toMinutes(), apiClient.stats().window(), stats.window(),
+                router.waitingCount());
+        if (line != null) {
+            logger.info(line);
+        }
     }
 
     /** async for a task a player is waiting on: a refusal is told to them at once. */
@@ -263,15 +287,30 @@ public final class FelisVelocityPlugin {
         if (r.servers != null) {
             registry.refresh(r.servers);
         }
-        if (r.restored) {
-            logger.warn("Felis: felis-api is unreachable at startup (status={}): {}; routing to the {} backends "
-                            + "in the saved server list until it answers.",
-                    r.failure.statusCode(), r.failure.getMessage(), r.servers.size());
-        } else if (r.failure != null) {
-            // Keep existing registrations on a control-plane blip (spec §11): a
-            // transient failure must never deregister live backends.
-            logger.warn("Felis: server list refresh failed (status={}): {}; keeping current registrations.",
-                    r.failure.statusCode(), r.failure.getMessage());
+        if (r.failure == null) {
+            if (refreshOutage.success() == OutageTracker.Report.RECOVERED) {
+                logger.info("Felis: server list refresh recovered after {} failed attempts over {} s.",
+                        refreshOutage.lastOutageFailures(), refreshOutage.lastOutageMillis() / 1000);
+            }
+        } else {
+            stats.count(ProxyStats.Event.REFRESH_FAILED);
+            OutageTracker.Report report = refreshOutage.failure();
+            if (r.restored) {
+                logger.warn("Felis: felis-api is unreachable at startup (status={}): {}; routing to the {} backends "
+                                + "in the saved server list until it answers.",
+                        r.failure.statusCode(), r.failure.getMessage(), r.servers.size());
+            } else if (report == OutageTracker.Report.DOWN) {
+                // Keep existing registrations on a control-plane blip (spec §11): a
+                // transient failure must never deregister live backends.
+                logger.warn("Felis: server list refresh failed (status={}): {}; keeping current registrations. "
+                                + "Repeats are summarized every {} min until it recovers.",
+                        r.failure.statusCode(), r.failure.getMessage(), REFRESH_OUTAGE_REPEAT_MILLIS / 60_000L);
+            } else if (report == OutageTracker.Report.STILL_DOWN) {
+                logger.warn("Felis: server list refresh still failing: {} failed attempts over {} s, last (status={}): {}; "
+                                + "keeping current registrations.",
+                        refreshOutage.failures(), refreshOutage.downForMillis() / 1000,
+                        r.failure.statusCode(), r.failure.getMessage());
+            }
         }
         if (r.fileError != null) {
             logger.warn("Felis: saved server list {}: {}", r.failure == null ? "not written" : "not usable",
@@ -492,6 +531,17 @@ public final class FelisVelocityPlugin {
         source.sendMessage(field("login", config.loginServer()));
         source.sendMessage(field("lobby", config.lobbyServer()));
         source.sendMessage(field("servers", String.valueOf(registry.all().size())));
+        if (!(source instanceof Player)) {
+            // Operator health, console only: felis-api as this proxy sees it, and the
+            // proxy-side failures since start.
+            source.sendMessage(field("felis-api", apiClient.stats().total().summary()));
+            source.sendMessage(field("waiting", String.valueOf(router.waitingCount())));
+            StringBuilder failures = new StringBuilder();
+            for (ProxyStats.Event e : ProxyStats.Event.values()) {
+                failures.append(failures.length() == 0 ? "" : ", ").append(e.label).append('=').append(stats.total(e));
+            }
+            source.sendMessage(field("since start", failures.toString()));
+        }
         source.sendMessage(Component.text(
                 zh ? "  /felis help 查看命令" : "  /felis help for commands", NamedTextColor.GRAY));
     }

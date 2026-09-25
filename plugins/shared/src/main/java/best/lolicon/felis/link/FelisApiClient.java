@@ -54,12 +54,18 @@ public final class FelisApiClient {
 
     private final LinkConfig config;
     private final HttpClient http;
+    private final ApiStats stats = new ApiStats();
 
     public FelisApiClient(LinkConfig config) {
         this.config = Objects.requireNonNull(config, "config");
         this.http = HttpClient.newBuilder()
                 .connectTimeout(config.connectTimeout())
                 .build();
+    }
+
+    /** stats counts this client's calls and their outcomes, for the plugin's health line. */
+    public ApiStats stats() {
+        return stats;
     }
 
     /** listServers returns the lifecycle view of every MinecraftServer (GET /servers). */
@@ -297,6 +303,7 @@ public final class FelisApiClient {
         } catch (InterruptedException e) {
             throw interrupted(e);
         }
+        stats.retried();
         return expectObject(send(req), expect);
     }
 
@@ -338,8 +345,17 @@ public final class FelisApiClient {
         }
     }
 
+    // exchange is the one place a request goes out, so every attempt is counted once.
     private HttpResponse<String> exchange(HttpRequest req) throws IOException, InterruptedException {
-        return http.send(req, HttpResponse.BodyHandlers.ofString());
+        long start = System.nanoTime();
+        int status = 0;
+        try {
+            HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
+            status = res.statusCode();
+            return res;
+        } finally {
+            stats.record(status, (System.nanoTime() - start) / 1_000_000);
+        }
     }
 
     // A refused connection arrives as a ConnectException with no message; the class

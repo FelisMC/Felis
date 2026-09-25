@@ -8,6 +8,7 @@ import best.lolicon.felis.link.LinkCode;
 import best.lolicon.felis.link.LinkConfig;
 import best.lolicon.felis.link.LinkConfigLoader;
 import best.lolicon.felis.link.LinkException;
+import best.lolicon.felis.link.OutageTracker;
 
 import com.loohp.limbo.events.EventHandler;
 import com.loohp.limbo.events.Listener;
@@ -121,6 +122,8 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
     static final long START_RETRY_WINDOW_MILLIS = 60_000L;
     // How long the release is re-sent after sign-in before giving up with a message.
     private static final long RELEASE_WINDOW_MILLIS = 120_000L;
+    // How often a link-status outage is summarized while it lasts.
+    private static final long POLL_OUTAGE_REPEAT_MILLIS = 5 * 60_000L;
 
     // ---- readiness state ----
     private final AtomicBoolean ready = new AtomicBoolean(false);
@@ -141,6 +144,11 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
     // Players whose release loop is running; the async link poll can observe "linked"
     // twice before its cancellation lands, and the release must start once.
     private final Set<UUID> releasing = ConcurrentHashMap.newKeySet();
+    // One tracker for every player's link poll: the polls share felis-api, so an outage
+    // is one event, reported when it starts, every few minutes while it lasts, and when
+    // it ends, rather than once a second per waiting player (or never, at FINE).
+    private final OutageTracker pollOutage =
+            new OutageTracker(POLL_OUTAGE_REPEAT_MILLIS, System::currentTimeMillis);
 
     @Override
     public void onEnable() {
@@ -324,7 +332,8 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
         } catch (RuntimeException e) {
             // A client that refuses the book (rare) still gets the chat instructions
             // below, so a book failure is not fatal to the flow.
-            LOG.fine("FelisLimbo: openBook failed for " + id + " — " + e.getMessage());
+            LOG.warning("FelisLimbo: openBook failed for " + id + " — " + e.getMessage()
+                    + "; the code is still sent in chat");
         }
         player.sendMessage("§e[Felis] 绑定码 / Code: §6" + code.code());
         player.sendMessage("§e[Felis] 用系统浏览器打开 §b" + url
@@ -348,13 +357,29 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
             disconnectOnMain(id, "登录超时，请重连 / Login timed out. Please reconnect.");
             return;
         }
+        boolean linked;
         try {
-            if (apiClient.linkStatus(id)) {
-                getServer().getScheduler().runTask(this, () -> startRelease(id));
-            }
+            linked = apiClient.linkStatus(id);
         } catch (LinkException e) {
             // A transient poll failure is not fatal — keep trying until the deadline.
-            LOG.fine("FelisLimbo: link status poll failed for " + id + " — " + e.getMessage());
+            OutageTracker.Report report = pollOutage.failure();
+            if (report == OutageTracker.Report.DOWN) {
+                LOG.warning("FelisLimbo: link status poll failed for " + id + " — " + e.getMessage()
+                        + "; players keep waiting, and repeats are summarized every "
+                        + POLL_OUTAGE_REPEAT_MILLIS / 60_000L + " min until it recovers");
+            } else if (report == OutageTracker.Report.STILL_DOWN) {
+                LOG.warning("FelisLimbo: link status polls still failing: " + pollOutage.failures()
+                        + " failed polls over " + pollOutage.downForMillis() / 1000 + " s, last — "
+                        + e.getMessage());
+            }
+            return;
+        }
+        if (pollOutage.success() == OutageTracker.Report.RECOVERED) {
+            LOG.info("FelisLimbo: link status polls recovered after " + pollOutage.lastOutageFailures()
+                    + " failed polls over " + pollOutage.lastOutageMillis() / 1000 + " s");
+        }
+        if (linked) {
+            getServer().getScheduler().runTask(this, () -> startRelease(id));
         }
     }
 

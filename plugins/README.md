@@ -192,6 +192,16 @@ one is still going. Acting commands (`/link`, `/felis claim`, migrate, op
 approve) share a per-player budget of 5 then one per 5 s; felis:control frames
 from the lobby are metered per player and menu status answers are cached.
 
+Health on the proxy: every 10 minutes that saw any activity the proxy logs one
+info line, `Felis: last 10 min: felis-api calls=… (no answer=…, 4xx=…, 5xx=…,
+retried=…), avg=… ms, max=… ms, busy refusals=…, join-events failed=…,
+join-events dropped=…, transfers failed=…, server-list refreshes failed=…,
+waiting now=…`, with only that window's counts. `/felis` run from the console
+adds the same felis-api counts since start, the waiting count and the failure
+totals. A server-list refresh that keeps failing warns once when it starts, then
+every 5 minutes with the running count, and logs at info when it recovers; the
+login gate treats its link-status polls the same way.
+
 ## Lobby menu (§12)
 
 The `paper/` module is the lobby's player-facing face for §27 scenario 10
