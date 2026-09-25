@@ -690,9 +690,14 @@ wait_for_pkg_locks() {
   done
 }
 
+# NEEDRESTART_SUSPEND keeps Ubuntu's needrestart hook from restarting services after
+# the install's own apt runs. It would restart felis-velocity whenever a rerun
+# happens to install or upgrade a package (the running JVM maps files the rerun
+# replaces), dropping every player on a rerun that changed nothing the proxy runs.
+# The installer restarts what it changes itself.
 apt_get() {
   wait_for_pkg_locks
-  DEBIAN_FRONTEND=noninteractive apt-get \
+  NEEDRESTART_SUSPEND=1 DEBIAN_FRONTEND=noninteractive apt-get \
     -o DPkg::Lock::Timeout="$PKG_LOCK_TIMEOUT" \
     "$@"
 }
@@ -1265,7 +1270,10 @@ EOF
 # digest ref the Deployment names and kubelet finds it. A docker save/import round
 # trip rewrites the manifest and would leave a copy the digest ref never matches.
 import_registry_image() {
-  if k3s_cmd ctr images ls -q 2>/dev/null | grep -qxF "$(registry_image_containerd_ref)"; then
+  local images
+  # Read the list whole before matching; see postgres_installed for the SIGPIPE.
+  images="$(k3s_cmd ctr images ls -q 2>/dev/null || true)"
+  if grep -qxF "$(registry_image_containerd_ref)" <<<"$images"; then
     ok "registry image ${REGISTRY_IMAGE} already in k3s containerd"
     return 0
   fi
@@ -2642,8 +2650,19 @@ init_postgres_data_dir() {
   fi
 }
 
+# postgres_installed reports whether a PostgreSQL client and server unit are present.
+# The unit list is read into a variable before matching: `systemctl list-unit-files |
+# grep -q` dies of SIGPIPE under pipefail once grep stops reading a list longer than
+# one write, and the install then took the "not installed" branch on a host that has it.
+postgres_installed() {
+  local units
+  command -v psql >/dev/null 2>&1 || return 1
+  units="$(systemctl list-unit-files 2>/dev/null)" || return 1
+  grep -q '^postgresql' <<<"$units"
+}
+
 install_postgres() {
-  if command -v psql >/dev/null 2>&1 && systemctl list-unit-files 2>/dev/null | grep -q '^postgresql'; then
+  if postgres_installed; then
     ok "postgresql already installed"
   else
     log "installing postgresql"

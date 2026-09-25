@@ -2072,6 +2072,72 @@ case "$out" in *WARN:*) echo "FAIL: a first install must not restore the binary 
 rm -rf "$hbdir"
 
 
+# --- a rerun reads the host right and keeps the proxy up --------------------------------
+# Both checks run under bootstrap.sh's own `set -Eeuo pipefail`. The lists are far past one
+# pipe buffer with the match on the first line, so a `cmd | grep -q` has grep exit while cmd
+# is still writing: cmd dies of SIGPIPE, pipefail fails the pipeline, and the install took
+# the "missing" branch on a host that had it (CI caught the PostgreSQL case reinstalling a
+# package on a rerun). apt then ran needrestart, which restarted felis-velocity.
+
+for f in postgres_installed import_registry_image apt_get; do
+  [ -n "$(awk '/^'"$f"'\(\) \{/,/^}/' "$BS")" ] || { echo "FAIL: no ${f} in $BS"; exit 1; }
+  [ "$(awk '/^'"$f"'\(\) \{/,/^}/' "$BS" | wc -l)" -lt 20 ] \
+    || { echo "FAIL: the extracted ${f} is not just the function -- did its closing brace move?"; exit 1; }
+done
+
+rrdir="$(mktemp -d)"
+printf '#!/bin/sh\nexit 0\n' > "$rrdir/psql"
+cat > "$rrdir/systemctl" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$FIRST_UNIT"
+seq 1 200000 | sed 's/.*/unit-&.service static -/'
+EOF
+cat > "$rrdir/apt-get" <<'EOF'
+#!/bin/sh
+echo "NEEDRESTART_SUSPEND=${NEEDRESTART_SUSPEND:-unset} $*"
+EOF
+chmod +x "$rrdir/psql" "$rrdir/systemctl" "$rrdir/apt-get"
+
+run_pg() { # first unit line
+  PATH="$rrdir:$PATH" FIRST_UNIT="$1" bash -c '
+    set -Eeuo pipefail
+    '"$(awk '/^postgres_installed\(\) \{/,/^}/' "$BS")"'
+    if postgres_installed; then echo INSTALLED; else echo MISSING; fi'
+}
+expect "an installed PostgreSQL is found in a long unit list" "INSTALLED" "$(run_pg 'postgresql.service enabled enabled')"
+expect "a host without the unit still gets PostgreSQL installed" "MISSING" "$(run_pg 'nginx.service enabled enabled')"
+
+run_reg() {
+  bash -c '
+    set -Eeuo pipefail
+    ok() { echo "OK: $*"; }; log() { echo "LOG: $*"; }; warn() { echo "WARN: $*"; }
+    REGISTRY_IMAGE=registry:2
+    registry_image_containerd_ref() { echo docker.io/library/registry:2; }
+    k3s_cmd() {
+      if [ "$1" = ctr ]; then
+        echo docker.io/library/registry:2
+        seq 1 200000 | sed "s/.*/example.test\/img-&:1/"
+      else
+        echo "PULLED $*"
+      fi
+    }
+    '"$(awk '/^import_registry_image\(\) \{/,/^}/' "$BS")"'
+    import_registry_image'
+}
+out="$(run_reg)"
+expect "an imported registry image is found in a long image list" "OK: registry image registry:2 already in k3s containerd" "$out"
+case "$out" in *PULLED*) echo "FAIL: the registry image was pulled again"; fails=$((fails + 1)) ;; esac
+
+out="$(PATH="$rrdir:$PATH" bash -c '
+  set -Eeuo pipefail
+  wait_for_pkg_locks() { :; }
+  PKG_LOCK_TIMEOUT=5
+  '"$(awk '/^apt_get\(\) \{/,/^}/' "$BS")"'
+  apt_get install -y postgresql')"
+expect "the install's apt runs keep needrestart from restarting services" \
+  "NEEDRESTART_SUSPEND=1 -o DPkg::Lock::Timeout=5 install -y postgresql" "$out"
+rm -rf "$rrdir"
+
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"
