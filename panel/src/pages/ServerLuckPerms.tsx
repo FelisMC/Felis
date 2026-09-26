@@ -48,6 +48,10 @@ interface ActionHistoryItem {
   target: string;
   value?: boolean;
   world?: string;
+  // undo is the exact write that puts a permission back as it was before; absent
+  // when that state is unknown, so the entry offers no revert (a guess would turn
+  // a removed deny into a grant). Group entries invert their action instead.
+  undo?: { action: "set" | "unset"; value?: boolean };
   status: "success" | "error";
   output: string;
   reverted?: boolean;
@@ -207,12 +211,26 @@ export function ServerLuckPerms() {
     return { node, world };
   };
 
+  // priorValue is the value the last read showed for a node in a world (LuckPerms
+  // matches both case-insensitively), or undefined when no row showed one: the
+  // node was unset, or nothing could be read. A read still in flight or one whose
+  // refresh failed is stale (it predates the last write), so it knows nothing.
+  const priorValue = (node: string, world: string): boolean | undefined => {
+    if (lpUnread || lpLoading) return undefined;
+    return lpInfo?.permissions?.find(
+      (p) => p.node.toLowerCase() === node.toLowerCase() && (p.world ?? "").toLowerCase() === world.toLowerCase(),
+    )?.value;
+  };
+
   const handleAddPermission = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedPlayer || !permNodeInput.trim() || submitting) return;
     const typed = typedPermission();
     if (!typed) return;
     const { node, world } = typed;
+    // Reverting a set restores the value the node had; with none read, it removes
+    // the node, which undoes the set whenever the node was not there before.
+    const prior = priorValue(node, world);
 
     setSubmitting(true);
     setFormFeedback(null);
@@ -225,6 +243,7 @@ export function ServerLuckPerms() {
         target: node,
         value: permValueInput,
         world: world || undefined,
+        undo: prior === undefined ? { action: "unset" } : { action: "set", value: prior },
         status: "success",
         output: res.output || t("luckperms_no_output"),
       });
@@ -239,7 +258,8 @@ export function ServerLuckPerms() {
   };
 
   // Returns whether the server took the unset, so the typed form can clear itself.
-  const handleRemovePermission = async (node: string, world?: string): Promise<boolean> => {
+  // value is what the node held, when known; only then can the removal be reverted.
+  const handleRemovePermission = async (node: string, world?: string, value?: boolean): Promise<boolean> => {
     if (!selectedPlayer || submitting) return false;
     setSubmitting(true);
     setFormFeedback(null);
@@ -250,7 +270,9 @@ export function ServerLuckPerms() {
         player: selectedPlayer,
         action: "unset",
         target: node,
+        value,
         world: world || undefined,
+        undo: value === undefined ? undefined : { action: "set", value },
         status: "success",
         output: res.output || t("luckperms_no_output"),
       });
@@ -270,7 +292,7 @@ export function ServerLuckPerms() {
     if (!selectedPlayer || !permNodeInput.trim() || submitting) return;
     const typed = typedPermission();
     if (!typed) return;
-    if (await handleRemovePermission(typed.node, typed.world)) {
+    if (await handleRemovePermission(typed.node, typed.world, priorValue(typed.node, typed.world))) {
       setPermNodeInput("");
       setPermWorldInput("");
     }
@@ -286,13 +308,14 @@ export function ServerLuckPerms() {
         const inverseAction = item.action === "add" ? "remove" : "add";
         await api.accessGroup(name, inverseAction, item.player, item.target);
       } else {
-        const inverseAction = item.action === "set" ? "unset" : "set";
+        const undo = item.undo;
+        if (!undo) return;
         await api.accessPermission(
           name,
-          inverseAction,
+          undo.action,
           item.player,
           item.target,
-          item.action === "set" ? item.value : undefined,
+          undo.action === "set" ? undo.value : undefined,
           item.world || undefined
         );
       }
@@ -671,7 +694,7 @@ export function ServerLuckPerms() {
                                           variant="ghost"
                                           size="sm"
                                           disabled={submitting}
-                                          onClick={() => handleRemovePermission(p.node, p.world)}
+                                          onClick={() => handleRemovePermission(p.node, p.world, p.value)}
                                           aria-label={t("luckperms_remove_perm", { node: p.node })}
                                           title={t("luckperms_remove_perm", { node: p.node })}
                                           className="h-7 w-7 p-0 text-muted-foreground hover:text-destructive hover:bg-muted rounded transition-all focus:outline-none"
@@ -834,9 +857,16 @@ export function ServerLuckPerms() {
                   <div className="divide-y divide-border/60 max-h-[320px] overflow-y-auto pr-1">
                     {history.map((h) => {
                       const isSuccess = h.status === "success";
+                      const shownValue = h.value === undefined ? "" : ` (${h.value ? "TRUE" : "FALSE"})`;
                       const actionLabel = h.type === "group"
                         ? `${h.action === "add" ? "+" : "-"} ${t("luckperms_group_name")}: ${h.target}`
-                        : `${h.action === "set" ? `+ ${h.target} (${h.value ? "TRUE" : "FALSE"})` : `- ${h.target}`}${h.world ? ` [${h.world}]` : ""}`;
+                        : `${h.action === "set" ? "+" : "-"} ${h.target}${shownValue}${h.world ? ` [${h.world}]` : ""}`;
+                      const revertible = h.type === "group" || !!h.undo;
+                      const revertTitle = h.undo
+                        ? h.undo.action === "set"
+                          ? t("luckperms_revert_to_set", { node: h.target, value: h.undo.value ? "TRUE" : "FALSE" })
+                          : t("luckperms_revert_to_unset", { node: h.target })
+                        : undefined;
 
                       return (
                         <div
@@ -860,17 +890,23 @@ export function ServerLuckPerms() {
                             </div>
                             <div className="flex items-center gap-2 shrink-0">
                               <span className="text-[10px] text-muted-foreground font-mono select-none">{h.timestamp}</span>
-                              {isSuccess && !h.reverted && (
+                              {isSuccess && !h.reverted && revertible && (
                                 <Button
                                   variant="outline"
                                   size="sm"
                                   disabled={submitting}
                                   onClick={() => handleRevert(h)}
+                                  title={revertTitle}
                                   className="h-6 text-[10px] text-muted-foreground hover:text-primary py-0 px-2 gap-1 focus:outline-none"
                                 >
                                   <Undo className="h-3 w-3" />
                                   {t("luckperms_revert")}
                                 </Button>
+                              )}
+                              {isSuccess && !h.reverted && !revertible && (
+                                <span className="text-[10px] text-muted-foreground select-none">
+                                  {t("luckperms_revert_unknown")}
+                                </span>
                               )}
                               {h.reverted && (
                                 <Badge variant="outline" className="text-[9px] h-5 border-emerald-500/30 text-emerald-600 bg-emerald-500/10 font-bold px-1.5 select-none uppercase">

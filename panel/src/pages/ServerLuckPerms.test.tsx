@@ -181,3 +181,108 @@ describe("ServerLuckPerms when LuckPerms does not answer", () => {
     expect(screen.queryByText(/Couldn't read this player's/)).toBeNull();
   });
 });
+
+// A revert puts a permission back as it was. A removed deny comes back as a deny
+// (it used to come back as a grant), a set that replaced a value restores that
+// value, and a removal whose earlier value was never read offers no revert.
+describe("ServerLuckPerms reverting a permission change", () => {
+  const read = {
+    player: "Alex",
+    groups: [],
+    permissions: [{ node: "essentials.fly", value: false, world: "world_nether" }],
+    output: "Alex's permissions: essentials.fly (false) world=world_nether",
+  };
+
+  beforeEach(() => {
+    calls.accessLuckPermsInfo.mockResolvedValue(read);
+    calls.accessPermission.mockResolvedValue({ output: "" });
+  });
+
+  async function lookUpAlex() {
+    renderPage();
+    await userEvent.type(await screen.findByPlaceholderText("Steve"), "Alex{Enter}");
+  }
+
+  async function typeNode(node: string, world = "") {
+    await userEvent.type(screen.getByLabelText("Permission Node"), node);
+    if (world) await userEvent.type(screen.getByLabelText("World Context (Optional)"), world);
+  }
+
+  it("puts a removed deny back as a deny", async () => {
+    await lookUpAlex();
+    await userEvent.click(await screen.findByRole("button", { name: "Remove permission essentials.fly" }));
+    expect(calls.accessPermission).toHaveBeenLastCalledWith("lobby", "unset", "Alex", "essentials.fly", undefined, "world_nether");
+    expect(await screen.findByText("- essentials.fly (FALSE) [world_nether]")).toBeTruthy();
+    await userEvent.click(screen.getByRole("button", { name: "Revert" }));
+    expect(calls.accessPermission).toHaveBeenLastCalledWith("lobby", "set", "Alex", "essentials.fly", false, "world_nether");
+  });
+
+  it("puts back the value a typed removal took, matched without case", async () => {
+    await lookUpAlex();
+    await screen.findByRole("button", { name: "Remove permission essentials.fly" });
+    await typeNode("Essentials.Fly", "World_Nether");
+    await userEvent.click(screen.getByRole("button", { name: /^remove permission$/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "Revert" }));
+    expect(calls.accessPermission).toHaveBeenLastCalledWith("lobby", "set", "Alex", "Essentials.Fly", false, "World_Nether");
+  });
+
+  it("restores the value a set replaced", async () => {
+    await lookUpAlex();
+    await screen.findByRole("button", { name: "Remove permission essentials.fly" });
+    await typeNode("essentials.fly", "world_nether");
+    await userEvent.click(screen.getByRole("button", { name: /^add permission$/i }));
+    expect(calls.accessPermission).toHaveBeenLastCalledWith("lobby", "set", "Alex", "essentials.fly", true, "world_nether");
+    await userEvent.click(await screen.findByRole("button", { name: "Revert" }));
+    expect(calls.accessPermission).toHaveBeenLastCalledWith("lobby", "set", "Alex", "essentials.fly", false, "world_nether");
+  });
+
+  it("removes a set node that held nothing in that world", async () => {
+    await lookUpAlex();
+    await screen.findByRole("button", { name: "Remove permission essentials.fly" });
+    await typeNode("essentials.fly");
+    await userEvent.click(screen.getByRole("button", { name: /^add permission$/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "Revert" }));
+    expect(calls.accessPermission).toHaveBeenLastCalledWith("lobby", "unset", "Alex", "essentials.fly", undefined, undefined);
+  });
+
+  it("offers no revert for a removal whose value was never read", async () => {
+    calls.accessLuckPermsInfo.mockResolvedValue({ player: "Alex", groups: [], permissions: [], output: "" });
+    await lookUpAlex();
+    await screen.findByText(/Couldn't read this player's permission nodes/);
+    await typeNode("essentials.fly", "world_nether");
+    await userEvent.click(screen.getByRole("button", { name: /^remove permission$/i }));
+    expect(await screen.findByText("Can't revert: value unknown")).toBeTruthy();
+    expect(screen.getByText("- essentials.fly [world_nether]")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Revert" })).toBeNull();
+
+    await typeNode("essentials.home");
+    await userEvent.click(screen.getByRole("button", { name: /^add permission$/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "Revert" }));
+    expect(calls.accessPermission).toHaveBeenLastCalledWith("lobby", "unset", "Alex", "essentials.home", undefined, undefined);
+  });
+
+  // The read predates the set that just landed: it still shows the deny, but the
+  // node now holds a grant, so the removal after it must not offer to restore the
+  // deny.
+  async function setThenRemoveOnStaleRead() {
+    await lookUpAlex();
+    await screen.findByRole("button", { name: "Remove permission essentials.fly" });
+    await typeNode("essentials.fly", "world_nether");
+    await userEvent.click(screen.getByRole("button", { name: /^add permission$/i }));
+    await typeNode("essentials.fly", "world_nether");
+    await userEvent.click(screen.getByRole("button", { name: /^remove permission$/i }));
+    expect(calls.accessPermission).toHaveBeenLastCalledWith("lobby", "unset", "Alex", "essentials.fly", undefined, "world_nether");
+    expect(await screen.findByText("Can't revert: value unknown")).toBeTruthy();
+    expect(screen.getByText("- essentials.fly [world_nether]")).toBeTruthy();
+  }
+
+  it("trusts no read whose refresh failed", async () => {
+    calls.accessLuckPermsInfo.mockResolvedValueOnce(read).mockRejectedValue({ status: 502, code: "rcon_unavailable", message: "console down" });
+    await setThenRemoveOnStaleRead();
+  });
+
+  it("trusts no read still being refreshed", async () => {
+    calls.accessLuckPermsInfo.mockResolvedValueOnce(read).mockReturnValue(new Promise(() => {}));
+    await setThenRemoveOnStaleRead();
+  });
+});
