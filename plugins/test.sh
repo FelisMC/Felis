@@ -3,7 +3,7 @@
 #
 #     bash plugins/test.sh
 #
-# Three gates, all runnable on any machine with a JDK 25 (Gradle comes from each
+# Five gates, all runnable on any machine with a JDK 25 (Gradle comes from each
 # module's wrapper, sha256-pinned):
 #
 #   1. The hand-written, framework-free test mains under shared/test and
@@ -23,8 +23,11 @@
 #      succeeds), a CR marked forwarding=legacy joins the fork's legacy-forwarding
 #      list above the installer's floor, /invite prompts cannot double-fire
 #      or outlive their TTL, the invite card really is a green/red clickable
-#      prompt, and the op-login approval card names the account and leaves its
-#      name for the admin to type. InviteCardTest and OpApprovalCardTest need the
+#      prompt, the op-login approval card names the account and leaves its
+#      name for the admin to type, and the loader mods' shared /link refuses the
+#      console and an offline-mode server before minting, fetches the code off the
+#      server thread and answers on it, and turns any failure into one line.
+#      InviteCardTest and OpApprovalCardTest need the
 #      adventure jars the velocity plugin compiles
 #      against; they are fetched from Maven Central below, pinned by version and
 #      checked by digest (a test run against silently-substituted bytes is not a
@@ -60,6 +63,17 @@
 #      the server's status and felis-api's verdict for the player: Join when it is up,
 #      Claim when ownerless, a grey tile with the reason (and no frame) when the
 #      player may not start it, the phase in the player's language.
+#
+#   5. The login gate self-test (`./gradlew loginTest` in plugins/limbo): the whole
+#      login flow on a virtual clock, a fake scheduler and players around the real
+#      LoginFlow and the real felis-api clients against a stub. A linked player goes
+#      straight to the lobby with the release re-sent on its backoff, an unlinked one
+#      gets the code (the minted panel URL, else the console) and is released once
+#      linked, a barred UUID is turned away without a code, an outage at join is
+#      retried for a minute (asking the proxy for the lobby each time) and a refusal
+#      is not, the login and release windows end in their own disconnect, a player
+#      who leaves stops every timer, and a reconnect or a lagging main thread still
+#      runs one loop. Also the readiness endpoint, the env parsing and the book.
 #
 # No test framework: the mains are the same javac one-liners their javadocs document,
 # so a local run and CI run the same bytes.
@@ -119,6 +133,12 @@ javac -d "$work/shared-classes" \
   plugins/shared/src/main/java/best/lolicon/felis/link/*.java \
   plugins/shared/test/best/lolicon/felis/link/OutageTrackerTest.java
 java -cp "$work/shared-classes" best.lolicon.felis.link.OutageTrackerTest
+
+echo "==> ModLinkTest (the loader mods' shared /link, shared)"
+javac -d "$work/shared-classes" \
+  plugins/shared/src/main/java/best/lolicon/felis/link/*.java \
+  plugins/shared/test/best/lolicon/felis/link/ModLinkTest.java
+java -cp "$work/shared-classes" best.lolicon.felis.link.ModLinkTest
 
 echo "==> ControlPolicyTest (who may send what on felis:control, velocity)"
 mkdir -p "$work/policy-classes"
@@ -208,5 +228,5 @@ echo "==> plugins/paper: ./gradlew --no-daemon lobbyTest"
 
 limbo_version="$(sed -n 's/^LIMBO_VERSION=//p' deploy/game-stack.lock)"
 [ -n "$limbo_version" ] || { echo "deploy/game-stack.lock sets no LIMBO_VERSION" >&2; exit 1; }
-echo "==> plugins/limbo: ./gradlew --no-daemon -PlimboVersion=${limbo_version} build"
-( cd plugins/limbo && ./gradlew --no-daemon -PlimboVersion="$limbo_version" build )
+echo "==> plugins/limbo: ./gradlew --no-daemon -PlimboVersion=${limbo_version} build loginTest"
+( cd plugins/limbo && ./gradlew --no-daemon -PlimboVersion="$limbo_version" build loginTest )

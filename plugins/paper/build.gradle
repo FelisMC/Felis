@@ -62,9 +62,10 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 // LobbyGuardTest drives the real LobbyGuard handlers with real paper-api events around
-// Proxy-built fakes, and MenuTilesTest checks the menu's tile judgement (plain mains, no
-// framework, like the velocity routing tests). Neither is part of `build`, which the
-// lobby image runs; plugins/test.sh runs `./gradlew lobbyTest`, which runs both.
+// Proxy-built fakes, MenuTilesTest checks the menu's tile judgement, and LobbyMenuTest
+// drives the whole menu (frames, clicks, drags, paging) against a fake screen (plain
+// mains, no framework, like the velocity routing tests). None is part of `build`, which
+// the lobby image runs; plugins/test.sh runs `./gradlew lobbyTest`, which runs all three.
 sourceSets {
     lobbyTest {
         java {
@@ -72,6 +73,7 @@ sourceSets {
             include 'best/lolicon/felis/paper/Fakes.java'
             include 'best/lolicon/felis/paper/LobbyGuardTest.java'
             include 'best/lolicon/felis/paper/MenuTilesTest.java'
+            include 'best/lolicon/felis/paper/LobbyMenuTest.java'
         }
         compileClasspath += sourceSets.main.output + configurations.compileClasspath
         runtimeClasspath += output + compileClasspath
@@ -85,10 +87,17 @@ tasks.register('menuTilesTest', JavaExec) {
     mainClass = 'best.lolicon.felis.paper.MenuTilesTest'
 }
 
+tasks.register('lobbyMenuTest', JavaExec) {
+    group = 'verification'
+    description = 'Runs the LobbyMenuTest self-test main.'
+    classpath = sourceSets.lobbyTest.runtimeClasspath
+    mainClass = 'best.lolicon.felis.paper.LobbyMenuTest'
+}
+
 tasks.register('lobbyTest', JavaExec) {
     group = 'verification'
-    description = 'Runs the LobbyGuardTest and MenuTilesTest self-test mains.'
-    dependsOn 'menuTilesTest'
+    description = 'Runs the LobbyGuardTest, MenuTilesTest and LobbyMenuTest self-test mains.'
+    dependsOn 'menuTilesTest', 'lobbyMenuTest'
     classpath = sourceSets.lobbyTest.runtimeClasspath
     mainClass = 'best.lolicon.felis.paper.LobbyGuardTest'
 }

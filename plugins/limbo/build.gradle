@@ -58,3 +58,26 @@ tasks.withType(JavaCompile).configureEach {
     // bytecode so the plugin loads on any Limbo running Java 17+.
     options.release = 17
 }
+
+// The login gate's self-test: LoginFlowTest runs the whole login flow on a virtual
+// clock (a fake scheduler and players around the real LoginFlow, the real felis-api
+// clients against a stub) plus the readiness endpoint, the env parsing and the book.
+// A framework-free main like the other plugins' tests; plugins/test.sh runs
+// `./gradlew loginTest`. The Limbo jar is on the classpath for the adventure types the
+// book is built from.
+sourceSets {
+    loginTest {
+        java {
+            srcDir 'test'
+        }
+        compileClasspath += sourceSets.main.output + configurations.compileClasspath
+        runtimeClasspath += output + compileClasspath
+    }
+}
+
+tasks.register('loginTest', JavaExec) {
+    group = 'verification'
+    description = 'Runs the LoginFlowTest self-test main.'
+    classpath = sourceSets.loginTest.runtimeClasspath
+    mainClass = 'best.lolicon.felis.limbo.LoginFlowTest'
+}
