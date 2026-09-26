@@ -155,8 +155,8 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 	if plan.Empty() {
 		return save()
 	}
-	if until := watchdog.QuietUntil(*quietPath); now.Before(until) {
-		fmt.Fprintf(stdout, "felis watchdog: quiet until %s (installer running); holding this mail: %s\n", until.UTC().Format(time.RFC3339), subject)
+	if hold := mailHold(*quietPath, cfg.Offsite.Enabled(), *offsiteStatus, now); hold != "" {
+		fmt.Fprintf(stdout, "felis watchdog: %s; holding this mail: %s\n", hold, subject)
 		return save()
 	}
 	switch {
@@ -175,6 +175,28 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 	}
 	state.Commit(plan, now)
 	return save()
+}
+
+// mailHold is why this run's mail waits, "" when it goes out: the installer's
+// quiet window, or this host standing by for another host's off-site bucket
+// (offsite.Status.StandsBy). A standby host is a rehearsal, or a rebuild not
+// yet taken over, and the owners its restored database names are that host's,
+// which mails them itself.
+func mailHold(quietPath string, offsiteOn bool, offsiteStatus string, now time.Time) string {
+	if until := watchdog.QuietUntil(quietPath); now.Before(until) {
+		return fmt.Sprintf("quiet until %s (installer running)", until.UTC().Format(time.RFC3339))
+	}
+	if !offsiteOn {
+		return ""
+	}
+	st, err := offsite.ReadStatus(offsiteStatus)
+	if err != nil {
+		return ""
+	}
+	if w := st.StandsBy(now); w != nil {
+		return fmt.Sprintf("this host stands by for %s, which wrote the off-site bucket at %s and mails its owners itself", w, w.At.UTC().Format(time.RFC3339))
+	}
+	return ""
 }
 
 // usesMirroredScanDB reports whether build scans read the vulnerability DB copy

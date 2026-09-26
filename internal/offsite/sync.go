@@ -104,6 +104,8 @@ type Syncer struct {
 	UploadsDir string
 	// UploadGrace and MinRate bound one object's upload: UploadGrace plus the
 	// time the object takes at MinRate bytes a second. Zero takes the defaults.
+	// Lease names this host in felis-writer (writer.go); nil checks no writer.
+	Lease       *Lease
 	UploadGrace time.Duration
 	MinRate     int64
 	Now         func() time.Time
@@ -201,8 +203,9 @@ func (s *Syncer) Run(ctx context.Context) (Result, error) {
 	}
 
 	// Before anything is written or pruned: objects sealed with another key
-	// are copies only that key opens, and DBKeep would prune them.
-	if err := ClaimKey(ctx, s.Bucket, s.Key); err != nil {
+	// are copies only that key opens, and DBKeep would prune them; a bucket
+	// another host writes is that host's to prune.
+	if err := claim(ctx, s.Bucket, s.Key, s.Lease, s.now()); err != nil {
 		return res, err
 	}
 	remoteWorlds, err := s.listSizes(ctx, worldsDir)

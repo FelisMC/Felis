@@ -1983,7 +1983,7 @@ ofile="$(mktemp)"
 for fn in validate_offsite_settings persisted_offsite_block offsite_block offsite_enabled configure_offsite install_offsite_timer summary_offsite; do
   blk="$(awk "/^${fn}\\(\\) \\{/,/^}/" "$BS")"
   [ -n "$blk" ] || { echo "FAIL: no ${fn} found in $BS"; exit 1; }
-  [ "$(printf '%s\n' "$blk" | wc -l)" -lt 90 ] \
+  [ "$(printf '%s\n' "$blk" | wc -l)" -lt 120 ] \
     || { echo "FAIL: the extracted block is not ${fn} -- did its closing brace move?"; exit 1; }
   printf '%s\n' "$blk" >> "$ofile"
 done
@@ -1998,7 +1998,12 @@ run_offsite() { # script; runs with the off-site functions sourced
     log() { printf "LOG: %s\n" "$*"; }; ok() { printf "OK: %s\n" "$*"; }; warn() { printf "WARN: %s\n" "$*"; }
     systemctl() { printf "SYSTEMCTL: %s\n" "$*" >&2; }
     fakefelis() { printf "RUN: %s\n" "$*" >&2; [ -z "${CHECK_FAILS:-}" ] || { echo "bucket: access denied" >&2; return 1; }
-      [ -z "${KEY_MISMATCH:-}" ] || { echo "the bucket records key id 1111111111111111, this key is 2222222222222222" >&2; return 3; }; }
+      [ -z "${KEY_MISMATCH:-}" ] || { echo "the bucket records key id 1111111111111111, this key is 2222222222222222" >&2; return 3; }
+      [ "$2" != take-over ] || [ -z "${STANDBY:-}" ] || { echo "felis offsite take-over: host prod-1 (id 3333333333333333) writes the bucket, last at 2026-09-27 07:00:00 (20m ago)"
+        echo "This host was built from its backup and copies nothing into the bucket."; return 4; }
+      [ "$2" != take-over ] || [ -z "${DISPLACED:-}" ] || { echo "felis offsite take-over: host spare-1 (id 4444444444444444) writes the bucket, last at 2026-09-27 07:10:00 (10m ago)"
+        echo "It took the bucket over from this host: this host copies nothing there any more, and its watchdog mails the owners about it."; return 5; }
+      [ "$2" != take-over ] || [ -z "${WRITER_FAILS:-}" ] || { echo "felis offsite take-over: offsite: felis-writer in the bucket is not a record Felis wrote" >&2; return 1; }; }
     FELIS_OFFSITE_ENDPOINT="${FELIS_OFFSITE_ENDPOINT:-}" FELIS_OFFSITE_BUCKET="${FELIS_OFFSITE_BUCKET:-}"
     FELIS_OFFSITE_REGION="${FELIS_OFFSITE_REGION:-}" FELIS_OFFSITE_PREFIX="${FELIS_OFFSITE_PREFIX:-}"
     FELIS_OFFSITE_DB_KEEP="${FELIS_OFFSITE_DB_KEEP:-}"
@@ -2141,6 +2146,53 @@ case "$out" in
 esac
 out="$(OFFSITE_ENABLED=1 OFFSITE_KEY_NEW=1 FELIS_OFFSITE_KEY=NEWKEY run_offsite 'install_offsite_timer; summary_offsite')"
 expect "a key the bucket takes is shown once" "WARN:     FELIS_OFFSITE_KEY=NEWKEY" "$out"
+
+# A rehearsal on a spare machine restores the production host's [offsite] settings: the
+# install must find the production host writing the bucket, say this host stands by, and
+# still start the first copy so the watchdog learns it.
+out="$(OFFSITE_ENABLED=1 run_offsite install_offsite_timer)"
+expect "the install asks which host writes the bucket" "RUN: offsite take-over -config $odir/felis.host.toml -env-file $odir/offsite.env" "$out"
+case "$out" in
+  *"take-over -yes"* | *"-config $odir/felis.host.toml -env-file $odir/offsite.env -yes"*) echo "FAIL the install took the bucket over: $out"; fails=$((fails + 1)) ;;
+  *) echo "PASS the install only asks, never takes the bucket over" ;;
+esac
+out="$(OFFSITE_ENABLED=1 STANDBY=1 run_offsite 'install_offsite_timer; summary_offsite')"
+expect "a standby host names the writer" "WARN:   host prod-1 (id 3333333333333333) writes the bucket, last at 2026-09-27 07:00:00 (20m ago)" "$out"
+expect "a standby host is a loud warning" "WARN: Another host writes the [offsite] bucket, and this host was built from its backup:" "$out"
+expect "a standby host says how to take over" "WARN: this host replaces it for good, run sudo felis offsite take-over -yes, then" "$out"
+expect "a standby host still records itself through the first copy" "SYSTEMCTL: start --no-block felis-offsite.service" "$out"
+expect "the summary says the copy stands by" "WARN: OFF-SITE COPY ON STANDBY: another host writes the [offsite] bucket (see above)." "$out"
+expect "a standby host still says where its key is" "LOG: Off-site copy: the encryption key is in" "$out"
+case "$out" in
+  *"OK: off-site copy: hourly"* | *"could not tell"* | *"OFF-SITE COPY STOPPED"*) echo "FAIL a standby host read as copying, as an error or as a key mismatch: $out"; fails=$((fails + 1)) ;;
+  *) echo "PASS a standby host reads as standing by only" ;;
+esac
+# A rehearsal machine that took the bucket over by mistake leaves the production host
+# displaced: its re-run must say so, with how to take the bucket back, and never call it a
+# standby, whose watchdog stays quiet.
+out="$(OFFSITE_ENABLED=1 DISPLACED=1 run_offsite 'install_offsite_timer; summary_offsite')"
+expect "a displaced host names the host that took over" "WARN:   host spare-1 (id 4444444444444444) writes the bucket, last at 2026-09-27 07:10:00 (10m ago)" "$out"
+expect "a displaced host is a loud warning" "WARN: Another host took the [offsite] bucket over from this host:" "$out"
+expect "a displaced host says how to take the bucket back" "WARN: sudo felis offsite take-over -yes, then sudo systemctl start felis-offsite.service" "$out"
+expect "the summary says the copy stopped" "WARN: OFF-SITE COPY STOPPED: another host took the [offsite] bucket over (see above)." "$out"
+expect "a displaced host still says where its key is" "LOG: Off-site copy: the encryption key is in" "$out"
+case "$out" in
+  *"OK: off-site copy: hourly"* | *"could not tell"* | *"ON STANDBY"* | *"built from its backup:"* | *"sealed with another key"*) echo "FAIL a displaced host read as copying, as an error, as a standby or as a key mismatch: $out"; fails=$((fails + 1)) ;;
+  *) echo "PASS a displaced host reads as taken over only" ;;
+esac
+out="$(OFFSITE_ENABLED=1 WRITER_FAILS=1 run_offsite 'install_offsite_timer; summary_offsite')"
+expect "an unreadable writer record shows why" "felis-writer in the bucket is not a record Felis wrote" "$out"
+expect "an unreadable writer record is a warning" "WARN: could not tell which host writes the [offsite] bucket (error above)" "$out"
+case "$out" in
+  *"OK: off-site copy: hourly"* | *"ON STANDBY"*) echo "FAIL an unreadable writer record read as copying or standing by: $out"; fails=$((fails + 1)) ;;
+  *) echo "PASS an unreadable writer record reads as neither copying nor standing by" ;;
+esac
+out="$(OFFSITE_ENABLED=1 run_offsite 'install_offsite_timer; summary_offsite')"
+expect "the host that writes the bucket copies" "OK: off-site copy: hourly to the [offsite] bucket, first copy started" "$out"
+case "$out" in
+  *"ON STANDBY"* | *"Another host writes"*) echo "FAIL the writer was called a standby: $out"; fails=$((fails + 1)) ;;
+  *) echo "PASS the writer is not called a standby" ;;
+esac
 
 out="$(OFFSITE_ENABLED=0 run_offsite 'systemctl() { printf "SYSTEMCTL: %s\n" "$*" >> "$STATE_DIR/systemctl.log"; }; install_offsite_timer')"
 expect "removing [offsite] disables the timer" "SYSTEMCTL: disable --now felis-offsite.timer" "$(cat "$odir/systemctl.log")"

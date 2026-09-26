@@ -356,22 +356,217 @@ func TestOffsiteCheckKey(t *testing.T) {
 	}
 }
 
-func TestRecordRunMarksAKeyMismatch(t *testing.T) {
+func TestRecordRun(t *testing.T) {
 	t0 := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	w := &offsite.Writer{HostID: "bbbbbbbbbbbbbbbb", Host: "prod-1", At: t0}
 	for _, tc := range []struct {
-		err      error
-		mismatch bool
-		success  bool
+		err                                   error
+		mismatch, standby, displaced, success bool
 	}{
-		{nil, false, true},
-		{errors.New("list worlds/ in the bucket: connection reset"), false, false},
-		{fmt.Errorf("%w: the bucket records key id 0123456789abcdef", offsite.ErrKeyMismatch), true, false},
+		{nil, false, false, false, true},
+		{errors.New("list worlds/ in the bucket: connection reset"), false, false, false, false},
+		{fmt.Errorf("%w: the bucket records key id 0123456789abcdef", offsite.ErrKeyMismatch), true, false, false, false},
+		{&offsite.WriterError{Kind: offsite.ErrStandby, Writer: w}, false, true, false, false},
+		{&offsite.WriterError{Kind: offsite.ErrDisplaced, Writer: w}, false, false, true, false},
 	} {
 		st := offsite.Status{LastAttempt: t0}
-		recordRun(&st, offsite.Result{RemoteDB: 2}, tc.err)
-		if st.KeyMismatch != tc.mismatch || st.LastSuccess.Equal(t0) != tc.success || st.Result.RemoteDB != 2 {
+		recordRun(&st, offsite.Result{RemoteDB: 2}, tc.err, offsite.Lease{})
+		if st.KeyMismatch != tc.mismatch || st.Standby != tc.standby || st.Displaced != tc.displaced ||
+			(st.Writer != nil) != (tc.standby || tc.displaced) || st.LastSuccess.Equal(t0) != tc.success || st.Result.RemoteDB != 2 {
 			t.Errorf("err %v: status %+v", tc.err, st)
 		}
+	}
+
+	// A host that copied before writers were recorded keeps that claim over
+	// failed runs until it has an id.
+	l := offsite.Lease{IDFile: filepath.Join(t.TempDir(), offsite.HostIDFile), Inherited: true}
+	st := offsite.Status{}
+	recordRun(&st, offsite.Result{}, errors.New("cannot reach bucket"), l)
+	if !st.Inherited {
+		t.Error("a failed run on a host with no id dropped the older release's claim")
+	}
+	writeTestFile(t, l.IDFile, "aaaaaaaaaaaaaaaa\n", 0o600)
+	st = offsite.Status{Inherited: true}
+	recordRun(&st, offsite.Result{}, nil, l)
+	if st.Inherited {
+		t.Error("a host with an id still carries the older release's claim")
+	}
+}
+
+// A refused run has copied nothing and listed nothing: its zero counts would
+// tell the journal the bucket is empty. A pass that ran and failed a step
+// shows what it did get to.
+func TestReportRun(t *testing.T) {
+	w := &offsite.Writer{HostID: "bbbbbbbbbbbbbbbb", Host: "prod-1", At: time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)}
+	for _, tc := range []struct {
+		name   string
+		res    offsite.Result
+		err    error
+		code   int
+		counts bool
+	}{
+		{"a pass", offsite.Result{DBUploaded: 1, RemoteDB: 3}, nil, 0, true},
+		{"a pass with a failed step", offsite.Result{RemoteDB: 3, Errors: []string{"copy db/x: timeout"}}, errors.New("1 of this run's steps failed; first: copy db/x: timeout"), 1, true},
+		{"standing by", offsite.Result{}, &offsite.WriterError{Kind: offsite.ErrStandby, Writer: w}, 1, false},
+		{"another key", offsite.Result{}, fmt.Errorf("%w: the bucket records key id 1111111111111111", offsite.ErrKeyMismatch), 1, false},
+		{"no bucket", offsite.Result{}, errors.New("bucket: access denied"), 1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			code := reportRun(tc.res, tc.err, &out, &errOut)
+			if code != tc.code {
+				t.Errorf("exit %d, want %d", code, tc.code)
+			}
+			if got := strings.Contains(out.String(), "bucket holds 0 worlds (0 B), 3 bundles"); got != tc.counts {
+				t.Errorf("counts shown = %v, want %v: %q", got, tc.counts, out.String())
+			}
+			if !tc.counts && out.Len() > 0 {
+				t.Errorf("a refused run printed %q", out.String())
+			}
+			if tc.err != nil && !strings.Contains(errOut.String(), "felis offsite sync: "+tc.err.Error()) {
+				t.Errorf("stderr %q lacks the error", errOut.String())
+			}
+		})
+	}
+}
+
+func TestOffsiteTakeOver(t *testing.T) {
+	newKey := func() []byte {
+		raw, _ := offsite.NewKey()
+		k, _ := offsite.ParseKey(raw)
+		return k
+	}
+	key, other := newKey(), newKey()
+	const mine, theirs = "aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"
+	t0 := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	sealed := func(k []byte, writer string) mapBucket {
+		b := mapBucket{}
+		putBundle(t, b, k, 0, nil)
+		b["felis-key-id"] = []byte(offsite.KeyID(k) + "\n")
+		if writer != "" {
+			raw, _ := json.Marshal(offsite.Writer{HostID: writer, Host: "prod-1", At: t0.Add(-20 * time.Minute)})
+			b["felis-writer"] = raw
+		}
+		return b
+	}
+	lease := func(id string) offsite.Lease {
+		l := offsite.Lease{IDFile: filepath.Join(t.TempDir(), offsite.HostIDFile), Host: "spare-1"}
+		if id != "" {
+			writeTestFile(t, l.IDFile, id+"\n", 0o600)
+		}
+		return l
+	}
+	run := func(b mapBucket, l offsite.Lease, statusFile string, yes bool) (int, string, string) {
+		t.Helper()
+		var out, errb bytes.Buffer
+		code := takeOver(context.Background(), b, key, l, statusFile, yes, t0, &out, &errb)
+		return code, out.String(), errb.String()
+	}
+	for _, tc := range []struct {
+		what   string
+		bucket mapBucket
+		id     string
+		code   int
+		says   []string
+	}{
+		{"this host writes the bucket", sealed(key, mine), mine, 0, []string{"this host (id " + mine + ") writes the bucket; nothing to take over"}},
+		{"an empty bucket", mapBucket{}, "", 0, []string{"names no host writing it; this host's next sync records itself"}},
+		{"a host built from the writer's backup", sealed(key, theirs), "", 4, []string{"host prod-1 (id " + theirs + ") writes the bucket, last at", "(20m ago)", "built from its backup", "sudo felis offsite take-over -yes"}},
+		{"another host's copies, no writer named", sealed(key, ""), "", 4, []string{"holds copies this host did not write, and names no host writing it", "take-over -yes"}},
+		{"a host another one took over from", sealed(key, theirs), mine, 5, []string{"took the bucket over from this host"}},
+		{"a key the bucket refuses", sealed(other, theirs), "", 3, []string{"sealed with another key"}},
+	} {
+		t.Run(tc.what, func(t *testing.T) {
+			before := string(tc.bucket["felis-writer"])
+			l := lease(tc.id)
+			code, out, errb := run(tc.bucket, l, filepath.Join(t.TempDir(), "status.json"), false)
+			if code != tc.code {
+				t.Fatalf("exit %d, want %d\n%s%s", code, tc.code, out, errb)
+			}
+			for _, s := range tc.says {
+				if !strings.Contains(out+errb, s) {
+					t.Errorf("output lacks %q:\n%s%s", s, out, errb)
+				}
+			}
+			if string(tc.bucket["felis-writer"]) != before {
+				t.Error("take-over without -yes wrote the bucket's writer")
+			}
+			if tc.id == "" {
+				if _, err := os.Stat(l.IDFile); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("take-over without -yes made this host an id: %v", err)
+				}
+			}
+		})
+	}
+
+	// -yes on a standby host: the bucket names it, and the refusal the last
+	// sync recorded is cleared, so the watchdog mails again at once.
+	b := sealed(key, theirs)
+	l := lease("")
+	statusFile := filepath.Join(t.TempDir(), "status.json")
+	lastSuccess := t0.Add(-48 * time.Hour)
+	if err := offsite.WriteStatus(statusFile, offsite.Status{
+		LastAttempt: t0.Add(-time.Hour), LastSuccess: lastSuccess, LastError: "offsite: another host writes this bucket", Format: offsite.StatusFormat,
+		Standby: true, Writer: &offsite.Writer{HostID: theirs, Host: "prod-1", At: t0}, Inherited: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	code, out, errb := run(b, l, statusFile, true)
+	id, _ := l.ID()
+	if code != 0 || id == "" || !strings.Contains(out, "this host (id "+id+") writes the bucket now; host prod-1 (id "+theirs+") stops at its next copy") || !strings.Contains(out, "systemctl start felis-offsite.service") {
+		t.Fatalf("take-over -yes: exit %d, id %q\n%s%s", code, id, out, errb)
+	}
+	if w, err := offsite.BucketWriter(context.Background(), b); err != nil || w.HostID != id || w.Host != "spare-1" || !w.At.Equal(t0) {
+		t.Errorf("writer after take-over -yes = %+v, %v", w, err)
+	}
+	st, err := offsite.ReadStatus(statusFile)
+	if err != nil || st.Standby || st.Writer != nil || st.LastError != "" || st.Inherited || !st.LastSuccess.Equal(lastSuccess) {
+		t.Errorf("status after take-over -yes = %+v, %v; want the refusal cleared and the last success kept", st, err)
+	}
+
+	// -yes with a key the bucket refuses writes nothing.
+	b = sealed(other, theirs)
+	before := string(b["felis-writer"])
+	if code, _, _ := run(b, lease(""), filepath.Join(t.TempDir(), "status.json"), true); code != 3 || string(b["felis-writer"]) != before {
+		t.Errorf("take-over -yes under another key: exit %d, writer %s", code, b["felis-writer"])
+	}
+}
+
+func TestOffsiteStatusSaysWhoWritesTheBucket(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "felis.toml")
+	writeTestFile(t, cfg, installerTOML("example.com", "127.0.0.1")+"\n[offsite]\nendpoint = \"https://s3.example.com\"\nbucket = \"felis-backups\"\n", 0o600)
+	statusFile := filepath.Join(dir, "status.json")
+	now := time.Now()
+	w := &offsite.Writer{HostID: "bbbbbbbbbbbbbbbb", Host: "prod-1", At: now.Add(-30 * time.Minute)}
+	stale := &offsite.Writer{HostID: "bbbbbbbbbbbbbbbb", Host: "prod-1", At: now.Add(-offsite.WriterLive - time.Hour)}
+	for _, tc := range []struct {
+		what string
+		st   offsite.Status
+		says []string
+		not  string
+	}{
+		{"standing by for a live writer", offsite.Status{Standby: true, Writer: w}, []string{"This host stands by: host prod-1 (id bbbbbbbbbbbbbbbb) writes the bucket", "mails no watchdog alert", "take-over -yes"}, "wrote it, last at"},
+		{"standing by for a writer gone quiet", offsite.Status{Standby: true, Writer: stale}, []string{"copies nothing into the bucket: host prod-1 (id bbbbbbbbbbbbbbbb) wrote it, last at", "take-over -yes"}, "mails no watchdog alert"},
+		{"standing by, no writer named", offsite.Status{Standby: true}, []string{"names no host writing it", "take-over -yes"}, "stands by:"},
+		{"displaced", offsite.Status{Displaced: true, Writer: w}, []string{"host prod-1 (id bbbbbbbbbbbbbbbb) took the bucket over", "rehearsal machine", "take-over -yes"}, "stands by"},
+	} {
+		t.Run(tc.what, func(t *testing.T) {
+			tc.st.LastAttempt, tc.st.LastSuccess, tc.st.LastError = now.Add(-time.Minute), now.Add(-time.Hour), "offsite: another host writes this bucket"
+			if err := offsite.WriteStatus(statusFile, tc.st); err != nil {
+				t.Fatal(err)
+			}
+			var out, errb bytes.Buffer
+			code := cmdOffsite([]string{"status", "-config", cfg, "-status-file", statusFile}, &out, &errb)
+			if code != 1 || strings.Contains(out.String(), "bucket holds:") || strings.Contains(out.String(), tc.not) {
+				t.Errorf("exit %d\n%s%s", code, out.String(), errb.String())
+			}
+			for _, s := range tc.says {
+				if !strings.Contains(out.String(), s) {
+					t.Errorf("output lacks %q:\n%s", s, out.String())
+				}
+			}
+		})
 	}
 }
 
@@ -430,5 +625,51 @@ func TestPrintDBBundlesSaysWhatEachHolds(t *testing.T) {
 		if l := lines[i+1]; !strings.HasPrefix(l, "  "+w.name+"  ") || !strings.Contains(l, w.holds) {
 			t.Errorf("line %d = %q, want %s with %q", i+1, l, w.name, w.holds)
 		}
+	}
+}
+
+// TestRestoredHostKeepsStandingBy walks the status file across runs: a host
+// restored from the writer's backup stands by on its first run and on every
+// run after it, a host an older release left copying claims the bucket once,
+// and a failed first run after the upgrade keeps that claim.
+func TestRestoredHostKeepsStandingBy(t *testing.T) {
+	rawKey, _ := offsite.NewKey()
+	key, _ := offsite.ParseKey(rawKey)
+	cfg := config.OffsiteConfig{Endpoint: "https://s3.example.com", Bucket: "felis-backups"}
+	t0 := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	standby := &offsite.WriterError{Kind: offsite.ErrStandby, Writer: &offsite.Writer{HostID: "bbbbbbbbbbbbbbbb", Host: "prod-1", At: t0}}
+	pass := func(statusFile string, at time.Time, err error) offsite.Lease {
+		t.Helper()
+		st, lease := startRun(cfg, key, statusFile, at)
+		recordRun(&st, offsite.Result{}, err, lease)
+		if werr := offsite.WriteStatus(statusFile, st); werr != nil {
+			t.Fatal(werr)
+		}
+		return lease
+	}
+
+	restored := filepath.Join(t.TempDir(), "status.json")
+	for i := range 3 {
+		if l := pass(restored, t0.Add(time.Duration(i)*time.Hour), standby); l.Inherited {
+			t.Fatalf("run %d of a restored host claims the bucket", i+1)
+		}
+	}
+	if st, _ := offsite.ReadStatus(restored); !st.Standby || st.Format != offsite.StatusFormat || st.KeyID != offsite.KeyID(key) || st.Bucket != "felis-backups" {
+		t.Errorf("restored host's status = %+v", st)
+	}
+
+	upgraded := filepath.Join(t.TempDir(), "status.json")
+	if err := offsite.WriteStatus(upgraded, offsite.Status{LastAttempt: t0.Add(-time.Hour), LastSuccess: t0.Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if l := pass(upgraded, t0, errors.New("cannot reach bucket")); !l.Inherited {
+		t.Fatal("the first run after the upgrade does not claim the bucket")
+	}
+	l := pass(upgraded, t0.Add(time.Hour), nil)
+	if !l.Inherited {
+		t.Fatal("a failed first run after the upgrade lost the claim")
+	}
+	if st, _ := offsite.ReadStatus(upgraded); !st.LastSuccess.Equal(t0.Add(time.Hour)) {
+		t.Errorf("upgraded host's status = %+v", st)
 	}
 }

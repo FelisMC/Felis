@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -160,36 +161,36 @@ func TestCheckKey(t *testing.T) {
 	}
 }
 
-func TestClaimKey(t *testing.T) {
+func TestClaim(t *testing.T) {
 	key, other := testKey(t), testKey(t)
 	marker := func(b *memBucket) string { return string(b.objs[keyMark]) }
 
 	b := newMemBucket()
-	if err := ClaimKey(context.Background(), b, key); err != nil {
+	if err := claim(context.Background(), b, key, nil, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if marker(b) != KeyID(key)+"\n" {
 		t.Fatalf("empty bucket: marker = %q, want %s", marker(b), KeyID(key))
 	}
-	if err := ClaimKey(context.Background(), b, key); err != nil || b.puts != 1 {
+	if err := claim(context.Background(), b, key, nil, time.Time{}); err != nil || b.puts != 1 {
 		t.Errorf("second claim: err %v, puts %d; want the marker written once", err, b.puts)
 	}
 	if fit, err := CheckKey(context.Background(), b, key); fit != KeyRecorded || err != nil {
 		t.Errorf("after the claim: CheckKey = %v, %v", fit, err)
 	}
-	if err := ClaimKey(context.Background(), b, other); !errors.Is(err, ErrKeyMismatch) || marker(b) != KeyID(key)+"\n" {
+	if err := claim(context.Background(), b, other, nil, time.Time{}); !errors.Is(err, ErrKeyMismatch) || marker(b) != KeyID(key)+"\n" {
 		t.Errorf("another key: err %v, marker %q; want a refusal that leaves the marker", err, marker(b))
 	}
 
 	b = newMemBucket()
 	putAt(b, "worlds/1.fenc", seal(t, []byte("1"), key), 0)
-	if err := ClaimKey(context.Background(), b, key); err != nil || marker(b) != KeyID(key)+"\n" {
+	if err := claim(context.Background(), b, key, nil, time.Time{}); err != nil || marker(b) != KeyID(key)+"\n" {
 		t.Errorf("unmarked bucket the key opens: err %v, marker %q", err, marker(b))
 	}
 
 	b = newMemBucket()
 	putAt(b, "worlds/1.fenc", seal(t, []byte("1"), other), 0)
-	if err := ClaimKey(context.Background(), b, key); !errors.Is(err, ErrKeyMismatch) || b.puts != 0 {
+	if err := claim(context.Background(), b, key, nil, time.Time{}); !errors.Is(err, ErrKeyMismatch) || b.puts != 0 {
 		t.Errorf("unmarked bucket under another key: err %v, puts %d; want a refusal that writes nothing", err, b.puts)
 	}
 }
@@ -214,6 +215,9 @@ func TestSyncRefusesAnotherKeysBucket(t *testing.T) {
 			for i, name := range []string{"felis-db-20260901T030000Z-daily.tar", "felis-db-20260902T030000Z-daily.tar", "felis-db-20260903T030000Z-daily.tar"} {
 				putAt(b, DBKey(name), seal(t, []byte(name), other), i)
 			}
+			// A new host: the wrong key must not record it as the writer either.
+			l := testLease(t, "")
+			s.Lease = &l
 			before := len(b.objs)
 
 			_, err := s.Run(context.Background())
@@ -225,6 +229,9 @@ func TestSyncRefusesAnotherKeysBucket(t *testing.T) {
 			}
 			if !cat.rows[0].offsite.IsZero() {
 				t.Error("the refused run recorded alpha as copied")
+			}
+			if _, err := os.Stat(l.IDFile); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("the refused run made this host an id: %v", err)
 			}
 		})
 	}

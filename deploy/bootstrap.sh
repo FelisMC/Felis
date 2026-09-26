@@ -4541,9 +4541,9 @@ quiet_watchdog() {
 }
 
 # The hourly off-site copy. The bucket is checked now, in the install, so wrong
-# credentials, an unreachable endpoint or a key other than the one its objects are sealed
-# with show up here; the first copy itself runs in the background, since a host with many
-# archives can take a long while to upload them.
+# credentials, an unreachable endpoint, a key other than the one its objects are sealed
+# with, or another host writing it show up here; the first copy itself runs in the
+# background, since a host with many archives can take a long while to upload them.
 # With no bucket configured the timer is removed (the operator deleted [offsite]) and the
 # install says loudly that every backup is on this machine only.
 install_offsite_timer() {
@@ -4590,8 +4590,40 @@ EOF
   "$HOST_BIN" offsite check-key -config "${STATE_DIR}/felis.host.toml" -env-file "$OFFSITE_ENV" >/dev/null || rc=$?
   case "$rc" in
     0)
+      # A host built from another host's backup (a rehearsal on a spare machine, or a
+      # rebuild) finds that host named as the bucket's writer and stands by: its copy
+      # writes nothing there and its watchdog mails nobody while that host keeps writing.
+      # A host another one took the bucket over from (5) stops copying and mails its
+      # owners. The first copy still runs, to record either for the watchdog.
+      local who wrc=0
+      who="$("$HOST_BIN" offsite take-over -config "${STATE_DIR}/felis.host.toml" -env-file "$OFFSITE_ENV")" || wrc=$?
       systemctl start --no-block felis-offsite.service
-      ok "off-site copy: hourly to the [offsite] bucket, first copy started (sudo felis offsite status; journalctl -u felis-offsite)"
+      case "$wrc" in
+        0) ok "off-site copy: hourly to the [offsite] bucket, first copy started (sudo felis offsite status; journalctl -u felis-offsite)" ;;
+        4)
+          OFFSITE_STANDBY=1
+          warn "================================================================================"
+          warn "Another host writes the [offsite] bucket, and this host was built from its backup:"
+          warn "  $(printf '%s\n' "$who" | head -n 1 | sed 's/^felis offsite take-over: //')"
+          warn "This host copies nothing into the bucket and, while that host keeps writing it,"
+          warn "mails no watchdog alert: a rehearsal leaves that host and its owners alone. When"
+          warn "this host replaces it for good, run sudo felis offsite take-over -yes, then"
+          warn "sudo systemctl start felis-offsite.service (docs/troubleshooting.md §16)."
+          warn "================================================================================"
+          ;;
+        5)
+          OFFSITE_DISPLACED=1
+          warn "================================================================================"
+          warn "Another host took the [offsite] bucket over from this host:"
+          warn "  $(printf '%s\n' "$who" | head -n 1 | sed 's/^felis offsite take-over: //')"
+          warn "This host copies nothing into the bucket any more, and its watchdog mails the"
+          warn "owners about it. If that host is a rehearsal machine, take the bucket back:"
+          warn "sudo felis offsite take-over -yes, then sudo systemctl start felis-offsite.service"
+          warn "(docs/troubleshooting.md §16)."
+          warn "================================================================================"
+          ;;
+        *) warn "could not tell which host writes the [offsite] bucket (error above); the first copy started and says what it found: journalctl -u felis-offsite" ;;
+      esac
       ;;
     3)
       # The timer stays: every run is refused (and reported by the watchdog) until the
@@ -4622,6 +4654,14 @@ summary_offsite() {
     warn "Losing its disk loses them all. Set FELIS_OFFSITE_BUCKET, FELIS_OFFSITE_ENDPOINT,"
     warn "FELIS_OFFSITE_ACCESS_KEY and FELIS_OFFSITE_SECRET_KEY and re-run (docs/troubleshooting.md §16)."
     return 0
+  fi
+  if [ "${OFFSITE_DISPLACED:-0}" = 1 ]; then
+    warn "OFF-SITE COPY STOPPED: another host took the [offsite] bucket over (see above)."
+    warn "This host's backups stay on this machine until: sudo felis offsite take-over -yes"
+  fi
+  if [ "${OFFSITE_STANDBY:-0}" = 1 ]; then
+    warn "OFF-SITE COPY ON STANDBY: another host writes the [offsite] bucket (see above)."
+    warn "This host's backups stay on this machine until: sudo felis offsite take-over -yes"
   fi
   if [ "${OFFSITE_KEY_MISMATCH:-0}" = 1 ]; then
     # A key the bucket refuses is no key to store; this run's is in OFFSITE_ENV if the
@@ -4824,6 +4864,8 @@ configure_offsite() {
   OFFSITE_ENABLED=0
   OFFSITE_KEY_NEW=0
   OFFSITE_KEY_MISMATCH=0
+  OFFSITE_STANDBY=0
+  OFFSITE_DISPLACED=0
   offsite_enabled || return 0
   OFFSITE_ENABLED=1
   local env_ak="${FELIS_OFFSITE_ACCESS_KEY:-}" env_sk="${FELIS_OFFSITE_SECRET_KEY:-}" env_key="${FELIS_OFFSITE_KEY:-}"

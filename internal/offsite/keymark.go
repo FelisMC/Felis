@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // keyMark is the one object the bucket holds in the clear: the KeyID of the
@@ -137,12 +138,23 @@ func CheckKey(ctx context.Context, b Bucket, key []byte) (KeyFit, error) {
 	return KeyUnused, nil
 }
 
-// ClaimKey is CheckKey, then records key's id in a bucket that has none, so
-// that every later check reads the id.
-func ClaimKey(ctx context.Context, b Bucket, key []byte) error {
+// claim is the check before a run writes anything: CheckKey, then the lease
+// (nil checks none), then key's id recorded in a bucket that has none, so
+// that every later check reads the id. The key goes first, so a host with the
+// wrong key never records itself as the writer, and the lease before the key
+// id, so a standby host writes nothing at all.
+func claim(ctx context.Context, b Bucket, key []byte, lease *Lease, now time.Time) error {
 	fit, err := CheckKey(ctx, b, key)
-	if err != nil || fit == KeyRecorded {
+	if err != nil {
 		return err
+	}
+	if lease != nil {
+		if err := lease.Acquire(ctx, b, fit == KeyUnused, now); err != nil {
+			return err
+		}
+	}
+	if fit == KeyRecorded {
+		return nil
 	}
 	id := KeyID(key) + "\n"
 	if err := b.Put(ctx, keyMark, strings.NewReader(id), int64(len(id))); err != nil {

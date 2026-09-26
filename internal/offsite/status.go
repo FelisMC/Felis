@@ -32,6 +32,46 @@ type Status struct {
 	// with another key (ErrKeyMismatch): no later run copies anything until
 	// the key is fixed, so the watchdog reports it at once.
 	KeyMismatch bool `json:"key_mismatch,omitempty"`
+	// Standby and Displaced are a run refused because another host, Writer,
+	// writes the bucket (ErrStandby, ErrDisplaced).
+	Standby   bool    `json:"standby,omitempty"`
+	Displaced bool    `json:"displaced,omitempty"`
+	Writer    *Writer `json:"writer,omitempty"`
+	// Format is StatusFormat in every record this release writes; 0 is a
+	// record from before writers were recorded, whose host had been copying
+	// to the bucket (Lease.Inherited).
+	Format int `json:"format,omitempty"`
+	// Inherited carries Lease.Inherited over runs that ended before the host
+	// recorded itself (an unreachable bucket on the first run after the
+	// upgrade), until it has an id.
+	Inherited bool `json:"inherited,omitempty"`
+}
+
+// StatusFormat marks a status record that knows about felis-writer.
+const StatusFormat = 2
+
+// StandsBy is the host this one stands by for: the last run was refused
+// because that host writes the bucket, and it wrote it within WriterLive of
+// now. While it keeps writing, this host is a rehearsal (or a rebuild not yet
+// taken over), and the owners in its restored database are that host's: the
+// watchdog here mails them nothing.
+func (st *Status) StandsBy(now time.Time) *Writer {
+	if st == nil || !st.Standby || st.Writer == nil || now.Sub(st.Writer.At) > WriterLive {
+		return nil
+	}
+	return st.Writer
+}
+
+// HostLease is the Lease of the host whose status file is statusFile: its id
+// next to it, and Inherited when that file was written by an older release
+// (or carries Inherited from one).
+func HostLease(statusFile string) Lease {
+	host, _ := os.Hostname()
+	l := Lease{IDFile: filepath.Join(filepath.Dir(statusFile), HostIDFile), Host: host}
+	if prev, err := ReadStatus(statusFile); err == nil && prev != nil && (prev.Format == 0 || prev.Inherited) {
+		l.Inherited = true
+	}
+	return l
 }
 
 // ReadStatus reads the status file. A missing file is (nil, nil): no sync has

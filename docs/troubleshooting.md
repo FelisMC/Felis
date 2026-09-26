@@ -1548,6 +1548,13 @@ How it mails:
   delay is never mailed; one that turns critical is mailed again at once.
 - **During an install** nothing is mailed. `bootstrap.sh` writes
   `/run/felis/watchdog-quiet-until` and removes it when it exits.
+- **On a host built from another host's backup** (a rehearsal on a spare
+  machine, a rebuild before `felis offsite take-over`) nothing is mailed while
+  the host the off-site bucket names ran in the last 3 hours: the owners in
+  the restored database are that host's, and it mails them itself. The run
+  logs `this host stands by for host ...; holding this mail`. Once that host
+  stops running, the standby is mailed like any other finding (§16).
+  [GO-TESTED: `TestMailHold`]
 - **Caching:** the relay password comes from `/etc/felis/smtp-password`, which
   the watchdog reads even while the API server is down (an install without that
   file reads the `felis-smtp` Secret instead). It and the recipient list are
@@ -2120,7 +2127,11 @@ bucket holding (images, uploads, world archives) at the bucket's bandwidth,
 and each skips what is already in place, so an interrupted one resumes. Write
 those sizes down with the bucket's download rate and you have the recovery
 time for your install. A whole-host rehearsal on a spare machine, once per
-release, is the way to know it for sure.
+release, is the way to know it for sure. The spare follows the steps below
+without step 8: it finds the production host named in the bucket and stands
+by, so it copies nothing into the bucket, prunes nothing there and, while
+production keeps writing, mails none of the owners its restored database
+holds.
 
 The order below matters: the state goes in before the installer so it reuses
 the old secrets and bucket; the images go back before the database so the
@@ -2154,8 +2165,9 @@ host yourself, plus the off-site encryption key if the copy is in the bucket.
 
    `latest` is the newest bundle, unless that one holds no servers and at
    most one account while an older one holds more. That is the database a
-   rebuilt host backs up and copies off-site within its first hour, before
-   anyone restores onto it, so `fetch-db latest` refuses it and names up to
+   rebuilt host copies off-site when it takes the bucket over before anyone
+   restores onto it (with an older release, within its first hour), so
+   `fetch-db latest` refuses it and names up to
    three older bundles with their counts; fetch the one you want by name in
    place of `latest` (`felis offsite list` shows them all, each with its
    counts). A bundle fetched by name that looks like a new install's is
@@ -2174,7 +2186,10 @@ host yourself, plus the off-site encryption key if the copy is in the bucket.
 3. Run the installer as for a first install. `bootstrap.done` is not in the
    bundle, so it takes the fresh-install path, creates the empty database with
    the restored password and migrates it. It finds `[offsite]` in the restored
-   `felis.host.toml` and turns the hourly copy back on.
+   `felis.host.toml`, turns the hourly copy back on and reports that another
+   host writes the bucket: this host was built from its backup, so it stands
+   by and copies nothing there until step 8, and ends with `OFF-SITE COPY ON
+   STANDBY`.
 4. Push the user images back into the new registry:
 
    ```
@@ -2187,8 +2202,8 @@ host yourself, plus the off-site encryption key if the copy is in the bucket.
    its digest, and pushes only what the registry lacks. The pruner counts a
    restored image as freshly pushed and keeps it for 24 hours; finish the
    database step within that window so the restored servers and whitelist
-   entries keep naming it. When the new host's hourly copy has already recorded
-   its still-empty registry, `fetch-images` refuses that newest list and names
+   entries keep naming it. When the new host has already taken the bucket over
+   and recorded its still-empty registry, `fetch-images` refuses that newest list and names
    the version to pass with `-at`; `fetch-uploads` does the same.
 5. Put the submission uploads back:
 
@@ -2221,6 +2236,18 @@ host yourself, plus the off-site encryption key if the copy is in the bucket.
    nothing has used it yet (a short-lived `felis-bind-felis-backups-*` pod). It
    lists any it could not find in the bucket. Restore a world from its archive
    as usual (§10, §13).
+8. Make this host the one that writes the bucket, and send its first copy:
+
+   ```
+   sudo felis offsite take-over          # names the host the bucket names now
+   sudo felis offsite take-over -yes
+   sudo systemctl start felis-offsite.service
+   ```
+
+   Without `-yes` it names the host the bucket records and when that host last
+   wrote it, and exits 4. With `-yes` it records this host; the old host, if it
+   ever runs again, copies nothing more and says it was taken over. Skip this
+   step on a rehearsal machine.
 
 Check the rebuild before letting players in:
 
@@ -2282,6 +2309,27 @@ empty bucket or prefix and re-run the installer.
 [GO-TESTED: `TestSyncRefusesAnotherKeysBucket`, `TestCheckKey`] [SH-TESTED]
 [VM-TESTED: MinIO, the other key's sync refused with the bucket unchanged, check-key 0/3, fetch-db naming both ids]
 
+The bucket also names the host that writes it: `felis-writer`, rewritten by
+every sync, holds that host's id (kept in `/var/lib/felis/offsite/host-id`,
+which no bundle carries), its name and the time of its last run. A host
+restored from a bundle has the bucket's key and credentials but no id, so it
+finds another host named there and stands by: its syncs copy and prune
+nothing, `felis offsite status` names the host that writes the bucket and exits
+1, and while that host ran in the last 3 hours the watchdog holds this host's
+mail (§14). Once it has not run for 3 hours, the watchdog mails this host's
+owners that it copies nothing into the bucket. A bucket that holds sealed
+objects and names no writer puts a host on standby too, except a host that
+copied to it with a release before writers were recorded, which claims it on
+its next sync. `sudo felis offsite take-over` names the host that writes the
+bucket; with `-yes` it records this host instead (step 8 of a rebuild). The
+host it replaced copies nothing from its next sync on: its `status` exits 1,
+and its watchdog mails its owners at once that `the off-site copy has
+stopped`. When that happened by mistake (a rehearsal machine took the bucket
+over), run `sudo felis offsite take-over -yes` on the production host to take
+it back. [GO-TESTED: `TestLeasePlan`, `TestSyncStandsBy`, `TestOffsiteTakeOver`,
+`TestRestoredHostKeepsStandingBy`] [SH-TESTED]
+[VM-TESTED: MinIO, a restored host standing by with the bucket unchanged, take-over, the old host displaced and taking it back, an older release's host claiming its prefix]
+
 What runs:
 
 - **`felis-offsite.timer`** runs `felis offsite sync` hourly (plus up to
@@ -2322,7 +2370,8 @@ What runs:
   `registry/index/<stamp>.json.fenc`, `uploads/blobs/<sha256>.fenc` and
   `uploads/index/<stamp>.json.fenc`: AES-256-GCM in 64 KiB segments, so
   truncation, reordering and a wrong key are all refused on the way back.
-  `felis-key-id` next to them holds the key's id in the clear.
+  `felis-key-id` and `felis-writer` next to them hold the key's id and the
+  host writing the bucket in the clear.
 - A pass sends the database bundles first, then world archives, images and
   uploads. Each object has its own time limit: 10 minutes plus its size at
   512 KiB/s (about 6 hours for 10 GiB). An archive the uplink cannot send in
@@ -2333,7 +2382,8 @@ What runs:
 - The reaper deletes an idle world only after its archive is in the bucket
   (§10).
 - The watchdog mails the owners when no sync has completed for 12 hours
-  (`the off-site copy last completed ... ago`).
+  (`the off-site copy last completed ... ago`), and at once when the bucket
+  refuses this host's key or another host took the bucket over.
 
 Checking it:
 

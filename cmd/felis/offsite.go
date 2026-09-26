@@ -34,6 +34,7 @@ const offsiteUsage = `usage:
   felis offsite fetch-images [-config path] [-registry host:port] [-at version]
   felis offsite fetch-uploads [-config path] [-uploads-dir dir] [-at version]
   felis offsite check-key    [-config path]
+  felis offsite take-over    [-config path] [-status-file path] [-yes]
   felis offsite keygen
 
 Every verb but keygen reads the bucket credentials and the encryption key from
@@ -44,6 +45,13 @@ FELIS_OFFSITE_SECRET_KEY, FELIS_OFFSITE_KEY), taking any that are unset from
 check-key tells whether the key is the one the bucket's objects are sealed
 with, writing nothing; it exits 3 when they are sealed with another key, and
 sync then refuses to write or prune anything in the bucket.
+
+take-over names the host that writes the bucket, writing nothing; it exits 4
+when that is another host and this one never wrote it, and 5 when another
+host took the bucket over from this one. A host built from another host's
+backup (a rehearsal, or a rebuild) copies nothing into that host's bucket
+until -yes makes it the writer; the host it replaces then stops copying and
+says so.
 `
 
 // defaultOffsiteEnvFile is where bootstrap keeps the [offsite] secrets; the
@@ -81,6 +89,8 @@ func cmdOffsite(args []string, stdout, stderr io.Writer) int {
 		return offsiteFetchUploads(fs, rest, stdout, stderr)
 	case "check-key":
 		return offsiteCheckKey(fs, rest, stdout, stderr)
+	case "take-over":
+		return offsiteTakeOver(fs, rest, stdout, stderr)
 	case "keygen":
 		k, err := offsite.NewKey()
 		if err != nil {
@@ -213,28 +223,32 @@ func offsiteSync(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintf(stderr, "felis offsite sync: %v\n", err)
 		return 1
 	}
-	st := offsite.Status{
-		LastAttempt: time.Now().UTC(), Endpoint: env.cfg.Endpoint, Bucket: env.cfg.Bucket,
-		Prefix: env.cfg.Prefix, KeyID: offsite.KeyID(env.key),
-	}
-	if prev, _ := offsite.ReadStatus(*statusFile); prev != nil {
-		st.LastSuccess = prev.LastSuccess
-	}
+	st, lease := startRun(env.cfg, env.key, *statusFile, time.Now())
 	res, err := runOffsiteSync(cfg, env, offsiteSources{
 		archiveDir: *archiveDir, backupPVC: *backupPVC, dbDir: *dbDir,
 		registry:   offsiteRegistryEndpoint(*registry, cfg.Registry),
 		uploadsDir: *uploadsDir, uploadsPVC: *uploadsPVC,
-	}, stderr)
-	recordRun(&st, res, err)
+	}, &lease, stderr)
+	recordRun(&st, res, err, lease)
 	if werr := offsite.WriteStatus(*statusFile, st); werr != nil {
 		fmt.Fprintf(stderr, "felis offsite sync: record status: %v\n", werr)
 	}
-	fmt.Fprintf(stdout, "felis offsite sync: worlds copied=%d pending=%d missing=%d expired=%d; bundles copied=%d pruned=%d; images copied=%d blobs=%d pruned=%d; uploads copied=%d pruned=%d; bucket holds %d worlds (%s), %d bundles, %d images in %d repositories (%s), %d uploads (%s)\n",
-		res.WorldsUploaded, res.WorldsPending, len(res.WorldsMissing), res.WorldsExpired,
-		res.DBUploaded, res.DBPruned, res.ImagesUploaded, res.ImageBlobsUploaded, res.ImageObjectsPruned,
-		res.UploadsUploaded, res.UploadObjectsPruned,
-		res.RemoteWorlds, offsite.HumanBytes(res.RemoteBytes), res.RemoteDB, res.Images, res.ImageRepos, offsite.HumanBytes(res.RemoteImageBytes),
-		res.Uploads, offsite.HumanBytes(res.RemoteUploadBytes))
+	return reportRun(res, err, stdout, stderr)
+}
+
+// reportRun prints one pass's outcome and its exit code. A run stopped before
+// it copied anything (a bucket that did not answer, another key's objects,
+// another host writing the bucket) prints no counts: its zeros would read as
+// an empty bucket.
+func reportRun(res offsite.Result, err error, stdout, stderr io.Writer) int {
+	if err == nil || len(res.Errors) > 0 {
+		fmt.Fprintf(stdout, "felis offsite sync: worlds copied=%d pending=%d missing=%d expired=%d; bundles copied=%d pruned=%d; images copied=%d blobs=%d pruned=%d; uploads copied=%d pruned=%d; bucket holds %d worlds (%s), %d bundles, %d images in %d repositories (%s), %d uploads (%s)\n",
+			res.WorldsUploaded, res.WorldsPending, len(res.WorldsMissing), res.WorldsExpired,
+			res.DBUploaded, res.DBPruned, res.ImagesUploaded, res.ImageBlobsUploaded, res.ImageObjectsPruned,
+			res.UploadsUploaded, res.UploadObjectsPruned,
+			res.RemoteWorlds, offsite.HumanBytes(res.RemoteBytes), res.RemoteDB, res.Images, res.ImageRepos, offsite.HumanBytes(res.RemoteImageBytes),
+			res.Uploads, offsite.HumanBytes(res.RemoteUploadBytes))
+	}
 	for _, m := range res.WorldsMissing {
 		fmt.Fprintf(stderr, "felis offsite sync: recorded archive not on the volume, nothing to copy: %s\n", m)
 	}
@@ -248,14 +262,39 @@ func offsiteSync(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int 
 	return 0
 }
 
-// recordRun puts one pass's outcome into its status record.
-func recordRun(st *offsite.Status, res offsite.Result, err error) {
+// startRun begins a pass: its status record, in this release's format and
+// carrying the last success over, and this host's lease, read from the record
+// the last pass left.
+func startRun(cfg config.OffsiteConfig, key []byte, statusFile string, now time.Time) (offsite.Status, offsite.Lease) {
+	st := offsite.Status{
+		LastAttempt: now.UTC(), Endpoint: cfg.Endpoint, Bucket: cfg.Bucket,
+		Prefix: cfg.Prefix, KeyID: offsite.KeyID(key), Format: offsite.StatusFormat,
+	}
+	if prev, _ := offsite.ReadStatus(statusFile); prev != nil {
+		st.LastSuccess = prev.LastSuccess
+	}
+	return st, offsite.HostLease(statusFile)
+}
+
+// recordRun puts one pass's outcome into its status record. A host that
+// inherited the bucket from an older release keeps that until it has an id.
+func recordRun(st *offsite.Status, res offsite.Result, err error, lease offsite.Lease) {
 	st.Result = res
 	if err != nil {
 		st.LastError = err.Error()
 		st.KeyMismatch = errors.Is(err, offsite.ErrKeyMismatch)
+		var we *offsite.WriterError
+		if errors.As(err, &we) {
+			st.Standby = errors.Is(err, offsite.ErrStandby)
+			st.Displaced = errors.Is(err, offsite.ErrDisplaced)
+			st.Writer = we.Writer
+		}
 	} else {
 		st.LastSuccess = st.LastAttempt
+	}
+	if lease.Inherited {
+		id, _ := lease.ID()
+		st.Inherited = id == ""
 	}
 }
 
@@ -276,7 +315,7 @@ type offsiteSources struct {
 // TimeoutStartSec sits above this.
 const offsiteRunLimit = 23 * time.Hour
 
-func runOffsiteSync(cfg *config.Config, env *offsiteEnv, src offsiteSources, log io.Writer) (offsite.Result, error) {
+func runOffsiteSync(cfg *config.Config, env *offsiteEnv, src offsiteSources, lease *offsite.Lease, log io.Writer) (offsite.Result, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), offsiteRunLimit)
 	defer cancel()
 	checkCtx, checkCancel := context.WithTimeout(ctx, 30*time.Second)
@@ -309,7 +348,7 @@ func runOffsiteSync(cfg *config.Config, env *offsiteEnv, src offsiteSources, log
 	defer drv.Close()
 	s := &offsite.Syncer{
 		Bucket: env.bucket, Catalog: offsite.PGCatalog{DB: drv.DB()}, Key: env.key,
-		ArchiveDir: archiveDir, DBDir: src.dbDir, DBKeep: env.cfg.DBKeep, UploadsDir: uploadsDir, Log: log,
+		ArchiveDir: archiveDir, DBDir: src.dbDir, DBKeep: env.cfg.DBKeep, UploadsDir: uploadsDir, Lease: lease, Log: log,
 	}
 	if src.registry != "" {
 		s.Images = newRegistryImages(src.registry)
@@ -453,6 +492,23 @@ func offsiteStatus(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) in
 	}
 	if st.KeyMismatch {
 		fmt.Fprintf(stdout, "\nThe last run was refused: the bucket's objects are sealed with another key than this host's (key id %s). No sync copies or prunes anything there until FELIS_OFFSITE_KEY in %s is theirs (sudo felis offsite check-key).\n", st.KeyID, defaultOffsiteEnvFile)
+		return 1
+	}
+	if st.Displaced && st.Writer != nil {
+		fmt.Fprintf(stdout, "\nThe last run was refused: %s took the bucket over (it last wrote it at %s), and this host copies nothing there any more. If that host is a rehearsal machine, take the bucket back: sudo felis offsite take-over -yes\n",
+			st.Writer, st.Writer.At.Local().Format(time.DateTime))
+		return 1
+	}
+	if st.Standby {
+		switch w := st.StandsBy(now); {
+		case w != nil:
+			fmt.Fprintf(stdout, "\nThis host stands by: %s writes the bucket (last at %s). This host was built from its backup, copies nothing into the bucket and, while that host keeps writing, mails no watchdog alert.", w, w.At.Local().Format(time.DateTime))
+		case st.Writer != nil:
+			fmt.Fprintf(stdout, "\nThis host copies nothing into the bucket: %s wrote it, last at %s, and this host was built from its backup.", st.Writer, st.Writer.At.Local().Format(time.DateTime))
+		default:
+			fmt.Fprint(stdout, "\nThis host copies nothing into the bucket: it holds copies this host did not write, and names no host writing it.")
+		}
+		fmt.Fprintln(stdout, " Once this host replaces that one for good: sudo felis offsite take-over -yes")
 		return 1
 	}
 	r := st.Result
@@ -609,6 +665,90 @@ func checkKey(ctx context.Context, b offsite.Bucket, key []byte, stdout, stderr 
 	case offsite.KeyUnused:
 		fmt.Fprintf(stdout, "felis offsite check-key: the bucket holds no sealed object yet; the first sync records key id %s\n", id)
 	}
+	return 0
+}
+
+func offsiteTakeOver(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
+	cfgPath := fs.String("config", "/etc/felis/felis.toml", "path to felis.toml")
+	envFile := fs.String("env-file", defaultOffsiteEnvFile, "file with the [offsite] secrets, for variables not already set")
+	statusFile := fs.String("status-file", offsite.DefaultStatusFile, "the record `sync` writes; this host's id is kept next to it")
+	yes := fs.Bool("yes", false, "make this host the one that writes the bucket")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	_, env, err := loadOffsite(*cfgPath, *envFile)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis offsite take-over: %v\n", err)
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := env.bucket.Check(ctx); err != nil {
+		fmt.Fprintf(stderr, "felis offsite take-over: %v\n", err)
+		return 1
+	}
+	return takeOver(ctx, env.bucket, env.key, offsite.HostLease(*statusFile), *statusFile, *yes, time.Now(), stdout, stderr)
+}
+
+// takeOver is take-over once the bucket is open: without yes it says which
+// host writes the bucket, 0 for this one (or none yet), 4 for another and 5
+// for one that took the bucket over from this host; with
+// yes it records this host as the writer. A key the bucket's objects refuse
+// is 3, as in check-key: taking over a bucket this host cannot copy into
+// would only stop the host that can.
+func takeOver(ctx context.Context, b offsite.Bucket, key []byte, lease offsite.Lease, statusFile string, yes bool, now time.Time, stdout, stderr io.Writer) int {
+	fit, err := offsite.CheckKey(ctx, b, key)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis offsite take-over: %v\n", err)
+		if errors.Is(err, offsite.ErrKeyMismatch) {
+			return 3
+		}
+		return 1
+	}
+	role, w, err := lease.Plan(ctx, b, fit == offsite.KeyUnused)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis offsite take-over: %v\n", err)
+		return 1
+	}
+	switch role {
+	case offsite.RoleWrites:
+		id, _ := lease.ID()
+		fmt.Fprintf(stdout, "felis offsite take-over: this host (id %s) writes the bucket; nothing to take over\n", id)
+		return 0
+	case offsite.RoleClaims:
+		fmt.Fprintln(stdout, "felis offsite take-over: the bucket names no host writing it; this host's next sync records itself")
+		return 0
+	}
+	who := "another host"
+	if w != nil {
+		who = w.String()
+		fmt.Fprintf(stdout, "felis offsite take-over: %s writes the bucket, last at %s (%s ago)\n", w, w.At.Local().Format(time.DateTime), dbbackup.Age(now.Sub(w.At)))
+	} else {
+		fmt.Fprintln(stdout, "felis offsite take-over: the bucket holds copies this host did not write, and names no host writing it")
+	}
+	if !yes {
+		if role == offsite.RoleDisplaced {
+			fmt.Fprintf(stdout, "It took the bucket over from this host: this host copies nothing there any more, and its watchdog mails the owners about it. If that host is a rehearsal machine, take the bucket back:\n  sudo felis offsite take-over -yes\n")
+			return 5
+		}
+		fmt.Fprintf(stdout, "This host was built from its backup and copies nothing into the bucket.\n")
+		fmt.Fprintf(stdout, "Taking it over makes this host the one that copies into the bucket and prunes it; %s stops at its next copy and mails its owners. Do it once that host is gone for good, or is a rehearsal machine you are done with:\n  sudo felis offsite take-over -yes\n", who)
+		return 4
+	}
+	if _, err := lease.TakeOver(ctx, b, now); err != nil {
+		fmt.Fprintf(stderr, "felis offsite take-over: %v\n", err)
+		return 1
+	}
+	// The refusal the last sync recorded is over: the watchdog mails again
+	// from now on, and status shows the next run's outcome.
+	if st, err := offsite.ReadStatus(statusFile); err == nil && st != nil && (st.Standby || st.Displaced) {
+		st.Standby, st.Displaced, st.Writer, st.LastError, st.Inherited = false, false, nil, "", false
+		if err := offsite.WriteStatus(statusFile, *st); err != nil {
+			fmt.Fprintf(stderr, "felis offsite take-over: record status: %v\n", err)
+		}
+	}
+	id, _ := lease.ID()
+	fmt.Fprintf(stdout, "felis offsite take-over: this host (id %s) writes the bucket now; %s stops at its next copy.\nStart the first copy: sudo systemctl start felis-offsite.service\n", id, who)
 	return 0
 }
 

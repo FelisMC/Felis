@@ -368,6 +368,28 @@ func OffsiteFinding(statusFile string, now time.Time) *Finding {
 			Hint:      "`sudo felis offsite check-key`; set FELIS_OFFSITE_KEY in /etc/felis/offsite.env to the key the bucket was written with (docs/troubleshooting.md §16)",
 		}
 	}
+	if st != nil && st.Displaced && st.Writer != nil {
+		return &Finding{
+			Key: "offsite", Severity: Warning, For: backupFor,
+			Summary:   fmt.Sprintf("异地备份已停止：主机 %s（id %s）接管了异地备份桶，本机不再往桶里写入", st.Writer.Host, st.Writer.HostID),
+			SummaryEN: fmt.Sprintf("the off-site copy has stopped: %s took the bucket over, and this host copies nothing there any more", st.Writer),
+			Hint:      "if that host is a rehearsal machine, take the bucket back with `sudo felis offsite take-over -yes`; `sudo felis offsite status` (docs/troubleshooting.md §16)",
+		}
+	}
+	if st != nil && st.Standby {
+		who, whoEN := "桶里有别的主机写入的副本，但没有记录是哪台主机", "the bucket holds another host's copies and names no host writing it"
+		if w := st.Writer; w != nil {
+			age := roundHours(max(now.Sub(w.At), 0))
+			who = fmt.Sprintf("主机 %s（id %s）在 %s 前写入过这个桶", w.Host, w.HostID, age)
+			whoEN = fmt.Sprintf("%s wrote it %s ago", w, age)
+		}
+		return &Finding{
+			Key: "offsite", Severity: Warning, For: backupFor,
+			Summary:   "本机是从另一台主机的备份建起来的，不往异地备份桶写入：" + who,
+			SummaryEN: "this host was built from another host's backup and copies nothing into the off-site bucket: " + whoEN,
+			Hint:      "once this host replaces that one for good: `sudo felis offsite take-over -yes` (docs/troubleshooting.md §16)",
+		}
+	}
 	if st != nil && !st.LastSuccess.IsZero() && now.Sub(st.LastSuccess) <= offsite.StaleAfter {
 		return nil
 	}

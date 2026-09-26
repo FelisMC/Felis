@@ -188,6 +188,21 @@ func TestOffsiteFinding(t *testing.T) {
 	if f := OffsiteFinding(path, t0); f == nil || !strings.Contains(f.SummaryEN, "has stopped") || !strings.Contains(f.SummaryEN, "(sealed with another key)") || !strings.Contains(f.Hint, "check-key") {
 		t.Fatalf("key mismatch: %+v", f)
 	}
+	// Another host writing the bucket stops every later run too: reported at
+	// once, a recent success notwithstanding.
+	w := &offsite.Writer{HostID: "bbbbbbbbbbbbbbbb", Host: "prod-1", At: t0.Add(-5 * time.Hour)}
+	write(offsite.Status{LastAttempt: t0.Add(-time.Hour), LastSuccess: t0.Add(-2 * time.Hour), Displaced: true, Writer: w})
+	if f := OffsiteFinding(path, t0); f == nil || !strings.Contains(f.SummaryEN, "has stopped: host prod-1 (id bbbbbbbbbbbbbbbb) took the bucket over") || !strings.Contains(f.Summary, "prod-1") || !strings.Contains(f.Hint, "take-over -yes") {
+		t.Fatalf("displaced: %+v", f)
+	}
+	write(offsite.Status{LastAttempt: t0.Add(-time.Hour), Standby: true, Writer: w})
+	if f := OffsiteFinding(path, t0); f == nil || !strings.Contains(f.SummaryEN, "built from another host's backup") || !strings.Contains(f.SummaryEN, "host prod-1 (id bbbbbbbbbbbbbbbb) wrote it 5h ago") || !strings.Contains(f.Summary, "5h") || !strings.Contains(f.Hint, "take-over -yes") {
+		t.Fatalf("standing by: %+v", f)
+	}
+	write(offsite.Status{LastAttempt: t0.Add(-time.Hour), Standby: true})
+	if f := OffsiteFinding(path, t0); f == nil || !strings.Contains(f.SummaryEN, "names no host writing it") {
+		t.Fatalf("standing by, no writer named: %+v", f)
+	}
 }
 
 func TestMemoryFinding(t *testing.T) {
