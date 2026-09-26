@@ -75,6 +75,7 @@ public final class WaitingRouterTest {
             longStart();
             menuAndCommands();
             joins();
+            backToLobby();
             disconnectAndRelease();
         } finally {
             api.close();
@@ -605,6 +606,43 @@ public final class WaitingRouterTest {
         assertEq("refused transfer: no retry advice", false, full.said("try again"));
     }
 
+    // /felis lobby and /felis go lobby: the lobby is a system server, so it never
+    // appeared among the servers /felis go knows.
+    private static void backToLobby() {
+        Fakes.FakePlayer back = player(null, true);
+        back.current = beta;
+        router.toLobby(back.player);
+        assertEq("from a server: moved to the lobby", List.of("lobby"), List.copyOf(back.connects));
+        assertEq("from a server: nothing asked of felis-api", 0, api.count(LINK + back.id));
+
+        Fakes.FakePlayer there = player(null, true);
+        there.current = lobby;
+        router.toLobby(there.player);
+        assertEq("in the lobby: told", true, there.said("You're already in the lobby."));
+        assertEq("in the lobby: no move", 0, there.connects.size());
+
+        Fakes.FakePlayer between = player(null, true);
+        router.toLobby(between.player);
+        assertEq("on no server yet: moved to the lobby", List.of("lobby"), List.copyOf(between.connects));
+
+        // A wait survives the trip: the queue parks players in the lobby anyway.
+        Fakes.FakePlayer waiter = player(null, true);
+        waiter.current = beta;
+        int before = router.waitingCount();
+        router.enqueueFromCommand(waiter.player, "zeta");
+        Fakes.await("waiter queued", () -> router.waitingCount() == before + 1);
+        router.toLobby(waiter.player);
+        assertEq("waiting: moved to the lobby", List.of("lobby"), List.copyOf(waiter.connects));
+        assertEq("waiting: still queued", before + 1, router.waitingCount());
+        router.onDisconnect(new DisconnectEvent(waiter.player, DisconnectEvent.LoginStatus.SUCCESSFUL_LOGIN));
+
+        Fakes.FakePlayer full = player(null, true);
+        full.current = beta;
+        full.refusals.put("lobby", "Server is full");
+        router.toLobby(full.player);
+        Fakes.await("lobby refused: told", () -> full.said("Couldn't connect you to « lobby ». Reason: Server is full"));
+    }
+
     private static void disconnectAndRelease() {
         // Leaving the proxy drops the queue entry.
         Fakes.FakePlayer leaver = player(null, true);
@@ -648,6 +686,11 @@ public final class WaitingRouterTest {
         router.releaseFromLogin(early.player);
         assertEq("no lobby yet: nothing sent", 0, early.connects.size());
         assertEq("no lobby yet: logged", 1, log.count("WARN", "login release for " + early.id + " but the lobby"));
+        Fakes.FakePlayer asker = player(null, true);
+        asker.current = beta;
+        router.toLobby(asker.player);
+        assertEq("no lobby: told", true, asker.said("The lobby is unavailable right now."));
+        assertEq("no lobby: no move", 0, asker.connects.size());
 
         // With no login gate registered a host-routed player is turned away.
         net.remove("login");

@@ -226,6 +226,33 @@ public final class WaitingRouter {
     }
 
     /**
+     * toLobby moves a player who is already past the login gate back to the lobby, for
+     * {@code /felis lobby} and {@code /felis go <lobby>}. The lobby is always up, so there
+     * is nothing to wake and no queue to join; a failed connect is reported like any other
+     * transfer. A wait the player joined earlier stays: the lobby is where the queue parks
+     * players anyway, and it still moves them when their server is ready.
+     */
+    void toLobby(Player player) {
+        boolean zh = FelisVelocityPlugin.zh(player);
+        if (player.getCurrentServer()
+                .map(sc -> serverNamed(sc.getServer(), lobbyServer))
+                .orElse(false)) {
+            player.sendMessage(Component.text(
+                    zh ? "你已经在大厅了。" : "You're already in the lobby.", NamedTextColor.YELLOW));
+            return;
+        }
+        Optional<RegisteredServer> lobby = proxy.getServer(lobbyServer);
+        if (lobby.isEmpty()) {
+            log.warn("Felis: {} asked for the lobby but '{}' is not registered", player.getUniqueId(), lobbyServer);
+            player.sendMessage(Component.text(
+                    zh ? "大厅暂时不可用，请稍后再试。" : "The lobby is unavailable right now. Try again shortly.",
+                    NamedTextColor.RED));
+            return;
+        }
+        transfer(player, lobbyServer, lobby.get());
+    }
+
+    /**
      * enqueueFromInvite is {@link #enqueueFromCommand} for an accepted invite. An invite can
      * only name the server its sender is standing on, so the target is running by
      * construction and the invitee is joined straight onto it.

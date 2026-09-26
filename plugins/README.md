@@ -173,6 +173,7 @@ What it does when routing is active:
 | Server-list ping (`ProxyPingEvent`) | Answers from the cached lifecycle view with a phase-aware MOTD (online / starting / sleeping) — **read-only, never wakes** anything. Mirroring each backend's own MOTD by background-pinging ready servers is a later slice. |
 | Join report (`ServerConnectedEvent`) | Reports real joins to a felis backend via `POST …/join-event`, so the reaper sees activity and the player is auto-added to the server allowlist. |
 | `/felis`, `/felis list` | Operator status: online-mode, root-domain, lobby, and the known server set with phase/ready. |
+| `/felis lobby`, `/felis go <lobby>` | Moves the player back to the lobby from any backend. Nothing is woken, and a wait already queued still moves them when its server is ready. Kept under `/felis` so a user server's own `/lobby` or `/hub` is not shadowed by the proxy. |
 
 Velocity-only config keys (read from the same `felis-link.properties` / env as
 `/link`; env wins):

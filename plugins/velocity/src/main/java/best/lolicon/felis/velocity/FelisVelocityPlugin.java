@@ -439,6 +439,11 @@ public final class FelisVelocityPlugin {
                             sendServerList(ctx.getSource());
                             return Command.SINGLE_SUCCESS;
                         }))
+                .then(BrigadierCommand.literalArgumentBuilder("lobby")
+                        .executes(ctx -> {
+                            doLobby(ctx.getSource());
+                            return Command.SINGLE_SUCCESS;
+                        }))
                 .then(BrigadierCommand.literalArgumentBuilder("go")
                         .then(BrigadierCommand.requiredArgumentBuilder("server", StringArgumentType.word())
                                 .executes(ctx -> {
@@ -569,6 +574,8 @@ public final class FelisVelocityPlugin {
                 zh ? "此代理已知的 felis 服务器" : "the felis servers this proxy knows");
         helpLine(source, "/felis go <server>",
                 zh ? "启动服务器并在就绪后把你传送过去" : "start a server and move you in when it's ready");
+        helpLine(source, "/felis lobby",
+                zh ? "回到大厅" : "back to the lobby");
         helpLine(source, "/felis claim",
                 zh ? "认领你所在的服务器" : "take ownership of the server you're on");
         helpLine(source, "/felis migrate",
@@ -626,6 +633,11 @@ public final class FelisVelocityPlugin {
             return false;
         }
         String target = serverArg.trim();
+        if (target.equalsIgnoreCase(config.lobbyServer())) {
+            // The lobby is a system server, so the loop below would call it unknown.
+            router.toLobby(player);
+            return true;
+        }
         ServerView match = null;
         for (ServerView v : registry.all()) {
             if (!isSystemServer(v.name()) && v.name().equalsIgnoreCase(target)) {
@@ -657,6 +669,18 @@ public final class FelisVelocityPlugin {
             router.enqueueFromCommand(player, match.name());
         }
         return true;
+    }
+
+    private void doLobby(CommandSource source) {
+        Player player = requirePlayer(source);
+        if (player == null || !ensureOutOfLimbo(player)) {
+            return;
+        }
+        if (!routingActive) {
+            player.sendMessage(routingDisabled(zh(player)));
+            return;
+        }
+        router.toLobby(player);
     }
 
     private void doClaim(CommandSource source) {
