@@ -340,6 +340,39 @@ remove_hba_block() { # file
   rm -f "$tmp"
 }
 
+# check_database_purge runs before anything is removed: DROP ROLE refuses a role that
+# still owns a database or holds anything in one besides felis (a felis_pgint left by
+# `felis db pgint`, a grant made by hand), and by then the units and k3s are already gone.
+# It lists what holds the role instead, so the purge either runs to the end or not at all.
+check_database_purge() {
+  [ "$PURGE" = 1 ] || return 0
+  systemctl is-active --quiet postgresql 2>/dev/null || return 0
+  local sql held err
+  read -r -d '' sql <<SQL || true
+WITH r AS (SELECT oid FROM pg_roles WHERE rolname = '${DB_USER}'),
+     f AS (SELECT oid FROM pg_database WHERE datname = '${DB_NAME}')
+SELECT DISTINCT CASE
+    WHEN s.classid = 'pg_database'::regclass THEN 'database ' || (SELECT datname FROM pg_database WHERE oid = s.objid)
+    WHEN s.classid = 'pg_tablespace'::regclass THEN 'tablespace ' || (SELECT spcname FROM pg_tablespace WHERE oid = s.objid)
+    ELSE 'objects in database ' || (SELECT datname FROM pg_database WHERE oid = s.dbid)
+  END || CASE s.deptype WHEN 'o' THEN ' (owned)' ELSE ' (privileges)' END
+FROM pg_shdepend s
+WHERE s.refclassid = 'pg_authid'::regclass AND s.refobjid = (SELECT oid FROM r)
+  AND s.dbid IS DISTINCT FROM (SELECT oid FROM f)
+  AND NOT (s.classid = 'pg_database'::regclass AND s.objid IS NOT DISTINCT FROM (SELECT oid FROM f))
+ORDER BY 1;
+SQL
+  err="$(mktemp)"
+  if ! held="$(as_postgres psql -v ON_ERROR_STOP=1 -tAq 2>"$err" <<<"$sql")"; then
+    held="$(cat "$err")"
+    rm -f "$err"
+    die "could not ask PostgreSQL what the ${DB_USER} role still holds, so nothing was removed: ${held}"
+  fi
+  rm -f "$err"
+  [ -n "$held" ] || return 0
+  die "the ${DB_USER} role still holds $(printf '%s' "$held" | paste -sd ';' - | sed 's/;/; /g'), so DROP ROLE would fail halfway through the purge; nothing was removed. Hand them to postgres first (sudo -u postgres psql -c 'ALTER DATABASE <name> OWNER TO postgres', or REASSIGN OWNED BY ${DB_USER} TO postgres; DROP OWNED BY ${DB_USER}; inside that database), or rerun without --purge"
+}
+
 purge_database() {
   [ "$PURGE" = 1 ] || return 0
   if ! systemctl is-active --quiet postgresql 2>/dev/null; then
@@ -395,6 +428,7 @@ main() {
   [ -e "$STATE_DIR" ] || [ -e "$HOST_BIN" ] || [ -e "$OPT_DIR" ] \
     || die "no Felis install here (${STATE_DIR}, ${HOST_BIN} and ${OPT_DIR} are all absent)"
   decide_k3s
+  check_database_purge
   print_plan
   confirm
   final_backup

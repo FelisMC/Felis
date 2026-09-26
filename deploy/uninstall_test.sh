@@ -89,7 +89,17 @@ run_uninstall() {
       shift 3
       case "$*" in
         *"SHOW hba_file"*) echo "$ROOT/h/hba.conf" ;;
-        *) echo "PSQL $* $(cat)" >> "$calls" ;;
+        *)
+          sql="$(cat)"
+          case "$sql" in
+            # What the felis role still holds: PG_HELD, one line each; PG_CHECK=fail for a
+            # server that refuses the query.
+            *pg_shdepend*)
+              echo "PSQL-CHECK" >> "$calls"
+              [ "${PG_CHECK:-}" = fail ] && { echo "psql: error: connection refused" >&2; return 2; }
+              [ -z "${PG_HELD:-}" ] || printf "%s\n" "$PG_HELD" ;;
+            *) echo "PSQL $* $sql" >> "$calls" ;;
+          esac ;;
       esac
     }
     docker() { echo "DOCKER $*" >> "$calls"; }
@@ -161,6 +171,7 @@ fresh_host
 out="$(run_uninstall "default felis minecraft" --purge --yes)"
 calls="$(cat "$root/calls")"
 refute "purge takes no bundle" "db backup" "$calls"
+expect "purge asks what the role holds first" "PSQL-CHECK" "$calls"
 expect "purge drops the database" "DROP DATABASE IF EXISTS felis;" "$calls"
 expect "purge drops the role" "DROP ROLE IF EXISTS felis;" "$calls"
 expect "purge puts listen_addresses back" "ALTER SYSTEM RESET listen_addresses;" "$calls"
@@ -178,6 +189,35 @@ case "$hba" in
   *) echo "FAIL pg_hba.conf starts with: $(printf '%s' "$hba" | head -n 1)"; fails=$((fails + 1)) ;;
 esac
 expect "purge cleans Docker's build cache" "DOCKER builder prune -af" "$calls"
+
+# --- a purge DROP ROLE would refuse -------------------------------------------------------
+# The VM drill: `felis db pgint` had left felis_pgint owned by felis, the purge removed the
+# units and k3s, then stopped at DROP ROLE with half the host gone.
+untouched() { # label
+  [ -d "$root/h/opt" ] && [ -f "$root/h/units/felis-velocity.service" ] && [ -d "$root/h/etc" ] \
+    && ! grep -q "k3s-uninstall.sh\|DROP DATABASE\|SYSTEMCTL disable" "$root/calls" \
+    && echo "PASS $1" \
+    || { echo "FAIL $1: $(cat "$root/calls")"; fails=$((fails + 1)); }
+}
+fresh_host
+out="$(PG_HELD="database felis_pgint (owned)
+objects in database shop (privileges)" run_uninstall "default felis minecraft" --purge --yes)"
+expect "a purge the role cannot survive is refused" "the felis role still holds database felis_pgint (owned); objects in database shop (privileges)" "$out"
+expect "with the way to hand the database over" "ALTER DATABASE <name> OWNER TO postgres" "$out"
+untouched "nothing is removed when DROP ROLE would fail"
+fresh_host
+out="$(PG_HELD="database felis_pgint (owned)" CONFIRM_TTY="$root/no-tty/x" run_uninstall "default felis minecraft" --purge)"
+expect "the check comes before the plan and the prompt" "the felis role still holds database felis_pgint" "$out"
+refute "so nobody confirms a purge that cannot finish" "this will remove" "$out"
+fresh_host
+out="$(PG_CHECK=fail run_uninstall "default felis minecraft" --purge --yes)"
+expect "a server that cannot be asked stops the purge" "could not ask PostgreSQL what the felis role still holds, so nothing was removed: psql: error: connection refused" "$out"
+untouched "nothing is removed when the check cannot run"
+fresh_host
+PG_HELD="database felis_pgint (owned)" run_uninstall "default felis minecraft" --yes >/dev/null
+calls="$(cat "$root/calls")"
+refute "keep-data drops no role, so it asks nothing" "PSQL-CHECK" "$calls"
+expect "and goes on" "RUN k3s-uninstall.sh" "$calls"
 
 # --- the pieces read before they are removed ---------------------------------------------
 fresh_host

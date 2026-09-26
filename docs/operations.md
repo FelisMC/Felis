@@ -189,7 +189,7 @@ the cluster holds nothing but Felis's namespaces; when it runs anything else onl
 | | keep data (default) | `--purge` |
 |---|---|---|
 | Final database bundle | taken first (`felis db backup -label manual`); a failure stops the uninstall before anything is removed. `--no-backup` skips it | none |
-| `felis` database and role | kept | dropped; `listen_addresses` and `pg_hba.conf` go back to how they were |
+| `felis` database and role | kept | dropped; `listen_addresses` and `pg_hba.conf` go back to how they were. Checked before anything is removed: a role that still owns another database (a `felis_pgint` left by `felis db pgint`) or holds grants elsewhere stops the purge up front with the list and the `ALTER DATABASE … OWNER TO postgres` to run |
 | `/etc/felis` (secrets, `felis.toml`, `offsite.env`, tunnel config) | kept; `bootstrap.done` and the per-run records go | deleted, with the tunnel's credentials file |
 | `/var/lib/felis` (database bundles) | kept | deleted |
 | Worlds, archives, registry, uploads | moved to `/var/lib/felis/retained/k3s-storage-<stamp>/` (with `--keep-k3s`: their volumes switch to `Retain` and stay in place) | deleted |
