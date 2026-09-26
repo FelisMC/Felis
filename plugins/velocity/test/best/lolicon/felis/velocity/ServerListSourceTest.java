@@ -31,9 +31,9 @@ public final class ServerListSourceTest {
     private static volatile List<ServerView> answer;
 
     private static final ServerView LOGIN = new ServerView("login", null, "Running", true,
-            null, "Running", "ClusterIP", "10.43.0.17:25565", 0, 0);
+            null, "Running", "direct", "10.43.0.17:25565", 0, 0);
     private static final ServerView SURVIVAL = new ServerView("survival", "Survival", "Stopped", false,
-            "Anyone", "Stopped", "ClusterIP", "10.43.9.2:25565", 3, 20);
+            "public", "Stopped", "fallback", "login", 3, 20);
 
     public static void main(String[] args) throws Exception {
         Path dir = Files.createTempDirectory("felis-server-list");
@@ -84,10 +84,10 @@ public final class ServerListSourceTest {
         assertEq("survival subdomain", "Survival", s.subdomain());
         assertEq("survival phase", "Stopped", s.phase());
         assertEq("survival ready", false, s.ready());
-        assertEq("survival policy", "Anyone", s.autostartPolicy());
+        assertEq("survival policy", "public", s.autostartPolicy());
         assertEq("survival desired", "Stopped", s.desiredState());
-        assertEq("survival mode", "ClusterIP", s.endpointMode());
-        assertEq("survival address", "10.43.9.2:25565", s.endpointAddress());
+        assertEq("survival mode", "fallback", s.endpointMode());
+        assertEq("survival address", "login", s.endpointAddress());
         assertEq("survival online", 3, s.playersOnline());
         assertEq("survival max", 20, s.playersMax());
     }
@@ -154,7 +154,7 @@ public final class ServerListSourceTest {
     private static void theLegacyForwardingMarkIsSaved(Path dir) throws Exception {
         Path file = fresh(dir);
         ServerView legacy = new ServerView("legacy18", "old", "Running", true,
-                null, "Running", "ClusterIP", "10.43.7.1:25565", 0, 20, true);
+                null, "Running", "direct", "10.43.7.1:25565", 0, 20, true);
         answer = List.of(legacy, SURVIVAL);
         new ServerListSource(ServerListSourceTest::fetch, file).next();
         answer = null;
@@ -167,7 +167,7 @@ public final class ServerListSourceTest {
     // The exact shape GET /api/v1/servers answers with, extra fields included.
     private static void theApiEnvelopeParses() {
         List<ServerView> v = ServerView.listFromJson("{\"servers\":[{\"name\":\"lobby\",\"subdomain\":\"\","
-                + "\"phase\":\"Running\",\"ready\":true,\"desiredState\":\"Running\",\"endpointMode\":\"ClusterIP\","
+                + "\"phase\":\"Running\",\"ready\":true,\"desiredState\":\"Running\",\"endpointMode\":\"direct\","
                 + "\"endpointAddress\":\"10.43.1.5:25565\",\"playersOnline\":1,\"playersMax\":100,"
                 + "\"owner\":\"x\"},\"junk\",{\"name\":\"legacy18\",\"legacyForwarding\":true}]}");
         assertEq("non-object entries skipped", 2, v.size());

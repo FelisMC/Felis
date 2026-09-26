@@ -71,6 +71,7 @@ public final class WaitingRouterTest {
             loginGate();
             wakeRefusals();
             queue();
+            wakeAnswers();
             longStart();
             menuAndCommands();
             joins();
@@ -97,6 +98,9 @@ public final class WaitingRouterTest {
                 view("theta", false, "10.43.0.22:25565"),
                 view("iota", false, "10.43.0.23:25565"),
                 view("kappa", false, "10.43.0.24:25565"),
+                view("lambda", false, "10.43.0.25:25565"),
+                view("omicron", false, "10.43.0.26:25565"),
+                view("sigma", false, "10.43.0.27:25565"),
                 view("fresh", false, null)));
         if (withGone) {
             list.add(view("gone", false, "10.43.0.9:25565"));
@@ -216,17 +220,27 @@ public final class WaitingRouterTest {
     }
 
     private static void wakeRefusals() {
+        // The first two come from the server's state, as on the real API: a stranger's
+        // wake of an ownerOnly server, and a start whose automatic retries are spent.
         String[][] cases = {
-                {"403 forbidden", "You're not allowed to start « gamma »", null},
+                {"ownerOnly, not the owner", "You're not allowed to start « gamma »", null},
+                {"retries spent", "« gamma » failed to start and its automatic retries are spent", null},
                 {"409 maintenance_in_progress", "« gamma » is under maintenance", null},
-                {"409 start_failed", "« gamma » failed to start and its automatic retries are spent", null},
                 {"409 conflict", "Couldn't start « gamma » right now", "wake gamma failed (status=409)"},
                 {"503 at_capacity", "The cluster is at capacity right now", null},
                 {"503 unavailable", "Couldn't start « gamma » right now", "wake gamma failed (status=503)"},
                 {"500 internal", "Couldn't start « gamma » right now", "wake gamma failed (status=500)"},
         };
         for (String[] c : cases) {
-            api.wakeError.put("gamma", c[0]);
+            switch (c[0]) {
+                case "ownerOnly, not the owner" -> api.policy.put("gamma", "ownerOnly");
+                case "retries spent" -> {
+                    api.phase.put("gamma", "Failed");
+                    api.restarts.put("gamma", 3);
+                    api.gaveUp.add("gamma");
+                }
+                default -> api.wakeError.put("gamma", c[0]);
+            }
             int before = router.waitingCount();
             int warned = c[2] == null ? 0 : log.count("WARN", c[2]);
             Fakes.FakePlayer p = player("gamma.mc.test", true);
@@ -238,6 +252,11 @@ public final class WaitingRouterTest {
             if (c[2] != null) {
                 assertEq(c[0] + ": logged", warned + 1, log.count("WARN", c[2]));
             }
+            api.policy.remove("gamma");
+            api.phase.remove("gamma");
+            api.restarts.remove("gamma");
+            api.gaveUp.remove("gamma");
+            api.wakeError.remove("gamma");
         }
         // 429: a wake is already in flight, so join the wait.
         api.wakeError.put("gamma", "429 cooldown");
@@ -329,6 +348,53 @@ public final class WaitingRouterTest {
         router.tick();
         assertEq("registered: moved", List.of("fresh"), List.copyOf(early.connects));
         assertEq("registered: queue empty", 0, router.waitingCount());
+    }
+
+    // The wakes that are not refused, each answered from the server's state the way the
+    // real API answers it.
+    private static void wakeAnswers() {
+        assertEq("wake answers: queue empty to begin with", 0, router.waitingCount());
+
+        // The owner of an ownerOnly server may wake it, and the wake names the player
+        // who asked: the gate reads nothing else.
+        api.policy.put("lambda", "ownerOnly");
+        Fakes.FakePlayer owner = player("lambda.mc.test", true);
+        api.owner.put("lambda", owner.id);
+        choose(owner);
+        assertEq("owner: released to the lobby", "lobby", allowedTo(release(owner)));
+        assertEq("owner: told it is starting", true, owner.said("Starting « lambda »"));
+        assertEq("owner: queued", 1, router.waitingCount());
+        assertEq("the wake carried the joining player", true,
+                api.bodies.get("POST " + SERVERS + "lambda/wake").contains(owner.id.toString()));
+
+        // Up since the last refresh: the host path still wakes, and the API answers 202
+        // ready without the gate. Nobody is refused or told a start is under way, and
+        // the next drain moves them in.
+        api.policy.put("omicron", "ownerOnly");
+        api.ready.put("omicron", true);
+        Fakes.FakePlayer friend = player("omicron.mc.test", true);
+        choose(friend);
+        assertEq("up behind a stale list: released to the lobby", "lobby", allowedTo(release(friend)));
+        assertEq("up behind a stale list: not refused", false, friend.said("not allowed"));
+        assertEq("up behind a stale list: no promise of a start", false, friend.said("Starting « omicron »"));
+        assertEq("up behind a stale list: queued", 2, router.waitingCount());
+        router.tick();
+        assertEq("up behind a stale list: moved at the next drain", List.of("omicron"), List.copyOf(friend.connects));
+        assertEq("up behind a stale list: only the owner's wait is left", 1, router.waitingCount());
+
+        // Failed, but inside its restart backoff: the next attempt is coming, so the
+        // wake is a 202 and the player waits for it.
+        api.phase.put("sigma", "Failed");
+        api.restarts.put("sigma", 1);
+        Fakes.FakePlayer patient = player("sigma.mc.test", true);
+        choose(patient);
+        assertEq("in the backoff: released to the lobby", "lobby", allowedTo(release(patient)));
+        assertEq("in the backoff: told it is starting", true, patient.said("Starting « sigma »"));
+        assertEq("in the backoff: queued", 2, router.waitingCount());
+
+        net.players.clear();
+        router.tick();
+        assertEq("wake answers: queue empty again", 0, router.waitingCount());
     }
 
     // A modpack's cold start outlasts any fixed wait: the operator gives a start 300 s,
@@ -446,9 +512,10 @@ public final class WaitingRouterTest {
         assertEq("only the menu entry tells the lobby", List.of(menu.name + "@epsilon"), List.copyOf(notified));
 
         // A friend's running server: the menu and /felis go join it without waking it.
-        // The API refuses a non-owner's wake of an ownerOnly server, and that refusal
-        // was all a friend got from the green tile while every entry woke first.
-        api.wakeError.put("beta", "403 forbidden");
+        // The API used to refuse a non-owner's wake of a running ownerOnly server, and
+        // that refusal was all a friend got from the green tile while every entry woke
+        // first.
+        api.policy.put("beta", "ownerOnly");
         Fakes.FakePlayer friend = player(null, true);
         friend.current = lobby;
         router.enqueueFromMenu(friend.player, "beta");
@@ -462,7 +529,7 @@ public final class WaitingRouterTest {
         assertEq("running server via /felis go: joined", List.of("beta"), List.copyOf(friend2.connects));
         assertEq("running server: never woken", 0, api.count("POST " + SERVERS + "beta/wake"));
         assertEq("running server: nobody refused", false, friend.said("not allowed") || friend2.said("not allowed"));
-        api.wakeError.remove("beta");
+        api.policy.remove("beta");
 
         // Asking for the server you stand on is answered at once, case-insensitively.
         Fakes.FakePlayer there = player(null, true);
@@ -674,7 +741,7 @@ public final class WaitingRouterTest {
         if (addr != null) {
             api.address.put(name, addr);
         }
-        return new ServerView(name, name, ready ? "Running" : "Stopped", ready, "ownerOnly",
+        return new ServerView(name, name, ready ? "Running" : "Stopped", ready, "public",
                 "Running", ready ? "direct" : "fallback", ready ? addr : "login", 0, 20);
     }
 

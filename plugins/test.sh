@@ -43,7 +43,9 @@
 #      fake proxy and a stub felis-api — a refresh registers, moves and drops
 #      backends and lets go of a renamed subdomain, the login gate and host routing
 #      admit only linked players, each wake refusal reaches the player as its own
-#      message, felis:control acts only for the connection's player and holds its
+#      message (the stub answers a wake from the server's state in felis-api's own
+#      order, so it cannot hand the router an answer the real API never gives),
+#      felis:control acts only for the connection's player and holds its
 #      frame budget. They ride the module's verified dependency set, which is why
 #      they live in Gradle rather than in the javac mains above.
 #

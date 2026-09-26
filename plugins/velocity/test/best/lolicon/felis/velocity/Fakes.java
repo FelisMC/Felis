@@ -33,6 +33,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Fakes are the test doubles the routing tests run the real proxy classes against:
@@ -432,13 +434,18 @@ final class Fakes {
 
     /**
      * Api is a stub felis-api internal face: link status from {@link #linked}, server
-     * status from {@link #ready}, wake answering 202 unless {@link #wakeError} holds an
-     * answer for the server, and join-events recorded. {@link #linkDown} makes the
-     * link-status route answer 500.
+     * status, menu and wake from one server state ({@link #ready}, {@link #phase},
+     * {@link #desired}, {@link #gaveUp}, {@link #policy}, {@link #owner}), and
+     * join-events recorded. {@link #linkDown} makes the link-status route answer 500.
      *
      * <p>Status replies carry the endpoint the way the operator writes it: a server that
      * is up reports {@code direct} and its {@link #address}; one that is not reports
      * {@code fallback} with the fallback server's NAME, "login", in the address field.
+     *
+     * <p>The wake follows handleInternalWake step for step, so a test cannot give the
+     * router an answer the real API never gives: an up server is 202 ready for anyone,
+     * 403 and 409 start_failed come from the state, and {@link #wakeError} only holds
+     * what the state cannot say (a cooldown, the running cap, maintenance, a fault).
      */
     static final class Api implements AutoCloseable {
         final Set<UUID> linked = ConcurrentHashMap.newKeySet();
@@ -455,9 +462,19 @@ final class Fakes {
         final Map<String, String> desired = new ConcurrentHashMap<>();
         final Map<String, Integer> restarts = new ConcurrentHashMap<>();
         final Set<String> gaveUp = ConcurrentHashMap.newKeySet();
+        /**
+         * policy is a server's autostartPolicy, public unless set, and owner the player
+         * who owns it. Only public or the owner passes the wake's gate: ownerOnly, and an
+         * allowlist the stub keeps empty, refuse everyone else.
+         */
+        final Map<String, String> policy = new ConcurrentHashMap<>();
+        final Map<String, UUID> owner = new ConcurrentHashMap<>();
         /** statusDown makes the status route answer 500. */
         volatile boolean statusDown;
-        /** wakeError maps a server to "status code" (e.g. "403 forbidden"). */
+        /**
+         * wakeError maps a server to "status code" (e.g. "429 cooldown"), answered where
+         * the real wake reaches its cooldown: after the gate and the start_failed check.
+         */
         final Map<String, String> wakeError = new ConcurrentHashMap<>();
         volatile int joinStatus = 204;
         /** claimable names the servers the menu route reports as claimable. */
@@ -511,16 +528,13 @@ final class Fakes {
                         reply(ex, 200, status(name, ready.getOrDefault(name, false)));
                         return;
                     case "POST wake":
-                        if (!error(ex, wakeError.get(name))) {
-                            // The real wake reply is this subset of the view: no endpoint.
-                            reply(ex, 202, "{\"name\":\"" + name + "\",\"desiredState\":\"Running\","
-                                    + "\"phase\":\"Stopped\",\"ready\":false}");
-                        }
+                        wake(ex, name, bodies.get(method + " " + path));
                         return;
                     case "GET menu":
                         if (!error(ex, menuError.get(name))) {
-                            reply(ex, 200, "{\"name\":\"" + name + "\",\"phase\":\"Stopped\",\"ready\":false,"
-                                    + "\"playersOnline\":3,\"playersMax\":20,\"claimable\":" + claimable.contains(name) + "}");
+                            reply(ex, 200, "{\"name\":\"" + name + "\",\"phase\":\"" + phaseOf(name)
+                                    + "\",\"ready\":" + ready.getOrDefault(name, false)
+                                    + ",\"playersOnline\":3,\"playersMax\":20,\"claimable\":" + claimable.contains(name) + "}");
                         }
                         return;
                     case "POST claim":
@@ -548,6 +562,52 @@ final class Fakes {
             return true;
         }
 
+        // wake answers the way handleInternalWake does, in its order: a server that is up
+        // and meant to stay up is 202 ready with no gate, nothing flipped; then the
+        // autostartPolicy gate on the body's mc_uuid; then 409 start_failed for a start
+        // whose retries are spent; then the cooldown and the rest of wakeError; then the
+        // flip to Running and a 202 with the phase as it stands.
+        private void wake(HttpExchange ex, String name, String body) throws IOException {
+            boolean up = ready.getOrDefault(name, false);
+            String want = desired.getOrDefault(name, "Running");
+            if (up && "Running".equals(want)) {
+                reply(ex, 202, wakeReply(name, want, true));
+                return;
+            }
+            UUID waker = mcUuid(body);
+            if (!"public".equals(policy.getOrDefault(name, "public"))
+                    && (waker == null || !waker.equals(owner.get(name)))) {
+                error(ex, "403 forbidden");
+                return;
+            }
+            if (gaveUp.contains(name) && "Running".equals(want)) {
+                error(ex, "409 start_failed");
+                return;
+            }
+            if (error(ex, wakeError.get(name))) {
+                return;
+            }
+            desired.put(name, "Running");
+            reply(ex, 202, wakeReply(name, "Running", up));
+        }
+
+        // The real wake reply is this subset of the view: no endpoint.
+        private String wakeReply(String name, String desiredState, boolean up) {
+            return "{\"name\":\"" + name + "\",\"desiredState\":\"" + desiredState + "\",\"phase\":\""
+                    + phaseOf(name) + "\",\"ready\":" + up + "}";
+        }
+
+        private static final Pattern MC_UUID = Pattern.compile("\"mc_uuid\"\\s*:\\s*\"([^\"]+)\"");
+
+        private static UUID mcUuid(String body) {
+            Matcher m = MC_UUID.matcher(body == null ? "" : body);
+            return m.find() ? UUID.fromString(m.group(1)) : null;
+        }
+
+        private String phaseOf(String name) {
+            return ready.getOrDefault(name, false) ? "Running" : phase.getOrDefault(name, "Stopped");
+        }
+
         private String status(String name, boolean up) {
             String addr = address.get(name);
             String endpoint = up
@@ -556,7 +616,8 @@ final class Fakes {
             // Like the real ServerInfo, autoRestarts and startGaveUp are left out at 0/false.
             int restarts = this.restarts.getOrDefault(name, 0);
             return "{\"name\":\"" + name + "\",\"subdomain\":\"" + name + "\",\"phase\":\""
-                    + (up ? "Running" : phase.getOrDefault(name, "Stopped")) + "\",\"ready\":" + up
+                    + phaseOf(name) + "\",\"ready\":" + up
+                    + ",\"autostartPolicy\":\"" + policy.getOrDefault(name, "public") + "\""
                     + ",\"desiredState\":\"" + desired.getOrDefault(name, "Running") + "\""
                     + (restarts == 0 ? "" : ",\"autoRestarts\":" + restarts)
                     + (gaveUp.contains(name) ? ",\"startGaveUp\":true" : "")

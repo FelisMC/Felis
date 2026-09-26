@@ -216,20 +216,32 @@ public final class ControlChannelTest {
     }
 
     private static void wakeAndTransfer() {
-        // A WakeRequest parks the player; when the backend is ready the lobby hears
-        // TransferReady just before the proxy moves them.
+        // A WakeRequest for a stopped server parks the player; when the backend is ready
+        // the lobby hears TransferReady just before the proxy moves them.
         Fakes.FakePlayer p = player(true);
         p.current = lobby;
-        message(p.on(lobby), ControlChannel.CHANNEL, Control.encode(ControlFrame.wakeRequest("forged-name", "beta")));
-        Fakes.await("beta woken", () -> api.count("POST " + SERVERS + "beta/wake") == 1);
+        message(p.on(lobby), ControlChannel.CHANNEL, Control.encode(ControlFrame.wakeRequest("forged-name", "gamma")));
+        Fakes.await("gamma woken", () -> api.count("POST " + SERVERS + "gamma/wake") == 1);
         Fakes.await("waker queued", () -> router.waitingCount() == 2);
-        api.ready.put("beta", true);
+        api.ready.put("gamma", true);
         router.tick();
         List<ControlFrame> r = frames(p);
         assertEq("one frame to the lobby", 1, r.size());
-        assertEq("transfer ready", ControlFrame.TRANSFER_READY + " " + p.name + " beta",
+        assertEq("transfer ready", ControlFrame.TRANSFER_READY + " " + p.name + " gamma",
                 r.get(0).type() + " " + r.get(0).player() + " " + r.get(0).server());
-        assertEq("then moved", List.of("beta"), List.copyOf(p.connects));
+        assertEq("then moved", List.of("gamma"), List.copyOf(p.connects));
+
+        // For a running one it is a join: TransferReady and the move at once, no wake.
+        Fakes.FakePlayer j = player(true);
+        j.current = lobby;
+        message(j.on(lobby), ControlChannel.CHANNEL, Control.encode(ControlFrame.wakeRequest(j.name, "beta")));
+        Fakes.await("running server joined", () -> j.connects.size() == 1);
+        List<ControlFrame> jr = frames(j);
+        assertEq("running server: one frame to the lobby", 1, jr.size());
+        assertEq("running server: transfer ready", ControlFrame.TRANSFER_READY + " " + j.name + " beta",
+                jr.get(0).type() + " " + jr.get(0).player() + " " + jr.get(0).server());
+        assertEq("running server: moved", List.of("beta"), List.copyOf(j.connects));
+        assertEq("running server: never woken", 0, api.count("POST " + SERVERS + "beta/wake"));
     }
 
     private static void budget() {
@@ -295,8 +307,12 @@ public final class ControlChannelTest {
 
     // Shaped like the operator's status: up is direct at addr; down is the fallback,
     // whose name ("login") sits in the address field.
+    // view is a server as GET /servers lists it, and the stub API's status, menu and
+    // wake answer for the same state: up at addr, or down on the "login" fallback.
     private static ServerView view(String name, boolean ready, String addr) {
-        return new ServerView(name, name, ready ? "Running" : "Stopped", ready, "ownerOnly",
+        api.ready.put(name, ready);
+        api.address.put(name, addr);
+        return new ServerView(name, name, ready ? "Running" : "Stopped", ready, "public",
                 "Running", ready ? "direct" : "fallback", ready ? addr : "login", 0, 20);
     }
 

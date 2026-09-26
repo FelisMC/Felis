@@ -162,7 +162,7 @@ public final class LegacyForwardingTest {
     }
 
     private static ServerView view(String name, boolean legacy) {
-        return new ServerView(name, name, "Running", true, null, "Running", "ClusterIP", "10.43.0.9:25565", 0, 20, legacy);
+        return new ServerView(name, name, "Running", true, null, "Running", "direct", "10.43.0.9:25565", 0, 20, legacy);
     }
 
     private static void assertEq(String what, Object want, Object got) {
