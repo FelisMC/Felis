@@ -660,6 +660,13 @@ describe("image whitelist and builds wire shapes", () => {
       expect(humanizeError({ code: "submission_cooldown" })).toMatch(/try again/i);
     });
 
+    it("says an uploads store that did not answer is worth another try", async () => {
+      const { humanizeError } = await import("./api");
+      expect(humanizeError({ status: 503, code: "uploads_store_unavailable" })).toBe(
+        "The uploads store did not answer — try again in a moment; what was already sent is kept.",
+      );
+    });
+
     it("withdrawSubmission DELETEs /me/submissions/{id}", async () => {
       const sub = { id: "sub-4", status: "pending_review" };
       const fetchSpy = fakeFetch(sub);

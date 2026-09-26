@@ -67,6 +67,7 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"felis.lolicon.best/internal/build"
@@ -109,6 +110,11 @@ var (
 	// was never uploaded). The internal context-fetch route maps it to 404, the
 	// same distinction Exists draws for Approve.
 	ErrBlobNotFound = errors.New("submit: context blob not found")
+	// ErrStoreUnavailable means the sizes the storage budgets are checked against
+	// could not be read: the blob store (an object store, most likely) or the
+	// staging directory failed to answer. Nothing was written and the request can
+	// simply be sent again, so the API answers 503 and the panel retries.
+	ErrStoreUnavailable = errors.New("submit: the uploads store did not answer")
 )
 
 // invalidf wraps ErrInvalid so every malformed-request case maps to one 400.
@@ -335,8 +341,9 @@ type Blobs interface {
 	Open(ctx context.Context, id string) (io.ReadCloser, error)
 }
 
-// Manager orchestrates the approval lane. It holds no mutable state; the clock
-// and id generator are injectable for hermetic tests.
+// Manager orchestrates the approval lane. Its only mutable state is the blob
+// sizes it remembers for the budget checks (blobSize); the clock and id
+// generator are injectable for hermetic tests. Use it by pointer.
 type Manager struct {
 	Store  Store
 	Builds Builds
@@ -390,7 +397,26 @@ type Manager struct {
 
 	Now   func() time.Time
 	IDGen func() string
+
+	// sizes remembers each blob's size as last read or written here, so the
+	// budget check ahead of every chunked-upload part does not stat every blob
+	// in the store again (blobSize).
+	sizesMu sync.Mutex
+	sizes   map[string]knownSize
 }
+
+// knownSize is a blob's size and when this Manager last read or wrote it.
+type knownSize struct {
+	n  int64
+	at time.Time
+}
+
+// blobSizeTTL is how long a blob size read from the store stands in for it in
+// the budget check ahead of a chunked-upload part. The blobs this Manager writes
+// or deletes update it at once; only another api replica's changes wait out the
+// TTL, and the check that decides what is stored (UploadContext, which
+// CompleteUpload goes through) always reads the store.
+const blobSizeTTL = time.Minute
 
 // ContextLimit is the effective cap on one uploaded context.
 func (m *Manager) ContextLimit() int64 { return m.maxContextBytes() }
@@ -602,7 +628,7 @@ func (m *Manager) UploadContext(ctx context.Context, id, submittedBy string, r i
 		return nil, invalidf("build context must be a gzip-compressed tarball (.tar.gz)")
 	}
 
-	limit, over, err := m.uploadLimit(ctx, submittedBy, id)
+	limit, over, err := m.uploadLimit(ctx, submittedBy, id, true)
 	if err != nil {
 		return nil, err
 	}
@@ -614,9 +640,14 @@ func (m *Manager) UploadContext(ctx context.Context, id, submittedBy string, r i
 		}
 	}
 	h := sha256.New()
-	if _, err := m.Blobs.Put(ctx, id, io.TeeReader(&cappedReader{r: br, left: limit, over: over}, h)); err != nil {
+	n, err := m.Blobs.Put(ctx, id, io.TeeReader(&cappedReader{r: br, left: limit, over: over}, h))
+	if err != nil {
+		// A failed Put may or may not have replaced the blob; the next read
+		// finds out.
+		m.forgetSize(id)
 		return nil, err
 	}
+	m.noteSize(id, n)
 	digest := hex.EncodeToString(h.Sum(nil))
 	won, err := m.Store.SetContextDigest(ctx, id, digest)
 	if err != nil {
@@ -658,9 +689,10 @@ func (m *Manager) ownPending(ctx context.Context, id, submittedBy string) (*Subm
 // package: a burst that reaches two api replicas (or any direct caller of the
 // Manager) can overshoot by up to one blob per interleaved upload — each write
 // still bounded by the single-blob cap — while the API's per-user upload
-// reservation collapses the single-replica case.
-func (m *Manager) uploadLimit(ctx context.Context, submittedBy, id string) (int64, error, error) {
-	used, total, err := m.storedBytes(ctx, submittedBy, id)
+// reservation collapses the single-replica case. fresh reads every blob's size
+// from the store; otherwise a size read within blobSizeTTL stands in for it.
+func (m *Manager) uploadLimit(ctx context.Context, submittedBy, id string, fresh bool) (int64, error, error) {
+	used, total, err := m.storedBytes(ctx, submittedBy, id, fresh)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -735,7 +767,9 @@ func (m *Manager) UploadPart(ctx context.Context, id, submittedBy string, offset
 			return UploadProgress{}, invalidf("build context must be a gzip-compressed tarball (.tar.gz)")
 		}
 	}
-	limit, over, err := m.uploadLimit(ctx, submittedBy, id)
+	// Remembered blob sizes: a part is one of many, and what is finally stored is
+	// checked against the store itself on completion.
+	limit, over, err := m.uploadLimit(ctx, submittedBy, id, false)
 	if err != nil {
 		return UploadProgress{}, err
 	}
@@ -798,8 +832,10 @@ func (m *Manager) ReapStaleParts(olderThan time.Duration) (int, error) {
 // the sums cannot drift from what is actually occupying the volume (including
 // blobs uploaded before any budget existed). A staged chunked upload counts as
 // well, so parts spread over several pending submissions cannot hold more than
-// the budget allows.
-func (m *Manager) storedBytes(ctx context.Context, submittedBy, excludeID string) (user, total int64, err error) {
+// the budget allows. With fresh unset, a blob size read or written within
+// blobSizeTTL is used as it stands (blobSize). A size that cannot be read is
+// ErrStoreUnavailable, for the caller to try again.
+func (m *Manager) storedBytes(ctx context.Context, submittedBy, excludeID string, fresh bool) (user, total int64, err error) {
 	subs, err := m.Store.ListSubmissions(ctx)
 	if err != nil {
 		return 0, 0, err
@@ -808,14 +844,14 @@ func (m *Manager) storedBytes(ctx context.Context, submittedBy, excludeID string
 		if s.ID == excludeID {
 			continue
 		}
-		n, _, err := m.Blobs.Size(ctx, s.ID)
+		n, err := m.blobSize(ctx, s.ID, fresh)
 		if err != nil {
 			return 0, 0, err
 		}
 		if m.Parts != nil {
 			staged, _, err := m.Parts.Size(s.ID)
 			if err != nil {
-				return 0, 0, err
+				return 0, 0, fmt.Errorf("%w: size of the staged upload of %s: %v", ErrStoreUnavailable, s.ID, err)
 			}
 			n += staged
 		}
@@ -825,6 +861,43 @@ func (m *Manager) storedBytes(ctx context.Context, submittedBy, excludeID string
 		}
 	}
 	return user, total, nil
+}
+
+// blobSize is id's stored blob size: the one remembered from within blobSizeTTL
+// unless fresh, else read from the store and remembered.
+func (m *Manager) blobSize(ctx context.Context, id string, fresh bool) (int64, error) {
+	now := m.now()
+	if !fresh {
+		m.sizesMu.Lock()
+		k, ok := m.sizes[id]
+		m.sizesMu.Unlock()
+		if ok && now.Sub(k.at) < blobSizeTTL {
+			return k.n, nil
+		}
+	}
+	n, _, err := m.Blobs.Size(ctx, id)
+	if err != nil {
+		return 0, fmt.Errorf("%w: size of the context of %s: %v", ErrStoreUnavailable, id, err)
+	}
+	m.noteSizeAt(id, n, now)
+	return n, nil
+}
+
+func (m *Manager) noteSize(id string, n int64) { m.noteSizeAt(id, n, m.now()) }
+
+func (m *Manager) noteSizeAt(id string, n int64, at time.Time) {
+	m.sizesMu.Lock()
+	defer m.sizesMu.Unlock()
+	if m.sizes == nil {
+		m.sizes = map[string]knownSize{}
+	}
+	m.sizes[id] = knownSize{n: n, at: at}
+}
+
+func (m *Manager) forgetSize(id string) {
+	m.sizesMu.Lock()
+	defer m.sizesMu.Unlock()
+	delete(m.sizes, id)
 }
 
 // ReapRejected deletes the uploaded context of every submission rejected more
@@ -848,6 +921,7 @@ func (m *Manager) ReapRejected(ctx context.Context, olderThan time.Duration) (in
 		_, ok, err := m.Blobs.Size(ctx, s.ID)
 		if err == nil && ok {
 			if err = m.Blobs.Delete(ctx, s.ID); err == nil {
+				m.noteSize(s.ID, 0)
 				reaped++
 			}
 		}
@@ -1133,7 +1207,9 @@ func (m *Manager) deleteBlob(ctx context.Context, id string) error {
 	if m.Blobs == nil {
 		return nil
 	}
-	if err := m.Blobs.Delete(ctx, id); err != nil {
+	err := m.Blobs.Delete(ctx, id)
+	m.forgetSize(id)
+	if err != nil {
 		return fmt.Errorf("submit: submission removed, but its uploaded context could not be deleted (it may remain on the uploads store): %w", err)
 	}
 	return nil

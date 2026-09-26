@@ -28,14 +28,16 @@ export const MAX_ATTEMPTS = 8;
 export const MAX_COMPLETE_WAITS = 40;
 
 // A transient answer is one the next attempt can outlast: no response at all, a
-// tunnel or ingress page in place of the API's (upstream_unavailable), or a 409
-// that means "ask where the upload stands and send again".
+// tunnel or ingress page in place of the API's (upstream_unavailable), an uploads
+// store that did not answer the budget check (uploads_store_unavailable), or a
+// 409 that means "ask where the upload stands and send again".
 export function isTransient(e: unknown): boolean {
   const err = e as Partial<ApiError> | null;
   if (!err || typeof err.code !== "string") return false;
   return (
     err.code === "network_error" ||
     err.code === "upstream_unavailable" ||
+    err.code === "uploads_store_unavailable" ||
     err.code === "upload_busy" ||
     err.code === "upload_offset_mismatch"
   );

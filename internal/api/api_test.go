@@ -824,6 +824,7 @@ func (f *fakeRepo) SetAllowlistWake(_ context.Context, n, uuid string, canWake b
 	}
 	return ErrNotFound
 }
+
 // RequestRetire and CancelRetire mirror PGRepo's: the first request time is
 // kept, a deletion stays a deletion, and only an admin cancels a deletion.
 func (f *fakeRepo) RequestRetire(_ context.Context, n string, del bool) (RetireState, error) {

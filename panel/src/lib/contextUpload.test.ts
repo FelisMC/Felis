@@ -134,6 +134,16 @@ describe("uploadContext", () => {
     expect((await sentParts()).map(([o]) => o)).toEqual([0, 4, 8]);
   });
 
+  it("sends a part again when the uploads store did not answer the budget check", async () => {
+    calls.getContextUpload.mockResolvedValueOnce(at(0)).mockResolvedValueOnce(at(4));
+    acceptParts();
+    calls.putContextPart.mockImplementationOnce(async (_id, offset: number, part: Blob) => at(offset + part.size));
+    calls.putContextPart.mockRejectedValueOnce({ status: 503, code: "uploads_store_unavailable", message: "" });
+    await uploadContext("sub-1", FILE, { sleep });
+    expect((await sentParts()).map(([o]) => o)).toEqual([0, 4, 4, 8]);
+    expect(calls.completeContextUpload).toHaveBeenCalledTimes(1);
+  });
+
   it("gives up at once on a refusal the next attempt cannot outlast", async () => {
     calls.getContextUpload.mockResolvedValue(at(0));
     const refused = { status: 400, code: "bad_request", message: "context must be a gzip-compressed tarball" };
@@ -214,6 +224,15 @@ describe("uploadContext completion", () => {
     await uploadContext("sub-1", FILE, { sleep });
     expect(calls.completeContextUpload).toHaveBeenCalledTimes(3);
     expect(sleep.mock.calls.map((c) => c[0])).toEqual([1000, 2000]);
+  });
+
+  it("completes again when the uploads store did not answer, the staged bytes still all there", async () => {
+    calls.getContextUpload.mockResolvedValueOnce(at(0)).mockResolvedValue(at(10));
+    calls.completeContextUpload
+      .mockRejectedValueOnce({ status: 503, code: "uploads_store_unavailable", message: "" })
+      .mockResolvedValueOnce({ id: "sub-1" });
+    await uploadContext("sub-1", FILE, { sleep });
+    expect(calls.completeContextUpload).toHaveBeenCalledTimes(2);
   });
 
   it("surfaces the real refusal when completing again answers with one", async () => {

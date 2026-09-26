@@ -1971,7 +1971,7 @@ export interface paths {
         get: operations["getContextUpload"];
         /**
          * Append one part of your chunked context upload.
-         * @description The body is the part's raw bytes, at most part_max_bytes (32 MiB). offset is where they start: 0 starts the upload over, and anything else must equal the staged length, or the answer is 409 upload_offset_mismatch and the client reads GET for where to resume. The first part must open with the gzip magic (400). The staged total meets the same context cap (400) and storage budget (403) as a single upload. A part that breaks off is cut back off, so the staged bytes are always a prefix of the file. One request per upload at a time (409 upload_busy). Staged bytes untouched for 24 hours are deleted.
+         * @description The body is the part's raw bytes, at most part_max_bytes (32 MiB). offset is where they start: 0 starts the upload over, and anything else must equal the staged length, or the answer is 409 upload_offset_mismatch and the client reads GET for where to resume. The first part must open with the gzip magic (400). The staged total meets the same context cap (400) and storage budget (403) as a single upload. A part that breaks off is cut back off, so the staged bytes are always a prefix of the file. One request per upload at a time (409 upload_busy). Staged bytes untouched for 24 hours are deleted. The budget check reads blob sizes remembered for up to a minute; when a size has to be read and the uploads store does not answer, the answer is 503 uploads_store_unavailable with Retry-After, and the same part can be sent again.
          */
         put: operations["putContextUploadPart"];
         post?: never;
@@ -1992,7 +1992,7 @@ export interface paths {
         put?: never;
         /**
          * Store your staged chunked upload as the submission's build context.
-         * @description Runs every check of POST /api/v1/me/submissions/{id}/context on the staged bytes (format, cap, budget, room), records the digest the same way, and deletes the staged copy. Holds the same per-user upload cooldown (429) and writes the same submission.upload audit event. Nothing staged is 400. After a failure the staged bytes stay, for a retry.
+         * @description Runs every check of POST /api/v1/me/submissions/{id}/context on the staged bytes (format, cap, budget, room), records the digest the same way, and deletes the staged copy. Holds the same per-user upload cooldown (429) and writes the same submission.upload audit event. Nothing staged is 400. After a failure the staged bytes stay, for a retry. The budget is checked against every blob's size read from the uploads store; a store that does not answer is 503 uploads_store_unavailable with Retry-After.
          */
         post: operations["completeContextUpload"];
         delete?: never;

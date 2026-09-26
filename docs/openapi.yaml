@@ -5884,7 +5884,11 @@ paths:
         the same context cap (400) and storage budget (403) as a single upload.
         A part that breaks off is cut back off, so the staged bytes are always a
         prefix of the file. One request per upload at a time (409 upload_busy).
-        Staged bytes untouched for 24 hours are deleted.
+        Staged bytes untouched for 24 hours are deleted. The budget check reads
+        blob sizes remembered for up to a minute; when a size has to be read and
+        the uploads store does not answer, the answer is 503
+        uploads_store_unavailable with Retry-After, and the same part can be
+        sent again.
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ sessionCookie: [] }]
@@ -5938,7 +5942,9 @@ paths:
         way, and deletes the staged copy. Holds the same per-user upload
         cooldown (429) and writes the same submission.upload audit event.
         Nothing staged is 400. After a failure the staged bytes stay, for a
-        retry.
+        retry. The budget is checked against every blob's size read from the
+        uploads store; a store that does not answer is 503
+        uploads_store_unavailable with Retry-After.
       x-felis-face: [external]
       x-felis-tier: app
       security: [{ sessionCookie: [] }]

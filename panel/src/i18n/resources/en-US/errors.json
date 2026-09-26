@@ -73,6 +73,7 @@
   "uploads_unavailable": "Uploads aren't available right now.",
   "upload_busy": "Another upload of this submission is still running — wait a moment and try again.",
   "upload_offset_mismatch": "The upload fell out of step with the server — try again to pick up where it stopped.",
+  "uploads_store_unavailable": "The uploads store did not answer — try again in a moment; what was already sent is kept.",
   "part_too_large": "A piece of the upload was larger than the server accepts.",
   "backup_unavailable": "Backups aren't available right now.",
   "account_retired": "This account has been retired — sign in with the account it was migrated to.",

@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"felis.lolicon.best/internal/submit"
 )
@@ -502,6 +503,9 @@ func (a *API) handleDeleteSubmission(w http.ResponseWriter, r *http.Request) {
 // errSubmissionsUnavailable is returned when the approval lane is not configured
 // on this api instance (a nil Submissions service), so the admin/app boundary is
 // still exercised before the subsystem is wired in.
+// uploadsStoreRetry is the Retry-After on uploads_store_unavailable.
+const uploadsStoreRetry = 5 * time.Second
+
 var errSubmissionsUnavailable = newError(http.StatusServiceUnavailable, "submissions_unavailable",
 	"modpack submission subsystem is not configured")
 
@@ -511,7 +515,10 @@ var errSubmissionsUnavailable = newError(http.StatusServiceUnavailable, "submiss
 // allowance is 403 (the same status the server-resource quota answers with), a
 // full uploads store (every user's uploads together at their cap, or the volume
 // short of free space) is 507, and an unconfigured upload transport is 503 (the store this deployment set has no
-// implemented transport — an honest "not available here", not a client error). Everything
+// implemented transport — an honest "not available here", not a client error). A
+// blob store that did not answer the budget check is 503 uploads_store_unavailable
+// with Retry-After: nothing was written and the same request can be sent again.
+// Everything
 // else — including a build.ErrInvalid raised by the pre-CAS build.Validate (a
 // platform registry/context MISCONFIGURATION, never client input, since every
 // build input is platform-derived) and a post-CAS Submit hand-off failure — is a
@@ -541,6 +548,12 @@ func writeSubmitError(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, submit.ErrUploadsUnavailable):
 		writeError(w, r, newError(http.StatusServiceUnavailable, "uploads_unavailable",
 			"modpack upload transport is not configured"))
+	case errors.Is(err, submit.ErrStoreUnavailable):
+		// The budget could not be checked; nothing was written. The panel's upload
+		// loop sends the same request again.
+		log.Printf("api: %s %s: %v", r.Method, r.URL.Path, err)
+		writeError(w, r, newError(http.StatusServiceUnavailable, "uploads_store_unavailable",
+			"the uploads store did not answer; send the request again").retryAfter(uploadsStoreRetry))
 	case errors.Is(err, submit.ErrUploadBusy):
 		writeError(w, r, newError(http.StatusConflict, "upload_busy",
 			"another request is still writing this upload; read where it stands and continue from there"))

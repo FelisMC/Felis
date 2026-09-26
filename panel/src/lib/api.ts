@@ -1170,6 +1170,8 @@ export function humanizeError(e: unknown): string {
       return t("upload_busy");
     case "upload_offset_mismatch":
       return t("upload_offset_mismatch");
+    case "uploads_store_unavailable":
+      return t("uploads_store_unavailable");
     case "part_too_large":
       return t("part_too_large");
     case "backup_unavailable":

@@ -60,12 +60,16 @@ func TestContextUploadErrors(t *testing.T) {
 		code int
 		want string
 		msg  string
+		// retry is the Retry-After the answer must carry, if any.
+		retry string
 	}{
-		{"offset mismatch", &submit.OffsetMismatchError{Received: 12}, 409, "upload_offset_mismatch", "the upload holds 12 bytes"},
-		{"busy", submit.ErrUploadBusy, 409, "upload_busy", ""},
-		{"part too large", fmt.Errorf("submit: write upload part: %w", submit.ErrPartTooLarge), 413, "part_too_large", ""},
-		{"not owned", submit.ErrNotFound, 404, "not_found", ""},
-		{"no part store", submit.ErrUploadsUnavailable, 503, "uploads_unavailable", ""},
+		{"offset mismatch", &submit.OffsetMismatchError{Received: 12}, 409, "upload_offset_mismatch", "the upload holds 12 bytes", ""},
+		{"busy", submit.ErrUploadBusy, 409, "upload_busy", "", ""},
+		{"part too large", fmt.Errorf("submit: write upload part: %w", submit.ErrPartTooLarge), 413, "part_too_large", "", ""},
+		{"not owned", submit.ErrNotFound, 404, "not_found", "", ""},
+		{"no part store", submit.ErrUploadsUnavailable, 503, "uploads_unavailable", "", ""},
+		{"store did not answer", fmt.Errorf("%w: size of the context of sub-3: dial tcp: i/o timeout", submit.ErrStoreUnavailable),
+			503, "uploads_store_unavailable", "send the request again", "5"},
 	} {
 		fs := &fakeSubmissions{chunkErr: tc.err}
 		w := do(appSubAPI(fs).ExternalHandler(), "PUT", "/api/v1/me/submissions/sub-9/context/upload?offset=12", "abcd", nil)
@@ -74,6 +78,9 @@ func TestContextUploadErrors(t *testing.T) {
 		}
 		if tc.msg != "" && !strings.Contains(w.Body.String(), tc.msg) {
 			t.Errorf("%s: body %s does not say %q", tc.name, w.Body.String(), tc.msg)
+		}
+		if got := w.Header().Get("Retry-After"); got != tc.retry {
+			t.Errorf("%s: Retry-After = %q, want %q", tc.name, got, tc.retry)
 		}
 	}
 }
