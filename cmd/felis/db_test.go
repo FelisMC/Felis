@@ -6,10 +6,14 @@ import (
 	"encoding/json"
 	"flag"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"felis.lolicon.best/internal/config"
+	"felis.lolicon.best/internal/dbbackup"
 	"felis.lolicon.best/internal/store"
 )
 
@@ -141,7 +145,7 @@ func TestPreMigrateBackupOnlyGuardsAPopulatedDatabase(t *testing.T) {
 		{"up to date", map[int]struct{}{1: {}, 2: {}}, false},
 		{"pending on a populated database", map[int]struct{}{1: {}}, true},
 	} {
-		path, err := preMigrateBackup(context.Background(), appliedDriver{done: tc.done}, ms, badURL, t.TempDir(), io.Discard)
+		path, err := preMigrateBackup(context.Background(), appliedDriver{done: tc.done}, ms, config.DatabaseConfig{URL: badURL}, t.TempDir(), io.Discard)
 		if attempted := err != nil; attempted != tc.attempt {
 			t.Errorf("%s: attempted = %v (err %v), want %v", tc.name, attempted, err, tc.attempt)
 		}
@@ -183,3 +187,167 @@ func TestAuditExportBounds(t *testing.T) {
 		}
 	}
 }
+
+// podK3s stands in for `k3s kubectl exec ... --`: it logs its argv and runs the
+// command after -- from the "container" directory, which is the only place the
+// PostgreSQL tools exist, as on an installed host.
+const podK3s = `#!/bin/sh
+printf '%s\n' "$*" >> "$FAKE_DIR/k3s.args"
+while [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done
+shift
+tool=$1; shift
+exec /usr/bin/env -i FAKE_DIR="$FAKE_DIR" PATH=/usr/bin:/bin "$FAKE_DIR/container/$tool" "$@"
+`
+
+var podTools = map[string]string{
+	"pg_dump": `#!/bin/sh
+case "$1" in --version) echo "pg_dump (PostgreSQL) 18.6"; exit 0 ;; esac
+printf 'PGDMP-fake-archive'
+`,
+	"pg_restore": `#!/bin/sh
+cat > /dev/null
+`,
+	"psql": `#!/bin/sh
+for a in "$@"; do [ "$a" = "-c" ] && { echo 3; exit 0; }; done
+cat > /dev/null
+`,
+}
+
+const podPassword = "pw-must-stay-on-the-host"
+
+// podDB is the host config's [database] on an installed host.
+var podDB = config.DatabaseConfig{
+	URL:        "postgres://felis:" + podPassword + "@127.0.0.1:15432/felis?sslmode=disable",
+	Deployment: "felis/felis-postgres",
+}
+
+const podExecPrefix = "kubectl exec -i -n felis deploy/felis-postgres -c postgres -- "
+
+// newPodRig puts the fake k3s on PATH, alone, and returns the directory its
+// k3s.args log lands in.
+func newPodRig(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	container := filepath.Join(dir, "container")
+	for _, d := range []string{bin, container} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeTestFile(t, filepath.Join(bin, "k3s"), podK3s, 0o755)
+	for name, body := range podTools {
+		writeTestFile(t, filepath.Join(container, name), body, 0o755)
+	}
+	t.Setenv("PATH", bin)
+	t.Setenv("FAKE_DIR", dir)
+	return dir
+}
+
+// podRuns returns what the fake k3s ran since the last call, failing on any
+// run outside the database container or with the password on its command
+// line (visible to every local user in ps).
+func podRuns(t *testing.T, dir string) []string {
+	t.Helper()
+	log := filepath.Join(dir, "k3s.args")
+	argv, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("nothing ran through k3s: %v", err)
+	}
+	os.Remove(log)
+	var runs []string
+	for _, line := range strings.Split(strings.TrimSpace(string(argv)), "\n") {
+		if !strings.HasPrefix(line, podExecPrefix) {
+			t.Errorf("k3s ran %q, want everything under %q", line, podExecPrefix)
+		}
+		if strings.Contains(line, podPassword) {
+			t.Errorf("the password crossed into the pod on a command line: %q", line)
+		}
+		runs = append(runs, strings.TrimPrefix(line, podExecPrefix))
+	}
+	return runs
+}
+
+func ranIn(runs []string, prefix string) bool {
+	for _, r := range runs {
+		if strings.HasPrefix(r, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestDBBackupAndRestoreRunTheToolsInTheDatabasePod: on an installed host the
+// database is a k3s Deployment and no PostgreSQL client exists outside it, so
+// `felis db backup` and `restore` must reach the tools through kubectl exec,
+// over the pod's socket, and without putting the role's password on a command
+// line.
+func TestDBBackupAndRestoreRunTheToolsInTheDatabasePod(t *testing.T) {
+	dir := newPodRig(t)
+	toml := strings.Replace(installerTOML("example.com", "127.0.0.1"),
+		`url = "postgres://felis:pw@127.0.0.1:5432/felis?sslmode=disable"`,
+		`url = "`+podDB.URL+`"
+deployment = "`+podDB.Deployment+`"`, 1)
+	cfg := filepath.Join(dir, "felis.toml")
+	writeTestFile(t, cfg, toml, 0o600)
+
+	var out, errBuf bytes.Buffer
+	bundles := filepath.Join(dir, "bundles")
+	if code := run([]string{"db", "backup", "-config", cfg, "-dir", bundles, "-state-dir", "", "-no-servers"}, &out, &errBuf); code != 0 {
+		t.Fatalf("backup: exit %d: %s", code, errBuf.String())
+	}
+	bundle := strings.TrimSpace(strings.TrimPrefix(out.String(), "felis db backup: wrote "))
+	if _, err := dbbackupVerify(bundle); err != nil {
+		t.Fatalf("the bundle does not verify: %v", err)
+	}
+	runs := podRuns(t, dir)
+	if !ranIn(runs, "pg_dump --format=custom --no-password --dbname=host=/var/run/postgresql port=5432 dbname='felis' user='felis'") {
+		t.Errorf("pg_dump did not dump over the pod's socket as felis on felis: %q", runs)
+	}
+
+	out.Reset()
+	errBuf.Reset()
+	if code := run([]string{"db", "restore", "-config", cfg, "-dir", bundles, "-yes", "-force", "-no-safety-backup", bundle}, &out, &errBuf); code != 0 {
+		t.Fatalf("restore: exit %d: %s", code, errBuf.String())
+	}
+	runs = podRuns(t, dir)
+	if !ranIn(runs, "pg_restore --no-owner --no-privileges --file=-") || !ranIn(runs, "psql -X -q -w -v ON_ERROR_STOP=1 -d host=/var/run/postgresql") {
+		t.Errorf("the replay did not run in the pod: %q", runs)
+	}
+}
+
+// TestPreMigrateBackupRunsInTheDatabasePod: the snapshot in front of an upgrade
+// is the one taken most often, by bootstrap on every rerun.
+func TestPreMigrateBackupRunsInTheDatabasePod(t *testing.T) {
+	dir := newPodRig(t)
+	ms := []store.Migration{{Version: 1}, {Version: 2}}
+	// The snapshot also bundles /etc/felis, which a test machine may lack; the
+	// dump runs first either way.
+	_, err := preMigrateBackup(context.Background(), appliedDriver{done: map[int]struct{}{1: {}}}, ms, podDB, filepath.Join(dir, "bundles"), io.Discard)
+	if err != nil && !strings.Contains(err.Error(), "read host state") {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if runs := podRuns(t, dir); !ranIn(runs, "pg_dump --format=custom") {
+		t.Errorf("pg_dump did not run in the pod: %q", runs)
+	}
+}
+
+func TestDBToolsNeedTheRoleAndDatabase(t *testing.T) {
+	if tools, err := dbTools(config.DatabaseConfig{URL: "postgres://felis:pw@db:5432/felis"}); err != nil || len(tools.Exec) != 0 {
+		t.Errorf("no deployment: tools %+v err %v, want the PATH tools", tools, err)
+	}
+	for _, u := range []string{"postgres://db:5432/felis", "postgres://felis:pw@db:5432/"} {
+		if _, err := dbTools(config.DatabaseConfig{URL: u, Deployment: "felis/felis-postgres"}); err == nil {
+			t.Errorf("%s: no error, want a refusal (the pod connection needs the role and the database)", u)
+		}
+	}
+	tools, err := dbTools(config.DatabaseConfig{URL: `postgres://o%27brien@db/my%20db`, Deployment: "felis/felis-postgres"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(tools.Conn, `dbname='my db' user='o\'brien'`) {
+		t.Errorf("Conn = %q, want the values quoted for libpq", tools.Conn)
+	}
+}
+
+var dbbackupVerify = dbbackup.Verify

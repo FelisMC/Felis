@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 
+	"felis.lolicon.best/internal/config"
+
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -14,7 +16,7 @@ import (
 // of the wizard can assume a healthy backend. It is non-interactive — it runs
 // to completion and reports back to the root via preflightDoneMsg.
 type preflightModel struct {
-	dbURL      string
+	db         config.DatabaseConfig
 	rootDomain string
 	adminHost  string
 
@@ -57,11 +59,11 @@ type pfMigApplyMsg struct {
 
 type pfPanelMsg struct{ err error }
 
-func newPreflightModel(dbURL, rootDomain, adminHostname string) *preflightModel {
+func newPreflightModel(db config.DatabaseConfig, rootDomain, adminHostname string) *preflightModel {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	sp.Style = tuiLabel
-	return &preflightModel{dbURL: dbURL, rootDomain: rootDomain, adminHost: adminHostname, sp: sp, state: pfCheckDB}
+	return &preflightModel{db: db, rootDomain: rootDomain, adminHost: adminHostname, sp: sp, state: pfCheckDB}
 }
 
 func (m *preflightModel) Init() tea.Cmd {
@@ -200,7 +202,7 @@ func (m *preflightModel) errText() string {
 }
 
 func (m *preflightModel) checkDB() tea.Cmd {
-	return func() tea.Msg { return pfDBMsg{err: checkPostgres(m.dbURL)} }
+	return func() tea.Msg { return pfDBMsg{err: checkPostgres(m.db.URL)} }
 }
 
 func (m *preflightModel) checkMigrations() tea.Cmd {
@@ -208,7 +210,7 @@ func (m *preflightModel) checkMigrations() tea.Cmd {
 		// The sets, not their sizes: a database a newer release migrated can hold as
 		// many rows as this build has migrations, and must stop here rather than be
 		// "healed" by an older binary.
-		s, err := readSchema(m.dbURL)
+		s, err := readSchema(m.db.URL)
 		if err == nil {
 			err = s.Newer()
 		}
@@ -218,7 +220,7 @@ func (m *preflightModel) checkMigrations() tea.Cmd {
 
 func (m *preflightModel) applyMigrations() tea.Cmd {
 	return func() tea.Msg {
-		applied, err := applyMigrations(m.dbURL)
+		applied, err := applyMigrations(m.db)
 		return pfMigApplyMsg{applied: applied, err: err}
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"felis.lolicon.best/internal/config"
+
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -30,7 +32,7 @@ func newTestRoot(adminExists bool, mode consoleMode, accessAud string) *rootMode
 	return newRootModel(
 		context.Background(),
 		&fakeOwnerStore{},
-		"postgres://localhost/felis",
+		config.DatabaseConfig{URL: "postgres://localhost/felis"},
 		"felis.example.com",
 		"admin.felis.example.com",
 		"panel.felis.example.com",

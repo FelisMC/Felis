@@ -58,7 +58,7 @@ func cmdMigrate(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if !*noBackup {
-		path, err := preMigrateBackup(ctx, drv, migrations, cfg.Database.URL, *backupDir, stderr)
+		path, err := preMigrateBackup(ctx, drv, migrations, cfg.Database, *backupDir, stderr)
 		if err != nil {
 			fmt.Fprintf(stderr, "felis migrate: pre-migration backup failed, nothing applied: %v\n", err)
 			fmt.Fprintln(stderr, "  fix the backup, or re-run with -no-backup to migrate without one")
@@ -85,7 +85,7 @@ func cmdMigrate(args []string, stdout, stderr io.Writer) int {
 // preMigrateBackup bundles the database when it already carries a schema and
 // some of migrations are not applied yet, and returns the bundle's path ("" when
 // there was nothing to protect: a fresh database, or nothing pending).
-func preMigrateBackup(ctx context.Context, drv store.Driver, migrations []store.Migration, dbURL, dir string, log io.Writer) (string, error) {
+func preMigrateBackup(ctx context.Context, drv store.Driver, migrations []store.Migration, db config.DatabaseConfig, dir string, log io.Writer) (string, error) {
 	if err := drv.EnsureVersionTable(ctx); err != nil {
 		return "", fmt.Errorf("ensure version table: %w", err)
 	}
@@ -96,8 +96,12 @@ func preMigrateBackup(ctx context.Context, drv store.Driver, migrations []store.
 	if len(done) == 0 || !hasPending(done, migrations) {
 		return "", nil
 	}
+	tools, err := dbTools(db)
+	if err != nil {
+		return "", err
+	}
 	return dbbackup.Backup(ctx, dbbackup.BackupOptions{
-		DatabaseURL: dbURL, Dir: dir, Label: dbbackup.LabelPreMigrate,
+		DatabaseURL: db.URL, Tools: tools, Dir: dir, Label: dbbackup.LabelPreMigrate,
 		Keep: defaultKeep[dbbackup.LabelPreMigrate], StateDir: dbbackup.DefaultStateDir,
 		Version: resolvedVersion(), Log: log, Record: true,
 	})

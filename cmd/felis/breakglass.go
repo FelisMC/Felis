@@ -158,7 +158,7 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 	host, _ := os.Hostname()
 	recovery := recoveryConfig{open: hostRecoveryMailer(cfg.SMTP, platform.DefaultControlNamespace), host: host}
 
-	res, err := runBreakGlassTUI(ctx, repo, cfg.Database.URL, cfg.Server.RootDomain, cfg.Auth.AdminHostname, cfg.Auth.PanelHostname, cfg.Auth.AccessJWTAud, cfg.K8s.Namespace, accountableOSUser(), adminExists, recovery)
+	res, err := runBreakGlassTUI(ctx, repo, cfg.Database, cfg.Server.RootDomain, cfg.Auth.AdminHostname, cfg.Auth.PanelHostname, cfg.Auth.AccessJWTAud, cfg.K8s.Namespace, accountableOSUser(), adminExists, recovery)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis breakGlass: %v\n", err)
 		return 1
@@ -627,18 +627,18 @@ const (
 	cloudflareAPITokenDocsURL        = "https://developers.cloudflare.com/fundamentals/api/how-to/account-owned-token-template/"
 )
 
-func runBreakGlassTUI(ctx context.Context, s ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool, recovery recoveryConfig) (breakGlassResult, error) {
-	return runConsoleTUI(ctx, s, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, consoleModeBreakGlass, recovery)
+func runBreakGlassTUI(ctx context.Context, s ownerStore, db config.DatabaseConfig, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool, recovery recoveryConfig) (breakGlassResult, error) {
+	return runConsoleTUI(ctx, s, db, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, consoleModeBreakGlass, recovery)
 }
 
 // runSetupTUI never reaches recovery: setup with a staff account present lands on
 // the status screen, so it has no relay to hand over.
-func runSetupTUI(ctx context.Context, s ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool) (breakGlassResult, error) {
-	return runConsoleTUI(ctx, s, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, consoleModeSetup, recoveryConfig{})
+func runSetupTUI(ctx context.Context, s ownerStore, db config.DatabaseConfig, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool) (breakGlassResult, error) {
+	return runConsoleTUI(ctx, s, db, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, consoleModeSetup, recoveryConfig{})
 }
 
-func runConsoleTUI(ctx context.Context, s ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool, mode consoleMode, recovery recoveryConfig) (breakGlassResult, error) {
-	rm := newRootModel(ctx, s, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, mode)
+func runConsoleTUI(ctx context.Context, s ownerStore, db config.DatabaseConfig, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool, mode consoleMode, recovery recoveryConfig) (breakGlassResult, error) {
+	rm := newRootModel(ctx, s, db, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, mode)
 	rm.recovery = recovery
 	final, err := tea.NewProgram(rm, tea.WithAltScreen()).Run()
 	if err != nil {

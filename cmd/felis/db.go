@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	neturl "net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/dbbackup"
+	"felis.lolicon.best/internal/platform"
 	"felis.lolicon.best/internal/retention"
 )
 
@@ -92,11 +94,43 @@ func parseWithArg(fs *flag.FlagSet, args []string) (string, bool) {
 }
 
 func dbDatabaseURL(path string) (string, error) {
+	db, err := dbDatabase(path)
+	return db.URL, err
+}
+
+func dbDatabase(path string) (config.DatabaseConfig, error) {
 	cfg, err := config.Load(path)
 	if err != nil {
-		return "", err
+		return config.DatabaseConfig{}, err
 	}
-	return cfg.Database.URL, nil
+	return cfg.Database, nil
+}
+
+// dbTools places pg_dump, pg_restore and psql. The installer's database runs in
+// k3s and the host has no PostgreSQL client, so when the host config names the
+// [database] deployment the tools run in its postgres container over the
+// container's socket, as the URL's role on the URL's database. Otherwise they
+// come from PATH and connect with the URL.
+func dbTools(db config.DatabaseConfig) (dbbackup.Tools, error) {
+	if db.Deployment == "" {
+		return dbbackup.Tools{}, nil
+	}
+	ns, name, _ := strings.Cut(db.Deployment, "/")
+	u, err := neturl.Parse(db.URL)
+	if err != nil || u.User == nil || u.User.Username() == "" || strings.TrimPrefix(u.Path, "/") == "" {
+		return dbbackup.Tools{}, errors.New("[database] url must name the role and the database to run the tools in the database's pod")
+	}
+	return dbbackup.Tools{
+		Exec: []string{"k3s", "kubectl", "exec", "-i", "-n", ns, "deploy/" + name, "-c", platform.PostgresContainer, "--"},
+		Conn: fmt.Sprintf("host=%s port=%d dbname=%s user=%s connect_timeout=15",
+			platform.PostgresSocketDir, platform.PostgresPort,
+			libpqQuote(strings.TrimPrefix(u.Path, "/")), libpqQuote(u.User.Username())),
+	}, nil
+}
+
+// libpqQuote renders v as a single-quoted libpq connection-string value.
+func libpqQuote(v string) string {
+	return "'" + strings.NewReplacer(`\`, `\\`, `'`, `\'`).Replace(v) + "'"
 }
 
 func dbBackup(fs *flag.FlagSet, dir *string, args []string, stdout, stderr io.Writer) int {
@@ -113,7 +147,12 @@ func dbBackup(fs *flag.FlagSet, dir *string, args []string, stdout, stderr io.Wr
 		fmt.Fprint(stderr, dbUsage)
 		return 2
 	}
-	url, err := dbDatabaseURL(*cfgPath)
+	db, err := dbDatabase(*cfgPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis db backup: %v\n", err)
+		return 1
+	}
+	tools, err := dbTools(db)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis db backup: %v\n", err)
 		return 1
@@ -122,7 +161,7 @@ func dbBackup(fs *flag.FlagSet, dir *string, args []string, stdout, stderr io.Wr
 		*keep = defaultKeep[*label]
 	}
 	o := dbbackup.BackupOptions{
-		DatabaseURL: url, Dir: *dir, Label: *label, Keep: *keep,
+		DatabaseURL: db.URL, Tools: tools, Dir: *dir, Label: *label, Keep: *keep,
 		StateDir: *stateDir, Version: resolvedVersion(), Log: stderr,
 		MetricsFile: *metrics, Record: true,
 	}
@@ -177,7 +216,12 @@ func dbRestore(fs *flag.FlagSet, dir *string, args []string, stdout, stderr io.W
 		fmt.Fprintln(stderr, "Scale felis-api and felis-operator to 0 first, then re-run with -yes.")
 		return 2
 	}
-	url, err := dbDatabaseURL(*cfgPath)
+	db, err := dbDatabase(*cfgPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis db restore: %v\n", err)
+		return 1
+	}
+	tools, err := dbTools(db)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis db restore: %v\n", err)
 		return 1
@@ -185,7 +229,7 @@ func dbRestore(fs *flag.FlagSet, dir *string, args []string, stdout, stderr io.W
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Minute)
 	defer cancel()
 	_, safety, err := dbbackup.Restore(ctx, dbbackup.RestoreOptions{
-		DatabaseURL: url, Bundle: bundle, Dir: *dir, Force: *force, SkipSafetyBackup: *noSafety,
+		DatabaseURL: db.URL, Tools: tools, Bundle: bundle, Dir: *dir, Force: *force, SkipSafetyBackup: *noSafety,
 		Safety: dbbackup.BackupOptions{Keep: defaultKeep[dbbackup.LabelPreRestore], StateDir: *stateDir,
 			Version: resolvedVersion(), ExportServers: exportMinecraftServers},
 		Log: stderr,

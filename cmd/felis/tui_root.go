@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"felis.lolicon.best/internal/cfsetup"
+	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/platform"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -133,7 +134,7 @@ type rootModel struct {
 	err    error
 
 	mode        consoleMode
-	dbURL       string
+	db          config.DatabaseConfig
 	store       ownerStore
 	osUser      string
 	rootDomain  string
@@ -145,11 +146,11 @@ type rootModel struct {
 	recovery    recoveryConfig // how the account operations mail a recovery code
 }
 
-func newRootModel(ctx context.Context, store ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool, mode consoleMode) *rootModel {
+func newRootModel(ctx context.Context, store ownerStore, db config.DatabaseConfig, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool, mode consoleMode) *rootModel {
 	rm := &rootModel{
 		ctx:         ctx,
 		reviewing:   -1,
-		dbURL:       dbURL,
+		db:          db,
 		store:       store,
 		osUser:      osUser,
 		rootDomain:  rootDomain,
@@ -180,7 +181,7 @@ func newRootModel(ctx context.Context, store ownerStore, dbURL, rootDomain, admi
 		}
 	} else {
 		rm.stage = stagePreflight
-		rm.screen = newPreflightModel(dbURL, rootDomain, adminHostname)
+		rm.screen = newPreflightModel(db, rootDomain, adminHostname)
 	}
 	return rm
 }
