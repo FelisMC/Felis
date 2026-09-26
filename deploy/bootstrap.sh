@@ -2364,6 +2364,21 @@ atomic_install_file() {
   mv -fT "$staged" "$target"
 }
 
+# install_if_changed is atomic_install_file that leaves a target with the same bytes in
+# place, fixing only its mode and owner, so the target's mtime keeps meaning "the content
+# changed". felis domain check reads a proxy started before felis-link.properties' mtime
+# as one still on the old names, and a re-run that rewrote the same bytes made every
+# install look behind (and `felis domain set` restart the proxy for nothing).
+install_if_changed() {
+  local source="$1" target="$2" mode="$3" owner="$4" group="$5"
+  if [ -f "$target" ] && [ ! -L "$target" ] && cmp -s "$source" "$target"; then
+    chown "${owner}:${group}" "$target"
+    chmod "$mode" "$target"
+    return 0
+  fi
+  atomic_install_file "$@"
+}
+
 # build_velocity_plugin compiles plugins/velocity in the same gradle image the two
 # Dockerfiles use, and drops the jar where Velocity will look for it. Docker is the
 # toolchain here on purpose: the host needs no JDK and no gradle, only a JRE. Gradle
@@ -2728,7 +2743,7 @@ EOF
 
   atomic_install_file "${tmp}/forwarding.secret" "${VELOCITY_DIR}/forwarding.secret" 0640 root "$VELOCITY_USER"
   atomic_install_file "${tmp}/velocity.toml" "${VELOCITY_DIR}/velocity.toml" 0640 "$VELOCITY_USER" "$VELOCITY_USER"
-  atomic_install_file "${tmp}/felis-link.properties" \
+  install_if_changed "${tmp}/felis-link.properties" \
     "${VELOCITY_DIR}/plugins/felis-link/felis-link.properties" 0640 root "$VELOCITY_USER"
   ok "velocity.toml + forwarding secret + felis-link.properties written (${VELOCITY_DIR})"
 }

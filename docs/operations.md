@@ -506,3 +506,9 @@ names afterwards. A second `set -yes` changed and restarted nothing; the install
 with the old `FELIS_ROOT_DOMAIN` stopped at its first check; a full installer re-run kept
 the moved domain and left `check` clean; moving back restored every surface
 **[VM-VERIFIED]**.
+
+`check` reads the proxy as behind when `felis-velocity` started before
+`felis-link.properties` last changed. Installers before this command rewrote that file
+on every run, so a host upgraded from one can show that line once with the file already
+on the names; `sudo systemctl restart felis-velocity` clears it. The installer now leaves
+the file alone when its content is the same.

@@ -1541,9 +1541,10 @@ panel_hostname = "console.r.example.com"
 # The proxy's link properties and the panel certificate take the carried names.
 wvblock="$(awk '/^write_velocity_config\(\) \{/,/^}/' "$BS")"
 ptblock="$(awk '/^ensure_panel_tls_cert\(\) \{/,/^}/' "$BS")"
-{ [ -n "$wvblock" ] && [ -n "$ptblock" ]; } \
-  || { echo "FAIL: write_velocity_config / ensure_panel_tls_cert not found in $BS"; exit 1; }
-printf '%s\n' "$wvblock" "$ptblock" >> "$fnfile"
+iicblock="$(awk '/^install_if_changed\(\) \{/,/^}/' "$BS")"
+{ [ -n "$wvblock" ] && [ -n "$ptblock" ] && [ -n "$iicblock" ]; } \
+  || { echo "FAIL: write_velocity_config / ensure_panel_tls_cert / install_if_changed not found in $BS"; exit 1; }
+printf '%s\n' "$iicblock" "$wvblock" "$ptblock" >> "$fnfile"
 cat > "$adir/felis.host.toml" <<'TOML'
 [auth]
 admin_hostname = "ops.example.org"
@@ -1600,6 +1601,39 @@ if [ -z "$err" ]; then
 else
   echo "FAIL: reading a long [auth] printed:"; printf '%s\n' "$err" | head -5; fails=$((fails + 1))
 fi
+
+# A re-run that writes the same felis-link.properties leaves the file alone: felis domain
+# check reads a proxy started before the file's mtime as still on the old names.
+run_link() { # velocity-dir [root-domain]
+  VD="$1" RD="${2:-r.example.com}" TMPDIR="$1" FNFILE="$fnfile" bash -c '
+    set -Eeuo pipefail
+    log() { :; }; ok() { :; }; remember_temp() { :; }
+    felis_internal_ip() { printf 10.43.0.1; }
+    prepare_velocity_layout() { :; }
+    atomic_install_file() { echo "REPLACED $(basename "$2")"; cp "$1" "$2"; }
+    chown() { echo "CHOWN $*"; }; chmod() { echo "CHMOD $*"; }
+    . "$FNFILE"
+    STATE_DIR="$VD" FELIS_ROOT_DOMAIN="$RD" FORWARDING_SECRET=f SERVICE_TOKEN=t LOGIN_SERVER=login \
+    LOBBY_SERVER=lobby FELIS_GAME_PORT=25565 VELOCITY_DIR="$VD" VELOCITY_USER=v NODE_IP=10.0.0.5
+    write_velocity_config' 2>&1
+}
+ldir2="$(mktemp -d)"
+mkdir -p "$ldir2/plugins/felis-link"
+lprops="$ldir2/plugins/felis-link/felis-link.properties"
+expect "a first write installs felis-link.properties" "REPLACED felis-link.properties" "$(run_link "$ldir2")"
+touch -t 202001010000 "$lprops"
+before="$(ls -l --time-style=+%s "$lprops" 2>/dev/null || stat -f '%m' "$lprops")"
+out="$(run_link "$ldir2")"
+case "$out" in
+  *"REPLACED felis-link.properties"*) echo "FAIL: a re-run with the same names replaced felis-link.properties"; fails=$((fails + 1)) ;;
+  *) echo "PASS a re-run with the same names leaves felis-link.properties in place" ;;
+esac
+expect "the re-run still fixes the owner" "CHOWN root:v $lprops" "$out"
+expect "the re-run still fixes the mode" "CHMOD 0640 $lprops" "$out"
+expect "the kept file keeps its mtime" "$before" "$(ls -l --time-style=+%s "$lprops" 2>/dev/null || stat -f '%m' "$lprops")"
+expect "a re-run on other names replaces felis-link.properties" "REPLACED felis-link.properties" "$(run_link "$ldir2" other.example.net)"
+expect "the replaced file has the new root domain" "root-domain=other.example.net" "$(grep '^root-domain=' "$lprops")"
+rm -rf "$ldir2"
 
 # A different FELIS_ROOT_DOMAIN on an installed host is refused with the way through.
 dnblock="$(awk '/^detect_node_ip\(\) \{/,/^}/' "$BS")"
