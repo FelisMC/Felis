@@ -25,7 +25,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { PhaseBadge, shownPhase } from "@/components/PhaseBadge";
+import { PhaseBadge, shownPhase, startFailure } from "@/components/PhaseBadge";
+import { PowerButton } from "@/components/PowerButton";
 import { Loading, ErrorState, NotYours, EmptyState } from "@/components/States";
 import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
@@ -156,7 +157,6 @@ export function ServerFiles() {
   const [opening, setOpening] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [reloading, setReloading] = useState(false);
-  const [stopping, setStopping] = useState(false);
   // Closing an editor with unsaved text (Esc, the overlay, ✕, Cancel) asks
   // first; leaving the page asks through the browser.
   const [confirmDiscard, setConfirmDiscard] = useState(false);
@@ -247,20 +247,6 @@ export function ServerFiles() {
     }
   }
 
-  async function handleStop() {
-    if (stopping) return;
-    setStopping(true);
-    setMsg(null);
-    try {
-      await api.stop(name);
-      statusQ.reload();
-    } catch (e) {
-      setMsg({ kind: "error", text: humanizeError(e) });
-    } finally {
-      setStopping(false);
-    }
-  }
-
   const back = <BackLink to={`/servers/${name}`} label={t("back_to_console")} />;
   if (statusQ.loading && !statusQ.data) {
     return (
@@ -326,14 +312,18 @@ export function ServerFiles() {
                     {t("stopped_required_body")}
                   </p>
                 </div>
-                <Button size="sm" onClick={handleStop} disabled={stopping}>
-                  {stopping ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Square className="h-4 w-4" />
-                  )}
-                  {t("stop_server")}
-                </Button>
+                <PowerButton
+                  name={name}
+                  phase={statusQ.data.phase}
+                  desiredState={statusQ.data.desiredState}
+                  failed={startFailure(statusQ.data) !== null}
+                  playersOnline={statusQ.data.playersOnline}
+                  playerCountUnknown={statusQ.data.playerCountUnknown}
+                  retiring={statusQ.data.retiring}
+                  stopOnly
+                  onChanged={statusQ.reload}
+                  className="items-center"
+                />
               </CardContent>
             </Card>
           ) : listLoading && entries === null ? (

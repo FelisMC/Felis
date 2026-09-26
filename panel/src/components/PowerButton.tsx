@@ -29,6 +29,10 @@ interface Props {
   /** A pending retirement: nothing starts the server until it is cancelled, so
    *  the control gives way to a badge saying why. */
   retiring?: RetireState;
+  /** Offer only ways down: a page that needs the server stopped (the file
+   *  editor) never offers a wake or a retry, and a server it cannot place gets
+   *  a Stop too. */
+  stopOnly?: boolean;
   /** Called after the wake or stop was accepted, so the parent refetches. */
   onChanged: () => void;
   size?: "sm" | "default";
@@ -54,6 +58,8 @@ function isUp(phase: Phase): boolean {
 // one asked to run with no pod yet offers Stop, which is the way out when it
 // never comes up.
 // A server given up or being deleted offers nothing to press, only why.
+// The file editor passes stopOnly: it needs the server down, so it offers Stop
+// alone, with the same question before disconnecting players.
 export function PowerButton({
   name,
   phase,
@@ -62,6 +68,7 @@ export function PowerButton({
   playersOnline,
   playerCountUnknown,
   retiring,
+  stopOnly = false,
   onChanged,
   size = "sm",
   className,
@@ -135,6 +142,8 @@ export function PowerButton({
     control = <RetiringBadge retiring={retiring} />;
   } else if (submitted !== null) {
     control = inProgress(submitted);
+  } else if (failed && stopOnly) {
+    control = stopButton("outline", () => void run("stop"));
   } else if (failed) {
     control = (
       <div className="flex flex-wrap items-center justify-end gap-2">
@@ -147,10 +156,10 @@ export function PowerButton({
     );
   } else if (pending === "stop" || (phase === "Stopping" && pending === null)) {
     control = inProgress("stop");
-  } else if (pending === "start" && phase === "Stopping") {
+  } else if (!stopOnly && pending === "start" && phase === "Stopping") {
     // Woken while stopping: the operator brings it back up once it is down.
     control = inProgress("wake");
-  } else if (!on) {
+  } else if (!stopOnly && !on) {
     control = (
       <Button size={size} onClick={() => void run("wake")} disabled={busy !== null}>
         {busy === "wake" ? spinner : <Play />}

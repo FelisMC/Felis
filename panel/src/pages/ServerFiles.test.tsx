@@ -1,13 +1,13 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, render, screen, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import i18next from "i18next";
 import { ServerFiles } from "./ServerFiles";
 import { STATUS_POLL_FAST_MS } from "@/lib/hooks";
 
-const mocks = vi.hoisted(() => ({ writeServerFile: vi.fn(), status: vi.fn() }));
+const mocks = vi.hoisted(() => ({ writeServerFile: vi.fn(), status: vi.fn(), stop: vi.fn() }));
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -16,6 +16,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     api: {
       ...actual.api,
       status: mocks.status,
+      stop: mocks.stop,
       listServerFiles: () =>
         Promise.resolve({
           path: "",
@@ -31,7 +32,7 @@ vi.mock("@/lib/tier", () => ({ useTier: () => ({ isAdmin: true, loading: false }
 
 const t = (key: string) => i18next.t(key);
 
-async function openEditor() {
+function renderFiles() {
   render(
     <MemoryRouter initialEntries={["/servers/lobby/files"]}>
       <Routes>
@@ -39,6 +40,10 @@ async function openEditor() {
       </Routes>
     </MemoryRouter>,
   );
+}
+
+async function openEditor() {
+  renderFiles();
   await userEvent.click(await screen.findByText("server.properties"));
   const dialog = await screen.findByRole("dialog");
   return { dialog, editor: within(dialog).getByRole("textbox") as HTMLTextAreaElement };
@@ -48,6 +53,7 @@ const stopped = { name: "lobby", subdomain: "lobby", phase: "Stopped", desiredSt
 
 beforeEach(() => {
   mocks.writeServerFile.mockReset();
+  mocks.stop.mockReset();
   mocks.status.mockReset();
   mocks.status.mockResolvedValue(stopped);
 });
@@ -106,13 +112,7 @@ describe("ServerFiles on a running server", () => {
   it("lists the files once the server has stopped, without a reload", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     mocks.status.mockResolvedValue({ ...stopped, phase: "Running", desiredState: "Running", ready: true });
-    render(
-      <MemoryRouter initialEntries={["/servers/lobby/files"]}>
-        <Routes>
-          <Route path="/servers/:name/files" element={<ServerFiles />} />
-        </Routes>
-      </MemoryRouter>,
-    );
+    renderFiles();
     expect(await screen.findByText(t("files:stopped_required_title"))).toBeTruthy();
     expect(screen.queryByText("server.properties")).toBeNull();
 
@@ -125,5 +125,58 @@ describe("ServerFiles on a running server", () => {
     const reads = mocks.status.mock.calls.length;
     await act(() => vi.advanceTimersByTimeAsync(STATUS_POLL_FAST_MS * 3));
     expect(mocks.status.mock.calls.length).toBe(reads);
+  });
+
+  it("asks before stopping a server with players on it", async () => {
+    mocks.stop.mockResolvedValue(undefined);
+    mocks.status.mockResolvedValue({ ...stopped, phase: "Running", desiredState: "Running", ready: true, playersOnline: 2 });
+    renderFiles();
+
+    await userEvent.click(await screen.findByRole("button", { name: t("servers:stop") }));
+    expect(mocks.stop).not.toHaveBeenCalled();
+    expect(screen.getByText(i18next.t("servers:stop_confirm_players", { count: 2 }))).toBeTruthy();
+
+    const reads = mocks.status.mock.calls.length;
+    await userEvent.click(screen.getByRole("button", { name: t("servers:stop") }));
+    expect(mocks.stop).toHaveBeenCalledWith("lobby");
+    // The page rereads at once to follow the stop.
+    await waitFor(() => expect(mocks.status.mock.calls.length).toBeGreaterThan(reads));
+  });
+
+  it("asks when the player count cannot be read", async () => {
+    mocks.status.mockResolvedValue({
+      ...stopped,
+      phase: "Running",
+      desiredState: "Running",
+      ready: true,
+      playersOnline: 0,
+      playerCountUnknown: true,
+    });
+    renderFiles();
+
+    await userEvent.click(await screen.findByRole("button", { name: t("servers:stop") }));
+
+    expect(mocks.stop).not.toHaveBeenCalled();
+    expect(screen.getByText(t("servers:stop_confirm_unknown"))).toBeTruthy();
+  });
+
+  it("offers a failed start a stop, sent without asking, and nothing that would start it", async () => {
+    mocks.stop.mockResolvedValue(undefined);
+    // Nobody is on a server that never came up, so even an unreadable count does not ask.
+    mocks.status.mockResolvedValue({
+      ...stopped,
+      phase: "Failed",
+      desiredState: "Running",
+      ready: false,
+      playersOnline: 0,
+      playerCountUnknown: true,
+    });
+    renderFiles();
+
+    await screen.findByText(t("files:stopped_required_title"));
+    expect(screen.queryByRole("button", { name: t("servers:retry_start") })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: t("servers:stop") }));
+
+    expect(mocks.stop).toHaveBeenCalledWith("lobby");
   });
 });

@@ -273,3 +273,48 @@ describe("PowerButton on a server given up or being deleted", () => {
     expect(screen.getByText(t("servers:retiring_badge_delete"))).toBeTruthy();
   });
 });
+
+describe("PowerButton on a page that needs the server down", () => {
+  const cases: {
+    phase: Phase;
+    desiredState?: "Running" | "Stopped";
+    failed?: boolean;
+    shows: string;
+    disabled: boolean;
+  }[] = [
+    { phase: "Running", desiredState: "Running", shows: "servers:stop", disabled: false },
+    // A failed start gets Stop alone: a retry would start what the page waits to see down.
+    { phase: "Failed", desiredState: "Running", failed: true, shows: "servers:stop", disabled: false },
+    // Woken while going down: Stop keeps it down.
+    { phase: "Stopping", desiredState: "Running", shows: "servers:stop", disabled: false },
+    // A phase nobody can place offers Stop, never a wake.
+    { phase: "Unknown", desiredState: "Stopped", shows: "servers:stop", disabled: false },
+    { phase: "Unknown", shows: "servers:stop", disabled: false },
+    { phase: "Failed", desiredState: "Stopped", shows: "servers:stop", disabled: false },
+    // Already on its way down: nothing to press.
+    { phase: "Stopping", desiredState: "Stopped", shows: "servers:stopping", disabled: true },
+    { phase: "Running", desiredState: "Stopped", shows: "servers:stopping", disabled: true },
+  ];
+
+  for (const c of cases) {
+    it(`${c.phase} asked ${c.desiredState ?? "(unknown)"}${c.failed ? " (failed)" : ""} offers ${c.shows}`, () => {
+      render(
+        <PowerButton name="lobby" phase={c.phase} desiredState={c.desiredState} failed={c.failed} stopOnly onChanged={vi.fn()} />,
+      );
+      const buttons = screen.getAllByRole("button");
+      expect(buttons).toHaveLength(1);
+      expect(buttons[0].textContent).toBe(t(c.shows));
+      expect(buttons[0]).toHaveProperty("disabled", c.disabled);
+    });
+  }
+
+  it("still asks before disconnecting players", async () => {
+    stop.mockResolvedValue(undefined);
+    render(<PowerButton name="lobby" phase="Running" desiredState="Running" playersOnline={2} stopOnly onChanged={vi.fn()} />);
+
+    await userEvent.click(screen.getByRole("button", { name: t("servers:stop") }));
+
+    expect(stop).not.toHaveBeenCalled();
+    expect(screen.getByText(t("servers:stop_confirm_players", { count: 2 }))).toBeTruthy();
+  });
+});
