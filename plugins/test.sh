@@ -39,14 +39,15 @@
 #      bundles: deploy/game-stack.lock's LIMBO_VERSION, which bootstrap passes too.
 #
 #   3. The velocity routing self-tests (`./gradlew routingTest`): ServerRegistry,
-#      WaitingRouter and ControlChannel run against the real velocity-api with a
+#      WaitingRouter, ControlChannel and the /server hand-off run against the real velocity-api with a
 #      fake proxy and a stub felis-api — a refresh registers, moves and drops
 #      backends and lets go of a renamed subdomain, the login gate and host routing
 #      admit only linked players, each wake refusal reaches the player as its own
 #      message (the stub answers a wake from the server's state in felis-api's own
 #      order, so it cannot hand the router an answer the real API never gives),
 #      felis:control acts only for the connection's player and holds its
-#      frame budget. They ride the module's verified dependency set, which is why
+#      frame budget, and Velocity's own /server steps aside for the backend's while
+#      one another proxy plugin registered stays. They ride the module's verified dependency set, which is why
 #      they live in Gradle rather than in the javac mains above.
 #
 #   4. The lobby guard self-test (`./gradlew lobbyTest` in plugins/paper): LobbyGuard

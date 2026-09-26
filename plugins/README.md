@@ -174,6 +174,7 @@ What it does when routing is active:
 | Join report (`ServerConnectedEvent`) | Reports real joins to a felis backend via `POST …/join-event`, so the reaper sees activity and the player is auto-added to the server allowlist. |
 | `/felis`, `/felis list` | Operator status: online-mode, root-domain, lobby, and the known server set with phase/ready. |
 | `/felis lobby`, `/felis go <lobby>` | Moves the player back to the lobby from any backend. Nothing is woken, and a wait already queued still moves them when its server is ready. Kept under `/felis` so a user server's own `/lobby` or `/hub` is not shadowed by the proxy. |
+| `/server` | Velocity's own `/server` is removed so the command reaches the backend: the lobby's server menu there, a user server's own `/server` anywhere else. It listed the login gate, the lobby and every running server to every player. A `/server` another proxy plugin registered is kept. With routing off the built-in stays, since it is then the one way to switch servers. |
 
 Velocity-only config keys (read from the same `felis-link.properties` / env as
 `/link`; env wins):
@@ -208,7 +209,7 @@ login gate treats its link-status polls the same way.
 The `paper/` module is the lobby's player-facing face for §27 scenario 10
 (`/menu → plugin msg → velocity → api → 共用等待队列 → ready 后 Connect`). It runs
 on the Paper lobby server and gives players a chest GUI instead of a command
-line: `/menu` (alias `/server`) opens a grid of one tile per server the proxy routes,
+line: `/menu` (alias `/server`, which the proxy passes through with routing active) opens a grid of one tile per server the proxy routes,
 and clicking a tile wakes, claims, or joins that backend.
 
 **Pure UI face.** The lobby holds no felis-api token, opens no HTTP connection,

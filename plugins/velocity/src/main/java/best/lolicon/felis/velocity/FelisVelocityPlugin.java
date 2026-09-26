@@ -21,6 +21,7 @@ import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
 import com.velocitypowered.api.plugin.Plugin;
+import com.velocitypowered.api.plugin.PluginManager;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
@@ -185,9 +186,41 @@ public final class FelisVelocityPlugin {
         // refresh above reached even a fork that reads the legacy list only once.
         legacyForwarding.accepting();
 
+        if (yieldServerCommand(proxy.getCommandManager(), proxy.getPluginManager())) {
+            logger.info("Felis: Velocity's /server removed; /server now reaches the backend "
+                    + "(the lobby's menu, or a server's own command).");
+        }
+
         this.routingActive = true;
         logger.info("Felis routing ready: rootDomain={}, login={}, lobby={}. /link, /felis and /invite registered.",
                 config.rootDomain(), config.loginServer(), config.lobbyServer());
+    }
+
+    /**
+     * yieldServerCommand removes Velocity's own /server, which answers every player
+     * before any backend sees the command: it lists the login gate, the lobby and every
+     * running server, and it shadows the lobby's /server, which opens the Felis menu.
+     * Without it the command reaches the backend: the menu in the lobby, a user
+     * server's own /server anywhere else. A /server another proxy plugin registered is
+     * that plugin's choice and stays. Called only with routing active; without routing
+     * the built-in is the one way to change servers.
+     */
+    static boolean yieldServerCommand(CommandManager commands, PluginManager plugins) {
+        CommandMeta meta = commands.getCommandMeta("server");
+        if (meta == null) {
+            return false;
+        }
+        // Velocity registers its built-ins under its virtual plugin, id "velocity";
+        // older proxies registered them with no plugin at all.
+        Object owner = meta.getPlugin();
+        boolean builtin = owner == null || plugins.fromInstance(owner)
+                .map(c -> "velocity".equals(c.getDescription().getId()))
+                .orElse(false);
+        if (!builtin) {
+            return false;
+        }
+        commands.unregister("server");
+        return true;
     }
 
     @Subscribe

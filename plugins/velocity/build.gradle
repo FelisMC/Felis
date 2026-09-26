@@ -82,13 +82,14 @@ sourceSets {
             include 'best/lolicon/felis/velocity/ServerRegistryTest.java'
             include 'best/lolicon/felis/velocity/WaitingRouterTest.java'
             include 'best/lolicon/felis/velocity/ControlChannelTest.java'
+            include 'best/lolicon/felis/velocity/ServerCommandTest.java'
         }
         compileClasspath += sourceSets.main.output + configurations.compileClasspath
         runtimeClasspath += output + compileClasspath
     }
 }
 
-def routingMains = ['ServerRegistryTest', 'WaitingRouterTest', 'ControlChannelTest']
+def routingMains = ['ServerRegistryTest', 'WaitingRouterTest', 'ControlChannelTest', 'ServerCommandTest']
 routingMains.each { name ->
     tasks.register(name, JavaExec) {
         group = 'verification'
@@ -100,7 +101,7 @@ routingMains.each { name ->
 
 tasks.register('routingTest') {
     group = 'verification'
-    description = 'Runs the routing self-tests (ServerRegistry, WaitingRouter, ControlChannel).'
+    description = 'Runs the routing self-tests (ServerRegistry, WaitingRouter, ControlChannel, ServerCommand).'
     dependsOn routingMains
 }
 
