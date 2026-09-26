@@ -6,17 +6,20 @@
 #   curl -fsSL <raw-url>/deploy/uninstall.sh | sudo bash -s -- --yes
 #
 # Options:
-#   --purge       also drop the felis database and role, and delete /etc/felis and
-#                 /var/lib/felis (the database bundles, and anything an earlier keep-data
-#                 run set aside). Asks for the word "purge" unless --yes is given.
+#   --purge       also delete /etc/felis and /var/lib/felis (the database's cluster, the
+#                 database bundles, and anything an earlier keep-data run set aside), and
+#                 drop the felis database and role from a host PostgreSQL an earlier
+#                 release installed. Asks for the word "purge" unless --yes is given.
 #   --keep-k3s    leave k3s installed and remove only Felis's namespaces and CRD.
 #   --remove-k3s  run k3s's own uninstaller even when other workloads live in the cluster.
 #   --no-backup   skip the final database bundle keep-data mode takes first.
 #   --yes         do not ask.
 #
 # Keep-data mode (the default) first takes a database bundle (`felis db backup -label
-# manual`) and stops if that fails. It leaves PostgreSQL's felis database, /etc/felis (the
-# secrets, felis.toml, offsite.env) and /var/lib/felis in place. The world, archive,
+# manual`) and stops if that fails. It leaves /etc/felis (the secrets, felis.toml,
+# offsite.env) and /var/lib/felis in place, and with it the felis database: felis-postgres
+# keeps its cluster in /var/lib/felis/postgres, stopped cleanly before k3s goes, and a
+# host PostgreSQL an earlier release installed keeps its copy. The world, archive,
 # registry and upload volumes live under k3s's storage directory, which k3s's uninstaller
 # deletes, so they are moved to /var/lib/felis/retained/k3s-storage-<UTC stamp> first; with
 # --keep-k3s their PersistentVolumes are switched to Retain before the namespaces go.
@@ -41,6 +44,12 @@ CLOUDFLARED_BIN="${CLOUDFLARED_BIN:-/usr/local/bin/cloudflared}"
 VELOCITY_USER="felis-velocity"
 DB_NAME="felis"
 DB_USER="felis"
+CONTROL_NS="felis"
+# The database bootstrap runs in k3s, its cluster on a hostPath under DATA_DIR, and the
+# marker bootstrap leaves once it moved a host PostgreSQL's felis database into it.
+PG_DEPLOYMENT="felis-postgres"
+PG_DATA_DIR="${DATA_DIR}/postgres"
+PG_MOVED_MARKER="${DATA_DIR}/postgres-moved"
 POD_CIDR="10.42.0.0/16"
 SERVICE_CIDR="10.43.0.0/16"
 FELIS_PANEL_NODEPORT="${FELIS_PANEL_NODEPORT:-30443}"
@@ -131,11 +140,12 @@ print_plan() {
     absent) ;;
   esac
   if [ "$PURGE" = 1 ]; then
-    log "  PURGE: the ${DB_NAME} database and role, ${STATE_DIR} (secrets), ${DATA_DIR} (database bundles"
-    log "  and anything set aside before), every world and archive, the Felis images and Docker's build cache"
+    log "  PURGE: ${STATE_DIR} (secrets), ${DATA_DIR} (the ${DB_NAME} database's cluster, the database"
+    log "  bundles and anything set aside before), the ${DB_NAME} database and role in a host PostgreSQL,"
+    log "  every world and archive, the Felis images and Docker's build cache"
   else
     [ "$BACKUP" = 1 ] && log "  after a final database bundle into ${DATA_DIR}/db-backups"
-    log "  kept: the ${DB_NAME} database, ${STATE_DIR}, ${DATA_DIR}; the volumes move to ${RETAIN_DIR}/"
+    log "  kept: ${STATE_DIR}, ${DATA_DIR} (the ${DB_NAME} database in ${PG_DATA_DIR}); the volumes move to ${RETAIN_DIR}/"
   fi
 }
 
@@ -273,8 +283,18 @@ remove_from_cluster() {
   ok "Felis removed from the cluster; k3s stays"
 }
 
+# stop_database_pod shuts felis-postgres down cleanly: k3s-killall.sh SIGKILLs every
+# container, and the cluster it leaves in PG_DATA_DIR is what a reinstall starts from.
+stop_database_pod() {
+  kube -n "$CONTROL_NS" scale deployment "$PG_DEPLOYMENT" --replicas=0 >/dev/null 2>&1 || return 0
+  kube -n "$CONTROL_NS" wait --for=delete pod -l app.kubernetes.io/name=felis,app.kubernetes.io/component=postgres \
+    --timeout=120s >/dev/null 2>&1 \
+    || warn "${PG_DEPLOYMENT} did not stop within 2 minutes; its cluster recovers from its WAL on the next start"
+}
+
 remove_k3s() {
   local stamp
+  [ "$PURGE" = 1 ] || stop_database_pod
   if [ "$PURGE" = 0 ] && [ -d "$K3S_STORAGE" ]; then
     # k3s-killall.sh stops every pod and unmounts their volumes, so nothing is writing a
     # world while it moves.
@@ -325,7 +345,8 @@ remove_host_files() {
 
 as_postgres() { (cd / && runuser -u postgres -- "$@"); }
 
-# remove_hba_block drops the block write_pg_hba_block maintains, and nothing else.
+# remove_hba_block drops the block bootstrap heads pg_hba.conf with (the rules of an
+# install on the host server, or the lockout the move into k3s left), and nothing else.
 remove_hba_block() { # file
   local tmp
   tmp="$(mktemp)"
@@ -374,23 +395,46 @@ SQL
   die "the ${DB_USER} role still holds $(printf '%s' "$held" | paste -sd ';' - | sed 's/;/; /g'), so DROP ROLE would fail halfway through the purge; nothing was removed. Hand them to postgres first (sudo -u postgres psql -c 'ALTER DATABASE <name> OWNER TO postgres', or REASSIGN OWNED BY ${DB_USER} TO postgres; DROP OWNED BY ${DB_USER}; inside that database), or rerun without --purge"
 }
 
+# purge_database drops the felis database and role from a host PostgreSQL an earlier
+# release installed; the cluster felis-postgres runs goes with DATA_DIR (purge_state). That
+# host server either still serves the platform, or the move into felis-postgres stopped it
+# with the pre-move copy left in it for a rollback: a purge takes that copy too and leaves
+# the server stopped. The units and k3s are gone by now, so a failure here is a warning
+# with the commands to finish by hand, and the purge goes on.
 purge_database() {
   [ "$PURGE" = 1 ] || return 0
+  local hba started=0
   if ! systemctl is-active --quiet postgresql 2>/dev/null; then
-    warn "PostgreSQL is not running; the ${DB_NAME} database and role are left in it"
-    return 0
+    [ -e "$PG_MOVED_MARKER" ] && systemctl cat postgresql >/dev/null 2>&1 || return 0
+    if ! systemctl start postgresql >/dev/null 2>&1; then
+      warn "could not start the host PostgreSQL, so its copy of the ${DB_NAME} database from before the move into k3s stays in it; drop it once it runs: sudo -u postgres dropdb ${DB_NAME}; sudo -u postgres dropuser ${DB_USER}"
+      return 0
+    fi
+    started=1
   fi
-  local hba
   hba="$(as_postgres psql -tAc 'SHOW hba_file;' 2>/dev/null || true)"
-  as_postgres psql -v ON_ERROR_STOP=1 -q <<SQL
+  if ! as_postgres psql -v ON_ERROR_STOP=1 -q <<SQL
 SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${DB_NAME}' AND pid <> pg_backend_pid();
 DROP DATABASE IF EXISTS ${DB_NAME};
 DROP ROLE IF EXISTS ${DB_USER};
 ALTER SYSTEM RESET listen_addresses;
 SQL
-  [ -n "$hba" ] && [ -f "$hba" ] && remove_hba_block "$hba"
-  systemctl restart postgresql
-  ok "database and role '${DB_NAME}' dropped; PostgreSQL listens on its default address again"
+  then
+    [ "$started" = 0 ] || systemctl stop postgresql >/dev/null 2>&1 || true
+    warn "could not drop the ${DB_NAME} database and role from the host PostgreSQL; drop them by hand: sudo -u postgres dropdb ${DB_NAME}; sudo -u postgres dropuser ${DB_USER}"
+    return 0
+  fi
+  if [ -n "$hba" ] && [ -f "$hba" ]; then
+    remove_hba_block "$hba"
+    rm -f "${hba}.pre-pg-move"
+  fi
+  if [ "$started" = 1 ]; then
+    systemctl stop postgresql
+    ok "the host PostgreSQL's copy of '${DB_NAME}' from before the move into k3s dropped; the server stays stopped"
+  else
+    systemctl restart postgresql
+    ok "database and role '${DB_NAME}' dropped; PostgreSQL listens on its default address again"
+  fi
 }
 
 purge_images() {
@@ -419,6 +463,10 @@ purge_state() {
     && cred="$(sed -n 's/^credentials-file: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' "$TUNNEL_CONFIG" | head -n 1)"
   if [ -n "$cred" ]; then rm -f "$cred"; fi
   rm -f "$TUNNEL_CONFIG"
+  # The file-context rule bootstrap gave the database's cluster directory.
+  if command -v semanage >/dev/null 2>&1; then
+    semanage fcontext -d "${PG_DATA_DIR}(/.*)?" >/dev/null 2>&1 || true
+  fi
   rm -rf "$STATE_DIR" "$DATA_DIR"
   ok "${STATE_DIR} and ${DATA_DIR} removed"
 }
@@ -453,7 +501,7 @@ main() {
   if [ "$PURGE" = 1 ]; then
     ok "Felis is gone from this host"
   else
-    ok "Felis is removed; the data stays in the ${DB_NAME} database, ${STATE_DIR} and ${DATA_DIR}"
+    ok "Felis is removed; the data stays in ${STATE_DIR} and ${DATA_DIR}, the ${DB_NAME} database in ${PG_DATA_DIR}"
     log "reinstalling reuses it: see docs/operations.md, \"Reinstall on top of kept data\""
   fi
 }

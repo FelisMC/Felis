@@ -44,6 +44,8 @@ fresh_host() {
     printf 'x\n' > "$root/h/etc/$f"
   done
   printf 'world\n' > "$root/h/storage/pvc-1_minecraft_world-a-0/level.dat"
+  mkdir -p "$root/h/data/postgres/18/docker"
+  printf '18\n' > "$root/h/data/postgres/18/docker/PG_VERSION"
   for b in felis k3s k3s-killall.sh k3s-uninstall.sh; do
     printf '#!/bin/sh\necho "RUN %s $*" >> "%s"\n' "$b" "$root/calls" > "$root/h/bin/$b"
     chmod +x "$root/h/bin/$b"
@@ -72,11 +74,19 @@ run_uninstall() {
     . "$0"
     calls="$ROOT/calls"
     id() { if [ "${1:-}" = -u ]; then echo 0; else echo "ID $*" >> "$calls"; fi; }
+    # PG_HOST: the host PostgreSQL is active (the default), stopped, or not installed (none);
+    # PG_START=fail for one that will not start.
     systemctl() {
       echo "SYSTEMCTL $*" >> "$calls"
-      case "$*" in "is-active --quiet firewalld") return 1 ;; esac
-      return 0
+      case "$*" in
+        "is-active --quiet firewalld") return 1 ;;
+        "is-active --quiet postgresql") [ "${PG_HOST:-active}" = active ] ;;
+        "cat postgresql") [ "${PG_HOST:-active}" != none ] ;;
+        "start postgresql") [ "${PG_START:-}" != fail ] ;;
+        *) return 0 ;;
+      esac
     }
+    semanage() { echo "SEMANAGE $*" >> "$calls"; }
     kube() {
       echo "KUBE $*" >> "$calls"
       case "$*" in
@@ -98,7 +108,7 @@ run_uninstall() {
               echo "PSQL-CHECK" >> "$calls"
               [ "${PG_CHECK:-}" = fail ] && { echo "psql: error: connection refused" >&2; return 2; }
               [ -z "${PG_HELD:-}" ] || printf "%s\n" "$PG_HELD" ;;
-            *) echo "PSQL $* $sql" >> "$calls" ;;
+            *) echo "PSQL $* $sql" >> "$calls"; [ "${PG_DROP:-}" != fail ] ;;
           esac ;;
       esac
     }
@@ -135,6 +145,15 @@ refute "keep-data leaves the database alone" "DROP DATABASE" "$calls"
 expect "the timers are disabled" "SYSTEMCTL disable --now felis-db-backup.timer" "$calls"
 expect "the velocity user is removed" "USERDEL felis-velocity" "$calls"
 expect "the run ends pointing at the reinstall steps" "Reinstall on top of kept data" "$out"
+[ -f "$root/h/data/postgres/18/docker/PG_VERSION" ] && echo "PASS the database's cluster stays for the reinstall" \
+  || { echo "FAIL keep-data removed the database's cluster"; fails=$((fails + 1)); }
+stop_at="$(grep -n 'KUBE -n felis scale deployment felis-postgres --replicas=0' "$root/calls" | head -n 1 | cut -d: -f1)"
+kill_at="$(grep -n 'RUN k3s-killall.sh' "$root/calls" | head -n 1 | cut -d: -f1)"
+[ -n "$stop_at" ] && [ -n "$kill_at" ] && [ "$stop_at" -lt "$kill_at" ] \
+  && echo "PASS the database shuts down cleanly before k3s-killall.sh kills what is left" \
+  || { echo "FAIL felis-postgres was not stopped before k3s-killall.sh: $calls"; fails=$((fails + 1)); }
+expect "and the uninstall waits for it to stop" "KUBE -n felis wait --for=delete pod -l app.kubernetes.io/name=felis,app.kubernetes.io/component=postgres" "$calls"
+refute "keep-data keeps the cluster directory's SELinux rule" "SEMANAGE" "$calls"
 
 # --- a failed final bundle stops everything ------------------------------------------------
 fresh_host
@@ -189,6 +208,42 @@ case "$hba" in
   *) echo "FAIL pg_hba.conf starts with: $(printf '%s' "$hba" | head -n 1)"; fails=$((fails + 1)) ;;
 esac
 expect "purge cleans Docker's build cache" "DOCKER builder prune -af" "$calls"
+expect "purge drops the cluster directory's SELinux rule" "SEMANAGE fcontext -d $root/h/data/postgres(/.*)?" "$calls"
+refute "purge leaves k3s's pods to k3s-uninstall.sh" "scale deployment felis-postgres" "$calls"
+
+# --- purge after the move into felis-postgres ---------------------------------------------
+# The move stopped the host server with the felis database left in it for a rollback.
+moved_host() { fresh_host; printf 'moved\n' > "$root/h/data/postgres-moved"; printf 'saved\n' > "$root/h/hba.conf.pre-pg-move"; }
+moved_host
+out="$(PG_HOST=stopped run_uninstall "default felis minecraft" --purge --yes)"
+calls="$(cat "$root/calls")"
+expect "purge starts the stopped host server to drop the pre-move copy" "SYSTEMCTL start postgresql" "$calls"
+expect "and drops it" "DROP DATABASE IF EXISTS felis;" "$calls"
+expect "the server stays stopped afterwards" "SYSTEMCTL stop postgresql" "$calls"
+refute "and is not restarted" "SYSTEMCTL restart postgresql" "$calls"
+refute "the lockout leaves pg_hba.conf" "FELIS MANAGED" "$(cat "$root/h/hba.conf")"
+[ ! -e "$root/h/hba.conf.pre-pg-move" ] && echo "PASS the pg_hba.conf the move saved goes with the copy" \
+  || { echo "FAIL purge left pg_hba.conf.pre-pg-move"; fails=$((fails + 1)); }
+moved_host
+out="$(PG_HOST=stopped PG_START=fail run_uninstall "default felis minecraft" --purge --yes)"
+calls="$(cat "$root/calls")"
+expect "a host server that will not start is named" "could not start the host PostgreSQL" "$out"
+refute "so nothing is dropped" "DROP DATABASE" "$calls"
+[ ! -e "$root/h/etc" ] && [ ! -e "$root/h/data" ] && echo "PASS and the purge goes on" \
+  || { echo "FAIL the purge stopped at the host server"; fails=$((fails + 1)); }
+moved_host
+out="$(PG_HOST=stopped PG_DROP=fail run_uninstall "default felis minecraft" --purge --yes)"
+calls="$(cat "$root/calls")"
+expect "a drop that fails says how to finish by hand" "sudo -u postgres dropdb felis" "$out"
+expect "and stops the server it started" "SYSTEMCTL stop postgresql" "$calls"
+[ ! -e "$root/h/data" ] && echo "PASS a failed drop does not stop the purge halfway" \
+  || { echo "FAIL the purge stopped at a failed drop"; fails=$((fails + 1)); }
+fresh_host
+(PG_HOST=stopped run_uninstall "default felis minecraft" --purge --yes >/dev/null)  # a subshell: sh keeps a prefix assignment to a function
+refute "a stopped host server the move never touched is left alone" "SYSTEMCTL start postgresql" "$(cat "$root/calls")"
+moved_host
+(PG_HOST=none run_uninstall "default felis minecraft" --purge --yes >/dev/null)  # a subshell: sh keeps a prefix assignment to a function
+refute "a host server removed since the move is not started" "SYSTEMCTL start postgresql" "$(cat "$root/calls")"
 
 # --- a purge DROP ROLE would refuse -------------------------------------------------------
 # The VM drill: the PG contract tests' felis_pgint was owned by felis, the purge removed the
@@ -252,6 +307,13 @@ units="$(awk '/^FELIS_UNITS=\(/ { f = 1; next } f && /^\)/ { f = 0 } f' "$US")"
 for u in $(sed -n 's|^[A-Z_]*="/etc/systemd/system/\([^"]*\)"$|\1|p' "$(dirname "$US")/bootstrap.sh"); do
   expect "the uninstaller removes $u" " $u" " $(printf '%s' "$units" | tr '\n' ' ')"
 done
+
+# The database's cluster and the move's marker are where bootstrap put them, or keep-data
+# and purge act on a directory that is not there.
+paths="$(FELIS_UNINSTALL_SOURCED=1 bash -c '. "$0"; printf "%s %s\n" "$PG_DATA_DIR" "$PG_MOVED_MARKER"' "$US")"
+bspaths="$(sed -n 's/^PG_DATA_DIR="\(.*\)"$/\1/p; s/^PG_MOVED_MARKER="\(.*\)"$/\1/p' "$(dirname "$US")/bootstrap.sh" | paste -sd ' ' -)"
+[ -n "$bspaths" ] && [ "$paths" = "$bspaths" ] && echo "PASS the database paths agree with bootstrap" \
+  || { echo "FAIL uninstall's database paths <$paths> differ from bootstrap's <$bspaths>"; fails=$((fails + 1)); }
 
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"
