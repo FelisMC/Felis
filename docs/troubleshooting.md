@@ -2148,7 +2148,8 @@ host yourself, plus the off-site encryption key if the copy is in the bucket.
    checks it (`felis db verify`) and names it, with when it was taken, the
    release and schema that took it, and how many accounts and servers its
    database holds. Read those before going on. A wrong key fails with
-   `object does not decrypt with this key` and writes nothing. For a copy you
+   `object does not decrypt with this key` (naming the bucket's key id and this
+   key's, once the bucket records one) and writes nothing. For a copy you
    made yourself, check it with `sha256sum -c felis-db-....tar.sha256`.
 
    `latest` is the newest bundle, unless that one holds no servers and at
@@ -2266,6 +2267,21 @@ host that has a bucket, and removed `felis-offsite.timer` as they did; a re-run
 of the current installer puts it back. `systemctl list-timers felis-offsite.timer`
 shows whether the timer is there. [SH-TESTED] [VM-TESTED: a re-run that lost the race]
 
+The bucket records which key sealed it: `felis-key-id`, the one object kept in
+the clear, holds the key's id (the `key id:` of `felis offsite status`), which
+names the key without revealing it. The first sync writes it; a bucket from
+before it was recorded is judged by whether the key opens its newest objects.
+The installer runs `felis offsite check-key`, and every sync checks before
+anything else. A key other than the bucket's (a reinstall that lost
+`offsite.env` and was given no `FELIS_OFFSITE_KEY` generates a new one) stops
+the sync before it copies or prunes anything, the installer ends with
+`OFF-SITE COPY STOPPED`, `status` exits 1 and the watchdog mails the owners
+at once. Set `FELIS_OFFSITE_KEY` in `/etc/felis/offsite.env` to the bucket's
+key and `sudo systemctl start felis-offsite.service`, or give `[offsite]` an
+empty bucket or prefix and re-run the installer.
+[GO-TESTED: `TestSyncRefusesAnotherKeysBucket`, `TestCheckKey`] [SH-TESTED]
+[VM-TESTED: MinIO, the other key's sync refused with the bucket unchanged, check-key 0/3, fetch-db naming both ids]
+
 What runs:
 
 - **`felis-offsite.timer`** runs `felis offsite sync` hourly (plus up to
@@ -2306,6 +2322,7 @@ What runs:
   `registry/index/<stamp>.json.fenc`, `uploads/blobs/<sha256>.fenc` and
   `uploads/index/<stamp>.json.fenc`: AES-256-GCM in 64 KiB segments, so
   truncation, reordering and a wrong key are all refused on the way back.
+  `felis-key-id` next to them holds the key's id in the clear.
 - A pass sends the database bundles first, then world archives, images and
   uploads. Each object has its own time limit: 10 minutes plus its size at
   512 KiB/s (about 6 hours for 10 GiB). An archive the uplink cannot send in
@@ -2323,6 +2340,7 @@ Checking it:
 ```
 sudo felis offsite status        # last run, errors, what the bucket holds, what waits
 sudo felis offsite list          # the bundles, image lists and upload lists in the bucket, newest first
+sudo felis offsite check-key     # whether offsite.env holds the key the bucket was sealed with
 sudo journalctl -u felis-offsite -n 50 --no-pager
 sudo systemctl start felis-offsite.service   # run one now
 ```

@@ -28,6 +28,10 @@ type Status struct {
 	Prefix      string    `json:"prefix,omitempty"`
 	KeyID       string    `json:"key_id"`
 	Result      Result    `json:"result"`
+	// KeyMismatch is a run refused because the bucket's objects are sealed
+	// with another key (ErrKeyMismatch): no later run copies anything until
+	// the key is fixed, so the watchdog reports it at once.
+	KeyMismatch bool `json:"key_mismatch,omitempty"`
 }
 
 // ReadStatus reads the status file. A missing file is (nil, nil): no sync has

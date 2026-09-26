@@ -33,12 +33,17 @@ const offsiteUsage = `usage:
   felis offsite fetch-worlds [-config path] [-archive-dir dir]
   felis offsite fetch-images [-config path] [-registry host:port] [-at version]
   felis offsite fetch-uploads [-config path] [-uploads-dir dir] [-at version]
+  felis offsite check-key    [-config path]
   felis offsite keygen
 
 Every verb but keygen reads the bucket credentials and the encryption key from
 the variables [offsite] names (default FELIS_OFFSITE_ACCESS_KEY,
 FELIS_OFFSITE_SECRET_KEY, FELIS_OFFSITE_KEY), taking any that are unset from
 -env-file (default /etc/felis/offsite.env).
+
+check-key tells whether the key is the one the bucket's objects are sealed
+with, writing nothing; it exits 3 when they are sealed with another key, and
+sync then refuses to write or prune anything in the bucket.
 `
 
 // defaultOffsiteEnvFile is where bootstrap keeps the [offsite] secrets; the
@@ -74,6 +79,8 @@ func cmdOffsite(args []string, stdout, stderr io.Writer) int {
 		return offsiteFetchImages(fs, rest, stdout, stderr)
 	case "fetch-uploads":
 		return offsiteFetchUploads(fs, rest, stdout, stderr)
+	case "check-key":
+		return offsiteCheckKey(fs, rest, stdout, stderr)
 	case "keygen":
 		k, err := offsite.NewKey()
 		if err != nil {
@@ -218,12 +225,7 @@ func offsiteSync(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int 
 		registry:   offsiteRegistryEndpoint(*registry, cfg.Registry),
 		uploadsDir: *uploadsDir, uploadsPVC: *uploadsPVC,
 	}, stderr)
-	st.Result = res
-	if err != nil {
-		st.LastError = err.Error()
-	} else {
-		st.LastSuccess = st.LastAttempt
-	}
+	recordRun(&st, res, err)
 	if werr := offsite.WriteStatus(*statusFile, st); werr != nil {
 		fmt.Fprintf(stderr, "felis offsite sync: record status: %v\n", werr)
 	}
@@ -244,6 +246,17 @@ func offsiteSync(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int 
 		return 1
 	}
 	return 0
+}
+
+// recordRun puts one pass's outcome into its status record.
+func recordRun(st *offsite.Status, res offsite.Result, err error) {
+	st.Result = res
+	if err != nil {
+		st.LastError = err.Error()
+		st.KeyMismatch = errors.Is(err, offsite.ErrKeyMismatch)
+	} else {
+		st.LastSuccess = st.LastAttempt
+	}
 }
 
 // offsiteSources is where one sync pass reads from: the world archive volume
@@ -438,6 +451,10 @@ func offsiteStatus(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) in
 	if st.LastError != "" {
 		fmt.Fprintf(stdout, "last error:   %s\n", st.LastError)
 	}
+	if st.KeyMismatch {
+		fmt.Fprintf(stdout, "\nThe last run was refused: the bucket's objects are sealed with another key than this host's (key id %s). No sync copies or prunes anything there until FELIS_OFFSITE_KEY in %s is theirs (sudo felis offsite check-key).\n", st.KeyID, defaultOffsiteEnvFile)
+		return 1
+	}
 	r := st.Result
 	fmt.Fprintf(stdout, "bucket holds: %d world archives (%s), %d database bundles, newest %s\n",
 		r.RemoteWorlds, offsite.HumanBytes(r.RemoteBytes), r.RemoteDB, orNone(r.NewestDB))
@@ -552,6 +569,62 @@ func printDBBundles(ctx context.Context, b offsite.Bucket, key []byte, bundles [
 	}
 }
 
+func offsiteCheckKey(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
+	cfgPath := fs.String("config", "/etc/felis/felis.toml", "path to felis.toml")
+	envFile := fs.String("env-file", defaultOffsiteEnvFile, "file with the [offsite] secrets, for variables not already set")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	_, env, err := loadOffsite(*cfgPath, *envFile)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis offsite check-key: %v\n", err)
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := env.bucket.Check(ctx); err != nil {
+		fmt.Fprintf(stderr, "felis offsite check-key: %v\n", err)
+		return 1
+	}
+	return checkKey(ctx, env.bucket, env.key, stdout, stderr)
+}
+
+// checkKey is check-key once the bucket is open: 0 when the key fits, 3 when
+// the bucket's objects are sealed with another one, 1 when it cannot tell.
+func checkKey(ctx context.Context, b offsite.Bucket, key []byte, stdout, stderr io.Writer) int {
+	fit, err := offsite.CheckKey(ctx, b, key)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis offsite check-key: %v\n", err)
+		if errors.Is(err, offsite.ErrKeyMismatch) {
+			return 3
+		}
+		return 1
+	}
+	id := offsite.KeyID(key)
+	switch fit {
+	case offsite.KeyRecorded:
+		fmt.Fprintf(stdout, "felis offsite check-key: the bucket records key id %s, this key's\n", id)
+	case offsite.KeyOpens:
+		fmt.Fprintf(stdout, "felis offsite check-key: the bucket's newest objects open with this key (key id %s); the next sync records it\n", id)
+	case offsite.KeyUnused:
+		fmt.Fprintf(stdout, "felis offsite check-key: the bucket holds no sealed object yet; the first sync records key id %s\n", id)
+	}
+	return 0
+}
+
+// keyHint explains an object the key cannot open when the bucket records
+// another key's id, "" otherwise.
+func keyHint(ctx context.Context, b offsite.Bucket, key []byte, err error) string {
+	if !errors.Is(err, offsite.ErrAuth) {
+		return ""
+	}
+	id, ierr := offsite.BucketKeyID(ctx, b)
+	if ierr != nil || id == "" || id == offsite.KeyID(key) {
+		return ""
+	}
+	return fmt.Sprintf("\n  the bucket records key id %s, and this key is %s: set FELIS_OFFSITE_KEY to the key the bucket was written with", id, offsite.KeyID(key))
+}
+
 func offsiteFetchDB(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 	cfgPath := fs.String("config", "/etc/felis/felis.toml", "path to felis.toml; on a host with no install yet, give -endpoint and -bucket instead")
 	envFile := fs.String("env-file", defaultOffsiteEnvFile, "file with the [offsite] secrets, for variables not already set")
@@ -603,7 +676,7 @@ func fetchDB(ctx context.Context, b offsite.Bucket, key []byte, arg, dir string,
 	if name == "latest" {
 		var err error
 		if name, _, err = offsite.ChooseDB(ctx, b, key); err != nil {
-			fmt.Fprintf(stderr, "felis offsite fetch-db: %v\n", err)
+			fmt.Fprintf(stderr, "felis offsite fetch-db: %v%s\n", err, keyHint(ctx, b, key, err))
 			return 1
 		}
 	}
@@ -617,7 +690,7 @@ func fetchDB(ctx context.Context, b offsite.Bucket, key []byte, arg, dir string,
 	}
 	dst := filepath.Join(dir, name)
 	if err := offsite.FetchObject(ctx, b, key, offsite.DBKey(name), dst, 0o600); err != nil {
-		fmt.Fprintf(stderr, "felis offsite fetch-db: %v\n", err)
+		fmt.Fprintf(stderr, "felis offsite fetch-db: %v%s\n", err, keyHint(ctx, b, key, err))
 		return 1
 	}
 	m, err := dbbackup.Verify(dst)

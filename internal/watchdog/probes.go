@@ -360,6 +360,14 @@ func OffsiteFinding(statusFile string, now time.Time) *Finding {
 			Hint:      hint,
 		}
 	}
+	if st != nil && st.KeyMismatch {
+		return &Finding{
+			Key: "offsite", Severity: Warning, For: backupFor,
+			Summary:   "异地备份已停止：桶里的对象是用另一把密钥加密的，本机不往桶里写入也不清理任何对象（" + st.LastError + "）",
+			SummaryEN: "the off-site copy has stopped: the bucket's objects are sealed with another key, and this host writes and prunes nothing there (" + st.LastError + ")",
+			Hint:      "`sudo felis offsite check-key`; set FELIS_OFFSITE_KEY in /etc/felis/offsite.env to the key the bucket was written with (docs/troubleshooting.md §16)",
+		}
+	}
 	if st != nil && !st.LastSuccess.IsZero() && now.Sub(st.LastSuccess) <= offsite.StaleAfter {
 		return nil
 	}

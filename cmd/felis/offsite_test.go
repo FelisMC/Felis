@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -283,6 +284,120 @@ func TestOffsiteFetchDB(t *testing.T) {
 			t.Errorf("exit %d, stdout %q, stderr %q", code, out, errb)
 		}
 	})
+}
+
+func TestOffsiteCheckKey(t *testing.T) {
+	newKey := func() []byte {
+		raw, _ := offsite.NewKey()
+		k, _ := offsite.ParseKey(raw)
+		return k
+	}
+	key, other := newKey(), newKey()
+	marked := func(k []byte) mapBucket { return mapBucket{"felis-key-id": []byte(offsite.KeyID(k) + "\n")} }
+	unmarked := func(k []byte) mapBucket {
+		b := mapBucket{}
+		putBundle(t, b, k, 0, nil)
+		return b
+	}
+	for _, tc := range []struct {
+		what   string
+		bucket mapBucket
+		code   int
+		says   []string
+	}{
+		{"the recorded key", marked(key), 0, []string{"records key id " + offsite.KeyID(key)}},
+		{"an unmarked bucket the key opens", unmarked(key), 0, []string{"open with this key", "the next sync records it"}},
+		{"an empty bucket", mapBucket{}, 0, []string{"no sealed object yet", "records key id " + offsite.KeyID(key)}},
+		{"another recorded key", marked(other), 3, []string{offsite.KeyID(other), offsite.KeyID(key), "FELIS_OFFSITE_KEY"}},
+		{"an unmarked bucket under another key", unmarked(other), 3, []string{"opens none of db/felis-db-"}},
+		{"a marker Felis did not write", mapBucket{"felis-key-id": []byte("hello")}, 1, []string{"not a key id"}},
+	} {
+		t.Run(tc.what, func(t *testing.T) {
+			before := len(tc.bucket)
+			var out, errb bytes.Buffer
+			code := checkKey(context.Background(), tc.bucket, key, &out, &errb)
+			if code != tc.code {
+				t.Fatalf("exit %d, want %d; stdout %q, stderr %q", code, tc.code, out.String(), errb.String())
+			}
+			said := out.String() + errb.String()
+			for _, s := range tc.says {
+				if !strings.Contains(said, s) {
+					t.Errorf("output lacks %q: %s", s, said)
+				}
+			}
+			if len(tc.bucket) != before {
+				t.Errorf("check-key wrote to the bucket: %d objects, had %d", len(tc.bucket), before)
+			}
+		})
+	}
+
+	// fetch-db names both ids when the bucket records another key.
+	b := marked(other)
+	name := putBundle(t, b, other, 0, &dbbackup.Counts{Users: 5, Servers: 3})
+	for _, arg := range []string{"latest", name} {
+		var out, errb bytes.Buffer
+		if code := fetchDB(context.Background(), b, key, arg, t.TempDir(), fetchT0, &out, &errb); code != 1 ||
+			!strings.Contains(errb.String(), "the bucket records key id "+offsite.KeyID(other)+", and this key is "+offsite.KeyID(key)) {
+			t.Errorf("fetch-db %s under another key: exit %d, stderr %q", arg, code, errb.String())
+		}
+	}
+	// A bundle the bucket lacks is not the key's fault.
+	var missOut, missErr bytes.Buffer
+	if code := fetchDB(context.Background(), b, key, "felis-db-20200101T000000Z-daily.tar", t.TempDir(), fetchT0, &missOut, &missErr); code != 1 || strings.Contains(missErr.String(), "records key id") {
+		t.Errorf("missing bundle: exit %d, stderr %q", code, missErr.String())
+	}
+	// A bundle damaged under the recorded key gets no such hint.
+	b = marked(key)
+	name = putBundle(t, b, key, 0, &dbbackup.Counts{Users: 5, Servers: 3})
+	b[offsite.DBKey(name)][60] ^= 1
+	var out, errb bytes.Buffer
+	if code := fetchDB(context.Background(), b, key, name, t.TempDir(), fetchT0, &out, &errb); code != 1 || strings.Contains(errb.String(), "records key id") {
+		t.Errorf("damaged bundle: exit %d, stderr %q", code, errb.String())
+	}
+}
+
+func TestRecordRunMarksAKeyMismatch(t *testing.T) {
+	t0 := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		err      error
+		mismatch bool
+		success  bool
+	}{
+		{nil, false, true},
+		{errors.New("list worlds/ in the bucket: connection reset"), false, false},
+		{fmt.Errorf("%w: the bucket records key id 0123456789abcdef", offsite.ErrKeyMismatch), true, false},
+	} {
+		st := offsite.Status{LastAttempt: t0}
+		recordRun(&st, offsite.Result{RemoteDB: 2}, tc.err)
+		if st.KeyMismatch != tc.mismatch || st.LastSuccess.Equal(t0) != tc.success || st.Result.RemoteDB != 2 {
+			t.Errorf("err %v: status %+v", tc.err, st)
+		}
+	}
+}
+
+func TestOffsiteStatusSaysTheKeyWasRefused(t *testing.T) {
+	dir := t.TempDir()
+	cfg := filepath.Join(dir, "felis.toml")
+	writeTestFile(t, cfg, installerTOML("example.com", "127.0.0.1")+"\n[offsite]\nendpoint = \"https://s3.example.com\"\nbucket = \"felis-backups\"\n", 0o600)
+	statusFile := filepath.Join(dir, "status.json")
+	st := offsite.Status{LastAttempt: time.Now().Add(-time.Minute), LastSuccess: time.Now().Add(-time.Hour), KeyID: "0123456789abcdef"}
+	status := func() (int, string) {
+		t.Helper()
+		if err := offsite.WriteStatus(statusFile, st); err != nil {
+			t.Fatal(err)
+		}
+		var out, errb bytes.Buffer
+		code := cmdOffsite([]string{"status", "-config", cfg, "-status-file", statusFile}, &out, &errb)
+		return code, out.String() + errb.String()
+	}
+	if code, out := status(); code != 0 || strings.Contains(out, "refused") {
+		t.Fatalf("a recent success: exit %d\n%s", code, out)
+	}
+	st.LastError, st.KeyMismatch = "offsite: the bucket's objects are sealed with another key", true
+	code, out := status()
+	if code != 1 || !strings.Contains(out, "The last run was refused") || !strings.Contains(out, "key id 0123456789abcdef") || strings.Contains(out, "bucket holds:") {
+		t.Fatalf("a refused run: exit %d\n%s", code, out)
+	}
 }
 
 func TestPrintDBBundlesSaysWhatEachHolds(t *testing.T) {

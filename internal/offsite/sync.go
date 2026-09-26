@@ -200,6 +200,11 @@ func (s *Syncer) Run(ctx context.Context) (Result, error) {
 		s.logf("%s", msg)
 	}
 
+	// Before anything is written or pruned: objects sealed with another key
+	// are copies only that key opens, and DBKeep would prune them.
+	if err := ClaimKey(ctx, s.Bucket, s.Key); err != nil {
+		return res, err
+	}
 	remoteWorlds, err := s.listSizes(ctx, worldsDir)
 	if err != nil {
 		return res, fmt.Errorf("list %s in the bucket: %w", worldsDir, err)

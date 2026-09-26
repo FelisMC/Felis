@@ -4541,8 +4541,9 @@ quiet_watchdog() {
 }
 
 # The hourly off-site copy. The bucket is checked now, in the install, so wrong
-# credentials or an unreachable endpoint show up here; the first copy itself runs in the
-# background, since a host with many archives can take a long while to upload them.
+# credentials, an unreachable endpoint or a key other than the one its objects are sealed
+# with show up here; the first copy itself runs in the background, since a host with many
+# archives can take a long while to upload them.
 # With no bucket configured the timer is removed (the operator deleted [offsite]) and the
 # install says loudly that every backup is on this machine only.
 install_offsite_timer() {
@@ -4585,12 +4586,33 @@ WantedBy=timers.target
 EOF
   systemctl daemon-reload
   systemctl enable --now felis-offsite.timer
-  if "$HOST_BIN" offsite list -config "${STATE_DIR}/felis.host.toml" -env-file "$OFFSITE_ENV" >/dev/null; then
-    systemctl start --no-block felis-offsite.service
-    ok "off-site copy: hourly to the [offsite] bucket, first copy started (sudo felis offsite status; journalctl -u felis-offsite)"
-  else
-    warn "the [offsite] bucket did not answer (error above); nothing is copied off this machine until it does: fix ${OFFSITE_ENV} or [offsite] in ${STATE_DIR}/felis.host.toml, then sudo systemctl start felis-offsite.service"
-  fi
+  local rc=0
+  "$HOST_BIN" offsite check-key -config "${STATE_DIR}/felis.host.toml" -env-file "$OFFSITE_ENV" >/dev/null || rc=$?
+  case "$rc" in
+    0)
+      systemctl start --no-block felis-offsite.service
+      ok "off-site copy: hourly to the [offsite] bucket, first copy started (sudo felis offsite status; journalctl -u felis-offsite)"
+      ;;
+    3)
+      # The timer stays: every run is refused (and reported by the watchdog) until the
+      # key is fixed, and the first run after that needs no re-run of the installer.
+      OFFSITE_KEY_MISMATCH=1
+      warn "================================================================================"
+      warn "The [offsite] bucket's objects are sealed with another key than the one in"
+      warn "${OFFSITE_ENV} (felis offsite check-key, above). Nothing is copied off this"
+      warn "machine, and nothing in the bucket is written or pruned, until the keys match."
+      if [ "${OFFSITE_KEY_NEW:-0}" = 1 ]; then
+        warn "This run generated that key: neither FELIS_OFFSITE_KEY nor ${OFFSITE_ENV} had one."
+      fi
+      warn "Set FELIS_OFFSITE_KEY in ${OFFSITE_ENV} to the key the bucket was written with and run"
+      warn "sudo systemctl start felis-offsite.service, or give [offsite] an empty bucket or prefix"
+      warn "and re-run the installer (docs/troubleshooting.md §16)."
+      warn "================================================================================"
+      ;;
+    *)
+      warn "the [offsite] bucket did not answer (error above); nothing is copied off this machine until it does: fix ${OFFSITE_ENV} or [offsite] in ${STATE_DIR}/felis.host.toml, then sudo systemctl start felis-offsite.service"
+      ;;
+  esac
 }
 
 # summary_offsite is the installer's last word on where the backups live.
@@ -4599,6 +4621,13 @@ summary_offsite() {
     warn "NO OFF-SITE COPY: every world archive and database backup is on this machine only."
     warn "Losing its disk loses them all. Set FELIS_OFFSITE_BUCKET, FELIS_OFFSITE_ENDPOINT,"
     warn "FELIS_OFFSITE_ACCESS_KEY and FELIS_OFFSITE_SECRET_KEY and re-run (docs/troubleshooting.md §16)."
+    return 0
+  fi
+  if [ "${OFFSITE_KEY_MISMATCH:-0}" = 1 ]; then
+    # A key the bucket refuses is no key to store; this run's is in OFFSITE_ENV if the
+    # operator moves to an empty bucket instead.
+    warn "OFF-SITE COPY STOPPED: the bucket's objects are sealed with another key (see above)."
+    warn "Every backup is on this machine only until ${OFFSITE_ENV} holds that key (sudo felis offsite check-key)."
     return 0
   fi
   if [ "${OFFSITE_KEY_NEW:-0}" = 1 ]; then
@@ -4789,10 +4818,12 @@ EOF
 # replace the file's (rotating the bucket credentials is a re-run); the encryption key is
 # generated when neither has one. A different key than the file's is refused: every object
 # already in the bucket is sealed with the old one, and swapping it would make them
-# unreadable without a word.
+# unreadable without a word. Whether the bucket's objects agree with the key is checked once
+# the binary is installed (install_offsite_timer).
 configure_offsite() {
   OFFSITE_ENABLED=0
   OFFSITE_KEY_NEW=0
+  OFFSITE_KEY_MISMATCH=0
   offsite_enabled || return 0
   OFFSITE_ENABLED=1
   local env_ak="${FELIS_OFFSITE_ACCESS_KEY:-}" env_sk="${FELIS_OFFSITE_SECRET_KEY:-}" env_key="${FELIS_OFFSITE_KEY:-}"
@@ -4806,7 +4837,7 @@ configure_offsite() {
   FELIS_OFFSITE_ACCESS_KEY="${env_ak:-$FELIS_OFFSITE_ACCESS_KEY}"
   FELIS_OFFSITE_SECRET_KEY="${env_sk:-$FELIS_OFFSITE_SECRET_KEY}"
   if [ -n "$env_key" ] && [ -n "$file_key" ] && [ "$env_key" != "$file_key" ]; then
-    die "FELIS_OFFSITE_KEY differs from the key in ${OFFSITE_ENV}; the objects already in the bucket are sealed with that one. Unset FELIS_OFFSITE_KEY to keep it (docs/troubleshooting.md §16)"
+    die "FELIS_OFFSITE_KEY differs from the key in ${OFFSITE_ENV}, which sealed what this host copied to the bucket. Unset FELIS_OFFSITE_KEY to keep it; when felis offsite check-key says the bucket's objects are sealed with another key, set FELIS_OFFSITE_KEY in ${OFFSITE_ENV} by hand instead (docs/troubleshooting.md §16)"
   fi
   FELIS_OFFSITE_KEY="${env_key:-$file_key}"
   if [ -z "$FELIS_OFFSITE_ACCESS_KEY" ] || [ -z "$FELIS_OFFSITE_SECRET_KEY" ]; then

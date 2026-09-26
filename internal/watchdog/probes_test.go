@@ -183,6 +183,11 @@ func TestOffsiteFinding(t *testing.T) {
 	if f := OffsiteFinding(path, t0); f != nil {
 		t.Fatalf("a success within %s reported: %+v", offsite.StaleAfter, f)
 	}
+	// A key mismatch stops every later run too: reported without waiting out StaleAfter.
+	write(offsite.Status{LastAttempt: t0.Add(-time.Hour), LastSuccess: t0.Add(-2 * time.Hour), LastError: "sealed with another key", KeyMismatch: true})
+	if f := OffsiteFinding(path, t0); f == nil || !strings.Contains(f.SummaryEN, "has stopped") || !strings.Contains(f.SummaryEN, "(sealed with another key)") || !strings.Contains(f.Hint, "check-key") {
+		t.Fatalf("key mismatch: %+v", f)
+	}
 }
 
 func TestMemoryFinding(t *testing.T) {

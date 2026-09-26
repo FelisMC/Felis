@@ -122,6 +122,10 @@ type memBucket struct {
 	stall map[string]bool
 	// started lists every Put in the order it began.
 	started []string
+	// modified is what List reports as each key's modification time.
+	modified map[string]time.Time
+	// getErr fails Get for a key the way an unreachable bucket would.
+	getErr map[string]error
 }
 
 func newMemBucket() *memBucket {
@@ -157,6 +161,9 @@ func (b *memBucket) Put(ctx context.Context, key string, r io.Reader, size int64
 func (b *memBucket) Get(_ context.Context, key string) (io.ReadCloser, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if err := b.getErr[key]; err != nil {
+		return nil, err
+	}
 	data, ok := b.objs[key]
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, key)
@@ -170,7 +177,7 @@ func (b *memBucket) List(_ context.Context, prefix string) ([]Object, error) {
 	var out []Object
 	for k, v := range b.objs {
 		if strings.HasPrefix(k, prefix) {
-			out = append(out, Object{Key: k, Size: int64(len(v))})
+			out = append(out, Object{Key: k, Size: int64(len(v)), Modified: b.modified[k]})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
@@ -245,11 +252,15 @@ func writeFile(t *testing.T, dir, name string, size int) []byte {
 
 var now = time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
 
+// newSyncer syncs into a bucket that already records its key, as every bucket
+// does after its first run.
 func newSyncer(t *testing.T, cat *fakeCatalog) (*Syncer, *memBucket) {
 	t.Helper()
 	b := newMemBucket()
+	key := testKey(t)
+	b.objs[keyMark] = []byte(KeyID(key) + "\n")
 	return &Syncer{
-		Bucket: b, Catalog: cat, Key: testKey(t),
+		Bucket: b, Catalog: cat, Key: key,
 		ArchiveDir: t.TempDir(), DBDir: t.TempDir(), DBKeep: 2,
 		Now: func() time.Time { return now },
 	}, b
@@ -393,7 +404,7 @@ func TestSyncDBKeepsNewest(t *testing.T) {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	want := "db/felis-db-20260923T030000Z-manual.tar.fenc db/felis-db-20260924T030000Z-daily.tar.fenc db/notes.txt"
+	want := "db/felis-db-20260923T030000Z-manual.tar.fenc db/felis-db-20260924T030000Z-daily.tar.fenc db/notes.txt " + keyMark
 	if strings.Join(keys, " ") != want {
 		t.Fatalf("bucket = %v, want %s", keys, want)
 	}
