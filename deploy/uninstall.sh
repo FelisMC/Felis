@@ -340,10 +340,11 @@ remove_hba_block() { # file
   rm -f "$tmp"
 }
 
-# check_database_purge runs before anything is removed: DROP ROLE refuses a role that
-# still owns a database or holds anything in one besides felis (a felis_pgint left by
-# `felis db pgint`, a grant made by hand), and by then the units and k3s are already gone.
-# It lists what holds the role instead, so the purge either runs to the end or not at all.
+# check_database_purge runs before anything is removed. DROP ROLE refuses a role that
+# still owns a database or holds anything in one besides felis (the felis_pgint database
+# CONTRIBUTING.md has developers make for the PG contract tests, a grant made by hand),
+# and by the time purge_database runs the units and k3s are already gone. It lists what
+# holds the role instead, so the purge either runs to the end or not at all.
 check_database_purge() {
   [ "$PURGE" = 1 ] || return 0
   systemctl is-active --quiet postgresql 2>/dev/null || return 0

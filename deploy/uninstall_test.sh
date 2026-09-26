@@ -191,7 +191,7 @@ esac
 expect "purge cleans Docker's build cache" "DOCKER builder prune -af" "$calls"
 
 # --- a purge DROP ROLE would refuse -------------------------------------------------------
-# The VM drill: `felis db pgint` had left felis_pgint owned by felis, the purge removed the
+# The VM drill: the PG contract tests' felis_pgint was owned by felis, the purge removed the
 # units and k3s, then stopped at DROP ROLE with half the host gone.
 untouched() { # label
   [ -d "$root/h/opt" ] && [ -f "$root/h/units/felis-velocity.service" ] && [ -d "$root/h/etc" ] \
