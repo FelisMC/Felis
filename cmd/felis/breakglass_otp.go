@@ -227,15 +227,22 @@ func maskEmail(email string) string {
 }
 
 // hostRecoveryMailer opens the [smtp] relay from the host the way the watchdog does:
-// the password is the env var password_ref names when that is set, else the
-// felis-smtp Secret, whose absence means a relay without AUTH.
-func hostRecoveryMailer(c config.SMTPConfig, controlNS string) func(context.Context) (recoveryMailer, error) {
+// the password is the env var password_ref names when that is set, else the host
+// copy at passwordPath, else the felis-smtp Secret, whose absence means a relay
+// without AUTH. The cluster is reached only when the host copy is missing, so a
+// break-glass on a host whose k3s is down still gets its code.
+func hostRecoveryMailer(c config.SMTPConfig, passwordPath, controlNS string) func(context.Context) (recoveryMailer, error) {
 	return func(ctx context.Context) (recoveryMailer, error) {
 		if strings.TrimSpace(c.Host) == "" {
 			return nil, errors.New("[smtp] is not configured in felis.toml")
 		}
 		if ref := c.PasswordRef; ref != "" && os.Getenv(ref) != "" {
 			return smtpRelay(c, os.Getenv(ref)), nil
+		}
+		if password, ok, err := readHostCredential(passwordPath); err != nil {
+			return nil, fmt.Errorf("read the relay password: %w", err)
+		} else if ok {
+			return smtpRelay(c, password), nil
 		}
 		cl, err := buildSystemServerClient()
 		if err != nil {

@@ -36,6 +36,7 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "/etc/felis/felis.toml", "path to felis.toml (the host copy, which reaches PostgreSQL on 127.0.0.1)")
 	statePath := fs.String("state", "/var/lib/felis/watchdog/state.json", "state kept between runs (root only: it caches the relay password)")
+	smtpPasswordFile := fs.String("smtp-password-file", hostSMTPPasswordPath, "the relay password `felis setup` keeps on the host; the felis-smtp Secret stands in while it is missing")
 	quietPath := fs.String("quiet-file", "/run/felis/watchdog-quiet-until", "Unix time before which nothing is mailed; the installer writes it while it restarts things on purpose")
 	backupDir := fs.String("backup-dir", "/var/lib/felis/db-backups", `control-plane database backups to check for freshness ("" skips the check)`)
 	diskPaths := fs.String("disk-paths", "/,/var/lib/rancher/k3s,/var/lib/felis", "comma-separated paths whose filesystems must keep free space")
@@ -88,9 +89,13 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 		report.Unknown = append(report.Unknown, watchdog.ClusterPrefixes...)
 	} else {
 		report.Findings = append(report.Findings, found...)
-		if cfg.SMTP.Host != "" {
-			refreshSMTPPassword(ctx, cl, *controlNS, state, stderr)
+	}
+	if cfg.SMTP.Host != "" {
+		var secrets client.Client
+		if err == nil {
+			secrets = cl
 		}
+		refreshSMTPPassword(ctx, *smtpPasswordFile, secrets, *controlNS, state, stderr)
 	}
 
 	if recipients, err := ownerEmails(ctx, cfg.Database.URL); err != nil {
@@ -183,13 +188,19 @@ func usesMirroredScanDB(cfg *config.Config) bool {
 	return repo == "" || strings.HasPrefix(repo, cfg.Registry.URL+"/mirror/")
 }
 
-// refreshSMTPPassword caches the relay password from the felis-smtp Secret, or
-// forgets it when the Secret is gone (a relay without AUTH). An env var named by
-// [smtp] password_ref, when set, wins at send time instead.
-func refreshSMTPPassword(ctx context.Context, cl client.Client, ns string, state *watchdog.State, stderr io.Writer) {
-	password, err := smtpSecretPassword(ctx, cl, ns)
-	if err != nil {
-		fmt.Fprintf(stderr, "felis watchdog: read %s/%s (keeping the cached relay password): %v\n", ns, platform.SMTPSecretName, err)
+// refreshSMTPPassword caches the relay password (relayPassword: the host copy at
+// path, else the felis-smtp Secret), or forgets it when the Secret is gone (a
+// relay without AUTH). The host copy is read even while the cluster is down, the
+// time an alert matters most; without one, a down cluster keeps the cached
+// password. An env var named by [smtp] password_ref, when set, wins at send time
+// instead.
+func refreshSMTPPassword(ctx context.Context, path string, cl client.Client, ns string, state *watchdog.State, stderr io.Writer) {
+	password, err := relayPassword(ctx, path, cl, ns)
+	switch {
+	case errors.Is(err, errClusterUnreachable):
+		return
+	case err != nil:
+		fmt.Fprintf(stderr, "felis watchdog: read the relay password (keeping the cached one): %v\n", err)
 		return
 	}
 	state.SMTPPassword = password

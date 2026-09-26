@@ -414,6 +414,12 @@ UPDATE_CHECK_SERVICE="/etc/systemd/system/felis-update-check.service"
 UPDATE_CHECK_TIMER="/etc/systemd/system/felis-update-check.timer"
 WATCHDOG_STATE="/var/lib/felis/watchdog/state.json"
 OFFSITE_ENV="${STATE_DIR}/offsite.env"
+# Host copies of the credentials `felis setup` takes at the keyboard, one bare value per
+# file, mode 0600 (cmd/felis/hostcreds.go); apply_setup_credential_secrets applies their
+# Secrets from them on every run.
+SMTP_PASSWORD_FILE="${STATE_DIR}/smtp-password"
+UPLOADS_S3_ACCESS_KEY_FILE="${STATE_DIR}/uploads-s3-access-key"
+UPLOADS_S3_SECRET_KEY_FILE="${STATE_DIR}/uploads-s3-secret-key"
 OFFSITE_SERVICE="/etc/systemd/system/felis-offsite.service"
 OFFSITE_TIMER="/etc/systemd/system/felis-offsite.timer"
 BUILD_TOOLS_SERVICE="/etc/systemd/system/felis-build-tools.service"
@@ -664,6 +670,54 @@ apply_registry_secrets() {
     --from-file=password="${dir}/build" \
     --dry-run=client -o yaml | kube apply -f -
   rm -rf -- "$dir"
+}
+
+# secret_key_to_file keeps one key of a Secret in path, mode 0600, when path does not
+# exist yet. An install from before the host copies had the setup screens' credentials
+# only in the cluster; this is the run that moves them onto the host. A missing Secret
+# leaves path missing. The value goes from kubectl into the file, never into argv or
+# the log.
+secret_key_to_file() {
+  local namespace="$1" name="$2" key="$3" path="$4" encoded tmp
+  [ -e "$path" ] && return 0
+  encoded="$(kube -n "$namespace" get secret "$name" -o "jsonpath={.data.${key}}" 2>/dev/null)" || return 0
+  tmp="$(umask 077; mktemp "${path}.XXXXXX")"
+  remember_temp "$tmp"
+  printf '%s' "$encoded" | base64 -d > "$tmp"
+  mv -f -- "$tmp" "$path"
+}
+
+# apply_setup_credential_secrets applies the Secrets behind `felis setup`'s email and
+# uploads-bucket screens from their host copies: felis-smtp in the control namespace and
+# in the workload one (the reaper's warning mails read that copy), felis-uploads-s3 in the
+# control namespace. A reinstall that kept /etc/felis, or a host rebuilt from a bundle's
+# state/, starts k3s with no Secrets at all; without this, every sign-in code and alert
+# would go out without AUTH and the relay would turn it away. The host copy wins over the
+# cluster's: `felis setup` writes both, so they differ only after a hand edit of the
+# Secret. A relay or bucket whose credentials are on neither side is reported, so the
+# operator enters them again before the first code fails.
+apply_setup_credential_secrets() {
+  local ns
+  secret_key_to_file "$CONTROL_NS" felis-smtp password "$SMTP_PASSWORD_FILE"
+  secret_key_to_file "$CONTROL_NS" felis-uploads-s3 access_key_id "$UPLOADS_S3_ACCESS_KEY_FILE"
+  secret_key_to_file "$CONTROL_NS" felis-uploads-s3 secret_access_key "$UPLOADS_S3_SECRET_KEY_FILE"
+  if [ -f "$SMTP_PASSWORD_FILE" ]; then
+    for ns in "$CONTROL_NS" "$MINECRAFT_NS"; do
+      kube -n "$ns" create secret generic felis-smtp \
+        --from-file=password="$SMTP_PASSWORD_FILE" \
+        --dry-run=client -o yaml | kube apply -f -
+    done
+  elif persisted_smtp_block | grep -Eq '^[[:space:]]*username[[:space:]]*=[[:space:]]*"[^"]'; then
+    warn "[smtp] signs in with a username, but its password is in neither ${SMTP_PASSWORD_FILE} nor the cluster: sign-in codes and alerts go out without AUTH until it is entered again (sudo felis setup, then e to configure email)"
+  fi
+  if [ -f "$UPLOADS_S3_ACCESS_KEY_FILE" ] && [ -f "$UPLOADS_S3_SECRET_KEY_FILE" ]; then
+    kube -n "$CONTROL_NS" create secret generic felis-uploads-s3 \
+      --from-file=access_key_id="$UPLOADS_S3_ACCESS_KEY_FILE" \
+      --from-file=secret_access_key="$UPLOADS_S3_SECRET_KEY_FILE" \
+      --dry-run=client -o yaml | kube apply -f -
+  elif persisted_registry_block | grep -Eq '^[[:space:]]*user_uploads_context[[:space:]]*=[[:space:]]*"[sS]3://'; then
+    warn "uploads go to an S3 bucket, but its keys are in neither ${UPLOADS_S3_ACCESS_KEY_FILE} / ${UPLOADS_S3_SECRET_KEY_FILE} nor the cluster: felis-api refuses modpack uploads until they are entered again (sudo felis setup, then s to change storage)"
+  fi
 }
 
 # node_global_cidrs prints one host-length CIDR per global address on this node.
@@ -4777,7 +4831,7 @@ deploy_bundle() {
     kube create namespace "$ns" --dry-run=client -o yaml | kube apply -f -
   done
 
-  log "provisioning felis-config + internal caller tokens + felis-forwarding-secret + registry credentials + panel TLS secrets (out-of-band, never in the bundle)"
+  log "provisioning felis-config + internal caller tokens + felis-forwarding-secret + registry credentials + mail relay and uploads bucket credentials + panel TLS secrets (out-of-band, never in the bundle)"
   apply_felis_config_secrets
   # felis-api mounts all four caller tokens from the control namespace. The login
   # gate's and the build Job's are also applied into the namespace their pods run in
@@ -4797,6 +4851,7 @@ deploy_bundle() {
   # "less secure", it is unjoinable.
   apply_literal_secret "$CONTROL_NS" felis-forwarding-secret secret "$FORWARDING_SECRET"
   apply_registry_secrets
+  apply_setup_credential_secrets
   kube -n "$CONTROL_NS" create secret tls felis-api-tls \
     --cert="$PANEL_TLS_CERT" \
     --key="$PANEL_TLS_KEY" \

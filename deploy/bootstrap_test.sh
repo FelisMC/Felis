@@ -3833,6 +3833,112 @@ expect "a FELIS_ARTIFACT_DIR with SHA256SUMS is accepted" "VALID" "$(run_vs "$ad
 expect "FELIS_ARTIFACT_DIR and FELIS_REF together are refused" "DIE: FELIS_ARTIFACT_DIR and FELIS_REF both name what to install" "$(run_vs "$adir" 1)"
 rm -rf "$adir"
 
+# --- the setup screens' credentials come back from /etc/felis ---------------------------
+# `felis setup` keeps the relay password and the uploads bucket's keys in /etc/felis as
+# well as in their Secrets. A reinstall, or a host rebuilt from a bundle's state/, starts
+# k3s empty, so every run applies the Secrets from those files; an install from before
+# them moves the Secrets' values into the files first. No value may reach kubectl's argv.
+for f in secret_key_to_file apply_setup_credential_secrets; do
+  [ -n "$(bsfn "$f")" ] || { echo "FAIL: no ${f} in $BS"; exit 1; }
+  [ "$(bsfn "$f" | wc -l)" -lt 45 ] \
+    || { echo "FAIL: the extracted ${f} is not the function -- did its closing brace move?"; exit 1; }
+done
+grep -q '^  apply_setup_credential_secrets$' "$BS" \
+  && echo "PASS every run applies the setup screens' Secrets" \
+  || { echo "FAIL: the install no longer calls apply_setup_credential_secrets"; fails=$((fails + 1)); }
+credir="$(mktemp -d)"
+credcalls="$(mktemp)"
+run_creds() { # secrets-in-cluster(0/1) smtp-username uploads-context
+  : > "$credcalls"
+  HAVE="$1" SMTPUSER="$2" UPCTX="$3" CALLS="$credcalls" STATE_DIR="$credir" CONTROL_NS=felis MINECRAFT_NS=minecraft bash -c '
+    set -Eeuo pipefail
+    SMTP_PASSWORD_FILE="${STATE_DIR}/smtp-password"
+    UPLOADS_S3_ACCESS_KEY_FILE="${STATE_DIR}/uploads-s3-access-key"
+    UPLOADS_S3_SECRET_KEY_FILE="${STATE_DIR}/uploads-s3-secret-key"
+    remember_temp() { :; }
+    warn() { printf "WARN: %s\n" "$*"; }
+    persisted_smtp_block() { printf "[smtp]\nhost = \"mail.example.com\"\nusername = \"%s\"\n" "$SMTPUSER"; }
+    persisted_registry_block() { printf "user_uploads_context = \"%s\"\n" "$UPCTX"; }
+    kube() {
+      case "$*" in
+        *" get secret "*)
+          printf "GET %s\n" "$*" >>"$CALLS"
+          [ "$HAVE" = 1 ] || return 1
+          case "$*" in
+            *felis-smtp*) printf "cmVsYXkgcHcvMSt4" ;;          # relay pw/1+x
+            *access_key_id*) printf "QUtJQU9MRA==" ;;           # AKIAOLD
+            *secret_access_key*) printf "b2xkL3NlY3JldCtrZXk=" ;; # old/secret+key
+          esac ;;
+        "apply -f -") cat >/dev/null; printf "APPLY\n" >>"$CALLS" ;;
+        *) printf "KUBE %s\n" "$*" >>"$CALLS" ;;
+      esac
+    }
+    '"$(bsfn secret_key_to_file)"'
+    '"$(bsfn apply_setup_credential_secrets)"'
+    apply_setup_credential_secrets' 2>&1
+  cat "$credcalls"
+}
+applies() { printf '%s\n' "$1" | grep -c '^APPLY$'; }
+
+out="$(run_creds 1 felis s3://uploads)"
+[ "$(cat "$credir/smtp-password")" = "relay pw/1+x" ] \
+  && [ "$(cat "$credir/uploads-s3-access-key")" = "AKIAOLD" ] \
+  && [ "$(cat "$credir/uploads-s3-secret-key")" = "old/secret+key" ] \
+  && echo "PASS an install from before the host copies moves the Secrets' values onto the host" \
+  || { echo "FAIL: the Secrets' values did not land in ${credir}:"; printf '%s\n' "$out"; fails=$((fails + 1)); }
+for f in smtp-password uploads-s3-access-key uploads-s3-secret-key; do
+  case "$(ls -l "$credir/$f" | cut -c1-10)" in
+    -rw-------) echo "PASS ${f} is root's alone" ;;
+    *) echo "FAIL: ${f} is $(ls -l "$credir/$f" | cut -c1-10), want -rw-------"; fails=$((fails + 1)) ;;
+  esac
+done
+[ -z "$(find "$credir" -name '*.??????' | head -1)" ] && echo "PASS the move leaves no temporary file in /etc/felis" \
+  || { echo "FAIL: a temporary file stayed behind: $(ls -a "$credir")"; fails=$((fails + 1)); }
+expect "the relay password is applied to the control plane" \
+  "KUBE -n felis create secret generic felis-smtp --from-file=password=${credir}/smtp-password --dry-run=client -o yaml" "$out"
+expect "and to the workload namespace the reaper mails from" \
+  "KUBE -n minecraft create secret generic felis-smtp --from-file=password=${credir}/smtp-password --dry-run=client -o yaml" "$out"
+expect "the bucket keys are applied to the control plane" \
+  "KUBE -n felis create secret generic felis-uploads-s3 --from-file=access_key_id=${credir}/uploads-s3-access-key --from-file=secret_access_key=${credir}/uploads-s3-secret-key --dry-run=client -o yaml" "$out"
+[ "$(applies "$out")" = 3 ] && echo "PASS all three Secrets are piped to kubectl apply" \
+  || { echo "FAIL: expected 3 applies:"; printf '%s\n' "$out"; fails=$((fails + 1)); }
+case "$out" in
+  *"relay pw"*|*AKIAOLD*|*"old/secret"*|*WARN*) echo "FAIL: a credential reached argv or the log, or a warning fired:"; printf '%s\n' "$out"; fails=$((fails + 1)) ;;
+  *) echo "PASS no credential reaches kubectl's argv or the log" ;;
+esac
+
+printf 'new pw' > "$credir/smtp-password"
+out="$(run_creds 1 felis s3://uploads)"
+[ "$(cat "$credir/smtp-password")" = "new pw" ] && ! printf '%s\n' "$out" | grep -q '^GET' \
+  && echo "PASS the host copy wins over the cluster's" \
+  || { echo "FAIL: the cluster's value replaced the host copy:"; printf '%s\n' "$out"; fails=$((fails + 1)); }
+[ "$(applies "$out")" = 3 ] && echo "PASS a re-run applies the Secrets from the host copies" \
+  || { echo "FAIL: expected 3 applies on the re-run:"; printf '%s\n' "$out"; fails=$((fails + 1)); }
+
+rm -f "$credir"/*
+out="$(run_creds 0 felis s3://uploads)"
+expect "a relay that signs in with no password anywhere is reported" \
+  "WARN: [smtp] signs in with a username, but its password is in neither ${credir}/smtp-password nor the cluster" "$out"
+expect "a bucket with no keys anywhere is reported" \
+  "WARN: uploads go to an S3 bucket, but its keys are in neither" "$out"
+[ "$(applies "$out")" = 0 ] && [ -z "$(ls -A "$credir")" ] \
+  && echo "PASS nothing is applied or written without a value" \
+  || { echo "FAIL: something was applied or written without a value:"; printf '%s\n' "$out"; ls -A "$credir"; fails=$((fails + 1)); }
+
+out="$(run_creds 0 "" /var/lib/felis/uploads)"
+case "$out" in
+  *WARN*|*APPLY*) echo "FAIL: a relay without AUTH and local uploads were reported or applied:"; printf '%s\n' "$out"; fails=$((fails + 1)) ;;
+  *) echo "PASS a relay without AUTH and local uploads need no credentials" ;;
+esac
+
+printf 'AKIAONLY' > "$credir/uploads-s3-access-key"
+out="$(run_creds 0 "" s3://uploads)"
+case "$out" in
+  *"create secret generic felis-uploads-s3"*) echo "FAIL: a bucket Secret was applied from one key alone:"; printf '%s\n' "$out"; fails=$((fails + 1)) ;;
+  *) expect "one bucket key alone is reported as missing keys" "WARN: uploads go to an S3 bucket" "$out" ;;
+esac
+rm -rf "$credir" "$credcalls"
+
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"

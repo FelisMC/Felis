@@ -130,7 +130,8 @@ const (
 	UploadsLocalPath = "/var/lib/felis/uploads"
 	// UploadsS3SecretName is the out-of-band Secret carrying the S3 credentials for
 	// an s3:// user_uploads_context. felis-api mounts its keys into env (optionally)
-	// and the setup wizard creates it. Like configSecretName it is NEVER rendered
+	// and the setup wizard creates it, keeping a host copy in /etc/felis that every
+	// installer run applies it from again. Like configSecretName it is NEVER rendered
 	// into the bundle — the credentials are the same red line.
 	UploadsS3SecretName      = "felis-uploads-s3"
 	UploadsS3SecretAccessKey = "access_key_id"
@@ -143,7 +144,8 @@ const (
 
 	// SMTPSecretName is the out-of-band Secret carrying the [smtp] relay password.
 	// Same red line as the S3 credentials: the setup wizard's "configure email"
-	// step creates it, felis-api reads it via SMTPPasswordEnv (optionally — a
+	// step creates it (and keeps a host copy in /etc/felis that every installer run
+	// applies it from again), felis-api reads it via SMTPPasswordEnv (optionally — a
 	// mailer-less install has no such Secret and still starts, falling back to
 	// logging codes), and it is never rendered into the bundle.
 	SMTPSecretName        = "felis-smtp"

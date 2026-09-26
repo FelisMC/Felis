@@ -1101,6 +1101,20 @@ control-namespace Secret alone is not. [GO-TESTED: the delivered/retried/
 suppressed matrix in `internal/reaper`; live-drilled end to end against a local
 SMTP sink.]
 
+The screen also keeps the password in `/etc/felis/smtp-password` (mode 0600),
+and the uploads screen keeps the bucket keys in `/etc/felis/uploads-s3-access-key`
+and `uploads-s3-secret-key`. Secrets live in k3s's datastore, which a reinstall
+or a host rebuilt from a bundle's `state/` starts empty, so **every installer
+run applies `felis-smtp` (both namespaces) and `felis-uploads-s3` from these
+files**. The files win: a hand edit of either Secret lasts until the next
+installer run, so change a credential through `felis setup`. An install from
+before these files gets them from the Secrets on its first re-run. When
+`[smtp]` has a `username` but no password is on either side, or uploads go to
+`s3://` without both keys, the installer says so and names the `felis setup`
+screen that takes them again. [SH-TESTED: `deploy/bootstrap_test.sh`, the move
+from the Secrets, the host copy winning, both warnings, no value in kubectl's
+argv. GO-TESTED: the host copy's mode and replacement.]
+
 ### Genuine false-delete risk vectors
 
 - **Stale `last_active_at`.** The keep-alive is `RecordJoin`, called from the
@@ -1510,9 +1524,12 @@ How it mails:
   delay is never mailed; one that turns critical is mailed again at once.
 - **During an install** nothing is mailed. `bootstrap.sh` writes
   `/run/felis/watchdog-quiet-until` and removes it when it exits.
-- **Caching:** the relay password and the recipient list are cached in
-  `/var/lib/felis/watchdog/state.json` (root-only). An outage of PostgreSQL or
-  of the API server can therefore still be mailed.
+- **Caching:** the relay password comes from `/etc/felis/smtp-password`, which
+  the watchdog reads even while the API server is down (an install without that
+  file reads the `felis-smtp` Secret instead). It and the recipient list are
+  cached in `/var/lib/felis/watchdog/state.json` (root-only). An outage of
+  PostgreSQL or of the API server can therefore still be mailed. [GO-TESTED: a
+  run with the API server and PostgreSQL both down caches the host copy.]
 - **No relay or no verified owner address:** each alert is written to the
   journal only.
 
@@ -1893,7 +1910,7 @@ along). One bundle is `felis-db-<UTC stamp>-<label>.tar`:
 |---|---|
 | `MANIFEST.json` | version, schema version, `pg_dump --version`, sha256 of every member |
 | `db.dump` | `pg_dump --format=custom` of the `felis` database |
-| `state/etc/felis/...` | every file in `/etc/felis`: `secrets.env` (DB password, session/forwarding secrets, registry tokens), `felis.host.toml`, `felis.pod.toml`, the `felis.toml` symlink, `offsite.env` (bucket credentials and encryption key), the panel TLS pair, and the installer's own markers (`system-server-images`, `velocity.fingerprint`). `bootstrap.done` is left out on purpose |
+| `state/etc/felis/...` | every file in `/etc/felis`: `secrets.env` (DB password, session/forwarding secrets, registry tokens), `felis.host.toml`, `felis.pod.toml`, the `felis.toml` symlink, `offsite.env` (bucket credentials and encryption key), `smtp-password`, `uploads-s3-access-key` and `uploads-s3-secret-key` (the mail relay password and the uploads bucket keys `felis setup` took), the panel TLS pair, and the installer's own markers (`system-server-images`, `velocity.fingerprint`). `bootstrap.done` is left out on purpose |
 | `k8s/minecraftservers.json` | every MinecraftServer, status and server-side metadata stripped, ready for `kubectl apply` (best effort: when the cluster did not answer, the manifest records why) |
 
 next to a `.sha256` sidecar in `sha256sum` format. **A bundle contains the
@@ -2030,7 +2047,7 @@ off-site bucket (next sections) plus a fresh install. What the host holds:
 | Data | On the host | In the bucket | Brought back by | Lost at most |
 |---|---|---|---|---|
 | Control-plane database (accounts, passkeys, ownership, quotas, audit, submissions, the `world_backups` index) | felis-postgres, `/var/lib/felis/postgres` | every bundle, copied within the hour of being written | `fetch-db`, `db restore` | changes since the newest bundle: up to a day plus an hour with the daily timer |
-| Host state (`/etc/felis`: secrets, both `felis.toml` copies, `offsite.env`, panel TLS pair) | `/etc/felis` | inside every bundle | `tar -x` of the bundle's `state/` | as the database |
+| Host state (`/etc/felis`: secrets, both `felis.toml` copies, `offsite.env`, the mail relay password and uploads bucket keys, panel TLS pair) | `/etc/felis` | inside every bundle | `tar -x` of the bundle's `state/` | as the database |
 | MinecraftServer objects | k3s | inside every bundle (`k8s/minecraftservers.json`) | `kubectl apply` | as the database |
 | World archives (reaper, "Back up now", pre-restore snapshots) | `felis-backups` volume | each one within the hour | `fetch-worlds` | archives written in the last hour |
 | Live worlds | `world-*` volumes under `/var/lib/rancher/k3s/storage` | **only as their archives** | a restore from the newest archive (§10) | everything since that world's newest archive |
@@ -2088,7 +2105,8 @@ host yourself, plus the off-site encryption key if the copy is in the bucket.
    `object does not decrypt with this key` and writes nothing. For a copy you
    made yourself, check it with `sha256sum -c felis-db-....tar.sha256`.
 2. Put the old host's state in place **before** installing, so the installer
-   reuses the same DB password, session secret, forwarding secret and the
+   reuses the same DB password, session secret, forwarding secret, the mail
+   relay password and uploads bucket keys `felis setup` took, and the
    `[offsite]` bucket with its credentials and key (`offsite.env`):
 
    ```
@@ -2414,8 +2432,10 @@ Once a staff account exists, `sudo felis breakGlass` asks which admin or owner
 is breaking the glass and mails that account's verified address a six-digit
 code through the same `[smtp]` relay as the sign-in codes. The code works for
 10 minutes and five wrong ones end it. The console reads the relay password
-the way the watchdog does (the `password_ref` env var, else the `felis-smtp`
-Secret, else no AUTH), and the mail skips the API's `max_per_hour` budget.
+the way the watchdog does (the `password_ref` env var, else
+`/etc/felis/smtp-password`, else the `felis-smtp` Secret, else no AUTH), so a
+host whose k3s is down still gets its code, and the mail skips the API's
+`max_per_hour` budget.
 Only the right code makes the run a `recovery` attributed to that account; the
 mail says which host and OS user asked, so an admin who did not ask learns
 that root there is in other hands.

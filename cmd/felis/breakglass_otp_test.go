@@ -246,7 +246,7 @@ func TestHostRecoveryMailer(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("no [smtp] host is no relay", func(t *testing.T) {
-		_, err := hostRecoveryMailer(config.SMTPConfig{}, "felis")(ctx)
+		_, err := hostRecoveryMailer(config.SMTPConfig{}, hostSMTPPasswordPath, "felis")(ctx)
 		if err == nil || !strings.Contains(err.Error(), "[smtp]") {
 			t.Fatalf("err = %v, want it to name [smtp]", err)
 		}
@@ -256,7 +256,7 @@ func TestHostRecoveryMailer(t *testing.T) {
 		t.Setenv("FELIS_TEST_RELAY_PW", "from-env")
 		off := false
 		c := config.SMTPConfig{Host: "mail.example.com", Port: 2525, From: "felis@example.com", Username: "felis", PasswordRef: "FELIS_TEST_RELAY_PW", RequireTLS: &off}
-		got, err := hostRecoveryMailer(c, "felis")(ctx)
+		got, err := hostRecoveryMailer(c, hostSMTPPasswordPath, "felis")(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}

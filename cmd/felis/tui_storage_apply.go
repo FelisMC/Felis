@@ -53,8 +53,17 @@ func applyStorageConfig(ctx context.Context, method storageMethod, in s3Inputs) 
 		return err
 	}
 	// S3: land the credentials in their own Secret BEFORE the roll, so the optional
-	// env refs resolve on the fresh pod. Local needs no Secret.
+	// env refs resolve on the fresh pod, and on the host before that, so the next
+	// installer run can apply the Secret again (hostcreds.go). Local needs no Secret.
 	if method == storageS3 {
+		for _, c := range []struct{ path, value string }{
+			{hostUploadsS3AccessKeyPath, in.accessKey},
+			{hostUploadsS3SecretKeyPath, in.secretKey},
+		} {
+			if err := writeHostCredential(c.path, c.value); err != nil {
+				return fmt.Errorf("keep the bucket credentials in %s: %w", c.path, err)
+			}
+		}
 		if err := applyUploadsS3Secret(ctx, in.accessKey, in.secretKey); err != nil {
 			return err
 		}
@@ -70,8 +79,9 @@ func applyStorageConfig(ctx context.Context, method storageMethod, in s3Inputs) 
 
 // currentStorageInputs reads the storage backend already recorded in felis.toml so
 // the reconfigure flow can pre-select the method and pre-fill the non-secret S3
-// fields (endpoint/bucket/region). Credentials live only in the felis-uploads-s3
-// Secret and are deliberately never read back — they must be re-entered to change.
+// fields (endpoint/bucket/region). The credentials (the felis-uploads-s3 Secret
+// and its host copies) are deliberately never read back — they must be re-entered
+// to change.
 // Any read error falls back to a blank local default rather than blocking reconfig.
 func currentStorageInputs() (storageMethod, s3Inputs) {
 	cfg, err := config.Load(hostSetupConfigPath)

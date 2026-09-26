@@ -273,7 +273,7 @@ and the MinecraftServer CRD are deleted.
 | Final database bundle | taken first (`felis db backup -label manual`); a failure stops the uninstall before anything is removed. `--no-backup` skips it | none |
 | The database (`/var/lib/felis/postgres`) | kept; felis-postgres is stopped cleanly before k3s goes | deleted with `/var/lib/felis` |
 | A host PostgreSQL an earlier release ran the database on | kept as it is: stopped after the move into k3s (below, §4), with its old copy of `felis` | its `felis` database and role are dropped (the server is started for that and stopped again), and `listen_addresses` and `pg_hba.conf` go back to how they were. Checked before anything is removed: a role that still owns another database (the `felis_pgint` the PG contract tests use, CONTRIBUTING.md) or holds grants elsewhere stops the purge up front with the list and the `ALTER DATABASE … OWNER TO postgres` to run |
-| `/etc/felis` (secrets, `felis.toml`, `offsite.env`, tunnel config) | kept; `bootstrap.done` and the per-run records go | deleted, with the tunnel's credentials file |
+| `/etc/felis` (secrets, `felis.toml`, `offsite.env`, the mail relay password and uploads bucket keys `felis setup` took, tunnel config) | kept; `bootstrap.done` and the per-run records go | deleted, with the tunnel's credentials file |
 | `/var/lib/felis` (the database, its bundles) | kept | deleted |
 | Worlds, archives, registry, uploads | moved to `/var/lib/felis/retained/k3s-storage-<stamp>/` (with `--keep-k3s`: their volumes switch to `Retain` and stay in place) | deleted |
 | Felis images, Docker build cache | kept | deleted |

@@ -276,8 +276,8 @@ func validateSMTPFrom(s string) error {
 }
 
 // currentSMTPInputs reads the relay already recorded in felis.toml so the form
-// pre-fills the non-secret fields. The password lives only in the felis-smtp
-// Secret and is deliberately never read back — it must be re-entered to change.
+// pre-fills the non-secret fields. The password (the felis-smtp Secret and its
+// host copy) is deliberately never read back — it must be re-entered to change.
 // Any read error falls back to a blank form rather than blocking reconfig.
 func currentSMTPInputs() smtpInputs {
 	cfg, err := config.Load(hostSetupConfigPath)
@@ -295,7 +295,8 @@ func currentSMTPInputs() smtpInputs {
 // applySMTPConfig proves the relay works, then persists it and rolls felis-api:
 // Ping (a full transaction — connect/STARTTLS/AUTH/MAIL FROM/RCPT/DATA, which
 // delivers one self-test message to the From address) → [smtp] into both config
-// files → the felis-smtp Secret → the config Secret → rollout. A failed Ping
+// files → the password into /etc/felis/smtp-password (hostcreds.go) → the
+// felis-smtp Secret → the config Secret → rollout. A failed Ping
 // leaves the install untouched, so a bad relay dies at the keyboard, not at a
 // player's OTP.
 //
@@ -329,6 +330,11 @@ func applySMTPConfig(ctx context.Context, in smtpInputs) error {
 		if err := writeConfig(path, cfg); err != nil {
 			return err
 		}
+	}
+	// The host copy first: should the Secret fail, the next installer run applies
+	// it from this file.
+	if err := writeHostCredential(hostSMTPPasswordPath, in.password); err != nil {
+		return fmt.Errorf("keep the relay password in %s: %w", hostSMTPPasswordPath, err)
 	}
 	if err := applySMTPSecret(ctx, in.password); err != nil {
 		return err
