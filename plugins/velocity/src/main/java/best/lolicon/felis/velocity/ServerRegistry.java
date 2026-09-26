@@ -36,9 +36,18 @@ import java.util.concurrent.ConcurrentHashMap;
  * first successful refresh replaces that placeholder with the live ClusterIP. A
  * proxy that starts while felis-api is down refreshes once from the last list the
  * API answered with instead ({@link ServerListSource}).
+ *
+ * <p>Only a {@code direct} endpoint carries a backend address. A server that is not
+ * up reports {@code fallback}, with the NAME of its fallback server ("login") in the
+ * address field: dialled as a hostname that resolves nowhere, so registering it
+ * turned every wake-and-transfer into "couldn't connect you". A fallback report leaves
+ * the last direct registration in place — the ClusterIP belongs to the Service and
+ * outlives the pod — and {@link #observe(ServerView)} lets the waiting queue apply the
+ * address a fresh status poll reports before it transfers anyone.
  */
 final class ServerRegistry {
     private static final int DEFAULT_PORT = 25565;
+    private static final String ENDPOINT_DIRECT = "direct";
 
     private final ProxyServer proxy;
     private final Logger log;
@@ -84,10 +93,23 @@ final class ServerRegistry {
         subdomainToName.keySet().retainAll(subdomains.keySet());
     }
 
+    /**
+     * observe applies one server's freshly polled view between refreshes: the view
+     * routing reads, and its registration when the poll reports a direct endpoint. A
+     * name the last refresh did not list is left to the next one.
+     */
+    void observe(ServerView v) {
+        String name = v.name();
+        if (name == null || byName.replace(name, v) == null) {
+            return;
+        }
+        ensureRegistered(v);
+    }
+
     private void ensureRegistered(ServerView v) {
         String addr = v.endpointAddress();
-        if (addr == null || addr.isEmpty()) {
-            return; // no backend address yet (server never started) → nothing to register
+        if (!ENDPOINT_DIRECT.equalsIgnoreCase(v.endpointMode()) || addr == null || addr.isEmpty()) {
+            return; // not up (the address is a fallback server's name) or never started
         }
         InetSocketAddress target = parseAddress(addr);
         Optional<RegisteredServer> existing = proxy.getServer(v.name());

@@ -293,9 +293,11 @@ public final class ControlChannelTest {
         return f.server() + " " + f.phase() + " " + f.ready();
     }
 
+    // Shaped like the operator's status: up is direct at addr; down is the fallback,
+    // whose name ("login") sits in the address field.
     private static ServerView view(String name, boolean ready, String addr) {
         return new ServerView(name, name, ready ? "Running" : "Stopped", ready, "ownerOnly",
-                "Running", "ClusterIP", addr, 0, 20);
+                "Running", ready ? "direct" : "fallback", ready ? addr : "login", 0, 20);
     }
 
     private static void assertEq(String what, Object want, Object got) {

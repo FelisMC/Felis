@@ -413,11 +413,17 @@ final class Fakes {
      * status from {@link #ready}, wake answering 202 unless {@link #wakeError} holds an
      * answer for the server, and join-events recorded. {@link #linkDown} makes the
      * link-status route answer 500.
+     *
+     * <p>Status replies carry the endpoint the way the operator writes it: a server that
+     * is up reports {@code direct} and its {@link #address}; one that is not reports
+     * {@code fallback} with the fallback server's NAME, "login", in the address field.
      */
     static final class Api implements AutoCloseable {
         final Set<UUID> linked = ConcurrentHashMap.newKeySet();
         volatile boolean linkDown;
         final Map<String, Boolean> ready = new ConcurrentHashMap<>();
+        /** address is the direct endpoint a server reports while it is ready. */
+        final Map<String, String> address = new ConcurrentHashMap<>();
         /** wakeError maps a server to "status code" (e.g. "403 forbidden"). */
         final Map<String, String> wakeError = new ConcurrentHashMap<>();
         volatile int joinStatus = 204;
@@ -465,11 +471,13 @@ final class Fakes {
                 String action = parts.length > 1 ? parts[1] : "";
                 switch (method + " " + action) {
                     case "GET status":
-                        reply(ex, 200, view(name, ready.getOrDefault(name, false)));
+                        reply(ex, 200, status(name, ready.getOrDefault(name, false)));
                         return;
                     case "POST wake":
                         if (!error(ex, wakeError.get(name))) {
-                            reply(ex, 202, view(name, false));
+                            // The real wake reply is this subset of the view: no endpoint.
+                            reply(ex, 202, "{\"name\":\"" + name + "\",\"desiredState\":\"Running\","
+                                    + "\"phase\":\"Stopped\",\"ready\":false}");
                         }
                         return;
                     case "GET menu":
@@ -503,8 +511,13 @@ final class Fakes {
             return true;
         }
 
-        private static String view(String name, boolean ready) {
-            return "{\"name\":\"" + name + "\",\"subdomain\":\"" + name + "\",\"ready\":" + ready + "}";
+        private String status(String name, boolean up) {
+            String addr = address.get(name);
+            String endpoint = up
+                    ? "\"endpointMode\":\"direct\"" + (addr == null ? "" : ",\"endpointAddress\":\"" + addr + "\"")
+                    : "\"endpointMode\":\"fallback\",\"endpointAddress\":\"login\"";
+            return "{\"name\":\"" + name + "\",\"subdomain\":\"" + name + "\",\"phase\":\""
+                    + (up ? "Running" : "Stopped") + "\",\"ready\":" + up + "," + endpoint + "}";
         }
 
         private static void reply(HttpExchange ex, int status, String body) throws IOException {

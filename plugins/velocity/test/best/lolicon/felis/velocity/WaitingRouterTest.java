@@ -62,6 +62,9 @@ public final class WaitingRouterTest {
             login = net.proxy.getServer("login").orElseThrow();
             lobby = net.proxy.getServer("lobby").orElseThrow();
             beta = net.proxy.getServer("beta").orElseThrow();
+            // A stopped server's address field names its fallback; dialled, "login"
+            // resolves nowhere.
+            assertEq("a stopped server is not registered at its fallback's name", null, net.address("alpha"));
 
             hostRouting();
             loginGate();
@@ -259,6 +262,8 @@ public final class WaitingRouterTest {
 
         api.ready.put("alpha", true);
         router.tick();
+        assertEq("alpha ready: registered from the poll, not the next refresh", "10.43.0.3:25565",
+                net.address("alpha"));
         assertEq("alpha ready: its waiters moved", List.of("alpha"), List.copyOf(onAlpha.connects));
         assertEq("alpha ready: told", true, onAlpha.said("« alpha » is ready — moving you in"));
         assertEq("alpha ready: one poll again", alphaPolls + 2, api.count("GET " + SERVERS + "alpha/status"));
@@ -286,7 +291,24 @@ public final class WaitingRouterTest {
         assertEq("lapsed: not moved", 0, lapsed.connects.size());
         assertEq("lapsed: told", true, lapsed.said("no longer linked"));
 
-        // Ready but with no backend registered yet: wait for the next refresh.
+        // alpha stops: the fallback report leaves its last registration alone. It comes
+        // back behind a new address, and the waiter goes there, not to the old one.
+        api.ready.put("alpha", false);
+        reg.refresh(servers(false));
+        assertEq("stopped: last direct registration kept", "10.43.0.3:25565", net.address("alpha"));
+        Fakes.FakePlayer back = player("alpha.mc.test", true);
+        choose(back);
+        release(back);
+        assertEq("stopped again: queued", 1, router.waitingCount());
+        api.address.put("alpha", "10.43.0.13:25565");
+        api.ready.put("alpha", true);
+        router.tick();
+        assertEq("new address: re-registered from the poll", "10.43.0.13:25565", net.address("alpha"));
+        assertEq("new address: moved", List.of("alpha"), List.copyOf(back.connects));
+        assertEq("new address: queue empty", 0, router.waitingCount());
+
+        // Ready, but neither the registry nor the poll has an address for it yet: wait
+        // for the refresh that brings one.
         Fakes.FakePlayer early = player("fresh.mc.test", true);
         choose(early);
         release(early);
@@ -474,9 +496,15 @@ public final class WaitingRouterTest {
         return n;
     }
 
+    // view is a server as GET /servers lists it: up at its direct address, or down on
+    // the fallback, where the operator writes the fallback server's name ("login")
+    // into the address. addr is also what the stub API reports once the server is up.
     private static ServerView view(String name, boolean ready, String addr) {
+        if (addr != null) {
+            api.address.put(name, addr);
+        }
         return new ServerView(name, name, ready ? "Running" : "Stopped", ready, "ownerOnly",
-                "Running", "ClusterIP", addr, 0, 20);
+                "Running", ready ? "direct" : "fallback", ready ? addr : "login", 0, 20);
     }
 
     private static void assertEq(String what, Object want, Object got) {

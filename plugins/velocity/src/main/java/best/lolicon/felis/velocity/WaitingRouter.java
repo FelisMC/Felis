@@ -401,7 +401,14 @@ public final class WaitingRouter {
             Boolean ready = readyCache.get(w.serverName);
             if (ready == null) {
                 try {
-                    ready = api.serverStatus(w.serverName).ready();
+                    ServerView status = api.serverStatus(w.serverName);
+                    ready = status.ready();
+                    // The registry refreshes every 15 s; a server that just came up may
+                    // still be registered at its old address, or not at all. Register
+                    // what this poll reports before transferring anyone to it.
+                    if (ready) {
+                        registry.observe(status);
+                    }
                 } catch (LinkException ex) {
                     ready = Boolean.FALSE; // transient → keep waiting until the deadline
                 }
