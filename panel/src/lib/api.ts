@@ -553,6 +553,7 @@ export const api = rejectingSync({
     ),
 
   patchServer: (name: string, req: {
+    /** Trimmed server-side; an empty one clears it. */
     displayName?: string;
     autostartPolicy?: AutostartPolicy;
     image?: string;
@@ -562,6 +563,8 @@ export const api = rejectingSync({
     memory?: string;
     /** Idle auto-stop: 0 turns it off, else seconds empty before the stop (60–86400). */
     idleStopSeconds?: number;
+    /** Single fields laid over the server's pod block: a field left out keeps its
+     *  value, and an empty cpu or cpuRequest removes that limit or request. */
     resources?: {
       cpu?: string;
       cpuRequest?: string;

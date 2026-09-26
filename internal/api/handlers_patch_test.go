@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
@@ -210,7 +211,8 @@ func TestPatchServerRejections(t *testing.T) {
 			wantCode: http.StatusBadRequest, wantErr: "bad_request",
 		},
 		{
-			name:     "resources without memory",
+			// The seeded server has no pod block, so there is no ceiling to keep.
+			name:     "resources on a server with no memory ceiling",
 			body:     `{"resources":{"cpu":"2"}}`,
 			wantCode: http.StatusBadRequest, wantErr: "bad_request",
 		},
@@ -307,5 +309,128 @@ func TestPatchServerIdleStop(t *testing.T) {
 		if got := cl.byName["survival"].IdleStopSeconds; got != tc.want {
 			t.Fatalf("%s: view idleStopSeconds = %d, want %d", tc.body, got, tc.want)
 		}
+	}
+}
+
+// seedResources gives survival the pod block create would have written: a 4Gi
+// ceiling, a 1-core CPU limit and a 500m CPU request.
+func seedResources(cl *fakeCluster) {
+	cl.byName["survival"].JavaMemory = "3072M"
+	cl.byName["survival"].Resources = corev1.ResourceRequirements{
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi"), corev1.ResourceCPU: resource.MustParse("1")},
+		Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi"), corev1.ResourceCPU: resource.MustParse("500m")},
+	}
+}
+
+func wantQuantity(t *testing.T, what string, list corev1.ResourceList, key corev1.ResourceName, want string) {
+	t.Helper()
+	got, ok := list[key]
+	if want == "" {
+		if ok {
+			t.Errorf("%s = %s, want none", what, got.String())
+		}
+		return
+	}
+	if !ok || got.Cmp(resource.MustParse(want)) != 0 {
+		t.Errorf("%s = %s (present %v), want %s", what, got.String(), ok, want)
+	}
+}
+
+// The edit dialog sends only the field the admin changed. Each patch lays that one
+// field over the server's pod block and keeps the rest.
+func TestPatchServerEditsOneResource(t *testing.T) {
+	t.Run("cpu only keeps the memory and the heap", func(t *testing.T) {
+		api, repo, cl, _ := newPatchAPI()
+		seedResources(cl)
+		repo.byName["survival"].OwnerID = "u1"
+		repo.quota["u1"] = true
+
+		w := patchSurvival(api, `{"resources":{"cpu":"2"}}`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
+		}
+		p := cl.patched["survival"]
+		if p.Resources == nil {
+			t.Fatal("a cpu patch must carry the pod block")
+		}
+		wantQuantity(t, "memory limit", p.Resources.Limits, corev1.ResourceMemory, "4Gi")
+		wantQuantity(t, "cpu limit", p.Resources.Limits, corev1.ResourceCPU, "2")
+		wantQuantity(t, "memory request", p.Resources.Requests, corev1.ResourceMemory, "4Gi")
+		wantQuantity(t, "cpu request", p.Resources.Requests, corev1.ResourceCPU, "500m")
+		if p.JavaMemory != nil {
+			t.Errorf("heap = %q, want untouched by a cpu patch", *p.JavaMemory)
+		}
+		if got := repo.resourceUpdates["survival"]; got.CPUMilli != 2000 || got.MemoryMB != 4096 {
+			t.Errorf("resource cache = %+v, want cpu 2000 / mem 4096", got)
+		}
+		if body := w.Body.String(); !strings.Contains(body, `"patched":["resources"]`) {
+			t.Errorf("response = %s, want patched [resources]", body)
+		}
+	})
+
+	t.Run("memory only keeps the cpu limit and request", func(t *testing.T) {
+		api, _, cl, _ := newPatchAPI()
+		seedResources(cl)
+
+		w := patchSurvival(api, `{"memory":"8Gi"}`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
+		}
+		p := cl.patched["survival"]
+		wantQuantity(t, "memory limit", p.Resources.Limits, corev1.ResourceMemory, "8Gi")
+		wantQuantity(t, "cpu limit", p.Resources.Limits, corev1.ResourceCPU, "1")
+		wantQuantity(t, "memory request", p.Resources.Requests, corev1.ResourceMemory, "8Gi")
+		wantQuantity(t, "cpu request", p.Resources.Requests, corev1.ResourceCPU, "500m")
+		if p.JavaMemory == nil || *p.JavaMemory != "6144M" {
+			t.Errorf("heap = %v, want 6144M derived from 8Gi", p.JavaMemory)
+		}
+	})
+
+	t.Run("an empty cpu removes the limit", func(t *testing.T) {
+		api, _, cl, _ := newPatchAPI()
+		seedResources(cl)
+
+		w := patchSurvival(api, `{"resources":{"cpu":""}}`)
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
+		}
+		p := cl.patched["survival"]
+		wantQuantity(t, "cpu limit", p.Resources.Limits, corev1.ResourceCPU, "")
+		wantQuantity(t, "memory limit", p.Resources.Limits, corev1.ResourceMemory, "4Gi")
+	})
+
+	for _, c := range []struct{ name, body string }{
+		{"the memory ceiling cannot be emptied", `{"resources":{"memory":""}}`},
+		{"a cpu request above the kept limit", `{"resources":{"cpuRequest":"2"}}`},
+		{"a memory ceiling below the kept request", `{"resources":{"memory":"2Gi"}}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			api, _, cl, _ := newPatchAPI()
+			seedResources(cl)
+
+			w := patchSurvival(api, c.body)
+			if w.Code != http.StatusBadRequest || decodeErr(t, w) != "bad_request" {
+				t.Fatalf("code = %d (%s), want 400 bad_request", w.Code, w.Body.String())
+			}
+			if len(cl.patched) != 0 {
+				t.Errorf("a rejected patch must not write a spec, got %+v", cl.patched)
+			}
+		})
+	}
+}
+
+// Clearing the display name in the dialog sends an empty one; the server then
+// goes by its name again. Blank space counts as empty.
+func TestPatchServerClearsDisplayName(t *testing.T) {
+	api, _, cl, _ := newPatchAPI()
+	cl.byName["survival"].DisplayName = "Survival Realm"
+
+	w := patchSurvival(api, `{"displayName":"   "}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
+	}
+	p := cl.patched["survival"]
+	if p.DisplayName == nil || *p.DisplayName != "" {
+		t.Fatalf("patched displayName = %v, want an empty one", p.DisplayName)
 	}
 }

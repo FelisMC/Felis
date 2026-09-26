@@ -10,6 +10,8 @@ import (
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/naming"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -318,5 +320,84 @@ func TestServerInfoCarriesStartGaveUp(t *testing.T) {
 	}
 	if !spent.StartGaveUp || !strings.Contains(string(b), `"startGaveUp":true`) {
 		t.Fatalf("spent: startGaveUp=%v JSON %s, want true", spent.StartGaveUp, b)
+	}
+}
+
+// An admin edits one resource at a time. The view hands the handler the whole
+// pod block, the handler lays the change over it, and the merge patch keeps
+// everything the admin left alone: memory-only keeps the CPU limit, CPU-only
+// keeps the memory, and an emptied CPU field really drops the limit.
+func TestResourcePatchesKeepWhatTheyLeaveOut(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	ms := testServer("survival", "survival")
+	ms.Spec.JavaMemory = "3072M"
+	ms.Spec.Resources = corev1.ResourceRequirements{
+		Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi"), corev1.ResourceCPU: resource.MustParse("2")},
+		Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi"), corev1.ResourceCPU: resource.MustParse("500m")},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(ms).Build()
+	k := NewK8sCluster(c, "minecraft")
+	ctx := context.Background()
+	str := func(s string) *string { return &s }
+	// edit is one PATCH /servers/survival: read the view, merge, write.
+	edit := func(memory *string, rr *patchResourceRequest) *ServerInfo {
+		t.Helper()
+		info, err := k.GetServer(ctx, "survival")
+		if err != nil {
+			t.Fatalf("GetServer: %v", err)
+		}
+		heap, moved, res, err := mergeResources(info.Resources, memory, rr)
+		if err != nil {
+			t.Fatalf("merge: %v", err)
+		}
+		p := ServerSpecPatch{Resources: &res}
+		if memory != nil || moved {
+			p.JavaMemory = &heap
+		}
+		if err := k.PatchServerSpec(ctx, "survival", p); err != nil {
+			t.Fatalf("patch: %v", err)
+		}
+		after, err := k.GetServer(ctx, "survival")
+		if err != nil {
+			t.Fatalf("GetServer: %v", err)
+		}
+		return after
+	}
+
+	info, err := k.GetServer(ctx, "survival")
+	if err != nil {
+		t.Fatalf("GetServer: %v", err)
+	}
+	if info.Memory != "4Gi" || info.CPU != "2" || info.JavaMemory != "3072M" {
+		t.Fatalf("view = memory %q cpu %q heap %q, want 4Gi 2 3072M", info.Memory, info.CPU, info.JavaMemory)
+	}
+	b, err := json.Marshal(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "requests") || strings.Contains(string(b), "Resources") {
+		t.Fatalf("the pod block reached the wire: %s", b)
+	}
+
+	after := edit(str("8Gi"), nil)
+	cpuReq := after.Resources.Requests[corev1.ResourceCPU]
+	if after.Memory != "8Gi" || after.CPU != "2" || cpuReq.String() != "500m" || after.JavaMemory != "6144M" {
+		t.Fatalf("memory-only: memory %q cpu %q cpuRequest %s heap %q, want 8Gi 2 500m 6144M",
+			after.Memory, after.CPU, cpuReq.String(), after.JavaMemory)
+	}
+
+	after = edit(nil, &patchResourceRequest{CPU: str("3")})
+	memReq := after.Resources.Requests[corev1.ResourceMemory]
+	if after.CPU != "3" || after.Memory != "8Gi" || memReq.String() != "8Gi" || after.JavaMemory != "6144M" {
+		t.Fatalf("cpu-only: cpu %q memory %q memoryRequest %s heap %q, want 3 8Gi 8Gi 6144M",
+			after.CPU, after.Memory, memReq.String(), after.JavaMemory)
+	}
+
+	after = edit(nil, &patchResourceRequest{CPU: str("")})
+	if _, has := after.Resources.Limits[corev1.ResourceCPU]; has || after.CPU != "" || after.Memory != "8Gi" {
+		t.Fatalf("cleared cpu: limits %v, want the CPU limit gone and memory 8Gi kept", after.Resources.Limits)
 	}
 }

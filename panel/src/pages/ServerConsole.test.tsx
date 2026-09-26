@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { ServerConsole } from "./ServerConsole";
 
-const calls = vi.hoisted(() => ({ status: vi.fn(), myServers: vi.fn() }));
+const calls = vi.hoisted(() => ({ status: vi.fn(), myServers: vi.fn(), listImages: vi.fn() }));
 vi.mock("@/lib/tier", () => ({
   useTier: () => ({
     loading: false,
@@ -31,6 +32,8 @@ beforeEach(() => {
   calls.status.mockReset();
   calls.myServers.mockReset();
   calls.myServers.mockResolvedValue([]);
+  calls.listImages.mockReset();
+  calls.listImages.mockResolvedValue([]);
 });
 
 function renderConsole() {
@@ -74,5 +77,20 @@ describe("ServerConsole failed start", () => {
     expect(await screen.findByTestId("log-stream")).toBeTruthy();
     expect(screen.queryByRole("status", { name: /failed to start|timed out/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Retry start/ })).toBeNull();
+  });
+});
+
+describe("ServerConsole edit dialog", () => {
+  it("offers the server's memory limit as the current memory, not the JVM heap", async () => {
+    calls.status.mockResolvedValue(
+      status({ phase: "Stopped", desiredState: "Stopped", memory: "4Gi", javaMemory: "3072M", cpu: "2" }),
+    );
+    renderConsole();
+
+    await userEvent.setup().click(await screen.findByRole("button", { name: /Edit Server Config/ }));
+    const memory = await screen.findByRole("combobox", { name: "Memory" });
+    expect(within(memory).getByText("4Gi")).toBeTruthy();
+    expect(screen.queryByText("3072M")).toBeNull();
+    expect((screen.getByLabelText("CPU Limit") as HTMLInputElement).value).toBe("2");
   });
 });

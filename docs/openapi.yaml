@@ -472,7 +472,12 @@ components:
         playersMax: { type: integer, format: int32 }
         displayName: { type: string }
         image: { type: string }
-        javaMemory: { type: string }
+        javaMemory:
+          type: string
+          description: The JVM heap (-Xmx) derived from the memory limit.
+        memory:
+          type: string
+          description: The pod memory limit (the server's memory as an admin picks it), a Kubernetes quantity such as 4Gi.
         storageSize: { type: string }
         cpu: { type: string }
         idleStopSeconds:
@@ -5773,7 +5778,9 @@ paths:
               type: object
               description: Only the supplied fields are patched; an empty patch is rejected.
               properties:
-                displayName: { type: string }
+                displayName:
+                  type: string
+                  description: Trimmed. An empty name clears it, and the server goes by its name again.
                 autostartPolicy: { type: string }
                 image:
                   type: string
@@ -5788,12 +5795,21 @@ paths:
                     version, whose chunk upgrades the old one cannot read. Without it an
                     image that would move the server is refused with 409
                     image_change_unconfirmed. The audit row records image_from/image_to.
-                memory: { type: string }
+                memory:
+                  type: string
+                  description: >-
+                    Sets the memory limit and request together, as create does, and
+                    re-derives the JVM heap. The CPU limit and request are kept.
                 storage:
                   type: string
                   description: Rejected with 400 storage_immutable — present for a clear error, not mutation.
                 resources:
                   type: object
+                  description: >-
+                    Single fields of the pod block, laid over what the server has: a
+                    field left out keeps its value, so each may be sent alone. An empty
+                    cpu or cpuRequest removes that limit or request; the memory ceiling
+                    cannot be emptied. A request above its limit is a 400.
                   properties:
                     cpu: { type: string }
                     cpuRequest: { type: string }

@@ -437,11 +437,12 @@ func (k *K8sCluster) PatchServerSpec(ctx context.Context, name string, p ServerS
 
 // serverInfo projects a MinecraftServer onto the API's lifecycle view.
 func serverInfo(ms *v1alpha1.MinecraftServer) *ServerInfo {
-	var cpuStr string
-	if ms.Spec.Resources.Limits != nil {
-		if limit, ok := ms.Spec.Resources.Limits[corev1.ResourceCPU]; ok {
-			cpuStr = limit.String()
-		}
+	var cpuStr, memStr string
+	if limit, ok := ms.Spec.Resources.Limits[corev1.ResourceCPU]; ok {
+		cpuStr = limit.String()
+	}
+	if limit, ok := ms.Spec.Resources.Limits[corev1.ResourceMemory]; ok {
+		memStr = limit.String()
 	}
 
 	return &ServerInfo{
@@ -458,6 +459,7 @@ func serverInfo(ms *v1alpha1.MinecraftServer) *ServerInfo {
 		DisplayName:     ms.Spec.DisplayName,
 		Image:           ms.Spec.Image,
 		JavaMemory:      ms.Spec.JavaMemory,
+		Memory:          memStr,
 		StorageSize:     ms.Spec.Storage.Size,
 		CPU:             cpuStr,
 		IdleStopSeconds: idleStopSeconds(ms),
@@ -466,6 +468,7 @@ func serverInfo(ms *v1alpha1.MinecraftServer) *ServerInfo {
 		LegacyForwarding: ms.Labels[v1alpha1.LabelForwarding] == v1alpha1.ForwardingLegacy,
 		AutoRestarts:     ms.Status.AutoRestarts,
 		StartGaveUp:      v1alpha1.StartGaveUp(&ms.Status),
+		Resources:        *ms.Spec.Resources.DeepCopy(),
 	}
 }
 

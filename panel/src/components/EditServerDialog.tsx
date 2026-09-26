@@ -27,6 +27,14 @@ import { InlineError } from "@/components/MessageLine";
 
 const MEMORY_OPTIONS = ["2Gi", "4Gi", "6Gi", "8Gi"];
 
+/** cpuValid accepts what the API takes as a CPU limit: a positive number of
+ *  cores ("2", "1.5") or millicores ("500m"). Empty is valid too: no limit. */
+function cpuValid(cpu: string): boolean {
+  if (cpu === "") return true;
+  const m = /^(\d+(?:\.\d+)?)(m?)$/.exec(cpu);
+  return m !== null && Number(m[1]) > 0 && (m[2] === "" || !m[1].includes("."));
+}
+
 /** Idle auto-stop presets in seconds; "0" is Never. The server default is 600. */
 const IDLE_OPTIONS = ["0", "300", "600", "900", "1800", "3600", "7200"];
 
@@ -141,18 +149,22 @@ export function EditServerDialog({
 
   const enabledImages = (images.data ?? []).filter((i) => i.enabled);
 
-  // Checks if form state has mutated from initial values
+  // Text fields count as what they send: surrounding space is no change, and an
+  // emptied field is one (it clears the name, or lifts the CPU limit).
+  const displayName = form.displayName.trim();
+  const cpu = form.cpu.trim();
+  const cpuOk = cpuValid(cpu);
   const hasChanges =
-    form.displayName !== currentDisplayName ||
+    displayName !== currentDisplayName ||
     form.autostartPolicy !== currentPolicy ||
     form.image !== currentImage ||
     form.memory !== currentMemory ||
-    form.cpu !== currentCpu ||
+    cpu !== currentCpu ||
     form.idleStop !== currentIdleStop;
 
   const imageChanged = form.image !== currentImage;
   const pinnedBuild = splitImageRef(currentImage).short;
-  const canSubmit = hasChanges && !submitting && (!imageChanged || imageConfirmed);
+  const canSubmit = hasChanges && cpuOk && !submitting && (!imageChanged || imageConfirmed);
 
   async function submit() {
     setSubmitting(true);
@@ -160,8 +172,8 @@ export function EditServerDialog({
     try {
       const payload: Parameters<typeof api.patchServer>[1] = {};
 
-      if (form.displayName !== currentDisplayName) {
-        payload.displayName = form.displayName.trim() || undefined;
+      if (displayName !== currentDisplayName) {
+        payload.displayName = displayName;
       }
       if (form.autostartPolicy !== currentPolicy) {
         payload.autostartPolicy = form.autostartPolicy;
@@ -170,13 +182,12 @@ export function EditServerDialog({
         payload.image = form.image;
         payload.confirmImageChange = imageConfirmed;
       }
+      // Memory and CPU each go alone; the API keeps whatever is not sent.
       if (form.memory !== currentMemory) {
         payload.memory = form.memory;
       }
-      if (form.cpu !== currentCpu) {
-        payload.resources = {
-          cpu: form.cpu.trim(),
-        };
+      if (cpu !== currentCpu) {
+        payload.resources = { cpu };
       }
       if (form.idleStop !== currentIdleStop) {
         payload.idleStopSeconds = Number(form.idleStop);
@@ -324,7 +335,14 @@ export function EditServerDialog({
                 placeholder={t("edit_server_cpu_placeholder")}
                 value={form.cpu}
                 onChange={(e) => set("cpu", e.target.value)}
+                aria-invalid={!cpuOk}
+                aria-describedby={cpuOk ? undefined : "es-cpu-error"}
               />
+              {!cpuOk && (
+                <p id="es-cpu-error" className="text-xs text-destructive">
+                  {t("edit_server_cpu_invalid")}
+                </p>
+              )}
             </div>
             <div className="grid gap-2">
               <Label htmlFor="edit-server-policy">{t("create_server_policy")}</Label>

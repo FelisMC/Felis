@@ -308,7 +308,7 @@ export function ServerConsole() {
                   currentDisplayName={data.displayName}
                   currentPolicy={data.autostartPolicy as AutostartPolicy}
                   currentImage={data.image}
-                  currentMemory={data.javaMemory}
+                  currentMemory={data.memory}
                   currentStorage={data.storageSize}
                   currentCpu={data.cpu}
                   currentIdleStopSeconds={data.idleStopSeconds}

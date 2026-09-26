@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	corev1 "k8s.io/api/core/v1"
 )
 
 const testRoot = "mc.example.net" // neutral; never a deployment domain
@@ -1844,6 +1845,22 @@ func (c *fakeCluster) PatchServerSpec(_ context.Context, n string, p ServerSpecP
 	}
 	if p.IdleStopSeconds != nil {
 		info.IdleStopSeconds = *p.IdleStopSeconds
+	}
+	if p.DisplayName != nil {
+		info.DisplayName = *p.DisplayName
+	}
+	if p.JavaMemory != nil {
+		info.JavaMemory = *p.JavaMemory
+	}
+	if p.Resources != nil {
+		info.Resources = *p.Resources.DeepCopy()
+		info.Memory, info.CPU = "", ""
+		if q, ok := p.Resources.Limits[corev1.ResourceMemory]; ok {
+			info.Memory = q.String()
+		}
+		if q, ok := p.Resources.Limits[corev1.ResourceCPU]; ok {
+			info.CPU = q.String()
+		}
 	}
 	return nil
 }

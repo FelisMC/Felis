@@ -617,17 +617,8 @@ func resolveResources(memory string, rr *resourceRequest) (string, corev1.Resour
 		}
 	}
 
-	// A request that exceeds its limit is rejected by Kubernetes; fail fast here
-	// with a clear 400 instead of letting the CRD write bounce.
-	if memReq, memLim := requests[corev1.ResourceMemory], limits[corev1.ResourceMemory]; memReq.Cmp(memLim) > 0 {
-		return "", corev1.ResourceRequirements{}, newError(http.StatusBadRequest, "bad_request",
-			"memory request %s exceeds limit %s", memReq.String(), memLim.String())
-	}
-	if cpuReq, hasReq := requests[corev1.ResourceCPU]; hasReq {
-		if cpuLim, hasLim := limits[corev1.ResourceCPU]; hasLim && cpuReq.Cmp(cpuLim) > 0 {
-			return "", corev1.ResourceRequirements{}, newError(http.StatusBadRequest, "bad_request",
-				"cpu request %s exceeds limit %s", cpuReq.String(), cpuLim.String())
-		}
+	if err := checkResourceBounds(limits, requests); err != nil {
+		return "", corev1.ResourceRequirements{}, err
 	}
 
 	// §22 fail-closed: never hand the operator a CRD without a concrete memory
@@ -640,6 +631,111 @@ func resolveResources(memory string, rr *resourceRequest) (string, corev1.Resour
 	}
 
 	return deriveJavaHeap(memLim), corev1.ResourceRequirements{Limits: limits, Requests: requests}, nil
+}
+
+// checkResourceBounds refuses a request above its limit. Kubernetes rejects one
+// too; failing here gives a clear 400 instead of a bounced CRD write.
+func checkResourceBounds(limits, requests corev1.ResourceList) error {
+	if memReq, hasReq := requests[corev1.ResourceMemory]; hasReq {
+		if memLim, hasLim := limits[corev1.ResourceMemory]; hasLim && memReq.Cmp(memLim) > 0 {
+			return newError(http.StatusBadRequest, "bad_request",
+				"memory request %s exceeds limit %s", memReq.String(), memLim.String())
+		}
+	}
+	if cpuReq, hasReq := requests[corev1.ResourceCPU]; hasReq {
+		if cpuLim, hasLim := limits[corev1.ResourceCPU]; hasLim && cpuReq.Cmp(cpuLim) > 0 {
+			return newError(http.StatusBadRequest, "bad_request",
+				"cpu request %s exceeds limit %s", cpuReq.String(), cpuLim.String())
+		}
+	}
+	return nil
+}
+
+// patchResourceRequest is the resources block of a patch. A field left out keeps
+// what the server has. An empty cpu or cpuRequest removes that limit or request;
+// the memory ceiling can be changed but never removed (§22).
+type patchResourceRequest struct {
+	CPU           *string `json:"cpu,omitempty"`
+	CPURequest    *string `json:"cpuRequest,omitempty"`
+	Memory        *string `json:"memory,omitempty"`
+	MemoryRequest *string `json:"memoryRequest,omitempty"`
+}
+
+// mergeResources lays a patch's memory and resources over the server's current
+// pod block, so a field the admin left out keeps its value: a CPU-only patch
+// keeps the memory, a memory-only patch keeps the CPU limit. The top-level
+// memory sets the memory limit and request together, as create does; the block
+// then overrides single fields. It returns the heap derived from the final
+// ceiling and whether the ceiling moved, which is when the heap must follow.
+func mergeResources(cur corev1.ResourceRequirements, memory *string, rr *patchResourceRequest) (string, bool, corev1.ResourceRequirements, error) {
+	out := *cur.DeepCopy()
+	if out.Limits == nil {
+		out.Limits = corev1.ResourceList{}
+	}
+	if out.Requests == nil {
+		out.Requests = corev1.ResourceList{}
+	}
+	fail := func(err error) (string, bool, corev1.ResourceRequirements, error) {
+		return "", false, corev1.ResourceRequirements{}, err
+	}
+	// set parses a present field onto one list entry. An empty value removes the
+	// entry where that is allowed and is refused where it is not.
+	set := func(list corev1.ResourceList, key corev1.ResourceName, v *string, field string, removable bool) error {
+		if v == nil {
+			return nil
+		}
+		if *v == "" {
+			if !removable {
+				return newError(http.StatusBadRequest, "bad_request", "%s cannot be empty", field)
+			}
+			delete(list, key)
+			return nil
+		}
+		q, err := parsePositiveQuantity(*v, field)
+		if err != nil {
+			return err
+		}
+		list[key] = q
+		return nil
+	}
+
+	if err := set(out.Limits, corev1.ResourceMemory, memory, "memory", false); err != nil {
+		return fail(err)
+	}
+	if memory != nil {
+		out.Requests[corev1.ResourceMemory] = out.Limits[corev1.ResourceMemory]
+	}
+	if rr != nil {
+		for _, f := range []struct {
+			list      corev1.ResourceList
+			key       corev1.ResourceName
+			v         *string
+			field     string
+			removable bool
+		}{
+			{out.Limits, corev1.ResourceMemory, rr.Memory, "resources.memory", false},
+			{out.Requests, corev1.ResourceMemory, rr.MemoryRequest, "resources.memoryRequest", false},
+			{out.Limits, corev1.ResourceCPU, rr.CPU, "resources.cpu", true},
+			{out.Requests, corev1.ResourceCPU, rr.CPURequest, "resources.cpuRequest", true},
+		} {
+			if err := set(f.list, f.key, f.v, f.field, f.removable); err != nil {
+				return fail(err)
+			}
+		}
+	}
+	if err := checkResourceBounds(out.Limits, out.Requests); err != nil {
+		return fail(err)
+	}
+
+	// §22 fail-closed: a server that somehow has no ceiling gets none invented
+	// here; the admin has to pick the memory.
+	memLim, ok := out.Limits[corev1.ResourceMemory]
+	if !ok || memLim.IsZero() {
+		return fail(newError(http.StatusBadRequest, "bad_request",
+			"this server has no memory ceiling; set memory in the same patch"))
+	}
+	curLim := cur.Limits[corev1.ResourceMemory]
+	return deriveJavaHeap(memLim), memLim.Cmp(curLim) != 0, out, nil
 }
 
 // deriveJavaHeap converts the pod memory ceiling into a JVM max-heap string
@@ -716,9 +812,10 @@ type patchServerRequest struct {
 	// whatever Minecraft version it carries. Chunks a newer version has upgraded
 	// cannot be read by the older one again, so without it an image change that
 	// would actually move the server is refused (image_change_unconfirmed).
-	ConfirmImageChange bool             `json:"confirmImageChange,omitempty"`
-	Memory             *string          `json:"memory,omitempty"`
-	Resources          *resourceRequest `json:"resources,omitempty"`
+	ConfirmImageChange bool    `json:"confirmImageChange,omitempty"`
+	Memory             *string `json:"memory,omitempty"`
+	// Resources overrides single fields of the pod block; see patchResourceRequest.
+	Resources *patchResourceRequest `json:"resources,omitempty"`
 	// IdleStopSeconds sets idle auto-stop: 0 turns it off, otherwise the server
 	// stops after that many seconds with nobody online (60 to 86400).
 	IdleStopSeconds *int32 `json:"idleStopSeconds,omitempty"`
@@ -777,9 +874,22 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 	changed := []string{}
 	// imageFrom is the image a confirmed image change replaced, for the audit row.
 	var imageFrom string
+	// current reads the server once, for the fields that are checked or merged
+	// against what it has now.
+	var cur *ServerInfo
+	current := func() (*ServerInfo, error) {
+		if cur != nil {
+			return cur, nil
+		}
+		info, err := a.Cluster.GetServer(r.Context(), name)
+		cur = info
+		return info, err
+	}
 
 	if body.DisplayName != nil {
-		patch.DisplayName = body.DisplayName
+		// An empty name is allowed: the panel then shows the server's name.
+		displayName := strings.TrimSpace(*body.DisplayName)
+		patch.DisplayName = &displayName
 		changed = append(changed, "displayName")
 	}
 
@@ -840,7 +950,7 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, err)
 			return
 		}
-		info, err := a.Cluster.GetServer(r.Context(), name)
+		info, err := current()
 		if err != nil {
 			a.writeLookupError(w, r, err)
 			return
@@ -862,33 +972,37 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Memory and the resource overrides move together: resolveResources derives the
-	// JVM heap and the §22 non-zero ceiling from the FINAL memory limit, and the
-	// override block is meaningless without that base. A resources-only patch has no
-	// base ceiling to widen (this endpoint does not read the current spec back), so
-	// it is rejected rather than guessed.
+	// Memory and the resource overrides are laid over the server's current pod
+	// block (mergeResources), so each may come alone and whatever the admin left
+	// out keeps its value. The heap follows the ceiling whenever memory is picked
+	// or the ceiling moves.
 	var (
 		newResources corev1.ResourceRequirements
 		resUpdated   bool
 	)
-	if body.Memory != nil {
-		javaMemory, resources, err := resolveResources(*body.Memory, body.Resources)
+	if body.Memory != nil || body.Resources != nil {
+		info, err := current()
+		if err != nil {
+			a.writeLookupError(w, r, err)
+			return
+		}
+		javaMemory, memMoved, resources, err := mergeResources(info.Resources, body.Memory, body.Resources)
 		if err != nil {
 			writeError(w, r, err)
 			return
 		}
-		patch.JavaMemory = &javaMemory
+		if body.Memory != nil || memMoved {
+			patch.JavaMemory = &javaMemory
+		}
 		patch.Resources = &resources
-		changed = append(changed, "memory")
+		if body.Memory != nil {
+			changed = append(changed, "memory")
+		}
 		if body.Resources != nil {
 			changed = append(changed, "resources")
 		}
 		newResources = resources
 		resUpdated = true
-	} else if body.Resources != nil {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
-			"resources overrides require memory to be set in the same patch"))
-		return
 	}
 
 	// Resource-cache consistency + quota enforcement (spec §9.3 / §22): every

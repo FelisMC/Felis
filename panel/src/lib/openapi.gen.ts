@@ -2339,7 +2339,10 @@ export interface components {
             playersMax: number;
             displayName?: string;
             image?: string;
+            /** @description The JVM heap (-Xmx) derived from the memory limit. */
             javaMemory?: string;
+            /** @description The pod memory limit (the server's memory as an admin picks it), a Kubernetes quantity such as 4Gi. */
+            memory?: string;
             storageSize?: string;
             cpu?: string;
             /**
@@ -7685,15 +7688,18 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
+                    /** @description Trimmed. An empty name clears it, and the server goes by its name again. */
                     displayName?: string;
                     autostartPolicy?: string;
                     /** @description Re-admitted against the whitelist (a pinned name:tag@sha256:… ref is admitted by its name:tag) and pinned like create does. A pin equal to the current image is no change; any other needs confirmImageChange. */
                     image?: string;
                     /** @description Acknowledges that the new image opens the world with its Minecraft version, whose chunk upgrades the old one cannot read. Without it an image that would move the server is refused with 409 image_change_unconfirmed. The audit row records image_from/image_to. */
                     confirmImageChange?: boolean;
+                    /** @description Sets the memory limit and request together, as create does, and re-derives the JVM heap. The CPU limit and request are kept. */
                     memory?: string;
                     /** @description Rejected with 400 storage_immutable — present for a clear error, not mutation. */
                     storage?: string;
+                    /** @description Single fields of the pod block, laid over what the server has: a field left out keeps its value, so each may be sent alone. An empty cpu or cpuRequest removes that limit or request; the memory ceiling cannot be emptied. A request above its limit is a 400. */
                     resources?: {
                         cpu?: string;
                         cpuRequest?: string;

@@ -26,8 +26,11 @@ type ServerInfo struct {
 	DisplayName     string `json:"displayName,omitempty"`
 	Image           string `json:"image,omitempty"`
 	JavaMemory      string `json:"javaMemory,omitempty"`
-	StorageSize     string `json:"storageSize,omitempty"`
-	CPU             string `json:"cpu,omitempty"`
+	// Memory is the pod memory limit (the §22 ceiling) — what an admin picks as
+	// the server's memory. JavaMemory is the heap derived from it.
+	Memory      string `json:"memory,omitempty"`
+	StorageSize string `json:"storageSize,omitempty"`
+	CPU         string `json:"cpu,omitempty"`
 	// IdleStopSeconds is how long the server may sit empty before idle
 	// auto-stop scales it down; 0 means it never idles out.
 	IdleStopSeconds int32 `json:"idleStopSeconds"`
@@ -43,6 +46,9 @@ type ServerInfo struct {
 	// restart backoff and may yet come up on its own.
 	AutoRestarts int32 `json:"autoRestarts,omitempty"`
 	StartGaveUp  bool  `json:"startGaveUp,omitempty"`
+	// Resources is the spec's pod resource block. It stays off the wire; a spec
+	// patch reads it so the fields the admin left out keep their values.
+	Resources corev1.ResourceRequirements `json:"-"`
 }
 
 // CreateServerInput is the validated, structured create-server form (spec §15).
@@ -77,9 +83,10 @@ type ServerSpecPatch struct {
 	DisplayName     *string
 	AutostartPolicy *v1alpha1.AutostartPolicy
 	Image           *string
-	// JavaMemory is the re-derived JVM heap string; Resources carries the matching
-	// pod block whose memory limit is the non-zero §22 ceiling. They move together
-	// (felis-api resolves both from the same form) or both stay nil.
+	// Resources is the whole pod block after the patch — the current spec with the
+	// admin's changes laid over it — whose memory limit is the non-zero §22
+	// ceiling. JavaMemory is the heap re-derived from that ceiling; it is set only
+	// when the memory moved, so a CPU-only patch leaves the heap alone.
 	JavaMemory *string
 	Resources  *corev1.ResourceRequirements
 	// IdleStopSeconds sets idle auto-stop: 0 turns it off, anything else is the

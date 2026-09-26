@@ -59,7 +59,10 @@ export interface ServerStatus {
   playersMax: number;
   displayName?: string;
   image?: string;
+  /** The JVM heap derived from `memory`. */
   javaMemory?: string;
+  /** The pod memory limit — the server's memory as an admin picks it (e.g. "4Gi"). */
+  memory?: string;
   storageSize?: string;
   cpu?: string;
   /** Seconds empty before idle auto-stop; 0 when the server never idles out. */

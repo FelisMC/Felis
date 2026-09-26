@@ -256,7 +256,8 @@ function initialState(): MockState {
         playersOnline: 12,
         playersMax: 20,
         autostartPolicy: "public",
-        javaMemory: "4Gi",
+        memory: "4Gi",
+        javaMemory: "3072M",
         storageSize: "20Gi",
         // Pinned the way felis-api stores it: the tag it was created from plus the
         // digest that tag named then.

@@ -29,10 +29,12 @@ export function ConfirmFooter({
   return (
     <DialogFooter className={className}>
       {children}
-      <Button variant="outline" size="sm" onClick={onCancel} disabled={disabled ?? loading}>
+      {/* Backing out stays open whenever nothing is in flight: a form with nothing to
+          save yet, or a confirm that is not allowed, is still one to cancel. */}
+      <Button variant="outline" size="sm" onClick={onCancel} disabled={loading}>
         {cancelLabel}
       </Button>
-      <Button variant={confirmVariant} size="sm" onClick={onConfirm} disabled={disabled ?? loading}>
+      <Button variant={confirmVariant} size="sm" onClick={onConfirm} disabled={disabled || loading}>
         {loading && <Loader2 className="h-4 w-4 animate-spin" />}
         {confirmLabel}
       </Button>
