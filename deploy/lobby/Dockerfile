@@ -32,7 +32,10 @@
 # build rather than the module's wrapper, which would download the same distribution
 # again on every image build. The build checks every dependency against
 # plugins/paper/gradle/verification-metadata.xml and fails on a mismatch.
-FROM gradle:9.8.0-jdk25@sha256:2b2fc1b1dfc3604a2acc916839f36eb5ee48fd7f232427fc5faca224c73bcb01 AS plugin
+# On the build platform: the jar is plain bytecode, identical for every architecture, so a
+# release building the arm64 image on an amd64 runner compiles it natively instead of under
+# QEMU (deploy/build-release-artifacts.sh). The runtime stage below stays on the target.
+FROM --platform=$BUILDPLATFORM gradle:9.8.0-jdk25@sha256:2b2fc1b1dfc3604a2acc916839f36eb5ee48fd7f232427fc5faca224c73bcb01 AS plugin
 WORKDIR /src
 COPY plugins/paper/ ./plugins/paper/
 COPY plugins/shared/ ./plugins/shared/

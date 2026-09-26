@@ -304,16 +304,19 @@ func TestDockerfileBaseImagesArePinnedByDigest(t *testing.T) {
 	}
 }
 
-// The plugin jars are built in three places the installer controls — the lobby and limbo
-// image builds and bootstrap's Velocity build — and through each module's wrapper by a
-// developer or CI. A tag alone is whatever it points at on build day, and two Gradle
-// versions are two chances for a build to pass in one place and break in the other, so
-// all of them run one image, pinned by digest, whose Gradle is the wrappers' Gradle.
+// The plugin jars are built in four places the installer controls — the lobby and limbo
+// image builds, bootstrap's Velocity build and the release build of the same jar — and
+// through each module's wrapper by a developer or CI. A tag alone is whatever it points
+// at on build day, and two Gradle versions are two chances for a build to pass in one
+// place and break in the other, so all of them run one image, pinned by digest, whose
+// Gradle is the wrappers' Gradle.
 func TestPluginBuildsRunOnePinnedGradle(t *testing.T) {
 	sources := map[string]string{
 		"deploy/lobby/Dockerfile": readGameStackFile(t, "deploy/lobby/Dockerfile"),
 		"deploy/limbo/Dockerfile": readGameStackFile(t, "deploy/limbo/Dockerfile"),
 		"deploy/bootstrap.sh":     BootstrapScript(),
+		// The release build compiles felis-velocity.jar for hosts that install prebuilt.
+		"deploy/build-release-artifacts.sh": readRepoFile(t, "deploy/build-release-artifacts.sh"),
 	}
 	anyRef := regexp.MustCompile(`gradle:[\w.-]+(@sha256:\w+)?`)
 	pinned := regexp.MustCompile(`^gradle:(\d+\.\d+(?:\.\d+)?)-jdk\d+@sha256:[0-9a-f]{64}$`)
@@ -485,6 +488,16 @@ func gameStackLock(t *testing.T) map[string]string {
 		lock[k] = v
 	}
 	return lock
+}
+
+// readRepoFile reads a file of the checkout that the binary does not embed.
+func readRepoFile(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
 
 func readGameStackFile(t *testing.T, name string) string {

@@ -33,7 +33,10 @@
 # must be >= 21 because current LOOHP/Limbo releases ship Java 21 API classes
 # (class-file major 65); a JDK 17 fails to read them with "wrong version 65.0, should be
 # 61.0". build.gradle still targets release 17 bytecode so the plugin loads on Java 17+.
-FROM gradle:9.8.0-jdk25@sha256:2b2fc1b1dfc3604a2acc916839f36eb5ee48fd7f232427fc5faca224c73bcb01 AS plugin
+# On the build platform: the jar is plain bytecode, identical for every architecture, so a
+# release building the arm64 image on an amd64 runner compiles it natively instead of under
+# QEMU (deploy/build-release-artifacts.sh). The runtime stage below stays on the target.
+FROM --platform=$BUILDPLATFORM gradle:9.8.0-jdk25@sha256:2b2fc1b1dfc3604a2acc916839f36eb5ee48fd7f232427fc5faca224c73bcb01 AS plugin
 WORKDIR /src
 # Copy what the limbo module needs: its own tree plus the shared link core it
 # srcDir-includes (../shared/src/main/java → /src/plugins/shared/src/main/java), so

@@ -2,14 +2,15 @@
 #
 # Two things depend on this job. /repos/{repo}/releases/latest must ANSWER — that endpoint is
 # what `felis update` polls (internal/updater/github.go) and what deploy/bootstrap.sh's default
-# "release" channel resolves its ref from. And the binaries below are what that channel then
-# INSTALLS: bootstrap downloads felis-linux-<arch> instead of compiling on the target host, so
-# these are the shipped artifact, not a convenience.
+# "release" channel resolves its ref from. And the assets below are what that channel then
+# INSTALLS: bootstrap downloads the felis binary, the image tars, their listing and the Velocity
+# plugin instead of building anything on the target host, so these are the shipped artifact,
+# not a convenience. A host installing a release needs neither Docker, Gradle, Go nor Docker Hub.
 #
-# The asset NAME is a contract with deploy/bootstrap.sh (download_release_binary builds
-# "felis-linux-${arch}"). It is deliberately a plain literal on both sides: a GitHub Actions
-# YAML and a go:embed'ed shell script have no honest way to share a constant, and the failure
-# mode is benign — bootstrap warns and falls back to a source build of the same tag.
+# deploy/build-release-artifacts.sh builds every asset in one run and documents each name; the
+# names are a contract with deploy/bootstrap.sh. They are plain literals on both sides: a YAML
+# workflow and a go:embed'ed shell script have no honest way to share a constant, and the
+# failure mode is benign — bootstrap warns and falls back to building on the host.
 #
 # The binary is built through the repo Dockerfile rather than a plain `go build`.
 # internal/panel/static holds a tracked PLACEHOLDER index.html so the //go:embed
@@ -18,13 +19,12 @@
 # build first, and is the same recipe bootstrap uses, so there is one way to build felis
 # rather than two that can drift.
 #
-# SHA256SUMS is a contract with bootstrap too: download_release_binary refuses a binary whose
-# hash is not listed there, BEFORE it runs it. A release without the file installs by source
-# build instead.
+# SHA256SUMS is a contract with bootstrap too: it refuses any asset whose hash is not listed
+# there, BEFORE it runs or imports it.
 #
 # The write token never meets the test suite: `gates` (ci.yml) and `build` run the tests,
-# Gradle and the Docker build (each of which executes third-party code) with a read-only
-# token, and `build` hands the binaries over as a workflow artifact; `publish` holds contents:write and runs only
+# Gradle and the Docker builds (each of which executes third-party code) with a read-only
+# token, and `build` hands the assets over as a workflow artifact; `publish` holds contents:write and runs only
 # pinned actions and gh. Every action is pinned to a commit SHA (the tag in the trailing
 # comment is for humans); .github/dependabot.yml proposes the bumps.
 name: release
@@ -52,69 +52,47 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # Both architectures, because bootstrap's default release channel DOWNLOADS these
-      # rather than compiling on the target host — an arm64 host with no asset silently
-      # falls back to a slow source build. Neither stage is emulated: the Dockerfile pins
-      # both build stages to $BUILDPLATFORM and the Go stage cross-compiles via TARGETARCH,
-      # so the second architecture costs about a minute.
+      # rather than building on the target host — an arm64 host with no asset falls back to
+      # a slow on-host build. The felis binary and the plugin jars cross-compile on the
+      # runner (their build stages are pinned to $BUILDPLATFORM); the game images' runtime
+      # stages run apt-get for the target platform, which for arm64 takes QEMU.
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      - name: Build the stamped binaries
-        run: |
-          docker buildx build --platform linux/amd64,linux/arm64 \
-            --build-arg FELIS_VERSION="${GITHUB_REF_NAME}" \
-            --output type=local,dest=out .
-          mv out/linux_amd64/usr/local/bin/felis ./felis-linux-amd64
-          mv out/linux_arm64/usr/local/bin/felis ./felis-linux-arm64
-          chmod +x ./felis-linux-amd64 ./felis-linux-arm64
+      # Two architectures of five images plus BuildKit's cache outgrow the runner's free disk
+      # with its preinstalled SDKs in place; none of them is used here.
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
 
-      # The stamp is the whole point and it fails silently: an unstamped binary reports
-      # "dev", which `felis update` refuses to compare, disabling update reporting for
-      # every install built from it. Assert it end to end instead of trusting the ARG
-      # reached the linker.
-      - name: Verify the version stamp
-        run: |
-          got="$(./felis-linux-amd64 version | head -1)"
-          echo "reported: ${got}"
-          [ "$got" = "felis ${GITHUB_REF_NAME}" ] \
-            || { echo "expected 'felis ${GITHUB_REF_NAME}' — the -X main.version stamp did not reach the binary"; exit 1; }
-          # The arm64 binary is checked by ELF machine type, NOT by running it. Runners have
-          # binfmt/QEMU registered, so `./felis-linux-arm64 version` would happily succeed on
-          # an amd64 binary misnamed arm64 — which is exactly the failure the Dockerfile's
-          # ${TARGETARCH:-$(go env GOARCH)} fallback produces if buildx did not take. Both
-          # binaries come out of one RUN with one -ldflags string, so the stamp is checked once.
-          file ./felis-linux-arm64
-          file ./felis-linux-arm64 | grep -q 'ARM aarch64' \
-            || { echo "felis-linux-arm64 is not an arm64 ELF — TARGETARCH did not reach the go build"; exit 1; }
-
-      - name: Checksum the binaries
-        run: sha256sum felis-linux-amd64 felis-linux-arm64 | tee SHA256SUMS
+      # The script checks what the old inline steps did: the host binary reports exactly
+      # "felis <tag>" (unstamped, `felis update` refuses to compare), and the other one is an
+      # ELF of its architecture, read with file(1) — binfmt would run a misnamed binary happily.
+      - name: Build the release assets
+        run: deploy/build-release-artifacts.sh "${GITHUB_REF_NAME}" dist
 
       # A CycloneDX SBOM per binary: the Go modules (and versions) linked into it, read
       # from the build info the linker embeds.
       - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          file: felis-linux-amd64
+          file: dist/felis-linux-amd64
           format: cyclonedx-json
-          output-file: felis-linux-amd64.cdx.json
+          output-file: sbom/felis-linux-amd64.cdx.json
           upload-artifact: false
           upload-release-assets: false
       - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          file: felis-linux-arm64
+          file: dist/felis-linux-arm64
           format: cyclonedx-json
-          output-file: felis-linux-arm64.cdx.json
+          output-file: sbom/felis-linux-arm64.cdx.json
           upload-artifact: false
           upload-release-assets: false
+      # Outside SHA256SUMS, which lists what bootstrap installs; beside it in the release.
+      - run: mv sbom/*.cdx.json dist/
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: release-assets
-          path: |
-            felis-linux-amd64
-            felis-linux-arm64
-            felis-linux-amd64.cdx.json
-            felis-linux-arm64.cdx.json
-            SHA256SUMS
+          path: dist/
           if-no-files-found: error
           retention-days: 7
 
@@ -134,7 +112,7 @@ jobs:
       - run: sha256sum -c SHA256SUMS
 
       # Signed SLSA provenance: which workflow run, commit and repository produced each
-      # binary. Check one with `gh attestation verify felis-linux-amd64 --repo FelisMC/Felis`.
+      # asset. Check one with `gh attestation verify felis-linux-amd64 --repo FelisMC/Felis`.
       # GitHub only stores attestations for private repositories on Enterprise Cloud, and a
       # failure here would block the release, so a private repository skips the step and
       # relies on SHA256SUMS alone.
@@ -143,8 +121,9 @@ jobs:
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
         with:
           subject-path: |
-            felis-linux-amd64
-            felis-linux-arm64
+            felis-linux-*
+            felis-image-*.tar
+            felis-velocity.jar
 
       # --verify-tag refuses to invent a release for a tag that is not pushed.
       #
@@ -164,7 +143,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          assets="felis-linux-amd64 felis-linux-arm64 felis-linux-amd64.cdx.json felis-linux-arm64.cdx.json SHA256SUMS"
+          # Every file the build handed over: SHA256SUMS names the installable ones, and the
+          # SBOMs ride along.
+          assets="$(ls)"
           flags=""
           case "$GITHUB_REF_NAME" in *-*) flags="--prerelease" ;; esac
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
