@@ -21,7 +21,7 @@ release pins by digest, with its data on the host in `/var/lib/felis/postgres`.
 | OS family | Package manager | Architectures | Status |
 |---|---|---|---|
 | CentOS Stream 9 (firewalld active, SELinux enforcing) | dnf | aarch64 | **[VM-VERIFIED]** fresh install from release assets and its rerun, upgrade from v0.1.0 (moving the database off the host PostgreSQL 13 into felis-postgres), uninstall and reinstall |
-| Ubuntu 24.04 LTS | apt | x86_64 | **[CI]** fresh install and same-commit rerun from the pushed commit's release assets, and upgrade from the newest release onto them; the on-host build weekly |
+| Ubuntu 24.04 LTS | apt | x86_64 | **[CI]** fresh install and same-commit rerun from the pushed commit's release assets; the README's one-line install as a new host runs it (the newest release's own assets); upgrade from the newest release, installed from its assets by its own installer, onto them; the on-host build weekly |
 | RHEL / Rocky / Alma 9, Fedora | dnf | x86_64, aarch64 | [CODE-ONLY] same code path as CentOS Stream |
 | Debian 12, other Ubuntu releases | apt | x86_64, aarch64 | [CODE-ONLY] |
 | openSUSE Leap / Tumbleweed | zypper | x86_64, aarch64 | [CODE-ONLY] |

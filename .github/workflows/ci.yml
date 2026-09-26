@@ -136,6 +136,7 @@ jobs:
 
       - run: sh deploy/bootstrap_test.sh
       - run: sh deploy/uninstall_test.sh
+      - run: bash deploy/e2e_release_test.sh
 
   panel:
     runs-on: ubuntu-latest

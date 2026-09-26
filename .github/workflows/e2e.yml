@@ -6,8 +6,12 @@
 #   install    a full install from those assets, the way a release installs, then the same
 #              assets again (a rerun must converge without restarting what did not change,
 #              importing or uploading an image again, or touching Docker)
-#   upgrade    the newest published release, then this commit's assets on top of it;
-#              skipped until a release exists
+#   readme     the README's one-line install as a new host runs it today: this commit's
+#              installer on its default channel, which installs the newest published
+#              release's binary, images and plugin from that release's assets; skipped until
+#              a release exists
+#   upgrade    the newest published release through its own installer and its own assets,
+#              then this commit's assets on top of it; skipped until a release exists
 #   source     a full install built on the host from this checkout (FELIS_SKIP_FETCH):
 #              the fallback a release without assets, or an unsupported one, takes. It builds
 #              everything with Docker, so it runs by hand and weekly only
@@ -142,6 +146,60 @@ jobs:
           path: '*.log'
           if-no-files-found: ignore
 
+  # The README's command on a fresh host: this commit's installer, as main serves it, on its
+  # default channel with nothing pinned. It resolves the newest release and installs that
+  # release's binary, images and plugin from its assets, each checked against its
+  # SHA256SUMS; the private repo's token is the only thing added. FELIS_INSTALL_MODE picks the
+  # mode the setup console would ask for.
+  readme:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - name: Find the newest release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash deploy/e2e_release.sh find
+
+      - name: Install as the README does
+        if: steps.release.outputs.tag != ''
+        env:
+          TOKEN: ${{ github.token }}
+        run: sudo FELIS_GITHUB_TOKEN="$TOKEN" FELIS_INSTALL_MODE=full bash deploy/bootstrap.sh 2>&1 | tee readme.log
+
+      # The binary is the release's, so the phase is `release`: its database backup and
+      # timers are the release's to have or lack.
+      - name: Check the install
+        if: steps.release.outputs.tag != ''
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          BINARY: ${{ steps.release.outputs.binary }}
+          SUMS: ${{ steps.release.outputs.sums }}
+        run: |
+          sudo bash deploy/e2e_check.sh release
+          sudo /usr/local/bin/felis version | grep -qx "felis ${TAG}"
+          bash deploy/e2e_release.sh check-readme readme.log
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+          sudo -E /usr/local/bin/k3s kubectl get pods -A -o wide || true
+          sudo -E /usr/local/bin/k3s kubectl -n felis logs deploy/felis-postgres --tail=60 || true
+          sudo journalctl -u k3s -u felis-velocity -u docker --no-pager -n 120 || true
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: e2e-readme-logs
+          path: '*.log'
+          if-no-files-found: ignore
+
   upgrade:
     needs: artifacts
     runs-on: ubuntu-24.04
@@ -163,15 +221,13 @@ jobs:
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName 2>/dev/null || true)"
-          if [ -z "$tag" ]; then
-            echo "::notice::no published release yet; the upgrade path has nothing to start from"
-          fi
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+        run: bash deploy/e2e_release.sh find
 
-      # The release's own installer, fetching the release's own binary: what a host that
-      # installed that release is running today.
+      # The release's own installer on its default channel, fetching the release's own
+      # binary: what a host that installed that release is running today. FELIS_REF would
+      # build the tag from source instead, a path no host takes by default. FELIS_RELEASE pins
+      # the tag found above; an installer older than FELIS_RELEASE ignores it and resolves
+      # the newest release, the same tag.
       - name: Install the newest release
         if: steps.release.outputs.tag != ''
         env:
@@ -179,11 +235,16 @@ jobs:
           TOKEN: ${{ github.token }}
         run: |
           git show "${TAG}:deploy/bootstrap.sh" > release-bootstrap.sh
-          sudo FELIS_GITHUB_TOKEN="$TOKEN" FELIS_REF="$TAG" FELIS_INSTALL_MODE=full bash release-bootstrap.sh 2>&1 | tee release.log
+          sudo FELIS_GITHUB_TOKEN="$TOKEN" FELIS_RELEASE="$TAG" FELIS_INSTALL_MODE=full bash release-bootstrap.sh 2>&1 | tee release.log
 
       - name: Check the release install
         if: steps.release.outputs.tag != ''
-        run: sudo bash deploy/e2e_check.sh release
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+          BINARY: ${{ steps.release.outputs.binary }}
+        run: |
+          sudo bash deploy/e2e_check.sh release
+          bash deploy/e2e_release.sh check-own release.log
 
       - name: Upgrade to this commit
         if: steps.release.outputs.tag != ''
