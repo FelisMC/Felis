@@ -411,7 +411,14 @@ export function ServerFiles() {
                             className="cursor-pointer transition-colors hover:bg-muted/30"
                           >
                             <td className="px-4 py-3">
-                              <span className="flex items-center gap-2 min-w-0">
+                              {/* The name is a button so the keyboard and a screen
+                                  reader reach every row; its click bubbles to the
+                                  row, which opens it from anywhere on the row. */}
+                              <button
+                                type="button"
+                                aria-label={t(e.is_dir ? "open_folder" : "open_file", { name: e.name })}
+                                className="flex min-w-0 max-w-full items-center gap-2 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              >
                                 {e.is_dir ? (
                                   <Folder className="h-4 w-4 shrink-0 text-primary" />
                                 ) : (
@@ -421,7 +428,7 @@ export function ServerFiles() {
                                 {opening === joinPath(dir, e.name) && (
                                   <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
                                 )}
-                              </span>
+                              </button>
                             </td>
                             <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
                               {e.is_dir ? "—" : formatBytes(e.size)}

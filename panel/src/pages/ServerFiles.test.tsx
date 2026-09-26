@@ -7,7 +7,13 @@ import i18next from "i18next";
 import { ServerFiles } from "./ServerFiles";
 import { STATUS_POLL_FAST_MS } from "@/lib/hooks";
 
-const mocks = vi.hoisted(() => ({ writeServerFile: vi.fn(), status: vi.fn(), stop: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  writeServerFile: vi.fn(),
+  status: vi.fn(),
+  stop: vi.fn(),
+  listServerFiles: vi.fn(),
+  readServerFile: vi.fn(),
+}));
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -17,13 +23,8 @@ vi.mock("@/lib/api", async (importOriginal) => {
       ...actual.api,
       status: mocks.status,
       stop: mocks.stop,
-      listServerFiles: () =>
-        Promise.resolve({
-          path: "",
-          truncated: false,
-          entries: [{ name: "server.properties", size: 8, is_dir: false, mod_time: "2026-09-01T00:00:00Z" }],
-        }),
-      readServerFile: () => Promise.resolve({ path: "server.properties", content: btoa("motd=hi\n"), sha256: "abc" }),
+      listServerFiles: mocks.listServerFiles,
+      readServerFile: mocks.readServerFile,
       writeServerFile: mocks.writeServerFile,
     },
   };
@@ -53,6 +54,21 @@ const stopped = { name: "lobby", subdomain: "lobby", phase: "Stopped", desiredSt
 
 beforeEach(() => {
   mocks.writeServerFile.mockReset();
+  mocks.listServerFiles.mockReset();
+  mocks.listServerFiles.mockImplementation((_name: string, path: string) =>
+    Promise.resolve({
+      path,
+      truncated: false,
+      entries: [
+        { name: "server.properties", size: 8, is_dir: false, mod_time: "2026-09-01T00:00:00Z" },
+        { name: "world", size: 0, is_dir: true, mod_time: "2026-09-01T00:00:00Z" },
+      ],
+    }),
+  );
+  mocks.readServerFile.mockReset();
+  mocks.readServerFile.mockImplementation((_name: string, path: string) =>
+    Promise.resolve({ path, content: btoa("motd=hi\n"), sha256: "abc" }),
+  );
   mocks.stop.mockReset();
   mocks.status.mockReset();
   mocks.status.mockResolvedValue(stopped);
@@ -178,5 +194,36 @@ describe("ServerFiles on a running server", () => {
     await userEvent.click(screen.getByRole("button", { name: t("servers:stop") }));
 
     expect(mocks.stop).toHaveBeenCalledWith("lobby");
+  });
+});
+
+describe("ServerFiles from the keyboard", () => {
+  it("opens a folder and then a file without a mouse", async () => {
+    renderFiles();
+    const folder = await screen.findByRole("button", { name: i18next.t("files:open_folder", { name: "world" }) });
+    folder.focus();
+    expect(document.activeElement).toBe(folder);
+
+    await userEvent.keyboard(" ");
+    expect(mocks.listServerFiles).toHaveBeenLastCalledWith("lobby", "world");
+
+    const file = await screen.findByRole("button", { name: i18next.t("files:open_file", { name: "server.properties" }) });
+    file.focus();
+    expect(document.activeElement).toBe(file);
+    await userEvent.keyboard("{Enter}");
+
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    // One press reads the file once: the button's click and the row's are one handler.
+    expect(mocks.readServerFile.mock.calls).toEqual([["lobby", "world/server.properties"]]);
+  });
+
+  it("still opens from a click anywhere on the row", async () => {
+    renderFiles();
+    const size = await screen.findByText("8 B");
+
+    await userEvent.click(size);
+
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    expect(mocks.readServerFile.mock.calls).toEqual([["lobby", "server.properties"]]);
   });
 });

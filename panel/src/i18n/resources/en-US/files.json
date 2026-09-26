@@ -4,6 +4,8 @@
   "root": "World root",
   "up": "Up",
   "refresh": "Refresh",
+  "open_folder": "Open folder {{name}}",
+  "open_file": "Open file {{name}}",
   "col_name": "Name",
   "col_size": "Size",
   "col_modified": "Modified",

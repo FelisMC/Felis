@@ -4,6 +4,8 @@
   "root": "世界根目录",
   "up": "上级目录",
   "refresh": "刷新",
+  "open_folder": "打开文件夹 {{name}}",
+  "open_file": "打开文件 {{name}}",
   "col_name": "名称",
   "col_size": "大小",
   "col_modified": "修改时间",
