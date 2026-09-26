@@ -68,6 +68,17 @@ once, then stops with nothing touched **[SH-TESTED]**:
 `FELIS_PREFLIGHT=warn` reports the same problems as warnings and installs anyway, for a
 host the checks misjudge.
 
+A host firewall is opened, never turned off **[SH-TESTED]**. With firewalld active the
+installer adds the panel NodePort, the game port and 6443, and puts k3s's pod and service
+ranges in the trusted zone. With ufw enabled (common on Ubuntu and Debian, and enabled in
+the CI install **[CI]**) it admits `10.42.0.0/16` and `10.43.0.0/16`, the panel NodePort and
+the game port, each rule commented `felis-…`; 6443 stays closed to the network, since pods
+reach the API server from their own range. Felis-nano opens its port to
+`FELIS_NANO_PROXY_CIDR` alone in either. `uninstall.sh` removes these again, the k3s ranges
+only when k3s goes too. Any other firewall in front of the host must admit the same:
+dropped pod traffic shows up as the first rollout timing out ("control-plane rollout did
+not complete").
+
 Two things the host must keep for as long as the install lives:
 
 - **Its address.** The install is bound to the IPv4 address it was made on (the k3s
@@ -266,8 +277,8 @@ Both modes remove the `felis-*` systemd units and `cloudflared-felis.service`, t
 Velocity user, `/opt/felis`, `/usr/local/bin/felis`, the release assets an interrupted
 install left in `/var/lib/felis/artifacts`, the installer's cloudflared binary (unless
 another unit runs it), the `felis_edge` nftables table (and `felis_postgres`, which
-releases before the database moved into k3s loaded) and the firewalld ports the installer
-opened. k3s goes with k3s's own `k3s-uninstall.sh` when the cluster holds nothing but
+releases before the database moved into k3s loaded), the firewalld ports the installer
+opened and its `felis-`-commented ufw rules. k3s goes with k3s's own `k3s-uninstall.sh` when the cluster holds nothing but
 Felis's namespaces; when it runs anything else only `felis`, `minecraft`, `felis-build`
 and the MinecraftServer CRD are deleted.
 `--keep-k3s` and `--remove-k3s` override that choice.

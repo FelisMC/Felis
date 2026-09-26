@@ -3,9 +3,10 @@
 #
 #   artifacts  this commit's release assets, built by deploy/build-release-artifacts.sh the
 #              way release.yml builds a tag's (amd64 only, the runners' architecture)
-#   install    a full install from those assets, the way a release installs, then the same
-#              assets again (a rerun must converge without restarting what did not change,
-#              importing or uploading an image again, or touching Docker)
+#   install    a full install from those assets, the way a release installs, on a host with
+#              ufw enabled, then the same assets again (a rerun must converge without
+#              restarting what did not change, importing or uploading an image again, or
+#              touching Docker)
 #   readme     the README's one-line install as a new host runs it today: this commit's
 #              installer on its default channel, which installs the newest published
 #              release's binary, images and plugin from that release's assets; skipped until
@@ -98,12 +99,21 @@ jobs:
       # whether bootstrap reached for it. From FELIS_ARTIFACT_DIR every image and the plugin
       # come out of the assets, so it must not have. (`! grep` is spelled `if grep ... exit 1`
       # below because bash -e ignores a failing `!` command.)
+      # ufw, enabled on many Ubuntu hosts, drops every inbound packet no rule admits, the
+      # pods' traffic to the API server among them; the runner ships it disabled. The
+      # runner's own traffic is outbound, which ufw lets through.
+      - name: Enable ufw
+        run: sudo ufw --force enable
+
       - name: Install
         run: sudo FELIS_ARTIFACT_DIR="$GITHUB_WORKSPACE/dist" FELIS_INSTALL_MODE=full bash deploy/bootstrap.sh 2>&1 | tee install.log
 
       - name: Check the install
         run: |
           sudo bash deploy/e2e_check.sh install
+          for tag in felis-k3s-pods felis-k3s-services felis-panel felis-proxy; do
+            sudo ufw status | grep -qE "# ${tag} *$"
+          done
           if grep -E 'docker already installed|installing docker|docker running' install.log; then exit 1; fi
           for role in felis limbo lobby paper; do
             grep -q "felis/${role}:[^ ]* is the release's" install.log

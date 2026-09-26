@@ -114,6 +114,14 @@ run_uninstall() {
           esac ;;
       esac
     }
+    # UFW_STATUS: what `ufw status numbered` answers; ufw translates it outside the C locale.
+    ufw() {
+      case "$*" in
+        "status numbered")
+          if [ "${LC_ALL:-}" = C ]; then printf "%s\n" "${UFW_STATUS:-Status: inactive}"; else echo "状态：激活"; fi ;;
+        *) echo "UFW $*" >> "$calls" ;;
+      esac
+    }
     docker() { echo "DOCKER $*" >> "$calls"; }
     userdel() { echo "USERDEL $*" >> "$calls"; }
     uname() { echo testhost; }
@@ -312,6 +320,57 @@ units="$(awk '/^FELIS_UNITS=\(/ { f = 1; next } f && /^\)/ { f = 0 } f' "$US")"
 for u in $(sed -n 's|^[A-Z_]*="/etc/systemd/system/\([^"]*\)"$|\1|p' "$(dirname "$US")/bootstrap.sh"); do
   expect "the uninstaller removes $u" " $u" " $(printf '%s' "$units" | tr '\n' ' ')"
 done
+
+# --- ufw: the rules bootstrap added, by the comments bootstrap gives them ------------------
+# The listing is what `ufw status numbered` prints once bootstrap has run: a rule of the
+# operator's own first (commented, as an operator may), then each felis- rule bootstrap.sh can
+# add and its IPv6 twin.
+tags="$(grep -o 'comment felis-[a-z0-9-]*' "$(dirname "$US")/bootstrap.sh" | awk '{ print $2 }' | sort -u)"
+case " $(printf '%s ' $tags)" in
+  *" felis-k3s-pods "*" felis-proxy "*) echo "PASS bootstrap tags its ufw rules" ;;
+  *) echo "FAIL bootstrap.sh adds no felis-k3s-pods and felis-proxy ufw rules: <$tags>"; fails=$((fails + 1)) ;;
+esac
+listing="Status: active
+
+     To                         Action      From
+     --                         ------      ----
+[ 1] 22/tcp                     ALLOW IN    Anywhere                    # ssh"
+n=1
+for twin in "" " (v6)"; do
+  for t in $tags; do
+    n=$((n + 1))
+    listing="${listing}
+$(printf '[%2d] Rule%-22s ALLOW IN    Anywhere%-19s # %s' "$n" "$twin" "$twin" "$t")"
+  done
+done
+listing="${listing}
+$(printf '[%2d] 22/tcp (v6)                ALLOW IN    Anywhere (v6)' "$((n + 1))")"
+# numbers <listing> <regex>: the rule numbers whose line matches, highest first.
+numbers() { printf '%s\n' "$1" | grep -E "$2" | sed 's/^\[ *\([0-9]*\)\].*/\1/' | sort -rn | paste -sd ' ' -; }
+deletes() { grep '^UFW --force delete' "$root/calls" | awk '{ print $4 }' | paste -sd ' ' -; }
+
+fresh_host
+out="$(UFW_STATUS="$listing" run_uninstall "default felis minecraft" --yes)"
+want="$(numbers "$listing" '# felis-')"
+[ -n "$want" ] && [ "$(deletes)" = "$want" ] \
+  && echo "PASS a Felis-only cluster's uninstall deletes every felis- ufw rule, highest first" \
+  || { echo "FAIL a Felis-only cluster: deleted <$(deletes)>, want <$want>"; fails=$((fails + 1)); }
+case " $(deletes) " in
+  *" 1 "* | *" $((n + 1)) "*) echo "FAIL the operator's own ufw rules were deleted: $(deletes)"; fails=$((fails + 1)) ;;
+  *) echo "PASS the operator's own ufw rules stay" ;;
+esac
+expect "  and says so" "ufw rules removed" "$out"
+
+fresh_host
+UFW_STATUS="$listing" run_uninstall "default kube-system felis minecraft felis-build shop" --yes >/dev/null
+[ "$(deletes)" = "$(numbers "$listing" '# felis-' | tr ' ' '\n' | grep -vxE "$(numbers "$listing" '# felis-k3s-' | tr ' ' '|')" | paste -sd ' ' -)" ] \
+  && echo "PASS a k3s that stays keeps its pod and service ranges in ufw" \
+  || { echo "FAIL a kept k3s: deleted <$(deletes)>, listing:"; echo "$listing"; fails=$((fails + 1)); }
+
+fresh_host
+UFW_STATUS="Status: inactive" run_uninstall "default felis minecraft" --yes >/dev/null
+[ -z "$(deletes)" ] && echo "PASS an inactive ufw is left alone" \
+  || { echo "FAIL an inactive ufw: deleted <$(deletes)>"; fails=$((fails + 1)); }
 
 # The database's cluster and the move's marker are where bootstrap put them, or keep-data
 # and purge act on a directory that is not there.

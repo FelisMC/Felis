@@ -1786,10 +1786,31 @@ stop_docker() {
 # 4. k3s — single node, trimmed for RAM. NetworkPolicy stays ENABLED on purpose:
 #    Felis's minecraft fence (default-deny + allow-rcon/allow-game) is a core
 #    security claim, so we must NOT pass --disable-network-policy.
-#    On SUSE-family hosts firewalld ships active by default; open the required
-#    rules rather than disabling the firewall.
+#    On SUSE-family hosts firewalld ships active by default, and Ubuntu and Debian
+#    hosts often enable ufw; open the required rules rather than disabling either.
 # ---------------------------------------------------------------------------
+
+# ufw_active reports whether ufw is enabled. Enabled, it drops every inbound packet no rule
+# admits, the pods' traffic to the API server among them, so an install that left it alone
+# waited out its first rollout and died with "did not complete". ufw translates its status
+# line, hence the C locale.
+ufw_active() {
+  command -v ufw >/dev/null 2>&1 || return 1
+  [ "$(LC_ALL=C ufw status 2>/dev/null | head -n 1)" = "Status: active" ]
+}
+
+# configure_k3s_firewall opens what k3s needs. For ufw that is what k3s's documentation asks:
+# the pod and service ranges, plus the panel's NodePort as firewalld gets it. The API
+# server's 6443 stays closed to the network, since pods reach it from POD_CIDR. Each ufw rule
+# carries a felis- comment, which is how deploy/uninstall.sh finds it again; `ufw allow`
+# skips a rule it already has, so a rerun adds nothing.
 configure_k3s_firewall() {
+  if ufw_active; then
+    log "configuring ufw for k3s"
+    ufw allow from "$POD_CIDR" comment felis-k3s-pods >/dev/null
+    ufw allow from "$SERVICE_CIDR" comment felis-k3s-services >/dev/null
+    ufw allow "${FELIS_PANEL_NODEPORT}/tcp" comment felis-panel >/dev/null
+  fi
   command -v firewall-cmd >/dev/null 2>&1 || return 0
   systemctl is-active --quiet firewalld || return 0
 
@@ -3773,6 +3794,10 @@ velocity_fingerprint() {
 }
 
 configure_velocity_firewall() {
+  if ufw_active; then
+    log "opening ufw port ${FELIS_GAME_PORT}/tcp for the Minecraft proxy"
+    ufw allow "${FELIS_GAME_PORT}/tcp" comment felis-proxy >/dev/null
+  fi
   command -v firewall-cmd >/dev/null 2>&1 || return 0
   systemctl is-active --quiet firewalld || return 0
   log "opening firewalld port ${FELIS_GAME_PORT}/tcp for the Minecraft proxy"
@@ -5483,9 +5508,17 @@ configure_nano_firewall() {
     ok "nano listens on ${FELIS_NANO_LISTEN} (loopback); no firewall port opened"
     return 0
   fi
+  local port="${FELIS_NANO_LISTEN##*:}" family=ipv4
+  if ufw_active; then
+    if [ -n "$FELIS_NANO_PROXY_CIDR" ]; then
+      log "opening ufw port ${port}/tcp to ${FELIS_NANO_PROXY_CIDR} only"
+      ufw allow proto tcp from "$FELIS_NANO_PROXY_CIDR" to any port "$port" comment felis-nano >/dev/null
+    else
+      warn "no FELIS_NANO_PROXY_CIDR, so ufw keeps ${port}/tcp closed; the summary shows how to admit your proxy"
+    fi
+  fi
   command -v firewall-cmd >/dev/null 2>&1 || return 0
   systemctl is-active --quiet firewalld || return 0
-  local port="${FELIS_NANO_LISTEN##*:}" family=ipv4
   # hasJoined takes no token, so the port is opened to the proxy alone. Earlier installers
   # opened it to every source, and a re-run must not leave that behind. A rule for a previous
   # FELIS_NANO_PROXY_CIDR is not tracked; it stays until removed by hand.
@@ -5560,16 +5593,17 @@ summary_nano() {
     log "Proxy on another machine? Re-run with the address on the sudo line (sudo drops"
     log "exported variables):"
     log "    curl -fsSL <raw-url>/deploy/bootstrap.sh | sudo FELIS_NANO_LISTEN=<private-ip>:${port} FELIS_NANO_PROXY_CIDR=<proxy-ip>/32 bash"
-    log "firewalld then admits ${port}/tcp ONLY from that proxy — hasJoined takes no auth token,"
+    log "firewalld or ufw then admits ${port}/tcp ONLY from that proxy — hasJoined takes no auth token,"
     log "so an internet-facing one is a free auth relay burning your Mojang egress IP."
   elif [ -n "$FELIS_NANO_PROXY_CIDR" ]; then
-    log "Bound to ${FELIS_NANO_LISTEN}. firewalld, where it runs, admits ${port}/tcp only from"
+    log "Bound to ${FELIS_NANO_LISTEN}. firewalld or ufw, where it runs, admits ${port}/tcp only from"
     log "${FELIS_NANO_PROXY_CIDR}; any other firewall in front of this host must do the same."
   else
     log "WARNING: bound to ${FELIS_NANO_LISTEN} with no FELIS_NANO_PROXY_CIDR. hasJoined takes no auth"
     log "token, so admit ${port}/tcp from your proxy alone, or anyone can relay their logins"
-    log "through you. firewalld, where it runs, keeps the port closed until you add:"
+    log "through you. firewalld or ufw, where it runs, keeps the port closed until you add one of:"
     log "    firewall-cmd --permanent --add-rich-rule='rule family=\"ipv4\" source address=\"<proxy-ip>/32\" port port=\"${port}\" protocol=\"tcp\" accept' && firewall-cmd --reload"
+    log "    ufw allow proto tcp from <proxy-ip>/32 to any port ${port} comment felis-nano"
   fi
   log "Then edit ${STATE_DIR}/felis.toml to add your [[auth_source]] roots and run:"
   log "    sudo systemctl restart felis-nano"

@@ -585,8 +585,24 @@ fblock="$(awk '/^configure_nano_firewall\(\) \{/,/^}/' "$BS")"
 [ "$(printf '%s\n' "$fblock" | wc -l)" -lt 40 ] \
   || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
 
-run_fw() { # listen proxy-cidr port-already-open(0|1)
-  FELIS_NANO_LISTEN="$1" FELIS_NANO_PROXY_CIDR="$2" OPEN="$3" bash -c '
+# ufw_stub is ufw for a run: UFW=active or inactive, its status line translated outside the
+# C locale as ufw translates it; every other call is printed to stderr, which the installer
+# leaves alone when it silences ufw's "Rule added".
+ufw_stub='
+    ufw() {
+      case "$*" in
+        status)
+          if [ "${UFW:-inactive}" != active ]; then echo "Status: inactive"
+          elif [ "${LC_ALL:-}" = C ]; then echo "Status: active"
+          else echo "状态：激活"; fi ;;
+        *) printf "UFW: %s\n" "$*" >&2 ;;
+      esac
+    }'
+ublock="$(awk '/^ufw_active\(\) \{/,/^}/' "$BS")"
+[ -n "$ublock" ] || { echo "FAIL: no ufw_active found in $BS"; exit 1; }
+
+run_fw() { # listen proxy-cidr port-already-open(0|1) [ufw-state]
+  FELIS_NANO_LISTEN="$1" FELIS_NANO_PROXY_CIDR="$2" OPEN="$3" UFW="${4:-inactive}" bash -c '
     ok() { printf "OK: %s\n" "$*"; }
     log() { printf "LOG: %s\n" "$*"; }
     warn() { printf "WARN: %s\n" "$*"; }
@@ -595,6 +611,8 @@ run_fw() { # listen proxy-cidr port-already-open(0|1)
       case "$*" in *--query-port=*) [ "$OPEN" = 1 ]; return ;; esac
       printf "FW: %s\n" "$*"
     }
+    '"$ufw_stub"'
+    '"$ublock"'
     '"$kblock"'
     '"$fblock"'
     configure_nano_firewall' 2>&1
@@ -626,6 +644,61 @@ case "$(run_fw 127.0.0.1:8081 10.0.0.7/32 1)" in
   *FW:*) echo "FAIL a loopback bind must leave firewalld alone"; fails=$((fails + 1)) ;;
   *) echo "PASS a loopback bind leaves firewalld alone" ;;
 esac
+
+# ufw, enabled on many Ubuntu and Debian hosts, drops what no rule admits.
+out="$(run_fw 0.0.0.0:8081 10.0.0.7/32 0 active)"
+expect "ufw admits the nano port from the proxy CIDR alone" \
+  "UFW: allow proto tcp from 10.0.0.7/32 to any port 8081 comment felis-nano" "$out"
+out="$(run_fw 0.0.0.0:8081 '' 0 active)"
+expect "no proxy CIDR says ufw keeps the port closed" "WARN: no FELIS_NANO_PROXY_CIDR, so ufw keeps 8081/tcp closed" "$out"
+case "$out" in
+  *"UFW: allow"*) echo "FAIL no proxy CIDR must add no ufw rule:"; echo "$out"; fails=$((fails + 1)) ;;
+  *) echo "PASS no proxy CIDR adds no ufw rule" ;;
+esac
+for args in "127.0.0.1:8081 10.0.0.7/32 0 active" "0.0.0.0:8081 10.0.0.7/32 0 inactive"; do
+  # shellcheck disable=SC2086 # the words are the arguments
+  case "$(run_fw $args)" in
+    *UFW:*) echo "FAIL run_fw $args must leave ufw alone"; fails=$((fails + 1)) ;;
+    *) echo "PASS run_fw $args leaves ufw alone" ;;
+  esac
+done
+
+k3fblock="$(awk '/^configure_k3s_firewall\(\) \{/,/^}/' "$BS")"
+[ -n "$k3fblock" ] || { echo "FAIL: no configure_k3s_firewall found in $BS"; exit 1; }
+vfblock="$(awk '/^configure_velocity_firewall\(\) \{/,/^}/' "$BS")"
+[ -n "$vfblock" ] || { echo "FAIL: no configure_velocity_firewall found in $BS"; exit 1; }
+run_host_fw() { # ufw-state firewalld(0|1)
+  UFW="$1" FIREWALLD="$2" POD_CIDR=10.42.0.0/16 SERVICE_CIDR=10.43.0.0/16 FELIS_PANEL_NODEPORT=30443 \
+  FELIS_GAME_PORT=25565 bash -c '
+    log() { printf "LOG: %s\n" "$*"; }
+    systemctl() { [ "$FIREWALLD" = 1 ]; }
+    firewall-cmd() { printf "FW: %s\n" "$*"; }
+    '"$ufw_stub"'
+    '"$ublock"'
+    '"$k3fblock"'
+    '"$vfblock"'
+    configure_k3s_firewall
+    configure_velocity_firewall' 2>&1
+}
+out="$(run_host_fw active 0)"
+expect "ufw admits the pods" "UFW: allow from 10.42.0.0/16 comment felis-k3s-pods" "$out"
+expect "ufw admits the services" "UFW: allow from 10.43.0.0/16 comment felis-k3s-services" "$out"
+expect "ufw opens the panel NodePort" "UFW: allow 30443/tcp comment felis-panel" "$out"
+expect "ufw opens the game port" "UFW: allow 25565/tcp comment felis-proxy" "$out"
+case "$out" in
+  *"UFW: allow 6443"*) echo "FAIL ufw must not open the API server to the network:"; echo "$out"; fails=$((fails + 1)) ;;
+  *) echo "PASS ufw keeps the API server closed to the network" ;;
+esac
+case "$out" in
+  *FW:*--add*) echo "FAIL an inactive firewalld must be left alone:"; echo "$out"; fails=$((fails + 1)) ;;
+  *) echo "PASS ufw alone leaves firewalld alone" ;;
+esac
+out="$(run_host_fw inactive 1)"
+case "$out" in
+  *UFW:*) echo "FAIL an inactive ufw must be left alone:"; echo "$out"; fails=$((fails + 1)) ;;
+  *) echo "PASS an inactive ufw is left alone" ;;
+esac
+expect "  while firewalld still gets the pods" "FW: --permanent --zone=trusted --add-source=10.42.0.0/16" "$out"
 
 expect "a routable bind with no proxy CIDR is warned about" "WARNING: bound to 10.0.0.5:8081 with no FELIS_NANO_PROXY_CIDR" \
   "$(run_summary 10.0.0.5:8081)"

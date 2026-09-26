@@ -133,7 +133,7 @@ confirm() {
 print_plan() {
   log "this will remove from $(uname -n):"
   log "  the felis-* systemd units, cloudflared-felis.service, the ${VELOCITY_USER} user,"
-  log "  ${OPT_DIR}, ${HOST_BIN}, the felis_postgres and felis_edge nftables tables and the firewalld openings"
+  log "  ${OPT_DIR}, ${HOST_BIN}, the felis_postgres and felis_edge nftables tables and the firewalld and ufw openings"
   case "$K3S_MODE" in
     remove) log "  k3s, with everything in it (${K3S_BIN_DIR}/k3s-uninstall.sh)" ;;
     keep) log "  Felis's namespaces (${FELIS_NAMESPACES[*]}) and the ${FELIS_CRD} CRD; k3s stays" ;;
@@ -242,6 +242,35 @@ remove_firewalld_rules() { # game-port nano-port
     firewall-cmd --reload >/dev/null
     ok "firewalld openings removed"
   fi
+}
+
+# remove_ufw_rules takes back the ufw rules the installer added, found by their felis-
+# comments (configure_k3s_firewall and its neighbours in bootstrap.sh). The k3s ranges stay
+# when k3s does, and go with it or when it is already gone. ufw lists a rule's IPv6 twin
+# under its own number, and each delete renumbers the rules after it, so they go from the
+# highest number down.
+remove_ufw_rules() {
+  command -v ufw >/dev/null 2>&1 || return 0
+  local status nums n keep_k3s=1
+  status="$(LC_ALL=C ufw status numbered 2>/dev/null)" || return 0
+  [ "$(printf '%s\n' "$status" | head -n 1)" = "Status: active" ] || return 0
+  [ "$K3S_MODE" = keep ] || keep_k3s=""
+  nums="$(printf '%s\n' "$status" | awk -v keep_k3s="$keep_k3s" '
+    match($0, /# felis-[a-z0-9-]+ *$/) {
+      tag = substr($0, RSTART + 2)
+      sub(/ +$/, "", tag)
+      if (keep_k3s != "" && tag ~ /^felis-k3s-/) next
+      if (match($0, /^\[ *[0-9]+\]/)) {
+        n = substr($0, RSTART + 1, RLENGTH - 2)
+        gsub(/ /, "", n)
+        print n
+      }
+    }' | sort -rn)"
+  [ -n "$nums" ] || return 0
+  for n in $nums; do
+    ufw --force delete "$n" >/dev/null
+  done
+  ok "ufw rules removed"
 }
 
 # retain_volumes_in_cluster keeps every volume Felis's claims are bound to when the
@@ -496,6 +525,7 @@ main() {
   esac
   remove_nft_tables
   remove_firewalld_rules "$game" "$nano"
+  remove_ufw_rules
   remove_host_files
   purge_database
   purge_images
