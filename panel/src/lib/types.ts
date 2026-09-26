@@ -65,6 +65,11 @@ export interface ServerStatus {
   /** True when the CR is labelled forwarding=legacy: the proxy forwards this
    *  server's players BungeeCord-style (a 1.8 backend behind ViaVersion). */
   legacyForwarding?: boolean;
+  /** How often the operator recreated the pod of this start after it timed out. */
+  autoRestarts?: number;
+  /** True for a Failed server no automatic retry will bring up; a Failed server
+   *  without it is still in its restart backoff. */
+  startGaveUp?: boolean;
 }
 
 /** WhitelistResult projects GET /servers/{name}/access/whitelist (spec §7 access).

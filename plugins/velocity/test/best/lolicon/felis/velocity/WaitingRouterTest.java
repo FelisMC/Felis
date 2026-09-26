@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * WaitingRouterTest drives the real WaitingRouter, ServerRegistry, FelisApiClient and
@@ -70,6 +71,7 @@ public final class WaitingRouterTest {
             loginGate();
             wakeRefusals();
             queue();
+            longStart();
             menuAndCommands();
             joins();
             disconnectAndRelease();
@@ -91,6 +93,10 @@ public final class WaitingRouterTest {
                 view("delta", false, "10.43.0.6:25565"),
                 view("epsilon", false, "10.43.0.7:25565"),
                 view("zeta", false, "10.43.0.8:25565"),
+                view("eta", false, "10.43.0.21:25565"),
+                view("theta", false, "10.43.0.22:25565"),
+                view("iota", false, "10.43.0.23:25565"),
+                view("kappa", false, "10.43.0.24:25565"),
                 view("fresh", false, null)));
         if (withGone) {
             list.add(view("gone", false, "10.43.0.9:25565"));
@@ -322,6 +328,102 @@ public final class WaitingRouterTest {
         router.tick();
         assertEq("registered: moved", List.of("fresh"), List.copyOf(early.connects));
         assertEq("registered: queue empty", 0, router.waitingCount());
+    }
+
+    // A modpack's cold start outlasts any fixed wait: the operator gives a start 300 s,
+    // then recreates the pod up to three times with a 1, 2, 4 min backoff. The waiter
+    // follows the server's own progress instead of a clock, and hears how it is going.
+    private static void longStart() {
+        assertEq("long start: queue empty to begin with", 0, router.waitingCount());
+        AtomicLong now = new AtomicLong(1_000_000_000L);
+        router.setClock(now::get);
+        try {
+            // Starting, then Failed inside the backoff, a recreated pod, and up at 25 min.
+            Fakes.FakePlayer slow = player("eta.mc.test", true);
+            choose(slow);
+            release(slow);
+            api.phase.put("eta", "Starting");
+            advance(now, 60, 30);
+            assertEq("slow start: told how it is going", true, slow.said("« eta » is still starting (1 min so far)"));
+            api.phase.put("eta", "Failed"); // the 300 s budget ran out; backoff until 6 min
+            advance(now, 6 * 60, 30);
+            assertEq("in the backoff: still waiting well past two minutes", 1, router.waitingCount());
+            api.phase.put("eta", "Starting");
+            api.restarts.put("eta", 1);
+            advance(now, 30, 30);
+            assertEq("recreated pod: told", true, slow.said("« eta » timed out starting; retrying automatically (attempt 1)"));
+            advance(now, 18 * 60, 30);
+            assertEq("25 minutes in: still waiting", 1, router.waitingCount());
+            assertEq("25 minutes in: never given up on", false, slow.said("taking longer than expected"));
+            int notices = count(slow.messages, "is still starting");
+            assertEq("about one progress line a minute, not one a poll", true, notices >= 20 && notices <= 25);
+            api.ready.put("eta", true);
+            router.tick();
+            assertEq("up at last: moved in", List.of("eta"), List.copyOf(slow.connects));
+            assertEq("up at last: queue empty", 0, router.waitingCount());
+
+            // The retries are spent: nothing is coming, and the player hears why.
+            Fakes.FakePlayer spent = player("theta.mc.test", true);
+            choose(spent);
+            release(spent);
+            api.phase.put("theta", "Failed");
+            api.restarts.put("theta", 3);
+            api.gaveUp.add("theta");
+            advance(now, 2, 2);
+            assertEq("given up: dropped", 0, router.waitingCount());
+            assertEq("given up: told", true, spent.said("« theta » failed to start and its automatic retries are spent"));
+            assertEq("given up: not moved", 0, spent.connects.size());
+
+            // Somebody stops the server. One poll can still show the desired state from
+            // before the wake (the api reads an informer cache); two in a row are a stop.
+            Fakes.FakePlayer stopped = player("iota.mc.test", true);
+            choose(stopped);
+            release(stopped);
+            api.desired.put("iota", "Stopped");
+            advance(now, 2, 2);
+            assertEq("one stopped poll: still waiting", 1, router.waitingCount());
+            api.desired.put("iota", "Running");
+            advance(now, 2, 2);
+            api.desired.put("iota", "Stopped");
+            advance(now, 2, 2);
+            assertEq("a lag blip does not count toward the stop", 1, router.waitingCount());
+            advance(now, 2, 2);
+            assertEq("stopped: dropped", 0, router.waitingCount());
+            assertEq("stopped: told", true, stopped.said("« iota » was stopped, so you're no longer waiting for it"));
+
+            // felis-api stops answering: the waiter rides it out for the wait window only.
+            Fakes.FakePlayer blind = player("kappa.mc.test", true);
+            choose(blind);
+            release(blind);
+            api.statusDown = true;
+            advance(now, 110, 10);
+            assertEq("api down: still waiting inside the window", 1, router.waitingCount());
+            advance(now, 20, 10);
+            assertEq("api down: dropped after the window", 0, router.waitingCount());
+            assertEq("api down: told", true, blind.said("« kappa » is taking longer than expected"));
+            api.statusDown = false;
+
+            // A status that never moves (an operator that is down) ends at the backstop.
+            Fakes.FakePlayer stuck = player("kappa.mc.test", true);
+            choose(stuck);
+            release(stuck);
+            api.phase.put("kappa", "Starting");
+            advance(now, 59 * 60, 60);
+            assertEq("stuck: still waiting before the hour", 1, router.waitingCount());
+            advance(now, 2 * 60, 60);
+            assertEq("stuck: dropped at the backstop", 0, router.waitingCount());
+            assertEq("stuck: told", true, stuck.said("« kappa » is taking longer than expected"));
+        } finally {
+            router.setClock(System::currentTimeMillis);
+        }
+    }
+
+    // advance moves the waiting queue's clock on by seconds, draining every step.
+    private static void advance(AtomicLong now, int seconds, int step) {
+        for (int s = 0; s < seconds; s += step) {
+            now.addAndGet(step * 1000L);
+            router.tick();
+        }
     }
 
     private static void menuAndCommands() {

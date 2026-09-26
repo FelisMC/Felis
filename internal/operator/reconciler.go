@@ -58,7 +58,7 @@ const (
 	// maxAutoRestarts bounds how often a timed-out start is retried by
 	// recreating its pod; autoRestartBaseBackoff is the first wait, doubling
 	// per attempt.
-	maxAutoRestarts            = 3
+	maxAutoRestarts            = v1alpha1.MaxAutoRestarts
 	autoRestartBaseBackoff     = time.Minute
 	defaultReadinessTimeoutSec = 300
 )
@@ -300,7 +300,7 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 	if current.Status.ReadyReplicas < 1 {
 		r.markStarting(server, "PodNotReady", "waiting for pod TCP readiness")
 		if r.startupTimedOut(server) {
-			r.markFailed(server, "StartupTimeout", "pod did not become ready within startup timeout")
+			r.markFailed(server, v1alpha1.ReasonStartupTimeout, "pod did not become ready within startup timeout")
 			if err := r.recoverFailedStart(ctx, server, startupTimeout(server)); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -339,7 +339,7 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 			}
 			r.markStarting(server, "RconNotReachable", err.Error())
 			if r.readinessTimedOut(server) {
-				r.markFailed(server, "ReadinessTimeout", "RCON probe did not succeed within readiness timeout")
+				r.markFailed(server, v1alpha1.ReasonReadinessTimeout, "RCON probe did not succeed within readiness timeout")
 				if err := r.recoverFailedStart(ctx, server, readinessTimeout(server)); err != nil {
 					return ctrl.Result{}, err
 				}

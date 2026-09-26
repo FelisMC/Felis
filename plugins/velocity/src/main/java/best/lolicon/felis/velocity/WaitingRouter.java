@@ -27,6 +27,7 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.LongSupplier;
 
 /**
  * WaitingRouter implements the §11 domain-autostart routing loop and its waiting
@@ -42,8 +43,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>The queue is drained by {@link #tick()}, scheduled by the plugin on the async
  * pool. Each tick polls felis-api once per distinct waited-on server and, when one
- * reports ready, transfers everyone waiting on it. A waiter drops out when it times
- * out, when the player leaves the proxy, or on a successful transfer.
+ * reports ready, transfers everyone waiting on it. A waiter stays as long as its
+ * server is on the way up, through the operator's restart backoff, and drops out on a
+ * successful transfer, when the player leaves the proxy, when the start is given up or
+ * the server stopped, or when felis-api stops answering for the wait window.
  *
  * <p>Every transition out of login is checked against felis-api's link status, and
  * command/menu queue entries are checked the same way. The wake is then gated
@@ -58,7 +61,19 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * outage on a recent positive answer for the same UUID and otherwise fails closed.
  */
 public final class WaitingRouter {
+    // A waiter stays while its server is on the way up — starting, or Failed inside the
+    // operator's restart backoff — and every poll that says so renews this window. It
+    // runs out only when felis-api stops answering or the server stops heading for
+    // Running. A modpack's cold start (a 300 s budget, then up to three recreated pods
+    // with a 1, 2, 4 min backoff) outlasts any fixed wait, and a waiter dropped early
+    // was never moved in when the server did come up.
     private static final long WAIT_TIMEOUT_MILLIS = 120_000L;
+    // The backstop for a start whose status never moves (an operator that is down):
+    // twice the default budget, 4 × 300 s plus 7 min of backoff.
+    private static final long MAX_WAIT_MILLIS = 60 * 60_000L;
+    // A long wait tells the player how it is going this often, so it is not silence.
+    private static final long PROGRESS_NOTICE_MILLIS = 60_000L;
+    private static final String DESIRED_STOPPED = "Stopped";
     // How long a positive link answer can stand in for felis-api while it is down.
     private static final long LINK_GRACE_MILLIS = 10 * 60_000L;
     // The login gate re-sends its release with backoff (and during a felis-api outage
@@ -86,6 +101,8 @@ public final class WaitingRouter {
     // felis:control face can tell the player's GUI the backend is ready. Null until
     // the ControlChannel is wired in at proxy init; set once, read on the tick pool.
     private volatile MenuTransferListener menuListener;
+    // The waiting queue's clock; tests move it to walk a long start.
+    private volatile LongSupplier clock = System::currentTimeMillis;
 
     WaitingRouter(ProxyServer proxy, Logger log, FelisApiClient api, ServerRegistry registry,
                   FelisVelocityPlugin plugin, String loginServer, String lobbyServer) {
@@ -97,6 +114,10 @@ public final class WaitingRouter {
         this.loginServer = loginServer;
         this.lobbyServer = lobbyServer;
         this.links = new LinkGate(api::linkStatus, LINK_GRACE_MILLIS, System::currentTimeMillis);
+    }
+
+    void setClock(LongSupplier clock) {
+        this.clock = clock;
     }
 
     /** pruneLinks bounds the LinkGate's fallback records; called on the refresh loop. */
@@ -399,8 +420,8 @@ public final class WaitingRouter {
     }
 
     private void drain() {
-        long now = System.currentTimeMillis();
-        Map<String, Boolean> readyCache = new HashMap<>(); // one status poll per distinct server
+        long now = clock.getAsLong();
+        Map<String, Optional<ServerView>> polled = new HashMap<>(); // one status poll per distinct server
         for (Map.Entry<UUID, Waiter> e : new ArrayList<>(waiting.entrySet())) {
             UUID id = e.getKey();
             Waiter w = e.getValue();
@@ -411,31 +432,22 @@ public final class WaitingRouter {
             }
             Player player = po.get();
             boolean zh = FelisVelocityPlugin.zh(player);
-            if (now > w.deadlineMillis) {
-                waiting.remove(id);
-                player.sendMessage(Component.text(
-                        zh ? "「" + w.serverName + "」启动耗时超出预期。你可以稍后在大厅重试。"
-                           : "« " + w.serverName + " » is taking longer than expected to start. "
-                             + "You can try again from the lobby later.", NamedTextColor.YELLOW));
-                continue;
+            Optional<ServerView> poll = polled.get(w.serverName);
+            if (poll == null) {
+                poll = poll(w.serverName);
+                polled.put(w.serverName, poll);
             }
-            Boolean ready = readyCache.get(w.serverName);
-            if (ready == null) {
-                try {
-                    ServerView status = api.serverStatus(w.serverName);
-                    ready = status.ready();
-                    // The registry refreshes every 15 s; a server that just came up may
-                    // still be registered at its old address, or not at all. Register
-                    // what this poll reports before transferring anyone to it.
-                    if (ready) {
-                        registry.observe(status);
-                    }
-                } catch (LinkException ex) {
-                    ready = Boolean.FALSE; // transient → keep waiting until the deadline
+            ServerView status = poll.orElse(null);
+            if (status == null || !status.ready()) {
+                if (status != null && !stillComing(player, zh, w, status, now)) {
+                    waiting.remove(id);
+                } else if (now > w.deadlineMillis || now - w.sinceMillis > MAX_WAIT_MILLIS) {
+                    waiting.remove(id);
+                    player.sendMessage(Component.text(
+                            zh ? "「" + w.serverName + "」启动耗时超出预期。你可以稍后在大厅重试。"
+                               : "« " + w.serverName + " » is taking longer than expected to start. "
+                                 + "You can try again from the lobby later.", NamedTextColor.YELLOW));
                 }
-                readyCache.put(w.serverName, ready);
-            }
-            if (!ready) {
                 continue;
             }
             Optional<RegisteredServer> backend = registry.registered(w.serverName);
@@ -468,6 +480,71 @@ public final class WaitingRouter {
             }
             transfer(player, w.serverName, backend.get());
         }
+    }
+
+    // poll asks felis-api how one waited-on server is doing; empty when it does not
+    // answer, which the waiters ride out until their window closes.
+    private Optional<ServerView> poll(String serverName) {
+        try {
+            ServerView status = api.serverStatus(serverName);
+            // The registry refreshes every 15 s; a server that just came up may still
+            // be registered at its old address, or not at all. Register what this poll
+            // reports before transferring anyone to it.
+            if (status.ready()) {
+                registry.observe(status);
+            }
+            return Optional.of(status);
+        } catch (LinkException ex) {
+            return Optional.empty();
+        }
+    }
+
+    // stillComing reads a not-ready poll for one waiter. While the server is heading
+    // for Running it renews the waiter's window, and now and then tells the player how
+    // the start is going. When nothing is coming — the retries are spent, or somebody
+    // stopped the server — it says so and returns false.
+    private boolean stillComing(Player player, boolean zh, Waiter w, ServerView status, long now) {
+        if (status.startGaveUp()) {
+            player.sendMessage(Component.text(
+                    zh ? "「" + w.serverName + "」启动失败，自动重试也已用完。服主可以在面板查看日志后重新启动。"
+                       : "« " + w.serverName + " » failed to start and its automatic retries are spent. "
+                         + "The owner can check its log in the panel and start it again.",
+                    NamedTextColor.RED));
+            return false;
+        }
+        if (DESIRED_STOPPED.equalsIgnoreCase(status.desiredState())) {
+            // felis-api reads servers from an informer cache, so the first poll after
+            // the wake can still show the old desired state; two in a row are a stop.
+            if (w.stopSeen) {
+                player.sendMessage(Component.text(
+                        zh ? "「" + w.serverName + "」已被停止，不再为你排队。"
+                           : "« " + w.serverName + " » was stopped, so you're no longer waiting for it.",
+                        NamedTextColor.YELLOW));
+                return false;
+            }
+            w.stopSeen = true;
+            return true;
+        }
+        w.stopSeen = false;
+        w.deadlineMillis = now + WAIT_TIMEOUT_MILLIS;
+        if (status.autoRestarts() > w.restartsSeen) {
+            w.restartsSeen = status.autoRestarts();
+            w.noticedMillis = now;
+            player.sendMessage(Component.text(
+                    zh ? "「" + w.serverName + "」启动超时，正在自动重试（第 " + w.restartsSeen + " 次）……"
+                       : "« " + w.serverName + " » timed out starting; retrying automatically (attempt "
+                         + w.restartsSeen + ")…",
+                    NamedTextColor.YELLOW));
+        } else if (now - w.noticedMillis >= PROGRESS_NOTICE_MILLIS) {
+            w.noticedMillis = now;
+            long minutes = (now - w.sinceMillis) / 60_000L;
+            player.sendMessage(Component.text(
+                    zh ? "「" + w.serverName + "」仍在启动（已等 " + minutes + " 分钟），就绪后会自动把你传送过去。"
+                       : "« " + w.serverName + " » is still starting (" + minutes + " min so far); "
+                         + "you'll be moved in when it's ready.",
+                    NamedTextColor.GRAY));
+        }
+        return true;
     }
 
     private void authorizeAndWait(Player player, String serverName, boolean fromMenu) {
@@ -608,8 +685,7 @@ public final class WaitingRouter {
                        : "Starting « " + serverName + " » — you'll be moved in automatically.",
                     NamedTextColor.GRAY));
         }
-        waiting.put(id, new Waiter(
-                serverName, System.currentTimeMillis() + WAIT_TIMEOUT_MILLIS, fromMenu));
+        waiting.put(id, new Waiter(serverName, clock.getAsLong(), fromMenu));
     }
 
     private void logWakeFailure(Player player, String serverName, boolean zh, LinkException e) {
@@ -659,13 +735,21 @@ public final class WaitingRouter {
 
     private static final class Waiter {
         final String serverName;
-        final long deadlineMillis;
         final boolean fromMenu; // true → notify the felis:control face on transfer
+        final long sinceMillis;
+        // Only the drain touches these, one tick at a time (the ticking flag orders
+        // the ticks), so they need no further synchronization.
+        long deadlineMillis;
+        long noticedMillis;
+        int restartsSeen;
+        boolean stopSeen;
 
-        Waiter(String serverName, long deadlineMillis, boolean fromMenu) {
+        Waiter(String serverName, long nowMillis, boolean fromMenu) {
             this.serverName = serverName;
-            this.deadlineMillis = deadlineMillis;
             this.fromMenu = fromMenu;
+            this.sinceMillis = nowMillis;
+            this.deadlineMillis = nowMillis + WAIT_TIMEOUT_MILLIS;
+            this.noticedMillis = nowMillis;
         }
     }
 

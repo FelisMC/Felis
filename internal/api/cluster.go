@@ -37,6 +37,12 @@ type ServerInfo struct {
 	// LegacyForwarding mirrors the CR's forwarding=legacy label: the proxy
 	// forwards this server's players in the handshake address (#15).
 	LegacyForwarding bool `json:"legacyForwarding,omitempty"`
+	// AutoRestarts is how often the operator has recreated the pod of this start
+	// after it timed out; StartGaveUp is true once no automatic retry is coming
+	// (v1alpha1.StartGaveUp). A Failed server without StartGaveUp is still in its
+	// restart backoff and may yet come up on its own.
+	AutoRestarts int32 `json:"autoRestarts,omitempty"`
+	StartGaveUp  bool  `json:"startGaveUp,omitempty"`
 }
 
 // CreateServerInput is the validated, structured create-server form (spec §15).

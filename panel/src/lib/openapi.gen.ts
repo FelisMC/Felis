@@ -2348,6 +2348,13 @@ export interface components {
             playerCountUnknown?: boolean;
             /** @description Present and true when the CR carries the label felis.lolicon.best/forwarding=legacy. The proxy then forwards this server's players BungeeCord-style in the handshake address instead of modern forwarding (Felis-Legacy Velocity fork only). */
             legacyForwarding?: boolean;
+            /**
+             * Format: int32
+             * @description Present when non-zero; how often the operator recreated the pod of this start after it timed out (at most 3).
+             */
+            autoRestarts?: number;
+            /** @description Present and true for a Failed server no automatic retry will bring up: its start timed out with the retries spent, or its spec is invalid. A Failed server without it is still in its restart backoff and may come up on its own. */
+            startGaveUp?: boolean;
         };
         /** @description One row of the fleet-wide admin read (internal/api/handlers_user.go fleetServerView). */
         FleetServer: components["schemas"]["ServerInfo"] & {

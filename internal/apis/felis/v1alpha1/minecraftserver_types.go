@@ -2,6 +2,7 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -90,6 +91,31 @@ const (
 	// read; idle auto-stop waits for a real count (spec §8).
 	ConditionPlayersCounted = "PlayersCounted"
 )
+
+// Ready-condition reasons of a start that timed out: the pod never passed its TCP
+// readiness, or RCON never answered. Both are retried by recreating the pod, at
+// most MaxAutoRestarts times with a doubling backoff.
+const (
+	ReasonStartupTimeout   = "StartupTimeout"
+	ReasonReadinessTimeout = "ReadinessTimeout"
+)
+
+// MaxAutoRestarts bounds how often the operator retries a timed-out start.
+const MaxAutoRestarts = 3
+
+// StartGaveUp reports a Failed server that no automatic retry will bring up: its
+// start timed out with the retries spent, or it failed for a reason the operator
+// never retries (an invalid spec). Only a person moves it on. A Failed server still
+// inside its restart backoff has not given up: the operator recreates its pod when
+// the backoff runs out, and whoever waits on it should keep waiting.
+func StartGaveUp(s *MinecraftServerStatus) bool {
+	if s.Phase != PhaseFailed {
+		return false
+	}
+	c := meta.FindStatusCondition(s.Conditions, ConditionReady)
+	timedOut := c != nil && (c.Reason == ReasonStartupTimeout || c.Reason == ReasonReadinessTimeout)
+	return !timedOut || s.AutoRestarts >= MaxAutoRestarts || s.StartRequestedAt == nil
+}
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
@@ -310,7 +336,7 @@ type MinecraftServerStatus struct {
 	// the server becomes unoccupied.
 	EmptySince *metav1.Time `json:"emptySince,omitempty"`
 	// AutoRestarts counts how often the operator recreated the pod of a start
-	// that timed out (at most 3, with a doubling backoff); reaching Ready or
+	// that timed out (at most MaxAutoRestarts, with a doubling backoff); reaching Ready or
 	// stopping resets it.
 	AutoRestarts int32 `json:"autoRestarts,omitempty"`
 	// LastAutoRestartAt is when the operator last recreated the pod.

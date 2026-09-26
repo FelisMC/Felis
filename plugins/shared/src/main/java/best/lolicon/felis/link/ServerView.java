@@ -35,6 +35,8 @@ public final class ServerView {
     private final int playersOnline;
     private final int playersMax;
     private final boolean legacyForwarding;
+    private final int autoRestarts;
+    private final boolean startGaveUp;
 
     public ServerView(String name, String subdomain, String phase, boolean ready,
                       String autostartPolicy, String desiredState, String endpointMode,
@@ -47,6 +49,14 @@ public final class ServerView {
                       String autostartPolicy, String desiredState, String endpointMode,
                       String endpointAddress, int playersOnline, int playersMax,
                       boolean legacyForwarding) {
+        this(name, subdomain, phase, ready, autostartPolicy, desiredState, endpointMode,
+                endpointAddress, playersOnline, playersMax, legacyForwarding, 0, false);
+    }
+
+    public ServerView(String name, String subdomain, String phase, boolean ready,
+                      String autostartPolicy, String desiredState, String endpointMode,
+                      String endpointAddress, int playersOnline, int playersMax,
+                      boolean legacyForwarding, int autoRestarts, boolean startGaveUp) {
         this.name = name;
         this.subdomain = subdomain;
         this.phase = phase;
@@ -58,6 +68,8 @@ public final class ServerView {
         this.playersOnline = playersOnline;
         this.playersMax = playersMax;
         this.legacyForwarding = legacyForwarding;
+        this.autoRestarts = autoRestarts;
+        this.startGaveUp = startGaveUp;
     }
 
     /** fromJson builds a view from a parsed felis-api object, tolerating absent fields. */
@@ -73,7 +85,9 @@ public final class ServerView {
                 str(o, "endpointAddress"),
                 intval(o, "playersOnline"),
                 intval(o, "playersMax"),
-                bool(o, "legacyForwarding"));
+                bool(o, "legacyForwarding"),
+                intval(o, "autoRestarts"),
+                bool(o, "startGaveUp"));
     }
 
     /**
@@ -124,6 +138,8 @@ public final class ServerView {
             b.append(",\"playersOnline\":").append(v.playersOnline);
             b.append(",\"playersMax\":").append(v.playersMax);
             b.append(",\"legacyForwarding\":").append(v.legacyForwarding);
+            b.append(",\"autoRestarts\":").append(v.autoRestarts);
+            b.append(",\"startGaveUp\":").append(v.startGaveUp);
             b.append('}');
         }
         return b.append("]}").toString();
@@ -186,6 +202,20 @@ public final class ServerView {
      */
     public boolean legacyForwarding() {
         return legacyForwarding;
+    }
+
+    /** autoRestarts is how often the operator recreated the pod of a start that timed out. */
+    public int autoRestarts() {
+        return autoRestarts;
+    }
+
+    /**
+     * startGaveUp is true for a Failed server no automatic retry will bring up (the
+     * restarts are spent, or its spec is invalid). A Failed server without it is in
+     * its restart backoff and may still come up on its own.
+     */
+    public boolean startGaveUp() {
+        return startGaveUp;
     }
 
     private static String str(Map<?, ?> o, String key) {

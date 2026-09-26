@@ -52,6 +52,8 @@ func TestTimedOutStartRecreatesThePodWithBackoff(t *testing.T) {
 	for i, a := range attempts {
 		if s := at(a[1]); s.Status.Phase != v1alpha1.PhaseFailed || !podExists() || s.Status.AutoRestarts != int32(i) {
 			t.Fatalf("attempt %d before due: phase=%s pod=%v restarts=%d", i+1, s.Status.Phase, podExists(), s.Status.AutoRestarts)
+		} else if v1alpha1.StartGaveUp(&s.Status) {
+			t.Fatalf("attempt %d before due: reported as given up while a retry is coming", i+1)
 		}
 		s := at(a[2])
 		if podExists() {
@@ -76,6 +78,9 @@ func TestTimedOutStartRecreatesThePodWithBackoff(t *testing.T) {
 	if s.Status.Phase != v1alpha1.PhaseFailed || s.Status.AutoRestarts != 3 || !podExists() {
 		t.Fatalf("after three attempts: phase=%s restarts=%d pod=%v", s.Status.Phase, s.Status.AutoRestarts, podExists())
 	}
+	if !v1alpha1.StartGaveUp(&s.Status) {
+		t.Fatal("after three attempts: not reported as given up")
+	}
 }
 
 // An RCON channel that never answers on a TCP-ready pod gets the same retry.
@@ -93,6 +98,8 @@ func TestReadinessTimeoutRecreatesThePod(t *testing.T) {
 	reconcile(t, r, "survival")
 	if s := getServer(t, c, "survival"); s.Status.Phase != v1alpha1.PhaseFailed || s.Status.AutoRestarts != 0 {
 		t.Fatalf("before due: phase=%s restarts=%d", s.Status.Phase, s.Status.AutoRestarts)
+	} else if v1alpha1.StartGaveUp(&s.Status) {
+		t.Fatal("before due: reported as given up while a retry is coming")
 	}
 	clock = base.Add(90 * time.Second)
 	reconcile(t, r, "survival")

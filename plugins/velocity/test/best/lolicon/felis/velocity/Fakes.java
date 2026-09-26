@@ -446,6 +446,17 @@ final class Fakes {
         final Map<String, Boolean> ready = new ConcurrentHashMap<>();
         /** address is the direct endpoint a server reports while it is ready. */
         final Map<String, String> address = new ConcurrentHashMap<>();
+        /**
+         * phase, desired, restarts and gaveUp are how a not-ready server's start is going,
+         * as the status route reports it (phase Stopped and desiredState Running unless
+         * set: the wake the waiter followed has asked for Running).
+         */
+        final Map<String, String> phase = new ConcurrentHashMap<>();
+        final Map<String, String> desired = new ConcurrentHashMap<>();
+        final Map<String, Integer> restarts = new ConcurrentHashMap<>();
+        final Set<String> gaveUp = ConcurrentHashMap.newKeySet();
+        /** statusDown makes the status route answer 500. */
+        volatile boolean statusDown;
         /** wakeError maps a server to "status code" (e.g. "403 forbidden"). */
         final Map<String, String> wakeError = new ConcurrentHashMap<>();
         volatile int joinStatus = 204;
@@ -493,6 +504,10 @@ final class Fakes {
                 String action = parts.length > 1 ? parts[1] : "";
                 switch (method + " " + action) {
                     case "GET status":
+                        if (statusDown) {
+                            reply(ex, 500, "{\"error\":{\"code\":\"internal\",\"message\":\"down\"}}");
+                            return;
+                        }
                         reply(ex, 200, status(name, ready.getOrDefault(name, false)));
                         return;
                     case "POST wake":
@@ -538,8 +553,14 @@ final class Fakes {
             String endpoint = up
                     ? "\"endpointMode\":\"direct\"" + (addr == null ? "" : ",\"endpointAddress\":\"" + addr + "\"")
                     : "\"endpointMode\":\"fallback\",\"endpointAddress\":\"login\"";
+            // Like the real ServerInfo, autoRestarts and startGaveUp are left out at 0/false.
+            int restarts = this.restarts.getOrDefault(name, 0);
             return "{\"name\":\"" + name + "\",\"subdomain\":\"" + name + "\",\"phase\":\""
-                    + (up ? "Running" : "Stopped") + "\",\"ready\":" + up + "," + endpoint + "}";
+                    + (up ? "Running" : phase.getOrDefault(name, "Stopped")) + "\",\"ready\":" + up
+                    + ",\"desiredState\":\"" + desired.getOrDefault(name, "Running") + "\""
+                    + (restarts == 0 ? "" : ",\"autoRestarts\":" + restarts)
+                    + (gaveUp.contains(name) ? ",\"startGaveUp\":true" : "")
+                    + "," + endpoint + "}";
         }
 
         private static void reply(HttpExchange ex, int status, String body) throws IOException {

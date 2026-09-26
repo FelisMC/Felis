@@ -290,3 +290,33 @@ func TestServerListCarriesLegacyForwarding(t *testing.T) {
 		}
 	}
 }
+
+// A Failed server reaches the proxy and the panel with whether the operator will
+// still retry it: the proxy keeps a waiting player through the restart backoff and
+// lets them go once the retries are spent.
+func TestServerInfoCarriesStartGaveUp(t *testing.T) {
+	failed := func(name string, restarts int32) *v1alpha1.MinecraftServer {
+		ms := testServer(name, name)
+		now := metav1.Now()
+		ms.Status = v1alpha1.MinecraftServerStatus{
+			Phase:            v1alpha1.PhaseFailed,
+			AutoRestarts:     restarts,
+			StartRequestedAt: &now,
+			Conditions: []metav1.Condition{{Type: v1alpha1.ConditionReady, Status: metav1.ConditionFalse,
+				Reason: v1alpha1.ReasonStartupTimeout}},
+		}
+		return ms
+	}
+	retrying := serverInfo(failed("retrying", 1))
+	if retrying.StartGaveUp || retrying.AutoRestarts != 1 {
+		t.Fatalf("retrying: startGaveUp=%v autoRestarts=%d, want false 1", retrying.StartGaveUp, retrying.AutoRestarts)
+	}
+	spent := serverInfo(failed("spent", v1alpha1.MaxAutoRestarts))
+	b, err := json.Marshal(spent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !spent.StartGaveUp || !strings.Contains(string(b), `"startGaveUp":true`) {
+		t.Fatalf("spent: startGaveUp=%v JSON %s, want true", spent.StartGaveUp, b)
+	}
+}
