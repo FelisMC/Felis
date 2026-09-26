@@ -102,8 +102,38 @@ type Syncer struct {
 	// UploadsDir is the host directory of the uploads volume, whose submission
 	// contexts are copied (uploads.go); empty copies none.
 	UploadsDir string
-	Now        func() time.Time
-	Log        io.Writer
+	// UploadGrace and MinRate bound one object's upload: UploadGrace plus the
+	// time the object takes at MinRate bytes a second. Zero takes the defaults.
+	UploadGrace time.Duration
+	MinRate     int64
+	Now         func() time.Time
+	Log         io.Writer
+}
+
+// Each object gets its own deadline, scaled to its size, so an archive too big
+// for the uplink fails alone and the rest of the pass still goes; one deadline
+// for the whole pass let a 10 GiB world use all of it, hour after hour, with
+// every bundle queued behind it. 512 KiB/s (about 4 Mbit/s) gives a 10 GiB
+// archive close to six hours, several times what a 20 Mbit/s uplink needs.
+const (
+	defaultUploadGrace = 10 * time.Minute
+	defaultMinRate     = 512 << 10
+)
+
+// uploadBudget is how long an object of size plaintext bytes may take.
+func (s *Syncer) uploadBudget(size int64) time.Duration {
+	grace := s.UploadGrace
+	if grace <= 0 {
+		grace = defaultUploadGrace
+	}
+	return grace + time.Duration(float64(SealedSize(size))/float64(s.rate())*float64(time.Second))
+}
+
+func (s *Syncer) rate() int64 {
+	if s.MinRate > 0 {
+		return s.MinRate
+	}
+	return defaultMinRate
 }
 
 // Result is what one Run did and found.
@@ -158,9 +188,10 @@ func (s *Syncer) logf(format string, args ...any) {
 	}
 }
 
-// Run does one pass: world archives, database bundles, registry images,
-// submission uploads, then expiry. A failure on one item is recorded and the pass carries on; the
-// returned error is non-nil when anything failed.
+// Run does one pass: database bundles, world archives, registry images,
+// submission uploads, then expiry. The bundles go first: they are small, and
+// every restore starts from one. A failure on one item is recorded and the
+// pass carries on; the returned error is non-nil when anything failed.
 func (s *Syncer) Run(ctx context.Context) (Result, error) {
 	var res Result
 	fail := func(format string, args ...any) {
@@ -173,8 +204,8 @@ func (s *Syncer) Run(ctx context.Context) (Result, error) {
 	if err != nil {
 		return res, fmt.Errorf("list %s in the bucket: %w", worldsDir, err)
 	}
-	s.syncWorlds(ctx, remoteWorlds, &res, fail)
 	s.syncDB(ctx, &res, fail)
+	s.syncWorlds(ctx, remoteWorlds, &res, fail)
 	s.syncImages(ctx, &res, fail)
 	s.syncUploads(ctx, &res, fail)
 	s.expireWorlds(ctx, remoteWorlds, &res, fail)
@@ -376,14 +407,22 @@ func (s *Syncer) putFile(ctx context.Context, key, p string, size int64) error {
 
 // putStream encrypts size bytes of src into key. The sealed size is known in
 // advance, so the upload streams: nothing larger than one part is buffered.
-// An error from src fails the upload.
+// An error from src fails the upload, and so does running past the object's
+// uploadBudget.
 func (s *Syncer) putStream(ctx context.Context, key string, src io.Reader, size int64) error {
+	budget := s.uploadBudget(size)
+	putCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
 	pr, pw := io.Pipe()
 	go func() {
 		pw.CloseWithError(Encrypt(pw, src, s.Key))
 	}()
-	err := s.Bucket.Put(ctx, key, pr, SealedSize(size))
+	err := s.Bucket.Put(putCtx, key, pr, SealedSize(size))
 	pr.CloseWithError(errors.New("upload finished"))
+	if err != nil && ctx.Err() == nil && errors.Is(putCtx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("not finished within %s (%s at under %s/s); the next run tries again: %w",
+			budget.Round(time.Minute), HumanBytes(SealedSize(size)), HumanBytes(s.rate()), err)
+	}
 	return err
 }
 

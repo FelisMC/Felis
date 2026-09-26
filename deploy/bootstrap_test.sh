@@ -2031,7 +2031,7 @@ timer="$(cat "$odir/felis-offsite.timer")"
 expect "the unit loads the secrets" "EnvironmentFile=$odir/offsite.env" "$unit"
 expect "the unit syncs from the host config" \
   "ExecStart=fakefelis offsite sync -config $odir/felis.host.toml -env-file $odir/offsite.env -db-dir /var/lib/felis/db-backups -backup-pvc \"felis-backups\"" "$unit"
-expect "a run ends before the next hour's" "TimeoutStartSec=55min" "$unit"
+expect "a pass over a big archive is not cut off at the hour" "TimeoutStartSec=24h" "$unit"
 expect "the copy runs hourly" "OnCalendar=hourly" "$timer"
 expect "a missed run catches up at boot" "Persistent=true" "$timer"
 expect "the timer is enabled" "SYSTEMCTL: enable --now felis-offsite.timer" "$out"

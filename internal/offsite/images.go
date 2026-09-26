@@ -532,7 +532,9 @@ func (s *Syncer) putBytes(ctx context.Context, key string, plain []byte) error {
 	if err := Encrypt(&sealed, bytes.NewReader(plain), s.Key); err != nil {
 		return err
 	}
-	return s.Bucket.Put(ctx, key, &sealed, int64(sealed.Len()))
+	putCtx, cancel := context.WithTimeout(ctx, s.uploadBudget(int64(len(plain))))
+	defer cancel()
+	return s.Bucket.Put(putCtx, key, &sealed, int64(sealed.Len()))
 }
 
 func (s *Syncer) putImageIndex(ctx context.Context, stamp string, x *ImageIndex) error {

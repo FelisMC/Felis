@@ -2250,6 +2250,13 @@ What runs:
   `registry/index/<stamp>.json.fenc`, `uploads/blobs/<sha256>.fenc` and
   `uploads/index/<stamp>.json.fenc`: AES-256-GCM in 64 KiB segments, so
   truncation, reordering and a wrong key are all refused on the way back.
+- A pass sends the database bundles first, then world archives, images and
+  uploads. Each object has its own time limit: 10 minutes plus its size at
+  512 KiB/s (about 6 hours for 10 GiB). An archive the uplink cannot send in
+  that time fails alone, stays pending and is tried again next pass; the rest
+  of the pass still goes. A pass over a big archive can run for hours; the
+  timer starts no second one meanwhile. An upload cut off restarts from the
+  beginning of that object. [GO-TESTED: `internal/offsite`]
 - The reaper deletes an idle world only after its archive is in the bucket
   (§10).
 - The watchdog mails the owners when no sync has completed for 12 hours

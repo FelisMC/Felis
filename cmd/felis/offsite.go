@@ -257,8 +257,14 @@ type offsiteSources struct {
 	uploadsDir, uploadsPVC string
 }
 
+// offsiteRunLimit backstops one sync pass. Each upload has its own deadline,
+// scaled to its size (internal/offsite), so a pass over a big archive may run
+// for hours; the timer starts no second pass while one runs, and the unit's
+// TimeoutStartSec sits above this.
+const offsiteRunLimit = 23 * time.Hour
+
 func runOffsiteSync(cfg *config.Config, env *offsiteEnv, src offsiteSources, log io.Writer) (offsite.Result, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), offsiteRunLimit)
 	defer cancel()
 	checkCtx, checkCancel := context.WithTimeout(ctx, 30*time.Second)
 	err := env.bucket.Check(checkCtx)

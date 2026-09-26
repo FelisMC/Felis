@@ -118,13 +118,24 @@ type memBucket struct {
 	putErr  map[string]error
 	puts    int
 	removed []string
+	// stall holds keys whose upload never finishes: Put waits out its context.
+	stall map[string]bool
+	// started lists every Put in the order it began.
+	started []string
 }
 
 func newMemBucket() *memBucket {
 	return &memBucket{objs: map[string][]byte{}, putErr: map[string]error{}}
 }
 
-func (b *memBucket) Put(_ context.Context, key string, r io.Reader, size int64) error {
+func (b *memBucket) Put(ctx context.Context, key string, r io.Reader, size int64) error {
+	b.mu.Lock()
+	b.started = append(b.started, key)
+	b.mu.Unlock()
+	if b.stall[key] {
+		<-ctx.Done()
+		return ctx.Err()
+	}
 	if err := b.putErr[key]; err != nil {
 		io.Copy(io.Discard, r)
 		return err
@@ -469,5 +480,67 @@ func TestWorldKeyRejectsOddRefs(t *testing.T) {
 		if _, ok := WorldKey(ref); ok {
 			t.Errorf("WorldKey(%q) accepted", ref)
 		}
+	}
+}
+
+// TestSyncBigArchiveDoesNotStallThePass: an archive the uplink cannot send in
+// time fails at its own deadline and stays pending, while the database bundle
+// (sent before any world) and the archives after it still reach the bucket.
+// One deadline for the whole pass used to go to the big archive, every hour,
+// with the bundles queued behind it.
+func TestSyncBigArchiveDoesNotStallThePass(t *testing.T) {
+	cat := &fakeCatalog{rows: []*row{
+		{WorldBackup: WorldBackup{ID: "b1", Server: "alpha", Ref: "/a/alpha-1.tar.gz"}, status: "present"},
+		{WorldBackup: WorldBackup{ID: "b2", Server: "beta", Ref: "/a/beta-2.tar.gz"}, status: "present"},
+	}}
+	s, b := newSyncer(t, cat)
+	s.UploadGrace = 50 * time.Millisecond
+	writeFile(t, s.ArchiveDir, "alpha-1.tar.gz", 100)
+	writeFile(t, s.ArchiveDir, "beta-2.tar.gz", 100)
+	writeFile(t, s.DBDir, "felis-db-20260924T030000Z-daily.tar", 50)
+	b.stall = map[string]bool{"worlds/alpha-1.tar.gz.fenc": true}
+
+	type ran struct {
+		res Result
+		err error
+	}
+	done := make(chan ran, 1)
+	go func() {
+		res, err := s.Run(context.Background())
+		done <- ran{res, err}
+	}()
+	var r ran
+	select {
+	case r = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the pass is still waiting on the archive that cannot be sent")
+	}
+
+	if r.err == nil || !strings.Contains(r.err.Error(), "alpha-1.tar.gz") || !strings.Contains(r.err.Error(), "the next run tries again") {
+		t.Fatalf("run error = %v, want the stalled archive named as retried next run", r.err)
+	}
+	if r.res.DBUploaded != 1 || r.res.WorldsUploaded != 1 || r.res.WorldsPending != 1 {
+		t.Fatalf("result = %+v, want the bundle and beta copied, alpha pending", r.res)
+	}
+	if !cat.rows[0].offsite.IsZero() || cat.rows[1].offsite.IsZero() {
+		t.Fatalf("offsite_at alpha=%v beta=%v, want only beta recorded", cat.rows[0].offsite, cat.rows[1].offsite)
+	}
+	if len(b.started) == 0 || !strings.HasPrefix(b.started[0], dbDir) {
+		t.Fatalf("uploads began in the order %v, want the database bundle first", b.started)
+	}
+}
+
+// TestUploadBudgetFitsTheUplink: by default a 10 GiB archive may take well over
+// what a 20 Mbit/s uplink needs to send it, and the smallest object still gets
+// the grace.
+func TestUploadBudgetFitsTheUplink(t *testing.T) {
+	s := &Syncer{}
+	const big = 10 << 30
+	need := time.Duration(float64(big) / (20e6 / 8) * float64(time.Second))
+	if got := s.uploadBudget(big); got < 3*need {
+		t.Errorf("budget for 10 GiB = %s, want at least %s (3× a 20 Mbit/s uplink)", got, 3*need)
+	}
+	if got := s.uploadBudget(0); got < defaultUploadGrace {
+		t.Errorf("budget for an empty object = %s, want at least %s", got, defaultUploadGrace)
 	}
 }
