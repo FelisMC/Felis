@@ -20,6 +20,9 @@ import (
 // takes in its comma-separated --accept flag.
 var scanIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 
+// dnsLabel is a Kubernetes namespace or object name (RFC 1123 label).
+var dnsLabel = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
+
 // Config is the parsed felis.toml.
 type Config struct {
 	Server   ServerConfig   `toml:"server"`
@@ -120,6 +123,12 @@ type ServerConfig struct {
 // DatabaseConfig is the [database] table.
 type DatabaseConfig struct {
 	URL string `toml:"url"`
+	// Deployment is the k3s Deployment the database runs as, "namespace/name"
+	// ("felis/felis-postgres"), written into the host copy only. The host
+	// carries no PostgreSQL client, so `felis db backup`/`restore` and the
+	// pre-migration snapshot run pg_dump, pg_restore and psql inside its
+	// postgres container. Empty runs the tools on PATH against url.
+	Deployment string `toml:"deployment"`
 }
 
 // VelocityConfig is the [velocity] table.
@@ -530,6 +539,12 @@ func (c *Config) applyDefaults() {
 func (c *Config) Validate() error {
 	if c.Database.URL == "" {
 		return fmt.Errorf("config: [database] url is required")
+	}
+	if d := c.Database.Deployment; d != "" {
+		ns, name, ok := strings.Cut(d, "/")
+		if !ok || !dnsLabel.MatchString(ns) || !dnsLabel.MatchString(name) {
+			return fmt.Errorf("config: [database] deployment %q is not namespace/name", d)
+		}
 	}
 	if c.Server.RootDomain == "" {
 		return fmt.Errorf("config: [server] root_domain is required")

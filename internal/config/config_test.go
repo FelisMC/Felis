@@ -171,6 +171,25 @@ root_domain = "mc.example.net"
 	}
 }
 
+func TestLoadDatabaseDeployment(t *testing.T) {
+	withDeployment := func(v string) string {
+		return strings.Replace(validTOML, `url = "postgres://felis:secret@db:5432/felis"`,
+			`url = "postgres://felis:secret@db:5432/felis"`+"\ndeployment = \""+v+"\"", 1)
+	}
+	cfg, err := config.Load(writeTOML(t, withDeployment("felis/felis-postgres")))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Database.Deployment != "felis/felis-postgres" {
+		t.Fatalf("deployment = %q", cfg.Database.Deployment)
+	}
+	for _, bad := range []string{"felis-postgres", "felis/", "/felis-postgres", "Felis/pg", "felis/pg; rm -rf /", "a/b/c"} {
+		if _, err := config.Load(writeTOML(t, withDeployment(bad))); err == nil || !strings.Contains(err.Error(), "namespace/name") {
+			t.Errorf("deployment %q: err = %v, want a namespace/name refusal", bad, err)
+		}
+	}
+}
+
 func TestLoadRejectsMissingRootDomain(t *testing.T) {
 	_, err := config.Load(writeTOML(t, `
 [database]
