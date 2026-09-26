@@ -30,7 +30,12 @@ check() { # label command...
 
 check "felis version runs" sh -c '/usr/local/bin/felis version | grep -q "^felis "'
 
-for d in felis-postgres felis-api felis-operator registry; do
+deploys=(felis-api felis-operator registry)
+# A release may still run the database on the host; the upgrade moves it into felis-postgres.
+if [ "$phase" != release ] || "${KUBECTL[@]}" -n felis get deploy/felis-postgres >/dev/null 2>&1; then
+  deploys=(felis-postgres "${deploys[@]}")
+fi
+for d in "${deploys[@]}"; do
   check "deployment ${d} is rolled out" "${KUBECTL[@]}" -n felis rollout status "deploy/${d}" --timeout=180s
 done
 
