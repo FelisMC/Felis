@@ -1,14 +1,25 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, Play, RotateCcw, Square } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
+import { pendingPower } from "@/components/PhaseBadge";
 import { api, humanizeError } from "@/lib/api";
+import type { Phase } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+/** How long a sent wake or stop shows as in progress when the view never
+ *  reflects it (the parent stopped polling, or someone reversed it at once). */
+export const SUBMITTED_HOLD_MS = 20_000;
+
+/** How often a sent call asks the parent to refetch until its view shows it. */
+export const SUBMITTED_RECHECK_MS = 2_000;
 
 interface Props {
   name: string;
-  /** A pod is up or on its way (Starting/Running/Stopping): offer Stop. */
-  live: boolean;
+  phase: Phase;
+  /** What the server was last asked to be. Absent in a view without it; the
+   *  phase alone then decides. */
+  desiredState?: "Running" | "Stopped";
   /** Its start Failed while meant to run: offer a retry and a stop. */
   failed?: boolean;
   playersOnline?: number;
@@ -20,6 +31,10 @@ interface Props {
   className?: string;
 }
 
+function isUp(phase: Phase): boolean {
+  return phase === "Running" || phase === "Starting";
+}
+
 // PowerButton starts or stops one server. It is busy while the call runs (no
 // double send), shows why a call was refused (quota, cooldown, a phase that
 // moved on), and asks before a stop that would disconnect players: the count
@@ -27,9 +42,17 @@ interface Props {
 // failed gets both ways out: retry (the wake, which felis-api turns into a fresh
 // start) and stop. Nobody is on a server that never came up, so that stop does
 // not ask.
+//
+// An accepted call keeps its spinner, and keeps asking the parent to reread,
+// until the parent's view shows the server asked to move (the list and the
+// console read a cache that lags the write by a moment), so nobody presses Wake
+// again into a 429. A server on its way down offers nothing until it is down;
+// one asked to run with no pod yet offers Stop, which is the way out when it
+// never comes up.
 export function PowerButton({
   name,
-  live,
+  phase,
+  desiredState,
   failed = false,
   playersOnline,
   playerCountUnknown,
@@ -39,8 +62,34 @@ export function PowerButton({
 }: Props) {
   const { t } = useTranslation("servers");
   const [busy, setBusy] = useState<"wake" | "stop" | null>(null);
+  const [submitted, setSubmitted] = useState<"wake" | "stop" | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const changed = useRef(onChanged);
+  useEffect(() => {
+    changed.current = onChanged;
+  }, [onChanged]);
+
+  const pending = pendingPower({ phase, desiredState });
+  const on = desiredState ? desiredState === "Running" : isUp(phase);
+
+  // A sent call is done once the view shows the lever moved: a wake when the
+  // server is meant to run (a retry once it is no longer Failed), a stop when it
+  // is meant to stop. The hold ends it anyway if the view never gets there.
+  const caughtUp = submitted === "wake" ? on && !failed : submitted === "stop" ? !on : true;
+  useEffect(() => {
+    if (submitted === null) return;
+    if (caughtUp) {
+      setSubmitted(null);
+      return;
+    }
+    const recheck = window.setInterval(() => changed.current(), SUBMITTED_RECHECK_MS);
+    const hold = window.setTimeout(() => setSubmitted(null), SUBMITTED_HOLD_MS);
+    return () => {
+      window.clearInterval(recheck);
+      window.clearTimeout(hold);
+    };
+  }, [submitted, caughtUp]);
 
   async function run(kind: "wake" | "stop") {
     if (busy) return;
@@ -49,6 +98,7 @@ export function PowerButton({
     try {
       await (kind === "wake" ? api.wake(name) : api.stop(name));
       setConfirming(false);
+      setSubmitted(kind);
       onChanged();
     } catch (e) {
       setError(humanizeError(e));
@@ -66,9 +116,18 @@ export function PowerButton({
       {busy === "stop" ? t("stopping") : t("stop")}
     </Button>
   );
+  // inProgress is a server on its way somewhere with nothing to press meanwhile.
+  const inProgress = (kind: "wake" | "stop") => (
+    <Button size={size} variant={kind === "stop" ? "outline" : "default"} disabled>
+      {spinner}
+      {kind === "wake" ? t("waking") : t("stopping")}
+    </Button>
+  );
 
   let control;
-  if (failed) {
+  if (submitted !== null) {
+    control = inProgress(submitted);
+  } else if (failed) {
     control = (
       <div className="flex flex-wrap items-center justify-end gap-2">
         <Button size={size} onClick={() => void run("wake")} disabled={busy !== null}>
@@ -78,7 +137,12 @@ export function PowerButton({
         {stopButton("outline", () => void run("stop"))}
       </div>
     );
-  } else if (!live) {
+  } else if (pending === "stop" || (phase === "Stopping" && pending === null)) {
+    control = inProgress("stop");
+  } else if (pending === "start" && phase === "Stopping") {
+    // Woken while stopping: the operator brings it back up once it is down.
+    control = inProgress("wake");
+  } else if (!on) {
     control = (
       <Button size={size} onClick={() => void run("wake")} disabled={busy !== null}>
         {busy === "wake" ? spinner : <Play />}

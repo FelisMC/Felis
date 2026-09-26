@@ -37,5 +37,6 @@
   "open_menu": "打开菜单",
   "copy_address": "复制地址 {{address}}",
   "address_copied": "已复制",
-  "address_copy_failed": "已选中，请用系统菜单复制"
+  "address_copy_failed": "已选中，请用系统菜单复制",
+  "refresh_failed": "刷新失败，下面是上次读到的状态。"
 }

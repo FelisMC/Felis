@@ -25,11 +25,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { PhaseBadge } from "@/components/PhaseBadge";
+import { PhaseBadge, shownPhase } from "@/components/PhaseBadge";
 import { Loading, ErrorState, NotYours, EmptyState } from "@/components/States";
 import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
-import { useAsync, useUnsavedGuard } from "@/lib/hooks";
+import { STATUS_POLL_FAST_MS, useAsync, usePolling, useUnsavedGuard } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
 import { canManage, ownershipPending } from "@/lib/ownership";
 import { formatBytes, formatRelative } from "@/lib/format";
@@ -137,12 +137,7 @@ export function ServerFiles() {
 
   // While the server is not stopped, poll the phase so the first successful
   // stop flips the page from the notice to the listing without a manual reload.
-  const reloadStatus = statusQ.reload;
-  useEffect(() => {
-    if (stopped) return;
-    const id = setInterval(reloadStatus, 4000);
-    return () => clearInterval(id);
-  }, [stopped, reloadStatus]);
+  usePolling(statusQ.reload, stopped ? null : STATUS_POLL_FAST_MS);
 
   // Editor state. `editable` false marks a binary file (rendered read-only).
   // `sha256` is the hash the read returned: every save sends it back, so a file
@@ -297,7 +292,7 @@ export function ServerFiles() {
       icon={FolderOpen}
       title={statusQ.data.displayName || statusQ.data.name}
       subtitle={t("title")}
-      actions={<PhaseBadge phase={statusQ.data.phase} />}
+      actions={<PhaseBadge phase={shownPhase(statusQ.data)} />}
       className="mb-6"
     />
   );

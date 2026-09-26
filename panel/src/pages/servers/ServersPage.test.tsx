@@ -163,3 +163,32 @@ describe("ServersPage failed starts", () => {
     expect(flaky.getByRole("button", { name: /Retry start/ })).toBeTruthy();
   });
 });
+
+describe("ServersPage servers asked to move", () => {
+  it("shows a wake or stop at once, in the badge, the button and the counts", async () => {
+    calls.fleet.mockResolvedValue([
+      row("survival", { phase: "Stopped", desiredState: "Running", owned: true }),
+      row("creative", { phase: "Running", desiredState: "Stopped", ready: true, owned: true }),
+    ]);
+    render(
+      <MemoryRouter>
+        <ServersPage />
+      </MemoryRouter>,
+    );
+
+    const survival = await tableRow("survival");
+    expect(survival.getByText("Starting")).toBeTruthy();
+    expect(survival.queryByText("Stopped")).toBeNull();
+    // Stop stays offered: the way out of a start that never comes up.
+    expect(survival.getByRole("button", { name: "Stop" })).toHaveProperty("disabled", false);
+
+    const creative = await tableRow("creative");
+    expect(creative.getByText("Stopping")).toBeTruthy();
+    expect(creative.getByRole("button", { name: "Stopping…" })).toHaveProperty("disabled", true);
+    expect(creative.queryByRole("button", { name: "Stop" })).toBeNull();
+
+    // The Running card counts neither: one is not up yet, the other is going down.
+    const runningCard = screen.getByText("Running", { selector: "div.mt-1" });
+    expect(runningCard.previousElementSibling?.textContent).toBe("0");
+  });
+});

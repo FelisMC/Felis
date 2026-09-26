@@ -19,13 +19,14 @@ import {
 import { useTranslation } from "react-i18next";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Loading, ErrorState } from "@/components/States";
+import { Loading, ErrorState, RefreshError } from "@/components/States";
+import { shownPhase } from "@/components/PhaseBadge";
 import { StatCard } from "@/components/StatCard";
 import { PageHeader } from "@/components/PageHeader";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { FleetGrid } from "@/components/FleetGrid";
 import { api, humanizeError } from "@/lib/api";
-import { useAsync, useConfig, type AsyncState } from "@/lib/hooks";
+import { useAsync, useConfig, usePolling, type AsyncState } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
 import { lazyWithReload } from "@/lib/chunk";
 import { webglAvailable } from "@/lib/webgl";
@@ -39,25 +40,39 @@ const VoxelFleet = lazyWithReload(() =>
   import("@/components/VoxelFleet").then((m) => ({ default: m.VoxelFleet })),
 );
 
+// The dashboard follows the fleet the way the server list does.
+const SERVERS_POLL_MS = 10_000;
+
 export function Dashboard() {
   const cfg = useConfig();
   const { isAdmin } = useTier();
   const servers = useAsync(() => api.myServers(), []);
+  usePolling(servers.reload, SERVERS_POLL_MS);
   const link = useAsync(() => api.linkStatus(), []);
   // Only admins may list the image whitelist (a user would get a 403).
   const images = useAsync(() => (isAdmin ? api.listImages() : Promise.resolve([])), [isAdmin]);
 
   const { t } = useTranslation("dashboard");
 
+  // A server just woken or stopped counts, colours and pulses as where it is
+  // heading, the same as its badge in the list.
+  const list = useMemo(
+    () =>
+      (servers.data ?? []).map((s) => ({
+        ...s,
+        phase: shownPhase({ phase: s.phase ?? "Unknown", desiredState: s.desiredState }),
+      })),
+    [servers.data],
+  );
+
   const counts = useMemo(() => {
-    const list = servers.data ?? [];
     const by = (p: Phase) => list.filter((s) => s.phase === p).length;
     return {
       total: list.length,
       running: by("Running"),
       players: list.reduce((n, s) => n + (s.playersOnline ?? 0), 0),
     };
-  }, [servers.data]);
+  }, [list]);
 
   // The page stands on the server list alone. Link status and the image
   // counts are side cards: when they fail only their card degrades, and each
@@ -68,18 +83,21 @@ export function Dashboard() {
 
       {servers.loading && !servers.data ? (
         <Loading />
-      ) : servers.error ? (
+      ) : servers.error && !servers.data ? (
         <ErrorState error={servers.error} onRetry={servers.reload} />
       ) : !cfg ? (
         <Loading />
       ) : (
-        <FleetView
-          servers={servers.data ?? []}
-          counts={counts}
-          link={link}
-          images={images.error ? null : images.data}
-          isAdmin={isAdmin}
-        />
+        <>
+          {servers.error && <RefreshError error={servers.error} className="mb-4" />}
+          <FleetView
+            servers={list}
+            counts={counts}
+            link={link}
+            images={images.error ? null : images.data}
+            isAdmin={isAdmin}
+          />
+        </>
       )}
     </>
   );

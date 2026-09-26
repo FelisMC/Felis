@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import i18next from "i18next";
@@ -156,5 +156,43 @@ describe("Dashboard", () => {
 
     await screen.findByText(t("welcome_title"));
     expect(calls.listImages).not.toHaveBeenCalled();
+  });
+});
+
+describe("Dashboard following the fleet", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // The fleet grid names each server with its phase.
+  const tile = () => screen.getByTitle(/^lobby · /).getAttribute("title");
+  const phase = (p: string) => `lobby · ${i18next.t(`servers:phase_${p}`)}`;
+
+  it("rereads the servers on its own, and keeps the last read when a reread fails", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    calls.myServers.mockResolvedValue([{ ...lobby, phase: "Stopped", desiredState: "Stopped", playersOnline: 0 }]);
+    renderDashboard();
+    await screen.findByTitle(/^lobby · /);
+    expect(tile()).toBe(phase("stopped"));
+
+    calls.myServers.mockResolvedValue([lobby]);
+    await act(() => vi.advanceTimersByTimeAsync(9_000));
+    expect(calls.myServers).toHaveBeenCalledTimes(1);
+    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    expect(calls.myServers).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(tile()).toBe(phase("running")));
+
+    calls.myServers.mockRejectedValue(failure("servers unavailable"));
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("servers unavailable");
+    expect(tile()).toBe(phase("running"));
+  });
+
+  it("counts a server just woken as starting", async () => {
+    calls.myServers.mockResolvedValue([{ ...lobby, phase: "Stopped", desiredState: "Running", playersOnline: 0 }]);
+    renderDashboard();
+    await screen.findByTitle(/^lobby · /);
+    expect(tile()).toBe(phase("starting"));
   });
 });

@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import i18next from "i18next";
 import { ServerLuckPerms } from "./ServerLuckPerms";
+import { STATUS_POLL_FAST_MS } from "@/lib/hooks";
 
 const calls = vi.hoisted(() => ({
   status: vi.fn(),
@@ -39,6 +40,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.useRealTimers();
   return i18next.changeLanguage("en-US");
 });
 
@@ -71,5 +73,36 @@ describe("ServerLuckPerms without LuckPerms", () => {
     expect(alerts).toHaveLength(2);
     expect(alerts.every((a) => /LuckPerms isn't installed/.test(a.textContent ?? ""))).toBe(true);
     expect(screen.queryByText(/success/i)).toBeNull();
+  });
+});
+
+describe("ServerLuckPerms on a server that is down", () => {
+  it("switches over once the server is up, and reads who is online then", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    calls.status.mockResolvedValue({ name: "lobby", displayName: "Lobby", phase: "Stopped", desiredState: "Stopped" });
+    renderPage();
+    expect(await screen.findByText("Server is asleep")).toBeTruthy();
+    expect(calls.accessPlayers).not.toHaveBeenCalled();
+
+    calls.status.mockResolvedValue({ name: "lobby", displayName: "Lobby", phase: "Running", desiredState: "Running" });
+    calls.accessPlayers.mockResolvedValue({ name: "lobby", online: 1, max: 20, players: ["Alex"], output: "" });
+    await act(() => vi.advanceTimersByTimeAsync(STATUS_POLL_FAST_MS));
+    expect(await screen.findByRole("button", { name: /Alex/ })).toBeTruthy();
+    expect(calls.accessPlayers).toHaveBeenCalledWith("lobby");
+    expect(screen.queryByText("Server is asleep")).toBeNull();
+  });
+
+  it("shows a server woken elsewhere as starting", async () => {
+    calls.status.mockResolvedValue({ name: "lobby", displayName: "Lobby", phase: "Stopped", desiredState: "Running" });
+    renderPage();
+    expect(await screen.findByText("Server is starting")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Wake" })).toBeNull();
+  });
+
+  it("says a server asked to stop is shutting down, before its pod is gone", async () => {
+    calls.status.mockResolvedValue({ name: "lobby", displayName: "Lobby", phase: "Running", desiredState: "Stopped" });
+    renderPage();
+    expect(await screen.findByText("Server is shutting down")).toBeTruthy();
+    expect(screen.queryByPlaceholderText("Steve")).toBeNull();
   });
 });

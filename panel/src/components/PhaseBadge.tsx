@@ -72,6 +72,29 @@ export function startFailure(s: {
   return s.startGaveUp ? "gaveUp" : "retrying";
 }
 
+/** PendingPower is a server asked to move that has not got there yet: asked to
+ *  run with no pod up ("start"), or asked to stop while still up ("stop"). */
+export type PendingPower = "start" | "stop";
+
+/** pendingPower compares the phase with desiredState, the lever a wake or stop
+ *  sets at once; the phase follows once the operator acts. Without desiredState
+ *  (a public view) nothing reads as pending. */
+export function pendingPower(s: { phase: Phase; desiredState?: string }): PendingPower | null {
+  if (s.desiredState === "Running" && (s.phase === "Stopped" || s.phase === "Stopping" || s.phase === "Unknown")) {
+    return "start";
+  }
+  if (s.desiredState === "Stopped" && (s.phase === "Running" || s.phase === "Starting")) return "stop";
+  return null;
+}
+
+/** shownPhase is the phase a person should see: one already asked to start reads
+ *  Starting, one asked to stop reads Stopping, so a wake or stop shows at once
+ *  instead of the old phase lingering until the operator gets to it. */
+export function shownPhase(s: { phase: Phase; desiredState?: string }): Phase {
+  const pending = pendingPower(s);
+  return pending === "start" ? "Starting" : pending === "stop" ? "Stopping" : s.phase;
+}
+
 export function PhaseBadge({
   phase,
   failure = null,

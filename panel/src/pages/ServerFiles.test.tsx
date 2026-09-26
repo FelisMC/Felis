@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import i18next from "i18next";
 import { ServerFiles } from "./ServerFiles";
+import { STATUS_POLL_FAST_MS } from "@/lib/hooks";
 
-const mocks = vi.hoisted(() => ({ writeServerFile: vi.fn() }));
+const mocks = vi.hoisted(() => ({ writeServerFile: vi.fn(), status: vi.fn() }));
 
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
@@ -14,7 +15,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
     ...actual,
     api: {
       ...actual.api,
-      status: () => Promise.resolve({ name: "lobby", subdomain: "lobby", phase: "Stopped", ready: false }),
+      status: mocks.status,
       listServerFiles: () =>
         Promise.resolve({
           path: "",
@@ -43,8 +44,15 @@ async function openEditor() {
   return { dialog, editor: within(dialog).getByRole("textbox") as HTMLTextAreaElement };
 }
 
+const stopped = { name: "lobby", subdomain: "lobby", phase: "Stopped", desiredState: "Stopped", ready: false };
+
 beforeEach(() => {
   mocks.writeServerFile.mockReset();
+  mocks.status.mockReset();
+  mocks.status.mockResolvedValue(stopped);
+});
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("ServerFiles editor", () => {
@@ -91,5 +99,31 @@ describe("ServerFiles editor", () => {
     window.dispatchEvent(dirty);
 
     expect(dirty.defaultPrevented).toBe(true);
+  });
+});
+
+describe("ServerFiles on a running server", () => {
+  it("lists the files once the server has stopped, without a reload", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mocks.status.mockResolvedValue({ ...stopped, phase: "Running", desiredState: "Running", ready: true });
+    render(
+      <MemoryRouter initialEntries={["/servers/lobby/files"]}>
+        <Routes>
+          <Route path="/servers/:name/files" element={<ServerFiles />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText(t("files:stopped_required_title"))).toBeTruthy();
+    expect(screen.queryByText("server.properties")).toBeNull();
+
+    mocks.status.mockResolvedValue(stopped);
+    await act(() => vi.advanceTimersByTimeAsync(STATUS_POLL_FAST_MS));
+    expect(await screen.findByText("server.properties")).toBeTruthy();
+    expect(screen.queryByText(t("files:stopped_required_title"))).toBeNull();
+
+    // Stopped is what it waited for: nothing more to reread.
+    const reads = mocks.status.mock.calls.length;
+    await act(() => vi.advanceTimersByTimeAsync(STATUS_POLL_FAST_MS * 3));
+    expect(mocks.status.mock.calls.length).toBe(reads);
   });
 });

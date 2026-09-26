@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { act, renderHook } from "@testing-library/react";
-import { useAsync, type AsyncOptions } from "./hooks";
+import { useAsync, usePolling, type AsyncOptions } from "./hooks";
 
 // A request the test settles by hand, one per call, in call order.
 function requests() {
@@ -98,5 +98,59 @@ describe("useAsync", () => {
     await h.settle(1, { ok: "server b" });
     await h.settle(0, { ok: "server a" });
     expect(h.result.current.data).toBe("server b");
+  });
+});
+
+describe("usePolling", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+  });
+
+  function setHidden(hidden: boolean) {
+    Object.defineProperty(document, "hidden", { configurable: true, value: hidden });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }
+
+  it("reloads on every tick while the tab is in view, and at once when it comes back", () => {
+    vi.useFakeTimers();
+    const reload = vi.fn();
+    renderHook(() => usePolling(reload, 1000));
+
+    vi.advanceTimersByTime(2500);
+    expect(reload).toHaveBeenCalledTimes(2);
+
+    setHidden(true);
+    vi.advanceTimersByTime(5000);
+    expect(reload).toHaveBeenCalledTimes(2);
+
+    setHidden(false);
+    expect(reload).toHaveBeenCalledTimes(3);
+  });
+
+  it("follows a new interval and stops when paused or unmounted", () => {
+    vi.useFakeTimers();
+    const reload = vi.fn();
+    const hook = renderHook(({ ms }: { ms: number | null }) => usePolling(reload, ms), {
+      initialProps: { ms: 1000 as number | null },
+    });
+    vi.advanceTimersByTime(1000);
+    expect(reload).toHaveBeenCalledTimes(1);
+
+    hook.rerender({ ms: 5000 });
+    vi.advanceTimersByTime(4000);
+    expect(reload).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1000);
+    expect(reload).toHaveBeenCalledTimes(2);
+
+    hook.rerender({ ms: null });
+    vi.advanceTimersByTime(20000);
+    setHidden(false);
+    expect(reload).toHaveBeenCalledTimes(2);
+
+    hook.rerender({ ms: 1000 });
+    hook.unmount();
+    vi.advanceTimersByTime(5000);
+    expect(reload).toHaveBeenCalledTimes(2);
   });
 });

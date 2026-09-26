@@ -2,17 +2,16 @@ import { useParams } from "react-router-dom";
 import { Users } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { BackLink } from "@/components/BackLink";
-import { PhaseBadge } from "@/components/PhaseBadge";
-import { Loading, ErrorState, NotYours, NotRunning } from "@/components/States";
+import { PhaseBadge, shownPhase, startFailure } from "@/components/PhaseBadge";
+import { Loading, ErrorState, NotYours, NotRunning, RefreshError } from "@/components/States";
 import { PageHeader } from "@/components/PageHeader";
 import { OnlineSection } from "@/components/players/OnlineSection";
 import { WhitelistSection } from "@/components/players/WhitelistSection";
 import { BansSection } from "@/components/players/BansSection";
 import { api } from "@/lib/api";
-import { useAsync } from "@/lib/hooks";
+import { STATUS_POLL_SLOW_MS, STATUS_POLL_FAST_MS, useAsync, usePolling } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
 import { canManage, ownershipPending } from "@/lib/ownership";
-import type { Phase } from "@/lib/types";
 
 /** ServerPlayers is the per-server player-management subpage (/servers/:name/players):
  *  whitelist today, online roster and bans as they land. It owns its own gating —
@@ -23,6 +22,9 @@ export function ServerPlayers() {
   const { t } = useTranslation("servers");
   const { isAdmin, loading: tierLoading } = useTier();
   const { data, error, loading, reload } = useAsync(() => api.status(name), [name]);
+  // The poll is what switches this page over once a wake lands, and back to
+  // NotRunning when the server stops (idle stop, the console, a player's timeout).
+  usePolling(reload, data && shownPhase(data) === "Running" ? STATUS_POLL_SLOW_MS : STATUS_POLL_FAST_MS);
   const {
     data: mine,
     error: mineError,
@@ -44,7 +46,7 @@ export function ServerPlayers() {
       </>
     );
   }
-  if (error) {
+  if (error && !data) {
     return (
       <>
         {back}
@@ -62,14 +64,15 @@ export function ServerPlayers() {
   // NotYours, which would wrongly tell an owner the server isn't theirs on a blip.
   const pending = ownershipPending(tierLoading, isAdmin, mine, mineError);
   const owned = canManage(isAdmin, mine, name);
-  const phase: Phase = data.phase;
+  const phase = shownPhase(data);
+  const failure = startFailure(data);
 
   const header = (
     <PageHeader
       icon={Users}
       title={data.displayName || data.name}
       subtitle={t("players_title")}
-      actions={<PhaseBadge phase={phase} />}
+      actions={<PhaseBadge phase={phase} failure={failure} autoRestarts={data.autoRestarts} />}
     />
   );
 
@@ -77,6 +80,7 @@ export function ServerPlayers() {
     <>
       {back}
       {header}
+      {error && <RefreshError error={error} className="mb-4" />}
       {pending ? (
         <Loading />
       ) : mineError ? (
@@ -84,7 +88,16 @@ export function ServerPlayers() {
       ) : !owned ? (
         <NotYours title={t("players_not_yours_title")} body={t("players_not_yours_body")} />
       ) : phase !== "Running" ? (
-        <NotRunning title={t("players_not_running_title")} body={t("players_not_running_body")} serverName={name} onWoken={reload} />
+        <NotRunning
+          title={t("players_not_running_title")}
+          body={t("players_not_running_body")}
+          serverName={name}
+          phase={data.phase}
+          desiredState={data.desiredState}
+          failure={failure}
+          autoRestarts={data.autoRestarts}
+          onWoken={reload}
+        />
       ) : (
         <div className="space-y-4">
           {/* Ordered as a who-may-be-here gradient: who is on right now → who may

@@ -4,12 +4,12 @@ import { Terminal, Moon, Shield, ShieldAlert, HelpCircle, Loader2, Users, Archiv
 import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
 import { BackLink } from "@/components/BackLink";
-import { MAX_AUTO_RESTARTS, PhaseBadge, startFailure, type StartFailure } from "@/components/PhaseBadge";
+import { MAX_AUTO_RESTARTS, PhaseBadge, pendingPower, shownPhase, startFailure, type StartFailure } from "@/components/PhaseBadge";
 import { PageHeader } from "@/components/PageHeader";
 import { LogConsole } from "@/components/LogConsole";
-import { Loading, ErrorState } from "@/components/States";
+import { Loading, ErrorState, RefreshError } from "@/components/States";
 import { api, consoleStreamURL, humanizeError } from "@/lib/api";
-import { useAsync, useConfig } from "@/lib/hooks";
+import { STATUS_POLL_FAST_MS, STATUS_POLL_SLOW_MS, useAsync, useConfig, usePolling } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
 import { canManage } from "@/lib/ownership";
 import { joinAddress } from "@/lib/config";
@@ -17,6 +17,7 @@ import { CopyAddress } from "@/components/CopyAddress";
 import type { Phase, AutostartPolicy } from "@/lib/types";
 import { EditServerDialog } from "@/components/EditServerDialog";
 import { PowerButton } from "@/components/PowerButton";
+import { cn } from "@/lib/utils";
 import { InlineError } from "@/components/MessageLine";
 
 // notStreamingCopy explains why there is no live feed for a phase that has no
@@ -24,9 +25,17 @@ import { InlineError } from "@/components/MessageLine";
 // Stopped/Failed/Stopping each get their own honest line rather than an empty
 // console. `default` covers Unknown plus any future phase the backend may emit
 // that the panel hasn't modelled yet — the screen stays informative regardless.
-function useNotStreamingCopy(phase: Phase): { icon: LucideIcon; title: string; body: string } {
+function useNotStreamingCopy(phase: Phase): { icon: LucideIcon; title: string; body: string; spin?: boolean } {
   const { t } = useTranslation("servers");
   switch (phase) {
+    case "Starting":
+      // Asked to start with no pod yet: the stream attaches once the pod is up.
+      return {
+        icon: Loader2,
+        title: t("server_waking_title"),
+        body: t("server_waking_body"),
+        spin: true,
+      };
     case "Stopped":
       return {
         icon: Moon,
@@ -49,10 +58,10 @@ function useNotStreamingCopy(phase: Phase): { icon: LucideIcon; title: string; b
 }
 
 function NotStreaming({ phase }: { phase: Phase }) {
-  const { icon: Icon, title, body } = useNotStreamingCopy(phase);
+  const { icon: Icon, title, body, spin } = useNotStreamingCopy(phase);
   return (
     <div className="flex items-start gap-3 rounded-md border border-dashed border-border bg-muted/30 p-6 text-sm text-muted-foreground">
-      <Icon className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground/70" />
+      <Icon className={cn("mt-0.5 h-5 w-5 shrink-0 text-muted-foreground/70", spin && "animate-spin")} />
       <div className="space-y-1">
         <p className="font-medium text-foreground">{title}</p>
         <p>{body}</p>
@@ -218,6 +227,17 @@ export function ServerConsole() {
     () => api.status(name),
     [name],
   );
+  // The header, the power button and whether the stream attaches all follow the
+  // status, so it is reread: fast while the server is on its way somewhere (a
+  // wake or stop just sent, a pod starting, an automatic retry due), slow while
+  // nothing is due, which still catches an idle stop or a wake from the lobby.
+  const moving =
+    !!data &&
+    (data.phase === "Starting" ||
+      data.phase === "Stopping" ||
+      pendingPower(data) !== null ||
+      startFailure(data) === "retrying");
+  usePolling(reload, moving ? STATUS_POLL_FAST_MS : STATUS_POLL_SLOW_MS);
   const { data: mine } = useAsync(
     () => (isAdmin ? Promise.resolve([]) : api.myServers()),
     [isAdmin, name],
@@ -242,20 +262,22 @@ export function ServerConsole() {
 
       {loading && !data ? (
         <Loading />
-      ) : error ? (
+      ) : error && !data ? (
         <ErrorState error={error} onRetry={reload} />
       ) : data ? (
         <>
+          {error && <RefreshError error={error} />}
           <PageHeader
             icon={Terminal}
             title={data.displayName || data.name}
             subtitle={cfg ? <CopyAddress address={joinAddress(data.subdomain, cfg)} /> : undefined}
             actions={
               <div className="flex items-center gap-2">
-                <PhaseBadge phase={data.phase} failure={failure} autoRestarts={data.autoRestarts} />
+                <PhaseBadge phase={shownPhase(data)} failure={failure} autoRestarts={data.autoRestarts} />
                 <PowerButton
                   name={name}
-                  live={data.phase === "Running" || data.phase === "Starting" || data.phase === "Stopping"}
+                  phase={data.phase}
+                  desiredState={data.desiredState}
                   failed={failure !== null}
                   playersOnline={data.playersOnline}
                   playerCountUnknown={data.playerCountUnknown}
@@ -273,7 +295,7 @@ export function ServerConsole() {
                 <CardContent className="p-0 flex-1 flex flex-col lg:min-h-0 min-h-0 bg-black">
                   {!streamable ? (
                     <div className="flex-1 flex flex-col justify-center p-6 bg-black">
-                      <NotStreaming phase={data.phase} />
+                      <NotStreaming phase={shownPhase(data)} />
                     </div>
                   ) : cfg ? (
                     <div className="flex-1 flex flex-col lg:min-h-0 min-h-0 bg-black">

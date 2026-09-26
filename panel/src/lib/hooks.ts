@@ -112,3 +112,26 @@ export function useUnsavedGuard(dirty: boolean): void {
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [dirty]);
 }
+
+/** How often a server page rereads its status: fast while it waits on the
+ *  server (coming up, going down, or needed up), slow while nothing is due. */
+export const STATUS_POLL_FAST_MS = 4_000;
+export const STATUS_POLL_SLOW_MS = 15_000;
+
+/** usePolling re-runs `reload` every `ms` while the tab is visible, and at once
+ *  when the tab comes back into view, so a page watching a server follows it
+ *  without a manual refresh. `ms` null pauses it. */
+export function usePolling(reload: () => void, ms: number | null): void {
+  useEffect(() => {
+    if (ms === null) return;
+    const tick = () => {
+      if (!document.hidden) reload();
+    };
+    const id = window.setInterval(tick, ms);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, [reload, ms]);
+}

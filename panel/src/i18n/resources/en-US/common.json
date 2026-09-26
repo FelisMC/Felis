@@ -37,5 +37,6 @@
   "open_menu": "Open menu",
   "copy_address": "Copy address {{address}}",
   "address_copied": "Copied",
-  "address_copy_failed": "Selected — copy it from the menu"
+  "address_copy_failed": "Selected — copy it from the menu",
+  "refresh_failed": "Couldn't refresh; what you see is the last status read."
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   Network,
@@ -30,16 +30,16 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
-import { PhaseBadge, PHASE_KEY, PHASE_COLOR, startFailure } from "@/components/PhaseBadge";
+import { PhaseBadge, PHASE_KEY, PHASE_COLOR, shownPhase, startFailure } from "@/components/PhaseBadge";
 import { PowerButton } from "@/components/PowerButton";
-import { Loading, ErrorState, EmptyState } from "@/components/States";
+import { Loading, ErrorState, EmptyState, RefreshError } from "@/components/States";
 import { Pagination } from "@/components/Pagination";
 import { CreateServerDialog } from "@/components/CreateServerDialog";
 import { StatCard } from "@/components/StatCard";
 import { CopyAddress } from "@/components/CopyAddress";
 import { PageHeader } from "@/components/PageHeader";
 import { api, humanizeError } from "@/lib/api";
-import { useAsync, useConfig } from "@/lib/hooks";
+import { useAsync, useConfig, usePolling } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
 import { joinAddress, type RuntimeConfig } from "@/lib/config";
 import { matchScore } from "@/lib/fuzzy";
@@ -107,19 +107,7 @@ export function ServersPage() {
   const [phaseFilter, setPhaseFilter] = useState<Phase | "all">("all");
   const [page, setPage] = useState(1);
 
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      if (!document.hidden) reload();
-    }, REFRESH_MS);
-    const onVisible = () => {
-      if (!document.hidden) reload();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      window.clearInterval(id);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [reload]);
+  usePolling(reload, REFRESH_MS);
 
   const servers = useMemo<UnifiedServer[]>(() => {
     if (!data) return [];
@@ -177,7 +165,8 @@ export function ServersPage() {
     let playersOnline = 0;
     let playersMax = 0;
     for (const s of servers) {
-      if (counts[s.phase as Phase] !== undefined) counts[s.phase as Phase]++;
+      const phase = shownPhase(s);
+      if (counts[phase] !== undefined) counts[phase]++;
       else counts.Unknown++;
       playersOnline += s.playersOnline ?? 0;
       playersMax += s.playersMax ?? 0;
@@ -187,7 +176,7 @@ export function ServersPage() {
 
   const visible = useMemo(() => {
     const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    const phaseOk = (s: UnifiedServer) => phaseFilter === "all" || s.phase === phaseFilter;
+    const phaseOk = (s: UnifiedServer) => phaseFilter === "all" || shownPhase(s) === phaseFilter;
     if (terms.length === 0) return servers.filter(phaseOk);
     const scored: { s: UnifiedServer; score: number }[] = [];
     for (const s of servers) {
@@ -242,12 +231,7 @@ export function ServersPage() {
         <Loading />
       ) : (
         <>
-          {error && (
-            <div role="alert" className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-              <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-              {humanizeError(error)}
-            </div>
-          )}
+          {error && <RefreshError error={error} />}
 
           {/* Stats Cards in a full grid row */}
           <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
@@ -468,7 +452,6 @@ function ServerActions({
     );
   }
 
-  const live = isLive(server.phase);
   return (
     <div className={cn("flex flex-col items-end gap-1", className)}>
       <div className="flex flex-wrap items-start justify-end gap-2 xl:flex-nowrap">
@@ -514,7 +497,8 @@ function ServerActions({
           <>
             <PowerButton
               name={server.name}
-              live={live}
+              phase={server.phase}
+              desiredState={server.desiredState}
               failed={startFailure(server) !== null}
               playersOnline={server.playersOnline}
               playerCountUnknown={server.playerCountUnknown}
@@ -617,7 +601,7 @@ function ServerRow({
       <td className="px-4 py-3 align-middle text-left">
         <div className="flex items-center gap-2">
           <ServerName server={server} />
-          <PhaseBadge phase={server.phase} failure={startFailure(server)} autoRestarts={server.autoRestarts} />
+          <PhaseBadge phase={shownPhase(server)} failure={startFailure(server)} autoRestarts={server.autoRestarts} />
         </div>
         {address && <CopyAddress address={address} className="md:max-w-[16rem]" />}
       </td>
@@ -676,7 +660,7 @@ function ServerMobileCard({
               <div className="flex min-w-0 items-baseline gap-2">
                 <ServerName server={server} />
               </div>
-              <PhaseBadge phase={server.phase} failure={startFailure(server)} autoRestarts={server.autoRestarts} />
+              <PhaseBadge phase={shownPhase(server)} failure={startFailure(server)} autoRestarts={server.autoRestarts} />
             </div>
             {/* Its own line: the join address is what a player came for, so it
                 gets the card's full width rather than sharing it with the badge. */}

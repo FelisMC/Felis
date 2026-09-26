@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { PHASE_COLOR, phaseColor, phaseVariant, startFailure } from "@/components/PhaseBadge";
+import { PHASE_COLOR, pendingPower, phaseColor, phaseVariant, shownPhase, startFailure } from "@/components/PhaseBadge";
 import type { Phase } from "@/lib/types";
 
 // The closed lifecycle set felis-api can emit — the Go source of truth is
@@ -58,4 +58,35 @@ describe("start failure", () => {
     expect(startFailure({ phase: "Failed", desiredState: "Running" })).toBe("retrying");
     expect(startFailure({ phase: "Failed", desiredState: "Running", startGaveUp: true })).toBe("gaveUp");
   });
+});
+
+describe("a server asked to move", () => {
+  // desiredState flips the moment a wake or stop is accepted; the phase follows
+  // once the operator acts. Every pair the two can be in:
+  const cases: [Phase, "Running" | "Stopped" | undefined, "start" | "stop" | null, Phase][] = [
+    ["Stopped", "Running", "start", "Starting"],
+    ["Unknown", "Running", "start", "Starting"],
+    // Woken while going down: it comes back up once it is down.
+    ["Stopping", "Running", "start", "Starting"],
+    ["Starting", "Running", null, "Starting"],
+    ["Running", "Running", null, "Running"],
+    // A failed start keeps its own badge and retry.
+    ["Failed", "Running", null, "Failed"],
+    ["Running", "Stopped", "stop", "Stopping"],
+    ["Starting", "Stopped", "stop", "Stopping"],
+    ["Stopping", "Stopped", null, "Stopping"],
+    ["Stopped", "Stopped", null, "Stopped"],
+    ["Failed", "Stopped", null, "Failed"],
+    ["Unknown", "Stopped", null, "Unknown"],
+    // A view without desiredState shows the phase as it is.
+    ["Stopped", undefined, null, "Stopped"],
+    ["Running", undefined, null, "Running"],
+  ];
+
+  for (const [phase, desiredState, pending, shown] of cases) {
+    it(`${phase} asked ${desiredState ?? "(unknown)"} is pending ${pending} and shows ${shown}`, () => {
+      expect(pendingPower({ phase, desiredState })).toBe(pending);
+      expect(shownPhase({ phase, desiredState })).toBe(shown);
+    });
+  }
 });

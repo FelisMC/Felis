@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { ServerConsole } from "./ServerConsole";
+import { STATUS_POLL_FAST_MS, STATUS_POLL_SLOW_MS } from "@/lib/hooks";
 
 const calls = vi.hoisted(() => ({ status: vi.fn(), myServers: vi.fn(), listImages: vi.fn() }));
 vi.mock("@/lib/tier", () => ({
@@ -92,5 +93,61 @@ describe("ServerConsole edit dialog", () => {
     expect(within(memory).getByText("4Gi")).toBeTruthy();
     expect(screen.queryByText("3072M")).toBeNull();
     expect((screen.getByLabelText("CPU Limit") as HTMLInputElement).value).toBe("2");
+  });
+});
+
+describe("ServerConsole following the server", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const advance = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
+
+  it("picks up a server woken elsewhere without a reload", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    calls.status.mockResolvedValue(status({ phase: "Stopped", desiredState: "Stopped" }));
+    renderConsole();
+    expect(await screen.findByText("Server is asleep")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Wake" })).toBeTruthy();
+
+    // Nothing is due, so it rereads at the slow pace.
+    calls.status.mockResolvedValue(status({ phase: "Running", desiredState: "Running", ready: true }));
+    await advance(STATUS_POLL_SLOW_MS - 1_000);
+    expect(calls.status).toHaveBeenCalledTimes(1);
+    await advance(1_000);
+    expect(await screen.findByTestId("log-stream")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
+    expect(screen.queryByText("Server is asleep")).toBeNull();
+  });
+
+  it("shows a wake at once and rereads fast until the pod is up", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    calls.status.mockResolvedValue(status({ phase: "Stopped", desiredState: "Running" }));
+    renderConsole();
+    expect(await screen.findByText("Server is starting")).toBeTruthy();
+    expect(screen.getByText("Starting")).toBeTruthy();
+    expect(screen.queryByText("Stopped")).toBeNull();
+    // Already asked to run: a second Wake would only be refused; Stop is the way out.
+    expect(screen.queryByRole("button", { name: "Wake" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
+
+    calls.status.mockResolvedValue(status({ phase: "Starting", desiredState: "Running" }));
+    await advance(STATUS_POLL_FAST_MS);
+    expect(calls.status).toHaveBeenCalledTimes(2);
+    expect(await screen.findByTestId("log-stream")).toBeTruthy();
+  });
+
+  it("keeps the console when a reread fails, and says the status may be old", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    calls.status.mockResolvedValue(status({ phase: "Running", desiredState: "Running", ready: true }));
+    renderConsole();
+    expect(await screen.findByTestId("log-stream")).toBeTruthy();
+
+    calls.status.mockRejectedValue({ status: 409, code: "test_failure", message: "status backend down" });
+    await advance(STATUS_POLL_SLOW_MS);
+    await waitFor(() => expect(screen.getByText(/Couldn't refresh/)).toBeTruthy());
+    expect(screen.getByText(/status backend down/)).toBeTruthy();
+    expect(screen.getByTestId("log-stream")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
   });
 });
