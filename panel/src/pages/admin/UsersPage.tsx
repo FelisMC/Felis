@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { RoleBadge } from "@/components/RoleBadge";
 import { UserStatusBadge } from "@/components/UserStatusBadge";
@@ -30,35 +30,57 @@ import { formatAbsolute } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { UserView } from "@/lib/types";
 
+const SEARCH_DEBOUNCE_MS = 300;
+
 export function UsersPage() {
   const { t, i18n } = useTranslation("admin");
   const locale = i18n.language;
   const navigate = useNavigate();
 
+  // The box searches on the server a moment after typing stops, and a new
+  // search starts from page one: the page someone was on may not exist in the
+  // new results. Enter or the button applies it at once.
   const [query, setQuery] = useState("");
+  const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("");
   const [disabledFilter, setDisabledFilter] = useState("");
   const [page, setPage] = useState(0);
   const pageSize = 20;
 
+  useEffect(() => {
+    const next = query.trim();
+    if (next === search) return;
+    const timer = setTimeout(() => {
+      setSearch(next);
+      setPage(0);
+    }, SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [query, search]);
+
   const fetchUsers = useCallback(
     () =>
       api.listUsers({
-        query: query || undefined,
+        query: search || undefined,
         role: (roleFilter || undefined) as "admin" | "user" | undefined,
         disabled: (disabledFilter || undefined) as "true" | "false" | undefined,
         limit: pageSize,
         offset: page * pageSize,
       }),
-    [query, roleFilter, disabledFilter, page],
+    [search, roleFilter, disabledFilter, page],
   );
 
   const { data, error, loading, reload } = useAsync(fetchUsers, [fetchUsers], { keepPrevious: true });
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
+    const next = query.trim();
+    // Unchanged and on page one: the press is a refresh.
+    if (next === search && page === 0) {
+      reload();
+      return;
+    }
+    setSearch(next);
     setPage(0);
-    reload();
   };
 
   const totalPages = data ? Math.max(1, Math.ceil(data.total / pageSize)) : 1;
