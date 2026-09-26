@@ -12,14 +12,16 @@ Evidence tags follow troubleshooting.md: **[VM-VERIFIED]** was run on a real hos
 ## 1. Supported hosts
 
 `deploy/bootstrap.sh` provisions a single node. It needs systemd, root, and one of the
-package managers below; everything else (Docker, k3s, the JRE, cloudflared) it installs.
+package managers below; everything else (k3s, the JRE, cloudflared, and Docker when an image
+has to be built on the host; see "Where the binary and the images come from" below) it
+installs.
 PostgreSQL runs inside k3s as the `felis-postgres` Deployment, from the official image the
 release pins by digest, with its data on the host in `/var/lib/felis/postgres`.
 
 | OS family | Package manager | Architectures | Status |
 |---|---|---|---|
 | CentOS Stream 9 (firewalld active, SELinux enforcing) | dnf | aarch64 | **[VM-VERIFIED]** install, same-version rerun, upgrade, uninstall and reinstall, with the database on the host PostgreSQL 13 of the releases before felis-postgres; felis-postgres and the move into it [SH-TESTED] |
-| Ubuntu 24.04 LTS | apt | x86_64 | **[CI]** fresh install, same-commit rerun, and upgrade from the newest release to the pushed commit |
+| Ubuntu 24.04 LTS | apt | x86_64 | **[CI]** fresh install and same-commit rerun from the pushed commit's release assets, and upgrade from the newest release onto them; the on-host build weekly |
 | RHEL / Rocky / Alma 9, Fedora | dnf | x86_64, aarch64 | [CODE-ONLY] same code path as CentOS Stream |
 | Debian 12, other Ubuntu releases | apt | x86_64, aarch64 | [CODE-ONLY] |
 | openSUSE Leap / Tumbleweed | zypper | x86_64, aarch64 | [CODE-ONLY] |
@@ -45,10 +47,11 @@ once, then stops with nothing touched **[SH-TESTED]**:
 
 - the architecture, systemd as init, and the memory cgroup controller k3s needs;
 - RAM: under 1.75 GiB is refused (a "2 GB" VPS passes), under 3.5 GiB is a warning;
-- free disk on each filesystem it writes to, summed when they share one: about 23 GiB
-  on a bare host, 7 GiB for a rerun, a directory that already holds data (Docker's cache,
-  a reused k3s) counting at the rerun size; a filesystem that would end over 85%, where
-  k3s starts deleting cached images, is a warning;
+- free disk on each filesystem it writes to, summed when they share one: on a bare host
+  about 17 GiB installing a release, 15 GiB from `FELIS_ARTIFACT_DIR` and 23 GiB when it
+  builds the images itself; 7 GiB for a rerun; a directory that already holds data
+  (Docker's cache, a reused k3s) counting at the rerun size; a filesystem that would end
+  over 85%, where k3s starts deleting cached images, is a warning;
 - the ports it will listen on: the game port, the panel NodePort, k3s's 6443/6444 and
   10248–10259 and the registry's loopback 5000. A port held by the installer's own
   proxy or k3s is a rerun and passes;
@@ -56,7 +59,10 @@ once, then stops with nothing touched **[SH-TESTED]**:
 - the node address or a routed network inside k3s's `10.42.0.0/16` and `10.43.0.0/16`
   (a Docker network there is the usual case); a wider route such as a `10.0.0.0/8` VPN
   is a warning;
-- HTTPS to the hosts it downloads from (GitHub, PaperMC's download API, Docker Hub).
+- HTTPS to the hosts it downloads from: GitHub and PaperMC's download API always, Docker
+  Hub when it builds images on the host. Installing a release, an unreachable Docker Hub
+  is a warning (it is needed only if an asset turns out unusable); from
+  `FELIS_ARTIFACT_DIR` it is not checked.
 
 `FELIS_PREFLIGHT=warn` reports the same problems as warnings and installs anyway, for a
 host the checks misjudge.
@@ -85,6 +91,51 @@ wakes and stops until their pod is back. Joining k3s agents to the cluster is un
 and gains no failover. A multi-node shape would need, at least, storage that can follow a
 pod to another node and leader election in felis-operator (controller-runtime's
 `LeaderElection`) so a second replica can stand by.
+
+### Where the binary and the images come from
+
+A release install (the default channel, and the setup console) takes everything Felis
+builds from that release's assets, each checked against the release's `SHA256SUMS` before
+it is used: the `felis` binary, the control-plane image, the limbo, lobby and paper images,
+the registry and PostgreSQL images (at the digests `bootstrap.sh` pins), and
+`felis-velocity.jar`. The images go into k3s's containerd with `k3s ctr images import` and
+from there into the in-cluster registry, so the host needs no Docker, Gradle, Go or Docker
+Hub for them. k3s's own images come from k3s's GitHub release
+(`k3s-airgap-images-<arch>.tar.zst`, checked against k3s's sha256 list) before k3s first
+starts. An upgrade downloads only the image tars holding an image the host lacks; they wait
+in `/var/lib/felis/artifacts` until the registry has the images, and are deleted then.
+`deploy/build-release-artifacts.sh` documents every asset. The decisions are **[SH-TESTED]**;
+the import into a real k3s is **[CODE-ONLY]** until the e2e job runs.
+
+The installer builds on the host instead, installing Docker for it and stopping Docker once
+the images are in the registry, when:
+
+- the source is not a release: `FELIS_VERSION_BOOTSTRAP=dev`, a pinned `FELIS_REF`, or
+  `FELIS_SKIP_FETCH`;
+- `FELIS_GAME_STACK=latest`, for the login, lobby and paper images (the rest still come
+  from the release);
+- the release publishes no `SHA256SUMS` (one cut before release assets existed, or still
+  uploading), or an asset is missing, fails its checksum or is malformed. Only that image is
+  built (the registry and PostgreSQL images are pulled from Docker Hub instead), and a
+  warning names it; troubleshooting §15c lists the messages.
+
+`FELIS_ARTIFACT_DIR=<absolute path>` installs from a directory instead of the release: a
+release's assets downloaded there (every `felis-*` file and `SHA256SUMS`), or the directory
+`deploy/build-release-artifacts.sh <version> <dir>` wrote. Nothing of Felis's own is
+downloaded or built (except the game images under `FELIS_GAME_STACK=latest`, which no release
+ships), so an asset the directory lacks, or one failing its checksum, stops the install; k3s,
+the JRE, cloudflared and Velocity still come from GitHub and PaperMC. It
+cannot be combined with `FELIS_REF` or `FELIS_SKIP_FETCH`, which name a source too.
+
+```
+# on a machine with access: the release's assets for the host's architecture
+gh release download v1.4.0 --repo FelisMC/Felis --dir felis-v1.4.0 \
+  --pattern 'felis-*linux-amd64*' --pattern felis-velocity.jar --pattern SHA256SUMS
+# on the host, after copying the directory over
+sudo FELIS_ARTIFACT_DIR=/root/felis-v1.4.0 bash bootstrap.sh
+```
+
+`SHA256SUMS` lists both architectures; the files of the other one may be left out.
 
 ### While felis-api restarts
 
@@ -140,9 +191,10 @@ server running **[VM-VERIFIED]**:
 Every game server adds the memory its owner gave it: the pod's limit equals its request,
 and the JVM heap is derived from it (§1a). Quotas cap it per user (panel → 管理 → 配额).
 
-The installer's own peak is the image builds (Docker plus a Gradle container); it stops
-Docker afterwards so that memory goes back to the servers. On a host under 2 GB of RAM
-without swap it adds a 2 GiB `/swapfile`.
+A release install builds nothing (§1). When the installer builds on the host its peak is
+the image builds (Docker plus a Gradle container); it stops Docker afterwards so that memory
+goes back to the servers. On a host under 2 GB of RAM without swap it adds a 2 GiB
+`/swapfile`.
 
 ### Recommendations
 
@@ -176,7 +228,8 @@ curl -fsSL <raw-url>/deploy/bootstrap.sh | sudo FELIS_VELOCITY_XMX=2G bash
 | World archives | the `felis-backups` volume (`FELIS_BACKUP_STORAGE`, default 10Gi requested) | about one compressed world per backup kept |
 | In-cluster registry | the `registry` volume (default 10Gi requested) | 2–3 GB for the stock images; grows with custom builds, pruned daily (§9) |
 | k3s's containerd images | `/var/lib/rancher/k3s/agent/containerd` | 6–9 GB |
-| Docker's images and build cache | `/var/lib/containerd` (Docker's containerd store) | 5–10 GB after repeated upgrades |
+| Docker's images and build cache | `/var/lib/containerd` (Docker's containerd store), on a host that built its images (§1) | 5–10 GB after repeated upgrades |
+| Release assets during an install | `/var/lib/felis/artifacts` | up to ~2 GB, deleted once the images are in the registry |
 | Toolchains and sources | `/opt/felis` | ~2.5 GB |
 | Database | `/var/lib/felis/postgres` (felis-postgres's cluster) | tens of MB; the audit log is most of it |
 | Database bundles | `/var/lib/felis/db-backups` | a few MB each, 14 daily kept |
@@ -184,8 +237,9 @@ curl -fsSL <raw-url>/deploy/bootstrap.sh | sudo FELIS_VELOCITY_XMX=2G bash
 k3s's local-path volumes do not enforce the requested sizes (§9), so every volume shares
 the root filesystem. Give the host at least **40 GB**, and 60 GB or more once worlds and
 custom images accumulate. The watchdog mails the owners when a watched filesystem passes
-its threshold, and §13b covers a full disk. `docker builder prune -af` (with Docker
-started) reclaims the build cache when space is short; the next upgrade rebuilds it.
+its threshold, and §13b covers a full disk. On a host that built its images,
+`docker builder prune -af` (with Docker started) reclaims the build cache when space is
+short; the next upgrade rebuilds it.
 
 ## 3. Uninstall
 
@@ -201,8 +255,9 @@ curl -fsSL <raw-url>/deploy/uninstall.sh | sudo bash -s -- --purge   # remove th
 With a private repository, fetch it the way the README fetches `bootstrap.sh`.
 
 Both modes remove the `felis-*` systemd units and `cloudflared-felis.service`, the
-Velocity user, `/opt/felis`, `/usr/local/bin/felis`, the installer's cloudflared binary
-(unless another unit runs it), the `felis_edge` nftables table (and `felis_postgres`, which
+Velocity user, `/opt/felis`, `/usr/local/bin/felis`, the release assets an interrupted
+install left in `/var/lib/felis/artifacts`, the installer's cloudflared binary (unless
+another unit runs it), the `felis_edge` nftables table (and `felis_postgres`, which
 releases before the database moved into k3s loaded) and the firewalld ports the installer
 opened. k3s goes with k3s's own `k3s-uninstall.sh` when the cluster holds nothing but
 Felis's namespaces; when it runs anything else only `felis`, `minecraft`, `felis-build`

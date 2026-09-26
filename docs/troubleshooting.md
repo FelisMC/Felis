@@ -598,8 +598,11 @@ reach upstream; that is accurate.
 
 **The platform's own images on an air-gapped node.** The registry pod and the database
 pod run images from Docker Hub by digest (`REGISTRY_IMAGE` and `POSTGRES_IMAGE` in
-`bootstrap.sh`), which the installer pulls into k3s's containerd and pins there so the
-kubelet's image GC never collects them. When the pull fails (`could not pull …`), fetch
+`bootstrap.sh`), which the installer imports into k3s's containerd from the release's
+`felis-image-base-linux-<arch>.tar` (or, without one, pulls) and pins there so the
+kubelet's image GC never collects them. On an air-gapped node the simplest way is to
+install from the release's assets copied to the node (`FELIS_ARTIFACT_DIR`, operations
+§1). When the pull fails (`could not pull …`) and no release assets are at hand, fetch
 the same digest on a machine that can, for the node's architecture, keeping the manifest
 as it is, and import it on the node:
 
@@ -1616,8 +1619,9 @@ annotated Service endpoints picks them up as is.
 ## 15. Control-plane upgrades, and rolling back a bad one
 
 There is no in-place updater: an upgrade is re-running the installer
-(`curl -fsSL <installer URL> | sudo bash`), which rebuilds/re-imports the image
-and re-applies the bundle. `felis update --panel` prints that command with the
+(`curl -fsSL <installer URL> | sudo bash`), which imports the release's images
+(or rebuilds them on the host, operations §1 "Where the binary and the images come
+from") and re-applies the bundle. `felis update --panel` prints that command with the
 script read at the newest release's tag, so the installer and the binary it
 downloads come from the same release. (`sudo felis setup` is not this path; on a completed
 install it only opens the config console.) The channel is not persisted across
@@ -1637,10 +1641,12 @@ Two properties of the control plane matter when you do:
 | Download | Check |
 |---|---|
 | `felis-linux-<arch>` (release channel) | its sha256 must match the release's `SHA256SUMS`; a release without one, or a mismatch, is compiled from the same tag instead |
+| the image tars `felis-image-*-linux-<arch>.tar`, their listing `felis-images-linux-<arch>.txt`, `felis-velocity.jar` (release channel, `FELIS_ARTIFACT_DIR`) | each sha256 must match the release's `SHA256SUMS`; the listing must give one known role per line with sha256 digests, and each image must be in containerd under the digest the listing names once its tar is imported. An asset that fails is built on the host instead (§15c); from `FELIS_ARTIFACT_DIR` the install stops |
+| k3s's own images (`k3s-airgap-images-<arch>.tar.zst`) | against the k3s release's `sha256sum-<arch>.txt`; a mismatch leaves k3s pulling them from Docker Hub |
 | k3s (fresh install, or `FELIS_UPGRADE_DEPS=1`) | the install script is read at `FELIS_K3S_VERSION`'s tag (default `v1.36.4+k3s1`), and it checks the binary against that release's sha256 list |
 | cloudflared (when absent, or `FELIS_UPGRADE_DEPS=1`) | release `FELIS_CLOUDFLARED_VERSION` (default `2026.9.1`) against a pinned sha256; another version needs `FELIS_CLOUDFLARED_SHA256` |
 | Go toolchain (nano, source builds) | pinned sha256 per architecture; another version needs `FELIS_GO_SHA256` |
-| the registry image | pinned by digest (`registry:2.8.3@sha256:a3d8…`) |
+| the registry and PostgreSQL images | pinned by digest (`registry:2.8.3@sha256:a3d8…`, `postgres:18.6-trixie@sha256:5a5a…`); a release's copy must carry that name and digest |
 | Limbo, its spawn schematic, Paper, LuckPerms, Velocity | the builds and sha256s in `deploy/game-stack.lock`; each image build and the proxy install refuse a download that hashes differently (§15b) |
 | the Temurin JRE the proxy runs on | release `25.0.4.1+1` against a pinned sha256 per architecture |
 | base images of the felis, limbo, lobby and paper images | pinned by digest in each `Dockerfile` |
@@ -1778,6 +1784,28 @@ build no server and no whitelist entry names is pruned after 24 hours, and the
 | Installer warns `could not pin the login system server` (or lobby) | the registry did not answer right after the push | the installer recreated the pod instead, which starts the new build only while `spec.image` names the bare tag; rerun the installer once `kubectl -n felis get pods -l app.kubernetes.io/component=registry` is Ready |
 | A running server restarted during an installer re-run | it was pinned in place: the operator rolled it onto the pinned ref, the build it already ran | nothing; it happens once per server |
 | Create/edit refused with `the registry no longer holds build …` | the image names a digest the pruner deleted: nothing referenced it for 24 hours (§9) | pick a current tag; whitelist the versioned tag of a build you want kept |
+
+## 15c. The installer builds on the host although it installs a release
+
+A release install takes its images and the Velocity plugin from the release's assets
+(operations §1, "Where the binary and the images come from"). When one cannot be used the
+installer names it and the reason, and builds that image with Docker instead (the registry
+and PostgreSQL images are pulled from Docker Hub). Nothing unchecked is used either way
+**[SH-TESTED]**.
+
+| Message | Meaning | What to do |
+|---|---|---|
+| `release vX publishes no SHA256SUMS … building them on this host instead` | the release predates release assets, or release.yml is still uploading them | nothing for an old release; for a new one, rerun once the release page lists `SHA256SUMS` |
+| `SHA256SUMS lists no <file>` or `could not download <file> from release vX` | the release lacks that asset (a partial upload) | rerun later; the host build is correct meanwhile |
+| `downloaded <file> hashes to …, but release vX's SHA256SUMS says …` | the download was corrupted, or the asset was replaced after `SHA256SUMS` was written | rerun: the bad copy is gone and is fetched again; the same mismatch every time means the asset itself is bad, so report it |
+| `the release's image listing … is malformed` | `felis-images-linux-<arch>.txt` does not parse | report it; every image is built on the host |
+| `the release's registry image is …, but this installer runs …` | the release's base tar carries another digest than this `bootstrap.sh` pins: the installer and the release are from different versions | run the installer read at the release's tag (`felis update --panel` prints that command) |
+| `k3s containerd holds no <image> from <tar>` | the tar was imported but did not hold the image under the listed digest | `sudo k3s ctr images ls \| grep felis` shows what it holds; report it |
+| `FELIS_ARTIFACT_DIR: …`, and the install stops | an asset is missing from the directory or fails its checksum; nothing is built from a directory | copy the named file from the release again and rerun |
+
+An install that stops part way leaves the downloaded tars in `/var/lib/felis/artifacts`; the
+rerun reuses those that still match `SHA256SUMS` and deletes the directory once the images
+are in the registry.
 
 ## 16. Control-plane database backups and disaster recovery
 
