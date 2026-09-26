@@ -77,6 +77,7 @@
   "migration_confirm_otp_btn": "发送验证码到我的邮箱",
   "migration_issue_title": "指定目标账户",
   "migration_issue_desc": "将目标账户本页面显示的「账户 ID」粘贴到此处，然后签发一次性转移码。",
+  "migration_issue_deadline": "请在 {{time}} 前签发。确认只在当前浏览器有效，过时需要重新确认。签发后，已验证的邮箱会收到一封通知。",
   "migration_target_placeholder": "目标账户 ID",
   "migration_issuing": "签发中…",
   "migration_issue_btn": "签发转移码",

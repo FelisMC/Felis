@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
 // Account-migration tests (spec §B3 inherit, scenario A) across BOTH faces. What they
@@ -24,13 +26,13 @@ import (
 //     target, the source is retired, and the code cannot be replayed.
 
 // migrateEnv wires the migration doors over one shared fakeRepo: a capturing mailer (so a
-// test can read the OTP that production only ever emails) and a fake passkey verifier
+// test can read the OTP that production only ever emails, and the notices) and a fake passkey verifier
 // primed with fixed options + a verified assertion. mk builds a face for a given
 // principal — the internal handler ignores it, each external handler is scoped to one
 // caller — so a test can drive the source and the target (and an interloper) against the
 // same store.
-func migrateEnv(repo *fakeRepo) (mk func(*Principal) *API, mailer *captureMailer, v *fakePasskeyVerifier) {
-	mailer = &captureMailer{}
+func migrateEnv(repo *fakeRepo) (mk func(*Principal) *API, mailer *noticeMailer, v *fakePasskeyVerifier) {
+	mailer = &noticeMailer{}
 	v = &fakePasskeyVerifier{
 		options:   json.RawMessage(`{"publicKey":{"challenge":"bWlncmF0ZQ"}}`),
 		assertion: VerifiedAssertion{CredentialID: "cred-1", UserVerified: true},
@@ -136,6 +138,11 @@ func TestMigrateVertical(t *testing.T) {
 	// 5) single-use: the spent code cannot be replayed.
 	if w := do(ehTgt, "POST", "/api/v1/account/migrate/redeem", `{"code":"`+mcode+`"}`, jsonHeader); w.Code != http.StatusBadRequest || decodeErr(t, w) != "invalid_code" {
 		t.Fatalf("replay of spent code: code = %d body %s, want 400 invalid_code", w.Code, w.Body.String())
+	}
+
+	// 6) the source never proved its address, so no notice went there.
+	if len(mailer.notices) != 0 {
+		t.Fatalf("notices to an unverified address = %q, want none", mailer.notices)
 	}
 }
 
@@ -345,5 +352,119 @@ func TestMigrateGuards(t *testing.T) {
 	}
 	if w := do(ehSrc, "POST", "/api/v1/account/migrate/issue-code", `{"target_user_id":"ghost"}`, jsonHeader); w.Code != http.StatusBadRequest || decodeErr(t, w) != "target_not_found" {
 		t.Fatalf("issue with unknown target: code = %d body %s, want 400 target_not_found", w.Code, w.Body.String())
+	}
+}
+
+// TestMigrateConfirmHoldsForOneSessionBriefly pins who may issue the code: only the
+// browser session that gave the step-up, and only for migrateConfirmWindow. Any other
+// live session of the source, or the same one later, meets the step-up again; a code
+// that expires unspent does too. The source's mailbox hears about each code and about
+// the redeem.
+func TestMigrateConfirmHoldsForOneSessionBriefly(t *testing.T) {
+	const uuid = "77777777-7777-7777-7777-777777777777"
+	src := &Principal{UserID: "u1", Username: "old", Email: "old@example.net", EmailVerified: true, Role: "user", ViaSession: true}
+	tgt := &Principal{UserID: "u2", Username: "new", Email: "new@example.net", EmailVerified: true, Role: "user", ViaSession: true}
+
+	repo := newFakeRepo()
+	repo.seedUser(UserView{ID: "u1", Username: "old", Email: "old@example.net", EmailVerified: true, Role: "user"})
+	repo.seedUser(UserView{ID: "u2", Username: "new", Email: "new@example.net", EmailVerified: true, Role: "user"})
+	repo.links[uuid] = "u1"
+	repo.byName["alpha"] = &ServerRecord{Name: "alpha", OwnerID: "u1"}
+	repo.passkeyCreds["row1"] = PasskeyCredential{ID: "row1", UserID: "u1", CredentialID: "cred-1", PublicKey: "k", UserVerified: true, CreatedAt: frozenNow}
+
+	mk, mail, _ := migrateEnv(repo)
+	now := time.Unix(1_700_000_000, 0)
+	external := func(p *Principal) http.Handler {
+		a := mk(p)
+		a.Now = func() time.Time { return now }
+		return a.ExternalHandler()
+	}
+	ehSrc, ehTgt := external(src), external(tgt)
+	onA := map[string]string{"Content-Type": "application/json", "Cookie": sessionCookieName + "=cookie-a"}
+	onB := map[string]string{"Content-Type": "application/json", "Cookie": sessionCookieName + "=cookie-b"}
+
+	confirm := func(h map[string]string) {
+		t.Helper()
+		if w := do(ehSrc, "POST", "/api/v1/account/migrate/confirm/passkey/begin", "", h); w.Code != http.StatusOK {
+			t.Fatalf("passkey begin: %d (%s)", w.Code, w.Body.String())
+		}
+		if w := do(ehSrc, "POST", "/api/v1/account/migrate/confirm/passkey/finish",
+			`{"assertion":{"id":"cred-1","type":"public-key"}}`, h); w.Code != http.StatusOK {
+			t.Fatalf("passkey finish: %d (%s)", w.Code, w.Body.String())
+		}
+	}
+	status := func(h map[string]string) map[string]any {
+		t.Helper()
+		return acctBody(t, do(ehSrc, "GET", "/api/v1/account/migrate", "", h))
+	}
+	issue := func(h map[string]string) *httptest.ResponseRecorder {
+		return do(ehSrc, "POST", "/api/v1/account/migrate/issue-code", `{"target_user_id":"u2"}`, h)
+	}
+	refused := func(what string, w *httptest.ResponseRecorder) {
+		t.Helper()
+		if w.Code != http.StatusConflict || decodeErr(t, w) != "not_confirmed" {
+			t.Fatalf("%s: code = %d body %s, want 409 not_confirmed", what, w.Code, w.Body.String())
+		}
+	}
+
+	if w := startMigrate(t, mk(src).InternalHandler(), uuid); w.Code != http.StatusCreated {
+		t.Fatalf("start: %d (%s)", w.Code, w.Body.String())
+	}
+	confirm(onA)
+	if st := status(onA); st["state"] != "confirmed" || st["confirm_expires_at"] != now.Add(migrateConfirmWindow).UTC().Format(time.RFC3339) {
+		t.Fatalf("status on a after its confirmation = %v, want confirmed until +%v", st, migrateConfirmWindow)
+	}
+	if st := status(onB); st["state"] != "initiated" {
+		t.Fatalf("status on b = %v, want initiated: b has not confirmed", st)
+	}
+	refused("issue from b", issue(onB))
+	refused("issue with no session", issue(jsonHeader))
+
+	now = now.Add(migrateConfirmWindow)
+	refused("issue from a once its window closed", issue(onA))
+	refused("issue to an unknown account from a once its window closed",
+		do(ehSrc, "POST", "/api/v1/account/migrate/issue-code", `{"target_user_id":"ghost"}`, onA))
+	if st := status(onA); st["state"] != "initiated" {
+		t.Fatalf("status on a after its window = %v, want initiated", st)
+	}
+	confirm(onA)
+	if len(mail.notices) != 0 {
+		t.Fatalf("notices before any code = %q, want none", mail.notices)
+	}
+	w := issue(onA)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("issue from a inside its window: %d (%s)", w.Code, w.Body.String())
+	}
+	first, _ := acctBody(t, w)["code"].(string)
+	exp := now.Add(migrateCodeTTL).UTC().Format("2006-01-02 15:04 MST")
+	if len(mail.notices) != 1 || !strings.HasPrefix(mail.notices[0], "old@example.net|") ||
+		!strings.Contains(mail.notices[0], "「new」") || !strings.Contains(mail.notices[0], exp) ||
+		!strings.Contains(mail.notices[0], "/felis migrate") {
+		t.Fatalf("notices after the code = %q, want one to old@example.net naming new, %s and how to void it", mail.notices, exp)
+	}
+	if st := status(onA); st["state"] != "code_issued" || st["target_user_id"] != "u2" {
+		t.Fatalf("status after the code = %v, want code_issued for u2", st)
+	}
+
+	// The code expires unspent: back to the step-up, and the old code is dead.
+	now = now.Add(migrateCodeTTL)
+	if st := status(onA); st["state"] != "initiated" {
+		t.Fatalf("status after the code expired = %v, want initiated", st)
+	}
+	confirm(onA)
+	if w := do(ehTgt, "POST", "/api/v1/account/migrate/redeem", `{"code":"`+first+`"}`, jsonHeader); w.Code != http.StatusBadRequest {
+		t.Fatalf("redeem of the expired code: %d (%s), want 400", w.Code, w.Body.String())
+	}
+	w = issue(onA)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("issue after the expired code: %d (%s)", w.Code, w.Body.String())
+	}
+	second, _ := acctBody(t, w)["code"].(string)
+	if w := do(ehTgt, "POST", "/api/v1/account/migrate/redeem", `{"code":"`+second+`"}`, jsonHeader); w.Code != http.StatusOK {
+		t.Fatalf("redeem: %d (%s)", w.Code, w.Body.String())
+	}
+	if n := len(mail.notices); n != 3 || !strings.HasPrefix(mail.notices[2], "old@example.net|") ||
+		!strings.Contains(mail.notices[2], "「new」") || !strings.Contains(mail.notices[2], "alpha") {
+		t.Fatalf("notices after the redeem = %q, want a third to old@example.net naming new and alpha", mail.notices)
 	}
 }

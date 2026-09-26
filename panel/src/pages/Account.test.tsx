@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   passkeyList: vi.fn(),
   passkeyDelete: vi.fn(),
   listMySessions: vi.fn(),
+  migrateStatus: vi.fn(),
+  migrateIssueCode: vi.fn(),
   identity: null as Identity | null,
 }));
 
@@ -21,7 +23,8 @@ vi.mock("@/lib/api", async (importOriginal) => {
     api: {
       ...actual.api,
       linkStatus: () => Promise.resolve({ linked: true }),
-      migrateStatus: () => Promise.resolve({ active: false }),
+      migrateStatus: mocks.migrateStatus,
+      migrateIssueCode: mocks.migrateIssueCode,
       passkeyList: mocks.passkeyList,
       passkeyDelete: mocks.passkeyDelete,
       listMySessions: mocks.listMySessions,
@@ -69,6 +72,9 @@ beforeEach(() => {
   mocks.passkeyDelete.mockReset();
   mocks.listMySessions.mockReset();
   mocks.listMySessions.mockResolvedValue([thisMac]);
+  mocks.migrateStatus.mockReset();
+  mocks.migrateStatus.mockResolvedValue({ active: false });
+  mocks.migrateIssueCode.mockReset();
   mocks.identity = identity(true);
 });
 
@@ -176,5 +182,27 @@ describe("Account passkey delete", () => {
     await within(screen.getByRole("dialog")).findByRole("alert");
 
     expect(mocks.listMySessions).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Account migration", () => {
+  it("shows until when the confirmation holds, and asks for it again once issuing is refused", async () => {
+    mocks.passkeyList.mockResolvedValue({ credentials: [] });
+    const until = "2026-09-27T10:10:00Z";
+    mocks.migrateStatus
+      .mockResolvedValueOnce({ active: true, state: "confirmed", confirm_factor: "email_otp", confirm_expires_at: until })
+      .mockResolvedValue({ active: true, state: "initiated" });
+    mocks.migrateIssueCode.mockRejectedValue({ status: 409, code: "not_confirmed", message: "confirm first" });
+    renderAccount();
+
+    const deadline = t("account:migration_issue_deadline", { time: new Date(until).toLocaleTimeString() });
+    expect(await screen.findByText(deadline)).toBeTruthy();
+    await userEvent.type(screen.getByPlaceholderText(t("account:migration_target_placeholder")), "u-2");
+    await userEvent.click(screen.getByRole("button", { name: t("account:migration_issue_btn") }));
+
+    expect(mocks.migrateIssueCode).toHaveBeenCalledWith("u-2");
+    expect(await screen.findByText(t("account:migration_confirm_title"))).toBeTruthy();
+    expect(screen.getByText(t("errors:not_confirmed"))).toBeTruthy();
+    expect(screen.queryByPlaceholderText(t("account:migration_target_placeholder"))).toBeNull();
   });
 });

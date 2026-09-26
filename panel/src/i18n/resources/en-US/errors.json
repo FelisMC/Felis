@@ -73,7 +73,7 @@
   "backup_unavailable": "Backups aren't available right now.",
   "account_retired": "This account has been retired — sign in with the account it was migrated to.",
   "no_migration": "There is no migration in progress.",
-  "not_confirmed": "This migration hasn't been confirmed yet.",
+  "not_confirmed": "Confirm it's you in this browser first. A confirmation lasts 10 minutes.",
   "already_confirmed": "This migration has already been confirmed.",
   "invalid_target": "The migration target must be a different account.",
   "target_not_found": "No account matches that migration target.",

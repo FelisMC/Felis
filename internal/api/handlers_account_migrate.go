@@ -28,16 +28,21 @@ import (
 //	                                         (reauth.go).
 //	3. web      issue code + name target  → handleMigrateIssueCode: the source names the
 //	                                         target account by id and mints a one-time code
-//	                                         ('code_issued').
+//	                                         ('code_issued'). Only the session that gave the
+//	                                         step-up may, within migrateConfirmWindow of it,
+//	                                         and the source's mailbox is told.
 //	4. web      target redeems code       → handleMigrateRedeem: the target, logged in as
 //	                                         itself, submits the code; ownership of the
 //	                                         source's servers moves to the target and the
-//	                                         source is retired ('redeemed').
+//	                                         source is retired ('redeemed'), and told so.
 //
 // The code is bound to the named target at issue AND the redeemer must authenticate AS
-// that target, so an intercepted code is useless to anyone else. Only server ownership
-// moves — the mc_uuid link and web credentials (email, passkeys) stay with their
-// accounts; moving credentials would make migrate a credential-theft primitive.
+// that target, so an intercepted code is useless to anyone else. Binding the step-up to
+// its session and a short window keeps a confirmation from outliving the moment: any
+// other live session of the source (a shared machine, a stolen cookie) meets the
+// step-up again instead of a door left open. Only server ownership moves — the mc_uuid
+// link and web credentials (email, passkeys) stay with their accounts; moving
+// credentials would make migrate a credential-theft primitive.
 //
 // CODE-ONLY (Java/Velocity, not represented here): the /felis migrate command that calls
 // handleMigrateStart, and the web forms that drive steps 2–4.
@@ -53,7 +58,29 @@ const (
 	// migrateCodeTTL bounds the one-time code the source hands to the target. Short
 	// enough that a leaked code is useless soon, long enough to switch accounts and type.
 	migrateCodeTTL = 10 * time.Minute
+	// migrateConfirmWindow is how long the step-up lets the session that gave it issue
+	// the code. Enough to paste the target's account id.
+	migrateConfirmWindow = 10 * time.Minute
 )
+
+// migrationStage is where the caller on session stands in m at now: the stored state,
+// except that a confirmation this session cannot use (another session's, or older
+// than migrateConfirmWindow) and a code that expired unspent put the caller back at
+// the step-up, "initiated". ConfirmMigration and IssueMigrationCode apply the same
+// rules in SQL.
+func migrationStage(m *MigrationView, session string, now time.Time) string {
+	switch m.State {
+	case "confirmed":
+		if m.ConfirmSession != session || m.ConfirmedAt == nil || !now.Before(m.ConfirmedAt.Add(migrateConfirmWindow)) {
+			return "initiated"
+		}
+	case "code_issued":
+		if m.CodeExpiresAt == nil || !now.Before(*m.CodeExpiresAt) {
+			return "initiated"
+		}
+	}
+	return m.State
+}
 
 // newMigrationID returns an opaque random row id (128 bits, hex) for an
 // account_migrations row, mirroring the other one-time-handle mints.
@@ -123,7 +150,9 @@ func (a *API) handleMigrateStart(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMigrateStatus reports the caller's live migration for the web flow to drive its
-// next step (spec §B3, external app face). No migration in flight → {active:false}.
+// next step (spec §B3, external app face). No migration in flight → {active:false}. The
+// state is migrationStage's, so a confirmation made elsewhere or lapsed reads as
+// "initiated" and the panel asks for the step-up again.
 func (a *API) handleMigrateStatus(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	m, err := a.Repo.MigrationForSource(r.Context(), p.UserID)
@@ -135,22 +164,24 @@ func (a *API) handleMigrateStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	resp := map[string]any{"active": true, "state": m.State}
-	if m.TargetUserID != "" {
-		resp["target_user_id"] = m.TargetUserID
-	}
-	if m.ConfirmFactor != "" {
+	stage := migrationStage(m, currentSessionHash(r), a.now())
+	resp := map[string]any{"active": true, "state": stage}
+	switch stage {
+	case "confirmed":
 		resp["confirm_factor"] = m.ConfirmFactor
-	}
-	if m.CodeExpiresAt != nil {
+		resp["confirm_expires_at"] = m.ConfirmedAt.Add(migrateConfirmWindow).UTC()
+	case "code_issued":
+		resp["confirm_factor"] = m.ConfirmFactor
+		resp["target_user_id"] = m.TargetUserID
 		resp["code_expires_at"] = m.CodeExpiresAt.UTC()
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// requireInitiatedMigration loads the caller's live migration and requires it be in
-// 'initiated' — the only state from which step-up may run. It writes the right error and
-// returns ok=false when the caller should stop, so the confirm handlers stay flat.
+// requireInitiatedMigration loads the caller's live migration and requires migrationStage
+// to put the caller at 'initiated' — the only stage from which step-up may run. It writes
+// the right error and returns ok=false when the caller should stop, so the confirm
+// handlers stay flat.
 func (a *API) requireInitiatedMigration(w http.ResponseWriter, r *http.Request, userID string) (*MigrationView, bool) {
 	m, err := a.Repo.MigrationForSource(r.Context(), userID)
 	if err != nil {
@@ -162,7 +193,7 @@ func (a *API) requireInitiatedMigration(w http.ResponseWriter, r *http.Request, 
 		writeError(w, r, err)
 		return nil, false
 	}
-	if m.State != "initiated" {
+	if migrationStage(m, currentSessionHash(r), a.now()) != "initiated" {
 		writeError(w, r, newError(http.StatusConflict, "already_confirmed",
 			"this migration has already been confirmed"))
 		return nil, false
@@ -229,7 +260,7 @@ func (a *API) handleMigrateConfirmOTPVerify(w http.ResponseWriter, r *http.Reque
 	if !a.verifyStepUpOTP(w, r, p, otpPurposeMigrate, "migrate_confirm", code) {
 		return
 	}
-	if err := a.Repo.ConfirmMigration(r.Context(), p.UserID, "email_otp", a.now()); err != nil {
+	if err := a.Repo.ConfirmMigration(r.Context(), p.UserID, "email_otp", currentSessionHash(r), a.now()); err != nil {
 		if errors.Is(err, ErrConflict) {
 			writeError(w, r, newError(http.StatusConflict, "already_confirmed",
 				"this migration has already been confirmed"))
@@ -283,7 +314,7 @@ func (a *API) handleMigrateConfirmPasskeyFinish(w http.ResponseWriter, r *http.R
 	if !a.finishStepUpPasskey(w, r, p, passkeyPurposeMigrate, "migrate_passkey", req.Assertion) {
 		return
 	}
-	if err := a.Repo.ConfirmMigration(r.Context(), p.UserID, "passkey", a.now()); err != nil {
+	if err := a.Repo.ConfirmMigration(r.Context(), p.UserID, "passkey", currentSessionHash(r), a.now()); err != nil {
 		if errors.Is(err, ErrConflict) {
 			writeError(w, r, newError(http.StatusConflict, "already_confirmed",
 				"this migration has already been confirmed"))
@@ -303,9 +334,11 @@ type migrateIssueCodeRequest struct {
 }
 
 // handleMigrateIssueCode binds the named target and mints the one-time migrate code
-// (spec §B3, external app face). Requires the migration to be 'confirmed' (step-up done).
-// The target must be a live account other than the source. The code is returned once,
-// out of band to the target; only its hash is stored.
+// (spec §B3, external app face). Requires the step-up done on this session within
+// migrateConfirmWindow. The target must be a live account other than the source. The
+// code is returned once, out of band to the target; only its hash is stored. The
+// source's verified address is told, so a code its owner did not issue does not go
+// unnoticed.
 func (a *API) handleMigrateIssueCode(w http.ResponseWriter, r *http.Request) {
 	p := principalFromContext(r.Context())
 	var req migrateIssueCodeRequest
@@ -333,9 +366,9 @@ func (a *API) handleMigrateIssueCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	if m.State != "confirmed" {
-		writeError(w, r, newError(http.StatusConflict, "not_confirmed",
-			"confirm the migration before issuing a code"))
+	session, now := currentSessionHash(r), a.now()
+	if migrationStage(m, session, now) != "confirmed" {
+		writeError(w, r, errMigrateNotConfirmed)
 		return
 	}
 	// The target must exist and be a live (non-deleted, non-disabled) account. Validate
@@ -359,19 +392,23 @@ func (a *API) handleMigrateIssueCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	expiresAt := a.now().Add(migrateCodeTTL)
-	if err := a.Repo.IssueMigrationCode(r.Context(), p.UserID, targetID, otpCodeHash(code), expiresAt); err != nil {
+	expiresAt := now.Add(migrateCodeTTL)
+	if err := a.Repo.IssueMigrationCode(r.Context(), p.UserID, targetID, session, otpCodeHash(code), now, expiresAt); err != nil {
 		if errors.Is(err, ErrConflict) {
-			writeError(w, r, newError(http.StatusConflict, "not_confirmed",
-				"confirm the migration before issuing a code"))
+			writeError(w, r, errMigrateNotConfirmed)
 			return
 		}
 		writeError(w, r, err)
 		return
 	}
 	a.audit(r, "account.migrate.code_issued", targetID)
+	a.notifyMigrateCodeIssued(r, verifiedEmail(p), target.Username, expiresAt)
 	writeJSON(w, http.StatusCreated, map[string]any{"code": code, "expires_at": expiresAt.UTC()})
 }
+
+// errMigrateNotConfirmed refuses a code to a caller without a usable step-up.
+var errMigrateNotConfirmed = newError(http.StatusConflict, "not_confirmed",
+	"confirm the migration on this browser first; a confirmation lasts 10 minutes")
 
 // migrateRedeemRequest is the redeem body: the one-time code the target received.
 type migrateRedeemRequest struct {
@@ -408,6 +445,7 @@ func (a *API) handleMigrateRedeem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.audit(r, "account.migrate.redeemed", sourceUserID)
+	a.notifyMigrateRedeemed(r, sourceUserID, p, moved)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"migrated":      true,
 		"servers_moved": len(moved),

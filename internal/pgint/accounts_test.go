@@ -53,10 +53,10 @@ func startToCode(t *testing.T, sourceID, targetID, codeHash string, now, expires
 	if err := repo.StartMigration(ctx, "mig-"+suffix(t), sourceID, now); err != nil {
 		t.Fatalf("StartMigration: %v", err)
 	}
-	if err := repo.ConfirmMigration(ctx, sourceID, "passkey", now); err != nil {
+	if err := repo.ConfirmMigration(ctx, sourceID, "passkey", "sess-src", now); err != nil {
 		t.Fatalf("ConfirmMigration: %v", err)
 	}
-	if err := repo.IssueMigrationCode(ctx, sourceID, targetID, codeHash, expiresAt); err != nil {
+	if err := repo.IssueMigrationCode(ctx, sourceID, targetID, "sess-src", codeHash, now, expiresAt); err != nil {
 		t.Fatalf("IssueMigrationCode: %v", err)
 	}
 }
@@ -82,7 +82,7 @@ func TestMigrationStateMachine(t *testing.T) {
 	if _, err := repo.MigrationForSource(ctx, src.ID); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("status before start = %v, want ErrNotFound", err)
 	}
-	if err := repo.ConfirmMigration(ctx, src.ID, "passkey", t0); !errors.Is(err, api.ErrConflict) {
+	if err := repo.ConfirmMigration(ctx, src.ID, "passkey", "sess-src", t0); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("confirm before start = %v, want ErrConflict", err)
 	}
 	if err := repo.StartMigration(ctx, "mig1-"+sfx, src.ID, t0); err != nil {
@@ -92,23 +92,23 @@ func TestMigrationStateMachine(t *testing.T) {
 	if err != nil || m.ID != "mig1-"+sfx || m.State != "initiated" || m.TargetUserID != "" || m.ConfirmedAt != nil {
 		t.Fatalf("after start = %+v, %v; want mig1 initiated, no target, unconfirmed", m, err)
 	}
-	if err := repo.IssueMigrationCode(ctx, src.ID, dst.ID, "h-skip", t0.Add(10*time.Minute)); !errors.Is(err, api.ErrConflict) {
+	if err := repo.IssueMigrationCode(ctx, src.ID, dst.ID, "sess-src", "h-skip", t0, t0.Add(10*time.Minute)); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("issue before confirm = %v, want ErrConflict", err)
 	}
-	if err := repo.ConfirmMigration(ctx, src.ID, "email_otp", t0); err != nil {
+	if err := repo.ConfirmMigration(ctx, src.ID, "email_otp", "sess-src", t0); err != nil {
 		t.Fatalf("ConfirmMigration: %v", err)
 	}
-	if err := repo.ConfirmMigration(ctx, src.ID, "passkey", t0.Add(time.Minute)); !errors.Is(err, api.ErrConflict) {
+	if err := repo.ConfirmMigration(ctx, src.ID, "passkey", "sess-src", t0.Add(time.Minute)); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("second confirm = %v, want ErrConflict", err)
 	}
 	m, err = repo.MigrationForSource(ctx, src.ID)
 	if err != nil || m.State != "confirmed" || m.ConfirmFactor != "email_otp" || m.ConfirmedAt == nil || !m.ConfirmedAt.Equal(t0) {
 		t.Fatalf("after confirm = %+v, %v; want confirmed by email_otp at %v", m, err, t0)
 	}
-	if err := repo.IssueMigrationCode(ctx, src.ID, dst.ID, "h-first", t0.Add(10*time.Minute)); err != nil {
+	if err := repo.IssueMigrationCode(ctx, src.ID, dst.ID, "sess-src", "h-first", t0, t0.Add(10*time.Minute)); err != nil {
 		t.Fatalf("IssueMigrationCode: %v", err)
 	}
-	if err := repo.IssueMigrationCode(ctx, src.ID, bystander.ID, "h-again", t0.Add(10*time.Minute)); !errors.Is(err, api.ErrConflict) {
+	if err := repo.IssueMigrationCode(ctx, src.ID, bystander.ID, "sess-src", "h-again", t0, t0.Add(10*time.Minute)); !errors.Is(err, api.ErrConflict) {
 		t.Fatalf("second issue = %v, want ErrConflict", err)
 	}
 	m, err = repo.MigrationForSource(ctx, src.ID)
@@ -130,10 +130,10 @@ func TestMigrationStateMachine(t *testing.T) {
 		t.Fatalf("code from the superseded attempt = %v, want ErrLinkCodeInvalid", err)
 	}
 
-	if err := repo.ConfirmMigration(ctx, src.ID, "passkey", t0); err != nil {
+	if err := repo.ConfirmMigration(ctx, src.ID, "passkey", "sess-src", t0); err != nil {
 		t.Fatalf("confirm the restart: %v", err)
 	}
-	if err := repo.IssueMigrationCode(ctx, src.ID, dst.ID, "h-second", t0.Add(10*time.Minute)); err != nil {
+	if err := repo.IssueMigrationCode(ctx, src.ID, dst.ID, "sess-src", "h-second", t0, t0.Add(10*time.Minute)); err != nil {
 		t.Fatalf("issue the restart: %v", err)
 	}
 	for _, bad := range []struct {
@@ -201,6 +201,76 @@ func TestMigrationStateMachine(t *testing.T) {
 	}
 	if err := repo.StartMigration(ctx, "mig3-"+sfx, src.ID, t0); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("retired source starting again = %v, want ErrNotFound", err)
+	}
+}
+
+// The step-up lets only the session that gave it issue the code, and only for
+// migrateConfirmWindow (10 minutes). Another session, or the same one later, starts over
+// at the step-up; so does a code that expired unspent, which the new confirmation clears.
+func TestMigrationConfirmBelongsToOneSessionBriefly(t *testing.T) {
+	ctx := context.Background()
+	src := newUser(t, "user", "migw-src")
+	dst := newUser(t, "user", "migw-dst")
+	t0 := mustNow().Truncate(time.Second)
+	const window = 10 * time.Minute
+	if err := repo.StartMigration(ctx, "migw-"+suffix(t), src.ID, t0); err != nil {
+		t.Fatalf("StartMigration: %v", err)
+	}
+	if err := repo.ConfirmMigration(ctx, src.ID, "passkey", "sess-a", t0); err != nil {
+		t.Fatalf("confirm on a: %v", err)
+	}
+	if m, err := repo.MigrationForSource(ctx, src.ID); err != nil || m.ConfirmSession != "sess-a" {
+		t.Fatalf("after confirm on a = %+v, %v; want it recorded against sess-a", m, err)
+	}
+	for _, bad := range []struct {
+		what, session string
+		at            time.Time
+	}{
+		{"another session", "sess-b", t0.Add(time.Minute)},
+		{"a caller with no session", "", t0.Add(time.Minute)},
+		{"the same session once the window closed", "sess-a", t0.Add(window)},
+	} {
+		if err := repo.IssueMigrationCode(ctx, src.ID, dst.ID, bad.session, "h-"+bad.session, bad.at, bad.at.Add(10*time.Minute)); !errors.Is(err, api.ErrConflict) {
+			t.Fatalf("issue from %s = %v, want ErrConflict", bad.what, err)
+		}
+	}
+	if err := repo.ConfirmMigration(ctx, src.ID, "passkey", "sess-a", t0.Add(window-time.Second)); !errors.Is(err, api.ErrConflict) {
+		t.Fatalf("confirm again on a while its confirmation holds = %v, want ErrConflict", err)
+	}
+
+	// Another session proves a factor of its own and takes the confirmation over.
+	t1 := t0.Add(time.Minute)
+	if err := repo.ConfirmMigration(ctx, src.ID, "email_otp", "sess-b", t1); err != nil {
+		t.Fatalf("confirm on b: %v", err)
+	}
+	if err := repo.IssueMigrationCode(ctx, src.ID, dst.ID, "sess-a", "h-a", t1, t1.Add(10*time.Minute)); !errors.Is(err, api.ErrConflict) {
+		t.Fatalf("issue from a after b confirmed = %v, want ErrConflict", err)
+	}
+	issueAt := t1.Add(window - time.Second)
+	if err := repo.IssueMigrationCode(ctx, src.ID, dst.ID, "sess-b", "h-b", issueAt, issueAt.Add(10*time.Minute)); err != nil {
+		t.Fatalf("issue from b inside its window: %v", err)
+	}
+
+	// A live code stands until it expires; then a new step-up clears it.
+	expiry := issueAt.Add(10 * time.Minute)
+	if err := repo.ConfirmMigration(ctx, src.ID, "passkey", "sess-a", expiry.Add(-time.Second)); !errors.Is(err, api.ErrConflict) {
+		t.Fatalf("confirm over a live code = %v, want ErrConflict", err)
+	}
+	if err := repo.ConfirmMigration(ctx, src.ID, "passkey", "sess-a", expiry); err != nil {
+		t.Fatalf("confirm once the code expired: %v", err)
+	}
+	m, err := repo.MigrationForSource(ctx, src.ID)
+	if err != nil || m.State != "confirmed" || m.ConfirmSession != "sess-a" || m.TargetUserID != "" || m.CodeExpiresAt != nil {
+		t.Fatalf("after confirming over the expired code = %+v, %v; want confirmed on a, no target, no code", m, err)
+	}
+	var hash sql.NullString
+	if err := db.QueryRow(`SELECT code_hash FROM account_migrations WHERE id = $1`, m.ID).Scan(&hash); err != nil || hash.Valid {
+		t.Fatalf("code hash after the new confirmation = %v, %v; want NULL", hash, err)
+	}
+
+	// The same session's own confirmation lapses too, and a fresh one replaces it.
+	if err := repo.ConfirmMigration(ctx, src.ID, "passkey", "sess-a", expiry.Add(window)); err != nil {
+		t.Fatalf("confirm again on a after its window: %v", err)
 	}
 }
 

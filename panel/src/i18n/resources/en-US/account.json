@@ -78,6 +78,7 @@
   "migration_confirm_otp_btn": "Send a code to my email",
   "migration_issue_title": "Name the destination account",
   "migration_issue_desc": "Paste the Account ID shown on the destination account's own page here, then issue a one-time transfer code.",
+  "migration_issue_deadline": "Issue it before {{time}}. The confirmation counts only in this browser; after that, confirm again. A verified email on this account gets a notice once the code is issued.",
   "migration_target_placeholder": "Destination Account ID",
   "migration_issuing": "Issuing…",
   "migration_issue_btn": "Issue code",

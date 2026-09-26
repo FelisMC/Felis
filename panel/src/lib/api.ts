@@ -744,6 +744,7 @@ export const api = rejectingSync({
       state?: string;
       target_user_id?: string;
       confirm_factor?: string;
+      confirm_expires_at?: string;
       code_expires_at?: string;
     }>("GET", "/account/migrate"),
 

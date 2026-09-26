@@ -2259,13 +2259,14 @@ func (p *PGRepo) StartMigration(ctx context.Context, id, sourceUserID string, no
 // ErrNotFound when none is in flight.
 func (p *PGRepo) MigrationForSource(ctx context.Context, sourceUserID string) (*MigrationView, error) {
 	const q = `SELECT id, source_user_id, COALESCE(target_user_id, ''), state,
-		COALESCE(confirm_factor, ''), confirmed_at, code_expires_at, created_at
+		COALESCE(confirm_factor, ''), COALESCE(confirm_session, ''), confirmed_at,
+		code_expires_at, created_at
 		FROM account_migrations
 		WHERE source_user_id = $1 AND state <> 'redeemed'`
 	var v MigrationView
 	switch err := p.db.QueryRowContext(ctx, q, sourceUserID).Scan(
 		&v.ID, &v.SourceUserID, &v.TargetUserID, &v.State,
-		&v.ConfirmFactor, &v.ConfirmedAt, &v.CodeExpiresAt, &v.CreatedAt); {
+		&v.ConfirmFactor, &v.ConfirmSession, &v.ConfirmedAt, &v.CodeExpiresAt, &v.CreatedAt); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
 	case err != nil:
@@ -2274,15 +2275,20 @@ func (p *PGRepo) MigrationForSource(ctx context.Context, sourceUserID string) (*
 	return &v, nil
 }
 
-// ConfirmMigration advances 'initiated' → 'confirmed' for the source, stamping the
-// step-up factor + time. It only advances from 'initiated' (0 rows → ErrConflict), so
-// the step-up can never be replayed against a later state.
-func (p *PGRepo) ConfirmMigration(ctx context.Context, sourceUserID, factor string, now time.Time) error {
+// ConfirmMigration moves the source's migration to 'confirmed', stamping the step-up
+// factor, time and session. It advances only from where migrationStage puts a caller
+// back at the step-up (0 rows → ErrConflict): 'initiated', a confirmation that lapsed
+// or belongs to another session, or a code that expired unspent, which it clears.
+func (p *PGRepo) ConfirmMigration(ctx context.Context, sourceUserID, factor, session string, now time.Time) error {
 	res, err := p.db.ExecContext(ctx,
 		`UPDATE account_migrations
-		 SET state = 'confirmed', confirm_factor = $2, confirmed_at = $3
-		 WHERE source_user_id = $1 AND state = 'initiated'`,
-		sourceUserID, factor, now)
+		 SET state = 'confirmed', confirm_factor = $2, confirmed_at = $3, confirm_session = $4,
+		     target_user_id = NULL, code_hash = NULL, code_expires_at = NULL
+		 WHERE source_user_id = $1 AND (
+		   state = 'initiated'
+		   OR (state = 'confirmed' AND (confirm_session IS DISTINCT FROM $4 OR confirmed_at <= $5))
+		   OR (state = 'code_issued' AND code_expires_at <= $3))`,
+		sourceUserID, factor, now, session, now.Add(-migrateConfirmWindow))
 	if err != nil {
 		return err
 	}
@@ -2297,15 +2303,17 @@ func (p *PGRepo) ConfirmMigration(ctx context.Context, sourceUserID, factor stri
 }
 
 // IssueMigrationCode advances 'confirmed' → 'code_issued', binding the target and
-// storing the one-time code hash + TTL. The caller has already validated the target is
-// a live account other than the source; the target FK is the backstop. Not-in-confirmed
-// → ErrConflict.
-func (p *PGRepo) IssueMigrationCode(ctx context.Context, sourceUserID, targetUserID, codeHash string, expiresAt time.Time) error {
+// storing the one-time code hash + TTL. The confirmation must be this session's and
+// younger than migrateConfirmWindow at now. The caller has already validated the
+// target is a live account other than the source; the target FK is the backstop.
+// Anything else → ErrConflict.
+func (p *PGRepo) IssueMigrationCode(ctx context.Context, sourceUserID, targetUserID, session, codeHash string, now, expiresAt time.Time) error {
 	res, err := p.db.ExecContext(ctx,
 		`UPDATE account_migrations
 		 SET state = 'code_issued', target_user_id = $2, code_hash = $3, code_expires_at = $4
-		 WHERE source_user_id = $1 AND state = 'confirmed'`,
-		sourceUserID, targetUserID, codeHash, expiresAt)
+		 WHERE source_user_id = $1 AND state = 'confirmed'
+		   AND confirm_session = $5 AND confirmed_at > $6`,
+		sourceUserID, targetUserID, codeHash, expiresAt, session, now.Add(-migrateConfirmWindow))
 	if err != nil {
 		return err
 	}

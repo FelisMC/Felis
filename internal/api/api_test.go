@@ -1310,22 +1310,24 @@ func (f *fakeRepo) SetUserDisabled(_ context.Context, userID string, disabled bo
 // fakeMigration mirrors an account_migrations row through its state machine. Zero
 // times mean the corresponding NULL column (not yet confirmed / no code issued).
 type fakeMigration struct {
-	id            string
-	sourceUserID  string
-	targetUserID  string
-	state         string
-	confirmFactor string
-	confirmedAt   time.Time
-	codeHash      string
-	codeExpiresAt time.Time
-	redeemedAt    time.Time
-	createdAt     time.Time
+	id             string
+	sourceUserID   string
+	targetUserID   string
+	state          string
+	confirmFactor  string
+	confirmSession string
+	confirmedAt    time.Time
+	codeHash       string
+	codeExpiresAt  time.Time
+	redeemedAt     time.Time
+	createdAt      time.Time
 }
 
 func (m *fakeMigration) view() *MigrationView {
 	v := &MigrationView{
 		ID: m.id, SourceUserID: m.sourceUserID, TargetUserID: m.targetUserID,
-		State: m.state, ConfirmFactor: m.confirmFactor, CreatedAt: m.createdAt,
+		State: m.state, ConfirmFactor: m.confirmFactor, ConfirmSession: m.confirmSession,
+		CreatedAt: m.createdAt,
 	}
 	if !m.confirmedAt.IsZero() {
 		t := m.confirmedAt
@@ -1373,21 +1375,29 @@ func (f *fakeRepo) MigrationForSource(_ context.Context, sourceUserID string) (*
 	return nil, ErrNotFound
 }
 
-func (f *fakeRepo) ConfirmMigration(_ context.Context, sourceUserID, factor string, now time.Time) error {
+func (f *fakeRepo) ConfirmMigration(_ context.Context, sourceUserID, factor, session string, now time.Time) error {
 	for _, m := range f.migrations {
-		if m.sourceUserID == sourceUserID && m.state == "initiated" {
+		if m.sourceUserID != sourceUserID {
+			continue
+		}
+		lapsed := m.state == "confirmed" && (m.confirmSession != session || !m.confirmedAt.After(now.Add(-migrateConfirmWindow)))
+		expired := m.state == "code_issued" && !m.codeExpiresAt.After(now)
+		if m.state == "initiated" || lapsed || expired {
 			m.state = "confirmed"
 			m.confirmFactor = factor
+			m.confirmSession = session
 			m.confirmedAt = now
+			m.targetUserID, m.codeHash, m.codeExpiresAt = "", "", time.Time{}
 			return nil
 		}
 	}
 	return ErrConflict
 }
 
-func (f *fakeRepo) IssueMigrationCode(_ context.Context, sourceUserID, targetUserID, codeHash string, expiresAt time.Time) error {
+func (f *fakeRepo) IssueMigrationCode(_ context.Context, sourceUserID, targetUserID, session, codeHash string, now, expiresAt time.Time) error {
 	for _, m := range f.migrations {
-		if m.sourceUserID == sourceUserID && m.state == "confirmed" {
+		if m.sourceUserID == sourceUserID && m.state == "confirmed" &&
+			m.confirmSession == session && m.confirmedAt.After(now.Add(-migrateConfirmWindow)) {
 			m.state = "code_issued"
 			m.targetUserID = targetUserID
 			m.codeHash = codeHash

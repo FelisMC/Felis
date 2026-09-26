@@ -1701,7 +1701,7 @@ export interface paths {
         };
         /**
          * Report the caller's active account-migration and where it is in the flow (spec §B3 inherit, web side).
-         * @description Read-only. Returns the live migration whose source is the authenticated principal, if any, so the web onboarding can resume the flow: whether a confirmation step-up is still needed, which factor confirmed it, the named target, and the one-time code's expiry once issued. active:false when the caller has no live migration.
+         * @description Read-only. Returns the live migration whose source is the authenticated principal, if any, so the web onboarding can resume the flow: whether a confirmation step-up is still needed, which factor confirmed it and until when, the named target, and the one-time code's expiry once issued. The step-up counts only for the session that gave it and for 10 minutes, so a confirmation made in another session, one that lapsed, and a code that expired unspent all read as initiated. active:false when the caller has no live migration.
          */
         get: operations["migrateStatus"];
         put?: never;
@@ -1803,7 +1803,7 @@ export interface paths {
         put?: never;
         /**
          * Name the target account and mint the one-time migration code (spec §B3 inherit).
-         * @description For a confirmed migration, binds the named target account and mints a single one-time code (only its hash is stored) that the target must redeem while logged in AS that target — an intercepted code is useless to anyone else. The target must exist and be neither disabled nor soft-deleted, and cannot be the source.
+         * @description For a migration confirmed by a step-up in this same session within the last 10 minutes, binds the named target account and mints a single one-time code (only its hash is stored) that the target must redeem while logged in AS that target — an intercepted code is useless to anyone else. The target must exist and be neither disabled nor soft-deleted, and cannot be the source. The source's verified address is sent a notice naming the target and the expiry, and another when the code is redeemed.
          */
         post: operations["migrateIssueCode"];
         delete?: never;
@@ -7049,6 +7049,11 @@ export interface operations {
                         target_user_id?: string;
                         /** @enum {string} */
                         confirm_factor?: "passkey" | "email_otp";
+                        /**
+                         * Format: date-time
+                         * @description Present while state is confirmed; the code must be issued before it.
+                         */
+                        confirm_expires_at?: string;
                         /** Format: date-time */
                         code_expires_at?: string;
                     };
@@ -7315,7 +7320,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description The migration has not been confirmed by a step-up yet (not_confirmed). */
+            /** @description No step-up from this session within the last 10 minutes, or a code is already out (not_confirmed). */
             409: {
                 headers: {
                     [name: string]: unknown;

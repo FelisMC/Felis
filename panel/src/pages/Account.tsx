@@ -666,10 +666,12 @@ function LinkForm({
  *  The flow is born in-game (/felis migrate proves the player) and driven here:
  *  status → step-up confirm (passkey when one is enrolled — the server 409s the
  *  OTP door in that case — else email-OTP) → issue-code (the source names the
- *  target account and reads a one-time code) → redeem (the TARGET account spends
- *  the code; the source's servers move over and the source is retired). Both
- *  roles render on every account: the redeem form is always offered, and the
- *  account id is always shown so a target can hand it to the source. */
+ *  target account and reads a one-time code; the confirmation counts only in this
+ *  browser and for 10 minutes, after which the status asks for it again) → redeem
+ *  (the TARGET account spends the code; the source's servers move over and the
+ *  source is retired). Both roles render on every account: the redeem form is
+ *  always offered, and the account id is always shown so a target can hand it to
+ *  the source. */
 function MigrationCard({ userId, hasPasskey }: { userId?: string; hasPasskey: boolean }) {
   const { t } = useTranslation("account");
   const mig = useAsync(() => api.migrateStatus(), []);
@@ -775,6 +777,10 @@ function MigrationCard({ userId, hasPasskey }: { userId?: string; hasPasskey: bo
                       e.preventDefault();
                       void run(async () => {
                         await api.migrateConfirmOTPVerify(otpCode.trim());
+                        // The code is spent; a later step-up (the confirmation lapsed)
+                        // starts from a fresh one.
+                        setOtpSent(false);
+                        setOtpCode("");
                         await mig.reload();
                       });
                     }}
@@ -795,19 +801,31 @@ function MigrationCard({ userId, hasPasskey }: { userId?: string; hasPasskey: bo
               </div>
             )}
 
-            {state === "confirmed" && !issued && (
+            {state === "confirmed" && (
               <form
                 className="space-y-2"
                 onSubmit={(e) => {
                   e.preventDefault();
                   void run(async () => {
-                    setIssued(await api.migrateIssueCode(targetId.trim()));
-                    await mig.reload();
+                    // Reload either way: a refusal usually means the confirmation
+                    // lapsed, and the status then asks for the step-up again.
+                    try {
+                      setIssued(await api.migrateIssueCode(targetId.trim()));
+                    } finally {
+                      await mig.reload();
+                    }
                   });
                 }}
               >
                 <p className="font-medium text-foreground">{t("migration_issue_title")}</p>
                 <p className="text-muted-foreground">{t("migration_issue_desc")}</p>
+                {mig.data?.confirm_expires_at && (
+                  <p className="text-xs text-muted-foreground">
+                    {t("migration_issue_deadline", {
+                      time: new Date(mig.data.confirm_expires_at).toLocaleTimeString(),
+                    })}
+                  </p>
+                )}
                 <div className="flex gap-2 max-w-md">
                   <Input
                     value={targetId}
@@ -823,7 +841,7 @@ function MigrationCard({ userId, hasPasskey }: { userId?: string; hasPasskey: bo
               </form>
             )}
 
-            {issued && (
+            {issued && state === "code_issued" && (
               <div className="space-y-2">
                 <p className="font-medium text-foreground">{t("migration_code_title")}</p>
                 <code className="block w-fit rounded bg-muted px-3 py-2 font-mono text-base tracking-[0.2em] text-foreground select-all">

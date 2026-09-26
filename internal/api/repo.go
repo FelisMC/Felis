@@ -233,18 +233,20 @@ type NewOpLoginRequest struct {
 
 // MigrationView is the live account-migration for a source user (spec §B3 inherit,
 // scenario A): its state-machine position and the fields the web step-up, issue-code,
-// and status paths read. TargetUserID is empty until a code is issued; ConfirmFactor
-// and ConfirmedAt are empty/nil until the source completes step-up; CodeExpiresAt is
-// nil until code_issued.
+// and status paths read. TargetUserID is empty until a code is issued; ConfirmFactor,
+// ConfirmSession and ConfirmedAt are empty/nil until the source completes step-up;
+// CodeExpiresAt is nil until code_issued. ConfirmSession is the token hash of the
+// session that gave the step-up.
 type MigrationView struct {
-	ID            string
-	SourceUserID  string
-	TargetUserID  string
-	State         string
-	ConfirmFactor string
-	ConfirmedAt   *time.Time
-	CodeExpiresAt *time.Time
-	CreatedAt     time.Time
+	ID             string
+	SourceUserID   string
+	TargetUserID   string
+	State          string
+	ConfirmFactor  string
+	ConfirmSession string
+	ConfirmedAt    *time.Time
+	CodeExpiresAt  *time.Time
+	CreatedAt      time.Time
 }
 
 // Repo is the business-layer data access the API depends on. It is an interface
@@ -762,17 +764,20 @@ type Repo interface {
 	// gate each step on the correct prior state.
 	MigrationForSource(ctx context.Context, sourceUserID string) (*MigrationView, error)
 	// ConfirmMigration records that the source proved control via a FRESH step-up
-	// (factor 'passkey' | 'email_otp'), advancing 'initiated' → 'confirmed'. It only
-	// advances from 'initiated'; any other current state (or no migration) → ErrConflict,
-	// so a confirmed/code_issued/redeemed migration can never be re-confirmed and the
-	// step-up cannot be replayed. now stamps confirmed_at.
-	ConfirmMigration(ctx context.Context, sourceUserID, factor string, now time.Time) error
+	// (factor 'passkey' | 'email_otp') on the session whose token hash is session,
+	// advancing to 'confirmed'. It advances only from where migrationStage puts the
+	// caller back at the step-up: 'initiated', a 'confirmed' that lapsed
+	// (migrateConfirmWindow) or belongs to another session, or a 'code_issued' whose
+	// code expired at now, which it clears. A live confirmation of this session, a live
+	// code, a redeemed migration or none → ErrConflict. now stamps confirmed_at.
+	ConfirmMigration(ctx context.Context, sourceUserID, factor, session string, now time.Time) error
 	// IssueMigrationCode binds the named target and stores the one-time code hash,
-	// advancing 'confirmed' → 'code_issued'. targetUserID must be a live account other
-	// than the source (validated by the caller before this call); the target FK also
-	// guarantees the row exists. codeHash is the sha-256 of the code; expiresAt is its
-	// TTL. A migration not in 'confirmed' → ErrConflict.
-	IssueMigrationCode(ctx context.Context, sourceUserID, targetUserID, codeHash string, expiresAt time.Time) error
+	// advancing 'confirmed' → 'code_issued'. The confirmation must be session's and
+	// younger than migrateConfirmWindow at now. targetUserID must be a live account
+	// other than the source (validated by the caller before this call); the target FK
+	// also guarantees the row exists. codeHash is the sha-256 of the code; expiresAt is
+	// its TTL. Anything else → ErrConflict.
+	IssueMigrationCode(ctx context.Context, sourceUserID, targetUserID, session, codeHash string, now, expiresAt time.Time) error
 	// RedeemMigration is the ATOMIC transfer: keyed by (codeHash, targetUserID) it
 	// finds the 'code_issued', unexpired migration whose named target is exactly the
 	// redeeming user, re-points every server owned by the source to the target, retires
