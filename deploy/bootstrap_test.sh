@@ -1375,12 +1375,16 @@ prblock="$(awk '/^persisted_registry_block\(\) \{/,/^}/' "$BS")"
 pablock="$(awk '/^persisted_archive_block\(\) \{/,/^}/' "$BS")"
 poblock="$(awk '/^persisted_offsite_block\(\) \{/,/^}/' "$BS")"
 oblock="$(awk '/^offsite_block\(\) \{/,/^}/' "$BS")"
-{ [ -n "$wrblock" ] && [ -n "$prblock" ] && [ -n "$pablock" ] && [ -n "$poblock" ] && [ -n "$oblock" ]; } \
-  || { echo "FAIL: write_felis_toml / persisted_{registry,archive,offsite}_block / offsite_block not found in $BS"; exit 1; }
+palblock="$(awk '/^persisted_auth_lines\(\) \{/,/^}/' "$BS")"
+ahblock="$(awk '/^auth_hostname\(\) \{/,/^}/' "$BS")"
+alblock="$(awk '/^auth_lines\(\) \{/,/^}/' "$BS")"
+{ [ -n "$wrblock" ] && [ -n "$prblock" ] && [ -n "$pablock" ] && [ -n "$poblock" ] && [ -n "$oblock" ] &&
+  [ -n "$palblock" ] && [ -n "$ahblock" ] && [ -n "$alblock" ]; } \
+  || { echo "FAIL: write_felis_toml / persisted_{registry,archive,offsite}_block / offsite_block / the [auth] helpers not found in $BS"; exit 1; }
 # The blocks quote themselves (the awk program uses single quotes), so they are
 # sourced from a file instead of being spliced into a single-quoted bash -c.
 fnfile="$(mktemp)"
-printf '%s\n%s\n%s\n%s\n%s\n' "$prblock" "$pablock" "$poblock" "$oblock" "$wrblock" > "$fnfile"
+printf '%s\n' "$prblock" "$pablock" "$poblock" "$oblock" "$palblock" "$ahblock" "$alblock" "$wrblock" > "$fnfile"
 
 rdir="$(mktemp -d)"
 cat > "$rdir/felis.host.toml" <<'TOML'
@@ -1413,8 +1417,10 @@ endpoint = "https://objects.example"
 bucket = "felis-offsite"
 TOML
 
-run_write() { # out-file
-  STATE_DIR="$rdir" OUT_TOML="$1" FNFILE="$fnfile" bash -c '
+run_write() { # out-file [state-dir]; under the installer's shell options and ERR trap
+  STATE_DIR="${2:-$rdir}" OUT_TOML="$1" FNFILE="$fnfile" bash -c '
+    set -Eeuo pipefail
+    trap '\''echo "ERR near line $LINENO (exit $?)" >&2'\'' ERR
     log() { :; }
     persisted_smtp_block() { :; }
     persisted_auth_source_blocks() { :; }
@@ -1467,6 +1473,164 @@ else
   fails=$((fails + 1))
 fi
 
+# --- installer re-runs keep [auth]; a different root domain is refused ------------------
+# The Cloudflare edge setup writes access_jwt_aud and client_ip_header into [auth] (the
+# header is what the sign-in rate limit keys on), and an operator may serve the admin
+# console on a name of their own. A re-run rewrote [auth] from the root domain and dropped
+# all of it. The hostnames also feed the proxy's felis-link.properties and the panel
+# certificate, which must follow the carried names.
+
+adir="$(mktemp -d)"
+cat > "$adir/felis.host.toml" <<'TOML'
+[server]
+root_domain = "r.example.com"
+
+[auth]
+admin_hostname = "ops.example.org"
+panel_hostname = "console.r.example.com"
+access_jwt_aud = "aud-0123"
+client_ip_header = "CF-Connecting-IP"
+
+[smtp]
+host = "mail.example"
+TOML
+err="$(run_write "$adir/out.toml" "$adir" 2>&1)"
+if [ -z "$err" ]; then
+  echo "PASS writing the config runs nothing (no command substitution in the template)"
+else
+  echo "FAIL: writing the config printed:"; printf '%s\n' "$err"; fails=$((fails + 1))
+fi
+out="$(cat "$adir/out.toml")"
+expect "a re-run keeps every [auth] key, the edge's and the operator's" '[auth]
+admin_hostname = "ops.example.org"
+panel_hostname = "console.r.example.com"
+access_jwt_aud = "aud-0123"
+client_ip_header = "CF-Connecting-IP"
+
+' "$out"
+case "$out" in
+  *op.console.r.example.com*)
+    echo "FAIL: a derived admin hostname was written next to the carried one:"; printf '%s\n' "$out"; fails=$((fails + 1)) ;;
+  *mail.example*)
+    echo "FAIL: the [auth] carry ran into the next section:"; printf '%s\n' "$out"; fails=$((fails + 1)) ;;
+  *) echo "PASS the carried names replace the derived ones and the carry stops at [smtp]" ;;
+esac
+cp "$adir/out.toml" "$adir/felis.host.toml"
+run_write "$adir/out2.toml" "$adir"
+if cmp -s "$adir/out.toml" "$adir/out2.toml"; then
+  echo "PASS a carried-forward [auth] converges (the second re-run is a no-op)"
+else
+  echo "FAIL: carrying [auth] is not idempotent"; diff "$adir/out.toml" "$adir/out2.toml" | head
+  fails=$((fails + 1))
+fi
+
+printf '[server]\nroot_domain = "r.example.com"\n\n[auth]\naccess_jwt_aud = "aud-0123"\n' > "$adir/felis.host.toml"
+run_write "$adir/out.toml" "$adir"
+expect "an [auth] without the hostnames gets the derived ones and keeps the rest" '[auth]
+admin_hostname = "op.console.r.example.com"
+panel_hostname = "console.r.example.com"
+access_jwt_aud = "aud-0123"' "$(cat "$adir/out.toml")"
+rm -f "$adir/felis.host.toml"
+run_write "$adir/out.toml" "$adir"
+expect "a first install writes the two derived hostnames" '[auth]
+admin_hostname = "op.console.r.example.com"
+panel_hostname = "console.r.example.com"
+
+' "$(cat "$adir/out.toml")"
+
+# The proxy's link properties and the panel certificate take the carried names.
+wvblock="$(awk '/^write_velocity_config\(\) \{/,/^}/' "$BS")"
+ptblock="$(awk '/^ensure_panel_tls_cert\(\) \{/,/^}/' "$BS")"
+{ [ -n "$wvblock" ] && [ -n "$ptblock" ]; } \
+  || { echo "FAIL: write_velocity_config / ensure_panel_tls_cert not found in $BS"; exit 1; }
+printf '%s\n' "$wvblock" "$ptblock" >> "$fnfile"
+cat > "$adir/felis.host.toml" <<'TOML'
+[auth]
+admin_hostname = "ops.example.org"
+panel_hostname = "play.example.org"
+TOML
+run_surfaces() { # state-dir out-dir; under the installer's shell options and ERR trap
+  STATE_DIR="$1" VOUT="$2" TMPDIR="$2" FNFILE="$fnfile" bash -c '
+    set -Eeuo pipefail
+    trap '\''echo "ERR near line $LINENO (exit $?)" >&2'\'' ERR
+    log() { :; }; ok() { :; }; remember_temp() { :; }
+    felis_internal_ip() { printf 10.43.0.1; }
+    prepare_velocity_layout() { :; }
+    atomic_install_file() { cp "$1" "$VOUT/$(basename "$2")"; }
+    openssl() { for a in "$@"; do :; done; cp "$a" "$VOUT/openssl.cnf"; touch "$VOUT/k" "$VOUT/c"; }
+    . "$FNFILE"
+    FELIS_ROOT_DOMAIN=r.example.com FORWARDING_SECRET=f SERVICE_TOKEN=t LOGIN_SERVER=login \
+    LOBBY_SERVER=lobby FELIS_GAME_PORT=25565 VELOCITY_DIR=/v VELOCITY_USER=v NODE_IP=10.0.0.5 \
+    PANEL_TLS_CERT="$VOUT/c" PANEL_TLS_KEY="$VOUT/k"
+    write_velocity_config
+    ensure_panel_tls_cert'
+}
+mkdir "$adir/v"
+run_surfaces "$adir" "$adir/v"
+out="$(cat "$adir/v/felis-link.properties" 2>&1)"
+expect "the proxy routes the carried panel hostname" "panel-hostname=play.example.org" "$out"
+expect "the proxy routes the carried admin hostname" "admin-hostname=ops.example.org" "$out"
+expect "the proxy keeps the root domain" "root-domain=r.example.com" "$out"
+out="$(cat "$adir/v/openssl.cnf" 2>&1)"
+expect "a regenerated panel certificate names the carried hostnames" 'DNS.1 = ops.example.org
+DNS.2 = play.example.org' "$out"
+
+# The hostnames on the section's first lines and the section far past one pipe buffer:
+# a `printf | grep -q` or `| awk exit` over it has the reader exit while printf is still
+# writing, which is certain here and a scheduling race on a real host. The config must
+# still carry each name once, and
+# the helpers must fail nothing along the way (the installer logs every failed command).
+{ printf '[auth]\nadmin_hostname = "ops.example.org"\npanel_hostname = "play.example.org"\n'
+  seq 1 200000 | sed 's/.*/k& = "v"/'; } > "$adir/felis.host.toml"
+err="$(run_write "$adir/out.toml" "$adir" 2>&1)"
+for key in admin_hostname panel_hostname; do
+  got="$(grep "^${key} = " "$adir/out.toml")"
+  case "$got" in
+    *$'\n'*) echo "FAIL: a long carried [auth] wrote ${key} twice:"; printf '%s\n' "$got"; fails=$((fails + 1)) ;;
+    "") echo "FAIL: a long carried [auth] lost ${key}"; fails=$((fails + 1)) ;;
+    *) echo "PASS a long carried [auth] writes ${key} once: ${got}" ;;
+  esac
+done
+expect "a long carried [auth] keeps the operator's admin name" 'admin_hostname = "ops.example.org"' "$(grep '^admin_hostname' "$adir/out.toml")"
+rm -rf "$adir/v"; mkdir "$adir/v"
+err="${err}$(run_surfaces "$adir" "$adir/v" 2>&1)"
+expect "a long carried [auth] still routes the carried panel hostname" "panel-hostname=play.example.org" "$(cat "$adir/v/felis-link.properties" 2>&1)"
+if [ -z "$err" ]; then
+  echo "PASS reading a long [auth] fails no command"
+else
+  echo "FAIL: reading a long [auth] printed:"; printf '%s\n' "$err" | head -5; fails=$((fails + 1))
+fi
+
+# A different FELIS_ROOT_DOMAIN on an installed host is refused with the way through.
+dnblock="$(awk '/^detect_node_ip\(\) \{/,/^}/' "$BS")"
+prdblock="$(awk '/^persisted_root_domain\(\) \{/,/^}/' "$BS")"
+{ [ -n "$dnblock" ] && [ -n "$prdblock" ]; } || { echo "FAIL: detect_node_ip / persisted_root_domain not found in $BS"; exit 1; }
+printf '%s\n' "$prdblock" "$dnblock" > "$fnfile"
+run_detect() { # state-dir [FELIS_ROOT_DOMAIN]
+  STATE_DIR="$1" RD="${2:-}" FNFILE="$fnfile" bash -c '
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    log() { printf "LOG: %s\n" "$*"; }
+    warn() { printf "WARN: %s\n" "$*"; }
+    ip() { echo "1.1.1.1 via 10.0.0.1 dev eth0 src 10.0.0.5 uid 0"; }
+    . "$FNFILE"
+    if [ -n "$RD" ]; then FELIS_ROOT_DOMAIN="$RD"; fi
+    detect_node_ip
+    echo "ROOT=$FELIS_ROOT_DOMAIN"'
+}
+printf '[server]\nroot_domain = "r.example.com"\n' > "$adir/felis.host.toml"
+out="$(run_detect "$adir" new.example.net)"
+expect "a different FELIS_ROOT_DOMAIN is refused" "DIE: FELIS_ROOT_DOMAIN (new.example.net) differs from the installed r.example.com" "$out"
+expect "the refusal names the command that moves the install" "sudo felis domain set new.example.net" "$out"
+case "$out" in
+  *ROOT=*) echo "FAIL: the installer went on after refusing:"; printf '%s\n' "$out"; fails=$((fails + 1)) ;;
+esac
+expect "the installed domain is reused when named again" "ROOT=r.example.com" "$(run_detect "$adir" r.example.com)"
+expect "the installed domain is reused when unset" "ROOT=r.example.com" "$(run_detect "$adir")"
+rm -f "$adir/felis.host.toml"
+expect "a first install takes FELIS_ROOT_DOMAIN" "ROOT=new.example.net" "$(run_detect "$adir" new.example.net)"
+expect "a first install defaults to nip.io" "ROOT=10.0.0.5.nip.io" "$(run_detect "$adir")"
+
+rm -rf "$adir"
 rm -f "$fnfile"
 
 # --- database backups: the pre-migration snapshot and the daily timer --------------------

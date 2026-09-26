@@ -87,7 +87,9 @@
 #                     previous one; :demo when the version is unknown — never :latest;
 #                     anything not under the registry is used as-is but is NOT
 #                     mirrored into it, so it has no pull source after an image GC)
-#   FELIS_ROOT_DOMAIN deployment root domain  (default: <node-ip>.nip.io)
+#   FELIS_ROOT_DOMAIN deployment root domain  (default: <node-ip>.nip.io; first install
+#                     only -- a rerun keeps the installed one, and sudo felis domain set
+#                     moves it)
 #   FELIS_PANEL_NODEPORT local HTTPS panel/API NodePort (default: 30443)
 #   FELIS_EGRESS_MODE loadbalancer|nodeport   (default: nodeport — no MetalLB on a demo box)
 #   FELIS_BACKUP_PVC  world-archive PVC the installer renders and felis-api hands to its
@@ -914,19 +916,19 @@ detect_node_ip() {
   # installer re-derived the domain from scratch every time and defaulted to nip.io, so
   # re-running it on a live install -- the only way to move felis-api to a newer release,
   # and what `felis update` points operators at -- rewrote root_domain, panel_hostname and
-  # admin_hostname to nip.io names. ensure_panel_tls_cert is write-once and kept serving a
-  # certificate for the OLD hostnames, so the console stopped matching its own cert, with
-  # no re-domain flow to recover through. Secrets never had this problem:
-  # load_or_make_secrets has always sourced secrets.env before generating anything.
+  # admin_hostname to nip.io names while the write-once panel certificate kept the old
+  # ones. Secrets never had this problem: load_or_make_secrets has always sourced
+  # secrets.env before generating anything.
+  #
+  # A different FELIS_ROOT_DOMAIN on an installed host is refused. The name is on more
+  # surfaces than this script rewrites -- the panel certificate, the felis-api-tls and
+  # felis-config Secrets, the proxy's felis-link.properties, the login gate's CR env, the
+  # Cloudflare tunnel -- and a half-moved install serves a certificate for the old names.
+  # `felis domain set` moves all of them and `felis domain check` proves each one.
   local persisted
   persisted="$(persisted_root_domain)"
   if [ -n "${FELIS_ROOT_DOMAIN:-}" ] && [ -n "$persisted" ] && [ "$FELIS_ROOT_DOMAIN" != "$persisted" ]; then
-    # Deliberate re-domain. Allowed -- there is no other route to it -- but it is not a
-    # thing this script finishes: the panel certificate, the two secrets, the velocity
-    # config and the login CR all still carry the old name.
-    warn "FELIS_ROOT_DOMAIN (${FELIS_ROOT_DOMAIN}) differs from the installed ${persisted}."
-    warn "This re-domains the install. The write-once panel certificate is NOT reissued and"
-    warn "will keep the old hostnames; the proxy and login config need the same treatment."
+    die "FELIS_ROOT_DOMAIN (${FELIS_ROOT_DOMAIN}) differs from the installed ${persisted}. The installer keeps the installed domain; to move the install, rerun it without FELIS_ROOT_DOMAIN, then run: sudo felis domain set ${FELIS_ROOT_DOMAIN} (docs/operations.md, Changing the root domain)"
   fi
   FELIS_ROOT_DOMAIN="${FELIS_ROOT_DOMAIN:-${persisted:-${NODE_IP}.nip.io}}"
   if [ -n "$persisted" ] && [ "$FELIS_ROOT_DOMAIN" = "$persisted" ]; then
@@ -2645,8 +2647,10 @@ felis_internal_ip() {
 }
 
 write_velocity_config() {
-  local api_ip tmp
+  local api_ip tmp panel_host admin_host
   api_ip="$(felis_internal_ip)"
+  panel_host="$(auth_hostname panel_hostname "console.${FELIS_ROOT_DOMAIN}")"
+  admin_host="$(auth_hostname admin_hostname "op.console.${FELIS_ROOT_DOMAIN}")"
 
   prepare_velocity_layout
   tmp="$(mktemp -d)"
@@ -2715,8 +2719,8 @@ EOF
 api-base-url=http://${api_ip}:8081
 service-token=${SERVICE_TOKEN}
 root-domain=${FELIS_ROOT_DOMAIN}
-panel-hostname=console.${FELIS_ROOT_DOMAIN}
-admin-hostname=op.console.${FELIS_ROOT_DOMAIN}
+panel-hostname=${panel_host}
+admin-hostname=${admin_host}
 login-server=${LOGIN_SERVER}
 lobby-server=${LOBBY_SERVER}
 EOF
@@ -3111,8 +3115,9 @@ ensure_panel_tls_cert() {
     return 0
   fi
 
-  local cn conf
-  cn="op.console.${FELIS_ROOT_DOMAIN}"
+  local cn panel_host conf
+  cn="$(auth_hostname admin_hostname "op.console.${FELIS_ROOT_DOMAIN}")"
+  panel_host="$(auth_hostname panel_hostname "console.${FELIS_ROOT_DOMAIN}")"
   conf="$(mktemp)"
   remember_temp "$conf"
   cat > "$conf" <<EOF
@@ -3129,8 +3134,8 @@ CN = ${cn}
 subjectAltName = @alt_names
 
 [alt_names]
-DNS.1 = op.console.${FELIS_ROOT_DOMAIN}
-DNS.2 = console.${FELIS_ROOT_DOMAIN}
+DNS.1 = ${cn}
+DNS.2 = ${panel_host}
 DNS.3 = localhost
 IP.1 = 127.0.0.1
 IP.2 = ${NODE_IP}
@@ -3181,6 +3186,58 @@ persisted_smtp_block() {
     printf '%s' "$out"
     return 0
   done
+}
+
+# persisted_auth_lines echoes the key lines of the [auth] section an earlier run left
+# behind, or nothing. Two writers own keys there that nothing in this script's inputs
+# derives: the Cloudflare edge setup (access_jwt_aud, client_ip_header -- the header the
+# sign-in rate limit keys on) and an operator who serves the panel or the admin console
+# on a name other than console.<root> / op.console.<root>. A wholesale rewrite dropped
+# all of them on every re-run: behind Cloudflare the rate limit fell back to the tunnel's
+# address, one bucket for everyone. Header-and-keys only, like persisted_smtp_block, and
+# the same first-readable-file rule.
+persisted_auth_lines() {
+  local f out
+  for f in "${STATE_DIR}/felis.host.toml" "${STATE_DIR}/felis.pod.toml"; do
+    [ -r "$f" ] || continue
+    out="$(awk '
+      /^[[:space:]]*\[/ {
+        if (inauth) exit
+        inauth = ($0 ~ /^[[:space:]]*\[auth\][[:space:]]*$/)
+        next
+      }
+      inauth && /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=/ { print }
+    ' "$f")"
+    [ -n "$out" ] || continue
+    printf '%s\n' "$out"
+    return 0
+  done
+}
+
+# auth_hostname echoes the installed value of an [auth] hostname key, or the default
+# derived from the root domain: `auth_hostname panel_hostname "console.${FELIS_ROOT_DOMAIN}"`.
+# The lines are read into a variable before matching, as in auth_lines.
+auth_hostname() {
+  local lines v
+  lines="$(persisted_auth_lines)"
+  v="$(awk -F'"' -v k="$1" '$1 ~ "^[[:space:]]*" k "[[:space:]]*=[[:space:]]*$" { print $2; exit }' <<<"$lines")"
+  printf '%s' "${v:-$2}"
+}
+
+# auth_lines is the body of the [auth] section this run writes: the carried keys, after
+# the two hostnames derived from the root domain when the carry lacks them. A first
+# install gets exactly the two derived lines; a re-run reproduces the carried section.
+# The keys are matched in a here-string, never `printf | grep -q`: grep exits at the
+# match, printf dies of SIGPIPE on the lines after it, pipefail fails the test, and a
+# second admin_hostname then breaks the file (see postgres_installed).
+auth_lines() {
+  local carried
+  carried="$(persisted_auth_lines)"
+  grep -Eq '^[[:space:]]*admin_hostname[[:space:]]*=' <<<"$carried" ||
+    printf 'admin_hostname = "op.console.%s"\n' "$FELIS_ROOT_DOMAIN"
+  grep -Eq '^[[:space:]]*panel_hostname[[:space:]]*=' <<<"$carried" ||
+    printf 'panel_hostname = "console.%s"\n' "$FELIS_ROOT_DOMAIN"
+  if [ -n "$carried" ]; then printf '%s\n' "$carried"; fi
 }
 
 # persisted_auth_source_blocks echoes the [[auth_source]] tables an earlier run left
@@ -3301,12 +3358,16 @@ offsite_enabled() {
 }
 
 write_felis_toml() {
-  local target="$1" db_host="$2" smtp_block auth_source_blocks registry_block archive_block offsite_section
+  local target="$1" db_host="$2" smtp_block auth_body auth_source_blocks registry_block archive_block offsite_section
   smtp_block="$(persisted_smtp_block)"
   if [ -n "$smtp_block" ]; then
     log "carrying forward the configured [smtp] relay"
     smtp_block="${smtp_block}"$'\n' # keep a blank line before the next section
   fi
+  if [ -n "$(persisted_auth_lines)" ]; then
+    log "carrying forward the configured [auth] keys"
+  fi
+  auth_body="$(auth_lines)"
   auth_source_blocks="$(persisted_auth_source_blocks)"
   registry_block="$(persisted_registry_block)"
   if [ -n "$registry_block" ]; then
@@ -3326,8 +3387,9 @@ write_felis_toml() {
   fi
   cat > "$target" <<EOF
 # Generated by deploy/bootstrap.sh; rerun the installer to regenerate. Hand edits are
-# overwritten, except [smtp], [[auth_source]], [offsite], and the operator-owned
-# [registry] / [archive] overrides, which carry forward.
+# overwritten, except [auth], [smtp], [[auth_source]], [offsite], and the operator-owned
+# [registry] / [archive] overrides, which carry forward. Move the install to another
+# root domain with: sudo felis domain set <new-root-domain>
 [server]
 listen = "0.0.0.0:8080"
 root_domain = "${FELIS_ROOT_DOMAIN}"
@@ -3356,8 +3418,7 @@ store = "tarLocal"
 local_path = "${FELIS_ARCHIVE_LOCAL_PATH}"
 ${archive_block}
 ${offsite_section}[auth]
-admin_hostname = "op.console.${FELIS_ROOT_DOMAIN}"
-panel_hostname = "console.${FELIS_ROOT_DOMAIN}"
+${auth_body}
 
 ${smtp_block}
 # Third-party Yggdrasil sources federated by the hasJoined multiplexer. Mojang is
@@ -4092,8 +4153,8 @@ summary() {
   echo
   systemctl --no-pager --full status felis-velocity 2>/dev/null | head -n 4 || true
   echo
-  log "Player panel: https://console.${FELIS_ROOT_DOMAIN} — served on 443 once your edge/Cloudflare Tunnel routes it here."
-  log "Operator console (Op/Admin/Owner): https://op.console.${FELIS_ROOT_DOMAIN} — the Owner runs 'felis setup' and onboards here."
+  log "Player panel: https://$(auth_hostname panel_hostname "console.${FELIS_ROOT_DOMAIN}") — served on 443 once your edge/Cloudflare Tunnel routes it here."
+  log "Operator console (Op/Admin/Owner): https://$(auth_hostname admin_hostname "op.console.${FELIS_ROOT_DOMAIN}") — the Owner runs 'felis setup' and onboards here."
   log "Before the edge is ready: direct + self-signed at https://${NODE_IP}:${FELIS_PANEL_NODEPORT} (browser will warn on first visit)."
   log "Minecraft address: ${NODE_IP}:${FELIS_GAME_PORT} (point mc.${FELIS_ROOT_DOMAIN} here)"
   log "The proxy authenticates against Mojang and forwards the verified profile to the"

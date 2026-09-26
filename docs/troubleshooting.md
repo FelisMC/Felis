@@ -1367,7 +1367,9 @@ the router or as a static address (`nmcli con mod <con> ipv4.method manual
 ipv4.addresses <ip>/<prefix> ipv4.gateway <gw> ipv4.dns <dns> && nmcli con up
 <con>` on Rocky), then restart felis-api (`sudo k3s kubectl -n felis rollout restart
 deploy/felis-api`) and the proxy (`sudo systemctl restart felis-velocity`). Moving an install
-to a new address is a reinstall onto a restored backup (docs/operations.md §5).
+to a new address is a reinstall onto a restored backup (docs/operations.md §5). A
+default `<ip>.nip.io` root domain names the old address too; once the install runs on
+its new address, `sudo felis domain set <new-ip>.nip.io` moves it (docs/operations.md §6).
 
 The node **name** is pinned. Every local-path volume (worlds, registry,
 uploads, backups) is bound to its node by name, and k3s takes the name from the
