@@ -2346,6 +2346,8 @@ export interface components {
             idleStopSeconds: number;
             /** @description Present and true while the operator cannot read the player count over RCON; idle auto-stop waits until it can. */
             playerCountUnknown?: boolean;
+            /** @description Present and true when the CR carries the label felis.lolicon.best/forwarding=legacy. The proxy then forwards this server's players BungeeCord-style in the handshake address instead of modern forwarding (Felis-Legacy Velocity fork only). */
+            legacyForwarding?: boolean;
         };
         /** @description One row of the fleet-wide admin read (internal/api/handlers_user.go fleetServerView). */
         FleetServer: components["schemas"]["ServerInfo"] & {

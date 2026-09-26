@@ -20,7 +20,8 @@
 #      lasts and when it ends, the link-status outage
 #      fallback fails closed outside its window, a proxy restarted during an API
 #      outage routes on the last saved server list (and only until a fetch
-#      succeeds), /invite prompts cannot double-fire
+#      succeeds), a CR marked forwarding=legacy joins the fork's legacy-forwarding
+#      list above the installer's floor, /invite prompts cannot double-fire
 #      or outlive their TTL, the invite card really is a green/red clickable
 #      prompt, and the op-login approval card names the account and leaves its
 #      name for the admin to type. InviteCardTest and OpApprovalCardTest need the
@@ -126,6 +127,14 @@ javac -d "$work/list-classes" \
   plugins/velocity/src/main/java/best/lolicon/felis/velocity/ServerListSource.java \
   plugins/velocity/test/best/lolicon/felis/velocity/ServerListSourceTest.java
 java -cp "$work/list-classes" best.lolicon.felis.velocity.ServerListSourceTest
+
+echo "==> LegacyForwardingTest (CR-marked servers reach the fork's legacy-forwarding list, velocity)"
+mkdir -p "$work/legacy-classes"
+javac -d "$work/legacy-classes" \
+  plugins/shared/src/main/java/best/lolicon/felis/link/*.java \
+  plugins/velocity/src/main/java/best/lolicon/felis/velocity/LegacyForwarding.java \
+  plugins/velocity/test/best/lolicon/felis/velocity/LegacyForwardingTest.java
+java -cp "$work/legacy-classes" best.lolicon.felis.velocity.LegacyForwardingTest
 
 echo "==> ApiPoolTest (bounded felis-api pool, non-overlapping repeats, velocity)"
 mkdir -p "$work/pool-classes"

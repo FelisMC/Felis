@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sort"
 	"strings"
@@ -251,5 +252,41 @@ func TestSubdomainOf(t *testing.T) {
 	}
 	if got := SubdomainOf(testServer("a", "")); got != nil {
 		t.Fatalf("SubdomainOf(no subdomain) = %v, want nil", got)
+	}
+}
+
+// The forwarding=legacy label reaches the proxy as legacyForwarding on the server
+// list (#15); any other value, and no label, leaves the server on modern
+// forwarding and keeps the key out of the JSON.
+func TestServerListCarriesLegacyForwarding(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("scheme: %v", err)
+	}
+	labeled := func(name, value string) *v1alpha1.MinecraftServer {
+		ms := testServer(name, name)
+		ms.Labels = map[string]string{v1alpha1.LabelForwarding: value}
+		return ms
+	}
+	k := NewK8sCluster(fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		labeled("legacy18", "legacy"), labeled("shouty", "LEGACY"), labeled("modern", "modern"),
+		testServer("plain", "plain"),
+	).Build(), "minecraft")
+	infos, err := k.ListServers(context.Background())
+	if err != nil {
+		t.Fatalf("ListServers: %v", err)
+	}
+	for _, i := range infos {
+		b, err := json.Marshal(i)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := i.Name == "legacy18"
+		if i.LegacyForwarding != want || strings.Contains(string(b), `"legacyForwarding":true`) != want {
+			t.Errorf("%s: legacyForwarding = %v, JSON %s; want %v", i.Name, i.LegacyForwarding, b, want)
+		}
+		if !want && strings.Contains(string(b), "legacyForwarding") {
+			t.Errorf("%s: JSON carries legacyForwarding although it is off: %s", i.Name, b)
+		}
 	}
 }

@@ -383,6 +383,38 @@ version, in this order, each step one release:
 3. A later release stops serving `v1alpha1`. Felis itself reads through one Go type at a
    time, so the operator and felis-api switch in the release that moves storage.
 
+### Legacy-forwarded backends [VM-VERIFIED]
+
+A 1.8-era backend sits behind ViaVersion, which drops modern forwarding's login plugin
+message on the way down to protocol 47, so the proxy has to hand that server the
+player's identity BungeeCord-style, in the handshake address. Only the Felis-Legacy
+Velocity fork can do that per server. Mark the server's CR and the proxy picks it up at
+its next server-list refresh (every 15 s):
+
+```sh
+kubectl -n minecraft label minecraftserver <name> felis.lolicon.best/forwarding=legacy
+kubectl -n minecraft label minecraftserver <name> felis.lolicon.best/forwarding-   # back to modern
+journalctl -u felis-velocity | grep 'legacy forwarding list'
+```
+
+The installer's `FELIS_LEGACY_FORWARDING_SERVERS` (default `legacy18`) stays in the list
+whatever the labels say. What a label does depends on the proxy the host runs:
+
+| Proxy | A label applies |
+|---|---|
+| Fork with patch 0004 (`build-velocity.sh` default arm) | from the next connection to that server |
+| Fork with 0003 alone (`--deployed`) | at the next `systemctl restart felis-velocity` |
+| Stock Velocity | never; the log line is a warning naming the server |
+
+On the test VM (fork with 0004) labelling a server logged `legacy forwarding list is now
+[legacy18,resolvecheck]` 12 s later, and removing the label logged the list back to
+`[legacy18]`. The fork's own test (`FelisLegacyForwardingTest`) covers the next
+connection following the rewritten list.
+
+Legacy forwarding carries no secret. A marked server believes any identity that reaches
+its game port, which `felis-allow-game-from-velocity` limits to the proxy and the node
+itself; anything else running on the node can reach it too.
+
 ## 5. Disaster recovery
 
 The procedures are in §16: what a database bundle holds, restoring one on the same host,

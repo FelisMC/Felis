@@ -446,6 +446,7 @@ func serverInfo(ms *v1alpha1.MinecraftServer) *ServerInfo {
 		IdleStopSeconds: idleStopSeconds(ms),
 		PlayerCountUnknown: ms.Status.Phase == v1alpha1.PhaseRunning &&
 			meta.IsStatusConditionFalse(ms.Status.Conditions, v1alpha1.ConditionPlayersCounted),
+		LegacyForwarding: ms.Labels[v1alpha1.LabelForwarding] == v1alpha1.ForwardingLegacy,
 	}
 }
 

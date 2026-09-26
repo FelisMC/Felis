@@ -38,10 +38,12 @@
 #   FELIS_NANO_PROXY_CIDR the proxy allowed to reach a non-loopback nano bind, as an address
 #                     with a prefix length (for example 10.0.0.7/32). firewalld opens the
 #                     port to that source only; unset, it opens nothing
-#   FELIS_LEGACY_FORWARDING_SERVERS comma-separated backends that receive their identity
-#                     through the handshake address instead of modern forwarding
-#                     (default: legacy18). Read once at Velocity start, so changing it
-#                     means re-running this script and restarting the proxy.
+#   FELIS_LEGACY_FORWARDING_SERVERS comma-separated backends that always receive their
+#                     identity through the handshake address instead of modern forwarding
+#                     (default: legacy18). A floor: any server whose MinecraftServer CR is
+#                     labelled felis.lolicon.best/forwarding=legacy joins it while the
+#                     proxy runs (docs/operations.md), so a new 1.8 backend needs a label,
+#                     not a re-run. Changing the floor itself means re-running this script.
 #   FELIS_VELOCITY_XMX maximum heap of the Velocity proxy, as <n>M or <n>G (default: 1G;
 #                     at least 256M). docs/operations.md sizes it by player count.
 #   FELIS_VELOCITY_FORK_JAR path to a Felis-Legacy Velocity fork build to install as the
@@ -2741,12 +2743,13 @@ install_velocity_service() {
   # fork reads this list from -Dfelis.legacy-forwarding.servers and forwards those servers legacy;
   # every other backend keeps modern+secret untouched.
   #
-  # The list is a JVM system property, so it is fixed for the life of the proxy process and a
-  # change needs a Velocity restart. FELIS_LEGACY_FORWARDING_SERVERS makes that reachable
-  # without editing this script, which is as far as a startup property can go. Having it follow
-  # the MinecraftServer CRs instead is a larger change: the forwarding decision lives in the
-  # fork's patch to Velocity core, not in the Felis plugin, so core would need to read state the
-  # plugin owns and refreshes.
+  # This value is the floor of the list. The felis-velocity plugin adds every server whose
+  # MinecraftServer CR is labelled felis.lolicon.best/forwarding=legacy by rewriting the same
+  # property on each server-list refresh (LegacyForwarding.java), and drops it again when the
+  # label goes; the floor always stays in. A fork carrying patch 0004 re-reads the property on
+  # every backend connection, so a label applies from the next connection. A fork with 0003
+  # alone reads it once, after the plugin's first refresh, so a label applies at the next proxy
+  # restart. Stock Velocity ignores it, and the plugin logs a warning for a labelled server.
   #
   # The -D below is double-quoted in ExecStart on purpose. The fork trims each element, so it
   # accepts "legacy18, legacy112", but systemd splits ExecStart on whitespace before java ever

@@ -43,6 +43,7 @@ public final class ServerListSourceTest {
             theSavedListIsHandedOutOnce(dir.resolve("c"));
             noSavedListMeansNothingToRestore(dir.resolve("d"));
             aMalformedSavedListIsReportedAndIgnored(dir.resolve("e"));
+            theLegacyForwardingMarkIsSaved(dir.resolve("f"));
             theApiEnvelopeParses();
         } finally {
             try (Stream<Path> walk = Files.walk(dir)) {
@@ -148,15 +149,32 @@ public final class ServerListSourceTest {
         assertEq("rewritten", true, Files.readString(file, StandardCharsets.UTF_8).contains("\"10.43.0.17:25565\""));
     }
 
+    // A proxy restarted during an outage must keep forwarding a marked 1.8 backend the
+    // legacy way (#15), so the mark rides the saved list like every other field.
+    private static void theLegacyForwardingMarkIsSaved(Path dir) throws Exception {
+        Path file = fresh(dir);
+        ServerView legacy = new ServerView("legacy18", "old", "Running", true,
+                null, "Running", "ClusterIP", "10.43.7.1:25565", 0, 20, true);
+        answer = List.of(legacy, SURVIVAL);
+        new ServerListSource(ServerListSourceTest::fetch, file).next();
+        answer = null;
+        ServerListSource.Result r = new ServerListSource(ServerListSourceTest::fetch, file).next();
+        assertEq("restored", true, r.restored);
+        assertEq("the mark survives", true, r.servers.get(0).legacyForwarding());
+        assertEq("an unmarked server stays unmarked", false, r.servers.get(1).legacyForwarding());
+    }
+
     // The exact shape GET /api/v1/servers answers with, extra fields included.
     private static void theApiEnvelopeParses() {
         List<ServerView> v = ServerView.listFromJson("{\"servers\":[{\"name\":\"lobby\",\"subdomain\":\"\","
                 + "\"phase\":\"Running\",\"ready\":true,\"desiredState\":\"Running\",\"endpointMode\":\"ClusterIP\","
                 + "\"endpointAddress\":\"10.43.1.5:25565\",\"playersOnline\":1,\"playersMax\":100,"
-                + "\"owner\":\"x\"},\"junk\"]}");
-        assertEq("non-object entries skipped", 1, v.size());
+                + "\"owner\":\"x\"},\"junk\",{\"name\":\"legacy18\",\"legacyForwarding\":true}]}");
+        assertEq("non-object entries skipped", 2, v.size());
         assertEq("lobby name", "lobby", v.get(0).name());
         assertEq("lobby max", 100, v.get(0).playersMax());
+        assertEq("an absent mark is false", false, v.get(0).legacyForwarding());
+        assertEq("the mark parses", true, v.get(1).legacyForwarding());
         try {
             ServerView.listFromJson("[]");
         } catch (IllegalArgumentException expected) {

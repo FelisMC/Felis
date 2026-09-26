@@ -34,10 +34,19 @@ public final class ServerView {
     private final String endpointAddress;
     private final int playersOnline;
     private final int playersMax;
+    private final boolean legacyForwarding;
 
     public ServerView(String name, String subdomain, String phase, boolean ready,
                       String autostartPolicy, String desiredState, String endpointMode,
                       String endpointAddress, int playersOnline, int playersMax) {
+        this(name, subdomain, phase, ready, autostartPolicy, desiredState, endpointMode,
+                endpointAddress, playersOnline, playersMax, false);
+    }
+
+    public ServerView(String name, String subdomain, String phase, boolean ready,
+                      String autostartPolicy, String desiredState, String endpointMode,
+                      String endpointAddress, int playersOnline, int playersMax,
+                      boolean legacyForwarding) {
         this.name = name;
         this.subdomain = subdomain;
         this.phase = phase;
@@ -48,6 +57,7 @@ public final class ServerView {
         this.endpointAddress = endpointAddress;
         this.playersOnline = playersOnline;
         this.playersMax = playersMax;
+        this.legacyForwarding = legacyForwarding;
     }
 
     /** fromJson builds a view from a parsed felis-api object, tolerating absent fields. */
@@ -62,7 +72,8 @@ public final class ServerView {
                 str(o, "endpointMode"),
                 str(o, "endpointAddress"),
                 intval(o, "playersOnline"),
-                intval(o, "playersMax"));
+                intval(o, "playersMax"),
+                bool(o, "legacyForwarding"));
     }
 
     /**
@@ -112,6 +123,7 @@ public final class ServerView {
             field(b, "endpointAddress", v.endpointAddress, false);
             b.append(",\"playersOnline\":").append(v.playersOnline);
             b.append(",\"playersMax\":").append(v.playersMax);
+            b.append(",\"legacyForwarding\":").append(v.legacyForwarding);
             b.append('}');
         }
         return b.append("]}").toString();
@@ -165,6 +177,15 @@ public final class ServerView {
 
     public int playersMax() {
         return playersMax;
+    }
+
+    /**
+     * legacyForwarding is true when the server's CR is labelled
+     * {@code felis.lolicon.best/forwarding=legacy}: the proxy forwards its players
+     * BungeeCord-style instead of modern forwarding ({@code LegacyForwarding}).
+     */
+    public boolean legacyForwarding() {
+        return legacyForwarding;
     }
 
     private static String str(Map<?, ?> o, String key) {

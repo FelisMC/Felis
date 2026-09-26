@@ -34,6 +34,9 @@ type ServerInfo struct {
 	// PlayerCountUnknown is true while the operator cannot read the player
 	// count over RCON; idle auto-stop waits until it can.
 	PlayerCountUnknown bool `json:"playerCountUnknown,omitempty"`
+	// LegacyForwarding mirrors the CR's forwarding=legacy label: the proxy
+	// forwards this server's players in the handshake address (#15).
+	LegacyForwarding bool `json:"legacyForwarding,omitempty"`
 }
 
 // CreateServerInput is the validated, structured create-server form (spec §15).

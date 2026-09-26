@@ -19,7 +19,21 @@ const (
 	// LabelSystemRole identifies setup-owned system servers. Its value is the
 	// reserved role name (for example, "login" or "lobby").
 	LabelSystemRole = GroupName + "/system-role"
+	// LabelForwarding set to ForwardingLegacy makes the proxy hand this server the
+	// player's identity BungeeCord-style, in the handshake address, instead of the
+	// proxy-wide modern forwarding (#15). It is for a 1.8-era backend behind
+	// ViaVersion, which drops modern forwarding's login plugin message; such a
+	// backend trusts whatever reaches its game port, so nothing but the proxy may.
+	// Only the Felis-Legacy Velocity fork acts on it. A label rather than a spec
+	// field: the CRD needs no change, so an existing install takes it as is; the
+	// operator copies no CR label onto the pod, so setting it never restarts the
+	// server; and felis-api never writes it, so marking a server takes kubectl on
+	// the cluster, which fits a switch that drops the forwarding secret.
+	LabelForwarding = GroupName + "/forwarding"
 )
+
+// ForwardingLegacy is the LabelForwarding value that selects legacy forwarding.
+const ForwardingLegacy = "legacy"
 
 // DesiredState is the operator-facing intent toggle (spec §4 spec.desiredState).
 type DesiredState string

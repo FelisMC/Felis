@@ -113,6 +113,7 @@ public final class FelisVelocityPlugin {
     private FelisApiClient apiClient;
     private ServerRegistry registry;
     private ServerListSource serverList;
+    private LegacyForwarding legacyForwarding;
     private WaitingRouter router;
     private boolean onlineMode;
     private boolean routingActive;
@@ -158,6 +159,8 @@ public final class FelisVelocityPlugin {
         this.apiClient = new FelisApiClient(config.linkConfig());
         this.registry = new ServerRegistry(proxy, logger, config.rootDomain());
         this.serverList = new ServerListSource(apiClient::listServers, dataDirectory.resolve(SERVER_LIST_FILE));
+        this.legacyForwarding = new LegacyForwarding(System.getProperty(LegacyForwarding.PROPERTY),
+                LegacyForwarding.detect(proxy.getClass().getClassLoader()));
         this.router = new WaitingRouter(proxy, logger, apiClient, registry, this,
                 config.loginServer(), config.lobbyServer());
         MotdResponder motd = new MotdResponder(registry);
@@ -178,6 +181,9 @@ public final class FelisVelocityPlugin {
         repeating(REGISTRATION_REFRESH, this::refreshRegistrations);
         repeating(WAIT_POLL, router::tick);
         repeating(STATS_INTERVAL, this::logStats);
+        // Velocity accepts no connection until this handler returns, so the first
+        // refresh above reached even a fork that reads the legacy list only once.
+        legacyForwarding.accepting();
 
         this.routingActive = true;
         logger.info("Felis routing ready: rootDomain={}, login={}, lobby={}. /link, /felis and /invite registered.",
@@ -285,6 +291,14 @@ public final class FelisVelocityPlugin {
         }
         ServerListSource.Result r = serverList.next();
         if (r.servers != null) {
+            // The forwarding mode goes first, so a newly registered legacy backend is
+            // never reachable under modern forwarding.
+            LegacyForwarding.Update lf = legacyForwarding.apply(r.servers);
+            if (lf != null && lf.warning) {
+                logger.warn(lf.message);
+            } else if (lf != null) {
+                logger.info(lf.message);
+            }
             registry.refresh(r.servers);
         }
         if (r.failure == null) {

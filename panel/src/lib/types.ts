@@ -62,6 +62,9 @@ export interface ServerStatus {
   idleStopSeconds: number;
   /** True while the operator cannot read the player count; idle stop waits. */
   playerCountUnknown?: boolean;
+  /** True when the CR is labelled forwarding=legacy: the proxy forwards this
+   *  server's players BungeeCord-style (a 1.8 backend behind ViaVersion). */
+  legacyForwarding?: boolean;
 }
 
 /** WhitelistResult projects GET /servers/{name}/access/whitelist (spec §7 access).
