@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	// addressFor is short: nothing reaches the database or the panel while the
-	// address is gone, so a DHCP renewal that lands on a new lease is an outage.
+	// addressFor is short: the cluster and the panel are down while the address
+	// is gone, so a DHCP renewal that lands on a new lease is an outage.
 	addressFor = 5 * time.Minute
 	// clockFor leaves room for an NTP daemon that was just enabled (by the
 	// installer, or after a reboot) to reach its first synchronization.

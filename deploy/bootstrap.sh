@@ -977,11 +977,10 @@ detect_node_ip() {
   fi
 }
 
-# warn_dynamic_node_ip warns when NODE_IP is a DHCP lease. The address is written into
-# the database connection string, pg_hba, the network policies, the panel certificate
-# and the default nip.io domain, and nothing re-addresses a live install, so a lease
-# that later comes back different takes the whole platform down (the watchdog then
-# reports host-address). `ip -o addr` marks a leased address "dynamic".
+# warn_dynamic_node_ip warns when NODE_IP is a DHCP lease. The address is the k3s node's
+# and is written into the network policies, the panel certificate and the default nip.io
+# domain, and nothing re-addresses a live install, so a lease that later comes back
+# different takes the platform down (the watchdog then reports host-address). `ip -o addr` marks a leased address "dynamic".
 warn_dynamic_node_ip() {
   if ip -4 -o addr show 2>/dev/null | awk -v ip="$NODE_IP" '
       { split($4, a, "/"); if (a[1] == ip && / dynamic /) found = 1 }
@@ -3275,7 +3274,7 @@ deploy_postgres() {
     --postgres-image "$POSTGRES_IMAGE" | kube apply -f -
   if ! kube -n "$CONTROL_NS" rollout status "deployment/${PG_DEPLOYMENT}" --timeout=600s; then
     diagnose_rollout "deployment/${PG_DEPLOYMENT}"
-    die "${PG_DEPLOYMENT} did not become ready (docs/troubleshooting.md §13c)"
+    die "${PG_DEPLOYMENT} did not become ready (docs/troubleshooting.md §16)"
   fi
   ensure_postgres_role
   ok "${PG_DEPLOYMENT} ready: pods at ${PG_SERVICE_ADDR}, this host at 127.0.0.1:${PG_HOST_PORT}"

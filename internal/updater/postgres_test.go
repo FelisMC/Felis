@@ -37,7 +37,7 @@ func TestPostgresFeedComparesWithinTheMajor(t *testing.T) {
 	}{
 		{"17.4", "17.10", nil},
 		{"18.6", "18.6", nil},
-		{"13.22", "13.23", []string{"PostgreSQL 13 reached end of life on 2025-11-13", "current major is 18"}},
+		{"13.22", "13.23", []string{"PostgreSQL 13 reached end of life on 2025-11-13", "current major is 18", "dump and restore"}},
 		{"9.6.3", "9.6.24", []string{"PostgreSQL 9.6 reached end of life"}},
 	}
 	for _, c := range cases {
