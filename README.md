@@ -33,7 +33,7 @@ A Kubernetes-driven Minecraft server hosting platform — one command to deploy,
 curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap.sh | sudo bash
 ```
 
-脚本将自动安装 K3s、部署控制平面并启动设置向导。完成后浏览器访问已配置的域名进入控制面板即可使用。
+脚本将自动安装 K3s，在 K3s 内部署 PostgreSQL 与控制平面，并启动设置向导。完成后浏览器访问已配置的域名进入控制面板即可使用。旧版本装在宿主上的 PostgreSQL 会在重跑时整库迁进 K3s，宿主上的那份停用保留，供回退（见 [运维手册 §4](docs/operations.md#4-upgrading-the-pieces-around-felis)）。
 
 动手之前，脚本先检查内存、磁盘、端口、网段冲突、已有的 Kubernetes 和外网连通，把所有问题一次列出并停下，主机上什么都没改（检查项见 [运维手册 §1](docs/operations.md#1-supported-hosts)）。
 

@@ -36,7 +36,7 @@ every push):
 curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap.sh | sudo bash
 ```
 
-The script installs K3s, deploys the control plane, and launches a setup wizard. Once done, open your browser at the configured domain.
+The script installs K3s, deploys PostgreSQL and the control plane inside it, and launches a setup wizard. Once done, open your browser at the configured domain. A PostgreSQL an earlier release installed on the host is moved into K3s on the next rerun, and the host copy is stopped and kept for a rollback (see [Operations §4](docs/operations.md#4-upgrading-the-pieces-around-felis)).
 
 Before it changes anything, the script checks RAM, disk, ports, network-range clashes, any Kubernetes already there and outbound access, lists every problem at once and stops with the host untouched (the checks are in [operations §1](docs/operations.md#1-supported-hosts)).
 

@@ -596,6 +596,25 @@ jsonpath='{.data.platform}' | base64 -d`), and repeat that for the DBs as often
 as advisories matter to you. The watchdog warning stays until the timer can
 reach upstream; that is accurate.
 
+**The platform's own images on an air-gapped node.** The registry pod and the database
+pod run images from Docker Hub by digest (`REGISTRY_IMAGE` and `POSTGRES_IMAGE` in
+`bootstrap.sh`), which the installer pulls into k3s's containerd and pins there so the
+kubelet's image GC never collects them. When the pull fails (`could not pull …`), fetch
+the same digest on a machine that can, for the node's architecture, keeping the manifest
+as it is, and import it on the node:
+
+```sh
+# elsewhere: the reference as bootstrap.sh names it, e.g. docker.io/library/postgres:18.6-trixie@sha256:…
+sudo ctr images pull --platform linux/arm64 "$ref"
+sudo ctr images export --platform linux/arm64 image.tar "$ref"
+# on the node:
+sudo k3s ctr images import image.tar
+```
+
+A `docker save` of the image rewrites its manifest, so its copy never matches the digest
+the Deployment names. Rerun the installer afterwards; it finds the image and pins it.
+[CODE-ONLY]
+
 **Kaniko is archived upstream** (June 2025); v1.24.0 is its last release and
 gets no security fixes. To run a maintained fork, copy it under `mirror/` and
 point the override at it. The other `[registry]` keys in `felis.toml`:
@@ -1353,12 +1372,12 @@ space.
 
 ## 13c. The host's address, name or clock changed
 
-An install is bound to the address it was made on. `bootstrap.sh` writes that
-address into the database connection string, `pg_hba.conf`, the network
-policies, the panel certificate and the default `<ip>.nip.io` root domain, and
-nothing re-addresses a live install. When the host loses the address (a DHCP
-lease that came back different, a moved VM), felis-api cannot reach PostgreSQL
-and the panel stops answering on its old name. The watchdog reports it as
+An install is bound to the address it was made on. `bootstrap.sh` gives that
+address to the k3s node and writes it into the network policies, the panel
+certificate and the default `<ip>.nip.io` root domain, and nothing re-addresses
+a live install. When the host loses the address (a DHCP lease that came back
+different, a moved VM), the cluster and the proxy's path to the game servers
+still name the old one, and the panel stops answering on its old name. The watchdog reports it as
 `host-address` (critical, after 5 minutes). The installer warns at install time
 when the address is a DHCP lease.
 
@@ -1665,19 +1684,18 @@ runs changed:
 |---|---|
 | `felis-velocity` (the proxy) | its unit, the JRE, `velocity.jar`, `velocity.toml`, the forwarding secret, the felis-link settings or a plugin jar changed, or it was not running. The fingerprint lives in `/etc/felis/velocity.fingerprint`; delete it to force a restart. |
 | login and lobby pods | the rebuilt limbo or lobby image has a new image ID (`/etc/felis/system-server-images`). The installer then pins that server's `spec.image` to the digest its tag names now (`felis pin-images --system login\|lobby`) and the operator rolls the pod onto it, each on its own; with the registry unreachable it recreates the pod instead. The installer turns off BuildKit's default provenance attestation (`BUILDX_NO_DEFAULT_ATTESTATIONS=1`): it records the build time, which would give every rebuild a new ID. |
-| PostgreSQL | first install only (`listen_addresses` needs a restart). A rerun reloads the configuration, which keeps connections open. |
+| felis-postgres | the release moved `POSTGRES_IMAGE` or changed the pod; a few seconds without the API. A rerun that changes neither leaves it running. |
 | felis-api, felis-operator, the registry pod (its gate and GC containers run the felis binary) | the image tag changed (an upgrade), or a same-version rerun rebuilt it. |
 
-**PostgreSQL across reruns.** On hosts without firewalld the installer loads an
-nftables table, `inet felis_postgres`, from `felis-postgres-firewall.service`:
-port 5432 accepts loopback, the pod network and the node's own address and drops
-everything else (`nft list table inet felis_postgres`). firewalld hosts already
-keep 5432 closed to the network. The installer also refuses to start a
-PostgreSQL whose major version differs from the cluster in the data directory,
-and prints the `pg_upgrade` steps; distributions that move the server package to
-a new major (Arch, Fedora) would otherwise leave the database unable to start.
-On Arch the installer's `pacman -Syu` holds `postgresql` back once a cluster
-exists, so the database is upgraded only when you run `pg_upgrade` yourself.
+**PostgreSQL across reruns.** The database runs in k3s from the image the release
+pins, so a distribution upgrade never moves it. The installer refuses to start a
+PostgreSQL whose major version differs from the cluster in `/var/lib/felis/postgres`
+and names the dump-and-restore path (docs/operations.md §4). The first rerun of a
+release with felis-postgres on a host an earlier release installed moves the
+database off the host PostgreSQL (docs/operations.md §4, "The database's move into
+k3s"), and removes that release's `felis-postgres-firewall.service`. On Arch the
+installer's `pacman -Syu` keeps holding the host `postgresql` package back while its
+cluster exists: that cluster is the copy a rollback of the move starts again.
 
 `rollout undo` reverts the image only. The upgrade's database migrations stay
 applied; when they are the problem, restore the `pre-migrate` bundle the upgrade
@@ -1766,8 +1784,11 @@ build no server and no whitelist entry names is pruned after 24 hours, and the
 The PostgreSQL database behind felis-api holds everything that is not a world:
 accounts, passkeys, Minecraft account links, server ownership, quotas, audit
 logs, and the `world_backups` index that maps an archive (§10) back to its
-owner. Losing it orphans every world archive. It lives on the host (not in
-k3s), so it is backed up on the host too.
+owner. Losing it orphans every world archive. It runs in k3s as the
+`felis-postgres` Deployment, with its cluster on the host in
+`/var/lib/felis/postgres`; `felis db` runs `pg_dump`, `psql` and `pg_restore`
+inside that pod (the host config's `[database] deployment`) and keeps the
+bundles on the host.
 
 ### What runs, and where the bundles go
 
@@ -1829,11 +1850,42 @@ sudo journalctl -u felis-db-backup -n 50 --no-pager   # why the last run failed
 sudo felis db backup                                  # take one now (label manual)
 ```
 
-Common failures: PostgreSQL down (`pg_dump: ... connection refused`); the
-backup directory's disk full (the half-written `.partial` is removed and the
-previous bundles stay intact); `pg_dump: server version mismatch` when an
-external database is newer than the host's client tools (install the matching
-`postgresql` client package).
+Common failures: felis-postgres not running (`kubectl exec` reports no running
+pod, or `pg_dump: ... connection refused`; next section); `k3s: executable file not
+found` from a `felis` that runs with neither `/usr/local/bin` on PATH nor k3s
+anywhere else; the backup directory's disk full (the half-written `.partial` is
+removed and the previous bundles stay intact); `pg_dump: server version mismatch`
+when an external database (no `deployment` in `[database]`) is newer than the
+host's client tools (install the matching `postgresql` client package).
+
+### felis-postgres is not running, or never became ready
+
+The installer stops with `felis-postgres did not become ready` after 10 minutes
+and prints the pod's events; the watchdog reports the Deployment the same way it
+reports felis-api. Look at the pod:
+
+```sh
+sudo k3s kubectl -n felis get pods -l app.kubernetes.io/component=postgres -o wide
+sudo k3s kubectl -n felis describe deploy/felis-postgres | tail -n 30
+sudo k3s kubectl -n felis logs deploy/felis-postgres --tail=60
+```
+
+| What it says | Cause | Fix |
+|---|---|---|
+| `ImagePullBackOff` / `ErrImagePull` on `postgres` | the node cannot reach Docker Hub and has no copy | §8e, "The platform's own images on an air-gapped node" |
+| `CreateContainerConfigError`, `secret "felis-postgres" not found` | the superuser Secret is gone | rerun the installer, which makes a new one. The image reads it only when it creates a cluster; the installer and `felis db` reach the database over the pod's socket |
+| the log says `Permission denied` on `/var/lib/postgresql/18/docker` | the hostPath lost its owner (uid 999) or, with SELinux enforcing, its `container_file_t` label (a restore of `/var/lib/felis` by hand, `restorecon` without the installer's rule) | rerun the installer, which sets both; by hand: `sudo chown -R 999:999 /var/lib/felis/postgres` and `sudo restorecon -R /var/lib/felis/postgres` |
+| the log says `database files are incompatible with server` | the cluster was made by another major version | docs/operations.md §4, "PostgreSQL major versions" |
+| `Pending`, `Insufficient memory` | the node is full | §13b |
+
+Query the database by hand from inside the pod, as the superuser over its socket:
+
+```sh
+sudo k3s kubectl -n felis exec -it deploy/felis-postgres -c postgres -- psql -U postgres felis
+```
+
+The copy an earlier release's host PostgreSQL still holds, from before the move
+into k3s, stays on the host; docs/operations.md §4 covers going back to it.
 
 ### Check a bundle
 
@@ -1897,7 +1949,7 @@ off-site bucket (next sections) plus a fresh install. What the host holds:
 
 | Data | On the host | In the bucket | Brought back by | Lost at most |
 |---|---|---|---|---|
-| Control-plane database (accounts, passkeys, ownership, quotas, audit, submissions, the `world_backups` index) | PostgreSQL | every bundle, copied within the hour of being written | `fetch-db`, `db restore` | changes since the newest bundle: up to a day plus an hour with the daily timer |
+| Control-plane database (accounts, passkeys, ownership, quotas, audit, submissions, the `world_backups` index) | felis-postgres, `/var/lib/felis/postgres` | every bundle, copied within the hour of being written | `fetch-db`, `db restore` | changes since the newest bundle: up to a day plus an hour with the daily timer |
 | Host state (`/etc/felis`: secrets, both `felis.toml` copies, `offsite.env`, panel TLS pair) | `/etc/felis` | inside every bundle | `tar -x` of the bundle's `state/` | as the database |
 | MinecraftServer objects | k3s | inside every bundle (`k8s/minecraftservers.json`) | `kubectl apply` | as the database |
 | World archives (reaper, "Back up now", pre-restore snapshots) | `felis-backups` volume | each one within the hour | `fetch-worlds` | archives written in the last hour |
@@ -2222,7 +2274,7 @@ sign-in keeps working. Each lock is audited as `auth.otp.locked` and counted in
 To lift a lock early once you have confirmed the owner locked themselves out:
 
 ```sh
-sudo -u postgres psql felis -c \
+sudo k3s kubectl -n felis exec deploy/felis-postgres -c postgres -- psql -U postgres felis -c \
   "DELETE FROM otp_failure_windows WHERE user_id = (SELECT id FROM users WHERE username = '<name>');"
 ```
 
@@ -2238,7 +2290,7 @@ keys on) and `user_agent`. `actor` is display text: a verified email or the
 username, never an address the caller set without verifying.
 
 ```sh
-sudo -u postgres psql felis -c "
+sudo k3s kubectl -n felis exec deploy/felis-postgres -c postgres -- psql -U postgres felis -c "
   SELECT created_at, action, actor, client_ip, payload->>'reason' AS reason
   FROM audit_logs
   WHERE action LIKE 'auth.%' AND created_at > now() - interval '1 hour'
@@ -2306,7 +2358,7 @@ something failed, `otp_skip_detail`. Root can edit the row afterwards, so it
 records attribution without proving it.
 
 ```sh
-sudo -u postgres psql felis -c "
+sudo k3s kubectl -n felis exec deploy/felis-postgres -c postgres -- psql -U postgres felis -c "
   SELECT created_at, action, actor, payload->>'verified' AS verified,
          payload->>'otp_skipped' AS skipped, payload->>'otp_skip_detail' AS detail
   FROM audit_logs WHERE source = 'break-glass' ORDER BY created_at DESC LIMIT 20;"
@@ -2355,6 +2407,7 @@ for 10 seconds (the Free plan's limits).
 | `pre-migration backup failed, nothing applied` during an upgrade | §16 |
 | Undo a mistaken change / restore the control-plane database | §16 |
 | Host lost: rebuild from a database bundle | §16 |
+| `felis-postgres did not become ready`; `kubectl exec` finds no database pod | §16 |
 | `the off-site copy last completed ... ago` / `NO OFF-SITE COPY` / reaper `awaiting_offsite` stays above 0 | §16, §10 |
 | Sign-in 429 `rate_limited` for everyone at once | §17 |
 | 429 `mail_rate_limited` / `FelisMailBudgetExhausted` | §17 |

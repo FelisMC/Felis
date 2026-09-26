@@ -12,12 +12,13 @@ Evidence tags follow troubleshooting.md: **[VM-VERIFIED]** was run on a real hos
 ## 1. Supported hosts
 
 `deploy/bootstrap.sh` provisions a single node. It needs systemd, root, and one of the
-package managers below; everything else (Docker, k3s, PostgreSQL, the JRE, cloudflared)
-it installs.
+package managers below; everything else (Docker, k3s, the JRE, cloudflared) it installs.
+PostgreSQL runs inside k3s as the `felis-postgres` Deployment, from the official image the
+release pins by digest, with its data on the host in `/var/lib/felis/postgres`.
 
 | OS family | Package manager | Architectures | Status |
 |---|---|---|---|
-| CentOS Stream 9 (firewalld active, PostgreSQL 13) | dnf | aarch64 | **[VM-VERIFIED]** install, same-version rerun, upgrade, uninstall and reinstall |
+| CentOS Stream 9 (firewalld active, SELinux enforcing) | dnf | aarch64 | **[VM-VERIFIED]** install, same-version rerun, upgrade, uninstall and reinstall, with the database on the host PostgreSQL 13 of the releases before felis-postgres; felis-postgres and the move into it [SH-TESTED] |
 | Ubuntu 24.04 LTS | apt | x86_64 | **[CI]** fresh install, same-commit rerun, and upgrade from the newest release to the pushed commit |
 | RHEL / Rocky / Alma 9, Fedora | dnf | x86_64, aarch64 | [CODE-ONLY] same code path as CentOS Stream |
 | Debian 12, other Ubuntu releases | apt | x86_64, aarch64 | [CODE-ONLY] |
@@ -34,7 +35,7 @@ cloudflared is left as it is, see §4):
 | Temurin JRE (Velocity) | 25, patch build pinned | `FELIS_JRE_VERSION`, sha256 per architecture |
 | Go (nano builds) | 1.26.8 | `GO_PINNED_VERSION`, sha256 per architecture |
 | Minecraft / Limbo / Paper / Velocity / LuckPerms | `deploy/game-stack.lock` | §15b |
-| PostgreSQL | the distribution's package | 13 and 18 are exercised by the `pgint` CI job |
+| PostgreSQL | 18.6, the official `postgres` image by digest | `POSTGRES_IMAGE` in `bootstrap.sh`, `defaultPostgresImage` in `internal/platform` |
 
 32-bit hosts are not supported: there is no k3s, JRE or Go build the installer will fetch
 for them.
@@ -62,13 +63,12 @@ host the checks misjudge.
 
 Two things the host must keep for as long as the install lives:
 
-- **Its address.** The install is bound to the IPv4 address it was made on (the
-  database connection string, `pg_hba.conf`, the network policies, the panel
-  certificate and the default nip.io domain all carry it). Give the host a static
-  address or a DHCP reservation before installing; the installer warns when the address
-  is a lease, and the watchdog reports `host-address` when the host loses it
-  (troubleshooting §13c). The k3s node name is pinned at install time, so a hostname
-  change is harmless.
+- **Its address.** The install is bound to the IPv4 address it was made on (the k3s
+  node, the network policies, the panel certificate and the default nip.io domain all
+  carry it). Give the host a static address or a DHCP reservation before installing;
+  the installer warns when the address is a lease, and the watchdog reports
+  `host-address` when the host loses it (troubleshooting §13c). The k3s node name is
+  pinned at install time, so a hostname change is harmless.
 - **A synchronized clock.** The installer turns NTP on (chrony where nothing else can)
   and the watchdog reports a clock that stays unsynchronized. Allow outbound UDP 123,
   or set `FELIS_MANAGE_TIME_SYNC=0` on a host whose clock is kept another way.
@@ -134,7 +134,7 @@ server running **[VM-VERIFIED]**:
 | lobby (Paper, pod limit 1 GiB) | ~0.7–0.85 GB |
 | login (Limbo, pod limit 512 MiB) | ~0.16 GB |
 | felis-api, felis-operator, registry gate | ~50 MB each |
-| PostgreSQL | ~30 MB plus page cache |
+| PostgreSQL (the felis-postgres pod) | ~30 MB plus page cache |
 | **Total in use** | **~3.4 GB** |
 
 Every game server adds the memory its owner gave it: the pod's limit equals its request,
@@ -178,6 +178,7 @@ curl -fsSL <raw-url>/deploy/bootstrap.sh | sudo FELIS_VELOCITY_XMX=2G bash
 | k3s's containerd images | `/var/lib/rancher/k3s/agent/containerd` | 6–9 GB |
 | Docker's images and build cache | `/var/lib/containerd` (Docker's containerd store) | 5–10 GB after repeated upgrades |
 | Toolchains and sources | `/opt/felis` | ~2.5 GB |
+| Database | `/var/lib/felis/postgres` (felis-postgres's cluster) | tens of MB; the audit log is most of it |
 | Database bundles | `/var/lib/felis/db-backups` | a few MB each, 14 daily kept |
 
 k3s's local-path volumes do not enforce the requested sizes (§9), so every volume shares
@@ -201,23 +202,29 @@ With a private repository, fetch it the way the README fetches `bootstrap.sh`.
 
 Both modes remove the `felis-*` systemd units and `cloudflared-felis.service`, the
 Velocity user, `/opt/felis`, `/usr/local/bin/felis`, the installer's cloudflared binary
-(unless another unit runs it), the `felis_postgres` and `felis_edge` nftables tables and
-the firewalld ports the installer opened. k3s goes with k3s's own `k3s-uninstall.sh` when
-the cluster holds nothing but Felis's namespaces; when it runs anything else only
-`felis`, `minecraft`, `felis-build` and the MinecraftServer CRD are deleted.
+(unless another unit runs it), the `felis_edge` nftables table (and `felis_postgres`, which
+releases before the database moved into k3s loaded) and the firewalld ports the installer
+opened. k3s goes with k3s's own `k3s-uninstall.sh` when the cluster holds nothing but
+Felis's namespaces; when it runs anything else only `felis`, `minecraft`, `felis-build`
+and the MinecraftServer CRD are deleted.
 `--keep-k3s` and `--remove-k3s` override that choice.
 
 | | keep data (default) | `--purge` |
 |---|---|---|
 | Final database bundle | taken first (`felis db backup -label manual`); a failure stops the uninstall before anything is removed. `--no-backup` skips it | none |
-| `felis` database and role | kept | dropped; `listen_addresses` and `pg_hba.conf` go back to how they were. Checked before anything is removed: a role that still owns another database (the `felis_pgint` the PG contract tests use, CONTRIBUTING.md) or holds grants elsewhere stops the purge up front with the list and the `ALTER DATABASE … OWNER TO postgres` to run |
+| The database (`/var/lib/felis/postgres`) | kept; felis-postgres is stopped cleanly before k3s goes | deleted with `/var/lib/felis` |
+| A host PostgreSQL an earlier release ran the database on | kept as it is: stopped after the move into k3s (below, §4), with its old copy of `felis` | its `felis` database and role are dropped (the server is started for that and stopped again), and `listen_addresses` and `pg_hba.conf` go back to how they were. Checked before anything is removed: a role that still owns another database (the `felis_pgint` the PG contract tests use, CONTRIBUTING.md) or holds grants elsewhere stops the purge up front with the list and the `ALTER DATABASE … OWNER TO postgres` to run |
 | `/etc/felis` (secrets, `felis.toml`, `offsite.env`, tunnel config) | kept; `bootstrap.done` and the per-run records go | deleted, with the tunnel's credentials file |
-| `/var/lib/felis` (database bundles) | kept | deleted |
+| `/var/lib/felis` (the database, its bundles) | kept | deleted |
 | Worlds, archives, registry, uploads | moved to `/var/lib/felis/retained/k3s-storage-<stamp>/` (with `--keep-k3s`: their volumes switch to `Retain` and stay in place) | deleted |
 | Felis images, Docker build cache | kept | deleted |
 
-Neither mode removes packages (Docker, PostgreSQL, git, nftables) or the swap file: other
-software may use them. On a host that should end up bare:
+The two database rows are [SH-TESTED] (`deploy/uninstall_test.sh`); the VM runs above
+predate felis-postgres.
+
+Neither mode removes packages (Docker, git, nftables, and the PostgreSQL server an earlier
+release installed) or the swap file: other software may use them. On a host that should
+end up bare:
 
 ```
 sudo swapoff /swapfile && sudo rm /swapfile && sudo sed -i '\|^/swapfile |d' /etc/fstab
@@ -232,8 +239,9 @@ DNS records for the panel hostnames, and the Access application.
 
 A keep-data uninstall leaves everything a reinstall needs. The installer reuses
 `/etc/felis/secrets.env`, so the database password and the forwarding and session
-secrets are unchanged, and it migrates the kept database instead of creating one
-**[VM-VERIFIED]**.
+secrets are unchanged, and the installer migrates the kept database instead of creating
+one **[VM-VERIFIED]** (with the host database of the releases before felis-postgres).
+felis-postgres starts again on the cluster kept in `/var/lib/felis/postgres` [SH-TESTED].
 
 Each step below was run on the reference VM after a keep-data uninstall, and the
 restored worlds matched their kept `level.dat` checksums **[VM-VERIFIED]**. `kept` names
@@ -305,7 +313,7 @@ the version they were installed with unless noted:
 | Temurin JRE | moves to the pinned patch build | rerun |
 | k3s | left alone | rerun with `FELIS_UPGRADE_DEPS=1`: moves to the pinned release through that tag's install script, one minor version at a time (a bigger jump stops before anything changes and names the release to go through), never backwards |
 | cloudflared | left alone | rerun with `FELIS_UPGRADE_DEPS=1`: swaps `/usr/local/bin/cloudflared` for the pinned, sha256-checked release and restarts `cloudflared-felis`; a cloudflared the distribution installed stays with its package manager |
-| PostgreSQL | the distribution's package | the package manager for a minor release; a major version needs `pg_upgrade` first (below) |
+| PostgreSQL | follows the image the release pins | a minor release comes with a Felis release, and the rerun restarts felis-postgres on it (a few seconds without the API); a major version is a dump and restore (below) |
 | Docker, git, nftables | distribution packages | the package manager |
 
 ```sh
@@ -315,8 +323,9 @@ curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap
 
 `sudo felis update` reports Felis, Velocity, k3s, cloudflared, the JRE and PostgreSQL
 against their newest releases; `--k3s`, `--cloudflared`, `--jre` and `--postgres` narrow
-it to one. PostgreSQL is compared within its major, since a minor release is a package
-update, and a major past its end of life gets a note naming the current one.
+it to one. PostgreSQL is read from the felis-postgres container and compared within its
+major, since a minor release arrives with a Felis release, and a major past its end of life
+gets a note naming the current one.
 
 The installer also sets up `felis-update-check.timer`, which runs `felis update --record`
 once a day around 05:30 (and at boot after a missed run). `--record` stores the result
@@ -370,19 +379,71 @@ The env var only carries the password; mail still needs the relay itself, set in
 
 ### PostgreSQL major versions [CODE-ONLY]
 
-The installer takes the major the distribution ships (13 on EL9) and never moves it. To
-go to a newer one, stop the writers, keep a dump, then use the distribution's upgrade
-path:
+felis-postgres keeps its cluster in `/var/lib/felis/postgres/<major>/docker`. A release that
+moves the image to a new major finds the old major's cluster there and stops before it
+changes anything: the new server would start an empty cluster beside it. The way across is
+a bundle, taken on the release you run now, restored into the new major's empty cluster:
 
 ```sh
+# On the release you run now:
+b="$(sudo felis db backup -label pre-upgrade | sed -n 's/^felis db backup: wrote //p')"
+sudo k3s kubectl -n felis scale deploy/felis-postgres --replicas=0
+sudo mv /var/lib/felis/postgres/18 /var/lib/felis/postgres-18.old   # the old major's cluster, for a way back
+
+# Install the new release: it starts an empty cluster on the new major and creates the schema.
+curl -fsSL <raw-url>/deploy/bootstrap.sh | sudo bash
+
+# Put the data back and bring its schema up to the new release.
 sudo k3s kubectl -n felis scale deploy/felis-api deploy/felis-operator --replicas=0
-sudo -u postgres pg_dumpall > /root/felis-pg-$(date +%F).sql
-# EL9: sudo systemctl stop postgresql; sudo dnf module switch-to postgresql:16
-#      sudo dnf install postgresql-upgrade; sudo postgresql-setup --upgrade
-# Debian/Ubuntu: sudo pg_upgradecluster <old-major> main
-sudo systemctl start postgresql
+sudo felis db restore -yes -no-safety-backup "$b"
+sudo felis migrate up -config /etc/felis/felis.host.toml
 sudo k3s kubectl -n felis scale deploy/felis-api deploy/felis-operator --replicas=1
 ```
+
+Delete `/var/lib/felis/postgres-18.old` once the new release has run for a while. To go back
+instead, scale felis-postgres to 0, move the new major's directory out of
+`/var/lib/felis/postgres`, move `postgres-18.old` back as `/var/lib/felis/postgres/18`, and
+rerun the older release's installer.
+
+### The database's move into k3s [SH-TESTED]
+
+Releases before the move ran the database on a PostgreSQL the installer installed on the
+host. The first rerun of a release with felis-postgres moves it, once:
+
+1. It stops felis-api, felis-operator and the host timers, and heads the host's
+   `pg_hba.conf` with a block that refuses every connection to `felis` but its own copy
+   (the original is kept beside it as `pg_hba.conf.pre-pg-move`).
+2. It takes a `pre-pg-move` bundle of the host database (`felis db backup`), restores it
+   into felis-postgres (`felis db restore`) and compares the row count of every table on
+   both servers. Any failure up to here puts `pg_hba.conf` and the control plane back and
+   the platform keeps running on the host database, untouched.
+3. It stops and disables the host `postgresql` service, which stays installed with its
+   copy of the data, and writes `/var/lib/felis/postgres-moved`. A host server that also
+   holds other databases keeps running; its `felis` copy is then reachable over loopback
+   only.
+
+From then on the host config points at felis-postgres (`127.0.0.1:15432`, and
+`deployment = "felis/felis-postgres"`, through which `felis db` runs `pg_dump`, `psql`
+and `pg_restore` inside the pod) and the pods at `felis-postgres.felis.svc:5432`.
+
+To go back to the host database, for instance to reinstall the release before the move:
+
+```sh
+sudo k3s kubectl -n felis scale deploy/felis-api deploy/felis-operator deploy/felis-postgres --replicas=0
+hba="$(sudo -u postgres psql -XtAc 'SHOW hba_file' 2>/dev/null || echo /var/lib/pgsql/data/pg_hba.conf)"
+sudo cp -p "${hba}.pre-pg-move" "$hba"
+sudo systemctl enable --now postgresql
+sudo rm /var/lib/felis/postgres-moved
+curl -fsSL <raw-url-of-that-release>/deploy/bootstrap.sh | sudo bash
+```
+
+`SHOW hba_file` needs the server running; with it stopped, the fallback path is EL's
+(Debian and Ubuntu keep it in `/etc/postgresql/<major>/main/`). Whatever the platform wrote
+after the move lives only in felis-postgres; take a bundle there first
+(`sudo felis db backup`) and restore it onto the host database afterwards if that matters.
+Once the move has run for a while, drop the host copy:
+`sudo systemctl start postgresql; sudo -u postgres dropdb felis; sudo -u postgres dropuser felis`,
+or remove the server package altogether.
 
 ### The MinecraftServer CRD [VM-VERIFIED]
 
