@@ -3833,6 +3833,57 @@ expect "a FELIS_ARTIFACT_DIR with SHA256SUMS is accepted" "VALID" "$(run_vs "$ad
 expect "FELIS_ARTIFACT_DIR and FELIS_REF together are refused" "DIE: FELIS_ARTIFACT_DIR and FELIS_REF both name what to install" "$(run_vs "$adir" 1)"
 rm -rf "$adir"
 
+# --- FELIS_RELEASE installs one published release, from its assets --------------------------
+# The way back to an earlier release. Without it a rerun resolves the newest release (and
+# migrates again), and FELIS_REF builds from source; anything else that names what to install
+# would silently win over it.
+vrblock="$(awk '/^  if \[ -n "\$FELIS_RELEASE" \]; then$/ { f = 1 } f { print } f && /^  fi$/ { exit }' "$BS")"
+case "$vrblock" in *"FELIS_SKIP_FETCH both"*) ;; *) echo "FAIL: the FELIS_RELEASE checks in validate_settings moved"; exit 1 ;; esac
+run_vr() { # FELIS_RELEASE, with the other settings from the environment
+  FELIS_RELEASE="$1" bash -c 'die() { echo "DIE: $*"; exit 1; }
+bootstrap_from_tui() { [ "${FELIS_BOOTSTRAP_FROM_TUI:-}" = 1 ]; }
+FELIS_REF_PINNED="${FELIS_REF_PINNED:-}" FELIS_ARTIFACT_DIR="${FELIS_ARTIFACT_DIR:-}"
+FELIS_VERSION_BOOTSTRAP="${FELIS_VERSION_BOOTSTRAP:-release}"
+'"$vrblock"'
+echo VALID' 2>&1
+}
+expect "a release tag is accepted" "VALID" "$(run_vr v1.2.3)"
+for bad in 1.2.3 v1.2 main v1.2.3-rc1 'v1.2.3;id'; do
+  expect "FELIS_RELEASE=$bad is refused" "DIE: FELIS_RELEASE must be a release tag like v1.2.3 (got '$bad')" "$(run_vr "$bad")"
+done
+expect "FELIS_RELEASE and FELIS_REF together are refused" "DIE: FELIS_RELEASE and FELIS_REF both name what to install" "$(FELIS_REF_PINNED=1 run_vr v1.2.3)"
+expect "FELIS_RELEASE and FELIS_ARTIFACT_DIR together are refused" "DIE: FELIS_RELEASE and FELIS_ARTIFACT_DIR both name what to install" "$(FELIS_ARTIFACT_DIR=/srv/assets run_vr v1.2.3)"
+expect "FELIS_RELEASE and FELIS_SKIP_FETCH together are refused" "DIE: FELIS_RELEASE and FELIS_SKIP_FETCH both name what to install" "$(FELIS_SKIP_FETCH=1 run_vr v1.2.3)"
+expect "FELIS_RELEASE on the dev channel is refused" "DIE: FELIS_RELEASE names a published release, which the dev channel does not install" "$(FELIS_VERSION_BOOTSTRAP=dev run_vr v1.2.3)"
+expect "FELIS_RELEASE under felis setup is refused" "DIE: FELIS_RELEASE does not reach felis setup's install" "$(FELIS_BOOTSTRAP_FROM_TUI=1 run_vr v1.2.3)"
+
+riblock="$(bsfn resolve_install_ref)"
+[ -n "$riblock" ] && [ "$(printf '%s\n' "$riblock" | wc -l)" -lt 60 ] \
+  || { echo "FAIL: no resolve_install_ref in $BS, or its closing brace moved"; exit 1; }
+urblock="$(bsfn use_release_binary)"
+run_ri() { # FELIS_RELEASE [published tags]
+  FELIS_RELEASE="$1" PUBLISHED="${2:-v1.2.3 v1.4.0}" bash -c 'die() { echo "DIE: $*"; exit 1; }
+log() { :; }
+ok() { echo "OK: $*"; }
+github_latest_tag() { echo "LOOKED UP THE NEWEST" >&2; echo v1.4.0; }
+load_release_json() { case " $PUBLISHED " in *" $1 "*) ;; *) return 1 ;; esac; }
+FELIS_REF="" FELIS_REF_PINNED="" FELIS_VERSION_BOOTSTRAP=release
+'"$riblock"'
+'"$urblock"'
+resolve_install_ref
+use_release_binary && echo "FROM ASSETS" || echo "FROM SOURCE"
+echo "ref=$FELIS_REF version=$FELIS_VERSION"' 2>&1
+}
+out="$(run_ri v1.2.3)"
+expect "a named release is what gets installed" "ref=v1.2.3 version=v1.2.3" "$out"
+expect "from its published assets" "FROM ASSETS" "$out"
+case "$out" in
+  *"LOOKED UP THE NEWEST"*) echo "FAIL a named release still looked up the newest"; fails=$((fails + 1)) ;;
+  *) echo "PASS a named release does not look up the newest" ;;
+esac
+expect "an unpublished release stops the install" "DIE: could not find the published Felis release v1.3.9" "$(run_ri v1.3.9)"
+expect "without one the newest release is installed" "ref=v1.4.0 version=v1.4.0" "$(run_ri "")"
+
 # --- the setup screens' credentials come back from /etc/felis ---------------------------
 # `felis setup` keeps the relay password and the uploads bucket's keys in /etc/felis as
 # well as in their Secrets. A reinstall, or a host rebuilt from a bundle's state/, starts

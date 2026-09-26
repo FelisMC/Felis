@@ -2036,8 +2036,28 @@ kubectl -n felis scale deployment felis-api felis-operator --replicas=1
 ```
 
 Do **not** run `felis migrate up` here: the host binary is already the new
-release and would re-apply the migrations you are rolling back. Re-run the
-older installer version to bring the host binary back in line.
+release and would re-apply the migrations you are rolling back. Bring the host
+back in line by installing the earlier release from its own assets, with the
+installer read at that same tag (`v1.2.3` here):
+
+```
+curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/v1.2.3/deploy/bootstrap.sh \
+  | sudo FELIS_RELEASE=v1.2.3 bash
+```
+
+`FELIS_RELEASE` makes the installer install that release where it would
+otherwise resolve the newest one, which would install the new release again and
+re-apply its migrations. It is refused together with `FELIS_REF`,
+`FELIS_ARTIFACT_DIR`, `FELIS_SKIP_FETCH` or `FELIS_VERSION_BOOTSTRAP=dev`, and
+an unpublished tag stops the install before anything changes. [SH-TESTED]
+
+- An installer older than `FELIS_RELEASE` ignores it and installs the newest.
+  `curl -fsSL <that URL> | grep -c FELIS_RELEASE` prints `0` for one of those;
+  run it with `FELIS_REF=v1.2.3` instead, which builds that tag from source
+  (slower, and it needs the build resources of §15c).
+- While the repository is private, read the installer through the README's
+  token'd form with `?ref=v1.2.3` after `contents/deploy/bootstrap.sh`, and run
+  it as `sudo -E FELIS_RELEASE=v1.2.3 bash`.
 
 ### Whole-host disaster recovery: what comes back, and from where
 

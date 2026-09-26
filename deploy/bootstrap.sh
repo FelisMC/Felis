@@ -90,6 +90,11 @@
 #   FELIS_GITHUB_TOKEN GitHub token; REQUIRED while the repo is private
 #   FELIS_REF         branch/tag/sha — pins the build, overrides the channel, and forces a
 #                     source build (naming a ref asks for that tree, not a published asset)
+#   FELIS_RELEASE     a published release tag (v1.2.3) the release channel installs, from
+#                     its assets, instead of the newest: the way back to an earlier release.
+#                     Read this script at the same tag. Installers older than this variable
+#                     ignore it and install the newest; for those, FELIS_REF=<tag> builds
+#                     that tag from source
 #   FELIS_IMAGE       control-plane image ref (default:
 #                     registry.felis.svc:5000/felis/felis:<the felis version>, so each
 #                     release has its own tag and `kubectl rollout undo` returns to the
@@ -153,6 +158,8 @@ FELIS_REF="${FELIS_REF:-}"
 # built, so it takes the source path even on the release channel.
 FELIS_REF_PINNED=""
 if [ -n "$FELIS_REF" ]; then FELIS_REF_PINNED=1; fi
+# A published release tag the release channel installs instead of the newest (header).
+FELIS_RELEASE="${FELIS_RELEASE:-}"
 # The directory of release assets to install from (header); empty installs as the channel says.
 FELIS_ARTIFACT_DIR="${FELIS_ARTIFACT_DIR:-}"
 # Set once a prebuilt felis binary is installed at HOST_BIN, by the TUI hand-off, a release
@@ -937,6 +944,18 @@ validate_settings() {
     # Each names what to install; the directory's binary would silently win.
     [ -z "$FELIS_REF_PINNED" ] || die "FELIS_ARTIFACT_DIR and FELIS_REF both name what to install; set one"
     [ -z "${FELIS_SKIP_FETCH:-}" ] || die "FELIS_ARTIFACT_DIR and FELIS_SKIP_FETCH both name what to install; set one"
+  fi
+  if [ -n "$FELIS_RELEASE" ]; then
+    [[ "$FELIS_RELEASE" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+      || die "FELIS_RELEASE must be a release tag like v1.2.3 (got '${FELIS_RELEASE}')"
+    # Each of these names what to install another way and would silently win, installing
+    # something other than the release asked for.
+    [ -z "$FELIS_REF_PINNED" ] || die "FELIS_RELEASE and FELIS_REF both name what to install; set one (FELIS_RELEASE installs a published release's assets, FELIS_REF builds a tree from source)"
+    [ -z "$FELIS_ARTIFACT_DIR" ] || die "FELIS_RELEASE and FELIS_ARTIFACT_DIR both name what to install; set one"
+    [ -z "${FELIS_SKIP_FETCH:-}" ] || die "FELIS_RELEASE and FELIS_SKIP_FETCH both name what to install; set one"
+    [ "$FELIS_VERSION_BOOTSTRAP" = release ] \
+      || die "FELIS_RELEASE names a published release, which the ${FELIS_VERSION_BOOTSTRAP} channel does not install; drop FELIS_VERSION_BOOTSTRAP"
+    ! bootstrap_from_tui || die "FELIS_RELEASE does not reach felis setup's install, which installs the binary it runs as; run the installer one-liner with FELIS_RELEASE instead"
   fi
   [ "$(heap_megabytes "$FELIS_VELOCITY_XMX")" -ge 256 ] \
     || die "FELIS_VELOCITY_XMX must be a heap size of at least 256M, written <n>M or <n>G (got '${FELIS_VELOCITY_XMX}')"
@@ -2567,10 +2586,19 @@ resolve_install_ref() {
   fi
   case "$FELIS_VERSION_BOOTSTRAP" in
     release)
-      log "resolving the newest published Felis release"
-      FELIS_REF="$(github_latest_tag)" || die "could not resolve the newest Felis release.
+      if [ -n "$FELIS_RELEASE" ]; then
+        # A named release installs from its own assets, as the newest would: the way back
+        # to an earlier release (docs/troubleshooting.md §16). validate_settings checked
+        # the tag's form; this checks it was published.
+        load_release_json "$FELIS_RELEASE" || die "could not find the published Felis release ${FELIS_RELEASE}.
+  Check the tag against the repository's releases page. If the repository is private, set FELIS_GITHUB_TOKEN to a token with read access to it."
+        FELIS_REF="$FELIS_RELEASE"
+      else
+        log "resolving the newest published Felis release"
+        FELIS_REF="$(github_latest_tag)" || die "could not resolve the newest Felis release.
   If the repository is private, set FELIS_GITHUB_TOKEN to a token with read access to it.
   If no release has been published yet, set FELIS_VERSION_BOOTSTRAP=dev to build main instead."
+      fi
       # A release IS its tag, so the stamp is final here and stamp_version leaves it be.
       FELIS_VERSION="$FELIS_REF"
       ok "release channel: ${FELIS_REF}"

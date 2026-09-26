@@ -110,6 +110,10 @@ Installing from the assets is **[VM-VERIFIED]** on CentOS Stream 9 aarch64 throu
 `FELIS_ARTIFACT_DIR`: a fresh install and an upgrade over a release that built on the host
 pulled no image and built nothing, and a rerun imported and uploaded nothing. Downloading them from a
 release is [SH-TESTED] until a release publishes assets.
+The release is the newest one unless `FELIS_RELEASE=<tag>` names an earlier one, which
+installs from that release's assets the same way: the way back after a bad upgrade
+(troubleshooting §16, "Roll back an upgrade that broke the database"), with the installer
+read at that tag.
 
 The installer builds on the host instead, installing Docker for it and stopping Docker once
 the images are in the registry, when:
