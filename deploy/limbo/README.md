@@ -116,6 +116,10 @@ LOOHP/Limbo would otherwise default to `30000`, unreachable through the Velocity
 idempotent, so a persisted world volume keeps all its other `server.properties`
 settings. Do **not** override `FELIS_GAME_PORT` except in lockstep with the operator.
 
+It also pins `max-players=-1` (no cap, Limbo's own default): unbound players wait at
+the gate for up to ten minutes and a stopped server's players all fall back here at
+once, so a cap left on the volume would turn players away at the door.
+
 ## Configure (deployer's responsibility)
 
 One setting this image does **not** guess (it keeps the release's own default):

@@ -57,7 +57,11 @@ set_prop() {
     # otherwise corrupt this bare sed s||| and silently break the key. Same escaping as
     # deploy/limbo — without it an unlucky password kills the console/permission channel.
     esc=$(printf '%s' "$2" | sed 's/[|\\&]/\\&/g')
-    sed -i "s|^$1=.*|$1=${esc}|" "$PROPS"
+    # Through a temp file rather than sed -i, which BSD sed reads differently, so the
+    # same function runs under the entrypoint tests on any machine.
+    sed "s|^$1=.*|$1=${esc}|" "$PROPS" > "$PROPS.tmp"
+    cat "$PROPS.tmp" > "$PROPS"
+    rm -f "$PROPS.tmp"
   else
     printf '%s=%s\n' "$1" "$2" >> "$PROPS"
   fi
@@ -65,6 +69,14 @@ set_prop() {
 
 set_prop server-port "$PORT"
 set_prop online-mode false
+
+# Every authenticated player passes through the lobby, and a stopped server's players
+# arrive together (they fall back to the login gate, which sends them straight on).
+# Paper's default cap of 20 would turn the 21st away at the door. 200 is far above
+# what one node serves at once, and a flood beyond it is refused at the door instead
+# of running the 1Gi lobby out of memory. What the world itself allows (no damage, no
+# building, the /menu hint) is felis-paper's LobbyGuard.
+set_prop max-players 200
 
 # RCON is the control plane's write channel (spec §8 写=RCON): the operator probes it
 # for readiness and the player tally, and felis-api runs console/permission commands over

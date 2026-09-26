@@ -61,7 +61,11 @@ set_prop() {
     # The secret is base64/hex-ish, but a '/' or '&' would still break a bare sed s///.
     # '|' as the delimiter plus escaping it is enough for every value we write.
     esc=$(printf '%s' "$2" | sed 's/[|\\&]/\\&/g')
-    sed -i "s|^$1=.*|$1=${esc}|" "$PROPS"
+    # Through a temp file rather than sed -i, which BSD sed reads differently, so the
+    # same function runs under the entrypoint tests on any machine.
+    sed "s|^$1=.*|$1=${esc}|" "$PROPS" > "$PROPS.tmp"
+    cat "$PROPS.tmp" > "$PROPS"
+    rm -f "$PROPS.tmp"
   else
     printf '%s=%s\n' "$1" "$2" >> "$PROPS"
   fi
@@ -75,6 +79,11 @@ set_prop bungeecord false
 set_prop bungee-guard false
 set_prop velocity-modern true
 set_prop forwarding-secrets "$SECRET"
+# Unbound players wait here for up to ten minutes, and a stopped server's players all
+# fall back here at once, so the gate must never be full. -1 (no cap) is Limbo's own
+# default; it is pinned so a hand-edited properties file on the volume cannot bring
+# a cap back.
+set_prop max-players -1
 
 echo "felis-limbo: server-port=${PORT}, velocity-modern=true (forwarding secret loaded, UUIDs are Mojang-verified)"
 JAVA_MEMORY_ARG=""

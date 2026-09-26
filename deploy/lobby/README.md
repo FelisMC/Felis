@@ -46,3 +46,25 @@ sudo felis setup
 - Align `online-mode` / player forwarding with the off-cluster Velocity proxy.
 - The lobby speaks only the `felis:control` plugin-message channel; it holds no
   felis-api token by design (spec §12).
+
+## What the lobby allows
+
+felis-paper's `LobbyGuard` keeps the lobby a hub that nobody can hurt, get hurt in,
+or leave a mark on:
+
+- every world is peaceful, with natural spawning, PvP, mob griefing and TNT off,
+  time frozen at noon, clear weather and inventories kept;
+- players take no damage and never go hungry; a fall into the void lands at spawn;
+- a player without `felis.lobby.build` joins at spawn in adventure mode and cannot
+  break or place blocks, use buckets, trample farmland, light fires, or harm mobs,
+  item frames, paintings, armor stands or vehicles. Buttons, doors, pressure plates
+  and containers keep working;
+- every join gets a chat line with a click that runs `/menu`.
+
+`felis.lobby.build` defaults to ops. To let an admin build the lobby, grant it with
+LuckPerms (`lp user <name> permission set felis.lobby.build true` on the lobby console)
+or op them.
+
+The entrypoint pins `max-players=200` on every boot, over Paper's default of 20: every
+authenticated player passes through here, and a stopped server's players arrive all at
+once.

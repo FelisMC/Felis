@@ -47,6 +47,13 @@
 #      frame budget. They ride the module's verified dependency set, which is why
 #      they live in Gradle rather than in the javac mains above.
 #
+#   4. The lobby guard self-test (`./gradlew lobbyTest` in plugins/paper): LobbyGuard
+#      runs against real paper-api events around fake players and worlds, so a
+#      passer-by cannot change the lobby while a builder can, nobody is hurt or
+#      starved, a fall into the void lands at spawn, a join sets adventure mode and
+#      names /menu with a click, and a world rule the server refuses is logged
+#      without taking the menu down with it.
+#
 # No test framework: the mains are the same javac one-liners their javadocs document,
 # so a local run and CI run the same bytes.
 set -euo pipefail
@@ -188,6 +195,9 @@ done
 
 echo "==> plugins/velocity: ./gradlew --no-daemon routingTest"
 ( cd plugins/velocity && ./gradlew --no-daemon routingTest )
+
+echo "==> plugins/paper: ./gradlew --no-daemon lobbyTest"
+( cd plugins/paper && ./gradlew --no-daemon lobbyTest )
 
 limbo_version="$(sed -n 's/^LIMBO_VERSION=//p' deploy/game-stack.lock)"
 [ -n "$limbo_version" ] || { echo "deploy/game-stack.lock sets no LIMBO_VERSION" >&2; exit 1; }

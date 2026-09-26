@@ -3,7 +3,7 @@ version: 0.1.0
 main: best.lolicon.felis.paper.FelisPaperPlugin
 api-version: '1.21'
 authors: [Felis]
-description: Lobby UI face — /menu and /server open a chest GUI that drives the felis:control channel.
+description: Lobby UI face — /menu and /server open a chest GUI that drives the felis:control channel; the lobby world is kept safe and unchanged.
 commands:
   menu:
     description: Open the Felis server menu.
@@ -11,3 +11,7 @@ commands:
   server:
     description: Open the Felis server menu (alias of /menu).
     usage: /server
+permissions:
+  felis.lobby.build:
+    description: Build in the lobby. Everyone else joins in adventure mode and cannot change the world.
+    default: op

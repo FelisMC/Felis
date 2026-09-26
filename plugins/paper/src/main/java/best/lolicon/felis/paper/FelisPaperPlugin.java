@@ -85,6 +85,12 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
         getServer().getMessenger().registerIncomingPluginChannel(this, Control.CHANNEL, this);
         getServer().getPluginManager().registerEvents(this, this);
 
+        // The lobby is a hub nobody can hurt or be hurt in (LobbyGuard). Worlds loaded
+        // before this point get the rules here, later ones on their WorldLoadEvent.
+        LobbyGuard guard = new LobbyGuard(getLogger());
+        getServer().getPluginManager().registerEvents(guard, this);
+        getServer().getWorlds().forEach(guard::protect);
+
         getLogger().info("felis-paper enabled: felis:control open, server list from the proxy. "
                 + "Pure UI face — no felis-api token.");
     }
@@ -406,7 +412,7 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
     // ---- helpers ----
 
     /** zh mirrors the Velocity rule: render Chinese when the client locale is zh-*. */
-    private static boolean zh(Player player) {
+    static boolean zh(Player player) {
         return "zh".equalsIgnoreCase(player.locale().getLanguage());
     }
 
