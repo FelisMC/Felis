@@ -1361,7 +1361,6 @@ paths:
       security: [{ serviceToken: [] }]
       parameters:
         - { name: name, in: path, required: true, schema: { type: string } }
-        - { name: mc_uuid, in: query, required: false, schema: { type: string } }
       responses:
         '200':
           description: Menu projection for the lobby UI.
@@ -1381,6 +1380,43 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /api/v1/internal/player/menu-access/{mc_uuid}:
+    get:
+      tags: [lobby]
+      operationId: internalMenuAccess
+      summary: What one player may start, for every user server — the lobby menu's per-player verdicts.
+      description: >
+        One call per menu open; each tile's live state stays in the shared
+        per-server projection (…/menu). A server that is up is open to every
+        linked player, so the lobby shows Join there whatever the verdict. The
+        verdicts follow the internal wake's gates without the transient ones
+        (cooldown, running-server cap): `retiring` (given up or being deleted),
+        `start_failed` (automatic restarts spent), `owner` (the player's own),
+        `wake` (the autostart policy admits the player), `owner_only`, and
+        `allowlist` (the player is not on the list).
+      x-felis-face: [internal]
+      x-felis-tier: service
+      x-felis-callers: [velocity]
+      security: [{ serviceToken: [] }]
+      parameters:
+        - { name: mc_uuid, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Verdict per user server name.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [servers]
+                properties:
+                  servers:
+                    type: object
+                    additionalProperties:
+                      type: string
+                      enum: [retiring, start_failed, owner, wake, owner_only, allowlist]
+        '401':
+          $ref: '#/components/responses/Unauthorized'
 
   /api/v1/internal/account/link/code:
     post:

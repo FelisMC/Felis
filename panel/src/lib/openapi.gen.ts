@@ -230,6 +230,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/internal/player/menu-access/{mc_uuid}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What one player may start, for every user server — the lobby menu's per-player verdicts.
+         * @description One call per menu open; each tile's live state stays in the shared per-server projection (…/menu). A server that is up is open to every linked player, so the lobby shows Join there whatever the verdict. The verdicts follow the internal wake's gates without the transient ones (cooldown, running-server cap): `retiring` (given up or being deleted), `start_failed` (automatic restarts spent), `owner` (the player's own), `wake` (the autostart policy admits the player), `owner_only`, and `allowlist` (the player is not on the list).
+         */
+        get: operations["internalMenuAccess"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/internal/account/link/code": {
         parameters: {
             query?: never;
@@ -3347,9 +3367,7 @@ export interface operations {
     };
     internalMenuStatus: {
         parameters: {
-            query?: {
-                mc_uuid?: string;
-            };
+            query?: never;
             header?: never;
             path: {
                 name: string;
@@ -3378,6 +3396,33 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    internalMenuAccess: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                mc_uuid: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Verdict per user server name. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        servers: {
+                            [key: string]: "retiring" | "start_failed" | "owner" | "wake" | "owner_only" | "allowlist";
+                        };
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
         };
     };
     createLinkCode: {

@@ -8,6 +8,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -143,6 +144,28 @@ public final class FelisApiClient {
     public MenuStatus menuStatus(String name) throws LinkException {
         Objects.requireNonNull(name, "name");
         return MenuStatus.fromJson(getObject("/api/v1/internal/servers/" + serverSegment(name) + "/menu", 200));
+    }
+
+    /**
+     * menuAccess reads what one player may start, for every user server at once
+     * ({@code GET /api/v1/internal/player/menu-access/{mc_uuid}} →
+     * {@code {"servers":{"<name>":"<verdict>"}}}): {@code owner}, {@code wake},
+     * {@code owner_only}, {@code allowlist}, {@code retiring} or {@code start_failed}.
+     * Velocity calls it once per menu open. An entry whose value is not a string is
+     * left out, as is the whole map when {@code servers} is missing.
+     */
+    public Map<String, String> menuAccess(UUID mcUuid) throws LinkException {
+        Objects.requireNonNull(mcUuid, "mcUuid");
+        Map<?, ?> obj = getObject("/api/v1/internal/player/menu-access/" + mcUuid, 200);
+        Map<String, String> out = new HashMap<>();
+        if (obj.get("servers") instanceof Map<?, ?> servers) {
+            for (Map.Entry<?, ?> e : servers.entrySet()) {
+                if (e.getKey() instanceof String name && e.getValue() instanceof String verdict) {
+                    out.put(name, verdict);
+                }
+            }
+        }
+        return out;
     }
 
     /**

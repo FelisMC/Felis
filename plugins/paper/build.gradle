@@ -62,23 +62,33 @@ tasks.withType(JavaCompile).configureEach {
 }
 
 // LobbyGuardTest drives the real LobbyGuard handlers with real paper-api events around
-// Proxy-built fakes (plain main, no framework, like the velocity routing tests). It is
-// not part of `build`, which the lobby image runs; plugins/test.sh runs `./gradlew lobbyTest`.
+// Proxy-built fakes, and MenuTilesTest checks the menu's tile judgement (plain mains, no
+// framework, like the velocity routing tests). Neither is part of `build`, which the
+// lobby image runs; plugins/test.sh runs `./gradlew lobbyTest`, which runs both.
 sourceSets {
     lobbyTest {
         java {
             srcDir 'test'
             include 'best/lolicon/felis/paper/Fakes.java'
             include 'best/lolicon/felis/paper/LobbyGuardTest.java'
+            include 'best/lolicon/felis/paper/MenuTilesTest.java'
         }
         compileClasspath += sourceSets.main.output + configurations.compileClasspath
         runtimeClasspath += output + compileClasspath
     }
 }
 
+tasks.register('menuTilesTest', JavaExec) {
+    group = 'verification'
+    description = 'Runs the MenuTilesTest self-test main.'
+    classpath = sourceSets.lobbyTest.runtimeClasspath
+    mainClass = 'best.lolicon.felis.paper.MenuTilesTest'
+}
+
 tasks.register('lobbyTest', JavaExec) {
     group = 'verification'
-    description = 'Runs the LobbyGuardTest self-test main.'
+    description = 'Runs the LobbyGuardTest and MenuTilesTest self-test mains.'
+    dependsOn 'menuTilesTest'
     classpath = sourceSets.lobbyTest.runtimeClasspath
     mainClass = 'best.lolicon.felis.paper.LobbyGuardTest'
 }

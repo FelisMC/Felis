@@ -48,14 +48,16 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p><b>Flow.</b> {@code /menu} sends a {@code ListRequest}; the proxy answers with a
  * {@code ListUpdate} naming every user server it routes, built from the same registry
  * it routes by, so a server created in the panel shows up here without anyone editing
- * this plugin. The menu then paints a "loading" tile per server on the page (45 per
- * page, arrows in the bottom row) and fires a {@code StatusQuery} for each; the proxy
- * answers with {@code StatusUpdate} frames that repaint each tile by phase +
- * ownership. Clicking a tile sends a
- * {@code ClaimRequest} when it is claimable (ownerless + stopped → "Claim &amp;
- * Start") or a {@code WakeRequest} otherwise (the single frame behind both the "Join"
- * of a running owned server and the "Wake" of a stopped owned one), then closes the
- * menu. A claim refusal comes back as an {@code Error} frame and is shown to the
+ * this plugin. The list puts the player's own servers first and carries felis-api's
+ * verdict on each: whether this player may start it, and why not. The menu then
+ * paints a "loading" tile per server on the page (45 per page, arrows in the bottom
+ * row) and fires a {@code StatusQuery} for each; the proxy answers with
+ * {@code StatusUpdate} frames that repaint each tile ({@link MenuTiles}): Join when it
+ * is up, Claim &amp; Start when it is ownerless, a grey tile naming the reason when the
+ * player may not start it, Start otherwise, with the phase in the player's language.
+ * Claim sends a {@code ClaimRequest}; Join and Start both send a {@code WakeRequest};
+ * each closes the menu. A grey tile sends nothing: its reason goes to chat and the
+ * menu stays open. A claim refusal comes back as an {@code Error} frame and is shown to the
  * player here; wake-path refusals (policy gate, capacity) are chat messages the
  * proxy's waiting queue sends directly. Readiness arrives as {@code TransferReady}
  * just before the proxy Connects them.
@@ -122,7 +124,7 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
         }, LIST_TIMEOUT_TICKS);
     }
 
-    private void openPage(Player player, List<String> all, int page) {
+    private void openPage(Player player, List<String> all, Map<String, String> access, int page) {
         boolean zh = zh(player);
         if (all.isEmpty()) {
             player.sendMessage(Component.text(
@@ -133,7 +135,7 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
         }
         int pages = MenuHolder.pageCount(all.size());
         int p = Math.max(0, Math.min(page, pages - 1));
-        MenuHolder holder = new MenuHolder(all, p);
+        MenuHolder holder = new MenuHolder(all, access, p);
         List<String> view = holder.servers();
         int size = pages > 1 ? 54 : invSize(view.size());
         Inventory inv = Bukkit.createInventory(holder, size, menuTitle(zh, p, pages));
@@ -180,7 +182,7 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
         if (holder.pages() > 1 && (slot == PREV_SLOT || slot == NEXT_SLOT)) {
             int target = holder.page() + (slot == PREV_SLOT ? -1 : 1);
             if (target >= 0 && target < holder.pages()) {
-                openPage(player, holder.all(), target);
+                openPage(player, holder.all(), holder.access(), target);
             }
             return;
         }
@@ -192,13 +194,17 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
         if (state == null) {
             return; // still loading — no status yet, so we don't know which frame to send
         }
-        // Claimable (ownerless + stopped) → Claim & Start; everything else → Wake
-        // (which the proxy treats as Join when the owned server is already running).
-        if (state.claimable()) {
-            sendUpstream(player, ControlFrame.claimRequest(player.getName(), server));
-        } else {
-            sendUpstream(player, ControlFrame.wakeRequest(player.getName(), server));
+        boolean zh = zh(player);
+        MenuTiles.Tile tile = MenuTiles.tile(state, holder.verdict(server), zh);
+        ControlFrame click = MenuTiles.click(tile, player.getName(), server);
+        if (click == null) {
+            // A start felis-api would refuse: say why and leave the menu open, so the
+            // player can pick another server.
+            player.sendMessage(Component.text("⚠ " + server + ": " + MenuTiles.chatReason(tile, zh),
+                    NamedTextColor.YELLOW));
+            return;
         }
+        sendUpstream(player, click);
         player.closeInventory();
     }
 
@@ -231,7 +237,7 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
                 // Only a /menu that is still waiting opens; a late answer after the
                 // timeout message is dropped rather than popping a menu up unasked.
                 if (pendingOpen.remove(player.getUniqueId()) != null) {
-                    openPage(player, frame.servers(), 0);
+                    openPage(player, frame.servers(), MenuTiles.accessByName(frame), 0);
                 }
                 break;
             case ControlFrame.STATUS_UPDATE:
@@ -266,7 +272,7 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
             return; // a server we are not showing
         }
         holder.put(frame.server(), frame);
-        top.setItem(slot, tile(frame, zh(player)));
+        top.setItem(slot, tile(frame, holder.verdict(frame.server()), zh(player)));
     }
 
     // markUnavailable repaints a still-loading tile whose status query was refused, so
@@ -318,30 +324,42 @@ public final class FelisPaperPlugin extends JavaPlugin implements Listener, Plug
         return item;
     }
 
-    private ItemStack tile(ControlFrame f, boolean zh) {
+    private ItemStack tile(ControlFrame f, String verdict, boolean zh) {
+        MenuTiles.Tile t = MenuTiles.tile(f, verdict, zh);
         Material material;
-        String action;
         NamedTextColor color;
-        if (f.claimable()) {
-            material = Material.GOLD_BLOCK;
-            action = zh ? "认领并启动" : "Claim & Start";
-            color = NamedTextColor.GOLD;
-        } else if (f.ready()) {
-            material = Material.LIME_CONCRETE;
-            action = zh ? "加入" : "Join";
-            color = NamedTextColor.GREEN;
-        } else {
-            material = Material.RED_CONCRETE;
-            action = zh ? "唤醒" : "Wake";
-            color = NamedTextColor.RED;
+        switch (t.kind()) {
+            case CLAIM -> {
+                material = Material.GOLD_BLOCK;
+                color = NamedTextColor.GOLD;
+            }
+            case JOIN -> {
+                material = Material.LIME_CONCRETE;
+                color = NamedTextColor.GREEN;
+            }
+            case LOCKED -> {
+                material = Material.GRAY_CONCRETE;
+                color = NamedTextColor.GRAY;
+            }
+            default -> {
+                material = Material.RED_CONCRETE;
+                color = NamedTextColor.RED;
+            }
         }
         ItemStack item = new ItemStack(material);
         ItemMeta meta = item.getItemMeta();
-        meta.displayName(Component.text(action + "  ·  " + f.server(), color)
+        meta.displayName(Component.text((t.mine() ? "★ " : "") + t.action() + "  ·  " + f.server(), color)
                 .decoration(TextDecoration.ITALIC, false));
         List<Component> lore = new ArrayList<>();
-        lore.add(line(zh ? "状态" : "Status", f.phase() == null || f.phase().isEmpty() ? "?" : f.phase()));
+        if (t.mine()) {
+            lore.add(Component.text(zh ? "你的服务器" : "Your server", NamedTextColor.GOLD)
+                    .decoration(TextDecoration.ITALIC, false));
+        }
+        lore.add(line(zh ? "状态" : "Status", MenuTiles.phase(f.phase(), zh)));
         lore.add(line(zh ? "在线" : "Players", f.playersOnline() + "/" + f.playersMax()));
+        for (String r : t.reason()) {
+            lore.add(Component.text(r, NamedTextColor.YELLOW).decoration(TextDecoration.ITALIC, false));
+        }
         meta.lore(lore);
         item.setItemMeta(meta);
         return item;

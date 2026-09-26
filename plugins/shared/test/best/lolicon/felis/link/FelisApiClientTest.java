@@ -44,6 +44,9 @@ public final class FelisApiClientTest {
             if (path.endsWith("/wake")) {
                 status = 202;
                 body = "{\"name\":\"alpha\",\"phase\":\"Starting\",\"ready\":false}";
+            } else if (path.startsWith("/api/v1/internal/player/menu-access/")) {
+                status = 200;
+                body = "{\"servers\":{\"mine\":\"owner\",\"odd\":7,\"pub\":\"wake\"}}";
             } else if (path.equals("/api/v1/internal/op-login/mismatch/approve")) {
                 status = 409;
                 body = "{\"error\":{\"code\":\"op_login_mismatch\",\"message\":\"that operator login is for a different account\"}}";
@@ -78,6 +81,7 @@ public final class FelisApiClientTest {
             opaqueSegmentsArePercentEncoded(api);
             opLoginShowNamesTheAccount(api);
             opLoginApproveSendsTheTypedName(api);
+            menuAccessReadsVerdictsByName(api);
         } finally {
             stub.stop(0);
         }
@@ -94,6 +98,15 @@ public final class FelisApiClientTest {
                 "POST /api/v1/internal/servers/alpha/wake",
                 "GET /api/v1/internal/servers/my-server-2/menu",
                 "GET /api/v1/internal/servers/abc/status"), seen);
+    }
+
+    // menuAccess reads the verdict map for the player's own UUID and keeps only the
+    // string verdicts, so one malformed entry cannot hide the others.
+    private static void menuAccessReadsVerdictsByName(FelisApiClient api) throws LinkException {
+        seen.clear();
+        UUID id = UUID.fromString("00000000-0000-0000-0000-00000000000a");
+        assertEq("verdicts", java.util.Map.of("mine", "owner", "pub", "wake"), api.menuAccess(id));
+        assertEq("route", List.of("GET /api/v1/internal/player/menu-access/" + id), seen);
     }
 
     private static void pathBendingNamesNeverLeaveTheClient(FelisApiClient api) {

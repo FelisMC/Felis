@@ -18,6 +18,7 @@ import com.velocitypowered.api.proxy.messages.MinecraftChannelIdentifier;
 import org.slf4j.Logger;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -47,6 +48,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * frames are metered per player ({@link FrameBudget}) and menu projections are
  * shared across players for {@link #STATUS_TTL_MILLIS}: a lobby full of players
  * opening the menu at once reads each server's status once, not once per player.
+ * The one per-player read is a menu open's {@code ListRequest}: a single call that
+ * says what the player may do with every tile.
  *
  * <p><b>Threading.</b> {@code felis:control} frames arrive on a Velocity event
  * thread, but every felis-api call below blocks on HTTP. So each handler does the
@@ -57,7 +60,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * it cannot be set from the async hop.
  *
  * <p>The lobby's upstream frames map onto the menu (spec §12): a {@code ListRequest}
- * asks which tiles to draw ({@code ListUpdate} back, built from the registry); a
+ * asks which tiles to draw ({@code ListUpdate} back: the registry's names, the
+ * player's own first, each with what felis-api says the player may do with it); a
  * {@code StatusQuery} refreshes a tile ({@code StatusUpdate} back); a
  * {@code WakeRequest} (owned server) wakes and parks; a {@code ClaimRequest}
  * (ownerless server) runs the two-rule split — claim asserts ownership/quota, then
@@ -82,9 +86,12 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
     // Two full menu pages (45 tiles + the list each) in a burst, then 10 frames a second.
     private static final int FRAME_BURST = 96;
     private static final double FRAME_REFILL_PER_SECOND = 10.0;
-    // Upper bound on names in one ListUpdate. A proxy→backend plugin message is capped
-    // at 32767 bytes; 500 names of at most 32 chars stays well under it.
+    // Upper bound on tiles in one ListUpdate. A proxy→backend plugin message is capped
+    // at 32767 bytes; 500 names of at most 32 chars plus 500 verdicts of at most 12
+    // (each quoted, comma-separated) come to about 25 KB.
     static final int MAX_LISTED = 500;
+    // The menu-access verdict for a server the player owns; those tiles lead the list.
+    static final String MENU_OWNER = "owner";
     // A refused source is logged at most once per interval, so a hostile backend
     // cannot turn its own refusals into a log flood.
     private static final long REFUSAL_LOG_INTERVAL_MILLIS = 60_000L;
@@ -182,7 +189,7 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
                 handleClaim(source, player, frame.server());
                 break;
             case ControlFrame.LIST_REQUEST:
-                send(source, ControlFrame.listUpdate(listed()));
+                handleList(source, player);
                 break;
             case ControlFrame.LOGIN_RELEASE:
                 router.releaseFromLogin(player);
@@ -198,6 +205,47 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
         budget.forget(event.getPlayer().getUniqueId());
     }
 
+    // A ListRequest draws the menu: the names come from the registry, and what this
+    // player may do with each comes from felis-api in one call. When felis-api cannot
+    // answer (or the pool is full) the names still go out, and the lobby draws its
+    // tiles without verdicts, as before they existed.
+    private void handleList(ServerConnection source, Player player) {
+        List<String> names = listed();
+        UUID id = player.getUniqueId();
+        boolean taken = plugin.async(() -> {
+            Map<String, String> access;
+            try {
+                access = api.menuAccess(id);
+            } catch (LinkException e) {
+                log.debug("Felis: menu access for {} unavailable; listing names only: {}", id, e.getMessage());
+                access = Map.of();
+            }
+            send(source, menuList(names, access));
+        });
+        if (!taken) {
+            send(source, menuList(names, Map.of()));
+        }
+    }
+
+    /**
+     * menuList orders the tiles and pairs each with its verdict: the player's own
+     * servers first, then everything else, each group by name. The cap applies after
+     * the ordering, so a player's own servers are never the ones cut.
+     */
+    static ControlFrame menuList(List<String> names, Map<String, String> access) {
+        List<String> sorted = new ArrayList<>(names);
+        sorted.sort(Comparator.comparing((String n) -> !MENU_OWNER.equals(access.get(n)))
+                .thenComparing(Comparator.naturalOrder()));
+        if (sorted.size() > MAX_LISTED) {
+            sorted = sorted.subList(0, MAX_LISTED);
+        }
+        List<String> verdicts = new ArrayList<>(sorted.size());
+        for (String n : sorted) {
+            verdicts.add(access.getOrDefault(n, ""));
+        }
+        return ControlFrame.listUpdate(sorted, verdicts);
+    }
+
     // listed is the lobby's tile set: every managed user server, by name. The system
     // servers are the lobby itself and the gate in front of it, so neither is a tile.
     private List<String> listed() {
@@ -207,8 +255,7 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
                 names.add(v.name());
             }
         }
-        names.sort(String::compareTo);
-        return names.size() > MAX_LISTED ? names.subList(0, MAX_LISTED) : names;
+        return names;
     }
 
     private void refused(String sourceName, ControlFrame frame, ControlPolicy.Verdict verdict) {
@@ -253,7 +300,7 @@ public final class ControlChannel implements WaitingRouter.MenuTransferListener 
         }
     }
 
-    // A WakeRequest is the menu's Join/Wake button on a server the player owns: wake
+    // A WakeRequest is the menu's Join or Start button: wake
     // it and park them in the shared queue. enqueueFromMenu does the HTTP off-thread
     // and reports its own refusals to the player; nothing to await here.
     private void handleWake(ServerConnection source, Player player, String server) {

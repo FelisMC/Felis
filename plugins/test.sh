@@ -46,16 +46,20 @@
 #      message (the stub answers a wake from the server's state in felis-api's own
 #      order, so it cannot hand the router an answer the real API never gives),
 #      felis:control acts only for the connection's player and holds its
-#      frame budget, and Velocity's own /server steps aside for the backend's while
+#      frame budget, the menu list leads with the player's own servers and falls
+#      back to names alone when felis-api or the call pool cannot answer, and Velocity's own /server steps aside for the backend's while
 #      one another proxy plugin registered stays. They ride the module's verified dependency set, which is why
 #      they live in Gradle rather than in the javac mains above.
 #
-#   4. The lobby guard self-test (`./gradlew lobbyTest` in plugins/paper): LobbyGuard
+#   4. The lobby self-tests (`./gradlew lobbyTest` in plugins/paper): LobbyGuard
 #      runs against real paper-api events around fake players and worlds, so a
 #      passer-by cannot change the lobby while a builder can, nobody is hurt or
 #      starved, a fall into the void lands at spawn, a join sets adventure mode and
 #      names /menu with a click, and a world rule the server refuses is logged
-#      without taking the menu down with it.
+#      without taking the menu down with it. MenuTiles decides each menu tile from
+#      the server's status and felis-api's verdict for the player: Join when it is up,
+#      Claim when ownerless, a grey tile with the reason (and no frame) when the
+#      player may not start it, the phase in the player's language.
 #
 # No test framework: the mains are the same javac one-liners their javadocs document,
 # so a local run and CI run the same bytes.

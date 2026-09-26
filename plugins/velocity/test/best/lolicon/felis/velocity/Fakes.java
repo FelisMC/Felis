@@ -31,6 +31,8 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.regex.Matcher;
@@ -482,6 +484,15 @@ final class Fakes {
         /** menuError and claimError map a server to "status code", like wakeError. */
         final Map<String, String> menuError = new ConcurrentHashMap<>();
         final Map<String, String> claimError = new ConcurrentHashMap<>();
+        /**
+         * access is what the menu-access route answers per player: server → verdict.
+         * A player with no entry gets an empty map; menuAccessError ("status code")
+         * makes the route fail for everyone.
+         */
+        final Map<UUID, Map<String, String>> access = new ConcurrentHashMap<>();
+        volatile String menuAccessError;
+        /** menuAccessHold, while set, holds every menu-access request until it opens. */
+        volatile CountDownLatch menuAccessHold;
         /** bodies holds the last request body per "METHOD path". */
         final Map<String, String> bodies = new ConcurrentHashMap<>();
         /** calls lists every request as "METHOD path", in arrival order. */
@@ -506,6 +517,7 @@ final class Fakes {
             calls.add(method + " " + path);
             String status = "/api/v1/internal/account/link/status/";
             String servers = "/api/v1/internal/servers/";
+            String menuAccess = "/api/v1/internal/player/menu-access/";
             if (path.startsWith(status)) {
                 if (linkDown) {
                     reply(ex, 500, "{\"error\":{\"code\":\"internal\",\"message\":\"down\"}}");
@@ -513,6 +525,24 @@ final class Fakes {
                 }
                 boolean yes = linked.contains(UUID.fromString(path.substring(status.length())));
                 reply(ex, 200, "{\"linked\":" + yes + "}");
+                return;
+            }
+            if (path.startsWith(menuAccess) && "GET".equals(method)) {
+                CountDownLatch hold = menuAccessHold;
+                if (hold != null) {
+                    try {
+                        hold.await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+                if (!error(ex, menuAccessError)) {
+                    UUID who = UUID.fromString(path.substring(menuAccess.length()));
+                    StringBuilder sb = new StringBuilder("{\"servers\":{");
+                    access.getOrDefault(who, Map.of()).forEach((n, v) ->
+                            sb.append(sb.length() > 12 ? "," : "").append('"').append(n).append("\":\"").append(v).append('"'));
+                    reply(ex, 200, sb.append("}}").toString());
+                }
                 return;
             }
             if (path.startsWith(servers)) {

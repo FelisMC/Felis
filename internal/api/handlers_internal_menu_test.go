@@ -2,9 +2,13 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 )
 
 // The internal-face claim + menu pair (spec §9.3, §12) is what velocity drives for
@@ -216,4 +220,118 @@ func (f *fakeRepo) assertClaimAudit(t *testing.T, name string) {
 		}
 	}
 	t.Fatalf("no velocity/internal claim audit for %q in %+v", name, f.audits)
+}
+
+func internalMenuAccess(api *API, uuid string) *httptest.ResponseRecorder {
+	return do(api.InternalHandler(), "GET", "/api/v1/internal/player/menu-access/"+uuid, "", nil)
+}
+
+// The menu-access verdicts tell the lobby, per tile, whether this player may start
+// the server and why not, with the wake's own gates behind each one.
+func TestInternalMenuAccess(t *testing.T) {
+	gone := &RetireState{RequestedAt: time.Now()}
+	setup := func() (*API, *fakeRepo) {
+		repo := newFakeRepo()
+		cl := newFakeCluster()
+		running := string(v1alpha1.DesiredRunning)
+		cl.list = []ServerInfo{
+			{Name: "pub", AutostartPolicy: "public"},
+			{Name: "mine", AutostartPolicy: "ownerOnly"},
+			{Name: "theirs", AutostartPolicy: "ownerOnly"},
+			{Name: "unset"},
+			{Name: "listed", AutostartPolicy: "allowlist"},
+			{Name: "unlisted", AutostartPolicy: "allowlist"},
+			{Name: "ownerless", AutostartPolicy: "ownerOnly"},
+			{Name: "gone", AutostartPolicy: "public"},
+			{Name: "mine-gone", AutostartPolicy: "ownerOnly"},
+			{Name: "broken", AutostartPolicy: "public", StartGaveUp: true, DesiredState: running},
+			{Name: "mine-broken", AutostartPolicy: "ownerOnly", StartGaveUp: true, DesiredState: running},
+			{Name: "broken-stopped", AutostartPolicy: "public", StartGaveUp: true},
+			{Name: "lobby", AutostartPolicy: "public"},
+		}
+		repo.owners = map[string]ServerOwnership{
+			"pub":            {OwnerID: "u2"},
+			"mine":           {OwnerID: "user1"},
+			"theirs":         {OwnerID: "u2"},
+			"unset":          {OwnerID: "u2"},
+			"listed":         {OwnerID: "u2"},
+			"unlisted":       {OwnerID: "u2"},
+			"ownerless":      {},
+			"gone":           {OwnerID: "u2", Retire: gone},
+			"mine-gone":      {OwnerID: "user1", Retire: gone},
+			"broken":         {OwnerID: "u2"},
+			"mine-broken":    {OwnerID: "user1"},
+			"broken-stopped": {OwnerID: "u2"},
+		}
+		repo.allowUUID["listed"] = map[string]bool{menuUUID: true}
+		return newTestAPI(repo, cl), repo
+	}
+	verdicts := func(t *testing.T, api *API) map[string]any {
+		t.Helper()
+		got := decodeMenu(t, internalMenuAccess(api, menuUUID))
+		servers, ok := got["servers"].(map[string]any)
+		if !ok {
+			t.Fatalf("servers = %v, want an object", got["servers"])
+		}
+		return servers
+	}
+
+	t.Run("a linked player", func(t *testing.T) {
+		api, repo := setup()
+		repo.links[menuUUID] = "user1"
+		got := verdicts(t, api)
+		for name, want := range map[string]string{
+			"pub":            "wake",
+			"mine":           "owner",
+			"theirs":         "owner_only",
+			"unset":          "owner_only",
+			"listed":         "wake",
+			"unlisted":       "allowlist",
+			"ownerless":      "owner_only",
+			"gone":           "retiring",
+			"mine-gone":      "retiring",
+			"broken":         "start_failed",
+			"mine-broken":    "start_failed",
+			"broken-stopped": "wake",
+		} {
+			assertEq(t, name, got[name], want)
+		}
+		if _, listed := got["lobby"]; listed {
+			t.Fatal("the lobby is not a menu tile, yet it has a verdict")
+		}
+		assertEq(t, "verdict count", len(got), 12)
+	})
+
+	t.Run("staff start any server that is not retiring or failed", func(t *testing.T) {
+		api, repo := setup()
+		repo.links[menuUUID] = "a1"
+		repo.staff["op"] = &StaffUser{ID: "a1", Username: "op", Role: "admin"}
+		got := verdicts(t, api)
+		assertEq(t, "theirs", got["theirs"], "wake")
+		assertEq(t, "unlisted", got["unlisted"], "wake")
+		assertEq(t, "ownerless", got["ownerless"], "wake")
+		assertEq(t, "gone", got["gone"], "retiring")
+	})
+
+	t.Run("an unlinked UUID owns nothing, not even an ownerless server", func(t *testing.T) {
+		api, _ := setup()
+		got := verdicts(t, api)
+		assertEq(t, "mine", got["mine"], "owner_only")
+		assertEq(t, "ownerless", got["ownerless"], "owner_only")
+		assertEq(t, "listed", got["listed"], "wake")
+		assertEq(t, "pub", got["pub"], "wake")
+	})
+
+	t.Run("a failed read fails the call", func(t *testing.T) {
+		api, repo := setup()
+		repo.ownersErr = errors.New("db down")
+		if w := internalMenuAccess(api, menuUUID); w.Code != http.StatusInternalServerError {
+			t.Fatalf("owners unreadable: code = %d, want 500 (%s)", w.Code, w.Body.String())
+		}
+		api, _ = setup()
+		api.Cluster.(*fakeCluster).listErr = errors.New("apiserver down")
+		if w := internalMenuAccess(api, menuUUID); w.Code < 500 {
+			t.Fatalf("cluster unreadable: code = %d, want 5xx (%s)", w.Code, w.Body.String())
+		}
+	})
 }

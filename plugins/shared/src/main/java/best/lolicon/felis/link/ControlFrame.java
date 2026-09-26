@@ -25,7 +25,7 @@ import java.util.Objects;
  *       {@code Connect} the gate used to send, so {@code bungeecord:main} can be
  *       switched off proxy-wide.</li>
  *   <li><b>Downstream</b> (velocity → lobby): {@link #STATUS_UPDATE} is the tile
- *       projection; {@link #LIST_UPDATE} is the set of tiles to show;
+ *       projection; {@link #LIST_UPDATE} is the set of tiles to show, with what the player may do with each;
  *       {@link #TRANSFER_READY} tells the lobby a parked player's backend is up;
  *       {@link #ERROR} reports a refusal.</li>
  * </ul>
@@ -65,7 +65,7 @@ public final class ControlFrame {
     public static final String ERROR = "Error";
     /** Upstream (lobby): ask for the current tile list; answered by {@link #LIST_UPDATE}. */
     public static final String LIST_REQUEST = "ListRequest";
-    /** Downstream: the user servers the lobby should show, in display order (servers). */
+    /** Downstream: the user servers the lobby should show, in display order (servers, access). */
     public static final String LIST_UPDATE = "ListUpdate";
     /** Upstream (login gate): the player finished signing in; move them to the lobby (player). */
     public static final String LOGIN_RELEASE = "LoginRelease";
@@ -81,15 +81,16 @@ public final class ControlFrame {
     private final String code;
     private final String message;
     private final List<String> servers;
+    private final List<String> access;
 
     private ControlFrame(String type, String player, String server, String phase, boolean ready,
                          int playersOnline, int playersMax, boolean claimable, String code, String message) {
-        this(type, player, server, phase, ready, playersOnline, playersMax, claimable, code, message, List.of());
+        this(type, player, server, phase, ready, playersOnline, playersMax, claimable, code, message, List.of(), List.of());
     }
 
     private ControlFrame(String type, String player, String server, String phase, boolean ready,
                          int playersOnline, int playersMax, boolean claimable, String code, String message,
-                         List<String> servers) {
+                         List<String> servers, List<String> access) {
         this.type = type;
         this.player = player;
         this.server = server;
@@ -101,6 +102,7 @@ public final class ControlFrame {
         this.code = code;
         this.message = message;
         this.servers = servers;
+        this.access = access;
     }
 
     // ---- factories (tolerant: no field validation, so decode can always rebuild) ----
@@ -137,16 +139,34 @@ public final class ControlFrame {
 
     /** listUpdate carries the tile names; null entries are dropped, the list is copied. */
     public static ControlFrame listUpdate(List<String> servers) {
-        List<String> copy = new ArrayList<>();
+        return listUpdate(servers, null);
+    }
+
+    /**
+     * listUpdate with {@code access} also carries what the player may do with each
+     * server: {@code access.get(i)} is felis-api's verdict for {@code servers.get(i)}
+     * ({@code ""} when unknown). A null name drops its verdict with it; missing
+     * verdicts read as unknown, and extra ones are cut. With no known verdict at all
+     * the list stays empty and the frame is the plain name list.
+     */
+    public static ControlFrame listUpdate(List<String> servers, List<String> access) {
+        List<String> names = new ArrayList<>();
+        List<String> verdicts = new ArrayList<>();
+        boolean anyKnown = false;
         if (servers != null) {
-            for (String s : servers) {
-                if (s != null) {
-                    copy.add(s);
+            for (int i = 0; i < servers.size(); i++) {
+                if (servers.get(i) == null) {
+                    continue;
                 }
+                String v = access != null && i < access.size() && access.get(i) != null ? access.get(i) : "";
+                names.add(servers.get(i));
+                verdicts.add(v);
+                anyKnown |= !v.isEmpty();
             }
         }
         return new ControlFrame(LIST_UPDATE, null, null, null, false, 0, 0, false, null, null,
-                Collections.unmodifiableList(copy));
+                Collections.unmodifiableList(names),
+                anyKnown ? Collections.unmodifiableList(verdicts) : List.of());
     }
 
     public static ControlFrame loginRelease(String player) {
@@ -200,6 +220,15 @@ public final class ControlFrame {
         return servers;
     }
 
+    /**
+     * access is the {@link #LIST_UPDATE}'s verdict per server, aligned with
+     * {@link #servers()} ({@code ""} for one felis-api gave none); empty when the
+     * proxy sent names only, and on every other type.
+     */
+    public List<String> access() {
+        return access;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) {
@@ -219,13 +248,14 @@ public final class ControlFrame {
                 && Objects.equals(phase, f.phase)
                 && Objects.equals(code, f.code)
                 && Objects.equals(message, f.message)
-                && Objects.equals(servers, f.servers);
+                && Objects.equals(servers, f.servers)
+                && Objects.equals(access, f.access);
     }
 
     @Override
     public int hashCode() {
         return Objects.hash(type, player, server, phase, ready, playersOnline, playersMax, claimable, code, message,
-                servers);
+                servers, access);
     }
 
     @Override

@@ -70,15 +70,12 @@ public final class Control {
             case ControlFrame.LIST_REQUEST:
                 break;
             case ControlFrame.LIST_UPDATE:
-                sb.append(",\"servers\":[");
-                List<String> names = frame.servers();
-                for (int i = 0; i < names.size(); i++) {
-                    if (i > 0) {
-                        sb.append(',');
-                    }
-                    jsonString(sb, names.get(i));
+                kvList(sb, "servers", frame.servers());
+                // Only a list that carries verdicts writes them, so a names-only
+                // frame stays the shape it always was.
+                if (!frame.access().isEmpty()) {
+                    kvList(sb, "access", frame.access());
                 }
-                sb.append(']');
                 break;
             case ControlFrame.LOGIN_RELEASE:
                 kv(sb, "player", frame.player());
@@ -128,7 +125,7 @@ public final class Control {
             case ControlFrame.LIST_REQUEST:
                 return ControlFrame.listRequest();
             case ControlFrame.LIST_UPDATE:
-                return ControlFrame.listUpdate(strList(o, "servers"));
+                return listUpdate(o);
             case ControlFrame.LOGIN_RELEASE:
                 return ControlFrame.loginRelease(str(o, "player"));
             default:
@@ -145,6 +142,17 @@ public final class Control {
         } else {
             jsonString(sb, value);
         }
+    }
+
+    private static void kvList(StringBuilder sb, String key, List<String> values) {
+        sb.append(",\"").append(key).append("\":[");
+        for (int i = 0; i < values.size(); i++) {
+            if (i > 0) {
+                sb.append(',');
+            }
+            jsonString(sb, values.get(i));
+        }
+        sb.append(']');
     }
 
     private static void kvBool(StringBuilder sb, String key, boolean value) {
@@ -199,19 +207,22 @@ public final class Control {
         return v instanceof String ? (String) v : null;
     }
 
-    // strList keeps the string entries of an array field and skips anything else, so a
-    // partly malformed list still yields the names that are well-formed.
-    private static List<String> strList(Map<?, ?> o, String key) {
-        List<String> out = new ArrayList<>();
-        Object v = o.get(key);
-        if (v instanceof List) {
-            for (Object e : (List<?>) v) {
-                if (e instanceof String) {
-                    out.add((String) e);
-                }
+    // listUpdate keeps the string entries of "servers" and skips anything else, so a
+    // partly malformed list still yields the names that are well-formed. "access" is
+    // read by the same index, so a skipped name takes its verdict with it and a
+    // verdict that is not a string reads as unknown.
+    private static ControlFrame listUpdate(Map<?, ?> o) {
+        List<String> names = new ArrayList<>();
+        List<String> access = new ArrayList<>();
+        List<?> rawNames = o.get("servers") instanceof List<?> l ? l : List.of();
+        List<?> rawAccess = o.get("access") instanceof List<?> l ? l : List.of();
+        for (int i = 0; i < rawNames.size(); i++) {
+            if (rawNames.get(i) instanceof String name) {
+                names.add(name);
+                access.add(i < rawAccess.size() && rawAccess.get(i) instanceof String v ? v : "");
             }
         }
-        return out;
+        return ControlFrame.listUpdate(names, access);
     }
 
     private static boolean bool(Map<?, ?> o, String key) {

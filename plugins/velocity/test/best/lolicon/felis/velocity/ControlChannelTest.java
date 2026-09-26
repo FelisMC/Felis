@@ -19,6 +19,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CountDownLatch;
 
 /**
  * ControlChannelTest drives the real ControlChannel (with the real WaitingRouter,
@@ -74,6 +76,7 @@ public final class ControlChannelTest {
 
             consumption();
             sources();
+            lists();
             statusQueries(reg, plugin);
             claims();
             wakeAndTransfer();
@@ -133,12 +136,90 @@ public final class ControlChannelTest {
         assertEq("malformed name not echoed", "Error not_found null", brief(r.get(2)));
         assertEq("bad server: no felis-api call", 0, api.count("POST " + SERVERS + "nope/wake"));
 
-        // The tile list: user servers only, sorted.
+        // The tile list: user servers only, sorted; no verdicts known for this player.
         message(q.on(lobby), ControlChannel.CHANNEL, Control.encode(ControlFrame.listRequest()));
+        Fakes.await("list answered", () -> q.pluginMessages.size() == 4);
         List<ControlFrame> all = frames(q);
         ControlFrame list = all.get(all.size() - 1);
         assertEq("list type", ControlFrame.LIST_UPDATE, list.type());
         assertEq("list: user servers, sorted", List.of("alpha", "beta", "gamma"), list.servers());
+        assertEq("list: no verdicts", List.of(), list.access());
+    }
+
+    private static void lists() throws Exception {
+        String accessPath = "GET /api/v1/internal/player/menu-access/";
+
+        // A menu open: the player's own servers lead, and each tile carries what felis-api
+        // says this player may do with it. A verdict for a server the proxy does not
+        // route is no tile.
+        Fakes.FakePlayer p = player(true);
+        api.access.put(p.id, Map.of("gamma", "owner", "alpha", "owner_only", "beta", "wake", "zeta", "wake"));
+        message(p.on(lobby), ControlChannel.CHANNEL, Control.encode(ControlFrame.listRequest()));
+        Fakes.await("list with verdicts", () -> p.pluginMessages.size() == 1);
+        ControlFrame f = frames(p).get(0);
+        assertEq("own servers first, then by name", List.of("gamma", "alpha", "beta"), f.servers());
+        assertEq("verdicts aligned with the names", List.of("owner", "owner_only", "wake"), f.access());
+        assertEq("asked felis-api about the connection's player", 1, api.count(accessPath + p.id));
+
+        // felis-api down: the names still go out, sorted, without verdicts.
+        api.menuAccessError = "500 internal";
+        Fakes.FakePlayer d = player(true);
+        api.access.put(d.id, Map.of("gamma", "owner"));
+        message(d.on(lobby), ControlChannel.CHANNEL, Control.encode(ControlFrame.listRequest()));
+        Fakes.await("list while felis-api is down", () -> d.pluginMessages.size() == 1);
+        ControlFrame down = frames(d).get(0);
+        assertEq("felis-api down: names, sorted", List.of("alpha", "beta", "gamma"), down.servers());
+        assertEq("felis-api down: no verdicts", List.of(), down.access());
+        api.menuAccessError = null;
+
+        // A full call pool (8 in flight, 64 waiting): the rest are answered at once with
+        // the names alone, and the held ones still arrive with verdicts once felis-api answers.
+        CountDownLatch hold = new CountDownLatch(1);
+        api.menuAccessHold = hold;
+        Fakes.FakePlayer b = player(true);
+        api.access.put(b.id, Map.of("gamma", "owner"));
+        try {
+            for (int i = 0; i < 80; i++) {
+                message(b.on(lobby), ControlChannel.CHANNEL, Control.encode(ControlFrame.listRequest()));
+            }
+            List<ControlFrame> inline = frames(b);
+            assertEq("pool full: the overflow answered at once (" + inline.size() + ")",
+                    true, inline.size() >= 8 && inline.size() <= 16);
+            for (ControlFrame x : inline) {
+                assertEq("pool full: names only", "[alpha, beta, gamma] []", x.servers() + " " + x.access());
+            }
+        } finally {
+            hold.countDown();
+            api.menuAccessHold = null;
+        }
+        Fakes.await("held lists answered", () -> b.pluginMessages.size() == 80);
+        List<ControlFrame> after = frames(b);
+        assertEq("held lists carry verdicts", "[gamma, alpha, beta] [owner, , ]",
+                after.get(after.size() - 1).servers() + " " + after.get(after.size() - 1).access());
+
+        // The cap cuts after the ordering: a player's own servers are never the ones dropped.
+        List<String> many = new ArrayList<>();
+        for (int i = 0; i < ControlChannel.MAX_LISTED + 100; i++) {
+            many.add(String.format("s%03d", i));
+        }
+        ControlFrame capped = ControlChannel.menuList(many, Map.of("s599", "owner", "s001", "wake"));
+        assertEq("cap: size", ControlChannel.MAX_LISTED, capped.servers().size());
+        assertEq("cap: own server kept, first", "s599 owner", capped.servers().get(0) + " " + capped.access().get(0));
+        assertEq("cap: then by name", "s000 s001 wake", capped.servers().get(1) + " "
+                + capped.servers().get(2) + " " + capped.access().get(2));
+        assertEq("cap: the tail is what goes", "s498", capped.servers().get(ControlChannel.MAX_LISTED - 1));
+
+        // The worst case still fits one proxy→backend plugin message: longest names,
+        // longest verdict on every tile.
+        List<String> longest = new ArrayList<>();
+        Map<String, String> worst = new java.util.HashMap<>();
+        for (int i = 0; i < ControlChannel.MAX_LISTED + 100; i++) {
+            String n = String.format("%032d", i);
+            longest.add(n);
+            worst.put(n, "start_failed");
+        }
+        int bytes = Control.encode(ControlChannel.menuList(longest, worst)).length;
+        assertEq("worst case fits one plugin message (" + bytes + " bytes)", true, bytes < 32767);
     }
 
     private static void statusQueries(ServerRegistry reg, FelisVelocityPlugin plugin) throws Exception {
@@ -246,19 +327,20 @@ public final class ControlChannelTest {
 
     private static void budget() {
         // 96 frames in a burst, then 10 a second: a flood is cut off, the connection
-        // is not. ListRequest is answered inline, so every accepted frame shows at once.
+        // is not. Every accepted ListRequest is answered exactly once (from the call pool,
+        // or at once when the pool is full), so the answers count the accepted frames.
         Fakes.FakePlayer p = player(true);
         for (int i = 0; i < 150; i++) {
             message(p.on(lobby), ControlChannel.CHANNEL, Control.encode(ControlFrame.listRequest()));
         }
-        int answered = p.pluginMessages.size();
+        int answered = settled(p, 96);
         assertEq("flood cut at the burst (plus what refilled meanwhile): " + answered,
                 true, answered >= 96 && answered <= 99);
 
         // Another player has a budget of their own.
         Fakes.FakePlayer q = player(true);
         message(q.on(lobby), ControlChannel.CHANNEL, Control.encode(ControlFrame.listRequest()));
-        assertEq("other player unaffected", 1, q.pluginMessages.size());
+        assertEq("other player unaffected", 1, settled(q, 1));
 
         // Leaving the proxy forgets the budget: a fresh burst, far more than a refill.
         channel.onDisconnect(new DisconnectEvent(p.player, DisconnectEvent.LoginStatus.SUCCESSFUL_LOGIN));
@@ -266,7 +348,29 @@ public final class ControlChannelTest {
         for (int i = 0; i < 50; i++) {
             message(p.on(lobby), ControlChannel.CHANNEL, Control.encode(ControlFrame.listRequest()));
         }
-        assertEq("budget forgotten on disconnect", 50, p.pluginMessages.size());
+        assertEq("budget forgotten on disconnect", 50, settled(p, 50));
+    }
+
+    // settled waits for at least min answers, then until none has arrived for 300 ms,
+    // and returns how many there are: the count once the pool has drained.
+    private static int settled(Fakes.FakePlayer p, int min) {
+        Fakes.await(min + " answers", () -> p.pluginMessages.size() >= min);
+        int seen = p.pluginMessages.size();
+        long quietSince = System.nanoTime();
+        while (System.nanoTime() - quietSince < 300_000_000L) {
+            try {
+                Thread.sleep(20);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("interrupted settling");
+            }
+            int now = p.pluginMessages.size();
+            if (now != seen) {
+                seen = now;
+                quietSince = System.nanoTime();
+            }
+        }
+        return seen;
     }
 
     // ---- helpers ----

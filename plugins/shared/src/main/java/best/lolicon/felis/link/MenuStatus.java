@@ -13,9 +13,10 @@ import java.util.Map;
  *
  * <p>Velocity reads this for a {@code StatusQuery} and projects it onto a
  * {@link ControlFrame#STATUS_UPDATE} frame the felis-paper lobby renders as a tile:
- * the {@code phase}/{@code ready}/{@code claimable} triple chooses the button
- * (Claim&nbsp;&amp;&nbsp;Start / Join / Wake) and {@code playersOnline}/{@code
- * playersMax} render the "3/20" count.
+ * {@code ready} and {@code claimable}, with felis-api's per-player verdict from the
+ * {@code ListUpdate}, choose the button (Join / Claim&nbsp;&amp;&nbsp;Start / Start, or
+ * a grey tile naming why not), {@code phase} is the status line, and
+ * {@code playersOnline}/{@code playersMax} render the "3/20" count.
  *
  * <p>{@link #fromJson(Map)} is tolerant in the same way as {@link ServerView}: an
  * absent field degrades to null/zero/false rather than throwing, so a partial body

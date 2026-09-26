@@ -343,6 +343,80 @@ func (a *API) handleInternalMenuStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Menu access verdicts: what a lobby menu click on a server that is not up would
+// meet for one player (handleInternalMenuAccess).
+const (
+	menuRetiring    = "retiring"     // given up or being deleted: nobody starts it
+	menuStartFailed = "start_failed" // automatic restarts spent: waits for its owner
+	menuOwner       = "owner"        // the player's own server
+	menuWake        = "wake"         // the policy lets this player start it
+	menuOwnerOnly   = "owner_only"   // ownerOnly (or unset): only its owner starts it
+	menuAllowlist   = "allowlist"    // allowlist, and the player is not on it
+)
+
+// handleInternalMenuAccess answers the lobby menu's per-player question (spec §12):
+// for every user server, whether this verified UUID may start it and why not. The
+// tiles' live state stays in the shared per-server projection (…/menu); this is one
+// call per menu open, so a lobby full of players still reads each server's status
+// once. A server that is up is open to every linked player (handleInternalWake), so
+// the lobby shows Join there whatever the verdict. The verdicts follow the wake's
+// own gates with the transient refusals (cooldown, the running-server cap) left out,
+// since a retry gets past those. Retiring comes first: nobody may start such a
+// server, so it is the reason a stranger is shown too.
+func (a *API) handleInternalMenuAccess(w http.ResponseWriter, r *http.Request) {
+	mcUUID := r.PathValue("mc_uuid")
+	if mcUUID == "" {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "mc_uuid is required"))
+		return
+	}
+	infos, err := a.Cluster.ListServers(r.Context())
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	owners, err := a.Repo.ServerOwners(r.Context())
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	standing, err := a.standingByUUID(r.Context(), mcUUID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	verdicts := make(map[string]string, len(infos))
+	for i := range infos {
+		info := &infos[i]
+		if naming.ValidateServerName(info.Name) != nil {
+			continue // the login gate and the lobby are not menu tiles
+		}
+		own := owners[info.Name]
+		switch {
+		case own.Retire != nil:
+			verdicts[info.Name] = menuRetiring
+		case info.StartGaveUp && info.DesiredState == string(v1alpha1.DesiredRunning):
+			verdicts[info.Name] = menuStartFailed
+		case standing.userID != "" && standing.userID == own.OwnerID:
+			verdicts[info.Name] = menuOwner
+		default:
+			ok, err := a.policyAdmits(r.Context(), mcUUID, standing, info, own.OwnerID)
+			if err != nil {
+				writeError(w, r, err)
+				return
+			}
+			switch {
+			case ok:
+				verdicts[info.Name] = menuWake
+			case info.AutostartPolicy == string(v1alpha1.AutostartAllowlist):
+				verdicts[info.Name] = menuAllowlist
+			default:
+				verdicts[info.Name] = menuOwnerOnly
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"servers": verdicts})
+}
+
 // authorizeWakeByUUID is the internal-face counterpart of authorizeWake (spec
 // §9.4): it applies the autostartPolicy gate for a wake driven by velocity, where
 // the joining player is known only by their verified online-mode UUID rather than
@@ -358,40 +432,66 @@ func (a *API) authorizeWakeByUUID(ctx context.Context, mcUUID string, info *Serv
 	if info.AutostartPolicy == string(v1alpha1.AutostartPublic) {
 		return nil
 	}
-	// Resolve the UUID to its linked user once; staff role or ownership grants
-	// the bypass. A missing link is not an error here — it just means "no
-	// standing", and a link pointing at a vanished user reads the same way.
-	switch userID, err := a.Repo.UserByMCUUID(ctx, mcUUID); {
-	case err == nil:
-		switch u, err := a.Repo.UserByID(ctx, userID); {
-		case err == nil:
-			if staffRole(u.Role) {
-				return nil
-			}
-		case !errors.Is(err, ErrNotFound):
-			return err
-		}
-		if rec != nil && rec.OwnerID != "" && userID == rec.OwnerID {
-			return nil
-		}
-	case errors.Is(err, ErrNotFound):
-		// unlinked UUID → fall through to the policy gate
-	default:
+	s, err := a.standingByUUID(ctx, mcUUID)
+	if err != nil {
 		return err
 	}
-	switch info.AutostartPolicy {
-	case string(v1alpha1.AutostartAllowlist):
-		ok, err := a.Repo.UUIDInAllowlist(ctx, info.Name, mcUUID)
-		if err != nil {
-			return err
-		}
-		if ok {
-			return nil
-		}
-		return errForbidden
-	default: // ownerOnly or unset → only the owner (handled above) may wake
+	owner := ""
+	if rec != nil {
+		owner = rec.OwnerID
+	}
+	ok, err := a.policyAdmits(ctx, mcUUID, s, info, owner)
+	if err != nil {
+		return err
+	}
+	if !ok {
 		return errForbidden
 	}
+	return nil
+}
+
+// uuidStanding is what a verified in-game UUID brings to the autostartPolicy gate:
+// the user it is linked to ("" when unlinked) and whether that user is staff.
+type uuidStanding struct {
+	userID string
+	staff  bool
+}
+
+// standingByUUID resolves the UUID to its linked user once. A missing link is not
+// an error here — it just means "no standing", and a link pointing at a vanished
+// user reads as the link without the staff role.
+func (a *API) standingByUUID(ctx context.Context, mcUUID string) (uuidStanding, error) {
+	userID, err := a.Repo.UserByMCUUID(ctx, mcUUID)
+	switch {
+	case errors.Is(err, ErrNotFound):
+		return uuidStanding{}, nil
+	case err != nil:
+		return uuidStanding{}, err
+	}
+	switch u, err := a.Repo.UserByID(ctx, userID); {
+	case err == nil:
+		return uuidStanding{userID: userID, staff: staffRole(u.Role)}, nil
+	case errors.Is(err, ErrNotFound):
+		return uuidStanding{userID: userID}, nil
+	default:
+		return uuidStanding{}, err
+	}
+}
+
+// policyAdmits is the autostartPolicy gate itself: public admits anyone, staff and
+// the owner (ownerID, "" while unclaimed) pass every policy, allowlist admits a
+// listed UUID, and ownerOnly or unset admits no one else.
+func (a *API) policyAdmits(ctx context.Context, mcUUID string, s uuidStanding, info *ServerInfo, ownerID string) (bool, error) {
+	if info.AutostartPolicy == string(v1alpha1.AutostartPublic) || s.staff {
+		return true, nil
+	}
+	if s.userID != "" && s.userID == ownerID {
+		return true, nil
+	}
+	if info.AutostartPolicy == string(v1alpha1.AutostartAllowlist) {
+		return a.Repo.UUIDInAllowlist(ctx, info.Name, mcUUID)
+	}
+	return false, nil
 }
 
 // writeLookupError maps a repo/cluster lookup error onto an HTTP status: a

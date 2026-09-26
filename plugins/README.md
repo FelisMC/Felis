@@ -219,14 +219,16 @@ a frame on the same channel. Velocity (the `ControlChannel`, above) is the only
 side that talks to felis-api. This is enforced **physically** by the build, not
 just by convention: the module's `sourceSets` include-filter compiles in only the
 paper package plus the three codec classes, so the lobby jar contains exactly
-five classes —
+these classes —
 
 ```
 best/lolicon/felis/link/Control.class        (channel framing)
 best/lolicon/felis/link/ControlFrame.class   (the frame model)
 best/lolicon/felis/link/Json.class           (codec)
-best/lolicon/felis/paper/FelisPaperPlugin.class
+best/lolicon/felis/paper/FelisPaperPlugin.class (+ $1)
+best/lolicon/felis/paper/LobbyGuard.class
 best/lolicon/felis/paper/MenuHolder.class
+best/lolicon/felis/paper/MenuTiles.class     (+ $Kind, $Tile)
 ```
 
 — and **no** `FelisApiClient`, `LinkClient`, or token-config class. If a codec
@@ -238,7 +240,11 @@ rather than silently widen the lobby's reach.
 `StatusUpdate`, `TransferReady` and `Error`. `/menu` sends a `ListRequest`, and the
 proxy answers with a `ListUpdate` naming every user server it routes, built from the
 registry it routes by, so a server created in the panel appears without anyone editing
-the lobby. The menu then paints a grey "loading" tile per server (45 per page, arrows
+the lobby. The list leads with the player's own servers and carries, per server,
+felis-api's verdict for this player (`GET /api/v1/internal/player/menu-access/{uuid}`,
+one call per menu open): `owner`, `wake`, `owner_only`, `allowlist`, `retiring` or
+`start_failed`. When felis-api cannot answer, the names go out alone and the tiles
+fall back to the wake's own judgement. The menu then paints a grey "loading" tile per server (45 per page, arrows
 in the bottom row) and fires a `StatusQuery` for each; the proxy answers with
 `StatusUpdate` frames that repaint each tile by phase + ownership.
 
@@ -249,17 +255,20 @@ gates authorize against that verified identity. The frame's `server` field is th
 trusted payload — it only names *which* tile was clicked. A fully compromised
 lobby therefore cannot act as another player or reach the API directly.
 
-**Button rules** (the tile a click sends depends on the last `StatusUpdate`):
+**Button rules** (`MenuTiles`: the last `StatusUpdate` plus the player's verdict, first match wins):
 
 | Tile state | Label | Frame sent |
 | ---------- | ----- | ---------- |
-| ownerless + stopped (`claimable`) | **Claim & Start** | `ClaimRequest{server}` |
-| owned + running (`ready`)         | **Join**          | `WakeRequest{server}` |
-| owned + stopped                   | **Wake**          | `WakeRequest{server}` |
+| up (`ready`), any verdict         | **Join** (green)          | `WakeRequest{server}` |
+| ownerless (`claimable`)           | **Claim & Start** (gold)  | `ClaimRequest{server}` |
+| `retiring` / `start_failed` / `owner_only` / `allowlist` | **Can't start** (grey, reason in the lore) | nothing; the reason goes to chat and the menu stays open |
+| anything else (`owner`, `wake`, no verdict) | **Start** (red) | `WakeRequest{server}` |
 
-"Join" and "Wake" are the **same** upstream frame (`WakeRequest`) — only the
-label differs; the proxy treats a wake of an already-running owned server as a
-join. A refusal comes back as an `Error` frame (`not_linked` / `quota_exceeded` /
+The player's own servers are marked ★ and "Your server". The status line shows the
+phase in the player's language (运行中 / Running, 启动中 / Starting, 停止中 / Stopping,
+已停止 / Stopped, 启动失败 / Failed to start, 未知 / Unknown). "Join" and "Start" are the
+**same** upstream frame (`WakeRequest`): the proxy joins a server that is already up,
+and every linked player may join one. A refusal comes back as an `Error` frame (`not_linked` / `quota_exceeded` /
 `already_claimed` → a friendly message), which is the only place a claim/quota/
 policy failure surfaces to the player; readiness arrives as `TransferReady` just
 before the proxy Connects them.

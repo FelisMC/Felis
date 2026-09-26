@@ -34,6 +34,7 @@ public final class ControlRoundTripTest {
         errorOmitsServerWhenAbsentButRoundTrips();
         escapesAwkwardStrings();
         listUpdateCarriesNamesInOrder();
+        listUpdateCarriesAccessByName();
         rejectsMalformedAndUnknownFrames();
         System.out.println("ControlRoundTripTest OK (" + checks + " checks)");
     }
@@ -52,6 +53,7 @@ public final class ControlRoundTripTest {
         roundTrip(ControlFrame.listRequest());
         roundTrip(ControlFrame.listUpdate(Arrays.asList("alpha", "beta-2", "gamma")));
         roundTrip(ControlFrame.listUpdate(List.of()));
+        roundTrip(ControlFrame.listUpdate(List.of("mine", "theirs"), List.of("owner", "owner_only")));
         roundTrip(ControlFrame.loginRelease("Notch"));
     }
 
@@ -79,6 +81,34 @@ public final class ControlRoundTripTest {
         ControlFrame mixed = Control.decode(
                 "{\"type\":\"ListUpdate\",\"servers\":[\"a\",1,true,\"b\"]}".getBytes(StandardCharsets.UTF_8));
         assertEq("non-string entries skipped", List.of("a", "b"), mixed.servers());
+    }
+
+    // ListUpdate's access list is the player's verdict per name, by index: it holds
+    // its alignment through a dropped name on either end, a missing or non-string
+    // verdict reads as unknown (""), and a list with no verdict at all is the plain
+    // name list on the wire.
+    private static void listUpdateCarriesAccessByName() {
+        ControlFrame f = decode(ControlFrame.listUpdate(
+                Arrays.asList("mine", null, "theirs", "fresh"),
+                Arrays.asList("owner", "wake", "owner_only")));
+        assertEq("names", List.of("mine", "theirs", "fresh"), f.servers());
+        assertEq("verdicts follow their names", List.of("owner", "owner_only", ""), f.access());
+        assertEq("names only: no verdicts", List.of(), decode(ControlFrame.listUpdate(List.of("a"))).access());
+        assertEq("all unknown: no verdicts", List.of(),
+                decode(ControlFrame.listUpdate(List.of("a", "b"), Arrays.asList("", null))).access());
+        assertEq("names only: nothing extra on the wire",
+                "{\"type\":\"ListUpdate\",\"servers\":[\"a\"]}",
+                new String(Control.encode(ControlFrame.listUpdate(List.of("a"), List.of(""))), StandardCharsets.UTF_8));
+        assertEq("extra verdicts are cut", List.of("wake"),
+                ControlFrame.listUpdate(List.of("a"), List.of("wake", "owner")).access());
+        ControlFrame mixed = Control.decode(("{\"type\":\"ListUpdate\",\"servers\":[\"a\",1,\"b\",\"c\"],"
+                + "\"access\":[\"owner\",\"wake\",7,\"allowlist\"]}").getBytes(StandardCharsets.UTF_8));
+        assertEq("hand-written: names", List.of("a", "b", "c"), mixed.servers());
+        assertEq("hand-written: a skipped name takes its verdict", List.of("owner", "", "allowlist"), mixed.access());
+        ControlFrame shortList = Control.decode(("{\"type\":\"ListUpdate\",\"servers\":[\"a\",\"b\"],"
+                + "\"access\":[\"retiring\"]}").getBytes(StandardCharsets.UTF_8));
+        assertEq("hand-written: a missing verdict is unknown", List.of("retiring", ""), shortList.access());
+        assertEq("access on a non-list frame", List.of(), decode(ControlFrame.statusQuery("s")).access());
     }
 
     // StatusUpdate refines the spec's "players" into ready + online + max; the GUI

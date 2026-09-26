@@ -399,6 +399,8 @@ func (a *API) internalAPIRoutes() []apiRoute {
 		// list/status views never carry.
 		{Method: "POST", Pattern: "/api/v1/internal/servers/{name}/claim", Callers: proxy, h: a.handleInternalClaim},
 		{Method: "GET", Pattern: "/api/v1/internal/servers/{name}/menu", Callers: proxy, h: a.handleInternalMenuStatus},
+		// What this player may start, for every tile at once: one call per menu open.
+		{Method: "GET", Pattern: "/api/v1/internal/player/menu-access/{mc_uuid}", Callers: proxy, h: a.handleInternalMenuAccess},
 		// Account linking (spec §10): the in-game /link side mints a one-time code for a
 		// verified UUID. Internal-only — the code is born from an online-mode UUID the
 		// web never holds (account_link_codes has no user_id column).
