@@ -115,6 +115,10 @@
 #                     system journal persistent so logs survive a reboot (default: 1)
 #   FELIS_JOURNAL_MAX_USE the persistent journal's size cap, journald's SystemMaxUse
 #                     written <n>K|M|G (default: 1G)
+#   FELIS_PREFLIGHT   strict|warn — before touching the host the installer checks RAM,
+#                     disk, ports, other Kubernetes, the pod network ranges and the hosts it
+#                     downloads from, and stops on any problem with the full list (default:
+#                     strict). warn reports them and installs anyway.
 #   PKG_LOCK_TIMEOUT seconds to wait for package-manager locks (default: 900)
 #   APT_LOCK_TIMEOUT legacy alias for PKG_LOCK_TIMEOUT
 set -Eeuo pipefail
@@ -217,6 +221,9 @@ FELIS_OFFSITE_REGION="${FELIS_OFFSITE_REGION:-}"
 FELIS_OFFSITE_PREFIX="${FELIS_OFFSITE_PREFIX:-}"
 FELIS_OFFSITE_DB_KEEP="${FELIS_OFFSITE_DB_KEEP:-}"
 INSTALL_MODE="${FELIS_INSTALL_MODE:-}"
+# strict stops the install on any preflight problem (preflight below); warn reports them
+# and goes on, for a host the checks misjudge.
+FELIS_PREFLIGHT="${FELIS_PREFLIGHT:-strict}"
 # Loopback by default: hasJoined is an unauthenticated endpoint by protocol (Velocity
 # sends no token), so a public bind is a free auth relay — anyone can point their own
 # proxy at it and spend YOUR egress IP on Mojang, until Mojang rate-limits you and your
@@ -787,6 +794,10 @@ validate_settings() {
   validate_listen FELIS_NANO_LISTEN "$FELIS_NANO_LISTEN"
   validate_cidr FELIS_NANO_PROXY_CIDR "$FELIS_NANO_PROXY_CIDR"
   validate_offsite_settings
+  case "$FELIS_PREFLIGHT" in
+    strict|warn) ;;
+    *) die "FELIS_PREFLIGHT must be strict or warn (got '${FELIS_PREFLIGHT}')" ;;
+  esac
   case "$FELIS_GAME_STACK" in
     pinned|latest) ;;
     *) die "FELIS_GAME_STACK must be pinned or latest (got '${FELIS_GAME_STACK}')" ;;
@@ -950,6 +961,293 @@ warn_dynamic_node_ip() {
     warn "${NODE_IP} is a DHCP lease, and the install is bound to this address. Give the host a"
     warn "DHCP reservation or a static address before it changes (docs/operations.md §1)."
   fi
+}
+
+# ---------------------------------------------------------------------------
+# Preflight: what would stop the install halfway, checked before the host is touched.
+# Every problem is collected and reported together, so a host that needs three fixes
+# costs one rerun rather than three; warnings print as they are found and never stop
+# the run. FELIS_PREFLIGHT=warn turns the problems into warnings too.
+# ---------------------------------------------------------------------------
+PREFLIGHT_PROBLEMS=()
+preflight_fail() { PREFLIGHT_PROBLEMS+=("$*"); }
+
+# The smallest host the full stack runs on: k3s, PostgreSQL, the control plane, the
+# registry, the proxy (1G heap by default) and the login and lobby servers. A "2 GB"
+# VPS reports ~1.9 GiB once the kernel has taken its share; ensure_swap adds swap below
+# 2 GiB. Below the recommendation it runs, with little room for players' own servers.
+PREFLIGHT_MIN_RAM_KB=1835008      # 1.75 GiB
+PREFLIGHT_RECOMMENDED_RAM_KB=3670016  # 3.5 GiB
+
+# ipv4_to_int prints a dotted quad as a 32-bit integer; anything else fails.
+ipv4_to_int() {
+  local a b c d n
+  IFS=. read -r a b c d <<<"$1"
+  for n in "$a" "$b" "$c" "$d"; do
+    case "$n" in ""|*[!0-9]*) return 1 ;; esac
+    [ "$n" -le 255 ] || return 1
+  done
+  printf '%s\n' "$(( (a << 24) | (b << 16) | (c << 8) | d ))"
+}
+
+# cidr_overlap reports whether two IPv4 prefixes (a bare address is a /32) share an
+# address.
+cidr_overlap() { # a/n b/m
+  local an=32 bn=32 ai bi n mask
+  case "$1" in */*) an="${1#*/}" ;; esac
+  case "$2" in */*) bn="${2#*/}" ;; esac
+  ai="$(ipv4_to_int "${1%/*}")" || return 1
+  bi="$(ipv4_to_int "${2%/*}")" || return 1
+  n=$(( an < bn ? an : bn ))
+  mask=$(( n == 0 ? 0 : (0xFFFFFFFF << (32 - n)) & 0xFFFFFFFF ))
+  [ $(( ai & mask )) -eq $(( bi & mask )) ]
+}
+
+# cgroup_controllers prints the enabled cgroup controllers (v2, else v1).
+cgroup_controllers() {
+  if [ -r /sys/fs/cgroup/cgroup.controllers ]; then
+    cat /sys/fs/cgroup/cgroup.controllers
+  elif [ -r /proc/cgroups ]; then
+    awk '$4 == 1 { print $1 }' /proc/cgroups | tr '\n' ' '
+  fi
+}
+
+systemd_is_init() { [ -d /run/systemd/system ]; }
+
+mem_total_kb() { awk '/^MemTotal:/ { print $2 }' /proc/meminfo; }
+
+preflight_platform() {
+  case "$(uname -m)" in
+    x86_64|amd64|aarch64|arm64) ;;
+    *) preflight_fail "this host is $(uname -m); Felis publishes its images for amd64 and arm64 only" ;;
+  esac
+  systemd_is_init \
+    || preflight_fail "systemd is not running as init; the installer manages k3s, the proxy and its timers as systemd units"
+  # k3s refuses to start without the memory controller. Raspberry Pi OS ships it off.
+  local controllers
+  controllers="$(cgroup_controllers)"
+  case " $controllers " in
+    *" memory "*) ;;
+    *) preflight_fail "the memory cgroup controller is off, and k3s will not start without it (on a Raspberry Pi add 'cgroup_memory=1 cgroup_enable=memory' to /boot/firmware/cmdline.txt and reboot)" ;;
+  esac
+}
+
+preflight_memory() {
+  local mem_kb
+  mem_kb="$(mem_total_kb)"
+  [ -n "$mem_kb" ] || return 0
+  if [ "$mem_kb" -lt "$PREFLIGHT_MIN_RAM_KB" ]; then
+    preflight_fail "this host has $((mem_kb / 1024)) MiB of RAM; the full stack needs at least $((PREFLIGHT_MIN_RAM_KB / 1024)) MiB (a 2 GB host), 4 GB to run players' servers beside it. Felis-nano (FELIS_INSTALL_MODE=nano) fits in far less"
+  elif [ "$mem_kb" -lt "$PREFLIGHT_RECOMMENDED_RAM_KB" ]; then
+    warn "preflight: $((mem_kb / 1024)) MiB of RAM runs the platform with little room for players' servers; 4 GB is the comfortable size"
+  fi
+}
+
+# existing_ancestor prints the nearest directory of $1 that exists, for df.
+existing_ancestor() {
+  local p="$1"
+  while [ ! -e "$p" ]; do p="$(dirname "$p")"; done
+  printf '%s\n' "$p"
+}
+
+# path_populated reports whether directory $1 exists with something in it.
+path_populated() { [ -n "$(ls -A "$1" 2>/dev/null)" ]; }
+
+# preflight_disk checks each filesystem the install writes to against what it will
+# write there, in MiB: k3s's images and volumes, the database and its bundles under
+# /var/lib/felis, the sources, toolchains and proxy under /opt/felis, and Docker's image
+# builds (operations.md §2 has the measured sizes). A directory that already holds
+# something (a rerun, a reused k3s, Docker's cache from an earlier install) needs only
+# the room for what changes.
+preflight_disk() {
+  local spec path need_empty need_populated need line rows="" mount size used avail
+  for spec in "/var/lib/rancher 10240 3072" "/var/lib/felis 2048 1024" "/opt/felis 3072 1024" \
+    "/var/lib/containerd 8192 2048"; do
+    read -r path need_empty need_populated <<<"$spec"
+    need="$need_empty"
+    path_populated "$path" && need="$need_populated"
+    line="$(df -Pk "$(existing_ancestor "$path")" 2>/dev/null | awk 'NR == 2 { print $6, $2, $3, $4 }')" || continue
+    [ -n "$line" ] && rows="${rows}${line} $((need * 1024))"$'\n'
+  done
+  # One line per filesystem, with what lands on it summed.
+  rows="$(printf '%s' "$rows" | awk 'NF == 5 {
+      if (!($1 in need)) order[++n] = $1
+      size[$1] = $2; used[$1] = $3; avail[$1] = $4; need[$1] += $5
+    }
+    END { for (i = 1; i <= n; i++) { m = order[i]; print m, size[m], used[m], avail[m], need[m] } }')"
+  while read -r mount size used avail need; do
+    [ -n "$mount" ] || continue
+    if [ "$avail" -lt "$need" ]; then
+      preflight_fail "${mount} has $((avail / 1024)) MiB free; this install writes about $((need / 1024)) MiB there (k3s under /var/lib/rancher, the image builds under /var/lib/containerd, the database under /var/lib/felis, sources under /opt/felis)"
+      continue
+    fi
+    # k3s's image GC starts collecting at 85% and the kubelet evicts pods below 5% free.
+    if [ "$size" -gt 0 ] && [ $(( (used + need) * 100 / size )) -ge 85 ]; then
+      warn "preflight: ${mount} will be over 85% full after the install; k3s starts deleting cached images there and evicts pods near 95%"
+    fi
+  done <<<"$rows"
+}
+
+# pid_unit prints the systemd service a process runs in, or nothing.
+pid_unit() {
+  sed -n 's#^.*/\([^/]*\.service\)\(/.*\)\{0,1\}$#\1#p' "/proc/$1/cgroup" 2>/dev/null | tail -n 1
+}
+
+# port_listeners prints "comm pid unit" for each process listening on TCP port $1.
+port_listeners() {
+  local out pair comm pid
+  out="$(ss -Hltnp "sport = :$1" 2>/dev/null)" || return 0
+  [ -n "$out" ] || return 0
+  pair="$(grep -oE '\("[^"]+",pid=[0-9]+' <<<"$out" | sort -u)" || true
+  if [ -z "$pair" ]; then
+    printf '%s\n' "? ? ?"
+    return 0
+  fi
+  while IFS= read -r pair; do
+    comm="${pair#(\"}"; comm="${comm%%\"*}"
+    pid="${pair##*pid=}"
+    printf '%s %s %s\n' "$comm" "$pid" "$(pid_unit "$pid")"
+  done <<<"$pair"
+}
+
+# preflight_ports refuses a port another program already holds. Listeners of the units
+# this installer runs are what a rerun finds, and pass.
+preflight_ports() {
+  command -v ss >/dev/null 2>&1 || { warn "preflight: ss not found; ports are not checked"; return 0; }
+  local spec port unit label comm pid owner
+  for spec in \
+    "${FELIS_GAME_PORT} felis-velocity.service the Minecraft proxy (FELIS_GAME_PORT)" \
+    "6443 k3s.service the Kubernetes API" "6444 k3s.service k3s's supervisor" \
+    "10248 k3s.service the kubelet" "10249 k3s.service kube-proxy" "10250 k3s.service the kubelet" \
+    "10256 k3s.service kube-proxy" "10257 k3s.service the controller manager" "10259 k3s.service the scheduler" \
+    "${FELIS_PANEL_NODEPORT} k3s.service the panel (FELIS_PANEL_NODEPORT)" \
+    "${REGISTRY_URL##*:} k3s.service the image registry's loopback port"; do
+    read -r port unit label <<<"$spec"
+    while read -r comm pid owner; do
+      [ -n "$comm" ] || continue
+      [ "$owner" = "$unit" ] && continue
+      if [ "$comm" = "?" ]; then
+        preflight_fail "port ${port} (${label}) is already taken by a process ss cannot name"
+      else
+        preflight_fail "port ${port} (${label}) is already taken by ${comm} (pid ${pid}${owner:+, ${owner}}); stop it or move it"
+      fi
+    done < <(port_listeners "$port")
+  done
+}
+
+# preflight_cluster refuses a host that already runs another Kubernetes, or is a k3s
+# agent: k3s would fight it for 6443, 10250 and the iptables chains. A k3s server is
+# reused as it is.
+preflight_cluster() {
+  local unit units
+  units="$(systemctl list-units --all --plain --no-legend --type=service 2>/dev/null | awk '{ print $1 }')" || units=""
+  for unit in rke2-server.service rke2-agent.service k0scontroller.service k0sworker.service \
+    snap.microk8s.daemon-kubelite.service kubelet.service k3s-agent.service; do
+    grep -qx "$unit" <<<"$units" || continue
+    systemctl is-active --quiet "$unit" 2>/dev/null || continue
+    case "$unit" in
+      k3s-agent.service) preflight_fail "this host is a k3s agent (k3s-agent.service); Felis installs a single-node k3s server" ;;
+      *) preflight_fail "another Kubernetes runs here (${unit}); Felis installs its own k3s, which would fight it for ports 6443 and 10250" ;;
+    esac
+  done
+  if [ -x "$K3S_BIN" ] && [ ! -f "$BOOTSTRAP_DONE" ]; then
+    log "preflight: k3s is already installed at ${K3S_BIN}; Felis adds its namespaces to that cluster"
+  fi
+}
+
+# preflight_networks refuses addresses k3s's pod and service ranges would shadow: the
+# node's own address, or a network (a Docker bridge, a LAN, a VPN) routed inside them.
+# A wider route that merely contains them, a 10.0.0.0/8 VPN say, keeps working for
+# everything outside the two ranges, so it is a warning.
+preflight_networks() {
+  local cidr routes line dst rest dev len
+  for cidr in "$POD_CIDR" "$SERVICE_CIDR"; do
+    if cidr_overlap "$NODE_IP" "$cidr"; then
+      preflight_fail "this host's address ${NODE_IP} is inside k3s's range ${cidr}; the cluster cannot route to its own node"
+    fi
+  done
+  routes="$(ip -4 route show 2>/dev/null)" || return 0
+  while read -r dst rest; do
+    case "$dst" in
+      ""|default) continue ;;
+      blackhole|unreachable|prohibit|throw|local|broadcast) read -r dst rest <<<"$rest" ;;
+    esac
+    line="$dst $rest"
+    dev="$(awk '{ for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit } }' <<<"$line")"
+    case "$dev" in cni0|flannel.1|flannel-wg|kube-ipvs0) continue ;; esac
+    len=32
+    case "$dst" in */*) len="${dst#*/}" ;; esac
+    for cidr in "$POD_CIDR" "$SERVICE_CIDR"; do
+      cidr_overlap "$dst" "$cidr" || continue
+      if [ "$len" -lt "${cidr#*/}" ]; then
+        warn "preflight: the route ${dst}${dev:+ via ${dev}} covers k3s's ${cidr}; hosts in ${cidr} on that network will be unreachable from here"
+      else
+        preflight_fail "the network ${dst}${dev:+ on ${dev}} lies inside k3s's ${cidr}; pods and that network would be confused (move the Docker network or LAN, or reinstall k3s with other ranges)"
+      fi
+    done
+  done <<<"$routes"
+}
+
+# preflight_hosts prints the hosts this run downloads from, one per line. Package
+# mirrors are left out: the package manager names its own.
+preflight_hosts() {
+  printf '%s\n' github.com
+  if ! bootstrap_from_tui && [ -z "${FELIS_SKIP_FETCH:-}" ] && [ -z "$FELIS_REF_PINNED" ]; then
+    printf '%s\n' api.github.com
+  fi
+  [ -x "$K3S_BIN" ] || printf '%s\n' raw.githubusercontent.com
+  [ -n "$FELIS_VELOCITY_FORK_JAR" ] || printf '%s\n' fill-data.papermc.io
+  printf '%s\n' registry-1.docker.io
+}
+
+# host_reachable reports whether an HTTPS connection to $1 can be made: any answer
+# counts, a 404 included. Without curl (a minimal image, before install_base) a bare
+# TCP connect stands in, unless a proxy is configured, which only curl would use.
+host_reachable() {
+  if command -v curl >/dev/null 2>&1; then
+    local code
+    code="$(curl -s -o /dev/null --connect-timeout 5 --max-time 15 -w '%{http_code}' "https://$1/" 2>/dev/null)" || true
+    [ -n "$code" ] && [ "$code" != 000 ]
+    return
+  fi
+  [ -z "${https_proxy:-}${HTTPS_PROXY:-}" ] || return 0
+  timeout 5 bash -c 'exec 3<>"/dev/tcp/$0/443"' "$1" 2>/dev/null
+}
+
+preflight_outbound() {
+  local host unreachable=()
+  while IFS= read -r host; do
+    [ -n "$host" ] || continue
+    host_reachable "$host" || unreachable+=("$host")
+  done < <(preflight_hosts)
+  [ "${#unreachable[@]}" -eq 0 ] && return 0
+  preflight_fail "cannot reach ${unreachable[*]} over HTTPS; the install downloads from there (check DNS, the firewall, or set https_proxy)"
+}
+
+preflight() {
+  log "preflight: checking this host before anything is changed"
+  PREFLIGHT_PROBLEMS=()
+  preflight_platform
+  preflight_memory
+  preflight_disk
+  preflight_ports
+  preflight_cluster
+  preflight_networks
+  preflight_outbound
+  warn_dynamic_node_ip
+  local n="${#PREFLIGHT_PROBLEMS[@]}" p
+  if [ "$n" -eq 0 ]; then
+    ok "preflight passed"
+    return 0
+  fi
+  if [ "$FELIS_PREFLIGHT" = warn ]; then
+    for p in "${PREFLIGHT_PROBLEMS[@]}"; do warn "preflight: $p"; done
+    warn "preflight: FELIS_PREFLIGHT=warn, going on despite ${n} problem(s)"
+    return 0
+  fi
+  printf '\033[1;31m[fail]\033[0m preflight found %s problem(s); nothing on this host has been changed:\n' "$n" >&2
+  for p in "${PREFLIGHT_PROBLEMS[@]}"; do printf '  - %s\n' "$p" >&2; done
+  die "fix them and rerun the installer (FELIS_PREFLIGHT=warn installs anyway)"
 }
 
 pkg_install() {
@@ -4518,10 +4816,12 @@ main() {
     main_nano
     return
   fi
+  detect_node_ip
+  # Before the first change to the host: a problem found here costs a rerun, one found
+  # halfway through costs an install to unwind.
+  preflight
   quiet_watchdog
   pause_package_background_timers
-  detect_node_ip
-  warn_dynamic_node_ip
   ensure_swap
   install_base
   ensure_time_sync

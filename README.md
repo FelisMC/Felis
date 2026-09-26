@@ -35,6 +35,8 @@ curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap
 
 脚本将自动安装 K3s、部署控制平面并启动设置向导。完成后浏览器访问已配置的域名进入控制面板即可使用。
 
+动手之前，脚本先检查内存、磁盘、端口、网段冲突、已有的 Kubernetes 和外网连通，把所有问题一次列出并停下，主机上什么都没改（检查项见 [运维手册 §1](docs/operations.md#1-supported-hosts)）。
+
 > **本仓库当前为私有**，上面这条会返回 404。请改用带凭据的形式；安装器自身也需要同一个 token
 > 去解析并下载 release，所以用 `sudo -E` 把它带进去：
 >

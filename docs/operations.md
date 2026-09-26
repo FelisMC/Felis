@@ -39,6 +39,27 @@ cloudflared is left as it is, see §4):
 32-bit hosts are not supported: there is no k3s, JRE or Go build the installer will fetch
 for them.
 
+Before it changes anything the installer checks the host and reports every problem at
+once, then stops with nothing touched **[SH-TESTED]**:
+
+- the architecture, systemd as init, and the memory cgroup controller k3s needs;
+- RAM: under 1.75 GiB is refused (a "2 GB" VPS passes), under 3.5 GiB is a warning;
+- free disk on each filesystem it writes to, summed when they share one: about 23 GiB
+  on a bare host, 7 GiB for a rerun, a directory that already holds data (Docker's cache,
+  a reused k3s) counting at the rerun size; a filesystem that would end over 85%, where
+  k3s starts deleting cached images, is a warning;
+- the ports it will listen on: the game port, the panel NodePort, k3s's 6443/6444 and
+  10248–10259 and the registry's loopback 5000. A port held by the installer's own
+  proxy or k3s is a rerun and passes;
+- another Kubernetes (kubelet, RKE2, k0s, MicroK8s) or a k3s agent on the host;
+- the node address or a routed network inside k3s's `10.42.0.0/16` and `10.43.0.0/16`
+  (a Docker network there is the usual case); a wider route such as a `10.0.0.0/8` VPN
+  is a warning;
+- HTTPS to the hosts it downloads from (GitHub, PaperMC's download API, Docker Hub).
+
+`FELIS_PREFLIGHT=warn` reports the same problems as warnings and installs anyway, for a
+host the checks misjudge.
+
 Two things the host must keep for as long as the install lives:
 
 - **Its address.** The install is bound to the IPv4 address it was made on (the

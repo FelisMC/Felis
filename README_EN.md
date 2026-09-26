@@ -38,6 +38,8 @@ curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap
 
 The script installs K3s, deploys the control plane, and launches a setup wizard. Once done, open your browser at the configured domain.
 
+Before it changes anything, the script checks RAM, disk, ports, network-range clashes, any Kubernetes already there and outbound access, lists every problem at once and stops with the host untouched (the checks are in [operations §1](docs/operations.md#1-supported-hosts)).
+
 > **This repository is currently private**, so the command above returns 404. Use the
 > credentialed form instead; the installer itself needs the same token to resolve and
 > download the release, so pass it through with `sudo -E`:

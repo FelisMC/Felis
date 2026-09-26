@@ -2738,9 +2738,163 @@ for v in 1g G 01G 1.5G 1GB 2T 1024 ""; do
   expect "journal cap '$v' is refused" "DIE: FELIS_JOURNAL_MAX_USE must be written" "$(check_max_use "$v")"
 done
 
-order="$(awk '/^main\(\) \{/,/^}/' "$BS" | grep -nE '^[[:space:]]*(detect_node_ip|warn_dynamic_node_ip|install_base|ensure_time_sync|ensure_persistent_journal|install_k3s)$' | sed 's/^[0-9]*:[[:space:]]*//' | tr '\n' ' ')"
+order="$(awk '/^main\(\) \{/,/^}/' "$BS" | grep -nE '^[[:space:]]*(detect_node_ip|install_base|ensure_time_sync|ensure_persistent_journal|install_k3s)$' | sed 's/^[0-9]*:[[:space:]]*//' | tr '\n' ' ')"
 expect "main checks the address, then turns on NTP and the journal once packages install, before k3s" \
-  "detect_node_ip warn_dynamic_node_ip install_base ensure_time_sync ensure_persistent_journal install_k3s " "$order"
+  "detect_node_ip install_base ensure_time_sync ensure_persistent_journal install_k3s " "$order"
+expect "preflight is what warns about a leased address" "warn_dynamic_node_ip" "$(awk '/^preflight\(\) \{/,/^}/' "$BS")"
+
+# --- preflight ---------------------------------------------------------------------------
+# The whole preflight section runs against a stubbed host: every fact it reads (RAM,
+# df, ss, systemctl, routes, curl) is answered from variables, so each case below is one
+# changed fact and the verdict it must change.
+pfblock="$(awk '/^PREFLIGHT_PROBLEMS=\(\)$/,/^preflight\(\) \{/' "$BS"; awk '/^preflight\(\) \{/,/^}/' "$BS" | tail -n +2)"
+case "$pfblock" in *"preflight_outbound"*"FELIS_PREFLIGHT=warn installs anyway"*) ;; *) echo "FAIL: preflight section not found in $BS"; exit 1 ;; esac
+wdblock="$(awk '/^warn_dynamic_node_ip\(\) \{/,/^}/' "$BS")"
+pfroot="$(mktemp -d)"
+# run_pf runs preflight with the stubbed facts in the environment; each defaults to a
+# healthy host: 8 GiB RAM, one 100 GiB filesystem with 60 GiB free, no listeners, no
+# other cluster, a LAN route, every download host answering.
+run_pf() {
+  PF_ROOT="$pfroot" bash -c '
+    set -Eeuo pipefail
+    log() { echo "LOG: $*"; }
+    ok() { echo "OK: $*"; }
+    warn() { echo "WARN: $*"; }
+    die() { echo "DIE: $*"; exit 1; }
+    uname() { echo "${PF_ARCH:-x86_64}"; }
+    df() { # -Pk path: the longest mount in PF_DF that prefixes path
+      local row
+      row="$(printf "%s\n" "${PF_DF:-/ 104857600 41943040 62914560}" | awk -v p="$2" "
+        { if (index(p, \$1) == 1 && length(\$1) > best) { best = length(\$1); r = \$0 } } END { print r }")"
+      echo "Filesystem 1024-blocks Used Available Capacity Mounted"
+      set -- $row
+      echo "/dev/x $2 $3 $4 50% $1"
+    }
+    ss() { # -Hltnp "sport = :PORT"
+      local port="${2##*:}"
+      printf "%s\n" "${PF_SS:-}" | grep -F ":${port} " || true
+    }
+    systemctl() {
+      case "$1" in
+        list-units) printf "%s\n" ${PF_ACTIVE:-} ${PF_STOPPED:-} ;;
+        is-active) case " ${PF_ACTIVE:-} " in *" ${3:-} "*) return 0 ;; esac; return 1 ;;
+      esac
+    }
+    ip() {
+      case "$*" in
+        "-4 route show") printf "%s\n" "${PF_ROUTES:-default via 192.168.1.1 dev eth0
+192.168.1.0/24 dev eth0 proto kernel scope link src 192.168.1.20}" ;;
+        *) printf "%s\n" "${PF_ADDRS:-}" ;;
+      esac
+    }
+    curl() {
+      local host="${!#}"
+      host="${host#https://}"; host="${host%/}"
+      case " ${PF_DOWN:-} " in *" ${host} "*) echo 000 ;; *) echo 404 ;; esac
+    }
+    bootstrap_from_tui() { return 1; }
+    FELIS_GAME_PORT=25565 FELIS_PANEL_NODEPORT=30443 REGISTRY_URL=registry.felis.svc:5000
+    POD_CIDR=10.42.0.0/16 SERVICE_CIDR=10.43.0.0/16 NODE_IP="${PF_NODE_IP:-192.168.1.20}"
+    K3S_BIN="$PF_ROOT/k3s" BOOTSTRAP_DONE="$PF_ROOT/bootstrap.done"
+    FELIS_REF_PINNED="" FELIS_VELOCITY_FORK_JAR="" FELIS_PREFLIGHT="${PF_MODE:-strict}"
+    '"$wdblock"'
+    '"$pfblock"'
+    # The host readers the section defines, answered from the same facts.
+    systemd_is_init() { [ "${PF_SYSTEMD:-1}" = 1 ]; }
+    cgroup_controllers() { echo "${PF_CGROUPS:-cpuset cpu io memory pids}"; }
+    mem_total_kb() { echo "${PF_MEM_KB:-8000000}"; }
+    pid_unit() { printf "%s\n" "${PF_UNITS:-}" | awk -v p="$1" "\$1 == p { print \$2 }"; }
+    existing_ancestor() { printf "%s\n" "$1"; }
+    path_populated() { case " ${PF_POPULATED:-} " in *" $1 "*) return 0 ;; esac; return 1; }
+    preflight; echo "WENT ON"' 2>&1
+}
+out="$(run_pf)"
+expect "a healthy host passes preflight" "OK: preflight passed" "$out"
+expect "and the install goes on" "WENT ON" "$out"
+
+out="$(PF_MEM_KB=1000000 run_pf)"
+expect "a 1 GB host is refused" "976 MiB of RAM; the full stack needs at least 1792 MiB" "$out"
+expect "and nano is named as what fits it" "FELIS_INSTALL_MODE=nano" "$out"
+out="$(PF_MEM_KB=1950000 run_pf)"
+expect "a 2 GB host installs" "WENT ON" "$out"
+expect "with a warning about room for servers" "WARN: preflight: 1904 MiB of RAM runs the platform" "$out"
+
+# 20 GiB free on the root filesystem: every path lands there and a first install writes
+# 10 + 2 + 3 + 8 GiB, so only the sum refuses it.
+out="$(PF_DF="/ 104857600 83886080 20971520" run_pf)"
+expect "a first install that fits each budget but not their sum is refused" "/ has 20480 MiB free; this install writes about 23552 MiB there" "$out"
+out="$(PF_DF="/ 104857600 83886080 20971520
+/var/lib/rancher 52428800 1048576 51380224" run_pf)"
+expect "the same host with k3s on its own disk passes" "OK: preflight passed" "$out"
+out="$(PF_POPULATED="/var/lib/rancher /var/lib/felis /opt/felis /var/lib/containerd" PF_DF="/ 104857600 96468992 8388608" run_pf)"
+expect "a rerun needs only room for new images" "WENT ON" "$out"
+expect "and warns when that crosses k3s's image-GC line" "WARN: preflight: / will be over 85% full" "$out"
+# The VM after a failed purge: Docker's cache stayed, k3s and /opt/felis went.
+out="$(PF_POPULATED="/var/lib/felis /var/lib/containerd" PF_DF="/ 39755776 21827584 17928192" run_pf)"
+expect "Docker's cache left by an earlier install is counted as there" "WENT ON" "$out"
+out="$(PF_DF="/ 39755776 21827584 17928192" run_pf)"
+expect "the same free space is too little for a bare host" "/ has 17508 MiB free; this install writes about 23552 MiB there" "$out"
+
+ss_line() { printf 'LISTEN 0 4096 0.0.0.0:%s 0.0.0.0:* users:(("%s",pid=%s,fd=7))' "$1" "$2" "$3"; }
+out="$(PF_SS="$(ss_line 25565 java 900)
+$(ss_line 6443 k3s-server 812)" PF_UNITS="900 felis-velocity.service
+812 k3s.service" run_pf)"
+expect "the installer's own proxy and k3s pass on a rerun" "OK: preflight passed" "$out"
+out="$(PF_SS="$(ss_line 25565 java 901)" PF_UNITS="901 minecraft.service" run_pf)"
+expect "someone else's server on the game port is refused" "port 25565 (the Minecraft proxy (FELIS_GAME_PORT)) is already taken by java (pid 901, minecraft.service)" "$out"
+out="$(PF_SS="$(ss_line 5000 python3 77)" run_pf)"
+expect "a program on the registry's loopback port is refused" "port 5000 (the image registry's loopback port) is already taken by python3 (pid 77)" "$out"
+
+out="$(PF_ACTIVE="kubelet.service" run_pf)"
+expect "a kubeadm node is refused" "another Kubernetes runs here (kubelet.service)" "$out"
+out="$(PF_STOPPED="kubelet.service" run_pf)"
+expect "a kubelet left installed but stopped is no obstacle" "OK: preflight passed" "$out"
+out="$(PF_ACTIVE="k3s-agent.service" run_pf)"
+expect "a k3s agent is refused" "this host is a k3s agent" "$out"
+: > "$pfroot/k3s"; chmod +x "$pfroot/k3s"
+out="$(run_pf)"
+expect "an existing k3s server is reused" "LOG: preflight: k3s is already installed" "$out"
+rm -f "$pfroot/k3s"
+
+out="$(PF_NODE_IP=10.42.7.9 run_pf)"
+expect "a node address inside the pod range is refused" "10.42.7.9 is inside k3s's range 10.42.0.0/16" "$out"
+out="$(PF_ROUTES="default via 192.168.1.1 dev eth0
+10.42.0.0/24 dev cni0 proto kernel scope link src 10.42.0.1
+10.43.0.0/16 dev docker0 proto kernel scope link src 10.43.0.1 linkdown" run_pf)"
+expect "a Docker network inside the service range is refused" "the network 10.43.0.0/16 on docker0 lies inside k3s's 10.43.0.0/16" "$out"
+case "$out" in *"10.42.0.0/24"*) echo "FAIL k3s's own cni0 route must not count against it"; fails=$((fails + 1)) ;; *) echo "PASS k3s's own cni0 route is its own" ;; esac
+out="$(PF_ROUTES="default via 192.168.1.1 dev eth0
+10.0.0.0/8 via 172.20.0.1 dev tun0" run_pf)"
+expect "a VPN route around both ranges only warns" "WARN: preflight: the route 10.0.0.0/8 via tun0 covers k3s's 10.42.0.0/16" "$out"
+expect "and the install goes on" "WENT ON" "$out"
+
+out="$(PF_DOWN="github.com fill-data.papermc.io" run_pf)"
+expect "unreachable download hosts are named together" "cannot reach github.com fill-data.papermc.io over HTTPS" "$out"
+
+# Three problems, one report, nothing done.
+out="$(PF_MEM_KB=1000000 PF_ARCH=armv7l PF_DOWN=github.com run_pf)"
+expect "every problem is in the one report" "preflight found 3 problem(s); nothing on this host has been changed" "$out"
+expect "the architecture is one of them" "this host is armv7l" "$out"
+case "$out" in *"WENT ON"*) echo "FAIL a failed preflight must stop the install"; fails=$((fails + 1)) ;; *) echo "PASS a failed preflight stops the install" ;; esac
+out="$(PF_MEM_KB=1000000 PF_MODE=warn run_pf)"
+expect "FELIS_PREFLIGHT=warn reports the problem" "WARN: preflight: this host has 976 MiB" "$out"
+expect "and goes on" "WENT ON" "$out"
+out="$(PF_CGROUPS="cpuset cpu io pids" run_pf)"
+expect "a host without the memory controller is refused" "the memory cgroup controller is off" "$out"
+rm -rf "$pfroot"
+
+ciblock="$(awk '/^ipv4_to_int\(\) \{/,/^}/' "$BS"; awk '/^cidr_overlap\(\) \{/,/^}/' "$BS")"
+overlap() { bash -c "$ciblock"'
+  if cidr_overlap "$0" "$1"; then echo yes; else echo no; fi' "$1" "$2"; }
+expect "a /24 inside the pod range overlaps" yes "$(overlap 10.42.5.0/24 10.42.0.0/16)"
+expect "the next /16 does not" no "$(overlap 10.44.0.0/16 10.42.0.0/16)"
+expect "a /8 around the service range overlaps" yes "$(overlap 10.0.0.0/8 10.43.0.0/16)"
+expect "a bare address is a /32" no "$(overlap 10.41.255.255 10.42.0.0/16)"
+expect "and is inside its own range" yes "$(overlap 10.42.0.1 10.42.0.0/16)"
+
+pforder="$(awk '/^main\(\) \{/,/^}/' "$BS" | grep -nE '^[[:space:]]*(detect_node_ip|preflight|quiet_watchdog|pause_package_background_timers|ensure_swap|install_base)$' | sed 's/^[0-9]*:[[:space:]]*//' | tr '\n' ' ')"
+expect "preflight runs once the node address is known and before the first change" \
+  "detect_node_ip preflight quiet_watchdog pause_package_background_timers ensure_swap install_base " "$pforder"
 
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then
