@@ -12,6 +12,8 @@
   "not_wired_yet": "功能尚未接入",
   "pending_backend_prefix": "待接入接口：",
   "checking_access": "正在验证权限…",
+  "access_unknown_title": "暂时无法确认你的权限",
+  "access_unknown_body": "账户信息没有读到，读到之前这一页先不显示。",
   "loading_config": "正在加载配置…",
   "brand_name": "Felis",
   "brand_tagline": "Kubernetes 原生的 Minecraft 管理平台",

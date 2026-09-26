@@ -25,6 +25,8 @@ import { deriveAuth, isUnauthorized, type AuthState } from "./auth";
 //     principal whose /me momentarily fails still gets the full User-Side app; they
 //     simply don't see admin surfaces. (The backend 403s admin data calls
 //     independently, so this is safe.) Only a genuine 401 sets `unauthenticated`.
+//     The failure itself is `identityError`: the admin and owner gates show it
+//     with a retry, since "not authorized" would be a guess.
 //
 //  3. Login-aware: `unauthenticated` (a true 401) routes to /login; `refresh()`
 //     re-reads /me after a login / logout so the gate re-evaluates without a reload.
@@ -61,6 +63,7 @@ const TierContext = createContext<TierState>({
   isAdmin: false,
   isOwner: false,
   unauthenticated: false,
+  identityError: null,
   refresh: async () => {},
   revalidate: async () => {},
   sessionEnded: false,

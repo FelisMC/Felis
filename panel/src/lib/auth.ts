@@ -20,6 +20,11 @@ export interface AuthState {
   /** True ONLY when /me returned 401 — no/expired session, route to /login. A
    *  transient or 5xx failure leaves this false so the app keeps rendering. */
   unauthenticated: boolean;
+  /** The settled /me failure that left the identity unknown (anything but a
+   *  401), else null. The app keeps running, but an admin cannot be told from a
+   *  user until a retry succeeds, so a gate says so and offers the retry instead
+   *  of "not authorized". */
+  identityError: unknown;
 }
 
 /** isUnauthorized reports whether a caught error is the request() 401 envelope —
@@ -48,6 +53,7 @@ export function deriveAuth(
     loading,
     isAdmin: identity?.is_admin === true,
     unauthenticated: !loading && identity === null && isUnauthorized(error),
+    identityError: !loading && identity === null && error != null && !isUnauthorized(error) ? error : null,
   };
 }
 

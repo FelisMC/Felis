@@ -1,9 +1,12 @@
-import { Loader2, AlertTriangle, Inbox, ShieldX, Construction, Moon, SearchX } from "lucide-react";
+import { useState } from "react";
+import { Loader2, AlertTriangle, Inbox, ShieldX, ShieldQuestion, Construction, Moon, SearchX, RefreshCw } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { MAX_AUTO_RESTARTS, shownPhase, type StartFailure } from "@/components/PhaseBadge";
 import { PowerButton } from "@/components/PowerButton";
+import { Button } from "@/components/ui/button";
 import { humanizeError } from "@/lib/api";
+import { useTier } from "@/lib/tier";
 import type { Phase, RetireState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -90,6 +93,41 @@ export function NotAuthorized() {
       <Link to="/" className="text-sm font-medium text-primary hover:underline">
         {t("back_to_dashboard")}
       </Link>
+    </div>
+  );
+}
+
+// AccessUnknown stands in for an admin or owner page while /me has failed with
+// anything but a 401: whether this account may see the page is unknown, so it
+// says the check failed and why, and retries in place (the app stays mounted).
+export function AccessUnknown({ error }: { error: unknown }) {
+  const { t } = useTranslation("common");
+  const { revalidate } = useTier();
+  const [retrying, setRetrying] = useState(false);
+
+  async function retry() {
+    setRetrying(true);
+    try {
+      await revalidate();
+    } finally {
+      setRetrying(false);
+    }
+  }
+
+  return (
+    <div className="mx-auto flex max-w-md flex-col items-center justify-center gap-3 py-24 text-center">
+      <ShieldQuestion className="h-8 w-8 text-amber-500" />
+      <div>
+        <p className="font-medium">{t("access_unknown_title")}</p>
+        <p className="mt-1 text-sm text-muted-foreground">{t("access_unknown_body")}</p>
+        <p role="alert" className="mt-2 text-xs text-muted-foreground/80">
+          {humanizeError(error)}
+        </p>
+      </div>
+      <Button size="sm" variant="outline" onClick={() => void retry()} disabled={retrying}>
+        {retrying ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+        {t("try_again")}
+      </Button>
     </div>
   );
 }

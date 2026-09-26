@@ -12,6 +12,8 @@
   "not_wired_yet": "Not wired yet",
   "pending_backend_prefix": "pending backend: ",
   "checking_access": "Checking access…",
+  "access_unknown_title": "Couldn't check your access",
+  "access_unknown_body": "Your account details didn't load, so this page stays hidden until they do.",
   "loading_config": "Loading config…",
   "brand_name": "Felis",
   "brand_tagline": "K8s-native Minecraft orchestration",

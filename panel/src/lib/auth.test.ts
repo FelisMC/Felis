@@ -68,6 +68,19 @@ describe("deriveAuth", () => {
     expect(s.isAdmin).toBe(false);
     expect(s.unauthenticated).toBe(false);
   });
+
+  it("keeps a settled non-401 failure as identityError, so a gate can offer a retry", () => {
+    expect(deriveAuth(null, err500, false).identityError).toBe(err500);
+    const offline = new TypeError("Failed to fetch");
+    expect(deriveAuth(null, offline, false).identityError).toBe(offline);
+  });
+
+  it("has no identityError for a 401, while loading, or once an identity is known", () => {
+    expect(deriveAuth(null, err401, false).identityError).toBeNull();
+    expect(deriveAuth(null, err500, true).identityError).toBeNull();
+    expect(deriveAuth(admin, err500, false).identityError).toBeNull();
+    expect(deriveAuth(null, null, false).identityError).toBeNull();
+  });
 });
 
 describe("loginReturnPath", () => {
