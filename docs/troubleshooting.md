@@ -2011,7 +2011,7 @@ kubectl -n felis scale deployment felis-api felis-operator --replicas=1
 - The replay is one transaction: it drops everything the `felis` role owns and
   loads the dump. **Any failure rolls back and leaves the database exactly as it
   was** (`rolled back, the database is unchanged`, with the psql and pg_restore
-  errors). [GO-TESTED]
+  errors). [PG-TESTED]
 - The database before the restore is in the `pre-restore` bundle it names;
   restoring that one undoes the restore.
 - `migrate up` brings an older bundle's schema up to the running release.

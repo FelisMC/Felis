@@ -8,8 +8,9 @@
 #   sudo bash deploy/e2e_check.sh upgrade   # after this commit ran over a release
 #
 # It asks what an operator's first minutes ask: the binary runs, the control plane and its
-# database are rolled out and ready, a database backup can be taken, the panel answers on
-# its NodePort, the proxy answers a Minecraft status ping, and the host timers are there.
+# database are rolled out and ready, a database backup can be taken and restored, the panel
+# answers on its NodePort, the proxy answers a Minecraft status ping, and the host timers
+# are there.
 # A rerun must also leave the proxy running (it restarts only when what it runs changed)
 # and keep every earlier answer.
 set -euo pipefail
@@ -50,6 +51,58 @@ check "felis-api is ready (database and cluster reachable)" \
 for unit in k3s felis-velocity; do
   check "${unit} is active" systemctl is-active --quiet "$unit"
 done
+# pod_psql runs one statement in the database's pod, over its socket, as the felis role on
+# the felis database.
+pod_psql() {
+  "${KUBECTL[@]}" -n felis exec -i deploy/felis-postgres -c postgres -- \
+    psql -X -q -At -v ON_ERROR_STOP=1 -U felis -d felis -c "$1"
+}
+
+# restore_drill walks troubleshooting.md's "Restore on the same host": refused while the
+# control plane is connected; with it scaled to 0 the bundle comes back (a row written after
+# it is gone) and the database it replaced is kept; migrate up runs; the control plane serves
+# again.
+restore_drill() { # dir bundle
+  local dir="$1" bundle="$2" out rc
+  local sel="app.kubernetes.io/part-of=felis-control-plane,app.kubernetes.io/component in (api,operator)"
+  if ! pod_psql "INSERT INTO platform_settings (key, value) VALUES ('e2e_restore_drill', '1')" >/dev/null; then
+    fail "write a row after the bundle"
+    return
+  fi
+  rc=0
+  out="$(/usr/local/bin/felis db restore -dir "$dir" -yes "$bundle" 2>&1)" || rc=$?
+  if [ "$rc" -eq 1 ] && grep -q "other clients are connected to the database" <<<"$out"; then
+    pass "felis db restore refuses while the control plane is connected"
+  else
+    fail "felis db restore refuses while the control plane is connected (exit ${rc}): ${out}"
+  fi
+
+  "${KUBECTL[@]}" -n felis scale deployment felis-api felis-operator --replicas=0 >/dev/null
+  for _ in $(seq 60); do
+    [ -z "$("${KUBECTL[@]}" -n felis get pods -l "$sel" -o name)" ] && break
+    sleep 2
+  done
+  rc=0
+  out="$(/usr/local/bin/felis db restore -dir "$dir" -yes "$bundle" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    pass "felis db restore replays the bundle with the control plane scaled to 0"
+  else
+    fail "felis db restore replays the bundle with the control plane scaled to 0 (exit ${rc}): ${out}"
+  fi
+  check "the restore dropped the row written after the bundle" \
+    test "$(pod_psql "SELECT count(*) FROM platform_settings WHERE key = 'e2e_restore_drill'")" = 0
+  check "the restore kept the database it replaced in a pre-restore bundle" \
+    sh -c "ls '${dir}' | grep -q -- '-pre-restore\.tar\$'"
+  check "felis migrate up runs on the restored database" \
+    /usr/local/bin/felis migrate up -config /etc/felis/felis.host.toml
+  "${KUBECTL[@]}" -n felis scale deployment felis-api felis-operator --replicas=1 >/dev/null
+  for d in felis-api felis-operator; do
+    check "deployment ${d} is rolled out again after the restore" "${KUBECTL[@]}" -n felis rollout status "deploy/${d}" --timeout=180s
+  done
+  check "felis-api is ready on the restored database" \
+    curl -sf --retry 10 --retry-delay 3 --retry-all-errors -o /dev/null "http://${internal}/readyz"
+}
+
 # The database runs in k3s; a release may still run it on the host, and the upgrade moved
 # it. The host has no PostgreSQL client: a bundle that verifies proves felis reaches the
 # database's pod through kubectl exec, and that pg_dump there reads every table.
@@ -59,6 +112,8 @@ if [ "$phase" != release ]; then
   if out="$(/usr/local/bin/felis db backup -dir "$bundle_dir" -state-dir "" -no-servers 2>&1)"; then
     bundle="$(printf '%s\n' "$out" | sed -n 's/^felis db backup: wrote //p' | tail -n 1)"
     check "felis db backup writes a bundle that verifies" /usr/local/bin/felis db verify "$bundle"
+    # A rerun keeps what the install left; the install and the upgrade restore it.
+    [ "$phase" = rerun ] || restore_drill "$bundle_dir" "$bundle"
   else
     fail "felis db backup writes a bundle: ${out}"
   fi

@@ -29,13 +29,43 @@ func TestDBUsage(t *testing.T) {
 	}
 }
 
+// TestDBRestoreNeedsYes: without -yes a restore describes the bundle and stops
+// before anything reaches the database, even with -force and
+// -no-safety-backup, which would otherwise let the replay run at once.
 func TestDBRestoreNeedsYes(t *testing.T) {
-	// A bundle that does not exist fails verification (1) before -yes matters;
-	// the -yes gate itself is exercised against a real bundle in internal/dbbackup
-	// and on the VM. Here: the refusal path never reaches the config or database.
+	dir := newPodRig(t)
+	cfg := podConfig(t, dir)
+	bundles := filepath.Join(dir, "bundles")
 	var out, errBuf bytes.Buffer
-	if code := run([]string{"db", "restore", "-dir", t.TempDir(), "missing.tar"}, &out, &errBuf); code != 1 {
-		t.Fatalf("exit %d, stderr %q", code, errBuf.String())
+	if code := run([]string{"db", "backup", "-config", cfg, "-dir", bundles, "-state-dir", "", "-no-servers"}, &out, &errBuf); code != 0 {
+		t.Fatalf("backup: exit %d: %s", code, errBuf.String())
+	}
+	bundle := strings.TrimSpace(strings.TrimPrefix(out.String(), "felis db backup: wrote "))
+	podRuns(t, dir)
+
+	out.Reset()
+	errBuf.Reset()
+	code := run([]string{"db", "restore", "-config", cfg, "-dir", bundles, "-force", "-no-safety-backup", filepath.Base(bundle)}, &out, &errBuf)
+	if code != 2 {
+		t.Fatalf("exit %d, want 2; stderr %q", code, errBuf.String())
+	}
+	if want := filepath.Base(bundle) + " (manual, taken "; !strings.Contains(errBuf.String(), want) || !strings.Contains(errBuf.String(), "schema 3).") {
+		t.Errorf("stderr %q does not describe the bundle", errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "re-run with -yes") {
+		t.Errorf("stderr %q does not say how to go on", errBuf.String())
+	}
+	if argv, err := os.ReadFile(filepath.Join(dir, "k3s.args")); err == nil {
+		t.Errorf("a restore without -yes ran in the database pod:\n%s", argv)
+	}
+
+	// A bundle that does not verify is refused before -yes is weighed.
+	errBuf.Reset()
+	if code := run([]string{"db", "restore", "-config", cfg, "-dir", bundles, "-yes", "missing.tar"}, &out, &errBuf); code != 1 {
+		t.Errorf("missing bundle: exit %d, want 1; stderr %q", code, errBuf.String())
+	}
+	if _, err := os.Stat(filepath.Join(dir, "k3s.args")); err == nil {
+		t.Error("a missing bundle reached the database pod")
 	}
 }
 
@@ -268,6 +298,19 @@ func podRuns(t *testing.T, dir string) []string {
 	return runs
 }
 
+// podConfig writes an installed host's felis.toml, [database] pointing at the
+// pod, into dir.
+func podConfig(t *testing.T, dir string) string {
+	t.Helper()
+	toml := strings.Replace(installerTOML("example.com", "127.0.0.1"),
+		`url = "postgres://felis:pw@127.0.0.1:5432/felis?sslmode=disable"`,
+		`url = "`+podDB.URL+`"
+deployment = "`+podDB.Deployment+`"`, 1)
+	cfg := filepath.Join(dir, "felis.toml")
+	writeTestFile(t, cfg, toml, 0o600)
+	return cfg
+}
+
 func ranIn(runs []string, prefix string) bool {
 	for _, r := range runs {
 		if strings.HasPrefix(r, prefix) {
@@ -284,12 +327,7 @@ func ranIn(runs []string, prefix string) bool {
 // line.
 func TestDBBackupAndRestoreRunTheToolsInTheDatabasePod(t *testing.T) {
 	dir := newPodRig(t)
-	toml := strings.Replace(installerTOML("example.com", "127.0.0.1"),
-		`url = "postgres://felis:pw@127.0.0.1:5432/felis?sslmode=disable"`,
-		`url = "`+podDB.URL+`"
-deployment = "`+podDB.Deployment+`"`, 1)
-	cfg := filepath.Join(dir, "felis.toml")
-	writeTestFile(t, cfg, toml, 0o600)
+	cfg := podConfig(t, dir)
 
 	var out, errBuf bytes.Buffer
 	bundles := filepath.Join(dir, "bundles")

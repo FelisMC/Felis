@@ -5,6 +5,8 @@
 // run against fakes that encode the CONTRACT — and PGRepo drifted behind that
 // contract three times (attempt accounting, a missing JOIN, a missing FOR UPDATE)
 // while every unit test stayed green.
+// dbrestore_test.go does the same for `felis db backup` and `restore`, whose
+// fakes stand in for pg_dump, pg_restore, psql and the server.
 //
 // They run ONLY against a throwaway database whose name contains "pgint": the
 // harness drops and recreates the public schema and replays the real embedded

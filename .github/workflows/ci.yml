@@ -72,6 +72,9 @@ jobs:
   # The business stores' SQL against a real PostgreSQL (internal/pgint): the unit suites run
   # on fakes, and PGRepo drifted from them three times while those stayed green. 13 is the
   # oldest server a supported distribution installs (EL9), 18 the newest (Arch).
+  # `felis db backup` and `restore` run there too, with the tools inside the service
+  # container, as production runs them inside felis-postgres: the runner's own client is one
+  # major version, and pg_dump refuses a newer server.
   pgint:
     runs-on: ubuntu-latest
     strategy:
@@ -102,6 +105,7 @@ jobs:
       - run: go test -race -tags pgint -count=1 ./internal/pgint/
         env:
           FELIS_TEST_PG_URL: postgres://felis:pgint@localhost:5432/felis_pgint?sslmode=disable
+          FELIS_TEST_PG_EXEC: docker exec -i ${{ job.services.postgres.id }}
 
   shell:
     runs-on: ubuntu-latest

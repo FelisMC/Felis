@@ -78,8 +78,15 @@ FELIS_TEST_PG_URL='postgres://felis:***@127.0.0.1:5432/felis_pgint?sslmode=disab
 ```
 
 Run it after touching anything under `internal/api/pgrepo.go`, `internal/submit`,
-or `internal/build` that speaks SQL: the fakes encode the contract, and this
-suite exists to catch the drift between the fakes and the real queries.
+`internal/build` or `internal/dbbackup` that speaks SQL: the fakes encode the
+contract, and this suite exists to catch the drift between the fakes and the real
+queries. The `felis db backup` and `restore` tests also run `pg_dump`, `pg_restore`
+and `psql`, which must be the server's major version. For a server in a container,
+run them in it, as production does in felis-postgres:
+
+```bash
+FELIS_TEST_PG_EXEC='docker exec -i <container>' FELIS_TEST_PG_URL=... go test -tags pgint ./internal/pgint/
+```
 
 Build the CLI:
 
