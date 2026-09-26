@@ -87,6 +87,17 @@ the window:
   `/opt/felis/velocity/plugins/felis-link/last-servers.json`, the last server list the
   API answered with, until a refresh succeeds (every 15 s).
 
+A longer outage reads like this in the logs [VM-VERIFIED]. The drill scaled felis-api
+to 0 for about 8 minutes on the reference VM.
+
+- The proxy logged `server list refresh failed ... keeping current registrations` 11 s
+  in, then `still failing: 22 failed attempts over 304 s` at the 5-minute mark.
+- The watchdog found `deployment/felis-api` critical on its first run after the scale.
+  It raised the alert on the first run past 5 minutes, at about 7 minutes; with no
+  `[smtp]` that is logged only (`journalctl -u felis-watchdog`).
+- The proxy logged `server list refresh recovered after 32 failed attempts over 469 s`
+  as soon as the new pod was Available.
+
 ## 2. Sizing
 
 ### What the platform itself uses
