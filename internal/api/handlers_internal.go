@@ -130,6 +130,18 @@ func (a *API) handleInternalWake(w http.ResponseWriter, r *http.Request) {
 		a.writeLookupError(w, r, err)
 		return
 	}
+	// A server that is up and meant to stay up has nothing to wake, and joining it
+	// is open to every linked player: host routing admits them on the link check
+	// alone. Putting the no-op through autostartPolicy answered a friend's menu
+	// "join" with "you may not start this server". Nothing changes here, so there
+	// is no cooldown to spend and nothing to audit.
+	if info.Ready && info.DesiredState == string(v1alpha1.DesiredRunning) {
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"name": name, "desiredState": info.DesiredState,
+			"phase": info.Phase, "ready": true,
+		})
+		return
+	}
 	rec, err := a.Repo.ServerByName(r.Context(), name)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		writeError(w, r, err)

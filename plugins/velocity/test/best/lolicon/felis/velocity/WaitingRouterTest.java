@@ -342,6 +342,25 @@ public final class WaitingRouterTest {
         assertEq("both moved (command)", List.of("epsilon"), List.copyOf(command.connects));
         assertEq("only the menu entry tells the lobby", List.of(menu.name + "@epsilon"), List.copyOf(notified));
 
+        // A friend's running server: the menu and /felis go join it without waking it.
+        // The API refuses a non-owner's wake of an ownerOnly server, and that refusal
+        // was all a friend got from the green tile while every entry woke first.
+        api.wakeError.put("beta", "403 forbidden");
+        Fakes.FakePlayer friend = player(null, true);
+        friend.current = lobby;
+        router.enqueueFromMenu(friend.player, "beta");
+        Fakes.await("friend moved (menu)", () -> friend.connects.size() == 1);
+        assertEq("running server via the menu: joined", List.of("beta"), List.copyOf(friend.connects));
+        assertEq("running server via the menu: the lobby is told", true, notified.contains(friend.name + "@beta"));
+        Fakes.FakePlayer friend2 = player(null, true);
+        friend2.current = lobby;
+        router.enqueueFromCommand(friend2.player, "beta");
+        Fakes.await("friend moved (command)", () -> friend2.connects.size() == 1);
+        assertEq("running server via /felis go: joined", List.of("beta"), List.copyOf(friend2.connects));
+        assertEq("running server: never woken", 0, api.count("POST " + SERVERS + "beta/wake"));
+        assertEq("running server: nobody refused", false, friend.said("not allowed") || friend2.said("not allowed"));
+        api.wakeError.remove("beta");
+
         // Asking for the server you stand on is answered at once, case-insensitively.
         Fakes.FakePlayer there = player(null, true);
         there.current = beta;
@@ -498,8 +517,10 @@ public final class WaitingRouterTest {
 
     // view is a server as GET /servers lists it: up at its direct address, or down on
     // the fallback, where the operator writes the fallback server's name ("login")
-    // into the address. addr is also what the stub API reports once the server is up.
+    // into the address. The stub API's status route answers the same: ready as listed,
+    // and addr as the address it reports once the server is up.
     private static ServerView view(String name, boolean ready, String addr) {
+        api.ready.put(name, ready);
         if (addr != null) {
             api.address.put(name, addr);
         }

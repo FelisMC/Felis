@@ -153,6 +153,59 @@ func TestInternalWakeAutostartGate(t *testing.T) {
 	})
 }
 
+// A running server is joined, not woken: the menu and /felis go wake before they
+// move anyone, and a friend who is not the owner of a running ownerOnly server was
+// told "you may not start it". Only an up-and-staying-up server skips the gate; one
+// that is on its way down is a real start and stays policy-gated.
+func TestInternalWakeOfRunningServerIsNotGated(t *testing.T) {
+	body := `{"mc_uuid":"` + wakeUUID + `"}`
+	running := func(desired v1alpha1.DesiredState) (*API, *fakeCluster, *fakeRepo) {
+		api, cl := newInternalWakeAPI("ownerOnly")
+		cl.byName["survival"] = &ServerInfo{Name: "survival", Phase: "Running", Ready: true,
+			AutostartPolicy: "ownerOnly", DesiredState: string(desired)}
+		repo := api.Repo.(*fakeRepo)
+		repo.byName["survival"] = &ServerRecord{Name: "survival", OwnerID: "owner1"}
+		repo.links[wakeUUID] = "someone-else"
+		api.WakeCooldown = time.Minute
+		return api, cl, repo
+	}
+
+	t.Run("up: a non-owner gets 202 ready and nothing changes", func(t *testing.T) {
+		api, cl, repo := running(v1alpha1.DesiredRunning)
+		w := internalWake(api, body)
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("code = %d, want 202 (body %s)", w.Code, w.Body.String())
+		}
+		var got map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatalf("body not JSON: %v (%s)", err, w.Body.String())
+		}
+		if got["ready"] != true || got["phase"] != "Running" {
+			t.Fatalf("reply = %v, want ready true and phase Running", got)
+		}
+		if _, set := cl.desired["survival"]; set {
+			t.Fatal("a no-op wake must not write desiredState")
+		}
+		if len(repo.audits) != 0 {
+			t.Fatalf("a no-op wake must not be audited as a wake: %+v", repo.audits)
+		}
+		// Nothing was woken, so the cooldown is untouched: a second join is not a 429.
+		if w := internalWake(api, body); w.Code != http.StatusAccepted {
+			t.Fatalf("second join code = %d, want 202", w.Code)
+		}
+	})
+
+	t.Run("stopping: a non-owner's wake is still a start and still forbidden", func(t *testing.T) {
+		api, cl, _ := running(v1alpha1.DesiredStopped)
+		if w := internalWake(api, body); w.Code != http.StatusForbidden {
+			t.Fatalf("code = %d, want 403", w.Code)
+		}
+		if _, set := cl.desired["survival"]; set {
+			t.Fatal("desiredState must not change on a forbidden wake")
+		}
+	})
+}
+
 func TestInternalWakeCooldownIsShared(t *testing.T) {
 	api, _ := newInternalWakeAPI("public")
 	api.WakeCooldown = time.Minute

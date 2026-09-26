@@ -144,51 +144,35 @@ public final class WaitingRouter {
     }
 
     /**
-     * enqueueFromMenu parks a player who is already on the proxy (sitting in the
-     * lobby) on a server they asked for through the felis-paper {@code /menu}, then
-     * wakes it and lets {@link #tick()} transfer them when ready — the same shared
-     * waiting queue used by host-based autostart routing (spec §12, §27 scenario 10).
-     * It differs from initial-server routing only in origin: the player drove it from
-     * a GUI button rather than a connecting virtual host, so the waiter is flagged to
-     * fire {@link MenuTransferListener} on transfer.
+     * enqueueFromMenu moves a player who is already on the proxy (sitting in the
+     * lobby) to a server they asked for through the felis-paper {@code /menu}: straight
+     * in when it is running, otherwise woken and transferred by {@link #tick()} once
+     * ready — the same shared waiting queue used by host-based autostart routing (spec
+     * §12, §27 scenario 10). It differs from initial-server routing only in origin: the
+     * player drove it from a GUI button rather than a connecting virtual host, so the
+     * move fires {@link MenuTransferListener}.
      */
     void enqueueFromMenu(Player player, String serverName) {
-        authorizeAndWait(player, serverName, true, false);
+        authorizeAndWait(player, serverName, true);
     }
 
     /**
-     * enqueueFromCommand parks a player who drove {@code /felis go <server>} from chat
-     * onto the server they named, then wakes it and lets {@link #tick()} transfer them
-     * when ready — the same shared waiting queue as host-based routing and the menu
-     * path, differing only in that it is NOT flagged {@code fromMenu}: a command-driven
-     * go has no felis-paper GUI tile to notify, so no {@code TransferReady} frame is
-     * emitted on readiness. The wake stays autostartPolicy-gated on the verified UUID
-     * exactly as the other origins, so this adds a new entry point, not a new authority.
+     * enqueueFromCommand is {@link #enqueueFromMenu} for {@code /felis go <server>} typed
+     * in chat, differing only in that it is NOT flagged {@code fromMenu}: a command has no
+     * felis-paper GUI tile to notify, so no {@code TransferReady} frame is emitted. A wake
+     * stays autostartPolicy-gated on the verified UUID exactly as for the other origins,
+     * so this adds a new entry point, not a new authority.
      */
     void enqueueFromCommand(Player player, String serverName) {
-        authorizeAndWait(player, serverName, false, false);
+        authorizeAndWait(player, serverName, false);
     }
 
     /**
-     * enqueueFromInvite is {@link #enqueueFromCommand} for an accepted invite, differing in
-     * one thing: a server that is ALREADY RUNNING is joined directly instead of woken.
+     * enqueueFromInvite is {@link #enqueueFromCommand} for an accepted invite. An invite can
+     * only name the server its sender is standing on, so the target is running by
+     * construction and the invitee is joined straight onto it.
      *
-     * <p>An invite can only name the server its sender is standing on, so the target is
-     * running by construction — and a running felis server is already reachable by any
-     * linked player through {@code <name>.<root-domain>}, which
-     * {@link #onServerPreConnect} admits on the link check alone: no wake, no
-     * autostartPolicy consultation. Routing an accept through {@link #wakeAndWaitLinked}
-     * instead asks the API to wake a server that needs no waking, and autostartPolicy
-     * defaults to ownerOnly, so the API answers 403 and the invitee is turned away from a
-     * place they could have walked into unaided — the green button does nothing for
-     * exactly the people you would invite.
-     *
-     * <p>Joining a live backend therefore grants no authority the invitee did not already
-     * have. WAKING a stopped one still does, which is why the not-ready case falls through
-     * to the policy-gated path unchanged: only the owner may start a stopped ownerOnly
-     * server, invite or no invite.
-     *
-     * <p>It does leave a mark, though, and one that outlives the invite: landing here fires
+     * <p>It does leave a mark, though, and one that outlives the invite: landing there fires
      * {@link #onServerConnected}, whose join-event appends the player to the server's
      * allowlist. On an autostartPolicy=allowlist server that row is the wake permission, so
      * an accepted invite ends in the invitee being able to start the server later. That is
@@ -197,7 +181,7 @@ public final class WaitingRouter {
      * up front (FelisVelocityPlugin#accessNotice), because they are the one causing it.
      */
     void enqueueFromInvite(Player player, String serverName) {
-        authorizeAndWait(player, serverName, false, true);
+        authorizeAndWait(player, serverName, false);
     }
 
     @Subscribe
@@ -449,8 +433,7 @@ public final class WaitingRouter {
         }
     }
 
-    private void authorizeAndWait(Player player, String serverName, boolean fromMenu,
-                                  boolean joinIfReady) {
+    private void authorizeAndWait(Player player, String serverName, boolean fromMenu) {
         UUID id = player.getUniqueId();
         boolean zh = FelisVelocityPlugin.zh(player);
         // Asking for the server you are standing on is a no-op, and it has to be caught
@@ -485,19 +468,47 @@ public final class WaitingRouter {
                         NamedTextColor.RED));
                 return;
             }
-            // Same ready-or-wake split as the host path above, for the one caller whose
-            // target is running by construction. See enqueueFromInvite for why joining a
-            // live backend is not an escalation and waking a stopped one still is.
-            if (joinIfReady) {
-                ServerView view = registry.view(serverName);
-                Optional<RegisteredServer> backend = registry.registered(serverName);
-                if (view != null && view.ready() && backend.isPresent()) {
-                    transfer(player, serverName, backend.get());
-                    return;
-                }
+            if (joinIfRunning(player, serverName, fromMenu)) {
+                return;
             }
             wakeAndWaitLinked(player, serverName, fromMenu);
         });
+    }
+
+    /**
+     * joinIfRunning is the ready-or-wake split of the host path, for the entries that
+     * start from inside the proxy: a server a fresh status poll reports up is joined
+     * directly, at the address the poll carries.
+     *
+     * <p>A running felis server is already reachable by any linked player through
+     * {@code <name>.<root-domain>}, which {@link #onServerPreConnect} admits on the link
+     * check alone, so joining one grants nothing. Waking it instead asks the API to
+     * start a server that needs no starting, and autostartPolicy defaults to ownerOnly:
+     * a friend's green "join" tile answered "you're not allowed to start it". WAKING a
+     * stopped server is still a start, and still policy-gated. A poll that fails falls
+     * through to the wake, which reports the failure its own way.
+     */
+    private boolean joinIfRunning(Player player, String serverName, boolean fromMenu) {
+        ServerView status;
+        try {
+            status = api.serverStatus(serverName);
+        } catch (LinkException e) {
+            return false;
+        }
+        if (!status.ready()) {
+            return false;
+        }
+        registry.observe(status);
+        Optional<RegisteredServer> backend = registry.registered(serverName);
+        if (backend.isEmpty()) {
+            return false; // up, but not listed or addressed yet → the queue waits for it
+        }
+        MenuTransferListener listener = menuListener;
+        if (fromMenu && listener != null) {
+            listener.onReady(player, serverName);
+        }
+        transfer(player, serverName, backend.get());
+        return true;
     }
 
     // Caller already ran the authoritative link-status check and is off the event
@@ -506,8 +517,11 @@ public final class WaitingRouter {
     private void wakeAndWaitLinked(Player player, String serverName, boolean fromMenu) {
         UUID id = player.getUniqueId();
         boolean zh = FelisVelocityPlugin.zh(player);
+        boolean up = false;
         try {
-            api.wake(serverName, id);
+            // An up server answers ready without waking anything; the queue still
+            // does the move, so the player just is not told it is starting.
+            up = api.wake(serverName, id).ready();
         } catch (LinkException e) {
             switch (e.statusCode()) {
                 case 403:
@@ -551,10 +565,12 @@ public final class WaitingRouter {
                     return;
             }
         }
-        player.sendMessage(Component.text(
-                zh ? "正在启动「" + serverName + "」——就绪后会自动把你传送过去。"
-                   : "Starting « " + serverName + " » — you'll be moved in automatically.",
-                NamedTextColor.GRAY));
+        if (!up) {
+            player.sendMessage(Component.text(
+                    zh ? "正在启动「" + serverName + "」——就绪后会自动把你传送过去。"
+                       : "Starting « " + serverName + " » — you'll be moved in automatically.",
+                    NamedTextColor.GRAY));
+        }
         waiting.put(id, new Waiter(
                 serverName, System.currentTimeMillis() + WAIT_TIMEOUT_MILLIS, fromMenu));
     }
