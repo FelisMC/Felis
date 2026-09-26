@@ -23,8 +23,8 @@ const (
 )
 
 // AddressFinding reports that this host no longer holds want, the node address
-// the installer wrote into the database connection string, pg_hba, the network
-// policies, the panel certificate and (by default) the nip.io root domain. held
+// the installer gave k3s and wrote into the network policies, the panel
+// certificate and (by default) the nip.io root domain. held
 // is every address on the host's interfaces. An empty or unparsable want skips
 // the check.
 func AddressFinding(want string, held []net.IP) *Finding {
@@ -47,9 +47,9 @@ func AddressFinding(want string, held []net.IP) *Finding {
 	}
 	return &Finding{
 		Key: "host-address", Severity: Critical, For: addressFor,
-		Summary: fmt.Sprintf("本机已不再持有安装时的地址 %s（现在是：%s）：数据库连接、pg_hba、网络策略和面板证书仍指向旧地址",
+		Summary: fmt.Sprintf("本机已不再持有安装时的地址 %s（现在是：%s）：k3s 节点、网络策略和面板证书仍指向旧地址",
 			want, current),
-		SummaryEN: fmt.Sprintf("this host no longer holds %s, the address the install was made on (it has: %s): the database connection, pg_hba, the network policies and the panel certificate still point at it",
+		SummaryEN: fmt.Sprintf("this host no longer holds %s, the address the install was made on (it has: %s): the k3s node, the network policies and the panel certificate still point at it",
 			want, current),
 		Hint: "give the host its old address back (a DHCP reservation or a static address); docs/troubleshooting.md §13c",
 	}

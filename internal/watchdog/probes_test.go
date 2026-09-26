@@ -103,7 +103,7 @@ func TestClusterCheck(t *testing.T) {
 		t.Fatalf("Check: %v", err)
 	}
 	want := []string{
-		"deployment/felis-operator", "deployment/registry",
+		"deployment/felis-operator", "deployment/felis-postgres", "deployment/registry",
 		"job-failed/backup-survival-abc", "node/n1/DiskPressure", "reaper-stale",
 		"server-failed/broken", "system-server/login",
 	}
@@ -119,6 +119,10 @@ func TestClusterCheck(t *testing.T) {
 		case "deployment/registry":
 			if !strings.Contains(f.SummaryEN, "missing") {
 				t.Errorf("registry finding = %+v, want missing", f)
+			}
+		case "deployment/felis-postgres":
+			if f.Severity != Critical || !strings.Contains(f.SummaryEN, "database is down") {
+				t.Errorf("database finding = %+v, want a critical database outage", f)
 			}
 		case "job-failed/backup-survival-abc":
 			if !f.Event || !strings.Contains(f.SummaryEN, "world backup Job") {

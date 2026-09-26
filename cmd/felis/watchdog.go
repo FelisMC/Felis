@@ -38,7 +38,7 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 	statePath := fs.String("state", "/var/lib/felis/watchdog/state.json", "state kept between runs (root only: it caches the relay password)")
 	quietPath := fs.String("quiet-file", "/run/felis/watchdog-quiet-until", "Unix time before which nothing is mailed; the installer writes it while it restarts things on purpose")
 	backupDir := fs.String("backup-dir", "/var/lib/felis/db-backups", `control-plane database backups to check for freshness ("" skips the check)`)
-	diskPaths := fs.String("disk-paths", "/,/var/lib/rancher/k3s,/var/lib/postgresql,/var/lib/felis", "comma-separated paths whose filesystems must keep free space")
+	diskPaths := fs.String("disk-paths", "/,/var/lib/rancher/k3s,/var/lib/felis", "comma-separated paths whose filesystems must keep free space")
 	proxyAddr := fs.String("proxy-addr", "", `game proxy address to dial, e.g. 127.0.0.1:25565 ("" skips the check)`)
 	nodeIP := fs.String("node-ip", "", `the node address the install was made on, which must stay on this host ("" skips the check)`)
 	controlNS := fs.String("control-namespace", platform.DefaultControlNamespace, "namespace of the control plane")

@@ -62,6 +62,7 @@ const (
 var controlDeployments = []struct {
 	name, impact, impactEN string
 }{
+	{platform.PostgresName, "数据库不可用：登录、面板和服务器管理都会失败", "the control-plane database is down: sign-in, the panel and server management fail"},
 	{platform.SAAPI, "面板、登录验证和内部接口都不可用", "the panel, sign-in and the internal API are down"},
 	{platform.SAOperator, "服务器无法启动、停止或更新状态", "no server can start, stop or report status"},
 	{"registry", "游戏镜像拉取和构建都会失败", "game image pulls and builds fail"},
@@ -301,13 +302,16 @@ func KubeAPIDown(err error) Finding {
 	}
 }
 
-// PostgresDown is the finding for a database that did not answer.
+// PostgresDown is the finding for a database that did not answer. It runs as
+// the felis-postgres Deployment; the host reaches it on the loopback hostPort.
 func PostgresDown(err error) Finding {
+	ns := platform.DefaultControlNamespace
 	return Finding{
 		Key: "postgres", Severity: Critical, For: postgresFor,
 		Summary:   "PostgreSQL 无法连接：登录、面板和服务器管理都会失败",
 		SummaryEN: "PostgreSQL is unreachable: sign-in, the panel and server management fail",
-		Hint:      fmt.Sprintf("systemctl status postgresql; journalctl -u postgresql -n 100 (%v)", err),
+		Hint: fmt.Sprintf("k3s kubectl -n %s get pods -l app.kubernetes.io/component=%s; k3s kubectl -n %s logs deploy/%s --tail=100 (%v)",
+			ns, platform.ComponentPostgres, ns, platform.PostgresName, err),
 	}
 }
 
