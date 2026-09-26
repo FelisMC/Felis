@@ -104,6 +104,10 @@ export function ServerLuckPerms() {
     !(lpInfo.output ?? "").trim() &&
     (lpInfo.groups?.length ?? 0) === 0 &&
     (lpInfo.permissions?.length ?? 0) === 0;
+  // Unread: the lists below know nothing, so they say so instead of "none", and a
+  // group or node is removed by typing it — a read row is the only other way in,
+  // and on LuckPerms 5.5 there never is one.
+  const lpUnread = lpSilent || !!lpError;
 
   // Form State
   const [groupNameInput, setGroupNameInput] = useState("");
@@ -162,8 +166,9 @@ export function ServerLuckPerms() {
     }
   };
 
-  const handleRemoveGroup = async (groupName: string) => {
-    if (!selectedPlayer || submitting) return;
+  // Returns whether the server took the removal, so the typed form can clear itself.
+  const handleRemoveGroup = async (groupName: string): Promise<boolean> => {
+    if (!selectedPlayer || submitting) return false;
     setSubmitting(true);
     setFormFeedback(null);
     try {
@@ -177,27 +182,37 @@ export function ServerLuckPerms() {
         output: res.output || t("luckperms_no_output"),
       });
       reloadLp();
+      return true;
     } catch (err) {
       setFormFeedback({ kind: "err", msg: humanizeError(err) });
+      return false;
     } finally {
       setSubmitting(false);
     }
   };
 
-  const handleAddPermission = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedPlayer || !permNodeInput.trim() || submitting) return;
+  // typedPermission is the node and world the form holds, or null (with the reason
+  // shown) when either is malformed.
+  const typedPermission = (): { node: string; world: string } | null => {
     const node = permNodeInput.trim();
     const world = permWorldInput.trim();
-
     if (!LP_NODE.test(node)) {
       setFormFeedback({ kind: "err", msg: t("luckperms_error_invalid_node") });
-      return;
+      return null;
     }
     if (world !== "" && !LP_CTX.test(world)) {
       setFormFeedback({ kind: "err", msg: t("luckperms_error_invalid_world") });
-      return;
+      return null;
     }
+    return { node, world };
+  };
+
+  const handleAddPermission = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedPlayer || !permNodeInput.trim() || submitting) return;
+    const typed = typedPermission();
+    if (!typed) return;
+    const { node, world } = typed;
 
     setSubmitting(true);
     setFormFeedback(null);
@@ -223,8 +238,9 @@ export function ServerLuckPerms() {
     }
   };
 
-  const handleRemovePermission = async (node: string, world?: string) => {
-    if (!selectedPlayer || submitting) return;
+  // Returns whether the server took the unset, so the typed form can clear itself.
+  const handleRemovePermission = async (node: string, world?: string): Promise<boolean> => {
+    if (!selectedPlayer || submitting) return false;
     setSubmitting(true);
     setFormFeedback(null);
     try {
@@ -239,10 +255,24 @@ export function ServerLuckPerms() {
         output: res.output || t("luckperms_no_output"),
       });
       reloadLp();
+      return true;
     } catch (err) {
       setFormFeedback({ kind: "err", msg: humanizeError(err) });
+      return false;
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  // The typed removal: the node and world as the form holds them, whatever value
+  // the node was set to (LuckPerms unsets a node in a context regardless of it).
+  const handleRemoveTypedPermission = async () => {
+    if (!selectedPlayer || !permNodeInput.trim() || submitting) return;
+    const typed = typedPermission();
+    if (!typed) return;
+    if (await handleRemovePermission(typed.node, typed.world)) {
+      setPermNodeInput("");
+      setPermWorldInput("");
     }
   };
 
@@ -503,6 +533,8 @@ export function ServerLuckPerms() {
                                 </button>
                               </Badge>
                             ))
+                          ) : lpUnread ? (
+                            <p className="text-xs text-muted-foreground py-1">{t("luckperms_groups_unread")}</p>
                           ) : (
                             <p className="text-xs text-muted-foreground/60 italic py-1">{t("luckperms_no_parent_groups")}</p>
                           )}
@@ -538,21 +570,38 @@ export function ServerLuckPerms() {
                               </Select>
                             </div>
                           </div>
-                          <Button
-                            size="sm"
-                            onClick={() => {
-                              const val = groupNameInput.trim();
-                              if (val) {
-                                handleAddGroup(val);
-                                setGroupNameInput("");
-                              }
-                            }}
-                            disabled={submitting || !groupNameInput.trim()}
-                            className="h-9 px-4 shrink-0 w-full sm:w-auto hover:bg-primary/90 transition-colors"
-                          >
-                            <Plus className="h-4 w-4 mr-1" />
-                            {t("luckperms_add_group_btn")}
-                          </Button>
+                          <div className="flex gap-2 w-full sm:w-auto">
+                            <Button
+                              size="sm"
+                              onClick={() => {
+                                const val = groupNameInput.trim();
+                                if (val) {
+                                  handleAddGroup(val);
+                                  setGroupNameInput("");
+                                }
+                              }}
+                              disabled={submitting || !groupNameInput.trim()}
+                              className="h-9 px-4 shrink-0 flex-1 sm:flex-none hover:bg-primary/90 transition-colors"
+                            >
+                              <Plus className="h-4 w-4 mr-1" />
+                              {t("luckperms_add_group_btn")}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={async () => {
+                                const val = groupNameInput.trim();
+                                if (val && (await handleRemoveGroup(val))) {
+                                  setGroupNameInput("");
+                                }
+                              }}
+                              disabled={submitting || !groupNameInput.trim()}
+                              className="h-9 px-4 shrink-0 flex-1 sm:flex-none hover:text-destructive transition-colors"
+                            >
+                              <Trash2 className="h-4 w-4 mr-1" />
+                              {t("luckperms_remove_group_btn")}
+                            </Button>
+                          </div>
                         </div>
                       </div>
                     )}
@@ -634,9 +683,15 @@ export function ServerLuckPerms() {
                                   ))
                                 ) : (
                                   <tr>
-                                    <td colSpan={4} className="px-4 py-10 text-center text-muted-foreground/60 italic">
-                                      {t("luckperms_no_perms")}
-                                    </td>
+                                    {lpUnread ? (
+                                      <td colSpan={4} className="px-4 py-10 text-center text-muted-foreground">
+                                        {t("luckperms_perms_unread")}
+                                      </td>
+                                    ) : (
+                                      <td colSpan={4} className="px-4 py-10 text-center text-muted-foreground/60 italic">
+                                        {t("luckperms_no_perms")}
+                                      </td>
+                                    )}
                                   </tr>
                                 )}
                               </tbody>
@@ -647,7 +702,7 @@ export function ServerLuckPerms() {
                         {/* Add Permission Node Inline Form */}
                         <form onSubmit={handleAddPermission} className="border-t border-border/50 pt-4 space-y-4">
                           <Label className="text-xs font-semibold text-muted-foreground">
-                            {t("luckperms_add_perm_btn")}
+                            {t("luckperms_perm_form_title")}
                           </Label>
                           <div className="grid grid-cols-1 sm:grid-cols-4 gap-3.5">
                             <div className="sm:col-span-2 grid gap-1.5">
@@ -716,15 +771,30 @@ export function ServerLuckPerms() {
                             </div>
                           </div>
 
-                          <div className="flex justify-end pt-1">
-                            <Button
-                              type="submit"
-                              disabled={submitting || !permNodeInput.trim()}
-                              className="w-full sm:w-auto h-9 hover:bg-primary/90 transition-colors"
-                            >
-                              <Plus className="h-4 w-4 mr-1" />
-                              {t("luckperms_add_perm_btn")}
-                            </Button>
+                          <div className="flex flex-col sm:flex-row sm:items-center gap-3 pt-1">
+                            <p className="text-[11px] text-muted-foreground sm:flex-1">
+                              {t("luckperms_remove_perm_hint")}
+                            </p>
+                            <div className="flex gap-2">
+                              <Button
+                                type="submit"
+                                disabled={submitting || !permNodeInput.trim()}
+                                className="flex-1 sm:flex-none h-9 hover:bg-primary/90 transition-colors"
+                              >
+                                <Plus className="h-4 w-4 mr-1" />
+                                {t("luckperms_add_perm_btn")}
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="outline"
+                                onClick={handleRemoveTypedPermission}
+                                disabled={submitting || !permNodeInput.trim()}
+                                className="flex-1 sm:flex-none h-9 hover:text-destructive transition-colors"
+                              >
+                                <Trash2 className="h-4 w-4 mr-1" />
+                                {t("luckperms_remove_perm_btn")}
+                              </Button>
+                            </div>
                           </div>
                         </form>
                       </div>

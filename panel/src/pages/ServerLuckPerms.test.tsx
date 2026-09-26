@@ -13,6 +13,7 @@ const calls = vi.hoisted(() => ({
   accessPlayers: vi.fn(),
   accessLuckPermsInfo: vi.fn(),
   accessGroup: vi.fn(),
+  accessPermission: vi.fn(),
 }));
 vi.mock("@/lib/tier", () => ({
   useTier: () => ({
@@ -37,6 +38,7 @@ beforeEach(() => {
   calls.accessPlayers.mockResolvedValue({ online: 0, max: 20, players: [], output: "" });
   calls.accessLuckPermsInfo.mockRejectedValue(missing);
   calls.accessGroup.mockRejectedValue(missing);
+  calls.accessPermission.mockRejectedValue(missing);
 });
 afterEach(() => {
   vi.restoreAllMocks();
@@ -104,5 +106,78 @@ describe("ServerLuckPerms on a server that is down", () => {
     renderPage();
     expect(await screen.findByText("Server is shutting down")).toBeTruthy();
     expect(screen.queryByPlaceholderText("Steve")).toBeNull();
+  });
+});
+
+// LuckPerms 5.5 answers every `lp` command over RCON with an empty body, so the
+// read of a player comes back with no output and no entries. The lists must not
+// claim the player has nothing, and whatever was granted must still be removable
+// by name, since no read row ever appears to hang a remove button on.
+describe("ServerLuckPerms when LuckPerms does not answer", () => {
+  const silent = { player: "Alex", groups: [], permissions: [], output: "" };
+
+  beforeEach(() => {
+    calls.accessLuckPermsInfo.mockResolvedValue(silent);
+    calls.accessGroup.mockResolvedValue({ output: "" });
+    calls.accessPermission.mockResolvedValue({ output: "" });
+  });
+
+  async function lookUpAlex() {
+    renderPage();
+    await userEvent.type(await screen.findByPlaceholderText("Steve"), "Alex{Enter}");
+    await screen.findByText(/Couldn't read this player's groups/);
+  }
+
+  it("says the lists are unread, never that they are empty", async () => {
+    await lookUpAlex();
+    expect(screen.getByText(/Couldn't read this player's permission nodes/)).toBeTruthy();
+    expect(screen.queryByText("No parent groups assigned")).toBeNull();
+    expect(screen.queryByText("No explicit permission nodes assigned")).toBeNull();
+  });
+
+  it("removes a typed group", async () => {
+    await lookUpAlex();
+    const input = screen.getByLabelText("Group Name");
+    await userEvent.type(input, "vip");
+    await userEvent.click(screen.getByRole("button", { name: /remove parent group/i }));
+    expect(calls.accessGroup).toHaveBeenCalledWith("lobby", "remove", "Alex", "vip");
+    expect(calls.accessGroup).toHaveBeenCalledTimes(1);
+    expect((input as HTMLInputElement).value).toBe("");
+  });
+
+  it("removes a typed node in its world, whatever value it held", async () => {
+    await lookUpAlex();
+    await userEvent.type(screen.getByLabelText("Permission Node"), "essentials.fly");
+    await userEvent.type(screen.getByLabelText("World Context (Optional)"), "world_nether");
+    await userEvent.click(screen.getByRole("button", { name: /^remove permission$/i }));
+    expect(calls.accessPermission).toHaveBeenCalledWith("lobby", "unset", "Alex", "essentials.fly", undefined, "world_nether");
+    expect(calls.accessPermission).toHaveBeenCalledTimes(1);
+    expect((screen.getByLabelText("Permission Node") as HTMLInputElement).value).toBe("");
+  });
+
+  it("refuses a malformed typed node without sending it", async () => {
+    await lookUpAlex();
+    await userEvent.type(screen.getByLabelText("Permission Node"), "essentials fly");
+    await userEvent.click(screen.getByRole("button", { name: /^remove permission$/i }));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/Invalid permission node/);
+    expect(calls.accessPermission).not.toHaveBeenCalled();
+  });
+
+  it("keeps the typed node when the removal is refused", async () => {
+    calls.accessPermission.mockRejectedValue(missing);
+    await lookUpAlex();
+    await userEvent.type(screen.getByLabelText("Permission Node"), "essentials.fly");
+    await userEvent.click(screen.getByRole("button", { name: /^remove permission$/i }));
+    expect((await screen.findByRole("alert")).textContent).toMatch(/LuckPerms isn't installed/);
+    expect((screen.getByLabelText("Permission Node") as HTMLInputElement).value).toBe("essentials.fly");
+  });
+
+  it("still says none when LuckPerms did answer with nothing", async () => {
+    calls.accessLuckPermsInfo.mockResolvedValue({ ...silent, output: "Alex has no parent groups." });
+    renderPage();
+    await userEvent.type(await screen.findByPlaceholderText("Steve"), "Alex{Enter}");
+    expect(await screen.findByText("No parent groups assigned")).toBeTruthy();
+    expect(screen.getByText("No explicit permission nodes assigned")).toBeTruthy();
+    expect(screen.queryByText(/Couldn't read this player's/)).toBeNull();
   });
 });
