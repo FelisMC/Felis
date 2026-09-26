@@ -44,8 +44,10 @@ type Spec struct {
 //     come from PaperMC (Fill v3), not GitHub.
 //   - jre         — the Temurin runtime Velocity runs on. The installer pins its patch
 //     build, so a newer build reaches a host through a Felis release: Notify only.
-//   - postgresql  — the control-plane database, from the distribution's packages.
-//     Notify only; a minor release is a package update, a major one a pg_upgrade.
+//   - postgresql  — the control-plane database, the felis-postgres Deployment running
+//     the image the installer pins by digest. Notify only: a newer minor reaches a
+//     host through a Felis release that moves the pin, a major one through a dump and
+//     restore.
 //
 // Minecraft is deliberately ABSENT: every MC server is Pinned and is appended to the
 // plan at runtime from the live fleet (integration), never force-tracked here.

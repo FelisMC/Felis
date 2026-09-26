@@ -3,8 +3,11 @@ package updater
 import (
 	"archive/zip"
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"felis.lolicon.best/internal/updates"
@@ -137,23 +140,47 @@ func TestJREReleaseVersion(t *testing.T) {
 	}
 }
 
-// PostgreSQL answers from the server binary where it is on PATH, else from the client.
-func TestHostGathererPostgres(t *testing.T) {
-	for name, out := range map[string]map[string][]byte{
-		"server on PATH": {"postgres": []byte("postgres (PostgreSQL) 13.23\n"), "psql": []byte("psql (PostgreSQL) 12.1\n")},
-		"client only":    {"psql": []byte("psql (PostgreSQL) 13.23 (Ubuntu 13.23-1.pgdg24.04+1)\n")},
-	} {
-		g := hostGatherer{sys: sysGatherer{run: fakeCmd{out: out}}}
-		v, err := g.Current(context.Background(), Spec{Name: "postgresql"})
-		if err != nil {
-			t.Fatalf("%s: %v", name, err)
-		}
-		if v.String() != "13.23" {
-			t.Errorf("%s: version = %s, want 13.23", name, v)
-		}
+// argvCmd answers one exact command line and records what it was asked.
+type argvCmd struct {
+	want string
+	out  []byte
+	err  error
+	got  *[]string
+}
+
+func (a argvCmd) output(_ context.Context, name string, args ...string) ([]byte, error) {
+	line := strings.Join(append([]string{name}, args...), " ")
+	*a.got = append(*a.got, line)
+	if line != a.want {
+		return nil, fmt.Errorf("unexpected command %q", line)
 	}
-	g := hostGatherer{sys: sysGatherer{run: fakeCmd{out: map[string][]byte{}}}}
-	if _, err := g.Current(context.Background(), Spec{Name: "postgresql"}); err == nil {
-		t.Error("no postgres and no psql must be an error")
+	return a.out, a.err
+}
+
+// PostgreSQL answers from the server binary in the felis-postgres container, never
+// from a host package the move into k3s left installed.
+func TestHostGathererPostgres(t *testing.T) {
+	const exec = "k3s kubectl exec -n felis deploy/felis-postgres -c postgres -- postgres --version"
+	var got []string
+	g := hostGatherer{sys: sysGatherer{run: argvCmd{want: exec, out: []byte("postgres (PostgreSQL) 18.6 (Debian 18.6-1.pgdg13+1)\n"), got: &got}}}
+	v, err := g.Current(context.Background(), Spec{Name: "postgresql"})
+	if err != nil {
+		t.Fatalf("Current: %v (ran %q)", err, got)
+	}
+	if v.String() != "18.6" {
+		t.Errorf("version = %s, want 18.6", v)
+	}
+	if len(got) != 1 {
+		t.Errorf("ran %q, want exactly the exec into the database pod", got)
+	}
+
+	got = nil
+	down := hostGatherer{sys: sysGatherer{run: argvCmd{want: exec, out: []byte("error: no running pod\n"), err: errors.New("exit status 1"), got: &got}}}
+	_, err = down.Current(context.Background(), Spec{Name: "postgresql"})
+	if err == nil || !strings.Contains(err.Error(), "no running pod") {
+		t.Errorf("a database pod that cannot answer = %v, want an error carrying kubectl's reason", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("ran %q after the pod failed, want no fallback to host binaries", got)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"felis.lolicon.best/internal/platform"
 	"felis.lolicon.best/internal/updates"
 )
 
@@ -86,16 +87,37 @@ func (g hostGatherer) Current(ctx context.Context, spec Spec) (updates.Version, 
 	case "jre":
 		return jreReleaseVersion(g.jreRelease)
 	case "postgresql":
-		// The server binary is on PATH on the dnf family; Debian and Ubuntu keep it
-		// under /usr/lib/postgresql/<major>/bin and put only the client on PATH, which
-		// the distribution ships at the same version.
-		if v, err := g.sys.cliVersion(ctx, "postgres"); err == nil {
-			return v, nil
-		}
-		return g.sys.cliVersion(ctx, "psql")
+		return g.postgresVersion(ctx)
 	default:
 		return g.sys.Current(ctx, spec)
 	}
+}
+
+// postgresVersionArgv asks the server binary in the felis-postgres Deployment
+// (internal/platform/postgres.go) for its version. The database runs from the image
+// the release pins, so the answer comes from the container: a distribution package
+// the move into k3s left installed on the host answers with a version nothing runs.
+var postgresVersionArgv = []string{
+	"kubectl", "exec", "-n", platform.DefaultControlNamespace, "deploy/" + platform.PostgresName,
+	"-c", platform.PostgresContainer, "--", "postgres", "--version",
+}
+
+func (g hostGatherer) postgresVersion(ctx context.Context) (updates.Version, error) {
+	if g.sys.run == nil {
+		return updates.Version{}, fmt.Errorf("updater: command runner not wired for %s", platform.PostgresName)
+	}
+	out, err := g.sys.run.output(ctx, "k3s", postgresVersionArgv...)
+	if err != nil {
+		if msg := truncate(string(out), 200); msg != "" {
+			err = fmt.Errorf("%w: %s", err, msg)
+		}
+		return updates.Version{}, fmt.Errorf("updater: ask %s for its version: %w", platform.PostgresName, err)
+	}
+	v, err := versionFromCLI(string(out))
+	if err != nil {
+		return updates.Version{}, fmt.Errorf("updater: %s: %w", platform.PostgresName, err)
+	}
+	return v, nil
 }
 
 // jreReleaseVersion reads the runtime's version from its release file. Temurin writes

@@ -17,12 +17,12 @@ import (
 // major, e.g. {"major":"13","latestMinor":"23","supported":false,"eolDate":"2025-11-13"}.
 const postgresFeedURL = "https://www.postgresql.org/versions.json"
 
-// postgresFeed discovers the newest minor release of the host's PostgreSQL major.
+// postgresFeed discovers the newest minor release of the running PostgreSQL major.
 //
-// Felis installs PostgreSQL from the distribution, so the major is whatever the
-// distribution ships and moving it is a pg_upgrade the operator plans. The report
-// therefore compares within the major (a minor release is a package update), and a
-// major that is past its end of life is surfaced separately as a note.
+// Felis runs PostgreSQL from an image the release pins, and moving to a new major is a
+// dump and restore the operator plans. The report therefore compares within the major
+// (a minor release is a new pin), and a major that is past its end of life is surfaced
+// separately as a note.
 type postgresFeed struct {
 	url       string
 	userAgent string

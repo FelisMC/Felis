@@ -215,8 +215,8 @@ func TestUpdateSelectorsAreFlags(t *testing.T) {
 	}
 }
 
-// k3s and cloudflared move only when the re-run is told to; PostgreSQL is the package
-// manager's, so its guidance carries no installer trailer.
+// k3s and cloudflared move only when the re-run is told to; the release pins the JRE
+// build and the PostgreSQL image, so their guidance is the plain re-run.
 func TestApplyGuidanceForHostDependencies(t *testing.T) {
 	notify := func(c string) updater.Result {
 		return planResult([]updates.Action{{Component: c, Kind: updates.ActionNotify, LatestKnown: true}})
@@ -232,8 +232,8 @@ func TestApplyGuidanceForHostDependencies(t *testing.T) {
 		t.Errorf("--jre guidance is the plain installer re-run:\n%s", jre)
 	}
 	pg := renderApplyGuidance(notify("postgresql"), map[string]bool{"postgres": true}, false)
-	if !strings.Contains(pg, "apt-get install --only-upgrade") || strings.Contains(pg, "Re-running the installer") {
-		t.Errorf("--postgres guidance is the package manager, without the installer trailer:\n%s", pg)
+	if !strings.Contains(pg, "| sudo bash") || strings.Contains(pg, "FELIS_UPGRADE_DEPS") || strings.Contains(pg, "apt-get") || strings.Contains(pg, "systemctl") {
+		t.Errorf("--postgres guidance is the plain installer re-run that moves the image pin:\n%s", pg)
 	}
 }
 

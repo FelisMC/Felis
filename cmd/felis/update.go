@@ -128,8 +128,9 @@ var updateTargets = []updateTarget{
 		selector:  "postgres",
 		help:      "select PostgreSQL",
 		component: "postgresql",
-		note:      "PostgreSQL comes from the distribution's packages, so a minor release is a package update followed by a restart (a few seconds without the API). A new major needs pg_upgrade first: docs/operations.md §4",
-		command:   "sudo dnf upgrade 'postgresql*' || sudo apt-get install --only-upgrade 'postgresql*'; sudo systemctl restart postgresql",
+		note:      "PostgreSQL runs as the felis-postgres Deployment from the image the Felis release pins by digest; a newer minor reaches the host with a release that moves the pin, and the installer re-run restarts the database on it (a few seconds without the API). A new major is a dump and restore: docs/operations.md §4",
+		command:   installerRerun,
+		installer: true,
 	},
 	{
 		selector:  "mc",
@@ -149,8 +150,9 @@ var updateTargets = []updateTarget{
 // reinstall/repair case.
 //
 // It never applies anything and never mutates the node, so unlike setup/breakGlass
-// it needs no root. The versions it reads come from this host: k3s, cloudflared and
-// PostgreSQL answer `--version`, Velocity's version is read out of the installed jar's
+// it needs no root, apart from PostgreSQL's version, which the felis-postgres container
+// answers through the cluster's admin kubeconfig. The versions it reads come from this
+// host: k3s, cloudflared and PostgreSQL answer `--version`, Velocity's version is read out of the installed jar's
 // manifest, the JRE's out of its release file, and felis-api's is this binary's own
 // build stamp — the same value `felis version` prints, which is what the user asked
 // to be the source of truth.

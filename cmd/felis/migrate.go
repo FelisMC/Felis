@@ -18,7 +18,8 @@ import (
 // database that already holds a schema and has migrations pending is bundled
 // first (internal/dbbackup, label pre-migrate). A failed snapshot stops the
 // upgrade; -no-backup is the explicit way past it, e.g. for an external
-// database whose server is newer than the host's pg_dump.
+// database (no [database] deployment, so the host's own pg_dump runs) whose
+// server is newer than that pg_dump.
 func cmdMigrate(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("migrate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
