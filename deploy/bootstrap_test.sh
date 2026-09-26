@@ -1639,7 +1639,7 @@ err="$(run_write "$adir/out.toml" "$adir" 2>&1)"
 for key in admin_hostname panel_hostname; do
   got="$(grep "^${key} = " "$adir/out.toml")"
   case "$got" in
-    *$'\n'*) echo "FAIL: a long carried [auth] wrote ${key} twice:"; printf '%s\n' "$got"; fails=$((fails + 1)) ;;
+    *"$nl"*) echo "FAIL: a long carried [auth] wrote ${key} twice:"; printf '%s\n' "$got"; fails=$((fails + 1)) ;;
     "") echo "FAIL: a long carried [auth] lost ${key}"; fails=$((fails + 1)) ;;
     *) echo "PASS a long carried [auth] writes ${key} once: ${got}" ;;
   esac
