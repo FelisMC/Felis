@@ -637,12 +637,20 @@ func (p *PGRepo) ServerOwners(ctx context.Context) (map[string]ServerOwnership, 
 }
 
 // SeedServer inserts the business rows backing a newly created server (spec
-// §15): the servers row (owner_id left NULL — the server is created unowned and
-// claimed later, spec §9.3) and its subdomain alias. Both inserts are
-// ON CONFLICT DO NOTHING so a retried create is idempotent. The alias subdomain
-// is a PRIMARY KEY, so a no-op insert means it was already bound; we then
-// confirm it resolves to this server and return ErrConflict otherwise, letting
+// §15): the servers row (owner_id NULL — the server is created unowned and
+// claimed later, spec §9.3) and its subdomain alias. The create handler has
+// already found no server and no world volume of this name, so a row that is
+// here belongs to an earlier server of the same name: one removed with kubectl,
+// or a create whose CRD write failed. That row starts over, and the earlier
+// server's other aliases and allowlist go with it; nothing of its owner, claim,
+// activity clock or reaper warnings reaches the new server. A retried create
+// lands on the same fresh state. The alias subdomain is a PRIMARY KEY: bound to
+// another server, it rolls the whole seed back and returns ErrConflict, letting
 // the create handler answer 409 before it touches the CRD.
+//
+// Two creates of one name racing between the handler's cluster check and the
+// first CRD write can still leave the loser's alias in place of the winner's;
+// that window is the create path's documented non-transactional tradeoff.
 func (p *PGRepo) SeedServer(ctx context.Context, name, subdomain string, cpuMilli, memoryMB, storageMB int) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -651,8 +659,19 @@ func (p *PGRepo) SeedServer(ctx context.Context, name, subdomain string, cpuMill
 	defer tx.Rollback() //nolint:errcheck // no-op after commit
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO servers (name, cached_cpu_milli, cached_memory_mb, cached_storage_mb) VALUES ($1, $2, $3, $4) ON CONFLICT (name) DO UPDATE SET cached_cpu_milli = EXCLUDED.cached_cpu_milli, cached_memory_mb = EXCLUDED.cached_memory_mb, cached_storage_mb = EXCLUDED.cached_storage_mb`, name, cpuMilli, memoryMB, storageMB); err != nil {
+		`INSERT INTO servers (name, cached_cpu_milli, cached_memory_mb, cached_storage_mb) VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (name) DO UPDATE SET owner_id = NULL, claimed_at = NULL, last_active_at = now(),
+		   warned_3d_at = NULL, warned_1d_at = NULL, cached_phase = NULL, created_at = now(), deleted_at = NULL,
+		   cached_cpu_milli = EXCLUDED.cached_cpu_milli, cached_memory_mb = EXCLUDED.cached_memory_mb,
+		   cached_storage_mb = EXCLUDED.cached_storage_mb`,
+		name, cpuMilli, memoryMB, storageMB); err != nil {
 		return fmt.Errorf("seed server row: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM server_allowlist WHERE server_name = $1`, name); err != nil {
+		return fmt.Errorf("clear an earlier allowlist: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM server_aliases WHERE server_name = $1`, name); err != nil {
+		return fmt.Errorf("clear earlier aliases: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO server_aliases (subdomain, server_name) VALUES ($1, $2) ON CONFLICT DO NOTHING`,

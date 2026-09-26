@@ -626,6 +626,98 @@ func TestSetQuotasReplacesEveryCap(t *testing.T) {
 	}
 }
 
+// A server removed with kubectl leaves its servers row, aliases and allowlist
+// behind, and the create handler lets its name be reused once the world volume is
+// gone too. SeedServer used to refresh only the resource cache, so the new server
+// came up owned by the earlier owner (and charged to their quota), reachable at
+// the earlier subdomain, with the earlier allowlist, reaper warnings and even the
+// earlier deleted_at. The new server must start clean.
+func TestSeedServerReusedNameStartsClean(t *testing.T) {
+	ctx := context.Background()
+	u := newUser(t, "user", "seedold")
+	name, oldSub, oldSub2, newSub := "sd-"+suffix(t), "sdo-"+suffix(t), "sdp-"+suffix(t), "sdn-"+suffix(t)
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx, q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if err := repo.SeedServer(ctx, name, oldSub, 1000, 2048, 10240); err != nil {
+		t.Fatalf("seed the earlier server: %v", err)
+	}
+	past := time.Now().Add(-90 * 24 * time.Hour)
+	exec(`UPDATE servers SET owner_id = $2, claimed_at = $3, last_active_at = $3, warned_3d_at = $3,
+		warned_1d_at = $3, cached_phase = 'Running', created_at = $3, deleted_at = $3 WHERE name = $1`, name, u.ID, past)
+	exec(`INSERT INTO server_aliases (subdomain, server_name) VALUES ($1, $2)`, oldSub2, name)
+	exec(`INSERT INTO server_allowlist (server_name, mc_uuid) VALUES ($1, $2)`, name, testUUID(t))
+
+	state := func() string {
+		t.Helper()
+		var owner, phase sql.NullString
+		var claimed, w3, w1, deleted sql.NullTime
+		var created, active time.Time
+		var cpu, mem, stor, allow int
+		var aliases string
+		if err := db.QueryRowContext(ctx,
+			`SELECT owner_id, claimed_at, warned_3d_at, warned_1d_at, cached_phase, deleted_at, created_at, last_active_at,
+			        cached_cpu_milli, cached_memory_mb, cached_storage_mb,
+			        (SELECT count(*) FROM server_allowlist WHERE server_name = s.name),
+			        (SELECT COALESCE(string_agg(subdomain, ',' ORDER BY subdomain), '') FROM server_aliases WHERE server_name = s.name)
+			 FROM servers s WHERE name = $1`, name).Scan(
+			&owner, &claimed, &w3, &w1, &phase, &deleted, &created, &active, &cpu, &mem, &stor, &allow, &aliases); err != nil {
+			t.Fatalf("read the servers row: %v", err)
+		}
+		recent := func(at time.Time) bool { return time.Since(at) < time.Hour }
+		return fmt.Sprintf("owner=%v claimed=%v warned=%v/%v phase=%v deleted=%v fresh=%v/%v cache=%d/%d/%d allow=%d aliases=%s",
+			owner.Valid, claimed.Valid, w3.Valid, w1.Valid, phase.Valid, deleted.Valid, recent(created), recent(active),
+			cpu, mem, stor, allow, strings.ReplaceAll(strings.ReplaceAll(aliases, oldSub2, "old2"), oldSub, "old"))
+	}
+	earlier := "owner=true claimed=true warned=true/true phase=true deleted=true fresh=false/false cache=1000/2048/10240 allow=1 aliases=old,old2"
+	if got := state(); got != earlier {
+		t.Fatalf("setup: %s, want %s", got, earlier)
+	}
+
+	// The new subdomain is bound to another server: the seed changes nothing.
+	other, otherSub := "sdz-"+suffix(t), "sdzs-"+suffix(t)
+	if err := repo.SeedServer(ctx, other, otherSub, 100, 128, 1024); err != nil {
+		t.Fatalf("seed the other server: %v", err)
+	}
+	if err := repo.SeedServer(ctx, name, otherSub, 2000, 4096, 20480); !errors.Is(err, api.ErrConflict) {
+		t.Fatalf("seed onto a subdomain another server holds = %v, want ErrConflict", err)
+	}
+	if got := state(); got != earlier {
+		t.Fatalf("a refused seed changed the row: %s, want %s", got, earlier)
+	}
+
+	clean := "owner=false claimed=false warned=false/false phase=false deleted=false fresh=true/true cache=2000/4096/20480 allow=0 aliases=" + newSub
+	for i := 0; i < 2; i++ { // a retried create lands on the same state
+		if err := repo.SeedServer(ctx, name, newSub, 2000, 4096, 20480); err != nil {
+			t.Fatalf("seed the new server (try %d): %v", i+1, err)
+		}
+		if got := state(); got != clean {
+			t.Fatalf("after seeding the new server (try %d): %s, want %s", i+1, got, clean)
+		}
+	}
+	rec, err := repo.ServerByName(ctx, name)
+	if err != nil || rec.OwnerID != "" || rec.Subdomain != newSub {
+		t.Fatalf("ServerByName = %+v, %v; want the new server, unowned, at %s", rec, err, newSub)
+	}
+	for _, sub := range []string{oldSub, oldSub2} {
+		var n int
+		if err := db.QueryRowContext(ctx, `SELECT count(*) FROM server_aliases WHERE subdomain = $1`, sub).Scan(&n); err != nil || n != 0 {
+			t.Fatalf("the earlier subdomain %s still resolves (%d rows, %v)", sub, n, err)
+		}
+	}
+
+	// The earlier server's own subdomain may come back with it.
+	if err := repo.SeedServer(ctx, name, oldSub, 2000, 4096, 20480); err != nil {
+		t.Fatalf("seed at the earlier subdomain: %v", err)
+	}
+	if got, want := state(), strings.Replace(clean, "aliases="+newSub, "aliases=old", 1); got != want {
+		t.Fatalf("after seeding at the earlier subdomain: %s, want %s", got, want)
+	}
+}
+
 // The fleet read needs every live server's claim state: the owner's id to tell
 // the caller's own servers apart, the display name (email, else username), and
 // the unclaimed rows too, since only those may be claimed. A soft-deleted row is

@@ -387,10 +387,13 @@ type Repo interface {
 	BackupStoreBytes(ctx context.Context) (int64, error)
 	// SeedServer inserts the business-layer rows for a newly created server (spec
 	// §15): a servers row (owner_id NULL — claimed later, spec §9.3) and its
-	// subdomain alias, both idempotent. The resource cache (cpuMilli, memoryMB,
-	// storageMB) is seeded alongside so QuotaCheck can aggregate per-owner usage
-	// without cross-system CRD reads. It returns ErrConflict if the subdomain is
-	// already bound to a different server.
+	// subdomain alias. A row left by an earlier server of the same name starts over:
+	// no owner, claim, activity clock, reaper warnings, other aliases or allowlist
+	// carry over, and a retried create lands on the same fresh state. The resource
+	// cache (cpuMilli, memoryMB, storageMB) is seeded alongside so QuotaCheck can
+	// aggregate per-owner usage without cross-system CRD reads. It returns
+	// ErrConflict, and changes nothing, if the subdomain is already bound to a
+	// different server.
 	SeedServer(ctx context.Context, name, subdomain string, cpuMilli, memoryMB, storageMB int) error
 	// UpdateServerResources updates the resource cache columns for a server
 	// after a spec mutation (spec §7 PATCH), so the per-owner aggregate stays in

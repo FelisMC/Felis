@@ -878,6 +878,12 @@ func (f *fakeRepo) SeedServer(_ context.Context, name, subdomain string, _, _, _
 	if bound, ok := f.aliases[subdomain]; ok && bound != name {
 		return ErrConflict
 	}
+	// Like the SQL: an earlier server of this name gives up its other aliases.
+	for sub, bound := range f.aliases {
+		if bound == name && sub != subdomain {
+			delete(f.aliases, sub)
+		}
+	}
 	f.seeded[name] = true
 	f.aliases[subdomain] = name
 	return nil
