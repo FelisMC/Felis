@@ -790,7 +790,10 @@ control namespace (or `--registry-namespace`):
   100 MB, never sees a body that large; a dropped connection resumes from the
   staged length, and a staged upload untouched for 24 hours is deleted. The
   staged bytes count toward the budgets below. A script can still POST a whole
-  context in one body, which the edge caps at 100 MB.
+  context in one body, which the edge caps at 100 MB. With an `s3://`
+  `user_uploads_context`, felis-api sends the finished context on to the bucket
+  in 8 MiB parts, so an upload of any size holds 8 MiB of its memory; S3's
+  10,000 parts put the ceiling at about 78 GiB.
   Uploaded build contexts are bounded by `user_uploads_max_bytes` (4Gi for all
   users together, §8e), 2 GiB per user, and 10% free space on the volume; past
   any of them an upload answers `507 uploads_full` or `403 submission_quota_exceeded`. A

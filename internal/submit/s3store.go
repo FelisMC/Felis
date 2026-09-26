@@ -155,21 +155,49 @@ func (s *S3ContextStore) keyFor(id string) (string, error) {
 	return path.Join(s.prefix, id, contextBlobName), nil
 }
 
+// s3PartSize is the size every upload is cut into, and so the one buffer an upload
+// holds in memory. Left unset, minio-go sizes the parts of a stream of unknown
+// length for a 5TiB object (528MiB each) and allocates one whole part before the
+// first byte arrives, twice felis-api's 256Mi memory limit: the first large modpack
+// would OOMKill the panel.
+const s3PartSize = 8 << 20
+
+// s3MaxObject is what the 10,000 parts S3 allows hold at s3PartSize: about 78GiB,
+// far past the 1GiB default context cap.
+const s3MaxObject = s3PartSize * 10000
+
 // Put streams r to the derived object key. Size is unknown (the Manager hands us a
-// size-capped reader), so it is uploaded with size -1 (multipart). PutObject is
-// atomic from a reader's perspective — a partial upload never becomes a readable
-// object — so a failed or oversize upload never replaces a good context. It
-// returns the number of bytes stored.
+// size-capped reader), so it is uploaded as s3PartSize parts. PutObject is atomic
+// from a reader's perspective — a partial upload never becomes a readable object —
+// so a failed or oversize upload never replaces a good context. It returns the
+// number of bytes stored.
 func (s *S3ContextStore) Put(ctx context.Context, id string, r io.Reader) (int64, error) {
 	key, err := s.keyFor(id)
 	if err != nil {
 		return 0, err
 	}
-	info, err := s.client.PutObject(ctx, s.bucket, key, r, -1, minio.PutObjectOptions{ContentType: "application/gzip"})
+	info, err := s.client.PutObject(ctx, s.bucket, key, r, -1, minio.PutObjectOptions{ContentType: "application/gzip", PartSize: s3PartSize})
 	if err != nil {
 		return 0, fmt.Errorf("submit: put context blob: %w", err)
 	}
-	return info.Size, nil
+	var probe [1]byte
+	n, rerr := io.ReadFull(r, probe[:])
+	if n == 0 && rerr == io.EOF {
+		return info.Size, nil
+	}
+	// minio-go stops reading after the last part S3 allows and completes the object
+	// with what it has, so a longer stream (a context cap configured past
+	// s3MaxObject) is stored cut short and reported as a success. Anything but a
+	// clean end here means the stored object is not the upload.
+	if n > 0 {
+		rerr = fmt.Errorf("submit: context blob exceeds the %d-byte multipart limit", int64(s3MaxObject))
+	} else {
+		rerr = fmt.Errorf("submit: put context blob: %w", rerr)
+	}
+	if err := s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{}); err != nil {
+		return 0, fmt.Errorf("%w (removing the truncated object also failed: %v)", rerr, err)
+	}
+	return 0, rerr
 }
 
 // Exists reports whether a context blob has been stored for id. Approve consults
