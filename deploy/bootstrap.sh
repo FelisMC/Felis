@@ -448,9 +448,11 @@ PG_LOCKOUT_LINE="# The felis database moved into k3s (felis-postgres); nothing e
 # The units that write to the database from the host; the move stops them and starts
 # again the ones that were running.
 PG_MOVE_TIMERS=(felis-db-backup felis-offsite felis-update-check felis-watchdog)
-# Each public table with its exact row count, one per line, in a collation-independent
-# order, so the two servers' answers compare byte for byte.
-PG_TABLE_COUNTS="SELECT c.relname || ' ' || (xpath('/row/n/text()', query_to_xml(format('SELECT count(*) AS n FROM public.%I', c.relname), false, true, '')))[1]::text FROM pg_class c JOIN pg_namespace s ON s.oid = c.relnamespace WHERE s.nspname = 'public' AND c.relkind IN ('r', 'p') ORDER BY 1 COLLATE \"C\""
+# Each public table with its exact row count, one per line, in byte order of the table names
+# whatever the servers' collations (relname is a name, which sorts in collation "C" since
+# PostgreSQL 12), so the two servers' answers compare byte for byte. internal/pgint runs it
+# on the oldest and newest server the installer meets; the shell tests stub psql.
+PG_TABLE_COUNTS="SELECT c.relname || ' ' || (xpath('/row/n/text()', query_to_xml(format('SELECT count(*) AS n FROM public.%I', c.relname), false, true, '')))[1]::text FROM pg_class c JOIN pg_namespace s ON s.oid = c.relnamespace WHERE s.nspname = 'public' AND c.relkind IN ('r', 'p') ORDER BY c.relname"
 PG_MOVE_STAGE=""
 PG_MOVE_HBA=""
 PG_MOVE_UNITS=()
