@@ -269,71 +269,57 @@ func TestEnableLocalAuth(t *testing.T) {
 	}
 }
 
-func TestAuthenticateAdmin(t *testing.T) {
+func TestResolveAdmin(t *testing.T) {
 	ctx := context.Background()
 
-	// Password verification is gone (passwordless design): authenticateAdmin now only
-	// resolves the named admin so recovery can attribute the audit to a real identity.
-	// The security boundary is the break-glass root gate, not a typed secret.
+	// resolveAdmin only finds the staff account a typed name points at; proving the
+	// operator holds it is the mailed code's job (beginRecovery).
 
-	t.Run("resolves an existing admin for attribution", func(t *testing.T) {
+	t.Run("resolves an existing admin", func(t *testing.T) {
 		f := &fakeOwnerStore{users: map[string]*api.StaffUser{"root": mkAdmin("root")}}
-		matched, ok, err := authenticateAdmin(ctx, f, "root")
+		u, err := resolveAdmin(ctx, f, "  root ")
 		if err != nil {
-			t.Fatalf("authenticateAdmin: %v", err)
+			t.Fatalf("resolveAdmin: %v", err)
 		}
-		if !ok {
-			t.Fatal("ok = false, want true for an existing admin")
-		}
-		if matched != "root" {
-			t.Errorf("matched = %q, want root", matched)
+		if u == nil || u.Username != "root" {
+			t.Fatalf("resolveAdmin = %+v, want the root admin", u)
 		}
 	})
 
-	t.Run("a non-admin role can never attribute a break-glass", func(t *testing.T) {
+	t.Run("a non-admin role is no staff account", func(t *testing.T) {
 		player := mkAdmin("alice")
 		player.Role = "user" // a player row is not staff
 		f := &fakeOwnerStore{users: map[string]*api.StaffUser{"alice": player}}
-		_, ok, err := authenticateAdmin(ctx, f, "alice")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if ok {
-			t.Error("ok = true, want false for a non-admin role")
+		if u, err := resolveAdmin(ctx, f, "alice"); u != nil || err != nil {
+			t.Errorf("resolveAdmin(player) = (%+v, %v), want (nil, nil)", u, err)
 		}
 	})
 
-	t.Run("the owner role attributes like an admin", func(t *testing.T) {
+	t.Run("the owner role counts as staff", func(t *testing.T) {
 		owner := mkAdmin("root")
 		owner.Role = "owner" // the platform owner is staff too (migration 0011)
 		f := &fakeOwnerStore{users: map[string]*api.StaffUser{"root": owner}}
-		matched, ok, err := authenticateAdmin(ctx, f, "root")
-		if err != nil || !ok || matched != "root" {
-			t.Fatalf("authenticateAdmin(owner) = (%q, %v, %v), want (root, true, nil)", matched, ok, err)
+		if u, err := resolveAdmin(ctx, f, "root"); err != nil || u == nil {
+			t.Fatalf("resolveAdmin(owner) = (%+v, %v), want the owner", u, err)
 		}
 	})
 
-	t.Run("an unknown user is a non-match, not an error", func(t *testing.T) {
-		f := &fakeOwnerStore{}
-		_, ok, err := authenticateAdmin(ctx, f, "nobody")
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if ok {
-			t.Error("ok = true, want false for an unknown user")
+	t.Run("an unknown user is nil, not an error", func(t *testing.T) {
+		if u, err := resolveAdmin(ctx, &fakeOwnerStore{}, "nobody"); u != nil || err != nil {
+			t.Errorf("resolveAdmin(unknown) = (%+v, %v), want (nil, nil)", u, err)
 		}
 	})
 
-	t.Run("an empty username is a non-match with no store call", func(t *testing.T) {
+	t.Run("an empty username makes no store call", func(t *testing.T) {
 		f := &fakeOwnerStore{userErr: errors.New("must not be called")}
-		if _, ok, err := authenticateAdmin(ctx, f, ""); ok || err != nil {
-			t.Errorf("empty username: ok=%v err=%v, want false,nil", ok, err)
+		if u, err := resolveAdmin(ctx, f, " "); u != nil || err != nil {
+			t.Errorf("empty username: (%+v, %v), want (nil, nil)", u, err)
 		}
 	})
 
 	t.Run("a datastore fault is surfaced", func(t *testing.T) {
 		f := &fakeOwnerStore{userErr: errors.New("db down")}
-		if _, _, err := authenticateAdmin(ctx, f, "root"); err == nil {
+		if _, err := resolveAdmin(ctx, f, "root"); err == nil {
 			t.Fatal("want error when the store fails")
 		}
 	})
@@ -401,6 +387,8 @@ func TestPerformBreakGlass(t *testing.T) {
 			osUser:         "alice",
 			ownerUsername:  "owner",
 			attemptedAdmin: "root",
+			verifiedBy:     verifiedByEmailOTP,
+			codeSentTo:     "root@example.com",
 		}
 		out, err := performBreakGlass(ctx, f, op)
 		if err != nil {
@@ -425,6 +413,23 @@ func TestPerformBreakGlass(t *testing.T) {
 		if payload["admin_account"] != "root" {
 			t.Errorf("payload.admin_account = %v, want root", payload["admin_account"])
 		}
+		if payload["verified_by"] != verifiedByEmailOTP || payload["code_sent_to"] != "root@example.com" {
+			t.Errorf("payload = %v, want verified_by=email_otp code_sent_to=root@example.com", payload)
+		}
+		if _, present := payload["otp_skipped"]; present {
+			t.Error("a proven recovery carries no otp_skipped")
+		}
+	})
+
+	t.Run("recovery without a proof is recorded unverified", func(t *testing.T) {
+		f := &fakeOwnerStore{}
+		op := breakGlassOp{mode: "recovery", accountable: "root", osUser: "alice", ownerUsername: "owner", attemptedAdmin: "root"}
+		if _, err := performBreakGlass(ctx, f, op); err != nil {
+			t.Fatalf("performBreakGlass: %v", err)
+		}
+		if _, payload := auditOf(t, f); payload["verified"] != false {
+			t.Errorf("payload.verified = %v, want false: only a mailed code verifies", payload["verified"])
+		}
 	})
 
 	t.Run("root override records an unverified row attributed to the OS user", func(t *testing.T) {
@@ -435,6 +440,8 @@ func TestPerformBreakGlass(t *testing.T) {
 			osUser:         "alice",
 			ownerUsername:  "owner",
 			attemptedAdmin: "typo-admin",
+			otpSkipped:     otpSkipSendFailed,
+			otpSkipDetail:  "dial tcp: connection refused",
 		}
 		if _, err := performBreakGlass(ctx, f, op); err != nil {
 			t.Fatalf("performBreakGlass: %v", err)
@@ -449,6 +456,13 @@ func TestPerformBreakGlass(t *testing.T) {
 		// The attempted (failed) admin is preserved so the trail shows what was tried.
 		if payload["admin_account"] != "typo-admin" {
 			t.Errorf("payload.admin_account = %v, want typo-admin", payload["admin_account"])
+		}
+		// Why no code proved anyone is part of the record.
+		if payload["otp_skipped"] != otpSkipSendFailed || payload["otp_skip_detail"] != "dial tcp: connection refused" {
+			t.Errorf("payload = %v, want otp_skipped=send_failed with its detail", payload)
+		}
+		if _, present := payload["verified_by"]; present {
+			t.Error("an override carries no verified_by")
 		}
 	})
 
@@ -616,6 +630,8 @@ func TestPerformAddOperator(t *testing.T) {
 			ownerUsername:  "ops-jordan",
 			ownerEmail:     "jordan@example.com",
 			attemptedAdmin: "root",
+			verifiedBy:     verifiedByEmailOTP,
+			codeSentTo:     "root@example.com",
 		}
 		out, err := performAddOperator(ctx, f, op)
 		if err != nil {
@@ -642,14 +658,14 @@ func TestPerformAddOperator(t *testing.T) {
 		if _, present := payload["owner"]; present {
 			t.Error("payload.owner present, want the new account under the operator key")
 		}
-		if payload["verified"] != true || payload["admin_account"] != "root" {
-			t.Errorf("payload = %v, want verified=true admin_account=root", payload)
+		if payload["verified"] != true || payload["admin_account"] != "root" || payload["verified_by"] != verifiedByEmailOTP {
+			t.Errorf("payload = %v, want verified=true admin_account=root verified_by=email_otp", payload)
 		}
 	})
 
 	t.Run("root override records an unverified operator row", func(t *testing.T) {
 		f := &fakeOwnerStore{}
-		op := breakGlassOp{mode: "root_override", accountable: "alice", osUser: "alice", ownerUsername: "ops", attemptedAdmin: "typo-admin"}
+		op := breakGlassOp{mode: "root_override", accountable: "alice", osUser: "alice", ownerUsername: "ops", attemptedAdmin: "typo-admin", otpSkipped: otpSkipUnknownAdmin}
 		if _, err := performAddOperator(ctx, f, op); err != nil {
 			t.Fatalf("performAddOperator: %v", err)
 		}
@@ -657,8 +673,8 @@ func TestPerformAddOperator(t *testing.T) {
 			t.Fatalf("want 1 insert, got %d", len(f.inserts))
 		}
 		_, payload := auditOf(t, f)
-		if payload["verified"] != false {
-			t.Errorf("payload.verified = %v, want false for root_override", payload["verified"])
+		if payload["verified"] != false || payload["otp_skipped"] != otpSkipUnknownAdmin {
+			t.Errorf("payload = %v, want verified=false otp_skipped=unknown_admin", payload)
 		}
 	})
 

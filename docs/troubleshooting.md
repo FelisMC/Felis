@@ -2270,6 +2270,42 @@ sudo felis db audit-export -until 2026-01-01 -out /root/audit-2025.jsonl
 window is `[since, until)`. Each line is one row as JSON, oldest first. The
 file is created `0600` and an existing file is never overwritten.
 
+### `felis breakGlass`: the recovery code and the OVERRIDE [VM-VERIFIED]
+
+Once a staff account exists, `sudo felis breakGlass` asks which admin or owner
+is breaking the glass and mails that account's verified address a six-digit
+code through the same `[smtp]` relay as the sign-in codes. The code works for
+10 minutes and five wrong ones end it. The console reads the relay password
+the way the watchdog does (the `password_ref` env var, else the `felis-smtp`
+Secret, else no AUTH), and the mail skips the API's `max_per_hour` budget.
+Only the right code makes the run a `recovery` attributed to that account; the
+mail says which host and OS user asked, so an admin who did not ask learns
+that root there is in other hands.
+
+Every other ending leads to the typed `OVERRIDE`, and the screen says why:
+the name matches no staff account, the account has no verified address, no
+relay (`[smtp] is not configured in felis.toml`, or the Secret could not be
+read), the relay refused the mail, the code expired or took five wrong tries,
+or the operator typed `OVERRIDE` at the code prompt. Esc on either screen
+starts over with a new code. With the relay down recovery still works, as an
+unverified override that records the reason.
+
+The audit row is `break_glass.recovery` or `break_glass.root_override`
+(`break_glass.operator_create` for a new Operator account), source
+`break-glass`. `verified` is true only for a run a code proved, which also
+carries `verified_by: email_otp` and `code_sent_to`. An override carries
+`otp_skipped` (`unknown_admin`, `no_verified_email`, `no_relay`,
+`send_failed`, `code_expired`, `code_rejected`, `operator_skipped`) and, where
+something failed, `otp_skip_detail`. Root can edit the row afterwards, so it
+records attribution without proving it.
+
+```sh
+sudo -u postgres psql felis -c "
+  SELECT created_at, action, actor, payload->>'verified' AS verified,
+         payload->>'otp_skipped' AS skipped, payload->>'otp_skip_detail' AS detail
+  FROM audit_logs WHERE source = 'break-glass' ORDER BY created_at DESC LIMIT 20;"
+```
+
 ### Optional: a Cloudflare rate limiting rule in front
 
 The limits above live in the API, so they hold on any edge. Behind Cloudflare
@@ -2319,4 +2355,5 @@ for 10 seconds (the Free plan's limits).
 | Right code refused; `otp_account_locked` / `FelisOTPAccountLocked` | §17 |
 | `FelisSignInFailures` / who is guessing, from where | §17 |
 | `FelisAuditWriteFailing` | §17 |
+| `felis breakGlass` sends no code / shows `Root override`; `otp_skipped` in the audit | §17 |
 | How long sessions, codes and audit rows are kept; export audit rows | §17 |

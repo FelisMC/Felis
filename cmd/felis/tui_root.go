@@ -142,6 +142,7 @@ type rootModel struct {
 	accessAud   string
 	namespace   string // minecraft workload namespace (cfg.K8s.Namespace); target of the halt op
 	adminExists bool
+	recovery    recoveryConfig // how the account operations mail a recovery code
 }
 
 func newRootModel(ctx context.Context, store ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool, mode consoleMode) *rootModel {
@@ -221,7 +222,7 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.stage = stageOwner
 		switch msg.op {
 		case bgAddOperator:
-			return m.adopt(newOperatorModel(m.ctx, m.store, m.osUser))
+			return m.adopt(newOperatorModel(m.ctx, m.store, m.osUser).withRecovery(m.recovery))
 		case bgHaltServer:
 			return m.adopt(newHaltModel(m.ctx, m.store, m.namespace, m.osUser))
 		case bgSyncBackup:
@@ -229,7 +230,7 @@ func (m *rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Service + service token the peer dials live in the control namespace.
 			return m.adopt(newBackupModel(m.ctx, m.namespace, platform.DefaultControlNamespace, m.osUser))
 		default:
-			return m.adopt(newOwnerModel(m.ctx, m.store, m.osUser, m.adminExists))
+			return m.adopt(newOwnerModel(m.ctx, m.store, m.osUser, m.adminExists).withRecovery(m.recovery))
 		}
 
 	case haltResultMsg:

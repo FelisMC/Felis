@@ -17,6 +17,7 @@ import (
 
 	"felis.lolicon.best/internal/api"
 	"felis.lolicon.best/internal/config"
+	"felis.lolicon.best/internal/platform"
 	"felis.lolicon.best/internal/store"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -33,13 +34,15 @@ import (
 //
 // Root is necessary but NOT sufficient for accountability: root is machine
 // authority, not a human identity, so the console additionally captures WHO is
-// breaking the glass. When a staff account already exists it asks the operator to
-// authenticate as an existing admin (the verified identity is the accountable
-// actor); when none exists yet it bootstraps the first Owner from the typed
-// credential and attributes the act to the OS user. The audit row records the
-// difference. This attribution is best-effort, not tamper-proof — whoever runs
-// this is root and can edit Postgres directly — but it produces an honest trail
-// for an honest operator, which is the point.
+// breaking the glass. When a staff account already exists the operator names one
+// and types the one-time code the console mails to its verified address
+// (breakglass_otp.go); that account is then the accountable actor. When no code can
+// be sent or proven, the typed OVERRIDE proceeds as the OS user and the audit row
+// says why. When no staff account exists yet it bootstraps the first Owner and
+// attributes the act to the OS user. The audit row records which of these
+// happened. This attribution is best-effort, not tamper-proof — whoever runs this
+// is root and can edit Postgres directly — but it produces an honest trail for an
+// honest operator, which is the point.
 //
 // When a staff account already exists the console opens on a thin top-level menu
 // (menuModel) so that operations are peers, not tails of one wizard. Two account
@@ -62,7 +65,7 @@ import (
 // suspension for the interactive `cloudflared tunnel login` browser consent.
 
 // breakGlassOverrideToken is the literal an operator must type to proceed when no
-// admin credential could be verified. Requiring an explicit, deliberate word (not a
+// admin could be verified by a mailed code. Requiring an explicit, deliberate word (not a
 // bare Enter) keeps the unverified root override from happening by reflex.
 const breakGlassOverrideToken = "OVERRIDE"
 
@@ -142,7 +145,7 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 	repo := api.NewPGRepo(drv.DB())
 
 	// Decide bootstrap (no admin yet → typed credential mints the first Owner) vs
-	// recovery (an admin exists → the operator must authenticate as one) BEFORE the
+	// recovery (an admin exists → the operator proves one with a mailed code) BEFORE the
 	// alt-screen TUI takes over, so a database fault surfaces as a plain error.
 	adminExists, err := repo.AdminExists(ctx)
 	if err != nil {
@@ -150,7 +153,12 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	res, err := runBreakGlassTUI(ctx, repo, cfg.Database.URL, cfg.Server.RootDomain, cfg.Auth.AdminHostname, cfg.Auth.PanelHostname, cfg.Auth.AccessJWTAud, cfg.K8s.Namespace, accountableOSUser(), adminExists)
+	// Recovery mails its code through [smtp]; the relay is opened only if a code is
+	// asked for.
+	host, _ := os.Hostname()
+	recovery := recoveryConfig{open: hostRecoveryMailer(cfg.SMTP, platform.DefaultControlNamespace), host: host}
+
+	res, err := runBreakGlassTUI(ctx, repo, cfg.Database.URL, cfg.Server.RootDomain, cfg.Auth.AdminHostname, cfg.Auth.PanelHostname, cfg.Auth.AccessJWTAud, cfg.K8s.Namespace, accountableOSUser(), adminExists, recovery)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis breakGlass: %v\n", err)
 		return 1
@@ -174,6 +182,9 @@ func cmdBreakGlass(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "\nfelis breakGlass: Owner account %q provisioned; local session sign-in is ENABLED.\n", res.username)
 		}
 		fmt.Fprintf(stdout, "Recorded as %q (mode: %s, os user: %s).\n", res.accountable, res.mode, res.osUser)
+		if res.mode == "root_override" {
+			fmt.Fprintln(stdout, "No admin was proven by an email code; the audit row records this run as an unverified root override and why.")
+		}
 		if res.setupTokenURL != "" {
 			fmt.Fprintf(stdout, "One-time setup URL (opens a lockdown session to verify email / enroll passkey):\n\n    %s\n\n", res.setupTokenURL)
 		}
@@ -256,29 +267,6 @@ func newOwnerID() string {
 		return ""
 	}
 	return "usr-" + hex.EncodeToString(b[:])
-}
-
-// authenticateAdmin resolves a typed admin username for recovery-mode attribution.
-// Password verification is gone (passwordless design); Phase 3 replaces this with
-// email-OTP recovery. For now it confirms the named admin exists.
-func authenticateAdmin(ctx context.Context, s ownerStore, username string) (matched string, ok bool, err error) {
-	username = strings.TrimSpace(username)
-	if username == "" {
-		return "", false, nil
-	}
-	u, err := s.UserByUsername(ctx, username)
-	if errors.Is(err, api.ErrNotFound) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, err
-	}
-	// Staff means admin OR owner: recovery attribution must accept the Owner (the
-	// primary break-glass identity), not just plain admins.
-	if u.Role != "admin" && u.Role != "owner" {
-		return "", false, nil
-	}
-	return u.Username, true, nil
 }
 
 // provisionOwner mints or resets the single Owner account direct-to-Postgres,
@@ -371,6 +359,10 @@ type breakGlassOp struct {
 	ownerUsername  string
 	ownerEmail     string
 	attemptedAdmin string // recovery / override: the admin username the operator typed
+	verifiedBy     string // recovery: how the admin was proven (verifiedByEmailOTP)
+	codeSentTo     string // recovery: the address the proving code went to
+	otpSkipped     string // root_override: why no code proved an admin (otpSkip*)
+	otpSkipDetail  string // root_override: what failed, when something did
 }
 
 // breakGlassOutcome is what performBreakGlass reports back to the TUI.
@@ -494,16 +486,7 @@ func auditSetupMCBind(ctx context.Context, s ownerStore, osUser, mcUUID, authSou
 // does not fail the recovery if this write fails — and intentionally honest: it
 // records attribution, it does not prove it (a malicious root can edit the row).
 func auditBreakGlass(ctx context.Context, s ownerStore, op breakGlassOp) error {
-	payload := map[string]any{
-		"mode":     op.mode,
-		"owner":    op.ownerUsername,
-		"os_user":  op.osUser,
-		"verified": op.mode == "recovery",
-	}
-	if op.attemptedAdmin != "" {
-		payload["admin_account"] = op.attemptedAdmin
-	}
-	blob, err := json.Marshal(payload)
+	blob, err := json.Marshal(breakGlassPayload(op, "owner"))
 	if err != nil {
 		return err
 	}
@@ -513,6 +496,33 @@ func auditBreakGlass(ctx context.Context, s ownerStore, op breakGlassOp) error {
 		Action:  "break_glass." + op.mode,
 		Payload: blob,
 	})
+}
+
+// breakGlassPayload is the who/how both account audits carry, with the account the
+// run wrote under subjectKey. verified is true only for a run a mailed code proved;
+// such a run names the address the code went to, and an override names why no code
+// proved anyone.
+func breakGlassPayload(op breakGlassOp, subjectKey string) map[string]any {
+	payload := map[string]any{
+		"mode":     op.mode,
+		subjectKey: op.ownerUsername,
+		"os_user":  op.osUser,
+		"verified": op.verifiedBy != "",
+	}
+	if op.attemptedAdmin != "" {
+		payload["admin_account"] = op.attemptedAdmin
+	}
+	if op.verifiedBy != "" {
+		payload["verified_by"] = op.verifiedBy
+		payload["code_sent_to"] = op.codeSentTo
+	}
+	if op.otpSkipped != "" {
+		payload["otp_skipped"] = op.otpSkipped
+		if op.otpSkipDetail != "" {
+			payload["otp_skip_detail"] = op.otpSkipDetail
+		}
+	}
+	return payload
 }
 
 // performAddOperator mints a NEW Operator account and records a best-effort
@@ -538,16 +548,7 @@ func performAddOperator(ctx context.Context, s ownerStore, op breakGlassOp) (bre
 // break_glass.operator_create action, naming the new account under an "operator" key
 // rather than "owner".
 func auditAddOperator(ctx context.Context, s ownerStore, op breakGlassOp) error {
-	payload := map[string]any{
-		"mode":     op.mode,
-		"operator": op.ownerUsername,
-		"os_user":  op.osUser,
-		"verified": op.mode == "recovery",
-	}
-	if op.attemptedAdmin != "" {
-		payload["admin_account"] = op.attemptedAdmin
-	}
-	blob, err := json.Marshal(payload)
+	blob, err := json.Marshal(breakGlassPayload(op, "operator"))
 	if err != nil {
 		return err
 	}
@@ -626,16 +627,19 @@ const (
 	cloudflareAPITokenDocsURL        = "https://developers.cloudflare.com/fundamentals/api/how-to/account-owned-token-template/"
 )
 
-func runBreakGlassTUI(ctx context.Context, s ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool) (breakGlassResult, error) {
-	return runConsoleTUI(ctx, s, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, consoleModeBreakGlass)
+func runBreakGlassTUI(ctx context.Context, s ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool, recovery recoveryConfig) (breakGlassResult, error) {
+	return runConsoleTUI(ctx, s, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, consoleModeBreakGlass, recovery)
 }
 
+// runSetupTUI never reaches recovery: setup with a staff account present lands on
+// the status screen, so it has no relay to hand over.
 func runSetupTUI(ctx context.Context, s ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool) (breakGlassResult, error) {
-	return runConsoleTUI(ctx, s, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, consoleModeSetup)
+	return runConsoleTUI(ctx, s, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, consoleModeSetup, recoveryConfig{})
 }
 
-func runConsoleTUI(ctx context.Context, s ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool, mode consoleMode) (breakGlassResult, error) {
+func runConsoleTUI(ctx context.Context, s ownerStore, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool, mode consoleMode, recovery recoveryConfig) (breakGlassResult, error) {
 	rm := newRootModel(ctx, s, dbURL, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, mode)
+	rm.recovery = recovery
 	final, err := tea.NewProgram(rm, tea.WithAltScreen()).Run()
 	if err != nil {
 		return breakGlassResult{}, err

@@ -187,16 +187,26 @@ func usesMirroredScanDB(cfg *config.Config) bool {
 // forgets it when the Secret is gone (a relay without AUTH). An env var named by
 // [smtp] password_ref, when set, wins at send time instead.
 func refreshSMTPPassword(ctx context.Context, cl client.Client, ns string, state *watchdog.State, stderr io.Writer) {
+	password, err := smtpSecretPassword(ctx, cl, ns)
+	if err != nil {
+		fmt.Fprintf(stderr, "felis watchdog: read %s/%s (keeping the cached relay password): %v\n", ns, platform.SMTPSecretName, err)
+		return
+	}
+	state.SMTPPassword = password
+}
+
+// smtpSecretPassword reads the relay password from the felis-smtp Secret. A missing
+// Secret is a relay without AUTH and reads as "".
+func smtpSecretPassword(ctx context.Context, cl client.Client, ns string) (string, error) {
 	var sec corev1.Secret
 	err := cl.Get(ctx, client.ObjectKey{Namespace: ns, Name: platform.SMTPSecretName}, &sec)
-	switch {
-	case apierrors.IsNotFound(err):
-		state.SMTPPassword = ""
-	case err != nil:
-		fmt.Fprintf(stderr, "felis watchdog: read %s/%s (keeping the cached relay password): %v\n", ns, platform.SMTPSecretName, err)
-	default:
-		state.SMTPPassword = string(sec.Data[platform.SMTPSecretPasswordKey])
+	if apierrors.IsNotFound(err) {
+		return "", nil
 	}
+	if err != nil {
+		return "", err
+	}
+	return string(sec.Data[platform.SMTPSecretPasswordKey]), nil
 }
 
 // ownerEmails pings PostgreSQL and returns the verified addresses of the
