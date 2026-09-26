@@ -40,7 +40,7 @@ concrete host.
 ## 1. Server is stuck in `Starting` and never becomes `Running`
 
 `MinecraftServer.status.phase` stays `Starting`. A start that never succeeds is
-requeued every 5s until one of the two startup budgets expires, then escalated
+requeued every 2s until one of the two startup budgets expires, then escalated
 to `Failed` — `StartupTimeout` if the pod never passed TCP readiness,
 `ReadinessTimeout` if the RCON probe never succeeded. Both default to **300s**
 when `spec.startup.timeoutSeconds` / `spec.startup.readinessTimeoutSeconds` are
@@ -62,13 +62,16 @@ kubectl get minecraftserver <name> -o jsonpath='{.status.conditions}'
 ```
 
 `markStarting` writes the same reason to both `Ready=False` and
-`RconReached=False`. The reason is exactly one of:
+`RconReached=False`. The reason is one of:
 
 | `status.conditions[].reason` | Meaning | Requeue |
 |---|---|---|
-| `PodNotReady` | Pod not TCP-ready yet (`status.readyReplicas < 1`) | 5s |
+| `PodNotReady` | Pod not TCP-ready yet (`status.readyReplicas < 1`) | 2s |
+| `SpecChanged` | The spec changed while the pod was not ready; the operator recreated the pod from the new template (§1a) | 2s |
+| `AutoRestart` / `StartRetried` | A timed-out start was retried, automatically or from the panel, by recreating the pod | 2s |
+| `ServiceAddressPending` | The client Service has no ClusterIP yet | 2s |
 | `RconSecretUnavailable` | RCON secret missing or malformed | 10s |
-| `RconNotReachable` | RCON dial/auth failed | 5s |
+| `RconNotReachable` | RCON dial/auth failed | 2s |
 
 [GO-TESTED for the reason set.]
 
@@ -88,6 +91,13 @@ kubectl describe pod <pod>     # look at Events + container State
   not exist, or the registry is unreachable. `spec.image` is copied verbatim into
   the container with **zero validation** by the operator. Fix the image
   reference, or see §7 (registry reachability) and §6 (build push target).
+  Editing the spec is enough, even once the server is `Failed` with its retries
+  spent: the StatefulSet (OrderedReady) never rolls a pod that is not ready, so
+  the operator deletes a not-ready `<name>-0` made from an older template itself
+  and the StatefulSet recreates it from the new one. The server goes back to
+  `Starting` with reason `SpecChanged`, a fresh start timeout and its restart
+  budget at zero, and the MinecraftServer gets a `PodReplaced` Event.
+  [GO-TESTED: `TestSpecChangeReplacesAPodThatGaveUp`, `TestStalePodReplacement`.]
 - **PVC `Pending`** → `kubectl get pvc -l app.kubernetes.io/name=<name>`. A
   nonexistent `spec.storage.storageClassName`, or a request larger than any class
   can satisfy, leaves the PVC unbound. The operator does **not** error on this

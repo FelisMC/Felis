@@ -215,13 +215,17 @@ func TestOperatorRole_ScopeExact(t *testing.T) {
 			t.Errorf("operator secrets rule must be get+create only, found %s", v)
 		}
 	}
-	// Pods are delete-only: the bounded retry of a timed-out start.
+	// Pods are read and deleted by name: the bounded retry of a timed-out start,
+	// and the replacement of a not-ready pod left on an old template.
 	if !hasRule(op, groupCore, "pods", "delete") {
 		t.Error("operator must have pods:delete (auto-restart of a timed-out start)")
 	}
-	for _, v := range []string{"get", "list", "watch", "create", "update", "patch", "deletecollection", "*"} {
+	if !hasRule(op, groupCore, "pods", "get") {
+		t.Error("operator must have pods:get (replacing a not-ready pod left on an old template)")
+	}
+	for _, v := range []string{"list", "watch", "create", "update", "patch", "deletecollection", "*"} {
 		if hasRule(op, groupCore, "pods", v) {
-			t.Errorf("operator pods rule must be delete-only, found %s", v)
+			t.Errorf("operator pods rule must be get+delete only, found %s", v)
 		}
 	}
 	// The world-volume lock check lists Jobs uncached; it never writes one.

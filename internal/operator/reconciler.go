@@ -130,6 +130,11 @@ type Reconciler struct {
 	// mirror with the database URL among them) and grow with them. Nil falls back
 	// to the embedded client.
 	Secrets client.Reader
+	// Pods reads a server's pod-0 by name, to replace one left on an old template
+	// (replaceStalePod). The manager's uncached API reader as well, so the
+	// operator holds pods:get and no pod informer. Nil falls back to the embedded
+	// client.
+	Pods client.Reader
 	// Recorder puts an Event on the MinecraftServer at each phase change, pod
 	// recreation, idle stop and RCON Secret provision, so `kubectl describe`
 	// shows the timeline the status alone overwrites. Nil records none.
@@ -330,6 +335,18 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 
 	// The pod must first pass its tcpSocket readiness (readyReplicas >= 1).
 	if current.Status.ReadyReplicas < 1 {
+		if replaced, err := r.replaceStalePod(ctx, server, &current); err != nil {
+			return ctrl.Result{}, err
+		} else if replaced {
+			// A new spec is a new start: its own timeout and restart budget.
+			server.Status.AutoRestarts = 0
+			server.Status.StartRequestedAt = nil
+			r.markStarting(server, "SpecChanged", "the spec changed while the pod was not ready; recreated the pod from the new spec")
+			if err := r.patchStatus(ctx, server); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: requeueStarting}, nil
+		}
 		r.markStarting(server, "PodNotReady", "waiting for pod TCP readiness")
 		if r.startupTimedOut(server) {
 			r.markFailed(server, v1alpha1.ReasonStartupTimeout, "pod did not become ready within startup timeout")
@@ -675,6 +692,57 @@ func (r *Reconciler) secretReader() client.Reader {
 		return r.Secrets
 	}
 	return r.Client
+}
+
+func (r *Reconciler) podReader() client.Reader {
+	if r.Pods != nil {
+		return r.Pods
+	}
+	return r.Client
+}
+
+// replaceStalePod deletes a pod-0 that is not ready and was made from an older
+// template than the StatefulSet's current one, for the StatefulSet to recreate
+// from the new spec. The StatefulSet controller does not do it: under
+// OrderedReady it rolls a pod only once that pod is Running and Ready, so a
+// server that cannot start keeps crash-looping on the image or settings that
+// broke it however its spec is corrected, until the next timed-out retry
+// deletes the pod, or forever once the retries are spent. A ready pod is left
+// to the controller's own rolling update, and one already terminating to its
+// deletion. It acts only on a StatefulSet status that has observed the current
+// template, so the update revision it compares against is the current one.
+func (r *Reconciler) replaceStalePod(ctx context.Context, server *v1alpha1.MinecraftServer, sts *appsv1.StatefulSet) (bool, error) {
+	update := sts.Status.UpdateRevision
+	if update == "" || sts.Status.ObservedGeneration < sts.Generation {
+		return false, nil
+	}
+	var pod corev1.Pod
+	if err := r.podReader().Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: server.Name + "-0"}, &pod); err != nil {
+		return false, client.IgnoreNotFound(err)
+	}
+	if pod.DeletionTimestamp != nil || pod.Labels[appsv1.ControllerRevisionHashLabelKey] == update || podReady(&pod) {
+		return false, nil
+	}
+	// The UID precondition: a pod the StatefulSet already recreated is not
+	// deleted in its place.
+	if err := r.Delete(ctx, &pod, client.Preconditions{UID: &pod.UID}); err != nil {
+		if apierrors.IsNotFound(err) || apierrors.IsConflict(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	log.FromContext(ctx).Info("recreated a pod left on an old spec", "pod", pod.Name, "revision", pod.Labels[appsv1.ControllerRevisionHashLabelKey], "updateRevision", update)
+	r.event(server, corev1.EventTypeNormal, "PodReplaced", "the spec changed while the pod was not ready; recreated the pod from the new spec")
+	return true, nil
+}
+
+func podReady(pod *corev1.Pod) bool {
+	for _, c := range pod.Status.Conditions {
+		if c.Type == corev1.PodReady {
+			return c.Status == corev1.ConditionTrue
+		}
+	}
+	return false
 }
 
 func (r *Reconciler) rconPassword(ctx context.Context, server *v1alpha1.MinecraftServer) (string, error) {

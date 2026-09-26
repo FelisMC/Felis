@@ -120,7 +120,10 @@ func cmdOperator(args []string, _, stderr io.Writer) int {
 		Jobs: mgr.GetAPIReader(),
 		// Uncached too: RCON Secrets are read by name, so the Role grants
 		// secrets:get without the list/watch an informer would need.
-		Secrets:  mgr.GetAPIReader(),
+		Secrets: mgr.GetAPIReader(),
+		// And pods: pod-0 is read by name, so the Role grants pods:get and no
+		// namespace-wide pod informer runs.
+		Pods:     mgr.GetAPIReader(),
 		Recorder: mgr.GetEventRecorderFor("felis-operator"),
 		Watch:    watch,
 	}

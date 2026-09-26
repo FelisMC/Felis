@@ -153,9 +153,12 @@ func APIBuildRole(p Params) *rbacv1.Role {
 // call fails closed with a 403), and reads RCON Secrets by name, uncached. Jobs are list-only,
 // through the manager's uncached API reader: before scaling a server up from zero
 // the operator checks that no restore/backup/file-write Job holds its world
-// (internal/maintenance). Pods are delete-only: a start that timed out is retried
-// by deleting its pod for the StatefulSet to recreate (bounded, three attempts;
-// internal/operator.recoverFailedStart). Events are create/patch only, for the
+// (internal/maintenance). Pods are get and delete, by name through the uncached
+// reader: a start that timed out is retried by deleting its pod for the
+// StatefulSet to recreate (bounded, three attempts;
+// internal/operator.recoverFailedStart), and a pod that is not ready and was made
+// from an older template is read and replaced the same way
+// (internal/operator.replaceStalePod). Events are create/patch only, for the
 // timeline it records on each server. It never touches PVCs or finalizers, so
 // none appear here.
 func OperatorRole(p Params) *rbacv1.Role {
@@ -175,9 +178,10 @@ func OperatorRole(p Params) *rbacv1.Role {
 		// list only: an uncached List (no informer, so no watch) of the world-volume
 		// maintenance Jobs; the operator never creates or deletes a Job.
 		rule([]string{groupBatch}, []string{"jobs"}, []string{"list"}),
-		// delete only, through the direct client: no read of pods is needed to
-		// remove the one named <server>-0.
-		rule([]string{groupCore}, []string{"pods"}, []string{"delete"}),
+		// get and delete by name of the one named <server>-0: get through the
+		// uncached API reader (Reconciler.Pods), to see whether it is ready and which
+		// template revision made it. No list/watch, so there is no pod informer.
+		rule([]string{groupCore}, []string{"pods"}, []string{"get", "delete"}),
 		// The Events the reconciler records on MinecraftServers (phase changes,
 		// pod recreation, idle stop): the recorder creates one and patches its
 		// count when the same Event repeats.
