@@ -2746,11 +2746,21 @@ run_pf() {
         *) printf "%s\n" "${PF_ADDRS:-}" ;;
       esac
     }
+    # curl -w "%{time_appconnect}": a host in PF_DOWN never answers, one in PF_FLAKY drops
+    # its first probe, one in PF_STALL completes TLS and then times out. Each probe of those
+    # is counted in $PF_ROOT/tries.<host>.
     curl() {
       local host="${!#}"
       host="${host#https://}"; host="${host%/}"
-      case " ${PF_DOWN:-} " in *" ${host} "*) echo 000 ;; *) echo 404 ;; esac
+      case " ${PF_DOWN:-} ${PF_FLAKY:-} ${PF_STALL:-} " in *" ${host} "*) printf x >> "$PF_ROOT/tries.${host}" ;; esac
+      case " ${PF_FLAKY:-} " in *" ${host} "*)
+        [ "$(cat "$PF_ROOT/tries.${host}")" = x ] && printf 0.000000 && return 7
+        printf 0.300000; return ;;
+      esac
+      case " ${PF_STALL:-} " in *" ${host} "*) printf 0.481676; return 28 ;; esac
+      case " ${PF_DOWN:-} " in *" ${host} "*) printf 0.000000; return 7 ;; *) printf 0.300000 ;; esac
     }
+    sleep() { echo "SLEEP: $*"; }
     bootstrap_from_tui() { [ -n "${PF_TUI:-}" ]; }
     '"$(awk '/^use_release_binary\(\) \{/,/^}/' "$BS")"'
     FELIS_GAME_PORT=25565 FELIS_PANEL_NODEPORT=30443 REGISTRY_URL=registry.felis.svc:5000 PG_HOST_PORT=15432
@@ -2834,6 +2844,21 @@ expect "and the install goes on" "WENT ON" "$out"
 
 out="$(PF_DOWN="github.com fill-data.papermc.io" run_pf)"
 expect "unreachable download hosts are named together" "cannot reach github.com fill-data.papermc.io over HTTPS" "$out"
+# The VM's rerun after an upgrade: one probe of fill-data.papermc.io timed out, a second a
+# minute later answered in under a second, and preflight had refused the install.
+rm -f "$pfroot"/tries.*
+out="$(PF_FLAKY=fill-data.papermc.io run_pf)"
+expect "a download host that drops one probe is tried again" "WENT ON" "$out"
+expect "two seconds later" "SLEEP: 2" "$out"
+[ "$(cat "$pfroot/tries.fill-data.papermc.io")" = xx ] && echo "PASS and not again once it answered" \
+  || { echo "FAIL: a host that answered its second probe was probed $(wc -c < "$pfroot/tries.fill-data.papermc.io") times"; fails=$((fails + 1)); }
+out="$(PF_STALL=fill-data.papermc.io run_pf)"
+expect "a host that completes TLS and then sits on the request is reachable" "WENT ON" "$out"
+rm -f "$pfroot"/tries.*
+out="$(PF_DOWN=fill-data.papermc.io run_pf)"
+expect "a host that never answers is refused" "cannot reach fill-data.papermc.io over HTTPS" "$out"
+[ "$(cat "$pfroot/tries.fill-data.papermc.io")" = xxx ] && echo "PASS after three probes" \
+  || { echo "FAIL: a host that never answered was probed $(wc -c < "$pfroot/tries.fill-data.papermc.io") times"; fails=$((fails + 1)); }
 
 # An install from a release's assets builds nothing: no Docker cache under /var/lib/containerd,
 # and Docker Hub only as the fallback for an image the release cannot supply. The downloaded

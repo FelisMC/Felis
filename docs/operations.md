@@ -60,9 +60,10 @@ once, then stops with nothing touched **[SH-TESTED]**:
   (a Docker network there is the usual case); a wider route such as a `10.0.0.0/8` VPN
   is a warning;
 - HTTPS to the hosts it downloads from: GitHub and PaperMC's download API always, Docker
-  Hub when it builds images on the host. Installing a release, an unreachable Docker Hub
-  is a warning (it is needed only if an asset turns out unusable); from
-  `FELIS_ARTIFACT_DIR` it is not checked.
+  Hub when it builds images on the host. A host counts as reachable once a TLS handshake
+  with it completes, and each gets three tries two seconds apart. Installing a release, an
+  unreachable Docker Hub is a warning (it is needed only if an asset turns out unusable);
+  from `FELIS_ARTIFACT_DIR` it is not checked.
 
 `FELIS_PREFLIGHT=warn` reports the same problems as warnings and installs anyway, for a
 host the checks misjudge.

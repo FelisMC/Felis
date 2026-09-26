@@ -1314,18 +1314,27 @@ preflight_hosts() {
   fi
 }
 
-# host_reachable reports whether an HTTPS connection to $1 can be made: any answer
-# counts, a 404 included. Without curl (a minimal image, before install_base) a bare
-# TCP connect stands in, unless a proxy is configured, which only curl would use.
+# host_reachable reports whether an HTTPS connection to $1 can be made: a TLS handshake that
+# completes, which any answer (a 404 included) comes after, and which a server that then sits
+# on the request has made too. It tries three times, two seconds apart, as the downloads it
+# stands for retry: one dropped probe must not stop an install. Without curl (a minimal
+# image, before install_base) a bare TCP connect stands in, unless a proxy is configured,
+# which only curl would use.
 host_reachable() {
-  if command -v curl >/dev/null 2>&1; then
-    local code
-    code="$(curl -s -o /dev/null --connect-timeout 5 --max-time 15 -w '%{http_code}' "https://$1/" 2>/dev/null)" || true
-    [ -n "$code" ] && [ "$code" != 000 ]
-    return
-  fi
-  [ -z "${https_proxy:-}${HTTPS_PROXY:-}" ] || return 0
-  timeout 5 bash -c 'exec 3<>"/dev/tcp/$0/443"' "$1" 2>/dev/null
+  local try tls
+  for try in 1 2 3; do
+    [ "$try" = 1 ] || sleep 2
+    if command -v curl >/dev/null 2>&1; then
+      # The handshake's time, 0.000000 until one completes, whatever curl then exits with.
+      tls="$(curl -s -o /dev/null --connect-timeout 5 --max-time 15 -w '%{time_appconnect}' "https://$1/" 2>/dev/null)" || true
+      [ -n "${tls//[0.]/}" ] && return 0
+    elif [ -n "${https_proxy:-}${HTTPS_PROXY:-}" ]; then
+      return 0
+    elif timeout 5 bash -c 'exec 3<>"/dev/tcp/$0/443"' "$1" 2>/dev/null; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 preflight_outbound() {
