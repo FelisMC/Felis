@@ -6,8 +6,8 @@
 #
 # Brings a fresh single-node Linux host from nothing to a running Felis control
 # plane: it installs whatever is missing (picking apt/dnf/yum/zypper/pacman by OS), provisions a
-# swap file on tiny hosts, then configures Docker, k3s and PostgreSQL, builds and
-# imports the felis image, runs database migrations and applies the rendered
+# swap file on tiny hosts, then configures Docker and k3s, starts PostgreSQL in k3s,
+# builds and imports the felis image, runs database migrations and applies the rendered
 # install bundle (CRD + namespaces + RBAC + NetworkPolicies + control-plane
 # Deployments + in-cluster registry).
 #
@@ -204,8 +204,8 @@ FELIS_DB_BACKUP_KEEP="${FELIS_DB_BACKUP_KEEP:-14}"
 FELIS_DB_BACKUP_TIME="${FELIS_DB_BACKUP_TIME:-*-*-* 03:30:00}"
 # node-exporter textfile collector target; FelisDBBackupStale (deploy/alerts) reads it.
 FELIS_DB_BACKUP_METRICS="${FELIS_DB_BACKUP_METRICS:-/var/lib/node_exporter/textfile_collector/felis_db_backup.prom}"
-# 0 migrates without the pre-migration snapshot, e.g. against an external database newer
-# than this host's pg_dump. The upgrade stops if the snapshot fails and this is not set.
+# 0 migrates without the pre-migration snapshot. The upgrade stops if the snapshot fails
+# and this is not set.
 FELIS_PRE_MIGRATE_BACKUP="${FELIS_PRE_MIGRATE_BACKUP:-1}"
 # The off-site copy (felis offsite, troubleshooting §16). Every hour the host encrypts each
 # world archive and the newest database bundles and copies them to an S3-compatible bucket,
@@ -270,6 +270,10 @@ FELIS_JOURNAL_MAX_USE="${FELIS_JOURNAL_MAX_USE:-1G}"
 # (internal/platform/identities.go, TestBootstrapPinsTheRegistryImage): the renderer puts
 # that ref in the Deployment, and this script caches and pins the same ref in containerd.
 REGISTRY_IMAGE="docker.io/library/registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
+# The control-plane database's image, by digest; it must equal platform.defaultPostgresImage
+# (TestBootstrapPinsThePostgresImage). Its major version names the cluster directory
+# under PG_DATA_DIR, so moving to a new major is a dump and restore (check_postgres_major).
+POSTGRES_IMAGE="docker.io/library/postgres:18.6-trixie@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722"
 PKG_LOCK_TIMEOUT="${PKG_LOCK_TIMEOUT:-${APT_LOCK_TIMEOUT:-900}}"
 APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-$PKG_LOCK_TIMEOUT}"
 
@@ -388,8 +392,31 @@ VELOCITY_SERVICE="/etc/systemd/system/felis-velocity.service"
 # since each of those restarts disconnects every player online.
 VELOCITY_FINGERPRINT="${STATE_DIR}/velocity.fingerprint"
 SYSTEM_SERVER_IMAGES="${STATE_DIR}/system-server-images"
-# The nftables rules that keep PostgreSQL's port to this host and its pods, on a host
-# without firewalld (configure_postgres_firewall).
+# The control-plane database, felis-postgres (internal/platform/postgres.go); these must
+# equal the platform's constants (TestBootstrapAgreesWithThePostgresConstants).
+PG_DEPLOYMENT="felis-postgres"
+PG_CONTAINER="postgres"
+PG_SECRET="felis-postgres"
+PG_SECRET_KEY="superuser-password"
+PG_DATA_DIR="/var/lib/felis/postgres"
+PG_UID=999
+PG_HOST_PORT=15432
+PG_SERVICE_ADDR="${PG_DEPLOYMENT}.${CONTROL_NS}.svc:5432"
+# Written once a host PostgreSQL's database has been moved into felis-postgres
+# (migrate_host_postgres); the move never runs again after it.
+PG_MOVED_MARKER="/var/lib/felis/postgres-moved"
+PG_LOCKOUT_LINE="# The felis database moved into k3s (felis-postgres); nothing else may reach this copy."
+# The units that write to the database from the host; the move stops them and starts
+# again the ones that were running.
+PG_MOVE_TIMERS=(felis-db-backup felis-offsite felis-update-check felis-watchdog)
+# Each public table with its exact row count, one per line, in a collation-independent
+# order, so the two servers' answers compare byte for byte.
+PG_TABLE_COUNTS="SELECT c.relname || ' ' || (xpath('/row/n/text()', query_to_xml(format('SELECT count(*) AS n FROM public.%I', c.relname), false, true, '')))[1]::text FROM pg_class c JOIN pg_namespace s ON s.oid = c.relnamespace WHERE s.nspname = 'public' AND c.relkind IN ('r', 'p') ORDER BY 1 COLLATE \"C\""
+PG_MOVE_STAGE=""
+PG_MOVE_HBA=""
+PG_MOVE_UNITS=()
+# The nftables rules an earlier release kept a host PostgreSQL's port behind; the move
+# retires them with the server.
 PG_FIREWALL_RULES="${STATE_DIR}/postgres-firewall.nft"
 PG_FIREWALL_SERVICE="/etc/systemd/system/felis-postgres-firewall.service"
 JRE_DIR="/opt/felis/jre"
@@ -483,6 +510,7 @@ on_error() {
 cleanup() {
   local status=$? id path unit
   restore_previous_host_binary "$status"
+  if [ "$status" -ne 0 ]; then undo_postgres_move; fi
   for unit in "${PKG_TIMERS_TO_RESTORE[@]-}"; do
     [ -n "$unit" ] || continue
     systemctl start "$unit" >/dev/null 2>&1 || true
@@ -1121,7 +1149,8 @@ preflight_ports() {
     "10248 k3s.service the kubelet" "10249 k3s.service kube-proxy" "10250 k3s.service the kubelet" \
     "10256 k3s.service kube-proxy" "10257 k3s.service the controller manager" "10259 k3s.service the scheduler" \
     "${FELIS_PANEL_NODEPORT} k3s.service the panel (FELIS_PANEL_NODEPORT)" \
-    "${REGISTRY_URL##*:} k3s.service the image registry's loopback port"; do
+    "${REGISTRY_URL##*:} k3s.service the image registry's loopback port" \
+    "${PG_HOST_PORT} k3s.service the database's loopback port"; do
     read -r port unit label <<<"$spec"
     while read -r comm pid owner; do
       [ -n "$comm" ] || continue
@@ -1267,9 +1296,10 @@ pkg_refresh_once() {
     dnf|yum) : ;;   # dnf/yum refresh metadata on demand
     zypper) wait_for_pkg_locks; zypper --non-interactive refresh ;;
     # Arch supports only whole-system upgrades (-Sy alone leaves a partial upgrade), so the
-    # refresh stays -Syu, with PostgreSQL held back once a cluster exists: a new major
-    # version cannot open the old data directory, and the upgrade would take the platform's
-    # database down on an unrelated rerun. check_postgres_major explains the way forward.
+    # refresh stays -Syu, with a host PostgreSQL held back once it has a cluster: a new major
+    # version cannot open the old data directory. That cluster is the database an earlier
+    # release ran on, which migrate_host_postgres reads to move it into felis-postgres, and
+    # afterwards the copy a rollback of that move starts again (docs/operations.md §4).
     pacman)
       wait_for_pkg_locks
       if [ -f "$(postgres_data_dir)/PG_VERSION" ]; then
@@ -1763,7 +1793,7 @@ wait_for_node_ready() {
 #         that is configure_registry_mirror below;
 #       * the registry's own image (REGISTRY_IMAGE) must already be in containerd
 #         before the registry Deployment can start at all —
-#         import_registry_image below caches it.
+#         import_platform_images below caches it.
 #     After deploy_bundle, push_images_to_registry mirrors the built images into
 #     the registry, so containerd's imported copies are a first-boot cache
 #     rather than the only copy.
@@ -1798,61 +1828,66 @@ EOF
   wait_for_node_ready
 }
 
-# The registry Deployment runs REGISTRY_IMAGE (platform.defaultRegistryImage; the
-# renderer's default — this script never passes --registry-image). On a box
-# that cannot reach Docker Hub the Deployment can never start without a local
-# copy, so the installer caches one whenever it can. Best-effort by design: if
-# the pull fails the registry rollout still fails loudly at deploy_bundle, with
-# the regular diagnostics — but for every box that CAN pull, the image is
-# fetched exactly once, here, instead of at first pod start.
+# Two platform images come from Docker Hub by digest, never from the platform's own
+# registry: REGISTRY_IMAGE, which is that registry, and POSTGRES_IMAGE, the database
+# everything else waits for. They must equal the renderer's defaults
+# (platform.defaultRegistryImage / defaultPostgresImage). On a box that cannot reach
+# Docker Hub neither Deployment can ever start without a local copy, so the installer
+# caches one whenever it can. Best-effort by design: if a pull fails the rollout still
+# fails loudly, with the regular diagnostics, but for every box that CAN pull, each
+# image is fetched exactly once, here, instead of at first pod start.
 #
 # crictl pulls through CRI, the same call kubelet makes, so containerd records the
 # digest ref the Deployment names and kubelet finds it. A docker save/import round
 # trip rewrites the manifest and would leave a copy the digest ref never matches.
-import_registry_image() {
-  local images
-  # Read the list whole before matching; see postgres_installed for the SIGPIPE.
+import_platform_images() {
+  local image images
+  # Read the list whole before matching: `ctr images ls | grep -q` dies of SIGPIPE under
+  # pipefail once grep stops reading a list longer than one pipe buffer.
   images="$(k3s_cmd ctr images ls -q 2>/dev/null || true)"
-  if grep -qxF "$(registry_image_containerd_ref)" <<<"$images"; then
-    ok "registry image ${REGISTRY_IMAGE} already in k3s containerd"
-    return 0
-  fi
-  log "pulling the registry's own image (${REGISTRY_IMAGE}) into k3s containerd"
-  if k3s_cmd crictl pull "$REGISTRY_IMAGE" >/dev/null; then
-    ok "registry image ${REGISTRY_IMAGE} pulled"
-  else
-    warn "could not pull ${REGISTRY_IMAGE}: the in-cluster registry will start only if the node can pull it from Docker Hub; on an air-gapped box import it by hand (docs/troubleshooting.md §8e)"
-  fi
+  for image in "$REGISTRY_IMAGE" "$POSTGRES_IMAGE"; do
+    if grep -qxF "$(pinned_image_ref "$image")" <<<"$images"; then
+      ok "${image} already in k3s containerd"
+      continue
+    fi
+    log "pulling ${image} into k3s containerd"
+    if k3s_cmd crictl pull "$image" >/dev/null; then
+      ok "${image} pulled"
+    else
+      warn "could not pull ${image}: its Deployment starts only if the node can pull it from Docker Hub; on an air-gapped box import it by hand (docs/troubleshooting.md §8e)"
+    fi
+  done
 }
 
-# registry_image_containerd_ref prints the name containerd lists REGISTRY_IMAGE under
+# pinned_image_ref <image> prints the name containerd lists a digest-pinned image under
 # once CRI has pulled it: the repository and the digest, with the tag dropped.
-registry_image_containerd_ref() {
-  printf '%s@%s\n' "${REGISTRY_IMAGE%%:*}" "${REGISTRY_IMAGE#*@}"
+pinned_image_ref() {
+  printf '%s@%s\n' "${1%%:*}" "${1#*@}"
 }
 
 # The registry pod runs REGISTRY_IMAGE and, as its registry-gate sidecar, the felis
-# image — neither of which can be pulled from the registry they make up. A kubelet
-# image GC that collected either would leave the registry, and every pull through
-# it, dead until someone re-imported by hand. containerd reports an image labelled
-# io.cri-containerd.pinned=pinned as pinned over CRI, and kubelet's image GC never
-# removes a pinned image. Older felis/felis tags are unpinned first, so upgrades
-# do not pile up pinned images forever.
-pin_registry_images() {
-  local ref registry_ref
-  registry_ref="$(registry_image_containerd_ref)"
+# image — neither of which can be pulled from the registry they make up — and the
+# database pod runs POSTGRES_IMAGE. A kubelet image GC that collected any of them
+# would leave that pod dead until someone re-imported by hand. containerd reports an
+# image labelled io.cri-containerd.pinned=pinned as pinned over CRI, and kubelet's
+# image GC never removes a pinned image. Older felis/felis tags and older registry and
+# postgres images are unpinned first, so upgrades do not pile up pinned images forever.
+pin_platform_images() {
+  local ref registry_ref postgres_ref
+  registry_ref="$(pinned_image_ref "$REGISTRY_IMAGE")"
+  postgres_ref="$(pinned_image_ref "$POSTGRES_IMAGE")"
   while read -r ref; do
     case "$ref" in
-      "$FELIS_IMAGE"|"$registry_ref") ;;
-      */felis/felis:*|docker.io/library/registry[:@]*)
+      "$FELIS_IMAGE"|"$registry_ref"|"$postgres_ref") ;;
+      */felis/felis:*|docker.io/library/registry[:@]*|docker.io/library/postgres[:@]*)
         k3s_cmd ctr images label "$ref" io.cri-containerd.pinned= >/dev/null 2>&1 || true ;;
     esac
   done < <(k3s_cmd ctr images ls -q 2>/dev/null || true)
-  for ref in "$FELIS_IMAGE" "$registry_ref"; do
+  for ref in "$FELIS_IMAGE" "$registry_ref" "$postgres_ref"; do
     if k3s_cmd ctr images label "$ref" io.cri-containerd.pinned=pinned >/dev/null 2>&1; then
       ok "pinned ${ref} in containerd (exempt from kubelet image GC)"
     else
-      warn "could not pin ${ref} in containerd: if the kubelet's image GC collects it, the registry pod cannot restart until it is re-imported (docs/troubleshooting.md §8e)"
+      warn "could not pin ${ref} in containerd: if the kubelet's image GC collects it, its pod cannot restart until it is re-imported (docs/troubleshooting.md §8e)"
     fi
   done
 }
@@ -3141,49 +3176,114 @@ configure_velocity_firewall() {
 }
 
 # ---------------------------------------------------------------------------
-# 6. PostgreSQL on the host. felis-api pods reach it at <node-ip>:5432;
-#    migrations run from the host binary against 127.0.0.1.
+# 6. PostgreSQL: the felis-postgres Deployment in k3s (internal/platform/postgres.go),
+#    from the official image pinned by digest (POSTGRES_IMAGE), its cluster on the
+#    PG_DATA_DIR hostPath. Pods reach it at its Service; the host's own tools and the
+#    migrations at 127.0.0.1:PG_HOST_PORT, a hostPort bound to loopback only. A host
+#    PostgreSQL an earlier release installed is moved into it once (migrate_host_postgres)
+#    and then left installed and stopped, so the move can be rolled back.
 # ---------------------------------------------------------------------------
-write_pg_hba_block() {
-  local hba="$1" tmp tmp_new node_cidr
 
-  node_cidr="${NODE_IP}/32"
-  tmp="$(mktemp)"
-  tmp_new="${tmp}.new"
-  remember_temp "$tmp"
-  remember_temp "$tmp_new"
-
-  awk \
-    -v db="$DB_NAME" \
-    -v user="$DB_USER" \
-    -v pod="$POD_CIDR" \
-    -v node="$node_cidr" '
-      $0 == "# BEGIN FELIS MANAGED HBA" { skip = 1; next }
-      $0 == "# END FELIS MANAGED HBA" { skip = 0; next }
-      skip { next }
-
-      # Clean up rules appended by older bootstrap versions.
-      $1 == "host" && $2 == db && $3 == user && $5 == "scram-sha-256" &&
-        ($4 == "127.0.0.1/32" || $4 == pod || $4 == node) { next }
-
-      { print }
-    ' "$hba" > "$tmp"
-
-  {
-    printf "# BEGIN FELIS MANAGED HBA\n"
-    printf "# Felis rules must precede distro defaults such as 127.0.0.1 ident.\n"
-    printf "host %s %s 127.0.0.1/32 scram-sha-256\n" "$DB_NAME" "$DB_USER"
-    printf "host %s %s %s scram-sha-256\n" "$DB_NAME" "$DB_USER" "$POD_CIDR"
-    printf "host %s %s %s scram-sha-256\n" "$DB_NAME" "$DB_USER" "$node_cidr"
-    printf "# END FELIS MANAGED HBA\n"
-    printf "\n"
-    cat "$tmp"
-  } > "$tmp_new"
-
-  cat "$tmp_new" > "$hba"
-  rm -f "$tmp" "$tmp_new"
+# Commands in the database container. pg_exec never attaches stdin: under
+# `curl ... | sudo bash` stdin is the rest of this script, and kubectl exec -i would
+# swallow it. pg_sql feeds the SQL on its stdin, so a password in it stays out of argv.
+pg_exec() { kube -n "$CONTROL_NS" exec "deploy/${PG_DEPLOYMENT}" -c "$PG_CONTAINER" -- "$@" </dev/null; }
+pg_sql() { # database; SQL on stdin
+  kube -n "$CONTROL_NS" exec -i "deploy/${PG_DEPLOYMENT}" -c "$PG_CONTAINER" -- \
+    psql -X -q -v ON_ERROR_STOP=1 -U postgres -d "$1"
 }
 
+# postgres_image_major prints the major version POSTGRES_IMAGE's tag names (18 for
+# postgres:18.6-trixie@sha256:...).
+postgres_image_major() {
+  local tag="${POSTGRES_IMAGE%%@*}"
+  printf '%s\n' "${tag##*:}" | sed -nE 's/^([0-9]+).*/\1/p'
+}
+
+# check_postgres_major stops before a new major version meets an old cluster. The image
+# keeps each major's cluster in its own directory (PGDATA /var/lib/postgresql/<major>/docker),
+# so a new major would not fail on the old one: it would initialise an empty cluster beside
+# it and the platform would come up with no users, no servers and no backups.
+check_postgres_major() {
+  local want found
+  want="$(postgres_image_major)"
+  [ -n "$want" ] || die "cannot read a PostgreSQL major version from ${POSTGRES_IMAGE}"
+  [ -f "${PG_DATA_DIR}/${want}/docker/PG_VERSION" ] && return 0
+  found="$(cat "$PG_DATA_DIR"/*/docker/PG_VERSION 2>/dev/null | tr -d '[:space:]')"
+  [ -z "$found" ] && return 0
+  die "this release runs PostgreSQL ${want}, but ${PG_DATA_DIR} holds a PostgreSQL ${found} cluster.
+  PostgreSQL ${want} would start an empty cluster beside it. A new major version is a dump
+  and restore (docs/operations.md §4): on the release you have now, take a bundle with
+  sudo felis db backup -label pre-upgrade, then follow that section."
+}
+
+# prepare_postgres_data_dir makes the hostPath the pod needs (hostPath type Directory, so a
+# missing one is a pod that never starts). The cluster directory belongs to the image's
+# postgres account, uid 999, which on the host is some unrelated account (systemd-coredump
+# on EL); the root-only parent keeps that account out of it.
+prepare_postgres_data_dir() {
+  install -d -m 0700 -o root -g root "$(dirname "$PG_DATA_DIR")"
+  install -d -m 0700 -o "$PG_UID" -g "$PG_UID" "$PG_DATA_DIR"
+  chown "$PG_UID:$PG_UID" "$PG_DATA_DIR"
+  chmod 0700 "$PG_DATA_DIR"
+  label_postgres_data_dir
+}
+
+# label_postgres_data_dir gives the cluster directory the label containers may write, on a
+# host with SELinux enabled. The file-context rule makes it survive a relabel; chcon is the
+# fallback where semanage is not installed.
+label_postgres_data_dir() {
+  command -v selinuxenabled >/dev/null 2>&1 && selinuxenabled || return 0
+  if command -v semanage >/dev/null 2>&1; then
+    semanage fcontext -a -t container_file_t "${PG_DATA_DIR}(/.*)?" 2>/dev/null \
+      || semanage fcontext -m -t container_file_t "${PG_DATA_DIR}(/.*)?" 2>/dev/null || true
+    restorecon -R "$PG_DATA_DIR" && return 0
+  fi
+  chcon -R -t container_file_t "$PG_DATA_DIR" \
+    || warn "could not label ${PG_DATA_DIR} container_file_t; if felis-postgres cannot write its cluster, label it by hand"
+}
+
+# ensure_postgres_superuser_secret creates the postgres role's password once. The image
+# reads it only when it initialises the cluster, so replacing it later would change
+# nothing but make the Secret lie about the cluster's password.
+ensure_postgres_superuser_secret() {
+  kube -n "$CONTROL_NS" get secret "$PG_SECRET" >/dev/null 2>&1 && return 0
+  apply_literal_secret "$CONTROL_NS" "$PG_SECRET" "$PG_SECRET_KEY" "$(openssl rand -hex 32)"
+}
+
+# ensure_postgres_role makes the felis role and database, idempotently, and (re)sets the
+# role's password to the persisted one.
+ensure_postgres_role() {
+  # Through a variable: how bash reads \' in a replacement differs between 3.2 and 5.x.
+  local q="'" password
+  password="${DB_PASSWORD//$q/$q$q}"
+  pg_sql postgres >/dev/null <<SQL
+SET password_encryption = 'scram-sha-256';
+SELECT format('CREATE ROLE %I LOGIN', '${DB_USER}') WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${DB_USER}')\gexec
+ALTER ROLE "${DB_USER}" WITH LOGIN PASSWORD '${password}';
+SELECT format('CREATE DATABASE %I OWNER %I', '${DB_NAME}', '${DB_USER}') WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '${DB_NAME}')\gexec
+SQL
+}
+
+deploy_postgres() {
+  check_postgres_major
+  prepare_postgres_data_dir
+  kube create namespace "$CONTROL_NS" --dry-run=client -o yaml | kube apply -f - >/dev/null
+  ensure_postgres_superuser_secret
+  log "deploying ${PG_DEPLOYMENT} (${POSTGRES_IMAGE%%@*})"
+  "$HOST_BIN" manifests --only postgres --control-namespace "$CONTROL_NS" --minecraft-namespace "$MINECRAFT_NS" \
+    --postgres-image "$POSTGRES_IMAGE" | kube apply -f -
+  if ! kube -n "$CONTROL_NS" rollout status "deployment/${PG_DEPLOYMENT}" --timeout=600s; then
+    diagnose_rollout "deployment/${PG_DEPLOYMENT}"
+    die "${PG_DEPLOYMENT} did not become ready (docs/troubleshooting.md §13c)"
+  fi
+  ensure_postgres_role
+  ok "${PG_DEPLOYMENT} ready: pods at ${PG_SERVICE_ADDR}, this host at 127.0.0.1:${PG_HOST_PORT}"
+}
+
+# --- moving a host PostgreSQL into felis-postgres -----------------------------------------
+
+# postgres_data_dir is where the distribution keeps a host PostgreSQL's cluster.
 postgres_data_dir() {
   case "$PKG" in
     pacman) printf '%s\n' /var/lib/postgres/data ;;
@@ -3191,183 +3291,179 @@ postgres_data_dir() {
   esac
 }
 
-init_postgres_data_dir() {
-  local data_dir
-  data_dir="$(postgres_data_dir)"
+# host_postgres_holds_felis reports whether this host runs the PostgreSQL an earlier release
+# installed, with the platform's tables in it.
+host_postgres_holds_felis() {
+  local n
+  systemctl is-active --quiet postgresql 2>/dev/null || return 1
+  n="$(as_postgres psql -XtA -d "$DB_NAME" -c "SELECT count(*) FROM pg_tables WHERE schemaname = 'public'" 2>/dev/null)" || return 1
+  [ "${n:-0}" -gt 0 ] 2>/dev/null
+}
 
-  [ "$PKG" = "apt" ] && return 0
-  [ -f "${data_dir}/PG_VERSION" ] && return 0
+# host_postgres_other_databases prints the databases on the host server besides the
+# platform's own: a server that also holds someone else's data keeps running after the move.
+host_postgres_other_databases() {
+  as_postgres psql -XtA -d postgres -c "SELECT datname FROM pg_database WHERE NOT datistemplate AND datname NOT IN ('postgres', '${DB_NAME}') ORDER BY 1" 2>/dev/null
+}
 
-  log "initialising postgresql data directory at ${data_dir}"
-  if command -v postgresql-setup >/dev/null 2>&1; then
-    postgresql-setup --initdb || /usr/bin/postgresql-setup initdb
-  elif command -v initdb >/dev/null 2>&1; then
-    install -d -o postgres -g postgres -m 0700 "$data_dir"
-    as_postgres initdb -D "$data_dir"
+host_pg_counts() { as_postgres psql -XtA -v ON_ERROR_STOP=1 -d "$DB_NAME" -c "$PG_TABLE_COUNTS"; }
+pod_pg_counts() { pg_exec psql -XtA -v ON_ERROR_STOP=1 -U postgres -d "$DB_NAME" -c "$PG_TABLE_COUNTS"; }
+
+# write_pg_hba_lockout heads the host's pg_hba.conf with a block that refuses every TCP
+# connection to the felis database but the move's own dump over loopback. pg_hba.conf is
+# first-match, so it overrides the rules earlier installers wrote, which it also removes.
+write_pg_hba_lockout() {
+  local hba="$1" tmp
+  tmp="$(mktemp)"
+  remember_temp "$tmp"
+  {
+    printf '# BEGIN FELIS MANAGED HBA\n'
+    printf '%s\n' "$PG_LOCKOUT_LINE"
+    printf 'host %s %s 127.0.0.1/32 scram-sha-256\n' "$DB_NAME" "$DB_USER"
+    printf 'host %s all 0.0.0.0/0 reject\n' "$DB_NAME"
+    printf 'host %s all ::/0 reject\n' "$DB_NAME"
+    printf '# END FELIS MANAGED HBA\n\n'
+    # The blank line the block is written with goes with it, or every run adds one.
+    awk -v db="$DB_NAME" -v user="$DB_USER" '
+      $0 == "# BEGIN FELIS MANAGED HBA" { skip = 1; next }
+      $0 == "# END FELIS MANAGED HBA" { skip = 0; blank = 1; next }
+      skip { next }
+      blank && $0 == "" { blank = 0; next }
+      { blank = 0 }
+      $1 == "host" && $2 == db && $3 == user && $5 == "scram-sha-256" { next }
+      { print }
+    ' "$hba"
+  } > "$tmp"
+  cat "$tmp" > "$hba"
+  rm -f "$tmp"
+}
+
+# quiesce_host_postgres leaves the felis database on the host with no writer: the control
+# plane at zero replicas, the host timers stopped, and pg_hba.conf refusing everyone else,
+# including pods of a release older than this one that still hold its old address.
+quiesce_host_postgres() {
+  local unit hba left
+  hba="$(as_postgres psql -XtA -c 'SHOW hba_file' 2>/dev/null)"
+  [ -n "$hba" ] && [ -f "$hba" ] || die "could not find the host PostgreSQL's pg_hba.conf"
+  PG_MOVE_HBA="$hba"
+  # A run killed while the lockout was up left it in place and the copy beside it; the
+  # copy is the real file then, and the lockout must not overwrite it.
+  if [ ! -f "${hba}.pre-pg-move" ] || ! grep -qxF "$PG_LOCKOUT_LINE" "$hba"; then
+    cp -p "$hba" "${hba}.pre-pg-move"
+  fi
+  PG_MOVE_STAGE=quiesced
+  for unit in felis-api felis-operator; do
+    kube -n "$CONTROL_NS" scale deployment "$unit" --replicas=0 >/dev/null 2>&1 || true
+  done
+  for unit in "${PG_MOVE_TIMERS[@]}"; do
+    if systemctl is-active --quiet "${unit}.timer" 2>/dev/null; then
+      PG_MOVE_UNITS+=("${unit}.timer")
+    fi
+    systemctl stop "${unit}.timer" "${unit}.service" >/dev/null 2>&1 || true
+  done
+  write_pg_hba_lockout "$hba"
+  as_postgres psql -XtA -v ON_ERROR_STOP=1 -c 'SELECT pg_reload_conf()' >/dev/null
+  sleep 2
+  as_postgres psql -XtA -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${DB_NAME}' AND pid <> pg_backend_pid()" >/dev/null 2>&1 || true
+  sleep 1
+  left="$(as_postgres psql -XtA -c "SELECT count(*) FROM pg_stat_activity WHERE datname = '${DB_NAME}' AND pid <> pg_backend_pid()" 2>/dev/null)"
+  [ "$left" = 0 ] || die "the host database still has ${left:-unknown} client(s) connected after the lockout; nothing was moved"
+}
+
+# compare_pg_counts fails unless both servers hold the same rows in every table.
+compare_pg_counts() {
+  local host pod
+  host="$(host_pg_counts)" || die "could not count the host database's rows"
+  pod="$(pod_pg_counts)" || die "could not count ${PG_DEPLOYMENT}'s rows"
+  [ -n "$host" ] || die "the host database reported no tables"
+  if [ "$host" != "$pod" ]; then
+    warn "row counts differ between the host database (<) and ${PG_DEPLOYMENT} (>):"
+    diff <(printf '%s\n' "$host") <(printf '%s\n' "$pod") >&2 || true
+    die "the copy in ${PG_DEPLOYMENT} does not match the host database; the host database is untouched and stays in use"
+  fi
+}
+
+# retire_host_postgres stops the host server the move emptied of meaning. It stays
+# installed with its data, for a rollback (docs/operations.md §4), unless it also serves
+# databases that are not the platform's: then it keeps running, with the felis copy locked out.
+retire_host_postgres() {
+  local others
+  others="$(host_postgres_other_databases)"
+  if [ -n "$others" ]; then
+    warn "the host PostgreSQL also holds $(printf '%s' "$others" | tr '\n' ' ')— it keeps running; its felis database is a stale copy that only loopback can reach; drop it once you no longer need a rollback"
   else
-    die "cannot initialise postgresql data directory: postgresql-setup/initdb not found"
+    systemctl disable --now postgresql
+  fi
+  if [ -e "$PG_FIREWALL_SERVICE" ]; then
+    systemctl disable --now felis-postgres-firewall.service >/dev/null 2>&1 || true
+    rm -f "$PG_FIREWALL_SERVICE" "$PG_FIREWALL_RULES"
+    systemctl daemon-reload
   fi
 }
 
-# postgres_installed reports whether a PostgreSQL client and server unit are present.
-# The unit list is read into a variable before matching: `systemctl list-unit-files |
-# grep -q` dies of SIGPIPE under pipefail once grep stops reading a list longer than
-# one write, and the install then took the "not installed" branch on a host that has it.
-postgres_installed() {
-  local units
-  command -v psql >/dev/null 2>&1 || return 1
-  units="$(systemctl list-unit-files 2>/dev/null)" || return 1
-  grep -q '^postgresql' <<<"$units"
+# migrate_host_postgres moves the platform's database from the host PostgreSQL an earlier
+# release installed into felis-postgres, once. The copy goes through the same bundle
+# format as every backup: felis db backup against the host server, felis db restore into
+# the pod, then every table's row count compared. Whatever felis-postgres held before is
+# replaced: until the move it served nobody. Any failure before the host server is stopped
+# puts the host back as it was (undo_postgres_move); the bundle stays in FELIS_DB_BACKUP_DIR.
+migrate_host_postgres() {
+  local legacy fresh out bundle
+  [ -e "$PG_MOVED_MARKER" ] && return 0
+  host_postgres_holds_felis || return 0
+  log "moving the felis database from the host PostgreSQL into ${PG_DEPLOYMENT}"
+  quiesce_host_postgres
+  legacy="$(mktemp)"
+  fresh="$(mktemp)"
+  remember_temp "$legacy"
+  remember_temp "$fresh"
+  write_felis_toml "$legacy" "127.0.0.1:5432"
+  write_felis_toml "$fresh" "127.0.0.1:${PG_HOST_PORT}" "${CONTROL_NS}/${PG_DEPLOYMENT}"
+  out="$("$HOST_BIN" db backup -config "$legacy" -dir "$FELIS_DB_BACKUP_DIR" -label pre-pg-move -keep 0)" \
+    || die "could not take a bundle of the host database; nothing was moved"
+  bundle="$(printf '%s\n' "$out" | sed -n 's/^felis db backup: wrote //p' | tail -n 1)"
+  [ -n "$bundle" ] && [ -f "$bundle" ] || die "felis db backup reported no bundle; nothing was moved"
+  "$HOST_BIN" db restore -config "$fresh" -dir "$FELIS_DB_BACKUP_DIR" -yes -no-safety-backup "$bundle" >/dev/null \
+    || die "could not restore ${bundle} into ${PG_DEPLOYMENT}; the host database is untouched and stays in use"
+  compare_pg_counts
+  retire_host_postgres
+  printf '%s moved from the host PostgreSQL; bundle %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$bundle" > "$PG_MOVED_MARKER"
+  PG_MOVE_STAGE=moved
+  ok "the felis database now lives in ${PG_DEPLOYMENT} (bundle ${bundle}); the host PostgreSQL is stopped and kept for a rollback"
 }
 
-install_postgres() {
-  if postgres_installed; then
-    ok "postgresql already installed"
-  else
-    log "installing postgresql"
-    case "$PKG" in
-      apt) pkg_install postgresql ;;
-      dnf) pkg_install postgresql-server postgresql ;;
-      yum) pkg_install postgresql-server postgresql ;;
-      zypper) pkg_install postgresql-server postgresql ;;
-      pacman) pkg_install postgresql ;;
-    esac
-  fi
-
-  init_postgres_data_dir
-  check_postgres_major
-  systemctl enable --now postgresql
-  ok "postgresql running"
-}
-
-# check_postgres_major refuses to start a PostgreSQL server whose major version differs from
-# the one that created the data directory. The server would not start anyway; this says why
-# and what to do, instead of a failed unit in the middle of the install. Debian and Ubuntu
-# keep one cluster per version under /var/lib/postgresql/<major> and upgrade with
-# pg_upgradecluster, so they are left to their own tooling.
-check_postgres_major() {
-  local data_dir have want
-  [ "$PKG" = "apt" ] && return 0
-  data_dir="$(postgres_data_dir)"
-  [ -f "${data_dir}/PG_VERSION" ] || return 0
-  have="$(tr -d '[:space:]' < "${data_dir}/PG_VERSION")"
-  want="$( (postgres --version 2>/dev/null || psql --version 2>/dev/null) | head -n 1 \
-    | sed -nE 's/^[^0-9]*([0-9]+)\..*/\1/p')"
-  [ -n "$want" ] && [ "$have" != "$want" ] || return 0
-  die "PostgreSQL ${want} is installed, but ${data_dir} holds a PostgreSQL ${have} cluster.
-  The server cannot open it. Upgrade the cluster first (pg_upgrade, with the ${have} binaries
-  still installed), or reinstall PostgreSQL ${have}, then rerun the installer. Take a
-  database bundle before either: sudo felis db backup"
-}
-
-configure_postgres() {
-  local cfg hba listen
-  cfg="$(as_postgres psql -tAc 'SHOW config_file;' 2>/dev/null || true)"
-  hba="$(as_postgres psql -tAc 'SHOW hba_file;' 2>/dev/null || true)"
-  [ -n "$cfg" ] && [ -n "$hba" ] || die "could not query postgresql config/hba file paths"
-  listen="$(as_postgres psql -tAc 'SHOW listen_addresses;' 2>/dev/null || true)"
-
-  # Listen on all interfaces (applied on restart). ALTER SYSTEM is idempotent. Pods reach the
-  # database at the node IP, and configure_postgres_firewall keeps the port from everyone else.
-  #
-  # The connection itself is not encrypted (sslmode=disable in felis.toml). On this
-  # single-node shape it never leaves the host: pods reach the node IP over their veth pair
-  # and the host binary uses loopback, so TLS would guard a path no other machine is on.
-  as_postgres psql -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET listen_addresses = '*';" >/dev/null
-
-  # Allow the host loopback, the pod CIDR, and the node IP before broader distro defaults.
-  write_pg_hba_block "$hba"
-
-  # Role + database (idempotent), and (re)set the password to our generated one.
-  as_postgres psql -v ON_ERROR_STOP=1 <<SQL >/dev/null
-SET password_encryption = 'scram-sha-256';
-DO \$\$
-BEGIN
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '${DB_USER}') THEN
-    CREATE ROLE ${DB_USER} LOGIN PASSWORD '${DB_PASSWORD}';
-  END IF;
-END
-\$\$;
-ALTER ROLE ${DB_USER} WITH LOGIN PASSWORD '${DB_PASSWORD}';
-SQL
-  if ! as_postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" | grep -q 1; then
-    as_postgres createdb -O "$DB_USER" "$DB_NAME"
-  fi
-
-  # listen_addresses is the only setting here that needs a restart, and a restart cuts
-  # every connection felis-api holds mid-transaction. pg_hba.conf and the role are live
-  # after a reload.
-  if [ "$listen" = "*" ]; then
-    as_postgres psql -v ON_ERROR_STOP=1 -tAc 'SELECT pg_reload_conf();' >/dev/null
-  else
-    systemctl restart postgresql
-  fi
-  configure_postgres_firewall
-  ok "postgresql configured (listen=*, role/db '${DB_NAME}', pg_hba opened to pods)"
-}
-
-# configure_postgres_firewall keeps 5432 to this host and its pods. PostgreSQL listens on
-# every address (pods dial the node IP), and pg_hba.conf only refuses a connection after the
-# server has spoken to it. firewalld's default zone does not open 5432 (configure_k3s_firewall
-# trusts only the pod and service CIDRs), so that host needs nothing more; on any other host a
-# small nftables table of our own drops 5432 from everywhere but loopback, the pod CIDR and the
-# node's own address, loaded at boot by a oneshot unit ordered before PostgreSQL.
-configure_postgres_firewall() {
-  if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
-    return 0
-  fi
-  command -v nft >/dev/null 2>&1 || pkg_install nftables
-  command -v nft >/dev/null 2>&1 || { warn "nft is not available; PostgreSQL's 5432 is reachable from the network (pg_hba still refuses other hosts)"; return 0; }
-  local node_rule
-  case "$NODE_IP" in
-    *:*) node_rule="ip6 saddr ${NODE_IP}" ;;
-    *) node_rule="ip saddr ${NODE_IP}" ;;
+# undo_postgres_move runs from cleanup when the install fails. Before the host server was
+# retired it opens pg_hba.conf again and brings the control plane back, so the platform
+# runs on the host database exactly as before the run. After it, the database lives in
+# felis-postgres and a rerun finishes pointing everything at it.
+undo_postgres_move() {
+  local unit
+  case "${PG_MOVE_STAGE:-}" in
+    quiesced)
+      if [ -f "${PG_MOVE_HBA}.pre-pg-move" ]; then
+        cat "${PG_MOVE_HBA}.pre-pg-move" > "$PG_MOVE_HBA" \
+          || warn "could not put ${PG_MOVE_HBA} back; its copy is ${PG_MOVE_HBA}.pre-pg-move"
+        as_postgres psql -XtA -c 'SELECT pg_reload_conf()' >/dev/null 2>&1 || true
+      fi
+      for unit in felis-api felis-operator; do
+        kube -n "$CONTROL_NS" scale deployment "$unit" --replicas=1 >/dev/null 2>&1 || true
+      done
+      warn "the database move was undone: the platform runs on the host PostgreSQL as before"
+      ;;
+    moved)
+      warn "the felis database already lives in ${PG_DEPLOYMENT}; rerun the installer to point the platform at it"
+      ;;
+    *) return 0 ;;
   esac
-  install -d -m 0700 "$STATE_DIR"
-  cat > "$PG_FIREWALL_RULES" <<EOF
-# Generated by deploy/bootstrap.sh — do not edit by hand; rerun the installer.
-# The first two lines make a reload replace the table instead of failing on it.
-table inet felis_postgres
-delete table inet felis_postgres
-table inet felis_postgres {
-  chain input {
-    type filter hook input priority filter; policy accept;
-    tcp dport 5432 iif "lo" accept
-    tcp dport 5432 ip saddr ${POD_CIDR} accept
-    tcp dport 5432 ${node_rule} accept
-    tcp dport 5432 drop
-  }
-}
-EOF
-  chmod 0600 "$PG_FIREWALL_RULES"
-  cat > "$PG_FIREWALL_SERVICE" <<EOF
-[Unit]
-Description=Felis: keep PostgreSQL's port to this host and its pods
-DefaultDependencies=no
-After=nftables.service
-# nftables.service starts from a flushed ruleset; a restart of it reloads this table too.
-PartOf=nftables.service
-Before=network-pre.target postgresql.service
-Wants=network-pre.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=$(command -v nft) -f ${PG_FIREWALL_RULES}
-ExecStop=$(command -v nft) delete table inet felis_postgres
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  systemctl daemon-reload
-  systemctl enable felis-postgres-firewall.service >/dev/null 2>&1
-  systemctl restart felis-postgres-firewall.service
-  ok "5432 accepts loopback, ${POD_CIDR} and ${NODE_IP} only (nftables table felis_postgres)"
+  for unit in "${PG_MOVE_UNITS[@]-}"; do
+    [ -n "$unit" ] || continue
+    systemctl start "$unit" >/dev/null 2>&1 || true
+  done
 }
 
 # ---------------------------------------------------------------------------
-# 7. Secrets + felis.toml (pod variant reaches Postgres at the node IP; host
-#    variant at 127.0.0.1 for migrations)
+# 7. Secrets + felis.toml (the pod copy reaches felis-postgres at its Service; the
+#    host copy at its loopback hostPort, and names the pod felis db runs its tools in)
 # ---------------------------------------------------------------------------
 load_or_make_secrets() {
   mkdir -p "$STATE_DIR"
@@ -3665,7 +3761,7 @@ offsite_block() {
 }
 
 # offsite_enabled: the [offsite] section this run writes names a bucket. The section is
-# read into a variable before matching (as in postgres_installed): in `offsite_block |
+# read into a variable before matching (as in import_platform_images): in `offsite_block |
 # grep -q` grep exits at the bucket line, the lines after it then kill offsite_block with
 # SIGPIPE, and pipefail made that "no bucket". A re-run that lost the race removed the
 # off-site timer and ended with NO OFF-SITE COPY on a host that has one.
@@ -3675,8 +3771,17 @@ offsite_enabled() {
   grep -Eq '^[[:space:]]*bucket[[:space:]]*=[[:space:]]*"[^"]+"' <<<"$block"
 }
 
+# write_felis_toml target host:port [namespace/deployment]: the deployment is the
+# database's pod, where `felis db` runs pg_dump, pg_restore and psql (the host has no
+# PostgreSQL client); only the host copy names it.
 write_felis_toml() {
-  local target="$1" db_host="$2" smtp_block auth_body auth_source_blocks registry_block archive_block offsite_section
+  local target="$1" db_addr="$2" deployment="${3:-}" deployment_line="" smtp_block auth_body auth_source_blocks registry_block archive_block offsite_section
+  if [ -n "$deployment" ]; then
+    # Starts with the newline that ends the url line, so the pod copy has no blank line there.
+    deployment_line="
+# The database's pod: felis db runs its client tools there.
+deployment = \"${deployment}\""
+  fi
   smtp_block="$(persisted_smtp_block)"
   if [ -n "$smtp_block" ]; then
     log "carrying forward the configured [smtp] relay"
@@ -3713,7 +3818,7 @@ listen = "0.0.0.0:8080"
 root_domain = "${FELIS_ROOT_DOMAIN}"
 
 [database]
-url = "postgres://${DB_USER}:${DB_PASSWORD}@${db_host}:5432/${DB_NAME}?sslmode=disable"
+url = "postgres://${DB_USER}:${DB_PASSWORD}@${db_addr}/${DB_NAME}?sslmode=disable"${deployment_line}
 
 [k8s]
 namespace = "${MINECRAFT_NS}"
@@ -3779,7 +3884,7 @@ ensure_default_config() {
 # ---------------------------------------------------------------------------
 run_migrations() {
   local backup_flags=(-backup-dir "$FELIS_DB_BACKUP_DIR")
-  write_felis_toml "${STATE_DIR}/felis.host.toml" "127.0.0.1"
+  write_felis_toml "${STATE_DIR}/felis.host.toml" "127.0.0.1:${PG_HOST_PORT}" "${CONTROL_NS}/${PG_DEPLOYMENT}"
   ensure_default_config
   if [ "$FELIS_PRE_MIGRATE_BACKUP" = 0 ]; then
     warn "FELIS_PRE_MIGRATE_BACKUP=0: pending migrations run without a database snapshot"
@@ -3788,7 +3893,7 @@ run_migrations() {
   # Migrations only roll forward. On an existing database with migrations pending, the
   # binary bundles the database into FELIS_DB_BACKUP_DIR first and refuses to migrate
   # if that fails; a fresh database has nothing to protect and is migrated directly.
-  log "running database migrations (host binary -> 127.0.0.1)"
+  log "running database migrations (host binary -> ${PG_DEPLOYMENT} at 127.0.0.1:${PG_HOST_PORT})"
   # From here the database may move forward, and the binary that moved it stays.
   HOST_BIN_IN_USE=1
   "$HOST_BIN" migrate up -config "${STATE_DIR}/felis.host.toml" "${backup_flags[@]}"
@@ -3820,7 +3925,7 @@ install_offsite_timer() {
   cat > "$OFFSITE_SERVICE" <<EOF
 [Unit]
 Description=Felis off-site copy (world archives, database bundles, user registry images and submission uploads, encrypted, to the [offsite] bucket)
-After=network-online.target k3s.service postgresql.service felis-db-backup.service
+After=network-online.target k3s.service felis-db-backup.service
 Wants=network-online.target
 
 [Service]
@@ -3893,7 +3998,7 @@ install_update_check_timer() {
   cat > "$UPDATE_CHECK_SERVICE" <<EOF
 [Unit]
 Description=Felis component version check (felis update --record)
-After=network-online.target postgresql.service k3s.service
+After=network-online.target k3s.service
 Wants=network-online.target
 
 [Service]
@@ -3924,7 +4029,7 @@ EOF
 }
 
 install_watchdog_timer() {
-  local disks="/,/var/lib/rancher/k3s,/var/lib/postgresql,/var/lib/felis" path
+  local disks="/,/var/lib/rancher/k3s,/var/lib/felis" path
   for path in "$FELIS_WORLDS_HOST_PATH" "$FELIS_ARCHIVE_LOCAL_PATH" "$FELIS_DB_BACKUP_DIR"; do
     if [ -n "$path" ]; then disks="${disks},${path}"; fi
   done
@@ -3932,7 +4037,7 @@ install_watchdog_timer() {
   cat > "$WATCHDOG_SERVICE" <<EOF
 [Unit]
 Description=Felis platform watchdog (health checks, owner alert mail)
-After=network-online.target k3s.service postgresql.service
+After=network-online.target k3s.service
 
 [Service]
 Type=oneshot
@@ -4014,8 +4119,7 @@ install_db_backup_timer() {
   cat > "$DB_BACKUP_SERVICE" <<EOF
 [Unit]
 Description=Felis control-plane database backup (pg_dump + /etc/felis state)
-After=postgresql.service k3s.service
-Wants=postgresql.service
+After=k3s.service
 
 [Service]
 Type=oneshot
@@ -4125,7 +4229,7 @@ revoke_worlds_root_grant() {
 deploy_bundle() {
   local prev_api prev_operator prev_gate
   export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-  write_felis_toml "${STATE_DIR}/felis.pod.toml" "${NODE_IP}"
+  write_felis_toml "${STATE_DIR}/felis.pod.toml" "$PG_SERVICE_ADDR"
 
   prev_api="$(deployment_image felis-api api)"
   prev_operator="$(deployment_image felis-operator operator)"
@@ -4177,6 +4281,7 @@ deploy_bundle() {
   log "rendering + applying the control-plane bundle"
   local -a manifest_args=(
     --felis-image "$FELIS_IMAGE"
+    --postgres-image "$POSTGRES_IMAGE"
     --panel-node-port "$FELIS_PANEL_NODEPORT"
     --velocity-cidr "${NODE_IP}/32"
   )
@@ -4227,6 +4332,10 @@ deploy_bundle() {
     if [ -n "$size" ]; then manifest_args+=(--backup-storage "$size"); fi
   fi
   "$HOST_BIN" manifests "${manifest_args[@]}" | kube apply -f -
+  # A client-side apply leaves a replica count the manifest did not change alone, so the
+  # zero a database move (or an operator's `felis db restore`) scaled the control plane
+  # to would outlive this install.
+  kube -n "$CONTROL_NS" scale deployment felis-api felis-operator --replicas=1
   restart_existing_control_plane "$prev_api" "$prev_operator" "$prev_gate"
 
   log "waiting for control-plane rollouts"
@@ -4440,6 +4549,7 @@ diagnose_rollout() {
     felis-api) selector='app.kubernetes.io/name=felis,app.kubernetes.io/component=api' ;;
     felis-operator) selector='app.kubernetes.io/name=felis,app.kubernetes.io/component=operator' ;;
     registry) selector='app.kubernetes.io/name=felis,app.kubernetes.io/component=registry' ;;
+    felis-postgres) selector='app.kubernetes.io/name=felis,app.kubernetes.io/component=postgres' ;;
     *) selector='' ;;
   esac
   [ -n "$selector" ] || return 0
@@ -4807,7 +4917,18 @@ main_nano() {
   summary_nano
 }
 
+# felis runs k3s from PATH (felis db's tools in the database pod, the MinecraftServer
+# export in every bundle), and sudo's secure_path on EL leaves out /usr/local/bin, where
+# k3s lives.
+ensure_k3s_on_path() {
+  case ":${PATH}:" in
+    *":${K3S_BIN_DIR}:"*) ;;
+    *) PATH="${K3S_BIN_DIR}:${PATH}"; export PATH ;;
+  esac
+}
+
 main() {
+  ensure_k3s_on_path
   resolve_nano_listen
   validate_settings
   detect_os
@@ -4842,10 +4963,10 @@ main() {
   install_docker
   install_k3s
   # The registry mirror must exist before the bundle's pods start pulling (and
-  # before any re-run's rollouts); the registry's own image must be in containerd
-  # before its Deployment can start at all.
+  # before any re-run's rollouts); the registry's and the database's own images must
+  # be in containerd before their Deployments can start at all.
   configure_registry_mirror
-  import_registry_image
+  import_platform_images
   # Three ways to end up with a felis binary, in preference order. The release download is
   # the only one that skips compiling: it is the CI artifact for this exact tag, panel
   # included. Both other arms leave HAVE_PREBUILT_BINARY unset where a source build is what
@@ -4860,13 +4981,15 @@ main() {
   resolve_felis_image
   build_image
   # After build_image imported the felis image: the registry pod's gate runs it.
-  pin_registry_images
+  pin_platform_images
   # Before build_game_stack: the builds user servers run must be read off the
   # registry's tags before new ones replace them.
   pin_user_server_images
   build_game_stack
-  install_postgres
-  configure_postgres
+  deploy_postgres
+  # Before run_migrations writes the host config that points at felis-postgres: until the
+  # move, the database is the host PostgreSQL an earlier release installed.
+  migrate_host_postgres
   run_migrations
   deploy_bundle
   # AFTER deploy_bundle: the registry the built images are mirrored into is part

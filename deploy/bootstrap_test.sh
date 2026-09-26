@@ -1230,39 +1230,48 @@ case "$out" in
 esac
 expect "the throwaway config is registered for EXIT cleanup" "TEMP /" "$out"
 
-# The registry pod's two images can only come from containerd's own store: pin
-# both against kubelet image GC, and unpin a previous felis tag.
-pnblock="$(awk '/^pin_registry_images\(\) \{/,/^}/' "$BS")"
-[ -n "$pnblock" ] || { echo "FAIL: no pin_registry_images found in $BS"; exit 1; }
-rrblock="$(awk '/^registry_image_containerd_ref\(\) \{/,/^}/' "$BS")"
-[ -n "$rrblock" ] || { echo "FAIL: no registry_image_containerd_ref found in $BS"; exit 1; }
+# The registry pod's two images and the database's can only come from containerd's own
+# store: pin all three against kubelet image GC, and unpin previous ones.
+pnblock="$(awk '/^pin_platform_images\(\) \{/,/^}/' "$BS")"
+[ -n "$pnblock" ] || { echo "FAIL: no pin_platform_images found in $BS"; exit 1; }
+rrblock="$(awk '/^pinned_image_ref\(\) \{/,/^}/' "$BS")"
+[ -n "$rrblock" ] || { echo "FAIL: no pinned_image_ref found in $BS"; exit 1; }
 regimage="$(grep -m1 '^REGISTRY_IMAGE=' "$BS" | cut -d'"' -f2)"
 regdigest="${regimage#*@}"
+pgimage="$(grep -m1 '^POSTGRES_IMAGE=' "$BS" | cut -d'"' -f2)"
+pgdigest="${pgimage#*@}"
+[ -n "$pgimage" ] && [ "$pgdigest" != "$pgimage" ] || { echo "FAIL: no digest-pinned POSTGRES_IMAGE in $BS"; exit 1; }
 calls="$(mktemp)"
 out="$(
-  CALLS="$calls" REGISTRY_IMAGE="$regimage" REGDIGEST="$regdigest" FELIS_IMAGE=registry.felis.svc:5000/felis/felis:v2 bash -c '
+  CALLS="$calls" REGISTRY_IMAGE="$regimage" REGDIGEST="$regdigest" POSTGRES_IMAGE="$pgimage" PGDIGEST="$pgdigest" \
+    FELIS_IMAGE=registry.felis.svc:5000/felis/felis:v2 bash -c '
     ok() { printf "OK: %s\n" "$*"; }
     warn() { printf "WARN: %s\n" "$*"; }
     k3s_cmd() {
       case "$*" in
-        "ctr images ls -q") printf "registry.felis.svc:5000/felis/felis:v1\nregistry.felis.svc:5000/felis/felis:v2\ndocker.io/library/registry:2\ndocker.io/library/registry@%s\nregistry.felis.svc:5000/felis/limbo:demo\n" "$REGDIGEST" ;;
+        "ctr images ls -q") printf "registry.felis.svc:5000/felis/felis:v1\nregistry.felis.svc:5000/felis/felis:v2\ndocker.io/library/registry:2\ndocker.io/library/registry@%s\nregistry.felis.svc:5000/felis/limbo:demo\ndocker.io/library/postgres@sha256:0000\ndocker.io/library/postgres@%s\n" "$REGDIGEST" "$PGDIGEST" ;;
         *) printf "CTR %s\n" "$*" >>"$CALLS" ;;
       esac
     }
     '"$rrblock"'
     '"$pnblock"'
-    pin_registry_images'
+    pin_platform_images'
 )$(printf '\n'; cat "$calls")"
 rm -f "$calls"
 expect "the running felis image is pinned" "CTR ctr images label registry.felis.svc:5000/felis/felis:v2 io.cri-containerd.pinned=pinned" "$out"
 expect "the registry image is pinned by digest" "CTR ctr images label docker.io/library/registry@${regdigest} io.cri-containerd.pinned=pinned" "$out"
+expect "the database image is pinned by digest" "CTR ctr images label docker.io/library/postgres@${pgdigest} io.cri-containerd.pinned=pinned" "$out"
 expect "a previous felis tag is unpinned" "CTR ctr images label registry.felis.svc:5000/felis/felis:v1 io.cri-containerd.pinned=" "$out"
 expect "the old registry:2 tag is unpinned" "CTR ctr images label docker.io/library/registry:2 io.cri-containerd.pinned=" "$out"
+expect "a previous database image is unpinned" "CTR ctr images label docker.io/library/postgres@sha256:0000 io.cri-containerd.pinned=" "$out"
 # $'\n' is bash; this file runs under dash in CI.
 nl='
 '
 case "$out" in
   *"registry@${regdigest} io.cri-containerd.pinned=${nl}"*) echo "FAIL: the current registry image must not be unpinned"; fails=$((fails + 1)) ;;
+esac
+case "$out${nl}" in
+  *"postgres@${pgdigest} io.cri-containerd.pinned=${nl}"*) echo "FAIL: the current database image must not be unpinned"; fails=$((fails + 1)) ;;
 esac
 case "$out" in
   *"limbo:demo io.cri"*) echo "FAIL: only the registry pod's images may be pinned or unpinned"; fails=$((fails + 1)) ;;
@@ -1306,12 +1315,12 @@ p="$(line_of pin_user_server_images)"; b="$(line_of build_game_stack)"; u="$(lin
   && echo "PASS user servers are pinned before the game images are rebuilt and pushed" \
   || { echo "FAIL: main must run pin_user_server_images before build_game_stack and push_images_to_registry (lines: $p $b $u)"; fails=$((fails + 1)); }
 
-# --- the registry's own image must not be re-pulled on every run --------------------------
-iblock="$(awk '/^import_registry_image\(\) \{/,/^}/' "$BS")"
-[ -n "$iblock" ] || { echo "FAIL: no import_registry_image found in $BS"; exit 1; }
+# --- the registry's and the database's own images must not be re-pulled on every run -----
+iblock="$(awk '/^import_platform_images\(\) \{/,/^}/' "$BS")"
+[ -n "$iblock" ] || { echo "FAIL: no import_platform_images found in $BS"; exit 1; }
 
 run_import() { # listed-refs
-  LISTED="$1" REGISTRY_IMAGE="$regimage" bash -c '
+  LISTED="$1" REGISTRY_IMAGE="$regimage" POSTGRES_IMAGE="$pgimage" bash -c '
     log() { printf "LOG: %s\n" "$*"; }
     ok() { printf "OK: %s\n" "$*"; }
     warn() { printf "WARN: %s\n" "$*"; }
@@ -1319,15 +1328,17 @@ run_import() { # listed-refs
     k3s_cmd() { case "$*" in "ctr images ls -q") printf "%b" "$LISTED" ;; *) printf "PULL %s\n" "$*" >&2 ;; esac; }
     '"$rrblock"'
     '"$iblock"'
-    import_registry_image' 2>&1
+    import_platform_images' 2>&1
 }
-out="$(run_import "docker.io/library/registry@${regdigest}\n")"
-expect "an already-pulled registry image is left alone" "already in k3s containerd" "$out"
+out="$(run_import "docker.io/library/registry@${regdigest}\ndocker.io/library/postgres@${pgdigest}\n")"
+expect "an already-pulled registry image is left alone" "OK: ${regimage} already in k3s containerd" "$out"
+expect "an already-pulled database image is left alone" "OK: ${pgimage} already in k3s containerd" "$out"
 case "$out" in
-  *PULL*) echo "FAIL: a present registry image must not be pulled again"; fails=$((fails + 1)) ;;
+  *PULL*) echo "FAIL: a present platform image must not be pulled again"; fails=$((fails + 1)) ;;
 esac
-out="$(run_import "docker.io/library/registry:2\n")"
-expect "only the pinned digest counts as present; the old tag is pulled over" "PULL crictl pull ${regimage}" "$out"
+out="$(run_import "docker.io/library/registry:2\ndocker.io/library/postgres:18\n")"
+expect "only the pinned digest counts as present; the old registry tag is pulled over" "PULL crictl pull ${regimage}" "$out"
+expect "only the pinned digest counts as present; the old database tag is pulled over" "PULL crictl pull ${pgimage}" "$out"
 
 # --- installer re-runs refresh the workload namespace's felis-config copy ---------------
 # The backup/restore/fileedit Jobs and the reaper mount the workload namespace's own
@@ -1417,8 +1428,8 @@ endpoint = "https://objects.example"
 bucket = "felis-offsite"
 TOML
 
-run_write() { # out-file [state-dir]; under the installer's shell options and ERR trap
-  STATE_DIR="${2:-$rdir}" OUT_TOML="$1" FNFILE="$fnfile" bash -c '
+run_write() { # out-file [state-dir] [database-deployment]; under the installer's shell options and ERR trap
+  STATE_DIR="${2:-$rdir}" OUT_TOML="$1" DEPLOY="${3:-}" FNFILE="$fnfile" bash -c '
     set -Eeuo pipefail
     trap '\''echo "ERR near line $LINENO (exit $?)" >&2'\'' ERR
     log() { :; }
@@ -1428,11 +1439,22 @@ run_write() { # out-file [state-dir]; under the installer's shell options and ER
     FELIS_ROOT_DOMAIN=r.example.com DB_USER=u DB_PASSWORD=p DB_NAME=d MINECRAFT_NS=minecraft \
     FELIS_EGRESS_MODE=nodeport FELIS_LIMBO_IMAGE=li FELIS_LOBBY_IMAGE=lo FELIS_GAME_PORT=25570 \
     REGISTRY_URL=registry.felis.svc:5000 BUILD_NS=felis-build FELIS_ARCHIVE_LOCAL_PATH=/a \
-    FELIS_OFFSITE_BUCKET= write_felis_toml "$OUT_TOML" 127.0.0.1'
+    FELIS_OFFSITE_BUCKET= write_felis_toml "$OUT_TOML" 127.0.0.1:15432 "$DEPLOY"'
 }
 
 run_write "$rdir/out.toml"
 out="$(cat "$rdir/out.toml")"
+expect "the database is reached at the address given" '[database]
+url = "postgres://u:p@127.0.0.1:15432/d?sslmode=disable"
+
+[k8s]' "$out"
+run_write "$rdir/deploy.toml" "$rdir" felis/felis-postgres
+expect "the host copy names the pod felis db runs its tools in" '[database]
+url = "postgres://u:p@127.0.0.1:15432/d?sslmode=disable"
+# The database'"'"'s pod: felis db runs its client tools there.
+deployment = "felis/felis-postgres"
+
+[k8s]' "$(cat "$rdir/deploy.toml")"
 expect "a re-run carries the build-lane executor mirrors" \
   'kaniko_image = "registry.felis.svc:5000/mirror/kaniko-executor:v1.24.0"' "$out"
 expect "a re-run carries the trivy vulnerability-DB mirror" \
@@ -1678,15 +1700,17 @@ mblock="$(awk '/^run_migrations\(\) \{/,/^}/' "$BS")"
 
 run_migrate() { # FELIS_PRE_MIGRATE_BACKUP
   FELIS_PRE_MIGRATE_BACKUP="$1" FELIS_DB_BACKUP_DIR=/var/lib/felis/db-backups STATE_DIR=/etc/felis \
-    HOST_BIN=fakefelis bash -c '
+    PG_HOST_PORT=15432 CONTROL_NS=felis PG_DEPLOYMENT=felis-postgres HOST_BIN=fakefelis bash -c '
     log() { :; }; ok() { :; }; warn() { printf "WARN: %s\n" "$*"; }
-    write_felis_toml() { :; }; ensure_default_config() { :; }
+    write_felis_toml() { printf "TOML: %s\n" "$*"; }; ensure_default_config() { :; }
     fakefelis() { printf "RUN: %s\n" "$*"; }
     '"$mblock"'
     run_migrations' 2>&1
 }
 
 out="$(run_migrate 1)"
+expect "the migrations reach felis-postgres at its loopback port and name its pod" \
+  "TOML: /etc/felis/felis.host.toml 127.0.0.1:15432 felis/felis-postgres" "$out"
 expect "an upgrade snapshots into the backup dir" "RUN: migrate up -config /etc/felis/felis.host.toml -backup-dir /var/lib/felis/db-backups" "$out"
 out="$(run_migrate 0)"
 expect "FELIS_PRE_MIGRATE_BACKUP=0 opts out explicitly" "RUN: migrate up -config /etc/felis/felis.host.toml -no-backup" "$out"
@@ -1784,7 +1808,7 @@ out="$(run_watchdog_timer 0 "")"
 unit="$(cat "$tdir/felis-watchdog.service")"
 timer="$(cat "$tdir/felis-watchdog.timer")"
 expect "the watchdog runs the host binary against the host config, dialing the proxy's port" \
-  "ExecStart=/usr/local/bin/felis watchdog -config /etc/felis/felis.host.toml -state $tdir/watchdog/state.json -quiet-file /run/felis/watchdog-quiet-until -backup-dir /var/lib/felis/db-backups -proxy-addr 127.0.0.1:25577 -disk-paths /,/var/lib/rancher/k3s,/var/lib/postgresql,/var/lib/felis,/var/lib/felis/archives,/var/lib/felis/db-backups" "$unit"
+  "ExecStart=/usr/local/bin/felis watchdog -config /etc/felis/felis.host.toml -state $tdir/watchdog/state.json -quiet-file /run/felis/watchdog-quiet-until -backup-dir /var/lib/felis/db-backups -proxy-addr 127.0.0.1:25577 -disk-paths /,/var/lib/rancher/k3s,/var/lib/felis,/var/lib/felis/archives,/var/lib/felis/db-backups" "$unit"
 expect "a wedged run is killed before the next one is due twice over" "TimeoutStartSec=3min" "$unit"
 expect "the watchdog runs every two minutes" "OnUnitActiveSec=2min" "$timer"
 expect "the watchdog starts soon after boot" "OnBootSec=3min" "$timer"
@@ -1798,14 +1822,14 @@ else
 fi
 
 out="$(run_watchdog_timer 0 /srv/worlds)"
-expect "a custom worlds root is watched for free space" "-disk-paths /,/var/lib/rancher/k3s,/var/lib/postgresql,/var/lib/felis,/srv/worlds," "$(cat "$tdir/felis-watchdog.service")"
+expect "a custom worlds root is watched for free space" "-disk-paths /,/var/lib/rancher/k3s,/var/lib/felis,/srv/worlds," "$(cat "$tdir/felis-watchdog.service")"
 case "$unit" in
   *-node-ip*) echo "FAIL without a node address the watchdog must not check one"; fails=$((fails + 1)) ;;
   *) echo "PASS without a node address the watchdog checks none" ;;
 esac
 out="$(run_watchdog_timer 0 "" 10.211.55.6)"
 expect "the watchdog checks the host still holds the install's address" \
-  "-disk-paths /,/var/lib/rancher/k3s,/var/lib/postgresql,/var/lib/felis,/var/lib/felis/archives,/var/lib/felis/db-backups -node-ip 10.211.55.6
+  "-disk-paths /,/var/lib/rancher/k3s,/var/lib/felis,/var/lib/felis/archives,/var/lib/felis/db-backups -node-ip 10.211.55.6
 " "$(cat "$tdir/felis-watchdog.service")"
 
 out="$(run_watchdog_timer 1 "")"
@@ -2165,61 +2189,6 @@ esac
 expect "the builds are recorded even before the pods exist" "lobby sha256:ddd" "$(cat "$sdir2/state")"
 rm -rf "$sdir2"
 
-pgblock="$(awk '/^configure_postgres\(\) \{/,/^}/' "$BS")"
-[ -n "$pgblock" ] || { echo "FAIL: no configure_postgres found in $BS"; exit 1; }
-pgcalls="$(mktemp)"
-run_configure_pg() { # current listen_addresses
-  : > "$pgcalls"
-  LISTEN="$1" CALLS="$pgcalls" DB_NAME=felis DB_USER=felis DB_PASSWORD=pw bash -c '
-    set -Eeuo pipefail
-    ok() { :; }
-    die() { printf "DIE: %s\n" "$*"; exit 1; }
-    as_postgres() {
-      case "$*" in
-        *"SHOW config_file"*) echo /c ;;
-        *"SHOW hba_file"*) echo /h ;;
-        *"SHOW listen_addresses"*) echo "$LISTEN" ;;
-        *pg_reload_conf*) echo RELOAD >> "$CALLS" ;;
-        *"SELECT 1 FROM pg_database"*) echo 1 ;;
-        *) cat >/dev/null ;;
-      esac
-    }
-    write_pg_hba_block() { :; }
-    configure_postgres_firewall() { echo FIREWALL; }
-    systemctl() { printf "SYSTEMCTL %s\n" "$*"; }
-    '"$pgblock"'
-    configure_postgres' < /dev/null
-  cat "$pgcalls"
-}
-out="$(run_configure_pg '*')"
-case "$out" in
-  *"SYSTEMCTL restart postgresql"*) echo "FAIL a rerun restarted PostgreSQL under felis-api"; fails=$((fails + 1)) ;;
-  *RELOAD*) echo "PASS a rerun reloads PostgreSQL instead of restarting it" ;;
-  *) echo "FAIL configure_postgres neither reloaded nor restarted: $out"; fails=$((fails + 1)) ;;
-esac
-expect "the firewall step runs" "FIREWALL" "$out"
-expect "a first install restarts PostgreSQL to listen on the node" "SYSTEMCTL restart postgresql" "$(run_configure_pg localhost)"
-rm -f "$pgcalls"
-
-pmblock="$(awk '/^check_postgres_major\(\) \{/,/^}/' "$BS")"
-[ -n "$pmblock" ] || { echo "FAIL: no check_postgres_major found in $BS"; exit 1; }
-pmdir="$(mktemp -d)"
-run_pg_major() { # PKG cluster-version server-version
-  printf '%s\n' "$2" > "$pmdir/PG_VERSION"
-  PKG="$1" SERVER="$3" DATA="$pmdir" bash -c '
-    die() { printf "DIE: %s\n" "$*"; exit 1; }
-    postgres_data_dir() { printf "%s\n" "$DATA"; }
-    postgres() { printf "postgres (PostgreSQL) %s\n" "$SERVER"; }
-    '"$pmblock"'
-    check_postgres_major && echo STARTS'
-}
-expect "a new major version over an old cluster is refused" "DIE: PostgreSQL 17 is installed, but $pmdir holds a PostgreSQL 16 cluster" \
-  "$(run_pg_major dnf 16 17.2)"
-expect "the refusal names the way forward" "pg_upgrade" "$(run_pg_major pacman 16 17.2)"
-expect "the same major version starts" "STARTS" "$(run_pg_major dnf 16 16.4)"
-expect "Debian-family clusters are left to pg_upgradecluster" "STARTS" "$(run_pg_major apt 15 17.2)"
-rm -rf "$pmdir"
-
 rfblock="$(awk '/^pkg_refresh_once\(\) \{/,/^}/' "$BS")"
 pmdir="$(mktemp -d)"
 run_refresh() {
@@ -2239,42 +2208,6 @@ printf '16\n' > "$pmdir/PG_VERSION"
 expect "an Arch rerun holds PostgreSQL at the cluster's version" "PACMAN -Syu --noconfirm --ignore postgresql" "$(run_refresh)"
 rm -rf "$pmdir"
 
-# The rules heredoc closes nft blocks with a bare "}", so stop at the function's own brace.
-fwblock="$(awk '/^configure_postgres_firewall\(\) \{/ { f = 1 }
-  f { print; if ($0 ~ /<<EOF$/) h = 1; else if ($0 == "EOF") h = 0; else if (!h && $0 == "}") exit }' "$BS")"
-[ -n "$fwblock" ] || { echo "FAIL: no configure_postgres_firewall found in $BS"; exit 1; }
-fwdir="$(mktemp -d)"
-run_pg_firewall() { # firewalld-active(0|1) node-ip
-  FWD="$1" NODE_IP="$2" POD_CIDR=10.42.0.0/16 STATE_DIR="$fwdir" \
-  PG_FIREWALL_RULES="$fwdir/pg.nft" PG_FIREWALL_SERVICE="$fwdir/pg.service" bash -c '
-    set -Eeuo pipefail
-    ok() { :; }
-    warn() { printf "WARN: %s\n" "$*"; }
-    pkg_install() { :; }
-    firewall-cmd() { :; }
-    nft() { :; }
-    systemctl() {
-      case "$1" in
-        is-active) [ "$FWD" = 1 ] ;;
-        *) printf "SYSTEMCTL %s\n" "$*" ;;
-      esac
-    }
-    '"$fwblock"'
-    configure_postgres_firewall'
-}
-out="$(run_pg_firewall 1 203.0.113.7)"
-[ -e "$fwdir/pg.nft" ] && { echo "FAIL a firewalld host got a second firewall"; fails=$((fails + 1)); } \
-  || echo "PASS firewalld already closes 5432"
-out="$(run_pg_firewall 0 203.0.113.7)"
-rules="$(cat "$fwdir/pg.nft")"
-expect "the pods may reach the database" "tcp dport 5432 ip saddr 10.42.0.0/16 accept" "$rules"
-expect "the node itself may reach the database" "tcp dport 5432 ip saddr 203.0.113.7 accept" "$rules"
-expect "everyone else is dropped" "tcp dport 5432 drop" "$rules"
-expect "the rules load at boot" "SYSTEMCTL restart felis-postgres-firewall.service" "$out"
-expect "the unit orders itself before PostgreSQL" "Before=network-pre.target postgresql.service" "$(cat "$fwdir/pg.service")"
-run_pg_firewall 0 2001:db8::7 >/dev/null
-expect "a v6 node address gets a v6 rule" "tcp dport 5432 ip6 saddr 2001:db8::7 accept" "$(cat "$fwdir/pg.nft")"
-rm -rf "$fwdir"
 
 
 # --- the proxy heap -----------------------------------------------------------------------
@@ -2342,54 +2275,42 @@ rm -rf "$hbdir"
 # the "missing" branch on a host that had it (CI caught the PostgreSQL case reinstalling a
 # package on a rerun). apt then ran needrestart, which restarted felis-velocity.
 
-for f in postgres_installed import_registry_image apt_get; do
+for f in import_platform_images apt_get; do
   [ -n "$(awk '/^'"$f"'\(\) \{/,/^}/' "$BS")" ] || { echo "FAIL: no ${f} in $BS"; exit 1; }
   [ "$(awk '/^'"$f"'\(\) \{/,/^}/' "$BS" | wc -l)" -lt 20 ] \
     || { echo "FAIL: the extracted ${f} is not just the function -- did its closing brace move?"; exit 1; }
 done
 
 rrdir="$(mktemp -d)"
-printf '#!/bin/sh\nexit 0\n' > "$rrdir/psql"
-cat > "$rrdir/systemctl" <<'EOF'
-#!/bin/sh
-printf '%s\n' "$FIRST_UNIT"
-seq 1 200000 | sed 's/.*/unit-&.service static -/'
-EOF
 cat > "$rrdir/apt-get" <<'EOF'
 #!/bin/sh
 echo "NEEDRESTART_SUSPEND=${NEEDRESTART_SUSPEND:-unset} $*"
 EOF
-chmod +x "$rrdir/psql" "$rrdir/systemctl" "$rrdir/apt-get"
-
-run_pg() { # first unit line
-  PATH="$rrdir:$PATH" FIRST_UNIT="$1" bash -c '
-    set -Eeuo pipefail
-    '"$(awk '/^postgres_installed\(\) \{/,/^}/' "$BS")"'
-    if postgres_installed; then echo INSTALLED; else echo MISSING; fi'
-}
-expect "an installed PostgreSQL is found in a long unit list" "INSTALLED" "$(run_pg 'postgresql.service enabled enabled')"
-expect "a host without the unit still gets PostgreSQL installed" "MISSING" "$(run_pg 'nginx.service enabled enabled')"
+chmod +x "$rrdir/apt-get"
 
 run_reg() {
   bash -c '
     set -Eeuo pipefail
     ok() { echo "OK: $*"; }; log() { echo "LOG: $*"; }; warn() { echo "WARN: $*"; }
-    REGISTRY_IMAGE=registry:2
-    registry_image_containerd_ref() { echo docker.io/library/registry:2; }
+    REGISTRY_IMAGE=registry:2@sha256:aa
+    POSTGRES_IMAGE=postgres:18@sha256:bb
     k3s_cmd() {
       if [ "$1" = ctr ]; then
-        echo docker.io/library/registry:2
+        echo registry@sha256:aa
+        echo postgres@sha256:bb
         seq 1 200000 | sed "s/.*/example.test\/img-&:1/"
       else
         echo "PULLED $*"
       fi
     }
-    '"$(awk '/^import_registry_image\(\) \{/,/^}/' "$BS")"'
-    import_registry_image'
+    '"$(awk '/^pinned_image_ref\(\) \{/,/^}/' "$BS")"'
+    '"$(awk '/^import_platform_images\(\) \{/,/^}/' "$BS")"'
+    import_platform_images'
 }
 out="$(run_reg)"
-expect "an imported registry image is found in a long image list" "OK: registry image registry:2 already in k3s containerd" "$out"
-case "$out" in *PULLED*) echo "FAIL: the registry image was pulled again"; fails=$((fails + 1)) ;; esac
+expect "an imported registry image is found in a long image list" "OK: registry:2@sha256:aa already in k3s containerd" "$out"
+expect "an imported database image is found in a long image list" "OK: postgres:18@sha256:bb already in k3s containerd" "$out"
+case "$out" in *PULLED*) echo "FAIL: a platform image was pulled again"; fails=$((fails + 1)) ;; esac
 
 out="$(PATH="$rrdir:$PATH" bash -c '
   set -Eeuo pipefail
@@ -2793,7 +2714,7 @@ run_pf() {
       case " ${PF_DOWN:-} " in *" ${host} "*) echo 000 ;; *) echo 404 ;; esac
     }
     bootstrap_from_tui() { return 1; }
-    FELIS_GAME_PORT=25565 FELIS_PANEL_NODEPORT=30443 REGISTRY_URL=registry.felis.svc:5000
+    FELIS_GAME_PORT=25565 FELIS_PANEL_NODEPORT=30443 REGISTRY_URL=registry.felis.svc:5000 PG_HOST_PORT=15432
     POD_CIDR=10.42.0.0/16 SERVICE_CIDR=10.43.0.0/16 NODE_IP="${PF_NODE_IP:-192.168.1.20}"
     K3S_BIN="$PF_ROOT/k3s" BOOTSTRAP_DONE="$PF_ROOT/bootstrap.done"
     FELIS_REF_PINNED="" FELIS_VELOCITY_FORK_JAR="" FELIS_PREFLIGHT="${PF_MODE:-strict}"
@@ -2844,6 +2765,8 @@ out="$(PF_SS="$(ss_line 25565 java 901)" PF_UNITS="901 minecraft.service" run_pf
 expect "someone else's server on the game port is refused" "port 25565 (the Minecraft proxy (FELIS_GAME_PORT)) is already taken by java (pid 901, minecraft.service)" "$out"
 out="$(PF_SS="$(ss_line 5000 python3 77)" run_pf)"
 expect "a program on the registry's loopback port is refused" "port 5000 (the image registry's loopback port) is already taken by python3 (pid 77)" "$out"
+out="$(PF_SS="$(ss_line 15432 socat 78)" run_pf)"
+expect "a program on the database's loopback port is refused" "port 15432 (the database's loopback port) is already taken by socat (pid 78)" "$out"
 
 out="$(PF_ACTIVE="kubelet.service" run_pf)"
 expect "a kubeadm node is refused" "another Kubernetes runs here (kubelet.service)" "$out"
@@ -2895,6 +2818,450 @@ expect "and is inside its own range" yes "$(overlap 10.42.0.1 10.42.0.0/16)"
 pforder="$(awk '/^main\(\) \{/,/^}/' "$BS" | grep -nE '^[[:space:]]*(detect_node_ip|preflight|quiet_watchdog|pause_package_background_timers|ensure_swap|install_base)$' | sed 's/^[0-9]*:[[:space:]]*//' | tr '\n' ' ')"
 expect "preflight runs once the node address is known and before the first change" \
   "detect_node_ip preflight quiet_watchdog pause_package_background_timers ensure_swap install_base " "$pforder"
+
+# --- the control-plane database: felis-postgres in k3s -------------------------------------
+bsfn() { awk '/^'"$1"'\(\) \{/,/^}/' "$BS"; }
+for f in postgres_image_major check_postgres_major prepare_postgres_data_dir label_postgres_data_dir \
+  ensure_postgres_superuser_secret ensure_postgres_role deploy_postgres host_postgres_holds_felis \
+  write_pg_hba_lockout quiesce_host_postgres compare_pg_counts retire_host_postgres \
+  migrate_host_postgres undo_postgres_move ensure_k3s_on_path; do
+  [ -n "$(bsfn "$f")" ] || { echo "FAIL: no ${f} in $BS"; exit 1; }
+  [ "$(bsfn "$f" | wc -l)" -lt 60 ] \
+    || { echo "FAIL: the extracted ${f} is not just the function -- did its closing brace move?"; exit 1; }
+done
+# before <label> <first> <second> <text>: both lines are present, the first one earlier.
+before() {
+  _a="$(printf '%s\n' "$4" | grep -nF -- "$2" | head -n 1 | cut -d: -f1)"
+  _b="$(printf '%s\n' "$4" | grep -nF -- "$3" | head -n 1 | cut -d: -f1)"
+  if [ -n "$_a" ] && [ -n "$_b" ] && [ "$_a" -lt "$_b" ]; then
+    echo "PASS $1"
+  else
+    echo "FAIL $1: expected <$2> before <$3> in:"; echo "$4"; fails=$((fails + 1))
+  fi
+}
+lockline="$(grep -m1 '^PG_LOCKOUT_LINE=' "$BS" | cut -d'"' -f2)"
+[ -n "$lockline" ] || { echo "FAIL: no PG_LOCKOUT_LINE in $BS"; exit 1; }
+
+major() { POSTGRES_IMAGE="$1" bash -c "$(bsfn postgres_image_major)"'
+postgres_image_major'; }
+expect "the pinned image's major version is read off its tag" "18" "$(major "docker.io/library/postgres:18.6-trixie@sha256:5a5a")"
+expect "a one-digit major is read whole" "9" "$(major "postgres:9.6-alpine@sha256:00")"
+expect "a bare major tag is read" "17" "$(major "example.test:5000/pg:17@sha256:00")"
+
+# A new major must stop at the old cluster: the image would initialise an empty one beside it.
+run_major() { # data-dir
+  PG_DATA_DIR="$1" POSTGRES_IMAGE="postgres:18.6-trixie@sha256:00" bash -c '
+    set -Eeuo pipefail
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    '"$(bsfn postgres_image_major)"'
+    '"$(bsfn check_postgres_major)"'
+    check_postgres_major && echo STARTS' 2>&1
+}
+pmdir="$(mktemp -d)"
+expect "an empty data directory starts" "STARTS" "$(run_major "$pmdir")"
+mkdir -p "$pmdir/17/docker"; echo 17 > "$pmdir/17/docker/PG_VERSION"
+out="$(run_major "$pmdir")"
+expect "an older major's cluster stops the install" "DIE: this release runs PostgreSQL 18, but $pmdir holds a PostgreSQL 17 cluster" "$out"
+expect "the refusal names the way forward" "docs/operations.md §4" "$out"
+mkdir -p "$pmdir/18/docker"; echo 18 > "$pmdir/18/docker/PG_VERSION"
+expect "the image's own major version starts beside an old one" "STARTS" "$(run_major "$pmdir")"
+rm -rf "$pmdir"
+
+out="$(PG_DATA_DIR=/var/lib/felis/postgres PG_UID=999 bash -c '
+  set -Eeuo pipefail
+  install() { printf "INSTALL %s\n" "$*"; }
+  chown() { printf "CHOWN %s\n" "$*"; }
+  chmod() { printf "CHMOD %s\n" "$*"; }
+  label_postgres_data_dir() { echo LABEL; }
+  '"$(bsfn prepare_postgres_data_dir)"'
+  prepare_postgres_data_dir')"
+expect "the data directory's parent is root-only" "INSTALL -d -m 0700 -o root -g root /var/lib/felis" "$out"
+expect "the cluster directory belongs to the image's postgres account" "INSTALL -d -m 0700 -o 999 -g 999 /var/lib/felis/postgres" "$out"
+expect "an existing cluster directory is handed back to that account" "CHOWN 999:999 /var/lib/felis/postgres" "$out"
+expect "an existing cluster directory is closed to 0700 again" "CHMOD 0700 /var/lib/felis/postgres" "$out"
+expect "the cluster directory is labelled for containers" "LABEL" "$out"
+
+run_label() { # tools-present selinux-enabled(0/1) chcon-exit
+  TOOLS="$1" SEL="$2" CHCON="${3:-0}" PG_DATA_DIR=/var/lib/felis/postgres bash -c '
+    set -Eeuo pipefail
+    warn() { printf "WARN: %s\n" "$*"; }
+    command() { [ "$1" = -v ] || return 1; case " $TOOLS " in *" $2 "*) return 0 ;; esac; return 1; }
+    selinuxenabled() { [ "$SEL" = 1 ]; }
+    semanage() { printf "SEMANAGE %s\n" "$*"; }
+    restorecon() { printf "RESTORECON %s\n" "$*"; }
+    chcon() { printf "CHCON %s\n" "$*"; return "$CHCON"; }
+    '"$(bsfn label_postgres_data_dir)"'
+    label_postgres_data_dir' 2>&1
+}
+[ -z "$(run_label "" 1)" ] && echo "PASS a host without SELinux labels nothing" \
+  || { echo "FAIL: a host without SELinux was relabelled"; fails=$((fails + 1)); }
+[ -z "$(run_label "selinuxenabled semanage" 0)" ] && echo "PASS SELinux disabled labels nothing" \
+  || { echo "FAIL: a host with SELinux disabled was relabelled"; fails=$((fails + 1)); }
+out="$(run_label "selinuxenabled semanage" 1)"
+expect "the label survives a relabel" "SEMANAGE fcontext -a -t container_file_t /var/lib/felis/postgres(/.*)?" "$out"
+expect "the label is applied now" "RESTORECON -R /var/lib/felis/postgres" "$out"
+case "$out" in *CHCON*) echo "FAIL: chcon ran although semanage labelled the directory"; fails=$((fails + 1)) ;; esac
+expect "without semanage the directory is labelled directly" "CHCON -R -t container_file_t /var/lib/felis/postgres" "$(run_label "selinuxenabled" 1)"
+expect "a label that cannot be set is a warning" "WARN: could not label /var/lib/felis/postgres" "$(run_label "selinuxenabled" 1 1)"
+
+run_pgsecret() { # secret-exists(0/1)
+  HAVE="$1" CONTROL_NS=felis PG_SECRET=felis-postgres PG_SECRET_KEY=superuser-password bash -c '
+    set -Eeuo pipefail
+    kube() { case "$*" in "-n felis get secret felis-postgres") [ "$HAVE" = 1 ] ;; *) printf "KUBE %s\n" "$*" ;; esac; }
+    apply_literal_secret() { printf "APPLY %s %s %s len=%s\n" "$1" "$2" "$3" "${#4}"; }
+    '"$(bsfn ensure_postgres_superuser_secret)"'
+    ensure_postgres_superuser_secret'
+}
+expect "a missing superuser password is generated" "APPLY felis felis-postgres superuser-password len=64" "$(run_pgsecret 0)"
+case "$(run_pgsecret 1)" in
+  *APPLY*) echo "FAIL: an existing superuser password was replaced"; fails=$((fails + 1)) ;;
+  *) echo "PASS an existing superuser password is kept" ;;
+esac
+
+rcalls="$(mktemp)"
+run_role() { # password
+  : > "$rcalls"
+  CALLS="$rcalls" DB_USER=felis DB_NAME=felis DB_PASSWORD="$1" bash -c '
+    set -Eeuo pipefail
+    pg_sql() { printf "ARGV %s\n" "$*" >>"$CALLS"; cat >>"$CALLS"; }
+    '"$(bsfn ensure_postgres_role)"'
+    ensure_postgres_role'
+  cat "$rcalls"
+}
+out="$(run_role s3cretpw)"
+expect "the role is made from the maintenance database" "ARGV postgres" "$out"
+case "$(printf '%s\n' "$out" | grep '^ARGV')" in
+  *s3cretpw*) echo "FAIL: the role's password reached kubectl's argv"; fails=$((fails + 1)) ;;
+  *) echo "PASS the role's password stays out of argv" ;;
+esac
+expect "the role's password is (re)set on every run" "ALTER ROLE \"felis\" WITH LOGIN PASSWORD 's3cretpw';" "$out"
+expect "a quote in the password cannot end the literal" "PASSWORD 'it''s';" "$(run_role "it's")"
+rm -f "$rcalls"
+
+dpcalls="$(mktemp)"
+run_deploy_pg() { # rollout-exit
+  : > "$dpcalls"
+  ROLL="$1" CALLS="$dpcalls" CONTROL_NS=felis MINECRAFT_NS=minecraft PG_DEPLOYMENT=felis-postgres PG_SERVICE_ADDR=felis-postgres.felis.svc:5432 \
+    PG_HOST_PORT=15432 POSTGRES_IMAGE="postgres:18.6@sha256:00" HOST_BIN=fakefelis bash -c '
+    set -Eeuo pipefail
+    log() { :; }; ok() { printf "OK: %s\n" "$*"; }
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    note() { printf "%s\n" "$*" >>"$CALLS"; }
+    check_postgres_major() { note MAJOR; }
+    prepare_postgres_data_dir() { note PREPARE; }
+    ensure_postgres_superuser_secret() { note SECRET; }
+    ensure_postgres_role() { note ROLE; }
+    diagnose_rollout() { note "DIAGNOSE $*"; }
+    fakefelis() { printf "RENDER %s\n" "$*"; }
+    kube() {
+      case "$*" in
+        *"rollout status"*) note "ROLLOUT $*"; return "$ROLL" ;;
+        "apply -f -") note "APPLY $(cat)" ;;
+        *) printf "KUBE %s\n" "$*" ;;
+      esac
+    }
+    '"$(bsfn deploy_postgres)"'
+    deploy_postgres' 2>&1
+  cat "$dpcalls"
+}
+out="$(run_deploy_pg 0)"
+before "an old major is caught before anything is written" "MAJOR" "PREPARE" "$out"
+before "the hostPath exists before the Deployment" "PREPARE" "APPLY RENDER manifests --only postgres" "$out"
+before "the namespace exists before the Secret" "APPLY KUBE create namespace felis" "SECRET" "$out"
+before "the superuser password exists before the first start" "SECRET" "APPLY RENDER manifests --only postgres" "$out"
+expect "the database is rendered from the pinned image" \
+  "APPLY RENDER manifests --only postgres --control-namespace felis --minecraft-namespace minecraft --postgres-image postgres:18.6@sha256:00" "$out"
+before "the role waits for the database to be ready" "ROLLOUT -n felis rollout status deployment/felis-postgres" "ROLE" "$out"
+out="$(run_deploy_pg 1)"
+expect "a database that never gets ready is diagnosed" "DIAGNOSE deployment/felis-postgres" "$out"
+expect "a database that never gets ready stops the install" "DIE: felis-postgres did not become ready" "$out"
+case "$out" in *ROLE*) echo "FAIL: the role was made on a database that is not ready"; fails=$((fails + 1)) ;; esac
+rm -f "$dpcalls"
+
+run_holds() { # active tables psql-exit
+  ACTIVE="$1" TABLES="$2" PSQL="${3:-0}" DB_NAME=felis bash -c '
+    systemctl() { [ "$*" = "is-active --quiet postgresql" ] && [ "$ACTIVE" = 1 ]; }
+    as_postgres() { case "$*" in *"-d felis "*) printf "%s\n" "$TABLES"; return "$PSQL" ;; *) echo 99 ;; esac; }
+    '"$(bsfn host_postgres_holds_felis)"'
+    if host_postgres_holds_felis; then echo HOLDS; else echo EMPTY; fi' 2>/dev/null
+}
+expect "a running host PostgreSQL with the platform's tables is moved" "HOLDS" "$(run_holds 1 12)"
+expect "a stopped host PostgreSQL is left alone" "EMPTY" "$(run_holds 0 12)"
+expect "a host PostgreSQL without the platform's tables is left alone" "EMPTY" "$(run_holds 1 0)"
+expect "a host PostgreSQL that cannot be asked is left alone" "EMPTY" "$(run_holds 1 12 2)"
+
+# The lockout heads pg_hba.conf, drops the rules earlier installers wrote, and keeps the rest.
+lkdir="$(mktemp -d)"
+cat > "$lkdir/pg_hba.conf" <<'HBA'
+# BEGIN FELIS MANAGED HBA
+# Felis rules must precede distro defaults such as 127.0.0.1 ident.
+host felis felis 127.0.0.1/32 scram-sha-256
+host felis felis 10.42.0.0/16 scram-sha-256
+host felis felis 10.0.0.5/32 scram-sha-256
+# END FELIS MANAGED HBA
+
+local   all             all                                     peer
+host    all             all             127.0.0.1/32            ident
+host felis felis 10.42.0.0/16 scram-sha-256
+HBA
+run_lockout() {
+  PG_LOCKOUT_LINE="$lockline" DB_NAME=felis DB_USER=felis HBA="$lkdir/pg_hba.conf" bash -c '
+    set -Eeuo pipefail
+    remember_temp() { :; }
+    '"$(bsfn write_pg_hba_lockout)"'
+    write_pg_hba_lockout "$HBA"'
+}
+run_lockout
+want="# BEGIN FELIS MANAGED HBA
+${lockline}
+host felis felis 127.0.0.1/32 scram-sha-256
+host felis all 0.0.0.0/0 reject
+host felis all ::/0 reject
+# END FELIS MANAGED HBA
+
+local   all             all                                     peer
+host    all             all             127.0.0.1/32            ident"
+if [ "$(cat "$lkdir/pg_hba.conf")" = "$want" ]; then
+  echo "PASS the lockout heads pg_hba.conf and removes every earlier felis rule"
+else
+  echo "FAIL: the locked-out pg_hba.conf is:"; cat "$lkdir/pg_hba.conf"; fails=$((fails + 1))
+fi
+run_lockout
+[ "$(cat "$lkdir/pg_hba.conf")" = "$want" ] && echo "PASS a second lockout changes nothing" \
+  || { echo "FAIL: a second lockout changed pg_hba.conf:"; cat "$lkdir/pg_hba.conf"; fails=$((fails + 1)); }
+rm -rf "$lkdir"
+
+qdir="$(mktemp -d)"
+run_quiesce() { # clients-left
+  : > "$qdir/calls"
+  LEFT="$1" HBA="$qdir/pg_hba.conf" CALLS="$qdir/calls" CONTROL_NS=felis DB_NAME=felis PG_LOCKOUT_LINE="$lockline" bash -c '
+    set -Eeuo pipefail
+    '"$(grep '^PG_MOVE_TIMERS=' "$BS")"'
+    PG_MOVE_UNITS=()
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    sleep() { :; }
+    as_postgres() {
+      case "$*" in
+        *"SHOW hba_file"*) echo "$HBA" ;;
+        *pg_reload_conf*) echo RELOAD >>"$CALLS" ;;
+        *pg_terminate_backend*) echo TERMINATE >>"$CALLS" ;;
+        *"SELECT count(*) FROM pg_stat_activity"*) echo "$LEFT" ;;
+      esac
+    }
+    kube() { printf "KUBE %s\n" "$*" >>"$CALLS"; }
+    systemctl() {
+      case "$*" in
+        "is-active --quiet felis-db-backup.timer"|"is-active --quiet felis-watchdog.timer") return 0 ;;
+        is-active*) return 1 ;;
+        *) printf "SYSTEMCTL %s\n" "$*" >>"$CALLS" ;;
+      esac
+    }
+    write_pg_hba_lockout() { echo LOCKOUT >>"$CALLS"; printf "%s\n" "$PG_LOCKOUT_LINE" > "$1"; }
+    '"$(bsfn quiesce_host_postgres)"'
+    quiesce_host_postgres
+    echo "STAGE=$PG_MOVE_STAGE UNITS=${PG_MOVE_UNITS[*]}"' 2>&1
+}
+printf 'local all all peer\n' > "$qdir/pg_hba.conf"
+out="$(run_quiesce 0)"
+calls="$(cat "$qdir/calls")"
+expect "felis-api stops writing" "KUBE -n felis scale deployment felis-api --replicas=0" "$calls"
+expect "felis-operator stops writing" "KUBE -n felis scale deployment felis-operator --replicas=0" "$calls"
+for unit in felis-db-backup felis-offsite felis-update-check felis-watchdog; do
+  expect "the host's ${unit} stops writing" "SYSTEMCTL stop ${unit}.timer ${unit}.service" "$calls"
+done
+expect "only the timers that ran are remembered for a restart" "STAGE=quiesced UNITS=felis-db-backup.timer felis-watchdog.timer" "$out"
+[ "$(cat "$qdir/pg_hba.conf.pre-pg-move")" = "local all all peer" ] && echo "PASS pg_hba.conf is kept for the undo" \
+  || { echo "FAIL: pg_hba.conf.pre-pg-move is not the original"; fails=$((fails + 1)); }
+before "the lockout is loaded" "LOCKOUT" "RELOAD" "$calls"
+before "clients are cut off once the lockout is live" "RELOAD" "TERMINATE" "$calls"
+before "the control plane is stopped before the lockout" "KUBE -n felis scale deployment felis-api --replicas=0" "LOCKOUT" "$calls"
+out="$(run_quiesce 0)"
+[ "$(cat "$qdir/pg_hba.conf.pre-pg-move")" = "local all all peer" ] && echo "PASS a lockout left behind never overwrites the saved pg_hba.conf" \
+  || { echo "FAIL: the second quiesce saved the lockout over the original pg_hba.conf"; fails=$((fails + 1)); }
+expect "a client that outlives the lockout stops the move" "DIE: the host database still has 2 client(s)" "$(run_quiesce 2)"
+rm -rf "$qdir"
+
+run_compare() { # host pod [pod-exit]
+  H="$1" P="$2" PX="${3:-0}" PG_DEPLOYMENT=felis-postgres bash -c '
+    set -Eeuo pipefail
+    warn() { printf "WARN: %s\n" "$*"; }
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    host_pg_counts() { printf "%s\n" "$H"; }
+    pod_pg_counts() { printf "%s\n" "$P"; return "$PX"; }
+    '"$(bsfn compare_pg_counts)"'
+    compare_pg_counts && echo SAME' 2>&1
+}
+counts="audit_logs 505${nl}servers 3${nl}users 17"
+expect "the same rows in every table pass" "SAME" "$(run_compare "$counts" "$counts")"
+out="$(run_compare "$counts" "audit_logs 505${nl}servers 2${nl}users 17")"
+expect "a table short of rows stops the move" "DIE: the copy in felis-postgres does not match" "$out"
+expect "the differing table is shown" "> servers 2" "$out"
+expect "a host that reports no tables stops the move" "DIE: the host database reported no tables" "$(run_compare "" "")"
+expect "a copy that cannot be counted stops the move" "DIE: could not count felis-postgres's rows" "$(run_compare "$counts" "$counts" 1)"
+
+rtdir="$(mktemp -d)"
+run_retire() { # other-databases
+  : > "$rtdir/calls"
+  OTHERS="$1" CALLS="$rtdir/calls" PG_FIREWALL_SERVICE="$rtdir/fw.service" PG_FIREWALL_RULES="$rtdir/fw.nft" bash -c '
+    set -Eeuo pipefail
+    warn() { printf "WARN: %s\n" "$*"; }
+    host_postgres_other_databases() { [ -z "$OTHERS" ] || printf "%s\n" $OTHERS; }
+    systemctl() { printf "SYSTEMCTL %s\n" "$*" >>"$CALLS"; }
+    '"$(bsfn retire_host_postgres)"'
+    retire_host_postgres' 2>&1
+  cat "$rtdir/calls"
+}
+expect "the host PostgreSQL is stopped and kept off at boot" "SYSTEMCTL disable --now postgresql" "$(run_retire "")"
+out="$(run_retire "gitea nextcloud")"
+case "$out" in *"disable --now postgresql"*) echo "FAIL: a host PostgreSQL serving other databases was stopped"; fails=$((fails + 1)) ;; esac
+expect "a host PostgreSQL serving other databases says which" "gitea nextcloud" "$out"
+: > "$rtdir/fw.service"; : > "$rtdir/fw.nft"
+expect "the old port firewall goes with the server" "SYSTEMCTL disable --now felis-postgres-firewall.service" "$(run_retire "")"
+[ ! -e "$rtdir/fw.service" ] && [ ! -e "$rtdir/fw.nft" ] && echo "PASS the old port firewall's files are removed" \
+  || { echo "FAIL: the old port firewall's files are still there"; fails=$((fails + 1)); }
+rm -rf "$rtdir"
+
+mgdir="$(mktemp -d)"
+run_move() { # holds(0/1) backup(ok|silent|fail) restore-exit compare-exit
+  : > "$mgdir/calls"
+  HOLDS="$1" BACKUP="$2" RESTORE="${3:-0}" COMPARE="${4:-0}" MARKER="$mgdir/moved" CALLS="$mgdir/calls" MGDIR="$mgdir" \
+    CONTROL_NS=felis PG_DEPLOYMENT=felis-postgres PG_HOST_PORT=15432 FELIS_DB_BACKUP_DIR="$mgdir/db" HOST_BIN=fakefelis bash -c '
+    set -Eeuo pipefail
+    PG_MOVED_MARKER="$MARKER"; PG_MOVE_STAGE=""
+    log() { :; }; ok() { printf "OK: %s\n" "$*"; }
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    remember_temp() { :; }
+    note() { printf "%s\n" "$*" >>"$CALLS"; }
+    host_postgres_holds_felis() { [ "$HOLDS" = 1 ]; }
+    quiesce_host_postgres() { note QUIESCE; PG_MOVE_STAGE=quiesced; }
+    write_felis_toml() { printf "%s %s\n" "$2" "${3:-no-deployment}" > "$1"; }
+    compare_pg_counts() { note COMPARE; [ "$COMPARE" = 0 ] || die "counts differ"; }
+    retire_host_postgres() { note RETIRE; }
+    fakefelis() {
+      note "FELIS $1 $2 [$(cat "$4")] ${*:5}"
+      case "$2" in
+        backup)
+          case "$BACKUP" in
+            ok) mkdir -p "$MGDIR/db"; : > "$MGDIR/db/b.tar"; echo "felis db backup: wrote $MGDIR/db/b.tar" ;;
+            silent) : ;;
+            fail) return 1 ;;
+          esac ;;
+        restore) return "$RESTORE" ;;
+      esac
+    }
+    '"$(bsfn migrate_host_postgres)"'
+    migrate_host_postgres
+    echo "STAGE=$PG_MOVE_STAGE"' 2>&1
+}
+out="$(run_move 1 ok)"
+calls="$(cat "$mgdir/calls")"
+expect "the bundle is taken from the host server, never pruned" \
+  "FELIS db backup [127.0.0.1:5432 no-deployment] -dir $mgdir/db -label pre-pg-move -keep 0" "$calls"
+expect "the bundle is restored into the pod, which served nobody yet" \
+  "FELIS db restore [127.0.0.1:15432 felis/felis-postgres] -dir $mgdir/db -yes -no-safety-backup $mgdir/db/b.tar" "$calls"
+before "writers are stopped before the bundle" "QUIESCE" "FELIS db backup" "$calls"
+before "the copy is counted after the restore" "FELIS db restore" "COMPARE" "$calls"
+before "the host server is retired only after the counts agree" "COMPARE" "RETIRE" "$calls"
+expect "the move is recorded with its bundle" "bundle $mgdir/db/b.tar" "$(cat "$mgdir/moved" 2>&1)"
+expect "the move ends in the moved stage" "STAGE=moved" "$out"
+out="$(run_move 1 ok)"
+[ -z "$(cat "$mgdir/calls")" ] && echo "PASS a recorded move never runs again" \
+  || { echo "FAIL: the move ran again after it was recorded:"; cat "$mgdir/calls"; fails=$((fails + 1)); }
+rm -f "$mgdir/moved"
+out="$(run_move 0 ok)"
+[ -z "$(cat "$mgdir/calls")" ] && echo "PASS a host with nothing to move is left alone" \
+  || { echo "FAIL: a host without the platform's database was moved"; fails=$((fails + 1)); }
+for case_ in "silent 0 0" "fail 0 0" "ok 1 0" "ok 0 1"; do
+  # shellcheck disable=SC2086
+  set -- $case_
+  rm -f "$mgdir/moved"
+  out="$(run_move 1 "$1" "$2" "$3")"
+  calls="$(cat "$mgdir/calls")"
+  case "$out" in
+    *DIE:*) ;;
+    *) echo "FAIL: a failed move (backup=$1 restore=$2 compare=$3) did not stop the install"; fails=$((fails + 1)) ;;
+  esac
+  case "$calls" in
+    *RETIRE*) echo "FAIL: a failed move (backup=$1 restore=$2 compare=$3) stopped the host server"; fails=$((fails + 1)) ;;
+    *) echo "PASS a failed move (backup=$1 restore=$2 compare=$3) keeps the host server" ;;
+  esac
+  [ ! -e "$mgdir/moved" ] || { echo "FAIL: a failed move was recorded as done"; fails=$((fails + 1)); }
+done
+case "$(run_move 1 silent; cat "$mgdir/calls")" in
+  *"db restore"*) echo "FAIL: a backup that named no bundle was restored anyway"; fails=$((fails + 1)) ;;
+esac
+rm -rf "$mgdir"
+
+uddir="$(mktemp -d)"
+run_undo() { # stage
+  : > "$uddir/calls"
+  printf '%s\n' "$lockline" > "$uddir/pg_hba.conf"
+  printf 'local all all peer\n' > "$uddir/pg_hba.conf.pre-pg-move"
+  STAGE="$1" HBA="$uddir/pg_hba.conf" CALLS="$uddir/calls" CONTROL_NS=felis PG_DEPLOYMENT=felis-postgres bash -c '
+    set -Eeuo pipefail
+    warn() { printf "WARN: %s\n" "$*"; }
+    PG_MOVE_STAGE="$STAGE"; PG_MOVE_HBA="$HBA"; PG_MOVE_UNITS=(felis-db-backup.timer felis-watchdog.timer)
+    as_postgres() { printf "PSQL %s\n" "$*" >>"$CALLS"; }
+    kube() { printf "KUBE %s\n" "$*" >>"$CALLS"; }
+    systemctl() { printf "SYSTEMCTL %s\n" "$*" >>"$CALLS"; }
+    '"$(bsfn undo_postgres_move)"'
+    undo_postgres_move' 2>&1
+}
+out="$(run_undo quiesced)"
+calls="$(cat "$uddir/calls")"
+[ "$(cat "$uddir/pg_hba.conf")" = "local all all peer" ] && echo "PASS an undone move puts pg_hba.conf back" \
+  || { echo "FAIL: an undone move left the lockout in pg_hba.conf"; fails=$((fails + 1)); }
+expect "an undone move reloads pg_hba.conf" "PSQL psql -XtA -c SELECT pg_reload_conf()" "$calls"
+expect "an undone move brings felis-api back" "KUBE -n felis scale deployment felis-api --replicas=1" "$calls"
+expect "an undone move brings felis-operator back" "KUBE -n felis scale deployment felis-operator --replicas=1" "$calls"
+expect "an undone move restarts the timers it stopped" "SYSTEMCTL start felis-watchdog.timer" "$calls"
+expect "an undone move says so" "WARN: the database move was undone" "$out"
+out="$(run_undo moved)"
+calls="$(cat "$uddir/calls")"
+[ "$(cat "$uddir/pg_hba.conf")" = "$lockline" ] && echo "PASS a finished move keeps the host copy locked out" \
+  || { echo "FAIL: a finished move reopened the host database"; fails=$((fails + 1)); }
+case "$calls" in *"--replicas=1"*) echo "FAIL: a finished move pointed the control plane back at the host"; fails=$((fails + 1)) ;; esac
+expect "a finished move restarts the timers it stopped" "SYSTEMCTL start felis-db-backup.timer" "$calls"
+expect "a finished move says a rerun completes it" "rerun the installer" "$out"
+out="$(run_undo "")"
+[ -z "$out$(cat "$uddir/calls")" ] && echo "PASS a run that moved nothing undoes nothing" \
+  || { echo "FAIL: undo acted without a move: $out"; fails=$((fails + 1)); }
+rm -rf "$uddir"
+
+run_cleanup() { # exit status
+  bash -c '
+    restore_previous_host_binary() { :; }
+    undo_postgres_move() { echo UNDO; }
+    WATCHDOG_QUIET_FILE=/nonexistent/felis-quiet
+    TEMP_PATHS=(); DOCKER_CONTAINERS=(); PKG_TIMERS_TO_RESTORE=()
+    '"$(bsfn cleanup)"'
+    trap cleanup EXIT
+    exit '"$1" 2>&1
+}
+expect "a failed install undoes the database move" "UNDO" "$(run_cleanup 1)"
+case "$(run_cleanup 0)" in *UNDO*) echo "FAIL: a finished install undid the database move"; fails=$((fails + 1)) ;; *) echo "PASS a finished install keeps the database move" ;; esac
+
+kp() { PATH_IN="$1" K3S_BIN_DIR=/usr/local/bin bash -c "$(bsfn ensure_k3s_on_path)"'
+PATH="$PATH_IN"; ensure_k3s_on_path; printf "%s\n" "$PATH"'; }
+expect "k3s joins a PATH sudo stripped of it" "/usr/local/bin:/usr/sbin:/usr/bin" "$(kp /usr/sbin:/usr/bin)"
+[ "$(kp /usr/bin:/usr/local/bin)" = "/usr/bin:/usr/local/bin" ] && echo "PASS a PATH that has k3s is left alone" \
+  || { echo "FAIL: ensure_k3s_on_path changed a PATH that had k3s: $(kp /usr/bin:/usr/local/bin)"; fails=$((fails + 1)); }
+
+# The host server is gone once the database moved: no unit may still wait for it.
+if grep -n 'postgresql\.service' "$BS"; then
+  echo "FAIL: a unit bootstrap writes still orders itself after postgresql.service"; fails=$((fails + 1))
+else
+  echo "PASS no unit waits for the host PostgreSQL"
+fi
+pgorder="$(awk '/^main\(\) \{/,/^}/' "$BS" | grep -nE '^[[:space:]]*(ensure_k3s_on_path|install_k3s|deploy_postgres|migrate_host_postgres|run_migrations|deploy_bundle)$' | sed 's/^[0-9]*:[[:space:]]*//' | tr '\n' ' ')"
+expect "the database runs in k3s, takes the host's data, then is migrated and joined by the bundle" \
+  "ensure_k3s_on_path install_k3s deploy_postgres migrate_host_postgres run_migrations deploy_bundle " "$pgorder"
+dbblock="$(bsfn deploy_bundle)"
+before "the control plane is scaled back up after the bundle is applied" \
+  'manifests "${manifest_args[@]}" | kube apply -f -' 'kube -n "$CONTROL_NS" scale deployment felis-api felis-operator --replicas=1' "$dbblock"
+before "the control plane is scaled back up before the rollouts are awaited" \
+  'kube -n "$CONTROL_NS" scale deployment felis-api felis-operator --replicas=1' 'rollout status "$d"' "$dbblock"
+expect "the pods reach the database at its Service" 'write_felis_toml "${STATE_DIR}/felis.pod.toml" "$PG_SERVICE_ADDR"' "$dbblock"
 
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then
