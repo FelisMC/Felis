@@ -1,4 +1,4 @@
-import i18next from "i18next";
+import i18next, { type InitOptions } from "i18next";
 import { initReactI18next } from "react-i18next";
 import LanguageDetector from "i18next-browser-languagedetector";
 import enCommon from "./resources/en-US/common.json";
@@ -25,51 +25,54 @@ import zhNavigation from "./resources/zh-CN/navigation.json";
 import zhBackups from "./resources/zh-CN/backups.json";
 import zhSubmissions from "./resources/zh-CN/submissions.json";
 import zhFiles from "./resources/zh-CN/files.json";
+import { panelLanguage, SUPPORTED_LANGUAGES } from "./language";
 
-i18next
-  .use(LanguageDetector)
-  .use(initReactI18next)
-  .init({
-    resources: {
-      "en-US": {
-        common: enCommon,
-        auth: enAuth,
-        dashboard: enDashboard,
-        servers: enServers,
-        account: enAccount,
-        admin: enAdmin,
-        ops: enOps,
-        errors: enErrors,
-        navigation: enNavigation,
-        backups: enBackups,
-        submissions: enSubmissions,
-        files: enFiles,
-      },
-      "zh-CN": {
-        common: zhCommon,
-        auth: zhAuth,
-        dashboard: zhDashboard,
-        servers: zhServers,
-        account: zhAccount,
-        admin: zhAdmin,
-        ops: zhOps,
-        errors: zhErrors,
-        navigation: zhNavigation,
-        backups: zhBackups,
-        submissions: zhSubmissions,
-        files: zhFiles,
-      },
+// Exported so a test can boot a fresh instance with the same detection.
+export const i18nOptions: InitOptions = {
+  resources: {
+    "en-US": {
+      common: enCommon,
+      auth: enAuth,
+      dashboard: enDashboard,
+      servers: enServers,
+      account: enAccount,
+      admin: enAdmin,
+      ops: enOps,
+      errors: enErrors,
+      navigation: enNavigation,
+      backups: enBackups,
+      submissions: enSubmissions,
+      files: enFiles,
     },
-    fallbackLng: "en-US",
-    defaultNS: "common",
-    interpolation: {
-      escapeValue: false,
+    "zh-CN": {
+      common: zhCommon,
+      auth: zhAuth,
+      dashboard: zhDashboard,
+      servers: zhServers,
+      account: zhAccount,
+      admin: zhAdmin,
+      ops: zhOps,
+      errors: zhErrors,
+      navigation: zhNavigation,
+      backups: zhBackups,
+      submissions: zhSubmissions,
+      files: zhFiles,
     },
-    detection: {
-      order: ["localStorage", "navigator"],
-      caches: ["localStorage"],
-      lookupLocalStorage: "felis-lang",
-    },
-  });
+  },
+  supportedLngs: [...SUPPORTED_LANGUAGES],
+  fallbackLng: "en-US",
+  defaultNS: "common",
+  interpolation: {
+    escapeValue: false,
+  },
+  detection: {
+    order: ["localStorage", "navigator"],
+    caches: ["localStorage"],
+    lookupLocalStorage: "felis-lang",
+    convertDetectedLanguage: panelLanguage,
+  },
+};
+
+i18next.use(LanguageDetector).use(initReactI18next).init(i18nOptions);
 
 export default i18next;
