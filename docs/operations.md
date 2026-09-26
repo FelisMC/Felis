@@ -20,7 +20,7 @@ release pins by digest, with its data on the host in `/var/lib/felis/postgres`.
 
 | OS family | Package manager | Architectures | Status |
 |---|---|---|---|
-| CentOS Stream 9 (firewalld active, SELinux enforcing) | dnf | aarch64 | **[VM-VERIFIED]** install, same-version rerun, upgrade, uninstall and reinstall, with the database on the host PostgreSQL 13 of the releases before felis-postgres; felis-postgres and the move into it [SH-TESTED] |
+| CentOS Stream 9 (firewalld active, SELinux enforcing) | dnf | aarch64 | **[VM-VERIFIED]** fresh install from release assets and its rerun, upgrade from v0.1.0 (moving the database off the host PostgreSQL 13 into felis-postgres), uninstall and reinstall |
 | Ubuntu 24.04 LTS | apt | x86_64 | **[CI]** fresh install and same-commit rerun from the pushed commit's release assets, and upgrade from the newest release onto them; the on-host build weekly |
 | RHEL / Rocky / Alma 9, Fedora | dnf | x86_64, aarch64 | [CODE-ONLY] same code path as CentOS Stream |
 | Debian 12, other Ubuntu releases | apt | x86_64, aarch64 | [CODE-ONLY] |
@@ -105,8 +105,11 @@ Hub for them. k3s's own images come from k3s's GitHub release
 (`k3s-airgap-images-<arch>.tar.zst`, checked against k3s's sha256 list) before k3s first
 starts. An upgrade downloads only the image tars holding an image the host lacks; they wait
 in `/var/lib/felis/artifacts` until the registry has the images, and are deleted then.
-`deploy/build-release-artifacts.sh` documents every asset. The decisions are **[SH-TESTED]**;
-the import into a real k3s is **[CODE-ONLY]** until the e2e job runs.
+`deploy/build-release-artifacts.sh` documents every asset. The decisions are **[SH-TESTED]**.
+Installing from the assets is **[VM-VERIFIED]** on CentOS Stream 9 aarch64 through
+`FELIS_ARTIFACT_DIR`: a fresh install and an upgrade over a release that built on the host
+pulled no image and built nothing, and a rerun imported and uploaded nothing. Downloading them from a
+release is [SH-TESTED] until a release publishes assets.
 
 The installer builds on the host instead, installing Docker for it and stopping Docker once
 the images are in the registry, when:
@@ -461,7 +464,7 @@ instead, scale felis-postgres to 0, move the new major's directory out of
 `/var/lib/felis/postgres`, move `postgres-18.old` back as `/var/lib/felis/postgres/18`, and
 rerun the older release's installer.
 
-### The database's move into k3s [SH-TESTED]
+### The database's move into k3s [VM-VERIFIED]
 
 Releases before the move ran the database on a PostgreSQL the installer installed on the
 host. The first rerun of a release with felis-postgres moves it, once:
