@@ -2921,7 +2921,9 @@ run_major() { # data-dir
     die() { printf "DIE: %s\n" "$*"; exit 1; }
     '"$(bsfn postgres_image_major)"'
     '"$(bsfn check_postgres_major)"'
-    check_postgres_major && echo STARTS' 2>&1
+    # A plain statement, as main calls it: on the left of && errexit is off inside the function.
+    check_postgres_major
+    echo STARTS' 2>&1
 }
 pmdir="$(mktemp -d)"
 expect "an empty data directory starts" "STARTS" "$(run_major "$pmdir")"
@@ -3155,7 +3157,8 @@ run_compare() { # host pod [pod-exit]
     host_pg_counts() { printf "%s\n" "$H"; }
     pod_pg_counts() { printf "%s\n" "$P"; return "$PX"; }
     '"$(bsfn compare_pg_counts)"'
-    compare_pg_counts && echo SAME' 2>&1
+    compare_pg_counts
+    echo SAME' 2>&1
 }
 counts="audit_logs 505${nl}servers 3${nl}users 17"
 expect "the same rows in every table pass" "SAME" "$(run_compare "$counts" "$counts")"

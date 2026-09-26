@@ -3721,7 +3721,8 @@ check_postgres_major() {
   want="$(postgres_image_major)"
   [ -n "$want" ] || die "cannot read a PostgreSQL major version from ${POSTGRES_IMAGE}"
   [ -f "${PG_DATA_DIR}/${want}/docker/PG_VERSION" ] && return 0
-  found="$(cat "$PG_DATA_DIR"/*/docker/PG_VERSION 2>/dev/null | tr -d '[:space:]')"
+  # A fresh host has no cluster: the glob matches nothing and cat fails the pipeline.
+  found="$(cat "$PG_DATA_DIR"/*/docker/PG_VERSION 2>/dev/null | tr -d '[:space:]')" || true
   [ -z "$found" ] && return 0
   die "this release runs PostgreSQL ${want}, but ${PG_DATA_DIR} holds a PostgreSQL ${found} cluster.
   PostgreSQL ${want} would start an empty cluster beside it. A new major version is a dump
