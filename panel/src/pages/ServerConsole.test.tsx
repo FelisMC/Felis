@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { ServerConsole } from "./ServerConsole";
 import { STATUS_POLL_FAST_MS, STATUS_POLL_SLOW_MS } from "@/lib/hooks";
+import { humanizeError } from "@/lib/api";
 
-const calls = vi.hoisted(() => ({ status: vi.fn(), myServers: vi.fn(), listImages: vi.fn() }));
+const calls = vi.hoisted(() => ({ status: vi.fn(), myServers: vi.fn(), listImages: vi.fn(), sendCommand: vi.fn() }));
 const tier = vi.hoisted(() => ({
   loading: false,
   identity: { user_id: "admin-1", email: "admin@example.test", role: "admin" },
@@ -35,6 +36,7 @@ beforeEach(() => {
   calls.myServers.mockResolvedValue([]);
   calls.listImages.mockReset();
   calls.listImages.mockResolvedValue([]);
+  calls.sendCommand.mockReset();
 });
 
 function renderConsole() {
@@ -210,5 +212,105 @@ describe("ServerConsole retirement", () => {
     expect(screen.getByText("Given up")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Wake" })).toBeNull();
     expect(giveUp()).toBeNull();
+  });
+});
+
+describe("ServerConsole command line", () => {
+  const HISTORY = "felis:cmd:history:survival";
+
+  beforeEach(() => {
+    calls.status.mockResolvedValue(status({ phase: "Running", desiredState: "Running", ready: true }));
+    calls.sendCommand.mockResolvedValue({ output: "There are 0 of a max of 20 players online.\n" });
+  });
+
+  async function commandLine() {
+    renderConsole();
+    return (await screen.findByRole("textbox", { name: "Server command" })) as HTMLInputElement;
+  }
+
+  it("sends the typed command, trimmed, and shows the reply under it", async () => {
+    const user = userEvent.setup();
+    const box = await commandLine();
+
+    await user.type(box, "  list  {Enter}");
+
+    expect(calls.sendCommand).toHaveBeenCalledExactlyOnceWith("survival", "list");
+    expect(await screen.findByText("There are 0 of a max of 20 players online.")).toBeTruthy();
+    expect(screen.getByText(/^> list/)).toBeTruthy();
+    expect(box.value).toBe("");
+  });
+
+  it("sends nothing for a blank line", async () => {
+    const user = userEvent.setup();
+    const box = await commandLine();
+
+    await user.type(box, "   {Enter}");
+
+    expect(calls.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it("says why a command failed", async () => {
+    const refusal = { status: 503, code: "rcon_unavailable", message: "rcon: connection refused" };
+    calls.sendCommand.mockRejectedValue(refusal);
+    const user = userEvent.setup();
+    const box = await commandLine();
+
+    await user.type(box, "list{Enter}");
+
+    expect(await screen.findByText(humanizeError(refusal))).toBeTruthy();
+  });
+
+  it("sends nothing on the Enter that picks an input-method candidate", async () => {
+    const box = await commandLine();
+
+    fireEvent.compositionStart(box);
+    fireEvent.change(box, { target: { value: "你好" } });
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(calls.sendCommand).not.toHaveBeenCalled();
+
+    fireEvent.compositionEnd(box);
+    fireEvent.keyDown(box, { key: "Enter" });
+    await waitFor(() => expect(calls.sendCommand).toHaveBeenCalledExactlyOnceWith("survival", "你好"));
+  });
+
+  it("walks the history with Up and Down, and brings back the line being typed", async () => {
+    localStorage.setItem(HISTORY, JSON.stringify(["say hi", "list"]));
+    const user = userEvent.setup();
+    const box = await commandLine();
+
+    await user.type(box, "tim");
+    const seen: string[] = [];
+    for (const key of ["{ArrowUp}", "{ArrowUp}", "{ArrowUp}", "{ArrowDown}", "{ArrowDown}", "{ArrowDown}"]) {
+      await user.keyboard(key);
+      seen.push(box.value);
+    }
+
+    expect(seen).toEqual(["list", "say hi", "say hi", "list", "tim", "tim"]);
+  });
+
+  it("leaves a fresh line alone on Down", async () => {
+    localStorage.setItem(HISTORY, JSON.stringify(["say hi", "list"]));
+    const user = userEvent.setup();
+    const box = await commandLine();
+
+    await user.keyboard("{ArrowDown}");
+
+    expect(box.value).toBe("");
+  });
+
+  it("keeps each server's last 50 commands across visits, without repeats in a row", async () => {
+    localStorage.setItem(HISTORY, JSON.stringify(Array.from({ length: 50 }, (_, i) => `cmd ${i}`)));
+    const user = userEvent.setup();
+    const box = await commandLine();
+
+    await user.type(box, "list{Enter}");
+    await waitFor(() => expect(calls.sendCommand).toHaveBeenCalledTimes(1));
+    await user.type(box, "list{Enter}");
+    await waitFor(() => expect(calls.sendCommand).toHaveBeenCalledTimes(2));
+
+    const kept = JSON.parse(localStorage.getItem(HISTORY) ?? "[]") as string[];
+    expect(kept).toHaveLength(50);
+    expect(kept[0]).toBe("cmd 1");
+    expect(kept.slice(-2)).toEqual(["cmd 49", "list"]);
   });
 });

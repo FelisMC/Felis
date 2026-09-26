@@ -23,6 +23,7 @@ import { Label } from "@/components/ui/label";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { hostFor, type RuntimeConfig } from "@/lib/config";
+import { serverNameIssue, type ServerNameIssue } from "@/lib/naming";
 import type { AutostartPolicy, CreateServerRequest } from "@/lib/types";
 import { InlineError } from "@/components/MessageLine";
 
@@ -34,8 +35,6 @@ import { InlineError } from "@/components/MessageLine";
 
 const MEMORY_OPTIONS = ["2Gi", "4Gi", "6Gi", "8Gi"];
 const STORAGE_OPTIONS = ["5Gi", "10Gi", "20Gi", "50Gi"];
-
-const SUBDOMAIN_RE = /^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$/;
 
 function policyOptions(t: (key: string) => string): { value: AutostartPolicy; label: string }[] {
   return [
@@ -72,10 +71,11 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
   }
 
   const enabledImages = (images.data ?? []).filter((i) => i.enabled);
-  const subdomainValid = SUBDOMAIN_RE.test(form.subdomain);
+  const nameIssue = serverNameIssue(form.name);
+  const subdomainIssue = serverNameIssue(form.subdomain);
   const canSubmit =
-    !!form.name &&
-    subdomainValid &&
+    nameIssue === null &&
+    subdomainIssue === null &&
     !!form.image &&
     !!form.memory &&
     !!form.storage &&
@@ -102,6 +102,12 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
 
   const policies = policyOptions(t);
 
+  // A field's hint turns into the reason it would be refused once something is typed.
+  const issueText = (issue: ServerNameIssue, value: string) =>
+    issue === "reserved" ? t("create_server_name_reserved", { name: value }) : t("create_server_name_invalid");
+  const hintClass = (value: string, issue: ServerNameIssue | null) =>
+    value && issue ? "text-xs text-destructive" : "text-xs text-muted-foreground";
+
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogTrigger asChild>
@@ -125,8 +131,15 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
               id="cs-name"
               placeholder={t("create_server_name_placeholder")}
               value={form.name}
-              onChange={(e) => set("name", e.target.value)}
+              onChange={(e) => set("name", e.target.value.toLowerCase())}
+              aria-invalid={!!form.name && nameIssue !== null}
+              aria-describedby="cs-name-hint"
             />
+            <p id="cs-name-hint" className={hintClass(form.name, nameIssue)}>
+              {form.name && nameIssue
+                ? issueText(nameIssue, form.name)
+                : t("create_server_name_hint")}
+            </p>
           </div>
 
           <div className="grid gap-2">
@@ -136,10 +149,12 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
               placeholder={t("create_server_subdomain_placeholder")}
               value={form.subdomain}
               onChange={(e) => set("subdomain", e.target.value.toLowerCase())}
+              aria-invalid={!!form.subdomain && subdomainIssue !== null}
+              aria-describedby="cs-sub-hint"
             />
-            <p className="text-xs text-muted-foreground">
-              {form.subdomain && !subdomainValid
-                ? t("create_server_subdomain_invalid")
+            <p id="cs-sub-hint" className={hintClass(form.subdomain, subdomainIssue)}>
+              {form.subdomain && subdomainIssue
+                ? issueText(subdomainIssue, form.subdomain)
                 : t("create_server_subdomain_hint", { host: hostFor(form.subdomain || "name", cfg) })}
             </p>
           </div>

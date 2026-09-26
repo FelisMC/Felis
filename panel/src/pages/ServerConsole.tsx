@@ -134,6 +134,8 @@ function CommandInput({ name }: { name: string }) {
   const [last, setLast] = useState<{ cmd: string; out: string } | null>(null);
   const historyRef = useRef<string[]>(loadHistory(name));
   const cursorRef = useRef(-1);
+  // What was typed before stepping up into the history.
+  const draftRef = useRef("");
   const inputRef = useRef<HTMLInputElement>(null);
   const composingRef = useRef(false);
 
@@ -172,21 +174,25 @@ function CommandInput({ name }: { name: string }) {
       return;
     }
     if (h.length === 0) return;
+    // The cursor is -1 or h.length on the line being typed, else on a history entry.
+    const onLine = cursorRef.current === -1 || cursorRef.current >= h.length;
     if (e.key === "ArrowUp") {
       e.preventDefault();
-      const idx = Math.max(0, cursorRef.current === -1 ? h.length - 1 : cursorRef.current - 1);
+      if (onLine) draftRef.current = command;
+      const idx = Math.max(0, onLine ? h.length - 1 : cursorRef.current - 1);
       cursorRef.current = idx;
       setCommand(h[idx]);
       setTimeout(() => { inputRef.current?.setSelectionRange(h[idx].length, h[idx].length); }, 0);
     }
-    if (e.key === "ArrowDown") {
+    // Down walks back toward the line being typed, and brings it back as it was;
+    // on that line there is nothing below.
+    if (e.key === "ArrowDown" && !onLine) {
       e.preventDefault();
-      const idx = Math.min(h.length, cursorRef.current + 1);
+      const idx = cursorRef.current + 1;
       cursorRef.current = idx;
-      setCommand(idx < h.length ? h[idx] : "");
-      if (idx < h.length) {
-        setTimeout(() => { inputRef.current?.setSelectionRange(h[idx].length, h[idx].length); }, 0);
-      }
+      const next = idx < h.length ? h[idx] : draftRef.current;
+      setCommand(next);
+      setTimeout(() => { inputRef.current?.setSelectionRange(next.length, next.length); }, 0);
     }
   }, [command, send]);
 
@@ -207,6 +213,7 @@ function CommandInput({ name }: { name: string }) {
           onKeyDown={onKeyDown}
           onCompositionStart={() => { composingRef.current = true; }}
           onCompositionEnd={() => { composingRef.current = false; }}
+          aria-label={t("command_label")}
           placeholder={t("command_placeholder")}
           autoComplete="off"
           spellCheck={false}
