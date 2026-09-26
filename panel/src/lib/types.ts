@@ -104,6 +104,17 @@ export interface BanlistResult {
   output: string;
 }
 
+/** AllowlistEntry is one row of GET /servers/{name}/allowlist: a player who joined
+ *  the server, and so may wake it under autostartPolicy "allowlist" unless the owner
+ *  took that away (can_wake false; the row stays so a rejoin cannot undo it).
+ *  username is the live Felis account the UUID is linked to, absent when none. */
+export interface AllowlistEntry {
+  mc_uuid: string;
+  username?: string;
+  added_at: string;
+  can_wake: boolean;
+}
+
 /** AccessResult is the common echo of a successful access mutation (whitelist add/
  *  remove, ban/pardon): the server replays the structured action it ran plus the
  *  raw RCON `output`, which the panel surfaces verbatim as confirmation. */

@@ -29,7 +29,7 @@
   "fleet_endpoint_idle": "未运行",
   "policy_owneronly": "仅所有者",
   "policy_public": "公开",
-  "policy_allowlist": "白名单",
+  "policy_allowlist": "唤醒名单",
   "fleet_empty_title": "暂无服务器",
   "fleet_empty_hint": "集群中尚未创建任何 MinecraftServer。",
   "fleet_no_match_title": "无匹配结果",

@@ -33,7 +33,11 @@ type fakeRepo struct {
 	// internal/velocity wake uses (name -> mc_uuid -> on list). allowlist above is
 	// the account_links-bridged web view of the same data.
 	allowUUID map[string]map[string]bool
-	mine      map[string][]MyServerView
+	// allowEntries is the listing face of server_allowlist (name -> rows as
+	// ServerAllowlist returns them); SetAllowlistWake flips CanWake in place.
+	allowEntries map[string][]AllowlistEntry
+	allowlistErr error // forces ServerAllowlist to fail
+	mine         map[string][]MyServerView
 	// owners mirrors the ServerOwners join (name -> claim state); a live unclaimed
 	// server appears with an empty OwnerID. ownersErr forces the lookup to fail so
 	// a test can prove the fleet read degrades rather than 500ing.
@@ -285,9 +289,10 @@ func newFakeRepo() *fakeRepo {
 		bySub: map[string]*ServerRecord{}, byName: map[string]*ServerRecord{},
 		linked: map[string]bool{}, quota: map[string]bool{},
 		allowlist: map[string]map[string]bool{}, allowUUID: map[string]map[string]bool{},
-		mine:    map[string][]MyServerView{},
-		owners:  map[string]ServerOwnership{},
-		claimOK: map[string]bool{}, claimQuotaRefuse: map[string]bool{},
+		allowEntries: map[string][]AllowlistEntry{},
+		mine:         map[string][]MyServerView{},
+		owners:       map[string]ServerOwnership{},
+		claimOK:      map[string]bool{}, claimQuotaRefuse: map[string]bool{},
 		serverResources: map[string]ResourceSpec{}, resourceUpdates: map[string]ResourceSpec{},
 		seeded: map[string]bool{}, aliases: map[string]string{},
 		linkCodes: map[string]fakeLinkCode{}, links: map[string]string{},
@@ -803,6 +808,21 @@ func (f *fakeRepo) UserInAllowlist(_ context.Context, n, u string) (bool, error)
 }
 func (f *fakeRepo) UUIDInAllowlist(_ context.Context, n, uuid string) (bool, error) {
 	return f.allowUUID[n][uuid], nil
+}
+func (f *fakeRepo) ServerAllowlist(_ context.Context, n string) ([]AllowlistEntry, error) {
+	if f.allowlistErr != nil {
+		return nil, f.allowlistErr
+	}
+	return append([]AllowlistEntry{}, f.allowEntries[n]...), nil
+}
+func (f *fakeRepo) SetAllowlistWake(_ context.Context, n, uuid string, canWake bool) error {
+	for i := range f.allowEntries[n] {
+		if f.allowEntries[n][i].MCUUID == uuid {
+			f.allowEntries[n][i].CanWake = canWake
+			return nil
+		}
+	}
+	return ErrNotFound
 }
 func (f *fakeRepo) UserByMCUUID(_ context.Context, uuid string) (string, error) {
 	if u, ok := f.links[uuid]; ok && !f.seededDead(u) {

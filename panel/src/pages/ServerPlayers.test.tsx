@@ -22,6 +22,12 @@ vi.mock("@/lib/api", async (importOriginal) => {
 vi.mock("@/components/players/OnlineSection", () => ({ OnlineSection: () => <div data-testid="online" /> }));
 vi.mock("@/components/players/WhitelistSection", () => ({ WhitelistSection: () => <div /> }));
 vi.mock("@/components/players/BansSection", () => ({ BansSection: () => <div /> }));
+// The wake list reads Postgres, so the page shows it whether the server runs or not.
+vi.mock("@/components/players/WakeListSection", () => ({
+  WakeListSection: (p: { policy?: string; defaultOpen?: boolean }) => (
+    <div data-testid="wake-list" data-policy={p.policy} data-open={String(!!p.defaultOpen)} />
+  ),
+}));
 
 const status = (over: Record<string, unknown>) => ({ name: "lobby", subdomain: "lobby", ready: false, ...over });
 
@@ -47,14 +53,17 @@ function renderPage() {
 describe("ServerPlayers following the server", () => {
   it("switches over once the server is up, and back when it stops", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    calls.status.mockResolvedValue(status({ phase: "Stopped", desiredState: "Stopped" }));
+    calls.status.mockResolvedValue(status({ phase: "Stopped", desiredState: "Stopped", autostartPolicy: "allowlist" }));
     renderPage();
     expect(await screen.findByText("Server is asleep")).toBeTruthy();
+    // Asleep, the wake list is the one block left, so it opens.
+    expect(screen.getByTestId("wake-list").dataset).toMatchObject({ policy: "allowlist", open: "true" });
 
     // Waiting on the server: the fast pace.
     calls.status.mockResolvedValue(status({ phase: "Running", desiredState: "Running", ready: true }));
     await act(() => vi.advanceTimersByTimeAsync(STATUS_POLL_FAST_MS));
     expect(await screen.findByTestId("online")).toBeTruthy();
+    expect(screen.getByTestId("wake-list").dataset.open).toBe("false");
 
     // Running: the slow pace, which still sees an idle stop.
     calls.status.mockResolvedValue(status({ phase: "Stopped", desiredState: "Stopped" }));

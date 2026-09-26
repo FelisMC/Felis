@@ -649,6 +649,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/servers/{name}/allowlist": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The server's wake allowlist, newest first. Owner/admin only.
+         * @description Who may wake the server while it sleeps under autostartPolicy=allowlist. A player lands here by joining the server once; entries whose wake right was taken away stay listed with can_wake false, so it can be given back. Felis keeps this list itself, so it answers whether the server is running or not. A change of owner (claim, reaper release, account deletion) empties it.
+         */
+        get: operations["listAllowlist"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{name}/allowlist/{uuid}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Take a player's wake right away or give it back. Owner/admin only.
+         * @description can_wake false keeps the entry on the list with its wake right revoked, so the player's next join does not restore it; true gives it back. Repeating either is harmless. Audited as allowlist.revoke / allowlist.restore.
+         */
+        put: operations["setAllowlistWake"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/servers/{name}/status": {
         parameters: {
             query?: never;
@@ -2377,6 +2417,20 @@ export interface components {
             ownerUnknown?: boolean;
             /** @description True for a platform-provisioned system service (the login gate, the lobby). Their reserved names are rejected by every per-server route, so the cockpit renders them read-only instead of offering actions that would 400. */
             system?: boolean;
+        };
+        /** @description One player on a server's wake allowlist (internal/api/repo.go AllowlistEntry): someone who joined the server, and so may wake it under autostartPolicy=allowlist unless the owner took that away. */
+        AllowlistEntry: {
+            /** Format: uuid */
+            mc_uuid: string;
+            /** @description The live Felis account the UUID is linked to; omitted when there is none (the account was closed or the link removed). */
+            username?: string;
+            /**
+             * Format: date-time
+             * @description The player's first join.
+             */
+            added_at: string;
+            /** @description False once the owner or an admin took the wake right away. */
+            can_wake: boolean;
         };
         /** @description One row of the caller's server list (internal/api/repo.go MyServerView). */
         MyServerView: {
@@ -4309,6 +4363,74 @@ export interface operations {
                 };
             };
             503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    listAllowlist: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The allowlist. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        server: string;
+                        entries: components["schemas"]["AllowlistEntry"][];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    setAllowlistWake: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                uuid: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    can_wake: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Changed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description No such server, or the UUID is not on its allowlist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     status: {

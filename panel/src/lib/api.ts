@@ -1,5 +1,6 @@
 import type {
   AccessResult,
+  AllowlistEntry,
   ApiError,
   AutostartPolicy,
   BackupView,
@@ -460,6 +461,18 @@ export const api = rejectingSync({
 
   accessKick: (name: string, player: string) =>
     request<KickResult>("POST", urlPath`/servers/${name}/access/kick`, { player }),
+
+  // Wake allowlist (GET/PUT /servers/{name}/allowlist): Felis's own record of who
+  // may wake the server under autostartPolicy "allowlist". Owner-or-admin gated,
+  // and unlike the access routes above it needs no running server.
+  serverAllowlist: (name: string) =>
+    request<{ server: string; entries: AllowlistEntry[] }>(
+      "GET",
+      urlPath`/servers/${name}/allowlist`,
+    ).then((r) => r.entries ?? []),
+
+  setAllowlistWake: (name: string, mcUUID: string, canWake: boolean) =>
+    request<void>("PUT", urlPath`/servers/${name}/allowlist/${mcUUID}`, { can_wake: canWake }),
 
   accessLuckPermsInfo: (name: string, player: string) =>
     request<{

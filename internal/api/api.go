@@ -511,6 +511,11 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/access/permission", h: a.handleAccessPermission},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/access/group", h: a.handleAccessGroup},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/access/luckperms/{player}", h: a.handleAccessLuckPermsInfo},
+		// Wake allowlist (autostartPolicy=allowlist): Felis's own Postgres record of
+		// who may wake the server, owner/admin-gated inside the handlers like the
+		// access routes above (handlers_allowlist.go).
+		{Method: "GET", Pattern: "/api/v1/servers/{name}/allowlist", h: a.handleAllowlistList},
+		{Method: "PUT", Pattern: "/api/v1/servers/{name}/allowlist/{uuid}", h: a.handleAllowlistSetWake},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/status", h: a.handleStatus},
 		// Identity self-read (spec §14 tiering): the panel reads this once at boot to
 		// learn its own tier and decide which navigation surfaces to render. App-tier —

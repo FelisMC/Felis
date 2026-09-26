@@ -423,6 +423,10 @@ func (p *PGRepo) ServerResources(ctx context.Context, name string) (ResourceSpec
 // as last_active_at, so without the reset a new owner who configures it from
 // the panel before anyone joins would lose it on the next reaper run, with no
 // warning and no archive of their own.
+//
+// It also empties the wake allowlist. Every entry is a player who joined while
+// someone else held the server (or nobody did), so it vouches for nothing on the
+// new owner's; a friend of the new owner is added again by their next join.
 func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string) (bool, error) {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -489,6 +493,9 @@ func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string) (bool, er
 	if n != 1 {
 		return false, nil
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM server_allowlist WHERE server_name = $1`, name); err != nil {
+		return false, err
+	}
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
@@ -517,10 +524,12 @@ func quotaAllows(maxServers, maxCPU, maxMem, maxStor sql.NullInt64,
 	return true
 }
 
+// UserInAllowlist reports whether any Minecraft UUID linked to the user is on the
+// wake allowlist with its wake right intact (revoked_at IS NULL).
 func (p *PGRepo) UserInAllowlist(ctx context.Context, name, userID string) (bool, error) {
 	const q = `SELECT EXISTS(
 		SELECT 1 FROM server_allowlist sa JOIN account_links al ON al.mc_uuid = sa.mc_uuid
-		WHERE sa.server_name = $1 AND al.user_id = $2)`
+		WHERE sa.server_name = $1 AND al.user_id = $2 AND sa.revoked_at IS NULL)`
 	var ok bool
 	err := p.db.QueryRowContext(ctx, q, name, userID).Scan(&ok)
 	return ok, err
@@ -529,13 +538,63 @@ func (p *PGRepo) UserInAllowlist(ctx context.Context, name, userID string) (bool
 // UUIDInAllowlist is the internal-face allowlist check keyed by the in-game UUID
 // directly (spec §9.4). The server_allowlist table is UUID-keyed, so the
 // velocity-driven wake — which knows the joining player only by their online-mode
-// UUID — needs no account_links bridge (contrast UserInAllowlist).
+// UUID — needs no account_links bridge (contrast UserInAllowlist). A revoked
+// entry does not count.
 func (p *PGRepo) UUIDInAllowlist(ctx context.Context, name, mcUUID string) (bool, error) {
 	const q = `SELECT EXISTS(
-		SELECT 1 FROM server_allowlist WHERE server_name = $1 AND mc_uuid = $2)`
+		SELECT 1 FROM server_allowlist WHERE server_name = $1 AND mc_uuid = $2 AND revoked_at IS NULL)`
 	var ok bool
 	err := p.db.QueryRowContext(ctx, q, name, mcUUID).Scan(&ok)
 	return ok, err
+}
+
+// ServerAllowlist lists a server's wake allowlist, newest first, revoked entries
+// included so the owner can give the right back. Username is the live account the
+// UUID is linked to, empty when there is none: only linked players get past the
+// login gate, so an unnamed entry belongs to a closed or unlinked account.
+func (p *PGRepo) ServerAllowlist(ctx context.Context, name string) ([]AllowlistEntry, error) {
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT sa.mc_uuid::text, COALESCE(u.username, ''), sa.added_at, sa.revoked_at IS NULL
+		   FROM server_allowlist sa
+		   LEFT JOIN account_links al ON al.mc_uuid = sa.mc_uuid
+		   LEFT JOIN users u ON u.id = al.user_id AND u.deleted_at IS NULL
+		  WHERE sa.server_name = $1
+		  ORDER BY sa.added_at DESC, sa.mc_uuid`, name)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AllowlistEntry{}
+	for rows.Next() {
+		var e AllowlistEntry
+		if err := rows.Scan(&e.MCUUID, &e.Username, &e.AddedAt, &e.CanWake); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// SetAllowlistWake gives an allowlisted UUID its wake right back or takes it away.
+// ErrNotFound when the UUID is not on the server's list. Taking it away keeps the
+// row (revoked_at) so the player's next join cannot restore it; repeating either
+// call changes nothing, and a repeated revoke keeps the first revoked_at.
+func (p *PGRepo) SetAllowlistWake(ctx context.Context, name, mcUUID string, canWake bool) error {
+	res, err := p.db.ExecContext(ctx,
+		`UPDATE server_allowlist
+		    SET revoked_at = CASE WHEN $3 THEN NULL ELSE COALESCE(revoked_at, now()) END
+		  WHERE server_name = $1 AND mc_uuid = $2`, name, mcUUID, canWake)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // UserByMCUUID resolves a verified in-game UUID to its linked user_id (spec §10
@@ -558,7 +617,8 @@ func (p *PGRepo) UserByMCUUID(ctx context.Context, mcUUID string) (string, error
 }
 
 // RecordJoin renews activity and auto-appends the UUID to the allowlist in one
-// transaction (spec §7, §9.4). A missing server is ErrNotFound.
+// transaction (spec §7, §9.4). A missing server is ErrNotFound. An entry the
+// owner revoked stays revoked: the append leaves an existing row alone.
 func (p *PGRepo) RecordJoin(ctx context.Context, name, mcUUID string) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1938,9 +1998,12 @@ func (p *PGRepo) DeleteUser(ctx context.Context, userID, _ string) error {
 		return ErrNotFound
 	}
 
-	// Release all owned servers.
+	// Release all owned servers, emptying their wake allowlists: the players on
+	// them were the departing owner's to vouch for (ClaimServer does the same).
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE servers SET owner_id = NULL WHERE owner_id = $1 AND deleted_at IS NULL`,
+		`WITH released AS (
+		   UPDATE servers SET owner_id = NULL WHERE owner_id = $1 AND deleted_at IS NULL RETURNING name)
+		 DELETE FROM server_allowlist WHERE server_name IN (SELECT name FROM released)`,
 		userID); err != nil {
 		return err
 	}

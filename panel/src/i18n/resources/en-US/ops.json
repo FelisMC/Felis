@@ -29,7 +29,7 @@
   "fleet_endpoint_idle": "Not running",
   "policy_owneronly": "Owner only",
   "policy_public": "Public",
-  "policy_allowlist": "Allowlist",
+  "policy_allowlist": "Wake list",
   "fleet_empty_title": "No servers",
   "fleet_empty_hint": "No MinecraftServer exists in the cluster yet.",
   "fleet_no_match_title": "No matches",

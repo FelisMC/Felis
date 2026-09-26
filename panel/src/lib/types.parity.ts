@@ -34,6 +34,7 @@ type Holds<X extends true> = X;
 export type WireParity = [
   Holds<Parity<T.ServerStatus, S["ServerInfo"]>>,
   Holds<Parity<T.MyServerView, S["MyServerView"]>>,
+  Holds<Parity<T.AllowlistEntry, S["AllowlistEntry"]>>,
   Holds<Parity<T.FleetServer, S["FleetServer"]>>,
   Holds<Parity<T.BackupView, S["BackupView"]>>,
   Holds<Parity<T.Build, S["Build"]>>,

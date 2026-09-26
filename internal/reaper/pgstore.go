@@ -82,11 +82,16 @@ func (s *PGStore) InsertBackup(ctx context.Context, rec BackupRecord) error {
 // ReleaseWorld releases ownership and resets the activity clock and warnings —
 // without deleting the row (red line ②). The resource cache stays: the server
 // keeps its spec, an ownerless row is in nobody's quota sum, and the next claim is
-// gated on that size and counts it.
+// gated on that size and counts it. The wake allowlist is emptied in the same
+// statement: its players were vouched for by the owner being released, and an
+// ownerless server set to autostartPolicy=allowlist would otherwise stay
+// wakeable by them.
 func (s *PGStore) ReleaseWorld(ctx context.Context, name string, at time.Time) error {
-	const q = `UPDATE servers
+	const q = `WITH released AS (
+		UPDATE servers
 		SET owner_id = NULL, last_active_at = $2, warned_3d_at = NULL, warned_1d_at = NULL
-		WHERE name = $1 AND deleted_at IS NULL`
+		WHERE name = $1 AND deleted_at IS NULL RETURNING name)
+		DELETE FROM server_allowlist WHERE server_name IN (SELECT name FROM released)`
 	_, err := s.db.ExecContext(ctx, q, name, at)
 	return err
 }

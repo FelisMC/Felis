@@ -8,13 +8,15 @@ import { PageHeader } from "@/components/PageHeader";
 import { OnlineSection } from "@/components/players/OnlineSection";
 import { WhitelistSection } from "@/components/players/WhitelistSection";
 import { BansSection } from "@/components/players/BansSection";
+import { WakeListSection } from "@/components/players/WakeListSection";
 import { api } from "@/lib/api";
 import { STATUS_POLL_SLOW_MS, STATUS_POLL_FAST_MS, useAsync, usePolling } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
 import { canManage, ownershipPending } from "@/lib/ownership";
 
 /** ServerPlayers is the per-server player-management subpage (/servers/:name/players):
- *  whitelist today, online roster and bans as they land. It owns its own gating —
+ *  the online roster, whitelist and bans over RCON while the server runs, and the wake
+ *  list, which Felis keeps itself, at any time. It owns its own gating —
  *  ownership (from /me/servers, since GET status never carries `owned`) and server
  *  readiness — because as a route it can be reached directly, not just from a link. */
 export function ServerPlayers() {
@@ -88,23 +90,30 @@ export function ServerPlayers() {
       ) : !owned ? (
         <NotYours title={t("players_not_yours_title")} body={t("players_not_yours_body")} />
       ) : phase !== "Running" ? (
-        <NotRunning
-          title={t("players_not_running_title")}
-          body={t("players_not_running_body")}
-          serverName={name}
-          phase={data.phase}
-          desiredState={data.desiredState}
-          failure={failure}
-          autoRestarts={data.autoRestarts}
-          onWoken={reload}
-        />
+        <div className="space-y-4">
+          <NotRunning
+            title={t("players_not_running_title")}
+            body={t("players_not_running_body")}
+            serverName={name}
+            phase={data.phase}
+            desiredState={data.desiredState}
+            failure={failure}
+            autoRestarts={data.autoRestarts}
+            onWoken={reload}
+          />
+          {/* The wake list is Felis's own record, so it stays manageable while the
+              server sleeps, which is when it decides who may start it. */}
+          <WakeListSection name={name} policy={data.autostartPolicy} defaultOpen />
+        </div>
       ) : (
         <div className="space-y-4">
           {/* Ordered as a who-may-be-here gradient: who is on right now → who may
-              join → who may NOT. Each collapses to an index row (shared.tsx). */}
+              join → who may NOT, then who may wake it while it sleeps. Each
+              collapses to an index row (shared.tsx). */}
           <OnlineSection name={name} />
           <WhitelistSection name={name} />
           <BansSection name={name} />
+          <WakeListSection name={name} policy={data.autostartPolicy} />
         </div>
       )}
     </>

@@ -540,6 +540,24 @@ components:
                 so the cockpit renders them read-only instead of offering actions
                 that would 400.
 
+    AllowlistEntry:
+      type: object
+      description: >-
+        One player on a server's wake allowlist (internal/api/repo.go
+        AllowlistEntry): someone who joined the server, and so may wake it under
+        autostartPolicy=allowlist unless the owner took that away.
+      required: [mc_uuid, added_at, can_wake]
+      properties:
+        mc_uuid: { type: string, format: uuid }
+        username:
+          type: string
+          description: >-
+            The live Felis account the UUID is linked to; omitted when there is
+            none (the account was closed or the link removed).
+        added_at: { type: string, format: date-time, description: The player's first join. }
+        can_wake:
+          type: boolean
+          description: False once the owner or an admin took the wake right away.
     MyServerView:
       type: object
       description: One row of the caller's server list (internal/api/repo.go MyServerView).
@@ -2402,6 +2420,83 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/servers/{name}/allowlist:
+    get:
+      tags: [access]
+      operationId: listAllowlist
+      summary: The server's wake allowlist, newest first. Owner/admin only.
+      description: >-
+        Who may wake the server while it sleeps under autostartPolicy=allowlist. A
+        player lands here by joining the server once; entries whose wake right was
+        taken away stay listed with can_wake false, so it can be given back. Felis
+        keeps this list itself, so it answers whether the server is running or not.
+        A change of owner (claim, reaper release, account deletion) empties it.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The allowlist.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [server, entries]
+                properties:
+                  server: { type: string }
+                  entries:
+                    type: array
+                    items: { $ref: '#/components/schemas/AllowlistEntry' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/v1/servers/{name}/allowlist/{uuid}:
+    put:
+      tags: [access]
+      operationId: setAllowlistWake
+      summary: Take a player's wake right away or give it back. Owner/admin only.
+      description: >-
+        can_wake false keeps the entry on the list with its wake right revoked, so
+        the player's next join does not restore it; true gives it back. Repeating
+        either is harmless. Audited as allowlist.revoke / allowlist.restore.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: uuid, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [can_wake]
+              properties:
+                can_wake: { type: boolean }
+      responses:
+        '204':
+          description: Changed.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No such server, or the UUID is not on its allowlist.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/servers/{name}/status:
     get:

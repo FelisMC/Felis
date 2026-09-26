@@ -336,6 +336,15 @@ type Repo interface {
 	// must be keyed by UUID directly (the allowlist table is UUID-keyed; the
 	// account_links join in UserInAllowlist only exists to bridge the web side).
 	UUIDInAllowlist(ctx context.Context, name, mcUUID string) (bool, error)
+	// ServerAllowlist lists the server's wake allowlist, newest first, revoked
+	// entries included, each with the live account its UUID is linked to.
+	ServerAllowlist(ctx context.Context, name string) ([]AllowlistEntry, error)
+	// SetAllowlistWake gives an allowlisted UUID its wake right back (true) or
+	// takes it away (false); ErrNotFound when the UUID is not on the list. A
+	// revoked entry stays on the list so the player's next join cannot restore it.
+	// Both allowlist checks above skip revoked entries, and a change of owner
+	// (claim, reaper release, account deletion) empties the list.
+	SetAllowlistWake(ctx context.Context, name, mcUUID string, canWake bool) error
 	// UserByMCUUID resolves a verified in-game UUID to the user_id it is linked to
 	// (spec §10 account_links), or ErrNotFound when the UUID is not linked. The
 	// internal-face wake uses it to apply the owner bypass for a player known only
@@ -824,6 +833,17 @@ type UserDetail struct {
 	UserView
 	DeletedAt      *time.Time      `json:"deleted_at,omitempty"`
 	LinkedAccounts []LinkedAccount `json:"linked_accounts,omitempty"`
+}
+
+// AllowlistEntry is one player on a server's wake allowlist (server_allowlist):
+// someone who joined it, and so may wake it under autostartPolicy=allowlist
+// unless the owner took that away (CanWake false). Username is the live account
+// the UUID is linked to, empty when there is none.
+type AllowlistEntry struct {
+	MCUUID   string    `json:"mc_uuid"`
+	Username string    `json:"username,omitempty"`
+	AddedAt  time.Time `json:"added_at"`
+	CanWake  bool      `json:"can_wake"`
 }
 
 // LinkedAccount is one verified MC-UUID binding (account_links, spec §10).
