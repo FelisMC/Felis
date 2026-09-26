@@ -214,6 +214,39 @@ func TestStartRespectsMaintenance(t *testing.T) {
 		}
 	})
 
+	t.Run("retry start -> Running plus the retry request, a plain start leaves none", func(t *testing.T) {
+		ms := stoppedServer()
+		ms.Spec.DesiredState = v1alpha1.DesiredRunning
+		ms.Status.Phase = v1alpha1.PhaseFailed
+		k, c := lockCluster(t, ms)
+		if err := k.SetDesiredState(ctx, "survival", v1alpha1.DesiredRunning); err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		if ann, _ := annotations(t, c); ann[v1alpha1.AnnotationStartRetry] != "" {
+			t.Fatalf("a plain start asked for a retry: %v", ann)
+		}
+		if err := k.RetryStart(ctx, "survival"); err != nil {
+			t.Fatalf("retry: %v", err)
+		}
+		ann, desired := annotations(t, c)
+		if desired != v1alpha1.DesiredRunning || ann[v1alpha1.AnnotationStartRetry] != lockNow.Format(time.RFC3339) {
+			t.Fatalf("desiredState = %q annotations = %v, want Running and the retry stamped %s",
+				desired, ann, lockNow.Format(time.RFC3339))
+		}
+	})
+
+	t.Run("retry start under a fresh lock -> busy, no retry request", func(t *testing.T) {
+		ms := stoppedServer()
+		ms.Annotations = map[string]string{maintenance.Annotation: maintenance.LockValue(maintenance.KindRestore, lockNow)}
+		k, c := lockCluster(t, ms)
+		if err := k.RetryStart(ctx, "survival"); !errors.Is(err, ErrMaintenanceInProgress) {
+			t.Fatalf("err = %v, want maintenance in progress", err)
+		}
+		if ann, _ := annotations(t, c); ann[v1alpha1.AnnotationStartRetry] != "" {
+			t.Fatalf("a refused retry left its request: %v", ann)
+		}
+	})
+
 	t.Run("stop ignores the lock", func(t *testing.T) {
 		ms := stoppedServer()
 		ms.Spec.DesiredState = v1alpha1.DesiredRunning

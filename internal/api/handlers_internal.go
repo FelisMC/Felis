@@ -152,6 +152,18 @@ func (a *API) handleInternalWake(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	// A start whose automatic restarts are spent (or that can never succeed as
+	// configured) stays down until a person looks at it. The 202 this used to
+	// return queued the player for a server nothing was starting. The join leaves
+	// the restart budget alone, or every player who tried to join would buy
+	// another three crash loops; velocity tells them and queues no one. A Failed
+	// server still inside its backoff is not this: its next attempt is coming, so
+	// it gets the 202 and the player waits for it.
+	if info.StartGaveUp && info.DesiredState == string(v1alpha1.DesiredRunning) {
+		writeError(w, r, newError(http.StatusConflict, "start_failed",
+			"the server failed to start and its automatic retries are spent; its owner can retry from the panel"))
+		return
+	}
 	if !a.limiter().allowed(name, a.WakeCooldown) {
 		writeError(w, r, newError(http.StatusTooManyRequests, "cooldown", "wake is cooling down, retry shortly"))
 		return

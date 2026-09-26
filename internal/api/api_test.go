@@ -1748,6 +1748,7 @@ type fakeCluster struct {
 	wakeErr  map[string]error
 	acquired []string // "name:kind" per admitted AcquireMaintenance
 	released []string // names per ReleaseMaintenance
+	retried  []string // names per RetryStart
 }
 
 func newFakeCluster() *fakeCluster {
@@ -1792,6 +1793,16 @@ func (c *fakeCluster) SetDesiredState(_ context.Context, n string, s v1alpha1.De
 		return err
 	}
 	c.desired[n] = s
+	return nil
+}
+
+// RetryStart records the retry on top of the plain start, so a test tells a
+// Failed server's retry apart from an ordinary wake.
+func (c *fakeCluster) RetryStart(ctx context.Context, n string) error {
+	if err := c.SetDesiredState(ctx, n, v1alpha1.DesiredRunning); err != nil {
+		return err
+	}
+	c.retried = append(c.retried, n)
 	return nil
 }
 func (c *fakeCluster) AcquireMaintenance(_ context.Context, n, kind string) error {
@@ -2092,9 +2103,11 @@ func TestMyServersJoinsLiveState(t *testing.T) {
 	cl := newFakeCluster()
 	cl.list = []ServerInfo{
 		{Name: "mine", DisplayName: "My World", Phase: "Running", DesiredState: "Running",
-			AutostartPolicy: "ownerOnly", PlayersOnline: 2, PlayersMax: 20, PlayerCountUnknown: true},
+			AutostartPolicy: "ownerOnly", PlayersOnline: 2, PlayersMax: 20, PlayerCountUnknown: true,
+			AutoRestarts: 3, StartGaveUp: true},
 		{Name: "open", DisplayName: "Open World", Phase: "Running", DesiredState: "Running",
-			AutostartPolicy: "public", PlayersMax: 10, PlayerCountUnknown: true},
+			AutostartPolicy: "public", PlayersMax: 10, PlayerCountUnknown: true,
+			AutoRestarts: 3, StartGaveUp: true},
 	}
 	api := newTestAPI(repo, cl)
 	api.External = staticExternal{p: &Principal{UserID: "u1", Role: "user"}}
@@ -2122,7 +2135,8 @@ func TestMyServersJoinsLiveState(t *testing.T) {
 	mine, open := got["mine"], got["open"]
 	for k, want := range map[string]any{"displayName": "My World", "phase": "Running",
 		"desiredState": "Running", "autostartPolicy": "ownerOnly", "playerCountUnknown": true,
-		"playersOnline": float64(2), "playersMax": float64(20)} {
+		"playersOnline": float64(2), "playersMax": float64(20),
+		"autoRestarts": float64(3), "startGaveUp": true} {
 		if mine[k] != want {
 			t.Errorf("own row %s = %v, want %v", k, mine[k], want)
 		}
@@ -2130,7 +2144,7 @@ func TestMyServersJoinsLiveState(t *testing.T) {
 	if open["displayName"] != "Open World" || open["phase"] != "Running" || open["playersMax"] != float64(10) {
 		t.Errorf("claimable row public fields = %v", open)
 	}
-	for _, k := range []string{"desiredState", "autostartPolicy", "playerCountUnknown"} {
+	for _, k := range []string{"desiredState", "autostartPolicy", "playerCountUnknown", "autoRestarts", "startGaveUp"} {
 		if _, ok := open[k]; ok {
 			t.Errorf("claimable row carries owner detail %s = %v", k, open[k])
 		}

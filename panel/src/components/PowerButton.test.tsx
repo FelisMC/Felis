@@ -103,4 +103,33 @@ describe("PowerButton", () => {
 
     expect(wake).toHaveBeenCalledOnce();
   });
+
+  it("offers a failed server a retry, which is the wake", async () => {
+    wake.mockResolvedValue(undefined);
+    const onChanged = vi.fn();
+    render(<PowerButton name="lobby" live={false} failed onChanged={onChanged} />);
+
+    expect(screen.queryByRole("button", { name: t("servers:wake") })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: t("servers:retry_start") }));
+
+    expect(wake).toHaveBeenCalledWith("lobby");
+    expect(stop).not.toHaveBeenCalled();
+    expect(onChanged).toHaveBeenCalledOnce();
+  });
+
+  it("stops a failed server without asking, and only the pressed button spins", async () => {
+    let resolve!: () => void;
+    stop.mockReturnValue(new Promise<void>((r) => (resolve = r)));
+    const onChanged = vi.fn();
+    render(<PowerButton name="lobby" live={false} failed playerCountUnknown onChanged={onChanged} />);
+
+    await userEvent.click(screen.getByRole("button", { name: t("servers:stop") }));
+
+    expect(stop).toHaveBeenCalledWith("lobby");
+    expect(screen.queryByText(t("servers:stop_confirm_unknown"))).toBeNull();
+    expect(screen.getByRole("button", { name: t("servers:stopping") })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: t("servers:retry_start") })).toHaveProperty("disabled", true);
+    resolve();
+    await vi.waitFor(() => expect(onChanged).toHaveBeenCalledOnce());
+  });
 });

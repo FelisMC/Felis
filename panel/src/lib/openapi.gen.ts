@@ -167,7 +167,7 @@ export interface paths {
         put?: never;
         /**
          * Domain-autostart wake driven by velocity for a joining player (spec §9.1).
-         * @description velocity holds no web Principal, so it drives the wake lever with its service token, identifying the player by online-mode UUID. Gated by the server's autostartPolicy and the per-server wake cooldown.
+         * @description velocity holds no web Principal, so it drives the wake lever with its service token, identifying the player by online-mode UUID. Gated by the server's autostartPolicy and the per-server wake cooldown. A server whose start failed with its automatic retries spent answers 409 start_failed: a join never resets the retry budget, so velocity queues no one for it.
          */
         post: operations["internalWake"];
         delete?: never;
@@ -419,7 +419,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Wake your own server. */
+        /**
+         * Wake your own server.
+         * @description On a server whose start Failed (phase Failed, desiredState Running) this is a retry: the operator recreates the pod and starts it over with a fresh automatic-restart budget. It is audited as retry_start.
+         */
         post: operations["wake"];
         delete?: never;
         options?: never;
@@ -2398,6 +2401,13 @@ export interface components {
             autostartPolicy?: "ownerOnly" | "public" | "allowlist";
             /** @description Owned rows only. Present and true while the operator cannot read the player count, so a stop may disconnect players. */
             playerCountUnknown?: boolean;
+            /**
+             * Format: int32
+             * @description Owned rows only. How often the operator recreated the pod of this start after it timed out.
+             */
+            autoRestarts?: number;
+            /** @description Owned rows only. Present and true for a Failed server no automatic retry will bring up; waking it from the panel starts it over. */
+            startGaveUp?: boolean;
         };
         /** @description One world backup (internal/api/repo.go BackupView). backup_ref is withheld (spec §286). */
         BackupView: {
@@ -3148,7 +3158,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            /** @description A restore, backup or file write holds the server's world volume (maintenance_in_progress); nothing was started. */
+            /** @description Nothing was started. maintenance_in_progress: a restore, backup or file write holds the server's world volume. start_failed: the last start failed and its automatic retries are spent (ServerInfo.startGaveUp); the server stays down until a person starts it from the panel. */
             409: {
                 headers: {
                     [name: string]: unknown;

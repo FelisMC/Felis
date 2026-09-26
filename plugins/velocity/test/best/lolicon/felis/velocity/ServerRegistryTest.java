@@ -2,6 +2,8 @@ package best.lolicon.felis.velocity;
 
 import best.lolicon.felis.link.ServerView;
 
+import net.kyori.adventure.text.format.NamedTextColor;
+
 import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.Optional;
@@ -138,6 +140,24 @@ public final class ServerRegistryTest {
                 ServerRegistry.parseAddress("backend.svc"));
         assertAddr("a non-numeric port is not a port", "backend:x", 25565,
                 ServerRegistry.parseAddress("backend:x"));
+
+        // The server-list MOTD reads a failed start before desiredState Running,
+        // which a failed start still holds.
+        assertEq("motd: up", "在线 / online", MotdResponder.statusLine(up("a", "a", "10.43.0.1:25565")));
+        assertEq("motd: starting", "启动中… / starting…", MotdResponder.statusLine(
+                new ServerView("a", "a", "Starting", false, "ownerOnly", "Running", "fallback", "login", 0, 0)));
+        ServerView backoff = new ServerView("a", "a", "Failed", false, "ownerOnly", "Running",
+                "fallback", "login", 0, 0, false, 1, false);
+        assertEq("motd: between retries", "启动超时，稍后自动重试 / start timed out — retrying shortly",
+                MotdResponder.statusLine(backoff));
+        assertEq("motd: between retries is yellow", NamedTextColor.YELLOW, MotdResponder.statusColor(backoff));
+        ServerView gaveUp = new ServerView("a", "a", "Failed", false, "ownerOnly", "Running",
+                "fallback", "login", 0, 0, false, 3, true);
+        assertEq("motd: retries spent", "启动失败，等服主处理 / failed to start — the owner has to restart it",
+                MotdResponder.statusLine(gaveUp));
+        assertEq("motd: retries spent is red", NamedTextColor.RED, MotdResponder.statusColor(gaveUp));
+        assertEq("motd: sleeping", "休眠中，加入即唤醒 / sleeping — join to wake",
+                MotdResponder.statusLine(down("a", "a")));
 
         System.out.println("ServerRegistryTest OK (" + checks + " checks)");
     }

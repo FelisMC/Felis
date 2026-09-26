@@ -21,9 +21,9 @@ type ServerRecord struct {
 // may auto-start, or may claim. Everything after Claimable is NOT stored in
 // Postgres — handleMyServers joins it best-effort from the CRD status
 // (Cluster.ListServers) at read time, so a cluster hiccup renders 0/0 and the
-// cached phase, never a 500. DesiredState, AutostartPolicy and
-// PlayerCountUnknown are owner detail and stay empty on rows the caller does
-// not own, the same split publicServerInfo makes on the status route.
+// cached phase, never a 500. DesiredState, AutostartPolicy, PlayerCountUnknown,
+// AutoRestarts and StartGaveUp are owner detail and stay empty on rows the caller
+// does not own, the same split publicServerInfo makes on the status route.
 type MyServerView struct {
 	Name               string `json:"name"`
 	Subdomain          string `json:"subdomain"`
@@ -36,6 +36,8 @@ type MyServerView struct {
 	DesiredState       string `json:"desiredState,omitempty"`
 	AutostartPolicy    string `json:"autostartPolicy,omitempty"`
 	PlayerCountUnknown bool   `json:"playerCountUnknown,omitempty"`
+	AutoRestarts       int32  `json:"autoRestarts,omitempty"`
+	StartGaveUp        bool   `json:"startGaveUp,omitempty"`
 }
 
 // ServerOwnership is one live server's claim state as the fleet read joins it.

@@ -195,6 +195,11 @@ func (r *Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		desired = v1alpha1.DesiredStopped
 	}
 	prevPhase, prevRestarts := server.Status.Phase, server.Status.AutoRestarts
+	if _, ok := server.Annotations[v1alpha1.AnnotationStartRetry]; ok {
+		if err := r.takeStartRetry(ctx, &server, desired); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	var res ctrl.Result
 	var err error
 	if desired == v1alpha1.DesiredStopped {
@@ -231,6 +236,33 @@ func (r *Reconciler) recordTransition(ctx context.Context, server *v1alpha1.Mine
 	}
 	log.FromContext(ctx).Info("phase changed", "from", from, "to", phase, "reason", reason, "message", msg)
 	r.event(server, eventType, reason, fmt.Sprintf("%s → %s: %s", from, phase, msg))
+}
+
+// takeStartRetry answers felis-api's AnnotationStartRetry: a server still Failed
+// and meant to run starts over as if freshly woken — pod recreated, restart
+// budget back to zero, a new start anchor — and in any other state the request
+// is stale and only removed. The fresh status is written before the request is
+// removed, so a pass that fails in between leaves the request to be taken again
+// (at the cost of one more pod recreate), never a removed request with the old
+// spent budget still in place.
+func (r *Reconciler) takeStartRetry(ctx context.Context, server *v1alpha1.MinecraftServer, desired v1alpha1.DesiredState) error {
+	if desired == v1alpha1.DesiredRunning && server.Status.Phase == v1alpha1.PhaseFailed {
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: server.Name + "-0", Namespace: server.Namespace}}
+		if err := r.Delete(ctx, pod); client.IgnoreNotFound(err) != nil {
+			return err
+		}
+		server.Status.AutoRestarts = 0
+		server.Status.StartRequestedAt = nil
+		r.markStarting(server, "StartRetried", "start requested again after it failed; recreated the pod")
+		if err := r.patchStatus(ctx, server); err != nil {
+			return err
+		}
+		log.FromContext(ctx).Info("start retried")
+		r.event(server, corev1.EventTypeNormal, "StartRetried", "start requested again after it failed; recreated the pod")
+	}
+	patch := client.MergeFrom(server.DeepCopy())
+	delete(server.Annotations, v1alpha1.AnnotationStartRetry)
+	return r.Patch(ctx, server, patch)
 }
 
 func (r *Reconciler) event(server *v1alpha1.MinecraftServer, eventType, reason, msg string) {
@@ -807,6 +839,7 @@ func (r *Reconciler) markFailed(server *v1alpha1.MinecraftServer, reason, msg st
 	server.Status.Phase = v1alpha1.PhaseFailed
 	server.Status.Ready = false
 	server.Status.ObservedGeneration = server.Generation
+	server.Status.LiveMotd = server.Spec.Motd.Failed
 	r.setCondition(server, v1alpha1.ConditionReady, metav1.ConditionFalse, reason, msg)
 	r.setCondition(server, v1alpha1.ConditionProvisioned, metav1.ConditionFalse, reason, msg)
 }

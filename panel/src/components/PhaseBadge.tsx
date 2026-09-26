@@ -52,18 +52,54 @@ export function phaseVariant(phase: Phase): BadgeVariant {
   return VARIANT[phase] ?? VARIANT.Unknown;
 }
 
-export function PhaseBadge({ phase }: { phase: Phase }) {
+/** MAX_AUTO_RESTARTS mirrors the operator's v1alpha1.MaxAutoRestarts: how often it
+ *  recreates the pod of a start that timed out before leaving it Failed. */
+export const MAX_AUTO_RESTARTS = 3;
+
+export type StartFailure = "retrying" | "gaveUp";
+
+/** startFailure reads how a Failed start stands from the owner detail. "retrying"
+ *  means the operator's next automatic attempt is coming; "gaveUp" means nothing
+ *  will start it again until a person does. A Failed server meant to stop, or a
+ *  public view without the owner detail, reads as null: there is no retry to
+ *  offer there, and the badge stays the plain Failed one. */
+export function startFailure(s: {
+  phase?: Phase;
+  desiredState?: string;
+  startGaveUp?: boolean;
+}): StartFailure | null {
+  if (s.phase !== "Failed" || s.desiredState !== "Running") return null;
+  return s.startGaveUp ? "gaveUp" : "retrying";
+}
+
+export function PhaseBadge({
+  phase,
+  failure = null,
+  autoRestarts = 0,
+}: {
+  phase: Phase;
+  /** From startFailure: a Failed start between automatic retries pulses and says so. */
+  failure?: StartFailure | null;
+  autoRestarts?: number;
+}) {
   const { t } = useTranslation();
+  const retrying = phase === "Failed" && failure === "retrying";
+  const hint =
+    phase !== "Failed" || failure === null
+      ? undefined
+      : retrying
+        ? t("servers:server_failed_retrying_body", { used: autoRestarts, max: MAX_AUTO_RESTARTS })
+        : t("servers:server_failed_body");
   return (
-    <Badge variant={phaseVariant(phase)} className="gap-1.5 whitespace-nowrap">
+    <Badge variant={phaseVariant(phase)} className="gap-1.5 whitespace-nowrap" title={hint}>
       <span
         className={cn(
           "h-1.5 w-1.5 rounded-full",
-          TRANSIENT.has(phase) && "animate-pulse",
+          (TRANSIENT.has(phase) || retrying) && "animate-pulse",
         )}
         style={{ backgroundColor: phaseColor(phase) }}
       />
-      {t(PHASE_KEY[phase] ?? PHASE_KEY.Unknown)}
+      {retrying ? t("servers:phase_failed_retrying") : t(PHASE_KEY[phase] ?? PHASE_KEY.Unknown)}
     </Badge>
   );
 }

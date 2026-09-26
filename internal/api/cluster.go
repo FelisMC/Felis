@@ -117,6 +117,10 @@ type Cluster interface {
 	// *MaintenanceBusyError (errors.Is ErrMaintenanceInProgress) while a restore,
 	// backup or file write holds the world volume.
 	SetDesiredState(ctx context.Context, name string, state v1alpha1.DesiredState) error
+	// RetryStart is SetDesiredState(Running) for a server whose start Failed: it
+	// also asks the operator to start it over with a fresh auto-restart budget
+	// (v1alpha1.AnnotationStartRetry). Maintenance refuses it the same way.
+	RetryStart(ctx context.Context, name string) error
 	// AcquireMaintenance admits one world-volume operation (internal/maintenance
 	// kind): ErrNotStopped unless the server is fully stopped, a
 	// *MaintenanceBusyError while another operation holds the volume. The check

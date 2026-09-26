@@ -246,6 +246,17 @@ func (k *K8sCluster) SetDesiredState(ctx context.Context, name string, state v1a
 // against, the same as AcquireMaintenance's: whichever of a racing wake and
 // admission writes second gets a conflict, re-reads, and sees the other.
 func (k *K8sCluster) start(ctx context.Context, name string) error {
+	return k.startWith(ctx, name, false)
+}
+
+// RetryStart starts a Failed server over: the same guarded write as start, plus
+// v1alpha1.AnnotationStartRetry so the operator resets the restart budget and
+// recreates the pod.
+func (k *K8sCluster) RetryStart(ctx context.Context, name string) error {
+	return k.startWith(ctx, name, true)
+}
+
+func (k *K8sCluster) startWith(ctx context.Context, name string, retryFailed bool) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var ms v1alpha1.MinecraftServer
 		if err := k.getServer(ctx, name, &ms); err != nil {
@@ -263,6 +274,12 @@ func (k *K8sCluster) start(ctx context.Context, name string) error {
 		// A lock still on the object here no longer holds anything (Holder said
 		// so): drop it in the same write.
 		delete(ms.Annotations, maintenance.Annotation)
+		if retryFailed {
+			if ms.Annotations == nil {
+				ms.Annotations = map[string]string{}
+			}
+			ms.Annotations[v1alpha1.AnnotationStartRetry] = k.clock().UTC().Format(time.RFC3339)
+		}
 		return k.c.Patch(ctx, &ms, patch)
 	})
 }

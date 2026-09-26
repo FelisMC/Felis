@@ -139,3 +139,27 @@ describe("ServersPage addresses", () => {
     expect(survival.getByRole("button", { name: "Copy address survival.example.test:25570" })).toBeTruthy();
   });
 });
+
+describe("ServersPage failed starts", () => {
+  it("offers a failed start a retry and a stop, and tells retrying from given up", async () => {
+    calls.fleet.mockResolvedValue([
+      row("broken", { phase: "Failed", desiredState: "Running", startGaveUp: true, autoRestarts: 3, owned: true }),
+      row("flaky", { phase: "Failed", desiredState: "Running", autoRestarts: 1, owned: true }),
+    ]);
+    render(
+      <MemoryRouter>
+        <ServersPage />
+      </MemoryRouter>,
+    );
+
+    const broken = await tableRow("broken");
+    expect(broken.getByText("Failed to start")).toBeTruthy();
+    expect(broken.getByRole("button", { name: /Retry start/ })).toBeTruthy();
+    expect(broken.getByRole("button", { name: /Stop/ })).toBeTruthy();
+    expect(broken.queryByRole("button", { name: /Wake/ })).toBeNull();
+
+    const flaky = await tableRow("flaky");
+    expect(flaky.getByText("Timed out · retrying")).toBeTruthy();
+    expect(flaky.getByRole("button", { name: /Retry start/ })).toBeTruthy();
+  });
+});

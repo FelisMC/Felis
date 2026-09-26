@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { PHASE_COLOR, phaseColor, phaseVariant } from "@/components/PhaseBadge";
+import { PHASE_COLOR, phaseColor, phaseVariant, startFailure } from "@/components/PhaseBadge";
 import type { Phase } from "@/lib/types";
 
 // The closed lifecycle set felis-api can emit — the Go source of truth is
@@ -45,5 +45,17 @@ describe("unmodelled phase fallback", () => {
 
   it("degrades an out-of-union phase to the Unknown variant", () => {
     expect(phaseVariant(future)).toBe(phaseVariant("Unknown"));
+  });
+});
+
+describe("start failure", () => {
+  // A Failed phase only reads as a failed start while the server still wants to
+  // run; a stopped Failed server needs nothing from its owner.
+  it("reads a failed start only while the server wants to run", () => {
+    expect(startFailure({ phase: "Running", desiredState: "Running" })).toBeNull();
+    expect(startFailure({ phase: "Failed", desiredState: "Stopped" })).toBeNull();
+    expect(startFailure({ phase: "Failed" })).toBeNull();
+    expect(startFailure({ phase: "Failed", desiredState: "Running" })).toBe("retrying");
+    expect(startFailure({ phase: "Failed", desiredState: "Running", startGaveUp: true })).toBe("gaveUp");
   });
 });

@@ -505,11 +505,7 @@ public final class WaitingRouter {
     // stopped the server — it says so and returns false.
     private boolean stillComing(Player player, boolean zh, Waiter w, ServerView status, long now) {
         if (status.startGaveUp()) {
-            player.sendMessage(Component.text(
-                    zh ? "「" + w.serverName + "」启动失败，自动重试也已用完。服主可以在面板查看日志后重新启动。"
-                       : "« " + w.serverName + " » failed to start and its automatic retries are spent. "
-                         + "The owner can check its log in the panel and start it again.",
-                    NamedTextColor.RED));
+            tellStartFailed(player, zh, w.serverName);
             return false;
         }
         if (DESIRED_STOPPED.equalsIgnoreCase(status.desiredState())) {
@@ -655,6 +651,12 @@ public final class WaitingRouter {
                                 NamedTextColor.YELLOW));
                         return;
                     }
+                    if ("start_failed".equals(e.errorCode())) {
+                        // The last start failed with its retries spent. The join does
+                        // not buy another round of them, so there is nothing to wait for.
+                        tellStartFailed(player, zh, serverName);
+                        return;
+                    }
                     logWakeFailure(player, serverName, zh, e);
                     return;
                 case 429:
@@ -686,6 +688,16 @@ public final class WaitingRouter {
                     NamedTextColor.GRAY));
         }
         waiting.put(id, new Waiter(serverName, clock.getAsLong(), fromMenu));
+    }
+
+    // The server's start failed and its automatic retries are spent: nothing more is
+    // coming until a person starts it again from the panel.
+    private static void tellStartFailed(Player player, boolean zh, String serverName) {
+        player.sendMessage(Component.text(
+                zh ? "「" + serverName + "」启动失败，自动重试也已用完。服主可以在面板查看日志后重新启动。"
+                   : "« " + serverName + " » failed to start and its automatic retries are spent. "
+                     + "The owner can check its log in the panel and start it again.",
+                NamedTextColor.RED));
     }
 
     private void logWakeFailure(Player player, String serverName, boolean zh, LinkException e) {

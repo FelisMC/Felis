@@ -30,7 +30,7 @@ import {
   SelectContent,
   SelectItem,
 } from "@/components/ui/select";
-import { PhaseBadge, PHASE_KEY, PHASE_COLOR } from "@/components/PhaseBadge";
+import { PhaseBadge, PHASE_KEY, PHASE_COLOR, startFailure } from "@/components/PhaseBadge";
 import { PowerButton } from "@/components/PowerButton";
 import { Loading, ErrorState, EmptyState } from "@/components/States";
 import { Pagination } from "@/components/Pagination";
@@ -81,6 +81,8 @@ interface UnifiedServer {
   playersOnline: number;
   playersMax: number;
   playerCountUnknown?: boolean;
+  autoRestarts?: number;
+  startGaveUp?: boolean;
   owner?: string;
   endpointAddress?: string | null;
   claimable?: boolean;
@@ -133,6 +135,8 @@ export function ServersPage() {
         playersOnline: s.playersOnline,
         playersMax: s.playersMax,
         playerCountUnknown: s.playerCountUnknown,
+        autoRestarts: s.autoRestarts,
+        startGaveUp: s.startGaveUp,
         owner: s.owner,
         endpointAddress: s.endpointAddress,
         claimable: s.claimable,
@@ -152,6 +156,8 @@ export function ServersPage() {
         playersOnline: s.playersOnline,
         playersMax: s.playersMax,
         playerCountUnknown: s.playerCountUnknown,
+        autoRestarts: s.autoRestarts,
+        startGaveUp: s.startGaveUp,
         owner: s.owned ? t("servers:owned_filter_mine") || "me" : undefined,
         claimable: s.claimable,
         owned: s.owned,
@@ -509,6 +515,7 @@ function ServerActions({
             <PowerButton
               name={server.name}
               live={live}
+              failed={startFailure(server) !== null}
               playersOnline={server.playersOnline}
               playerCountUnknown={server.playerCountUnknown}
               onChanged={onChanged}
@@ -610,7 +617,7 @@ function ServerRow({
       <td className="px-4 py-3 align-middle text-left">
         <div className="flex items-center gap-2">
           <ServerName server={server} />
-          <PhaseBadge phase={server.phase} />
+          <PhaseBadge phase={server.phase} failure={startFailure(server)} autoRestarts={server.autoRestarts} />
         </div>
         {address && <CopyAddress address={address} className="md:max-w-[16rem]" />}
       </td>
@@ -669,7 +676,7 @@ function ServerMobileCard({
               <div className="flex min-w-0 items-baseline gap-2">
                 <ServerName server={server} />
               </div>
-              <PhaseBadge phase={server.phase} />
+              <PhaseBadge phase={server.phase} failure={startFailure(server)} autoRestarts={server.autoRestarts} />
             </div>
             {/* Its own line: the join address is what a player came for, so it
                 gets the card's full width rather than sharing it with the badge. */}

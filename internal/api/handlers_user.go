@@ -56,9 +56,23 @@ func (a *API) handleWake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Refused with 409 maintenance_in_progress while a restore, backup or file
-	// write holds the world volume: starting on a half-written world corrupts it.
-	if err := a.Cluster.SetDesiredState(r.Context(), name, v1alpha1.DesiredRunning); err != nil {
+	// A start that Failed already holds desiredState Running, so writing Running
+	// again changes nothing and the server stayed dead once its automatic restarts
+	// were spent. A person pressing start on it means "try again": RetryStart
+	// makes the operator start it over with a fresh restart budget. Only this face
+	// does that; a player's join never resets the budget (handleInternalWake).
+	//
+	// Either write is refused with 409 maintenance_in_progress while a restore,
+	// backup or file write holds the world volume: starting on a half-written
+	// world corrupts it.
+	action := "wake"
+	if info.Phase == string(v1alpha1.PhaseFailed) && info.DesiredState == string(v1alpha1.DesiredRunning) {
+		action = "retry_start"
+		err = a.Cluster.RetryStart(r.Context(), name)
+	} else {
+		err = a.Cluster.SetDesiredState(r.Context(), name, v1alpha1.DesiredRunning)
+	}
+	if err != nil {
 		a.writeLookupError(w, r, err)
 		return
 	}
@@ -67,7 +81,7 @@ func (a *API) handleWake(w http.ResponseWriter, r *http.Request) {
 	// held at capacity should retry the instant a slot frees, not wait out a
 	// cooldown their refused wake never earned).
 	a.limiter().record(name)
-	a.audit(r, "wake", name)
+	a.audit(r, action, name)
 	writeJSON(w, http.StatusAccepted, map[string]any{"name": name, "desiredState": "Running"})
 }
 
@@ -267,6 +281,8 @@ func (a *API) handleMyServers(w http.ResponseWriter, r *http.Request) {
 				v.DesiredState = info.DesiredState
 				v.AutostartPolicy = info.AutostartPolicy
 				v.PlayerCountUnknown = info.PlayerCountUnknown
+				v.AutoRestarts = info.AutoRestarts
+				v.StartGaveUp = info.StartGaveUp
 			}
 		}
 	}

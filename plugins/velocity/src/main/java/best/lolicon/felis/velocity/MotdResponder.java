@@ -20,12 +20,14 @@ import java.util.Optional;
  * backend or the wake lever.
  *
  * <p>This is the read-only, phase-aware subset of the responsibility: the MOTD is
- * synthesized from the server's lifecycle (online / starting / sleeping) and its
- * cached player counts. Mirroring each backend's <em>own</em> MOTD string (by
- * pinging ready servers in the background and caching the result) is a richer
+ * synthesized from the server's lifecycle (online / starting / start failed /
+ * sleeping) and its cached player counts. Mirroring each backend's <em>own</em> MOTD
+ * string (by pinging ready servers in the background and caching the result) is a richer
  * variant deferred to a later slice; nothing here ever pings a sleeping backend.
  */
 public final class MotdResponder {
+    private static final String PHASE_FAILED = "Failed";
+
     private final ServerRegistry registry;
 
     MotdResponder(ServerRegistry registry) {
@@ -55,10 +57,19 @@ public final class MotdResponder {
     }
 
     // The server-list ping carries no client locale, so the MOTD status uses the
-    // both-languages-in-one-line pattern the modded /link clients share.
-    private static String statusLine(ServerView v) {
+    // both-languages-in-one-line pattern the modded /link clients share. A start
+    // that failed still holds desiredState Running, so it is read first: joining a
+    // server whose retries are spent wakes nothing, and one between retries is
+    // waiting out a backoff, which a "starting…" line hid behind a queue that ran out.
+    static String statusLine(ServerView v) {
         if (v.ready()) {
             return "在线 / online";
+        }
+        if (v.startGaveUp()) {
+            return "启动失败，等服主处理 / failed to start — the owner has to restart it";
+        }
+        if (PHASE_FAILED.equals(v.phase())) {
+            return "启动超时，稍后自动重试 / start timed out — retrying shortly";
         }
         if ("Running".equals(v.desiredState())) {
             return "启动中… / starting…";
@@ -66,9 +77,12 @@ public final class MotdResponder {
         return "休眠中，加入即唤醒 / sleeping — join to wake";
     }
 
-    private static NamedTextColor statusColor(ServerView v) {
+    static NamedTextColor statusColor(ServerView v) {
         if (v.ready()) {
             return NamedTextColor.GREEN;
+        }
+        if (v.startGaveUp()) {
+            return NamedTextColor.RED;
         }
         if ("Running".equals(v.desiredState())) {
             return NamedTextColor.YELLOW;

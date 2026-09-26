@@ -36,6 +36,10 @@ export interface MyServerView {
   autostartPolicy?: AutostartPolicy;
   /** True while the operator cannot read the player count; a stop may drop players. */
   playerCountUnknown?: boolean;
+  /** How often the operator recreated the pod of this start after it timed out. */
+  autoRestarts?: number;
+  /** True for a Failed server no automatic retry will bring up. */
+  startGaveUp?: boolean;
 }
 
 /** ServerStatus is GET /servers/{name}/status (Go ServerInfo). It never carries

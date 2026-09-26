@@ -219,6 +219,7 @@ public final class WaitingRouterTest {
         String[][] cases = {
                 {"403 forbidden", "You're not allowed to start « gamma »", null},
                 {"409 maintenance_in_progress", "« gamma » is under maintenance", null},
+                {"409 start_failed", "« gamma » failed to start and its automatic retries are spent", null},
                 {"409 conflict", "Couldn't start « gamma » right now", "wake gamma failed (status=409)"},
                 {"503 at_capacity", "The cluster is at capacity right now", null},
                 {"503 unavailable", "Couldn't start « gamma » right now", "wake gamma failed (status=503)"},

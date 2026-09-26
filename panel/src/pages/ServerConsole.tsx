@@ -1,10 +1,10 @@
-import { useState, useRef, useCallback, useLayoutEffect, type KeyboardEvent } from "react";
+import { useState, useRef, useCallback, useId, useLayoutEffect, type KeyboardEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Terminal, Moon, Shield, ShieldAlert, HelpCircle, Loader2, Users, Archive, FolderOpen, ChevronRight, type LucideIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, CardContent } from "@/components/ui/card";
 import { BackLink } from "@/components/BackLink";
-import { PhaseBadge } from "@/components/PhaseBadge";
+import { MAX_AUTO_RESTARTS, PhaseBadge, startFailure, type StartFailure } from "@/components/PhaseBadge";
 import { PageHeader } from "@/components/PageHeader";
 import { LogConsole } from "@/components/LogConsole";
 import { Loading, ErrorState } from "@/components/States";
@@ -39,12 +39,6 @@ function useNotStreamingCopy(phase: Phase): { icon: LucideIcon; title: string; b
         title: t("server_shutting_down_title"),
         body: t("server_shutting_down_body"),
       };
-    case "Failed":
-      return {
-        icon: ShieldAlert,
-        title: t("server_failed_title"),
-        body: t("server_failed_body"),
-      };
     default:
       return {
         icon: HelpCircle,
@@ -62,6 +56,34 @@ function NotStreaming({ phase }: { phase: Phase }) {
       <div className="space-y-1">
         <p className="font-medium text-foreground">{title}</p>
         <p>{body}</p>
+      </div>
+    </div>
+  );
+}
+
+// FailedStartNotice heads the console of a server whose start failed: whether the
+// operator will try again on its own, and what the owner can do. The log below it
+// is the attempt that failed, which is what they need to find the cause.
+function FailedStartNotice({ failure, autoRestarts }: { failure: StartFailure; autoRestarts: number }) {
+  const { t } = useTranslation("servers");
+  const retrying = failure === "retrying";
+  const titleId = useId();
+  return (
+    <div
+      role="status"
+      aria-labelledby={titleId}
+      className="flex items-start gap-3 border-b border-zinc-800 bg-red-950/40 px-4 py-3 text-sm text-zinc-300"
+    >
+      <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-red-400" />
+      <div className="space-y-0.5">
+        <p id={titleId} className="font-medium text-zinc-100">
+          {retrying ? t("server_failed_retrying_title") : t("server_failed_title")}
+        </p>
+        <p>
+          {retrying
+            ? t("server_failed_retrying_body", { used: autoRestarts, max: MAX_AUTO_RESTARTS })
+            : t("server_failed_body")}
+        </p>
       </div>
     </div>
   );
@@ -206,8 +228,11 @@ export function ServerConsole() {
   // during BOTH Starting and Running — the operator marks Starting once the pod
   // is up but RCON is not yet reachable (it only flips to Running after RCON
   // readiness). Boot logs flow precisely in that Starting window, which is when a
-  // read most wants them, so the gate streams for both, not Running alone.
-  const streamable = data?.phase === "Running" || data?.phase === "Starting";
+  // read most wants them, so the gate streams for both, not Running alone. A
+  // Failed start usually leaves its pod behind, and that pod's log is how the
+  // owner finds out why it failed, so Failed streams too.
+  const streamable = data?.phase === "Running" || data?.phase === "Starting" || data?.phase === "Failed";
+  const failure = data ? startFailure(data) : null;
 
   return (
     <div className="flex flex-col lg:h-[calc(100vh-3.5rem)] lg:min-h-[35rem] gap-4 min-h-0">
@@ -227,10 +252,11 @@ export function ServerConsole() {
             subtitle={cfg ? <CopyAddress address={joinAddress(data.subdomain, cfg)} /> : undefined}
             actions={
               <div className="flex items-center gap-2">
-                <PhaseBadge phase={data.phase} />
+                <PhaseBadge phase={data.phase} failure={failure} autoRestarts={data.autoRestarts} />
                 <PowerButton
                   name={name}
-                  live={streamable || data.phase === "Stopping"}
+                  live={data.phase === "Running" || data.phase === "Starting" || data.phase === "Stopping"}
+                  failed={failure !== null}
                   playersOnline={data.playersOnline}
                   playerCountUnknown={data.playerCountUnknown}
                   onChanged={reload}
@@ -251,6 +277,9 @@ export function ServerConsole() {
                     </div>
                   ) : cfg ? (
                     <div className="flex-1 flex flex-col lg:min-h-0 min-h-0 bg-black">
+                      {failure && (
+                        <FailedStartNotice failure={failure} autoRestarts={data.autoRestarts ?? 0} />
+                      )}
                       <LogConsole
                         key={name}
                         url={consoleStreamURL(cfg.apiBase, name)}

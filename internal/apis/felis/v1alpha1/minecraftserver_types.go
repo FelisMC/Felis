@@ -31,6 +31,13 @@ const (
 	// server; and felis-api never writes it, so marking a server takes kubectl on
 	// the cluster, which fits a switch that drops the forwarding secret.
 	LabelForwarding = GroupName + "/forwarding"
+	// AnnotationStartRetry is felis-api asking the operator to start a Failed
+	// server over: its value is the request time (RFC 3339). Re-patching
+	// desiredState to the Running it already holds changes nothing the operator
+	// can see, so a person pressing "retry" in the panel had no way through once
+	// the automatic restarts were spent. The operator takes the request once —
+	// fresh restart budget, new start anchor, pod recreated — and removes it.
+	AnnotationStartRetry = GroupName + "/start-retry"
 )
 
 // ForwardingLegacy is the LabelForwarding value that selects legacy forwarding.
