@@ -269,6 +269,11 @@ func (r *restoreRig) restore(bundle string, mut func(*dbbackup.RestoreOptions)) 
 func TestDBRestoreRoundTrip(t *testing.T) {
 	r := newRestoreRig(t)
 	r.seed(t)
+	// A deleted account and server, which the manifest's counts leave out.
+	r.exec(t, r.url,
+		`INSERT INTO users (id, username, role, deleted_at) VALUES ('pgint-carol', 'carol', 'user', now())`,
+		`INSERT INTO servers (name, cached_cpu_milli, cached_memory_mb, cached_storage_mb, owner_id, deleted_at)
+			VALUES ('carol-smp', 500, 1024, 2048, 'pgint-carol', now())`)
 	want := r.fingerprint(t)
 	bundle := r.backup(t)
 	m, err := dbbackup.Verify(bundle)
@@ -278,6 +283,9 @@ func TestDBRestoreRoundTrip(t *testing.T) {
 	ms, _ := store.LoadMigrations()
 	if m.SchemaVersion != ms[len(ms)-1].Version || !strings.HasPrefix(m.PGDumpVersion, "pg_dump (PostgreSQL) ") {
 		t.Errorf("manifest schema %d pg_dump %q, want schema %d and pg_dump's version", m.SchemaVersion, m.PGDumpVersion, ms[len(ms)-1].Version)
+	}
+	if m.Counts == nil || *m.Counts != (dbbackup.Counts{Users: 2, Servers: 2}) {
+		t.Errorf("manifest counts %v, want alice and bob with a server each", m.Counts)
 	}
 
 	r.change(t)

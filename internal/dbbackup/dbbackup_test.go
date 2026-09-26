@@ -2,6 +2,7 @@ package dbbackup
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 )
 
@@ -56,6 +58,7 @@ if [ -n "$q" ]; then
   case "$q" in
     *schema_migrations*) echo 21;;
     *pg_stat_activity*) cat "$D/clients" 2>/dev/null || echo 0;;
+    *"FROM users"*) cat "$D/counts" 2>/dev/null || echo "3|2";;
   esac
   exit 0
 fi
@@ -236,6 +239,9 @@ func TestBackupWritesAVerifiableBundle(t *testing.T) {
 	if m.Label != LabelDaily || m.FelisVersion != "v1.2.3" || m.SchemaVersion != 21 || !m.CreatedAt.Equal(t0) {
 		t.Errorf("manifest = %+v", m)
 	}
+	if m.Counts == nil || *m.Counts != (Counts{Users: 3, Servers: 2}) {
+		t.Errorf("counts = %v, want the 3 accounts and 2 servers psql answered", m.Counts)
+	}
 	if m.Database != (DatabaseInfo{Host: "127.0.0.1", Port: "5432", Name: "felis", User: "felis"}) {
 		t.Errorf("database = %+v", m.Database)
 	}
@@ -317,6 +323,86 @@ func TestBackupRecordsAClusterThatDidNotAnswer(t *testing.T) {
 	}
 	if m.ServersError != "connection refused" || len(m.Files) != 1 {
 		t.Errorf("manifest = %+v", m)
+	}
+}
+
+func TestBackupCounts(t *testing.T) {
+	for _, tc := range []struct {
+		reply string
+		want  *Counts
+		fresh bool
+	}{
+		{"0|0", &Counts{}, true},
+		{"1|0", &Counts{Users: 1}, true},
+		{"2|0", &Counts{Users: 2}, false},
+		{"1|1", &Counts{Users: 1, Servers: 1}, false},
+		{"", nil, false},    // the query failed: psql printed nothing
+		{"17", nil, false},  // not the two columns asked for
+		{"x|2", nil, false}, // not numbers
+	} {
+		pg := newFakePG(t, "x\n")
+		if err := os.WriteFile(filepath.Join(pg.dir, "counts"), []byte(tc.reply+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		path, err := Backup(context.Background(), BackupOptions{DatabaseURL: testURL, Dir: t.TempDir(), Label: LabelManual, Tools: pg.tools, Now: at(t0)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		m, err := Verify(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (m.Counts == nil) != (tc.want == nil) || (m.Counts != nil && *m.Counts != *tc.want) {
+			t.Errorf("reply %q: counts = %v, want %v", tc.reply, m.Counts, tc.want)
+		}
+		if m.Counts.Fresh() != tc.fresh {
+			t.Errorf("reply %q: Fresh = %v, want %v", tc.reply, m.Counts.Fresh(), tc.fresh)
+		}
+	}
+	if got := (*Counts)(nil).String(); got != "not recorded" {
+		t.Errorf("nil counts print %q", got)
+	}
+	if got := (&Counts{Users: 3, Servers: 2}).String(); got != "3 accounts, 2 servers" {
+		t.Errorf("counts print %q", got)
+	}
+	if got := (&Counts{Users: 1, Servers: 1}).String(); got != "1 account, 1 server" {
+		t.Errorf("counts print %q", got)
+	}
+}
+
+func TestReadManifestStopsAtTheManifest(t *testing.T) {
+	pg := newFakePG(t, strings.Repeat("row\n", 64))
+	path, err := Backup(context.Background(), BackupOptions{DatabaseURL: testURL, Dir: t.TempDir(), Label: LabelDaily, Version: "v1.2.3", Tools: pg.tools, Now: at(t0)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Everything after the manifest is withheld: the reader fails past it.
+	cut := strings.Index(string(raw), "PGDMP")
+	cutErr := errors.New("the rest has not arrived")
+	m, err := ReadManifest(io.MultiReader(bytes.NewReader(raw[:cut]), iotest.ErrReader(cutErr)))
+	if err != nil {
+		t.Fatalf("ReadManifest read past the manifest: %v", err)
+	}
+	if m.Label != LabelDaily || m.FelisVersion != "v1.2.3" || !m.CreatedAt.Equal(t0) || m.Counts == nil || m.Counts.Users != 3 {
+		t.Errorf("manifest = %+v", m)
+	}
+
+	// A stream that fails before the manifest is whole says why.
+	if _, err := ReadManifest(io.MultiReader(bytes.NewReader(raw[:100]), iotest.ErrReader(cutErr))); !errors.Is(err, cutErr) {
+		t.Errorf("stream failing in the header: err = %v, want %v", err, cutErr)
+	}
+	for what, r := range map[string]io.Reader{
+		"empty":   bytes.NewReader(nil),
+		"not tar": strings.NewReader(strings.Repeat("junk", 200)),
+		"cut tar": bytes.NewReader(raw[:100]),
+	} {
+		if _, err := ReadManifest(r); !errors.Is(err, errNotBundle) {
+			t.Errorf("%s: err = %v, want errNotBundle", what, err)
+		}
 	}
 }
 
@@ -412,7 +498,7 @@ func TestBackupAndRestoreThroughThePod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.SchemaVersion != 21 || !strings.Contains(m.PGDumpVersion, "13.23") {
+	if m.SchemaVersion != 21 || !strings.Contains(m.PGDumpVersion, "13.23") || m.Counts == nil || m.Counts.Servers != 2 {
 		t.Errorf("manifest = %+v", m)
 	}
 	args, _ := os.ReadFile(filepath.Join(pg.dir, "pg_dump.args"))
@@ -425,9 +511,9 @@ func TestBackupAndRestoreThroughThePod(t *testing.T) {
 	if rec, _ := os.ReadFile(filepath.Join(pg.dir, "record.args")); !strings.Contains(string(rec), podConn) {
 		t.Errorf("freshness record args = %s", rec)
 	}
-	// dump, list, --version, schema version, record
-	if n := pg.execRuns(t); n != 5 {
-		t.Errorf("%d tool runs went through kubectl exec, want 5", n)
+	// dump, list, --version, schema version, counts, record
+	if n := pg.execRuns(t); n != 6 {
+		t.Errorf("%d tool runs went through kubectl exec, want 6", n)
 	}
 
 	pg.setDB(t, "users: alice\nusers: bob\n")

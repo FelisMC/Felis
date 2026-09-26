@@ -211,8 +211,8 @@ func dbRestore(fs *flag.FlagSet, dir *string, args []string, stdout, stderr io.W
 		return 1
 	}
 	if !*yes {
-		fmt.Fprintf(stderr, "felis db restore: this replaces every table in the felis database with %s (%s, taken %s, schema %d).\n",
-			filepath.Base(bundle), m.Label, m.CreatedAt.Format(time.RFC3339), m.SchemaVersion)
+		fmt.Fprintf(stderr, "felis db restore: this replaces every table in the felis database with %s (%s, taken %s, schema %d, holding %s).\n",
+			filepath.Base(bundle), m.Label, m.CreatedAt.Format(time.RFC3339), m.SchemaVersion, m.Counts.String())
 		fmt.Fprintln(stderr, "Scale felis-api and felis-operator to 0 first, then re-run with -yes.")
 		return 2
 	}
@@ -268,8 +268,9 @@ func dbVerify(fs *flag.FlagSet, dir *string, args []string, stdout, stderr io.Wr
 		fmt.Fprintf(stderr, "felis db verify: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "%s: ok\n  taken   %s (%s)\n  felis   %s\n  schema  %d\n  %s\n",
-		filepath.Base(bundle), m.CreatedAt.Format(time.RFC3339), m.Label, orUnknown(m.FelisVersion), m.SchemaVersion, orUnknown(m.PGDumpVersion))
+	fmt.Fprintf(stdout, "%s: ok\n  taken   %s (%s)\n  felis   %s\n  schema  %d\n  holds   %s\n  %s\n",
+		filepath.Base(bundle), m.CreatedAt.Format(time.RFC3339), m.Label, orUnknown(m.FelisVersion), m.SchemaVersion,
+		m.Counts.String(), orUnknown(m.PGDumpVersion))
 	for _, f := range m.Files {
 		if f.Link != "" {
 			fmt.Fprintf(stdout, "  %-40s -> %s\n", f.Name, f.Link)

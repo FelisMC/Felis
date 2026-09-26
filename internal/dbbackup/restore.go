@@ -68,6 +68,39 @@ func Verify(path string) (Manifest, error) {
 	return readBundle(path, nil)
 }
 
+var errNotBundle = fmt.Errorf("not a felis database bundle (no %s)", manifestEntry)
+
+// ReadManifest reads the manifest off the front of a bundle stream and stops
+// there, so a bundle can be described before all of it is downloaded. The
+// members it lists are not checked; Verify does that. An error from r itself
+// is returned as is.
+func ReadManifest(r io.Reader) (Manifest, error) {
+	return readManifest(tar.NewReader(r))
+}
+
+func readManifest(tr *tar.Reader) (Manifest, error) {
+	var m Manifest
+	first, err := tr.Next()
+	switch {
+	case err == nil && first.Name == manifestEntry:
+	case err == nil, errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF), errors.Is(err, tar.ErrHeader):
+		return m, errNotBundle
+	default:
+		return m, err
+	}
+	raw, err := io.ReadAll(io.LimitReader(tr, 1<<20))
+	if err != nil {
+		return m, err
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return m, fmt.Errorf("read %s: %w", manifestEntry, err)
+	}
+	if m.Format != formatV1 {
+		return m, fmt.Errorf("bundle format %d is not one this felis reads (want %d)", m.Format, formatV1)
+	}
+	return m, nil
+}
+
 // readBundle is Verify that also copies db.dump to dumpTo when non-nil.
 func readBundle(path string, dumpTo io.Writer) (Manifest, error) {
 	var m Manifest
@@ -79,19 +112,12 @@ func readBundle(path string, dumpTo io.Writer) (Manifest, error) {
 	whole := sha256.New()
 	tr := tar.NewReader(io.TeeReader(f, whole))
 
-	first, err := tr.Next()
-	if err != nil || first.Name != manifestEntry {
+	m, err = readManifest(tr)
+	if errors.Is(err, errNotBundle) {
 		return m, fmt.Errorf("%s is not a felis database bundle (no %s)", filepath.Base(path), manifestEntry)
 	}
-	raw, err := io.ReadAll(io.LimitReader(tr, 1<<20))
 	if err != nil {
 		return m, err
-	}
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return m, fmt.Errorf("read %s: %w", manifestEntry, err)
-	}
-	if m.Format != formatV1 {
-		return m, fmt.Errorf("bundle format %d is not one this felis reads (want %d)", m.Format, formatV1)
 	}
 	want := map[string]ManifestEntry{}
 	for _, e := range m.Files {

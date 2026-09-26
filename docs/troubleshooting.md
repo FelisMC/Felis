@@ -2145,9 +2145,21 @@ host yourself, plus the off-site encryption key if the copy is in the bucket.
    ```
 
    It writes the bundle into `/var/lib/felis/db-backups` (`-dir` to change),
-   checks it (`felis db verify`) and names it. A wrong key fails with
+   checks it (`felis db verify`) and names it, with when it was taken, the
+   release and schema that took it, and how many accounts and servers its
+   database holds. Read those before going on. A wrong key fails with
    `object does not decrypt with this key` and writes nothing. For a copy you
    made yourself, check it with `sha256sum -c felis-db-....tar.sha256`.
+
+   `latest` is the newest bundle, unless that one holds no servers and at
+   most one account while an older one holds more. That is the database a
+   rebuilt host backs up and copies off-site within its first hour, before
+   anyone restores onto it, so `fetch-db latest` refuses it and names up to
+   three older bundles with their counts; fetch the one you want by name in
+   place of `latest` (`felis offsite list` shows them all, each with its
+   counts). A bundle fetched by name that looks like a new install's is
+   written with a warning. Bundles from releases before the counts were
+   recorded show `not recorded`.
 2. Put the old host's state in place **before** installing, so the installer
    reuses the same DB password, session secret, forwarding secret, the mail
    relay password and uploads bucket keys `felis setup` took, and the

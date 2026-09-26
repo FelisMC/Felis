@@ -501,10 +501,7 @@ func printOffsiteList(env *offsiteEnv, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis offsite list: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "database bundles (%d, newest first):\n", len(bundles))
-	for _, b := range bundles {
-		fmt.Fprintf(stdout, "  %s  %s\n", b.Key, offsite.HumanBytes(b.Size))
-	}
+	printDBBundles(ctx, env.bucket, env.key, bundles, stdout)
 	var total int64
 	for _, w := range worlds {
 		total += w.Size
@@ -539,6 +536,20 @@ func printOffsiteList(env *offsiteEnv, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "  %s  %d submission contexts (%s)\n", uploads[i], len(x.Contexts), offsite.HumanBytes(x.Bytes()))
 	}
 	return 0
+}
+
+// printDBBundles lists the database bundles with what each one's database
+// held, read off the front of each, so a restore can pick one by its contents.
+func printDBBundles(ctx context.Context, b offsite.Bucket, key []byte, bundles []offsite.Object, stdout io.Writer) {
+	fmt.Fprintf(stdout, "database bundles (%d, newest first; restore one with fetch-db):\n", len(bundles))
+	for _, o := range bundles {
+		m, err := offsite.PeekDB(ctx, b, key, o.Key)
+		if err != nil {
+			fmt.Fprintf(stdout, "  %s  %s  unreadable: %v\n", o.Key, offsite.HumanBytes(o.Size), err)
+			continue
+		}
+		fmt.Fprintf(stdout, "  %s  %s  %s\n", o.Key, offsite.HumanBytes(o.Size), m.Counts.String())
+	}
 }
 
 func offsiteFetchDB(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
@@ -583,37 +594,44 @@ func offsiteFetchDB(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) i
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
+	return fetchDB(ctx, env.bucket, env.key, arg, *dir, time.Now(), stdout, stderr)
+}
+
+// fetchDB is fetch-db once the bucket is open: arg is a bundle name or latest.
+func fetchDB(ctx context.Context, b offsite.Bucket, key []byte, arg, dir string, now time.Time, stdout, stderr io.Writer) int {
 	name := arg
 	if name == "latest" {
-		bundles, err := offsite.ListDB(ctx, env.bucket)
-		if err != nil {
+		var err error
+		if name, _, err = offsite.ChooseDB(ctx, b, key); err != nil {
 			fmt.Fprintf(stderr, "felis offsite fetch-db: %v\n", err)
 			return 1
 		}
-		if len(bundles) == 0 {
-			fmt.Fprintln(stderr, "felis offsite fetch-db: the bucket holds no database bundle")
-			return 1
-		}
-		name = bundles[0].Key
 	}
 	if _, _, ok := dbbackup.ParseBundleName(name); !ok {
 		fmt.Fprintf(stderr, "felis offsite fetch-db: %q is not a bundle name (felis-db-<stamp>-<label>.tar); see `felis offsite list`\n", name)
 		return 2
 	}
-	if err := os.MkdirAll(*dir, 0o700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		fmt.Fprintf(stderr, "felis offsite fetch-db: %v\n", err)
 		return 1
 	}
-	dst := filepath.Join(*dir, name)
-	if err := offsite.FetchObject(ctx, env.bucket, env.key, offsite.DBKey(name), dst, 0o600); err != nil {
+	dst := filepath.Join(dir, name)
+	if err := offsite.FetchObject(ctx, b, key, offsite.DBKey(name), dst, 0o600); err != nil {
 		fmt.Fprintf(stderr, "felis offsite fetch-db: %v\n", err)
 		return 1
 	}
-	if _, err := dbbackup.Verify(dst); err != nil {
+	m, err := dbbackup.Verify(dst)
+	if err != nil {
 		fmt.Fprintf(stderr, "felis offsite fetch-db: fetched %s but it does not verify: %v\n", dst, err)
 		return 1
 	}
 	fmt.Fprintf(stdout, "felis offsite fetch-db: wrote %s (verified)\n", dst)
+	fmt.Fprintf(stdout, "  taken   %s (%s, %s ago)\n  felis   %s, schema %d\n  holds   %s\n",
+		m.CreatedAt.Format(time.RFC3339), m.Label, dbbackup.Age(now.Sub(m.CreatedAt)),
+		orUnknown(m.FelisVersion), m.SchemaVersion, m.Counts.String())
+	if m.Counts.Fresh() {
+		fmt.Fprintln(stdout, "  This database holds no servers and at most one account, like a new install's. Check it is the state to restore before `felis db restore`.")
+	}
 	return 0
 }
 

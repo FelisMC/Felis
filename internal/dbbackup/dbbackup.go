@@ -168,8 +168,38 @@ type Manifest struct {
 	SchemaVersion int             `json:"schema_version,omitempty"`
 	PGDumpVersion string          `json:"pg_dump_version,omitempty"`
 	Files         []ManifestEntry `json:"files"`
+	// Counts is nil in bundles taken before it was recorded, or when the
+	// database did not answer the count.
+	Counts *Counts `json:"counts,omitempty"`
 	// ServersError is why k8s/minecraftservers.json is absent, when it is.
 	ServersError string `json:"servers_error,omitempty"`
+}
+
+// Counts is how much the database held when the bundle was taken: accounts
+// and servers, deleted ones left out.
+type Counts struct {
+	Users   int `json:"users"`
+	Servers int `json:"servers"`
+}
+
+// Fresh is whether the database looks like a new install's: no servers and
+// at most the owner the first-run setup creates. A host rebuilt after a loss
+// backs up (and syncs off-site) such a database before anyone restores onto
+// it, so a restore that picks bundles by date alone would pick it.
+func (c *Counts) Fresh() bool { return c != nil && c.Servers == 0 && c.Users <= 1 }
+
+// String is what the CLI prints for the counts.
+func (c *Counts) String() string {
+	if c == nil {
+		return "not recorded"
+	}
+	count := func(n int, what string) string {
+		if n == 1 {
+			return "1 " + what
+		}
+		return fmt.Sprintf("%d %ss", n, what)
+	}
+	return count(c.Users, "account") + ", " + count(c.Servers, "server")
 }
 
 // DatabaseInfo is the connection a bundle was taken from, password excluded.
@@ -476,6 +506,7 @@ func Backup(ctx context.Context, o BackupOptions) (string, error) {
 		m.PGDumpVersion = strings.TrimSpace(string(out))
 	}
 	m.SchemaVersion = schemaVersion(ctx, c, o.Tools)
+	m.Counts = counts(ctx, c, o.Tools)
 
 	var members []member
 	dm, err := fileMember(dumpEntry, dump)
@@ -611,6 +642,22 @@ func schemaVersion(ctx context.Context, c conn, t Tools) int {
 	}
 	v, _ := strconv.Atoi(strings.TrimSpace(string(out)))
 	return v
+}
+
+// counts reads the database's Counts, or nil when it does not answer.
+func counts(ctx context.Context, c conn, t Tools) *Counts {
+	out, err := run(t.command(ctx, c, t.psql(), "-X", "-q", "-t", "-A", "-w", "-d", t.dsn(c),
+		"-c", "SELECT (SELECT count(*) FROM users WHERE deleted_at IS NULL), (SELECT count(*) FROM servers WHERE deleted_at IS NULL)"))
+	if err != nil {
+		return nil
+	}
+	users, servers, _ := strings.Cut(strings.TrimSpace(string(out)), "|")
+	u, uerr := strconv.Atoi(users)
+	s, serr := strconv.Atoi(servers)
+	if uerr != nil || serr != nil {
+		return nil
+	}
+	return &Counts{Users: u, Servers: s}
 }
 
 // member is one bundle entry: a file on disk, bytes, or a symlink.

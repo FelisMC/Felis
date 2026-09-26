@@ -545,6 +545,73 @@ func ListDB(ctx context.Context, b Bucket) ([]Object, error) {
 	return out, nil
 }
 
+// PeekDB reads the manifest of the database bundle name, downloading and
+// decrypting only as far as the manifest. Each segment is authenticated
+// before any of its bytes are read, so a manifest read this way is the one
+// the bundle was sealed with.
+func PeekDB(ctx context.Context, b Bucket, key []byte, name string) (dbbackup.Manifest, error) {
+	rc, err := b.Get(ctx, DBKey(name))
+	if err != nil {
+		return dbbackup.Manifest{}, err
+	}
+	defer rc.Close()
+	pr, pw := io.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		pw.CloseWithError(Decrypt(pw, rc, key))
+	}()
+	m, err := dbbackup.ReadManifest(pr)
+	pr.Close() // Decrypt stops at its next write
+	<-done
+	return m, err
+}
+
+// dbChoices is how many older bundles ChooseDB names when it refuses the
+// newest; `felis offsite list` shows the rest.
+const dbChoices = 3
+
+// ChooseDB picks the bundle `fetch-db latest` means: the newest, unless its
+// database looks like a new install's (dbbackup.Counts.Fresh) while an older
+// bundle holds more. That newest bundle is what a rebuilt host backs up and
+// syncs before its restore, so it is refused with the bundles worth naming
+// instead. A bundle from before counts were recorded is taken to hold more.
+func ChooseDB(ctx context.Context, b Bucket, key []byte) (string, dbbackup.Manifest, error) {
+	bundles, err := ListDB(ctx, b)
+	if err != nil {
+		return "", dbbackup.Manifest{}, err
+	}
+	if len(bundles) == 0 {
+		return "", dbbackup.Manifest{}, errors.New("the bucket holds no database bundle")
+	}
+	newest := bundles[0].Key
+	m, err := PeekDB(ctx, b, key, newest)
+	if err != nil {
+		return "", dbbackup.Manifest{}, fmt.Errorf("%s: %w", newest, err)
+	}
+	if !m.Counts.Fresh() {
+		return newest, m, nil
+	}
+	var older []string
+	for _, o := range bundles[1:] {
+		om, err := PeekDB(ctx, b, key, o.Key)
+		if err != nil {
+			return "", dbbackup.Manifest{}, fmt.Errorf("%s: %w", o.Key, err)
+		}
+		if c := om.Counts; c == nil || c.Users > m.Counts.Users || c.Servers > m.Counts.Servers {
+			older = append(older, fmt.Sprintf("%s (%s)", o.Key, c))
+			if len(older) == dbChoices {
+				break
+			}
+		}
+	}
+	if len(older) == 0 {
+		return newest, m, nil
+	}
+	return "", dbbackup.Manifest{}, fmt.Errorf("the newest bundle %s holds %s, like the database a rebuilt host backs up before its restore; "+
+		"fetch an older one by name instead of latest (all of them: felis offsite list): %s", newest, m.Counts, strings.Join(older, ", "))
+}
+
 // HumanBytes formats n in binary units.
 func HumanBytes(n int64) string {
 	const unit = 1024

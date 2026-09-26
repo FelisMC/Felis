@@ -29,6 +29,26 @@ func TestDBUsage(t *testing.T) {
 	}
 }
 
+func TestDBVerifySaysWhatTheBundleHolds(t *testing.T) {
+	dir := newPodRig(t)
+	cfg := podConfig(t, dir)
+	bundles := filepath.Join(dir, "bundles")
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"db", "backup", "-config", cfg, "-dir", bundles, "-state-dir", "", "-no-servers"}, &out, &errBuf); code != 0 {
+		t.Fatalf("backup: exit %d: %s", code, errBuf.String())
+	}
+	bundle := strings.TrimSpace(strings.TrimPrefix(out.String(), "felis db backup: wrote "))
+	out.Reset()
+	if code := run([]string{"db", "verify", "-dir", bundles, filepath.Base(bundle)}, &out, &errBuf); code != 0 {
+		t.Fatalf("verify: exit %d: %s", code, errBuf.String())
+	}
+	for _, want := range []string{filepath.Base(bundle) + ": ok", "schema  3", "holds   4 accounts, 2 servers", "pg_dump (PostgreSQL) 18.6"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("verify output lacks %q:\n%s", want, out.String())
+		}
+	}
+}
+
 // TestDBRestoreNeedsYes: without -yes a restore describes the bundle and stops
 // before anything reaches the database, even with -force and
 // -no-safety-backup, which would otherwise let the replay run at once.
@@ -49,7 +69,7 @@ func TestDBRestoreNeedsYes(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("exit %d, want 2; stderr %q", code, errBuf.String())
 	}
-	if want := filepath.Base(bundle) + " (manual, taken "; !strings.Contains(errBuf.String(), want) || !strings.Contains(errBuf.String(), "schema 3).") {
+	if want := filepath.Base(bundle) + " (manual, taken "; !strings.Contains(errBuf.String(), want) || !strings.Contains(errBuf.String(), "schema 3, holding 4 accounts, 2 servers).") {
 		t.Errorf("stderr %q does not describe the bundle", errBuf.String())
 	}
 	if !strings.Contains(errBuf.String(), "re-run with -yes") {
@@ -238,6 +258,7 @@ printf 'PGDMP-fake-archive'
 cat > /dev/null
 `,
 	"psql": `#!/bin/sh
+for a in "$@"; do case "$a" in *"FROM users"*) echo "4|2"; exit 0 ;; esac; done
 for a in "$@"; do [ "$a" = "-c" ] && { echo 3; exit 0; }; done
 cat > /dev/null
 `,

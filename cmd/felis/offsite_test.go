@@ -1,14 +1,23 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"felis.lolicon.best/internal/config"
+	"felis.lolicon.best/internal/dbbackup"
 	"felis.lolicon.best/internal/imagepush"
 	"felis.lolicon.best/internal/offsite"
 )
@@ -118,5 +127,193 @@ func TestRegistryGoneMarksNotFound(t *testing.T) {
 	}
 	if err := registryGone(&imagepush.StatusError{Op: "get blob", Code: 503}); errors.Is(err, offsite.ErrImageGone) {
 		t.Fatalf("503 = %v, want it kept an ordinary failure", err)
+	}
+}
+
+// mapBucket is an in-memory offsite.Bucket.
+type mapBucket map[string][]byte
+
+func (b mapBucket) Put(_ context.Context, key string, r io.Reader, _ int64) error {
+	data, err := io.ReadAll(r)
+	b[key] = data
+	return err
+}
+
+func (b mapBucket) Get(_ context.Context, key string) (io.ReadCloser, error) {
+	data, ok := b[key]
+	if !ok {
+		return nil, offsite.ErrNotFound
+	}
+	return io.NopCloser(bytes.NewReader(data)), nil
+}
+
+func (b mapBucket) List(_ context.Context, prefix string) ([]offsite.Object, error) {
+	var out []offsite.Object
+	for k, v := range b {
+		if strings.HasPrefix(k, prefix) {
+			out = append(out, offsite.Object{Key: k, Size: int64(len(v))})
+		}
+	}
+	return out, nil
+}
+
+func (b mapBucket) Remove(_ context.Context, key string) error {
+	delete(b, key)
+	return nil
+}
+
+var fetchT0 = time.Date(2026, 9, 20, 3, 30, 0, 0, time.UTC)
+
+// putBundle seals a bundle that verifies, taken daysAgo days before fetchT0,
+// into b and returns its name.
+func putBundle(t *testing.T, b mapBucket, key []byte, daysAgo int, counts *dbbackup.Counts) string {
+	t.Helper()
+	created := fetchT0.AddDate(0, 0, -daysAgo)
+	dump := []byte("PGDMP " + created.String())
+	sum := sha256.Sum256(dump)
+	manifest, err := json.Marshal(dbbackup.Manifest{
+		Format: 1, CreatedAt: created, Label: dbbackup.LabelDaily, FelisVersion: "v1.2.3", SchemaVersion: 21, Counts: counts,
+		Files: []dbbackup.ManifestEntry{{Name: "db.dump", Size: int64(len(dump)), SHA256: hex.EncodeToString(sum[:]), Mode: 0o600}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plain bytes.Buffer
+	tw := tar.NewWriter(&plain)
+	for _, f := range []struct {
+		name string
+		data []byte
+	}{{"MANIFEST.json", manifest}, {"db.dump", dump}} {
+		if err := tw.WriteHeader(&tar.Header{Name: f.name, Mode: 0o600, Size: int64(len(f.data)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(f.data); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var sealed bytes.Buffer
+	if err := offsite.Encrypt(&sealed, &plain, key); err != nil {
+		t.Fatal(err)
+	}
+	name := dbbackup.BundleName(created, dbbackup.LabelDaily)
+	b[offsite.DBKey(name)] = sealed.Bytes()
+	return name
+}
+
+func TestOffsiteFetchDB(t *testing.T) {
+	rawKey, _ := offsite.NewKey()
+	key, _ := offsite.ParseKey(rawKey)
+	now := fetchT0.Add(2 * time.Hour)
+	fetch := func(b mapBucket, arg string) (dir string, code int, stdout, stderr string) {
+		dir = t.TempDir()
+		var out, errb bytes.Buffer
+		code = fetchDB(context.Background(), b, key, arg, dir, now, &out, &errb)
+		return dir, code, out.String(), errb.String()
+	}
+	fetched := func(t *testing.T, dir string) []string {
+		t.Helper()
+		var names []string
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		return names
+	}
+
+	t.Run("latest skips a rebuilt host's empty bundle", func(t *testing.T) {
+		b := mapBucket{}
+		full := putBundle(t, b, key, 3, &dbbackup.Counts{Users: 5, Servers: 3})
+		empty := putBundle(t, b, key, 0, &dbbackup.Counts{})
+		dir, code, out, errb := fetch(b, "latest")
+		if code != 1 || !strings.Contains(errb, empty) || !strings.Contains(errb, full+" (5 accounts, 3 servers)") {
+			t.Fatalf("exit %d, stdout %q, stderr %q; want a refusal naming %s", code, out, errb, full)
+		}
+		if got := fetched(t, dir); len(got) != 0 {
+			t.Errorf("a refused fetch wrote %v", got)
+		}
+	})
+
+	t.Run("latest takes the newest bundle and says what it holds", func(t *testing.T) {
+		b := mapBucket{}
+		putBundle(t, b, key, 3, &dbbackup.Counts{Users: 5, Servers: 2})
+		newest := putBundle(t, b, key, 1, &dbbackup.Counts{Users: 5, Servers: 3})
+		dir, code, out, errb := fetch(b, "latest")
+		if code != 0 {
+			t.Fatalf("exit %d: %s", code, errb)
+		}
+		if got := fetched(t, dir); !slices.Equal(got, []string{newest}) {
+			t.Errorf("wrote %v, want %s", got, newest)
+		}
+		for _, want := range []string{
+			"wrote " + filepath.Join(dir, newest) + " (verified)",
+			"taken   2026-09-19T03:30:00Z (daily, 26h0m ago)",
+			"felis   v1.2.3, schema 21",
+			"holds   5 accounts, 3 servers",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("stdout lacks %q:\n%s", want, out)
+			}
+		}
+		if strings.Contains(out, "new install") {
+			t.Errorf("a bundle with servers flagged as a new install's:\n%s", out)
+		}
+	})
+
+	t.Run("an empty bundle named outright is fetched with a warning", func(t *testing.T) {
+		b := mapBucket{}
+		putBundle(t, b, key, 3, &dbbackup.Counts{Users: 5, Servers: 3})
+		empty := putBundle(t, b, key, 0, &dbbackup.Counts{Users: 1})
+		dir, code, out, errb := fetch(b, empty)
+		if code != 0 || !slices.Equal(fetched(t, dir), []string{empty}) {
+			t.Fatalf("exit %d, wrote %v: %s", code, fetched(t, dir), errb)
+		}
+		if !strings.Contains(out, "holds   1 account, 0 servers") || !strings.Contains(out, "like a new install's") {
+			t.Errorf("stdout = %s", out)
+		}
+	})
+
+	t.Run("a bundle from before counts says so", func(t *testing.T) {
+		b := mapBucket{}
+		old := putBundle(t, b, key, 0, nil)
+		_, code, out, errb := fetch(b, "latest")
+		if code != 0 || !strings.Contains(out, old) || !strings.Contains(out, "holds   not recorded") || strings.Contains(out, "new install") {
+			t.Errorf("exit %d, stdout %q, stderr %q", code, out, errb)
+		}
+	})
+}
+
+func TestPrintDBBundlesSaysWhatEachHolds(t *testing.T) {
+	rawKey, _ := offsite.NewKey()
+	key, _ := offsite.ParseKey(rawKey)
+	otherRaw, _ := offsite.NewKey()
+	other, _ := offsite.ParseKey(otherRaw)
+	b := mapBucket{}
+	old := putBundle(t, b, key, 3, nil)
+	full := putBundle(t, b, key, 2, &dbbackup.Counts{Users: 5, Servers: 3})
+	sealedElsewhere := putBundle(t, b, other, 1, &dbbackup.Counts{Users: 5, Servers: 3})
+	empty := putBundle(t, b, key, 0, &dbbackup.Counts{})
+	bundles, err := offsite.ListDB(context.Background(), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	printDBBundles(context.Background(), b, key, bundles, &out)
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	want := []struct{ name, holds string }{
+		{empty, "0 accounts, 0 servers"},
+		{sealedElsewhere, "unreadable: offsite: object does not decrypt with this key"},
+		{full, "5 accounts, 3 servers"},
+		{old, "not recorded"},
+	}
+	if len(lines) != len(want)+1 || !strings.HasPrefix(lines[0], "database bundles (4, newest first") {
+		t.Fatalf("output:\n%s", out.String())
+	}
+	for i, w := range want {
+		if l := lines[i+1]; !strings.HasPrefix(l, "  "+w.name+"  ") || !strings.Contains(l, w.holds) {
+			t.Errorf("line %d = %q, want %s with %q", i+1, l, w.name, w.holds)
+		}
 	}
 }
