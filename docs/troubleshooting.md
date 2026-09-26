@@ -2054,7 +2054,11 @@ a generated encryption key in `/etc/felis/offsite.env` (mode 0600), and
 sealed objects, and without the key they cannot be read. A later re-run keeps
 the key; it refuses a `FELIS_OFFSITE_KEY` that differs from the one in
 `offsite.env`, since every object already in the bucket is sealed with it.
-Without a bucket the installer ends with `NO OFF-SITE COPY`.
+Without a bucket the installer ends with `NO OFF-SITE COPY`. Installers before
+the fix for a pipe race in reading `[offsite]` could also end that way on a
+host that has a bucket, and removed `felis-offsite.timer` as they did; a re-run
+of the current installer puts it back. `systemctl list-timers felis-offsite.timer`
+shows whether the timer is there. [SH-TESTED] [VM-TESTED: a re-run that lost the race]
 
 What runs:
 

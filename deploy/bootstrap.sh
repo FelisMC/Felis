@@ -3227,9 +3227,8 @@ auth_hostname() {
 # auth_lines is the body of the [auth] section this run writes: the carried keys, after
 # the two hostnames derived from the root domain when the carry lacks them. A first
 # install gets exactly the two derived lines; a re-run reproduces the carried section.
-# The keys are matched in a here-string, never `printf | grep -q`: grep exits at the
-# match, printf dies of SIGPIPE on the lines after it, pipefail fails the test, and a
-# second admin_hostname then breaks the file (see postgres_installed).
+# The keys are matched in a here-string, never `printf | grep -q` (see offsite_enabled):
+# a lost race there wrote a second admin_hostname, and the duplicate key broke the file.
 auth_lines() {
   local carried
   carried="$(persisted_auth_lines)"
@@ -3352,9 +3351,15 @@ offsite_block() {
   if [ -n "$FELIS_OFFSITE_DB_KEEP" ]; then printf 'db_keep = %s\n' "$FELIS_OFFSITE_DB_KEEP"; fi
 }
 
-# offsite_enabled: the [offsite] section this run writes names a bucket.
+# offsite_enabled: the [offsite] section this run writes names a bucket. The section is
+# read into a variable before matching (as in postgres_installed): in `offsite_block |
+# grep -q` grep exits at the bucket line, the lines after it then kill offsite_block with
+# SIGPIPE, and pipefail made that "no bucket". A re-run that lost the race removed the
+# off-site timer and ended with NO OFF-SITE COPY on a host that has one.
 offsite_enabled() {
-  offsite_block | grep -Eq '^[[:space:]]*bucket[[:space:]]*=[[:space:]]*"[^"]+"'
+  local block
+  block="$(offsite_block)"
+  grep -Eq '^[[:space:]]*bucket[[:space:]]*=[[:space:]]*"[^"]+"' <<<"$block"
 }
 
 write_felis_toml() {

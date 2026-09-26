@@ -1577,8 +1577,8 @@ DNS.2 = play.example.org' "$out"
 
 # The hostnames on the section's first lines and the section far past one pipe buffer:
 # a `printf | grep -q` or `| awk exit` over it has the reader exit while printf is still
-# writing, which is certain here and a scheduling race on a real host. The config must
-# still carry each name once, and
+# writing, which is certain here and a scheduling race on a real host (offsite_enabled
+# lost it, see the off-site section). The config must still carry each name once, and
 # the helpers must fail nothing along the way (the installer logs every failed command).
 { printf '[auth]\nadmin_hostname = "ops.example.org"\npanel_hostname = "play.example.org"\n'
   seq 1 200000 | sed 's/.*/k& = "v"/'; } > "$adir/felis.host.toml"
@@ -1878,6 +1878,15 @@ case "$out" in
   *admin_hostname*) echo "FAIL the carried [offsite] swallowed the next section"; fails=$((fails + 1)) ;;
   *) echo "PASS the carried [offsite] stops at the next section" ;;
 esac
+
+# A re-run found a configured bucket "missing" and removed the off-site timer: grep -q
+# stopped at the bucket line while offsite_block was still writing, and pipefail turned
+# the SIGPIPE into "no bucket". The section far past one pipe buffer with the bucket near
+# its top makes the lost race certain.
+{ printf '[offsite]\nbucket = "kept"\nendpoint = "https://s3.example"\n'
+  seq 1 200000 | sed 's/.*/prefix = "p&"/'; } > "$odir/felis.host.toml"
+out="$(run_offsite 'if offsite_enabled; then echo ENABLED; else echo "OFF (exit $?)"; fi')"
+expect "a configured bucket is found in a long [offsite] section" "ENABLED" "$out"
 
 # First configured install: the key is generated, the file is private, the key is shown once.
 rm -f "$odir/felis.host.toml"
