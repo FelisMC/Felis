@@ -3,8 +3,9 @@ import { Loader2, Play, RotateCcw, Square } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { pendingPower } from "@/components/PhaseBadge";
+import { RetiringBadge } from "@/components/Retirement";
 import { api, humanizeError } from "@/lib/api";
-import type { Phase } from "@/lib/types";
+import type { Phase, RetireState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 /** How long a sent wake or stop shows as in progress when the view never
@@ -25,6 +26,9 @@ interface Props {
   playersOnline?: number;
   /** The operator cannot read the player count, so players may be online. */
   playerCountUnknown?: boolean;
+  /** A pending retirement: nothing starts the server until it is cancelled, so
+   *  the control gives way to a badge saying why. */
+  retiring?: RetireState;
   /** Called after the wake or stop was accepted, so the parent refetches. */
   onChanged: () => void;
   size?: "sm" | "default";
@@ -49,6 +53,7 @@ function isUp(phase: Phase): boolean {
 // again into a 429. A server on its way down offers nothing until it is down;
 // one asked to run with no pod yet offers Stop, which is the way out when it
 // never comes up.
+// A server given up or being deleted offers nothing to press, only why.
 export function PowerButton({
   name,
   phase,
@@ -56,6 +61,7 @@ export function PowerButton({
   failed = false,
   playersOnline,
   playerCountUnknown,
+  retiring,
   onChanged,
   size = "sm",
   className,
@@ -125,7 +131,9 @@ export function PowerButton({
   );
 
   let control;
-  if (submitted !== null) {
+  if (retiring) {
+    control = <RetiringBadge retiring={retiring} />;
+  } else if (submitted !== null) {
     control = inProgress(submitted);
   } else if (failed) {
     control = (

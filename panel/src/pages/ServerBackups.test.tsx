@@ -99,6 +99,12 @@ describe("ServerBackups", () => {
     expect(ops.map((el) => el.textContent)).toEqual(["Scheduled backup", "Backup"]);
   });
 
+  it("names the archive the reaper leaves when a server is given up or deleted", async () => {
+    calls.listBackups.mockResolvedValue({ backups: [{ ...backup("bk-rel", 4), reason: "released" }], total: 1 });
+    renderPage();
+    expect((await screen.findByText("4 hours ago")).closest("tr")?.textContent).toContain("Archived when given up or deleted");
+  });
+
   it("shows no pager when the server's backups fit on one page", async () => {
     calls.listBackups.mockResolvedValue({ backups: [backup("bk-1", 3)], total: 1 });
     renderPage();

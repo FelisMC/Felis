@@ -152,6 +152,12 @@ func (a *API) handleInternalWake(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	// Given up or being deleted: it stays down until the reaper archives it, and
+	// velocity tells the player so instead of queueing them.
+	if rec != nil && rec.Retire != nil {
+		writeError(w, r, errServerRetiring)
+		return
+	}
 	// A start whose automatic restarts are spent (or that can never succeed as
 	// configured) stays down until a person looks at it. The 202 this used to
 	// return queued the player for a server nothing was starting. The join leaves
@@ -305,7 +311,8 @@ func (a *API) handleInternalClaim(w http.ResponseWriter, r *http.Request) {
 // the claim call's, not the menu's). The lobby uses it purely to choose between
 // rendering `Claim & Start` (ownerless) and `Join`/`Wake` (owned). A server known
 // to the cluster but missing its servers-row is treated as ownerless, so it still
-// renders a sane tile rather than erroring.
+// renders a sane tile rather than erroring. A server being deleted is not claimable
+// even while it has no owner.
 func (a *API) handleInternalMenuStatus(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if err := naming.ValidateServerName(name); err != nil {
@@ -323,7 +330,7 @@ func (a *API) handleInternalMenuStatus(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	if rec != nil && rec.OwnerID != "" {
+	if rec != nil && (rec.OwnerID != "" || rec.Retire != nil) {
 		claimable = false
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

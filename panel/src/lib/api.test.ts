@@ -273,6 +273,29 @@ describe("api access-control wire shapes", () => {
   beforeEach(() => vi.restoreAllMocks());
   afterEach(() => vi.unstubAllGlobals());
 
+  it("retireServer PUTs the typed name and the delete flag to the retirement path", async () => {
+    const requested_at = "2026-09-27T12:00:00Z";
+    const fetchSpy = fakeFetch({ name: "survival", retiring: { requested_at, delete: true } }, { status: 202 });
+    vi.stubGlobal("fetch", fetchSpy);
+    const res = await api.retireServer("survival", { confirm: "survival", delete: true });
+    expect(res.retiring).toEqual({ requested_at, delete: true });
+
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(String(url)).toBe("/servers/survival/retirement");
+    expect((opts as RequestInit).method).toBe("PUT");
+    expect(JSON.parse(String((opts as RequestInit).body))).toEqual({ confirm: "survival", delete: true });
+  });
+
+  it("cancelRetire DELETEs the retirement path", async () => {
+    const fetchSpy = vi.fn(async () => ({ ok: true, status: 204, statusText: "No Content", text: async () => "" })) as unknown as typeof fetch;
+    vi.stubGlobal("fetch", fetchSpy);
+    await api.cancelRetire("survival");
+
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(String(url)).toBe("/servers/survival/retirement");
+    expect((opts as RequestInit).method).toBe("DELETE");
+  });
+
   it("accessWhitelistList GETs the whitelist path and returns players + raw output", async () => {
     const fetchSpy = fakeFetch({
       name: "survival",

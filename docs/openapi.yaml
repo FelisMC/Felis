@@ -503,6 +503,14 @@ components:
             Present and true for a Failed server no automatic retry will bring up: its
             start timed out with the retries spent, or its spec is invalid. A Failed
             server without it is still in its restart backoff and may come up on its own.
+        reaperExempt:
+          type: boolean
+          description: Present and true for a system server the reaper never touches; it cannot be given up or deleted.
+        retiring:
+          allOf: [{ $ref: '#/components/schemas/RetireState' }]
+          description: >-
+            Owner and staff only. Present while the owner has given the server up or an
+            admin is deleting it; the reaper carries that out on its next run.
 
     FleetServer:
       description: One row of the fleet-wide admin read (internal/api/handlers_user.go fleetServerView).
@@ -525,8 +533,9 @@ components:
             claimable:
               type: boolean
               description: >-
-                True for a live, unclaimed, non-system server, the same rule the claim
-                route enforces. False whenever ownership is unknown.
+                True for a live, unclaimed, non-system server with no pending deletion,
+                the same rule the claim route enforces. False whenever ownership is
+                unknown.
             ownerUnknown:
               type: boolean
               description: >-
@@ -539,6 +548,19 @@ components:
                 lobby). Their reserved names are rejected by every per-server route,
                 so the cockpit renders them read-only instead of offering actions
                 that would 400.
+
+    RetireState:
+      type: object
+      description: >-
+        A pending retirement (internal/api/repo.go RetireState): the owner gave the
+        server up, or with delete an admin is deleting it. The reaper carries it out
+        on its next daily run: it archives the world as a released backup, deletes
+        the world volume and releases the server, and for a deletion also removes
+        it. Until then the server stays stopped and cannot be woken or claimed.
+      required: [requested_at, delete]
+      properties:
+        requested_at: { type: string, format: date-time }
+        delete: { type: boolean }
 
     AllowlistEntry:
       type: object
@@ -596,6 +618,9 @@ components:
         startGaveUp:
           type: boolean
           description: Owned rows only. Present and true for a Failed server no automatic retry will bring up; waking it from the panel starts it over.
+        retiring:
+          allOf: [{ $ref: '#/components/schemas/RetireState' }]
+          description: Owned rows only. Present while the server is given up or being deleted.
 
     BackupView:
       type: object
@@ -610,7 +635,7 @@ components:
         size_bytes: { type: integer, format: int64 }
         reason:
           type: string
-          description: inactive_15d (idle reclaim), manual (on demand), pre_restore (the safety snapshot in front of a restore) or scheduled (the daily restore point felis-api takes of a world played since its last one, once the server stops).
+          description: inactive_15d (idle reclaim), released (the world of a server its owner gave up or an admin deleted), manual (on demand), pre_restore (the safety snapshot in front of a restore) or scheduled (the daily restore point felis-api takes of a world played since its last one, once the server stops).
         status: { type: string }
         created_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
@@ -1240,6 +1265,8 @@ paths:
             file write holds the server's world volume. start_failed: the last
             start failed and its automatic retries are spent (ServerInfo.startGaveUp);
             the server stays down until a person starts it from the panel.
+            server_retiring: the owner gave the server up or an admin is deleting it;
+            it stays down until the reaper archives it.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -1830,7 +1857,10 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: A restore, backup or file write holds the server's world volume (maintenance_in_progress); nothing was started.
+          description: >-
+            Nothing was started. maintenance_in_progress: a restore, backup or file
+            write holds the server's world volume. server_retiring: the server is
+            given up or being deleted (ServerInfo.retiring).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -1904,7 +1934,9 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: Already claimed.
+          description: >-
+            already_claimed: someone else owns it. server_retiring: the server is
+            being deleted.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -2497,6 +2529,97 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/servers/{name}/retirement:
+    put:
+      tags: [servers]
+      operationId: retireServer
+      summary: Give the server up (owner) or delete it (admin). The reaper carries it out.
+      description: >-
+        The server is stopped and the request recorded; the reaper, the one component
+        that deletes a world, carries it out on its next daily run. It archives the
+        world as a released backup (kept for the reaper's retention, recorded against
+        the owner), deletes the world volume and releases the server for anyone to
+        claim; with delete it also removes the server, which frees its name and
+        subdomain. Until then the server cannot be woken or claimed and still counts
+        against the owner's quota, and the request can be cancelled. Repeating it
+        keeps the first request time, and a deletion stays a deletion. confirm must
+        repeat the server's name. Audited as server.release / server.delete.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm]
+              properties:
+                confirm: { type: string, description: The server's name, typed back. }
+                delete: { type: boolean, description: Delete the server (admin only). Default false gives it up. }
+      responses:
+        '202':
+          description: Recorded; the server is stopped.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [name, retiring]
+                properties:
+                  name: { type: string }
+                  retiring: { $ref: '#/components/schemas/RetireState' }
+        '400':
+          description: A malformed body or name, or confirm does not match the name (confirm_mismatch).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Neither the owner nor an admin, or an owner asking to delete.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: >-
+            system_server: a system server is never given up or deleted.
+            world_volume_orphaned: the server is gone from the cluster but its world
+            volume remains, which an operator archives and removes by hand.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [servers]
+      operationId: cancelRetire
+      summary: Cancel a pending retirement. Only an admin cancels a deletion.
+      description: >-
+        The server stays stopped; its owner starts it again when they want it.
+        Cancelling when nothing is pending changes nothing. Audited as
+        server.retire_cancel.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '204':
+          description: Nothing is pending any more.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Neither the owner nor an admin, or an owner cancelling an admin's deletion.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '404':
+          $ref: '#/components/responses/NotFound'
 
   /api/v1/servers/{name}/status:
     get:

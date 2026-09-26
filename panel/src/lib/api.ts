@@ -21,6 +21,7 @@ import type {
   PlayersResult,
   QuotaInput,
   QuotaView,
+  RetireState,
   ServerFileEntry,
   ServerJob,
   MyServerView,
@@ -414,6 +415,16 @@ export const api = rejectingSync({
 
   claim: (name: string) =>
     request<{ name: string; claimed: boolean }>("POST", urlPath`/servers/${name}/claim`),
+
+  // Retirement (PUT/DELETE /servers/{name}/retirement): the owner gives the server
+  // up, or an admin deletes it (delete: true, admin only). felis-api stops the
+  // server and records the request; the reaper archives the world and carries it
+  // out on its next daily run. confirm must repeat the server's name. The cancel
+  // is the owner's for a give-up and an admin's for a deletion (403 otherwise).
+  retireServer: (name: string, body: { confirm: string; delete: boolean }) =>
+    request<{ name: string; retiring: RetireState }>("PUT", urlPath`/servers/${name}/retirement`, body),
+
+  cancelRetire: (name: string) => request<void>("DELETE", urlPath`/servers/${name}/retirement`),
 
   /** sendCommand runs one RCON command against a running server (spec §8 写=RCON).
    *  The backend strips a leading "/", rejects control characters (newline → 400)
@@ -1044,6 +1055,18 @@ export function humanizeError(e: unknown): string {
     // new server cannot mount the old world.
     case "world_volume_exists":
       return t("world_volume_exists");
+    // Retirement (internal/api/handlers_retire.go): a server given up or being
+    // deleted cannot be woken or claimed until that is cancelled or done; the
+    // request repeats the server's name; a system server is never retired; a
+    // deletion refuses while a hand-deleted server's world volume is left.
+    case "server_retiring":
+      return t("server_retiring");
+    case "confirm_mismatch":
+      return t("confirm_mismatch");
+    case "system_server":
+      return t("system_server");
+    case "world_volume_orphaned":
+      return t("world_volume_orphaned");
     case "cooldown":
       return t("cooldown");
     // Access control (spec §7): the server must be Running for any RCON-backed

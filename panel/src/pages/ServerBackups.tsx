@@ -71,6 +71,8 @@ function BackupRow({
   const reasonLabel =
     b.reason === "inactive_15d"
       ? t("reason_inactive")
+      : b.reason === "released"
+      ? t("reason_released")
       : b.reason === "manual"
       ? t("reason_manual")
       : b.reason === "pre_restore"

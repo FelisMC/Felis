@@ -20,7 +20,7 @@ type PGStore struct {
 func NewPGStore(db *sql.DB) *PGStore { return &PGStore{db: db} }
 
 func (s *PGStore) ListActiveServers(ctx context.Context) ([]Candidate, error) {
-	const q = `SELECT name, owner_id, last_active_at, warned_3d_at, warned_1d_at
+	const q = `SELECT name, owner_id, last_active_at, warned_3d_at, warned_1d_at, retire_requested_at, retire_delete
 		FROM servers WHERE deleted_at IS NULL ORDER BY name`
 	rows, err := s.db.QueryContext(ctx, q)
 	if err != nil {
@@ -33,8 +33,9 @@ func (s *PGStore) ListActiveServers(ctx context.Context) ([]Candidate, error) {
 			c      Candidate
 			owner  sql.NullString
 			w3, w1 sql.NullTime
+			retire sql.NullTime
 		)
-		if err := rows.Scan(&c.Name, &owner, &c.LastActiveAt, &w3, &w1); err != nil {
+		if err := rows.Scan(&c.Name, &owner, &c.LastActiveAt, &w3, &w1, &retire, &c.RetireDelete); err != nil {
 			return nil, err
 		}
 		c.OwnerID = owner.String
@@ -44,18 +45,21 @@ func (s *PGStore) ListActiveServers(ctx context.Context) ([]Candidate, error) {
 		if w1.Valid {
 			c.Warned1dAt = w1.Time
 		}
+		if retire.Valid {
+			c.RetireRequestedAt = retire.Time
+		}
 		out = append(out, c)
 	}
 	return out, rows.Err()
 }
 
 func (s *PGStore) FreshBackup(ctx context.Context, server string, since time.Time) (Fresh, bool, error) {
-	// Only the reaper's own archives count, and only those taken since the
-	// current owner claimed the server: a manual backup may predate a panel edit
-	// that did not move last_active_at, and an archive from before the claim is
-	// the previous owner's world. One found corrupt is never reused.
+	// Only the reaper's own archives count (an idle reap's or a retirement's),
+	// and only those taken since the current owner claimed the server: a manual
+	// backup may predate a panel edit that did not move last_active_at, and an
+	// archive from before the claim is the previous owner's world. One found corrupt is never reused.
 	const q = `SELECT b.id, b.backup_ref, COALESCE(b.sha256, ''), b.offsite_at IS NOT NULL FROM world_backups b
-		WHERE b.server_name = $1 AND b.status = 'present' AND b.reason = 'inactive_15d' AND b.created_at >= $2
+		WHERE b.server_name = $1 AND b.status = 'present' AND b.reason IN ('inactive_15d', 'released') AND b.created_at >= $2
 		  AND b.corrupt_at IS NULL
 		  AND b.created_at >= COALESCE((SELECT s.claimed_at FROM servers s WHERE s.name = $1 AND s.deleted_at IS NULL), '-infinity')
 		ORDER BY b.offsite_at IS NOT NULL DESC, b.created_at DESC LIMIT 1`
@@ -85,13 +89,32 @@ func (s *PGStore) InsertBackup(ctx context.Context, rec BackupRecord) error {
 // gated on that size and counts it. The wake allowlist is emptied in the same
 // statement: its players were vouched for by the owner being released, and an
 // ownerless server set to autostartPolicy=allowlist would otherwise stay
-// wakeable by them.
+// wakeable by them. A pending release is done with once the world is gone;
+// a pending deletion stays, so an idle reap that lands on a server an admin is
+// deleting leaves the deletion for the next run.
 func (s *PGStore) ReleaseWorld(ctx context.Context, name string, at time.Time) error {
 	const q = `WITH released AS (
 		UPDATE servers
-		SET owner_id = NULL, last_active_at = $2, warned_3d_at = NULL, warned_1d_at = NULL
+		SET owner_id = NULL, last_active_at = $2, warned_3d_at = NULL, warned_1d_at = NULL,
+		    retire_requested_at = CASE WHEN retire_delete THEN retire_requested_at END
 		WHERE name = $1 AND deleted_at IS NULL RETURNING name)
 		DELETE FROM server_allowlist WHERE server_name IN (SELECT name FROM released)`
+	_, err := s.db.ExecContext(ctx, q, name, at)
+	return err
+}
+
+// DeleteServerRow marks a server deleted once its MinecraftServer is gone. The
+// row stays (red line ②) and so do its backups (red line ③), recorded against
+// the name; the aliases go, which frees the subdomain, and the allowlist with
+// them. A create under the name later starts the row over (api.SeedServer).
+func (s *PGStore) DeleteServerRow(ctx context.Context, name string, at time.Time) error {
+	const q = `WITH gone AS (
+		UPDATE servers
+		SET deleted_at = $2, owner_id = NULL, retire_requested_at = NULL, retire_delete = false,
+		    warned_3d_at = NULL, warned_1d_at = NULL
+		WHERE name = $1 AND deleted_at IS NULL AND retire_delete RETURNING name),
+	aliases AS (DELETE FROM server_aliases WHERE server_name IN (SELECT name FROM gone))
+	DELETE FROM server_allowlist WHERE server_name IN (SELECT name FROM gone)`
 	_, err := s.db.ExecContext(ctx, q, name, at)
 	return err
 }
@@ -123,8 +146,8 @@ func (s *PGStore) PresentBackupBytes(ctx context.Context) (int64, error) {
 
 func (s *PGStore) EvictableBackups(ctx context.Context) ([]StoredBackup, error) {
 	const q = `SELECT id, server_name, backup_ref, size_bytes, reason, COALESCE(sha256, '') FROM world_backups
-		WHERE status = 'present' AND (reason <> 'inactive_15d' OR offsite_at IS NOT NULL)
-		ORDER BY reason = 'inactive_15d', created_at ASC`
+		WHERE status = 'present' AND (reason NOT IN ('inactive_15d', 'released') OR offsite_at IS NOT NULL)
+		ORDER BY reason IN ('inactive_15d', 'released'), created_at ASC`
 	return s.queryBackups(ctx, q)
 }
 

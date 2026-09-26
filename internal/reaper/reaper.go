@@ -43,11 +43,18 @@ const Day = 24 * time.Hour
 // (spec §18). It is a stable label, not a literal restatement of the deadline.
 const ReasonInactive = "inactive_15d"
 
+// ReasonReleased is the world_backups.reason for the archive of a world whose
+// server its owner gave up or an admin deleted (PUT /servers/{name}/retirement).
+// Like an idle reap's, it is the world's copy after the volume is gone.
+const ReasonReleased = "released"
+
 // Audit actions emitted by the reaper. The actor/source are a system identity
 // ("reaper") because no human Access email is in play here (spec §14).
 const (
-	ActionReapWorld   = "reap_world"
-	ActionEvictBackup = "evict_backup_early"
+	ActionReapWorld    = "reap_world"
+	ActionEvictBackup  = "evict_backup_early"
+	ActionReleaseWorld = "release_world"
+	ActionDeleteServer = "delete_server"
 )
 
 // ErrNotFound is returned by Cluster.Inspect when the MinecraftServer CRD for a
@@ -151,6 +158,12 @@ type Candidate struct {
 	LastActiveAt time.Time
 	Warned3dAt   time.Time // zero = not yet sent
 	Warned1dAt   time.Time // zero = not yet sent
+	// RetireRequestedAt is when the owner gave the server up or an admin asked
+	// for it to be deleted (zero = no request); RetireDelete marks a deletion.
+	// Either is carried out on the next run, however recently the world was
+	// played.
+	RetireRequestedAt time.Time
+	RetireDelete      bool
 }
 
 func (c Candidate) warnedAt(t Tier) time.Time {
@@ -160,11 +173,25 @@ func (c Candidate) warnedAt(t Tier) time.Time {
 	return c.Warned3dAt
 }
 
+func (c Candidate) retiring() bool { return !c.RetireRequestedAt.IsZero() }
+
+// worldSince is how recent an archive must be to hold the current world: taken
+// after the last join, and for a retirement after the request, so the world
+// archived is the one its owner left.
+func (c Candidate) worldSince() time.Time {
+	if c.RetireRequestedAt.After(c.LastActiveAt) {
+		return c.RetireRequestedAt
+	}
+	return c.LastActiveAt
+}
+
 // ServerCRD is the slice of the MinecraftServer CRD the reaper needs: the
-// exemption flag (red line ①) and the world PVC to archive then delete.
+// exemption flag (red line ①), the world PVC to archive then delete, and the
+// object's uid, so a deletion removes the server that was inspected.
 type ServerCRD struct {
 	Exempt bool
 	PVC    string
+	UID    string
 }
 
 // BackupRecord is a world_backups insert. FormerOwner is captured so the
@@ -233,8 +260,16 @@ type Store interface {
 
 	// ReleaseWorld is the post-delete business mutation: owner_id→NULL,
 	// last_active_at→at (clock reset), warned_*→NULL. It does NOT delete the
-	// row (red line ②).
+	// row (red line ②). A pending release is done with; a pending deletion
+	// stays for the next run to finish.
 	ReleaseWorld(ctx context.Context, name string, at time.Time) error
+
+	// DeleteServerRow finishes an admin's deletion once the MinecraftServer is
+	// gone: the row is marked deleted, which frees its name and subdomain, and
+	// loses its owner, aliases and allowlist. Only a row with a pending deletion
+	// is touched, so a server created again under the name is left alone. The
+	// row itself stays, like every reaped server's (red line ②).
+	DeleteServerRow(ctx context.Context, name string, at time.Time) error
 
 	// RestartClock sets last_active_at→at and clears warned_* on a server with
 	// no world to reclaim, so it is not found idle again every run.
@@ -295,6 +330,11 @@ type Cluster interface {
 	WorldExists(ctx context.Context, pvc string) (bool, error)
 	// DeletePVC deletes the world PersistentVolumeClaim.
 	DeletePVC(ctx context.Context, pvc string) error
+	// DeleteServer removes the MinecraftServer whose uid Inspect returned, and
+	// with it what the operator made for it (StatefulSet, Service, Secret). The
+	// world volume is not among them: it is deleted first. A server already gone
+	// is not an error; one of the same name with another uid is left alone.
+	DeleteServer(ctx context.Context, name, uid string) error
 }
 
 // Warner delivers an impending-reap notice. It is optional and best-effort: a
@@ -323,10 +363,15 @@ type Reaper struct {
 type Summary struct {
 	Evaluated    int
 	WorldsReaped int
-	Warned       int
+	// Released are servers given up by their owner (or released by an admin)
+	// and ServersDeleted the ones an admin deleted, carried out this run.
+	Released       int
+	ServersDeleted int
+	Warned         int
 	// Skipped are servers the run failed on (archive, store, cluster or
 	// capacity errors); their worlds are kept and retried next run. Exempt
-	// servers and rows whose CRD is gone are not counted.
+	// servers and rows whose CRD is gone are not counted, except a deletion
+	// left with a world volume and no MinecraftServer to hold it by.
 	Skipped int
 	// StoreFull are the Skipped servers kept because the backup store was at
 	// capacity and eviction could not make room.
@@ -453,6 +498,11 @@ func (r *Reaper) evaluate(ctx context.Context, now time.Time, offs []time.Durati
 	crd, err := r.Cluster.Inspect(ctx, c.Name)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
+			if c.RetireDelete {
+				// An earlier run removed the MinecraftServer and stopped before
+				// marking the row, or it was removed by hand.
+				return r.forgetServer(ctx, now, c, sum)
+			}
 			// CRD gone but the row lingers — nothing safe to do; not a failure.
 			r.log().Warn("reaper: CRD missing, skipping", "server", c.Name)
 			return nil
@@ -460,8 +510,17 @@ func (r *Reaper) evaluate(ctx context.Context, now time.Time, offs []time.Durati
 		return fmt.Errorf("inspect: %w", err)
 	}
 	if crd.Exempt {
-		// Red line ①: system servers (lobby/proxy) are never reaped.
+		// Red line ①: system servers (lobby/proxy) are never reaped. felis-api
+		// refuses to retire one, so a request here predates the flag.
+		if c.retiring() {
+			r.log().Warn("reaper: a system server is never given up or deleted; request ignored", "server", c.Name)
+		}
 		return nil
+	}
+	if c.retiring() {
+		// The owner gave the server up, or an admin is deleting it: the world
+		// goes now, archived like an idle one, and no warning is owed.
+		return r.reap(ctx, now, c, crd, sum)
 	}
 
 	idle := now.Sub(c.LastActiveAt)
@@ -490,7 +549,7 @@ func (r *Reaper) reap(ctx context.Context, now time.Time, c Candidate, crd Serve
 		return fmt.Errorf("look up world volume: %w", err)
 	}
 	if !exists {
-		return r.reapNoWorld(ctx, now, c, sum)
+		return r.reapNoWorld(ctx, now, c, crd, sum)
 	}
 
 	// §26 soft cap: free space before adding a backup. If the store cannot be
@@ -510,7 +569,7 @@ func (r *Reaper) reap(ctx context.Context, now time.Time, c Candidate, crd Serve
 	// world but failed before deleting the PVC, reuse that backup rather than
 	// writing a duplicate. The world has not changed since last_active_at, so
 	// any present backup created after it still describes the current world.
-	fresh, ok, err := r.Store.FreshBackup(ctx, c.Name, c.LastActiveAt)
+	fresh, ok, err := r.Store.FreshBackup(ctx, c.Name, c.worldSince())
 	if err != nil {
 		return fmt.Errorf("lookup fresh backup: %w", err)
 	}
@@ -537,13 +596,17 @@ func (r *Reaper) reap(ctx context.Context, now time.Time, c Candidate, crd Serve
 			r.log().Warn("reaper: archive leaves out entries that are not plain files or directories",
 				"server", c.Name, "count", len(a.Skipped), "first", a.Skipped[:min(len(a.Skipped), 5)])
 		}
+		reason := ReasonInactive
+		if c.retiring() {
+			reason = ReasonReleased
+		}
 		rec := BackupRecord{
 			ID:             r.id(),
 			ServerName:     c.Name,
 			FormerOwner:    c.OwnerID,
 			BackupRef:      string(a.Ref),
 			SizeBytes:      a.Size,
-			Reason:         ReasonInactive,
+			Reason:         reason,
 			ExpiresAt:      now.Add(r.Cfg.Retention),
 			SHA256:         a.SHA256,
 			SkippedEntries: len(a.Skipped),
@@ -577,16 +640,24 @@ func (r *Reaper) reap(ctx context.Context, now time.Time, c Candidate, crd Serve
 		// the delete, so no duplicate archive is created.
 		return fmt.Errorf("delete pvc: %w", err)
 	}
-	return r.finishReap(ctx, now, c, ref, sum)
+	return r.finishReap(ctx, now, c, crd, ref, sum)
 }
 
-// finishReap releases a world whose PVC is gone and records the reap.
-func (r *Reaper) finishReap(ctx context.Context, now time.Time, c Candidate, ref string, sum *Summary) error {
-	if err := r.Store.ReleaseWorld(ctx, c.Name, now); err != nil {
-		return fmt.Errorf("release world: %w", err)
-	}
-	if err := r.Store.Audit(ctx, AuditRecord{Action: ActionReapWorld, ServerName: c.Name, FormerOwner: c.OwnerID}); err != nil {
-		r.log().Error("reaper: audit reap_world failed", "server", c.Name, "err", err)
+// finishReap releases a world whose PVC is gone and records the reap. A
+// retirement is finished with it: the server is released, or for a deletion
+// removed.
+func (r *Reaper) finishReap(ctx context.Context, now time.Time, c Candidate, crd ServerCRD, ref string, sum *Summary) error {
+	if c.retiring() {
+		if err := r.retire(ctx, now, c, crd, sum); err != nil {
+			return err
+		}
+	} else {
+		if err := r.Store.ReleaseWorld(ctx, c.Name, now); err != nil {
+			return fmt.Errorf("release world: %w", err)
+		}
+		if err := r.Store.Audit(ctx, AuditRecord{Action: ActionReapWorld, ServerName: c.Name, FormerOwner: c.OwnerID}); err != nil {
+			r.log().Error("reaper: audit reap_world failed", "server", c.Name, "err", err)
+		}
 	}
 
 	sum.WorldsReaped++
@@ -604,13 +675,17 @@ func (r *Reaper) finishReap(ctx context.Context, now time.Time, c Candidate, ref
 // no world to reclaim: an owner who never started the server gives it up
 // (nothing to back up), and an unowned one — typically a world reaped earlier —
 // only has its clock restarted, so it is not reaped over and over.
-func (r *Reaper) reapNoWorld(ctx context.Context, now time.Time, c Candidate, sum *Summary) error {
-	fresh, ok, err := r.Store.FreshBackup(ctx, c.Name, c.LastActiveAt)
+func (r *Reaper) reapNoWorld(ctx context.Context, now time.Time, c Candidate, crd ServerCRD, sum *Summary) error {
+	fresh, ok, err := r.Store.FreshBackup(ctx, c.Name, c.worldSince())
 	if err != nil {
 		return fmt.Errorf("lookup fresh backup: %w", err)
 	}
 	if ok {
-		return r.finishReap(ctx, now, c, fresh.Ref, sum)
+		return r.finishReap(ctx, now, c, crd, fresh.Ref, sum)
+	}
+	if c.retiring() {
+		// A retired server that never had a world has nothing to archive.
+		return r.retire(ctx, now, c, crd, sum)
 	}
 	if c.OwnerID == "" {
 		if err := r.Store.RestartClock(ctx, c.Name, now); err != nil {
@@ -625,6 +700,58 @@ func (r *Reaper) reapNoWorld(ctx context.Context, now time.Time, c Candidate, su
 		r.log().Error("reaper: audit reap_world failed", "server", c.Name, "err", err)
 	}
 	r.log().Info("reaper: idle server released; it had no world to archive", "server", c.Name, "former_owner", c.OwnerID)
+	return nil
+}
+
+// retire carries out a retirement once the world is archived and its volume
+// deleted, or there was none: a given-up server is released for someone else to
+// claim, and a deleted one loses its MinecraftServer and then its row.
+func (r *Reaper) retire(ctx context.Context, now time.Time, c Candidate, crd ServerCRD, sum *Summary) error {
+	if !c.RetireDelete {
+		if err := r.Store.ReleaseWorld(ctx, c.Name, now); err != nil {
+			return fmt.Errorf("release world: %w", err)
+		}
+		if err := r.Store.Audit(ctx, AuditRecord{Action: ActionReleaseWorld, ServerName: c.Name, FormerOwner: c.OwnerID}); err != nil {
+			r.log().Error("reaper: audit release_world failed", "server", c.Name, "err", err)
+		}
+		sum.Released++
+		r.log().Info("reaper: server given up and released", "server", c.Name, "former_owner", c.OwnerID)
+		return nil
+	}
+	// The row goes last: a failure in between leaves a row that still asks for
+	// its deletion, and the next run finishes it (forgetServer).
+	if err := r.Cluster.DeleteServer(ctx, c.Name, crd.UID); err != nil {
+		return fmt.Errorf("delete server: %w", err)
+	}
+	return r.deleteRow(ctx, now, c, sum)
+}
+
+// forgetServer finishes the deletion of a server whose MinecraftServer is gone.
+// A world volume left behind (the StatefulSet retains claims, so removing the
+// MinecraftServer by hand leaves it) is never deleted unarchived, and without the
+// MinecraftServer the reaper cannot hold it still to archive it: an operator
+// takes it from there, and the run reports the server until then.
+func (r *Reaper) forgetServer(ctx context.Context, now time.Time, c Candidate, sum *Summary) error {
+	pvc := WorldPVCName(c.Name)
+	exists, err := r.Cluster.WorldExists(ctx, pvc)
+	if err != nil {
+		return fmt.Errorf("look up world volume: %w", err)
+	}
+	if exists {
+		return fmt.Errorf("its MinecraftServer is gone but world volume %s is still there; archive and remove it by hand to finish the deletion", pvc)
+	}
+	return r.deleteRow(ctx, now, c, sum)
+}
+
+func (r *Reaper) deleteRow(ctx context.Context, now time.Time, c Candidate, sum *Summary) error {
+	if err := r.Store.DeleteServerRow(ctx, c.Name, now); err != nil {
+		return fmt.Errorf("mark server deleted: %w", err)
+	}
+	if err := r.Store.Audit(ctx, AuditRecord{Action: ActionDeleteServer, ServerName: c.Name, FormerOwner: c.OwnerID}); err != nil {
+		r.log().Error("reaper: audit delete_server failed", "server", c.Name, "err", err)
+	}
+	sum.ServersDeleted++
+	r.log().Info("reaper: server deleted", "server", c.Name, "former_owner", c.OwnerID)
 	return nil
 }
 

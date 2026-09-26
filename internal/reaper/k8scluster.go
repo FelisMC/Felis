@@ -33,7 +33,8 @@ const gamePodComponent = "server"
 
 // K8sCluster is the production Cluster backed by a controller-runtime client
 // (spec §4, §18). It reads spec.reaperExempt, stops a server and holds its world
-// volume through the maintenance lock, and deletes the world PVC — nothing else.
+// volume through the maintenance lock, deletes the world PVC, and removes the
+// MinecraftServer of a server an admin deleted — nothing else.
 type K8sCluster struct {
 	c         client.Client
 	namespace string
@@ -60,7 +61,7 @@ func (k *K8sCluster) Inspect(ctx context.Context, name string) (ServerCRD, error
 	if err := k.get(ctx, name, &ms); err != nil {
 		return ServerCRD{}, err
 	}
-	return ServerCRD{Exempt: ms.Spec.ReaperExempt, PVC: WorldPVCName(name)}, nil
+	return ServerCRD{Exempt: ms.Spec.ReaperExempt, PVC: WorldPVCName(name), UID: string(ms.UID)}, nil
 }
 
 // HoldWorld implements Cluster. The lock is the same Annotation felis-api
@@ -230,6 +231,30 @@ func (k *K8sCluster) DeletePVC(ctx context.Context, pvc string) error {
 		return err
 	}
 	return nil
+}
+
+// DeleteServer implements Cluster. The read and the delete are one step (the
+// delete carries the resourceVersion read), so the object removed is the one
+// whose uid was checked: a server made again under the name is refused.
+func (k *K8sCluster) DeleteServer(ctx context.Context, name, uid string) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var ms v1alpha1.MinecraftServer
+		switch err := k.get(ctx, name, &ms); {
+		case errors.Is(err, ErrNotFound):
+			return nil
+		case err != nil:
+			return err
+		}
+		if string(ms.UID) != uid {
+			return fmt.Errorf("MinecraftServer %s is another server now (uid %s, inspected %s)", name, ms.UID, uid)
+		}
+		rv, u := ms.ResourceVersion, ms.UID
+		err := k.c.Delete(ctx, &ms, client.Preconditions{UID: &u, ResourceVersion: &rv})
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return err
+	})
 }
 
 func (k *K8sCluster) get(ctx context.Context, name string, ms *v1alpha1.MinecraftServer) error {

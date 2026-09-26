@@ -331,16 +331,31 @@ func TestReaperRBAC_GatedOnRetention(t *testing.T) {
 	}
 }
 
-// TestNoIdentityDeletesMinecraftServers locks the lifecycle invariant: the
-// MinecraftServer CR is the retained source of truth (released by Stop + PVC
-// reclaim, never hard-deleted, so a former owner can re-claim within the retention
-// window — spec §466). No control-plane identity may hold minecraftservers:delete;
-// if a future change adds it, this fails loudly so the decision is deliberate.
-func TestNoIdentityDeletesMinecraftServers(t *testing.T) {
+// TestOnlyReaperDeletesMinecraftServers locks the lifecycle invariant: a
+// MinecraftServer is retained when its world is reaped (released by Stop + PVC
+// reclaim, so it can be claimed again), and removed only when an admin deletes the
+// server, by the reaper, after it archived and deleted the world. No other
+// control-plane identity may hold minecraftservers:delete, and without a reaper
+// deployed none does.
+func TestOnlyReaperDeletesMinecraftServers(t *testing.T) {
 	for _, role := range ControlPlaneRBAC(testParams()).Roles {
 		if hasRule(role, groupFelis, "minecraftservers", "delete") {
-			t.Errorf("%s grants minecraftservers:delete — the CR is retained, never hard-deleted", role.Name)
+			t.Errorf("%s grants minecraftservers:delete with no reaper deployed", role.Name)
 		}
+	}
+	reaper := 0
+	for _, role := range ControlPlaneRBAC(reaperParams()).Roles {
+		if !hasRule(role, groupFelis, "minecraftservers", "delete") {
+			continue
+		}
+		if role.Name != "felis-reaper" {
+			t.Errorf("%s grants minecraftservers:delete — only the reaper removes a server, after archiving its world", role.Name)
+			continue
+		}
+		reaper++
+	}
+	if reaper != 1 {
+		t.Error("the reaper must delete minecraftservers (an admin's deletion of a server)")
 	}
 }
 

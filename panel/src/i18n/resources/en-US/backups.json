@@ -7,6 +7,7 @@
   "latest_title": "Latest backup",
   "history_note": "Backups can be restored until they expire, then they are cleaned up automatically. Each server keeps only its most recent manual backups and its most recent scheduled backups (older ones of the same kind are removed once a new one finishes), and its last 3 pre-restore snapshots.",
   "reason_inactive": "Idle archive",
+  "reason_released": "Archived when given up or deleted",
   "reason_manual": "Manual backup",
   "reason_pre_restore": "Pre-restore snapshot",
   "reason_scheduled": "Scheduled backup",

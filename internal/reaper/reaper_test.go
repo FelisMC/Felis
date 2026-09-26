@@ -115,6 +115,9 @@ type fakeCluster struct {
 	held     map[string]bool // servers held right now
 	holds    []string
 	lost     context.CancelCauseFunc
+
+	deletedServers  []string // name/uid of each DeleteServer
+	deleteServerErr error
 }
 
 func (c *fakeCluster) HoldWorld(ctx context.Context, name string) (context.Context, func(), error) {
@@ -167,10 +170,24 @@ func (c *fakeCluster) DeletePVC(ctx context.Context, pvc string) error {
 	return nil
 }
 
+func (c *fakeCluster) DeleteServer(ctx context.Context, name, uid string) error {
+	if c.deleteServerErr != nil {
+		return c.deleteServerErr
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	c.deletedServers = append(c.deletedServers, name+"/"+uid)
+	delete(c.crds, name)
+	c.rec.add("deleteServer")
+	return nil
+}
+
 // ---- fake Store -----------------------------------------------------------
 
 type fakeBackup struct {
 	id, server, ref    string
+	owner              string
 	reason             string
 	size               int64
 	status             string // present | deleted
@@ -190,6 +207,8 @@ type fakeStore struct {
 	backups   []*fakeBackup
 	audits    []AuditRecord
 	released  []string
+	deleted   []string
+	deleteErr error
 	listErr   error
 	insertErr error
 	liveErr   error
@@ -210,7 +229,7 @@ func (s *fakeStore) ListActiveServers(context.Context) ([]Candidate, error) {
 func (s *fakeStore) FreshBackup(_ context.Context, server string, since time.Time) (Fresh, bool, error) {
 	var found *fakeBackup
 	for _, b := range s.backups {
-		if b.server == server && b.status == "present" && b.reason == ReasonInactive && !b.createdAt.Before(since) && b.corruptAt.IsZero() {
+		if b.server == server && b.status == "present" && (b.reason == ReasonInactive || b.reason == ReasonReleased) && !b.createdAt.Before(since) && b.corruptAt.IsZero() {
 			if found == nil || (b.offsite && !found.offsite) {
 				found = b
 			}
@@ -227,7 +246,7 @@ func (s *fakeStore) InsertBackup(_ context.Context, rec BackupRecord) error {
 		return s.insertErr
 	}
 	s.backups = append(s.backups, &fakeBackup{
-		id: rec.ID, server: rec.ServerName, ref: rec.BackupRef, reason: rec.Reason, size: rec.SizeBytes,
+		id: rec.ID, server: rec.ServerName, owner: rec.FormerOwner, ref: rec.BackupRef, reason: rec.Reason, size: rec.SizeBytes,
 		status: "present", createdAt: s.clock, expires: rec.ExpiresAt, sha: rec.SHA256, skipped: rec.SkippedEntries,
 	})
 	s.rec.add("insert")
@@ -240,8 +259,33 @@ func (s *fakeStore) ReleaseWorld(_ context.Context, name string, at time.Time) e
 	c.LastActiveAt = at
 	c.Warned3dAt = time.Time{}
 	c.Warned1dAt = time.Time{}
+	if !c.RetireDelete {
+		c.RetireRequestedAt = time.Time{}
+	}
 	s.released = append(s.released, name)
 	s.rec.add("release")
+	return nil
+}
+
+// DeleteServerRow drops the row from the listing, as deleted_at does, and only
+// when it asks for its deletion (PGStore's condition).
+func (s *fakeStore) DeleteServerRow(_ context.Context, name string, _ time.Time) error {
+	if s.deleteErr != nil {
+		return s.deleteErr
+	}
+	c := s.byName[name]
+	if c == nil || !c.RetireDelete {
+		return nil
+	}
+	delete(s.byName, name)
+	for i, n := range s.order {
+		if n == name {
+			s.order = append(s.order[:i], s.order[i+1:]...)
+			break
+		}
+	}
+	s.deleted = append(s.deleted, name)
+	s.rec.add("deleteRow")
 	return nil
 }
 
@@ -277,12 +321,12 @@ func (s *fakeStore) PresentBackupBytes(context.Context) (int64, error) {
 func (s *fakeStore) EvictableBackups(context.Context) ([]StoredBackup, error) {
 	var ps []*fakeBackup
 	for _, b := range s.backups {
-		if b.status == "present" && (b.reason != ReasonInactive || b.offsite) {
+		if b.status == "present" && ((b.reason != ReasonInactive && b.reason != ReasonReleased) || b.offsite) {
 			ps = append(ps, b)
 		}
 	}
 	sort.SliceStable(ps, func(i, j int) bool {
-		if ri, rj := ps[i].reason == ReasonInactive, ps[j].reason == ReasonInactive; ri != rj {
+		if ri, rj := isArchive(ps[i].reason), isArchive(ps[j].reason); ri != rj {
 			return rj
 		}
 		return ps[i].createdAt.Before(ps[j].createdAt)
@@ -293,6 +337,8 @@ func (s *fakeStore) EvictableBackups(context.Context) ([]StoredBackup, error) {
 	}
 	return out, nil
 }
+
+func isArchive(reason string) bool { return reason == ReasonInactive || reason == ReasonReleased }
 
 func (s *fakeStore) ListExpiredBackups(_ context.Context, now time.Time) ([]StoredBackup, error) {
 	var out []StoredBackup
@@ -397,7 +443,7 @@ func newReaper(cfg Config, cands ...Candidate) (*Reaper, *fakeStore, *fakeCluste
 		cc := cands[i]
 		st.byName[cc.Name] = &cc
 		st.order = append(st.order, cc.Name)
-		cl.crds[cc.Name] = ServerCRD{PVC: "world-" + cc.Name + "-0"}
+		cl.crds[cc.Name] = ServerCRD{PVC: "world-" + cc.Name + "-0", UID: "uid-" + cc.Name}
 	}
 	ar := &fakeArchiver{rec: rec}
 	r := &Reaper{

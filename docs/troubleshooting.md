@@ -963,12 +963,15 @@ failing: `sudo felis offsite status` (§16).
 Each run ends with one line:
 
 ```
-felis reaper: evaluated=12 reaped=1 awaiting_offsite=0 awaiting_stop=0 warned=2 skipped=0 store_full=0 evicted=0 expired=3 expire_failed=0 verified=6 corrupt=0 verify_failed=0 swept=0 orphan_archives=0
+felis reaper: evaluated=12 reaped=1 released=0 deleted=0 awaiting_offsite=0 awaiting_stop=0 warned=2 skipped=0 store_full=0 evicted=0 expired=3 expire_failed=0 verified=6 corrupt=0 verify_failed=0 swept=0 orphan_archives=0
 ```
 
-`skipped` counts servers the run failed on (steps 1–3 above, or the cluster or
-the database answering with an error; exempt servers and rows whose CRD is gone
-are not counted), `store_full` the subset kept because the backup store is full,
+`released` and `deleted` count retirements carried out: servers their owner gave
+up (or an admin released) and servers an admin deleted, each world archived
+first as a `released` backup. `skipped` counts servers the run failed on (steps
+1–3 above, or the cluster or the database answering with an error; exempt
+servers and rows whose CRD is gone are not counted, except a deletion whose
+MinecraftServer is gone while its world volume remains), `store_full` the subset kept because the backup store is full,
 and `expire_failed` expired backups it could not remove. `awaiting_stop` counts
 idle servers left for the next run because they were not yet down (step 0); it
 does not fail the run, but a server that stays there for days is being started

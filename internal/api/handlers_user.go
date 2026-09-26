@@ -39,6 +39,12 @@ func (a *API) handleWake(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	// A server its owner gave up, or an admin is deleting, stays stopped until the
+	// reaper archives it: a start would change the world it archives.
+	if rec != nil && rec.Retire != nil {
+		writeError(w, r, errServerRetiring)
+		return
+	}
 	if !a.limiter().allowed(name, a.WakeCooldown) {
 		writeError(w, r, newError(http.StatusTooManyRequests, "cooldown", "wake is cooling down, retry shortly"))
 		return
@@ -135,6 +141,12 @@ func (a *API) handleClaim(w http.ResponseWriter, r *http.Request) {
 			"link your Minecraft account before claiming (see /api/v1/account/link/start)"))
 		return
 	}
+	// A server with a pending deletion is not claimable (ClaimServer refuses it
+	// too); saying why beats the 409 already_claimed that would otherwise explain it.
+	if rec, err := a.Repo.ServerByName(r.Context(), name); err == nil && rec.Retire != nil {
+		writeError(w, r, errServerRetiring)
+		return
+	}
 
 	// ② quota gate, evaluated before the ownership write. All four dimensions
 	// (servers, CPU, memory, storage) are checked against the user's quota caps
@@ -224,6 +236,11 @@ func (a *API) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		if !a.isOwnerOrAdmin(p, rec) {
 			info = publicServerInfo(info)
+		} else if rec != nil && rec.Retire != nil {
+			// A pending retirement is Postgres state the cluster does not hold.
+			withRetire := *info
+			withRetire.Retiring = rec.Retire
+			info = &withRetire
 		}
 	}
 	writeJSON(w, http.StatusOK, info)
@@ -348,9 +365,10 @@ func (a *API) handleFleet(w http.ResponseWriter, r *http.Request) {
 	for i, s := range servers {
 		o, known := owners[s.Name]
 		system := naming.IsSystemServer(s.Name)
+		s.Retiring = o.Retire
 		views[i] = fleetServerView{ServerInfo: s, Owner: o.Owner, System: system,
 			Owned:        o.OwnerID != "" && o.OwnerID == p.UserID,
-			Claimable:    known && o.OwnerID == "" && !system,
+			Claimable:    known && o.OwnerID == "" && o.Retire == nil && !system,
 			OwnerUnknown: unknown}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": views})
@@ -369,8 +387,8 @@ type fleetServerView struct {
 	// Owned is true when the caller claimed this server, decided by account id so
 	// an owner without an email is still recognized.
 	Owned bool `json:"owned"`
-	// Claimable is true for a live, unclaimed, non-system server: the same rule
-	// ClaimServer enforces. It is false whenever ownership is unknown.
+	// Claimable is true for a live, unclaimed, non-system server with no pending
+	// deletion: the same rule ClaimServer enforces. It is false whenever ownership is unknown.
 	Claimable bool `json:"claimable"`
 	// OwnerUnknown is true when the best-effort owner lookup failed, so an empty
 	// Owner says nothing about whether the server is claimed.

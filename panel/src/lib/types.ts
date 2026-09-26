@@ -17,6 +17,16 @@ export type Phase =
 
 export type AutostartPolicy = "ownerOnly" | "public" | "allowlist";
 
+/** RetireState is a pending retirement (Go RetireState): the owner gave the
+ *  server up, or with `delete` an admin is deleting it. The reaper carries it out
+ *  on its next daily run (archive the world, delete its volume, release the
+ *  server, and for a deletion remove it); until then the server stays stopped and
+ *  cannot be woken or claimed. Only the owner and admins are shown it. */
+export interface RetireState {
+  requested_at: string;
+  delete: boolean;
+}
+
 /** MyServerView is the GET /me/servers row (wrapped under { servers: [...] }).
  *  Only this projection says whether the caller owns or may claim a server.
  *  The live fields come from the CRD best-effort; desiredState, autostartPolicy
@@ -40,6 +50,8 @@ export interface MyServerView {
   autoRestarts?: number;
   /** True for a Failed server no automatic retry will bring up. */
   startGaveUp?: boolean;
+  /** A pending retirement; present on the caller's own rows only. */
+  retiring?: RetireState;
 }
 
 /** ServerStatus is GET /servers/{name}/status (Go ServerInfo). It never carries
@@ -77,6 +89,11 @@ export interface ServerStatus {
   /** True for a Failed server no automatic retry will bring up; a Failed server
    *  without it is still in its restart backoff. */
   startGaveUp?: boolean;
+  /** A platform system server the reaper never touches, so it cannot be given
+   *  up or deleted. Owner and admin view only. */
+  reaperExempt?: boolean;
+  /** A pending retirement. Owner and admin view only. */
+  retiring?: RetireState;
 }
 
 /** WhitelistResult projects GET /servers/{name}/access/whitelist (spec §7 access).

@@ -216,3 +216,36 @@ func TestGamePodComponentMatchesOperator(t *testing.T) {
 		t.Fatalf("gamePodComponent = %q, operator labels its pods %q", gamePodComponent, operator.ComponentValue)
 	}
 }
+
+// DeleteServer removes the MinecraftServer Inspect returned, and nothing that
+// merely carries its name: a server made again under the name (another uid)
+// stays, and one already gone is not an error.
+func TestDeleteServerRemovesOnlyTheInspectedServer(t *testing.T) {
+	ms := holdServer(v1alpha1.DesiredStopped, v1alpha1.PhaseStopped)
+	ms.UID = "uid-1"
+	k, c, _ := holdCluster(t, ms)
+	ctx := context.Background()
+
+	crd, err := k.Inspect(ctx, "survival")
+	if err != nil || crd.UID != "uid-1" {
+		t.Fatalf("Inspect = %+v, %v; want uid-1", crd, err)
+	}
+
+	if err := k.DeleteServer(ctx, "survival", "uid-0"); err == nil {
+		t.Fatal("DeleteServer with another uid succeeded")
+	}
+	var got v1alpha1.MinecraftServer
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "minecraft", Name: "survival"}, &got); err != nil {
+		t.Fatalf("the server of another uid was deleted: %v", err)
+	}
+
+	if err := k.DeleteServer(ctx, "survival", crd.UID); err != nil {
+		t.Fatalf("DeleteServer: %v", err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "minecraft", Name: "survival"}, &got); err == nil {
+		t.Fatal("the server is still there")
+	}
+	if err := k.DeleteServer(ctx, "survival", crd.UID); err != nil {
+		t.Fatalf("DeleteServer of a server already gone = %v, want nil", err)
+	}
+}

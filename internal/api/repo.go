@@ -15,6 +15,19 @@ type ServerRecord struct {
 	OwnerID string
 	// CachedPhase is the non-authoritative phase projection used for fast lists.
 	CachedPhase string
+	// Retire is the pending request to give the server up or delete it, nil when
+	// there is none (PUT /servers/{name}/retirement).
+	Retire *RetireState
+}
+
+// RetireState is a server's pending retirement: its owner gave it up, or an admin
+// asked for it to be deleted (Delete). The reaper carries it out on its next run
+// (archive the world, delete the volume, release the server, and with Delete also
+// remove the server itself); until then the server stays stopped and cannot be
+// woken or claimed.
+type RetireState struct {
+	RequestedAt time.Time `json:"requested_at"`
+	Delete      bool      `json:"delete"`
 }
 
 // MyServerView is a row of GET /api/v1/me/servers: a server the caller owns,
@@ -38,6 +51,8 @@ type MyServerView struct {
 	PlayerCountUnknown bool   `json:"playerCountUnknown,omitempty"`
 	AutoRestarts       int32  `json:"autoRestarts,omitempty"`
 	StartGaveUp        bool   `json:"startGaveUp,omitempty"`
+	// Retiring is the pending retirement of a server the caller owns.
+	Retiring *RetireState `json:"retiring,omitempty"`
 }
 
 // ServerOwnership is one live server's claim state as the fleet read joins it.
@@ -49,6 +64,9 @@ type ServerOwnership struct {
 	// Owner is the claiming account's display identity (email, or username when
 	// the address is absent), "" while unclaimed.
 	Owner string
+	// Retire is the server's pending retirement, nil when there is none. A server
+	// being deleted is not claimable even while it has no owner.
+	Retire *RetireState
 }
 
 // AuditEntry is one row written to audit_logs (spec §6). Actor is display text:
@@ -325,6 +343,7 @@ type Repo interface {
 	// QuotaCheck remains the advisory pre-check for the handler's fast-path 403.
 	// A successful claim resets last_active_at to now and clears warned_*, so the
 	// reaper counts idleness from the claim.
+	// A server with a pending retirement is not claimable either (false).
 	ClaimServer(ctx context.Context, name, userID string) (bool, error)
 	// UserInAllowlist reports whether the user's linked UUID is on the server
 	// allowlist (spec §9.4).
@@ -345,6 +364,15 @@ type Repo interface {
 	// Both allowlist checks above skip revoked entries, and a change of owner
 	// (claim, reaper release, account deletion) empties the list.
 	SetAllowlistWake(ctx context.Context, name, mcUUID string, canWake bool) error
+	// RequestRetire records that the server is to be given up, or deleted when
+	// deleteServer, and returns the pending request. Asking again keeps the first
+	// request time, and a deletion once asked for stays one. ErrNotFound when the
+	// server does not exist.
+	RequestRetire(ctx context.Context, name string, deleteServer bool) (RetireState, error)
+	// CancelRetire drops the server's pending retirement; with none pending it
+	// changes nothing. A pending deletion is dropped only when mayCancelDelete,
+	// and otherwise ErrConflict. ErrNotFound when the server does not exist.
+	CancelRetire(ctx context.Context, name string, mayCancelDelete bool) error
 	// UserByMCUUID resolves a verified in-game UUID to the user_id it is linked to
 	// (spec §10 account_links), or ErrNotFound when the UUID is not linked. The
 	// internal-face wake uses it to apply the owner bypass for a player known only

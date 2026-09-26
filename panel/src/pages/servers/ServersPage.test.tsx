@@ -192,3 +192,54 @@ describe("ServersPage servers asked to move", () => {
     expect(runningCard.previousElementSibling?.textContent).toBe("0");
   });
 });
+
+describe("ServersPage retiring servers", () => {
+  it("shows a server given up or being deleted with its badge and no start", async () => {
+    const requested_at = new Date().toISOString();
+    calls.fleet.mockResolvedValue([
+      row("survival", { owner: "steve-mc", retiring: { requested_at, delete: false } }),
+      row("creative", { owner: "alice@example.test", retiring: { requested_at, delete: true } }),
+      row("skyblock", { owner: "bob@example.test" }),
+    ]);
+    render(
+      <MemoryRouter>
+        <ServersPage />
+      </MemoryRouter>,
+    );
+
+    const survival = await tableRow("survival");
+    expect(survival.getByText("Given up")).toBeTruthy();
+    expect(survival.queryByRole("button", { name: /Wake/ })).toBeNull();
+    const creative = await tableRow("creative");
+    expect(creative.getByText("Deleting")).toBeTruthy();
+    expect(creative.queryByRole("button", { name: /Wake/ })).toBeNull();
+    const skyblock = await tableRow("skyblock");
+    expect(skyblock.getByRole("button", { name: /Wake/ })).toBeTruthy();
+  });
+
+  it("marks the owner's own server given up in their list", async () => {
+    tier.isAdmin = false;
+    calls.myServers.mockResolvedValue([
+      {
+        name: "survival",
+        subdomain: "survival",
+        owned: true,
+        claimable: false,
+        phase: "Stopped",
+        desiredState: "Stopped",
+        playersOnline: 0,
+        playersMax: 20,
+        retiring: { requested_at: new Date().toISOString(), delete: false },
+      } satisfies MyServerView,
+    ]);
+    render(
+      <MemoryRouter>
+        <ServersPage />
+      </MemoryRouter>,
+    );
+
+    const survival = await tableRow("survival");
+    expect(survival.getByText("Given up")).toBeTruthy();
+    expect(survival.queryByRole("button", { name: /Wake/ })).toBeNull();
+  });
+});

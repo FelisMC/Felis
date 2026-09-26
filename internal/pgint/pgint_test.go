@@ -647,32 +647,34 @@ func TestSeedServerReusedNameStartsClean(t *testing.T) {
 	}
 	past := time.Now().Add(-90 * 24 * time.Hour)
 	exec(`UPDATE servers SET owner_id = $2, claimed_at = $3, last_active_at = $3, warned_3d_at = $3,
-		warned_1d_at = $3, cached_phase = 'Running', created_at = $3, deleted_at = $3 WHERE name = $1`, name, u.ID, past)
+		warned_1d_at = $3, cached_phase = 'Running', created_at = $3, deleted_at = $3,
+		retire_requested_at = $3, retire_delete = true WHERE name = $1`, name, u.ID, past)
 	exec(`INSERT INTO server_aliases (subdomain, server_name) VALUES ($1, $2)`, oldSub2, name)
 	exec(`INSERT INTO server_allowlist (server_name, mc_uuid) VALUES ($1, $2)`, name, testUUID(t))
 
 	state := func() string {
 		t.Helper()
 		var owner, phase sql.NullString
-		var claimed, w3, w1, deleted sql.NullTime
+		var claimed, w3, w1, deleted, retireAt sql.NullTime
+		var retireDelete bool
 		var created, active time.Time
 		var cpu, mem, stor, allow int
 		var aliases string
 		if err := db.QueryRowContext(ctx,
 			`SELECT owner_id, claimed_at, warned_3d_at, warned_1d_at, cached_phase, deleted_at, created_at, last_active_at,
-			        cached_cpu_milli, cached_memory_mb, cached_storage_mb,
+			        cached_cpu_milli, cached_memory_mb, cached_storage_mb, retire_requested_at, retire_delete,
 			        (SELECT count(*) FROM server_allowlist WHERE server_name = s.name),
 			        (SELECT COALESCE(string_agg(subdomain, ',' ORDER BY subdomain), '') FROM server_aliases WHERE server_name = s.name)
 			 FROM servers s WHERE name = $1`, name).Scan(
-			&owner, &claimed, &w3, &w1, &phase, &deleted, &created, &active, &cpu, &mem, &stor, &allow, &aliases); err != nil {
+			&owner, &claimed, &w3, &w1, &phase, &deleted, &created, &active, &cpu, &mem, &stor, &retireAt, &retireDelete, &allow, &aliases); err != nil {
 			t.Fatalf("read the servers row: %v", err)
 		}
 		recent := func(at time.Time) bool { return time.Since(at) < time.Hour }
-		return fmt.Sprintf("owner=%v claimed=%v warned=%v/%v phase=%v deleted=%v fresh=%v/%v cache=%d/%d/%d allow=%d aliases=%s",
+		return fmt.Sprintf("owner=%v claimed=%v warned=%v/%v phase=%v deleted=%v fresh=%v/%v cache=%d/%d/%d retire=%v/%v allow=%d aliases=%s",
 			owner.Valid, claimed.Valid, w3.Valid, w1.Valid, phase.Valid, deleted.Valid, recent(created), recent(active),
-			cpu, mem, stor, allow, strings.ReplaceAll(strings.ReplaceAll(aliases, oldSub2, "old2"), oldSub, "old"))
+			cpu, mem, stor, retireAt.Valid, retireDelete, allow, strings.ReplaceAll(strings.ReplaceAll(aliases, oldSub2, "old2"), oldSub, "old"))
 	}
-	earlier := "owner=true claimed=true warned=true/true phase=true deleted=true fresh=false/false cache=1000/2048/10240 allow=1 aliases=old,old2"
+	earlier := "owner=true claimed=true warned=true/true phase=true deleted=true fresh=false/false cache=1000/2048/10240 retire=true/true allow=1 aliases=old,old2"
 	if got := state(); got != earlier {
 		t.Fatalf("setup: %s, want %s", got, earlier)
 	}
@@ -689,7 +691,7 @@ func TestSeedServerReusedNameStartsClean(t *testing.T) {
 		t.Fatalf("a refused seed changed the row: %s, want %s", got, earlier)
 	}
 
-	clean := "owner=false claimed=false warned=false/false phase=false deleted=false fresh=true/true cache=2000/4096/20480 allow=0 aliases=" + newSub
+	clean := "owner=false claimed=false warned=false/false phase=false deleted=false fresh=true/true cache=2000/4096/20480 retire=false/false allow=0 aliases=" + newSub
 	for i := 0; i < 2; i++ { // a retried create lands on the same state
 		if err := repo.SeedServer(ctx, name, newSub, 2000, 4096, 20480); err != nil {
 			t.Fatalf("seed the new server (try %d): %v", i+1, err)

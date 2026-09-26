@@ -17,6 +17,7 @@ import { CopyAddress } from "@/components/CopyAddress";
 import type { Phase, AutostartPolicy } from "@/lib/types";
 import { EditServerDialog } from "@/components/EditServerDialog";
 import { PowerButton } from "@/components/PowerButton";
+import { RetireCard, RetireNotice } from "@/components/Retirement";
 import { cn } from "@/lib/utils";
 import { InlineError } from "@/components/MessageLine";
 
@@ -281,12 +282,17 @@ export function ServerConsole() {
                   failed={failure !== null}
                   playersOnline={data.playersOnline}
                   playerCountUnknown={data.playerCountUnknown}
+                  retiring={data.retiring}
                   onChanged={reload}
                 />
               </div>
             }
             className="mb-6"
           />
+
+          {data.retiring && (
+            <RetireNotice name={name} retiring={data.retiring} isAdmin={isAdmin} onChanged={reload} />
+          )}
 
           <div className="grid grid-cols-1 gap-6 lg:grid-cols-4 flex-1 lg:min-h-0 min-h-0">
             {/* Left/Main column: Console */}
@@ -397,6 +403,13 @@ export function ServerConsole() {
                 </div>
                 <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
               </Link>
+
+              {/* Giving the server up (owner) or deleting it (admin) closes the
+                  sidebar. A system server is never retired, and one already on its
+                  way out shows the notice above with the way back instead. */}
+              {owned && !data.reaperExempt && !data.retiring && (
+                <RetireCard name={name} label={data.displayName || data.name} isAdmin={isAdmin} onChanged={reload} />
+              )}
             </div>
           </div>
         </>

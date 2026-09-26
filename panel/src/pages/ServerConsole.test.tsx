@@ -7,14 +7,13 @@ import { ServerConsole } from "./ServerConsole";
 import { STATUS_POLL_FAST_MS, STATUS_POLL_SLOW_MS } from "@/lib/hooks";
 
 const calls = vi.hoisted(() => ({ status: vi.fn(), myServers: vi.fn(), listImages: vi.fn() }));
-vi.mock("@/lib/tier", () => ({
-  useTier: () => ({
-    loading: false,
-    identity: { user_id: "admin-1", email: "admin@example.test", role: "admin" },
-    isAdmin: true,
-    isOwner: false,
-  }),
+const tier = vi.hoisted(() => ({
+  loading: false,
+  identity: { user_id: "admin-1", email: "admin@example.test", role: "admin" },
+  isAdmin: true,
+  isOwner: false,
 }));
+vi.mock("@/lib/tier", () => ({ useTier: () => tier }));
 vi.mock("@/lib/config", async (importActual) => {
   const actual = await importActual<typeof import("@/lib/config")>();
   return {
@@ -30,6 +29,7 @@ vi.mock("@/lib/api", async (importActual) => {
 vi.mock("@/components/LogConsole", () => ({ LogConsole: () => <div data-testid="log-stream" /> }));
 
 beforeEach(() => {
+  tier.isAdmin = true;
   calls.status.mockReset();
   calls.myServers.mockReset();
   calls.myServers.mockResolvedValue([]);
@@ -149,5 +149,66 @@ describe("ServerConsole following the server", () => {
     expect(screen.getByText(/status backend down/)).toBeTruthy();
     expect(screen.getByTestId("log-stream")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
+  });
+});
+
+describe("ServerConsole retirement", () => {
+  const stopped = (over: Record<string, unknown> = {}) => status({ phase: "Stopped", desiredState: "Stopped", ...over });
+  const mine = (owned: boolean) => [
+    { name: "survival", subdomain: "survival", owned, claimable: false, playersOnline: 0, playersMax: 20 },
+  ];
+  const giveUp = () => screen.queryByRole("button", { name: "Give up" });
+  const del = () => screen.queryByRole("button", { name: "Delete" });
+
+  it("offers the owner a give-up and no deletion", async () => {
+    tier.isAdmin = false;
+    calls.myServers.mockResolvedValue(mine(true));
+    calls.status.mockResolvedValue(stopped());
+    renderConsole();
+
+    expect(await screen.findByRole("button", { name: "Give up" })).toBeTruthy();
+    expect(del()).toBeNull();
+    expect(screen.getByRole("button", { name: "Wake" })).toBeTruthy();
+  });
+
+  it("offers an admin both", async () => {
+    calls.status.mockResolvedValue(stopped());
+    renderConsole();
+
+    expect(await screen.findByRole("button", { name: "Delete" })).toBeTruthy();
+    expect(giveUp()).toBeTruthy();
+  });
+
+  it("offers someone who does not own it neither", async () => {
+    tier.isAdmin = false;
+    calls.myServers.mockResolvedValue(mine(false));
+    calls.status.mockResolvedValue(stopped());
+    renderConsole();
+
+    expect(await screen.findByText("Server is asleep")).toBeTruthy();
+    await waitFor(() => expect(calls.myServers).toHaveBeenCalled());
+    expect(giveUp()).toBeNull();
+  });
+
+  it("offers nothing for a system server", async () => {
+    calls.status.mockResolvedValue(stopped({ reaperExempt: true }));
+    renderConsole();
+
+    expect(await screen.findByText("Server is asleep")).toBeTruthy();
+    expect(giveUp()).toBeNull();
+    expect(del()).toBeNull();
+  });
+
+  it("shows a pending give-up and the way back in place of the card and the wake", async () => {
+    tier.isAdmin = false;
+    calls.myServers.mockResolvedValue(mine(true));
+    calls.status.mockResolvedValue(stopped({ retiring: { requested_at: new Date().toISOString(), delete: false } }));
+    renderConsole();
+
+    expect(await screen.findByText("This server has been given up")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Cancel request" })).toBeTruthy();
+    expect(screen.getByText("Given up")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Wake" })).toBeNull();
+    expect(giveUp()).toBeNull();
   });
 });

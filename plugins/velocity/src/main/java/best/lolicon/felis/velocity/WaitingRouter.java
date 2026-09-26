@@ -651,6 +651,16 @@ public final class WaitingRouter {
                                 NamedTextColor.YELLOW));
                         return;
                     }
+                    if ("server_retiring".equals(e.errorCode())) {
+                        // The owner gave the server up or an admin is deleting it: it
+                        // stays down until the reaper archives it, unless that is
+                        // cancelled in the panel, so there is nothing to wait for.
+                        player.sendMessage(Component.text(
+                                zh ? "「" + serverName + "」已被放弃或正在删除，不能启动。"
+                                   : "« " + serverName + " » has been given up or is being deleted, so it can't be started.",
+                                NamedTextColor.YELLOW));
+                        return;
+                    }
                     if ("start_failed".equals(e.errorCode())) {
                         // The last start failed with its retries spent. The join does
                         // not buy another round of them, so there is nothing to wait for.

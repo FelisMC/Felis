@@ -468,6 +468,7 @@ func serverInfo(ms *v1alpha1.MinecraftServer) *ServerInfo {
 		LegacyForwarding: ms.Labels[v1alpha1.LabelForwarding] == v1alpha1.ForwardingLegacy,
 		AutoRestarts:     ms.Status.AutoRestarts,
 		StartGaveUp:      v1alpha1.StartGaveUp(&ms.Status),
+		ReaperExempt:     ms.Spec.ReaperExempt,
 		Resources:        *ms.Spec.Resources.DeepCopy(),
 	}
 }

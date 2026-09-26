@@ -761,7 +761,7 @@ function fleetView(state: MockState, accountInfo: MockAccount): FleetServer[] {
       playersOnline: s.ready ? s.playersOnline : 0,
       owner: owner ? state.accounts[owner].email : "",
       owned: owner === accountInfo.id,
-      claimable: owner === null,
+      claimable: owner === null && !s.retiring,
     };
   });
 }
@@ -775,7 +775,7 @@ function myServerView(serverInfo: MockServer, accountInfo: MockAccount): MyServe
     name: serverInfo.name,
     subdomain: serverInfo.subdomain,
     owned,
-    claimable: serverInfo.owner === null && accountInfo.linked && !owned,
+    claimable: serverInfo.owner === null && !serverInfo.retiring && accountInfo.linked && !owned,
     phase: serverInfo.phase,
     playersOnline: serverInfo.playersOnline,
     playersMax: serverInfo.playersMax,
@@ -784,6 +784,7 @@ function myServerView(serverInfo: MockServer, accountInfo: MockAccount): MyServe
       desiredState: serverInfo.desiredState,
       autostartPolicy: serverInfo.autostartPolicy,
       playerCountUnknown: serverInfo.playerCountUnknown,
+      retiring: serverInfo.retiring,
     }),
   };
 }
@@ -2234,6 +2235,10 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
       sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
       return true;
     }
+    if (serverInfo.retiring) {
+      sendError(ctx.res, 409, "server_retiring", "this server is being given up or deleted; cancel that first");
+      return true;
+    }
     setPhase(serverInfo, "Starting");
     sendJSON(ctx.res, 200, { name: serverInfo.name, desiredState: "Running" });
     return true;
@@ -2253,6 +2258,10 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
       return true;
     }
     handleCommandMock(ctx, serverInfo);
+    return true;
+  }
+  if (ctx.parts[4] === "retirement" && (is("PUT", ctx) || is("DELETE", ctx))) {
+    await handleRetirementMock(ctx, serverInfo);
     return true;
   }
   if (is("POST", ctx) && ctx.parts[4] === "claim") {
@@ -2693,6 +2702,47 @@ function mockCommandReply(cmd: string): string {
   if (cmd.startsWith("say ")) return `[mock_server] ${cmd.slice(4)}`;
   if (lower === "help") return "--- Showing help ---\n/felis\n/msg\n/list\n/rules";
   return `[mock] command "${cmd}" executed`;
+}
+
+// handleRetirementMock mirrors handlers_retire.go: owner-or-admin, delete is an
+// admin's, the typed name must match, a system server is refused. The mock has no
+// reaper, so the request just sits until cancelled; the cancel of a deletion is an
+// admin's too.
+async function handleRetirementMock(ctx: SessionContext, serverInfo: MockServer): Promise<void> {
+  if (!canManage(ctx.account, serverInfo)) {
+    sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+    return;
+  }
+  const admin = isAdmin(ctx.account.role);
+  if (is("DELETE", ctx)) {
+    if (serverInfo.retiring?.delete && !admin) {
+      sendError(ctx.res, 403, "forbidden", "only an administrator can cancel the deletion of a server");
+      return;
+    }
+    serverInfo.retiring = undefined;
+    ctx.res.statusCode = 204;
+    ctx.res.end();
+    return;
+  }
+  const body = await readJSON<{ confirm?: string; delete?: boolean }>(ctx.req);
+  if (body.delete && !admin) {
+    sendError(ctx.res, 403, "forbidden", "only an administrator can delete a server");
+    return;
+  }
+  if (body.confirm !== serverInfo.name) {
+    sendError(ctx.res, 400, "confirm_mismatch", "type the server's name to confirm");
+    return;
+  }
+  if (serverInfo.reaperExempt) {
+    sendError(ctx.res, 409, "system_server", "a system server cannot be given up or deleted");
+    return;
+  }
+  setPhase(serverInfo, "Stopped");
+  serverInfo.retiring = {
+    requested_at: serverInfo.retiring?.requested_at ?? new Date().toISOString(),
+    delete: (serverInfo.retiring?.delete ?? false) || body.delete === true,
+  };
+  sendJSON(ctx.res, 202, { name: serverInfo.name, retiring: serverInfo.retiring });
 }
 
 function claimServer(ctx: SessionContext, serverInfo: MockServer): void {

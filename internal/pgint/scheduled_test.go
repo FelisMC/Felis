@@ -15,7 +15,8 @@ import (
 // backups: an owned world joined since its owner's newest intact scheduled
 // backup is due once that backup is older than the period, worlds without one
 // first. A previous owner's, a corrupt, a deleted, a pre-claim or a manual
-// backup is no restore point of the current owner's world.
+// backup is no restore point of the current owner's world. A world being given
+// up is never due: the reaper archives it anyway.
 func TestScheduledBackupCandidates(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "sched")
@@ -75,6 +76,10 @@ func TestScheduledBackupCandidates(t *testing.T) {
 	backup(manual, u.ID, "manual", "present", now.Add(-30*time.Minute), false)
 	server("unowned", "", claimed, now.Add(-h), false)
 	server("gone", u.ID, claimed, now.Add(-h), true)
+	retiring := server("retiring", u.ID, claimed, now.Add(-h), false)
+	if _, err := repo.RequestRetire(ctx, retiring, false); err != nil {
+		t.Fatalf("RequestRetire: %v", err)
+	}
 
 	got, err := repo.ScheduledBackupCandidates(ctx, now.Add(-24*h))
 	if err != nil {

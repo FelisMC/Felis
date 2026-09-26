@@ -39,6 +39,22 @@ function notRunning(
 }
 
 describe("NotRunning", () => {
+  it("offers no wake for a server given up or being deleted, only why", () => {
+    render(
+      <NotRunning
+        title="Server is asleep"
+        body="Wake it to manage players."
+        serverName="survival"
+        phase="Stopped"
+        desiredState="Stopped"
+        retiring={{ requested_at: new Date().toISOString(), delete: false }}
+        onWoken={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getByText("Given up")).toBeTruthy();
+  });
+
   it("offers the wake for a server that is down and meant to stay down", () => {
     render(notRunning("Stopped", "Stopped"));
     expect(screen.getByText("Server is asleep")).toBeTruthy();

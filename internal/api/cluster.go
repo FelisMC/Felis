@@ -46,6 +46,13 @@ type ServerInfo struct {
 	// restart backoff and may yet come up on its own.
 	AutoRestarts int32 `json:"autoRestarts,omitempty"`
 	StartGaveUp  bool  `json:"startGaveUp,omitempty"`
+	// ReaperExempt marks a system server (spec.reaperExempt, the lobby): the
+	// reaper never touches it, so it cannot be given up or deleted either.
+	ReaperExempt bool `json:"reaperExempt,omitempty"`
+	// Retiring is the pending request to give the server up or delete it. It is
+	// business state from Postgres, joined onto the owner's and staff's view by
+	// the status route; the cluster never sets it.
+	Retiring *RetireState `json:"retiring,omitempty"`
 	// Resources is the spec's pod resource block. It stays off the wire; a spec
 	// patch reads it so the fields the admin left out keep their values.
 	Resources corev1.ResourceRequirements `json:"-"`

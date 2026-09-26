@@ -824,6 +824,30 @@ func (f *fakeRepo) SetAllowlistWake(_ context.Context, n, uuid string, canWake b
 	}
 	return ErrNotFound
 }
+// RequestRetire and CancelRetire mirror PGRepo's: the first request time is
+// kept, a deletion stays a deletion, and only an admin cancels a deletion.
+func (f *fakeRepo) RequestRetire(_ context.Context, n string, del bool) (RetireState, error) {
+	rec, ok := f.byName[n]
+	if !ok {
+		return RetireState{}, ErrNotFound
+	}
+	if rec.Retire == nil {
+		rec.Retire = &RetireState{RequestedAt: time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)}
+	}
+	rec.Retire.Delete = rec.Retire.Delete || del
+	return *rec.Retire, nil
+}
+func (f *fakeRepo) CancelRetire(_ context.Context, n string, mayCancelDelete bool) error {
+	rec, ok := f.byName[n]
+	if !ok {
+		return ErrNotFound
+	}
+	if rec.Retire != nil && rec.Retire.Delete && !mayCancelDelete {
+		return ErrConflict
+	}
+	rec.Retire = nil
+	return nil
+}
 func (f *fakeRepo) UserByMCUUID(_ context.Context, uuid string) (string, error) {
 	if u, ok := f.links[uuid]; ok && !f.seededDead(u) {
 		return u, nil

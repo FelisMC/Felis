@@ -323,6 +323,27 @@ func TestServerInfoCarriesStartGaveUp(t *testing.T) {
 	}
 }
 
+// A system server reaches the panel marked, so the console offers no give-up or
+// delete the API would refuse; every other server leaves the field out.
+func TestServerInfoCarriesReaperExempt(t *testing.T) {
+	lobby := testServer("lobby", "lobby")
+	lobby.Spec.ReaperExempt = true
+	for _, tc := range []struct {
+		ms   *v1alpha1.MinecraftServer
+		want bool
+	}{{lobby, true}, {testServer("plain", "plain"), false}} {
+		info := serverInfo(tc.ms)
+		b, err := json.Marshal(info)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.ReaperExempt != tc.want || strings.Contains(string(b), `"reaperExempt":true`) != tc.want ||
+			(!tc.want && strings.Contains(string(b), "reaperExempt")) {
+			t.Errorf("%s: reaperExempt = %v, JSON %s; want %v", tc.ms.Name, info.ReaperExempt, b, tc.want)
+		}
+	}
+}
+
 // An admin edits one resource at a time. The view hands the handler the whole
 // pod block, the handler lays the change over it, and the merge patch keeps
 // everything the admin left alone: memory-only keeps the CPU limit, CPU-only

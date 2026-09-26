@@ -689,6 +689,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/servers/{name}/retirement": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Give the server up (owner) or delete it (admin). The reaper carries it out.
+         * @description The server is stopped and the request recorded; the reaper, the one component that deletes a world, carries it out on its next daily run. It archives the world as a released backup (kept for the reaper's retention, recorded against the owner), deletes the world volume and releases the server for anyone to claim; with delete it also removes the server, which frees its name and subdomain. Until then the server cannot be woken or claimed and still counts against the owner's quota, and the request can be cancelled. Repeating it keeps the first request time, and a deletion stays a deletion. confirm must repeat the server's name. Audited as server.release / server.delete.
+         */
+        put: operations["retireServer"];
+        post?: never;
+        /**
+         * Cancel a pending retirement. Only an admin cancels a deletion.
+         * @description The server stays stopped; its owner starts it again when they want it. Cancelling when nothing is pending changes nothing. Audited as server.retire_cancel.
+         */
+        delete: operations["cancelRetire"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/servers/{name}/status": {
         parameters: {
             query?: never;
@@ -2404,6 +2428,10 @@ export interface components {
             autoRestarts?: number;
             /** @description Present and true for a Failed server no automatic retry will bring up: its start timed out with the retries spent, or its spec is invalid. A Failed server without it is still in its restart backoff and may come up on its own. */
             startGaveUp?: boolean;
+            /** @description Present and true for a system server the reaper never touches; it cannot be given up or deleted. */
+            reaperExempt?: boolean;
+            /** @description Owner and staff only. Present while the owner has given the server up or an admin is deleting it; the reaper carries that out on its next run. */
+            retiring?: components["schemas"]["RetireState"];
         };
         /** @description One row of the fleet-wide admin read (internal/api/handlers_user.go fleetServerView). */
         FleetServer: components["schemas"]["ServerInfo"] & {
@@ -2411,12 +2439,18 @@ export interface components {
             owner?: string;
             /** @description True when the caller claimed this server, decided by account id so an owner without an email is still recognized. */
             owned: boolean;
-            /** @description True for a live, unclaimed, non-system server, the same rule the claim route enforces. False whenever ownership is unknown. */
+            /** @description True for a live, unclaimed, non-system server with no pending deletion, the same rule the claim route enforces. False whenever ownership is unknown. */
             claimable: boolean;
             /** @description Present and true when the owner lookup failed, so an absent owner says nothing about whether the server is claimed. */
             ownerUnknown?: boolean;
             /** @description True for a platform-provisioned system service (the login gate, the lobby). Their reserved names are rejected by every per-server route, so the cockpit renders them read-only instead of offering actions that would 400. */
             system?: boolean;
+        };
+        /** @description A pending retirement (internal/api/repo.go RetireState): the owner gave the server up, or with delete an admin is deleting it. The reaper carries it out on its next daily run: it archives the world as a released backup, deletes the world volume and releases the server, and for a deletion also removes it. Until then the server stays stopped and cannot be woken or claimed. */
+        RetireState: {
+            /** Format: date-time */
+            requested_at: string;
+            delete: boolean;
         };
         /** @description One player on a server's wake allowlist (internal/api/repo.go AllowlistEntry): someone who joined the server, and so may wake it under autostartPolicy=allowlist unless the owner took that away. */
         AllowlistEntry: {
@@ -2468,6 +2502,8 @@ export interface components {
             autoRestarts?: number;
             /** @description Owned rows only. Present and true for a Failed server no automatic retry will bring up; waking it from the panel starts it over. */
             startGaveUp?: boolean;
+            /** @description Owned rows only. Present while the server is given up or being deleted. */
+            retiring?: components["schemas"]["RetireState"];
         };
         /** @description One world backup (internal/api/repo.go BackupView). backup_ref is withheld (spec §286). */
         BackupView: {
@@ -2477,7 +2513,7 @@ export interface components {
             former_owner?: string;
             /** Format: int64 */
             size_bytes: number;
-            /** @description inactive_15d (idle reclaim), manual (on demand), pre_restore (the safety snapshot in front of a restore) or scheduled (the daily restore point felis-api takes of a world played since its last one, once the server stops). */
+            /** @description inactive_15d (idle reclaim), released (the world of a server its owner gave up or an admin deleted), manual (on demand), pre_restore (the safety snapshot in front of a restore) or scheduled (the daily restore point felis-api takes of a world played since its last one, once the server stops). */
             reason: string;
             status: string;
             /** Format: date-time */
@@ -3218,7 +3254,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            /** @description Nothing was started. maintenance_in_progress: a restore, backup or file write holds the server's world volume. start_failed: the last start failed and its automatic retries are spent (ServerInfo.startGaveUp); the server stays down until a person starts it from the panel. */
+            /** @description Nothing was started. maintenance_in_progress: a restore, backup or file write holds the server's world volume. start_failed: the last start failed and its automatic retries are spent (ServerInfo.startGaveUp); the server stays down until a person starts it from the panel. server_retiring: the owner gave the server up or an admin is deleting it; it stays down until the reaper archives it. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -3789,7 +3825,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            /** @description A restore, backup or file write holds the server's world volume (maintenance_in_progress); nothing was started. */
+            /** @description Nothing was started. maintenance_in_progress: a restore, backup or file write holds the server's world volume. server_retiring: the server is given up or being deleted (ServerInfo.retiring). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -3882,7 +3918,7 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
-            /** @description Already claimed. */
+            /** @description already_claimed: someone else owns it. server_retiring: the server is being deleted. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -4431,6 +4467,101 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+        };
+    };
+    retireServer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description The server's name */
+                    confirm: string;
+                    /** @description Delete the server (admin only). Default false gives it up. */
+                    delete?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description Recorded; the server is stopped. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        name: string;
+                        retiring: components["schemas"]["RetireState"];
+                    };
+                };
+            };
+            /** @description A malformed body or name, or confirm does not match the name (confirm_mismatch). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description Neither the owner nor an admin, or an owner asking to delete. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            404: components["responses"]["NotFound"];
+            /** @description system_server: a system server is never given up or deleted. world_volume_orphaned: the server is gone from the cluster but its world volume remains, which an operator archives and removes by hand. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    cancelRetire: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Nothing is pending any more. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            /** @description Neither the owner nor an admin, or an owner cancelling an admin's deletion. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            404: components["responses"]["NotFound"];
         };
     };
     status: {

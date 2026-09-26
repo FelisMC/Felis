@@ -392,6 +392,7 @@ export function ServerLuckPerms() {
           desiredState={data.desiredState}
           failure={failure}
           autoRestarts={data.autoRestarts}
+          retiring={data.retiring}
           onWoken={reload}
         />
       ) : (

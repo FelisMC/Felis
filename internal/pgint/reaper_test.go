@@ -40,6 +40,11 @@ func (c *reclaimCluster) HoldWorld(ctx context.Context, _ string) (context.Conte
 
 func (c *reclaimCluster) WorldExists(context.Context, string) (bool, error) { return true, nil }
 
+// DeleteServer is only reached by a retirement, which these tests do not ask for.
+func (c *reclaimCluster) DeleteServer(_ context.Context, name, _ string) error {
+	return errors.New("unexpected deletion of " + name)
+}
+
 type reclaimArchiver struct{ archived []string }
 
 func (a *reclaimArchiver) Archive(_ context.Context, server, _ string) (backup.Archived, error) {

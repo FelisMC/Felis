@@ -21,31 +21,47 @@ func NewPGRepo(db *sql.DB) *PGRepo { return &PGRepo{db: db} }
 func (p *PGRepo) Ping(ctx context.Context) error { return p.db.PingContext(ctx) }
 
 func (p *PGRepo) ServerBySubdomain(ctx context.Context, subdomain string) (*ServerRecord, error) {
-	const q = `SELECT s.name, sa.subdomain, COALESCE(s.owner_id, ''), COALESCE(s.cached_phase, '')
+	const q = `SELECT s.name, sa.subdomain, COALESCE(s.owner_id, ''), COALESCE(s.cached_phase, ''),
+		s.retire_requested_at, s.retire_delete
 		FROM server_aliases sa JOIN servers s ON s.name = sa.server_name
 		WHERE sa.subdomain = $1 AND s.deleted_at IS NULL`
 	var r ServerRecord
-	switch err := p.db.QueryRowContext(ctx, q, subdomain).Scan(&r.Name, &r.Subdomain, &r.OwnerID, &r.CachedPhase); {
+	var retireAt sql.NullTime
+	var retireDelete bool
+	switch err := p.db.QueryRowContext(ctx, q, subdomain).Scan(&r.Name, &r.Subdomain, &r.OwnerID, &r.CachedPhase, &retireAt, &retireDelete); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
 	case err != nil:
 		return nil, err
 	}
+	r.Retire = retireState(retireAt, retireDelete)
 	return &r, nil
 }
 
 func (p *PGRepo) ServerByName(ctx context.Context, name string) (*ServerRecord, error) {
-	const q = `SELECT s.name, COALESCE(sa.subdomain, ''), COALESCE(s.owner_id, ''), COALESCE(s.cached_phase, '')
+	const q = `SELECT s.name, COALESCE(sa.subdomain, ''), COALESCE(s.owner_id, ''), COALESCE(s.cached_phase, ''),
+		s.retire_requested_at, s.retire_delete
 		FROM servers s LEFT JOIN server_aliases sa ON sa.server_name = s.name
 		WHERE s.name = $1 AND s.deleted_at IS NULL`
 	var r ServerRecord
-	switch err := p.db.QueryRowContext(ctx, q, name).Scan(&r.Name, &r.Subdomain, &r.OwnerID, &r.CachedPhase); {
+	var retireAt sql.NullTime
+	var retireDelete bool
+	switch err := p.db.QueryRowContext(ctx, q, name).Scan(&r.Name, &r.Subdomain, &r.OwnerID, &r.CachedPhase, &retireAt, &retireDelete); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
 	case err != nil:
 		return nil, err
 	}
+	r.Retire = retireState(retireAt, retireDelete)
 	return &r, nil
+}
+
+// retireState is a servers row's pending retirement, nil when there is none.
+func retireState(at sql.NullTime, deleteServer bool) *RetireState {
+	if !at.Valid {
+		return nil
+	}
+	return &RetireState{RequestedAt: at.Time, Delete: deleteServer}
 }
 
 func (p *PGRepo) IsLinked(ctx context.Context, userID string) (bool, error) {
@@ -443,11 +459,12 @@ func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string) (bool, er
 	}
 
 	var owned sql.NullString
+	var retiring bool
 	var cpu, mem, stor int
 	switch err := tx.QueryRowContext(ctx,
-		`SELECT owner_id, cached_cpu_milli, cached_memory_mb, cached_storage_mb
+		`SELECT owner_id, retire_requested_at IS NOT NULL, cached_cpu_milli, cached_memory_mb, cached_storage_mb
 		 FROM servers WHERE name = $1 AND deleted_at IS NULL FOR UPDATE`,
-		name).Scan(&owned, &cpu, &mem, &stor); {
+		name).Scan(&owned, &retiring, &cpu, &mem, &stor); {
 	case errors.Is(err, sql.ErrNoRows):
 		return false, ErrNotFound
 	case err != nil:
@@ -455,6 +472,12 @@ func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string) (bool, er
 	}
 	if owned.Valid {
 		return false, nil // already claimed → 409 at the handler
+	}
+	// An unowned server an admin is releasing or deleting: its world is about to
+	// be archived and deleted, or the server itself removed. The handler refuses
+	// it up front; this holds against a request that lands in between.
+	if retiring {
+		return false, nil
 	}
 
 	// The four-dimension gate, re-run inside the transaction. A missing quota
@@ -481,7 +504,7 @@ func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string) (bool, er
 
 	res, err := tx.ExecContext(ctx,
 		`UPDATE servers SET owner_id = $2, claimed_at = now(), last_active_at = now(), warned_3d_at = NULL, warned_1d_at = NULL
-		 WHERE name = $1 AND owner_id IS NULL AND deleted_at IS NULL`,
+		 WHERE name = $1 AND owner_id IS NULL AND deleted_at IS NULL AND retire_requested_at IS NULL`,
 		name, userID)
 	if err != nil {
 		return false, err
@@ -597,6 +620,54 @@ func (p *PGRepo) SetAllowlistWake(ctx context.Context, name, mcUUID string, canW
 	return nil
 }
 
+// RequestRetire records the server's retirement for the reaper to carry out.
+// Asking again keeps the first request time, so the panel's "since" stays true,
+// and a deletion once asked for is not turned back into a release by the owner
+// asking too.
+func (p *PGRepo) RequestRetire(ctx context.Context, name string, deleteServer bool) (RetireState, error) {
+	var st RetireState
+	switch err := p.db.QueryRowContext(ctx,
+		`UPDATE servers
+		    SET retire_requested_at = COALESCE(retire_requested_at, now()),
+		        retire_delete = retire_delete OR $2
+		  WHERE name = $1 AND deleted_at IS NULL
+		  RETURNING retire_requested_at, retire_delete`, name, deleteServer).Scan(&st.RequestedAt, &st.Delete); {
+	case errors.Is(err, sql.ErrNoRows):
+		return RetireState{}, ErrNotFound
+	case err != nil:
+		return RetireState{}, err
+	}
+	return st, nil
+}
+
+// CancelRetire drops the server's pending retirement. The row is locked while
+// the deletion flag is read, so an owner cannot cancel a deletion an admin asked
+// for in between.
+func (p *PGRepo) CancelRetire(ctx context.Context, name string, mayCancelDelete bool) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+	var deleteServer bool
+	switch err := tx.QueryRowContext(ctx,
+		`SELECT retire_delete FROM servers WHERE name = $1 AND deleted_at IS NULL FOR UPDATE`,
+		name).Scan(&deleteServer); {
+	case errors.Is(err, sql.ErrNoRows):
+		return ErrNotFound
+	case err != nil:
+		return err
+	}
+	if deleteServer && !mayCancelDelete {
+		return ErrConflict
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE servers SET retire_requested_at = NULL, retire_delete = false WHERE name = $1`, name); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // UserByMCUUID resolves a verified in-game UUID to its linked user_id (spec §10
 // account_links), or ErrNotFound when the UUID is not linked to any account. A
 // link whose account is dead reads the same as no link at all (audit #33), so the
@@ -647,9 +718,13 @@ func (p *PGRepo) RecordJoin(ctx context.Context, name, mcUUID string) error {
 	return tx.Commit()
 }
 
+// MyServers lists the servers the user owns, each with its pending retirement,
+// and the unowned ones they may claim. An unowned server an admin is releasing or
+// deleting is listed but not claimable.
 func (p *PGRepo) MyServers(ctx context.Context, userID string) ([]MyServerView, error) {
 	const q = `SELECT s.name, COALESCE(sa.subdomain, ''),
-		COALESCE(s.owner_id = $1, false) AS owned, (s.owner_id IS NULL) AS claimable, COALESCE(s.cached_phase, '')
+		COALESCE(s.owner_id = $1, false) AS owned, (s.owner_id IS NULL AND s.retire_requested_at IS NULL) AS claimable,
+		COALESCE(s.cached_phase, ''), s.retire_requested_at, s.retire_delete
 		FROM servers s LEFT JOIN server_aliases sa ON sa.server_name = s.name
 		WHERE s.deleted_at IS NULL AND (s.owner_id = $1 OR s.owner_id IS NULL)
 		ORDER BY s.name`
@@ -661,8 +736,13 @@ func (p *PGRepo) MyServers(ctx context.Context, userID string) ([]MyServerView, 
 	var out []MyServerView
 	for rows.Next() {
 		var v MyServerView
-		if err := rows.Scan(&v.Name, &v.Subdomain, &v.Owned, &v.Claimable, &v.Phase); err != nil {
+		var retireAt sql.NullTime
+		var retireDelete bool
+		if err := rows.Scan(&v.Name, &v.Subdomain, &v.Owned, &v.Claimable, &v.Phase, &retireAt, &retireDelete); err != nil {
 			return nil, err
+		}
+		if v.Owned {
+			v.Retiring = retireState(retireAt, retireDelete)
 		}
 		out = append(out, v)
 	}
@@ -676,7 +756,8 @@ func (p *PGRepo) MyServers(ctx context.Context, userID string) ([]MyServerView, 
 // log records as the human actor, §6) and falls back to the never-NULL username
 // when the address is absent.
 func (p *PGRepo) ServerOwners(ctx context.Context) (map[string]ServerOwnership, error) {
-	const q = `SELECT s.name, COALESCE(s.owner_id, ''), COALESCE(NULLIF(u.email, ''), u.username, '')
+	const q = `SELECT s.name, COALESCE(s.owner_id, ''), COALESCE(NULLIF(u.email, ''), u.username, ''),
+		s.retire_requested_at, s.retire_delete
 		FROM servers s LEFT JOIN users u ON u.id = s.owner_id
 		WHERE s.deleted_at IS NULL`
 	rows, err := p.db.QueryContext(ctx, q)
@@ -688,9 +769,12 @@ func (p *PGRepo) ServerOwners(ctx context.Context) (map[string]ServerOwnership, 
 	for rows.Next() {
 		var name string
 		var o ServerOwnership
-		if err := rows.Scan(&name, &o.OwnerID, &o.Owner); err != nil {
+		var retireAt sql.NullTime
+		var retireDelete bool
+		if err := rows.Scan(&name, &o.OwnerID, &o.Owner, &retireAt, &retireDelete); err != nil {
 			return nil, err
 		}
+		o.Retire = retireState(retireAt, retireDelete)
 		out[name] = o
 	}
 	return out, rows.Err()
@@ -701,9 +785,11 @@ func (p *PGRepo) ServerOwners(ctx context.Context) (map[string]ServerOwnership, 
 // claimed later, spec §9.3) and its subdomain alias. The create handler has
 // already found no server and no world volume of this name, so a row that is
 // here belongs to an earlier server of the same name: one removed with kubectl,
-// or a create whose CRD write failed. That row starts over, and the earlier
+// a create whose CRD write failed, or one the reaper deleted between removing
+// its MinecraftServer and marking the row. That row starts over, and the earlier
 // server's other aliases and allowlist go with it; nothing of its owner, claim,
-// activity clock or reaper warnings reaches the new server. A retried create
+// activity clock, reaper warnings or pending retirement reaches the new server,
+// so the reaper's unfinished deletion no longer applies to it. A retried create
 // lands on the same fresh state. The alias subdomain is a PRIMARY KEY: bound to
 // another server, it rolls the whole seed back and returns ErrConflict, letting
 // the create handler answer 409 before it touches the CRD.
@@ -722,6 +808,7 @@ func (p *PGRepo) SeedServer(ctx context.Context, name, subdomain string, cpuMill
 		`INSERT INTO servers (name, cached_cpu_milli, cached_memory_mb, cached_storage_mb) VALUES ($1, $2, $3, $4)
 		 ON CONFLICT (name) DO UPDATE SET owner_id = NULL, claimed_at = NULL, last_active_at = now(),
 		   warned_3d_at = NULL, warned_1d_at = NULL, cached_phase = NULL, created_at = now(), deleted_at = NULL,
+		   retire_requested_at = NULL, retire_delete = false,
 		   cached_cpu_milli = EXCLUDED.cached_cpu_milli, cached_memory_mb = EXCLUDED.cached_memory_mb,
 		   cached_storage_mb = EXCLUDED.cached_storage_mb`,
 		name, cpuMilli, memoryMB, storageMB); err != nil {
@@ -865,7 +952,9 @@ func (p *PGRepo) BackupStoreBytes(ctx context.Context) (int64, error) {
 // world's point is its current owner's newest intact scheduled backup taken
 // since they claimed it: a previous owner's backups say nothing about the world
 // the new owner has built, and a corrupt one restores nothing. last_active_at
-// moves on every join, so a world nobody joined since its point is skipped.
+// moves on every join, so a world nobody joined since its point is skipped. A
+// world being given up is skipped too: the reaper archives it anyway, and a
+// backup Job holding it when the reaper runs would put the release off a day.
 func (p *PGRepo) ScheduledBackupCandidates(ctx context.Context, before time.Time) ([]ScheduledCandidate, error) {
 	rows, err := p.db.QueryContext(ctx,
 		`SELECT s.name, s.owner_id FROM servers s
@@ -876,6 +965,7 @@ func (p *PGRepo) ScheduledBackupCandidates(ctx context.Context, before time.Time
 		     AND b.created_at >= COALESCE(s.claimed_at, '-infinity')
 		 ) pt ON true
 		 WHERE s.deleted_at IS NULL AND s.owner_id IS NOT NULL
+		   AND s.retire_requested_at IS NULL
 		   AND s.last_active_at > COALESCE(pt.at, '-infinity')
 		   AND COALESCE(pt.at, '-infinity') < $1
 		 ORDER BY pt.at NULLS FIRST, s.name`, before)

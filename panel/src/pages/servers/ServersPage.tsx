@@ -43,7 +43,7 @@ import { useAsync, useConfig, usePolling } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
 import { joinAddress, type RuntimeConfig } from "@/lib/config";
 import { matchScore } from "@/lib/fuzzy";
-import type { AutostartPolicy, FleetServer, Phase, MyServerView } from "@/lib/types";
+import type { AutostartPolicy, FleetServer, Phase, MyServerView, RetireState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 const REFRESH_MS = 10_000;
@@ -90,6 +90,8 @@ interface UnifiedServer {
   /** The fleet's owner lookup failed, so an absent owner proves nothing. */
   ownerUnknown?: boolean;
   system?: boolean;
+  /** A pending retirement (owner and admin views): the row offers no start. */
+  retiring?: RetireState;
 }
 
 export function ServersPage() {
@@ -131,6 +133,7 @@ export function ServersPage() {
         owned: s.owned,
         ownerUnknown: s.ownerUnknown,
         system: s.system,
+        retiring: s.retiring,
       }));
     } else {
       return (data as MyServerView[]).map((s) => ({
@@ -149,6 +152,7 @@ export function ServersPage() {
         owner: s.owned ? t("servers:owned_filter_mine") || "me" : undefined,
         claimable: s.claimable,
         owned: s.owned,
+        retiring: s.retiring,
       }));
     }
   }, [data, isAdmin, t]);
@@ -502,6 +506,7 @@ function ServerActions({
               failed={startFailure(server) !== null}
               playersOnline={server.playersOnline}
               playerCountUnknown={server.playerCountUnknown}
+              retiring={server.retiring}
               onChanged={onChanged}
             />
             {(server.owned || isAdmin) && (

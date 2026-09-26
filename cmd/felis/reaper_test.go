@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,7 @@ func TestReportReaperRunFailsTheJob(t *testing.T) {
 		want int
 	}{
 		{"clean", reaper.Summary{Evaluated: 3, WorldsReaped: 1, AwaitingOffsite: 1}, 0},
+		{"retirements", reaper.Summary{Evaluated: 5, WorldsReaped: 3, Released: 2, ServersDeleted: 1}, 0},
 		{"waiting for a stop", reaper.Summary{Evaluated: 3, AwaitingStop: 1}, 0},
 		{"server failed", reaper.Summary{Evaluated: 3, Skipped: 1}, 1},
 		{"store full", reaper.Summary{Evaluated: 3, Skipped: 1, StoreFull: 1}, 1},
@@ -40,7 +42,8 @@ func TestReportReaperRunFailsTheJob(t *testing.T) {
 		if got := reportReaperRun(tc.sum, &out, &errb); got != tc.want {
 			t.Errorf("%s: exit %d, want %d", tc.name, got, tc.want)
 		}
-		if !strings.Contains(out.String(), "skipped=") || !strings.Contains(out.String(), "expire_failed=") {
+		if !strings.Contains(out.String(), "skipped=") || !strings.Contains(out.String(), "expire_failed=") ||
+			!strings.Contains(out.String(), fmt.Sprintf(" released=%d deleted=%d ", tc.sum.Released, tc.sum.ServersDeleted)) {
 			t.Errorf("%s: summary line = %q", tc.name, out.String())
 		}
 		if (tc.want == 1) != (errb.Len() > 0) {

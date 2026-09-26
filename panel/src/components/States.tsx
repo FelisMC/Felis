@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { MAX_AUTO_RESTARTS, shownPhase, type StartFailure } from "@/components/PhaseBadge";
 import { PowerButton } from "@/components/PowerButton";
 import { humanizeError } from "@/lib/api";
-import type { Phase } from "@/lib/types";
+import type { Phase, RetireState } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 export function Loading({ label }: { label?: string }) {
@@ -174,6 +174,8 @@ export interface NotRunningProps {
   /** From startFailure: a Failed start gets its own copy and a retry. */
   failure?: StartFailure | null;
   autoRestarts?: number;
+  /** A pending retirement: the page offers no wake, only why. */
+  retiring?: RetireState;
   /** Called once the wake was accepted, so the page refetches its status. */
   onWoken: () => void;
 }
@@ -190,6 +192,7 @@ export function NotRunning({
   desiredState,
   failure = null,
   autoRestarts = 0,
+  retiring,
   onWoken,
 }: NotRunningProps) {
   const { t } = useTranslation("servers");
@@ -232,6 +235,7 @@ export function NotRunning({
           phase={phase}
           desiredState={desiredState}
           failed={failure !== null}
+          retiring={retiring}
           onChanged={onWoken}
           className="items-center"
         />

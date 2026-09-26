@@ -185,12 +185,16 @@ func OperatorRole(p Params) *rbacv1.Role {
 	})
 }
 
-// ReaperRole grants felis-reaper its two destructive, disjoint powers
-// (internal/reaper.k8scluster): patch a MinecraftServer to Stop it and delete its
-// world PVC. Candidate servers come from the Postgres store, not a cluster List,
-// so minecraftservers need no list/watch; the reaper uses a direct client. It can
-// read+patch minecraftservers but cannot create them, and holds no power over
-// StatefulSets, Services, or Secrets — those belong to the operator and api.
+// ReaperRole grants felis-reaper its destructive powers
+// (internal/reaper.k8scluster): patch a MinecraftServer to Stop it, delete its
+// world PVC, and delete the MinecraftServer of a server an admin deleted.
+// Candidate servers come from the Postgres store, not a cluster List, so
+// minecraftservers need no list/watch; the reaper uses a direct client. It can
+// read, patch and delete minecraftservers but cannot create them, and holds no
+// power over StatefulSets, Services, or Secrets — those belong to the operator
+// and api (deleting a MinecraftServer lets garbage collection take the ones the
+// operator made for it; the world PVC is retained by the StatefulSet and the
+// reaper deletes it first, after archiving it).
 //
 // The same patch holds the world maintenance lock while a world is archived and
 // reclaimed (internal/maintenance). Taking it needs the two reads felis-api makes
@@ -202,16 +206,16 @@ func OperatorRole(p Params) *rbacv1.Role {
 // stock local-path directory name. get is strictly weaker than the delete the
 // same rule already grants, so it widens nothing.
 //
-// Note no identity anywhere holds minecraftservers:delete. That is intentional, not
-// a missing grant: reaping releases a server by flipping desiredState=Stopped and
-// reclaiming the world PVC (k8scluster.go does "nothing else"), leaving the CR in
-// place so a former owner can re-claim it within the retention window (spec §466).
-// The MinecraftServer CR is the lifecycle source of truth and is retained, never
-// hard-deleted, so the delete verb is deliberately absent from every Role.
+// The reaper is the only identity with minecraftservers:delete. Reaping an idle
+// world releases the server by flipping desiredState=Stopped and reclaiming the
+// world PVC, leaving the CR in place so it can be claimed again; the CR goes only
+// when an admin deletes the server (PUT /servers/{name}/retirement), and then only
+// once the reaper has archived and deleted its world. felis-api records that
+// request and never deletes a CR itself.
 func ReaperRole(p Params) *rbacv1.Role {
 	p = p.withDefaults()
 	return role(p.MinecraftNamespace, "felis-reaper", ComponentReaper, []rbacv1.PolicyRule{
-		rule([]string{groupFelis}, []string{"minecraftservers"}, []string{"get", "patch"}),
+		rule([]string{groupFelis}, []string{"minecraftservers"}, []string{"get", "patch", "delete"}),
 		rule([]string{groupCore}, []string{"persistentvolumeclaims"}, []string{"get", "delete"}),
 		rule([]string{groupCore}, []string{"pods"}, []string{"list"}),
 		rule([]string{groupBatch}, []string{"jobs"}, []string{"list"}),

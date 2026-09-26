@@ -255,3 +255,21 @@ describe("PowerButton on a server already moving", () => {
     });
   }
 });
+
+describe("PowerButton on a server given up or being deleted", () => {
+  it("offers nothing to press, only the badge saying why", () => {
+    const requested_at = new Date().toISOString();
+    const { rerender } = render(
+      <PowerButton name="lobby" phase="Stopped" desiredState="Stopped" retiring={{ requested_at, delete: false }} onChanged={vi.fn()} />,
+    );
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getByText(t("servers:retiring_badge_release"))).toBeTruthy();
+
+    // A failed start would otherwise offer its retry.
+    rerender(
+      <PowerButton name="lobby" phase="Failed" desiredState="Running" failed retiring={{ requested_at, delete: true }} onChanged={vi.fn()} />,
+    );
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(screen.getByText(t("servers:retiring_badge_delete"))).toBeTruthy();
+  });
+});
