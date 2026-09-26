@@ -86,6 +86,18 @@ var labelRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 // PATH; tests point them at fakes.
 type Tools struct {
 	PGDump, PGRestore, PSQL string
+	// Exec, when set, is the argv prefix every tool runs under. The installer's
+	// database is a k3s Deployment and the host carries no PostgreSQL client, so
+	// the tools run in the database's own container:
+	// `k3s kubectl exec -i -n felis deploy/felis-postgres -c postgres --`.
+	// kubectl exec carries neither the environment nor files across: the dump
+	// comes back on stdout and archives go in on stdin, and the tools connect as
+	// Conn instead of the database URL.
+	Exec []string
+	// Conn is the libpq connection string the tools use under Exec: the
+	// container's own socket, which trusts local connections, so no password
+	// has to cross into it.
+	Conn string
 }
 
 func (t Tools) pgDump() string    { return orDefault(t.PGDump, "pg_dump") }
@@ -222,23 +234,43 @@ func (c conn) env() []string {
 	return append(env, "PGCONNECT_TIMEOUT=15")
 }
 
-func (c conn) command(ctx context.Context, bin string, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, bin, args...)
+// toolCmd is one run of a client tool, named for errors by the tool itself:
+// under Tools.Exec the process is kubectl, which says nothing.
+type toolCmd struct {
+	*exec.Cmd
+	name string
+}
+
+// command runs tool with args, directly or under t.Exec.
+func (t Tools) command(ctx context.Context, c conn, tool string, args ...string) toolCmd {
+	if len(t.Exec) > 0 {
+		argv := append(append(append([]string{}, t.Exec[1:]...), tool), args...)
+		return toolCmd{exec.CommandContext(ctx, t.Exec[0], argv...), filepath.Base(tool)}
+	}
+	cmd := exec.CommandContext(ctx, tool, args...)
 	cmd.Env = c.env()
-	return cmd
+	return toolCmd{cmd, filepath.Base(tool)}
+}
+
+// dsn is what the tools pass as --dbname / -d.
+func (t Tools) dsn(c conn) string {
+	if len(t.Exec) > 0 {
+		return t.Conn
+	}
+	return c.uri
 }
 
 // run executes cmd and folds its stderr into the error.
-func run(cmd *exec.Cmd) ([]byte, error) {
+func run(cmd toolCmd) ([]byte, error) {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
-			return out, fmt.Errorf("%s: %w", filepath.Base(cmd.Path), err)
+			return out, fmt.Errorf("%s: %w", cmd.name, err)
 		}
-		return out, fmt.Errorf("%s: %w: %s", filepath.Base(cmd.Path), err, msg)
+		return out, fmt.Errorf("%s: %w: %s", cmd.name, err, msg)
 	}
 	return out, nil
 }
@@ -250,15 +282,21 @@ var foreignObjectRe = regexp.MustCompile(`permission denied for (table|sequence|
 // an object created in the felis database by another role (typically postgres,
 // from a manual psql session). The dump runs as the felis role and must read
 // everything; leaving the object out would make the bundle an incomplete restore.
-func dumpHint(err error, db DatabaseInfo) string {
+func dumpHint(err error, db DatabaseInfo, t Tools) string {
 	m := foreignObjectRe.FindStringSubmatch(err.Error())
 	if m == nil {
 		return ""
 	}
+	// The superuser's psql: the host's postgres account, or the image's
+	// postgres role over the container's socket.
+	su := "sudo -u postgres psql"
+	if len(t.Exec) > 0 {
+		su = "sudo " + strings.Join(t.Exec, " ") + " psql -U postgres"
+	}
 	kind, name := strings.ToUpper(m[1]), m[2]
 	return fmt.Sprintf("\n  %s %s belongs to another role, so %s cannot dump it. Hand it over with\n"+
-		"    sudo -u postgres psql -d %s -c 'ALTER %s %s OWNER TO %s'\n"+
-		"  or drop it if it is a leftover.", strings.ToLower(kind), name, db.User, db.Name, kind, name, db.User)
+		"    %s -d %s -c 'ALTER %s %s OWNER TO %s'\n"+
+		"  or drop it if it is a leftover.", strings.ToLower(kind), name, db.User, su, db.Name, kind, name, db.User)
 }
 
 // BundleName is the file name of a bundle taken at t with label.
@@ -424,20 +462,17 @@ func Backup(ctx context.Context, o BackupOptions) (string, error) {
 
 	dump := filepath.Join(o.Dir, "."+name+".dump.partial")
 	defer os.Remove(dump)
-	if _, err := run(c.command(ctx, o.Tools.pgDump(), "--format=custom", "--no-password", "--file="+dump, "--dbname="+c.uri)); err != nil {
-		return "", fmt.Errorf("dump the database: %w%s", err, dumpHint(err, c.info))
-	}
-	if err := os.Chmod(dump, 0o600); err != nil {
+	if err := dumpTo(ctx, c, o.Tools, dump); err != nil {
 		return "", err
 	}
 	// A dump pg_restore cannot read is not a backup; find out now, not on the
 	// day it is needed.
-	if _, err := run(exec.CommandContext(ctx, o.Tools.pgRestore(), "--list", dump)); err != nil {
+	if err := listArchive(ctx, c, o.Tools, dump); err != nil {
 		return "", fmt.Errorf("the dump does not read back: %w", err)
 	}
 
 	m := Manifest{Format: formatV1, CreatedAt: created, Label: o.Label, FelisVersion: o.Version, Database: c.info}
-	if out, err := run(exec.CommandContext(ctx, o.Tools.pgDump(), "--version")); err == nil {
+	if out, err := run(o.Tools.command(ctx, c, o.Tools.pgDump(), "--version")); err == nil {
 		m.PGDumpVersion = strings.TrimSpace(string(out))
 	}
 	m.SchemaVersion = schemaVersion(ctx, c, o.Tools)
@@ -496,6 +531,44 @@ func Backup(ctx context.Context, o BackupOptions) (string, error) {
 	return final, nil
 }
 
+// dumpTo writes pg_dump's custom-format archive of the database to path,
+// created 0600. The archive travels on stdout, the one channel that reaches
+// the host from a tool running under Tools.Exec.
+func dumpTo(ctx context.Context, c conn, t Tools, path string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	cmd := t.command(ctx, c, t.pgDump(), "--format=custom", "--no-password", "--dbname="+t.dsn(c))
+	var stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = f, &stderr
+	err = cmd.Run()
+	if cerr := f.Close(); err == nil && cerr != nil {
+		return cerr
+	}
+	if err != nil {
+		err = fmt.Errorf("%s: %w", cmd.name, err)
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			err = fmt.Errorf("%w: %s", err, msg)
+		}
+		return fmt.Errorf("dump the database: %w%s", err, dumpHint(err, c.info, t))
+	}
+	return nil
+}
+
+// listArchive proves pg_restore can read the archive at path, fed on stdin.
+func listArchive(ctx context.Context, c conn, t Tools, path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	cmd := t.command(ctx, c, t.pgRestore(), "--list")
+	cmd.Stdin = f
+	_, err = run(cmd)
+	return err
+}
+
 // record upserts st into platform_settings. The JSON travels as a psql
 // variable, quoted by psql itself, over stdin (-c does not interpolate).
 func record(ctx context.Context, c conn, t Tools, st Status) error {
@@ -503,7 +576,7 @@ func record(ctx context.Context, c conn, t Tools, st Status) error {
 	if err != nil {
 		return err
 	}
-	cmd := c.command(ctx, t.psql(), "-X", "-q", "-w", "-v", "ON_ERROR_STOP=1", "-v", "v="+string(v), "-d", c.uri)
+	cmd := t.command(ctx, c, t.psql(), "-X", "-q", "-w", "-v", "ON_ERROR_STOP=1", "-v", "v="+string(v), "-d", t.dsn(c))
 	cmd.Stdin = strings.NewReader("INSERT INTO platform_settings (key, value) VALUES ('" + StatusKey + "', :'v'::jsonb)\n" +
 		"ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now();\n")
 	_, err = run(cmd)
@@ -531,7 +604,7 @@ felis_db_backup_last_size_bytes{label=%q} %d
 
 // schemaVersion reads the newest applied migration, or 0 when it cannot.
 func schemaVersion(ctx context.Context, c conn, t Tools) int {
-	out, err := run(c.command(ctx, t.psql(), "-X", "-q", "-t", "-A", "-w", "-d", c.uri,
+	out, err := run(t.command(ctx, c, t.psql(), "-X", "-q", "-t", "-A", "-w", "-d", t.dsn(c),
 		"-c", "SELECT coalesce(max(version), 0) FROM schema_migrations"))
 	if err != nil {
 		return 0

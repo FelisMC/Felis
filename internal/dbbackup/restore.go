@@ -200,7 +200,7 @@ func Restore(ctx context.Context, o RestoreOptions) (Manifest, string, error) {
 	if err != nil {
 		return m, "", err
 	}
-	if _, err := run(exec.CommandContext(ctx, o.Tools.pgRestore(), "--list", scratch.Name())); err != nil {
+	if err := listArchive(ctx, c, o.Tools, scratch.Name()); err != nil {
 		return m, "", fmt.Errorf("the bundle's dump does not read: %w", err)
 	}
 
@@ -255,7 +255,7 @@ func recordNewest(ctx context.Context, c conn, t Tools, dir string) error {
 
 // otherClients counts client sessions on the database other than this one.
 func otherClients(ctx context.Context, c conn, t Tools) (int, error) {
-	out, err := run(c.command(ctx, t.psql(), "-X", "-q", "-t", "-A", "-w", "-d", c.uri, "-c",
+	out, err := run(t.command(ctx, c, t.psql(), "-X", "-q", "-t", "-A", "-w", "-d", t.dsn(c), "-c",
 		"SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND pid <> pg_backend_pid() AND backend_type = 'client backend'"))
 	if err != nil {
 		return 0, err
@@ -272,16 +272,24 @@ const dropOwned = "DROP OWNED BY CURRENT_USER;\n"
 // exited cleanly: a generator that dies mid-stream leaves psql at EOF inside an
 // open transaction, which the server rolls back when psql disconnects. psql's
 // own --single-transaction would commit whatever arrived before that EOF.
+//
+// pg_restore reads the archive on stdin, sequentially, which is all a full
+// restore needs and the only way in under Tools.Exec.
 func replay(ctx context.Context, c conn, t Tools, dump string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	in, err := os.Open(dump)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
 	r, w, err := os.Pipe()
 	if err != nil {
 		return err
 	}
 	var restoreErr, psqlErr bytes.Buffer
-	gen := exec.CommandContext(ctx, t.pgRestore(), "--no-owner", "--no-privileges", "--file=-", dump)
-	gen.Stdout, gen.Stderr = w, &restoreErr
+	gen := t.command(ctx, c, t.pgRestore(), "--no-owner", "--no-privileges", "--file=-")
+	gen.Stdin, gen.Stdout, gen.Stderr = in, w, &restoreErr
 	if err := gen.Start(); err != nil {
 		r.Close()
 		w.Close()
@@ -289,8 +297,8 @@ func replay(ctx context.Context, c conn, t Tools, dump string) error {
 	}
 	w.Close()
 
-	tail := &commitAfter{gen: gen}
-	apply := c.command(ctx, t.psql(), "-X", "-q", "-w", "-v", "ON_ERROR_STOP=1", "-d", c.uri)
+	tail := &commitAfter{gen: gen.Cmd}
+	apply := t.command(ctx, c, t.psql(), "-X", "-q", "-w", "-v", "ON_ERROR_STOP=1", "-d", t.dsn(c))
 	apply.Stdin = io.MultiReader(strings.NewReader("BEGIN;\n"+dropOwned), r, tail)
 	apply.Stdout, apply.Stderr = io.Discard, &psqlErr
 	aerr := apply.Run()

@@ -27,19 +27,22 @@ printf '%s\n' "$*" > "$D/pg_dump.args"
 printf '%s' "$PGPASSWORD" > "$D/pg_dump.password"
 [ -f "$D/dump_fail" ] && { echo "pg_dump: error: connection refused" >&2; exit 1; }
 [ -f "$D/dump_denied" ] && { printf 'pg_dump: error: query failed: ERROR:  permission denied for table servers_preserve\npg_dump: error: query was: LOCK TABLE public.servers_preserve IN ACCESS SHARE MODE\n' >&2; exit 1; }
-for a in "$@"; do case "$a" in --file=*) out="${a#--file=}";; esac; done
-if [ -f "$D/dump_garbage" ]; then echo garbage > "$out"; exit 0; fi
-{ printf 'PGDMP\n'; cat "$D/db"; } > "$out"
+for a in "$@"; do case "$a" in --file=*|-f) echo "pg_dump: the archive must come back on stdout" >&2; exit 2;; esac; done
+if [ -f "$D/dump_garbage" ]; then echo garbage; exit 0; fi
+printf 'PGDMP\n'; cat "$D/db"
 `
 
 const fakePGRestore = `#!/bin/sh
 D="$FAKE_DIR"
 list=0
-for a in "$@"; do case "$a" in --list) list=1;; esac; last="$a"; done
-head -n 1 "$last" | grep -q '^PGDMP$' || { echo "pg_restore: error: input file does not appear to be a valid archive" >&2; exit 1; }
-[ $list = 1 ] && { echo "; Archive created"; exit 0; }
+for a in "$@"; do case "$a" in --list) list=1;; -*) ;; *) echo "pg_restore: the archive must arrive on stdin, got $a" >&2; exit 2;; esac; done
+in="$D/restore.in.$$"
+cat > "$in"
+head -n 1 "$in" | grep -q '^PGDMP$' || { rm -f "$in"; echo "pg_restore: error: input file does not appear to be a valid archive" >&2; exit 1; }
+[ $list = 1 ] && { rm -f "$in"; echo "; Archive created"; exit 0; }
 echo "-- restore script"
-tail -n +2 "$last" | sed 's/^/DATA /'
+tail -n +2 "$in" | sed 's/^/DATA /'
+rm -f "$in"
 [ -f "$D/restore_fail" ] && { echo "pg_restore: error: could not read input" >&2; exit 1; }
 exit 0
 `
@@ -67,7 +70,21 @@ tail -n 1 "$D/psql.stdin" | grep -q '^COMMIT;$' || exit 0
 grep '^DATA ' "$D/psql.stdin" | sed 's/^DATA //' > "$D/db"
 `
 
+// fakeExec stands in for kubectl exec: the argv up to -- is its own, and none
+// of the caller's environment crosses into the "container".
+const fakeExec = `#!/bin/sh
+D="$FAKE_DIR"
+pre=""
+while [ $# -gt 0 ] && [ "$1" != "--" ]; do pre="$pre $1"; shift; done
+shift
+printf '%s\n' "$pre" >> "$D/exec.args"
+exec env -i FAKE_DIR="$D" PATH="$PATH" "$@"
+`
+
 const testURL = "postgres://felis:s3cret-pw@127.0.0.1:5432/felis?sslmode=disable"
+
+// podConn is the in-container connection the Exec tests hand the tools.
+const podConn = "host=/var/run/postgresql port=5432 dbname=felis user=felis"
 
 type fakePG struct {
 	dir   string
@@ -90,6 +107,32 @@ func newFakePG(t *testing.T, db string) *fakePG {
 	f.setDB(t, db)
 	t.Setenv("FAKE_DIR", dir)
 	return f
+}
+
+// newFakePod is newFakePG with the tools behind a fake kubectl exec.
+func newFakePod(t *testing.T, db string) *fakePG {
+	t.Helper()
+	f := newFakePG(t, db)
+	ex := filepath.Join(f.dir, "kubectl")
+	if err := os.WriteFile(ex, []byte(fakeExec), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.tools.Exec = []string{ex, "exec", "-i", "-n", "felis", "deploy/felis-postgres", "-c", "postgres", "--"}
+	f.tools.Conn = podConn
+	return f
+}
+
+// execRuns is how many tool runs went through the fake kubectl exec.
+func (f *fakePG) execRuns(t *testing.T) int {
+	t.Helper()
+	b, _ := os.ReadFile(filepath.Join(f.dir, "exec.args"))
+	n := 0
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.Contains(l, "deploy/felis-postgres -c postgres") {
+			n++
+		}
+	}
+	return n
 }
 
 func (f *fakePG) setDB(t *testing.T, s string) {
@@ -349,6 +392,74 @@ func TestBackupFailures(t *testing.T) {
 		}
 		if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
 			t.Error("stale partial survived")
+		}
+	})
+}
+
+// The installer's database is a k3s pod and the host has no client tools: every
+// tool runs behind kubectl exec, reaches the database through the container's
+// socket, and moves the archive over stdout and stdin.
+func TestBackupAndRestoreThroughThePod(t *testing.T) {
+	pg := newFakePod(t, "users: alice\n")
+	dir := t.TempDir()
+	path, err := Backup(context.Background(), BackupOptions{
+		DatabaseURL: testURL, Dir: dir, Label: LabelDaily, Tools: pg.tools, Now: at(t0), Record: true,
+	})
+	if err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	m, err := Verify(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.SchemaVersion != 21 || !strings.Contains(m.PGDumpVersion, "13.23") {
+		t.Errorf("manifest = %+v", m)
+	}
+	args, _ := os.ReadFile(filepath.Join(pg.dir, "pg_dump.args"))
+	if !strings.Contains(string(args), "--dbname="+podConn) || strings.Contains(string(args), "127.0.0.1") {
+		t.Errorf("pg_dump args = %s, want the container's socket", args)
+	}
+	if pw, _ := os.ReadFile(filepath.Join(pg.dir, "pg_dump.password")); len(pw) != 0 {
+		t.Errorf("PGPASSWORD reached the container: %q", pw)
+	}
+	if rec, _ := os.ReadFile(filepath.Join(pg.dir, "record.args")); !strings.Contains(string(rec), podConn) {
+		t.Errorf("freshness record args = %s", rec)
+	}
+	// dump, list, --version, schema version, record
+	if n := pg.execRuns(t); n != 5 {
+		t.Errorf("%d tool runs went through kubectl exec, want 5", n)
+	}
+
+	pg.setDB(t, "users: alice\nusers: bob\n")
+	if _, err := restore(pg, dir, path, nil); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if got := pg.db(t); got != "users: alice\n" {
+		t.Fatalf("db after restore = %q", got)
+	}
+	if args, _ := os.ReadFile(filepath.Join(pg.dir, "psql.args")); !strings.Contains(string(args), podConn) {
+		t.Errorf("replay psql args = %s", args)
+	}
+
+	t.Run("a failed replay still rolls back", func(t *testing.T) {
+		pg.setDB(t, "current\n")
+		pg.flag(t, "restore_fail", "")
+		defer os.Remove(filepath.Join(pg.dir, "restore_fail"))
+		if _, err := restore(pg, dir, path, func(o *RestoreOptions) { o.SkipSafetyBackup = true }); err == nil || !strings.Contains(err.Error(), "rolled back") {
+			t.Fatalf("err = %v", err)
+		}
+		if got := pg.db(t); got != "current\n" {
+			t.Fatalf("db = %q, want it untouched", got)
+		}
+	})
+
+	t.Run("the ownership hint uses the container's superuser", func(t *testing.T) {
+		pg.flag(t, "dump_denied", "")
+		defer os.Remove(filepath.Join(pg.dir, "dump_denied"))
+		_, err := Backup(context.Background(), BackupOptions{DatabaseURL: testURL, Dir: t.TempDir(), Label: LabelDaily, Tools: pg.tools, Now: at(t0)})
+		want := "sudo " + strings.Join(pg.tools.Exec, " ") + " psql -U postgres -d felis -c 'ALTER TABLE servers_preserve OWNER TO felis'"
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %v, want %q", err, want)
 		}
 	})
 }
