@@ -1511,21 +1511,9 @@ func (f *fakeRepo) SetQuotas(_ context.Context, userID string, qi QuotaInput, _ 
 	if f.fakeQuotas == nil {
 		f.fakeQuotas = map[string]*QuotaView{}
 	}
-	if _, ok := f.fakeQuotas[userID]; !ok {
-		f.fakeQuotas[userID] = &QuotaView{UserID: userID}
-	}
-	if qi.MaxServers != nil {
-		f.fakeQuotas[userID].MaxServers = qi.MaxServers
-	}
-	if qi.MaxCPUMilli != nil {
-		f.fakeQuotas[userID].MaxCPUMilli = qi.MaxCPUMilli
-	}
-	if qi.MaxMemoryMB != nil {
-		f.fakeQuotas[userID].MaxMemoryMB = qi.MaxMemoryMB
-	}
-	if qi.MaxStorageGB != nil {
-		f.fakeQuotas[userID].MaxStorageGB = qi.MaxStorageGB
-	}
+	// A full replacement, like the SQL upsert: nil is unlimited.
+	f.fakeQuotas[userID] = &QuotaView{UserID: userID, MaxServers: qi.MaxServers,
+		MaxCPUMilli: qi.MaxCPUMilli, MaxMemoryMB: qi.MaxMemoryMB, MaxStorageGB: qi.MaxStorageGB}
 	return f.fakeQuotas[userID], nil
 }
 

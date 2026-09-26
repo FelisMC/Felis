@@ -218,6 +218,7 @@
   "users_quota_memory": "Max Memory (MiB)",
   "users_quota_storage": "Max Storage (GiB)",
   "users_quota_unlimited": "Unlimited",
+  "users_quota_hint": "Leave a box empty for unlimited. 0 grants none of it, so every claim that needs it is refused. A cap below current use only stops new claims; servers the user already has stay.",
   "users_sessions": "Sessions",
   "users_no_sessions": "No active sessions.",
   "users_session_expires": "Expires",

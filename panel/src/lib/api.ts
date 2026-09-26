@@ -1146,6 +1146,8 @@ export function humanizeError(e: unknown): string {
       return t("no_migration");
     case "not_confirmed":
       return t("not_confirmed");
+    case "invalid_quota":
+      return t("invalid_quota");
     case "already_confirmed":
       return t("already_confirmed");
     case "invalid_target":

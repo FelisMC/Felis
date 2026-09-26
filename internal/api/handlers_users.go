@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -317,11 +318,23 @@ func (a *API) handleSetQuotas(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Reject a body where every field is nil — a silent no-op is a client mistake.
-	if body.MaxServers == nil && body.MaxCPUMilli == nil && body.MaxMemoryMB == nil && body.MaxStorageGB == nil {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
-			"at least one quota field must be set"))
-		return
+	// The body replaces all four caps; an empty one lifts every cap. A negative cap
+	// would refuse every claim the way 0 does while reading like a mistake, and the
+	// columns are 32-bit.
+	for _, f := range []struct {
+		name string
+		v    *int
+	}{
+		{"max_servers", body.MaxServers},
+		{"max_cpu_milli", body.MaxCPUMilli},
+		{"max_memory_mb", body.MaxMemoryMB},
+		{"max_storage_gb", body.MaxStorageGB},
+	} {
+		if f.v != nil && (*f.v < 0 || *f.v > math.MaxInt32) {
+			writeError(w, r, newError(http.StatusBadRequest, "invalid_quota",
+				"%s must be a whole number from 0 to 2147483647, or null for unlimited", f.name))
+			return
+		}
 	}
 
 	v, err := a.Repo.SetQuotas(r.Context(), id, body, p.Email)

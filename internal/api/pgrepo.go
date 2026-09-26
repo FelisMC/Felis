@@ -2027,55 +2027,23 @@ func (p *PGRepo) requireLiveUser(ctx context.Context, userID string) error {
 	return nil
 }
 
-// SetQuotas upserts a quotas row. Nil fields are left unchanged; a non-nil
-// zero-value field clears the cap.
+// SetQuotas replaces the user's quotas row. A nil field stores NULL, which every
+// quota gate reads as unlimited; any other value is the cap, 0 included. The form
+// always carries all four caps, so clearing one is a matter of leaving it out.
 func (p *PGRepo) SetQuotas(ctx context.Context, userID string, qi QuotaInput, setBy string) (*QuotaView, error) {
 	if err := p.requireLiveUser(ctx, userID); err != nil {
 		return nil, err
 	}
-	type col struct {
-		name  string
-		value *int
-	}
-	cols := []col{
-		{"max_servers", qi.MaxServers},
-		{"max_cpu_milli", qi.MaxCPUMilli},
-		{"max_memory_mb", qi.MaxMemoryMB},
-		{"max_storage_gb", qi.MaxStorageGB},
-	}
-
-	// Build the ON CONFLICT upsert dynamically.
-	var insCols, insVals []string
-	var upd []string
-	var args []any
-	argn := 0
-	args = append(args, userID) // $1 = user_id
-	argn++
-	args = append(args, setBy) // $2 = updated_by
-	argn++
-	insCols = append(insCols, "user_id", "updated_by")
-	insVals = append(insVals, "$1", "$2")
-
-	for _, c := range cols {
-		if c.value == nil {
-			continue
-		}
-		argn++
-		insCols = append(insCols, c.name)
-		insVals = append(insVals, fmt.Sprintf("$%d", argn))
-		args = append(args, *c.value)
-		upd = append(upd, fmt.Sprintf("%s = EXCLUDED.%s", c.name, c.name))
-	}
-
-	query := fmt.Sprintf(`INSERT INTO quotas (%s) VALUES (%s)
-		ON CONFLICT (user_id) DO UPDATE SET %s, updated_by = $2
-		RETURNING user_id, max_servers, max_cpu_milli, max_memory_mb, max_storage_gb`,
-		joinStr(insCols), joinStr(insVals), joinStr(upd))
-
 	v := QuotaView{}
-	switch err := p.db.QueryRowContext(ctx, query, args...).Scan(
-		&v.UserID, &v.MaxServers, &v.MaxCPUMilli, &v.MaxMemoryMB, &v.MaxStorageGB); {
-	case err != nil:
+	if err := p.db.QueryRowContext(ctx,
+		`INSERT INTO quotas (user_id, updated_by, max_servers, max_cpu_milli, max_memory_mb, max_storage_gb)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 ON CONFLICT (user_id) DO UPDATE SET updated_by = EXCLUDED.updated_by,
+		   max_servers = EXCLUDED.max_servers, max_cpu_milli = EXCLUDED.max_cpu_milli,
+		   max_memory_mb = EXCLUDED.max_memory_mb, max_storage_gb = EXCLUDED.max_storage_gb
+		 RETURNING user_id, max_servers, max_cpu_milli, max_memory_mb, max_storage_gb`,
+		userID, setBy, qi.MaxServers, qi.MaxCPUMilli, qi.MaxMemoryMB, qi.MaxStorageGB).Scan(
+		&v.UserID, &v.MaxServers, &v.MaxCPUMilli, &v.MaxMemoryMB, &v.MaxStorageGB); err != nil {
 		return nil, err
 	}
 	return &v, nil
@@ -2733,18 +2701,6 @@ func (p *PGRepo) CreateSetupToken(ctx context.Context, tokenHash, userID string,
 		`INSERT INTO setup_tokens (token_hash, user_id, expires_at) VALUES ($1, $2, $3)`,
 		tokenHash, userID, expiresAt)
 	return err
-}
-
-// joinStr joins a slice of strings with ", ".
-func joinStr(vals []string) string {
-	if len(vals) == 0 {
-		return ""
-	}
-	s := vals[0]
-	for _, v := range vals[1:] {
-		s += ", " + v
-	}
-	return s
 }
 
 // isUniqueViolation reports whether err is a Postgres unique-constraint

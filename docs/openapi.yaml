@@ -843,7 +843,7 @@ components:
 
     QuotaView:
       type: object
-      description: A user's quotas row (internal/api/repo.go QuotaView). Null fields mean unlimited.
+      description: A user's quotas row (internal/api/repo.go QuotaView). An absent or null field is unlimited; 0 grants none of that resource.
       required: [user_id]
       properties:
         user_id: { type: string }
@@ -4186,6 +4186,11 @@ paths:
       tags: [users]
       operationId: setQuotas
       summary: Set a user's quotas (admin only).
+      description: >-
+        Replaces all four caps at once. An absent or null field is unlimited; 0
+        grants none of that resource, so every claim that needs it is refused. An
+        empty body lifts every cap. A cap below what the user already owns refuses
+        new claims and leaves the servers they have alone.
       x-felis-face: [external]
       x-felis-tier: owner
       security: [{ sessionCookie: [] }]
@@ -4198,10 +4203,10 @@ paths:
             schema:
               type: object
               properties:
-                max_servers: { type: integer, nullable: true }
-                max_cpu_milli: { type: integer, nullable: true }
-                max_memory_mb: { type: integer, nullable: true }
-                max_storage_gb: { type: integer, nullable: true }
+                max_servers: { type: integer, nullable: true, minimum: 0, maximum: 2147483647 }
+                max_cpu_milli: { type: integer, nullable: true, minimum: 0, maximum: 2147483647 }
+                max_memory_mb: { type: integer, nullable: true, minimum: 0, maximum: 2147483647 }
+                max_storage_gb: { type: integer, nullable: true, minimum: 0, maximum: 2147483647 }
       responses:
         '200':
           description: Quotas updated.
@@ -4209,7 +4214,12 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/QuotaView' }
         '400':
-          $ref: '#/components/responses/BadRequest'
+          description: >-
+            invalid_quota, a cap outside 0..2147483647; or a body that is not JSON
+            or carries a fraction.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':

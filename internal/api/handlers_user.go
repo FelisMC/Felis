@@ -1041,7 +1041,17 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 			writeError(w, r, err)
 			return
 		}
-		if rec != nil && rec.OwnerID != "" {
+		var cur ResourceSpec
+		if rec != nil {
+			if cur, err = a.Repo.ServerResources(r.Context(), name); err != nil {
+				writeError(w, r, err)
+				return
+			}
+		}
+		// Only growth is held to the caps. A change that grows neither CPU nor memory
+		// cannot push the owner past one, and it is how an admin brings a server back
+		// under a cap lowered below what the owner already uses.
+		if rec != nil && rec.OwnerID != "" && (newCPU > cur.CPUMilli || newMemMB > cur.MemoryMB) {
 			ok, err := a.Repo.QuotaCheck(r.Context(), rec.OwnerID, name,
 				ResourceSpec{CPUMilli: newCPU, MemoryMB: newMemMB})
 			if err != nil {
@@ -1062,16 +1072,7 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 		// A resource patch cannot change storage, so its cached contribution must
 		// be preserved: passing 0 would silently zero the storage dimension of the
 		// owner's four-cap aggregate (the cached columns are its only input).
-		storMB := 0
-		if rec != nil {
-			cur, err := a.Repo.ServerResources(r.Context(), name)
-			if err != nil {
-				writeError(w, r, err)
-				return
-			}
-			storMB = cur.StorageMB
-		}
-		_ = a.Repo.UpdateServerResources(r.Context(), name, newCPU, newMemMB, storMB)
+		_ = a.Repo.UpdateServerResources(r.Context(), name, newCPU, newMemMB, cur.StorageMB)
 	} else {
 		if err := a.Cluster.PatchServerSpec(r.Context(), name, patch); err != nil {
 			a.writeLookupError(w, r, err)

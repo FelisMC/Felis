@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -126,4 +127,66 @@ func TestAdminSubresourcesRequireLiveUser(t *testing.T) {
 			t.Fatalf("link: code = %d body %s, want 200", w.Code, w.Body.String())
 		}
 	})
+}
+
+// The quotas form replaces all four caps at once, so an owner can lift a cap they
+// set: a missing or null field is unlimited, 0 grants none of it. Before, a null
+// field meant "leave it", the panel sent null for every emptied box, and a cap once
+// set could only be moved, never removed; a negative one was written as is.
+func TestSetQuotasReplacesAllCaps(t *testing.T) {
+	owner := &Principal{UserID: "usr-root", Role: "owner", ViaAdminAccess: true}
+	repo := newFakeRepo()
+	repo.seedUser(UserView{ID: "usr-root", Username: "root", Role: "owner"})
+	repo.seedUser(UserView{ID: "u2", Username: "alice", Role: "user"})
+	api := newTestAPI(repo, newFakeCluster())
+	api.External = staticExternal{p: owner}
+	eh := api.ExternalHandler()
+
+	caps := func() string {
+		t.Helper()
+		w := do(eh, "GET", "/api/v1/users/u2/quotas", "", nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("get quotas: code = %d body %s", w.Code, w.Body.String())
+		}
+		return strings.TrimSpace(w.Body.String())
+	}
+	put := func(body string, want int) {
+		t.Helper()
+		w := do(eh, "PUT", "/api/v1/users/u2/quotas", body, jsonHeader)
+		if w.Code != want {
+			t.Fatalf("PUT %s: code = %d body %s, want %d", body, w.Code, w.Body.String(), want)
+		}
+	}
+
+	put(`{"max_servers":0,"max_cpu_milli":2000,"max_memory_mb":4096,"max_storage_gb":20}`, http.StatusOK)
+	if got, want := caps(), `{"user_id":"u2","max_servers":0,"max_cpu_milli":2000,"max_memory_mb":4096,"max_storage_gb":20}`; got != want {
+		t.Fatalf("after setting every cap: %s, want %s", got, want)
+	}
+	// What the panel sends after the owner empties two boxes.
+	put(`{"max_servers":null,"max_cpu_milli":1000,"max_memory_mb":null,"max_storage_gb":20}`, http.StatusOK)
+	if got, want := caps(), `{"user_id":"u2","max_cpu_milli":1000,"max_storage_gb":20}`; got != want {
+		t.Fatalf("after emptying two boxes: %s, want %s", got, want)
+	}
+	put(`{}`, http.StatusOK)
+	if got, want := caps(), `{"user_id":"u2"}`; got != want {
+		t.Fatalf("after lifting every cap: %s, want %s", got, want)
+	}
+
+	put(`{"max_servers":3}`, http.StatusOK)
+	for _, body := range []string{
+		`{"max_servers":-1}`,
+		`{"max_servers":1,"max_storage_gb":-5}`,
+		`{"max_memory_mb":2147483648}`,
+		`{"max_cpu_milli":1.5}`,
+	} {
+		put(body, http.StatusBadRequest)
+	}
+	if got, want := caps(), `{"user_id":"u2","max_servers":3}`; got != want {
+		t.Fatalf("a refused write changed the caps: %s, want %s", got, want)
+	}
+	w := do(eh, "PUT", "/api/v1/users/u2/quotas", `{"max_storage_gb":-5}`, jsonHeader)
+	if !strings.Contains(w.Body.String(), `"invalid_quota"`) || !strings.Contains(w.Body.String(), "max_storage_gb") {
+		t.Fatalf("a negative cap should name the field: %s", w.Body.String())
+	}
+	put(`{"max_memory_mb":2147483647}`, http.StatusOK)
 }

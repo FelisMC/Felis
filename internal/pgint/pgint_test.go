@@ -553,6 +553,79 @@ func TestClaimServerQuotaAtomicGate(t *testing.T) {
 	}
 }
 
+// The quotas form replaces every cap at once: a nil field lifts that cap and 0 grants
+// none of it. SetQuotas used to skip nil fields, so a cap once set could be moved but
+// never removed, and the panel's emptied box changed nothing.
+func TestSetQuotasReplacesEveryCap(t *testing.T) {
+	ctx := context.Background()
+	u := newUser(t, "user", "qrepl")
+	name := "qr-" + suffix(t)
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO servers (name, cached_cpu_milli, cached_memory_mb, cached_storage_mb) VALUES ($1, 100, 128, 1)`,
+		name); err != nil {
+		t.Fatalf("seed server: %v", err)
+	}
+	spec := api.ResourceSpec{CPUMilli: 100, MemoryMB: 128, StorageMB: 1}
+	n := func(v int) *int { return &v }
+	caps := func(q *api.QuotaView) string {
+		s := make([]string, 0, 4)
+		for _, v := range []*int{q.MaxServers, q.MaxCPUMilli, q.MaxMemoryMB, q.MaxStorageGB} {
+			if v == nil {
+				s = append(s, "-")
+			} else {
+				s = append(s, fmt.Sprint(*v))
+			}
+		}
+		return strings.Join(s, "/")
+	}
+	set := func(in api.QuotaInput, want string) {
+		t.Helper()
+		got, err := repo.SetQuotas(ctx, u.ID, in, "pgint-"+want)
+		if err != nil {
+			t.Fatalf("SetQuotas(%s): %v", want, err)
+		}
+		if caps(got) != want {
+			t.Fatalf("SetQuotas returned %s, want %s", caps(got), want)
+		}
+		read, err := repo.GetQuotas(ctx, u.ID)
+		if err != nil || caps(read) != want {
+			t.Fatalf("GetQuotas = %s, %v; want %s", caps(read), err, want)
+		}
+		var by string
+		if err := db.QueryRowContext(ctx, `SELECT updated_by FROM quotas WHERE user_id = $1`, u.ID).Scan(&by); err != nil || by != "pgint-"+want {
+			t.Fatalf("updated_by = %q, %v; want the latest writer", by, err)
+		}
+	}
+	gate := func(want bool) {
+		t.Helper()
+		if ok, err := repo.QuotaCheck(ctx, u.ID, "", spec); err != nil || ok != want {
+			t.Fatalf("QuotaCheck = %v, %v; want %v", ok, err, want)
+		}
+	}
+
+	set(api.QuotaInput{MaxServers: n(0), MaxCPUMilli: n(2000), MaxMemoryMB: n(4096), MaxStorageGB: n(20)}, "0/2000/4096/20")
+	gate(false)
+	if ok, err := repo.QuotaAvailable(ctx, u.ID); err != nil || ok {
+		t.Fatalf("QuotaAvailable at max_servers 0 = %v, %v; want false", ok, err)
+	}
+	if _, err := repo.ClaimServer(ctx, name, u.ID); !errors.Is(err, api.ErrQuotaExceeded) {
+		t.Fatalf("claim at max_servers 0 = %v, want ErrQuotaExceeded", err)
+	}
+
+	set(api.QuotaInput{MaxCPUMilli: n(2000), MaxStorageGB: n(20)}, "-/2000/-/20")
+	gate(true)
+	set(api.QuotaInput{MaxCPUMilli: n(0)}, "-/0/-/-")
+	gate(false)
+	set(api.QuotaInput{}, "-/-/-/-")
+	gate(true)
+	if ok, err := repo.QuotaAvailable(ctx, u.ID); err != nil || !ok {
+		t.Fatalf("QuotaAvailable with every cap lifted = %v, %v; want true", ok, err)
+	}
+	if claimed, err := repo.ClaimServer(ctx, name, u.ID); err != nil || !claimed {
+		t.Fatalf("claim with every cap lifted = %v, %v; want claimed", claimed, err)
+	}
+}
+
 // The fleet read needs every live server's claim state: the owner's id to tell
 // the caller's own servers apart, the display name (email, else username), and
 // the unclaimed rows too, since only those may be claimed. A soft-deleted row is

@@ -1263,7 +1263,10 @@ export interface paths {
         };
         /** Get a user's quotas (admin only). */
         get: operations["getQuotas"];
-        /** Set a user's quotas (admin only). */
+        /**
+         * Set a user's quotas (admin only).
+         * @description Replaces all four caps at once. An absent or null field is unlimited; 0 grants none of that resource, so every claim that needs it is refused. An empty body lifts every cap. A cap below what the user already owns refuses new claims and leaves the servers they have alone.
+         */
         put: operations["setQuotas"];
         post?: never;
         delete?: never;
@@ -2620,7 +2623,7 @@ export interface components {
                 verified_at: string;
             }[];
         };
-        /** @description A user's quotas row (internal/api/repo.go QuotaView). Null fields mean unlimited. */
+        /** @description A user's quotas row (internal/api/repo.go QuotaView). An absent or null field is unlimited; 0 grants none of that resource. */
         QuotaView: {
             user_id: string;
             max_servers?: number | null;
@@ -6119,7 +6122,15 @@ export interface operations {
                     "application/json": components["schemas"]["QuotaView"];
                 };
             };
-            400: components["responses"]["BadRequest"];
+            /** @description invalid_quota, a cap outside 0..2147483647; or a body that is not JSON or carries a fraction. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             /** @description Unknown user. */

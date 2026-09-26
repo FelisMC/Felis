@@ -723,8 +723,8 @@ type Repo interface {
 	// GetQuotas returns the quotas row for a user, or a zero-value view when no
 	// row exists (which means unlimited per spec §9.3).
 	GetQuotas(ctx context.Context, userID string) (*QuotaView, error)
-	// SetQuotas upserts a quotas row for userID. Nil fields leave the column
-	// untouched; a zero-value (non-nil) field clears the cap (unlimited).
+	// SetQuotas replaces the quotas row for userID with q: a nil field is stored as
+	// NULL (unlimited), any other value is the cap, 0 included.
 	SetQuotas(ctx context.Context, userID string, q QuotaInput, setBy string) (*QuotaView, error)
 
 	// ---- session admin (admin-only) ----
@@ -854,8 +854,9 @@ type QuotaView struct {
 	MaxStorageGB *int   `json:"max_storage_gb,omitempty"`
 }
 
-// QuotaInput is the admin set-quotas form. Nil fields are left unchanged;
-// a non-nil zero-value field clears the cap (unlimited).
+// QuotaInput is the admin set-quotas form. It replaces all four caps at once: an
+// absent or null field is unlimited, and 0 grants none of that resource, so every
+// claim that needs it is refused. The handler rejects a value outside 0..MaxInt32.
 type QuotaInput struct {
 	MaxServers   *int `json:"max_servers,omitempty"`
 	MaxCPUMilli  *int `json:"max_cpu_milli,omitempty"`

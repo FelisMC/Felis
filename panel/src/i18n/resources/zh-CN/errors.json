@@ -74,6 +74,7 @@
   "account_retired": "该账户已退役——请使用迁移后的账户登录。",
   "no_migration": "当前没有进行中的迁移。",
   "not_confirmed": "请先在当前浏览器完成身份确认，确认 10 分钟内有效。",
+  "invalid_quota": "配额要填 0 到 2147483647 之间的整数，不限就留空。",
   "already_confirmed": "该迁移已经确认过了。",
   "invalid_target": "迁移目标账户不能与来源账户相同。",
   "target_not_found": "找不到迁移目标账户。",

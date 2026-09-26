@@ -428,13 +428,27 @@ function QuotasCard({ userId }: { userId: string }) {
     setSaving(true);
     setErr(null);
     setOk(null);
+    // The form replaces all four caps: an empty box is unlimited, 0 grants none.
+    // Anything else must be a whole number the server's 32-bit columns hold; the
+    // boxes are text so a stray letter stays visible and is refused here instead
+    // of turning into an empty (unlimited) number field.
+    const parse = (s: string): number | null | undefined => {
+      const v = s.trim();
+      if (v === "") return null;
+      return /^\d+$/.test(v) && Number(v) <= 2147483647 ? Number(v) : undefined;
+    };
+    const [servers, cpu, mem, storage] = [maxServers, maxCpu, maxMem, maxStorage].map(parse);
+    if (servers === undefined || cpu === undefined || mem === undefined || storage === undefined) {
+      setErr(t("errors:invalid_quota"));
+      setSaving(false);
+      return;
+    }
     try {
-      const toNum = (s: string) => (s === "" ? null : parseInt(s, 10));
       await api.setUserQuotas(userId, {
-        max_servers: toNum(maxServers),
-        max_cpu_milli: toNum(maxCpu),
-        max_memory_mb: toNum(maxMem),
-        max_storage_gb: toNum(maxStorage),
+        max_servers: servers,
+        max_cpu_milli: cpu,
+        max_memory_mb: mem,
+        max_storage_gb: storage,
       });
       setOk(t("users_save_ok"));
       reload();
@@ -464,7 +478,8 @@ function QuotasCard({ userId }: { userId: string }) {
             <Label htmlFor="user-detail-quota-servers" className="text-xs font-semibold text-muted-foreground">{t("users_quota_servers")}</Label>
             <Input
               id="user-detail-quota-servers"
-              type="number"
+              type="text"
+              inputMode="numeric"
               value={maxServers}
               onChange={(e) => setMaxServers(e.target.value)}
               placeholder={t("users_quota_unlimited")}
@@ -475,7 +490,8 @@ function QuotasCard({ userId }: { userId: string }) {
             <Label htmlFor="user-detail-quota-cpu" className="text-xs font-semibold text-muted-foreground">{t("users_quota_cpu")}</Label>
             <Input
               id="user-detail-quota-cpu"
-              type="number"
+              type="text"
+              inputMode="numeric"
               value={maxCpu}
               onChange={(e) => setMaxCpu(e.target.value)}
               placeholder={t("users_quota_unlimited")}
@@ -486,7 +502,8 @@ function QuotasCard({ userId }: { userId: string }) {
             <Label htmlFor="user-detail-quota-memory" className="text-xs font-semibold text-muted-foreground">{t("users_quota_memory")}</Label>
             <Input
               id="user-detail-quota-memory"
-              type="number"
+              type="text"
+              inputMode="numeric"
               value={maxMem}
               onChange={(e) => setMaxMem(e.target.value)}
               placeholder={t("users_quota_unlimited")}
@@ -497,7 +514,8 @@ function QuotasCard({ userId }: { userId: string }) {
             <Label htmlFor="user-detail-quota-storage" className="text-xs font-semibold text-muted-foreground">{t("users_quota_storage")}</Label>
             <Input
               id="user-detail-quota-storage"
-              type="number"
+              type="text"
+              inputMode="numeric"
               value={maxStorage}
               onChange={(e) => setMaxStorage(e.target.value)}
               placeholder={t("users_quota_unlimited")}
@@ -505,6 +523,8 @@ function QuotasCard({ userId }: { userId: string }) {
             />
           </div>
         </div>
+
+        <p className="text-xs text-muted-foreground">{t("users_quota_hint")}</p>
 
         {err && (
           <MessageLine kind="error" message={err} />

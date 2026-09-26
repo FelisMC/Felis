@@ -10,6 +10,7 @@ import type { UserDetail } from "@/lib/types";
 const calls = vi.hoisted(() => ({
   getUser: vi.fn(),
   getUserQuotas: vi.fn(),
+  setUserQuotas: vi.fn(),
   listUserSessions: vi.fn(),
   revokeUserSession: vi.fn(),
   revokeUserSessions: vi.fn(),
@@ -238,5 +239,59 @@ describe("UserDetailPage", () => {
       const role = screen.getByRole("combobox");
       expect(within(role).getByText("User")).toBeTruthy();
     });
+  });
+});
+
+describe("UserDetailPage quotas", () => {
+  function quotaBox(label: string) {
+    return screen.getByLabelText(i18next.t(`admin:${label}`)) as HTMLInputElement;
+  }
+  function quotaCard() {
+    return quotaBox("users_quota_servers").closest(".space-y-4") as HTMLElement;
+  }
+
+  it("sends every box, an emptied one as unlimited and 0 as none", async () => {
+    calls.getUser.mockResolvedValue(USER);
+    calls.getUserQuotas.mockResolvedValue({ user_id: "u-1", max_servers: 3, max_cpu_milli: 2000 });
+    calls.setUserQuotas.mockResolvedValue({ user_id: "u-1", max_cpu_milli: 2000, max_storage_gb: 0 });
+    renderPage();
+    const user = userEvent.setup();
+
+    await waitFor(() => expect(quotaBox("users_quota_servers").value).toBe("3"));
+    expect(within(quotaCard()).getByText(i18next.t("admin:users_quota_hint"))).toBeTruthy();
+    await user.clear(quotaBox("users_quota_servers"));
+    await user.type(quotaBox("users_quota_storage"), "0");
+    await user.click(within(quotaCard()).getByRole("button", { name: i18next.t("admin:users_save_btn") }));
+
+    await waitFor(() => expect(calls.setUserQuotas).toHaveBeenCalledTimes(1));
+    expect(calls.setUserQuotas).toHaveBeenCalledWith("u-1", {
+      max_servers: null,
+      max_cpu_milli: 2000,
+      max_memory_mb: null,
+      max_storage_gb: 0,
+    });
+  });
+
+  it("refuses a box that is not a whole number the server can store, and sends nothing", async () => {
+    calls.getUser.mockResolvedValue(USER);
+    renderPage();
+    const user = userEvent.setup();
+    await waitFor(() => expect(quotaBox("users_quota_servers")).toBeTruthy());
+
+    for (const bad of ["-1", "1.5", "2abc", "2147483648"]) {
+      await user.clear(quotaBox("users_quota_memory"));
+      await user.type(quotaBox("users_quota_memory"), bad);
+      await user.click(within(quotaCard()).getByRole("button", { name: i18next.t("admin:users_save_btn") }));
+      expect(await within(quotaCard()).findByText(i18next.t("errors:invalid_quota"))).toBeTruthy();
+      expect(quotaBox("users_quota_memory").value).toBe(bad);
+    }
+    expect(calls.setUserQuotas).not.toHaveBeenCalled();
+
+    await user.clear(quotaBox("users_quota_memory"));
+    await user.type(quotaBox("users_quota_memory"), " 2147483647 ");
+    calls.setUserQuotas.mockResolvedValue({ user_id: "u-1", max_memory_mb: 2147483647 });
+    await user.click(within(quotaCard()).getByRole("button", { name: i18next.t("admin:users_save_btn") }));
+    await waitFor(() => expect(calls.setUserQuotas).toHaveBeenCalledTimes(1));
+    expect(calls.setUserQuotas.mock.calls[0][1].max_memory_mb).toBe(2147483647);
   });
 });

@@ -434,3 +434,43 @@ func TestPatchServerClearsDisplayName(t *testing.T) {
 		t.Fatalf("patched displayName = %v, want an empty one", p.DisplayName)
 	}
 }
+
+// An owner over a cap an admin lowered (quota set below what they already use)
+// must still be brought back under it: only growth is held to the caps. Before,
+// every resource patch ran the quota check, so shrinking a server of an over-cap
+// owner got the same 403 as growing it.
+func TestPatchServerOverQuotaMayShrink(t *testing.T) {
+	api, repo, cl, _ := newPatchAPI()
+	seedResources(cl)
+	repo.byName["survival"].OwnerID = "u1"
+	repo.quota["u1"] = false // over every cap: any check refuses
+	repo.serverResources["survival"] = ResourceSpec{CPUMilli: 1000, MemoryMB: 4096, StorageMB: 10240}
+
+	for _, body := range []string{`{"resources":{"cpu":"500m"}}`, `{"resources":{"cpu":"1"}}`} {
+		delete(cl.patched, "survival")
+		w := patchSurvival(api, body)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: code = %d, want 200 (%s)", body, w.Code, w.Body.String())
+		}
+		if _, ok := cl.patched["survival"]; !ok {
+			t.Fatalf("%s: the patch did not reach the cluster", body)
+		}
+	}
+	if len(repo.quotaChecked) != 0 {
+		t.Errorf("a patch that grows nothing was quota-checked: %+v", repo.quotaChecked)
+	}
+	if got := repo.resourceUpdates["survival"]; got != (ResourceSpec{CPUMilli: 1000, MemoryMB: 4096, StorageMB: 10240}) {
+		t.Errorf("resource cache = %+v, want cpu 1000 / mem 4096 / storage kept", got)
+	}
+
+	for _, body := range []string{`{"resources":{"cpu":"2"}}`, `{"resources":{"cpu":"500m","memory":"8Gi"}}`} {
+		delete(cl.patched, "survival")
+		w := patchSurvival(api, body)
+		if w.Code != http.StatusForbidden || decodeErr(t, w) != "quota_exceeded" {
+			t.Fatalf("growing an over-cap owner's server %s: code = %d body %s, want 403 quota_exceeded", body, w.Code, w.Body.String())
+		}
+		if _, ok := cl.patched["survival"]; ok {
+			t.Fatalf("a refused growth %s reached the cluster", body)
+		}
+	}
+}

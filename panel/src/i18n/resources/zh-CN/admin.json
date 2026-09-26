@@ -217,6 +217,7 @@
   "users_quota_memory": "最大内存（MiB）",
   "users_quota_storage": "最大存储（GiB）",
   "users_quota_unlimited": "无限制",
+  "users_quota_hint": "留空为不限。填 0 表示这一项不给额度，该用户需要它的认领都会被拒绝。调低到已用量以下只挡新的认领，已有的服务器不受影响。",
   "users_sessions": "活跃会话",
   "users_no_sessions": "无活跃会话。",
   "users_session_expires": "过期时间",
