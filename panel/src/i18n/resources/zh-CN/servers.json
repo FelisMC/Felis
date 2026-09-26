@@ -217,7 +217,7 @@
   "idle_stop_seconds": "{{count}} 秒",
   "idle_stop_minutes": "{{count}} 分钟",
   "idle_stop_hours": "{{count}} 小时",
-  "stop_confirm_players": "{{count}} 名玩家在线，停服会断开他们。确定停止？",
+  "stop_confirm_players": "{{count}} 名玩家在线。停服会先在游戏里提醒他们，30 秒后断开。确定停止？",
   "stop_confirm_unknown": "读不到在线人数，可能有玩家在线。确定停止？",
   "retire_card_title": "放弃服务器",
   "retire_card_title_admin": "放弃或删除服务器",

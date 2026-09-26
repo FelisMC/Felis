@@ -342,6 +342,11 @@ type MinecraftServerStatus struct {
 	// or the server stops, so the empty-duration counter starts fresh each time
 	// the server becomes unoccupied.
 	EmptySince *metav1.Time `json:"emptySince,omitempty"`
+	// StopNoticeAt is when the operator told the players on a server that it is
+	// about to stop (desiredState flipped to Stopped with players online). The stop
+	// itself waits until StopNoticeWindow has passed since then; the stamp is cleared
+	// once the server is scaled down, or when desiredState goes back to Running first.
+	StopNoticeAt *metav1.Time `json:"stopNoticeAt,omitempty"`
 	// AutoRestarts counts how often the operator recreated the pod of a start
 	// that timed out (at most MaxAutoRestarts, with a doubling backoff); reaching Ready or
 	// stopping resets it.

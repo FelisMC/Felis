@@ -31,6 +31,9 @@ type fakeProber struct {
 	saveErr error
 	// saves, when set, records each Save's address.
 	saves *[]string
+	// broadcasts, when set, records each Broadcast's text.
+	broadcasts   *[]string
+	broadcastErr error
 }
 
 func (f fakeProber) Probe(context.Context, string, string) (operator.PlayerCount, error) {
@@ -42,6 +45,13 @@ func (f fakeProber) Save(_ context.Context, addr, _ string) error {
 		*f.saves = append(*f.saves, addr)
 	}
 	return f.saveErr
+}
+
+func (f fakeProber) Broadcast(_ context.Context, _, _, text string) error {
+	if f.broadcasts != nil {
+		*f.broadcasts = append(*f.broadcasts, text)
+	}
+	return f.broadcastErr
 }
 
 func newScheme(t *testing.T) *runtime.Scheme {
@@ -316,7 +326,7 @@ func TestReconcileStopped_NoWorkloadIsStopped(t *testing.T) {
 }
 
 func TestReconcileStopped_ScalesRunningWorkloadDown(t *testing.T) {
-	r, c := newReconciler(t, fakeProber{}, runningServer(), rconSecret())
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}, runningServer(), rconSecret())
 
 	reconcile(t, r, "survival")
 	markPodReady(t, c, "survival")
@@ -353,7 +363,7 @@ func stopRunningServer(t *testing.T, r *operator.Reconciler, c client.Client) {
 
 func TestReconcileStopped_SavesBeforeScalingDown(t *testing.T) {
 	var saves []string
-	r, c := newReconciler(t, fakeProber{saves: &saves}, runningServer(), rconSecret())
+	r, c := newReconciler(t, fakeProber{saves: &saves, players: operator.PlayerCount{Known: true}}, runningServer(), rconSecret())
 
 	stopRunningServer(t, r, c)
 
@@ -374,7 +384,7 @@ func TestReconcileStopped_SavesBeforeScalingDown(t *testing.T) {
 
 func TestReconcileStopped_FailedSaveStillStops(t *testing.T) {
 	var saves []string
-	prober := fakeProber{saves: &saves, saveErr: errors.New("i/o timeout")}
+	prober := fakeProber{saves: &saves, saveErr: errors.New("i/o timeout"), players: operator.PlayerCount{Known: true}}
 	r, c := newReconciler(t, prober, runningServer(), rconSecret())
 
 	stopRunningServer(t, r, c)
@@ -1149,7 +1159,7 @@ func TestFelisUpgradeLeavesARunningServerAlone(t *testing.T) {
 // TestFelisUpgradeReachesAServerOnItsNextStart: a stopped server's next start
 // writes the whole template, the new felis image included.
 func TestFelisUpgradeReachesAServerOnItsNextStart(t *testing.T) {
-	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 1, Max: 20, Known: true}}, runningServer(), rconSecret())
+	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}, runningServer(), rconSecret())
 	r.FelisImage = felisV1
 	stopRunningServer(t, r, c)
 	markPodTerminated(t, c, "survival")

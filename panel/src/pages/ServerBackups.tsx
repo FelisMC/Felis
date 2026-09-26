@@ -283,13 +283,16 @@ function ChainNote({ job }: { job: ServerJob }) {
  *  server plus consciously confirming a player-kicking, world-overwriting act.
  *
  *  The stop-and-wait is a bounded async loop (not an effect): after api.stop it polls
- *  status until Stopped is observed, giving up after ~60s with a retryable timeout — so
+ *  status until Stopped is observed, giving up after ~2 min with a retryable timeout — so
  *  restore only fires once the volume is provably free. While the chain runs the dialog
  *  is locked (no ✕, no dismiss) so a mid-flight close can't strand it. A 202 is
  *  terminal: the dialog closes and the row shows a "restore started" note in place of
  *  the button, so a second restore Job can't race the first. */
 const POLL_MS = 2500;
-const MAX_POLLS = 24; // ~60s ceiling before we stop waiting for Stopped
+// ~2 min before we stop waiting for Stopped: with players online the operator warns
+// them in game and holds the stop 30 s, then the pre-stop save and the pod's own
+// shutdown save follow.
+const MAX_POLLS = 48;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function RestoreControls({

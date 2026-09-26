@@ -122,6 +122,8 @@ func (p switchProber) Probe(context.Context, string, string) (operator.PlayerCou
 
 func (switchProber) Save(context.Context, string, string) error { return nil }
 
+func (switchProber) Broadcast(context.Context, string, string, string) error { return nil }
+
 // A Running server keeps its phase and endpoint through two missed probes,
 // re-probing every 10s; the third consecutive miss degrades it to Starting,
 // and any success in between starts the count over.

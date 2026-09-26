@@ -277,6 +277,11 @@ func (r *Reconciler) event(server *v1alpha1.MinecraftServer, eventType, reason, 
 }
 
 func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.MinecraftServer) (ctrl.Result, error) {
+	if server.Status.StopNoticeAt != nil {
+		if err := r.callOffStop(ctx, server); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	if kind, held, err := r.maintenanceHold(ctx, server); err != nil {
 		return ctrl.Result{}, err
 	} else if held {
@@ -495,7 +500,11 @@ func (r *Reconciler) reconcileStopped(ctx context.Context, server *v1alpha1.Mine
 	// which sends the server SIGTERM and so its own shutdown save within the
 	// grace period.
 	if sts.Spec.Replicas == nil || *sts.Spec.Replicas != 0 {
+		if wait, err := r.noticeStop(ctx, server, &sts); err != nil || wait > 0 {
+			return ctrl.Result{RequeueAfter: wait}, err
+		}
 		r.saveBeforeStop(ctx, server, &sts)
+		server.Status.StopNoticeAt = nil
 		zero := int32(0)
 		sts.Spec.Replicas = &zero
 		if err := r.Update(ctx, &sts); err != nil {
@@ -513,6 +522,86 @@ func (r *Reconciler) reconcileStopped(ctx context.Context, server *v1alpha1.Mine
 
 	r.markStopped(server)
 	return ctrl.Result{}, r.patchStatus(ctx, server)
+}
+
+// StopNoticeWindow is how long the players on a server get between the warning
+// and the stop: long enough to finish a fight or get off a boat, short enough that
+// the owner's stop (and the backup or restore waiting behind it) is not held up.
+const StopNoticeWindow = 30 * time.Second
+
+// The lines players see around a stop. The operator does not know a player's
+// language, so each carries both.
+const (
+	stopNoticeText    = "[Felis] 服务器将在 30 秒后关闭，请尽快找安全的地方 / This server stops in 30 seconds"
+	stopNowText       = "[Felis] 正在保存世界并关闭服务器 / Saving the world and stopping now"
+	stopCalledOffText = "[Felis] 关闭已取消 / The stop was called off"
+)
+
+// noticeStop warns the players on a server that is about to be scaled down, and
+// returns how long the stop must still wait for them. The first pass tells everyone
+// online and stamps StopNoticeAt; the stop goes ahead once StopNoticeWindow has
+// passed since, with a last line as it does.
+//
+// There is no wait when nobody can be told or nobody is there: RCON off, no ready
+// pod, a probe or broadcast that fails, or a tally that says zero players. A tally
+// the server did not give (an unfamiliar `list` reply) still gets the warning,
+// since players may well be on it. Idle auto-stop therefore never waits: it only
+// fires on an empty server.
+func (r *Reconciler) noticeStop(ctx context.Context, server *v1alpha1.MinecraftServer, sts *appsv1.StatefulSet) (time.Duration, error) {
+	if at := server.Status.StopNoticeAt; at != nil {
+		if wait := at.Time.Add(StopNoticeWindow).Sub(r.now().Time); wait > 0 {
+			return wait, nil
+		}
+		r.broadcast(ctx, server, stopNowText)
+		return 0, nil
+	}
+	if !server.Spec.Rcon.Enabled || sts.Status.ReadyReplicas == 0 {
+		return 0, nil
+	}
+	password, err := r.rconPassword(ctx, server)
+	if err != nil {
+		return 0, nil
+	}
+	addr := rconAddress(server)
+	players, err := r.Prober.Probe(ctx, addr, password)
+	if err != nil || (players.Known && players.Online == 0) {
+		return 0, nil
+	}
+	if err := r.Prober.Broadcast(ctx, addr, password, stopNoticeText); err != nil {
+		ctrl.LoggerFrom(ctx).Info("could not warn players before the stop; stopping now", "error", err.Error())
+		return 0, nil
+	}
+	now := r.now()
+	server.Status.StopNoticeAt = &now
+	if err := r.patchStatus(ctx, server); err != nil {
+		return 0, err
+	}
+	r.event(server, corev1.EventTypeNormal, "StopNotice",
+		fmt.Sprintf("players warned; stopping in %s", StopNoticeWindow))
+	return StopNoticeWindow, nil
+}
+
+// callOffStop answers a desiredState that went back to Running inside the notice
+// window: the players who were warned hear that the stop is off.
+func (r *Reconciler) callOffStop(ctx context.Context, server *v1alpha1.MinecraftServer) error {
+	r.broadcast(ctx, server, stopCalledOffText)
+	server.Status.StopNoticeAt = nil
+	return r.patchStatus(ctx, server)
+}
+
+// broadcast shows text to everyone on server, best-effort: a server that cannot be
+// reached has nobody listening either.
+func (r *Reconciler) broadcast(ctx context.Context, server *v1alpha1.MinecraftServer, text string) {
+	if !server.Spec.Rcon.Enabled {
+		return
+	}
+	password, err := r.rconPassword(ctx, server)
+	if err != nil {
+		return
+	}
+	if err := r.Prober.Broadcast(ctx, rconAddress(server), password, text); err != nil {
+		ctrl.LoggerFrom(ctx).Info("player broadcast failed", "error", err.Error())
+	}
 }
 
 // saveBeforeStop runs `save-all flush` on a server that is about to be scaled to

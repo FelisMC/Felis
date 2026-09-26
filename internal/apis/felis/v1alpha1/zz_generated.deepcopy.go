@@ -121,6 +121,9 @@ func (in *MinecraftServerStatus) DeepCopyInto(out *MinecraftServerStatus) {
 	if in.EmptySince != nil {
 		out.EmptySince = in.EmptySince.DeepCopy()
 	}
+	if in.StopNoticeAt != nil {
+		out.StopNoticeAt = in.StopNoticeAt.DeepCopy()
+	}
 	if in.LastAutoRestartAt != nil {
 		out.LastAutoRestartAt = in.LastAutoRestartAt.DeepCopy()
 	}

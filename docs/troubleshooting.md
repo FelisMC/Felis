@@ -284,8 +284,19 @@ panel shows `Stopped` means the game pod is still terminating (its shutdown save
 can take a while); retry once `kubectl -n minecraft get pods -l
 felis.lolicon.best/server=<name>` shows nothing.
 
+A stop that leaves the server `Running` for about 30 s is the players' warning.
+When desiredState turns `Stopped` and the RCON tally does not say the server is
+empty, the operator sends everyone online a yellow chat line (`tellraw @a`),
+stamps `status.stopNoticeAt`, records a `StopNotice` Event, and scales down
+once `StopNoticeWindow` (30 s) has passed, with a last "stopping now" line
+before the save. Starting the server again inside the window calls the stop
+off, and the players are told so. An empty server, RCON off, or a probe or
+broadcast that fails stops at once. Idle auto-stop only fires on an empty
+server, so it never waits.
+
 [GO-TESTED: `internal/maintenance`, `k8scluster_maintenance_test.go`,
-`handlers_maintenance_test.go`, operator `maintenance_test.go`.]
+`handlers_maintenance_test.go`, operator `maintenance_test.go`,
+`stopnotice_test.go`.]
 
 ---
 

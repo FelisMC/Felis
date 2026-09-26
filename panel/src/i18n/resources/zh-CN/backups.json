@@ -52,7 +52,7 @@
   "cancel": "取消",
   "restore_started_short": "已启动恢复",
   "restore_snapshot_started_short": "快照中，随后恢复",
-  "stopping": "正在停止服务器……",
+  "stopping": "正在停止服务器（有玩家在线时先在游戏里预告 30 秒）……",
   "restoring": "正在恢复备份……",
   "stop_timeout": "服务器停止超时。请关闭此窗口，稍后重试。",
   "corrupt_badge": "已损坏",

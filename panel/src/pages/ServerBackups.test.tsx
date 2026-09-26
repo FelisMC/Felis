@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import i18next from "i18next";
@@ -12,6 +12,8 @@ const calls = vi.hoisted(() => ({
   myServers: vi.fn(),
   serverJobs: vi.fn(),
   listBackups: vi.fn(),
+  stop: vi.fn(),
+  restoreBackup: vi.fn(),
 }));
 vi.mock("@/lib/tier", () => ({
   useTier: () => ({
@@ -53,6 +55,7 @@ beforeEach(() => {
   }));
 });
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   return i18next.changeLanguage("en-US");
 });
@@ -110,5 +113,44 @@ describe("ServerBackups", () => {
     renderPage();
     expect(await screen.findByText("Latest backup")).toBeTruthy();
     expect(screen.queryByText(/^Page \d+ of/)).toBeNull();
+  });
+
+  // Restoring a running server stops it first and restores only once it is down.
+  // With players online the operator warns them for 30 s before the stop, and the
+  // saves follow, so the wait must outlast that.
+  async function restoreRunningServer(stopsAfterMs: number) {
+    let stoppedAt = Infinity;
+    calls.status.mockImplementation(async () => {
+      const since = Date.now() - stoppedAt;
+      // Running through the warning, Stopping while the pod saves and goes.
+      const phase = since >= stopsAfterMs ? "Stopped" : since >= 30_000 ? "Stopping" : "Running";
+      return { name: "survival", displayName: "Survival", phase };
+    });
+    calls.stop.mockImplementation(async () => {
+      stoppedAt = Date.now();
+    });
+    calls.restoreBackup.mockResolvedValue({ safety_snapshot: true });
+    calls.listBackups.mockResolvedValue({ backups: [backup("bk-1", 3)], total: 1 });
+    renderPage();
+    await userEvent.click(await screen.findByRole("button", { name: "Restore" }));
+    const confirm = await screen.findByRole("button", { name: "Confirm restore" });
+    vi.useFakeTimers();
+    await act(async () => {
+      fireEvent.click(confirm);
+    });
+    expect(calls.stop).toHaveBeenCalledWith("survival");
+    await act(() => vi.advanceTimersByTimeAsync(130_000));
+  }
+
+  it("waits out a stop held for the players' 30-second warning, then restores", async () => {
+    await restoreRunningServer(75_000);
+    expect(calls.restoreBackup).toHaveBeenCalledWith("survival", "bk-1", true);
+    expect(screen.queryByText(i18next.t("backups:stop_timeout"))).toBeNull();
+  });
+
+  it("gives up without restoring when the server never goes down", async () => {
+    await restoreRunningServer(Infinity);
+    expect(calls.restoreBackup).not.toHaveBeenCalled();
+    expect(screen.getByText(i18next.t("backups:stop_timeout"))).toBeTruthy();
   });
 });

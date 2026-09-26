@@ -2,9 +2,13 @@ package operator
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf16"
 
 	"felis.lolicon.best/internal/rcon"
 )
@@ -31,9 +35,13 @@ type PlayerCount struct {
 // Save flushes the world to disk (`save-all flush`) and returns once the server
 // has answered, i.e. once the save is done. The reconciler runs it right before
 // scaling a server to zero (spec §7).
+//
+// Broadcast shows text in every online player's chat (`tellraw @a`). The reconciler
+// uses it to warn players before a stop.
 type Prober interface {
 	Probe(ctx context.Context, addr, password string) (PlayerCount, error)
 	Save(ctx context.Context, addr, password string) error
+	Broadcast(ctx context.Context, addr, password, text string) error
 }
 
 // RconProber is the production Prober: a successful Dial (TCP connect + auth)
@@ -108,6 +116,45 @@ func (p RconProber) Save(ctx context.Context, addr, password string) error {
 	}
 	_, err = conn.Execute("save-all flush")
 	return err
+}
+
+// Broadcast runs `tellraw @a` with text as one yellow chat line. tellraw takes a
+// JSON text component on every loader and version Felis runs, and unlike `say` it
+// shows the text without a "[Server]" or "[Rcon]" prefix.
+func (p RconProber) Broadcast(ctx context.Context, addr, password, text string) error {
+	timeout := boundTimeout(ctx, p.Timeout, 5*time.Second)
+	conn, err := rcon.Dial(addr, password, timeout)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
+		return err
+	}
+	_, err = conn.Execute(tellrawCommand(text))
+	return err
+}
+
+// tellrawCommand is the `tellraw @a` command that shows text to everyone online.
+// Everything past ASCII is written as a JSON \u escape, so the command survives
+// an RCON implementation that does not read its payload as UTF-8; the game's JSON
+// parser turns the escapes back into the text.
+func tellrawCommand(text string) string {
+	component, _ := json.Marshal(map[string]string{"text": text, "color": "yellow"})
+	var b strings.Builder
+	b.WriteString("tellraw @a ")
+	for _, r := range string(component) {
+		switch {
+		case r < 0x80:
+			b.WriteRune(r)
+		case r > 0xFFFF:
+			hi, lo := utf16.EncodeRune(r)
+			fmt.Fprintf(&b, `\u%04x\u%04x`, hi, lo)
+		default:
+			fmt.Fprintf(&b, `\u%04x`, r)
+		}
+	}
+	return b.String()
 }
 
 // listReplyPatterns match the `list` replies of the loaders Felis runs, tried in

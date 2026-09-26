@@ -3,8 +3,10 @@ package operator
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -157,5 +159,38 @@ func TestRconProberSaveTimesOut(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 900*time.Millisecond {
 		t.Errorf("Save took %v, want it bounded by SaveTimeout", elapsed)
+	}
+}
+
+// The broadcast is plain ASCII on the wire and decodes back to the exact text, CJK
+// and a character outside the BMP included.
+func TestTellrawCommand(t *testing.T) {
+	text := `[Felis] 服务器将在 30 秒后关闭 / "stops" 🙂`
+	cmd := tellrawCommand(text)
+	want := `tellraw @a {"color":"yellow","text":"[Felis] \u670d\u52a1\u5668\u5c06\u5728 30 \u79d2\u540e\u5173\u95ed / \"stops\" \ud83d\ude42"}`
+	if cmd != want {
+		t.Errorf("command =\n%s\nwant\n%s", cmd, want)
+	}
+	for i := 0; i < len(cmd); i++ {
+		if cmd[i] >= 0x80 {
+			t.Fatalf("byte %d of %q is not ASCII", i, cmd)
+		}
+	}
+	var component map[string]string
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(cmd, "tellraw @a ")), &component); err != nil {
+		t.Fatalf("component does not parse: %v", err)
+	}
+	if component["text"] != text {
+		t.Errorf("decoded text = %q, want %q", component["text"], text)
+	}
+}
+
+func TestRconProberBroadcastSendsTellraw(t *testing.T) {
+	addr, cmds := serveFakeRcon(t, 0)
+	if err := (RconProber{}).Broadcast(context.Background(), addr, "pw", "关闭 / stop"); err != nil {
+		t.Fatalf("Broadcast: %v", err)
+	}
+	if got, want := <-cmds, tellrawCommand("关闭 / stop"); got != want {
+		t.Errorf("command = %q, want %q", got, want)
 	}
 }

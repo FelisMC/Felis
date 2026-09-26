@@ -52,7 +52,7 @@
   "cancel": "Cancel",
   "restore_started_short": "Restore started",
   "restore_snapshot_started_short": "Snapshot, then restore",
-  "stopping": "Stopping the server…",
+  "stopping": "Stopping the server (players online get a 30-second warning first)…",
   "restoring": "Restoring…",
   "stop_timeout": "The server did not stop in time. Close this window and try again shortly.",
   "corrupt_badge": "Corrupt",

@@ -433,6 +433,14 @@ spec:
                   because the two endpoints fall in different reconcile passes.
                 format: date-time
                 type: string
+              stopNoticeAt:
+                description: |-
+                  StopNoticeAt is when the operator told the players on a server that it is
+                  about to stop (desiredState flipped to Stopped with players online). The stop
+                  itself waits until StopNoticeWindow has passed since then; the stamp is cleared
+                  once the server is scaled down, or when desiredState goes back to Running first.
+                format: date-time
+                type: string
             type: object
         type: object
     served: true
