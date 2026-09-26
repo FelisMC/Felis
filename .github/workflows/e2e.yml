@@ -1,14 +1,19 @@
 # deploy/bootstrap.sh end to end on a fresh Ubuntu 24.04 x86_64 runner: the paths every
 # host goes through, run for real instead of by hand on a VM.
 #
-#   install  a full install of this commit, then the same commit again (a rerun must
-#            converge without restarting what did not change)
-#   upgrade  the newest published release, then this commit on top of it; skipped until
-#            a release exists
+#   artifacts  this commit's release assets, built by deploy/build-release-artifacts.sh the
+#              way release.yml builds a tag's (amd64 only, the runners' architecture)
+#   install    a full install from those assets, the way a release installs, then the same
+#              assets again (a rerun must converge without restarting what did not change,
+#              importing or uploading an image again, or touching Docker)
+#   upgrade    the newest published release, then this commit's assets on top of it;
+#              skipped until a release exists
+#   source     a full install built on the host from this checkout (FELIS_SKIP_FETCH):
+#              the fallback a release without assets, or an unsupported one, takes. It builds
+#              everything with Docker, so it runs by hand and weekly only
 #
-# Each job builds the control plane, the game images and the proxy from scratch, about
-# half an hour of runner time, so this runs on pushes that touch what gets installed, by
-# hand, and weekly (a moving upstream: apt mirrors, k3s's install script, Adoptium).
+# This runs on pushes that touch what gets installed, by hand, and weekly (a moving
+# upstream: apt mirrors, k3s's install script and release assets, Adoptium).
 # deploy/e2e_check.sh holds the assertions.
 name: e2e
 
@@ -32,14 +37,47 @@ on:
 permissions:
   contents: read
 
+# An explicit bash runs with -o pipefail, so `bootstrap.sh | tee install.log` fails the step
+# when the installer fails; the default shell reports tee's status.
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: e2e-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  install:
+  artifacts:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0 # the newest tag is the version's base, as on the dev channel
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      # Stamped the way bootstrap stamps a build of main: "<newest tag>+g<sha>".
+      - name: Build the release assets
+        run: |
+          base="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || echo v0.0.0)"
+          FELIS_RELEASE_ARCHES=amd64 deploy/build-release-artifacts.sh "${base}+g$(git rev-parse --short HEAD)" dist
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-assets
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  install:
+    needs: artifacts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -47,28 +85,41 @@ jobs:
       - name: Free disk space
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
 
-      # FELIS_SKIP_FETCH builds whatever sits in /opt/felis/src, the way the VM runs
-      # have always been done; the .git directory is what stamps the build. Root owns it
-      # so git, run as root by the installer, does not refuse it as dubious.
-      - name: Stage this commit as the installer's source
-        run: |
-          sudo mkdir -p /opt/felis
-          sudo cp -a "$GITHUB_WORKSPACE" /opt/felis/src
-          sudo chown -R root:root /opt/felis/src
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: e2e-assets
+          path: dist
 
+      # The runner has Docker preinstalled, so its absence proves nothing: the log shows
+      # whether bootstrap reached for it. From FELIS_ARTIFACT_DIR every image and the plugin
+      # come out of the assets, so it must not have. (`! grep` is spelled `if grep ... exit 1`
+      # below because bash -e ignores a failing `!` command.)
       - name: Install
-        run: sudo FELIS_SKIP_FETCH=1 FELIS_INSTALL_MODE=full bash /opt/felis/src/deploy/bootstrap.sh 2>&1 | tee install.log
+        run: sudo FELIS_ARTIFACT_DIR="$GITHUB_WORKSPACE/dist" FELIS_INSTALL_MODE=full bash deploy/bootstrap.sh 2>&1 | tee install.log
 
       - name: Check the install
-        run: sudo bash deploy/e2e_check.sh install
+        run: |
+          sudo bash deploy/e2e_check.sh install
+          if grep -E 'docker already installed|installing docker|docker running' install.log; then exit 1; fi
+          for role in felis limbo lobby paper; do
+            grep -q "felis/${role}:[^ ]* is the release's" install.log
+          done
+          grep -q "docker.io/library/registry@sha256:[0-9a-f]* is the release's" install.log
+          grep -q "docker.io/library/postgres@sha256:[0-9a-f]* is the release's" install.log
+          grep -q "felis-velocity.jar is the release's" install.log
 
-      - name: Rerun the same commit
-        run: sudo FELIS_SKIP_FETCH=1 FELIS_INSTALL_MODE=full bash /opt/felis/src/deploy/bootstrap.sh 2>&1 | tee rerun.log
+      - name: Rerun the same assets
+        run: sudo FELIS_ARTIFACT_DIR="$GITHUB_WORKSPACE/dist" FELIS_INSTALL_MODE=full bash deploy/bootstrap.sh 2>&1 | tee rerun.log
 
+      # containerd and the registry already hold every image under the digest the listing
+      # names, so nothing is imported or uploaded twice.
       - name: Check the rerun
         run: |
           sudo bash deploy/e2e_check.sh rerun
           grep -q 'felis-velocity unchanged; left running' rerun.log
+          if grep -E 'docker already installed|installing docker|docker running' rerun.log; then exit 1; fi
+          if grep -E 'importing felis-image-|mirroring .* into the internal registry' rerun.log; then exit 1; fi
+          grep -q 'is already in the internal registry' rerun.log
 
       - name: Diagnostics
         if: failure()
@@ -92,6 +143,7 @@ jobs:
           if-no-files-found: ignore
 
   upgrade:
+    needs: artifacts
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -101,6 +153,11 @@ jobs:
 
       - name: Free disk space
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: e2e-assets
+          path: dist
 
       - name: Find the newest release
         id: release
@@ -130,11 +187,7 @@ jobs:
 
       - name: Upgrade to this commit
         if: steps.release.outputs.tag != ''
-        run: |
-          sudo rm -rf /opt/felis/src
-          sudo cp -a "$GITHUB_WORKSPACE" /opt/felis/src
-          sudo chown -R root:root /opt/felis/src
-          sudo FELIS_SKIP_FETCH=1 FELIS_INSTALL_MODE=full bash /opt/felis/src/deploy/bootstrap.sh 2>&1 | tee upgrade.log
+        run: sudo FELIS_ARTIFACT_DIR="$GITHUB_WORKSPACE/dist" FELIS_INSTALL_MODE=full bash deploy/bootstrap.sh 2>&1 | tee upgrade.log
 
       - name: Check the upgrade
         if: steps.release.outputs.tag != ''
@@ -153,5 +206,44 @@ jobs:
         if: always()
         with:
           name: e2e-upgrade-logs
+          path: '*.log'
+          if-no-files-found: ignore
+
+  source:
+    if: github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      # FELIS_SKIP_FETCH builds whatever sits in /opt/felis/src; the .git directory is what
+      # stamps the build. Root owns it so git, run as root by the installer, does not refuse
+      # it as dubious.
+      - name: Stage this commit as the installer's source
+        run: |
+          sudo mkdir -p /opt/felis
+          sudo cp -a "$GITHUB_WORKSPACE" /opt/felis/src
+          sudo chown -R root:root /opt/felis/src
+
+      - name: Install
+        run: sudo FELIS_SKIP_FETCH=1 FELIS_INSTALL_MODE=full bash /opt/felis/src/deploy/bootstrap.sh 2>&1 | tee source.log
+
+      - name: Check the install
+        run: sudo bash deploy/e2e_check.sh install
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+          sudo -E /usr/local/bin/k3s kubectl get pods -A -o wide || true
+          sudo journalctl -u k3s -u felis-velocity -u docker --no-pager -n 120 || true
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: e2e-source-logs
           path: '*.log'
           if-no-files-found: ignore
