@@ -853,6 +853,7 @@ run_k3s() { # installed-version pinned-version [FELIS_UPGRADE_DEPS]
     write_k3s_config() { :; }
     strip_k3s_kubeconfig_mode_flag() { :; }
     run_k3s_installer() { printf "INSTALLER: %s\n" "$FELIS_K3S_VERSION"; }
+    stage_k3s_airgap_images() { echo STAGE; }
     systemctl() { :; }
     wait_for_node_ready() { :; }
     chmod() { :; }
@@ -864,10 +865,15 @@ run_k3s() { # installed-version pinned-version [FELIS_UPGRADE_DEPS]
 out="$(run_k3s v1.36.4+k3s1 v1.36.4+k3s1 1)"
 expect "a k3s at the pin is left alone" "OK: k3s v1.36.4+k3s1 already installed" "$out"
 case "$out" in *INSTALLER:*) echo "FAIL: a k3s at the pin must not be reinstalled"; fails=$((fails + 1)) ;; esac
+# k3s's image tarball is read as k3s starts, so it is fetched only for a k3s about to start
+# on a new version: a rerun downloads nothing.
+case "$out" in *STAGE*) echo "FAIL: a k3s left as it is must not have its images downloaded again"; fails=$((fails + 1)) ;; *) echo "PASS a k3s left as it is stages no images" ;; esac
 out="$(run_k3s v1.35.2+k3s1 v1.36.4+k3s1)"
 expect "an older k3s is reported without the flag" "this release pins v1.36.4+k3s1 (FELIS_UPGRADE_DEPS=1 moves it)" "$out"
 case "$out" in *INSTALLER:*) echo "FAIL: an installed k3s must not move without FELIS_UPGRADE_DEPS=1"; fails=$((fails + 1)) ;; esac
 expect "FELIS_UPGRADE_DEPS=1 moves k3s up one minor" "INSTALLER: v1.36.4+k3s1" "$(run_k3s v1.35.2+k3s1 v1.36.4+k3s1 1)"
+expect "an upgrade stages the new k3s's images before its installer restarts it" "STAGE
+INSTALLER: v1.36.4+k3s1" "$(run_k3s v1.35.2+k3s1 v1.36.4+k3s1 1)"
 expect "FELIS_UPGRADE_DEPS=1 moves k3s to a newer patch" "INSTALLER: v1.36.4+k3s1" "$(run_k3s v1.36.1+k3s2 v1.36.4+k3s1 1)"
 out="$(run_k3s v1.34.6+k3s1 v1.36.4+k3s1 1)"
 expect "a k3s upgrade that skips a minor is refused" "DIE: k3s v1.34.6+k3s1 -> v1.36.4+k3s1 skips a minor version" "$out"
@@ -1156,22 +1162,28 @@ rm -rf "$pushdir"
 
 # docker must be started ONCE for the whole batch: a start/stop pair per image trips
 # systemd's start rate limit ("start-limit-hit" — observed live; the 4th image was never
-# mirrored because docker.service is socket-triggered and each cycle counts twice).
-wiblock="$(awk '/^push_images_to_registry\(\) \{/,/^}/' "$BS")"
-[ -n "$wiblock" ] || { echo "FAIL: no push_images_to_registry found in $BS"; exit 1; }
-out="$(
-  FELIS_IMAGE=a FELIS_LIMBO_IMAGE=b FELIS_LOBBY_IMAGE=c FELIS_PAPER_IMAGE=d bash -c '
+# mirrored because docker.service is socket-triggered and each cycle counts twice). An image
+# the release shipped is pushed from its bundle instead, and needs no Docker at all.
+wiblock="$(for f in push_images_to_registry role_prebuilt role_image stop_docker; do awk '/^'"$f"'\(\) \{/,/^}/' "$BS"; done)"
+case "$wiblock" in *"push_images_to_registry() {"*"role_prebuilt() {"*"role_image() {"*"stop_docker() {"*) ;; *) echo "FAIL: push_images_to_registry or its helpers are missing from $BS"; exit 1 ;; esac
+run_batch() { # PREBUILT_ROLES [ARTIFACT_MODE [ARTIFACT_CACHE]]
+  FELIS_IMAGE=a FELIS_LIMBO_IMAGE=b FELIS_LOBBY_IMAGE=c FELIS_PAPER_IMAGE=d PREBUILT_ROLES="$1" \
+    ARTIFACT_MODE="${2:-}" ARTIFACT_CACHE="${3:-/nonexistent}" bash -c '
+    DOCKER_INSTALLED=""
     systemctl() { printf "SYSTEMCTL %s\n" "$*"; }
+    ensure_docker() { printf "ENSURE\n"; DOCKER_INSTALLED=1; }
     push_image_to_registry() { printf "PUSH %s\n" "$1"; }
     push_version_tag() { printf "VERSION %s\n" "$1"; }
+    push_release_image() { printf "RELEASE %s\n" "$1"; }
     registry_docker_login() { printf "LOGIN\n"; }
     '"$wiblock"'
     push_images_to_registry'
-)"
-expect "the batch logs in to the registry gate before pushing" "SYSTEMCTL start docker
+}
+out="$(run_batch " ")"
+expect "the batch logs in to the registry gate before pushing" "ENSURE
 LOGIN
 PUSH a" "$out"
-starts="$(printf '%s\n' "$out" | grep -c 'SYSTEMCTL start docker')"
+starts="$(printf '%s\n' "$out" | grep -c 'ENSURE')"
 stops="$(printf '%s\n' "$out" | grep -c 'SYSTEMCTL stop docker')"
 [ "$starts" = 1 ] && [ "$stops" = 1 ] && [ "$(printf '%s\n' "$out" | grep -c '^PUSH')" = 4 ] \
   && echo "PASS the batch wraps all four pushes in ONE docker start/stop" \
@@ -1179,6 +1191,24 @@ stops="$(printf '%s\n' "$out" | grep -c 'SYSTEMCTL stop docker')"
 [ "$(printf '%s\n' "$out" | grep '^VERSION' | tr '\n' ' ')" = "VERSION b VERSION c VERSION d " ] \
   && echo "PASS the three game images, and only they, also get a version tag" \
   || { echo "FAIL: expected version tags for b c d only, got:"; printf '%s\n' "$out"; fails=$((fails + 1)); }
+out="$(run_batch " felis limbo ")"
+expect "release images are pushed from their bundles, the rest with docker" "RELEASE felis
+RELEASE limbo
+ENSURE
+LOGIN
+PUSH c
+VERSION c
+PUSH d
+VERSION d
+SYSTEMCTL stop docker docker.socket" "$out"
+case "$out" in *"PUSH a"*|*"PUSH b"*) echo "FAIL: a release image must not also go through docker push"; fails=$((fails + 1)) ;; *) echo "PASS a release image is pushed once" ;; esac
+cachedir="$(mktemp -d)"
+out="$(run_batch " felis limbo lobby paper " release "$cachedir")"
+[ "$(printf '%s\n' "$out" | grep -c '^RELEASE')" = 4 ] && [ "$(printf '%s\n' "$out" | grep -c '^RELEASE')" = "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" ] \
+  && echo "PASS an install from release images pushes without Docker, and never starts or stops it" \
+  || { echo "FAIL: an all-release batch touched docker:"; printf '%s\n' "$out"; fails=$((fails + 1)); }
+[ ! -e "$cachedir" ] && echo "PASS the downloaded bundles are removed once they are pushed" \
+  || { echo "FAIL: ${cachedir} was left behind after the pushes"; fails=$((fails + 1)); rm -rf "$cachedir"; }
 
 # Each game build is also mirrored under <MC version>-<image id>, a tag no later run
 # rewrites, so an admin can still name that exact build after :demo moves on.
@@ -2082,12 +2112,16 @@ case "$out" in
   *) echo "FAIL restart_existing_control_plane died on a first install: $out"; fails=$((fails + 1)) ;;
 esac
 
-mainblock="$(awk '/^main\(\) \{/,/^}/' "$BS")"
-case "$mainblock" in
-  *"resolve_felis_image
-  build_image"*) echo "PASS the image is named before it is built" ;;
-  *) echo "FAIL main must call resolve_felis_image right before build_image"; fails=$((fails + 1)) ;;
-esac
+# The binary names the release, the release names the images, and each image is looked for in
+# the release's bundles before anything is pulled or built.
+imorder="$(awk '/^main\(\) \{/,/^}/' "$BS" | grep -nE '^[[:space:]]*(install_k3s|configure_registry_mirror|install_artifact_binary|fetch_source|select_release_artifacts|resolve_felis_image|import_release_images felis registry postgres|import_platform_images|build_image|pin_platform_images)$' | sed 's/^[0-9]*:[[:space:]]*//' | tr '\n' ' ')"
+expect "main takes the binary, then the release's images, before pulling or building any" \
+  "install_k3s configure_registry_mirror install_artifact_binary fetch_source select_release_artifacts resolve_felis_image import_release_images felis registry postgres import_platform_images build_image pin_platform_images " "$imorder"
+if awk '/^main\(\) \{/,/^}/' "$BS" | grep -qE '^[[:space:]]*install_docker$'; then
+  echo "FAIL: main installs Docker up front; only a build may (ensure_docker)"; fails=$((fails + 1))
+else
+  echo "PASS main leaves Docker to the builds that need it"
+fi
 
 # --- a rerun restarts only what changed -------------------------------------------------
 # The proxy, the login and lobby pods and PostgreSQL each disconnect every player (or cut
@@ -2488,6 +2522,7 @@ run_install_k3s() { # $1: installed version ("" = none), $2: drop-in changed (0|
     write_k3s_config() { [ "$CHANGED" = 0 ] || K3S_RESTART_NEEDED=1; }
     strip_k3s_kubeconfig_mode_flag() { :; }
     run_k3s_installer() { echo "INSTALLER"; printf "#!/bin/sh\n" > "$K3S_BIN"; command chmod +x "$K3S_BIN"; }
+    stage_k3s_airgap_images() { echo "STAGE"; }
     systemctl() { echo "SYSTEMCTL: $*"; }
     wait_for_node_ready() { echo "READY"; }
     chmod() { echo "CHMOD: $*"; }
@@ -2503,6 +2538,8 @@ case "$out" in *"restart k3s"*) echo "FAIL unchanged k3s settings must not resta
 out="$(run_install_k3s "" 1)"
 expect "a fresh host runs the k3s installer and waits for the node" "INSTALLER
 SYSTEMCTL: enable --now k3s" "$out"
+expect "a fresh host stages k3s's images before k3s first starts" "STAGE
+INSTALLER" "$out"
 expect "a fresh host's kubeconfig is made root-only too" "CHMOD: 0600 /etc/rancher/k3s/k3s.yaml" "$out"
 case "$out" in *"restart k3s"*) echo "FAIL the k3s installer already started k3s on the new settings; no second restart"; fails=$((fails + 1)) ;; *) echo "PASS a fresh k3s is not restarted a second time" ;; esac
 out="$(run_install_k3s v1.35.2+k3s1 1 1)"
@@ -2674,7 +2711,8 @@ wdblock="$(awk '/^warn_dynamic_node_ip\(\) \{/,/^}/' "$BS")"
 pfroot="$(mktemp -d)"
 # run_pf runs preflight with the stubbed facts in the environment; each defaults to a
 # healthy host: 8 GiB RAM, one 100 GiB filesystem with 60 GiB free, no listeners, no
-# other cluster, a LAN route, every download host answering.
+# other cluster, a LAN route, every download host answering. The install defaults to a
+# source build (the dev channel), the one that writes the most and downloads from the most.
 run_pf() {
   PF_ROOT="$pfroot" bash -c '
     set -Eeuo pipefail
@@ -2713,11 +2751,14 @@ run_pf() {
       host="${host#https://}"; host="${host%/}"
       case " ${PF_DOWN:-} " in *" ${host} "*) echo 000 ;; *) echo 404 ;; esac
     }
-    bootstrap_from_tui() { return 1; }
+    bootstrap_from_tui() { [ -n "${PF_TUI:-}" ]; }
+    '"$(awk '/^use_release_binary\(\) \{/,/^}/' "$BS")"'
     FELIS_GAME_PORT=25565 FELIS_PANEL_NODEPORT=30443 REGISTRY_URL=registry.felis.svc:5000 PG_HOST_PORT=15432
     POD_CIDR=10.42.0.0/16 SERVICE_CIDR=10.43.0.0/16 NODE_IP="${PF_NODE_IP:-192.168.1.20}"
     K3S_BIN="$PF_ROOT/k3s" BOOTSTRAP_DONE="$PF_ROOT/bootstrap.done"
     FELIS_REF_PINNED="" FELIS_VELOCITY_FORK_JAR="" FELIS_PREFLIGHT="${PF_MODE:-strict}"
+    FELIS_VERSION_BOOTSTRAP="${PF_CHANNEL:-dev}" FELIS_ARTIFACT_DIR="${PF_ARTIFACT_DIR:-}"
+    FELIS_GAME_STACK="${PF_GAME_STACK:-pinned}"
     '"$wdblock"'
     '"$pfblock"'
     # The host readers the section defines, answered from the same facts.
@@ -2793,6 +2834,31 @@ expect "and the install goes on" "WENT ON" "$out"
 
 out="$(PF_DOWN="github.com fill-data.papermc.io" run_pf)"
 expect "unreachable download hosts are named together" "cannot reach github.com fill-data.papermc.io over HTTPS" "$out"
+
+# An install from a release's assets builds nothing: no Docker cache under /var/lib/containerd,
+# and Docker Hub only as the fallback for an image the release cannot supply. The downloaded
+# bundles wait under /var/lib/felis until they are pushed, so that budget grows.
+out="$(PF_CHANNEL=release PF_DF="/ 104857600 83886080 20971520" run_pf)"
+expect "a release install fits where a source build does not" "OK: preflight passed" "$out"
+out="$(PF_CHANNEL=release PF_DF="/ 104857600 88080384 16777216" run_pf)"
+expect "a release install still needs room for its bundles" "/ has 16384 MiB free; this install writes about 17408 MiB there" "$out"
+out="$(PF_ARTIFACT_DIR=/srv/felis-release PF_DF="/ 104857600 88080384 16777216" PF_DOWN="api.github.com registry-1.docker.io" run_pf)"
+expect "an install from FELIS_ARTIFACT_DIR downloads no bundles and asks neither GitHub's API nor Docker Hub" "OK: preflight passed" "$out"
+case "$out" in *"cannot reach"*) echo "FAIL: FELIS_ARTIFACT_DIR probed a host it never uses"; fails=$((fails + 1)) ;; *) echo "PASS FELIS_ARTIFACT_DIR probes only what it uses" ;; esac
+out="$(PF_CHANNEL=release PF_DOWN=registry-1.docker.io run_pf)"
+expect "a release install without Docker Hub is warned about" "WARN: preflight: cannot reach registry-1.docker.io over HTTPS; the install goes on" "$out"
+expect "and goes on" "OK: preflight passed" "$out"
+out="$(PF_DOWN=registry-1.docker.io run_pf)"
+expect "a source build without Docker Hub is refused" "cannot reach registry-1.docker.io over HTTPS; the install downloads from there" "$out"
+out="$(PF_CHANNEL=release PF_GAME_STACK=latest PF_DOWN=registry-1.docker.io run_pf)"
+expect "FELIS_GAME_STACK=latest builds its images here, so it needs Docker Hub" "cannot reach registry-1.docker.io over HTTPS; the install downloads from there" "$out"
+out="$(PF_CHANNEL=release PF_GAME_STACK=latest PF_DF="/ 104857600 83886080 20971520" run_pf)"
+expect "and room for the builds" "/ has 20480 MiB free; this install writes about 25600 MiB there" "$out"
+out="$(PF_CHANNEL=release PF_DOWN=api.github.com run_pf)"
+expect "the release channel cannot install without GitHub's API" "cannot reach api.github.com over HTTPS; the install downloads from there" "$out"
+out="$(PF_TUI=1 PF_DOWN=api.github.com run_pf)"
+expect "the setup console only warns without it: its binary is already here" "WARN: preflight: cannot reach api.github.com" "$out"
+expect "and goes on" "OK: preflight passed" "$out"
 
 # Three problems, one report, nothing done.
 out="$(PF_MEM_KB=1000000 PF_ARCH=armv7l PF_DOWN=github.com run_pf)"
@@ -3262,6 +3328,476 @@ before "the control plane is scaled back up after the bundle is applied" \
 before "the control plane is scaled back up before the rollouts are awaited" \
   'kube -n "$CONTROL_NS" scale deployment felis-api felis-operator --replicas=1' 'rollout status "$d"' "$dbblock"
 expect "the pods reach the database at its Service" 'write_felis_toml "${STATE_DIR}/felis.pod.toml" "$PG_SERVICE_ADDR"' "$dbblock"
+
+# --- a release's prebuilt assets ----------------------------------------------------------
+# Every file is used only once its sha256 is the one SHA256SUMS lists; the interesting cases
+# are the refusals, and that a refused file is never handed on.
+for f in load_artifact_sums artifact_sum artifact_fetch artifact_unusable install_artifact_binary \
+  select_release_artifacts load_release_listing release_listing import_release_images \
+  push_release_image registry_manifest_digest stage_k3s_airgap_images install_velocity_plugin \
+  build_game_stack load_release_json; do
+  [ -n "$(bsfn "$f")" ] || { echo "FAIL: no ${f} in $BS"; exit 1; }
+  [ "$(bsfn "$f" | wc -l)" -lt 90 ] \
+    || { echo "FAIL: the extracted ${f} is not just the function -- did its closing brace move?"; exit 1; }
+done
+adir="$(mktemp -d)"
+sha() { sha256sum <"$1" | cut -d' ' -f1; }
+afblock="$(bsfn artifact_sum; bsfn artifact_fetch)"
+# run_fetch_artifact <mode> <name> [sums]: the directory is $adir/dir, the cache $adir/cache,
+# and the "release" serves $adir/release/<name>.
+run_fetch_artifact() {
+  MODE="$1" NAME="$2" SUMS="${3:-$(cat "$adir/SUMS")}" A="$adir" bash -c '
+    set -Eeuo pipefail
+    warn() { echo "WARN: $*"; }
+    download_release_asset() { echo "DOWNLOAD $2" >&2; [ -f "$A/release/$2" ] || return 1; cp "$A/release/$2" "$3"; }
+    ARTIFACT_MODE="$MODE" ARTIFACT_TAG=v9.9.9 ARTIFACT_SUMS="$SUMS" ARTIFACT_CACHE="$A/cache"
+    FELIS_ARTIFACT_DIR="$A/dir"
+    '"$afblock"'
+    if artifact_fetch "$NAME"; then echo "FILE $ARTIFACT_FILE"; cat "$ARTIFACT_FILE"; else echo REFUSED; fi' 2>&1
+}
+mkdir -p "$adir/dir" "$adir/release"
+printf 'the game images\n' > "$adir/dir/felis-image-game-linux-amd64.tar"
+cp "$adir/dir/felis-image-game-linux-amd64.tar" "$adir/release/"
+printf '%s  felis-image-game-linux-amd64.tar\n%s *felis-velocity.jar\n' \
+  "$(sha "$adir/dir/felis-image-game-linux-amd64.tar")" "$(printf 'the plugin\n' | sha256sum | cut -d' ' -f1)" > "$adir/SUMS"
+out="$(run_fetch_artifact dir felis-image-game-linux-amd64.tar)"
+expect "a directory's file that matches SHA256SUMS is used where it is" "FILE $adir/dir/felis-image-game-linux-amd64.tar" "$out"
+out="$(run_fetch_artifact dir felis-velocity.jar)"
+expect "a file the directory lacks is refused" "WARN: $adir/dir/felis-velocity.jar is missing" "$out"
+case "$out" in *DOWNLOAD*) echo "FAIL: FELIS_ARTIFACT_DIR went to the release for a file it lacks"; fails=$((fails + 1)) ;; *) echo "PASS FELIS_ARTIFACT_DIR never downloads" ;; esac
+printf 'not the plugin\n' > "$adir/dir/felis-velocity.jar"
+out="$(run_fetch_artifact dir felis-velocity.jar)"
+expect "a directory's file that does not match is refused, naming both hashes" "hashes to $(sha "$adir/dir/felis-velocity.jar"), but SHA256SUMS says" "$out"
+case "$out" in *FILE*) echo "FAIL: a mismatched file was handed on"; fails=$((fails + 1)) ;; *) echo "PASS a mismatched file is never handed on" ;; esac
+out="$(run_fetch_artifact dir felis-linux-amd64)"
+expect "a name SHA256SUMS does not list is refused" "WARN: SHA256SUMS lists no felis-linux-amd64" "$out"
+out="$(run_fetch_artifact release felis-linux-amd64)"
+case "$out" in *DOWNLOAD*|*FILE*) echo "FAIL: a file SHA256SUMS does not list was fetched: $out"; fails=$((fails + 1)) ;; *) echo "PASS a file SHA256SUMS does not list is never downloaded" ;; esac
+out="$(run_fetch_artifact dir felis-image-game-linux-amd64.tar "$(printf 'deadbeef  felis-image-game-linux-amd64.tar\n')")"
+expect "a SHA256SUMS line without a whole sha256 lists nothing" "WARN: SHA256SUMS lists no felis-image-game-linux-amd64.tar" "$out"
+
+out="$(run_fetch_artifact release felis-image-game-linux-amd64.tar)"
+expect "a release file is downloaded into the cache once it matches" "FILE $adir/cache/felis-image-game-linux-amd64.tar" "$out"
+[ ! -e "$adir/cache/felis-image-game-linux-amd64.tar.partial" ] && echo "PASS the download's partial file is gone" \
+  || { echo "FAIL: the partial download was left behind"; fails=$((fails + 1)); }
+[ "$(stat -c %a "$adir/cache" 2>/dev/null || stat -f %Lp "$adir/cache")" = 700 ] && echo "PASS the cache is root's alone" \
+  || { echo "FAIL: the artifact cache is not 0700"; fails=$((fails + 1)); }
+out="$(run_fetch_artifact release felis-image-game-linux-amd64.tar)"
+case "$out" in *DOWNLOAD*) echo "FAIL: a cached file that still matches was downloaded again"; fails=$((fails + 1)) ;; *) echo "PASS a cached file that still matches is reused" ;; esac
+printf 'tampered\n' > "$adir/cache/felis-image-game-linux-amd64.tar"
+out="$(run_fetch_artifact release felis-image-game-linux-amd64.tar)"
+expect "a cached file that no longer matches is fetched again" "DOWNLOAD felis-image-game-linux-amd64.tar" "$out"
+expect "and the fresh copy is used" "the game images" "$out"
+printf 'a swapped asset\n' > "$adir/release/felis-velocity.jar"
+out="$(run_fetch_artifact release felis-velocity.jar)"
+expect "a download that does not match is refused" "downloaded felis-velocity.jar hashes to $(sha "$adir/release/felis-velocity.jar"), but release v9.9.9's SHA256SUMS says" "$out"
+[ ! -e "$adir/cache/felis-velocity.jar" ] && [ ! -e "$adir/cache/felis-velocity.jar.partial" ] \
+  && echo "PASS a refused download leaves nothing in the cache" \
+  || { echo "FAIL: a refused download was kept"; fails=$((fails + 1)); }
+rm -f "$adir/release/felis-velocity.jar"
+out="$(run_fetch_artifact release felis-velocity.jar)"
+expect "a release without the asset is refused" "could not download felis-velocity.jar from release v9.9.9" "$out"
+[ "$(printf '%s\n' "$out" | grep -c '^WARN')" = 1 ] && echo "PASS a failed download is reported once, as a failed download" \
+  || { echo "FAIL: a failed download went on to be checked: $out"; fails=$((fails + 1)); }
+
+# From FELIS_ARTIFACT_DIR nothing is ever built, so an unusable asset stops the install; from
+# a release it falls back, with a warning.
+unblock="$(bsfn artifact_unusable)"
+out="$(ARTIFACT_MODE=dir bash -c 'die() { echo "DIE: $*"; exit 1; }; warn() { echo "WARN: $*"; }; '"$unblock"'; artifact_unusable "no plugin" "building it"; echo GOES ON')"
+expect "FELIS_ARTIFACT_DIR stops on an unusable asset" "DIE: FELIS_ARTIFACT_DIR: no plugin" "$out"
+case "$out" in *"GOES ON"*) echo "FAIL: FELIS_ARTIFACT_DIR went on without an asset"; fails=$((fails + 1)) ;; esac
+out="$(ARTIFACT_MODE=release bash -c 'die() { echo "DIE: $*"; exit 1; }; warn() { echo "WARN: $*"; }; '"$unblock"'; artifact_unusable "no plugin" "building it"; echo GOES ON')"
+expect "a release's unusable asset falls back" "WARN: no plugin; building it" "$out"
+expect "and the install goes on" "GOES ON" "$out"
+
+# --- the image listing ----------------------------------------------------------------------
+llblock="$(bsfn load_release_listing)"
+d1="sha256:$(printf 'm' | sha256sum | cut -d' ' -f1)"
+d2="sha256:$(printf 'c' | sha256sum | cut -d' ' -f1)"
+good="felis-image-game-linux-amd64.tar limbo registry.felis.svc:5000/felis/limbo:demo $d1 $d2
+felis-image-base-linux-amd64.tar registry docker.io/library/registry@$d1 $d1 $d2"
+run_listing() { # content
+  printf '%s\n' "$1" > "$adir/listing"
+  bash -c "$llblock"'
+    if load_release_listing "$0" amd64; then printf "%s" "$RELEASE_LISTING"; echo LOADED; else echo REFUSED; fi' "$adir/listing"
+}
+expect "a well-formed listing is loaded" "LOADED" "$(run_listing "$good")"
+expect "a listing for another architecture is refused" "REFUSED" "$(run_listing "$(printf '%s\n' "$good" | sed 's/amd64/arm64/')")"
+expect "a line with a sixth field is refused" "REFUSED" "$(run_listing "$good extra")"
+expect "a line missing its config digest is refused" "REFUSED" "$(run_listing "felis-image-game-linux-amd64.tar limbo registry.felis.svc:5000/felis/limbo:demo $d1")"
+expect "a role Felis does not know is refused" "REFUSED" "$(run_listing "felis-image-game-linux-amd64.tar miner x/y:z $d1 $d2")"
+expect "a role listed twice is refused" "REFUSED" "$(run_listing "$good
+felis-image-game-linux-amd64.tar limbo other/limbo:demo $d1 $d2")"
+expect "a short digest is refused" "REFUSED" "$(run_listing "felis-image-game-linux-amd64.tar limbo x/limbo:demo sha256:abc $d2")"
+expect "a name with shell characters is refused" "REFUSED" "$(run_listing "felis-image-game-linux-amd64.tar limbo x/limbo:\$(id) $d1 $d2")"
+expect "a bundle outside the felis-image-* names is refused" "REFUSED" "$(run_listing "../../etc/shadow limbo x/limbo:demo $d1 $d2")"
+expect "an empty listing is refused" "REFUSED" "$(run_listing "")"
+
+# --- importing a release's images into containerd --------------------------------------------
+# ctr is a fake containerd: `images ls` prints the refs in $adir/ctr (with the header row the
+# real one has), `images import` adds what the imported bundle's .names file holds, and
+# `images tag` adds a name.
+ilblock="$(bsfn artifact_unusable; bsfn role_image; bsfn role_fallback; bsfn role_prebuilt; bsfn image_repo; bsfn image_present; bsfn pinned_image_ref; bsfn import_release_images)"
+fdig="sha256:$(printf 'felis' | sha256sum | cut -d' ' -f1)"
+gdig="sha256:$(printf 'limbo' | sha256sum | cut -d' ' -f1)"
+rdig="sha256:$(printf 'registry' | sha256sum | cut -d' ' -f1)"
+cdig="sha256:0123456789ab$(printf 'cfg' | sha256sum | cut -c13-64)"
+ridx="sha256:$(printf 'index' | sha256sum | cut -d' ' -f1)"
+listing="felis-image-felis-linux-amd64.tar felis registry.felis.svc:5000/felis/felis:v9.9.9 $fdig $cdig
+felis-image-game-linux-amd64.tar limbo registry.felis.svc:5000/felis/limbo:demo $gdig $cdig
+felis-image-base-linux-amd64.tar registry docker.io/library/registry@$ridx $rdig $cdig"
+run_import_release() { # mode ctr-refs FELIS_IMAGE-or-empty roles...
+  ir_mode="$1" ir_refs="$2" ir_fimg="${3:-registry.felis.svc:5000/felis/felis:v9.9.9}"
+  shift 3
+  MODE="$ir_mode" REFS="$ir_refs" FIMG="$ir_fimg" A="$adir" LISTING="$listing" \
+    FD="$fdig" GD="$gdig" RD="$rdig" RIDX="$ridx" bash -c '
+    set -Eeuo pipefail
+    die() { echo "DIE: $*"; exit 1; }
+    warn() { echo "WARN: $*"; }
+    log() { :; }
+    ok() { echo "OK: $*"; }
+    printf "%s\n" "$REFS" > "$A/ctr"
+    k3s_cmd() {
+      shift
+      case "$2" in
+        ls) echo "REF TYPE DIGEST SIZE PLATFORMS LABELS"; awk "NF { print \$1, \"application/vnd.oci.image.manifest.v1+json\", \$2, \"25.3 MiB\", \"linux/amd64\", \"-\" }" "$A/ctr" ;;
+        import) echo "IMPORT ${3##*/}" >&2; cat "$3.names" >> "$A/ctr" ;;
+        tag) echo "TAG $4 $5" >&2; awk -v s="$4" -v t="$5" "\$1 == s { print t, \$2 }" "$A/ctr" >> "$A/ctr" ;;
+      esac
+    }
+    artifact_fetch() { echo "FETCH $1" >&2; ARTIFACT_FILE="$A/bundles/$1"; [ -f "$ARTIFACT_FILE" ]; }
+    release_listing() { RELEASE_LISTING="$LISTING"; }
+    ARTIFACT_MODE="$MODE" PREBUILT_ROLES=" " RELEASE_IMAGES="" LIMBO_IMAGE_ID="" LOBBY_IMAGE_ID=""
+    FELIS_IMAGE="$FIMG" FELIS_LIMBO_IMAGE=registry.felis.svc:5000/felis/limbo:demo
+    FELIS_LOBBY_IMAGE=registry.felis.svc:5000/felis/lobby:demo FELIS_PAPER_IMAGE=registry.felis.svc:5000/felis/paper:demo
+    REGISTRY_IMAGE="docker.io/library/registry:2.8.3@$RIDX" POSTGRES_IMAGE="docker.io/library/postgres:18.6-trixie@$RIDX"
+    '"$ilblock"'
+    import_release_images "$@"
+    echo "PREBUILT[$PREBUILT_ROLES] LIMBO_ID[$LIMBO_IMAGE_ID]"
+    printf "%s" "$RELEASE_IMAGES"' x "$@" 2>&1
+}
+mkdir -p "$adir/bundles"
+: > "$adir/bundles/felis-image-felis-linux-amd64.tar"
+printf '%s %s\n' "registry.felis.svc:5000/felis/felis:v9.9.9" "$fdig" "registry.felis.svc:5000/felis/felis@$fdig" "$fdig" \
+  > "$adir/bundles/felis-image-felis-linux-amd64.tar.names"
+: > "$adir/bundles/felis-image-game-linux-amd64.tar"
+printf '%s %s\n' "registry.felis.svc:5000/felis/limbo:demo" "$gdig" > "$adir/bundles/felis-image-game-linux-amd64.tar.names"
+: > "$adir/bundles/felis-image-base-linux-amd64.tar"
+printf '%s %s\n' "docker.io/library/registry@$ridx" "$rdig" > "$adir/bundles/felis-image-base-linux-amd64.tar.names"
+
+out="$(run_import_release release "" "" felis registry)"
+expect "a fresh node imports the bundles holding the images it lacks" "IMPORT felis-image-felis-linux-amd64.tar" "$out"
+expect "the base bundle too" "IMPORT felis-image-base-linux-amd64.tar" "$out"
+case "$out" in *"felis-image-game"*) echo "FAIL: a bundle no asked-for image is in was fetched"; fails=$((fails + 1)) ;; *) echo "PASS only the bundles holding the asked-for images are fetched" ;; esac
+expect "each imported image is recorded as the release's" "PREBUILT[ felis registry ]" "$out"
+expect "with the line push_release_image reads" "felis felis-image-felis-linux-amd64.tar registry.felis.svc:5000/felis/felis:v9.9.9 registry.felis.svc:5000/felis/felis:v9.9.9 $fdig $cdig" "$out"
+
+out="$(run_import_release release "registry.felis.svc:5000/felis/felis:v9.9.9 $fdig
+docker.io/library/registry@$ridx $ridx" "" felis registry)"
+case "$out" in *FETCH*|*IMPORT*) echo "FAIL: images containerd already holds were fetched again"; fails=$((fails + 1)) ;; *) echo "PASS a rerun fetches nothing containerd already holds" ;; esac
+expect "a digest name CRI pulled counts as the image" "PREBUILT[ felis registry ]" "$out"
+
+out="$(run_import_release release "registry.felis.svc:5000/felis/felis:v9.9.9 sha256:$(printf old | sha256sum | cut -d' ' -f1)" "" felis)"
+expect "a tag naming another build is imported over" "IMPORT felis-image-felis-linux-amd64.tar" "$out"
+
+out="$(run_import_release release "" "registry.felis.svc:5000/felis/felis:custom" felis)"
+expect "a FELIS_IMAGE set to another name gets that name on the release's image" "TAG registry.felis.svc:5000/felis/felis:v9.9.9 registry.felis.svc:5000/felis/felis:custom" "$out"
+expect "and its digest name, for a pinned pull" "TAG registry.felis.svc:5000/felis/felis:v9.9.9 registry.felis.svc:5000/felis/felis@$fdig" "$out"
+expect "and counts as the release's" "PREBUILT[ felis ]" "$out"
+
+out="$(run_import_release release "" "" limbo)"
+expect "a game image's config digest is the build the login server runs" "LIMBO_ID[$cdig]" "$out"
+
+out="$(run_import_release release "" "" paper)"
+expect "a role the release does not list falls back alone" "WARN: the release lists no paper image; building it on this host instead" "$out"
+expect "and is not recorded as the release's" "PREBUILT[ ]" "$out"
+[ "$(printf '%s\n' "$out" | grep -c '^WARN')" = 1 ] && echo "PASS a role the release does not list is reported once" \
+  || { echo "FAIL: a role the release does not list went on to be looked for in containerd: $out"; fails=$((fails + 1)); }
+out="$(run_import_release dir "" "" paper)"
+expect "from FELIS_ARTIFACT_DIR a missing role stops the install" "DIE: FELIS_ARTIFACT_DIR: the release lists no paper image" "$out"
+
+out="$(run_import_release release "" "" postgres)"
+expect "a base image the release does not list falls back to Docker Hub" "WARN: the release lists no postgres image; k3s pulls it from Docker Hub instead" "$out"
+listing="$(printf '%s\n' "$listing" | sed "s|docker.io/library/registry@$ridx|docker.io/library/registry@sha256:$(printf other | sha256sum | cut -d' ' -f1)|")"
+out="$(run_import_release release "" "" registry)"
+expect "the release's registry must be the one this installer pins" "the release's registry image is docker.io/library/registry@sha256:$(printf other | sha256sum | cut -d' ' -f1), but this installer runs docker.io/library/registry@$ridx" "$out"
+expect "and falls back to Docker Hub" "k3s pulls it from Docker Hub instead" "$out"
+case "$out" in *IMPORT*) echo "FAIL: a refused base image was imported"; fails=$((fails + 1)) ;; *) echo "PASS a refused base image is not imported" ;; esac
+
+rm -f "$adir/bundles/felis-image-game-linux-amd64.tar.names"
+: > "$adir/bundles/felis-image-game-linux-amd64.tar.names"
+out="$(run_import_release release "" "" limbo)"
+expect "a bundle that does not hold the image it is listed for falls back" "WARN: k3s containerd holds no registry.felis.svc:5000/felis/limbo:demo from felis-image-game-linux-amd64.tar; building it on this host instead" "$out"
+expect "and records nothing" "PREBUILT[ ]" "$out"
+
+out="$(run_import_release "" "" "" felis limbo)"
+case "$out" in *FETCH*|*IMPORT*|*WARN*) echo "FAIL: a source build looked at release bundles"; fails=$((fails + 1)) ;; *) echo "PASS a source build imports nothing from a release" ;; esac
+
+# The listing is read once per run, and a bad one is reported once.
+rlblock="$(bsfn release_listing)"
+run_rl() { # listing-content
+  printf '%s\n' "$1" > "$adir/rl.txt"
+  A="$adir" bash -c '
+    warn() { echo "WARN: $*"; }
+    die() { echo "DIE: $*"; exit 1; }
+    felis_asset_arch() { echo amd64; }
+    artifact_fetch() { echo "FETCH $1"; ARTIFACT_FILE="$A/rl.txt"; }
+    '"$unblock"'
+    '"$llblock"'
+    '"$rlblock"'
+    ARTIFACT_MODE=release RELEASE_LISTING="" RELEASE_LISTING_STATE=""
+    release_listing && echo FIRST-OK
+    release_listing && echo SECOND-OK
+    true'
+}
+out="$(run_rl "$good")"
+[ "$(printf '%s\n' "$out" | grep -c FETCH)" = 1 ] && expect "a good listing serves every lookup" "FIRST-OK
+SECOND-OK" "$out" \
+  || { echo "FAIL: the listing was fetched more than once: $out"; fails=$((fails + 1)); }
+out="$(run_rl "junk")"
+[ "$(printf '%s\n' "$out" | grep -c 'WARN:')" = 1 ] && [ "$(printf '%s\n' "$out" | grep -c FETCH)" = 1 ] \
+  && expect "a malformed listing is reported once and trusted nowhere" "is malformed; building its images on this host instead" "$out" \
+  || { echo "FAIL: a malformed listing was reported or fetched more than once: $out"; fails=$((fails + 1)); }
+case "$out" in *-OK*) echo "FAIL: a malformed listing was used"; fails=$((fails + 1)) ;; esac
+
+# --- pushing a release image into the platform registry ----------------------------------------
+prblock="$(bsfn push_release_image)"
+run_push_release() { # role registry-digest-for-tag registry-digest-for-version-tag [MC_VERSION]
+  REG_TAG="$2" REG_VER="$3" MCV="${4-26.2}" LINE="$1 felis-image-game-linux-amd64.tar registry.felis.svc:5000/felis/$1:demo registry.felis.svc:5000/felis/$1:demo $gdig $cdig" bash -c '
+    die() { echo "DIE: $*"; exit 1; }
+    warn() { echo "WARN: $*"; }
+    log() { :; }
+    ok() { echo "OK: $*"; }
+    registry_manifest_digest() { case "$1" in *:demo) echo "$REG_TAG" ;; *) echo "$REG_VER" ;; esac; }
+    artifact_fetch() { ARTIFACT_FILE="/cache/$1"; }
+    felis() { echo "PUSH-IMAGE user=$FELIS_REGISTRY_USERNAME pass=$FELIS_REGISTRY_PASSWORD $*" >&2; echo "$gdig"; }
+    HOST_BIN=felis REGISTRY_URL=registry.felis.svc:5000 REGISTRY_PUSH_HOST=127.0.0.1:5000
+    REGISTRY_PLATFORM_TOKEN=tok MC_VERSION="$MCV" RELEASE_IMAGES="$LINE"
+    '"$prblock"'
+    push_release_image "${LINE%% *}"' 2>&1
+}
+out="$(run_push_release limbo "" "")"
+expect "a release image is pushed from its bundle by name, as the platform principal" \
+  "PUSH-IMAGE user=platform pass=tok push-image --tar /cache/felis-image-game-linux-amd64.tar --image registry.felis.svc:5000/felis/limbo:demo --ref 127.0.0.1:5000/felis/limbo:demo" "$out"
+expect "and under its Minecraft version and config digest" "--ref 127.0.0.1:5000/felis/limbo:26.2-0123456789ab" "$out"
+out="$(run_push_release limbo "$gdig" "")"
+case "$out" in *"--ref 127.0.0.1:5000/felis/limbo:demo"*) echo "FAIL: a tag already naming the image was pushed again"; fails=$((fails + 1)) ;; *) echo "PASS a tag already naming the image is left as it is" ;; esac
+expect "while a missing version tag is still pushed" "--ref 127.0.0.1:5000/felis/limbo:26.2-0123456789ab" "$out"
+out="$(run_push_release limbo "sha256:$(printf other | sha256sum | cut -d' ' -f1)" "$gdig")"
+expect "a tag naming another build is pushed over" "--ref 127.0.0.1:5000/felis/limbo:demo" "$out"
+out="$(run_push_release felis "" "")"
+case "$out" in *"26.2-"*) echo "FAIL: the control-plane image got a Minecraft version tag"; fails=$((fails + 1)) ;; *) echo "PASS only game images get a version tag" ;; esac
+out="$(run_push_release limbo "" "" "")"
+case "$out" in *"-0123456789ab"*) echo "FAIL: a version tag was made without a Minecraft version"; fails=$((fails + 1)) ;; *) echo "PASS no Minecraft version, no version tag" ;; esac
+
+rmblock="$(bsfn registry_manifest_digest)"
+curlargs="$(mktemp)"
+out="$(CA="$curlargs" bash -c 'curl() { printf "%s\n" "$*" > "$CA"; printf "HTTP/1.1 200 OK\r\nContent-Type: x\r\nDocker-Content-Digest: sha256:abc\r\n\r\n"; }
+'"$rmblock"'
+registry_manifest_digest 127.0.0.1:5000/felis/limbo:26.2-0123')"
+expect "the registry's digest for a tag is read off a HEAD" "-fsSI --max-time 30" "$(cat "$curlargs")"
+expect "from the tag's manifest URL" "http://127.0.0.1:5000/v2/felis/limbo/manifests/26.2-0123" "$(cat "$curlargs")"
+expect "asking for every manifest kind a registry may hold" "application/vnd.docker.distribution.manifest.list.v2+json" "$(cat "$curlargs")"
+rm -f "$curlargs"
+[ "$out" = "sha256:abc" ] && echo "PASS the digest comes back without its carriage return" \
+  || { echo "FAIL: registry_manifest_digest printed: $out"; fails=$((fails + 1)); }
+[ -z "$(bash -c 'curl() { return 22; }; '"$rmblock"'; registry_manifest_digest 127.0.0.1:5000/felis/x:demo')" ] \
+  && echo "PASS a tag the registry lacks has no digest" || { echo "FAIL: a missing tag printed a digest"; fails=$((fails + 1)); }
+
+# --- the binary from FELIS_ARTIFACT_DIR -----------------------------------------------------
+iabblock="$(bsfn load_artifact_sums; bsfn artifact_sum; bsfn install_artifact_binary)"
+mkdir -p "$adir/abin/dir" "$adir/abin/bin"
+run_artifact_binary() { # binary-script
+  printf '%s\n' "$1" > "$adir/abin/dir/felis-linux-amd64"
+  printf '%s  felis-linux-amd64\n' "$(sha "$adir/abin/dir/felis-linux-amd64")" > "$adir/abin/dir/SHA256SUMS"
+  [ -z "${TAMPER:-}" ] || printf 'x\n' >> "$adir/abin/dir/felis-linux-amd64"
+  A="$adir/abin" bash -c '
+    set -Eeuo pipefail
+    die() { echo "DIE: $*"; exit 1; }
+    ok() { echo "OK: $*"; }
+    remember_temp() { :; }
+    keep_previous_host_binary() { echo KEEP; }
+    felis_asset_arch() { echo amd64; }
+    FELIS_ARTIFACT_DIR="$A/dir" HOST_BIN="$A/bin/felis" ARTIFACT_MODE="" ARTIFACT_SUMS="" HAVE_PREBUILT_BINARY="" FELIS_VERSION=""
+    '"$iabblock"'
+    install_artifact_binary
+    echo "VERSION[$FELIS_VERSION] PREBUILT[$HAVE_PREBUILT_BINARY] MODE[$ARTIFACT_MODE]"' 2>&1
+}
+out="$(run_artifact_binary '#!/bin/sh
+echo "felis v9.9.9"')"
+expect "the directory's binary is installed and names the version" "VERSION[v9.9.9] PREBUILT[1] MODE[dir]" "$out"
+[ -x "$adir/abin/bin/felis" ] && echo "PASS the binary lands at HOST_BIN" || { echo "FAIL: no binary at HOST_BIN"; fails=$((fails + 1)); }
+out="$(run_artifact_binary '#!/bin/sh
+echo "felis v9.9.9"')"
+case "$out" in *KEEP*) echo "FAIL: the same binary was replaced (and its previous copy overwritten)"; fails=$((fails + 1)) ;; *) echo "PASS the same binary is left in place" ;; esac
+out="$(TAMPER=1 run_artifact_binary '#!/bin/sh
+echo "felis v9.9.9"')"
+expect "a binary that does not match SHA256SUMS stops the install" "DIE: FELIS_ARTIFACT_DIR: felis-linux-amd64 does not match SHA256SUMS" "$out"
+out="$(run_artifact_binary '#!/bin/sh
+exit 1')"
+expect "a binary that cannot say its version stops the install" "DIE: FELIS_ARTIFACT_DIR: felis-linux-amd64 reports 'nothing' as its version" "$out"
+rm -f "$adir/abin/dir/SHA256SUMS"
+out="$(A="$adir/abin" bash -c 'die() { echo "DIE: $*"; exit 1; }; remember_temp() { :; }; felis_asset_arch() { echo amd64; }
+FELIS_ARTIFACT_DIR="$A/dir" ARTIFACT_MODE="" ARTIFACT_SUMS=""
+'"$iabblock"'
+install_artifact_binary' 2>&1)"
+expect "a directory without SHA256SUMS stops the install" "DIE: FELIS_ARTIFACT_DIR: $adir/abin/dir holds no SHA256SUMS" "$out"
+
+# --- which release the images come from -------------------------------------------------------
+srblock="$(bsfn select_release_artifacts)"
+run_select() { # binary-version sums-available(0|1) [ARTIFACT_MODE] [HAVE_PREBUILT_BINARY]
+  printf '#!/bin/sh\necho "felis %s"\n' "$1" > "$adir/selbin"; chmod +x "$adir/selbin"
+  SUMS_OK="$2" MODE="${3:-}" PRE="${4-1}" B="$adir/selbin" bash -c '
+    ok() { echo "OK: $*"; }
+    warn() { echo "WARN: $*"; }
+    load_artifact_sums() { echo "SUMS $ARTIFACT_TAG"; [ "$SUMS_OK" = 1 ]; }
+    ARTIFACT_MODE="$MODE" ARTIFACT_TAG="" HAVE_PREBUILT_BINARY="$PRE" HOST_BIN="$B"
+    '"$srblock"'
+    select_release_artifacts
+    echo "MODE[$ARTIFACT_MODE] TAG[$ARTIFACT_TAG]"'
+}
+expect "a release binary takes its images from that release" "MODE[release] TAG[v9.9.9]" "$(run_select v9.9.9 1)"
+expect "a prerelease tag too" "MODE[release] TAG[v9.9.9-rc.1]" "$(run_select v9.9.9-rc.1 1)"
+out="$(run_select v9.9.9 0)"
+expect "a release without SHA256SUMS builds its images here" "MODE[] TAG[]" "$out"
+expect "and says what that costs" "this installs Docker and needs about 8 GiB more" "$out"
+out="$(run_select v0.0.0+gabc1234 1)"
+expect "a dev build names no release" "MODE[] TAG[]" "$out"
+case "$out" in *SUMS*) echo "FAIL: a dev build looked up a release"; fails=$((fails + 1)) ;; *) echo "PASS a dev build looks up no release" ;; esac
+case "$(run_select dev 1)" in *SUMS*) echo "FAIL: an unstamped build looked up a release"; fails=$((fails + 1)) ;; *) echo "PASS an unstamped build looks up no release" ;; esac
+expect "a source build takes nothing from a release" "MODE[] TAG[]" "$(run_select v9.9.9 1 "" "")"
+expect "FELIS_ARTIFACT_DIR stays the source" "MODE[dir] TAG[]" "$(run_select v9.9.9 1 dir)"
+
+# --- the game stack and the Velocity plugin --------------------------------------------------
+gsblock="$(bsfn build_game_stack; bsfn role_prebuilt; bsfn stop_docker)"
+run_game_stack() { # PREBUILT_ROLES-after-import FELIS_GAME_STACK [ARTIFACT_MODE]
+  AFTER="$1" STACK="$2" MODE="${3-release}" bash -c '
+    ok() { :; }
+    game_stack_source() { :; }
+    resolve_game_jars() { :; }
+    import_release_images() { echo "IMPORT $*"; PREBUILT_ROLES="$AFTER"; }
+    ensure_docker() { echo ENSURE; DOCKER_INSTALLED=1; }
+    build_game_image() { echo "BUILD $1"; }
+    install_velocity_plugin() { echo PLUGIN; }
+    systemctl() { echo "SYSTEMCTL $*"; }
+    PREBUILT_ROLES=" " DOCKER_INSTALLED="" FELIS_GAME_STACK="$STACK" ARTIFACT_MODE="$MODE"
+    '"$gsblock"'
+    build_game_stack'
+}
+out="$(run_game_stack " limbo lobby paper " pinned)"
+expect "the pinned stack comes from the release" "IMPORT limbo lobby paper" "$out"
+case "$out" in *BUILD*|*ENSURE*|*SYSTEMCTL*) echo "FAIL: a release game stack built or touched docker: $out"; fails=$((fails + 1)) ;; *) echo "PASS a release game stack needs no docker" ;; esac
+out="$(run_game_stack " limbo " pinned)"
+expect "only what the release did not supply is built" "ENSURE
+BUILD lobby
+BUILD paper
+PLUGIN
+SYSTEMCTL stop docker docker.socket" "$out"
+out="$(run_game_stack " limbo lobby paper " latest)"
+case "$out" in *IMPORT*) echo "FAIL: FELIS_GAME_STACK=latest took the release's pinned images"; fails=$((fails + 1)) ;; *) echo "PASS FELIS_GAME_STACK=latest takes nothing from the release" ;; esac
+expect "and builds all three" "BUILD limbo
+BUILD lobby
+BUILD paper" "$out"
+
+vpblock="$(bsfn install_velocity_plugin; bsfn artifact_unusable)"
+run_plugin() { # ARTIFACT_MODE fetch-ok(0|1)
+  MODE="$1" FOK="$2" bash -c '
+    die() { echo "DIE: $*"; exit 1; }
+    warn() { echo "WARN: $*"; }
+    ok() { echo "OK: $*"; }
+    artifact_fetch() { ARTIFACT_FILE=/cache/felis-velocity.jar; [ "$FOK" = 1 ]; }
+    prepare_velocity_layout() { echo LAYOUT; }
+    install_if_changed() { echo "INSTALL $*"; }
+    ensure_docker() { echo ENSURE; }
+    build_velocity_plugin() { echo BUILD; }
+    ARTIFACT_MODE="$MODE" VELOCITY_DIR=/opt/felis/velocity
+    '"$vpblock"'
+    install_velocity_plugin'
+}
+out="$(run_plugin release 1)"
+expect "the release's plugin is put in place" "LAYOUT
+INSTALL /cache/felis-velocity.jar /opt/felis/velocity/plugins/felis-velocity.jar 0644 root root" "$out"
+case "$out" in *BUILD*|*ENSURE*) echo "FAIL: a release plugin was built too"; fails=$((fails + 1)) ;; *) echo "PASS a release plugin is not built" ;; esac
+out="$(run_plugin release 0)"
+expect "an unusable release plugin is built here" "WARN: the release's felis-velocity.jar cannot be used; building it on this host instead
+ENSURE
+BUILD" "$out"
+expect "from FELIS_ARTIFACT_DIR it stops the install" "DIE: FELIS_ARTIFACT_DIR: the release's felis-velocity.jar cannot be used" "$(run_plugin dir 0)"
+expect "a source build builds the plugin" "ENSURE
+BUILD" "$(run_plugin "" 0)"
+
+# --- k3s's own images from its GitHub release ----------------------------------------------------
+kablock="$(bsfn stage_k3s_airgap_images)"
+mkdir -p "$adir/k3simg" "$adir/k3srel"
+printf 'k3s images\n' > "$adir/k3srel/k3s-airgap-images-amd64.tar.zst"
+run_airgap() { # sums-file-content
+  printf '%s\n' "$1" > "$adir/k3srel/sha256sum-amd64.txt"
+  A="$adir" bash -c '
+    set -Eeuo pipefail
+    warn() { echo "WARN: $*"; }
+    ok() { echo "OK: $*"; }
+    log() { :; }
+    remember_temp() { :; }
+    felis_asset_arch() { echo amd64; }
+    curl() {
+      local out="" url
+      while [ "$#" -gt 0 ]; do case "$1" in -o) out="$2"; shift 2 ;; *) url="$1"; shift ;; esac; done
+      echo "CURL ${url##*/}" >&2
+      [ -f "$A/k3srel/${url##*/}" ] || return 22
+      if [ -n "$out" ]; then cp "$A/k3srel/${url##*/}" "$out"; else cat "$A/k3srel/${url##*/}"; fi
+    }
+    FELIS_K3S_VERSION=v1.36.4+k3s1 K3S_IMAGES_DIR="$A/k3simg"
+    '"$kablock"'
+    stage_k3s_airgap_images
+    echo STAGED-OK' 2>&1
+}
+ksum="$(sha "$adir/k3srel/k3s-airgap-images-amd64.tar.zst")"
+out="$(run_airgap "$ksum  k3s-airgap-images-amd64.tar.zst")"
+expect "k3s's images are downloaded where k3s imports them" "OK: staged k3s v1.36.4+k3s1's images" "$out"
+cmp -s "$adir/k3simg/k3s-airgap-images-amd64.tar.zst" "$adir/k3srel/k3s-airgap-images-amd64.tar.zst" \
+  && echo "PASS the staged tarball is the release's" || { echo "FAIL: the tarball was not staged"; fails=$((fails + 1)); }
+[ "$(ls -A "$adir/k3simg")" = k3s-airgap-images-amd64.tar.zst ] && echo "PASS no temp file is left where k3s reads" \
+  || { echo "FAIL: a temp file was left in the images directory: $(ls -A "$adir/k3simg")"; fails=$((fails + 1)); }
+out="$(run_airgap "$ksum  k3s-airgap-images-amd64.tar.zst")"
+case "$out" in *"CURL k3s-airgap-images-amd64.tar.zst"*) echo "FAIL: staged images were downloaded again"; fails=$((fails + 1)) ;; *) echo "PASS staged images are not downloaded again" ;; esac
+rm -f "$adir/k3simg/k3s-airgap-images-amd64.tar.zst"
+out="$(run_airgap "$(printf '%064d' 0)  k3s-airgap-images-amd64.tar.zst")"
+expect "a tarball that does not match k3s's sums is refused" "WARN: k3s-airgap-images-amd64.tar.zst hashes to $ksum" "$out"
+expect "and the install goes on without it" "STAGED-OK" "$out"
+[ -z "$(ls -A "$adir/k3simg")" ] && echo "PASS a refused tarball leaves nothing for k3s to import" \
+  || { echo "FAIL: a refused tarball was left: $(ls -A "$adir/k3simg")"; fails=$((fails + 1)); }
+out="$(run_airgap "$ksum  k3s-airgap-images-arm64.tar.zst")"
+expect "a sums file that does not list the tarball stages nothing" "WARN: k3s v1.36.4+k3s1 lists no sha256 for k3s-airgap-images-amd64.tar.zst" "$out"
+case "$out" in *"CURL k3s-airgap-images-amd64.tar.zst"*) echo "FAIL: an unlisted tarball was downloaded"; fails=$((fails + 1)) ;; *) echo "PASS an unlisted tarball is not downloaded" ;; esac
+
+# --- one release lookup per tag ------------------------------------------------------------------
+rjblock="$(bsfn load_release_json; bsfn github_asset_id)"
+out="$(bash -c '
+  github_api() { echo "API $1" >&2; printf "{\"assets\":[{\"url\":\"https://api.github.com/repos/o/r/releases/assets/11\",\"name\":\"SHA256SUMS\"},{\"url\":\"https://api.github.com/repos/o/r/releases/assets/12\",\"name\":\"felis-velocity.jar\"}]}"; }
+  repo_slug() { echo o/r; }
+  RELEASE_JSON_TAG="" RELEASE_JSON=""
+  '"$rjblock"'
+  load_release_json v9.9.9
+  github_asset_id v9.9.9 SHA256SUMS; github_asset_id v9.9.9 felis-velocity.jar' 2>&1)"
+[ "$(printf '%s\n' "$out" | grep -c '^API')" = 1 ] && echo "PASS one release is looked up once" \
+  || { echo "FAIL: the release was looked up more than once: $out"; fails=$((fails + 1)); }
+expect "and every asset is found in it" "11
+12" "$out"
+
+# --- FELIS_ARTIFACT_DIR is checked before anything happens ------------------------------------
+vsblock="$(awk '/^  if \[ -n "\$FELIS_ARTIFACT_DIR" \]; then$/ { f = 1 } f { print } f && /^  fi$/ { exit }' "$BS")"
+case "$vsblock" in *"FELIS_SKIP_FETCH both"*) ;; *) echo "FAIL: the FELIS_ARTIFACT_DIR checks in validate_settings moved"; exit 1 ;; esac
+run_vs() { # FELIS_ARTIFACT_DIR [FELIS_REF_PINNED]
+  FELIS_ARTIFACT_DIR="$1" FELIS_REF_PINNED="${2:-}" bash -c 'die() { echo "DIE: $*"; exit 1; }
+'"$vsblock"'
+echo VALID'
+}
+expect "a relative FELIS_ARTIFACT_DIR is refused" "DIE: FELIS_ARTIFACT_DIR must be an absolute path" "$(run_vs release-assets)"
+expect "a FELIS_ARTIFACT_DIR without SHA256SUMS is refused up front" "SHA256SUMS does not exist" "$(run_vs "$adir/nowhere")"
+printf 'x  y\n' > "$adir/SHA256SUMS"
+expect "a FELIS_ARTIFACT_DIR with SHA256SUMS is accepted" "VALID" "$(run_vs "$adir")"
+expect "FELIS_ARTIFACT_DIR and FELIS_REF together are refused" "DIE: FELIS_ARTIFACT_DIR and FELIS_REF both name what to install" "$(run_vs "$adir" 1)"
+rm -rf "$adir"
 
 # ---------------------------------------------------------------------------------------
 if [ "$fails" -eq 0 ]; then

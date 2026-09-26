@@ -71,13 +71,22 @@
 #                     restarts cloudflared-felis onto the new binary (default: 0)
 #   FELIS_REPO_URL    git URL to build from   (raw script mode only)
 #   FELIS_VERSION_BOOTSTRAP release|dev — which version to install (default: release).
-#                     release DOWNLOADS the prebuilt felis binary published for the newest
-#                     tag (panel included — it is go:embed'ed into that same binary) and
-#                     builds only a thin image around it; dev clones and compiles. If the
-#                     asset is missing or this architecture has none, release warns and falls
-#                     back to compiling the SAME tag. The downloaded binary must match
-#                     the release's SHA256SUMS before it is run; a release without one
-#                     is compiled from source too. The game stack is always built here.
+#                     release DOWNLOADS what the newest tag publishes: the felis binary
+#                     (panel included — it is go:embed'ed into that same binary), every
+#                     image and the Velocity plugin, each checked against the release's
+#                     SHA256SUMS before it is used, so the host needs neither Docker nor
+#                     Docker Hub; dev clones and compiles. If an asset is missing or this
+#                     architecture has none, release warns and builds that piece of the
+#                     SAME tag here instead (with Docker); a release without SHA256SUMS
+#                     is compiled from source whole.
+#   FELIS_ARTIFACT_DIR a directory holding a release's assets as release.yml publishes them
+#                     (felis-linux-<arch>, felis-image-*-linux-<arch>.tar, their listing
+#                     felis-images-linux-<arch>.txt, felis-velocity.jar, SHA256SUMS; see
+#                     deploy/build-release-artifacts.sh): the binary, images and plugin are
+#                     installed from there and nothing is fetched from api.github.com or
+#                     Docker Hub, nor built (FELIS_GAME_STACK=latest aside: no release
+#                     ships that stack, so its game images are built here). A file missing
+#                     from it or not matching its SHA256SUMS stops the install.
 #   FELIS_GITHUB_TOKEN GitHub token; REQUIRED while the repo is private
 #   FELIS_REF         branch/tag/sha — pins the build, overrides the channel, and forces a
 #                     source build (naming a ref asks for that tree, not a published asset)
@@ -144,13 +153,43 @@ FELIS_REF="${FELIS_REF:-}"
 # built, so it takes the source path even on the release channel.
 FELIS_REF_PINNED=""
 if [ -n "$FELIS_REF" ]; then FELIS_REF_PINNED=1; fi
-# Set once a prebuilt felis binary is installed at HOST_BIN, by either the TUI hand-off or a
-# release download. It is what the image build, the CRD apply and the game stack key off:
-# all three only need "is there a binary and no checkout", never "which route got us here".
+# The directory of release assets to install from (header); empty installs as the channel says.
+FELIS_ARTIFACT_DIR="${FELIS_ARTIFACT_DIR:-}"
+# Set once a prebuilt felis binary is installed at HOST_BIN, by the TUI hand-off, a release
+# download or FELIS_ARTIFACT_DIR. It is what the image build, the CRD apply and the game stack
+# key off: all three only need "is there a binary and no checkout", never "which route got us
+# here".
 HAVE_PREBUILT_BINARY=""
 # The image the control plane ran before this run moved it (deploy_bundle), for the rollback
 # hint in summary.
 PREVIOUS_FELIS_IMAGE=""
+# Where the images and the Velocity plugin come from, decided by select_release_artifacts once
+# the binary is on the host: "dir" (FELIS_ARTIFACT_DIR), "release" (the assets of release
+# ARTIFACT_TAG, downloaded into ARTIFACT_CACHE), or empty, when everything is built here.
+ARTIFACT_MODE=""
+ARTIFACT_TAG=""
+# Root-only, and outside /tmp: an image bundle waits here from its import to its push, and a
+# run that failed in between finds it again. push_images_to_registry empties it.
+ARTIFACT_CACHE="/var/lib/felis/artifacts"
+# The SHA256SUMS every artifact is checked against (load_artifact_sums), and the verified local
+# copy artifact_fetch last pointed at.
+ARTIFACT_SUMS=""
+ARTIFACT_FILE=""
+# The validated lines of the image listing ("bundle role name manifest-digest config-digest"),
+# and whether it was read yet: "", "ok", or "bad" (the listing could not be used).
+RELEASE_LISTING=""
+RELEASE_LISTING_STATE=""
+# One "role bundle name target manifest-digest config-digest" line per image this run took from
+# a bundle (import_release_images), and those roles; every other image is built here.
+RELEASE_IMAGES=""
+PREBUILT_ROLES=" "
+# Docker is installed and started only for what has to be built on this host (ensure_docker).
+DOCKER_INSTALLED=""
+# The release JSON every asset lookup reads, fetched once per tag (load_release_json): an install
+# downloads up to a dozen assets, and GitHub allows an address without a token 60 API calls an
+# hour.
+RELEASE_JSON_TAG=""
+RELEASE_JSON=""
 # Optional GitHub credential, needed while this repository is private: GitHub answers
 # 404 (not 403) for a repo the caller cannot see, so without it both the release lookup
 # and the clone fail as "not found". Exported because git's credential helper below runs
@@ -436,6 +475,8 @@ K3S_CONFIG_DROPIN="/etc/rancher/k3s/config.yaml.d/50-felis.yaml"
 K3S_UNIT_FILE="/etc/systemd/system/k3s.service"
 K3S_KUBECONFIG="/etc/rancher/k3s/k3s.yaml"
 K3S_KUBELET_CERT="/var/lib/rancher/k3s/agent/client-kubelet.crt"
+# Where k3s imports image tarballs from as it starts (stage_k3s_airgap_images).
+K3S_IMAGES_DIR="/var/lib/rancher/k3s/agent/images"
 # ensure_persistent_journal's drop-in, and the directory journald creates once it
 # stores the journal persistently.
 JOURNALD_DROPIN="/etc/systemd/journald.conf.d/50-felis.conf"
@@ -830,6 +871,17 @@ validate_settings() {
     pinned|latest) ;;
     *) die "FELIS_GAME_STACK must be pinned or latest (got '${FELIS_GAME_STACK}')" ;;
   esac
+  if [ -n "$FELIS_ARTIFACT_DIR" ]; then
+    case "$FELIS_ARTIFACT_DIR" in
+      /*) ;;
+      *) die "FELIS_ARTIFACT_DIR must be an absolute path (got '${FELIS_ARTIFACT_DIR}')" ;;
+    esac
+    [ -f "${FELIS_ARTIFACT_DIR}/SHA256SUMS" ] \
+      || die "FELIS_ARTIFACT_DIR: ${FELIS_ARTIFACT_DIR}/SHA256SUMS does not exist; point it at the directory deploy/build-release-artifacts.sh wrote, or at a release's downloaded assets"
+    # Each names what to install; the directory's binary would silently win.
+    [ -z "$FELIS_REF_PINNED" ] || die "FELIS_ARTIFACT_DIR and FELIS_REF both name what to install; set one"
+    [ -z "${FELIS_SKIP_FETCH:-}" ] || die "FELIS_ARTIFACT_DIR and FELIS_SKIP_FETCH both name what to install; set one"
+  fi
   [ "$(heap_megabytes "$FELIS_VELOCITY_XMX")" -ge 256 ] \
     || die "FELIS_VELOCITY_XMX must be a heap size of at least 256M, written <n>M or <n>G (got '${FELIS_VELOCITY_XMX}')"
   case "$FELIS_UPGRADE_DEPS" in
@@ -1080,16 +1132,38 @@ existing_ancestor() {
 # path_populated reports whether directory $1 exists with something in it.
 path_populated() { [ -n "$(ls -A "$1" 2>/dev/null)" ]; }
 
+# release_assets_expected reports whether this run expects to download a release's images and
+# Velocity plugin (select_release_artifacts): on the release channel, and from the setup
+# console, whose binary is a release's.
+release_assets_expected() {
+  [ -z "$FELIS_ARTIFACT_DIR" ] || return 1
+  bootstrap_from_tui || use_release_binary
+}
+
+# host_builds_expected reports whether this run expects to build images here, and so to install
+# Docker: a source build does, an install from a release's assets does not, and the game images
+# under FELIS_GAME_STACK=latest are always built here, since no release ships that stack. What
+# preflight cannot see coming is a release that turns out to carry no usable images (one cut
+# before they were published, or still uploading); that one is built here after all.
+host_builds_expected() {
+  [ "$FELIS_GAME_STACK" != latest ] || return 0
+  [ -z "$FELIS_ARTIFACT_DIR" ] || return 1
+  ! release_assets_expected
+}
+
 # preflight_disk checks each filesystem the install writes to against what it will
 # write there, in MiB: k3s's images and volumes, the database and its bundles under
-# /var/lib/felis, the sources, toolchains and proxy under /opt/felis, and Docker's image
-# builds (operations.md §2 has the measured sizes). A directory that already holds
-# something (a rerun, a reused k3s, Docker's cache from an earlier install) needs only
-# the room for what changes.
+# /var/lib/felis (and a release's image bundles on their way in), the sources, toolchains
+# and proxy under /opt/felis, and Docker's image builds (operations.md §2 has the measured
+# sizes). A directory that already holds something (a rerun, a reused k3s, Docker's cache
+# from an earlier install) needs only the room for what changes.
 preflight_disk() {
   local spec path need_empty need_populated need line rows="" mount size used avail
-  for spec in "/var/lib/rancher 10240 3072" "/var/lib/felis 2048 1024" "/opt/felis 3072 1024" \
-    "/var/lib/containerd 8192 2048"; do
+  local felis_spec="/var/lib/felis 2048 1024" docker_spec=""
+  release_assets_expected && felis_spec="/var/lib/felis 4096 3072"
+  host_builds_expected && docker_spec="/var/lib/containerd 8192 2048"
+  for spec in "/var/lib/rancher 10240 3072" "$felis_spec" "/opt/felis 3072 1024" \
+    ${docker_spec:+"$docker_spec"}; do
     read -r path need_empty need_populated <<<"$spec"
     need="$need_empty"
     path_populated "$path" && need="$need_populated"
@@ -1216,16 +1290,26 @@ preflight_networks() {
   done <<<"$routes"
 }
 
-# preflight_hosts prints the hosts this run downloads from, one per line. Package
-# mirrors are left out: the package manager names its own.
+# preflight_hosts prints the hosts this run downloads from, one "host required|optional" line
+# each. An optional host is one the install only falls back to: Docker Hub when the images are
+# expected from a release, and, from the setup console, the release lookup (without it every
+# image is built here). Package mirrors are left out: the package manager names its own.
 preflight_hosts() {
-  printf '%s\n' github.com
-  if ! bootstrap_from_tui && [ -z "${FELIS_SKIP_FETCH:-}" ] && [ -z "$FELIS_REF_PINNED" ]; then
-    printf '%s\n' api.github.com
+  printf '%s\n' "github.com required"
+  if [ -z "$FELIS_ARTIFACT_DIR" ] && [ -z "${FELIS_SKIP_FETCH:-}" ] && [ -z "$FELIS_REF_PINNED" ]; then
+    if bootstrap_from_tui; then
+      printf '%s\n' "api.github.com optional"
+    else
+      printf '%s\n' "api.github.com required"
+    fi
   fi
-  [ -x "$K3S_BIN" ] || printf '%s\n' raw.githubusercontent.com
-  [ -n "$FELIS_VELOCITY_FORK_JAR" ] || printf '%s\n' fill-data.papermc.io
-  printf '%s\n' registry-1.docker.io
+  [ -x "$K3S_BIN" ] || printf '%s\n' "raw.githubusercontent.com required"
+  [ -n "$FELIS_VELOCITY_FORK_JAR" ] || printf '%s\n' "fill-data.papermc.io required"
+  if host_builds_expected; then
+    printf '%s\n' "registry-1.docker.io required"
+  elif [ -z "$FELIS_ARTIFACT_DIR" ]; then
+    printf '%s\n' "registry-1.docker.io optional"
+  fi
 }
 
 # host_reachable reports whether an HTTPS connection to $1 can be made: any answer
@@ -1243,11 +1327,19 @@ host_reachable() {
 }
 
 preflight_outbound() {
-  local host unreachable=()
-  while IFS= read -r host; do
+  local host need unreachable=() fallback=()
+  while read -r host need; do
     [ -n "$host" ] || continue
-    host_reachable "$host" || unreachable+=("$host")
+    host_reachable "$host" && continue
+    if [ "$need" = optional ]; then
+      fallback+=("$host")
+    else
+      unreachable+=("$host")
+    fi
   done < <(preflight_hosts)
+  if [ "${#fallback[@]}" -gt 0 ]; then
+    warn "preflight: cannot reach ${fallback[*]} over HTTPS; the install goes on, but cannot build or pull here an image the release turns out not to supply"
+  fi
   [ "${#unreachable[@]}" -eq 0 ] && return 0
   preflight_fail "cannot reach ${unreachable[*]} over HTTPS; the install downloads from there (check DNS, the firewall, or set https_proxy)"
 }
@@ -1587,6 +1679,25 @@ install_docker() {
   ok "docker running"
 }
 
+# ensure_docker installs and starts Docker the first time this run has something to build, and
+# starts it again after an earlier step stopped it. Only what a release did not ship prebuilt
+# is built here, so an install from a release's assets never installs Docker at all.
+ensure_docker() {
+  if [ -z "$DOCKER_INSTALLED" ]; then
+    install_docker
+    DOCKER_INSTALLED=1
+  else
+    systemctl start docker
+  fi
+}
+
+# stop_docker hands back the ~150 MiB the docker daemon holds once a step is done with it; the
+# next step that builds starts it again. A Docker this run never started is left alone.
+stop_docker() {
+  [ -n "$DOCKER_INSTALLED" ] || return 0
+  systemctl stop docker docker.socket 2>/dev/null || true
+}
+
 # ---------------------------------------------------------------------------
 # 4. k3s — single node, trimmed for RAM. NetworkPolicy stays ENABLED on purpose:
 #    Felis's minecraft fence (default-deny + allow-rcon/allow-game) is a core
@@ -1622,11 +1733,13 @@ install_k3s() {
       ok "k3s ${current:-(version unreadable)} already installed at ${K3S_BIN}; this release pins ${FELIS_K3S_VERSION} (FELIS_UPGRADE_DEPS=1 moves it)"
     elif k3s_upgrade_allowed "$current" "$FELIS_K3S_VERSION"; then
       log "upgrading k3s ${current} to ${FELIS_K3S_VERSION}; running pods keep running while it restarts"
+      stage_k3s_airgap_images
       run_k3s_installer
       installer_ran=1
     fi
   else
     log "installing k3s ${FELIS_K3S_VERSION} into ${K3S_BIN_DIR} (no traefik/servicelb/metrics-server)"
+    stage_k3s_airgap_images
     run_k3s_installer
     installer_ran=1
   fi
@@ -1740,6 +1853,47 @@ run_k3s_installer() {
     INSTALL_K3S_BIN_DIR="$K3S_BIN_DIR" \
     INSTALL_K3S_EXEC="--disable traefik --disable servicelb --disable metrics-server" \
     sh -
+}
+
+# stage_k3s_airgap_images puts the image tarball of the k3s release about to be installed where
+# k3s imports images from as it starts, so k3s's own images (pause, CoreDNS, the local-path
+# provisioner) come from that GitHub release, checked against its sha256sum file, instead of
+# from Docker Hub, whose anonymous pull limit (10 an hour per address) a shared VPS address may
+# have spent already. Best-effort: without the file k3s pulls them as it always has. k3s only
+# reads names ending in a tarball extension, so the download's dotted temp name is never read.
+stage_k3s_airgap_images() {
+  local arch base file sums want have tmp
+  arch="$(felis_asset_arch)" || return 0
+  base="https://github.com/k3s-io/k3s/releases/download/${FELIS_K3S_VERSION}"
+  file="k3s-airgap-images-${arch}.tar.zst"
+  sums="$(curl -fsSL --retry 5 --retry-delay 2 "${base}/sha256sum-${arch}.txt")" || sums=""
+  want="$(awk -v n="$file" '$2 == n { print $1; exit }' <<<"$sums")"
+  if ! [[ "$want" =~ ^[0-9a-f]{64}$ ]]; then
+    warn "k3s ${FELIS_K3S_VERSION} lists no sha256 for ${file}; k3s pulls its own images from Docker Hub instead"
+    return 0
+  fi
+  if [ -f "${K3S_IMAGES_DIR}/${file}" ] && [ "$(sha256sum <"${K3S_IMAGES_DIR}/${file}" | cut -d' ' -f1)" = "$want" ]; then
+    ok "k3s ${FELIS_K3S_VERSION}'s images already staged"
+    return 0
+  fi
+  mkdir -p "$K3S_IMAGES_DIR"
+  tmp="$(mktemp "${K3S_IMAGES_DIR}/.${file}.XXXXXX")"
+  remember_temp "$tmp"
+  log "downloading k3s ${FELIS_K3S_VERSION}'s own images (${file})"
+  if ! curl -fsSL --retry 5 --retry-delay 2 -o "$tmp" "${base}/${file}"; then
+    rm -f "$tmp"
+    warn "could not download ${file}; k3s pulls its own images from Docker Hub instead"
+    return 0
+  fi
+  have="$(sha256sum <"$tmp" | cut -d' ' -f1)"
+  if [ "$have" != "$want" ]; then
+    rm -f "$tmp"
+    warn "${file} hashes to ${have}, but k3s ${FELIS_K3S_VERSION}'s sha256sum-${arch}.txt says ${want}; k3s pulls its own images from Docker Hub instead"
+    return 0
+  fi
+  chmod 0644 "$tmp"
+  mv -f "$tmp" "${K3S_IMAGES_DIR}/${file}"
+  ok "staged k3s ${FELIS_K3S_VERSION}'s images for its first start"
 }
 
 # k3s_upgrade_allowed decides whether an installed k3s ($1) may move to $2. Kubernetes
@@ -1967,6 +2121,14 @@ felis_asset_arch() {
   esac
 }
 
+# load_release_json keeps release tag $1's JSON in RELEASE_JSON, fetching it only for a tag it
+# does not hold yet.
+load_release_json() {
+  [ "$RELEASE_JSON_TAG" != "$1" ] || return 0
+  RELEASE_JSON="$(github_api "repos/$(repo_slug)/releases/tags/$1")" || return 1
+  RELEASE_JSON_TAG="$1"
+}
+
 # github_asset_id prints the numeric id of the asset named $2 on release tag $1.
 #
 # Two details here are load-bearing and both are wrong in the obvious version. The newline
@@ -1981,10 +2143,10 @@ felis_asset_arch() {
 # precedes it. Anything published after uploader (size, digest, browser_download_url) is NOT
 # reachable this way — fetch releases/assets/<id> with the JSON Accept if that is ever needed.
 github_asset_id() {
-  local tag="$1" name="$2" json id
+  local tag="$1" name="$2" id
   # Fetch first, filter second — the SIGPIPE reason documented on resolve_latest_game_jars.
-  json="$(github_api "repos/$(repo_slug)/releases/tags/${tag}")" || return 1
-  id="$(printf '%s' "$json" | tr -d '\n' | tr '{' '\n' \
+  load_release_json "$tag" || return 1
+  id="$(printf '%s' "$RELEASE_JSON" | tr -d '\n' | tr '{' '\n' \
     | grep "\"name\":[[:space:]]*\"${name}\"" \
     | grep -o 'releases/assets/[0-9]\{1,\}' | head -1)" || true
   id="${id##*/}"
@@ -2013,6 +2175,8 @@ github_asset_id() {
 download_release_asset() {
   local tag="$1" name="$2" dest="$3" id ua url rc=0
   ua="felis-bootstrap (+${FELIS_REPO_URL})"
+  # Loaded here, in this shell, so the lookup's subshell below finds it cached.
+  load_release_json "$tag" || return 1
   id="$(github_asset_id "$tag" "$name")" || return 1
   url="https://api.github.com/repos/$(repo_slug)/releases/assets/${id}"
   log "downloading ${name} from release ${tag}"
@@ -2146,6 +2310,159 @@ download_release_binary() {
 
   HAVE_PREBUILT_BINARY=1
   ok "installed ${asset} ${FELIS_REF} at ${HOST_BIN}"
+}
+
+# ---------------------------------------------------------------------------
+# 5a. A release's prebuilt assets: every image and the Velocity plugin, next to the binary
+#     (deploy/build-release-artifacts.sh writes them, release.yml publishes them). Each file
+#     is used only once its sha256 matches the release's SHA256SUMS.
+# ---------------------------------------------------------------------------
+
+# load_artifact_sums reads the SHA256SUMS the artifacts are checked against: the directory's,
+# or release ARTIFACT_TAG's. It fails when there is none.
+load_artifact_sums() {
+  local tmp
+  ARTIFACT_SUMS=""
+  if [ "$ARTIFACT_MODE" = dir ]; then
+    ARTIFACT_SUMS="$(cat "${FELIS_ARTIFACT_DIR}/SHA256SUMS" 2>/dev/null)" || ARTIFACT_SUMS=""
+  else
+    tmp="$(mktemp)"
+    remember_temp "$tmp"
+    if download_release_asset "$ARTIFACT_TAG" SHA256SUMS "$tmp"; then
+      ARTIFACT_SUMS="$(cat "$tmp")"
+    fi
+    rm -f "$tmp"
+  fi
+  [ -n "$ARTIFACT_SUMS" ]
+}
+
+# artifact_sum <name> prints the sha256 SHA256SUMS lists for <name>, or nothing. sha256sum's
+# text-mode line is "<hash>  <name>", binary mode "<hash> *<name>". No regex interval here:
+# Debian's mawk does not take one.
+artifact_sum() {
+  awk -v n="$1" '($2 == n || $2 == "*" n) && length($1) == 64 && $1 !~ /[^0-9a-f]/ { print $1; exit }' <<<"$ARTIFACT_SUMS"
+}
+
+# artifact_fetch <name> points ARTIFACT_FILE at a local copy of artifact <name> whose sha256 is
+# the one SHA256SUMS lists: the directory's own file, or a download kept in ARTIFACT_CACHE (a
+# copy already there that still matches is used as it is, so a rerun after a failure fetches
+# nothing twice). It warns and fails, leaving nothing half-written behind, when SHA256SUMS
+# does not list the name, the file is missing, or its bytes differ.
+artifact_fetch() {
+  local name="$1" want have file partial
+  ARTIFACT_FILE=""
+  want="$(artifact_sum "$name")"
+  if [ -z "$want" ]; then
+    warn "SHA256SUMS lists no ${name}"
+    return 1
+  fi
+  if [ "$ARTIFACT_MODE" = dir ]; then
+    file="${FELIS_ARTIFACT_DIR}/${name}"
+    if [ ! -f "$file" ]; then
+      warn "${file} is missing"
+      return 1
+    fi
+  else
+    file="${ARTIFACT_CACHE}/${name}"
+  fi
+  if [ -f "$file" ]; then
+    have="$(sha256sum <"$file" | cut -d' ' -f1)"
+    if [ "$have" = "$want" ]; then
+      ARTIFACT_FILE="$file"
+      return 0
+    fi
+    if [ "$ARTIFACT_MODE" = dir ]; then
+      warn "${file} hashes to ${have}, but SHA256SUMS says ${want}"
+      return 1
+    fi
+    rm -f "$file"
+  fi
+  install -d -m 0700 "$ARTIFACT_CACHE"
+  partial="${file}.partial"
+  if ! download_release_asset "$ARTIFACT_TAG" "$name" "$partial"; then
+    rm -f "$partial"
+    warn "could not download ${name} from release ${ARTIFACT_TAG}"
+    return 1
+  fi
+  have="$(sha256sum <"$partial" | cut -d' ' -f1)"
+  if [ "$have" != "$want" ]; then
+    rm -f "$partial"
+    warn "downloaded ${name} hashes to ${have}, but release ${ARTIFACT_TAG}'s SHA256SUMS says ${want}"
+    return 1
+  fi
+  mv -f "$partial" "$file"
+  ARTIFACT_FILE="$file"
+}
+
+# artifact_unusable <problem> <fallback> handles an asset this run cannot use. With
+# FELIS_ARTIFACT_DIR it stops the install: the operator named the directory so that nothing
+# would be built or pulled here. For a downloaded release it warns, and <fallback> (that piece
+# built on this host, or pulled) takes its place.
+artifact_unusable() {
+  [ "$ARTIFACT_MODE" != dir ] || die "FELIS_ARTIFACT_DIR: $1"
+  warn "$1; $2"
+}
+
+# install_artifact_binary installs FELIS_ARTIFACT_DIR's felis binary, and never falls back to a
+# build: a missing or mismatched file is for the operator to fix. The copy is staged next to
+# HOST_BIN for download_release_binary's reason (the directory, like /tmp, may be mounted
+# noexec), and hashed there, after the copy, so the bytes checked are the bytes run. Its
+# version names the control-plane image and the release the rest of the directory must be.
+install_artifact_binary() {
+  local arch name tmp got
+  ARTIFACT_MODE=dir
+  arch="$(felis_asset_arch)" || die "FELIS_ARTIFACT_DIR: Felis publishes no binary for $(uname -m)"
+  name="felis-linux-${arch}"
+  load_artifact_sums || die "FELIS_ARTIFACT_DIR: ${FELIS_ARTIFACT_DIR} holds no SHA256SUMS"
+  [ -n "$(artifact_sum "$name")" ] || die "FELIS_ARTIFACT_DIR: SHA256SUMS lists no ${name}"
+  mkdir -p "$(dirname "$HOST_BIN")"
+  tmp="$(mktemp "$(dirname "$HOST_BIN")/.felis-download.XXXXXX")"
+  remember_temp "$tmp"
+  cp "${FELIS_ARTIFACT_DIR}/${name}" "$tmp" || die "FELIS_ARTIFACT_DIR: cannot read ${FELIS_ARTIFACT_DIR}/${name}"
+  [ "$(sha256sum <"$tmp" | cut -d' ' -f1)" = "$(artifact_sum "$name")" ] \
+    || die "FELIS_ARTIFACT_DIR: ${name} does not match SHA256SUMS"
+  chmod 0755 "$tmp"
+  got="$("$tmp" version 2>/dev/null | head -n 1 || true)"
+  case "$got" in
+    "felis "?*) ;;
+    *) die "FELIS_ARTIFACT_DIR: ${name} reports '${got:-nothing}' as its version" ;;
+  esac
+  FELIS_VERSION="${got#felis }"
+  if [ -x "$HOST_BIN" ] && cmp -s "$tmp" "$HOST_BIN"; then
+    ok "host binary is already felis ${FELIS_VERSION} from ${FELIS_ARTIFACT_DIR}"
+  else
+    keep_previous_host_binary
+    rm -f "$HOST_BIN"
+    install -m 0755 "$tmp" "$HOST_BIN"
+    command -v restorecon >/dev/null 2>&1 && restorecon "$HOST_BIN" >/dev/null 2>&1 || true
+    ok "installed felis ${FELIS_VERSION} from ${FELIS_ARTIFACT_DIR}"
+  fi
+  rm -f "$tmp"
+  HAVE_PREBUILT_BINARY=1
+}
+
+# select_release_artifacts decides, once the felis binary is on the host, where this run's
+# images and Velocity plugin come from: FELIS_ARTIFACT_DIR, else the assets of the release the
+# binary is (the one just downloaded, or the one the setup console runs). A source build
+# builds them too, and so does a release without SHA256SUMS (cut before release.yml wrote
+# one, or still uploading), since nothing of it could be checked.
+select_release_artifacts() {
+  local v
+  [ "$ARTIFACT_MODE" != dir ] || return 0
+  [ -n "$HAVE_PREBUILT_BINARY" ] || return 0
+  v="$("$HOST_BIN" version 2>/dev/null | head -n 1 || true)"
+  v="${v#felis }"
+  # A release's version is its tag; a dev or pinned build's names no release.
+  [[ "$v" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || return 0
+  ARTIFACT_MODE=release
+  ARTIFACT_TAG="$v"
+  if load_artifact_sums; then
+    ok "release ${v}'s prebuilt images and Velocity plugin are installed as published"
+    return 0
+  fi
+  ARTIFACT_MODE=""
+  ARTIFACT_TAG=""
+  warn "release ${v} publishes no SHA256SUMS, so none of its images can be checked; building them on this host instead (this installs Docker and needs about 8 GiB more under /var/lib/containerd)"
 }
 
 # git_auth runs git with the token supplied by an inline credential helper. The helper
@@ -2364,7 +2681,11 @@ image_tag_for_version() {
 }
 
 build_image() {
-  systemctl start docker
+  if role_prebuilt felis; then
+    ok "${FELIS_IMAGE} is the release's own image; nothing to build"
+    return 0
+  fi
+  ensure_docker
   # Keyed on the binary, not on the route that produced it: the TUI hand-off and a release
   # download both land on exactly the same state (a felis binary at HOST_BIN, no checkout),
   # and a release download that fell back to source has cleared this so the source build runs.
@@ -2391,6 +2712,159 @@ remove_k3s_image() {
     */*) ;;
     *) k3s_cmd ctr images rm "docker.io/library/${image}" >/dev/null 2>&1 || true ;;
   esac
+}
+
+# role_image <role> prints the name this install runs <role>'s image under: the names above for
+# the images Felis builds, the name CRI gives a digest-pinned pull for the two it does not.
+role_image() {
+  case "$1" in
+    felis) printf '%s\n' "$FELIS_IMAGE" ;;
+    limbo) printf '%s\n' "$FELIS_LIMBO_IMAGE" ;;
+    lobby) printf '%s\n' "$FELIS_LOBBY_IMAGE" ;;
+    paper) printf '%s\n' "$FELIS_PAPER_IMAGE" ;;
+    registry) pinned_image_ref "$REGISTRY_IMAGE" ;;
+    postgres) pinned_image_ref "$POSTGRES_IMAGE" ;;
+  esac
+}
+
+# role_fallback <role> prints what takes the place of a release image this run cannot use.
+role_fallback() {
+  case "$1" in
+    registry|postgres) printf 'k3s pulls it from Docker Hub instead' ;;
+    *) printf 'building it on this host instead' ;;
+  esac
+}
+
+# role_prebuilt <role> reports whether <role>'s image came from the release (import_release_images).
+role_prebuilt() {
+  case "$PREBUILT_ROLES" in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
+# image_repo <ref> prints <ref> with its digest and tag dropped.
+image_repo() {
+  local r="${1%%@*}"
+  case "${r##*/}" in *:*) r="${r%:*}" ;; esac
+  printf '%s\n' "$r"
+}
+
+# image_present <ctr-images-ls> <ref> <manifest-digest> reports whether the listing holds <ref>
+# (its header row starts with REF, which no image is named). A tag has to name
+# <manifest-digest> too, since a tag moves; a digest name is the content it names, whether a
+# bundle imported the platform manifest under it or CRI pulled the whole index.
+image_present() {
+  case "$2" in
+    *@*) awk -v r="$2" '$1 == r { f = 1 } END { exit !f }' <<<"$1" ;;
+    *) awk -v r="$2" -v d="$3" '$1 == r && $3 == d { f = 1 } END { exit !f }' <<<"$1" ;;
+  esac
+}
+
+# load_release_listing <file> <arch> keeps the image listing's lines in RELEASE_LISTING once every
+# line is one bundle of this architecture, a role Felis knows once, two sha256 digests and a
+# name made of image-reference characters. A single line that is not is reason enough to trust
+# none: the listing is what decides which tar each image is read from.
+load_release_listing() {
+  local file="$1" arch="$2" bundle role name digest config rest out="" seen=" "
+  while read -r bundle role name digest config rest; do
+    [ -n "$bundle" ] || continue
+    [ -z "$rest" ] || return 1
+    [[ "$bundle" =~ ^felis-image-[a-z]+-linux-${arch}\.tar$ ]] || return 1
+    case "$role" in felis|limbo|lobby|paper|registry|postgres) ;; *) return 1 ;; esac
+    case "$seen" in *" $role "*) return 1 ;; esac
+    seen="${seen}${role} "
+    [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] && [[ "$config" =~ ^sha256:[0-9a-f]{64}$ ]] || return 1
+    [[ "$name" =~ ^[A-Za-z0-9._:/@-]+$ ]] || return 1
+    out="${out}${bundle} ${role} ${name} ${digest} ${config}"$'\n'
+  done <"$file"
+  [ -n "$out" ] || return 1
+  RELEASE_LISTING="$out"
+}
+
+# release_listing reads this architecture's image listing once per run, and fails, after one
+# warning (or, from FELIS_ARTIFACT_DIR, the end of the install), when it cannot be used.
+release_listing() {
+  local arch name
+  case "$RELEASE_LISTING_STATE" in
+    ok) return 0 ;;
+    bad) return 1 ;;
+  esac
+  RELEASE_LISTING_STATE=bad
+  arch="$(felis_asset_arch)" || return 1
+  name="felis-images-linux-${arch}.txt"
+  if ! artifact_fetch "$name"; then
+    artifact_unusable "the release's image listing ${name} cannot be used" "building its images on this host instead"
+    return 1
+  fi
+  if ! load_release_listing "$ARTIFACT_FILE" "$arch"; then
+    artifact_unusable "the release's image listing ${name} is malformed" "building its images on this host instead"
+    return 1
+  fi
+  RELEASE_LISTING_STATE=ok
+}
+
+# import_release_images <role>... puts each role's image into k3s containerd from the release's
+# bundles, and records it as prebuilt: build_image and build_game_stack skip it, and
+# push_images_to_registry pushes it from its bundle. Only the bundles holding an image
+# containerd lacks are fetched and imported, so a rerun, or an upgrade that changed only the
+# control plane, downloads just that. A bundle names each image by the name the installer
+# runs it under by default; a FELIS_*_IMAGE set to another name gets that name as a second tag
+# on the same image. A role the release cannot supply falls back to role_fallback, one image
+# at a time: the rest still install as published.
+import_release_images() {
+  local role line bundle name digest config target images todo="" needed="" b
+  [ -n "$ARTIFACT_MODE" ] || return 0
+  release_listing || return 0
+  # Read the list whole before matching: the SIGPIPE reason on import_platform_images.
+  images="$(k3s_cmd ctr images ls 2>/dev/null || true)"
+  for role in "$@"; do
+    line="$(awk -v r="$role" '$2 == r' <<<"$RELEASE_LISTING")"
+    if [ -z "$line" ]; then
+      artifact_unusable "the release lists no ${role} image" "$(role_fallback "$role")"
+      continue
+    fi
+    read -r bundle _ name digest config <<<"$line"
+    target="$(role_image "$role")"
+    case "$role" in
+      registry|postgres)
+        # Docker Hub's copy is pinned by digest here; the release's must be that one.
+        if [ "$name" != "$target" ]; then
+          artifact_unusable "the release's ${role} image is ${name}, but this installer runs ${target}" "$(role_fallback "$role")"
+          continue
+        fi
+        ;;
+    esac
+    todo="${todo}${role} ${bundle} ${name} ${target} ${digest} ${config}"$'\n'
+    if ! image_present "$images" "$target" "$digest"; then
+      case "${needed} " in *" ${bundle} "*) ;; *) needed="${needed} ${bundle}" ;; esac
+    fi
+  done
+  for b in $needed; do
+    # artifact_fetch says why it failed; the images the bundle holds are refused below.
+    artifact_fetch "$b" || continue
+    log "importing ${b} into k3s containerd"
+    k3s_cmd ctr images import "$ARTIFACT_FILE" >/dev/null || warn "k3s containerd could not import ${b}"
+  done
+  [ -z "$needed" ] || images="$(k3s_cmd ctr images ls 2>/dev/null || true)"
+  while read -r role bundle name target digest config; do
+    [ -n "$role" ] || continue
+    if ! image_present "$images" "$target" "$digest"; then
+      if ! image_present "$images" "$name" "$digest" \
+          || ! k3s_cmd ctr images tag --force "$name" "$target" >/dev/null \
+          || ! k3s_cmd ctr images tag --force "$name" "$(image_repo "$target")@${digest}" >/dev/null; then
+        artifact_unusable "k3s containerd holds no ${target} from ${bundle}" "$(role_fallback "$role")"
+        continue
+      fi
+    fi
+    PREBUILT_ROLES="${PREBUILT_ROLES}${role} "
+    RELEASE_IMAGES="${RELEASE_IMAGES}${role} ${bundle} ${name} ${target} ${digest} ${config}"$'\n'
+    # The build each system server runs, for restart_existing_system_servers: the image's
+    # config digest, the id docker gives the same image.
+    case "$role" in
+      limbo) LIMBO_IMAGE_ID="$config" ;;
+      lobby) LOBBY_IMAGE_ID="$config" ;;
+    esac
+    ok "${target} is the release's (${digest:7:12})"
+  done <<<"$todo"
 }
 
 # ---------------------------------------------------------------------------
@@ -2608,51 +3082,90 @@ papermc_latest_jar() {
 }
 
 build_game_stack() {
-  systemctl start docker
+  local role docker_used=""
   game_stack_source
   resolve_game_jars
+  # A release's game images are built from its game-stack.lock, the pinned stack. The latest
+  # stack is resolved on this host at install time, so it is built here.
+  if [ "$FELIS_GAME_STACK" = pinned ]; then
+    import_release_images limbo lobby paper
+  fi
+  for role in limbo lobby paper; do
+    role_prebuilt "$role" && continue
+    [ -n "$docker_used" ] || ensure_docker
+    docker_used=1
+    build_game_image "$role"
+  done
+  install_velocity_plugin
+  stop_docker
+  ok "login + lobby images imported; felis-velocity.jar staged"
+}
 
-  log "building ${FELIS_LIMBO_IMAGE} (LOOHP/Limbo ${LIMBO_VERSION}, Minecraft ${MC_VERSION})"
-  docker build -f "${GAME_STACK_DIR}/deploy/limbo/Dockerfile" \
-    --build-arg LIMBO_JAR_URL="$LIMBO_JAR_URL" \
-    --build-arg LIMBO_JAR_SHA256="$LIMBO_JAR_SHA256" \
-    --build-arg LIMBO_SCHEM_URL="$LIMBO_SCHEM_URL" \
-    --build-arg LIMBO_SCHEM_SHA256="$LIMBO_SCHEM_SHA256" \
-    --build-arg LIMBO_VERSION="$LIMBO_VERSION" \
-    -t "$FELIS_LIMBO_IMAGE" "$GAME_STACK_DIR"
-
-  log "building ${FELIS_LOBBY_IMAGE} (Paper ${MC_VERSION} + felis-paper /menu + LuckPerms)"
-  docker build -f "${GAME_STACK_DIR}/deploy/lobby/Dockerfile" \
-    --build-arg PAPER_JAR_URL="$PAPER_JAR_URL" \
-    --build-arg PAPER_JAR_SHA256="$PAPER_JAR_SHA256" \
-    --build-arg LUCKPERMS_JAR_URL="$LUCKPERMS_JAR_URL" \
-    --build-arg LUCKPERMS_JAR_SHA256="$LUCKPERMS_JAR_SHA256" \
-    -t "$FELIS_LOBBY_IMAGE" "$GAME_STACK_DIR"
-
-  # Plain Paper, same MC_VERSION and PAPER_JAR_URL (no new dependency). Forwarding is the
-  # operator initContainer's job, so this image carries no /menu plugin and no secret gate.
-  log "building ${FELIS_PAPER_IMAGE} (plain Paper ${MC_VERSION}, forwarding via the operator initContainer)"
-  docker build -f "${GAME_STACK_DIR}/deploy/paper/Dockerfile" \
-    --build-arg PAPER_JAR_URL="$PAPER_JAR_URL" \
-    --build-arg PAPER_JAR_SHA256="$PAPER_JAR_SHA256" \
-    -t "$FELIS_PAPER_IMAGE" "$GAME_STACK_DIR"
+# build_game_image <role> builds one game image on this host and imports it into k3s containerd.
+build_game_image() {
+  local img
+  case "$1" in
+    limbo)
+      img="$FELIS_LIMBO_IMAGE"
+      log "building ${img} (LOOHP/Limbo ${LIMBO_VERSION}, Minecraft ${MC_VERSION})"
+      docker build -f "${GAME_STACK_DIR}/deploy/limbo/Dockerfile" \
+        --build-arg LIMBO_JAR_URL="$LIMBO_JAR_URL" \
+        --build-arg LIMBO_JAR_SHA256="$LIMBO_JAR_SHA256" \
+        --build-arg LIMBO_SCHEM_URL="$LIMBO_SCHEM_URL" \
+        --build-arg LIMBO_SCHEM_SHA256="$LIMBO_SCHEM_SHA256" \
+        --build-arg LIMBO_VERSION="$LIMBO_VERSION" \
+        -t "$img" "$GAME_STACK_DIR"
+      ;;
+    lobby)
+      img="$FELIS_LOBBY_IMAGE"
+      log "building ${img} (Paper ${MC_VERSION} + felis-paper /menu + LuckPerms)"
+      docker build -f "${GAME_STACK_DIR}/deploy/lobby/Dockerfile" \
+        --build-arg PAPER_JAR_URL="$PAPER_JAR_URL" \
+        --build-arg PAPER_JAR_SHA256="$PAPER_JAR_SHA256" \
+        --build-arg LUCKPERMS_JAR_URL="$LUCKPERMS_JAR_URL" \
+        --build-arg LUCKPERMS_JAR_SHA256="$LUCKPERMS_JAR_SHA256" \
+        -t "$img" "$GAME_STACK_DIR"
+      ;;
+    paper)
+      # Plain Paper, same MC_VERSION and PAPER_JAR_URL (no new dependency). Forwarding is the
+      # operator initContainer's job, so this image carries no /menu plugin and no secret gate.
+      img="$FELIS_PAPER_IMAGE"
+      log "building ${img} (plain Paper ${MC_VERSION}, forwarding via the operator initContainer)"
+      docker build -f "${GAME_STACK_DIR}/deploy/paper/Dockerfile" \
+        --build-arg PAPER_JAR_URL="$PAPER_JAR_URL" \
+        --build-arg PAPER_JAR_SHA256="$PAPER_JAR_SHA256" \
+        -t "$img" "$GAME_STACK_DIR"
+      ;;
+  esac
 
   # The builds the system servers run, for restart_existing_system_servers. Docker's layer
   # cache gives an unchanged build the same id, so a rerun that rebuilt nothing leaves the
   # login and lobby pods (and every player on them) alone.
-  LIMBO_IMAGE_ID="$(docker image inspect -f '{{.Id}}' "$FELIS_LIMBO_IMAGE")"
-  LOBBY_IMAGE_ID="$(docker image inspect -f '{{.Id}}' "$FELIS_LOBBY_IMAGE")"
+  case "$1" in
+    limbo) LIMBO_IMAGE_ID="$(docker image inspect -f '{{.Id}}' "$img")" ;;
+    lobby) LOBBY_IMAGE_ID="$(docker image inspect -f '{{.Id}}' "$img")" ;;
+  esac
 
-  local img
-  for img in "$FELIS_LIMBO_IMAGE" "$FELIS_LOBBY_IMAGE" "$FELIS_PAPER_IMAGE"; do
-    log "importing ${img} into k3s containerd"
-    remove_k3s_image "$img"
-    docker save "$img" | k3s_cmd ctr images import -
-  done
+  log "importing ${img} into k3s containerd"
+  remove_k3s_image "$img"
+  docker save "$img" | k3s_cmd ctr images import -
+}
 
+# install_velocity_plugin puts the release's felis-velocity.jar in place, or builds one here
+# when the release has none this run can use. The jar is JVM bytecode, one file for every
+# architecture.
+install_velocity_plugin() {
+  if [ -n "$ARTIFACT_MODE" ]; then
+    if artifact_fetch felis-velocity.jar; then
+      prepare_velocity_layout
+      install_if_changed "$ARTIFACT_FILE" "${VELOCITY_DIR}/plugins/felis-velocity.jar" 0644 root root
+      ok "felis-velocity.jar is the release's"
+      return 0
+    fi
+    artifact_unusable "the release's felis-velocity.jar cannot be used" "building it on this host instead"
+  fi
+  ensure_docker
   build_velocity_plugin
-  systemctl stop docker docker.socket 2>/dev/null || true
-  ok "login + lobby images imported; felis-velocity.jar staged"
 }
 
 ensure_velocity_directory() {
@@ -4469,19 +4982,80 @@ registry_docker_login() {
 # a re-run: three fast pushes, then "Start request repeated too quickly /
 # start-limit-hit" and the fourth image never got mirrored. docker.service is
 # socket-triggered, so each cycle counts twice against the burst limit.
+#
+# An image the release shipped (import_release_images) is pushed from its bundle by felis
+# push-image, and needs no Docker at all; only the images built here go through docker push.
 push_images_to_registry() {
-  local img
-  systemctl start docker
-  registry_docker_login
-  for img in "$FELIS_IMAGE" "$FELIS_LIMBO_IMAGE" "$FELIS_LOBBY_IMAGE" "$FELIS_PAPER_IMAGE"; do
+  local role img docker_used=""
+  for role in felis limbo lobby paper; do
+    role_prebuilt "$role" || continue
+    push_release_image "$role"
+  done
+  for role in felis limbo lobby paper; do
+    role_prebuilt "$role" && continue
+    img="$(role_image "$role")"
     [ -n "$img" ] || continue
+    if [ -z "$docker_used" ]; then
+      ensure_docker
+      registry_docker_login
+      docker_used=1
+    fi
     push_image_to_registry "$img"
+    [ "$role" = felis ] || push_version_tag "$img"
   done
-  for img in "$FELIS_LIMBO_IMAGE" "$FELIS_LOBBY_IMAGE" "$FELIS_PAPER_IMAGE"; do
-    [ -n "$img" ] || continue
-    push_version_tag "$img"
+  stop_docker
+  # Every bundle is in containerd and the registry now; a rerun that needs one fetches it again.
+  if [ "$ARTIFACT_MODE" = release ]; then
+    rm -rf -- "$ARTIFACT_CACHE"
+  fi
+}
+
+# registry_manifest_digest <host/repository:tag> prints the digest the platform registry holds
+# under that tag, or nothing. Reads are anonymous at the gate.
+registry_manifest_digest() {
+  local ref="$1" repo tag
+  repo="${ref#*/}"
+  tag="${repo##*:}"
+  repo="${repo%:*}"
+  curl -fsSI --max-time 30 \
+    -H 'Accept: application/vnd.oci.image.manifest.v1+json' \
+    -H 'Accept: application/vnd.docker.distribution.manifest.v2+json' \
+    -H 'Accept: application/vnd.oci.image.index.v1+json' \
+    -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+    "http://${ref%%/*}/v2/${repo}/manifests/${tag}" 2>/dev/null \
+    | tr -d '\r' | awk 'tolower($1) == "docker-content-digest:" { print $2 }' || true
+}
+
+# push_release_image <role> mirrors a release image into the platform registry under its tag
+# and, for a game image, under push_version_tag's <Minecraft version>-<12 hex of its id> as
+# well, the id being the image's config digest here as it is docker's image id there. A tag
+# already naming the image's digest is left as it is, so a rerun uploads nothing.
+push_release_image() {
+  local role="$1" bundle name target digest config refs ref push_ref
+  read -r _ bundle name target digest config <<<"$(awk -v r="$role" '$1 == r' <<<"$RELEASE_IMAGES")"
+  case "$target" in
+    "${REGISTRY_URL}/"*) ;;
+    *)
+      warn "not mirroring ${target} into the internal registry: it is not under ${REGISTRY_URL}; once the image GC collects that tag, nothing can re-pull it"
+      return 0
+      ;;
+  esac
+  refs="$target"
+  if [ "$role" != felis ] && [ -n "${MC_VERSION:-}" ]; then
+    refs="${refs} ${target%:*}:${MC_VERSION}-${config:7:12}"
+  fi
+  for ref in $refs; do
+    push_ref="${REGISTRY_PUSH_HOST}/${ref#"${REGISTRY_URL}/"}"
+    if [ "$(registry_manifest_digest "$push_ref")" = "$digest" ]; then
+      ok "${ref} is already in the internal registry"
+      continue
+    fi
+    artifact_fetch "$bundle" || die "could not mirror ${ref} into the internal registry: ${bundle} (above) is gone"
+    log "mirroring ${ref} into the internal registry"
+    FELIS_REGISTRY_USERNAME=platform FELIS_REGISTRY_PASSWORD="$REGISTRY_PLATFORM_TOKEN" \
+      "$HOST_BIN" push-image --tar "$ARTIFACT_FILE" --image "$name" --ref "$push_ref" >/dev/null \
+      || die "could not mirror ${ref} into the internal registry — check the registry Deployment/pod (the registry, registry-gate and registry-gc containers) and its PVC"
   done
-  systemctl stop docker docker.socket 2>/dev/null || true
 }
 
 # push_version_tag mirrors a game image a second time under a tag no later run
@@ -4954,30 +5528,37 @@ main() {
   # do not have: the TUI rebuilds the binary it is already running, and FELIS_SKIP_FETCH
   # builds whatever is staged, which stamp_version reads the SHA off. Resolving anyway
   # would set FELIS_VERSION to the newest tag and stamp a staged tree as that release.
-  bootstrap_from_tui || [ -n "${FELIS_SKIP_FETCH:-}" ] || resolve_install_ref
+  # FELIS_ARTIFACT_DIR is its own release: its binary names the version.
+  bootstrap_from_tui || [ -n "${FELIS_SKIP_FETCH:-}" ] || [ -n "$FELIS_ARTIFACT_DIR" ] || resolve_install_ref
   install_cloudflared
   load_or_make_secrets
   configure_offsite
   ensure_panel_tls_cert
-  install_docker
+  # No install_docker here: Docker comes in only for an image this run has to build
+  # (ensure_docker), and an install from a release's assets builds none.
   install_k3s
   # The registry mirror must exist before the bundle's pods start pulling (and
-  # before any re-run's rollouts); the registry's and the database's own images must
-  # be in containerd before their Deployments can start at all.
+  # before any re-run's rollouts).
   configure_registry_mirror
-  import_platform_images
-  # Three ways to end up with a felis binary, in preference order. The release download is
-  # the only one that skips compiling: it is the CI artifact for this exact tag, panel
-  # included. Both other arms leave HAVE_PREBUILT_BINARY unset where a source build is what
-  # actually happens, which is what routes build_image below.
-  if bootstrap_from_tui; then
+  # Four ways to end up with a felis binary, in preference order. FELIS_ARTIFACT_DIR and the
+  # release download skip compiling: each is the CI artifact for its tag, panel included. The
+  # other arms leave HAVE_PREBUILT_BINARY unset where a source build is what actually
+  # happens, which is what routes build_image below.
+  if [ -n "$FELIS_ARTIFACT_DIR" ]; then
+    install_artifact_binary
+  elif bootstrap_from_tui; then
     install_embedded_binary
   elif use_release_binary && download_release_binary; then
     :
   else
     fetch_source
   fi
+  select_release_artifacts
   resolve_felis_image
+  # The registry's and the database's own images must be in containerd before their
+  # Deployments can start at all: from the release's bundle when it has them, else pulled.
+  import_release_images felis registry postgres
+  import_platform_images
   build_image
   # After build_image imported the felis image: the registry pod's gate runs it.
   pin_platform_images
