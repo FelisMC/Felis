@@ -138,11 +138,12 @@ func (a *API) handleClaim(w http.ResponseWriter, r *http.Request) {
 
 	// ② quota gate, evaluated before the ownership write. All four dimensions
 	// (servers, CPU, memory, storage) are checked against the user's quota caps
-	// using the PG-resident resource cache (spec §9.3, §22). The server being
-	// claimed has owner_id=NULL so it is not yet in the per-owner aggregate.
-	res, err := a.Repo.ServerResources(r.Context(), name)
+	// (spec §9.3, §22), with the server at its real size (claimResources). The
+	// server being claimed has owner_id=NULL so it is not yet in the per-owner
+	// aggregate.
+	res, err := a.claimResources(r.Context(), name)
 	if err != nil {
-		writeError(w, r, err)
+		a.writeLookupError(w, r, err)
 		return
 	}
 	ok, err := a.Repo.QuotaCheck(r.Context(), p.UserID, "", res)
@@ -176,6 +177,28 @@ func (a *API) handleClaim(w http.ResponseWriter, r *http.Request) {
 	// ④ audit. Allowlist population happens on first successful join (spec §9.4).
 	a.audit(r, "claim", name)
 	writeJSON(w, http.StatusOK, map[string]any{"name": name, "claimed": true})
+}
+
+// claimResources is the size a claim is gated on and then counted at: the server's
+// spec as the cluster holds it, written through to the resource cache first. The
+// cache is all the per-owner quota sums read, and a world the reaper released
+// before it kept the cache holds zeros there: gated on those, a claim passed every
+// resource cap and the server went uncounted for as long as its new owner kept it.
+func (a *API) claimResources(ctx context.Context, name string) (ResourceSpec, error) {
+	info, err := a.Cluster.GetServer(ctx, name)
+	if err != nil {
+		return ResourceSpec{}, err
+	}
+	storage, _ := resource.ParseQuantity(info.StorageSize)
+	res := ResourceSpec{
+		CPUMilli:  quantityToMilli(info.Resources.Limits[corev1.ResourceCPU]),
+		MemoryMB:  quantityToMB(info.Resources.Limits[corev1.ResourceMemory]),
+		StorageMB: quantityToMB(storage),
+	}
+	if err := a.Repo.UpdateServerResources(ctx, name, res.CPUMilli, res.MemoryMB, res.StorageMB); err != nil {
+		return ResourceSpec{}, err
+	}
+	return res, nil
 }
 
 // handleStatus returns the CRD status view (spec §7 GET /servers/{name}/status).

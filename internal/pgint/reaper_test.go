@@ -5,6 +5,7 @@ package pgint
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -389,6 +390,63 @@ func TestBackupReadBack(t *testing.T) {
 	}
 	if l := live(); l["/archives/"+newer+".tar.gz"] || !l["/archives/"+older+".tar.gz"] {
 		t.Fatalf("live refs after deleting %s still claim its archive", newer)
+	}
+}
+
+// TestReleasedWorldKeepsItsSize: a world the reaper released keeps its resource
+// cache, so the next claim is gated on the server's size and counts it. Zeroed on
+// release, it let a user whose quota is spent claim the server anyway and then
+// counted it as nothing.
+func TestReleasedWorldKeepsItsSize(t *testing.T) {
+	ctx := context.Background()
+	st := reaper.NewPGStore(db)
+	name := "released-" + suffix(t)
+	if _, err := db.ExecContext(ctx,
+		`INSERT INTO servers (name, cached_cpu_milli, cached_memory_mb, cached_storage_mb) VALUES ($1, 2000, 4096, 10240)`,
+		name); err != nil {
+		t.Fatalf("seed server: %v", err)
+	}
+	first := newUser(t, "user", "released-a")
+	if ok, err := repo.ClaimServer(ctx, name, first.ID); err != nil || !ok {
+		t.Fatalf("first claim = (%v, %v)", ok, err)
+	}
+	if err := st.ReleaseWorld(ctx, name, time.Now()); err != nil {
+		t.Fatalf("ReleaseWorld: %v", err)
+	}
+	var owner sql.NullString
+	var cpu, mem, stor int
+	if err := db.QueryRowContext(ctx,
+		`SELECT owner_id, cached_cpu_milli, cached_memory_mb, cached_storage_mb FROM servers WHERE name = $1`, name).
+		Scan(&owner, &cpu, &mem, &stor); err != nil {
+		t.Fatal(err)
+	}
+	if owner.Valid || cpu != 2000 || mem != 4096 || stor != 10240 {
+		t.Fatalf("after ReleaseWorld: owner=%v cache=%d/%d/%d; want no owner, cache 2000/4096/10240", owner, cpu, mem, stor)
+	}
+
+	// One CPU of quota does not cover a two-CPU server.
+	small := newUser(t, "user", "released-b")
+	oneCPU := 1000
+	if _, err := repo.SetQuotas(ctx, small.ID, api.QuotaInput{MaxCPUMilli: &oneCPU}, "pgint"); err != nil {
+		t.Fatalf("SetQuotas: %v", err)
+	}
+	if ok, err := repo.ClaimServer(ctx, name, small.ID); !errors.Is(err, api.ErrQuotaExceeded) {
+		t.Fatalf("claim over the CPU quota = (%v, %v), want ErrQuotaExceeded", ok, err)
+	}
+
+	// A claim that fits counts the server at its size.
+	fits := newUser(t, "user", "released-c")
+	if ok, err := repo.ClaimServer(ctx, name, fits.ID); err != nil || !ok {
+		t.Fatalf("claim within quota = (%v, %v)", ok, err)
+	}
+	var used int
+	if err := db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(cached_cpu_milli), 0) FROM servers WHERE owner_id = $1 AND deleted_at IS NULL`, fits.ID).
+		Scan(&used); err != nil {
+		t.Fatal(err)
+	}
+	if used != 2000 {
+		t.Fatalf("the new owner's CPU use = %d, want 2000", used)
 	}
 }
 

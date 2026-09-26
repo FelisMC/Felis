@@ -16,6 +16,7 @@ import (
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 )
 
 const testRoot = "mc.example.net" // neutral; never a deployment domain
@@ -47,8 +48,10 @@ type fakeRepo struct {
 	// UpdateServerResources records the write for assertions.
 	serverResources map[string]ResourceSpec
 	resourceUpdates map[string]ResourceSpec
-	audits          []AuditEntry
-	failAudit       error // Audit fails with it (a store outage)
+	// quotaChecked records the size every QuotaCheck was asked about, in order.
+	quotaChecked []ResourceSpec
+	audits       []AuditEntry
+	failAudit    error // Audit fails with it (a store outage)
 	// backupRequested mirrors the newest backup.create audit row per server,
 	// stamped by Audit with the wall clock (LastBackupRequest).
 	backupRequested map[string]time.Time
@@ -323,7 +326,8 @@ func (f *fakeRepo) ServerByName(_ context.Context, n string) (*ServerRecord, err
 func (f *fakeRepo) IsLinked(_ context.Context, u string) (bool, error)       { return f.linked[u], nil }
 func (f *fakeRepo) QuotaAvailable(_ context.Context, u string) (bool, error) { return f.quota[u], nil }
 
-func (f *fakeRepo) QuotaCheck(_ context.Context, userID string, _ string, _ ResourceSpec) (bool, error) {
+func (f *fakeRepo) QuotaCheck(_ context.Context, userID string, _ string, incoming ResourceSpec) (bool, error) {
+	f.quotaChecked = append(f.quotaChecked, incoming)
 	// For hermetic tests, QuotaCheck delegates to the same QuotaAvailable
 	// store — tests that care about per-dimension checks should use
 	// fakeQuotas with direct inspection.
@@ -2400,7 +2404,7 @@ func TestClaimStateMachine(t *testing.T) {
 	t.Run("over quota -> 403", func(t *testing.T) {
 		repo := newFakeRepo()
 		repo.linked["u1"] = true
-		api := newTestAPI(repo, newFakeCluster())
+		api := newTestAPI(repo, claimCluster())
 		api.External = staticExternal{p: user}
 		w := do(api.ExternalHandler(), "POST", "/api/v1/servers/survival/claim", "", nil)
 		if w.Code != http.StatusForbidden || decodeErr(t, w) != "quota_exceeded" {
@@ -2415,7 +2419,7 @@ func TestClaimStateMachine(t *testing.T) {
 		repo.quota["u1"] = true
 		repo.claimOK["survival"] = true
 		repo.claimQuotaRefuse["survival"] = true
-		api := newTestAPI(repo, newFakeCluster())
+		api := newTestAPI(repo, claimCluster())
 		api.External = staticExternal{p: user}
 		w := do(api.ExternalHandler(), "POST", "/api/v1/servers/survival/claim", "", nil)
 		if w.Code != http.StatusForbidden || decodeErr(t, w) != "quota_exceeded" {
@@ -2427,7 +2431,7 @@ func TestClaimStateMachine(t *testing.T) {
 		repo.linked["u1"] = true
 		repo.quota["u1"] = true
 		repo.claimOK["survival"] = false // row exists but owner already set
-		api := newTestAPI(repo, newFakeCluster())
+		api := newTestAPI(repo, claimCluster())
 		api.External = staticExternal{p: user}
 		w := do(api.ExternalHandler(), "POST", "/api/v1/servers/survival/claim", "", nil)
 		if w.Code != http.StatusConflict || decodeErr(t, w) != "already_claimed" {
@@ -2439,7 +2443,7 @@ func TestClaimStateMachine(t *testing.T) {
 		repo.linked["u1"] = true
 		repo.quota["u1"] = true
 		repo.claimOK["survival"] = true
-		api := newTestAPI(repo, newFakeCluster())
+		api := newTestAPI(repo, claimCluster())
 		api.External = staticExternal{p: user}
 		w := do(api.ExternalHandler(), "POST", "/api/v1/servers/survival/claim", "", nil)
 		if w.Code != http.StatusOK {
@@ -2449,6 +2453,71 @@ func TestClaimStateMachine(t *testing.T) {
 			t.Fatalf("audit not written as expected: %+v", repo.audits)
 		}
 	})
+	// A world the reaper released used to have its resource cache zeroed, and the
+	// quota gate read the cache: the claim passed every resource cap and the server
+	// then counted as nothing. The claim reads the server's size off the cluster,
+	// gates on it, and writes it back to the cache.
+	t.Run("gated on the server's real size, whatever the cache says", func(t *testing.T) {
+		repo := newFakeRepo()
+		repo.linked["u1"] = true
+		repo.claimOK["survival"] = true
+		repo.serverResources["survival"] = ResourceSpec{}
+		api := newTestAPI(repo, claimCluster())
+		api.External = staticExternal{p: user}
+		w := do(api.ExternalHandler(), "POST", "/api/v1/servers/survival/claim", "", nil)
+		if w.Code != http.StatusForbidden || decodeErr(t, w) != "quota_exceeded" {
+			t.Fatalf("code = %d body %s, want 403 quota_exceeded", w.Code, w.Body.String())
+		}
+		want := ResourceSpec{CPUMilli: 2000, MemoryMB: 4096, StorageMB: 10240}
+		if len(repo.quotaChecked) != 1 || repo.quotaChecked[0] != want {
+			t.Errorf("quota checked against %+v, want [%+v]", repo.quotaChecked, want)
+		}
+		if got := repo.resourceUpdates["survival"]; got != want {
+			t.Errorf("resource cache = %+v, want %+v", got, want)
+		}
+	})
+	t.Run("the internal face is gated the same way", func(t *testing.T) {
+		repo := newFakeRepo()
+		repo.links[menuUUID] = "u1"
+		repo.claimOK["survival"] = true
+		api := newTestAPI(repo, claimCluster())
+		w := internalClaim(api, `{"mc_uuid":"`+menuUUID+`"}`)
+		if w.Code != http.StatusForbidden || decodeErr(t, w) != "quota_exceeded" {
+			t.Fatalf("code = %d body %s, want 403 quota_exceeded", w.Code, w.Body.String())
+		}
+		want := ResourceSpec{CPUMilli: 2000, MemoryMB: 4096, StorageMB: 10240}
+		if len(repo.quotaChecked) != 1 || repo.quotaChecked[0] != want {
+			t.Errorf("quota checked against %+v, want [%+v]", repo.quotaChecked, want)
+		}
+		if got := repo.resourceUpdates["survival"]; got != want {
+			t.Errorf("resource cache = %+v, want %+v", got, want)
+		}
+	})
+	t.Run("a server the cluster does not have -> 404", func(t *testing.T) {
+		repo := newFakeRepo()
+		repo.linked["u1"] = true
+		repo.quota["u1"] = true
+		repo.claimOK["survival"] = true
+		api := newTestAPI(repo, newFakeCluster())
+		api.External = staticExternal{p: user}
+		w := do(api.ExternalHandler(), "POST", "/api/v1/servers/survival/claim", "", nil)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("code = %d body %s, want 404", w.Code, w.Body.String())
+		}
+		if len(repo.audits) != 0 {
+			t.Fatalf("a refused claim was audited: %+v", repo.audits)
+		}
+	})
+}
+
+// claimCluster holds the survival server a claim test claims: 2 CPUs, 4Gi of memory
+// and a 10Gi world.
+func claimCluster() *fakeCluster {
+	cl := newFakeCluster()
+	cl.byName["survival"] = &ServerInfo{Name: "survival", StorageSize: "10Gi", Resources: corev1.ResourceRequirements{
+		Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("4Gi")},
+	}}
+	return cl
 }
 
 // ---- wake (autostartPolicy gate + cooldown) ----

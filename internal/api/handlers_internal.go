@@ -251,10 +251,11 @@ func (a *API) handleInternalClaim(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// ② quota gate, evaluated before the ownership write (mirrors handleClaim).
-	// All four dimensions (servers, CPU, memory, storage) are checked.
-	res, err := a.Repo.ServerResources(r.Context(), name)
+	// All four dimensions (servers, CPU, memory, storage) are checked, with the
+	// server at its real size.
+	res, err := a.claimResources(r.Context(), name)
 	if err != nil {
-		writeError(w, r, err)
+		a.writeLookupError(w, r, err)
 		return
 	}
 	ok, err := a.Repo.QuotaCheck(r.Context(), userID, "", res)

@@ -34,7 +34,7 @@ func TestAccountLinkVertical(t *testing.T) {
 	repo.quota["u1"] = true
 	repo.claimOK["survival"] = true
 
-	api := newTestAPI(repo, newFakeCluster())
+	api := newTestAPI(repo, claimCluster())
 	api.External = staticExternal{p: user}
 	ih := api.InternalHandler()
 	eh := api.ExternalHandler()

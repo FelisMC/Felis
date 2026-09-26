@@ -79,12 +79,13 @@ func (s *PGStore) InsertBackup(ctx context.Context, rec BackupRecord) error {
 	return err
 }
 
-// ReleaseWorld releases ownership, zeros the resource cache, and resets the
-// activity clock and warnings — without deleting the row (red line ②).
+// ReleaseWorld releases ownership and resets the activity clock and warnings —
+// without deleting the row (red line ②). The resource cache stays: the server
+// keeps its spec, an ownerless row is in nobody's quota sum, and the next claim is
+// gated on that size and counts it.
 func (s *PGStore) ReleaseWorld(ctx context.Context, name string, at time.Time) error {
 	const q = `UPDATE servers
-		SET owner_id = NULL, cached_cpu_milli = 0, cached_memory_mb = 0, cached_storage_mb = 0,
-		    last_active_at = $2, warned_3d_at = NULL, warned_1d_at = NULL
+		SET owner_id = NULL, last_active_at = $2, warned_3d_at = NULL, warned_1d_at = NULL
 		WHERE name = $1 AND deleted_at IS NULL`
 	_, err := s.db.ExecContext(ctx, q, name, at)
 	return err
