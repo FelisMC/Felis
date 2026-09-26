@@ -39,6 +39,11 @@ const (
 	// a control-plane identity, so the RCON NetworkPolicy peer (which requires
 	// part-of=felis-control-plane) can never select it.
 	ComponentRegistry = "registry"
+
+	// ComponentPostgres labels the control-plane database. Like the registry it
+	// is a supporting workload and NOT part-of=felis-control-plane, so no
+	// control-plane peer selector (RCON, the internal API) can select it.
+	ComponentPostgres = "postgres"
 )
 
 // Service-account names. The control-plane SAs (api/operator/reaper) are bound to
@@ -70,6 +75,15 @@ const (
 	// for humans. deploy/bootstrap.sh's REGISTRY_IMAGE caches and GC-pins this exact
 	// ref and must name the same one (TestBootstrapPinsTheRegistryImage).
 	defaultRegistryImage = "docker.io/library/registry:2.8.3@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373"
+
+	// defaultPostgresImage is the official PostgreSQL image the control-plane
+	// database runs (postgres.go). Pinned by digest for the same reason as the
+	// registry, and more: a re-tag that moved the major would start an empty
+	// cluster in a fresh <major>/docker directory beside the real one.
+	// deploy/bootstrap.sh's POSTGRES_IMAGE caches and GC-pins this exact ref
+	// (TestBootstrapPinsThePostgresImage) and refuses to start it over data
+	// another major wrote.
+	defaultPostgresImage = "docker.io/library/postgres:18.6-trixie@sha256:5a5a84b19854a9ffaa54082c166ff4ec27473a361e496e5ea167f298f2da9722"
 )
 
 // Params parameterises the install bundle. Namespaces and the registry location
@@ -126,6 +140,9 @@ type Params struct {
 	FelisImage string
 	// RegistryImage is the in-cluster registry image. Defaults to registry 2.8.3, by digest.
 	RegistryImage string
+	// PostgresImage is the control-plane database image. Defaults to PostgreSQL
+	// 18.6, by digest.
+	PostgresImage string
 	// BackupPVC is the name of the world-archive PersistentVolumeClaim. The bundle
 	// RENDERS this PVC (backupPVC in workloads.go, Minecraft namespace — where every
 	// pod that mounts it runs) and felis-api advertises the name to its backup/restore
@@ -235,6 +252,9 @@ func (p Params) withDefaults() Params {
 	}
 	if p.RegistryImage == "" {
 		p.RegistryImage = defaultRegistryImage
+	}
+	if p.PostgresImage == "" {
+		p.PostgresImage = defaultPostgresImage
 	}
 	if p.RegistryStorage == "" {
 		p.RegistryStorage = registryStorageSize

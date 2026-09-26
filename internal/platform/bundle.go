@@ -111,6 +111,11 @@ func Objects(p Params) []Object {
 	}
 	objs = append(objs, RegistryIngressPolicy(p))
 
+	// The database's pg_hba.conf and ingress fence. deploy/bootstrap.sh applies
+	// the database alone first (PostgresObjects); rendering it here as well keeps
+	// the full apply from drifting it.
+	objs = append(objs, postgresHBAConfig(p), PostgresIngressPolicy(p))
+
 	// The running control-plane the fence protects: felis-api/operator Deployments
 	// (which bind the SAs to workloads and stamp the RCON-peer labels) and the
 	// in-cluster registry (Deployment + Service + PVC) the build egress policy
@@ -124,8 +129,13 @@ func Objects(p Params) []Object {
 // `---`-separated form kubectl apply consumes). It is the verifiable source of
 // truth a Helm chart would otherwise only re-encode.
 func RenderYAML(p Params) ([]byte, error) {
+	return RenderObjects(Objects(p))
+}
+
+// RenderObjects marshals objs into one multi-document YAML stream, in order.
+func RenderObjects(objs []Object) ([]byte, error) {
 	var buf bytes.Buffer
-	for i, obj := range Objects(p) {
+	for i, obj := range objs {
 		if i > 0 {
 			buf.WriteString("---\n")
 		}

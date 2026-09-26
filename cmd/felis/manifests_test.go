@@ -278,3 +278,37 @@ func TestManifestsStorageSizes(t *testing.T) {
 		t.Errorf("--registry-storage lots: exit %d, stderr %q; want a refusal naming the flag", code, errBuf.String())
 	}
 }
+
+// TestManifestsOnlyPostgres: the installer renders the database before it has
+// an image or a proxy address for the rest of the bundle, so --only postgres
+// must render without them, and render the database and nothing else (a stray
+// Deployment in that apply would start without its identities).
+func TestManifestsOnlyPostgres(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	code := run([]string{"manifests", "--only", "postgres", "--control-namespace", "ctl", "--postgres-image", "example/pg:18@sha256:abc"}, &out, &errBuf)
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr=%q", code, errBuf.String())
+	}
+	var kinds []string
+	for _, doc := range strings.Split(out.String(), "\n---\n") {
+		for _, line := range strings.Split(doc, "\n") {
+			if strings.HasPrefix(line, "kind: ") {
+				kinds = append(kinds, strings.TrimPrefix(line, "kind: "))
+			}
+		}
+	}
+	if got, want := strings.Join(kinds, ","), "Namespace,ConfigMap,NetworkPolicy,Deployment,Service"; got != want {
+		t.Errorf("rendered kinds %s, want %s", got, want)
+	}
+	for _, want := range []string{"name: felis-postgres", "namespace: ctl", "image: example/pg:18@sha256:abc"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("rendered database missing %q", want)
+		}
+	}
+
+	out.Reset()
+	errBuf.Reset()
+	if code := run([]string{"manifests", "--only", "registry"}, &out, &errBuf); code != 2 || out.Len() != 0 {
+		t.Errorf("--only registry: exit %d with %d bytes of YAML, want 2 and none", code, out.Len())
+	}
+}

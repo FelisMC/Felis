@@ -35,6 +35,11 @@ func (m *multiFlag) Set(v string) error {
 // --velocity-cidr records the proxy host addresses allowed by the game NetworkPolicy.
 // Kubernetes permits resident-node traffic regardless, but remote proxy deployments
 // need an explicit CIDR, so the renderer refuses to guess.
+//
+// --only postgres renders just the control-plane database (platform.PostgresObjects),
+// which the installer brings up before migrations, before it has anything else
+// to render the full bundle with; it needs neither --felis-image nor
+// --velocity-cidr.
 func cmdManifests(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("manifests", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -46,6 +51,8 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 	panelNodePort := fs.Int("panel-node-port", int(platform.DefaultPanelNodePort), "NodePort that exposes the built-in HTTPS panel/API origin")
 	felisImage := fs.String("felis-image", "", "container image the felis-api/operator Deployments run, also passed through as FELIS_IMAGE (REQUIRED)")
 	registryImage := fs.String("registry-image", "", "in-cluster registry image (default: registry 2.8.3, pinned by digest)")
+	postgresImage := fs.String("postgres-image", "", "control-plane database image (default: PostgreSQL 18.6, pinned by digest)")
+	only := fs.String("only", "", `render one part of the bundle instead of all of it; "postgres" is the control-plane database`)
 	backupPVC := fs.String("backup-pvc", "felis-backups", "name of the world-archive PVC this bundle renders in the Minecraft namespace and advertises to the backup/restore executors via FELIS_BACKUP_PVC (default: felis-backups; pass an empty value to render none, leaving backup/restore answering 503)")
 	worldsHostPath := fs.String("worlds-host-path", "", "node directory the reaper reads worlds from: each world PVC resolves as <path>/<pvc>, or as the stock local-path directory <path>/<pv-name>_<ns>_<pvc-name> (k3s storage root: /var/lib/rancher/k3s/storage); enables the reaper CronJob (requires --archive-local-path and a non-empty --backup-pvc)")
 	archiveLocalPath := fs.String("archive-local-path", "", "path the backup PVC is mounted at in the reaper CronJob; MUST equal felis.toml [archive] local_path. With the backup PVC alone it renders the retention-only CronJob, which deletes backups past their expiry and never touches a world")
@@ -62,6 +69,18 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 	var serverAllowCIDRs multiFlag
 	fs.Var(&serverAllowCIDRs, "server-egress-allow-cidr", "private CIDR game server pods may reach despite the private-range block, e.g. a LAN database (repeatable)")
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	switch *only {
+	case "":
+	case "postgres":
+		return renderManifests(stdout, stderr, platform.PostgresObjects(platform.Params{
+			ControlNamespace:   *controlNS,
+			MinecraftNamespace: *minecraftNS,
+			PostgresImage:      *postgresImage,
+		}))
+	default:
+		fmt.Fprintf(stderr, "felis manifests: --only %q: the one part that renders alone is \"postgres\"\n", *only)
 		return 2
 	}
 
@@ -165,6 +184,7 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 		PanelNodePort:      int32(*panelNodePort),
 		FelisImage:         *felisImage,
 		RegistryImage:      *registryImage,
+		PostgresImage:      *postgresImage,
 		BackupPVC:          *backupPVC,
 		WorldsHostPath:     *worldsHostPath,
 		ReaperNode:         *reaperNode,
@@ -183,7 +203,11 @@ func cmdManifests(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis manifests: %v\n", err)
 		return 2
 	}
-	out, err := platform.RenderYAML(params)
+	return renderManifests(stdout, stderr, platform.Objects(params))
+}
+
+func renderManifests(stdout, stderr io.Writer, objs []platform.Object) int {
+	out, err := platform.RenderObjects(objs)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis manifests: render: %v\n", err)
 		return 1

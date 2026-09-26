@@ -707,15 +707,15 @@ func TestWorkloads_DeploymentsCarryProbes(t *testing.T) {
 	}
 }
 
-// TestWorkloads_BundleContents sanity-checks the slice Workloads returns: the two
-// control-plane Deployments, the api external+internal Services, the operator
-// metrics Service, and the registry
+// TestWorkloads_BundleContents sanity-checks the slice Workloads returns: the
+// database Deployment/Service, the two control-plane Deployments, the api
+// external+internal Services, the operator metrics Service, and the registry
 // Deployment/Service/PVC, every one with TypeMeta (so its YAML header renders). The
 // internal Service must be present or the login pod's felis-api:8081 path is dead.
 func TestWorkloads_BundleContents(t *testing.T) {
 	objs := Workloads(testParams())
-	if len(objs) != 9 {
-		t.Fatalf("Workloads returned %d objects, want 9", len(objs))
+	if len(objs) != 11 {
+		t.Fatalf("Workloads returned %d objects, want 11", len(objs))
 	}
 	var haveInternalSvc bool
 	for _, o := range objs {
@@ -733,7 +733,7 @@ func TestWorkloads_BundleContents(t *testing.T) {
 }
 
 // TestControlPlanePriorityClass pins the node-pressure eviction shield: every
-// control-plane pod template (api/operator/reaper/registry) runs under the
+// control-plane pod template (postgres/api/operator/reaper/registry) runs under the
 // BUILT-IN system-cluster-critical class (value 2e9), at which kubelet's
 // eviction manager refuses to evict the pod. A live drill showed the whole
 // cascade with plain ordering: disk pressure evicted the game pods and then the
@@ -759,8 +759,8 @@ func TestControlPlanePriorityClass(t *testing.T) {
 			}
 		}
 	}
-	if deployments != 3 || cronJobs != 1 {
-		t.Errorf("scanned %d deployments / %d cronjobs, want 3 / 1 — a pod template escaped the class check", deployments, cronJobs)
+	if deployments != 4 || cronJobs != 1 {
+		t.Errorf("scanned %d deployments / %d cronjobs, want 4 / 1 — a pod template escaped the class check", deployments, cronJobs)
 	}
 	// The name must be the built-in critical class: any custom class is capped at
 	// 1e9 by the API server and would be evictable.

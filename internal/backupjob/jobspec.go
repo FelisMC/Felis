@@ -82,12 +82,19 @@ type JobParams struct {
 // backup and a restore of the same server never collide.
 func BackupJobName(server string) string { return "backup-" + server }
 
-func backupLabels(p JobParams) map[string]string {
+// PodSelector matches every world-backup Job pod, whichever server it backs up:
+// the peer the database's ingress fence admits (internal/platform/postgres.go).
+func PodSelector() map[string]string {
 	return map[string]string{
 		LabelManagedBy: managedByValue,
 		LabelComponent: componentValue,
-		LabelServer:    p.Server,
 	}
+}
+
+func backupLabels(p JobParams) map[string]string {
+	labels := PodSelector()
+	labels[LabelServer] = p.Server
+	return labels
 }
 
 // BackupJob renders the on-demand world-backup Job (spec §18/§19 WorldArchiver,

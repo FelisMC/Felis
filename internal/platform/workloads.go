@@ -243,9 +243,10 @@ func InternalAPIBaseURL(controlNamespace string) string {
 	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", APIInternalServiceName, controlNamespace, apiInternalPort)
 }
 
-// Workloads renders the running control-plane: the felis-api Deployment, the
-// felis-operator Deployment, and the in-cluster registry (Deployment + Service +
-// PVC), the world-archive PVC when p.BackupPVC names it (it backs the
+// Workloads renders the running control-plane: the database (Deployment +
+// Service, postgres.go), the felis-api Deployment, the felis-operator
+// Deployment, and the in-cluster registry (Deployment + Service + PVC), the
+// world-archive PVC when p.BackupPVC names it (it backs the
 // backup/restore Jobs and the reaper), plus the reaper CronJob when
 // reaperEnabled(p). Every pod template carries the built-in
 // system-cluster-critical PriorityClass (controlPlanePriorityName), the
@@ -254,6 +255,8 @@ func InternalAPIBaseURL(controlNamespace string) string {
 func Workloads(p Params) []Object {
 	p = p.withDefaults()
 	objs := []Object{
+		postgresDeployment(p),
+		postgresService(p),
 		APIDeployment(p),
 		apiService(p),
 		apiInternalService(p),
