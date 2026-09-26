@@ -7,10 +7,11 @@
 #   sudo bash deploy/e2e_check.sh release   # after the newest release installed
 #   sudo bash deploy/e2e_check.sh upgrade   # after this commit ran over a release
 #
-# It asks what an operator's first minutes ask: the binary runs, the control plane is
-# rolled out and ready, the panel answers on its NodePort, the proxy answers a Minecraft
-# status ping, and the host timers are there. A rerun must also leave the proxy running
-# (it restarts only when what it runs changed) and keep every earlier answer.
+# It asks what an operator's first minutes ask: the binary runs, the control plane and its
+# database are rolled out and ready, a database backup can be taken, the panel answers on
+# its NodePort, the proxy answers a Minecraft status ping, and the host timers are there.
+# A rerun must also leave the proxy running (it restarts only when what it runs changed)
+# and keep every earlier answer.
 set -euo pipefail
 
 phase="${1:?usage: e2e_check.sh install|rerun|release|upgrade}"
@@ -29,7 +30,7 @@ check() { # label command...
 
 check "felis version runs" sh -c '/usr/local/bin/felis version | grep -q "^felis "'
 
-for d in felis-api felis-operator registry; do
+for d in felis-postgres felis-api felis-operator registry; do
   check "deployment ${d} is rolled out" "${KUBECTL[@]}" -n felis rollout status "deploy/${d}" --timeout=180s
 done
 
@@ -41,9 +42,23 @@ internal="$("${KUBECTL[@]}" -n felis get svc felis-api-internal -o jsonpath='{.s
 check "felis-api is ready (database and cluster reachable)" \
   curl -sf --retry 10 --retry-delay 3 --retry-all-errors -o /dev/null "http://${internal}/readyz"
 
-for unit in k3s postgresql felis-velocity; do
+for unit in k3s felis-velocity; do
   check "${unit} is active" systemctl is-active --quiet "$unit"
 done
+# The database runs in k3s; a release may still run it on the host, and the upgrade moved
+# it. The host has no PostgreSQL client: a bundle that verifies proves felis reaches the
+# database's pod through kubectl exec, and that pg_dump there reads every table.
+if [ "$phase" != release ]; then
+  check "the host's own postgresql is stopped" sh -c '! systemctl is-active --quiet postgresql'
+  bundle_dir="$(mktemp -d)"
+  if out="$(/usr/local/bin/felis db backup -dir "$bundle_dir" -state-dir "" -no-servers 2>&1)"; then
+    bundle="$(printf '%s\n' "$out" | sed -n 's/^felis db backup: wrote //p' | tail -n 1)"
+    check "felis db backup writes a bundle that verifies" /usr/local/bin/felis db verify "$bundle"
+  else
+    fail "felis db backup writes a bundle: ${out}"
+  fi
+  rm -rf "$bundle_dir"
+fi
 # A release may predate a timer; what this commit installs has them all.
 if [ "$phase" != release ]; then
   for timer in felis-db-backup.timer felis-watchdog.timer felis-update-check.timer; do

@@ -81,7 +81,8 @@ jobs:
             k -n "${p%%/*}" describe pod "${p#*/}" | tail -n 40 || true
             k -n "${p%%/*}" logs "${p#*/}" --all-containers --tail=60 || true
           done
-          sudo journalctl -u k3s -u felis-velocity -u postgresql --no-pager -n 120 || true
+          k -n felis logs deploy/felis-postgres --tail=60 || true
+          sudo journalctl -u k3s -u felis-velocity --no-pager -n 120 || true
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
@@ -144,6 +145,8 @@ jobs:
         run: |
           export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
           sudo -E /usr/local/bin/k3s kubectl get pods -A -o wide || true
+          sudo -E /usr/local/bin/k3s kubectl -n felis logs deploy/felis-postgres --tail=60 || true
+          # The release ran the database on the host; the upgrade moves it into k3s.
           sudo journalctl -u k3s -u felis-velocity -u postgresql --no-pager -n 120 || true
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
