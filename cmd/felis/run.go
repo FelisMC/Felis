@@ -78,6 +78,7 @@ var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"init-forwarding":    cmdInitForwarding,
 	"init-volume":        cmdInitVolume,
 	"pin-images":         cmdPinImages,
+	"image-bundle":       cmdImageBundle,
 	"version":            cmdVersion,
 	"update":             cmdUpdate,
 	"watchdog":           cmdWatchdog,

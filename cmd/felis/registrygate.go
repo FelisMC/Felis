@@ -131,7 +131,8 @@ func loopbackAddr(addr string) bool {
 func cmdPushImage(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("push-image", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	tarPath := fs.String("tar", "", "image tarball Kaniko wrote with --tar-path")
+	tarPath := fs.String("tar", "", "image tarball Kaniko wrote with --tar-path, or with --image an OCI layout tar")
+	image := fs.String("image", "", "push the image this name (io.containerd.image.name) marks in the OCI layout tar --tar, e.g. a release's image bundle")
 	ref := fs.String("ref", "", "host/repository:tag to publish it as")
 	scheme := fs.String("scheme", "http", "registry scheme: http for the in-cluster registry, https otherwise")
 	if err := fs.Parse(args); err != nil {
@@ -154,7 +155,13 @@ func cmdPushImage(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	p := &imagepush.Pusher{Scheme: *scheme, Username: user, Password: pass, Log: stderr}
-	digest, err := p.Push(ctx, *tarPath, *ref)
+	var digest string
+	var err error
+	if *image != "" {
+		digest, err = p.PushLayout(ctx, *tarPath, *image, *ref)
+	} else {
+		digest, err = p.Push(ctx, *tarPath, *ref)
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "felis push-image: %v\n", err)
 		return 1
