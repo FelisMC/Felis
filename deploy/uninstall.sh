@@ -333,6 +333,9 @@ remove_host_files() {
   fi
   rm -rf "$OPT_DIR"
   rm -f "$HOST_BIN" "${HOST_BIN}.new" "${HOST_BIN}.prev"
+  # The release assets an install that stopped part way left for its rerun: downloads, not
+  # data, so keep-data mode drops them too.
+  rm -rf "${DATA_DIR}/artifacts"
   remove_cloudflared_binary
   if [ "$PURGE" = 0 ]; then
     # What describes the removed install goes; what a reinstall reuses stays. Without

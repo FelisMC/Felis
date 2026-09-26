@@ -44,6 +44,8 @@ fresh_host() {
     printf 'x\n' > "$root/h/etc/$f"
   done
   printf 'world\n' > "$root/h/storage/pvc-1_minecraft_world-a-0/level.dat"
+  mkdir -p "$root/h/data/artifacts"
+  printf 'bundle\n' > "$root/h/data/artifacts/felis-image-game-linux-amd64.tar.partial"
   mkdir -p "$root/h/data/postgres/18/docker"
   printf '18\n' > "$root/h/data/postgres/18/docker/PG_VERSION"
   for b in felis k3s k3s-killall.sh k3s-uninstall.sh; do
@@ -136,6 +138,9 @@ expect "the volumes are set aside before k3s deletes them" "k3s-storage-" "$kept
 [ ! -e "$root/h/etc/bootstrap.done" ] && [ ! -e "$root/h/etc/velocity.fingerprint" ] \
   && echo "PASS the markers of the removed install go, so a reinstall starts fresh" \
   || { echo "FAIL bootstrap.done or the proxy fingerprint was left"; fails=$((fails + 1)); }
+[ ! -e "$root/h/data/artifacts" ] && [ -d "$root/h/data/postgres" ] \
+  && echo "PASS keep-data drops the downloaded release assets and keeps the database" \
+  || { echo "FAIL keep-data left the release-asset cache or took the database: $(ls "$root/h/data")"; fails=$((fails + 1)); }
 refute "keep-data leaves the database alone" "DROP DATABASE" "$calls"
 [ ! -e "$root/h/opt" ] && [ ! -e "$root/h/bin/felis" ] \
   && echo "PASS /opt/felis and the host binary are removed" \
@@ -314,6 +319,10 @@ paths="$(FELIS_UNINSTALL_SOURCED=1 bash -c '. "$0"; printf "%s %s\n" "$PG_DATA_D
 bspaths="$(sed -n 's/^PG_DATA_DIR="\(.*\)"$/\1/p; s/^PG_MOVED_MARKER="\(.*\)"$/\1/p' "$(dirname "$US")/bootstrap.sh" | paste -sd ' ' -)"
 [ -n "$bspaths" ] && [ "$paths" = "$bspaths" ] && echo "PASS the database paths agree with bootstrap" \
   || { echo "FAIL uninstall's database paths <$paths> differ from bootstrap's <$bspaths>"; fails=$((fails + 1)); }
+bscache="$(sed -n 's/^ARTIFACT_CACHE="\(.*\)"$/\1/p' "$(dirname "$US")/bootstrap.sh")"
+uscache="$(FELIS_UNINSTALL_SOURCED=1 bash -c '. "$0"; printf "%s/artifacts\n" "$DATA_DIR"' "$US")"
+[ -n "$bscache" ] && [ "$uscache" = "$bscache" ] && echo "PASS the release-asset cache is where bootstrap keeps it" \
+  || { echo "FAIL uninstall removes <$uscache>, bootstrap caches release assets in <$bscache>"; fails=$((fails + 1)); }
 
 if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"
