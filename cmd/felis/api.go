@@ -440,6 +440,13 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// reconciles it, but this loop converges builds nobody is polling.
 	go reconcileBuilds(ctx, builder, stderr)
 	go settleRestoreChains(ctx, a, stderr)
+	// A daily restore point of every world played since its last one, taken
+	// once the server stops ([archive] scheduled_every; 0s turns it off).
+	if backuper != nil && rcfg.ScheduledEvery > 0 {
+		go scheduleBackups(ctx, &api.BackupScheduler{API: a, Store: repo, Jobs: jobStatus, Every: rcfg.ScheduledEvery}, stderr)
+	} else {
+		fmt.Fprintln(stderr, "felis api: scheduled backups off (needs the backup executor and [archive] scheduled_every above 0s)")
+	}
 
 	if pruner := registryPruner(cfg, builder.Store, cluster, stderr); pruner != nil {
 		go pruner.Loop(ctx, registryPruneInterval)
@@ -698,6 +705,25 @@ func settleRestoreChains(ctx context.Context, a *api.API, stderr io.Writer) {
 		case <-t.C:
 			if err := a.SettleRestoreChains(ctx); err != nil {
 				fmt.Fprintf(stderr, "felis api: restore chains: %v\n", err)
+			}
+		}
+	}
+}
+
+// scheduleBackups starts the scheduled backups (api.BackupScheduler). Each tick
+// starts at most one, so the interval also spaces the worlds that stopped at
+// the same time: a world that stops waits at most this long for its point to
+// start once the Jobs ahead of it are done.
+func scheduleBackups(ctx context.Context, s *api.BackupScheduler, stderr io.Writer) {
+	t := time.NewTicker(2 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := s.Tick(ctx); err != nil {
+				fmt.Fprintf(stderr, "felis api: scheduled backups: %v\n", err)
 			}
 		}
 	}

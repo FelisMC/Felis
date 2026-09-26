@@ -2420,7 +2420,7 @@ export interface components {
             former_owner?: string;
             /** Format: int64 */
             size_bytes: number;
-            /** @description inactive_15d (idle reclaim), manual (on demand) or pre_restore (the safety snapshot in front of a restore). */
+            /** @description inactive_15d (idle reclaim), manual (on demand), pre_restore (the safety snapshot in front of a restore) or scheduled (the daily restore point felis-api takes of a world played since its last one, once the server stops). */
             reason: string;
             status: string;
             /** Format: date-time */
@@ -5548,6 +5548,8 @@ export interface operations {
                             then_restore_reason?: "snapshot_failed" | "not_configured" | "server_gone" | "server_started" | "restore_busy";
                             /** @description The backup the chained restore extracts. */
                             restore_backup_id?: string;
+                            /** @description A backup felis-api took on its own: the daily restore point of a played world. Omitted when false. */
+                            scheduled?: boolean;
                         }[];
                     };
                 };

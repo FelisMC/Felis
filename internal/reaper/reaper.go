@@ -96,6 +96,14 @@ type Config struct {
 	// ManualCooldown is the shortest gap between two owner-requested backups
 	// of one server (default 10m); operators are not held to it.
 	ManualCooldown time.Duration
+	// ScheduledEvery is the spacing of the restore points felis-api takes of
+	// a world that has been played since its last one (default 1d; 0 turns
+	// them off). ScheduledKeep caps how many a server keeps (default 7), and
+	// ScheduledRetention is how long each is kept (default 90d, the reaper's
+	// retention): the newest ones are all a quiet world has.
+	ScheduledEvery     time.Duration
+	ScheduledKeep      int
+	ScheduledRetention time.Duration
 	// RequireOffsite holds each deletion until the world's archive has its
 	// off-site copy ([offsite] configured; internal/offsite records the copy).
 	// The archive is written on the run that finds the world idle, and the
@@ -123,6 +131,10 @@ func DefaultConfig() Config {
 		ManualRetention: 30 * Day,
 		ManualKeep:      5,
 		ManualCooldown:  10 * time.Minute,
+
+		ScheduledEvery:     Day,
+		ScheduledKeep:      7,
+		ScheduledRetention: 90 * Day,
 
 		VerifyEvery:  7 * Day,
 		VerifyPerRun: 10,

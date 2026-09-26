@@ -1452,6 +1452,9 @@ local_path = "/stale/path"
 retention = "30d"
 manual_keep = 3
 manual_cooldown = "1h"
+scheduled_every = "12h"
+scheduled_keep = 14
+scheduled_retention = "45d"
 
 [offsite]
 endpoint = "https://objects.example"
@@ -1503,6 +1506,9 @@ expect "url stays installer-owned" 'url = "registry.felis.svc:5000"' "$out"
 expect "a re-run carries the archive retention window" 'retention = "30d"' "$out"
 expect "a re-run carries the on-demand backup count" 'manual_keep = 3' "$out"
 expect "a re-run carries the on-demand backup cooldown" 'manual_cooldown = "1h"' "$out"
+expect "a re-run carries the scheduled backup period" 'scheduled_every = "12h"' "$out"
+expect "a re-run carries the scheduled backup count" 'scheduled_keep = 14' "$out"
+expect "a re-run carries the scheduled backup retention" 'scheduled_retention = "45d"' "$out"
 expect "the archive mount stays installer-owned" 'local_path = "/a"' "$out"
 expect "the panel learns the public game port" 'game_port = 25570' "$out"
 expect "a re-run keeps the off-site bucket, set apart from the next section" '[offsite]

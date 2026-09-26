@@ -237,6 +237,41 @@ func TestBackupJobCarriesTheRestoreChain(t *testing.T) {
 	}
 }
 
+// A scheduled backup records itself as scheduled (so the Job prunes it to its
+// own keep, not the owner's manual one) and says so on the Job for the jobs
+// route; it protects nothing and carries no chain.
+func TestBackupJobRecordsAScheduledBackup(t *testing.T) {
+	p := sampleJobParams()
+	p.Scheduled = true
+	job, err := BackupJob(p)
+	if err != nil {
+		t.Fatalf("BackupJob: %v", err)
+	}
+	args := job.Spec.Template.Spec.Containers[0].Args
+	if !argsContain(args, "--reason", ReasonScheduled) {
+		t.Errorf("args = %v, want --reason %s", args, ReasonScheduled)
+	}
+	for _, a := range args {
+		if a == "--protect" {
+			t.Errorf("a scheduled backup passes --protect: %v", args)
+		}
+	}
+	if job.Labels[LabelReason] != ReasonScheduled {
+		t.Errorf("job labels = %v, want %s=%s", job.Labels, LabelReason, ReasonScheduled)
+	}
+	if _, ok := job.Labels[labelThenRestore]; ok {
+		t.Errorf("a scheduled backup carries a chain: %v", job.Labels)
+	}
+
+	plain, err := BackupJob(sampleJobParams())
+	if err != nil {
+		t.Fatalf("BackupJob(plain): %v", err)
+	}
+	if _, ok := plain.Labels[LabelReason]; ok {
+		t.Errorf("a plain backup is labelled scheduled: %v", plain.Labels)
+	}
+}
+
 func TestBackupJobRejectsMissingInputs(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -247,6 +282,9 @@ func TestBackupJobRejectsMissingInputs(t *testing.T) {
 		{"no backup pvc", func(p *JobParams) { p.BackupPVC = "" }},
 		{"no config secret", func(p *JobParams) { p.ConfigSecret = "" }},
 		{"chain without backup id", func(p *JobParams) { p.RestoreRef = "/backups/a.tar.gz" }},
+		{"scheduled with a chain", func(p *JobParams) {
+			p.Scheduled, p.RestoreRef, p.RestoreBackupID = true, "/backups/a.tar.gz", "bk-1"
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := sampleJobParams()

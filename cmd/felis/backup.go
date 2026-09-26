@@ -38,7 +38,7 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 	server := fs.String("server", "", "server name whose world is being backed up")
 	formerOwner := fs.String("former-owner", "", "owner recorded on the backup row (empty for an unowned server)")
 	worldsRoot := fs.String("worlds-root", "/world", "mount path of the world PVC being archived")
-	reason := fs.String("reason", reasonManual, "world_backups reason: manual, or pre_restore for the safety snapshot in front of a restore")
+	reason := fs.String("reason", reasonManual, "world_backups reason: manual, pre_restore for the safety snapshot in front of a restore, or scheduled for felis-api's daily restore point")
 	protect := fs.String("protect", "", "backup id the prune must keep (the one a chained restore extracts)")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -47,9 +47,8 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "felis backup: --server is required")
 		return 2
 	}
-	keep, ok := map[string]int{reasonManual: -1, backupjob.ReasonPreRestore: preRestoreKeep}[*reason]
-	if !ok {
-		fmt.Fprintf(stderr, "felis backup: unknown --reason %q (manual or %s)\n", *reason, backupjob.ReasonPreRestore)
+	if _, _, ok := backupPolicy(*reason, reaper.DefaultConfig()); !ok {
+		fmt.Fprintf(stderr, "felis backup: unknown --reason %q (manual, %s or %s)\n", *reason, backupjob.ReasonPreRestore, backupjob.ReasonScheduled)
 		return 2
 	}
 
@@ -62,16 +61,14 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis backup: archive store %q is not implemented in this build (only tarLocal)\n", cfg.Archive.Store)
 		return 1
 	}
-	// The [archive] parse the reaper uses; an on-demand backup takes its
-	// manual_retention and manual_keep.
+	// The [archive] parse the reaper uses: it holds each reason's keep and
+	// retention.
 	rcfg, err := reaperConfig(cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis backup: %v\n", err)
 		return 1
 	}
-	if keep < 0 {
-		keep = rcfg.ManualKeep
-	}
+	keep, retention, _ := backupPolicy(*reason, rcfg)
 
 	// The world PVC is mounted directly at worldsRoot; the resolver returns it for
 	// any target, exactly as in cmdRestore. This is the same TarLocal the reaper
@@ -117,7 +114,7 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 		BackupRef:   string(ref),
 		SizeBytes:   size,
 		Reason:      *reason,
-		ExpiresAt:   time.Now().Add(rcfg.ManualRetention),
+		ExpiresAt:   time.Now().Add(retention),
 
 		SHA256:         a.SHA256,
 		SkippedEntries: len(a.Skipped),
@@ -136,7 +133,7 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 	}
 
 	fmt.Fprintf(stdout, "felis backup: server=%s archived %d bytes to %s (backup %s)\n", *server, size, ref, rec.ID)
-	pruneBackups(ctx, st, archiver, *server, *reason, keep, *protect, stdout, stderr)
+	pruneBackups(ctx, st, archiver, *server, *formerOwner, *reason, keep, *protect, stdout, stderr)
 	return 0
 }
 
@@ -148,13 +145,32 @@ const (
 	preRestoreKeep = 3
 )
 
-// pruneBackups keeps server's newest keep backups of this reason and removes the
-// rest, oldest first, so repeated backups of one world cannot fill the shared
-// archive store. protect is never removed: it is the backup a chained restore is
-// about to extract. The new backup is already recorded; a removal that fails is
-// reported and retried after the next backup.
-func pruneBackups(ctx context.Context, st *reaper.PGStore, archiver backup.WorldArchiver, server, reason string, keep int, protect string, stdout, stderr io.Writer) {
-	excess, err := st.ExcessBackups(ctx, server, reason, keep, protect)
+// backupPolicy is how many backups of one reason a server keeps and how long
+// each lives: an owner's own backups and the safety snapshots in front of a
+// restore by [archive] manual_keep / manual_retention (the snapshots capped at
+// preRestoreKeep), felis-api's daily restore points by scheduled_keep /
+// scheduled_retention, so neither kind crowds out the other. ok is false for a
+// reason this command does not record.
+func backupPolicy(reason string, rcfg reaper.Config) (keep int, retention time.Duration, ok bool) {
+	switch reason {
+	case reasonManual:
+		return rcfg.ManualKeep, rcfg.ManualRetention, true
+	case backupjob.ReasonPreRestore:
+		return preRestoreKeep, rcfg.ManualRetention, true
+	case backupjob.ReasonScheduled:
+		return rcfg.ScheduledKeep, rcfg.ScheduledRetention, true
+	}
+	return 0, 0, false
+}
+
+// pruneBackups keeps the newest keep backups of this reason that owner holds of
+// server and removes the rest, oldest first, so repeated backups of one world
+// cannot fill the shared archive store and a new owner's backups never remove a
+// previous owner's. protect is never removed: it is the backup a chained restore
+// is about to extract. The new backup is already recorded; a removal that fails
+// is reported and retried after the next backup.
+func pruneBackups(ctx context.Context, st *reaper.PGStore, archiver backup.WorldArchiver, server, owner, reason string, keep int, protect string, stdout, stderr io.Writer) {
+	excess, err := st.ExcessBackups(ctx, server, owner, reason, keep, protect)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis backup: list older backups of %s: %v\n", server, err)
 		return

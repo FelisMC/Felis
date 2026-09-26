@@ -4196,13 +4196,15 @@ persisted_auth_source_blocks() {
 
 # persisted_archive_block echoes the operator-owned [archive] keys an earlier run
 # left behind — the retention window, the pre-reap warn offsets, the local cap,
-# the on-demand backup retention/count/cooldown — so a re-run does not silently
-# revert them to the built-ins (felis reaper, felis backup and felis api read
-# these from the config Secret; defaults: 90d retention, 3d/1d warnings, no cap,
-# manual backups kept 30d, 5 per server, one per 10m). store and local_path are
-# NOT carried: this script owns them (FELIS_ARCHIVE_LOCAL_PATH must equal the
-# mount). Same first-readable-file rule as persisted_smtp_block; warn_before must
-# be a single-line TOML array (the shape every writer here emits).
+# the on-demand backup retention/count/cooldown, the scheduled backup
+# period/count/retention — so a re-run does not silently revert them to the
+# built-ins (felis reaper, felis backup and felis api read these from the config
+# Secret; defaults: 90d retention, 3d/1d warnings, no cap, manual backups kept
+# 30d, 5 per server, one per 10m, a scheduled backup a day kept 7 per server for
+# 90d). store and local_path are NOT carried: this script owns them
+# (FELIS_ARCHIVE_LOCAL_PATH must equal the mount). Same first-readable-file rule
+# as persisted_smtp_block; warn_before must be a single-line TOML array (the
+# shape every writer here emits).
 persisted_archive_block() {
   local f out
   for f in "${STATE_DIR}/felis.host.toml" "${STATE_DIR}/felis.pod.toml"; do
@@ -4210,7 +4212,7 @@ persisted_archive_block() {
     out="$(awk '
       /^[[:space:]]*\[/ { sect = $0; next }
       sect ~ /^[[:space:]]*\[archive\][[:space:]]*$/ &&
-        /^[[:space:]]*(retention|warn_before|max_local_bytes|manual_retention|manual_keep|manual_cooldown)[[:space:]]*=/ { print }
+        /^[[:space:]]*(retention|warn_before|max_local_bytes|manual_retention|manual_keep|manual_cooldown|scheduled_every|scheduled_keep|scheduled_retention)[[:space:]]*=/ { print }
     ' "$f")"
     [ -n "$out" ] || continue
     printf '%s\n' "$out"

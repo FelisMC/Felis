@@ -214,6 +214,9 @@ export interface ServerJob {
   then_restore?: string;
   then_restore_reason?: string;
   restore_backup_id?: string;
+  /** A backup felis-api took on its own: the daily restore point of a world
+   *  played since its last one, taken once the server stops. */
+  scheduled?: boolean;
 }
 
 /** WhitelistImage is one row of GET /images (the create-form dropdown source). */

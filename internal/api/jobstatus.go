@@ -26,6 +26,9 @@ type AsyncJob struct {
 	ThenRestore       string `json:"then_restore,omitempty"`
 	ThenRestoreReason string `json:"then_restore_reason,omitempty"`
 	RestoreBackupID   string `json:"restore_backup_id,omitempty"`
+	// Scheduled marks a backup felis-api took on its own (BackupScheduler), so
+	// the owner can tell it from one somebody asked for.
+	Scheduled bool `json:"scheduled,omitempty"`
 }
 
 // JobStatusReader reads the newest backup/restore Jobs for a server, newest

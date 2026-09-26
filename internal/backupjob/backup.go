@@ -205,6 +205,21 @@ func (b *Backuper) BackupThenRestore(ctx context.Context, serverName, formerOwne
 	return nil
 }
 
+// BackupScheduled enqueues the daily restore point of a world (api.BackupScheduler):
+// a backup Job like Backup's, recorded as a scheduled backup and pruned to
+// [archive] scheduled_keep, so the owner's own backups keep their count.
+func (b *Backuper) BackupScheduled(ctx context.Context, serverName, formerOwner string) error {
+	p := b.jobParams(serverName, formerOwner)
+	p.Scheduled = true
+	if err := b.Jobs.CreateBackupJob(ctx, p); err != nil {
+		if errors.Is(err, ErrAlreadyExists) {
+			return nil // suffix collision — treat as enqueued
+		}
+		return err
+	}
+	return nil
+}
+
 // jobNameSuffix is a short random hex tag that makes each backup Job name unique.
 // 32 bits is ample: collisions only matter within a single Job's TTL window across
 // a handful of manual backups.

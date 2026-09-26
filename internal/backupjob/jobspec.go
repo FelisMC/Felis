@@ -29,6 +29,12 @@ const (
 
 	// ReasonPreRestore is the world_backups reason of a safety snapshot.
 	ReasonPreRestore = "pre_restore"
+	// ReasonScheduled is the world_backups reason of the daily restore point
+	// felis-api takes of a world played since its last one.
+	ReasonScheduled = "scheduled"
+	// LabelReason marks a scheduled backup Job, so the jobs route can tell it
+	// from one somebody asked for.
+	LabelReason = "felis.lolicon.best/backup-reason"
 
 	worldVolume     = "world"
 	backupVolume    = "backup"
@@ -72,6 +78,10 @@ type JobParams struct {
 	// the restore will extract.
 	RestoreRef      string
 	RestoreBackupID string
+	// Scheduled records the backup as ReasonScheduled, pruned to its own
+	// [archive] scheduled_keep, and labels the Job LabelReason. It never carries
+	// a restore.
+	Scheduled bool
 
 	TTLAfterFinished time.Duration
 }
@@ -134,6 +144,9 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 	if p.RestoreRef != "" && p.RestoreBackupID == "" {
 		return nil, fmt.Errorf("backup: a chained restore needs the backup id")
 	}
+	if p.RestoreRef != "" && p.Scheduled {
+		return nil, fmt.Errorf("backup: a scheduled backup carries no restore")
+	}
 	limits, err := resourceLimits(p.CPULimit, p.MemLimit)
 	if err != nil {
 		return nil, err
@@ -159,6 +172,9 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 	}
 	if p.RestoreRef != "" {
 		args = append(args, "--reason", ReasonPreRestore, "--protect", p.RestoreBackupID)
+	}
+	if p.Scheduled {
+		args = append(args, "--reason", ReasonScheduled)
 	}
 
 	container := corev1.Container{
@@ -211,6 +227,9 @@ func BackupJob(p JobParams) (*batchv1.Job, error) {
 			annotationRestoreRef:      p.RestoreRef,
 			annotationRestoreBackupID: p.RestoreBackupID,
 		}
+	}
+	if p.Scheduled {
+		meta.Labels[LabelReason] = ReasonScheduled
 	}
 	job := &batchv1.Job{
 		ObjectMeta: meta,

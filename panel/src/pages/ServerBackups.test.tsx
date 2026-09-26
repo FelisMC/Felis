@@ -82,6 +82,23 @@ describe("ServerBackups", () => {
     expect(screen.queryByText("Latest backup")).toBeNull();
   });
 
+  it("names the daily restore points felis-api takes, in the list and in recent operations", async () => {
+    calls.listBackups.mockResolvedValue({
+      backups: [{ ...backup("bk-sched", 3), reason: "scheduled" }, backup("bk-manual", 5)],
+      total: 2,
+    });
+    calls.serverJobs.mockResolvedValue([
+      { name: "backup-survival-aa", kind: "backup", state: "succeeded", scheduled: true },
+      { name: "backup-survival-bb", kind: "backup", state: "succeeded" },
+    ]);
+    renderPage();
+    const sched = await screen.findByText("3 hours ago");
+    expect(sched.closest("tr")?.textContent).toContain("Scheduled backup");
+    expect(screen.getByText("5 hours ago").closest("tr")?.textContent).toContain("Manual backup");
+    const ops = await screen.findAllByText(/^(Scheduled backup|Backup)$/, { selector: "li span" });
+    expect(ops.map((el) => el.textContent)).toEqual(["Scheduled backup", "Backup"]);
+  });
+
   it("shows no pager when the server's backups fit on one page", async () => {
     calls.listBackups.mockResolvedValue({ backups: [backup("bk-1", 3)], total: 1 });
     renderPage();

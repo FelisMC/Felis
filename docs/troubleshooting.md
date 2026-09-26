@@ -892,8 +892,10 @@ re-run turns world reaping on. [GO-TESTED: `TestRunRetentionTouchesNoWorld`,
 With a worlds root the reaper
 reaps a world only when `now - last_active_at > 15d` (`inactive_15d`); the 15-day
 deadline is **hard-fixed in code** (only `warn_before` / `retention` /
-`max_local_bytes` and the on-demand backup keys `manual_retention` /
-`manual_keep` / `manual_cooldown` are configurable from `felis.toml [archive]`).
+`max_local_bytes`, the on-demand backup keys `manual_retention` /
+`manual_keep` / `manual_cooldown` and the scheduled backup keys
+`scheduled_every` / `scheduled_keep` / `scheduled_retention` are configurable
+from `felis.toml [archive]`).
 
 ### What a "backup" contains
 
@@ -1021,6 +1023,53 @@ with `not enough free disk for the archive`. A failed backup or restore shows
 the error its container exited on under Recent operations on the server's
 backup page. [GO-TESTED: `TestBackupNow`, `TestCheckRoom`,
 `TestReaperConfigManualKeys`, `TestLatestJobsExplainsFailures`]
+
+### Scheduled backups (daily restore points)
+
+A world played every day never idles 15 days, so the reaper never archives it.
+felis-api therefore takes a `scheduled` backup of every owned world that
+somebody joined since its owner's last intact scheduled backup, once that
+backup is `scheduled_every` old. This works without a worlds root: it is the
+same backup Job "Back up now" starts, so it needs only `FELIS_IMAGE` and
+`FELIS_BACKUP_PVC` (felis-api logs `scheduled backups off` at start when
+either is missing or `scheduled_every` is `0s`).
+
+| Key | Default | Effect |
+|---|---|---|
+| `scheduled_every` | `1d` | how old a world's newest scheduled backup must be before it gets the next one (`0s` turns scheduled backups off) |
+| `scheduled_keep` | `7` | scheduled backups kept per server and owner; the Job removes older ones like `manual_keep` |
+| `scheduled_retention` | `90d` | when a scheduled backup expires |
+
+How it behaves:
+
+- **Only a stopped server is backed up.** The Job mounts the world volume,
+  which a running server holds. Idle auto-stop brings a played world down
+  minutes after its last player leaves, so the point normally lands the same
+  day. A server with auto-stop turned off gets its point the next time it
+  stops; one that never stops never gets one.
+- **One Job at a time, cluster-wide.** felis-api checks every 2 minutes and
+  starts one scheduled backup only while no backup or restore Job is running,
+  worlds without a point first. It holds the world like any backup, so a player
+  who wakes the server during those minutes sees the maintenance message and can
+  retry once it finishes.
+- **Paused while the store is full.** While the present backups add up to
+  `max_local_bytes`, no scheduled backup starts (felis-api logs
+  `scheduled backups paused` and `resumed` once each). The backup Job's 10%
+  free-disk check applies too.
+- **A failed backup is retried** after a quarter of `scheduled_every` (6 hours
+  by default); the failure shows under Recent operations as "Scheduled backup".
+- **Counted per owner.** A backup the world's previous owner took before it was
+  reaped and claimed again is no restore point of the new owner's world, and the
+  new owner's backups never prune it. The keep-N prune of every reason is scoped
+  to the backup's owner the same way.
+- Scheduled backups write the audit action `backup.scheduled` (actor
+  `scheduler`) and never start the owner's `manual_cooldown`. They are copied
+  offsite and evicted by `max_local_bytes` like manual backups.
+
+[GO-TESTED: `TestBackupScheduler`, `TestK8sScheduledBackupJobs`,
+`TestBackupJobRecordsAScheduledBackup`, `TestBackupPolicyPerReason`,
+`TestReaperConfigScheduledKeys`; PG-TESTED: `TestScheduledBackupCandidates`,
+`TestExcessBackupsPerOwner`]
 
 ### Exemptions (world never reaped)
 

@@ -25,6 +25,11 @@ const (
 
 	jobManagedByBackup  = "felis-backup"
 	jobManagedByRestore = "felis-restore"
+
+	// jobBackupReasonLabel marks the backup Job of a scheduled restore point
+	// (backupjob.LabelReason).
+	jobBackupReasonLabel     = "felis.lolicon.best/backup-reason"
+	jobBackupReasonScheduled = "scheduled"
 )
 
 // K8sJobStatus reads the async Jobs the executors created, by the server label
@@ -137,7 +142,25 @@ func jobToAsyncJob(j *batchv1.Job) (AsyncJob, bool) {
 			}
 		}
 	}
+	aj.Scheduled = aj.Kind == "backup" && j.Labels[jobBackupReasonLabel] == jobBackupReasonScheduled
 	return aj, true
+}
+
+// RunningWorldJobs counts the backup and restore Jobs of every server that
+// have yet to finish (BackupScheduler waits for them).
+func (k *K8sJobStatus) RunningWorldJobs(ctx context.Context) (int, error) {
+	var list batchv1.JobList
+	if err := k.c.List(ctx, &list, client.InNamespace(k.namespace), client.HasLabels{jobManagedByLabel}); err != nil {
+		return 0, err
+	}
+	n := 0
+	for i := range list.Items {
+		j := &list.Items[i]
+		if _, ok := jobOutcome(j); ok && !maintenance.JobFinished(j) {
+			n++
+		}
+	}
+	return n, nil
 }
 
 // PendingRestoreChains lists the safety snapshots felis-api has yet to settle,

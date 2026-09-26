@@ -782,6 +782,39 @@ func (p *PGRepo) BackupStoreBytes(ctx context.Context) (int64, error) {
 	return n, err
 }
 
+// ScheduledBackupCandidates is the ScheduleStore behind BackupScheduler. A
+// world's point is its current owner's newest intact scheduled backup taken
+// since they claimed it: a previous owner's backups say nothing about the world
+// the new owner has built, and a corrupt one restores nothing. last_active_at
+// moves on every join, so a world nobody joined since its point is skipped.
+func (p *PGRepo) ScheduledBackupCandidates(ctx context.Context, before time.Time) ([]ScheduledCandidate, error) {
+	rows, err := p.db.QueryContext(ctx,
+		`SELECT s.name, s.owner_id FROM servers s
+		 LEFT JOIN LATERAL (
+		   SELECT max(b.created_at) AS at FROM world_backups b
+		   WHERE b.server_name = s.name AND b.reason = 'scheduled' AND b.status = 'present'
+		     AND b.corrupt_at IS NULL AND b.former_owner = s.owner_id
+		     AND b.created_at >= COALESCE(s.claimed_at, '-infinity')
+		 ) pt ON true
+		 WHERE s.deleted_at IS NULL AND s.owner_id IS NOT NULL
+		   AND s.last_active_at > COALESCE(pt.at, '-infinity')
+		   AND COALESCE(pt.at, '-infinity') < $1
+		 ORDER BY pt.at NULLS FIRST, s.name`, before)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ScheduledCandidate
+	for rows.Next() {
+		var c ScheduledCandidate
+		if err := rows.Scan(&c.Name, &c.OwnerID); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 func (p *PGRepo) Audit(ctx context.Context, e AuditEntry) error {
 	// A nil Payload must land as SQL NULL, not the text "null"; a non-nil Payload is
 	// passed as a JSON text the jsonb column parses (same idiom as reaper.PGStore).

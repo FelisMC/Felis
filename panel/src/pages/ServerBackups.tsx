@@ -75,6 +75,8 @@ function BackupRow({
       ? t("reason_manual")
       : b.reason === "pre_restore"
       ? t("reason_pre_restore")
+      : b.reason === "scheduled"
+      ? t("reason_scheduled")
       : t("reason_label", { reason: b.reason });
 
   // Below md the row stops being a table row: the when/why block takes the full
@@ -684,6 +686,8 @@ export function ServerBackups() {
                                 : j.kind === "backup"
                                 ? j.then_restore
                                   ? t("job_pre_restore")
+                                  : j.scheduled
+                                  ? t("job_scheduled")
                                   : t("job_backup")
                                 : j.kind}
                             </span>

@@ -123,15 +123,17 @@ func (s *PGStore) EvictableBackups(ctx context.Context) ([]StoredBackup, error) 
 	return s.queryBackups(ctx, q)
 }
 
-// ExcessBackups lists server's present backups of one reason beyond the newest
-// keep, oldest first: what the backup Job removes after adding one. protect, when
-// set, is a backup id left out of the list whatever its age (the one a chained
-// restore is about to extract).
-func (s *PGStore) ExcessBackups(ctx context.Context, server, reason string, keep int, protect string) ([]StoredBackup, error) {
+// ExcessBackups lists the present backups of one reason that owner holds of
+// server beyond the newest keep, oldest first: what the backup Job removes after
+// adding one. Another owner's backups of the same server (one it held before the
+// world was reaped and claimed again) are theirs to restore and never counted.
+// protect, when set, is a backup id left out of the list whatever its age (the
+// one a chained restore is about to extract).
+func (s *PGStore) ExcessBackups(ctx context.Context, server, owner, reason string, keep int, protect string) ([]StoredBackup, error) {
 	const q = `SELECT id, server_name, backup_ref, size_bytes, reason, COALESCE(sha256, '') FROM world_backups
-		WHERE server_name = $1 AND status = 'present' AND reason = $2 AND id <> $4
+		WHERE server_name = $1 AND COALESCE(former_owner, '') = $5 AND status = 'present' AND reason = $2 AND id <> $4
 		ORDER BY corrupt_at IS NULL DESC, created_at DESC OFFSET $3`
-	out, err := s.queryBackups(ctx, q, server, reason, keep, protect)
+	out, err := s.queryBackups(ctx, q, server, reason, keep, protect, owner)
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
 	}

@@ -199,8 +199,9 @@ func (w *mailWarner) Warn(ctx context.Context, ownerID, server, remaining string
 
 // reaperConfig derives the reaper's retention windows from felis.toml. The 15d
 // idle deadline is fixed by §18; only the warning offsets, retention, the
-// store soft-cap and the on-demand backup bounds are configurable (§24). The
-// backup Job and felis-api read the manual_* bounds through it too.
+// store soft-cap, the on-demand backup bounds and the scheduled restore points
+// are configurable (§24). The backup Job and felis-api read the manual_* and
+// scheduled_* keys through it too.
 func reaperConfig(cfg *config.Config) (reaper.Config, error) {
 	rc := reaper.DefaultConfig()
 	if v := cfg.Archive.Retention; v != "" {
@@ -247,6 +248,26 @@ func reaperConfig(cfg *config.Config) (reaper.Config, error) {
 			return rc, fmt.Errorf("[archive] manual_cooldown %q: want a span such as 10m (0s for none)", v)
 		}
 		rc.ManualCooldown = d
+	}
+	if v := cfg.Archive.ScheduledEvery; v != "" {
+		d, err := parseSpanDuration(v)
+		if err != nil || d < 0 {
+			return rc, fmt.Errorf("[archive] scheduled_every %q: want a span such as 1d (0s for none)", v)
+		}
+		rc.ScheduledEvery = d
+	}
+	switch n := cfg.Archive.ScheduledKeep; {
+	case n < 0:
+		return rc, fmt.Errorf("[archive] scheduled_keep %d: want 1 or more", n)
+	case n > 0:
+		rc.ScheduledKeep = n
+	}
+	if v := cfg.Archive.ScheduledRetention; v != "" {
+		d, err := parseSpanDuration(v)
+		if err != nil || d <= 0 {
+			return rc, fmt.Errorf("[archive] scheduled_retention %q: want a positive span such as 90d", v)
+		}
+		rc.ScheduledRetention = d
 	}
 	rc.RequireOffsite = cfg.Offsite.Enabled()
 	return rc, nil

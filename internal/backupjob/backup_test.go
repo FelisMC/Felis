@@ -59,3 +59,28 @@ func TestBackupThenRestoreChainsTheRestore(t *testing.T) {
 		t.Errorf("JobName %q", p.JobName)
 	}
 }
+
+func TestBackupScheduledMarksTheJob(t *testing.T) {
+	jobs := &captureJobs{}
+	b := &Backuper{Jobs: jobs, Config: Config{Image: "img", BackupPVC: "pvc"}}
+	if err := b.BackupScheduled(context.Background(), "survival", "usr-1"); err != nil {
+		t.Fatalf("BackupScheduled: %v", err)
+	}
+	if len(jobs.got) != 1 {
+		t.Fatalf("created %d jobs, want 1", len(jobs.got))
+	}
+	p := jobs.got[0]
+	if !p.Scheduled || p.FormerOwner != "usr-1" || p.RestoreRef != "" {
+		t.Errorf("params = %+v", p)
+	}
+	if !strings.HasPrefix(p.JobName, BackupJobName("survival")+"-") {
+		t.Errorf("JobName %q", p.JobName)
+	}
+
+	if err := b.Backup(context.Background(), "survival", "usr-1"); err != nil {
+		t.Fatalf("Backup: %v", err)
+	}
+	if jobs.got[1].Scheduled {
+		t.Error("an on-demand backup is marked scheduled")
+	}
+}

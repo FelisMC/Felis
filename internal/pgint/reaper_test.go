@@ -192,7 +192,7 @@ func TestManualBackupRationing(t *testing.T) {
 	insert(sole, "inactive_15d", now.Add(-100*reaper.Day), false, 1000)
 	insert(copied, "inactive_15d", now.Add(-50*reaper.Day), true, 100)
 
-	excess, err := st.ExcessBackups(ctx, name, "manual", 5, "")
+	excess, err := st.ExcessBackups(ctx, name, "", "manual", 5, "")
 	if err != nil {
 		t.Fatalf("ExcessBackups: %v", err)
 	}
@@ -200,14 +200,14 @@ func TestManualBackupRationing(t *testing.T) {
 		t.Fatalf("excess = %+v; want the two oldest manual backups, oldest first", excess)
 	}
 	// The backup a chained restore will extract is never pruned.
-	excess, err = st.ExcessBackups(ctx, name, "manual", 5, manual[0])
+	excess, err = st.ExcessBackups(ctx, name, "", "manual", 5, manual[0])
 	if err != nil {
 		t.Fatalf("ExcessBackups(protect): %v", err)
 	}
 	if len(excess) != 1 || excess[0].ID != manual[1] {
 		t.Fatalf("excess with %s protected = %+v; want only %s", manual[0], excess, manual[1])
 	}
-	if excess, err = st.ExcessBackups(ctx, name, "pre_restore", 0, ""); err != nil || len(excess) != 0 {
+	if excess, err = st.ExcessBackups(ctx, name, "", "pre_restore", 0, ""); err != nil || len(excess) != 0 {
 		t.Fatalf("pre_restore excess = %+v, %v; the manual ones are not its to prune", excess, err)
 	}
 
@@ -366,7 +366,7 @@ func TestBackupReadBack(t *testing.T) {
 		t.Fatalf("AllBackups listed %d of the 2 backups", seen)
 	}
 
-	if excess, err := st.ExcessBackups(ctx, name, "inactive_15d", 1, ""); err != nil || len(excess) != 1 || excess[0].ID != newer {
+	if excess, err := st.ExcessBackups(ctx, name, "", "inactive_15d", 1, ""); err != nil || len(excess) != 1 || excess[0].ID != newer {
 		t.Fatalf("ExcessBackups(keep 1) = (%+v, %v); want the corrupt %s pruned first", excess, err, newer)
 	}
 

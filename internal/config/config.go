@@ -287,17 +287,23 @@ type RegistryS3Config struct {
 // The manual_* keys bound the owners' on-demand backups, which share the
 // archive store with the reaper's: how long each is kept (default 30d), how
 // many per server (default 5, the oldest go first), and how soon an owner may
-// ask for the next one (default 10m). Empty or zero means the default.
+// ask for the next one (default 10m). The scheduled_* keys shape the daily
+// restore points felis-api takes of played worlds: how far apart (default 1d,
+// "0s" turns them off), how many per server (default 7) and how long each is
+// kept (default 90d). Empty or zero means the default.
 type ArchiveConfig struct {
-	Store           string          `toml:"store"`
-	LocalPath       string          `toml:"local_path"`
-	Retention       string          `toml:"retention"`
-	WarnBefore      []string        `toml:"warn_before"`
-	MaxLocalBytes   string          `toml:"max_local_bytes"`
-	ManualRetention string          `toml:"manual_retention"`
-	ManualKeep      int             `toml:"manual_keep"`
-	ManualCooldown  string          `toml:"manual_cooldown"`
-	S3              ArchiveS3Config `toml:"s3"`
+	Store              string          `toml:"store"`
+	LocalPath          string          `toml:"local_path"`
+	Retention          string          `toml:"retention"`
+	WarnBefore         []string        `toml:"warn_before"`
+	MaxLocalBytes      string          `toml:"max_local_bytes"`
+	ManualRetention    string          `toml:"manual_retention"`
+	ManualKeep         int             `toml:"manual_keep"`
+	ManualCooldown     string          `toml:"manual_cooldown"`
+	ScheduledEvery     string          `toml:"scheduled_every"`
+	ScheduledKeep      int             `toml:"scheduled_keep"`
+	ScheduledRetention string          `toml:"scheduled_retention"`
+	S3                 ArchiveS3Config `toml:"s3"`
 }
 
 // ArchiveS3Config is the [archive.s3] subtable.

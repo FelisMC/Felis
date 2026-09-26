@@ -85,6 +85,42 @@ func TestReaperConfigManualKeys(t *testing.T) {
 	}
 }
 
+// TestReaperConfigScheduledKeys: the scheduled restore points default to one a
+// day, seven per server and the reaper's 90 days, accept overrides ("0s" turns
+// them off), and refuse values that would keep nothing or run backwards.
+func TestReaperConfigScheduledKeys(t *testing.T) {
+	rc, err := reaperConfig(&config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc.ScheduledEvery != reaper.Day || rc.ScheduledKeep != 7 || rc.ScheduledRetention != 90*reaper.Day {
+		t.Fatalf("defaults = %v / %d / %v", rc.ScheduledEvery, rc.ScheduledKeep, rc.ScheduledRetention)
+	}
+	rc, err = reaperConfig(&config.Config{Archive: config.ArchiveConfig{
+		ScheduledEvery: "12h", ScheduledKeep: 3, ScheduledRetention: "14d"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rc.ScheduledEvery != 12*time.Hour || rc.ScheduledKeep != 3 || rc.ScheduledRetention != 14*reaper.Day {
+		t.Fatalf("overrides = %v / %d / %v", rc.ScheduledEvery, rc.ScheduledKeep, rc.ScheduledRetention)
+	}
+	rc, err = reaperConfig(&config.Config{Archive: config.ArchiveConfig{ScheduledEvery: "0s"}})
+	if err != nil || rc.ScheduledEvery != 0 {
+		t.Fatalf("scheduled_every 0s = %v, %v; want off", rc.ScheduledEvery, err)
+	}
+	for _, bad := range []config.ArchiveConfig{
+		{ScheduledEvery: "-1h"},
+		{ScheduledEvery: "daily"},
+		{ScheduledKeep: -1},
+		{ScheduledRetention: "0d"},
+		{ScheduledRetention: "forever"},
+	} {
+		if _, err := reaperConfig(&config.Config{Archive: bad}); err == nil {
+			t.Errorf("%+v was accepted", bad)
+		}
+	}
+}
+
 func TestResolveWorldDir(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
