@@ -191,6 +191,14 @@ const (
 // namespace; the host-side off-site copy reads and restores it.
 const UploadsPVCName = uploadsPVCName
 
+// The Secrets felis-api mounts its config and panel certificate from, which the
+// host rewrites when the install moves to a new root domain (felis domain set).
+const (
+	ConfigSecretName = configSecretName
+	ConfigSecretKey  = configSecretKey
+	APITLSSecretName = apiTLSSecretName
+)
+
 // ControlPlaneUID is the uid and gid the control-plane pods run as, which own
 // what they write to their volumes; a host-side restore into one of them
 // writes as it.

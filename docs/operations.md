@@ -444,3 +444,65 @@ production install:
   then log in and restore one world. `felis offsite status` and `felis db check` exit
   non-zero when the copy or the newest bundle is stale; wire them into your monitoring,
   or rely on the watchdog's mail.
+
+## 6. Changing the root domain [VM-VERIFIED] [GO-TESTED] [SH-TESTED]
+
+The root domain is written into more places than the installer's config: the panel
+certificate (`/etc/felis/panel-tls.crt`), the `felis-config` Secret in both namespaces,
+the `felis-api-tls` Secret, the proxy's `felis-link.properties`, the login gate's
+`MinecraftServer` env (`FELIS_ROOT_DOMAIN`, `FELIS_PANEL_HOSTNAME`), the Cloudflare tunnel
+and DNS. `felis domain set` moves every one of them that lives on the host, in that
+order, then restarts what reads them; `felis domain check` reports each surface on its
+own line. The installer keeps the installed domain: a rerun with a different
+`FELIS_ROOT_DOMAIN` stops and names this command.
+
+```sh
+sudo felis domain set new.example.net        # the plan: every surface, what it moves to, what it costs
+sudo felis domain set -yes new.example.net   # do it
+sudo felis domain check                      # one line per surface; exits 1 while any is behind
+```
+
+What it keeps:
+
+- A panel or admin-console hostname set by hand in `[auth]` (anything other than
+  `console.<root>` / `op.console.<root>`) stays as it is; change it in
+  `/etc/felis/felis.host.toml` yourself if it should move, then run `set` again.
+- The other `[auth]` keys (`access_jwt_aud`, `client_ip_header`) and every other line of
+  both config files. The edit refuses a file it cannot change line for line (a multi-line
+  value, a quoted or dotted key) and names what to fix.
+- An operator's own certificate. The installer's self-signed certificate is reissued for
+  the new names (same shape, the old pair saved beside it as `*.pre-domain-<time>`); a
+  certificate from another issuer that does not cover the new names stops the command
+  before anything changes. Replace it with one that does, then run `set` again.
+
+What it costs, which the plan prints before `-yes`:
+
+- **DNS.** `<root>`, `console.<root>`, `op.console.<root>` and `*.<root>` must reach the
+  host. The wildcard does not cover `op.console.<root>`, a third-level name: give it its
+  own record. `check` resolves each name and warns on the ones that do not resolve yet.
+- **Players.** Servers are reached as `<name>.<new root>`; the old addresses stop routing,
+  and the proxy restart disconnects everyone online. The first installer re-run after a
+  move restarts the proxy once more: the fingerprint it keeps of the proxy's files
+  predates the move.
+- **Sign-in.** Session cookies belong to the old hostnames, so everyone signs in again.
+  Passkeys are bound to the panel hostname: when it changes, the plan counts the passkeys
+  that stop working, and their users sign in with an email code and register a new one.
+  Without an `[smtp]` relay no code is delivered; an Owner locked out that way recovers
+  with `sudo felis breakGlass`.
+- **Cloudflare.** The tunnel's ingress and the Access application still carry the old
+  names. Re-run the Cloudflare step of `sudo felis setup` after the move; `check` lists
+  the tunnel's hostnames against the new ones.
+- **A proxy on another host** (a remote `felis-link.properties`) is outside this host's
+  reach: `set` prints the three keys to put there.
+
+`set` is safe to repeat: a second run changes only what is still behind, and on an
+install that is already on the domain it converges whatever `check` reports. The same
+holds after an interruption.
+
+On the reference VM the move from `10.211.55.6.nip.io` to `10-211-55-6.nip.io` took 34
+seconds. The certificate served on 30443, `/config.json` on both hostnames, the proxy's
+`Felis routing ready: rootDomain=` log line and the login pod's env all carried the new
+names afterwards. A second `set -yes` changed and restarted nothing; the installer run
+with the old `FELIS_ROOT_DOMAIN` stopped at its first check; a full installer re-run kept
+the moved domain and left `check` clean; moving back restored every surface
+**[VM-VERIFIED]**.

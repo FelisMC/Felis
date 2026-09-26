@@ -259,6 +259,11 @@ func writeTokenSecret(ctx context.Context, cl client.Client, namespace, name, to
 // file is replaced atomically and keeps its mode and owner: felis-link.properties
 // is root:felis-velocity 0640, and the proxy must still be able to read it.
 func setKeyValueLine(path, key, sep, value string) error {
+	return setKeyValueLines(path, sep, [][2]string{{key, value}})
+}
+
+// setKeyValueLines is setKeyValueLine for several keys in one rewrite.
+func setKeyValueLines(path, sep string, kv [][2]string) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return err
@@ -268,17 +273,27 @@ func setKeyValueLine(path, key, sep, value string) error {
 		return err
 	}
 	lines := strings.Split(strings.TrimRight(string(raw), "\n"), "\n")
-	found := false
-	for i, ln := range lines {
-		k, _, ok := strings.Cut(ln, sep)
-		if ok && strings.TrimSpace(k) == key {
-			lines[i] = key + sep + value
-			found = true
+	for _, p := range kv {
+		key, value := p[0], p[1]
+		found := false
+		for i, ln := range lines {
+			k, _, ok := strings.Cut(ln, sep)
+			if ok && strings.TrimSpace(k) == key {
+				lines[i] = key + sep + value
+				found = true
+			}
+		}
+		if !found {
+			lines = append(lines, key+sep+value)
 		}
 	}
-	if !found {
-		lines = append(lines, key+sep+value)
-	}
+	return replaceFileKeepingMode(path, info, []byte(strings.Join(lines, "\n")+"\n"))
+}
+
+// replaceFileKeepingMode atomically replaces path with data, keeping the mode and
+// owner info describes: these files are read by other users (the proxy's) and
+// some hold credentials, so a rewrite must not widen or narrow who can read them.
+func replaceFileKeepingMode(path string, info os.FileInfo, data []byte) error {
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
 	if err != nil {
 		return err
@@ -294,7 +309,7 @@ func setKeyValueLine(path, key, sep, value string) error {
 			return err
 		}
 	}
-	if _, err := tmp.WriteString(strings.Join(lines, "\n") + "\n"); err != nil {
+	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		return err
 	}

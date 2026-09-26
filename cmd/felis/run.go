@@ -32,6 +32,7 @@ Commands:
   setup             Run host bootstrap + first-run setup console (TUI; requires root/sudo)
   converge          Fill in fields a newer desired spec added to already-installed system servers
   rotate-token      Replace one internal caller's token and restart what holds it (velocity|limbo|build|ops; requires root/sudo)
+  domain            Move the install to a new root domain on every surface that carries it, or check each one (set|check; requires root/sudo)
   watchdog          Check the platform once and mail the owners what has gone wrong (run by felis-watchdog.timer)
   version           Print the build stamp of this binary
   update            Report which platform components have updates available
@@ -71,6 +72,7 @@ var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"setup":              cmdSetup,
 	"converge":           cmdConverge,
 	"rotate-token":       cmdRotateToken,
+	"domain":             cmdDomain,
 	"breakGlass":         cmdBreakGlass,
 	"bootstrap-assets":   cmdBootstrapAssets,
 	"init-forwarding":    cmdInitForwarding,
