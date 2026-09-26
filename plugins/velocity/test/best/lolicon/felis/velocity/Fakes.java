@@ -32,6 +32,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BooleanSupplier;
+import java.util.function.Function;
 
 /**
  * Fakes are the test doubles the routing tests run the real proxy classes against:
@@ -236,7 +237,17 @@ final class Fakes {
         volatile boolean connectSucceeds = true;
         volatile String disconnectedWith;
         final List<String> messages = Collections.synchronizedList(new ArrayList<>());
-        /** connects lists every server a connection request was sent to, by name. */
+        /**
+         * refusals maps a backend to the kick it answers this player's login with (a ban,
+         * the whitelist, "server is full"): the connect fails with that reason.
+         */
+        final Map<String, String> refusals = new ConcurrentHashMap<>();
+        /**
+         * preConnect stands in for the proxy's ServerPreConnectEvent: it maps the server a
+         * request asked for to the one it goes to, or null when a listener denied it.
+         */
+        volatile Function<RegisteredServer, RegisteredServer> preConnect = Function.identity();
+        /** connects lists every server a connection went to (after pre-connect), by name. */
         final List<String> connects = Collections.synchronizedList(new ArrayList<>());
         /** pluginMessages lists every plugin message sent down any of this player's server connections. */
         final List<byte[]> pluginMessages = Collections.synchronizedList(new ArrayList<>());
@@ -308,18 +319,29 @@ final class Fakes {
                     case "getServer":
                         return target;
                     case "connect":
-                        connects.add(target.getServerInfo().getName());
-                        boolean ok = connectSucceeds;
-                        ConnectionRequestBuilder.Status status = ok
-                                ? ConnectionRequestBuilder.Status.SUCCESS
-                                : ConnectionRequestBuilder.Status.SERVER_DISCONNECTED;
+                        RegisteredServer dest = preConnect.apply(target);
+                        RegisteredServer attempted = dest == null ? target : dest;
+                        String refusal = dest == null ? null : refusals.get(dest.getServerInfo().getName());
+                        ConnectionRequestBuilder.Status status;
+                        if (dest == null) {
+                            status = ConnectionRequestBuilder.Status.CONNECTION_CANCELLED;
+                        } else {
+                            connects.add(dest.getServerInfo().getName());
+                            status = connectSucceeds && refusal == null
+                                    ? ConnectionRequestBuilder.Status.SUCCESS
+                                    : ConnectionRequestBuilder.Status.SERVER_DISCONNECTED;
+                        }
                         return CompletableFuture.completedFuture(fake(ConnectionRequestBuilder.Result.class,
                                 (m2, a2) -> {
                                     switch (m2) {
                                         case "getStatus":
                                             return status;
                                         case "getAttemptedConnection":
-                                            return target;
+                                            return attempted;
+                                        case "getReasonComponent":
+                                            return refusal == null
+                                                    ? Optional.empty()
+                                                    : Optional.of(Component.text(refusal));
                                         default:
                                             return UNANSWERED;
                                     }

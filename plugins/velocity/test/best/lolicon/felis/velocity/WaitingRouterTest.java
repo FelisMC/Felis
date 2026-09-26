@@ -419,9 +419,19 @@ public final class WaitingRouterTest {
         refused.current = lobby;
         refused.connectSucceeds = false;
         router.enqueueFromInvite(refused.player, "beta");
-        Fakes.await("failed transfer counted", () -> plugin.stats().total(ProxyStats.Event.TRANSFER_FAILED) == 1);
-        assertEq("failed transfer: told", true, refused.said("Couldn't connect you to « beta »"));
+        // The chat line is the last thing the failure path does; the count comes first.
+        Fakes.await("failed transfer: told", () -> refused.said("Couldn't connect you to « beta »"));
+        assertEq("failed transfer counted", 1L, plugin.stats().total(ProxyStats.Event.TRANSFER_FAILED));
         assertEq("failed transfer: logged", 1, log.count("WARN", "transfer of " + refused.id + " to beta failed"));
+
+        // A backend that kicks the login says why; "please try again" is wrong for a ban.
+        Fakes.FakePlayer full = player(null, true);
+        full.current = lobby;
+        full.refusals.put("beta", "The server is full");
+        router.enqueueFromInvite(full.player, "beta");
+        Fakes.await("refused transfer: told the reason", () -> full.said("Couldn't connect you to « beta ». Reason: The server is full"));
+        assertEq("refused transfer counted", 2L, plugin.stats().total(ProxyStats.Event.TRANSFER_FAILED));
+        assertEq("refused transfer: no retry advice", false, full.said("try again"));
     }
 
     private static void disconnectAndRelease() {
@@ -438,6 +448,29 @@ public final class WaitingRouterTest {
         Fakes.FakePlayer released = player(null, true);
         router.releaseFromLogin(released.player);
         assertEq("release connects to the lobby", List.of("lobby"), List.copyOf(released.connects));
+
+        // A requested server that turns the player away (a ban, the whitelist, full) is
+        // shown with its own reason and the player goes to the lobby at once: the
+        // remembered target sent every retry of the gate into the same refusal, silently,
+        // until the gate gave up two minutes later.
+        Fakes.FakePlayer banned = player("beta.mc.test", true);
+        choose(banned);
+        gated(banned);
+        banned.refusals.put("beta", "You are banned from this server");
+        router.releaseFromLogin(banned.player);
+        assertEq("refused target: tried, then the lobby", List.of("beta", "lobby"), List.copyOf(banned.connects));
+        assertEq("refused target: told why", true, banned.said(
+                "« beta » turned you away, so you're in the lobby instead. Reason: You are banned from this server"));
+        assertEq("refused target: forgotten", "lobby", allowedTo(release(banned)));
+
+        // A lobby that refuses is the gate's to retry: one attempt, no release loop.
+        Fakes.FakePlayer bounced = player(null, true);
+        gated(bounced);
+        bounced.refusals.put("lobby", "Server is full");
+        router.releaseFromLogin(bounced.player);
+        assertEq("refused lobby: one attempt", List.of("lobby"), List.copyOf(bounced.connects));
+        assertEq("refused lobby: nothing said", 0, bounced.messages.size());
+        assertEq("refused lobby: logged", 1, log.count("WARN", "login release for " + bounced.id + " did not land"));
 
         net.remove("lobby");
         Fakes.FakePlayer early = player(null, true);
@@ -479,7 +512,21 @@ public final class WaitingRouterTest {
     // router's async part run to completion the way Velocity's event manager would.
     private static ServerPreConnectEvent release(Fakes.FakePlayer p) {
         p.current = login;
-        ServerPreConnectEvent e = new ServerPreConnectEvent(p.player, lobby, login);
+        return preConnect(p, lobby);
+    }
+
+    // gated puts the player on the login gate and runs every connection request it
+    // makes through the router's pre-connect check, as the proxy does.
+    private static void gated(Fakes.FakePlayer p) {
+        p.current = login;
+        p.preConnect = target -> {
+            ServerPreConnectEvent e = preConnect(p, target);
+            return e.getResult().isAllowed() ? e.getResult().getServer().orElse(target) : null;
+        };
+    }
+
+    private static ServerPreConnectEvent preConnect(Fakes.FakePlayer p, RegisteredServer target) {
+        ServerPreConnectEvent e = new ServerPreConnectEvent(p.player, target, p.current);
         EventTask task = router.onServerPreConnect(e);
         if (task != null) {
             task.execute(new Continuation() {

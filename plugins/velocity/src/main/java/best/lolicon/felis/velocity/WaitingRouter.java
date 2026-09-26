@@ -10,6 +10,7 @@ import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.player.PlayerChooseInitialServerEvent;
 import com.velocitypowered.api.event.player.ServerConnectedEvent;
 import com.velocitypowered.api.event.player.ServerPreConnectEvent;
+import com.velocitypowered.api.proxy.ConnectionRequestBuilder;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
@@ -120,8 +121,44 @@ public final class WaitingRouter {
         player.createConnectionRequest(lobby.get()).connect().whenComplete((result, err) -> {
             if (err != null) {
                 log.warn("Felis: login release for {} failed: {}", player.getUniqueId(), err.toString());
+                return;
+            }
+            if (result != null && !result.isSuccessful()) {
+                releaseRefused(player, result);
             }
         });
+    }
+
+    /**
+     * releaseRefused handles a login release that did not land. When the pre-connect
+     * check had redirected it to the player's requested server and that server turned
+     * them away — banned, not whitelisted, full, the wrong mods — the remembered target
+     * would send every retry of the gate into the same refusal, silently, until the gate
+     * gave up two minutes later with "couldn't enter the lobby". Forget the target, show
+     * the server's own reason, and release the player to the lobby at once.
+     */
+    private void releaseRefused(Player player, ConnectionRequestBuilder.Result result) {
+        UUID id = player.getUniqueId();
+        RegisteredServer attempted = result.getAttemptedConnection();
+        String pending = pendingTargets.get(id);
+        if (attempted == null || pending == null || !serverNamed(attempted, pending)
+                || !pendingTargets.remove(id, pending)) {
+            log.warn("Felis: login release for {} did not land: {}", id, result.getStatus());
+            return; // a failed move to the lobby itself: the gate retries
+        }
+        boolean zh = FelisVelocityPlugin.zh(player);
+        Component line = Component.text(
+                zh ? "「" + pending + "」拒绝了你的连接，已把你送到大厅。"
+                   : "« " + pending + " » turned you away, so you're in the lobby instead.",
+                NamedTextColor.RED);
+        Optional<Component> reason = result.getReasonComponent();
+        if (reason.isPresent()) {
+            line = line.append(Component.text(zh ? " 原因：" : " Reason: ", NamedTextColor.RED))
+                    .append(reason.get());
+        }
+        player.sendMessage(line);
+        log.info("Felis: {} refused {} on the login release ({})", pending, id, result.getStatus());
+        releaseFromLogin(player);
     }
 
     // linked runs the link check through the gate and notes when the answer came from
@@ -589,11 +626,19 @@ public final class WaitingRouter {
                 plugin.stats().count(ProxyStats.Event.TRANSFER_FAILED);
                 log.warn("Felis: transfer of {} to {} failed: {}", player.getUniqueId(), serverName,
                         err != null ? err.toString() : result.getStatus());
-                player.sendMessage(Component.text(
-                        FelisVelocityPlugin.zh(player)
-                                ? "无法把你连接到「" + serverName + "」。请重试。"
-                                : "Couldn't connect you to « " + serverName + " ». Please try again.",
-                        NamedTextColor.RED));
+                boolean zh = FelisVelocityPlugin.zh(player);
+                Component line = Component.text(
+                        zh ? "无法把你连接到「" + serverName + "」。"
+                           : "Couldn't connect you to « " + serverName + " ».",
+                        NamedTextColor.RED);
+                // A backend that refuses the login says why (ban, whitelist, full, mods);
+                // "please try again" is wrong advice for all of those.
+                Optional<Component> reason = result == null ? Optional.empty() : result.getReasonComponent();
+                line = reason.isPresent()
+                        ? line.append(Component.text(zh ? " 原因：" : " Reason: ", NamedTextColor.RED))
+                              .append(reason.get())
+                        : line.append(Component.text(zh ? "请重试。" : " Please try again.", NamedTextColor.RED));
+                player.sendMessage(line);
             }
         });
     }
