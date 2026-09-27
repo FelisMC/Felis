@@ -2289,6 +2289,7 @@ off-site bucket (next sections) plus a fresh install. What the host holds:
 | Live worlds | `world-*` volumes under `/var/lib/rancher/k3s/storage` | **only as their archives** | a restore from the newest archive (§10) | everything since that world's newest archive |
 | User images | `registry` volume | hourly; image lists kept 14 days | `fetch-images` | images pushed in the last hour |
 | Submission uploads (modpacks awaiting or past review) | `felis-uploads` volume | hourly; upload lists kept 14 days | `fetch-uploads` | uploads of the last hour |
+| The Cloudflare Tunnel connector (when the panel is behind one) | `/etc/felis/cloudflared.yml`; `/root/.cloudflared/cert.pem` and `<tunnel-id>.json`; `cloudflared-felis.service` | the config inside every bundle; the login certificate, the tunnel's credentials and the unit are not copied | the Cloudflare step of `sudo felis setup` (step 11 below) | nothing: the tunnel, its DNS records and the Access application live at Cloudflare |
 | Platform images, Velocity, the JRE, build tools | registry, `/opt/felis` | not copied | the installer builds and pushes them again | nothing |
 | k3s itself (its token, CA, datastore, Secrets, Deployments) | `/var/lib/rancher/k3s` | not copied | the installer makes a new single-node cluster and renders every Secret and Deployment from `/etc/felis` | nothing: no Felis data lives only there |
 
@@ -2313,17 +2314,21 @@ and each skips what is already in place, so an interrupted one resumes. Write
 those sizes down with the bucket's download rate and you have the recovery
 time for your install. A whole-host rehearsal on a spare machine, once per
 release, is the way to know it for sure. The spare follows the steps below
-without step 8: it finds the production host named in the bucket and stands
-by, so it copies nothing into the bucket, prunes nothing there and, while
-production keeps writing, mails none of the owners its restored database
-holds.
+without steps 8 and 11. It finds the production host named in the bucket and
+stands by, so it copies nothing into the bucket, prunes nothing there and,
+while production keeps writing, mails none of the owners its restored
+database holds. A second connector on the production tunnel would take a
+share of the real visitors, so the spare leaves the tunnel alone and is
+reached by its own address (step 10 moves it to one).
 
 The order below matters: the state goes in before the installer so it reuses
 the old secrets and bucket; the images go back before the database so the
 servers the database restores find the digests they pin, inside the pruner's
 24-hour grace; the MinecraftServers go back with the database that names their
-owners; the worlds come last because a restore needs a server to restore
-into.
+owners; the worlds come after them because a restore needs a server to
+restore into. Mail is checked before the domain moves, because a move can
+cost passkeys and email codes are the way back in; the domain moves after the
+MinecraftServers are applied, since the login gate's env carries it.
 
 ### Rebuild on a new host (the old one is gone)
 
@@ -2441,6 +2446,67 @@ host yourself, plus the off-site encryption key if the copy is in the bucket.
    wrote it, and exits 4. With `-yes` it records this host; the old host, if it
    ever runs again, copies nothing more and says it was taken over. Skip this
    step on a rehearsal machine.
+9. Check that this host can send mail, when the old one had a relay. Email
+   codes are how users sign in without a passkey, and step 10 can cost them
+   their passkeys. Run `sudo felis setup`, press `e` (configure email) on the
+   status screen and save the pre-filled relay with its password typed again
+   (the form never shows the stored one). Saving delivers one self-test
+   message to the From address and writes nothing unless it arrives. A relay
+   that admits senders by address, or an SPF record for the From domain that
+   lists the old host's address, refuses this host or sends its mail to spam:
+   add the new address there and save again. With no relay at all, an Owner
+   who cannot sign in recovers with `sudo felis breakGlass` (§17).
+10. Move the install to this host's address when its names still lead to the
+    old one. The installer kept the bundle's root domain (its log says
+    `(reusing the installed domain)`).
+
+    - The `<old-address>.nip.io` default resolves to the dead host by
+      construction. Move it:
+
+      ```
+      sudo felis domain set <new-address>.nip.io       # the plan
+      sudo felis domain set -yes <new-address>.nip.io
+      sudo felis domain check
+      ```
+
+      It runs after step 6 because the MinecraftServers applied there carry
+      the domain in the login gate's env. The plan counts the passkeys that
+      stop working; their users sign in with an email code (step 9) and
+      register a new one. docs/operations.md §6 has the rest of what it moves.
+    - A domain of your own stays. Point its records at the new address:
+      `<root>`, `*.<root>`, `console.<root>` and `op.console.<root>`, or only
+      `<root>` and `*.<root>` when the tunnel serves the panel. Confirm each
+      with `dig +short <name>` before going on: `felis domain check` warns
+      while a name does not resolve and accepts any address once it does.
+      Lower the records' TTL beforehand if the old host is still around to
+      plan with.
+11. Bring the Cloudflare edge back, when the old host served the panel
+    through a tunnel. The bundle carries `/etc/felis/cloudflared.yml`; the
+    login certificate (`/root/.cloudflared/cert.pem`), the tunnel's
+    credentials (`/root/.cloudflared/<tunnel-id>.json`) and the
+    `cloudflared-felis` unit stay behind with the old disk, so the panel
+    hostnames answer Cloudflare error 1033 until a connector runs here.
+
+    Run `sudo felis setup`, press `c` (change connection) on the status
+    screen and choose Cloudflare Tunnel + Access. On the step's first screen
+    press `i` to install cloudflared, then `l` for `cloudflared tunnel login`
+    (browser consent on your account, which writes `cert.pem`); `enter` opens
+    the form once both are in place. Enter an API token and the account ID,
+    then the same Admit identity, hostnames and tunnel name as before. The
+    hostnames come pre-filled from the restored config and the tunnel name
+    defaults to `felis`; for another name, look up the id on the `tunnel:`
+    line of the restored `cloudflared.yml` in Zero Trust → Networks → Tunnels.
+
+    The step finds the existing tunnel by name and fetches its credentials
+    again, points the panel records at it, finds the existing Access
+    application (so its audience stays the one the restored config names)
+    and rewrites its policy, installs and starts `cloudflared-felis`, and
+    closes the panel's NodePort once the tunnel serves. A kept copy of the
+    old `<tunnel-id>.json` can go back into `/root/.cloudflared` (mode 0600)
+    first; the step still needs `cert.pem`. A different tunnel name makes a
+    second tunnel, moves the panel records to it and leaves the old one idle:
+    delete that one in the dashboard afterwards. Skip this step on a
+    rehearsal machine.
 
 Check the rebuild before letting players in:
 
@@ -2449,13 +2515,24 @@ sudo felis db check                     # the database answers and has a fresh b
 kubectl get minecraftservers -A         # every server the bundle held
 kubectl -n minecraft get pods           # servers pull their pinned images (no ImagePullBackOff)
 sudo felis offsite status               # the hourly copy runs from this host again
+sudo felis domain check                 # every name, the certificate and the tunnel on the new address
 ```
 
-Point the panel and game hostnames at the new host (DNS, or the tunnel in
-front of it). In the panel: sign in with an old account (accounts and passkeys
-come back with the database), open a restored server's backup page and confirm
-its archives are listed, restore the newest one, start the server and join
-it.
+A rehearsal machine that restored a tunnel install and moved to a `nip.io`
+name in step 10 fails the Cloudflare tunnel line, since the tunnel still
+routes production's names; that one failure is expected there.
+
+In the panel, reached by its hostname (steps 10 and 11):
+
+- Sign in with an old account; accounts and passkeys come back with the
+  database, except passkeys step 10 counted as lost.
+- Sign out and sign in again with an email code, to an Owner account whose
+  inbox you read. The code arriving proves felis-api itself mails through the
+  relay to an outside inbox; step 9's self-test came from the setup console
+  and went to the From address. A code that never comes: §17.
+- Open a restored server's backup page and confirm its archives are listed,
+  restore the newest one, start the server and join it at
+  `<name>.<root>`.
 
 ### Keep a copy somewhere else
 
