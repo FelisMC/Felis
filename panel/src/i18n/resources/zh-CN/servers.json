@@ -201,7 +201,7 @@
   "luckperms_revert_unknown": "无法撤销：原值未知",
   "luckperms_remove_group": "移除权限组 {{group}}",
   "luckperms_remove_perm": "移除权限 {{node}}",
-  "luckperms_reverting": "正在撤销...",
+  "luckperms_revert_failed": "撤销失败：{{reason}}",
   "luckperms_revert_success": "已成功撤销该操作！",
   "luckperms_presets": "预设",
   "luckperms_no_parent_groups": "未分配任何父组",

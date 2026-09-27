@@ -329,7 +329,7 @@ export function ServerLuckPerms() {
         reloadLp();
       }
     } catch (err) {
-      setFormFeedback({ kind: "err", msg: `${t("luckperms_reverting")} ${humanizeError(err)}` });
+      setFormFeedback({ kind: "err", msg: t("luckperms_revert_failed", { reason: humanizeError(err) }) });
     } finally {
       setSubmitting(false);
     }

@@ -6,6 +6,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import i18next from "i18next";
 import { ServerLuckPerms } from "./ServerLuckPerms";
 import { STATUS_POLL_FAST_MS } from "@/lib/hooks";
+import { humanizeError } from "@/lib/api";
 
 const calls = vi.hoisted(() => ({
   status: vi.fn(),
@@ -243,6 +244,23 @@ describe("ServerLuckPerms reverting a permission change", () => {
     await userEvent.click(screen.getByRole("button", { name: /^add permission$/i }));
     await userEvent.click(await screen.findByRole("button", { name: "Revert" }));
     expect(calls.accessPermission).toHaveBeenLastCalledWith("lobby", "unset", "Alex", "essentials.fly", undefined, undefined);
+  });
+
+  it("says a revert failed, and why, and leaves the change unreverted", async () => {
+    await lookUpAlex();
+    await userEvent.click(await screen.findByRole("button", { name: "Remove permission essentials.fly" }));
+    await screen.findByText("- essentials.fly (FALSE) [world_nether]");
+    calls.accessPermission.mockRejectedValue({ status: 502, code: "rcon_unavailable", message: "console down" });
+    await userEvent.click(screen.getByRole("button", { name: "Revert" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(
+      i18next.t("servers:luckperms_revert_failed", {
+        reason: humanizeError({ status: 502, code: "rcon_unavailable", message: "console down" }),
+      }),
+    );
+    expect(alert.textContent?.startsWith("Couldn't revert: ")).toBe(true);
+    expect(screen.getByRole("button", { name: "Revert" })).toBeTruthy();
   });
 
   it("offers no revert for a removal whose value was never read", async () => {

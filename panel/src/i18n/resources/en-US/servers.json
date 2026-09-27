@@ -201,7 +201,7 @@
   "luckperms_revert_unknown": "Can't revert: value unknown",
   "luckperms_remove_group": "Remove group {{group}}",
   "luckperms_remove_perm": "Remove permission {{node}}",
-  "luckperms_reverting": "Reverting...",
+  "luckperms_revert_failed": "Couldn't revert: {{reason}}",
   "luckperms_revert_success": "Action reverted successfully!",
   "luckperms_presets": "Presets",
   "luckperms_no_parent_groups": "No parent groups assigned",
