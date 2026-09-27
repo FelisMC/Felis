@@ -131,7 +131,8 @@ public final class FelisVelocityPlugin {
     @Subscribe
     public void onProxyInitialize(ProxyInitializeEvent event) {
         try {
-            this.config = FelisVelocityConfig.load(dataDirectory.resolve("felis-link.properties"));
+            this.config = FelisVelocityConfig.load(dataDirectory.resolve("felis-link.properties"),
+                    msg -> logger.info("Felis: {}", msg));
         } catch (Exception e) {
             logger.error("Felis disabled: {}", e.getMessage());
             return;

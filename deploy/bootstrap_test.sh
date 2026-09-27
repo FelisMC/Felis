@@ -1643,7 +1643,7 @@ run_atomic() { # script; under the installer's shell options, its temp files rem
 mode_of() { ls -l "$1" | cut -c1-10; }
 
 printf 'A=1\nB=2\n' > "$wadir/in.new"
-printf 'DB_PASSWORD=new\nSESSION_SECRET=new\n' > "$wadir/in.replace"
+printf 'DB_PASSWORD=new\nSERVICE_TOKEN=new\n' > "$wadir/in.replace"
 out="$(run_atomic "umask 000; write_file_atomic '$wadir/new.env' 0600 < '$wadir/in.new'; echo done")"
 expect "an atomic write finishes" "done" "$out"
 expect "an atomic write holds all of its input" "$(printf 'A=1\nB=2')" "$(cat "$wadir/new.env")"
@@ -1651,11 +1651,11 @@ expect "an atomic write is private under a permissive umask" "-rw-------" "$(mod
 run_atomic "write_file_atomic '$wadir/new.env' 0640 < '$wadir/in.new'" >/dev/null
 expect "an atomic write sets the mode it is given" "-rw-r-----" "$(mode_of "$wadir/new.env")"
 
-printf 'DB_PASSWORD=old-and-whole\nSESSION_SECRET=kept\n' > "$wadir/old.env"
+printf 'DB_PASSWORD=old-and-whole\nSERVICE_TOKEN=kept\n' > "$wadir/old.env"
 out="$(run_atomic "cat() { head -c 7; return 1; }; write_file_atomic '$wadir/old.env' 0600 < '$wadir/in.replace'; echo survived")"
 expect "a write that fails halfway dies" "DIE: could not write $wadir/old.env; it is left as it was" "$out"
 expect "a write that fails halfway leaves the old file whole" \
-  "$(printf 'DB_PASSWORD=old-and-whole\nSESSION_SECRET=kept')" "$(cat "$wadir/old.env")"
+  "$(printf 'DB_PASSWORD=old-and-whole\nSERVICE_TOKEN=kept')" "$(cat "$wadir/old.env")"
 out="$(run_atomic "sync() { return 1; }; write_file_atomic '$wadir/old.env' 0600 < '$wadir/in.replace'")"
 expect "content that did not reach the disk does not replace the old file" "DIE: could not write $wadir/old.env" "$out"
 expect "the old file survives a failed sync" "DB_PASSWORD=old-and-whole" "$(cat "$wadir/old.env")"
@@ -2675,6 +2675,20 @@ expect "a new heap size restarts the proxy" "SYSTEMCTL restart felis-velocity" "
 expect "the unit carries the new ceiling" "java -Xms512M -Xmx3G " "$(cat "$vdir/unit")"
 run_velocity_service 1 384M >/dev/null
 expect "a ceiling below 512M is also the initial heap" "java -Xms384M -Xmx384M " "$(cat "$vdir/unit")"
+# `felis rotate-token velocity` rewrites service-token, which the plugin re-reads by itself:
+# that line alone changing leaves the proxy running, and any other change restarts it.
+props="$vdir/v/plugins/felis-link/felis-link.properties"
+printf 'api-base-url=http://a\nservice-token=one\n' > "$props"
+expect "new proxy properties restart the proxy" "SYSTEMCTL restart felis-velocity" "$(run_velocity_service 1 384M)"
+printf 'api-base-url=http://a\nservice-token=two\n' > "$props"
+out="$(run_velocity_service 1 384M)"
+case "$out" in
+  *"SYSTEMCTL restart"*) echo "FAIL a new service-token alone restarted the proxy"; fails=$((fails + 1)) ;;
+  *"felis-velocity unchanged; left running"*) echo "PASS a new service-token alone leaves the proxy running" ;;
+  *) echo "FAIL install_velocity_service died on a new service-token: $out"; fails=$((fails + 1)) ;;
+esac
+printf 'api-base-url=http://b\nservice-token=two\n' > "$props"
+expect "another change to the proxy properties restarts the proxy" "SYSTEMCTL restart felis-velocity" "$(run_velocity_service 1 384M)"
 rm -rf "$vdir"
 
 ssblock="$(awk '/^restart_existing_system_servers\(\) \{/,/^}/' "$BS")"

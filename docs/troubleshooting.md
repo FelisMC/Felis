@@ -439,15 +439,47 @@ token on the wire, which is one more reason the proxy belongs on the node (§1 o
 
 ### Rotating a token
 
-`sudo felis rotate-token <velocity|limbo|build|ops>` replaces one caller's token:
-it writes the new value to `secrets.env` (so a later installer run keeps it), the
-Secret and its replica, rolls felis-api so only the new value is accepted, then
-restarts the caller — the `felis-velocity` unit when the proxy runs on this host,
-or the login pod. Build Jobs and `felis backup-now` pick the new value up on their
-next run. The old value stops working as soon as felis-api has rolled; the caller
-is turned away for the few seconds until it restarts. For a proxy on another host,
-the command leaves the host alone and tells you to copy the new value from the
-Secret into that proxy's `felis-link.properties` and restart it. [GO-TESTED]
+`sudo felis rotate-token <kind>` replaces one credential the installer generated.
+Without `-yes` it only prints what it would write and what that interrupts;
+`sudo felis rotate-token -yes <kind>` rotates. Every rotation writes the new value
+into `/etc/felis/secrets.env` first, so whatever fails after that, a re-run of the
+installer (`sudo bash deploy/bootstrap.sh`) puts the value everywhere. [GO-TESTED]
+
+| kind | replaces | interrupts |
+|---|---|---|
+| `velocity` | the proxy's token: Secret `felis-service-token`, `service-token` in the host proxy's `felis-link.properties` | felis-api restarts (one replica: the panel, sign-in and the proxy's calls stop for a few seconds). The proxy re-reads its file and keeps its players |
+| `limbo` | the login gate's token, `felis-limbo-token` and its minecraft replica | felis-api restarts, then the login pod |
+| `build` | the build Jobs' token, `felis-build-token` and its build-namespace replica | felis-api restarts; a build fetching its context at that moment fails and can be submitted again |
+| `ops` | `felis backup-now`'s token, `felis-ops-token` | felis-api restarts |
+| `registry` | the registry's `platform`, `build` and `prune` write tokens: Secret `felis-registry-auth`, the build Jobs' `felis-registry-push` | the registry restarts (a push at that moment fails, a pull retries), then felis-api |
+| `forwarding` | the Velocity forwarding secret: `/opt/felis/velocity/forwarding.secret`, Secret `felis-forwarding-secret` in both namespaces | every running server restarts (saving its world) and the proxy restarts: everyone online is disconnected |
+| `db` | the database role's password: the role in felis-postgres, `[database] url` in `felis.host.toml` and `felis.pod.toml`, Secret `felis-config` in both namespaces | felis-api restarts; a backup, restore or file Job that connects in those seconds fails and can be run again |
+
+- **velocity** — the rotation waits for the proxy's log line
+  `Felis: service-token reloaded from … (fingerprint <12 hex digits>)`. A proxy
+  that has not logged it within 60 s of felis-api's restart (a plugin from before
+  this release) is restarted, which disconnects everyone online. The file keeps
+  its modification time, so `felis domain check` does not read the proxy as
+  stale. A proxy on another host is left alone: set `service-token` in its
+  `felis-link.properties` to the value in Secret `felis/felis-service-token`, and
+  it takes it within a few seconds.
+- **forwarding** — a server whose world a backup, restore or file write holds is
+  left running and named in the plan and the output; players cannot join it until
+  it restarts, so stop and start it from the panel once that finishes. The next
+  installer run restarts the proxy once more (its record of what the proxy was
+  started from predates the rotation); an upgrade restarts it for the new plugin
+  jar anyway. A proxy on another host needs the value in Secret
+  `felis/felis-forwarding-secret` in its forwarding secret file, and a restart.
+- **db** — the password reaches PostgreSQL as a SCRAM-SHA-256 verifier, never as
+  text a failed statement could log. The config copies change only after a
+  connection with the new password succeeds; when it does not, the command stops
+  and says so, and the installer re-run sets the password from `secrets.env` in
+  the role and every copy. A database the installer does not run (`[database]
+  deployment` unset) is refused: change its password where it runs, then in each
+  copy's `[database] url`. `felis.pod.toml` must be a file of its own, since the
+  pods reach the database at another address.
+- The old value stops working as felis-api (or the registry) restarts; a caller
+  still presenting it is turned away until it has the new one.
 
 ---
 
@@ -867,9 +899,9 @@ control namespace (or `--registry-namespace`):
   container, via `felis-registry-push` in `felis-build`) may write anything outside
   `felis/` and `mirror/` and may never delete. A missing Secret leaves the registry
   read-only rather than down. The tokens persist in `/etc/felis/secrets.env`;
-  rotating one means editing it there and re-running the installer, then
-  `kubectl -n felis rollout restart deployment/registry` (the gate reads its tokens
-  at start).
+  `sudo felis rotate-token -yes registry` replaces all three and restarts the
+  registry (the gate reads its tokens at start) and felis-api, which presents the
+  `prune` token (§6 "Rotating a token").
 - **Who can connect:** `felis-registry-ingress` admits only the `felis-build`
   namespace to the registry pod. Node-local traffic (containerd pulls, the
   installer's pushes through the hostPort) is always allowed by Kubernetes; game
@@ -1916,7 +1948,7 @@ runs changed:
 
 | Component | Restarted when |
 |---|---|
-| `felis-velocity` (the proxy) | its unit, the JRE, `velocity.jar`, `velocity.toml`, the forwarding secret, the felis-link settings or a plugin jar changed, or it was not running. The fingerprint lives in `/etc/felis/velocity.fingerprint`; delete it to force a restart. |
+| `felis-velocity` (the proxy) | its unit, the JRE, `velocity.jar`, `velocity.toml`, the forwarding secret, the felis-link settings (all but `service-token`, which the plugin re-reads) or a plugin jar changed, or it was not running. The fingerprint lives in `/etc/felis/velocity.fingerprint`; delete it to force a restart. |
 | login and lobby pods | the rebuilt limbo or lobby image has a new image ID (`/etc/felis/system-server-images`). The installer then pins that server's `spec.image` to the digest its tag names now (`felis pin-images --system login\|lobby`) and the operator rolls the pod onto it, each on its own; with the registry unreachable it recreates the pod instead. The installer turns off BuildKit's default provenance attestation (`BUILDX_NO_DEFAULT_ATTESTATIONS=1`): it records the build time, which would give every rebuild a new ID. |
 | felis-postgres | the release moved `POSTGRES_IMAGE` or changed the pod; a few seconds without the API. A rerun that changes neither leaves it running. |
 | felis-api, felis-operator, the registry pod (its gate and GC containers run the felis binary) | the image tag changed (an upgrade), or a same-version rerun rebuilt it. |
@@ -2078,7 +2110,7 @@ along). One bundle is `felis-db-<UTC stamp>-<label>.tar`:
 |---|---|
 | `MANIFEST.json` | version, schema version, `pg_dump --version`, sha256 of every member |
 | `db.dump` | `pg_dump --format=custom` of the `felis` database |
-| `state/etc/felis/...` | every file in `/etc/felis`: `secrets.env` (DB password, session/forwarding secrets, registry tokens), `felis.host.toml`, `felis.pod.toml`, the `felis.toml` symlink, `offsite.env` (bucket credentials and encryption key), `smtp-password`, `uploads-s3-access-key` and `uploads-s3-secret-key` (the mail relay password and the uploads bucket keys `felis setup` took), the panel TLS pair, and the installer's own markers (`system-server-images`, `velocity.fingerprint`). `bootstrap.done` is left out on purpose |
+| `state/etc/felis/...` | every file in `/etc/felis`: `secrets.env` (DB password, forwarding secret, caller and registry tokens), `felis.host.toml`, `felis.pod.toml`, the `felis.toml` symlink, `offsite.env` (bucket credentials and encryption key), `smtp-password`, `uploads-s3-access-key` and `uploads-s3-secret-key` (the mail relay password and the uploads bucket keys `felis setup` took), the panel TLS pair, and the installer's own markers (`system-server-images`, `velocity.fingerprint`). `bootstrap.done` is left out on purpose |
 | `k8s/minecraftservers.json` | every MinecraftServer, status and server-side metadata stripped, ready for `kubectl apply`. The export is tried 3 times, 10 s apart; when the cluster still does not answer, the bundle is written without it and the manifest records why (next section) |
 
 next to a `.sha256` sidecar in `sha256sum` format. **A bundle contains the
@@ -2327,7 +2359,7 @@ host yourself, plus the off-site encryption key if the copy is in the bucket.
    written with a warning. Bundles from releases before the counts were
    recorded show `not recorded`.
 2. Put the old host's state in place **before** installing, so the installer
-   reuses the same DB password, session secret, forwarding secret, the mail
+   reuses the same DB password, caller tokens, forwarding secret, the mail
    relay password and uploads bucket keys `felis setup` took, and the
    `[offsite]` bucket with its credentials and key (`offsite.env`):
 

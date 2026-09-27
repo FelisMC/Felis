@@ -3859,13 +3859,20 @@ EOF
 # velocity_fingerprint hashes what the proxy process runs: its unit (JVM flags and system
 # properties), the JRE, the jars and the files the installer writes for it. The Via config
 # and whatever else plugins write at runtime stay out; Via rewrites its config on every load.
+# So does the service-token line of felis-link.properties: the plugin re-reads it on its own
+# (`felis rotate-token velocity` counts on that), and a restart for it would only disconnect
+# every player.
 velocity_fingerprint() {
-  local f
+  local f sum
   for f in "$VELOCITY_SERVICE" "${JRE_DIR}/release" "${VELOCITY_DIR}/velocity.jar" \
       "${VELOCITY_DIR}/velocity.toml" "${VELOCITY_DIR}/forwarding.secret" \
       "${VELOCITY_DIR}/plugins/felis-link/felis-link.properties" "${VELOCITY_DIR}"/plugins/*.jar; do
     [ -f "$f" ] || continue
-    printf '%s %s\n' "$(sha256sum <"$f" | cut -d' ' -f1)" "$f"
+    case "$f" in
+      */felis-link.properties) sum="$({ grep -v '^service-token=' "$f" || true; } | sha256sum | cut -d' ' -f1)" ;;
+      *) sum="$(sha256sum <"$f" | cut -d' ' -f1)" ;;
+    esac
+    printf '%s %s\n' "$sum" "$f"
   done | sha256sum | cut -d' ' -f1
 }
 
@@ -4187,12 +4194,13 @@ load_or_make_secrets() {
   # to its own routes and a leak is contained to that caller: SERVICE_TOKEN is the
   # proxy's (felis-link.properties), LIMBO_TOKEN the login gate's, BUILD_TOKEN what a
   # build Job fetches its context with, OPS_TOKEN what `felis backup-now` presents.
-  # `felis rotate-token <caller>` rewrites the matching line here.
+  # `felis rotate-token <caller>` replaces one of them, and `felis rotate-token
+  # registry|forwarding|db` the other values persisted below: every line of secrets.env
+  # has a rotation that rewrites it (cmd/felis TestInstallerSecretsAreAllRotatable).
   SERVICE_TOKEN="${SERVICE_TOKEN:-$(openssl rand -hex 32)}"
   LIMBO_TOKEN="${LIMBO_TOKEN:-$(openssl rand -hex 32)}"
   BUILD_TOKEN="${BUILD_TOKEN:-$(openssl rand -hex 32)}"
   OPS_TOKEN="${OPS_TOKEN:-$(openssl rand -hex 32)}"
-  SESSION_SECRET="${SESSION_SECRET:-$(openssl rand -hex 32)}"
   # The Velocity modern-forwarding key. It is what makes a backend's UUID trustworthy:
   # the proxy does the Mojang handshake and HMACs the resulting profile with this key,
   # and a backend that cannot verify it would fall back to an offline UUID derived from
@@ -4213,7 +4221,6 @@ SERVICE_TOKEN=${SERVICE_TOKEN}
 LIMBO_TOKEN=${LIMBO_TOKEN}
 BUILD_TOKEN=${BUILD_TOKEN}
 OPS_TOKEN=${OPS_TOKEN}
-SESSION_SECRET=${SESSION_SECRET}
 FORWARDING_SECRET=${FORWARDING_SECRET}
 REGISTRY_PLATFORM_TOKEN=${REGISTRY_PLATFORM_TOKEN}
 REGISTRY_BUILD_TOKEN=${REGISTRY_BUILD_TOKEN}

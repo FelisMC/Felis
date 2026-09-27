@@ -74,7 +74,8 @@ carry works, but nothing installs them for you.
 > the `limbo` token: it opens the link-code, link-status and blacklist routes and nothing
 > else. The `velocity` token also approves op-logins and wakes or claims servers for any
 > player; it stays on the proxy host. `sudo felis rotate-token limbo` replaces a leaked
-> token (the login gate restarts onto the new value; copy it to the mod by hand).
+> token (the login gate restarts onto the new value; copy it into the mod's
+> `felis-link.properties` by hand; the mod takes it on its next call, without a restart).
 
 ## Whose identity each path trusts
 
@@ -379,7 +380,10 @@ login gate the `limbo` token (`felis-limbo-token`), and each serves only its own
 routes (a token on another caller's route gets `403 wrong_caller`). A loader mod
 takes the `limbo` token, on a standalone online-mode server only (see the warning
 under the module table). Treat it as a secret; `sudo felis rotate-token <caller>`
-replaces it.
+replaces it. A token read from this file follows the file: the proxy or mod
+presents a new `service-token` from its next call to felis-api (it re-reads the
+file at most once a second), logs `service-token reloaded from … (fingerprint …)`, and keeps its
+players. A token from `FELIS_SERVICE_TOKEN` is fixed until the process restarts.
 
 On **Velocity**, also set `root-domain` (and optionally `lobby-server`) in the
 same file to turn on §11 routing, and make sure `online-mode=true` in

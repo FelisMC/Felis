@@ -144,7 +144,7 @@ set them by hand:
   the minecraft namespace (and `felis setup` refreshes that replica from the control
   namespace), and the operator injects it into the `login` pod (only) as
   `FELIS_SERVICE_TOKEN` via a `secretKeyRef`, keyed off the reserved `login` name.
-  `sudo felis rotate-token limbo` replaces it and restarts the pod. Until the token is
+  `sudo felis rotate-token -yes limbo` replaces it and restarts the pod. Until the token is
   present the plugin fail-safes to readiness-only, so the gate is never broken — it
   simply does not authenticate yet.
 - **Service:** the login pod dials `FELIS_API_BASE_URL`, which resolves to the

@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
 import java.util.Properties;
+import java.util.function.Consumer;
 
 /**
  * FelisVelocityConfig extends the shared link config with the inputs only the full
@@ -62,8 +63,9 @@ final class FelisVelocityConfig {
         this.adminHostname = adminHostname;
     }
 
-    static FelisVelocityConfig load(Path file) throws IOException {
-        LinkConfig link = LinkConfigLoader.load(file); // url + token (required) + template + validate
+    // load reads the file; notice hears of a service token replaced in it later.
+    static FelisVelocityConfig load(Path file, Consumer<String> notice) throws IOException {
+        LinkConfig link = LinkConfigLoader.load(file, notice); // url + token (required) + template + validate
         Properties props = new Properties();
         if (Files.exists(file)) {
             try (InputStream in = Files.newInputStream(file)) {

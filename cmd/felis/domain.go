@@ -235,7 +235,7 @@ func verifyTOMLEdit(orig, edited []byte, edits []tomlStringEdit) error {
 		t[e.key] = e.value
 	}
 	if !reflect.DeepEqual(want, got) {
-		return errors.New("a line edit would change more than the domain keys (a multi-line value, or a quoted or dotted key?)")
+		return errors.New("a line edit would change more than the keys it sets (a multi-line value, or a quoted or dotted key?)")
 	}
 	return nil
 }
@@ -591,9 +591,15 @@ type tomlTarget struct{ path, real string }
 // tomlTargets are the host and pod copies, and felis.toml when it is a file of
 // its own rather than the link to the host copy.
 func (h domainHost) tomlTargets() ([]tomlTarget, error) {
+	return tomlTargetsOf(h.paths.hostTOML, h.paths.podTOML, h.paths.defaultTOML)
+}
+
+// tomlTargetsOf is the host copy, the pod copy, and def when it exists and is
+// not a link to one of them.
+func tomlTargetsOf(host, pod, def string) ([]tomlTarget, error) {
 	var out []tomlTarget
 	seen := map[string]bool{}
-	for i, p := range []string{h.paths.hostTOML, h.paths.podTOML, h.paths.defaultTOML} {
+	for i, p := range []string{host, pod, def} {
 		real, err := filepath.EvalSymlinks(p)
 		if errors.Is(err, fs.ErrNotExist) && i == 2 {
 			continue

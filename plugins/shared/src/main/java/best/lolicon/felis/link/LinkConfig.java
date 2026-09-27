@@ -2,14 +2,16 @@ package best.lolicon.felis.link;
 
 import java.time.Duration;
 import java.util.Objects;
+import java.util.function.Supplier;
 
 /**
- * LinkConfig is the immutable configuration a {@link LinkClient} needs to reach
- * the felis-api internal face. Both the base URL and the service token are
- * deployment inputs — operator config or a Secret-injected environment variable —
- * and are <em>never</em> compiled in. Keeping them out of source is what lets the
- * tree stay domain- and credential-free; each platform's config loader is
- * responsible for sourcing them.
+ * LinkConfig is the configuration a {@link LinkClient} needs to reach the
+ * felis-api internal face. It is fixed once built, except for a service token
+ * read from felis-link.properties, which follows that file ({@link FileToken}).
+ * Both the base URL and the service token are deployment inputs — operator config
+ * or a Secret-injected environment variable — and are <em>never</em> compiled in.
+ * Keeping them out of source is what lets the tree stay domain- and
+ * credential-free; each platform's config loader is responsible for sourcing them.
  *
  * <p>Two timeouts bound each call: {@code connectTimeout} for opening the TCP
  * connection and {@code requestTimeout} for the whole exchange once it is open. A
@@ -18,11 +20,17 @@ import java.util.Objects;
  */
 public final class LinkConfig {
     private final String apiBaseUrl;
-    private final String serviceToken;
+    private final Supplier<String> serviceToken;
     private final Duration connectTimeout;
     private final Duration requestTimeout;
 
     public LinkConfig(String apiBaseUrl, String serviceToken, Duration connectTimeout, Duration requestTimeout) {
+        this(apiBaseUrl, fixed(serviceToken), connectTimeout, requestTimeout);
+    }
+
+    // LinkConfig with a token that may change while the process runs (FileToken);
+    // it must hold one from the start.
+    LinkConfig(String apiBaseUrl, Supplier<String> serviceToken, Duration connectTimeout, Duration requestTimeout) {
         this.apiBaseUrl = stripTrailingSlash(Objects.requireNonNull(apiBaseUrl, "apiBaseUrl"));
         this.serviceToken = Objects.requireNonNull(serviceToken, "serviceToken");
         this.connectTimeout = Objects.requireNonNull(connectTimeout, "connectTimeout");
@@ -30,7 +38,7 @@ public final class LinkConfig {
         if (this.apiBaseUrl.isEmpty()) {
             throw new IllegalArgumentException("apiBaseUrl is empty");
         }
-        if (this.serviceToken.isEmpty()) {
+        if (this.serviceToken.get().isEmpty()) {
             throw new IllegalArgumentException("serviceToken is empty");
         }
         if (this.connectTimeout.isZero() || this.connectTimeout.isNegative()) {
@@ -49,8 +57,9 @@ public final class LinkConfig {
         return apiBaseUrl;
     }
 
+    /** serviceToken is the token to present on this call; FileToken may have replaced it since the last. */
     public String serviceToken() {
-        return serviceToken;
+        return serviceToken.get();
     }
 
     public Duration connectTimeout() {
@@ -59,6 +68,11 @@ public final class LinkConfig {
 
     public Duration requestTimeout() {
         return requestTimeout;
+    }
+
+    private static Supplier<String> fixed(String token) {
+        Objects.requireNonNull(token, "serviceToken");
+        return () -> token;
     }
 
     private static String stripTrailingSlash(String u) {

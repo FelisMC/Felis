@@ -5,8 +5,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
@@ -15,7 +17,9 @@ import java.util.stream.Stream;
  * the environment wins, both required values must come from somewhere, a first run
  * leaves a template and still refuses to start, and the call timeouts default to
  * 10 s, take the operator's value, and refuse anything that is not a whole number
- * of seconds from 1 to 120.
+ * of seconds from 1 to 120. A token from the file follows the file (at most one
+ * look a second, a notice naming its fingerprint on each change, a blank or missing
+ * file ignored); one from the environment stays fixed.
  *
  * <p>Run: {@code javac -d <out> shared/src/main/java/best/lolicon/felis/link/*.java
  * shared/test/best/lolicon/felis/link/LinkConfigLoaderTest.java && java -cp <out>
@@ -35,6 +39,8 @@ public final class LinkConfigLoaderTest {
             firstRunWritesATemplateAndRefuses();
             timeoutsComeFromFileOrEnvironment();
             badTimeoutsAreRefused();
+            fileTokenFollowsTheFile();
+            environmentTokenIsFixed();
         } finally {
             try (Stream<Path> walk = Files.walk(dir)) {
                 walk.sorted(Comparator.reverseOrder()).forEach(p -> p.toFile().delete());
@@ -122,6 +128,55 @@ public final class LinkConfigLoaderTest {
         Path f = write("env-bad.properties", base);
         IOException e = expectRefused("env request timeout 0", f, env("FELIS_API_REQUEST_TIMEOUT_SECONDS", "0"));
         assertContains("env bad names the variable", e.getMessage(), "FELIS_API_REQUEST_TIMEOUT_SECONDS");
+    }
+
+    // `felis rotate-token velocity` rewrites the file and waits for the notice
+    // naming the new token's fingerprint; the proxy presents the new token from
+    // then on, without a restart.
+    private static void fileTokenFollowsTheFile() throws IOException {
+        Path f = write("rotate.properties", "api-base-url=http://x:8081\nservice-token=old-token\n");
+        long[] now = {5_000_000_000L};
+        List<String> notices = new ArrayList<>();
+        LinkConfig c = LinkConfigLoader.load(f, env(), notices::add, () -> now[0]);
+        assertEq("initial file token", "old-token", c.serviceToken());
+
+        write("rotate.properties", "api-base-url=http://x:8081\nservice-token=new-token\n");
+        now[0] += FileToken.RECHECK_NANOS - 1;
+        assertEq("within a second of the last look the file is not read", "old-token", c.serviceToken());
+        now[0] += 1;
+        assertEq("a second on, the rewritten token is presented", "new-token", c.serviceToken());
+        assertEq("one notice for one change", 1, notices.size());
+        write("rotate.properties", "api-base-url=http://x:8081\nservice-token=third-token\n");
+        now[0] += FileToken.RECHECK_NANOS - 1;
+        assertEq("the second counts from the last look", "new-token", c.serviceToken());
+        write("rotate.properties", "api-base-url=http://x:8081\nservice-token=new-token\n");
+        assertEq("the notice names the file and the fingerprint",
+                "service-token reloaded from " + f + " (fingerprint 348e9df2a42b)", notices.get(0));
+        now[0] += FileToken.RECHECK_NANOS;
+        c.serviceToken();
+        assertEq("an unchanged file gives no notice", 1, notices.size());
+
+        // A file mid-edit, or gone, keeps the token that works.
+        write("rotate.properties", "api-base-url=http://x:8081\nservice-token=  \n");
+        now[0] += FileToken.RECHECK_NANOS;
+        assertEq("a blank token in the file is ignored", "new-token", c.serviceToken());
+        Files.delete(f);
+        now[0] += FileToken.RECHECK_NANOS;
+        assertEq("a missing file is ignored", "new-token", c.serviceToken());
+        assertEq("neither gave a notice", 1, notices.size());
+    }
+
+    // The login gate's token comes from its pod's environment, which only a
+    // restart changes: the file does not override it later.
+    private static void environmentTokenIsFixed() throws IOException {
+        Path f = write("env-fixed.properties", "api-base-url=http://x:8081\nservice-token=file-token\n");
+        long[] now = {0};
+        List<String> notices = new ArrayList<>();
+        LinkConfig c = LinkConfigLoader.load(f, env("FELIS_SERVICE_TOKEN", "env-token"), notices::add, () -> now[0]);
+        write("env-fixed.properties", "api-base-url=http://x:8081\nservice-token=other-token\n");
+        now[0] += 10 * FileToken.RECHECK_NANOS;
+        assertEq("env token stays", "env-token", c.serviceToken());
+        assertEq("env token gives no notice", 0, notices.size());
     }
 
     // ---- harness ----

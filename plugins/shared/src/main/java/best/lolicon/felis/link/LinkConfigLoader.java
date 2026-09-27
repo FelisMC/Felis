@@ -8,6 +8,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Properties;
+import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 import java.util.function.UnaryOperator;
 
 /**
@@ -18,7 +20,9 @@ import java.util.function.UnaryOperator;
  * compiled in — this loader is the single seam each loader's entrypoint calls, so
  * the source tree stays domain- and credential-free. On first run it writes a
  * commented template and then reports the values as missing, so an operator gets
- * a file to fill in rather than a silent half-configured plugin.
+ * a file to fill in rather than a silent half-configured plugin. A token from the
+ * file follows the file while the process runs ({@link FileToken}), so
+ * {@code felis rotate-token velocity} replaces it without restarting the proxy.
  *
  * <p>The two call timeouts ({@code connect-timeout-seconds},
  * {@code request-timeout-seconds}, or {@code FELIS_API_CONNECT_TIMEOUT_SECONDS} /
@@ -51,11 +55,26 @@ public final class LinkConfigLoader {
      *     timeout is not a whole number of seconds in range.
      */
     public static LinkConfig load(Path propertiesFile) throws IOException {
-        return load(propertiesFile, System::getenv);
+        return load(propertiesFile, msg -> { });
     }
 
-    // load with the environment passed in, so the precedence rules are testable.
+    /**
+     * load, with {@code notice} told when a token from the file is replaced while
+     * the process runs ({@link FileToken}). A token from the environment is fixed
+     * for the life of the process.
+     */
+    public static LinkConfig load(Path propertiesFile, Consumer<String> notice) throws IOException {
+        return load(propertiesFile, System::getenv, notice, System::nanoTime);
+    }
+
     static LinkConfig load(Path propertiesFile, UnaryOperator<String> env) throws IOException {
+        return load(propertiesFile, env, msg -> { }, System::nanoTime);
+    }
+
+    // load with the environment and the clock passed in, so the precedence rules
+    // and the file token's re-reads are testable.
+    static LinkConfig load(Path propertiesFile, UnaryOperator<String> env, Consumer<String> notice,
+                           LongSupplier clock) throws IOException {
         Properties props = new Properties();
         if (Files.exists(propertiesFile)) {
             try (InputStream in = Files.newInputStream(propertiesFile)) {
@@ -76,6 +95,9 @@ public final class LinkConfigLoader {
                 firstNonBlank(env.apply(ENV_CONNECT_TIMEOUT), props.getProperty(KEY_CONNECT_TIMEOUT)));
         Duration request = seconds(KEY_REQUEST_TIMEOUT, ENV_REQUEST_TIMEOUT,
                 firstNonBlank(env.apply(ENV_REQUEST_TIMEOUT), props.getProperty(KEY_REQUEST_TIMEOUT)));
+        if (isBlank(env.apply(ENV_TOKEN))) {
+            return new LinkConfig(url, new FileToken(propertiesFile, KEY_TOKEN, token, clock, notice), connect, request);
+        }
         return new LinkConfig(url, token, connect, request);
     }
 
