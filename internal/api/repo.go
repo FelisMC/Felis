@@ -734,8 +734,8 @@ type Repo interface {
 	// ---- user admin (spec §7, admin-only) ----
 
 	// ListUsers returns a page of non-deleted users matching the optional filters,
-	// newest first. total is the unfiltered count so the admin page can render
-	// pagination without a second round-trip.
+	// newest first. total counts every user the same filters match, so the admin
+	// page can size its pagination without a second round-trip.
 	ListUsers(ctx context.Context, opts ListUsersOpts) ([]UserView, int, error)
 	// UserDetail loads one user with its linked MC accounts, or ErrNotFound.
 	// A deleted user is returned (the row lives for audit) but flagged.

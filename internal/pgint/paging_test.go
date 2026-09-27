@@ -192,3 +192,48 @@ func TestBackupListPaging(t *testing.T) {
 		t.Fatalf("other's s2 = %s of %d (%v), want nothing", idsOf(vs), total, err)
 	}
 }
+
+// ListUsers reports as total every live user the same filters match, past the
+// last page too, so the admin page does not size its pagination from the whole
+// table and offer pages that come back empty.
+func TestListUsersTotalFollowsFilters(t *testing.T) {
+	ctx := context.Background()
+	tag := suffix(t)
+	newUser(t, "user", "lu"+tag)
+	newUser(t, "admin", "lu"+tag)
+	bob := newUser(t, "user", "lu"+tag)
+	newUser(t, "user", "other") // live, but matches no query below
+	gone := newUser(t, "user", "lu"+tag)
+	if err := repo.SetUserDisabled(ctx, bob.ID, true); err != nil {
+		t.Fatalf("SetUserDisabled: %v", err)
+	}
+	if err := repo.DeleteUser(ctx, gone.ID, "pgint"); err != nil {
+		t.Fatalf("DeleteUser: %v", err)
+	}
+	var live int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM users WHERE deleted_at IS NULL`).Scan(&live); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+
+	for _, c := range []struct {
+		name      string
+		opts      api.ListUsersOpts
+		rows, all int
+	}{
+		{"no filter", api.ListUsersOpts{Limit: 1}, 1, live},
+		{"query", api.ListUsersOpts{Query: tag, Limit: 2}, 2, 3},
+		{"query past the last page", api.ListUsersOpts{Query: tag, Limit: 2, Offset: 4}, 0, 3},
+		{"query and role", api.ListUsersOpts{Query: tag, Role: "admin"}, 1, 1},
+		{"query and disabled", api.ListUsersOpts{Query: tag, Hidden: "true"}, 1, 1},
+		{"query and enabled", api.ListUsersOpts{Query: tag, Hidden: "false"}, 2, 2},
+	} {
+		users, total, err := repo.ListUsers(ctx, c.opts)
+		if err != nil || len(users) != c.rows || total != c.all {
+			t.Errorf("%s: %d rows, total %d, err %v; want %d rows, total %d", c.name, len(users), total, err, c.rows, c.all)
+		}
+	}
+	users, _, err := repo.ListUsers(ctx, api.ListUsersOpts{Query: tag, Hidden: "true"})
+	if err != nil || len(users) != 1 || users[0].ID != bob.ID {
+		t.Fatalf("disabled filter = %+v, %v; want only %s", users, err, bob.Username)
+	}
+}

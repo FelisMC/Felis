@@ -1850,17 +1850,9 @@ func (p *PGRepo) DeleteAllPasskeyCredentialsForUser(ctx context.Context, userID 
 // ---- user admin (spec §7, admin-only) ----
 
 // ListUsers returns a page of non-deleted users matching the optional filters,
-// newest first. total is the unfiltered count so the admin page can render
-// pagination without a second round-trip.
+// newest first. total counts every user the same filters match, so the admin
+// page can size its pagination without a second round-trip.
 func (p *PGRepo) ListUsers(ctx context.Context, opts ListUsersOpts) ([]UserView, int, error) {
-	var total int
-	{
-		q := `SELECT count(*) FROM users WHERE deleted_at IS NULL`
-		if err := p.db.QueryRowContext(ctx, q).Scan(&total); err != nil {
-			return nil, 0, err
-		}
-	}
-
 	limit := opts.Limit
 	if limit <= 0 || limit > 100 {
 		limit = 20
@@ -1891,6 +1883,11 @@ func (p *PGRepo) ListUsers(ctx context.Context, opts ListUsersOpts) ([]UserView,
 		where += ` AND u.disabled = true`
 	case "false":
 		where += ` AND u.disabled = false`
+	}
+
+	var total int
+	if err := p.db.QueryRowContext(ctx, `SELECT count(*) FROM users u`+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
 	}
 
 	q := `SELECT u.id, u.username, COALESCE(u.email, ''), u.role::text,
