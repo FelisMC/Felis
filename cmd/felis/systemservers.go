@@ -15,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -243,6 +244,15 @@ func buildSystemServerClient() (client.Client, error) {
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
 		return nil, err
 	}
+	cfg, err := hostRESTConfig()
+	if err != nil {
+		return nil, err
+	}
+	return client.New(cfg, client.Options{Scheme: scheme})
+}
+
+// hostRESTConfig is the cluster connection buildSystemServerClient describes.
+func hostRESTConfig() (*rest.Config, error) {
 	cfg, err := ctrl.GetConfig()
 	if err != nil {
 		cfg, err = clientcmd.BuildConfigFromFlags("", hostBootstrapKubeconfigPath)
@@ -250,7 +260,7 @@ func buildSystemServerClient() (client.Client, error) {
 			return nil, fmt.Errorf("no reachable kubeconfig (tried in-cluster/$KUBECONFIG/~/.kube and %s): %w", hostBootstrapKubeconfigPath, err)
 		}
 	}
-	return client.New(cfg, client.Options{Scheme: scheme})
+	return cfg, nil
 }
 
 // systemServerOutcome records what ensureSystemServers did with one service so

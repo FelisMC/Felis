@@ -19,6 +19,7 @@ A Kubernetes-driven Minecraft server hosting platform — one command to deploy,
 - **Web 控制面板**：浏览器中查看服务器状态、在线玩家与资源用量，管理备份与恢复。
 - **备份与恢复**：一键把整服数据（世界、配置、插件/模组，即整个 /data 卷）打包进集群内的归档库，支持从任意备份点回滚；默认安装就已启用（归档 PVC 与路径由安装器一并生成）。
 - **控制面数据库备份**：账号、服务器归属、配额与存档索引所在的数据库每天自动备份，每次升级迁移前先快照，出错可用 `felis db restore` 整库原子回滚；面板「维护与备份」页显示备份是否新鲜（见 [故障排查 §16](docs/troubleshooting.md)）。
+- **运维自检**：`sudo felis status` 一屏列出节点、控制面、游戏代理、每台服务器、备份与未解决的告警；`sudo felis doctor` 把健康检查全跑一遍，按区域给出问题和下一步去哪看，不发邮件；`sudo felis support-bundle` 打出一个脱敏的诊断包，求助时直接附上（见 [故障排查 §0](docs/troubleshooting.md)）。
 - **智慧回收（可选开启）**：超过 15 天无人游玩的世界自动备份后删除，释放磁盘空间；安装时设置 `FELIS_WORLDS_HOST_PATH`（k3s 默认 `/var/lib/rancher/k3s/storage`）即启用每日回收，不设置则不删任何世界。过期备份无论是否开启都会每天清理。
 - **多核心支持**：兼容 Paper、Fabric、Forge、NeoForge，经由 Velocity 代理统一入口。
 - **模组自助提交**：玩家自行上传模组包，服主审批通过后自动构建；构建产物进入镜像白名单，可直接选用为服务器镜像完成部署。

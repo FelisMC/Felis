@@ -35,22 +35,8 @@ const proxyFor = 3 * time.Minute
 func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("watchdog", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	cfgPath := fs.String("config", "/etc/felis/felis.toml", "path to felis.toml (the host copy, which reaches PostgreSQL on 127.0.0.1)")
-	statePath := fs.String("state", "/var/lib/felis/watchdog/state.json", "state kept between runs (root only: it caches the relay password)")
-	fallbackState := fs.String("fallback-state", watchdog.FallbackStatePath, "where a run keeps its state while -state cannot be written, so what it mailed is not mailed again (tmpfs: until the host restarts; \"\" keeps none)")
-	smtpPasswordFile := fs.String("smtp-password-file", hostSMTPPasswordPath, "the relay password `felis setup` keeps on the host; the felis-smtp Secret stands in while it is missing")
-	quietPath := fs.String("quiet-file", "/run/felis/watchdog-quiet-until", "Unix time before which nothing is mailed; the installer writes it while it restarts things on purpose")
-	backupDir := fs.String("backup-dir", "/var/lib/felis/db-backups", `control-plane database backups to check for freshness ("" skips the check)`)
-	diskPaths := fs.String("disk-paths", "/,/var/lib/rancher/k3s,/var/lib/felis", "comma-separated paths whose filesystems must keep free space")
-	certDirs := fs.String("k3s-cert-dirs", strings.Join(watchdog.K3sCertDirs, ","), `k3s certificate directories whose *.crt files must not be near expiry ("" skips the check)`)
-	proxyAddr := fs.String("proxy-addr", "", `game proxy address to dial, e.g. 127.0.0.1:25565 ("" skips the check)`)
-	nodeIP := fs.String("node-ip", "", `the node address the install was made on, which must stay on this host ("" skips the check)`)
-	controlNS := fs.String("control-namespace", platform.DefaultControlNamespace, "namespace of the control plane")
-	offsiteStatus := fs.String("offsite-status", offsite.DefaultStatusFile, "the record `felis offsite sync` leaves, checked when [offsite] is configured")
-	toolsStatus := fs.String("build-tools-status", defaultBuildToolsStatus, "the record `felis mirror-build-tools` leaves, checked when builds scan against the registry's DB copy")
-	dryRun := fs.Bool("dry-run", false, "print every finding and the mail that is due; send nothing and keep the state as it was")
-	heartbeatFile := fs.String("heartbeat-file", defaultHeartbeatFile, "file holding the heartbeat URL each run pings, a dead man's switch at a monitoring service that alerts when the pings stop (no file pings nothing)")
-	unitFailed := fs.Bool("unit-failed", false, "report a failed run of felis-watchdog.service instead of checking; felis-watchdog-failed.service runs this through OnFailure=")
+	var w watchdogFlags
+	w.register(fs)
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return 0
@@ -58,20 +44,20 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	now := time.Now()
-	if *unitFailed {
+	if w.unitFailed {
 		return watchdogUnitFailed(unitFailedRun{
-			cfgPath: *cfgPath, statePath: *statePath, fallbackPath: *fallbackState, quietPath: *quietPath,
-			offsiteStatus: *offsiteStatus, heartbeatFile: *heartbeatFile,
+			cfgPath: w.cfgPath, statePath: w.statePath, fallbackPath: w.fallbackState, quietPath: w.quietPath,
+			offsiteStatus: w.offsiteStatus, heartbeatFile: w.heartbeatFile,
 			result: os.Getenv("MONITOR_SERVICE_RESULT"), exitStatus: os.Getenv("MONITOR_EXIT_STATUS"),
 			send: watchdogSender, client: http.DefaultClient, now: now,
 		}, stdout, stderr)
 	}
-	cfg, err := config.Load(*cfgPath)
+	cfg, err := config.Load(w.cfgPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis watchdog: %v\n", err)
 		return 1
 	}
-	loadPath := watchdog.NewestState(*statePath, *fallbackState)
+	loadPath := watchdog.NewestState(w.statePath, w.fallbackState)
 	state, aside, err := watchdog.RecoverState(loadPath, now)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis watchdog: %v\n", err)
@@ -81,71 +67,18 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 
 	var report watchdog.Report
-	add := func(f *watchdog.Finding) {
-		if f != nil {
-			report.Findings = append(report.Findings, *f)
-		}
-	}
 	if aside != "" {
 		fmt.Fprintf(stderr, "felis watchdog: %s was unreadable; moved it to %s and started over\n", loadPath, aside)
-		f := watchdog.StateSetAside(aside)
-		add(&f)
+		report.Findings = append(report.Findings, watchdog.StateSetAside(aside))
 	}
-
-	// The cluster: one unreachable API server stands in for every check behind it.
-	minecraftNS := cfg.K8s.Namespace
-	if minecraftNS == "" {
-		minecraftNS = platform.DefaultMinecraftNamespace
-	}
-	cl, err := buildSystemServerClient()
-	var found []watchdog.Finding
-	if err == nil {
-		found, err = watchdog.Cluster{Client: cl, ControlNamespace: *controlNS, MinecraftNamespace: minecraftNS}.Check(ctx, now)
-	}
-	if err != nil {
-		f := watchdog.KubeAPIDown(err)
-		add(&f)
-		report.Unknown = append(report.Unknown, watchdog.ClusterPrefixes...)
-	} else {
-		report.Findings = append(report.Findings, found...)
-	}
+	cl, owners, ownersErr := watchdogProbes(ctx, w, cfg, now, &report)
 	if cfg.SMTP.Host != "" {
-		var secrets client.Client
-		if err == nil {
-			secrets = cl
-		}
-		refreshSMTPPassword(ctx, *smtpPasswordFile, secrets, *controlNS, state, stderr)
+		refreshSMTPPassword(ctx, w.smtpPasswordFile, cl, w.controlNS, state, stderr)
 	}
 	state.Relay = cachedRelay(cfg.SMTP)
-
-	if recipients, err := ownerEmails(ctx, cfg.Database.URL); err != nil {
-		f := watchdog.PostgresDown(err)
-		add(&f)
-	} else {
-		state.Recipients = recipients
+	if ownersErr == nil {
+		state.Recipients = owners
 	}
-
-	if *proxyAddr != "" {
-		add(proxyFinding(ctx, *proxyAddr))
-	}
-	if *backupDir != "" {
-		add(watchdog.BackupFinding(*backupDir, now))
-	}
-	if cfg.Offsite.Enabled() {
-		add(watchdog.OffsiteFinding(*offsiteStatus, now))
-	}
-	if usesMirroredScanDB(cfg) {
-		add(watchdog.ScanDBFinding(*toolsStatus, now))
-	}
-	report.Findings = append(report.Findings, watchdog.DiskFindings(splitList(*diskPaths))...)
-	add(watchdog.MemoryFinding("/proc/meminfo"))
-	add(watchdog.CertFinding(splitList(*certDirs), now))
-	if *nodeIP != "" {
-		if held, err := watchdog.HostAddresses(); err == nil {
-			add(watchdog.AddressFinding(*nodeIP, held))
-		}
-	}
-	add(watchdog.ClockFinding(watchdog.ClockStatus()))
 
 	if len(report.Findings) == 0 {
 		fmt.Fprintln(stdout, "felis watchdog: every check passed")
@@ -158,13 +91,13 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 	host, _ := os.Hostname()
 	subject, body := plan.Message(host, now)
 	beat := heartbeat{
-		standby: standsBy(cfg.Offsite.Enabled(), *offsiteStatus),
-		quiet:   now.Before(watchdog.QuietUntil(*quietPath)),
+		standby: standsBy(cfg.Offsite.Enabled(), w.offsiteStatus),
+		quiet:   now.Before(watchdog.QuietUntil(w.quietPath)),
 	}
-	if beat.url, err = readHeartbeatURL(*heartbeatFile); err != nil {
+	if beat.url, err = readHeartbeatURL(w.heartbeatFile); err != nil {
 		fmt.Fprintf(stderr, "felis watchdog: %v; pinging no heartbeat\n", err)
 	}
-	if *dryRun {
+	if w.dryRun {
 		if plan.Empty() {
 			fmt.Fprintln(stdout, "felis watchdog: nothing is due to be mailed")
 		} else {
@@ -177,8 +110,8 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 	}
 
 	m := configMailer(cfg.SMTP, state.SMTPPassword, watchdogSender)
-	unheard, mailFailed := m.deliver(ctx, state, plan, subject, body, mailHold(*quietPath, cfg.Offsite.Enabled(), *offsiteStatus, now), now, stdout, stderr)
-	saveErr := watchdog.SaveStateOr(*statePath, *fallbackState, state)
+	unheard, mailFailed := m.deliver(ctx, state, plan, subject, body, mailHold(w.quietPath, cfg.Offsite.Enabled(), w.offsiteStatus, now), now, stdout, stderr)
+	saveErr := watchdog.SaveStateOr(w.statePath, w.fallbackState, state)
 	if saveErr != nil {
 		fmt.Fprintf(stderr, "felis watchdog: save state: %v\n", saveErr)
 	}
@@ -189,6 +122,93 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	return 0
+}
+
+// watchdogFlags are felis watchdog's flags. felis doctor reads them back from
+// the ExecStart= line of felis-watchdog.service, so it checks what the timer's
+// runs check, with the same paths.
+type watchdogFlags struct {
+	cfgPath, statePath, fallbackState, smtpPasswordFile, quietPath string
+	backupDir, diskPaths, certDirs, proxyAddr, nodeIP, controlNS   string
+	offsiteStatus, toolsStatus, heartbeatFile                      string
+	dryRun, unitFailed                                             bool
+}
+
+func (w *watchdogFlags) register(fs *flag.FlagSet) {
+	fs.StringVar(&w.cfgPath, "config", "/etc/felis/felis.toml", "path to felis.toml (the host copy, which reaches PostgreSQL on 127.0.0.1)")
+	fs.StringVar(&w.statePath, "state", "/var/lib/felis/watchdog/state.json", "state kept between runs (root only: it caches the relay password)")
+	fs.StringVar(&w.fallbackState, "fallback-state", watchdog.FallbackStatePath, "where a run keeps its state while -state cannot be written, so what it mailed is not mailed again (tmpfs: until the host restarts; \"\" keeps none)")
+	fs.StringVar(&w.smtpPasswordFile, "smtp-password-file", hostSMTPPasswordPath, "the relay password `felis setup` keeps on the host; the felis-smtp Secret stands in while it is missing")
+	fs.StringVar(&w.quietPath, "quiet-file", "/run/felis/watchdog-quiet-until", "Unix time before which nothing is mailed; the installer writes it while it restarts things on purpose")
+	fs.StringVar(&w.backupDir, "backup-dir", "/var/lib/felis/db-backups", `control-plane database backups to check for freshness ("" skips the check)`)
+	fs.StringVar(&w.diskPaths, "disk-paths", "/,/var/lib/rancher/k3s,/var/lib/felis", "comma-separated paths whose filesystems must keep free space")
+	fs.StringVar(&w.certDirs, "k3s-cert-dirs", strings.Join(watchdog.K3sCertDirs, ","), `k3s certificate directories whose *.crt files must not be near expiry ("" skips the check)`)
+	fs.StringVar(&w.proxyAddr, "proxy-addr", "", `game proxy address to dial, e.g. 127.0.0.1:25565 ("" skips the check)`)
+	fs.StringVar(&w.nodeIP, "node-ip", "", `the node address the install was made on, which must stay on this host ("" skips the check)`)
+	fs.StringVar(&w.controlNS, "control-namespace", platform.DefaultControlNamespace, "namespace of the control plane")
+	fs.StringVar(&w.offsiteStatus, "offsite-status", offsite.DefaultStatusFile, "the record `felis offsite sync` leaves, checked when [offsite] is configured")
+	fs.StringVar(&w.toolsStatus, "build-tools-status", defaultBuildToolsStatus, "the record `felis mirror-build-tools` leaves, checked when builds scan against the registry's DB copy")
+	fs.BoolVar(&w.dryRun, "dry-run", false, "print every finding and the mail that is due; send nothing and keep the state as it was")
+	fs.StringVar(&w.heartbeatFile, "heartbeat-file", defaultHeartbeatFile, "file holding the heartbeat URL each run pings, a dead man's switch at a monitoring service that alerts when the pings stop (no file pings nothing)")
+	fs.BoolVar(&w.unitFailed, "unit-failed", false, "report a failed run of felis-watchdog.service instead of checking; felis-watchdog-failed.service runs this through OnFailure=")
+}
+
+// watchdogProbes is one pass of every check, appended to report. cl is the
+// cluster client, nil while the API server is unreachable; owners is who the
+// alerts go to, and ownersErr why PostgreSQL did not say.
+func watchdogProbes(ctx context.Context, w watchdogFlags, cfg *config.Config, now time.Time, report *watchdog.Report) (cl client.Client, owners []string, ownersErr error) {
+	add := func(f *watchdog.Finding) {
+		if f != nil {
+			report.Findings = append(report.Findings, *f)
+		}
+	}
+
+	// The cluster: one unreachable API server stands in for every check behind it.
+	minecraftNS := cfg.K8s.Namespace
+	if minecraftNS == "" {
+		minecraftNS = platform.DefaultMinecraftNamespace
+	}
+	cl, err := buildSystemServerClient()
+	var found []watchdog.Finding
+	if err == nil {
+		found, err = watchdog.Cluster{Client: cl, ControlNamespace: w.controlNS, MinecraftNamespace: minecraftNS}.Check(ctx, now)
+	}
+	if err != nil {
+		cl = nil
+		f := watchdog.KubeAPIDown(err)
+		add(&f)
+		report.Unknown = append(report.Unknown, watchdog.ClusterPrefixes...)
+	} else {
+		report.Findings = append(report.Findings, found...)
+	}
+
+	if owners, ownersErr = ownerEmails(ctx, cfg.Database.URL); ownersErr != nil {
+		f := watchdog.PostgresDown(ownersErr)
+		add(&f)
+	}
+
+	if w.proxyAddr != "" {
+		add(proxyFinding(ctx, w.proxyAddr))
+	}
+	if w.backupDir != "" {
+		add(watchdog.BackupFinding(w.backupDir, now))
+	}
+	if cfg.Offsite.Enabled() {
+		add(watchdog.OffsiteFinding(w.offsiteStatus, now))
+	}
+	if usesMirroredScanDB(cfg) {
+		add(watchdog.ScanDBFinding(w.toolsStatus, now))
+	}
+	report.Findings = append(report.Findings, watchdog.DiskFindings(splitList(w.diskPaths))...)
+	add(watchdog.MemoryFinding("/proc/meminfo"))
+	add(watchdog.CertFinding(splitList(w.certDirs), now))
+	if w.nodeIP != "" {
+		if held, err := watchdog.HostAddresses(); err == nil {
+			add(watchdog.AddressFinding(w.nodeIP, held))
+		}
+	}
+	add(watchdog.ClockFinding(watchdog.ClockStatus()))
+	return cl, owners, ownersErr
 }
 
 // failureReport is what the heartbeat's failure ping carries, "" when the run

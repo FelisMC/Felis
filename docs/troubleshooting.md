@@ -37,6 +37,85 @@ concrete host.
 
 ---
 
+## 0. First look: `felis status`, `felis doctor`, `felis support-bundle`
+
+Three read-only commands, all run as root on the node, give the state of the
+whole host before any of the sections below. They change nothing and mail
+nothing, so they are safe to run at any time.
+
+**`sudo felis status`** prints the platform at a glance: the release, the node
+and its kubelet, each control-plane Deployment (ready replicas, image, pod
+restarts), the game proxy (the `felis-velocity` unit and whether the game port
+accepts connections), every server with its desired state, phase, players and
+newest world backup, the newest database bundle and the off-site copy, the
+watched disks and memory, and the alerts the watchdog has open. A part that is
+down reads as such and the rest still prints: with k3s stopped the cluster
+line says `unreachable (...)` and the servers `unknown while the cluster is
+unreachable`; with PostgreSQL down the backup column reads `?` and a line under
+the table says why. [GO-TESTED: `TestStatusReport`, `TestStatusWithPartsDown`,
+`TestStatusClusterEdges`, `TestStatusBackups`, `TestStatusWatchdog`]
+
+**`sudo felis doctor`** runs every check `felis watchdog` runs, with the
+settings `felis-watchdog.service` gives it, plus what only the host shows: a
+Felis unit that failed or a long-running one (`k3s`, `felis-velocity`) that
+stopped, a timer that no longer fires, alerts that reach no one (no `[smtp]`
+relay, no owner with a verified address), an unusable heartbeat URL. It prints
+one line per area, `✓` fine, `!` warnings, `✗` something critical, `-` not
+checked and why (the off-site copy on an install without one), each finding
+with where to look next:
+
+```text
+felis doctor on felis-1 at 2026-09-27 12:00 UTC
+checks run as /etc/systemd/system/felis-watchdog.service runs them (config /etc/felis/felis.host.toml)
+
+✓  configuration
+✓  Kubernetes cluster
+✗  PostgreSQL
+     critical postgres: PostgreSQL is unreachable: sign-in, the panel and server management fail
+              → k3s kubectl -n felis get pods -l app.kubernetes.io/component=postgres; k3s kubectl -n felis logs deploy/felis-postgres --tail=100 (...)
+-  off-site copy: not checked, not configured
+...
+1 problem(s): 1 critical, 0 warning(s)
+```
+
+It exits 1 when it found anything and 0 otherwise, so a script can run it. It
+never mails, pings the heartbeat or touches the watchdog's state: an alert it
+shows is mailed by the watchdog's own next run, on the watchdog's delays (§14).
+A missing or unreadable `felis-watchdog.service` is itself a critical finding,
+and the checks then run with the watchdog's defaults. [GO-TESTED:
+`TestDoctorReportsByArea`, `TestDoctorMailsPingsAndSavesNothing`,
+`TestDoctorWithoutUnitOrConfig`, `TestUnitFindings`, `TestPrintDoctorReport`]
+
+**`sudo felis support-bundle`** collects what someone helping needs into one
+file, `/var/lib/felis/support/felis-support-<host>-<time>.tar.gz` (mode 0600;
+`-o DIR` writes elsewhere): `status.txt` and `doctor.txt`, the release, a
+summary of the configuration (names and settings, no credentials), the Felis
+units and timers, `df`, addresses and memory, the names of the files under
+`/etc/felis` (no contents), each Felis unit's and k3s's journal (`-since 48h`,
+`-log-lines 2000`), the nodes, volumes and servers, and the pods, Deployments,
+StatefulSets, Jobs, CronJobs, Services, claims, network policies and events of
+the control-plane, build and server namespaces, and the tail of every
+control-plane and build container's log (and of its previous run after a
+restart). Game servers contribute their init containers' logs only; their own
+logs carry player names, IP addresses and chat, and `-server-logs` adds them.
+
+What it leaves out: every Secret and ConfigMap, the contents of every
+configuration file, the database and every world. What it takes out of what it
+keeps: every value in the host's secret files (`secrets.env`, `offsite.env`,
+the relay and upload keys, the heartbeat URL, the forwarding secret, the
+proxy's token, the k3s tokens), the database password, every environment value
+in a pod spec or a server, passwords in URLs, private keys, `Bearer`/`Basic`
+credentials, and anything a log or report writes as `password=`, `token=`,
+`secret=` and the like. `MANIFEST.txt` inside lists what the bundle holds, what
+was taken out and what could not be collected (k3s down, a log that is gone).
+**Read it through before sending the bundle anywhere**: a secret logged in a
+form none of these rules knows stays in. [GO-TESTED: `TestSupportBundle`
+plants 25 secrets across every source and finds none in the bundle,
+`TestSupportBundleWithTheClusterDown`, `TestSupportBundleServerLogs`,
+`TestScrubber`]
+
+---
+
 ## 1. Server is stuck in `Starting` and never becomes `Running`
 
 `MinecraftServer.status.phase` stays `Starting`. A start that never succeeds is
@@ -3088,6 +3167,7 @@ end, has not been run on a cluster.]
 
 | Symptom | Section |
 |---|---|
+| Where to start: what is up, what is wrong, what to send when asking for help | §0 |
 | Stuck `Starting`, never `Running` | §1 |
 | `Starting` with `PodNotReady` (image? PVC? boot?) | §1a |
 | RCON secret/auth/port errors | §1b, §1c |
