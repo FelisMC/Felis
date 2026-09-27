@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import i18next from "i18next";
 import { MySubmissionsPage } from "./MySubmissionsPage";
+import { humanizeError } from "@/lib/api";
 import type { SubmissionPage } from "@/lib/types";
 
 const calls = vi.hoisted(() => ({
@@ -49,6 +50,7 @@ beforeEach(() => {
   );
 });
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
   return i18next.changeLanguage("en-US");
 });
@@ -206,6 +208,64 @@ describe("MySubmissionsPage", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.queryByRole("progressbar")).toBeNull();
     expect(screen.getByRole("button", { name: "Continue upload" })).toBeTruthy();
+  });
+});
+
+describe("MySubmissionsPage keeps reading", () => {
+  const row = PAGE.submissions[0];
+  const waiting: SubmissionPage = {
+    submissions: [{ ...row, status: "pending_review" }],
+    total: 1,
+    counts: { pending_review: 1, approved: 0, rejected: 0 },
+  };
+  const approved: SubmissionPage = {
+    submissions: [{ ...row, status: "approved" }],
+    total: 1,
+    counts: { pending_review: 0, approved: 1, rejected: 0 },
+  };
+  const renderPage = () =>
+    render(
+      <MemoryRouter>
+        <MySubmissionsPage />
+      </MemoryRouter>,
+    );
+
+  it("picks up a review verdict at the slow pace", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    calls.listMySubmissions.mockResolvedValue(waiting);
+    renderPage();
+    await screen.findByRole("button", { name: "Pending Review (1)" });
+    const before = calls.listMySubmissions.mock.calls.length;
+
+    calls.listMySubmissions.mockResolvedValue(approved);
+    await act(() => vi.advanceTimersByTimeAsync(14_000));
+    expect(calls.listMySubmissions.mock.calls.length).toBe(before);
+    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    expect(calls.listMySubmissions.mock.calls.length).toBe(before + 1);
+    expect(await screen.findByRole("button", { name: "Approved (1)" })).toBeTruthy();
+  });
+
+  it.each(["pending", "building"] as const)("rereads fast while a shown build is %s", async (build_status) => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    calls.listMySubmissions.mockResolvedValue({ ...approved, submissions: [{ ...row, build_id: "b-1", build_status }] });
+    renderPage();
+    await screen.findByText("Create Above and Beyond");
+    const before = calls.listMySubmissions.mock.calls.length;
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    expect(calls.listMySubmissions.mock.calls.length).toBe(before + 1);
+  });
+
+  it("keeps the list when a later read fails, and says why", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    calls.listMySubmissions.mockResolvedValue(waiting);
+    renderPage();
+    await screen.findByRole("button", { name: "Pending Review (1)" });
+    const outage = { status: 503, code: "unavailable", message: "list unavailable" };
+    calls.listMySubmissions.mockRejectedValue(outage);
+    await act(() => vi.advanceTimersByTimeAsync(15_000));
+    expect((await screen.findByRole("alert")).textContent).toContain(humanizeError(outage));
+    expect(screen.getByText("Create Above and Beyond")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Pending Review (1)" })).toBeTruthy();
   });
 });
 

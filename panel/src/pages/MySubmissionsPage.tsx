@@ -32,14 +32,14 @@ import {
 import { cn } from "@/lib/utils";
 import { MessageLine } from "@/components/MessageLine";
 import { InlineConfirm } from "@/components/InlineConfirm";
-import { Loading, ErrorState, EmptyState } from "@/components/States";
+import { Loading, ErrorState, EmptyState, RefreshError } from "@/components/States";
 import { Pagination } from "@/components/Pagination";
 import { StatCard } from "@/components/StatCard";
 import { PageHeader } from "@/components/PageHeader";
 import { SubmissionStatusBadge } from "@/components/SubmissionStatusBadge";
 import { api, humanizeError } from "@/lib/api";
 import { uploadContext } from "@/lib/contextUpload";
-import { useAsync } from "@/lib/hooks";
+import { STATUS_POLL_FAST_MS, STATUS_POLL_SLOW_MS, useAsync, usePolling } from "@/lib/hooks";
 import { formatRelative, formatAbsolute } from "@/lib/format";
 import type { BuildStatus, Submission, SubmissionStatus } from "@/lib/types";
 
@@ -134,6 +134,11 @@ export function MySubmissionsPage() {
   const { data, error: fetchError, loading, reload } = useAsync(listMine, [listMine], { keepPrevious: true });
   const submissions = useMemo<Submission[]>(() => data?.submissions ?? [], [data]);
   const matching = data?.total ?? 0;
+  // A review lands whenever an admin gets to it and an approved pack builds on
+  // its own, so the list keeps reading: every few seconds while a shown build
+  // is still under way, at the slow pace otherwise.
+  const building = submissions.some((s) => s.build_status === "pending" || s.build_status === "building");
+  usePolling(reload, building ? STATUS_POLL_FAST_MS : STATUS_POLL_SLOW_MS);
 
   // The cards and filter chips count everything this player submitted, whatever is filtered.
   const stats = useMemo(() => {
@@ -316,6 +321,8 @@ export function MySubmissionsPage() {
 
       {/* Row-action error (withdraw) */}
       {actionError && <MessageLine kind="error" message={actionError} compact />}
+      {/* A later read that failed keeps the last list and says so above it. */}
+      {!!fetchError && !!data && <RefreshError error={fetchError} />}
 
       {/* Stats Cards Row */}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
@@ -398,7 +405,7 @@ export function MySubmissionsPage() {
           {/* List Content */}
           {loading && !data ? (
             <div className="py-12"><Loading /></div>
-          ) : fetchError ? (
+          ) : fetchError && !data ? (
             <div className="py-12"><ErrorState error={fetchError} onRetry={reload} /></div>
           ) : submissions.length === 0 ? (
             <div className="p-4 border-b-0">
