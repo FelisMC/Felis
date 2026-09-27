@@ -39,9 +39,10 @@ permissions:
 jobs:
   # A tag that ships red is worse than a tag that fails to ship. These are ci.yml's gates,
   # called rather than copied: Go (race, vet, staticcheck), govulncheck, the PostgreSQL
-  # contract suite, shellcheck and the bootstrap tests, the panel, and the Java layer the
-  # binary EMBEDS (bootstrap_asset.go ships the plugin sources, so a tag whose plugins do
-  # not compile turns every install of that release into a failed bootstrap).
+  # contract suite, shellcheck and the bootstrap tests, promtool on the alert rules, the
+  # panel, and the Java layer the binary EMBEDS (bootstrap_asset.go ships the plugin
+  # sources, so a tag whose plugins do not compile turns every install of that release into
+  # a failed bootstrap).
   gates:
     uses: ./.github/workflows/ci.yml
 

@@ -142,6 +142,25 @@ jobs:
       - run: sh deploy/uninstall_test.sh
       - run: bash deploy/e2e_release_test.sh
 
+  # The shipped alert rules (deploy/alerts): promtool parses them and runs their unit tests,
+  # which pin when each alert fires and that it stays quiet before. internal/metrics'
+  # alerts_test.go pins what promtool cannot see from there: the PrometheusRule twin and the
+  # metric names the rules read.
+  alerts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # A pinned release, like shellcheck's, so a new Prometheus cannot change what fails.
+      - name: promtool
+        run: |
+          curl -fsSL -o prometheus.tar.gz \
+            https://github.com/prometheus/prometheus/releases/download/v3.15.0/prometheus-3.15.0.linux-amd64.tar.gz
+          echo "2a542df32eac02ee17b9d844fb2aa1de00dafa5476579ba8a3ba862e9d572ea0  prometheus.tar.gz" | sha256sum -c
+          tar -xzf prometheus.tar.gz --strip-components=1 prometheus-3.15.0.linux-amd64/promtool
+          ./promtool check rules deploy/alerts/felis-alerts.yaml
+          ./promtool test rules deploy/alerts/felis-alerts_test.yml
+
   panel:
     runs-on: ubuntu-latest
     steps:
