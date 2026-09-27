@@ -58,7 +58,7 @@ func TestPasskeyRegisterVertical(t *testing.T) {
 
 	// 1) begin returns the creation options FLAT (envelope stripped for the panel) and
 	// stashes exactly one challenge bound to the caller.
-	w := do(eh, "POST", "/api/v1/account/passkey/register/begin", `{}`, nil)
+	w := do(eh, "POST", "/api/v1/account/passkey/register/begin", "", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("begin: code = %d, want 200 (%s)", w.Code, w.Body.String())
 	}
@@ -157,7 +157,7 @@ func TestPasskeyBeginPassesExistingCredentials(t *testing.T) {
 	v := &fakePasskeyVerifier{}
 	eh := newPasskeyAPI(repo, v, user)
 
-	if w := do(eh, "POST", "/api/v1/account/passkey/register/begin", `{}`, nil); w.Code != http.StatusOK {
+	if w := do(eh, "POST", "/api/v1/account/passkey/register/begin", "", nil); w.Code != http.StatusOK {
 		t.Fatalf("begin: code = %d, want 200 (%s)", w.Code, w.Body.String())
 	}
 	if len(v.lastUser.Credentials) != 1 || v.lastUser.Credentials[0].CredentialID != "existing-cred" {
@@ -173,8 +173,8 @@ func TestPasskeyBeginSupersedes(t *testing.T) {
 	repo := newFakeRepo()
 	eh := newPasskeyAPI(repo, &fakePasskeyVerifier{}, user)
 
-	do(eh, "POST", "/api/v1/account/passkey/register/begin", `{}`, nil)
-	do(eh, "POST", "/api/v1/account/passkey/register/begin", `{}`, nil)
+	do(eh, "POST", "/api/v1/account/passkey/register/begin", "", nil)
+	do(eh, "POST", "/api/v1/account/passkey/register/begin", "", nil)
 	if len(repo.passkeyChallenges) != 1 {
 		t.Fatalf("a second begin must supersede the first; stashed challenges = %d, want 1", len(repo.passkeyChallenges))
 	}
@@ -189,7 +189,7 @@ func TestPasskeyUnavailable(t *testing.T) {
 	repo := newFakeRepo()
 	eh := newPasskeyAPI(repo, nil, user) // nil verifier
 
-	if w := do(eh, "POST", "/api/v1/account/passkey/register/begin", `{}`, nil); w.Code != http.StatusServiceUnavailable || decodeErr(t, w) != "passkey_unavailable" {
+	if w := do(eh, "POST", "/api/v1/account/passkey/register/begin", "", nil); w.Code != http.StatusServiceUnavailable || decodeErr(t, w) != "passkey_unavailable" {
 		t.Fatalf("begin with no verifier: code = %d body %s, want 503 passkey_unavailable", w.Code, w.Body.String())
 	}
 	if w := do(eh, "POST", "/api/v1/account/passkey/register/finish", `{"name":"x","attestation":{"a":1}}`, nil); w.Code != http.StatusServiceUnavailable || decodeErr(t, w) != "passkey_unavailable" {
@@ -395,7 +395,7 @@ func TestPasskeyFaceSeparation(t *testing.T) {
 	ih := api.InternalHandler()
 
 	for _, tc := range []struct{ method, path, body string }{
-		{"POST", "/api/v1/account/passkey/register/begin", `{}`},
+		{"POST", "/api/v1/account/passkey/register/begin", ""},
 		{"POST", "/api/v1/account/passkey/register/finish", `{"name":"k","attestation":{"a":1}}`},
 		{"GET", "/api/v1/account/passkey/credentials", ""},
 		{"DELETE", "/api/v1/account/passkey/credentials/x", ""},

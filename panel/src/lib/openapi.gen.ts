@@ -8463,7 +8463,14 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description The context_sha256 the admin reviewed: the X-Felis-Context-Sha256 header of the context they downloaded, or the listed one. A context uploaded again since answers 409 context_changed. */
+                    expected_digest: string;
+                };
+            };
+        };
         responses: {
             /** @description The approved submission, with the linked build id. */
             200: {
@@ -8478,7 +8485,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            /** @description Submission has already been reviewed. */
+            /** @description The submission has already been reviewed (already_reviewed), or its context was uploaded again after the reviewed digest (context_changed). */
             409: {
                 headers: {
                     [name: string]: unknown;

@@ -29,7 +29,8 @@ import (
 //   - the operation must list the status that came back (or a default / 4XX / 5XX);
 //   - a JSON body must fit the schema documented for that status, and a response
 //     object may carry only the properties its schema names;
-//   - the JSON request behind a 2xx must fit the documented requestBody.
+//   - the JSON request behind a 2xx must fit the documented requestBody, naming
+//     only the properties it names.
 //
 // Requests to a path the document does not have are left to the route parity test.
 
@@ -163,7 +164,10 @@ func checkContract(path string, calls []contractCall) ([]string, error) {
 				}
 			}
 		}
-		if c.status/100 == 2 && isJSON(c.reqCT) && len(c.reqBody) > 0 {
+		// decodeJSON reads the body whatever Content-Type says, so a JSON body sent
+		// without one (as most handler tests send it) is held to the document too.
+		reqJSON := isJSON(c.reqCT) || (c.reqCT == "" && json.Valid(c.reqBody))
+		if c.status/100 == 2 && reqJSON && len(c.reqBody) > 0 {
 			rb, ok := op["requestBody"].(map[string]any)
 			if !ok && c.method == http.MethodGet {
 				continue // a body on a GET is ignored, whatever it holds
@@ -175,7 +179,7 @@ func checkContract(path string, calls []contractCall) ([]string, error) {
 			if schema, ok := jsonSchemaOf(v.deref(rb)); ok {
 				var body any
 				if err := json.Unmarshal(c.reqBody, &body); err == nil {
-					for _, e := range v.check(schema, body, "request", false) {
+					for _, e := range v.check(schema, body, "request", true) {
 						report(c, "%s", e)
 					}
 				}
@@ -318,8 +322,9 @@ func (v *contractValidator) deref(n map[string]any) map[string]any {
 	return n
 }
 
-// check returns where value leaves schema. strict (responses) also refuses object
-// properties the schema does not name, unless it allows additional ones.
+// check returns where value leaves schema. strict also refuses object properties
+// the schema does not name, unless it allows additional ones: a response field and
+// a request field the document misnames (display_name for displayName) both show.
 func (v *contractValidator) check(schema map[string]any, value any, at string, strict bool) []string {
 	schema = v.deref(schema)
 	if ref, ok := schema["x-unresolved"]; ok {
@@ -491,6 +496,11 @@ func TestContractCheckerCatchesDrift(t *testing.T) {
 		// A response field outside its enum.
 		{method: "POST", path: "/api/v1/account/link/verify", reqCT: jsonCT, reqBody: []byte(`{"code":"ABC"}`),
 			status: 200, respCT: jsonCT, respBody: []byte(`{"linked":true,"mc_uuid":"u","auth_source":""}`), at: "j"},
+		// A request property the requestBody does not name: the document once had
+		// display_name where the handler reads displayName. Sent with no Content-Type,
+		// which the handler decodes all the same.
+		{method: "POST", path: "/api/v1/servers", reqBody: []byte(`{"name":"x1","subdomain":"x1","display_name":"X"}`),
+			status: 201, respCT: jsonCT, respBody: []byte(`{"name":"x1","subdomain":"x1","desiredState":"Stopped"}`), at: "k"},
 	}
 	got, err := checkContract("../../docs/openapi.yaml", calls)
 	if err != nil {
@@ -504,6 +514,7 @@ func TestContractCheckerCatchesDrift(t *testing.T) {
 		`GET /api/v1/servers → 200 (b): response: property "extra" is not documented`,
 		`POST /api/v1/account/link/verify → 200 (i): request.code: is integer, documented as string`,
 		`POST /api/v1/account/link/verify → 200 (j): response.auth_source:  is not one of [mojang thirdparty]`,
+		`POST /api/v1/servers → 201 (k): request: property "display_name" is not documented`,
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("violations:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))

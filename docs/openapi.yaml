@@ -6571,6 +6571,20 @@ paths:
       security: [{ sessionCookie: [] }]
       parameters:
         - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [expected_digest]
+              properties:
+                expected_digest:
+                  type: string
+                  description: >-
+                    The context_sha256 the admin reviewed: the X-Felis-Context-Sha256 header of
+                    the context they downloaded, or the listed one. A context uploaded again since
+                    answers 409 context_changed.
       responses:
         '200':
           description: The approved submission, with the linked build id.
@@ -6586,7 +6600,9 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: Submission has already been reviewed.
+          description: >-
+            The submission has already been reviewed (already_reviewed), or its context was
+            uploaded again after the reviewed digest (context_changed).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
