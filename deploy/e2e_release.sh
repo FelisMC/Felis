@@ -31,13 +31,33 @@ lacks_re() { # label regex log
 
 # find_release: `gh release view` with no tag answers with the newest release that is not a
 # prerelease, the one the installer's release channel resolves.
+#
+# An empty tag skips the readme and upgrade jobs, green. Only gh's own `release not found`
+# means there is no release; any other failure (a token it refused, a rate limit, a network
+# error) fails the step, or every release's upgrade would go untested without a word.
 find_release() {
-  local lines tag names binary="" sums=""
-  lines="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName,assets --jq '.tagName, .assets[].name' 2>/dev/null || true)"
+  local lines err rc=0 tag names binary="" sums=""
+  err="$(mktemp)"
+  lines="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName,assets --jq '.tagName, .assets[].name' 2>"$err")" || rc=$?
+  if [ "$rc" -ne 0 ] && grep -qx 'release not found' "$err"; then
+    rm -f "$err"
+    echo "::notice::no published release yet; the readme and upgrade jobs have nothing to install"
+    printf 'tag=\nbinary=\nsums=\n' >> "${GITHUB_OUTPUT:-/dev/stdout}"
+    return 0
+  fi
+  if [ "$rc" -ne 0 ]; then
+    echo "::error::gh release view failed (exit ${rc}), so the newest release is unknown: $(tr '\n' ' ' < "$err")"
+    rm -f "$err"
+    fails=$((fails + 1))
+    return
+  fi
+  rm -f "$err"
   tag="$(printf '%s\n' "$lines" | head -n 1)"
   names="$(printf '%s\n' "$lines" | tail -n +2)"
   if [ -z "$tag" ]; then
-    echo "::notice::no published release yet; the readme and upgrade jobs have nothing to install"
+    echo "::error::gh release view answered without a tag"
+    fails=$((fails + 1))
+    return
   fi
   if printf '%s\n' "$names" | grep -qxF "$ASSET"; then binary=yes; fi
   if printf '%s\n' "$names" | grep -qxF SHA256SUMS; then sums=yes; fi

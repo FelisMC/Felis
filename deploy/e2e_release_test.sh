@@ -138,17 +138,21 @@ status "the release's installer downloading another release fails" 1 $?
 out="$(own "$root/nobinary.log" "")"
 status "a release without a binary asks nothing of its installer" 0 $?
 
-# find: the listing gh answers with, in the step's outputs, exactly.
+# find: the listing gh answers with, in the step's outputs, exactly. GH_FAIL is what a
+# failing gh prints on stderr before it exits 1.
 mkdir -p "$root/bin"
 cat > "$root/bin/gh" <<'STUB'
 #!/bin/sh
-[ -n "${GH_LISTING:-}" ] || exit 1
+if [ -n "${GH_FAIL:-}" ]; then
+  printf '%s\n' "$GH_FAIL" >&2
+  exit 1
+fi
 printf '%s\n' $GH_LISTING
 STUB
 chmod +x "$root/bin/gh"
-find_run() { # listing: prints what find says; its outputs land in $root/out
+find_run() { # listing [gh's error]: prints what find says; its outputs land in $root/out
   : > "$root/out"
-  GH_LISTING="$1" GITHUB_REPOSITORY=FelisMC/Felis GITHUB_OUTPUT="$root/out" PATH="$root/bin:$PATH" bash "$ER" find 2>&1
+  GH_LISTING="$1" GH_FAIL="${2:-}" GITHUB_REPOSITORY=FelisMC/Felis GITHUB_OUTPUT="$root/out" PATH="$root/bin:$PATH" bash "$ER" find 2>&1
 }
 same() { # label want got
   if [ "$2" = "$3" ]; then echo "PASS $1"; else printf 'FAIL %s: got\n%s\nwant\n%s\n' "$1" "$3" "$2"; fails=$((fails + 1)); fi
@@ -159,9 +163,25 @@ find_run "v0.1.0 felis-linux-amd64 felis-linux-arm64" >/dev/null
 same "find: a release without SHA256SUMS" "$(printf 'tag=v0.1.0\nbinary=yes\nsums=')" "$(cat "$root/out")"
 find_run "v0.1.0 felis-linux-arm64 felis-linux-amd64.cdx.json SHA256SUMS.sig" >/dev/null
 same "find: only exact asset names count" "$(printf 'tag=v0.1.0\nbinary=\nsums=')" "$(cat "$root/out")"
+out="$(find_run "" "release not found")"
+status "find: no release passes" 0 $?
+same "  with an empty tag, which skips the release jobs" "$(printf 'tag=\nbinary=\nsums=')" "$(cat "$root/out")"
+same "  and says so" "::notice::no published release yet; the readme and upgrade jobs have nothing to install" "$out"
+
+# Anything else gh fails on leaves the newest release unknown: the step fails, and writes no
+# tag that would skip the jobs.
+for e in "HTTP 401: Bad credentials (https://api.github.com/graphql)" \
+    "API rate limit exceeded for installation ID 1." \
+    "error connecting to api.github.com"; do
+  out="$(find_run "" "$e")"
+  status "find: gh failing with <$e> fails" 1 $?
+  same "  and quotes gh" "::error::gh release view failed (exit 1), so the newest release is unknown: $e " "$out"
+  same "  and writes no outputs" "" "$(cat "$root/out")"
+done
 out="$(find_run "")"
-same "find: no release" "$(printf 'tag=\nbinary=\nsums=')" "$(cat "$root/out")"
-expect "  and says so" "::notice::no published release yet" "$out"
+status "find: gh answering nothing fails" 1 $?
+same "  and says so" "::error::gh release view answered without a tag" "$out"
+same "  and writes no outputs" "" "$(cat "$root/out")"
 
 echo
 if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "${fails} FAILED"; fi
