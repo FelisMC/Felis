@@ -1260,6 +1260,15 @@ func TestOpLoginStateMachine(t *testing.T) {
 		t.Fatal("fresh pending request missing from the list")
 	}
 
+	// A pending request is not a ticket: the store refuses to consume it on its own,
+	// whatever the caller checked, and the refusal leaves it pending and unconsumed.
+	if err := repo.ConsumeOpLoginRequest(ctx, id, now); !errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("consume pending = %v, want ErrNotFound", err)
+	}
+	if req, err := repo.OpLoginRequestByID(ctx, id); err != nil || req.Status != "pending" || req.Consumed {
+		t.Fatalf("after refused consume = %+v, %v; want pending+unconsumed", req, err)
+	}
+
 	// Approve -> consume -> single use; second approve/consume are ErrNotFound.
 	if err := repo.ApproveOpLogin(ctx, id, approver.ID, now); err != nil {
 		t.Fatalf("ApproveOpLogin: %v", err)

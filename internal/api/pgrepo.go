@@ -2948,7 +2948,7 @@ func (p *PGRepo) ApproveOpLogin(ctx context.Context, id, approverUserID string, 
 func (p *PGRepo) ConsumeOpLoginRequest(ctx context.Context, id string, now time.Time) error {
 	res, err := p.db.ExecContext(ctx,
 		`UPDATE op_login_requests SET consumed_at = $2
-		 WHERE id = $1 AND consumed_at IS NULL AND expires_at > $2`,
+		 WHERE id = $1 AND approved_at IS NOT NULL AND consumed_at IS NULL AND expires_at > $2`,
 		id, now)
 	if err != nil {
 		return err

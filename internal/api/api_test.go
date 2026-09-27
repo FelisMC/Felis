@@ -1734,13 +1734,13 @@ func (f *fakeRepo) OpLoginRequestByID(_ context.Context, id string) (*OpLoginReq
 	}, nil
 }
 
-// ConsumeOpLoginRequest stamps consumed on an unconsumed, unexpired request (the
-// finish path's single-use guard), mirroring the PG zero-rows-else UPDATE. The
-// approval gate is read by the handler BEFORE this call, so consume only checks
-// consumed_at and expiry (exactly as PG does).
+// ConsumeOpLoginRequest stamps consumed on an approved, unconsumed, unexpired
+// request (the finish path's single-use guard), mirroring the PG zero-rows-else
+// UPDATE. The handler reads the approval first too; the store refuses a pending
+// request on its own so the single-use guard never depends on that read.
 func (f *fakeRepo) ConsumeOpLoginRequest(_ context.Context, id string, now time.Time) error {
 	r, ok := f.opLogins[id]
-	if !ok || r.consumed || !r.expiresAt.After(now) {
+	if !ok || r.status != "approved" || r.consumed || !r.expiresAt.After(now) {
 		return ErrNotFound
 	}
 	r.consumed = true
