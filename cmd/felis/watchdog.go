@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"flag"
 	"fmt"
@@ -424,8 +423,8 @@ func smtpSecretPassword(ctx context.Context, cl client.Client, ns string) (strin
 	return string(sec.Data[platform.SMTPSecretPasswordKey]), nil
 }
 
-// ownerEmails pings PostgreSQL and returns the verified addresses of the
-// enabled owner accounts, the people who can act on an alert.
+// ownerEmails pings PostgreSQL and returns the owners an alert goes to
+// (watchdog.OwnerEmails).
 func ownerEmails(ctx context.Context, url string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -434,24 +433,7 @@ func ownerEmails(ctx context.Context, url string) ([]string, error) {
 		return nil, err
 	}
 	defer drv.Close()
-	rows, err := drv.DB().QueryContext(ctx,
-		`SELECT email FROM users
-		 WHERE role = 'owner' AND email_verified AND COALESCE(email, '') <> ''
-		   AND NOT disabled AND deleted_at IS NULL
-		 ORDER BY email`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var email sql.NullString
-		if err := rows.Scan(&email); err != nil {
-			return nil, err
-		}
-		out = append(out, email.String)
-	}
-	return out, rows.Err()
+	return watchdog.OwnerEmails(ctx, drv.DB())
 }
 
 // proxyFinding dials the game proxy; players reach every server through it.
