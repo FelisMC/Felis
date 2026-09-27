@@ -10,7 +10,8 @@ const STYLE_MAP = {
   user: "bg-muted text-muted-foreground",
 };
 
-const I18N_KEY = {
+// The role's name in the UI language, under the admin namespace.
+export const ROLE_LABEL_KEY = {
   owner: "users_role_owner",
   admin: "users_role_admin",
   user: "users_role_user",
@@ -27,7 +28,7 @@ export function RoleBadge({ role }: { role: "owner" | "admin" | "user" }) {
       )}
     >
       <Icon className="h-3 w-3" />
-      {t(I18N_KEY[role])}
+      {t(ROLE_LABEL_KEY[role])}
     </span>
   );
 }

@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { ConfigBanner, VersionBadge } from "@/components/RuntimeStatus";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Loading } from "@/components/States";
+import { ROLE_LABEL_KEY } from "@/components/RoleBadge";
 
 function SectionGroup({
   section,
@@ -71,9 +72,9 @@ const FOOT_ICON_BTN =
 
 function UserStrip() {
   // The sidebar foot identifies the principal and exposes one action — sign out.
-  // identity?.email is the only display-safe field (user_id is a UUID, role is
-  // server-truth not display). While /me is loading or has failed we render a
-  // muted placeholder rather than a broken row, so the strip never flashes empty.
+  // It shows the email and the role by its name in the UI language (user_id is a
+  // UUID). While /me is loading or has failed both lines hold a muted dash, so
+  // the strip never flashes empty and never names a role it has not read.
   const { identity, refresh } = useTier();
   const { t } = useTranslation("account");
   const [signingOut, setSigningOut] = useState(false);
@@ -99,8 +100,8 @@ function UserStrip() {
         >
           {identity?.email ?? <span className="text-muted-foreground/40">—</span>}
         </div>
-        <div className="text-[10px] text-muted-foreground/70 capitalize font-medium">
-          {identity?.role ?? "user"}
+        <div className="text-[10px] text-muted-foreground/70 font-medium">
+          {identity ? t(`admin:${ROLE_LABEL_KEY[identity.role]}`) : <span className="text-muted-foreground/40">—</span>}
         </div>
       </div>
       <button
