@@ -12,14 +12,15 @@
 #              release's binary, images and plugin from that release's assets; skipped until
 #              a release exists
 #   upgrade    the newest published release through its own installer and its own assets,
-#              then this commit's assets on top of it; skipped until a release exists
+#              rows of every kind seeded into its database, then this commit's assets on
+#              top of it; skipped until a release exists
 #   source     a full install built on the host from this checkout (FELIS_SKIP_FETCH):
 #              the fallback a release without assets, or an unsupported one, takes. It builds
 #              everything with Docker, so it runs by hand and weekly only
 #
 # This runs on pushes that touch what gets installed, by hand, and weekly (a moving
 # upstream: apt mirrors, k3s's install script and release assets, Adoptium).
-# deploy/e2e_check.sh holds the assertions.
+# deploy/e2e_check.sh holds the assertions, deploy/e2e_seed.sh the upgrade's seed and its check.
 name: e2e
 
 on:
@@ -256,13 +257,25 @@ jobs:
           sudo bash deploy/e2e_check.sh release
           bash deploy/e2e_release.sh check-own release.log
 
+      # A fresh install's database holds only what its migrations wrote: the seed gives the
+      # upgrade's move and its pending migrations existing rows to carry.
+      - name: Seed the release's database
+        if: steps.release.outputs.tag != ''
+        run: sudo bash deploy/e2e_seed.sh seed
+
       - name: Upgrade to this commit
         if: steps.release.outputs.tag != ''
         run: sudo FELIS_ARTIFACT_DIR="$GITHUB_WORKSPACE/dist" FELIS_INSTALL_MODE=full bash deploy/bootstrap.sh 2>&1 | tee upgrade.log
 
+      # Both checks run and report: the seeded rows go last, after the restore drill has
+      # also put them back from a bundle.
       - name: Check the upgrade
         if: steps.release.outputs.tag != ''
-        run: sudo bash deploy/e2e_check.sh upgrade
+        run: |
+          rc=0
+          sudo bash deploy/e2e_check.sh upgrade || rc=1
+          sudo bash deploy/e2e_seed.sh check || rc=1
+          exit "$rc"
 
       - name: Diagnostics
         if: failure()
