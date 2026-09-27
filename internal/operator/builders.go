@@ -270,13 +270,15 @@ func buildStatefulSet(server *v1alpha1.MinecraftServer, replicas int32, felisIma
 	// otherwise be read-only to it. An arbitrary user Paper image then gets the forwarding
 	// config written for it (it does not consume FELIS_FORWARDING_SECRET itself); system
 	// servers (login/lobby) are Felis-built and handle forwarding in their own
-	// entrypoints. Without a felis image name there is nothing to run either step with.
+	// entrypoints. Last, every server waits for its egress fence (egressGateInitContainer).
+	// Without a felis image name there is nothing to run any step with.
 	var initContainers []corev1.Container
 	if felisImage != "" {
 		initContainers = append(initContainers, prepareDataInitContainer(felisImage))
 		if server.Labels[v1alpha1.LabelSystemRole] == "" {
 			initContainers = append(initContainers, forwardingInitContainer(felisImage))
 		}
+		initContainers = append(initContainers, egressGateInitContainer(felisImage))
 	}
 
 	grace := graceSeconds(server)
@@ -446,6 +448,35 @@ func forwardingInitContainer(felisImage string) corev1.Container {
 	}
 }
 
+// egressGateWait bounds how long a server's start waits for its egress fence.
+// kube-router programs a new pod's policy within a second; the rest is margin for
+// a loaded node.
+const egressGateWait = 30 * time.Second
+
+// egressGateInitContainer holds the server image back until the pod's egress fence
+// (platform.ServerEgressPolicies) is in effect. The policy is programmed after the
+// pod starts, and live on k3s a new server-labelled pod reached felis-api's
+// internal face on its first request; the server image and the plugins it loads
+// are the owner's code and must never run inside that window. The gate is `felis
+// egress-gate`, which the build pod runs first for the same reason.
+//
+// It fails open where the build's gate fails closed. An operator's
+// --server-egress-allow-cidr can cover the node the Kubernetes API Service leads
+// to, and then the probe answers forever while the fence stands; refusing would
+// take every server down on a legitimate install. After egressGateWait the policy
+// has landed if it ever will, so letting the server on costs nothing the fence
+// would have given, and the gate's log says why the start was slow.
+func egressGateInitContainer(felisImage string) corev1.Container {
+	return corev1.Container{
+		Name:  "egress-gate",
+		Image: felisImage,
+		Command: []string{felisBinaryPath, "egress-gate",
+			"--wait", egressGateWait.String(), "--fail-open"},
+		Resources:       initContainerResources(),
+		SecurityContext: hardenedContainerSecurityContext(true),
+	}
+}
+
 // prepareDataInitContainer runs `felis init-volume`, which chowns every world-volume
 // entry not already owned by naming.GameUID:GameGID. It is the one container in the
 // pod that runs as root, and it holds only what a chown walk needs: CHOWN to change
@@ -512,8 +543,8 @@ func hardenedContainerSecurityContext(readOnlyRoot bool) *corev1.SecurityContext
 	return sc
 }
 
-// initContainerResources bounds the two felis-image initContainers. Both are short
-// file walks; the memory ceiling stops a pathological volume from taking the node's
+// initContainerResources bounds the felis-image initContainers. Two are short file
+// walks and the third a dial loop; the memory ceiling stops a pathological volume from taking the node's
 // memory with it, and no CPU limit keeps a large world's chown from being throttled
 // into the pod's start-up time.
 func initContainerResources() corev1.ResourceRequirements {

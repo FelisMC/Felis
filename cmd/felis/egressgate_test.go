@@ -75,6 +75,40 @@ func TestEgressGateRefusesAnOpenNetwork(t *testing.T) {
 	}
 }
 
+// A server's gate waits out --wait all the same, then lets the pod start with a
+// warning in its log.
+func TestEgressGateFailOpenWaitsThenWarns(t *testing.T) {
+	shrinkEgressGate(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+	var out, errb bytes.Buffer
+	start := time.Now()
+	if code := cmdEgressGate([]string{"--probe", ln.Addr().String(), "--wait", "150ms", "--fail-open"}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d, want 0: %s", code, errb.String())
+	}
+	if waited := time.Since(start); waited < 150*time.Millisecond {
+		t.Errorf("gave up after %s, before --wait ran out", waited)
+	}
+	if !strings.Contains(errb.String(), ln.Addr().String()+" still answers after 150ms; starting anyway") {
+		t.Errorf("stderr = %q", errb.String())
+	}
+	if out.Len() != 0 {
+		t.Errorf("stdout = %q, want nothing: the lock was never seen", out.String())
+	}
+}
+
 func TestEgressGateDefaultsToTheKubernetesService(t *testing.T) {
 	shrinkEgressGate(t)
 	t.Setenv("KUBERNETES_SERVICE_HOST", "")

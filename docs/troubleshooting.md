@@ -118,6 +118,31 @@ kubectl describe pod <pod>     # look at Events + container State
   to keep its state under `/data`. [GO-TESTED: `TestBuildStatefulSetRunsGameAsNonRoot`,
   `TestChownTreeHandsOverMismatchedEntries`; INTEGRATION-ONLY for the walk on a
   live volume.]
+- **Every start sits about 30 s in its last `Init:` step** → the `egress-gate`
+  initContainer (`felis egress-gate`) holds the server image until the pod's
+  egress fence (`felis-server-egress`) is in effect: kube-router programs a new
+  pod's policy a moment after it starts, and a server-labelled pod reached
+  felis-api's internal face on its first request. It dials the Kubernetes API
+  Service, which no server is admitted to, and normally passes within a second.
+  `kubectl logs <pod> -c egress-gate` says which way it went:
+
+  ```
+  felis egress-gate: 10.43.0.1:443 is unreachable after 201ms (...); the egress lock is in effect
+  felis egress-gate: 10.43.0.1:443 still answers after 30s; starting anyway. ...
+  ```
+
+  The second line means the probe answered for the whole wait. Either the cluster
+  runs without NetworkPolicy enforcement (a CNI without it, or k3s started with
+  `--disable-network-policy`), which leaves every server off the fence, or a
+  `--server-egress-allow-cidr` covers the node the API Service leads to, which
+  admits servers to the node's PostgreSQL and kube API port as well. Narrow the
+  CIDR to the host the servers need. The gate lets the server start after the
+  wait either way, where the build's gate refuses. [GO-TESTED:
+  `TestBuildStatefulSetGatesEgress`, `TestEgressGateFailOpenWaitsThenWarns`.
+  VM-TESTED on k3s: without the gate a server-labelled pod's first request reached
+  `felis-api-internal:8081`; behind it, three pods' first requests were refused
+  after gates of about 200 ms, and a pod no policy selects started after the 5 s
+  wait it was given, with the warning.]
 - **`FailedCreate … violates PodSecurity "baseline"`** on the StatefulSet or a
   Job → the minecraft namespace enforces the PodSecurity `baseline` profile
   (`pod-security.kubernetes.io/enforce=baseline`, set by the install bundle).

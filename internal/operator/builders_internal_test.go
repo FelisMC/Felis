@@ -1,6 +1,7 @@
 package operator
 
 import (
+	"slices"
 	"testing"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
@@ -58,7 +59,7 @@ func TestReadinessProbeHTTPCustomPath(t *testing.T) {
 
 // A user server (no system-role label) gets the forwarding-config initContainer after
 // prepare-data, running the felis image and mounting the world volume. A system
-// server gets only prepare-data, and a build with no felis image name gets neither.
+// server gets no forwarding step, and a build with no felis image name gets no step.
 func TestBuildStatefulSetForwardingInitContainer(t *testing.T) {
 	user := &v1alpha1.MinecraftServer{}
 	user.Spec.Storage.Size = "1Gi"
@@ -68,8 +69,8 @@ func TestBuildStatefulSetForwardingInitContainer(t *testing.T) {
 		t.Fatalf("buildStatefulSet: %v", err)
 	}
 	inits := sts.Spec.Template.Spec.InitContainers
-	if len(inits) != 2 || inits[0].Name != "prepare-data" || inits[1].Name != "init-forwarding" {
-		t.Fatalf("want [prepare-data init-forwarding], got %+v", inits)
+	if len(inits) != 3 || inits[0].Name != "prepare-data" || inits[1].Name != "init-forwarding" || inits[2].Name != "egress-gate" {
+		t.Fatalf("want [prepare-data init-forwarding egress-gate], got %+v", inits)
 	}
 	ic := inits[1]
 	if ic.Image != "felis:demo" {
@@ -113,13 +114,51 @@ func TestBuildStatefulSetForwardingInitContainer(t *testing.T) {
 	}
 
 	// System server handles forwarding in its own entrypoint, but its world still
-	// needs handing to the game uid.
+	// needs handing to the game uid and its image waits for the fence all the same.
 	sys := &v1alpha1.MinecraftServer{}
 	sys.Spec.Storage.Size = "1Gi"
 	sys.Labels = map[string]string{v1alpha1.LabelSystemRole: "lobby"}
 	sysSts, _ := buildStatefulSet(sys, 1, "felis:demo")
-	if got := sysSts.Spec.Template.Spec.InitContainers; len(got) != 1 || got[0].Name != "prepare-data" {
-		t.Errorf("system server must get only prepare-data, got %+v", got)
+	if got := sysSts.Spec.Template.Spec.InitContainers; len(got) != 2 || got[0].Name != "prepare-data" || got[1].Name != "egress-gate" {
+		t.Errorf("system server must get [prepare-data egress-gate], got %+v", got)
+	}
+}
+
+// Every server's image waits behind the egress gate, the last step before it: the
+// pod's NetworkPolicy is programmed after the pod starts. The gate runs the felis
+// image with nothing but the dial it needs, and it lets the server start after
+// egressGateWait, where the build's gate refuses.
+func TestBuildStatefulSetGatesEgress(t *testing.T) {
+	for _, role := range []string{"", naming.SystemLoginServer, "lobby"} {
+		server := &v1alpha1.MinecraftServer{}
+		server.Spec.Storage.Size = "1Gi"
+		if role != "" {
+			server.Labels = map[string]string{v1alpha1.LabelSystemRole: role}
+		}
+		sts, err := buildStatefulSet(server, 1, "felis:demo")
+		if err != nil {
+			t.Fatalf("buildStatefulSet: %v", err)
+		}
+		inits := sts.Spec.Template.Spec.InitContainers
+		gate := inits[len(inits)-1]
+		if gate.Name != "egress-gate" || gate.Image != "felis:demo" {
+			t.Fatalf("role %q: last init container = %s (%s), want egress-gate on the felis image", role, gate.Name, gate.Image)
+		}
+		want := []string{felisBinaryPath, "egress-gate", "--wait", "30s", "--fail-open"}
+		if !slices.Equal(gate.Command, want) || len(gate.Args) != 0 {
+			t.Errorf("role %q: gate runs %v %v, want %v", role, gate.Command, gate.Args, want)
+		}
+		if sc := gate.SecurityContext; sc == nil || sc.RunAsUser != nil || !dropsAll(sc) || len(sc.Capabilities.Add) != 0 ||
+			sc.ReadOnlyRootFilesystem == nil || !*sc.ReadOnlyRootFilesystem ||
+			sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
+			t.Errorf("role %q: the gate must run unprivileged as the pod uid, got %+v", role, sc)
+		}
+		if len(gate.VolumeMounts) != 0 || len(gate.Env) != 0 || len(gate.EnvFrom) != 0 {
+			t.Errorf("role %q: the gate needs no volume and no secret, got mounts %+v env %+v %+v", role, gate.VolumeMounts, gate.Env, gate.EnvFrom)
+		}
+		if gate.Resources.Limits.Memory().IsZero() {
+			t.Errorf("role %q: the gate must carry a memory limit", role)
+		}
 	}
 }
 

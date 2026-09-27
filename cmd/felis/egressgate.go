@@ -17,23 +17,28 @@ var (
 	egressPollInterval = 200 * time.Millisecond
 )
 
-// cmdEgressGate is the first initContainer of every build pod. The pod's
-// NetworkPolicy is programmed asynchronously after the pod starts (live on k3s:
-// a build-labelled pod reached the internet and the Kubernetes API for its first
-// ~0.7 s), so the gate dials a destination the policy denies until it stops
-// answering, and only then lets the pod's next container, eventually the
-// untrusted Dockerfile, start.
+// cmdEgressGate is the first initContainer of every build pod and the last of
+// every game server pod. A pod's NetworkPolicy is programmed asynchronously after
+// the pod starts (live on k3s: a build-labelled pod reached the internet and the
+// Kubernetes API for its first ~0.7 s, a server-labelled one felis-api's internal
+// face on its first request), so the gate dials a destination the policy denies
+// until it stops answering, and only then lets the pod's next container, the
+// untrusted Dockerfile or server image, start.
 //
 // The default probe is the Kubernetes API Service, which the kubelet names in
-// every pod's environment and the build policy never admits. A probe that still
-// answers after --wait means the policy is not enforced at all (a CNI without
+// every pod's environment and neither policy admits. A probe that still answers
+// after --wait means the policy is not enforced at all (a CNI without
 // NetworkPolicy support, or k3s run with --disable-network-policy), and the
-// build fails closed.
+// build fails closed. A server passes --fail-open: an operator's
+// --server-egress-allow-cidr may cover the node the API Service leads to, so a
+// probe that keeps answering does not prove the fence is missing, and by then
+// the policy has had --wait to land.
 func cmdEgressGate(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("egress-gate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	probe := fs.String("probe", "", "host:port the build NetworkPolicy denies (default: the Kubernetes API Service from KUBERNETES_SERVICE_HOST/PORT)")
-	wait := fs.Duration("wait", 2*time.Minute, "how long the probe may keep answering before the build is refused")
+	probe := fs.String("probe", "", "host:port the pod's NetworkPolicy denies (default: the Kubernetes API Service from KUBERNETES_SERVICE_HOST/PORT)")
+	wait := fs.Duration("wait", 2*time.Minute, "how long the probe may keep answering before the gate gives up")
+	failOpen := fs.Bool("fail-open", false, "when --wait runs out, warn and let the pod go on instead of refusing it")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -56,6 +61,12 @@ func cmdEgressGate(args []string, stdout, stderr io.Writer) int {
 		}
 		_ = conn.Close()
 		if time.Since(start) >= *wait {
+			if *failOpen {
+				fmt.Fprintf(stderr, "felis egress-gate: %s still answers after %s; starting anyway. Either this namespace's "+
+					"NetworkPolicy is not enforced (a CNI without NetworkPolicy support, or k3s started with "+
+					"--disable-network-policy), or an allowed CIDR admits the address behind it\n", *probe, *wait)
+				return 0
+			}
 			fmt.Fprintf(stderr, "felis egress-gate: %s still answers after %s: the build namespace's NetworkPolicy is not enforced "+
 				"(a CNI without NetworkPolicy support, or k3s started with --disable-network-policy); refusing to run the build\n",
 				*probe, *wait)
