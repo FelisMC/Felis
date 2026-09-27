@@ -74,7 +74,16 @@ public final class MotdResponder {
         if ("Running".equals(v.desiredState())) {
             return "启动中… / starting…";
         }
-        return "休眠中，加入即唤醒 / sleeping — join to wake";
+        // The ping carries no identity either, so a sleeping server says who can wake
+        // it, by the same autostartPolicy gate the join runs into: ownerOnly or unset
+        // admits the owner alone.
+        if ("public".equals(v.autostartPolicy())) {
+            return "休眠中，加入即唤醒 / sleeping — join to wake";
+        }
+        if ("allowlist".equals(v.autostartPolicy())) {
+            return "休眠中，名单内玩家加入即唤醒 / sleeping — allowlisted players can wake it";
+        }
+        return "休眠中，仅服主可唤醒 / sleeping — only the owner can wake it";
     }
 
     static NamedTextColor statusColor(ServerView v) {

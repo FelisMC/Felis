@@ -221,6 +221,7 @@ per-server cooldown → global running cap**. Map the API result:
 |---|---|---|---|
 | `403` | `forbidden` | `autostartPolicy=allowlist` and UUID not allowlisted, or `ownerOnly` and caller is not owner | Add the UUID / claim the server / set `autostartPolicy=public` |
 | `409` | `maintenance_in_progress` | A restore, backup or file write holds the server's world volume (§3b) | Wait for the Job to finish |
+| `409` | `world_reclaiming` | The idle reaper is archiving the world (§3b item 3); afterwards the server is released with an empty world | Nothing to wait for; the old world stays in the archive |
 | `429` | (cooldown) | Wake retried within the 30s per-server `WakeCooldown` | Wait out the cooldown |
 | `503` | `at_capacity` | Global `MaxRunningServers` cap reached | Stop another server or raise the cap |
 
@@ -231,7 +232,8 @@ teleports when `ready=true`.
 
 The Velocity-side consumption of these codes (`403` → "You're not allowed to
 start «server»"; `409 maintenance_in_progress` → "«server» is under
-maintenance", not queued; `429` → re-queue; other → "Couldn't start … Try again
+maintenance", not queued; `409 world_reclaiming` → "«server» sat idle too
+long and its world is being archived", not queued; `429` → re-queue; other → "Couldn't start … Try again
 shortly.") lives in the Java plugin and is **[CODE-ONLY]** — the codes it reacts
 to are produced by the Go-tested `authorizeWakeByUUID` / cooldown limiter, so
 grade the two halves separately.

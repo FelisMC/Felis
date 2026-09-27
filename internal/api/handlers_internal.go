@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	"felis.lolicon.best/internal/maintenance"
 	"felis.lolicon.best/internal/naming"
 )
 
@@ -192,8 +193,16 @@ func (a *API) handleInternalWake(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// A 409 maintenance_in_progress tells velocity nothing is coming up until the
-	// restore/backup/file write finishes, so it does not enqueue the player.
+	// restore/backup/file write finishes, so it does not enqueue the player. The
+	// idle reaper gets its own code: when it lets go, the world is archived and the
+	// server released, so "try again shortly" would send the player back to a server
+	// that is no longer the one they knew.
 	if err := a.Cluster.SetDesiredState(r.Context(), name, v1alpha1.DesiredRunning); err != nil {
+		var busy *MaintenanceBusyError
+		if errors.As(err, &busy) && busy.Kind == maintenance.KindReap {
+			writeError(w, r, errWorldReclaiming)
+			return
+		}
 		a.writeLookupError(w, r, err)
 		return
 	}
@@ -209,6 +218,12 @@ func (a *API) handleInternalWake(w http.ResponseWriter, r *http.Request) {
 		"phase": info.Phase, "ready": info.Ready,
 	})
 }
+
+// errWorldReclaiming refuses a join-driven wake while the idle reaper archives the
+// server's world. Once it is done the server is released with an empty world and
+// the old one stays in the archive.
+var errWorldReclaiming = newError(http.StatusConflict, "world_reclaiming",
+	"this server sat idle too long and its world is being archived; afterwards it is released with an empty world")
 
 // internalClaimRequest is the velocity `Claim & Start` body: the verified
 // online-mode UUID of the player claiming an ownerless server (spec §9.3, §12).

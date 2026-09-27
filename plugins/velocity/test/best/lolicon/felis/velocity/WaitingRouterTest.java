@@ -234,6 +234,7 @@ public final class WaitingRouterTest {
                 {"retries spent", "« gamma » failed to start and its automatic retries are spent", null},
                 {"409 maintenance_in_progress", "« gamma » is under maintenance", null},
                 {"409 server_retiring", "« gamma » has been given up or is being deleted", null},
+                {"409 world_reclaiming", "« gamma » sat idle too long and its world is being archived", null},
                 {"409 conflict", "Couldn't start « gamma » right now", "wake gamma failed (status=409)"},
                 {"503 at_capacity", "The cluster is at capacity right now", null},
                 {"503 unavailable", "Couldn't start « gamma » right now", "wake gamma failed (status=503)"},
@@ -259,6 +260,8 @@ public final class WaitingRouterTest {
             assertEq(c[0] + ": no promise of a start", false, p.said("Starting « gamma »"));
             if (c[2] != null) {
                 assertEq(c[0] + ": logged", warned + 1, log.count("WARN", c[2]));
+            } else {
+                assertEq(c[0] + ": no generic failure on top", false, p.said("Couldn't start « gamma » right now"));
             }
             api.policy.remove("gamma");
             api.phase.remove("gamma");

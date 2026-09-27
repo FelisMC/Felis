@@ -727,6 +727,18 @@ public final class WaitingRouter {
                                 NamedTextColor.YELLOW));
                         return;
                     }
+                    if ("world_reclaiming".equals(e.errorCode())) {
+                        // The idle reaper is archiving the world. When it is done the
+                        // server is released with an empty world, so there is nothing
+                        // to wait for, and "try again shortly" would mislead.
+                        player.sendMessage(Component.text(
+                                zh ? "「" + serverName + "」闲置太久，世界正在归档回收，现在不能启动。"
+                                     + "回收后它会变成可认领的空服，旧世界留在归档里。"
+                                   : "« " + serverName + " » sat idle too long and its world is being archived, so it can't start."
+                                     + " Afterwards it becomes a claimable empty server; the old world stays in the archive.",
+                                NamedTextColor.YELLOW));
+                        return;
+                    }
                     if ("server_retiring".equals(e.errorCode())) {
                         // The owner gave the server up or an admin is deleting it: it
                         // stays down until the reaper archives it, unless that is

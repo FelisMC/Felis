@@ -58,6 +58,20 @@ func TestWakeRefusedDuringMaintenance(t *testing.T) {
 			t.Fatalf("wake after maintenance: code = %d body %s", w.Code, w.Body.String())
 		}
 	})
+
+	// The idle reaper is no wait-and-retry: when it lets go the world is archived
+	// and the server released, so velocity must be able to tell the player that.
+	t.Run("internal wake during an idle reap -> 409 world_reclaiming", func(t *testing.T) {
+		api, cl := newInternalWakeAPI("public")
+		cl.wakeErr["survival"] = &MaintenanceBusyError{Kind: maintenance.KindReap}
+		w := internalWake(api, `{"mc_uuid":"`+wakeUUID+`"}`)
+		if w.Code != http.StatusConflict || decodeErr(t, w) != "world_reclaiming" {
+			t.Fatalf("code = %d body %s, want 409 world_reclaiming", w.Code, w.Body.String())
+		}
+		if _, set := cl.desired["survival"]; set {
+			t.Fatal("a refused wake must not flip desiredState")
+		}
+	})
 }
 
 // maintenanceOp is one world-volume operation as the external face serves it.

@@ -3280,7 +3280,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            /** @description Nothing was started. maintenance_in_progress: a restore, backup or file write holds the server's world volume. start_failed: the last start failed and its automatic retries are spent (ServerInfo.startGaveUp); the server stays down until a person starts it from the panel. server_retiring: the owner gave the server up or an admin is deleting it; it stays down until the reaper archives it. */
+            /** @description Nothing was started. maintenance_in_progress: a restore, backup or file write holds the server's world volume. start_failed: the last start failed and its automatic retries are spent (ServerInfo.startGaveUp); the server stays down until a person starts it from the panel. server_retiring: the owner gave the server up or an admin is deleting it; it stays down until the reaper archives it. world_reclaiming: the idle reaper is archiving the world; afterwards the server is released with an empty world. */
             409: {
                 headers: {
                     [name: string]: unknown;

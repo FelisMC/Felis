@@ -1276,7 +1276,9 @@ paths:
             start failed and its automatic retries are spent (ServerInfo.startGaveUp);
             the server stays down until a person starts it from the panel.
             server_retiring: the owner gave the server up or an admin is deleting it;
-            it stays down until the reaper archives it.
+            it stays down until the reaper archives it. world_reclaiming: the idle
+            reaper is archiving the world; afterwards the server is released with an
+            empty world.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
