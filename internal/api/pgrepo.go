@@ -830,11 +830,11 @@ func (p *PGRepo) ServerOwners(ctx context.Context) (map[string]ServerOwnership, 
 // a create whose CRD write failed, or one the reaper deleted between removing
 // its MinecraftServer and marking the row. That row starts over, and the earlier
 // server's other aliases and allowlist go with it; nothing of its owner, claim,
-// activity clock, reaper warnings or pending retirement reaches the new server,
-// so the reaper's unfinished deletion no longer applies to it. A retried create
-// lands on the same fresh state. The alias subdomain is a PRIMARY KEY: bound to
-// another server, it rolls the whole seed back and returns ErrConflict, letting
-// the create handler answer 409 before it touches the CRD.
+// activity clock, reaper warnings, pending retirement or scheduled tasks reaches
+// the new server, so the reaper's unfinished deletion no longer applies to it. A
+// retried create lands on the same fresh state. The alias subdomain is a PRIMARY
+// KEY: bound to another server, it rolls the whole seed back and returns
+// ErrConflict, letting the create handler answer 409 before it touches the CRD.
 //
 // Two creates of one name racing between the handler's cluster check and the
 // first CRD write can still leave the loser's alias in place of the winner's;
@@ -861,6 +861,9 @@ func (p *PGRepo) SeedServer(ctx context.Context, name, subdomain string, cpuMill
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM server_aliases WHERE server_name = $1`, name); err != nil {
 		return fmt.Errorf("clear earlier aliases: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM server_schedules WHERE server_name = $1`, name); err != nil {
+		return fmt.Errorf("clear earlier schedules: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO server_aliases (subdomain, server_name) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
@@ -2613,7 +2616,8 @@ func (p *PGRepo) RedeemMigration(ctx context.Context, targetUserID, codeHash str
 	}
 
 	// Re-point every server the source owns to the target, collecting the names for
-	// the audit trail. Server ownership is the only thing that moves.
+	// the audit trail. Server ownership moves, and the servers' scheduled tasks
+	// with it: they belong to the same person.
 	rows, err := tx.QueryContext(ctx,
 		`UPDATE servers SET owner_id = $2, claimed_at = $3
 		 WHERE owner_id = $1 AND deleted_at IS NULL
@@ -2636,6 +2640,13 @@ func (p *PGRepo) RedeemMigration(ctx context.Context, targetUserID, codeHash str
 		return "", nil, err
 	}
 	rows.Close()
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE server_schedules s SET owner_id = $2 FROM servers v
+		 WHERE v.name = s.server_name AND v.owner_id = $2 AND s.owner_id = $1`,
+		sourceUserID, targetUserID); err != nil {
+		return "", nil, err
+	}
 
 	// Retire the source: revoke its live sessions and soft-delete it so it can neither
 	// log in nor start another migration (double-spend defense). The servers just moved

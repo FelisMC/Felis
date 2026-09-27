@@ -98,6 +98,11 @@ type API struct {
 	FileStage       *fileedit.Stage
 	InternalBaseURL string
 
+	// Schedules stores the servers' scheduled tasks (schedules.go), which
+	// RunSchedules fires. Optional: when nil the schedule routes report 503 and
+	// RunSchedules does nothing.
+	Schedules ServerSchedules
+
 	// Submissions is the user-modpack approval lane (a user-directed extension over
 	// the §16 build subsystem; see internal/submit). It is optional: when
 	// nil the /me/submissions and /submissions routes report 503 rather than 404, so
@@ -576,6 +581,15 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/files/mkdir", h: a.handleMkdir},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/files/rename", h: a.handleRenameFile},
 		{Method: "PUT", Pattern: "/api/v1/servers/{name}/files/upload", h: a.handleUploadFile},
+		// Scheduled tasks (handlers_schedules.go): a console command, restart, stop,
+		// start or backup at set times, which felis-api's runner fires. App-tier and
+		// owner-or-admin inside the handler, like the console and power routes they
+		// automate; a schedule reaches nothing its owner could not do by hand.
+		{Method: "GET", Pattern: "/api/v1/servers/{name}/schedules", h: a.handleListSchedules},
+		{Method: "POST", Pattern: "/api/v1/servers/{name}/schedules", h: a.handleCreateSchedule},
+		{Method: "PUT", Pattern: "/api/v1/servers/{name}/schedules/{id}", h: a.handleUpdateSchedule},
+		{Method: "DELETE", Pattern: "/api/v1/servers/{name}/schedules/{id}", h: a.handleDeleteSchedule},
+		{Method: "POST", Pattern: "/api/v1/servers/{name}/schedules/{id}/run", h: a.handleRunSchedule},
 		// Account linking (spec §10), web side: /start reports link status (it is the
 		// pointer handleClaim's 412 emits), /verify consumes the in-game code and binds
 		// the account. App-tier, not admin — linking your own account is an ordinary

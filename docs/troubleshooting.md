@@ -3163,6 +3163,65 @@ end, has not been run on a cluster.]
 
 ---
 
+## 19. Scheduled tasks: a run is skipped, missed or failed
+
+A server's owner (or an admin) keeps up to 20 scheduled tasks on it, on the
+panel's **Scheduled tasks** page (`/api/v1/servers/{name}/schedules`). Each one
+sends a console command, restarts, stops, starts or backs up the server, once a
+day at a set time or every 15 minutes to 12 hours, on the chosen weekdays, in an
+IANA time zone (the browser's by default). A restart, stop or backup may warn the
+players in game (`say`) 1 to 30 minutes ahead. felis-api runs the tasks itself: a
+loop every 15 seconds, so a task starts within about 15 seconds of its time, and
+the database hands each run to one felis-api only.
+
+What each action does:
+
+| Action | Server running | Server stopped |
+| --- | --- | --- |
+| command | runs it over RCON (a leading `/` is dropped) | skipped |
+| restart | stops the pod, then starts it | skipped |
+| stop | stops it | skipped |
+| start | skipped (a start that `Failed` is started over) | starts it, as the panel's start does (running-server cap, retiring server, busy world) |
+| backup | stops it, takes the same backup Job as "Back up now", then starts it again | takes the backup |
+
+A step has a deadline: the pod must stop within 15 minutes, the backup Job must
+end within 45, and the start is given 15. A restart or backup that cannot finish
+still starts the server again when it was running before, so a failed backup never
+leaves a world offline.
+
+The row's last result says how the latest run went:
+
+| `last_result` | `last_detail` | What to do |
+| --- | --- | --- |
+| `ok` | empty, or the reply of a console command | nothing |
+| `skipped` | `the server has a new owner since this schedule was saved; save it again to use it` | the server changed owner (claim, account migration, admin). The task switched itself off; the new owner reviews it and saves it to turn it back on |
+| `skipped` | `the server was not running`, `the server was already stopped`, `the server was already running`, `the server has no world yet`, `the server is being given up or deleted`, `the server no longer exists`, and for a start `the cluster is at its running-server cap` or `the world is busy with …` | the run had nothing to act on; the next run tries again |
+| `missed` | `felis-api was not running at the scheduled time` | felis-api was down more than 10 minutes past the time. The run is dropped, so a restart never lands hours late; the next one runs as usual |
+| `failed` | `felis-api stopped in the middle of this run` | felis-api restarted during the run's first step (the claim was over 2 minutes old); check that the server is in the state you want |
+| `failed` | `the server did not stop within 15 minutes` | see §1 and §2 for a pod that hangs; the backup did not run |
+| `failed` | `another operation kept the world busy for 15 minutes` | a restore, file change or another backup held the world (§3b) |
+| `failed` | `the backup failed: …`, `the backup did not finish within 45 minutes`, `the backup store is full; ask an administrator to free space` | §10 for backup Jobs; the Backups page shows the Job |
+| `failed` | `could not start the server again: …` (after a restart or a backup) | the server stopped and could not be started again: the running-server cap, a server being given up, or a world still busy after 15 minutes of retries. Start it from the panel once the cause is gone (§1, §3b) |
+| `failed` | `the server console could not be reached`, `the command failed: …` | the server's RCON (§1c) |
+
+"Run now" starts a run at once, including on a switched-off task, and leaves the
+next planned run where it was. While a run is in progress (`run_state` is
+`claimed`, `stopping`, `backing_up` or `starting`) the task cannot be edited,
+deleted or run again (`409 schedule_running`).
+
+A time the clock skips at a daylight-saving change runs an hour early (the offset
+before the jump applies); a time it repeats runs once, the first time. A time zone
+the host no longer knows runs in UTC. Deleting a server drops its tasks, and a new
+server of the same name starts with none. The audit actions are `schedule.create`,
+`schedule.update`, `schedule.delete`, `schedule.run_now` (by a person) and
+`schedule.run` (every finished run, with its result and detail).
+
+[GO-TESTED: `TestScheduleNextRun`, `TestScheduleInputValidation`,
+`TestScheduleRunnerBackup`, `TestScheduleRunnerRestart`, `TestScheduleRunnerStaleClaim`;
+PG-TESTED: `TestScheduleStoreRunCAS`, `TestDueSchedules`, `TestSchedulesFollowTheServer`]
+
+---
+
 ## Quick reference: symptom → section
 
 | Symptom | Section |
@@ -3208,3 +3267,4 @@ end, has not been run on a cluster.]
 | `felis breakGlass` sends no code / shows `Root override`; `otp_skipped` in the audit | §17 |
 | How long sessions, codes and audit rows are kept; export audit rows | §17 |
 | Files page: a change or upload refused (`file_exists`, `bad_path`, `too_large`, `upload_staging_full`, `volume_full`, `files_timeout`) | §18 |
+| A scheduled task shows `skipped`, `missed` or `failed`; a task switched itself off after an owner change | §19 |

@@ -1382,6 +1382,71 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/servers/{name}/schedules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List a server's scheduled tasks (owner-or-admin). */
+        get: operations["listServerSchedules"];
+        put?: never;
+        /**
+         * Add a scheduled task to a server (owner-or-admin).
+         * @description The task belongs to the server's current owner: once the server has another owner felis-api disables it instead of running it, until somebody saves it again. felis-api checks the tasks every 15 seconds; a run it was down for is started late, up to 10 minutes, and dropped as missed after that. A command runs only on a running server, a restart only restarts a running one, and a start goes through the running-server cap and a pending retirement like a wake. Audited as schedule.create; each run as schedule.run by scheduler.
+         */
+        post: operations["createServerSchedule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{name}/schedules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Change a scheduled task (owner-or-admin).
+         * @description Replaces the task's settings and recomputes its next run. The task passes to the server's current owner. Refused while a run is in progress. Audited as schedule.update.
+         */
+        put: operations["updateServerSchedule"];
+        post?: never;
+        /**
+         * Remove a scheduled task (owner-or-admin).
+         * @description Refused while a run is in progress. Audited as schedule.delete.
+         */
+        delete: operations["deleteServerSchedule"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{name}/schedules/{id}/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run a scheduled task now (owner-or-admin).
+         * @description Starts a run at once, without the players' warning, whether the task is enabled or not; its next scheduled run stays where it was. The answer is the task after the run's first step: a command, stop or start has finished, and a restart or backup goes on in the background (run_state). Audited as schedule.run_now, and the run itself as schedule.run.
+         */
+        post: operations["runServerSchedule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/users": {
         parameters: {
             query?: never;
@@ -2638,6 +2703,76 @@ export interface components {
             startGaveUp?: boolean;
             /** @description Owned rows only. Present while the server is given up or being deleted. */
             retiring?: components["schemas"]["RetireState"];
+        };
+        /** @description One scheduled task of a server (internal/api/schedules.go Schedule). It runs at minute_of_day on the weekdays, or with every_minutes set at every multiple of it since midnight on those days, in timezone. */
+        Schedule: {
+            /** Format: int64 */
+            id: number;
+            server: string;
+            /** @description Free text naming the task; may be empty. */
+            label: string;
+            /**
+             * @description backup of a running server stops it, takes a backup (pruned with the daily restore points, [archive] scheduled_keep) and starts it again; of a stopped server it leaves the server stopped.
+             * @enum {string}
+             */
+            action: "command" | "restart" | "stop" | "start" | "backup";
+            /** @description The console command of a command task */
+            command: string;
+            /**
+             * @description 0 runs once a day at minute_of_day. A restart, stop, start or backup repeats at most every 60 minutes.
+             * @enum {integer}
+             */
+            every_minutes: 0 | 15 | 30 | 60 | 120 | 180 | 240 | 360 | 480 | 720;
+            /** @description Minutes after local midnight; 0 when every_minutes is set. */
+            minute_of_day: number;
+            /** @description Bitmask of the days it runs on: bit 0 Sunday to bit 6 Saturday. */
+            weekdays: number;
+            /** @description IANA zone the times are in */
+            timezone: string;
+            /**
+             * @description How long before a restart, stop or backup the players on the server are told (say); 0 for none, and always 0 for a command or start.
+             * @enum {integer}
+             */
+            warn_minutes: 0 | 1 | 5 | 10 | 15 | 30;
+            enabled: boolean;
+            /**
+             * Format: date-time
+             * @description Null while disabled.
+             */
+            next_run_at: string | null;
+            /**
+             * @description What a run in progress is doing; empty when none is.
+             * @enum {string}
+             */
+            run_state: "" | "claimed" | "stopping" | "backing_up" | "starting";
+            /** Format: date-time */
+            last_run_at: string | null;
+            /**
+             * @description How the last run ended; empty before the first and during a run. missed is a run felis-api was down for, dropped once it was 10 minutes late.
+             * @enum {string}
+             */
+            last_result: "" | "ok" | "skipped" | "failed" | "missed";
+            /** @description What happened */
+            last_detail: string;
+            created_by: string;
+            /** Format: date-time */
+            created_at: string;
+        };
+        ScheduleInput: {
+            label?: string;
+            /** @enum {string} */
+            action: "command" | "restart" | "stop" | "start" | "backup";
+            /** @description Required for a command task and refused for the others. One line; a leading slash is dropped. */
+            command?: string;
+            /** @enum {integer} */
+            every_minutes?: 0 | 15 | 30 | 60 | 120 | 180 | 240 | 360 | 480 | 720;
+            minute_of_day?: number;
+            weekdays: number;
+            timezone: string;
+            /** @enum {integer} */
+            warn_minutes?: 0 | 1 | 5 | 10 | 15 | 30;
+            /** @description Default true. */
+            enabled?: boolean;
         };
         /** @description One world backup (internal/api/repo.go BackupView). backup_ref is withheld (spec §286). */
         BackupView: {
@@ -6638,6 +6773,206 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
+        };
+    };
+    listServerSchedules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The server's tasks, oldest first, and how many it may have. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        server: string;
+                        schedules: components["schemas"]["Schedule"][];
+                        limit: number;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    createServerSchedule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduleInput"];
+            };
+        };
+        responses: {
+            /** @description Created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Schedule"];
+                };
+            };
+            /** @description A malformed body or name, or settings out of range (bad_schedule, bad_request for the command). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description The server already has 20 tasks (schedule_limit). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    updateServerSchedule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ScheduleInput"];
+            };
+        };
+        responses: {
+            /** @description Saved. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Schedule"];
+                };
+            };
+            /** @description A malformed body, name or id, or settings out of range (bad_schedule). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description A run is in progress (schedule_running). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    deleteServerSchedule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Removed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description A run is in progress (schedule_running). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    runServerSchedule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Started. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Schedule"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description A run is already in progress (schedule_running), or the server has another owner since the task was saved (schedule_stale). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     listUsers: {

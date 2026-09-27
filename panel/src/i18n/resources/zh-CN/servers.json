@@ -61,6 +61,8 @@
   "backups_link_desc": "查看并恢复该服务器的世界备份。",
   "files_link_title": "服务器文件",
   "files_link_desc": "浏览并修复世界卷中的文件。",
+  "schedules_link_title": "计划任务",
+  "schedules_link_desc": "定时重启、备份或执行命令。",
   "system_service": "系统服务",
   "system_service_hint": "由平台预置并管理（felis systemservers），不接受用户操作。",
   "players_back_to_console": "返回控制台",

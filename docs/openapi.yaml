@@ -123,6 +123,8 @@ tags:
     description: Read (SSE) and write (RCON) server console (external face, app tier).
   - name: backups
     description: World backup listing and restore (external face, app tier).
+  - name: schedules
+    description: Scheduled tasks of your own servers (external face, app tier).
   - name: account
     description: Web side of account linking (external face, app tier).
   - name: admin-servers
@@ -638,6 +640,68 @@ components:
         retiring:
           allOf: [{ $ref: '#/components/schemas/RetireState' }]
           description: Owned rows only. Present while the server is given up or being deleted.
+
+    Schedule:
+      type: object
+      description: >-
+        One scheduled task of a server (internal/api/schedules.go Schedule). It runs
+        at minute_of_day on the weekdays, or with every_minutes set at every multiple
+        of it since midnight on those days, in timezone.
+      required: [id, server, label, action, command, every_minutes, minute_of_day, weekdays, timezone, warn_minutes, enabled, next_run_at, run_state, last_run_at, last_result, last_detail, created_by, created_at]
+      properties:
+        id: { type: integer, format: int64 }
+        server: { type: string }
+        label: { type: string, description: Free text naming the task; may be empty. }
+        action:
+          type: string
+          enum: [command, restart, stop, start, backup]
+          description: >-
+            backup of a running server stops it, takes a backup (pruned with the daily
+            restore points, [archive] scheduled_keep) and starts it again; of a stopped
+            server it leaves the server stopped.
+        command: { type: string, description: The console command of a command task, without a slash; empty otherwise. }
+        every_minutes:
+          type: integer
+          enum: [0, 15, 30, 60, 120, 180, 240, 360, 480, 720]
+          description: 0 runs once a day at minute_of_day. A restart, stop, start or backup repeats at most every 60 minutes.
+        minute_of_day: { type: integer, minimum: 0, maximum: 1439, description: Minutes after local midnight; 0 when every_minutes is set. }
+        weekdays: { type: integer, minimum: 1, maximum: 127, description: 'Bitmask of the days it runs on: bit 0 Sunday to bit 6 Saturday.' }
+        timezone: { type: string, description: IANA zone the times are in, e.g. Asia/Shanghai. }
+        warn_minutes:
+          type: integer
+          enum: [0, 1, 5, 10, 15, 30]
+          description: How long before a restart, stop or backup the players on the server are told (say); 0 for none, and always 0 for a command or start.
+        enabled: { type: boolean }
+        next_run_at: { type: string, format: date-time, nullable: true, description: Null while disabled. }
+        run_state:
+          type: string
+          enum: ['', claimed, stopping, backing_up, starting]
+          description: What a run in progress is doing; empty when none is.
+        last_run_at: { type: string, format: date-time, nullable: true }
+        last_result:
+          type: string
+          enum: ['', ok, skipped, failed, missed]
+          description: >-
+            How the last run ended; empty before the first and during a run. missed is a
+            run felis-api was down for, dropped once it was 10 minutes late.
+        last_detail: { type: string, description: What happened, in English (a command's reply, or why the run was skipped or failed). }
+        created_by: { type: string }
+        created_at: { type: string, format: date-time }
+
+    ScheduleInput:
+      type: object
+      required: [action, weekdays, timezone]
+      additionalProperties: false
+      properties:
+        label: { type: string, maxLength: 64 }
+        action: { type: string, enum: [command, restart, stop, start, backup] }
+        command: { type: string, maxLength: 1024, description: Required for a command task and refused for the others. One line; a leading slash is dropped. }
+        every_minutes: { type: integer, enum: [0, 15, 30, 60, 120, 180, 240, 360, 480, 720] }
+        minute_of_day: { type: integer, minimum: 0, maximum: 1439 }
+        weekdays: { type: integer, minimum: 1, maximum: 127 }
+        timezone: { type: string }
+        warn_minutes: { type: integer, enum: [0, 1, 5, 10, 15, 30] }
+        enabled: { type: boolean, description: Default true. }
 
     BackupView:
       type: object
@@ -4594,6 +4658,201 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
+
+  # --------------------------------------------------- scheduled tasks (app) ---
+  /api/v1/servers/{name}/schedules:
+    get:
+      tags: [schedules]
+      operationId: listServerSchedules
+      summary: List a server's scheduled tasks (owner-or-admin).
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The server's tasks, oldest first, and how many it may have.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [server, schedules, limit]
+                properties:
+                  server: { type: string }
+                  schedules:
+                    type: array
+                    items: { $ref: '#/components/schemas/Schedule' }
+                  limit: { type: integer }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    post:
+      tags: [schedules]
+      operationId: createServerSchedule
+      summary: Add a scheduled task to a server (owner-or-admin).
+      description: >-
+        The task belongs to the server's current owner: once the server has another
+        owner felis-api disables it instead of running it, until somebody saves it
+        again. felis-api checks the tasks every 15 seconds; a run it was down for is
+        started late, up to 10 minutes, and dropped as missed after that. A command
+        runs only on a running server, a restart only restarts a running one, and a
+        start goes through the running-server cap and a pending retirement like a
+        wake. Audited as schedule.create; each run as schedule.run by scheduler.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ScheduleInput' }
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Schedule' }
+        '400':
+          description: A malformed body or name, or settings out of range (bad_schedule, bad_request for the command).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The server already has 20 tasks (schedule_limit).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/servers/{name}/schedules/{id}:
+    put:
+      tags: [schedules]
+      operationId: updateServerSchedule
+      summary: Change a scheduled task (owner-or-admin).
+      description: >-
+        Replaces the task's settings and recomputes its next run. The task passes to
+        the server's current owner. Refused while a run is in progress. Audited as
+        schedule.update.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ScheduleInput' }
+      responses:
+        '200':
+          description: Saved.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Schedule' }
+        '400':
+          description: A malformed body, name or id, or settings out of range (bad_schedule).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: A run is in progress (schedule_running).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    delete:
+      tags: [schedules]
+      operationId: deleteServerSchedule
+      summary: Remove a scheduled task (owner-or-admin).
+      description: Refused while a run is in progress. Audited as schedule.delete.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        '204':
+          description: Removed.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: A run is in progress (schedule_running).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/servers/{name}/schedules/{id}/run:
+    post:
+      tags: [schedules]
+      operationId: runServerSchedule
+      summary: Run a scheduled task now (owner-or-admin).
+      description: >-
+        Starts a run at once, without the players' warning, whether the task is
+        enabled or not; its next scheduled run stays where it was. The answer is the
+        task after the run's first step: a command, stop or start has finished, and a
+        restart or backup goes on in the background (run_state). Audited as
+        schedule.run_now, and the run itself as schedule.run.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: integer, format: int64 } }
+      responses:
+        '202':
+          description: Started.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Schedule' }
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: >-
+            A run is already in progress (schedule_running), or the server has another
+            owner since the task was saved (schedule_stale).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
 
   # ------------------------------------------------------ users (admin tier) ----
   /api/v1/users:

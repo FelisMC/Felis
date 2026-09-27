@@ -118,5 +118,10 @@
   "bad_request": "请求未被接受：{{detail}}",
   "restore_in_progress": "这台服务器的世界正在恢复另一份备份，请等它完成后再试。",
   "uploads_full": "上传存储已满，需要管理员删除已审核的提交后才能继续上传。",
-  "unsupported_media_type": "请求格式不被服务器接受，请刷新页面后重试。"
+  "unsupported_media_type": "请求格式不被服务器接受，请刷新页面后重试。",
+  "schedules_unavailable": "计划任务当前不可用。",
+  "schedule_limit": "这台服务器的计划任务数量已达上限，请先删除一个。",
+  "schedule_running": "这个任务正在执行，请等本次执行结束后再试。",
+  "schedule_stale": "保存这个任务后服务器换了所有者，请先重新保存任务再执行。",
+  "bad_schedule": "计划任务未保存：{{detail}}"
 }

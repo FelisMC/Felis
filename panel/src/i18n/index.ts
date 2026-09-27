@@ -13,6 +13,7 @@ import enNavigation from "./resources/en-US/navigation.json";
 import enBackups from "./resources/en-US/backups.json";
 import enSubmissions from "./resources/en-US/submissions.json";
 import enFiles from "./resources/en-US/files.json";
+import enSchedules from "./resources/en-US/schedules.json";
 import zhCommon from "./resources/zh-CN/common.json";
 import zhAuth from "./resources/zh-CN/auth.json";
 import zhDashboard from "./resources/zh-CN/dashboard.json";
@@ -25,6 +26,7 @@ import zhNavigation from "./resources/zh-CN/navigation.json";
 import zhBackups from "./resources/zh-CN/backups.json";
 import zhSubmissions from "./resources/zh-CN/submissions.json";
 import zhFiles from "./resources/zh-CN/files.json";
+import zhSchedules from "./resources/zh-CN/schedules.json";
 import { panelLanguage, SUPPORTED_LANGUAGES } from "./language";
 
 // Exported so a test can boot a fresh instance with the same detection.
@@ -43,6 +45,7 @@ export const i18nOptions: InitOptions = {
       backups: enBackups,
       submissions: enSubmissions,
       files: enFiles,
+      schedules: enSchedules,
     },
     "zh-CN": {
       common: zhCommon,
@@ -57,6 +60,7 @@ export const i18nOptions: InitOptions = {
       backups: zhBackups,
       submissions: zhSubmissions,
       files: zhFiles,
+      schedules: zhSchedules,
     },
   },
   supportedLngs: [...SUPPORTED_LANGUAGES],

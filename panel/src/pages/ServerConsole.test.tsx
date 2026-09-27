@@ -98,6 +98,16 @@ describe("ServerConsole edit dialog", () => {
   });
 });
 
+describe("ServerConsole doorways", () => {
+  it("links to the server's scheduled tasks while it is stopped", async () => {
+    calls.status.mockResolvedValue(status({ phase: "Stopped", desiredState: "Stopped" }));
+    renderConsole();
+
+    const link = await screen.findByRole("link", { name: /^Scheduled tasks/ });
+    expect(link.getAttribute("href")).toBe("/servers/survival/schedules");
+  });
+});
+
 describe("ServerConsole following the server", () => {
   afterEach(() => {
     vi.useRealTimers();

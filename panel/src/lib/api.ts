@@ -22,6 +22,8 @@ import type {
   QuotaInput,
   QuotaView,
   RetireState,
+  Schedule,
+  ScheduleInput,
   ServerFileEntry,
   ServerJob,
   MyServerView,
@@ -680,6 +682,41 @@ export const api = rejectingSync({
       "GET",
       urlPath`/servers/${name}/jobs`,
     ).then((r) => r.jobs ?? []),
+
+  // Scheduled tasks of one server (GET/POST /servers/{name}/schedules, PUT/DELETE
+  // .../{id}, POST .../{id}/run). Owner-or-admin gated server-side; 503
+  // schedules_unavailable while the schedule store is not wired. A server holds
+  // at most `limit` of them (409 schedule_limit past it).
+  listSchedules: (name: string) =>
+    request<{ server: string; schedules: Schedule[]; limit: number }>(
+      "GET",
+      urlPath`/servers/${name}/schedules`,
+    ).then((r) => ({ schedules: r.schedules ?? [], limit: r.limit })),
+
+  // createSchedule saves a new schedule; it belongs to the server's current
+  // owner. Validation failures are 400 bad_request / bad_schedule with the reason
+  // in the message.
+  createSchedule: (name: string, input: ScheduleInput) =>
+    request<Schedule>("POST", urlPath`/servers/${name}/schedules`, input),
+
+  // updateSchedule replaces a schedule's settings (the whole input, not a patch)
+  // and passes it to the server's current owner, which is how a schedule the
+  // runner disabled after an owner change comes back. 409 schedule_running while
+  // it runs.
+  updateSchedule: (name: string, id: number, input: ScheduleInput) =>
+    request<Schedule>("PUT", urlPath`/servers/${name}/schedules/${String(id)}`, input),
+
+  // deleteSchedule answers 204; 409 schedule_running while it runs.
+  deleteSchedule: (name: string, id: number) =>
+    request<null>("DELETE", urlPath`/servers/${name}/schedules/${String(id)}`),
+
+  // runSchedule runs a schedule now, without the players' warning; its next
+  // scheduled run stays where it is. The reply is 202 with the schedule after the
+  // run's first step: a restart or backup goes on in the background and shows in
+  // run_state. 409 schedule_running mid-run, 409 schedule_stale when the server
+  // changed owner since the schedule was saved.
+  runSchedule: (name: string, id: number) =>
+    request<Schedule>("POST", urlPath`/servers/${name}/schedules/${String(id)}/run`),
 
   // Server file manager (spec §7). Every route is owner-or-admin gated and
   // refuses with 409 not_stopped unless the server is fully stopped (the world
@@ -1344,10 +1381,21 @@ export function humanizeError(e: unknown): string {
       return t("uploads_full");
     case "unsupported_media_type":
       return t("unsupported_media_type");
+    // Scheduled tasks (internal/api/handlers_schedules.go).
+    case "schedules_unavailable":
+      return t("schedules_unavailable");
+    case "schedule_limit":
+      return t("schedule_limit");
+    case "schedule_running":
+      return t("schedule_running");
+    case "schedule_stale":
+      return t("schedule_stale");
     // The detail says which field was wrong; the server writes it in English,
     // so it rides inside a localized sentence.
     case "bad_request":
       return err.message ? t("bad_request", { detail: err.message }) : t("generic");
+    case "bad_schedule":
+      return err.message ? t("bad_schedule", { detail: err.message }) : t("generic");
     default:
       if (err.status === 401) return t("session_expired");
       if (err.status === 403) return t("forbidden");

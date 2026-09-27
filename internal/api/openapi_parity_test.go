@@ -40,6 +40,7 @@ func TestOpenAPISchemasMatchWireStructs(t *testing.T) {
 		"MyServerView":          MyServerView{},
 		"AllowlistEntry":        AllowlistEntry{},
 		"BackupView":            BackupView{},
+		"Schedule":              Schedule{},
 		"Build":                 build.Build{},
 		"Image":                 build.Image{},
 		"BuildScan":             buildScanView{},

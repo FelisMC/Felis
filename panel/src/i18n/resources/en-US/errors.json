@@ -118,5 +118,10 @@
   "bad_request": "The request was not accepted: {{detail}}",
   "restore_in_progress": "Another backup is still being restored to this server's world. Try again once it finishes.",
   "uploads_full": "The upload store is full. An admin has to delete reviewed submissions before new uploads fit.",
-  "unsupported_media_type": "The request was sent in a format the server does not accept. Reload the page and try again."
+  "unsupported_media_type": "The request was sent in a format the server does not accept. Reload the page and try again.",
+  "schedules_unavailable": "Scheduled tasks aren't available right now.",
+  "schedule_limit": "This server already has as many scheduled tasks as it can hold. Delete one first.",
+  "schedule_running": "This task is running right now. Try again once the run finishes.",
+  "schedule_stale": "The server has a new owner since this task was saved. Save the task again before running it.",
+  "bad_schedule": "The task was not saved: {{detail}}"
 }

@@ -370,6 +370,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		InternalBaseURL: internalAPIBaseURL(),
 		Submissions:     submissions,
 		Mailer:          mailer,
+		Schedules:       repo,
 		// The external face authenticates the local session cookie the sign-in doors
 		// mint, live once `felis breakGlass` flips local_auth_enabled on. Cloudflare
 		// Access, when the install sits behind it, is enforced at the edge only.
@@ -464,6 +465,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// reconciles it, but this loop converges builds nobody is polling.
 	go reconcileBuilds(ctx, builder, stderr)
 	go settleRestoreChains(ctx, a, stderr)
+	go runSchedules(ctx, a, stderr)
 	// A daily restore point of every world played since its last one, taken
 	// once the server stops ([archive] scheduled_every; 0s turns it off).
 	if backuper != nil && rcfg.ScheduledEvery > 0 {
@@ -729,6 +731,24 @@ func settleRestoreChains(ctx context.Context, a *api.API, stderr io.Writer) {
 		case <-t.C:
 			if err := a.SettleRestoreChains(ctx); err != nil {
 				fmt.Fprintf(stderr, "felis api: restore chains: %v\n", err)
+			}
+		}
+	}
+}
+
+// runSchedules runs the servers' scheduled tasks (api.API.RunSchedules). The
+// interval is how late a task may start, and how often a restart or backup in
+// progress checks whether it can take its next step.
+func runSchedules(ctx context.Context, a *api.API, stderr io.Writer) {
+	t := time.NewTicker(15 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := a.RunSchedules(ctx); err != nil {
+				fmt.Fprintf(stderr, "felis api: scheduled tasks: %v\n", err)
 			}
 		}
 	}

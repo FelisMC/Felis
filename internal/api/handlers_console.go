@@ -3,7 +3,6 @@ package api
 import (
 	"errors"
 	"net/http"
-	"strings"
 
 	"felis.lolicon.best/internal/naming"
 )
@@ -51,23 +50,10 @@ func (a *API) handleCommand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A console command is exactly one line. Trim surrounding space, strip a
-	// single leading '/' (players type "/say hi"; RCON wants "say hi"), then
-	// reject control characters so one request can never smuggle a second command
-	// past a newline.
-	command := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(body.Command), "/"))
-	if command == "" {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "command is required"))
-		return
-	}
-	if len(command) > maxConsoleCommandLen {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
-			"command too long (max %d bytes)", maxConsoleCommandLen))
-		return
-	}
-	if strings.IndexFunc(command, func(c rune) bool { return c < 0x20 }) >= 0 {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
-			"command must be a single line (no control characters)"))
+	// A console command is exactly one line (normalizeConsoleCommand).
+	command, err := normalizeConsoleCommand(body.Command)
+	if err != nil {
+		writeError(w, r, err)
 		return
 	}
 

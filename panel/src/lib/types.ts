@@ -247,6 +247,62 @@ export interface ServerJob {
   scheduled?: boolean;
 }
 
+// ---- Scheduled tasks (internal/api/schedules.go Schedule, scheduleInput) ----
+
+export type ScheduleAction = "command" | "restart" | "stop" | "start" | "backup";
+/** 0 runs once a day at minute_of_day; the rest divide a day, so the runs sit at
+ *  the same clock times every day. A restart, stop, start or backup repeats at
+ *  most every 60 minutes. */
+export type ScheduleEveryMinutes = 0 | 15 | 30 | 60 | 120 | 180 | 240 | 360 | 480 | 720;
+/** How long before a restart, stop or backup the players are told in game. */
+export type ScheduleWarnMinutes = 0 | 1 | 5 | 10 | 15 | 30;
+/** The step of a run in progress; empty when none is. */
+export type ScheduleRunState = "" | "claimed" | "stopping" | "backing_up" | "starting";
+/** How the last run ended; empty before the first and during a run. */
+export type ScheduleResult = "" | "ok" | "skipped" | "failed" | "missed";
+
+/** Schedule is one scheduled task of a server (GET /servers/{name}/schedules).
+ *  It runs at minute_of_day on the weekdays (bit 0 Sunday … bit 6 Saturday), or
+ *  with every_minutes set at every multiple of it since midnight on those days,
+ *  in timezone. last_detail is the backend's English. */
+export interface Schedule {
+  id: number;
+  server: string;
+  label: string;
+  action: ScheduleAction;
+  /** The console command of a command task, without a slash; empty otherwise. */
+  command: string;
+  every_minutes: ScheduleEveryMinutes;
+  minute_of_day: number;
+  weekdays: number;
+  timezone: string;
+  warn_minutes: ScheduleWarnMinutes;
+  enabled: boolean;
+  /** Null while disabled. */
+  next_run_at: string | null;
+  run_state: ScheduleRunState;
+  last_run_at: string | null;
+  last_result: ScheduleResult;
+  last_detail: string;
+  created_by: string;
+  created_at: string;
+}
+
+/** ScheduleInput is the body of a create (POST) or a save (PUT). The server trims
+ *  the label, drops a command's leading slash, and refuses a command on any other
+ *  action and a warning on a command or start. enabled defaults to true. */
+export interface ScheduleInput {
+  label?: string;
+  action: ScheduleAction;
+  command?: string;
+  every_minutes?: ScheduleEveryMinutes;
+  minute_of_day?: number;
+  weekdays: number;
+  timezone: string;
+  warn_minutes?: ScheduleWarnMinutes;
+  enabled?: boolean;
+}
+
 /** WhitelistImage is one row of GET /images (the create-form dropdown source). */
 export interface WhitelistImage {
   image_ref: string;

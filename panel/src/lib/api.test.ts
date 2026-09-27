@@ -1440,6 +1440,95 @@ describe("server file manager wire shapes", () => {
   });
 });
 
+describe("scheduled task wire shapes", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => vi.unstubAllGlobals());
+
+  function sent(fetchSpy: typeof fetch): [string, RequestInit] {
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    return [String(url), opts as RequestInit];
+  }
+
+  const input = {
+    label: "Nightly",
+    action: "restart" as const,
+    command: "",
+    every_minutes: 0 as const,
+    minute_of_day: 240,
+    weekdays: 127,
+    timezone: "Asia/Shanghai",
+    warn_minutes: 5 as const,
+    enabled: true,
+  };
+  const saved = { ...input, id: 7, server: "survival", next_run_at: "2026-09-28T04:00:00+08:00", run_state: "" };
+
+  it("listSchedules GETs /servers/{name}/schedules and keeps the limit", async () => {
+    const fetchSpy = fakeFetch({ server: "survival", schedules: [saved], limit: 20 });
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.listSchedules("survival")).toEqual({ schedules: [saved], limit: 20 });
+    const [url, opts] = sent(fetchSpy);
+    expect(url).toBe("/servers/survival/schedules");
+    expect(opts.method).toBe("GET");
+  });
+
+  it("listSchedules reads a missing list as none", async () => {
+    vi.stubGlobal("fetch", fakeFetch({ server: "survival", limit: 20 }));
+    expect(await api.listSchedules("survival")).toEqual({ schedules: [], limit: 20 });
+  });
+
+  it("createSchedule POSTs the input as it is", async () => {
+    const fetchSpy = fakeFetch(saved, { status: 201 });
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.createSchedule("survival", input)).toEqual(saved);
+    const [url, opts] = sent(fetchSpy);
+    expect(url).toBe("/servers/survival/schedules");
+    expect(opts.method).toBe("POST");
+    expect(JSON.parse(opts.body as string)).toEqual(input);
+  });
+
+  it("updateSchedule PUTs the whole input to the schedule's id", async () => {
+    const fetchSpy = fakeFetch(saved);
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.updateSchedule("survival", 7, { ...input, enabled: false })).toEqual(saved);
+    const [url, opts] = sent(fetchSpy);
+    expect(url).toBe("/servers/survival/schedules/7");
+    expect(opts.method).toBe("PUT");
+    expect(JSON.parse(opts.body as string)).toEqual({ ...input, enabled: false });
+  });
+
+  it("deleteSchedule DELETEs the schedule with no body and takes the 204", async () => {
+    const fetchSpy = vi.fn(async () => ({
+      ok: true,
+      status: 204,
+      statusText: "No Content",
+      text: async () => "",
+    })) as unknown as typeof fetch;
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.deleteSchedule("survival", 7)).toBeNull();
+    const [url, opts] = sent(fetchSpy);
+    expect(url).toBe("/servers/survival/schedules/7");
+    expect(opts.method).toBe("DELETE");
+    expect(opts.body).toBeUndefined();
+  });
+
+  it("runSchedule POSTs to .../run with no body and parses the 202", async () => {
+    const fetchSpy = fakeFetch({ ...saved, run_state: "stopping" }, { status: 202 });
+    vi.stubGlobal("fetch", fetchSpy);
+    expect((await api.runSchedule("survival", 7)).run_state).toBe("stopping");
+    const [url, opts] = sent(fetchSpy);
+    expect(url).toBe("/servers/survival/schedules/7/run");
+    expect(opts.method).toBe("POST");
+    expect(opts.body).toBeUndefined();
+  });
+
+  it("refuses a server name that is not one path segment before sending anything", async () => {
+    const fetchSpy = fakeFetch({});
+    vi.stubGlobal("fetch", fetchSpy);
+    await expect(api.runSchedule("..", 7)).rejects.toMatchObject({ code: "bad_path_param" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
 // The API's generic codes carry an English developer message ("user not found",
 // "invalid request"); the panel words them itself so a Chinese UI never shows it.
 describe("copy for the generic server codes", () => {
@@ -1468,6 +1557,25 @@ describe("copy for the generic server codes", () => {
     expect(humanizeError({ status: 507, code: "upload_staging_full", message: "raw" })).toMatch(/upload space is nearly full/);
     expect(humanizeError({ status: 400, code: "upload_incomplete", message: "raw" })).toMatch(/stopped before the whole file arrived/);
     expect(humanizeError({ status: 411, code: "length_required", message: "raw" })).toMatch(/did not say how large it is/);
+  });
+
+  it("words the scheduled tasks' refusals itself, and keeps the reason a schedule was refused", () => {
+    expect(humanizeError({ status: 503, code: "schedules_unavailable", message: "raw" })).toBe(
+      "Scheduled tasks aren't available right now.",
+    );
+    expect(humanizeError({ status: 409, code: "schedule_limit", message: "raw" })).toBe(
+      "This server already has as many scheduled tasks as it can hold. Delete one first.",
+    );
+    expect(humanizeError({ status: 409, code: "schedule_running", message: "raw" })).toBe(
+      "This task is running right now. Try again once the run finishes.",
+    );
+    expect(humanizeError({ status: 409, code: "schedule_stale", message: "raw" })).toBe(
+      "The server has a new owner since this task was saved. Save the task again before running it.",
+    );
+    expect(
+      humanizeError({ status: 400, code: "bad_schedule", message: "a restart can repeat at most every 60 minutes" }),
+    ).toBe("The task was not saved: a restart can repeat at most every 60 minutes");
+    expect(humanizeError({ status: 400, code: "bad_schedule", message: "" })).toBe("Something went wrong.");
   });
 
   it("reads a full upload store as full, not as an outage", () => {
