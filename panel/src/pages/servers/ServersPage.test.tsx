@@ -111,6 +111,36 @@ describe("ServersPage fleet ownership", () => {
     expect(skyblock.getByRole("button", { name: /Claim/ })).toBeTruthy();
   });
 
+  it("offers a player only the claim on a server nobody owns, and an admin its wake and console too", async () => {
+    tier.isAdmin = false;
+    calls.myServers.mockResolvedValue([
+      { name: "skyblock", subdomain: "skyblock", owned: false, claimable: true, phase: "Stopped", playersOnline: 0, playersMax: 20 },
+    ] satisfies MyServerView[]);
+    const { unmount } = render(
+      <MemoryRouter>
+        <ServersPage />
+      </MemoryRouter>,
+    );
+    let skyblock = await tableRow("skyblock");
+    const names = skyblock.getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent?.trim());
+    expect(names).toEqual(["Copy address skyblock.example.test:25570", "Claim"]);
+    expect(skyblock.queryByRole("link")).toBeNull();
+    unmount();
+
+    tier.isAdmin = true;
+    calls.fleet.mockResolvedValue([row("skyblock", { claimable: true })]);
+    render(
+      <MemoryRouter>
+        <ServersPage />
+      </MemoryRouter>,
+    );
+    skyblock = await tableRow("skyblock");
+    expect(skyblock.getByRole("button", { name: /Claim/ })).toBeTruthy();
+    expect(skyblock.getByRole("button", { name: /Wake/ })).toHaveProperty("disabled", false);
+    expect(skyblock.getByRole("link").getAttribute("href")).toBe("/servers/skyblock");
+    expect(within(skyblock.getByRole("link")).getByRole("button", { name: /Console/ })).toHaveProperty("disabled", false);
+  });
+
   it("says the owner is unknown and offers no claim when the lookup failed", async () => {
     calls.fleet.mockResolvedValue([row("survival", { ownerUnknown: true })]);
     render(

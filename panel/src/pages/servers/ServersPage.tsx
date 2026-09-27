@@ -525,10 +525,15 @@ function ServerActions({
     );
   }
 
+  // An unclaimed server is the player's to claim and nothing more: waking it and
+  // its console belong to its owner, and it has none yet. An admin runs any server
+  // (the wake and console routes admit them), so theirs keep both beside the claim.
+  const claimable = server.claimable && !server.owned;
+
   return (
     <div className={cn("flex flex-col items-end gap-1", className)}>
       <div className="flex flex-wrap items-start justify-end gap-2 xl:flex-nowrap">
-        {server.claimable && !server.owned ? (
+        {claimable && (
           <>
             <Button
               size="sm"
@@ -538,9 +543,6 @@ function ServerActions({
               className="text-primary hover:text-primary hover:bg-primary/5 border-primary/20"
             >
               <Hand /> {ts("claim")}
-            </Button>
-            <Button size="sm" variant="outline" disabled>
-              <Terminal /> {ts("console")}
             </Button>
 
             <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
@@ -566,26 +568,25 @@ function ServerActions({
               </DialogContent>
             </Dialog>
           </>
-        ) : (
-          <>
-            <PowerButton
-              name={server.name}
-              phase={server.phase}
-              desiredState={server.desiredState}
-              failed={startFailure(server) !== null}
-              playersOnline={server.playersOnline}
-              playerCountUnknown={server.playerCountUnknown}
-              retiring={server.retiring}
-              onChanged={onChanged}
-            />
-            {(server.owned || isAdmin) && (
-              <Link to={`/servers/${server.name}`}>
-                <Button size="sm" variant="outline">
-                  <Terminal /> {ts("console")}
-                </Button>
-              </Link>
-            )}
-          </>
+        )}
+        {(!claimable || isAdmin) && (
+          <PowerButton
+            name={server.name}
+            phase={server.phase}
+            desiredState={server.desiredState}
+            failed={startFailure(server) !== null}
+            playersOnline={server.playersOnline}
+            playerCountUnknown={server.playerCountUnknown}
+            retiring={server.retiring}
+            onChanged={onChanged}
+          />
+        )}
+        {(server.owned || isAdmin) && (
+          <Link to={`/servers/${server.name}`}>
+            <Button size="sm" variant="outline">
+              <Terminal /> {ts("console")}
+            </Button>
+          </Link>
         )}
       </div>
       {error && (
