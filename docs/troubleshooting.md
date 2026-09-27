@@ -2020,7 +2020,7 @@ along). One bundle is `felis-db-<UTC stamp>-<label>.tar`:
 | `MANIFEST.json` | version, schema version, `pg_dump --version`, sha256 of every member |
 | `db.dump` | `pg_dump --format=custom` of the `felis` database |
 | `state/etc/felis/...` | every file in `/etc/felis`: `secrets.env` (DB password, session/forwarding secrets, registry tokens), `felis.host.toml`, `felis.pod.toml`, the `felis.toml` symlink, `offsite.env` (bucket credentials and encryption key), `smtp-password`, `uploads-s3-access-key` and `uploads-s3-secret-key` (the mail relay password and the uploads bucket keys `felis setup` took), the panel TLS pair, and the installer's own markers (`system-server-images`, `velocity.fingerprint`). `bootstrap.done` is left out on purpose |
-| `k8s/minecraftservers.json` | every MinecraftServer, status and server-side metadata stripped, ready for `kubectl apply` (best effort: when the cluster did not answer, the manifest records why) |
+| `k8s/minecraftservers.json` | every MinecraftServer, status and server-side metadata stripped, ready for `kubectl apply`. The export is tried 3 times, 10 s apart; when the cluster still does not answer, the bundle is written without it and the manifest records why (next section) |
 
 next to a `.sha256` sidecar in `sha256sum` format. **A bundle contains the
 secrets; treat it like `/etc/felis` itself.** Retention per label: `daily` 14
@@ -2055,6 +2055,22 @@ sudo systemctl status felis-db-backup.timer          # enabled? next run?
 sudo journalctl -u felis-db-backup -n 50 --no-pager   # why the last run failed
 sudo felis db backup                                  # take one now (label manual)
 ```
+
+**A bundle without the MinecraftServer objects.** When the cluster does not
+answer the export (`k3s kubectl get minecraftservers`) three times running,
+the bundle is still written, since it holds the database, but a restore from it
+brings back no servers. `felis db backup` then exits 1 (the timer's run shows
+failed) after `wrote ...` and the reason; the panel card turns amber
+(**不完整**) with the reason and the commands; the watchdog mails the owners
+(`the newest control-plane database backup ... lacks the MinecraftServer
+objects`) while that bundle is the newest; `felis db verify` and
+`felis offsite list`/`fetch-db` name the gap. A pre-migrate or pre-restore
+bundle goes the same way without stopping the upgrade or the restore, whose
+rollback needs the database alone. The bundle the off-site copy takes after
+copying archives refuses to go without them and is tried again next pass. Once
+`sudo k3s kubectl get minecraftservers -A` answers, run `sudo felis db backup`.
+[GO-TESTED: `internal/dbbackup`, `cmd/felis`, `internal/watchdog`; the panel card
+in `DBBackupCard.test.tsx`]
 
 Common failures: felis-postgres not running (`kubectl exec` reports no running
 pod, or `pg_dump: ... connection refused`; next section); `k3s: executable file not
@@ -2302,6 +2318,12 @@ host yourself, plus the off-site encryption key if the copy is in the bucket.
    kubectl -n felis scale deployment felis-api felis-operator --replicas=1
    tar -xOf felis-db-....tar k8s/minecraftservers.json | kubectl apply -f -
    ```
+
+   When `tar` answers `Not found in archive`, the bundle lacks the
+   MinecraftServer objects (`fetch-db` said so when it fetched it). Fetch the
+   newest bundle `felis offsite list` shows without `no MinecraftServer
+   objects` and apply its `k8s/minecraftservers.json` instead; servers that
+   bundle does not list do not come back from it.
 
 7. Bring the world archives back into the archive volume:
 

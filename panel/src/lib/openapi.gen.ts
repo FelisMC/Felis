@@ -2329,8 +2329,11 @@ export interface components {
                 at: string;
                 /** @description Bundle file name, felis-db-<UTC stamp>-<label>.tar. */
                 name: string;
-                /** @enum {string} */
-                label: "daily" | "pre-migrate" | "pre-restore" | "manual";
+                /**
+                 * @description offsite is the bundle `felis offsite sync` takes after copying world archives; a restore records the newest bundle on disk, which may be one.
+                 * @enum {string}
+                 */
+                label: "daily" | "pre-migrate" | "pre-restore" | "offsite" | "manual";
                 /** Format: int64 */
                 size_bytes: number;
                 felis_version?: string;
@@ -2338,6 +2341,8 @@ export interface components {
                 schema_version?: number;
                 /** @description Backup directory on the host. */
                 dir: string;
+                /** @description Why the bundle lacks the MinecraftServer objects (the cluster did not answer the export), when it does. A restore from it brings back the database but no servers. */
+                servers_error?: string;
             } | null;
             /** @description True when there is no record or it is older than max_age_seconds. */
             stale: boolean;

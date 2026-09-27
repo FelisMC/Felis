@@ -19,10 +19,14 @@ const LABEL_KEY: Record<DBBackupLabel, string> = {
   daily: "dbbackup_label_daily",
   "pre-migrate": "dbbackup_label_pre_migrate",
   "pre-restore": "dbbackup_label_pre_restore",
+  offsite: "dbbackup_label_offsite",
   manual: "dbbackup_label_manual",
 };
 
 const FIX_COMMANDS = ["sudo felis db backup", "journalctl -u felis-db-backup -n 50 --no-pager"];
+// A bundle the cluster did not add its MinecraftServer objects to: see why the
+// cluster did not answer, then take a whole one.
+const SERVERS_COMMANDS = ["sudo k3s kubectl get minecraftservers -A", "sudo felis db backup"];
 
 export function CopyCommand({ command }: { command: string }) {
   const { t } = useTranslation("admin");
@@ -73,6 +77,7 @@ export function DBBackupCard() {
   const { data, error, loading, reload } = useAsync(() => api.getDBBackup(), []);
   const last = data?.last ?? null;
   const maxAgeHours = data ? Math.round(data.max_age_seconds / 3600) : 26;
+  const serversError = last?.servers_error ?? "";
 
   const state: "loading" | "error" | "never" | "stale" | "ok" = !data
     ? error
@@ -87,6 +92,14 @@ export function DBBackupCard() {
   const badge = (() => {
     switch (state) {
       case "ok":
+        if (serversError) {
+          return (
+            <Badge className="gap-1 border-transparent bg-amber-500/15 text-amber-600 dark:text-amber-400">
+              <AlertTriangle className="h-3 w-3" />
+              {t("dbbackup_status_incomplete")}
+            </Badge>
+          );
+        }
         return (
           <Badge className="gap-1 border-transparent bg-emerald-500/15 text-emerald-500">
             <CheckCircle2 className="h-3 w-3" />
@@ -121,7 +134,9 @@ export function DBBackupCard() {
               "hidden rounded-md p-2 sm:block",
               state === "stale" || state === "never"
                 ? "bg-destructive/10 text-destructive"
-                : "bg-primary/10 text-primary",
+                : serversError
+                  ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                  : "bg-primary/10 text-primary",
             )}
           >
             <Database className="h-5 w-5" />
@@ -199,6 +214,24 @@ export function DBBackupCard() {
             </div>
             <div className="space-y-2">
               {FIX_COMMANDS.map((c) => (
+                <CopyCommand key={c} command={c} />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {serversError && (
+          <div className="space-y-3 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
+            <div className="flex items-start gap-2 text-amber-800 dark:text-amber-200">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div className="min-w-0 space-y-1">
+                <p className="font-semibold">{t("dbbackup_servers_title")}</p>
+                <p className="text-xs leading-relaxed">{t("dbbackup_servers_hint")}</p>
+                <p className="break-all font-mono text-[11px] opacity-80">{serversError}</p>
+              </div>
+            </div>
+            <div className="space-y-2">
+              {SERVERS_COMMANDS.map((c) => (
                 <CopyCommand key={c} command={c} />
               ))}
             </div>

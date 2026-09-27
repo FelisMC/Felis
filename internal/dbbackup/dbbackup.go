@@ -126,11 +126,17 @@ type BackupOptions struct {
 	StateDir string // host state to bundle; "" bundles none
 	Version  string // felis build stamp, recorded in the manifest
 	Tools    Tools
-	// ExportServers returns the cluster's MinecraftServer objects as JSON. A
-	// failure is recorded in the manifest and does not fail the backup: the
-	// database is what must not be lost, and a nightly run cannot hang on a
-	// cluster that happens to be down.
+	// ExportServers returns the cluster's MinecraftServer objects as JSON.
+	// When it fails the bundle is still written, with the reason in its
+	// manifest and in the Record, and Backup returns its path with
+	// ErrServersMissing: the database is what must not be lost, and a nightly
+	// run cannot hang on a cluster that happens to be down. A restore from
+	// such a bundle brings back no servers, so the caller has to make that
+	// heard.
 	ExportServers func(ctx context.Context) ([]byte, error)
+	// RequireServers makes an ExportServers failure fail the backup before a
+	// bundle is written, for a caller that can simply try again later.
+	RequireServers bool
 	// MetricsFile, when set, is rewritten after a successful backup with
 	// node-exporter textfile metrics (felis_db_backup_last_success_timestamp_seconds
 	// and felis_db_backup_last_size_bytes), which FelisDBBackupStale alerts on.
@@ -146,6 +152,11 @@ type BackupOptions struct {
 // StatusKey is the platform_settings key Record writes; internal/api reads it.
 const StatusKey = "db_backup_last"
 
+// ErrServersMissing comes back from Backup, together with the path of the
+// bundle it wrote, when the bundle holds the database but ExportServers
+// failed every try: a restore from it brings back no servers.
+var ErrServersMissing = errors.New("the bundle holds the database but not the MinecraftServer objects")
+
 // StaleAfter is how old the newest backup may get before it counts as missed:
 // a day plus the timer's randomized delay and a slow dump. `felis db check`,
 // the admin panel and the FelisDBBackupStale alert (deploy/alerts) share it.
@@ -160,6 +171,9 @@ type Status struct {
 	FelisVersion  string    `json:"felis_version,omitempty"`
 	SchemaVersion int       `json:"schema_version,omitempty"`
 	Dir           string    `json:"dir"`
+	// ServersError is why the bundle lacks the MinecraftServer objects, when
+	// it does.
+	ServersError string `json:"servers_error,omitempty"`
 }
 
 // Manifest describes a bundle.
@@ -444,7 +458,9 @@ func removeStalePartials(dir string) {
 	}
 }
 
-// Backup writes one bundle and returns its path.
+// Backup writes one bundle and returns its path. With ErrServersMissing the
+// bundle is written and holds the database, but not the MinecraftServer
+// objects.
 func Backup(ctx context.Context, o BackupOptions) (string, error) {
 	if !labelRe.MatchString(o.Label) {
 		return "", fmt.Errorf("invalid label %q (want [a-z0-9-], e.g. daily or manual)", o.Label)
@@ -527,6 +543,9 @@ func Backup(ctx context.Context, o BackupOptions) (string, error) {
 	}
 	if o.ExportServers != nil {
 		if data, err := o.ExportServers(ctx); err != nil {
+			if o.RequireServers {
+				return "", fmt.Errorf("export the MinecraftServer objects: %w", err)
+			}
 			m.ServersError = err.Error()
 			fmt.Fprintf(logw, "felis db backup: MinecraftServer objects not included: %v\n", err)
 		} else {
@@ -546,7 +565,7 @@ func Backup(ctx context.Context, o BackupOptions) (string, error) {
 	}
 	if info, err := os.Stat(final); err == nil {
 		st := Status{At: created, Name: name, Label: o.Label, SizeBytes: info.Size(),
-			FelisVersion: o.Version, SchemaVersion: m.SchemaVersion, Dir: o.Dir}
+			FelisVersion: o.Version, SchemaVersion: m.SchemaVersion, Dir: o.Dir, ServersError: m.ServersError}
 		if o.Record {
 			if err := record(ctx, c, o.Tools, st); err != nil {
 				fmt.Fprintf(logw, "felis db backup: record the backup for the panel: %v\n", err)
@@ -562,6 +581,9 @@ func Backup(ctx context.Context, o BackupOptions) (string, error) {
 		fmt.Fprintf(logw, "felis db backup: prune old %s bundles: %v\n", o.Label, err)
 	} else if len(removed) > 0 {
 		fmt.Fprintf(logw, "felis db backup: pruned %d old %s bundle(s)\n", len(removed), o.Label)
+	}
+	if m.ServersError != "" {
+		return final, fmt.Errorf("%w: %s", ErrServersMissing, m.ServersError)
 	}
 	return final, nil
 }

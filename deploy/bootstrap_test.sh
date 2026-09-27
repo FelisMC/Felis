@@ -3534,7 +3534,7 @@ run_move() { # holds(0/1) backup(ok|silent|fail) restore-exit compare-exit
 out="$(run_move 1 ok)"
 calls="$(cat "$mgdir/calls")"
 expect "the bundle is taken from the host server, never pruned" \
-  "FELIS db backup [127.0.0.1:5432 no-deployment] -dir $mgdir/db -label pre-pg-move -keep 0" "$calls"
+  "FELIS db backup [127.0.0.1:5432 no-deployment] -dir $mgdir/db -label pre-pg-move -keep 0 -no-servers" "$calls"
 expect "the bundle is restored into the pod, which served nobody yet" \
   "FELIS db restore [127.0.0.1:15432 felis/felis-postgres] -dir $mgdir/db -yes -no-safety-backup $mgdir/db/b.tar" "$calls"
 before "writers are stopped before the bundle" "QUIESCE" "FELIS db backup" "$calls"

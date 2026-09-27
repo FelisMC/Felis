@@ -363,7 +363,8 @@ components:
               description: Bundle file name, felis-db-<UTC stamp>-<label>.tar.
             label:
               type: string
-              enum: [daily, pre-migrate, pre-restore, manual]
+              enum: [daily, pre-migrate, pre-restore, offsite, manual]
+              description: offsite is the bundle `felis offsite sync` takes after copying world archives; a restore records the newest bundle on disk, which may be one.
             size_bytes:
               type: integer
               format: int64
@@ -375,6 +376,12 @@ components:
             dir:
               type: string
               description: Backup directory on the host.
+            servers_error:
+              type: string
+              description: >
+                Why the bundle lacks the MinecraftServer objects (the cluster did not
+                answer the export), when it does. A restore from it brings back the
+                database but no servers.
         stale:
           type: boolean
           description: True when there is no record or it is older than max_age_seconds.

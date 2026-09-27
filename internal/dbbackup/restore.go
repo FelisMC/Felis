@@ -247,7 +247,9 @@ func Restore(ctx context.Context, o RestoreOptions) (Manifest, string, error) {
 		if so.Log == nil {
 			so.Log = logw
 		}
-		if safety, err = Backup(ctx, so); err != nil {
+		// The restore replaces the database alone, so a safety bundle the cluster
+		// did not add its objects to still holds everything it replaces.
+		if safety, err = Backup(ctx, so); err != nil && !errors.Is(err, ErrServersMissing) {
 			return m, "", fmt.Errorf("safety backup of the current database: %w (pass -no-safety-backup to restore without one)", err)
 		}
 		fmt.Fprintf(logw, "felis db restore: current database saved to %s\n", safety)
@@ -274,7 +276,7 @@ func recordNewest(ctx context.Context, c conn, t Tools, dir string) error {
 	b := all[0]
 	st := Status{At: b.Created, Name: b.Name, Label: b.Label, SizeBytes: b.Size, Dir: dir}
 	if m, err := Verify(b.Path); err == nil {
-		st.FelisVersion, st.SchemaVersion = m.FelisVersion, m.SchemaVersion
+		st.FelisVersion, st.SchemaVersion, st.ServersError = m.FelisVersion, m.SchemaVersion, m.ServersError
 	}
 	return record(ctx, c, t, st)
 }

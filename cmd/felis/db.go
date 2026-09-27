@@ -172,6 +172,14 @@ func dbBackup(fs *flag.FlagSet, dir *string, args []string, stdout, stderr io.Wr
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 	path, err := dbbackup.Backup(ctx, o)
+	if errors.Is(err, dbbackup.ErrServersMissing) {
+		// The bundle is on disk and holds the database; the exit status fails
+		// the timer's run so the gap shows in systemctl and the journal, and
+		// the panel and the watchdog read it from the record and the manifest.
+		fmt.Fprintf(stdout, "felis db backup: wrote %s\n", path)
+		fmt.Fprintf(stderr, "felis db backup: %v\n  a restore from %s brings back the database but no servers; check `k3s kubectl get minecraftservers -A`, then run `felis db backup` again\n", err, filepath.Base(path))
+		return 1
+	}
 	if err != nil {
 		fmt.Fprintf(stderr, "felis db backup: %v\n", err)
 		return 1
@@ -423,10 +431,36 @@ func dbCheck(fs *flag.FlagSet, dir *string, args []string, stdout, stderr io.Wri
 	return 0
 }
 
-// exportMinecraftServers reads every MinecraftServer through the host's k3s
+// serverExportTries and serverExportRetry are how long a backup waits out a
+// cluster that is briefly away (an apiserver restart) before its bundle goes
+// without the MinecraftServer objects.
+const serverExportTries = 3
+
+var serverExportRetry = 10 * time.Second
+
+// exportMinecraftServers is dbbackup's ExportServers on the host: the
+// MinecraftServer objects through k3s kubectl, tried serverExportTries times.
+func exportMinecraftServers(ctx context.Context) ([]byte, error) {
+	for try := 1; ; try++ {
+		out, err := getMinecraftServers(ctx)
+		if err == nil {
+			return out, nil
+		}
+		if try == serverExportTries {
+			return nil, fmt.Errorf("%w (tried %d times)", err, try)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("%w (tried %d times)", err, try)
+		case <-time.After(serverExportRetry):
+		}
+	}
+}
+
+// getMinecraftServers reads every MinecraftServer through the host's k3s
 // kubectl and strips what the API server owns, so the result can be fed back
 // with `kubectl apply -f` on a rebuilt cluster.
-func exportMinecraftServers(ctx context.Context) ([]byte, error) {
+func getMinecraftServers(ctx context.Context) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	// Output, not the CombinedOutput kubectlOutput uses: a deprecation warning

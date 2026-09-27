@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -83,6 +84,10 @@ func cmdMigrate(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// preMigrateStateDir is the host state a pre-migrate bundle carries; tests
+// point it at a directory of their own.
+var preMigrateStateDir = dbbackup.DefaultStateDir
+
 // preMigrateBackup bundles the database when it already carries a schema and
 // some of migrations are not applied yet, and returns the bundle's path ("" when
 // there was nothing to protect: a fresh database, or nothing pending).
@@ -101,11 +106,18 @@ func preMigrateBackup(ctx context.Context, drv store.Driver, migrations []store.
 	if err != nil {
 		return "", err
 	}
-	return dbbackup.Backup(ctx, dbbackup.BackupOptions{
+	path, err := dbbackup.Backup(ctx, dbbackup.BackupOptions{
 		DatabaseURL: db.URL, Tools: tools, Dir: dir, Label: dbbackup.LabelPreMigrate,
-		Keep: defaultKeep[dbbackup.LabelPreMigrate], StateDir: dbbackup.DefaultStateDir,
-		Version: resolvedVersion(), Log: log, Record: true,
+		Keep: defaultKeep[dbbackup.LabelPreMigrate], StateDir: preMigrateStateDir,
+		Version: resolvedVersion(), ExportServers: exportMinecraftServers, Log: log, Record: true,
 	})
+	if errors.Is(err, dbbackup.ErrServersMissing) {
+		// Rolling the migration back needs the database alone. Backup logged
+		// the gap, and the panel and the watchdog show it while this is the
+		// newest bundle.
+		return path, nil
+	}
+	return path, err
 }
 
 func hasPending(done map[int]struct{}, migrations []store.Migration) bool {

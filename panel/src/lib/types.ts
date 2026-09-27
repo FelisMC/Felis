@@ -457,7 +457,7 @@ export interface UpdateWindow {
 
 // ---- Control-plane database backup (internal/api/handlers_dbbackup.go dbBackupView) ----
 
-export type DBBackupLabel = "daily" | "pre-migrate" | "pre-restore" | "manual";
+export type DBBackupLabel = "daily" | "pre-migrate" | "pre-restore" | "offsite" | "manual";
 
 export interface DBBackupRecord {
   at: string;
@@ -467,6 +467,8 @@ export interface DBBackupRecord {
   felis_version?: string;
   schema_version?: number;
   dir: string;
+  /** Why the bundle lacks the MinecraftServer objects, when it does: a restore from it brings back no servers. */
+  servers_error?: string;
 }
 
 export interface DBBackupStatus {

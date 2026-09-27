@@ -382,7 +382,10 @@ func offsiteSyncer(cfg *config.Config, env *offsiteEnv, src offsiteSources, arch
 // (offsite.Syncer.Snapshot): what `felis db backup` takes, labelled offsite,
 // with the newest one kept in dir. It is not recorded for the panel, whose
 // backup card watches felis-db-backup.timer: snapshots come only when archives
-// are copied, and would hide a daily timer that stopped.
+// are copied, and would hide a daily timer that stopped. It requires the
+// MinecraftServer objects: it becomes the newest bundle in the bucket, which a
+// lost host restores from, and a pass that cannot take a whole one fails and
+// tries again next hour.
 func offsiteSnapshot(db config.DatabaseConfig, dir, stateDir string, log io.Writer) func(context.Context) error {
 	return func(ctx context.Context) error {
 		tools, err := dbTools(db)
@@ -394,7 +397,7 @@ func offsiteSnapshot(db config.DatabaseConfig, dir, stateDir string, log io.Writ
 		path, err := dbbackup.Backup(ctx, dbbackup.BackupOptions{
 			DatabaseURL: db.URL, Tools: tools, Dir: dir, Label: dbbackup.LabelOffsite,
 			Keep: defaultKeep[dbbackup.LabelOffsite], StateDir: stateDir, Version: resolvedVersion(),
-			ExportServers: exportMinecraftServers, Log: log,
+			ExportServers: exportMinecraftServers, RequireServers: true, Log: log,
 		})
 		if err == nil {
 			fmt.Fprintf(log, "felis offsite: took database bundle %s, which lists the archives just copied\n", filepath.Base(path))
@@ -667,7 +670,11 @@ func printDBBundles(ctx context.Context, b offsite.Bucket, key []byte, bundles [
 			fmt.Fprintf(stdout, "  %s  %s  unreadable: %v\n", o.Key, offsite.HumanBytes(o.Size), err)
 			continue
 		}
-		fmt.Fprintf(stdout, "  %s  %s  %s\n", o.Key, offsite.HumanBytes(o.Size), m.Counts.String())
+		gap := ""
+		if m.ServersError != "" {
+			gap = ", no MinecraftServer objects"
+		}
+		fmt.Fprintf(stdout, "  %s  %s  %s%s\n", o.Key, offsite.HumanBytes(o.Size), m.Counts.String(), gap)
 	}
 }
 
@@ -890,6 +897,9 @@ func fetchDB(ctx context.Context, b offsite.Bucket, key []byte, arg, dir string,
 		orUnknown(m.FelisVersion), m.SchemaVersion, m.Counts.String())
 	if m.Counts.Fresh() {
 		fmt.Fprintln(stdout, "  This database holds no servers and at most one account, like a new install's. Check it is the state to restore before `felis db restore`.")
+	}
+	if m.ServersError != "" {
+		fmt.Fprintf(stdout, "  This bundle lacks the MinecraftServer objects (%s): `felis db restore` brings back the database, and the servers come from k8s/minecraftservers.json in the newest bundle `felis offsite list` shows without that gap.\n", m.ServersError)
 	}
 	return 0
 }

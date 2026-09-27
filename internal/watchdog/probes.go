@@ -342,7 +342,7 @@ func PostgresDown(err error) Finding {
 }
 
 // BackupFinding reports a control-plane database backup older than a day, or
-// none at all, in dir.
+// none at all, in dir, and a fresh one that would restore no servers.
 func BackupFinding(dir string, now time.Time) *Finding {
 	bundles, err := dbbackup.List(dir)
 	if err != nil {
@@ -354,7 +354,7 @@ func BackupFinding(dir string, now time.Time) *Finding {
 		}
 	}
 	if len(bundles) > 0 && now.Sub(bundles[0].Created) <= maxBackupAge {
-		return nil
+		return serversFinding(bundles[0])
 	}
 	f := &Finding{
 		Key: "db-backup", Severity: Critical, For: backupFor,
@@ -368,6 +368,29 @@ func BackupFinding(dir string, now time.Time) *Finding {
 		f.SummaryEN = fmt.Sprintf("the newest control-plane database backup is %s old (%s)", age, bundles[0].Name)
 	}
 	return f
+}
+
+// serversFinding reports a bundle whose MinecraftServer export failed: a
+// restore from it, which a lost host would take from the newest bundle, brings
+// back the database and no servers. A bundle it cannot read is left to the
+// restore that verifies it; a bundle taken without the export on purpose
+// (`felis db backup -no-servers`) records no failure.
+func serversFinding(b dbbackup.Bundle) *Finding {
+	f, err := os.Open(b.Path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	m, err := dbbackup.ReadManifest(f)
+	if err != nil || m.ServersError == "" {
+		return nil
+	}
+	return &Finding{
+		Key: "db-backup-servers", Severity: Warning, For: backupFor,
+		Summary:   fmt.Sprintf("最新的控制面数据库备份 %s 缺少 MinecraftServer 对象（%s）：用它恢复能找回数据库，但集群里不会有任何服务器", b.Name, m.ServersError),
+		SummaryEN: fmt.Sprintf("the newest control-plane database backup %s lacks the MinecraftServer objects (%s): a restore from it brings back the database but no servers", b.Name, m.ServersError),
+		Hint:      "k3s kubectl get minecraftservers -A; once the cluster answers, take one now with `sudo felis db backup` (docs/troubleshooting.md §16)",
+	}
 }
 
 // OffsiteFinding reports an off-site copy that has not completed a clean run

@@ -169,11 +169,18 @@ var fetchT0 = time.Date(2026, 9, 20, 3, 30, 0, 0, time.UTC)
 // into b and returns its name.
 func putBundle(t *testing.T, b mapBucket, key []byte, daysAgo int, counts *dbbackup.Counts) string {
 	t.Helper()
+	return putBundleWith(t, b, key, daysAgo, counts, "")
+}
+
+// putBundleWith is putBundle for a bundle whose server export failed with
+// serversError, when that is not empty.
+func putBundleWith(t *testing.T, b mapBucket, key []byte, daysAgo int, counts *dbbackup.Counts, serversError string) string {
+	t.Helper()
 	created := fetchT0.AddDate(0, 0, -daysAgo)
 	dump := []byte("PGDMP " + created.String())
 	sum := sha256.Sum256(dump)
 	manifest, err := json.Marshal(dbbackup.Manifest{
-		Format: 1, CreatedAt: created, Label: dbbackup.LabelDaily, FelisVersion: "v1.2.3", SchemaVersion: 21, Counts: counts,
+		Format: 1, CreatedAt: created, Label: dbbackup.LabelDaily, FelisVersion: "v1.2.3", SchemaVersion: 21, Counts: counts, ServersError: serversError,
 		Files: []dbbackup.ManifestEntry{{Name: "db.dump", Size: int64(len(dump)), SHA256: hex.EncodeToString(sum[:]), Mode: 0o600}},
 	})
 	if err != nil {
@@ -273,6 +280,20 @@ func TestOffsiteFetchDB(t *testing.T) {
 		}
 		if !strings.Contains(out, "holds   1 account, 0 servers") || !strings.Contains(out, "like a new install's") {
 			t.Errorf("stdout = %s", out)
+		}
+	})
+
+	t.Run("a bundle without the servers says where they come from", func(t *testing.T) {
+		b := mapBucket{}
+		gapped := putBundleWith(t, b, key, 1, &dbbackup.Counts{Users: 5, Servers: 3}, "connection refused (tried 3 times)")
+		_, code, out, errb := fetch(b, gapped)
+		if code != 0 || !strings.Contains(out, "This bundle lacks the MinecraftServer objects (connection refused (tried 3 times))") ||
+			!strings.Contains(out, "k8s/minecraftservers.json in the newest bundle `felis offsite list` shows without that gap") {
+			t.Errorf("exit %d, stdout %q, stderr %q", code, out, errb)
+		}
+		whole := putBundle(t, b, key, 0, &dbbackup.Counts{Users: 5, Servers: 3})
+		if _, _, out, _ := fetch(b, whole); strings.Contains(out, "lacks the MinecraftServer objects") {
+			t.Errorf("a whole bundle flagged:\n%s", out)
 		}
 	})
 
@@ -601,6 +622,7 @@ func TestPrintDBBundlesSaysWhatEachHolds(t *testing.T) {
 	otherRaw, _ := offsite.NewKey()
 	other, _ := offsite.ParseKey(otherRaw)
 	b := mapBucket{}
+	gapped := putBundleWith(t, b, key, 4, &dbbackup.Counts{Users: 5, Servers: 3}, "connection refused")
 	old := putBundle(t, b, key, 3, nil)
 	full := putBundle(t, b, key, 2, &dbbackup.Counts{Users: 5, Servers: 3})
 	sealedElsewhere := putBundle(t, b, other, 1, &dbbackup.Counts{Users: 5, Servers: 3})
@@ -617,12 +639,13 @@ func TestPrintDBBundlesSaysWhatEachHolds(t *testing.T) {
 		{sealedElsewhere, "unreadable: offsite: object does not decrypt with this key"},
 		{full, "5 accounts, 3 servers"},
 		{old, "not recorded"},
+		{gapped, "5 accounts, 3 servers, no MinecraftServer objects"},
 	}
-	if len(lines) != len(want)+1 || !strings.HasPrefix(lines[0], "database bundles (4, newest first") {
+	if len(lines) != len(want)+1 || !strings.HasPrefix(lines[0], "database bundles (5, newest first") {
 		t.Fatalf("output:\n%s", out.String())
 	}
 	for i, w := range want {
-		if l := lines[i+1]; !strings.HasPrefix(l, "  "+w.name+"  ") || !strings.Contains(l, w.holds) {
+		if l := lines[i+1]; !strings.HasPrefix(l, "  "+w.name+"  ") || !strings.Contains(l, w.holds) || strings.Contains(l, "no MinecraftServer") != (w.name == gapped) {
 			t.Errorf("line %d = %q, want %s with %q", i+1, l, w.name, w.holds)
 		}
 	}
@@ -708,11 +731,24 @@ func TestOffsiteSyncerSnapshotsAndSweeps(t *testing.T) {
 	}
 	// The MinecraftServer objects are exported alongside, as in the daily bundle.
 	argv, _ := os.ReadFile(filepath.Join(dir, "k3s.args"))
-	if ran := string(argv); !strings.Contains(ran, podExecPrefix+"pg_dump --format=custom") || !strings.Contains(ran, "kubectl get minecraftservers") {
-		t.Errorf("k3s ran %q, want pg_dump in the pod and the server export", ran)
+	if ran := string(argv); !strings.Contains(ran, podExecPrefix+"pg_dump --format=custom") {
+		t.Errorf("k3s ran %q, want pg_dump in the pod", ran)
+	}
+	if !strings.Contains(string(bundleServers(t, got[0].Path)), `"name": "lobby"`) {
+		t.Errorf("the snapshot holds no MinecraftServer objects")
 	}
 	if !strings.Contains(log.String(), "took database bundle "+got[0].Name) {
 		t.Errorf("the snapshot is not logged:\n%s", log.String())
+	}
+	// It becomes the newest bundle in the bucket, so with the cluster away it
+	// fails, leaves no bundle, and the next pass tries again.
+	noServerExportWait(t)
+	writeTestFile(t, filepath.Join(dir, "servers_fail"), "99", 0o600)
+	if err := s.Snapshot(context.Background()); err == nil || !strings.Contains(err.Error(), "export the MinecraftServer objects") {
+		t.Errorf("snapshot with the cluster away: %v, want a failure", err)
+	}
+	if again, _ := dbbackup.List(bundles); len(again) != 1 || again[0].Name != got[0].Name {
+		t.Errorf("bundle directory after the failed snapshot = %+v, want %s alone", again, got[0].Name)
 	}
 
 	for _, c := range []struct {

@@ -1,7 +1,10 @@
 package watchdog
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sort"
@@ -158,6 +161,46 @@ func TestBackupFinding(t *testing.T) {
 	touch(t0.Add(-2 * time.Hour))
 	if f := BackupFinding(dir, t0); f != nil {
 		t.Fatalf("fresh backup reported: %+v", f)
+	}
+}
+
+// TestBackupFindingServers: a fresh newest bundle whose MinecraftServer export
+// failed is reported, since a lost host restores from it; an older bundle
+// with the same gap, a bundle taken without the export and a stale newest
+// bundle are left to the checks that own them.
+func TestBackupFindingServers(t *testing.T) {
+	dir := t.TempDir()
+	bundle := func(at time.Time, label, serversError string) {
+		t.Helper()
+		m, err := json.Marshal(map[string]any{"format": 1, "label": label, "servers_error": serversError})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var buf bytes.Buffer
+		tw := tar.NewWriter(&buf)
+		if err := tw.WriteHeader(&tar.Header{Name: "MANIFEST.json", Mode: 0o600, Size: int64(len(m))}); err != nil {
+			t.Fatal(err)
+		}
+		tw.Write(m)
+		tw.Close()
+		if err := os.WriteFile(filepath.Join(dir, dbbackup.BundleName(at, label)), buf.Bytes(), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	bundle(t0.Add(-5*time.Hour), "daily", "k3s kubectl get minecraftservers: connection refused")
+	bundle(t0.Add(-3*time.Hour), "manual", "")
+	if f := BackupFinding(dir, t0); f != nil {
+		t.Fatalf("an older bundle's gap reported under a whole newer one: %+v", f)
+	}
+	bundle(t0.Add(-2*time.Hour), "pre-migrate", "k3s kubectl get minecraftservers: connection refused")
+	f := BackupFinding(dir, t0)
+	if f == nil || f.Key != "db-backup-servers" || f.Severity != Warning ||
+		!strings.Contains(f.SummaryEN, "felis-db-20260924T100000Z-pre-migrate.tar lacks the MinecraftServer objects (k3s kubectl get minecraftservers: connection refused)") ||
+		!strings.Contains(f.Summary, "缺少 MinecraftServer 对象") || !strings.Contains(f.Hint, "felis db backup") {
+		t.Fatalf("newest bundle without servers: %+v", f)
+	}
+	if f := BackupFinding(dir, t0.Add(30*time.Hour)); f == nil || f.Key != "db-backup" {
+		t.Fatalf("stale: %+v, want the staleness finding", f)
 	}
 }
 

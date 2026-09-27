@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -240,8 +241,20 @@ func TestAuditExportBounds(t *testing.T) {
 
 // podK3s stands in for `k3s kubectl exec ... --`: it logs its argv and runs the
 // command after -- from the "container" directory, which is the only place the
-// PostgreSQL tools exist, as on an installed host.
+// PostgreSQL tools exist, as on an installed host. `kubectl get` lists one
+// MinecraftServer, logged to k3s.get, and refuses its first N calls while
+// servers_fail holds N.
 const podK3s = `#!/bin/sh
+if [ "$1" = kubectl ] && [ "$2" = get ]; then
+  printf '%s\n' "$*" >> "$FAKE_DIR/k3s.get"
+  n=$(/usr/bin/wc -l < "$FAKE_DIR/k3s.get")
+  if [ -f "$FAKE_DIR/servers_fail" ] && [ "$n" -le "$(/bin/cat "$FAKE_DIR/servers_fail")" ]; then
+    echo "The connection to the server 127.0.0.1:6443 was refused - did you specify the right host or port?" >&2
+    exit 1
+  fi
+  echo '{"apiVersion":"v1","kind":"List","items":[{"apiVersion":"felis.lolicon.best/v1alpha1","kind":"MinecraftServer","metadata":{"name":"lobby","namespace":"felis-servers","uid":"u-1"},"spec":{"type":"PAPER"},"status":{"phase":"Running"}}]}'
+  exit 0
+fi
 printf '%s\n' "$*" >> "$FAKE_DIR/k3s.args"
 while [ $# -gt 0 ] && [ "$1" != "--" ]; do shift; done
 shift
@@ -410,3 +423,142 @@ func TestDBToolsNeedTheRoleAndDatabase(t *testing.T) {
 }
 
 var dbbackupVerify = dbbackup.Verify
+
+func noServerExportWait(t *testing.T) {
+	t.Helper()
+	old := serverExportRetry
+	serverExportRetry = 0
+	t.Cleanup(func() { serverExportRetry = old })
+}
+
+// serverGets counts the `kubectl get` calls the fake k3s answered or refused.
+func serverGets(dir string) int {
+	b, _ := os.ReadFile(filepath.Join(dir, "k3s.get"))
+	return strings.Count(string(b), "\n")
+}
+
+// bundleServers returns the bundle's k8s/minecraftservers.json, or nil.
+func bundleServers(t *testing.T, bundle string) []byte {
+	t.Helper()
+	f, err := os.Open(bundle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	tr := tar.NewReader(f)
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.Name == "k8s/minecraftservers.json" {
+			data, err := io.ReadAll(tr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return data
+		}
+	}
+}
+
+// TestDBBackupWithoutServersFails: when the cluster stays away the daily
+// bundle is still written, and `felis db backup` exits 1, so the timer's run
+// shows failed, saying a restore from the bundle brings back no servers.
+func TestDBBackupWithoutServersFails(t *testing.T) {
+	noServerExportWait(t)
+	dir := newPodRig(t)
+	cfg := podConfig(t, dir)
+	writeTestFile(t, filepath.Join(dir, "servers_fail"), "99", 0o600)
+	var out, errBuf bytes.Buffer
+	code := run([]string{"db", "backup", "-config", cfg, "-dir", filepath.Join(dir, "bundles"), "-state-dir", "", "-label", "daily"}, &out, &errBuf)
+	if code != 1 {
+		t.Fatalf("exit %d, want 1: %s", code, errBuf.String())
+	}
+	bundle := strings.TrimSpace(strings.TrimPrefix(out.String(), "felis db backup: wrote "))
+	m, err := dbbackupVerify(bundle)
+	if err != nil {
+		t.Fatalf("the database must still be bundled: %v", err)
+	}
+	if !strings.Contains(m.ServersError, "6443 was refused") || !strings.Contains(m.ServersError, "(tried 3 times)") || bundleServers(t, bundle) != nil {
+		t.Errorf("manifest servers error = %q", m.ServersError)
+	}
+	if n := serverGets(dir); n != serverExportTries {
+		t.Errorf("export tried %d times, want %d", n, serverExportTries)
+	}
+	if msg := errBuf.String(); !strings.Contains(msg, "a restore from "+filepath.Base(bundle)+" brings back the database but no servers") {
+		t.Errorf("stderr = %q", msg)
+	}
+}
+
+// TestDBBackupRetriesTheServerExport: a cluster back on the last try costs the
+// bundle nothing, and what it holds is ready for kubectl apply.
+func TestDBBackupRetriesTheServerExport(t *testing.T) {
+	noServerExportWait(t)
+	dir := newPodRig(t)
+	cfg := podConfig(t, dir)
+	writeTestFile(t, filepath.Join(dir, "servers_fail"), "2", 0o600)
+	var out, errBuf bytes.Buffer
+	if code := run([]string{"db", "backup", "-config", cfg, "-dir", filepath.Join(dir, "bundles"), "-state-dir", ""}, &out, &errBuf); code != 0 {
+		t.Fatalf("exit %d: %s", code, errBuf.String())
+	}
+	bundle := strings.TrimSpace(strings.TrimPrefix(out.String(), "felis db backup: wrote "))
+	servers := string(bundleServers(t, bundle))
+	if !strings.Contains(servers, `"name": "lobby"`) || strings.Contains(servers, "status") || strings.Contains(servers, "u-1") {
+		t.Errorf("k8s/minecraftservers.json = %s", servers)
+	}
+	if n := serverGets(dir); n != 3 {
+		t.Errorf("export tried %d times, want 3", n)
+	}
+}
+
+// TestPreMigrateBackupExportsServers: the snapshot every upgrade takes, often
+// the newest bundle, carries the MinecraftServer objects too; a cluster that
+// is away does not hold back the migration, whose rollback needs the database
+// alone.
+func TestPreMigrateBackupExportsServers(t *testing.T) {
+	noServerExportWait(t)
+	dir := newPodRig(t)
+	old := preMigrateStateDir
+	preMigrateStateDir = ""
+	t.Cleanup(func() { preMigrateStateDir = old })
+	ms := []store.Migration{{Version: 1}, {Version: 2}}
+	bundles := filepath.Join(dir, "bundles")
+	pending := appliedDriver{done: map[int]struct{}{1: {}}}
+
+	path, err := preMigrateBackup(context.Background(), pending, ms, podDB, bundles, io.Discard)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if !strings.Contains(string(bundleServers(t, path)), `"name": "lobby"`) {
+		t.Errorf("%s holds no MinecraftServer objects", path)
+	}
+
+	writeTestFile(t, filepath.Join(dir, "servers_fail"), "99", 0o600)
+	path, err = preMigrateBackup(context.Background(), pending, ms, podDB, bundles, io.Discard)
+	if err != nil || path == "" {
+		t.Fatalf("snapshot with the cluster away = %q, %v; want the bundle and no error", path, err)
+	}
+	if m, err := dbbackupVerify(path); err != nil || m.ServersError == "" || bundleServers(t, path) != nil {
+		t.Errorf("snapshot with the cluster away: %+v, %v", m, err)
+	}
+}
+
+// TestServerExportStopsWaitingWithTheContext: a backup whose time is up stops
+// waiting for the cluster between tries.
+func TestServerExportStopsWaitingWithTheContext(t *testing.T) {
+	dir := newPodRig(t)
+	writeTestFile(t, filepath.Join(dir, "servers_fail"), "99", 0o600)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := exportMinecraftServers(ctx)
+	if err == nil || !strings.Contains(err.Error(), "(tried 1 times)") || serverGets(dir) != 1 {
+		t.Fatalf("err = %v after %d tries, want the first failure alone", err, serverGets(dir))
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Errorf("took %s, want the context's deadline, not the %s retry wait", took, serverExportRetry)
+	}
+}

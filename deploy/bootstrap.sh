@@ -4074,7 +4074,9 @@ migrate_host_postgres() {
   remember_temp "$fresh"
   write_felis_toml "$legacy" "127.0.0.1:5432"
   write_felis_toml "$fresh" "127.0.0.1:${PG_HOST_PORT}" "${CONTROL_NS}/${PG_DEPLOYMENT}"
-  out="$("$HOST_BIN" db backup -config "$legacy" -dir "$FELIS_DB_BACKUP_DIR" -label pre-pg-move -keep 0)" \
+  # The move carries the database alone; the MinecraftServer objects stay in the
+  # cluster, so a cluster slow to answer their export must not stop it.
+  out="$("$HOST_BIN" db backup -config "$legacy" -dir "$FELIS_DB_BACKUP_DIR" -label pre-pg-move -keep 0 -no-servers)" \
     || die "could not take a bundle of the host database; nothing was moved"
   bundle="$(printf '%s\n' "$out" | sed -n 's/^felis db backup: wrote //p' | tail -n 1)"
   [ -n "$bundle" ] && [ -f "$bundle" ] || die "felis db backup reported no bundle; nothing was moved"

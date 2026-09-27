@@ -307,22 +307,73 @@ func TestBackupRecordsFreshness(t *testing.T) {
 	}
 }
 
+// failingExport stands in for a cluster that does not answer.
+func failingExport(context.Context) ([]byte, error) {
+	return nil, errors.New("connection refused")
+}
+
+func hasServers(m Manifest) bool {
+	return slices.ContainsFunc(m.Files, func(f ManifestEntry) bool { return f.Name == serversEntry })
+}
+
+// TestBackupRecordsAClusterThatDidNotAnswer: the database still gets its
+// bundle when the cluster is away, and the caller learns the bundle restores
+// no servers, as do the manifest and the panel's record.
 func TestBackupRecordsAClusterThatDidNotAnswer(t *testing.T) {
 	pg := newFakePG(t, "x\n")
 	dir := t.TempDir()
+	var log bytes.Buffer
 	path, err := Backup(context.Background(), BackupOptions{
 		DatabaseURL: testURL, Dir: dir, Label: LabelDaily, Tools: pg.tools, Now: at(t0),
-		ExportServers: func(context.Context) ([]byte, error) { return nil, errors.New("connection refused") },
+		ExportServers: failingExport, Record: true, Log: &log,
 	})
-	if err != nil {
-		t.Fatalf("a cluster outage must not fail the database backup: %v", err)
+	if !errors.Is(err, ErrServersMissing) || !strings.HasSuffix(err.Error(), ": connection refused") {
+		t.Fatalf("err = %v, want ErrServersMissing with the export's reason", err)
 	}
-	m, err := Verify(path)
+	if !strings.Contains(log.String(), "MinecraftServer objects not included: connection refused") {
+		t.Errorf("log = %q", log.String())
+	}
+	m, verr := Verify(path)
+	if verr != nil {
+		t.Fatalf("the database must still be bundled: %v", verr)
+	}
+	if m.ServersError != "connection refused" || hasServers(m) || len(m.Files) != 1 {
+		t.Errorf("manifest = %+v", m)
+	}
+	if st := pg.recorded(t); st.Name != filepath.Base(path) || st.ServersError != m.ServersError {
+		t.Errorf("recorded %+v, want the bundle with its servers error", st)
+	}
+}
+
+// TestBackupRequiringServersWritesNothing: a caller that can try again later
+// gets no bundle rather than one that restores no servers.
+func TestBackupRequiringServersWritesNothing(t *testing.T) {
+	pg := newFakePG(t, "x\n")
+	dir := t.TempDir()
+	path, err := Backup(context.Background(), BackupOptions{
+		DatabaseURL: testURL, Dir: dir, Label: LabelOffsite, Tools: pg.tools, Now: at(t0),
+		ExportServers: failingExport, RequireServers: true, Record: true,
+	})
+	if err == nil || errors.Is(err, ErrServersMissing) || path != "" {
+		t.Fatalf("Backup = %q, %v; want a plain failure and no path", path, err)
+	}
+	if all, _ := List(dir); len(all) != 0 {
+		t.Errorf("bundles left behind: %v", all)
+	}
+	if st := pg.recorded(t); st.Name != "" {
+		t.Errorf("recorded %+v for a backup that failed", st)
+	}
+	// With the cluster answering, the same backup is whole.
+	path, err = Backup(context.Background(), BackupOptions{
+		DatabaseURL: testURL, Dir: dir, Label: LabelOffsite, Tools: pg.tools, Now: at(t0),
+		ExportServers:  func(context.Context) ([]byte, error) { return []byte(`{"kind":"List","items":[]}`), nil },
+		RequireServers: true,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m.ServersError != "connection refused" || len(m.Files) != 1 {
-		t.Errorf("manifest = %+v", m)
+	if m, err := Verify(path); err != nil || !hasServers(m) || m.ServersError != "" {
+		t.Errorf("manifest = %+v, %v", m, err)
 	}
 }
 

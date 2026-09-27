@@ -137,3 +137,30 @@ func TestRestoreRefusesACorruptBundle(t *testing.T) {
 		}
 	}
 }
+
+// TestRestoreKeepsASafetyBundleWithoutServers: the restore replaces only the
+// database, so a cluster that is away does not stop it, and the record the
+// restore leaves says the newest bundle restores no servers.
+func TestRestoreKeepsASafetyBundleWithoutServers(t *testing.T) {
+	pg := newFakePG(t, "alice\n")
+	dir := t.TempDir()
+	bundle := takeBackup(t, pg, dir, t0)
+	pg.setDB(t, "alice\nbob\n")
+
+	safety, err := restore(pg, dir, bundle, func(o *RestoreOptions) {
+		o.Safety.ExportServers = failingExport
+	})
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if got := pg.db(t); got != "alice\n" {
+		t.Fatalf("db after restore = %q", got)
+	}
+	m, err := Verify(safety)
+	if err != nil || m.ServersError == "" || m.Label != LabelPreRestore {
+		t.Fatalf("safety bundle %s: %+v, %v", safety, m, err)
+	}
+	if st := pg.recorded(t); st.Name != filepath.Base(safety) || st.ServersError != m.ServersError {
+		t.Fatalf("recorded after restore = %+v", st)
+	}
+}
