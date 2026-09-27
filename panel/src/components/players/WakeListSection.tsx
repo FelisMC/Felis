@@ -8,7 +8,7 @@ import { formatAbsolute, formatRelative } from "@/lib/format";
 import { useAsync } from "@/lib/hooks";
 import type { AllowlistEntry, AutostartPolicy } from "@/lib/types";
 import { cn } from "@/lib/utils";
-import { CollapsibleSection, FeedbackLine, PagerFooter, SearchBox, usePagedNames, type Feedback } from "./shared";
+import { CollapsibleSection, FeedbackLine, LoadError, PagerFooter, SearchBox, usePagedNames, type Feedback } from "./shared";
 
 /** WakeListSection shows who may wake the server while it sleeps under the "wake
  *  list" autostart policy, and lets the owner take that right away or give it back.
@@ -100,9 +100,7 @@ export function WakeListSection({
             <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("log_connecting")}
           </div>
         ) : error ? (
-          <p role="alert" className="text-xs text-destructive">
-            {t("wake_list_load_error")}
-          </p>
+          <LoadError message={t("wake_list_load_error")} error={error} />
         ) : entries.length === 0 ? (
           <div className="rounded-md border border-dashed border-border bg-muted/20 px-4 py-8 text-center">
             <p className="text-sm text-muted-foreground">{t("wake_list_empty")}</p>

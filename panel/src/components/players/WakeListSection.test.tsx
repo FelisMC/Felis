@@ -103,7 +103,9 @@ describe("WakeListSection", () => {
 
     calls.serverAllowlist.mockRejectedValue({ status: 500, code: "internal", message: "db down" });
     render(<WakeListSection name="lobby" policy="allowlist" defaultOpen />);
-    expect((await screen.findByRole("alert")).textContent).toBe("Couldn't load the wake list.");
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Couldn't load the wake list. The service is unavailable right now (it may be restarting or upgrading). Try again shortly.",
+    );
   });
 
   it("finds a player by account name or by UUID once the list is long", async () => {

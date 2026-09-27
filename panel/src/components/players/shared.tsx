@@ -11,6 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { humanizeError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 // MC_NAME mirrors the backend's mcNameRe (handlers_access.go): a Minecraft name is
@@ -41,6 +42,17 @@ export function FeedbackLine({ fb }: { fb: Feedback }) {
       className={fb.kind === "ok" ? "text-xs text-emerald-500" : "text-xs text-destructive"}
     >
       {fb.msg}
+    </p>
+  );
+}
+
+/** LoadError says a section's list failed to load and why: a lapsed session, a
+ *  server mid-restart and an RCON refusal each want a different next step, so the
+ *  reason is shown with the message. The section header's refresh retries. */
+export function LoadError({ message, error }: { message: string; error: unknown }) {
+  return (
+    <p role="alert" className="text-xs text-destructive">
+      {message} {humanizeError(error)}
     </p>
   );
 }
