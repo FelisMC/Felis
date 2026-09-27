@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -369,4 +372,28 @@ func resList(specs ...string) corev1.ResourceList {
 		rl[corev1.ResourceName(name)] = resource.MustParse(val)
 	}
 	return rl
+}
+
+// TestApplyReportsAMissingKubeconfig pins the node-side failure: with no kubeconfig to
+// find, apply says which ones it tried and exits 1. It used to call
+// ctrl.GetConfigOrDie, which ended the process with exit 1 and nothing printed.
+func TestApplyReportsAMissingKubeconfig(t *testing.T) {
+	if _, err := os.Stat(hostBootstrapKubeconfigPath); err == nil {
+		t.Skipf("%s exists on this machine", hostBootstrapKubeconfigPath)
+	}
+	dir := t.TempDir()
+	t.Setenv("KUBECONFIG", filepath.Join(dir, "missing"))
+	t.Setenv("KUBERNETES_SERVICE_HOST", "")
+	form := filepath.Join(dir, "server.json")
+	if err := os.WriteFile(form, []byte(`{"name":"alpha","subdomain":"alpha","image":"registry.felis.svc:5000/felis/paper:demo","memory":"1Gi","storage":"1Gi"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out, errw bytes.Buffer
+	if code := cmdApply([]string{"-f", form}, &out, &errw); code != 1 {
+		t.Fatalf("exit = %d, want 1; stderr %q", code, errw.String())
+	}
+	want := "felis apply: no reachable kubeconfig (tried in-cluster/$KUBECONFIG/~/.kube and " + hostBootstrapKubeconfigPath + "): stat " + hostBootstrapKubeconfigPath + ": no such file or directory\n"
+	if errw.String() != want || out.Len() != 0 {
+		t.Fatalf("stdout %q, stderr %q, want stderr %q", out.String(), errw.String(), want)
+	}
 }

@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/naming"
@@ -16,10 +18,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -111,20 +109,15 @@ func cmdApply(args []string, stdout, stderr io.Writer) int {
 	}
 
 	// ------- K8s client (one context, one client) -------
-	// SetupSignalHandler must be called exactly once per process —
-	// controller-runtime panics on a second call. We create ctx and the
-	// K8s client here and thread both through every downstream call so no
-	// callee ever needs to call SetupSignalHandler again.
-	ctx := ctrl.SetupSignalHandler()
-
-	scheme := runtime.NewScheme()
-	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
-	utilruntime.Must(v1alpha1.AddToScheme(scheme))
-
-	cfg := ctrl.GetConfigOrDie()
-	cl, err := client.New(cfg, client.Options{Scheme: scheme})
+	// The operator runs this on the node, where the kubeconfig is k3s's own file and
+	// neither $KUBECONFIG nor ~/.kube is set. buildSystemServerClient falls back to that
+	// file and names what it tried; ctrl.GetConfigOrDie exited 1 there without a word,
+	// because controller-runtime's logger is never set up in a CLI command.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	cl, err := buildSystemServerClient()
 	if err != nil {
-		fmt.Fprintf(stderr, "felis apply: build client: %v\n", err)
+		fmt.Fprintf(stderr, "felis apply: %v\n", err)
 		return 1
 	}
 
@@ -264,8 +257,7 @@ func buildMinecraftServerFromApplyRequest(req applyRequest, namespace string) (*
 // request if any CRD already carries the given spec.subdomain. metadata.name
 // uniqueness is enforced by K8s on Create, but spec.subdomain must be checked
 // here because two CRDs with different names could otherwise share a subdomain.
-// It reuses the caller's context and K8s client — it never calls
-// SetupSignalHandler or builds its own client.
+// It reuses the caller's context and K8s client.
 func checkSubdomainUnique(ctx context.Context, cl client.Client, namespace, subdomain string) error {
 	var list v1alpha1.MinecraftServerList
 	if err := cl.List(ctx, &list, client.InNamespace(namespace)); err != nil {
