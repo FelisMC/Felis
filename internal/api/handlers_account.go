@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Account-linking endpoints (spec §10). The flow is forced by the
@@ -49,6 +51,28 @@ const (
 // check, so a non-empty value reaching validation must be one we can store.
 func validAuthSource(s string) bool {
 	return s == authSourceMojang || s == authSourceThirdParty
+}
+
+// errBadMCUUID answers an mc_uuid that is not a UUID. Every mc_uuid column is
+// Postgres's uuid type, which refuses such text with 22P02, and that reached the
+// caller as a 500.
+var errBadMCUUID = newError(http.StatusBadRequest, "bad_mc_uuid",
+	"mc_uuid must be a UUID, such as 069a79f4-44e9-4726-a5be-fca90e38aaf5")
+
+// parseMCUUID reads an mc_uuid from a request: surrounding spaces trimmed, empty
+// → 400 bad_request "mc_uuid is required", not a UUID → errBadMCUUID. It returns
+// the canonical lowercase hyphenated form, the text Postgres gives back for the
+// column, so what a handler stores, echoes and compares is one spelling.
+func parseMCUUID(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", newError(http.StatusBadRequest, "bad_request", "mc_uuid is required")
+	}
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return "", errBadMCUUID
+	}
+	return id.String(), nil
 }
 
 // deriveAuthSource infers the auth source from the UUID's version nibble when
@@ -104,8 +128,9 @@ func (a *API) handleCreateLinkCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	if req.MCUUID == "" {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "mc_uuid is required"))
+	mcUUID, err := parseMCUUID(req.MCUUID)
+	if err != nil {
+		writeError(w, r, err)
 		return
 	}
 	// Default an omitted source from the UUID's version nibble (v3 = felis-nano
@@ -114,7 +139,7 @@ func (a *API) handleCreateLinkCode(w http.ResponseWriter, r *http.Request) {
 	// stored value the panel will later mislabel.
 	authSource := req.AuthSource
 	if authSource == "" {
-		authSource = deriveAuthSource(req.MCUUID)
+		authSource = deriveAuthSource(mcUUID)
 	}
 	if !validAuthSource(authSource) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
@@ -127,7 +152,7 @@ func (a *API) handleCreateLinkCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	expiresAt := a.now().Add(linkCodeTTL)
-	if err := a.Repo.CreateLinkCode(r.Context(), code, req.MCUUID, authSource, expiresAt); err != nil {
+	if err := a.Repo.CreateLinkCode(r.Context(), code, mcUUID, authSource, expiresAt); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -171,12 +196,12 @@ func (a *API) handleCreateLinkCode(w http.ResponseWriter, r *http.Request) {
 // handlers_player_reclaim.go keeps CODE-ONLY (reclaimed_by_user_id stays NULL on
 // the verifiable path); this endpoint reports link completion only, not that choice.
 func (a *API) handleLinkStatus(w http.ResponseWriter, r *http.Request) {
-	mcUUID := r.PathValue("mc_uuid")
-	if mcUUID == "" {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "mc_uuid is required"))
+	mcUUID, err := parseMCUUID(r.PathValue("mc_uuid"))
+	if err != nil {
+		writeError(w, r, err)
 		return
 	}
-	_, err := a.Repo.UserByMCUUID(r.Context(), mcUUID)
+	_, err = a.Repo.UserByMCUUID(r.Context(), mcUUID)
 	switch {
 	case errors.Is(err, ErrNotFound):
 		// Not linked yet. For the poller this is simply "keep waiting": velocity

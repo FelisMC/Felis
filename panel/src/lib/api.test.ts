@@ -438,6 +438,12 @@ describe("api access-control wire shapes", () => {
     );
   });
 
+  it("says what a Minecraft UUID looks like when the typed one is not", () => {
+    expect(humanizeError({ status: 400, code: "bad_mc_uuid" })).toBe(
+      "That isn't a Minecraft UUID. It looks like 069a79f4-44e9-4726-a5be-fca90e38aaf5, with or without the dashes.",
+    );
+  });
+
   it("says email codes are off when the install has no mail relay", async () => {
     const { humanizeError } = await import("./api");
     expect(humanizeError({ status: 503, code: "mail_unavailable" })).toBe(

@@ -1002,6 +1002,8 @@ export function humanizeError(e: unknown): string {
       return t("invalid_code");
     case "already_linked":
       return t("already_linked");
+    case "bad_mc_uuid":
+      return t("bad_mc_uuid");
     case "otp_resend_cooldown":
       return t("otp_resend_cooldown");
     case "otp_locked":

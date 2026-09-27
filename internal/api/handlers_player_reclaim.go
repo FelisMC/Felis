@@ -140,9 +140,9 @@ func (a *API) handleReclaimUsername(w http.ResponseWriter, r *http.Request) {
 // squatter before letting them in; the genuine Mojang UUID (same name, different
 // UUID) is never on the list, so it always passes.
 func (a *API) handleCheckBlacklist(w http.ResponseWriter, r *http.Request) {
-	mcUUID := r.PathValue("mc_uuid")
-	if mcUUID == "" {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "mc_uuid is required"))
+	mcUUID, err := parseMCUUID(r.PathValue("mc_uuid"))
+	if err != nil {
+		writeError(w, r, err)
 		return
 	}
 	blacklisted, err := a.Repo.IsUsernameBlacklisted(r.Context(), mcUUID)

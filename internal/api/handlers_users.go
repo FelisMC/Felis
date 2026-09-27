@@ -447,9 +447,13 @@ func (a *API) handleUnbindUserPasskeys(w http.ResponseWriter, r *http.Request) {
 // (DELETE /users/{id}/links/{mc_uuid}).
 func (a *API) handleUnlinkAccount(w http.ResponseWriter, r *http.Request) {
 	userID := r.PathValue("id")
-	mcUUID := r.PathValue("mc_uuid")
-	if userID == "" || mcUUID == "" {
+	if userID == "" {
 		writeError(w, r, errBadRequest)
+		return
+	}
+	mcUUID, err := parseMCUUID(r.PathValue("mc_uuid"))
+	if err != nil {
+		writeError(w, r, err)
 		return
 	}
 
@@ -484,16 +488,16 @@ func (a *API) handleLinkAccount(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	if body.MCUUID == "" {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
-			"mc_uuid is required"))
+	mcUUID, err := parseMCUUID(body.MCUUID)
+	if err != nil {
+		writeError(w, r, err)
 		return
 	}
 	if body.AuthSource == "" {
 		// Same version-nibble inference as the mint path (handlers_account.go):
 		// defaulting to mojang here would leave a force-linked thirdparty UUID
 		// outside the reclaim guard.
-		body.AuthSource = deriveAuthSource(body.MCUUID)
+		body.AuthSource = deriveAuthSource(mcUUID)
 	}
 	if !validAuthSource(body.AuthSource) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
@@ -501,7 +505,7 @@ func (a *API) handleLinkAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.Repo.LinkAccount(r.Context(), userID, body.MCUUID, body.AuthSource); err != nil {
+	if err := a.Repo.LinkAccount(r.Context(), userID, mcUUID, body.AuthSource); err != nil {
 		if errors.Is(err, ErrConflict) {
 			writeError(w, r, newError(http.StatusConflict, "already_linked",
 				"this UUID is already linked to a different user"))
@@ -518,7 +522,7 @@ func (a *API) handleLinkAccount(w http.ResponseWriter, r *http.Request) {
 	a.audit(r, "user.link_account", userID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":          true,
-		"mc_uuid":     body.MCUUID,
+		"mc_uuid":     mcUUID,
 		"auth_source": body.AuthSource,
 	})
 }

@@ -1422,6 +1422,8 @@ paths:
                     additionalProperties:
                       type: string
                       enum: [retiring, start_failed, owner, wake, owner_only, allowlist]
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -1505,6 +1507,8 @@ paths:
                 required: [linked]
                 properties:
                   linked: { type: boolean }
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -1637,6 +1641,8 @@ paths:
                 required: [blacklisted]
                 properties:
                   blacklisted: { type: boolean }
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
 
@@ -4684,6 +4690,8 @@ paths:
                 properties:
                   ok: { type: boolean, const: true }
                   mc_uuid: { type: string, format: uuid }
+        '400':
+          $ref: '#/components/responses/BadRequest'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':

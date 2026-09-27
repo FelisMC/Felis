@@ -4,6 +4,7 @@
   "not_linked": "Link your Minecraft account before claiming (Account → Link).",
   "invalid_code": "That code is invalid or expired — request a fresh one and try again.",
   "already_linked": "That Minecraft account is already linked to another user.",
+  "bad_mc_uuid": "That isn't a Minecraft UUID. It looks like 069a79f4-44e9-4726-a5be-fca90e38aaf5, with or without the dashes.",
   "quota_exceeded": "You have reached your server quota.",
   "already_claimed": "Someone else just claimed this server.",
   "image_not_whitelisted": "That image is not on the whitelist.",

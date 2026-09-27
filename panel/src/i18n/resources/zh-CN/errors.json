@@ -4,6 +4,7 @@
   "not_linked": "请先关联 Minecraft 账户（账户页 → 关联）。",
   "invalid_code": "代码无效或已过期——请重新获取后再试。",
   "already_linked": "该 Minecraft 账户已关联至其他用户。",
+  "bad_mc_uuid": "这不是 Minecraft UUID。它的样子是 069a79f4-44e9-4726-a5be-fca90e38aaf5，短横线可带可不带。",
   "quota_exceeded": "服务器数量已达配额上限。",
   "already_claimed": "该服务器已被他人抢先认领。",
   "image_not_whitelisted": "该镜像未在白名单中。",

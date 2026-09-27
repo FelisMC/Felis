@@ -66,7 +66,7 @@ func (a *API) handleAllowlistSetWake(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := uuid.Parse(r.PathValue("uuid"))
 	if err != nil {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "invalid Minecraft UUID"))
+		writeError(w, r, errBadMCUUID)
 		return
 	}
 	var req allowlistWakeRequest

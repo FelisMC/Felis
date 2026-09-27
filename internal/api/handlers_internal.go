@@ -83,11 +83,12 @@ func (a *API) handleJoinEvent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	if req.MCUUID == "" {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "mc_uuid is required"))
+	mcUUID, err := parseMCUUID(req.MCUUID)
+	if err != nil {
+		writeError(w, r, err)
 		return
 	}
-	if err := a.Repo.RecordJoin(r.Context(), name, req.MCUUID); err != nil {
+	if err := a.Repo.RecordJoin(r.Context(), name, mcUUID); err != nil {
 		a.writeLookupError(w, r, err)
 		return
 	}
@@ -120,8 +121,9 @@ func (a *API) handleInternalWake(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	if req.MCUUID == "" {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "mc_uuid is required"))
+	mcUUID, err := parseMCUUID(req.MCUUID)
+	if err != nil {
+		writeError(w, r, err)
 		return
 	}
 
@@ -148,7 +150,7 @@ func (a *API) handleInternalWake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.authorizeWakeByUUID(r.Context(), req.MCUUID, info, rec); err != nil {
+	if err := a.authorizeWakeByUUID(r.Context(), mcUUID, info, rec); err != nil {
 		writeError(w, r, err)
 		return
 	}
@@ -235,8 +237,9 @@ func (a *API) handleInternalClaim(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	if req.MCUUID == "" {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "mc_uuid is required"))
+	mcUUID, err := parseMCUUID(req.MCUUID)
+	if err != nil {
+		writeError(w, r, err)
 		return
 	}
 
@@ -245,7 +248,7 @@ func (a *API) handleInternalClaim(w http.ResponseWriter, r *http.Request) {
 	// no separate IsLinked check (mirrors the external claim's order, link → quota
 	// → write). ErrNotFound here is "claimer not linked" (412), never "server
 	// missing" — that distinction is the claim call's, below.
-	userID, err := a.Repo.UserByMCUUID(r.Context(), req.MCUUID)
+	userID, err := a.Repo.UserByMCUUID(r.Context(), mcUUID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			writeError(w, r, newError(http.StatusPreconditionFailed, "not_linked",
@@ -364,9 +367,9 @@ const (
 // since a retry gets past those. Retiring comes first: nobody may start such a
 // server, so it is the reason a stranger is shown too.
 func (a *API) handleInternalMenuAccess(w http.ResponseWriter, r *http.Request) {
-	mcUUID := r.PathValue("mc_uuid")
-	if mcUUID == "" {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "mc_uuid is required"))
+	mcUUID, err := parseMCUUID(r.PathValue("mc_uuid"))
+	if err != nil {
+		writeError(w, r, err)
 		return
 	}
 	infos, err := a.Cluster.ListServers(r.Context())

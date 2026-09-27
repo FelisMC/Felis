@@ -111,9 +111,9 @@ func (a *API) handleMigrateStart(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	mcUUID := strings.TrimSpace(req.MCUUID)
-	if mcUUID == "" {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "mc_uuid is required"))
+	mcUUID, err := parseMCUUID(req.MCUUID)
+	if err != nil {
+		writeError(w, r, err)
 		return
 	}
 	sourceUserID, err := a.Repo.UserByMCUUID(r.Context(), mcUUID)
