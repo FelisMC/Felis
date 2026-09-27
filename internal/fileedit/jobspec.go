@@ -1,8 +1,8 @@
 package fileedit
 
 import (
-	"encoding/base64"
 	"fmt"
+	"strconv"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -46,9 +46,20 @@ type JobParams struct {
 	Path    string
 	Content []byte // OpWrite only
 	// Expect is a write's precondition hash (see Execute); empty writes
-	// unconditionally.
-	Expect   string
-	WorldPVC string
+	// unconditionally. CreateOnly makes a write refuse an existing path.
+	Expect     string
+	CreateOnly bool
+	// To is a rename's destination.
+	To string
+	// SourceURL, UploadToken, UploadSize and UploadSHA256 tell an upload Job where
+	// to fetch its bytes and what they must be (see Stage); Overwrite lets it
+	// replace an existing file.
+	SourceURL    string
+	UploadToken  string
+	UploadSize   int64
+	UploadSHA256 string
+	Overwrite    bool
+	WorldPVC     string
 
 	Namespace      string
 	ServiceAccount string
@@ -104,8 +115,8 @@ func filesLabels(p JobParams) map[string]string {
 //     mounts the config Secret to self-record its row: a file-editor Pod has nothing
 //     to record, so it is handed no database URL and no credential of any kind (the
 //     four-power red line, spec §22);
-//   - mounts that one volume READ-ONLY for list and read. Only a write needs to
-//     mutate the world, so two of the three operations physically cannot — the
+//   - mounts that one volume READ-ONLY for list and read (see mutates), so the
+//     two operations that only look physically cannot change anything — the
 //     kernel refuses, not merely the code. This is why readOnly is derived from the
 //     op rather than fixed;
 //   - runs as a non-root, fixed uid/gid with an fsGroup matching the operator's
@@ -113,7 +124,8 @@ func filesLabels(p JobParams) map[string]string {
 //     server later runs as — a config file the server cannot read would be worse
 //     than no edit at all;
 //   - no privilege, no privilege escalation, read-only root filesystem, drop ALL
-//     capabilities. The world mount is the only writable path, and only on a write;
+//     capabilities. The world mount is the only writable path, and only for an op
+//     that mutates;
 //   - activeDeadlineSeconds + backoffLimit=0 so a wedged mount cannot loop or hang
 //     forever; ttlSecondsAfterFinished GCs the finished Job, which — see
 //     FilesJobName — is the ONLY cleanup available to felis-api.
@@ -131,11 +143,14 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 	if p.OpID == "" {
 		return nil, fmt.Errorf("fileedit: op id is required")
 	}
-	if p.Op != OpList && p.Op != OpRead && p.Op != OpWrite {
+	if !validOp(p.Op) {
 		return nil, fmt.Errorf("fileedit: unknown op %q", p.Op)
 	}
 	if len(p.Content) > MaxWriteBytes {
 		return nil, fmt.Errorf("fileedit: content is %d bytes, over the %d limit", len(p.Content), MaxWriteBytes)
+	}
+	if p.Op == OpUpload && (p.SourceURL == "" || p.UploadToken == "") {
+		return nil, fmt.Errorf("fileedit: an upload needs a source URL and a token")
 	}
 	limits, err := resourceLimits(p.CPULimit, p.MemLimit)
 	if err != nil {
@@ -150,10 +165,10 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 		ttl = int32(defaultTTL / time.Second)
 	}
 
-	// Only a write may mutate the world. Mounting read-only for the other two ops
-	// makes "a listing cannot damage a world" a kernel guarantee rather than a
-	// code-review one.
-	readOnlyWorld := p.Op != OpWrite
+	// Only an op that changes the world gets it read-write. Mounting read-only for
+	// list and read makes "a listing cannot damage a world" a kernel guarantee
+	// rather than a code-review one.
+	readOnlyWorld := !mutates(p.Op)
 
 	args := []string{
 		"--op", p.Op,
@@ -162,8 +177,24 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 	}
 	// The expected hash is a digest of content the caller already holds, not a
 	// secret, so it rides argv; only the content itself needs the env channel.
-	if p.Op == OpWrite && p.Expect != "" {
-		args = append(args, "--expect-sha256", p.Expect)
+	switch p.Op {
+	case OpWrite:
+		if p.Expect != "" {
+			args = append(args, "--expect-sha256", p.Expect)
+		}
+		if p.CreateOnly {
+			args = append(args, "--create-only")
+		}
+	case OpRename:
+		args = append(args, "--to", p.To)
+	case OpUpload:
+		// The URL, size and digest are not secrets — only the token is, and it
+		// rides the environment below.
+		args = append(args, "--source-url", p.SourceURL,
+			"--size", strconv.FormatInt(p.UploadSize, 10), "--sha256", p.UploadSHA256)
+		if p.Overwrite {
+			args = append(args, "--overwrite")
+		}
 	}
 	container := corev1.Container{
 		Name:    containerName,
@@ -185,16 +216,21 @@ func FilesJob(p JobParams) (*batchv1.Job, error) {
 		},
 	}
 
-	// New content rides the Job spec as a base64 env var. felis-api cannot create a
-	// Secret (it holds secrets:get only), so the spec is the sole channel into the
-	// Pod; base64 keeps arbitrary bytes — CRLF line endings, a UTF-8 BOM, a binary
-	// blob — intact through a field that must be a valid string. The env var is set
-	// ONLY for a write, so a list/read Job spec carries no caller content at all.
-	if p.Op == OpWrite {
-		container.Env = []corev1.EnvVar{{
-			Name:  ContentEnv,
-			Value: base64.StdEncoding.EncodeToString(p.Content),
-		}}
+	// New content rides the Job spec as base64 env vars (see ContentEnv for why
+	// it is several). felis-api cannot create a Secret (it holds secrets:get only),
+	// so the spec is the sole channel into the Pod; base64 keeps arbitrary bytes —
+	// CRLF line endings, a UTF-8 BOM, a binary blob — intact through a field that
+	// must be a valid string. Content is set ONLY for a write and the token ONLY
+	// for an upload, so no other Job spec carries either.
+	switch p.Op {
+	case OpWrite:
+		parts := splitContent(p.Content)
+		container.Env = []corev1.EnvVar{{Name: ContentPartsEnv, Value: strconv.Itoa(len(parts))}}
+		for i, part := range parts {
+			container.Env = append(container.Env, corev1.EnvVar{Name: contentPartEnv(i), Value: part})
+		}
+	case OpUpload:
+		container.Env = []corev1.EnvVar{{Name: UploadTokenEnv, Value: p.UploadToken}}
 	}
 
 	job := &batchv1.Job{
@@ -261,11 +297,12 @@ func int64Ptr(i int64) *int64 { return &i }
 
 // filesCapabilities is what the root executor keeps after dropping ALL (see
 // Config.RunAsUser). DAC_OVERRIDE opens a mode-0600 file (level.dat) the game wrote
-// as its own uid, which a fixed non-root uid could not. A write also keeps CHOWN so
-// the file it creates can be handed to naming.GameUID (exec.go ownWritten); a list
-// or read changes nothing and gets no more than it needs.
+// as its own uid, which a fixed non-root uid could not. A write, mkdir or upload
+// also keeps CHOWN so what it creates can be handed to naming.GameUID (exec.go
+// ownWritten). List, read, delete and rename create nothing and get no more than
+// they need.
 func filesCapabilities(op string) []corev1.Capability {
-	if op == OpWrite {
+	if op == OpWrite || op == OpMkdir || op == OpUpload {
 		return []corev1.Capability{"CHOWN", "DAC_OVERRIDE"}
 	}
 	return []corev1.Capability{"DAC_OVERRIDE"}

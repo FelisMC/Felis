@@ -139,6 +139,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/internal/file-uploads/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Stream one staged file upload to the Job landing it (one-time bearer token).
+         * @description PUT /api/v1/servers/{name}/files/upload stages the body on felis-api's disk and creates a Job to land it in the world volume; the Job fetches the bytes here. The Job holds no service token, so the route is public on the internal face and the bearer token minted with the upload is the whole check. The token opens its upload once. An unknown id, a wrong or missing token and a spent token are all the same 404, so the route says nothing about which uploads exist.
+         */
+        get: operations["internalFileUpload"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/internal/servers/{name}/join-event": {
         parameters: {
             query?: never;
@@ -1291,6 +1311,70 @@ export interface paths {
          * @description Replaces a file's contents, creating the file if absent but never creating its parent directories. Content is base64 so arbitrary bytes (CRLF endings, a BOM) survive intact. Writes are capped at 256 KiB — the Job spec carries the content, and etcd bounds the object — so a larger body is 413. Same stopped-gate and os.Root containment as the read; a write through a symlink leaving the world root is refused. The replacement is atomic (a synced temporary sibling renamed over the file, keeping its mode), so a failed write leaves the old file whole. With expect_sha256 the write lands only if the file still has that hash; otherwise 409 file_changed. Audited as file.write.
          */
         put: operations["writeServerFile"];
+        post?: never;
+        /**
+         * Delete a file or folder in a server's world volume (owner-or-admin; server must be stopped).
+         * @description Deletes a file, a symlink (never what it points at) or a folder with everything in it. The world root itself is refused (400 bad_path). Same stopped-gate, world lock and os.Root containment as a write. The panel confirms first; this route does not. Audited as file.delete.
+         */
+        delete: operations["deleteServerFile"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{name}/files/mkdir": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Make a folder in a server's world volume (owner-or-admin; server must be stopped).
+         * @description Makes one folder. Its parent must already exist (404), and nothing may be at the path yet (409 file_exists). Same stopped-gate, world lock and os.Root containment as a write. Audited as file.mkdir.
+         */
+        post: operations["makeServerFolder"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{name}/files/rename": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Move or rename a file or folder in a server's world volume (owner-or-admin; server must be stopped).
+         * @description Moves the file or folder at path to to. It never replaces: an existing destination is 409 file_exists, and a missing destination folder is 404. server.properties, config/paper-global.yml and config/ cannot be moved under any name they are reached by (400 bad_path), because elsewhere the read path would no longer withhold their secrets. Same stopped-gate, world lock and os.Root containment as a write. Audited as file.rename.
+         */
+        post: operations["renameServerFile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{name}/files/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Upload a file into a server's world volume (owner-or-admin; server must be stopped).
+         * @description Lands the raw request body as the file at path, up to 64 MiB — a plugin jar, a datapack, a world region. Content-Length is required (411 length_required). An existing file is 409 file_exists unless overwrite=true; a folder at the path is 400 bad_path either way. The body is staged on felis-api's disk first and then fetched by the file Job with a one-time token, so the world lock is taken only after the body has arrived and a slow upload holds off no backup. The file lands atomically: a synced temporary sibling is checked against the staged size and SHA-256, then renamed into place, so a failed upload leaves the old file whole. Same stopped-gate and os.Root containment as a write. Audited as file.upload.
+         */
+        put: operations["uploadServerFile"];
         post?: never;
         delete?: never;
         options?: never;
@@ -3244,6 +3328,32 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
             503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    internalFileUpload: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Bearer followed by the token minted with the upload. */
+                Authorization: string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The staged bytes, verbatim, with their Content-Length. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            404: components["responses"]["NotFound"];
         };
     };
     joinEvent: {
@@ -6130,6 +6240,8 @@ export interface operations {
                     content: string;
                     /** @description The sha256 a read returned. When present, the write is refused with 409 file_changed if the file has changed (or been deleted) since. Omit it to write unconditionally. */
                     expect_sha256?: string;
+                    /** @description true writes only if nothing is at the path yet (409 file_exists otherwise), for making a new file without replacing one that appeared meanwhile. Cannot be combined with expect_sha256. */
+                    create_only?: boolean;
                 };
             };
         };
@@ -6169,7 +6281,7 @@ export interface operations {
                     "application/json": components["schemas"]["Error"];
                 };
             };
-            /** @description Server is not stopped (not_stopped), or a restore, backup or file write already holds its world volume (maintenance_in_progress). */
+            /** @description The file changed since expect_sha256 was read (file_changed), something is already at the path with create_only (file_exists), the server is not stopped (not_stopped), or a restore, backup or file change already holds its world volume (maintenance_in_progress). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -6198,6 +6310,326 @@ export interface operations {
                 };
             };
             /** @description The world volume has no room for the write (volume_full); the file is unchanged. */
+            507: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    deleteServerFile: {
+        parameters: {
+            query: {
+                /** @description File or folder to delete, relative to the world root. */
+                path: string;
+            };
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Deleted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        path: string;
+                        /** @constant */
+                        status: "deleted";
+                    };
+                };
+            };
+            /** @description Missing path, invalid server name, the world root, or a path that escapes it. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Unknown server, or nothing at the path. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Server is not stopped (not_stopped), or a restore, backup or file change already holds its world volume (maintenance_in_progress). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+            /** @description The file Job did not finish in time; retry. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    makeServerFolder: {
+        parameters: {
+            query: {
+                /** @description Folder to make, relative to the world root. */
+                path: string;
+            };
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Folder made. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        path: string;
+                        /** @constant */
+                        status: "created";
+                    };
+                };
+            };
+            /** @description Missing path, invalid server name, the world root, or a path that escapes it. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Unknown server, or the parent folder does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Something is already at the path (file_exists), the server is not stopped (not_stopped), or a restore, backup or file change already holds its world volume (maintenance_in_progress). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+            /** @description The file Job did not finish in time; retry. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    renameServerFile: {
+        parameters: {
+            query: {
+                /** @description File or folder to move, relative to the world root. */
+                path: string;
+            };
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description The new path */
+                    to: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Moved. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        path: string;
+                        to: string;
+                        /** @constant */
+                        status: "renamed";
+                    };
+                };
+            };
+            /** @description Missing path or to, malformed body, invalid server name, the world root, a file felis manages, or a path that escapes the world root. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Unknown server, nothing at path, or the destination folder does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Something is already at to (file_exists), the server is not stopped (not_stopped), or a restore, backup or file change already holds its world volume (maintenance_in_progress). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+            /** @description The file Job did not finish in time; retry. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    uploadServerFile: {
+        parameters: {
+            query: {
+                /** @description File to create, relative to the world root. Its folder must exist. */
+                path: string;
+                /** @description true replaces an existing file, keeping its mode. Anything else refuses to. */
+                overwrite?: "true" | "false";
+            };
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description File uploaded. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        path: string;
+                        /** @constant */
+                        status: "uploaded";
+                        /** @description SHA-256 of the bytes landed. */
+                        sha256: string;
+                        /**
+                         * Format: int64
+                         * @description Bytes landed.
+                         */
+                        size: number;
+                    };
+                };
+            };
+            /** @description Missing path, invalid server name, a folder or the world root at the path, a path that escapes the world root, or a body that ended before Content-Length bytes arrived (upload_incomplete). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Unknown server, or the folder does not exist. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description A file is already at the path and overwrite is not true (file_exists), the server is not stopped (not_stopped), or a restore, backup or file change already holds its world volume (maintenance_in_progress). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The request has no Content-Length (length_required). */
+            411: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The file is over 64 MiB (too_large). */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+            /** @description The file Job did not finish in time; retry. */
+            504: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description felis-api's staging disk has no room for the upload right now (upload_staging_full), or the world volume has no room for it (volume_full); nothing was changed. */
             507: {
                 headers: {
                     [name: string]: unknown;

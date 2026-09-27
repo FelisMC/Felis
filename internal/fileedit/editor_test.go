@@ -82,12 +82,61 @@ func TestEditorRendersParams(t *testing.T) {
 		r := &fakeRunner{payload: mustPayload(t, Result{SHA256: "new"})}
 		e := &Editor{Runner: r, Config: Config{Image: "img"}}
 
-		sum, err := e.Write(context.Background(), "survival", "ops.json", []byte("[]"), "old")
+		sum, err := e.Write(context.Background(), "survival", "ops.json", []byte("[]"), "old", false)
 		if err != nil {
 			t.Fatalf("Write: %v", err)
 		}
-		if r.got[0].Op != OpWrite || string(r.got[0].Content) != "[]" || r.got[0].Expect != "old" || sum != "new" {
+		if r.got[0].Op != OpWrite || string(r.got[0].Content) != "[]" || r.got[0].Expect != "old" ||
+			r.got[0].CreateOnly || sum != "new" {
 			t.Fatalf("params = %+v, sha256 = %q", r.got[0], sum)
+		}
+	})
+
+	t.Run("create-only write", func(t *testing.T) {
+		r := &fakeRunner{payload: mustPayload(t, Result{SHA256: "new"})}
+		e := &Editor{Runner: r, Config: Config{Image: "img"}}
+		if _, err := e.Write(context.Background(), "survival", "new.yml", nil, "", true); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		if !r.got[0].CreateOnly {
+			t.Fatalf("params = %+v, want CreateOnly", r.got[0])
+		}
+	})
+
+	t.Run("mkdir, delete and rename", func(t *testing.T) {
+		r := &fakeRunner{payload: mustPayload(t, Result{})}
+		e := &Editor{Runner: r, Config: Config{Image: "img"}}
+		ctx := context.Background()
+		if err := e.Mkdir(ctx, "survival", "plugins"); err != nil {
+			t.Fatalf("Mkdir: %v", err)
+		}
+		if err := e.Delete(ctx, "survival", "old.jar"); err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+		if err := e.Rename(ctx, "survival", "a.txt", "b.txt"); err != nil {
+			t.Fatalf("Rename: %v", err)
+		}
+		for i, want := range []struct{ op, path, to string }{
+			{OpMkdir, "plugins", ""}, {OpDelete, "old.jar", ""}, {OpRename, "a.txt", "b.txt"},
+		} {
+			p := r.got[i]
+			if p.Op != want.op || p.Path != want.path || p.To != want.to || p.Server != "survival" || p.WorldPVC != "world-survival-0" {
+				t.Errorf("call %d params = %+v, want %+v", i, p, want)
+			}
+		}
+	})
+
+	t.Run("upload", func(t *testing.T) {
+		r := &fakeRunner{payload: mustPayload(t, Result{})}
+		e := &Editor{Runner: r, Config: Config{Image: "img"}}
+		src := UploadSource{URL: "http://api/x", Token: "tok", Size: 42, SHA256: "sum"}
+		if err := e.Upload(context.Background(), "survival", "plugins/x.jar", src, true); err != nil {
+			t.Fatalf("Upload: %v", err)
+		}
+		p := r.got[0]
+		if p.Op != OpUpload || p.Path != "plugins/x.jar" || p.SourceURL != "http://api/x" || p.UploadToken != "tok" ||
+			p.UploadSize != 42 || p.UploadSHA256 != "sum" || !p.Overwrite {
+			t.Fatalf("params = %+v", p)
 		}
 	})
 }
@@ -132,6 +181,7 @@ func TestEditorMapsResultCodes(t *testing.T) {
 		{"oversized", CodeTooLarge, ErrTooLarge},
 		{"changed since read", CodeConflict, ErrConflict},
 		{"volume full", CodeNoSpace, ErrNoSpace},
+		{"already there", CodeExists, ErrExists},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -176,7 +226,7 @@ func TestEditorRefusesOversizedWriteBeforeTheCluster(t *testing.T) {
 	r := &fakeRunner{payload: mustPayload(t, Result{})}
 	e := &Editor{Runner: r, Config: Config{Image: "img"}}
 
-	_, err := e.Write(context.Background(), "survival", "big.txt", make([]byte, MaxWriteBytes+1), "")
+	_, err := e.Write(context.Background(), "survival", "big.txt", make([]byte, MaxWriteBytes+1), "", false)
 	if !errors.Is(err, ErrTooLarge) {
 		t.Fatalf("err = %v, want ErrTooLarge", err)
 	}

@@ -1331,6 +1331,115 @@ describe("chunked context upload", () => {
   });
 });
 
+// The file manager's changes: each is one route, and what the server takes from
+// it is the query path plus a small JSON body (an upload, the raw bytes).
+describe("server file manager wire shapes", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    FakeXHR.last = undefined;
+    vi.stubGlobal("XMLHttpRequest", FakeXHR);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  function sent(fetchSpy: typeof fetch): [string, RequestInit] {
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    return [String(url), opts as RequestInit];
+  }
+
+  it("createServerFile PUTs the content with create_only, so nothing already there is replaced", async () => {
+    const fetchSpy = fakeFetch({ path: "plugins/new.yml", status: "written", sha256: "c".repeat(64) });
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.createServerFile("survival", "plugins/new.yml", "")).toEqual({
+      path: "plugins/new.yml",
+      status: "written",
+      sha256: "c".repeat(64),
+    });
+    const [url, opts] = sent(fetchSpy);
+    expect(url).toBe("/servers/survival/file?path=plugins%2Fnew.yml");
+    expect(opts.method).toBe("PUT");
+    expect(opts.body).toBe(JSON.stringify({ content: "", create_only: true }));
+  });
+
+  it("deleteServerFile DELETEs /servers/{name}/file with no body", async () => {
+    const fetchSpy = fakeFetch({ path: "logs", status: "deleted" });
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.deleteServerFile("survival", "old logs")).toEqual({ path: "logs", status: "deleted" });
+    const [url, opts] = sent(fetchSpy);
+    expect(url).toBe("/servers/survival/file?path=old%20logs");
+    expect(opts.method).toBe("DELETE");
+    expect(opts.body).toBeUndefined();
+  });
+
+  it("mkdirServerFolder POSTs /servers/{name}/files/mkdir with the path in the query", async () => {
+    const fetchSpy = fakeFetch({ path: "plugins/Chunky", status: "created" });
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.mkdirServerFolder("survival", "plugins/Chunky")).toEqual({ path: "plugins/Chunky", status: "created" });
+    const [url, opts] = sent(fetchSpy);
+    expect(url).toBe("/servers/survival/files/mkdir?path=plugins%2FChunky");
+    expect(opts.method).toBe("POST");
+    expect(opts.body).toBeUndefined();
+  });
+
+  it("renameServerFile POSTs the old path in the query and the new one as {to}", async () => {
+    const fetchSpy = fakeFetch({ path: "world", to: "world_old", status: "renamed" });
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.renameServerFile("survival", "world", "world old")).toEqual({
+      path: "world",
+      to: "world_old",
+      status: "renamed",
+    });
+    const [url, opts] = sent(fetchSpy);
+    expect(url).toBe("/servers/survival/files/rename?path=world");
+    expect(opts.method).toBe("POST");
+    expect(opts.body).toBe(JSON.stringify({ to: "world old" }));
+  });
+
+  it("uploadServerFile PUTs the raw bytes with the session cookie and reports progress", async () => {
+    const file = new Blob(["jar bytes"]);
+    const seen: number[] = [];
+    const done = api.uploadServerFile("survival", "plugins/Chunky 1.4.jar", file, false, {
+      onProgress: (n) => seen.push(n),
+    });
+    const xhr = await sentXHR();
+    expect(xhr.method).toBe("PUT");
+    expect(xhr.url).toBe("/servers/survival/files/upload?path=plugins%2FChunky%201.4.jar");
+    expect(xhr.withCredentials).toBe(true);
+    expect(xhr.headers).toEqual({ "Content-Type": "application/octet-stream" });
+    expect(xhr.body).toBe(file);
+    xhr.upload.onprogress?.({ loaded: 4 });
+    xhr.respond(200, JSON.stringify({ path: "plugins/Chunky 1.4.jar", status: "uploaded", sha256: "d".repeat(64), size: 9 }));
+    expect(await done).toEqual({ path: "plugins/Chunky 1.4.jar", status: "uploaded", sha256: "d".repeat(64), size: 9 });
+    expect(seen).toEqual([4]);
+  });
+
+  it("uploadServerFile asks to replace only when told to overwrite", async () => {
+    const done = api.uploadServerFile("survival", "server-icon.png", new Blob(["png"]), true);
+    const xhr = await sentXHR();
+    expect(xhr.url).toBe("/servers/survival/files/upload?path=server-icon.png&overwrite=true");
+    xhr.respond(200, JSON.stringify({ path: "server-icon.png", status: "uploaded", sha256: "e".repeat(64), size: 3 }));
+    await done;
+  });
+
+  it("an upload refused because the file is there reads as file_exists", async () => {
+    const done = api.uploadServerFile("survival", "server-icon.png", new Blob(["png"]), false);
+    (await sentXHR()).respond(
+      409,
+      JSON.stringify({ error: { code: "file_exists", message: "something is already at server-icon.png" } }),
+      "Conflict",
+    );
+    await expect(done).rejects.toEqual({ status: 409, code: "file_exists", message: "something is already at server-icon.png" });
+  });
+
+  it("refuses a server name that is not one path segment before sending anything", async () => {
+    const fetchSpy = fakeFetch({});
+    vi.stubGlobal("fetch", fetchSpy);
+    await expect(api.renameServerFile("..", "a", "b")).rejects.toMatchObject({ code: "bad_path_param" });
+    await expect(api.uploadServerFile(".", "x", new Blob(["x"]), false)).rejects.toMatchObject({ code: "bad_path_param" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(FakeXHR.last).toBeUndefined();
+  });
+});
+
 // The API's generic codes carry an English developer message ("user not found",
 // "invalid request"); the panel words them itself so a Chinese UI never shows it.
 describe("copy for the generic server codes", () => {
@@ -1350,6 +1459,15 @@ describe("copy for the generic server codes", () => {
       "The request was not accepted: mc_uuid is required",
     );
     expect(humanizeError({ status: 400, code: "bad_request", message: "" })).toBe("Something went wrong.");
+  });
+
+  it("words the file manager's refusals itself", () => {
+    expect(humanizeError({ status: 409, code: "file_exists", message: "something is already at a.txt" })).toBe(
+      "Something with that name is already there. Pick another name, or rename or delete the one that is there first.",
+    );
+    expect(humanizeError({ status: 507, code: "upload_staging_full", message: "raw" })).toMatch(/upload space is nearly full/);
+    expect(humanizeError({ status: 400, code: "upload_incomplete", message: "raw" })).toMatch(/stopped before the whole file arrived/);
+    expect(humanizeError({ status: 411, code: "length_required", message: "raw" })).toMatch(/did not say how large it is/);
   });
 
   it("reads a full upload store as full, not as an outage", () => {

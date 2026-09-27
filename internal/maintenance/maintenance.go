@@ -54,8 +54,9 @@ const (
 	// their own copies; maintenance_test pins them against these).
 	LabelServer    = "felis.lolicon.best/server"
 	LabelManagedBy = "app.kubernetes.io/managed-by"
-	// LabelFilesMode is the file-editor operation (list, read, write) a files Job
-	// performs. Only write holds the volume.
+	// LabelFilesMode is the file operation (list, read, write, mkdir, delete,
+	// rename, upload) a files Job performs. Every one but list and read holds the
+	// volume.
 	LabelFilesMode = "felis.lolicon.best/files-mode"
 
 	// LabelThenRestore marks a backup Job that is the safety snapshot in front of
@@ -90,14 +91,18 @@ const (
 	KindReap = "reap"
 )
 
-// FilesModeWrite is the LabelFilesMode value of a file write.
-const FilesModeWrite = "write"
+// The LabelFilesMode values of the two file operations that only look: they
+// mount the world read-only, so they hold nothing.
+const (
+	FilesModeList = "list"
+	FilesModeRead = "read"
+)
 
 // JobKind names the holder a Job represents, or reports false for a Job that
 // holds nothing (a file read, a build, anything else in the namespace). A files
-// Job without LabelFilesMode predates the label and is counted as a write: it can
-// only be an old Job still inside its TTL, and over-counting it for that window
-// is the safe side.
+// Job holds unless it is a list or a read, so an operation this build does not
+// know — and a Job without LabelFilesMode, which can only be an old one still
+// inside its TTL — counts as a change: over-counting is the safe side.
 func JobKind(j *batchv1.Job) (string, bool) {
 	switch j.Labels[LabelManagedBy] {
 	case "felis-restore":
@@ -105,8 +110,7 @@ func JobKind(j *batchv1.Job) (string, bool) {
 	case "felis-backup":
 		return KindBackup, true
 	case "felis-files":
-		mode, ok := j.Labels[LabelFilesMode]
-		if !ok || mode == FilesModeWrite {
+		if mode := j.Labels[LabelFilesMode]; mode != FilesModeList && mode != FilesModeRead {
 			return KindFileWrite, true
 		}
 	}

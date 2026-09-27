@@ -19,28 +19,46 @@ import (
 	"felis.lolicon.best/internal/naming"
 )
 
-// The three operations the editor supports. The set is deliberately closed and
-// tiny: list a directory, read a file, write a file. There is no rename, delete,
-// or chmod — each would need its own containment and audit story, and none is
-// required to fix a broken server.properties, which is what this subsystem exists
-// for.
+// The operations the editor supports: list a directory, read a file, write a
+// file, make a directory, delete, rename, and upload. The set is closed; there is
+// no chmod, chown, link or copy. Every op resolves every path through os.Root (see
+// Execute), and each mutating op carries its own containment note below.
 //
-// A write DOES accept arbitrary bytes at any path inside the mount, and that is a
-// real capability rather than an oversight: the root is the server's whole working
-// directory (see Config.WorldsRoot), so an owner can write plugins/<x>.jar and
-// Paper will load it on the next boot. It is the same power a hosting panel's file
-// manager gives, scoped to a server the caller already owns and already controls
-// through /command. Note what it is NOT scoped by: admin image curation. Images
-// are admin-only (POST /images, POST /images/build) and modpack submissions need
-// an admin verdict, so this is the one owner-tier route that lands executable code
-// in a backend pod. That trade was made deliberately; if it is ever revisited, the
-// guard belongs in write() below, which is the single choke point all three
-// callers route through.
+// A write or upload DOES land arbitrary bytes at any path inside the mount, and
+// that is a real capability rather than an oversight: the root is the server's
+// whole working directory (see Config.WorldsRoot), so an owner can upload
+// plugins/<x>.jar and Paper will load it on the next boot. It is the same power a
+// hosting panel's file manager gives, scoped to a server the caller already owns
+// and already controls through /command. Note what it is NOT scoped by: admin
+// image curation. Images are admin-only (POST /images, POST /images/build) and
+// modpack submissions need an admin verdict, so this is the one owner-tier route
+// that lands executable code in a backend pod. That trade was made deliberately;
+// if it is ever revisited, the guard belongs in land() below, which is the single
+// choke point both byte-landing ops route through.
 const (
-	OpList  = "list"
-	OpRead  = "read"
-	OpWrite = "write"
+	OpList   = "list"
+	OpRead   = "read"
+	OpWrite  = "write"
+	OpMkdir  = "mkdir"
+	OpDelete = "delete"
+	OpRename = "rename"
+	OpUpload = "upload"
 )
+
+// mutates reports whether op changes the world, and so whether its Job gets the
+// world mount read-write. Only list and read leave the world alone; anything else
+// counts as a change. maintenance.JobKind draws the same line for the world-volume
+// lock.
+func mutates(op string) bool { return op != OpList && op != OpRead }
+
+// validOp reports whether op is one the Job knows.
+func validOp(op string) bool {
+	switch op {
+	case OpList, OpRead, OpWrite, OpMkdir, OpDelete, OpRename, OpUpload:
+		return true
+	}
+	return false
+}
 
 // Result codes. A failure that is the CALLER's fault travels back as a Result
 // with a Code rather than as a non-zero exit, so felis-api can map it onto a
@@ -59,6 +77,10 @@ const (
 	// (the write is atomic), so this is the caller's volume being full rather
 	// than a bad request.
 	CodeNoSpace = "no_space"
+	// CodeExists is a create, mkdir, rename or upload whose target is already
+	// there. None of them replaces anything unless told to (an upload's
+	// Overwrite), so a name collision is reported rather than resolved.
+	CodeExists = "exists"
 )
 
 // ResultPrefix marks the single stdout line carrying the JSON Result. The Job's
@@ -70,15 +92,32 @@ const (
 // JSON. Without it any stray stderr byte would corrupt every response.
 const ResultPrefix = "FELIS-FILES-RESULT: "
 
-// ContentEnv is the environment variable the write path carries new file content
-// in (base64). It travels on the Job spec felis-api creates, because felis-api
-// holds `jobs: create` but NOT `secrets: create` in the minecraft namespace
-// (internal/platform.APIMinecraftRole) — a Secret is not available to it, so the
-// Job spec is the only channel into the Pod. The consequence is that written
-// content is readable by anyone holding jobs:get in the minecraft namespace,
-// which is a cluster-admin-level power; it is NOT readable by felis-operator,
-// felis-reaper, or any weak Job SA, none of which hold that verb.
-const ContentEnv = "FELIS_FILE_CONTENT"
+// ContentEnv names the environment variables the write path carries new file
+// content in (base64). It travels on the Job spec felis-api creates, because
+// felis-api holds `jobs: create` but NOT `secrets: create` in the minecraft
+// namespace (internal/platform.APIMinecraftRole) — a Secret is not available to
+// it, so the Job spec is the only channel into the Pod. The consequence is that
+// written content is readable by anyone holding jobs:get in the minecraft
+// namespace, which is a cluster-admin-level power; it is NOT readable by
+// felis-operator, felis-reaper, or any weak Job SA, none of which hold that verb.
+//
+// The base64 is split across ContentEnv_0 … ContentEnv_<n-1>, with n in
+// ContentPartsEnv. One variable cannot carry it: execve refuses any single
+// environment string longer than MAX_ARG_STRLEN (32 pages, 128 KiB with 4 KiB
+// pages), so a container whose one variable held the base64 of a 100 KiB file
+// never started — the Pod failed with exit 255 before felis ran, and the save
+// came back as an opaque 500. contentChunk keeps every part well under that.
+const (
+	ContentEnv      = "FELIS_FILE_CONTENT"
+	ContentPartsEnv = ContentEnv + "_PARTS"
+	contentChunk    = 64 << 10
+)
+
+// UploadTokenEnv carries the one-time token an upload Job presents to felis-api
+// to fetch the bytes it lands (see Stage). Like the content it rides the Job
+// spec, and it opens exactly one thing — the one upload that Job was created
+// for, once.
+const UploadTokenEnv = "FELIS_UPLOAD_TOKEN"
 
 // Size and count ceilings. Every one of them exists because the result travels
 // through a Kubernetes object or a pod log, neither of which is an unbounded pipe:
@@ -94,10 +133,17 @@ const ContentEnv = "FELIS_FILE_CONTENT"
 //   - MaxEntries bounds a listing. A world's region/ directory legitimately holds
 //     thousands of .mca files, so this truncates rather than errors (Truncated
 //     says so), keeping the log line bounded while still being useful.
+//   - MaxUploadBytes bounds an upload. Its bytes travel neither through the Job
+//     spec nor the pod log — felis-api stages them and the Job fetches them — so
+//     the bound is the request body instead: the Cloudflare edge refuses bodies
+//     over 100 MB on the Free and Pro plans, and 64 MiB covers the largest plugin
+//     jars (a Geyser build is about 20 MiB) with room to spare. A whole world is
+//     a different operation (a restore), not an upload.
 const (
-	MaxWriteBytes = 256 << 10 // 256 KiB
-	MaxReadBytes  = 1 << 20   // 1 MiB
-	MaxEntries    = 2000
+	MaxWriteBytes  = 256 << 10 // 256 KiB
+	MaxReadBytes   = 1 << 20   // 1 MiB
+	MaxEntries     = 2000
+	MaxUploadBytes = 64 << 20 // 64 MiB
 )
 
 // Entry is one directory entry in a listing. It carries only what a file browser
@@ -113,7 +159,7 @@ type Entry struct {
 }
 
 // Result is the single JSON object the Job prints and felis-api parses back. One
-// shape covers all three ops so the transport has exactly one thing to find and
+// shape covers every op so the transport has exactly one thing to find and
 // unmarshal; the op decides which fields are populated.
 //
 // Content is []byte, so encoding/json base64-encodes it on the way out and
@@ -134,14 +180,46 @@ type Result struct {
 	Truncated bool `json:"truncated,omitempty"`
 	// SHA256 is the hex digest of the file's on-disk bytes: after a read, the file
 	// as read (before any redaction); after a write, the bytes written; on a
-	// conflict, the file as it is now. A client hands it back as the expected hash
-	// of its next write (see write).
+	// conflict, the file as it is now. A client hands it back as the expected
+	// hash of its next write (see write).
 	SHA256 string `json:"sha256,omitempty"`
 }
 
-// Execute performs op on the file named by path, resolved inside root, and returns
-// the Result to print. root is the in-Pod mount path of the server's world PVC;
-// path is the caller-supplied relative path underneath it.
+// Request is one file operation. Op decides which of the other fields it reads.
+type Request struct {
+	Op   string
+	Path string
+	// To is a rename's destination.
+	To string
+	// Content and Expect are a write's bytes and precondition: when Expect is
+	// non-empty, the write lands only if the file's current SHA-256 (hex) equals
+	// it.
+	Content []byte
+	Expect  string
+	// CreateOnly makes a write refuse a path that already exists. It is the
+	// panel's "new file", which must never truncate a file it did not know was
+	// there.
+	CreateOnly bool
+	// Upload is where an upload's bytes come from; Overwrite lets it replace a
+	// file already at the path.
+	Upload    *Upload
+	Overwrite bool
+}
+
+// Upload describes the bytes an upload lands. Size and SHA256 are what felis-api
+// received from the caller; the fetched bytes must match both before they replace
+// anything.
+type Upload struct {
+	Size   int64
+	SHA256 string
+	// Open starts the transfer. It runs only once the target has passed every
+	// check, so a refused upload never pulls the bytes.
+	Open func() (io.ReadCloser, error)
+}
+
+// Execute performs one operation inside root and returns the Result to print.
+// root is the in-Pod mount path of the server's world PVC; every path in req is
+// relative to it.
 //
 // CONTAINMENT INVARIANT: every filesystem access goes through *os.Root, never
 // through a path string this function assembled. os.Root is the stdlib's
@@ -162,11 +240,14 @@ type Result struct {
 // to os.Root as-is and refused. Silently reinterpreting "/etc/passwd" as
 // "<root>/etc/passwd" would turn an unambiguous escape attempt into a successful
 // read of a file the caller did not name, which is exactly the confusion this
-// editor must not have.
+// editor must not have. mkdir, delete and rename do path.Clean the path first (so
+// a trailing slash cannot make them act on a link's target), and Clean keeps both
+// a leading "/" and a leading "..", so an escape stays an escape.
 //
-// expect is a write's precondition: when non-empty, the write lands only if the
-// file's current SHA-256 (hex) equals it. It is ignored by list and read.
-func Execute(root, op, path string, content []byte, expect string) (Result, error) {
+// The error is an infrastructure failure: the world mount unopenable, an unknown
+// op, or an upload whose transfer broke. A caller's mistake is a Result with a
+// Code.
+func Execute(root string, req Request) (Result, error) {
 	r, err := os.OpenRoot(root)
 	if err != nil {
 		// The world mount itself is unopenable: infrastructure, not caller fault.
@@ -174,19 +255,31 @@ func Execute(root, op, path string, content []byte, expect string) (Result, erro
 	}
 	defer r.Close()
 
+	path := req.Path
 	if path == "" {
 		path = "."
 	}
 
-	switch op {
+	switch req.Op {
 	case OpList:
 		return list(r, path), nil
 	case OpRead:
 		return read(r, path), nil
 	case OpWrite:
-		return write(r, path, content, expect), nil
+		return write(r, path, req.Content, req.Expect, req.CreateOnly), nil
+	case OpMkdir:
+		return mkdir(r, path), nil
+	case OpDelete:
+		return remove(r, path), nil
+	case OpRename:
+		return rename(r, path, req.To), nil
+	case OpUpload:
+		if req.Upload == nil {
+			return Result{}, errors.New("an upload needs a source")
+		}
+		return upload(r, path, *req.Upload, req.Overwrite)
 	default:
-		return Result{}, fmt.Errorf("unknown op %q", op)
+		return Result{}, fmt.Errorf("unknown op %q", req.Op)
 	}
 }
 
@@ -339,17 +432,9 @@ func redactSecretProps(name string, content []byte) []byte {
 // path this editor writes is an existing config file being corrected, so an
 // unexpected mkdir would more likely be a typo materialising a stray directory in
 // the world mount than an intent. A missing file is still created, so a config
-// the server has not yet generated can be authored.
-//
-// The replacement is atomic. The bytes go to a temporary sibling that is synced
-// and then renamed over the target, so a full disk, a Job killed at its deadline
-// or a crashed node leaves either the old file or the new one — never the
-// zero-length or half-written server.properties an in-place truncate would, which
-// is a server that no longer boots. The sibling keeps the target's mode and is
-// handed to the game uid before the rename, so the file the server finds is never
-// root's. On failure it is removed; only a kill between create and rename leaves
-// one behind, named ".<file>.felis-edit-<hex>" so no loader mistakes it for a
-// plugin jar or a config.
+// the server has not yet generated can be authored; createOnly refuses a path that
+// already exists, which is how the panel's "new file" avoids truncating a file it
+// did not know was there.
 //
 // expect, when set, is the SHA-256 the caller read the file at (Result.SHA256 of
 // its read). A file that has changed since — another manager saved it, or the
@@ -357,12 +442,7 @@ func redactSecretProps(name string, content []byte) []byte {
 // being overwritten, which is how two people editing the same file find out.
 // The world lock (internal/maintenance) already serialises writes, so the check
 // and the rename cannot interleave with another write.
-//
-// os.Root applies the same containment to every step. A symlink at the target is
-// followed only while it stays inside the root (resolveLink), so a planted link
-// to a file outside is refused and the rename replaces the file the link names,
-// never the link itself.
-func write(r *os.Root, name string, content []byte, expect string) Result {
+func write(r *os.Root, name string, content []byte, expect string, createOnly bool) Result {
 	if len(content) > MaxWriteBytes {
 		// Defence in depth: felis-api already refuses an oversized write with a 413
 		// before rendering the Job. Re-checking here keeps the ceiling true even if
@@ -370,38 +450,94 @@ func write(r *os.Root, name string, content []byte, expect string) Result {
 		return Result{Code: CodeTooLarge, Error: fmt.Sprintf(
 			"content is %d bytes; the editor writes at most %d", len(content), MaxWriteBytes)}
 	}
-	target, res := resolveLink(r, name)
+	target, mode, res := landingTarget(r, name, !createOnly)
 	if res.Code != "" {
 		return res
 	}
-
-	mode := fs.FileMode(0o644)
-	info, err := r.Lstat(target)
-	switch {
-	case err == nil && info.IsDir():
-		return Result{Code: CodeBadPath, Error: fmt.Sprintf("%s is a directory, not a file", name)}
-	case err == nil && !info.Mode().IsRegular():
-		return Result{Code: CodeBadPath, Error: fmt.Sprintf("%s is not a regular file", name)}
-	case err == nil:
-		mode = info.Mode().Perm()
-	case !errors.Is(err, fs.ErrNotExist):
-		return failure(err, name)
-	}
-
 	if expect != "" {
 		if res := checkUnchanged(r, name, target, expect); res.Code != "" {
 			return res
 		}
 	}
+	// A write's fill never returns a transfer error, so land's error is always nil.
+	res, _ = land(r, name, target, mode, func(w io.Writer) error {
+		_, err := w.Write(content)
+		return err
+	})
+	if res.Code == "" {
+		res.SHA256 = digest(content)
+	}
+	return res
+}
 
+// landingTarget decides where a write or upload lands and with what mode. A
+// symlink at name is followed only while it stays inside the root (resolveLink), so
+// a planted link to a file outside is refused and the rename in land replaces the
+// file the link names, never the link itself. The target keeps its mode; a new file
+// gets 0644.
+//
+// mayExist false refuses a name that is already there in any form — file,
+// directory or link, dangling or not — before any link is followed.
+func landingTarget(r *os.Root, name string, mayExist bool) (string, fs.FileMode, Result) {
+	if !mayExist {
+		if _, err := r.Lstat(name); err == nil {
+			return "", 0, Result{Code: CodeExists, Error: fmt.Sprintf("%s already exists", name)}
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return "", 0, failure(err, name)
+		}
+	}
+	target, res := resolveLink(r, name)
+	if res.Code != "" {
+		return "", 0, res
+	}
+	info, err := r.Lstat(target)
+	switch {
+	case err == nil && info.IsDir():
+		return "", 0, Result{Code: CodeBadPath, Error: fmt.Sprintf("%s is a directory, not a file", name)}
+	case err == nil && !info.Mode().IsRegular():
+		return "", 0, Result{Code: CodeBadPath, Error: fmt.Sprintf("%s is not a regular file", name)}
+	case err == nil:
+		return target, info.Mode().Perm(), Result{}
+	case errors.Is(err, fs.ErrNotExist):
+		return target, 0o644, Result{}
+	default:
+		return "", 0, failure(err, name)
+	}
+}
+
+// transferError marks an upload whose bytes could not be fetched intact. It is
+// infrastructure — felis-api staged the bytes and serves them to this Job — so it
+// leaves Execute as an error (a non-zero exit, a 500) rather than a caller-facing
+// code.
+type transferError struct{ err error }
+
+func (e *transferError) Error() string { return "fetch upload: " + e.err.Error() }
+func (e *transferError) Unwrap() error { return e.err }
+
+// land atomically puts the bytes fill writes at target, the path landingTarget
+// returned for name. It is the single choke point both byte-landing ops (write and
+// upload) route through.
+//
+// The bytes go to a temporary sibling that is synced and then renamed over the
+// target, so a full disk, a Job killed at its deadline or a crashed node leaves
+// either the old file or the new one — never the zero-length or half-written
+// server.properties an in-place truncate would, which is a server that no longer
+// boots. The sibling gets mode and is handed to the game uid before the rename, so
+// the file the server finds is never root's. On failure it is removed; only a kill
+// between create and rename leaves one behind, named ".<file>.felis-edit-<hex>" so
+// no loader mistakes it for a plugin jar or a config.
+//
+// A *transferError from fill comes back as the error; every other failure is a
+// Result.
+func land(r *os.Root, name, target string, mode fs.FileMode, fill func(io.Writer) error) (Result, error) {
 	var suffix [6]byte
 	if _, err := rand.Read(suffix[:]); err != nil {
-		return Result{Code: CodeBadPath, Error: fmt.Sprintf("generate a temporary name: %v", err)}
+		return Result{Code: CodeBadPath, Error: fmt.Sprintf("generate a temporary name: %v", err)}, nil
 	}
 	tmp := path.Join(path.Dir(target), "."+path.Base(target)+".felis-edit-"+hex.EncodeToString(suffix[:]))
 	f, err := r.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
-		return writeFailure(err, name)
+		return writeFailure(err, name), nil
 	}
 	renamed := false
 	defer func() {
@@ -413,21 +549,25 @@ func write(r *os.Root, name string, content []byte, expect string) Result {
 	// owner had at 0664 or 0600 should come back the same.
 	if err := f.Chmod(mode); err != nil {
 		f.Close()
-		return writeFailure(err, name)
+		return writeFailure(err, name), nil
 	}
-	if _, err := f.Write(content); err != nil {
+	if err := fill(f); err != nil {
 		f.Close()
-		return writeFailure(err, name)
+		var te *transferError
+		if errors.As(err, &te) {
+			return Result{}, err
+		}
+		return writeFailure(err, name), nil
 	}
 	// Sync before the rename, or a crash could leave the new name pointing at
 	// blocks that never reached the disk. Close is where a buffered-write error
 	// surfaces, so its error is honoured rather than deferred-and-dropped.
 	if err := syncWritten(f); err != nil {
 		f.Close()
-		return writeFailure(err, name)
+		return writeFailure(err, name), nil
 	}
 	if err := f.Close(); err != nil {
-		return writeFailure(err, name)
+		return writeFailure(err, name), nil
 	}
 	// The Job runs as root, so the file it just created is root's. The server runs
 	// as the game uid and could read it but never rewrite it — a config the panel
@@ -435,16 +575,166 @@ func write(r *os.Root, name string, content []byte, expect string) Result {
 	// prepare-data initContainer re-owns anything left behind on its next start.
 	_ = ownWritten(r, tmp)
 	if err := r.Rename(tmp, target); err != nil {
-		return writeFailure(err, name)
+		return writeFailure(err, name), nil
 	}
 	renamed = true
-	// The rename lives in the directory; sync it so the new entry survives a crash
-	// too. Best effort: the content has landed and reporting failure would lie.
-	if d, err := r.Open(path.Dir(target)); err == nil {
+	syncDir(r, path.Dir(target))
+	return Result{}, nil
+}
+
+// syncDir syncs a directory so an entry just added, renamed or removed survives a
+// crash too. Best effort: the change has happened and reporting failure would lie.
+func syncDir(r *os.Root, dir string) {
+	if d, err := r.Open(dir); err == nil {
 		_ = d.Sync()
 		d.Close()
 	}
-	return Result{SHA256: digest(content)}
+}
+
+// upload lands a file fetched from felis-api (see Stage). Everything that can
+// refuse it is checked before u.Open, so a refused upload never pulls its bytes.
+// The fetched bytes must match both the size and the SHA-256 felis-api received;
+// either mismatch is a broken transfer, and the target is left as it was. A
+// success has landed exactly what felis-api staged, whose digest it already holds.
+func upload(r *os.Root, name string, u Upload, overwrite bool) (Result, error) {
+	if u.Size > MaxUploadBytes {
+		return Result{Code: CodeTooLarge, Error: fmt.Sprintf(
+			"the upload is %d bytes; the editor uploads at most %d", u.Size, MaxUploadBytes)}, nil
+	}
+	target, mode, res := landingTarget(r, name, overwrite)
+	if res.Code != "" {
+		return res, nil
+	}
+	return land(r, name, target, mode, func(w io.Writer) error {
+		body, err := u.Open()
+		if err != nil {
+			return &transferError{err}
+		}
+		defer body.Close()
+		h := sha256.New()
+		// One byte past Size so a source that sends more than it promised is seen.
+		n, err := io.Copy(io.MultiWriter(w, h), sourceReader{io.LimitReader(body, u.Size+1)})
+		if err != nil {
+			return err
+		}
+		if n != u.Size {
+			return &transferError{fmt.Errorf("got %d bytes, expected %d", n, u.Size)}
+		}
+		if sum := hex.EncodeToString(h.Sum(nil)); sum != u.SHA256 {
+			return &transferError{fmt.Errorf("got sha256 %s, expected %s", sum, u.SHA256)}
+		}
+		return nil
+	})
+}
+
+// sourceReader tags the source's read errors as transfer errors, so land can tell
+// a broken fetch from the volume filling up underneath the copy.
+type sourceReader struct{ r io.Reader }
+
+func (s sourceReader) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+	if err != nil && err != io.EOF {
+		err = &transferError{err}
+	}
+	return n, err
+}
+
+// mkdir makes one directory, handed to the game uid. It does not make parents:
+// the panel creates a folder inside the one it is showing, so a missing parent is
+// a stale view, reported as such.
+//
+// The path is cleaned first so a trailing slash cannot slip past the "." check.
+// Clean keeps a leading "/" or "..", so os.Root still sees — and refuses — an
+// escape.
+func mkdir(r *os.Root, name string) Result {
+	name = path.Clean(name)
+	if name == "." {
+		return Result{Code: CodeBadPath, Error: "a folder needs a name"}
+	}
+	if err := r.Mkdir(name, 0o755); err != nil {
+		switch {
+		case errors.Is(err, fs.ErrExist):
+			return Result{Code: CodeExists, Error: fmt.Sprintf("%s already exists", name)}
+		case errors.Is(err, fs.ErrNotExist):
+			return Result{Code: CodeNotFound, Error: fmt.Sprintf("folder %s does not exist", path.Dir(name))}
+		}
+		return writeFailure(err, name)
+	}
+	_ = ownWritten(r, name)
+	syncDir(r, path.Dir(name))
+	return Result{}
+}
+
+// remove deletes a file, a link or a whole directory. RemoveAll removes a symlink
+// itself, never what it points at, and os.Root keeps it inside the mount; the Lstat
+// is there because RemoveAll reports nothing for a path that is not there. The
+// root itself is refused — emptying a server's whole volume is a reset, which has
+// its own path.
+func remove(r *os.Root, name string) Result {
+	name = path.Clean(name)
+	if name == "." {
+		return Result{Code: CodeBadPath, Error: "the server's root folder cannot be deleted"}
+	}
+	if _, err := r.Lstat(name); err != nil {
+		return failure(err, name)
+	}
+	if err := r.RemoveAll(name); err != nil {
+		return failure(err, name)
+	}
+	syncDir(r, path.Dir(name))
+	return Result{}
+}
+
+// rename moves from to to, both inside the root. It never replaces: a destination
+// that exists is CodeExists, so a mistyped name cannot silently destroy another
+// file. A missing destination folder is not made.
+func rename(r *os.Root, from, to string) Result {
+	from, to = path.Clean(from), path.Clean(to)
+	if from == "." || to == "." {
+		return Result{Code: CodeBadPath, Error: "the server's root folder cannot be moved"}
+	}
+	info, err := r.Lstat(from)
+	if err != nil {
+		return failure(err, from)
+	}
+	if res := guardMove(r, from, info); res.Code != "" {
+		return res
+	}
+	if _, err := r.Lstat(to); err == nil {
+		return Result{Code: CodeExists, Error: fmt.Sprintf("%s already exists", to)}
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return failure(err, to)
+	}
+	if err := r.Rename(from, to); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return Result{Code: CodeNotFound, Error: fmt.Sprintf("folder %s does not exist", path.Dir(to))}
+		}
+		return failure(err, to)
+	}
+	syncDir(r, path.Dir(from))
+	syncDir(r, path.Dir(to))
+	return Result{}
+}
+
+// guardedPaths are the paths read guards by name: secretConfigPath is refused and
+// propsPath has its RCON password redacted. Moving either — or the config folder
+// holding the first — to another name would make the next read hand back what the
+// guard withholds, so rename refuses them.
+var guardedPaths = []string{secretConfigPath, path.Dir(secretConfigPath), propsPath}
+
+// guardMove refuses a rename whose source is a guarded path under any name: the
+// comparison is by file identity, so "./config", a link's target or a folder
+// reached through a link are all caught.
+func guardMove(r *os.Root, from string, info fs.FileInfo) Result {
+	for _, g := range guardedPaths {
+		for _, stat := range []func(string) (fs.FileInfo, error){r.Lstat, r.Stat} {
+			if gi, err := stat(g); err == nil && os.SameFile(info, gi) {
+				return Result{Code: CodeBadPath, Error: fmt.Sprintf(
+					"%s is managed by felis and cannot be moved or renamed", from)}
+			}
+		}
+	}
+	return Result{}
 }
 
 // writeFailure is failure for the steps that move bytes, where a full volume is

@@ -36,6 +36,11 @@ func worldRoot(t *testing.T) (root, outside string) {
 	return root, outside
 }
 
+// run executes one list, read or write the way the Job does.
+func run(root, op, path string, content []byte, expect string) (Result, error) {
+	return Execute(root, Request{Op: op, Path: path, Content: content, Expect: expect})
+}
+
 // TestExecuteContainment is the security test of this package. The world directory
 // holds attacker-influenced content (players and plugins create files in it), so
 // each vector below is a path a caller could genuinely supply to try to leave the
@@ -76,7 +81,7 @@ func TestExecuteContainment(t *testing.T) {
 
 	for _, v := range vectors {
 		t.Run("read "+v.name, func(t *testing.T) {
-			res, err := Execute(root, OpRead, v.path, nil, "")
+			res, err := run(root, OpRead, v.path, nil, "")
 			if err != nil {
 				t.Fatalf("Execute returned an infrastructure error, want a contained refusal: %v", err)
 			}
@@ -92,7 +97,7 @@ func TestExecuteContainment(t *testing.T) {
 	// The write side must be contained by the same invariant: a planted symlink
 	// must not become a write into the file it points at.
 	t.Run("write through a planted symlink is refused", func(t *testing.T) {
-		res, err := Execute(root, OpWrite, "planted.txt", []byte("pwned"), "")
+		res, err := run(root, OpWrite, "planted.txt", []byte("pwned"), "")
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
@@ -109,7 +114,7 @@ func TestExecuteContainment(t *testing.T) {
 	})
 
 	t.Run("write escaping by traversal is refused", func(t *testing.T) {
-		res, err := Execute(root, OpWrite, "../outside/new.txt", []byte("pwned"), "")
+		res, err := run(root, OpWrite, "../outside/new.txt", []byte("pwned"), "")
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
@@ -122,7 +127,7 @@ func TestExecuteContainment(t *testing.T) {
 	})
 
 	t.Run("list escaping by traversal is refused", func(t *testing.T) {
-		res, err := Execute(root, OpList, "../outside", nil, "")
+		res, err := run(root, OpList, "../outside", nil, "")
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
@@ -139,7 +144,7 @@ func TestExecuteHappyPath(t *testing.T) {
 	root, _ := worldRoot(t)
 
 	t.Run("list the world root", func(t *testing.T) {
-		res, err := Execute(root, OpList, "", nil, "")
+		res, err := run(root, OpList, "", nil, "")
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
@@ -162,7 +167,7 @@ func TestExecuteHappyPath(t *testing.T) {
 	})
 
 	t.Run("list a subdirectory", func(t *testing.T) {
-		res, err := Execute(root, OpList, "config", nil, "")
+		res, err := run(root, OpList, "config", nil, "")
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
@@ -172,7 +177,7 @@ func TestExecuteHappyPath(t *testing.T) {
 	})
 
 	t.Run("read a file", func(t *testing.T) {
-		res, err := Execute(root, OpRead, "server.properties", nil, "")
+		res, err := run(root, OpRead, "server.properties", nil, "")
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
@@ -182,7 +187,7 @@ func TestExecuteHappyPath(t *testing.T) {
 	})
 
 	t.Run("write replaces content, then reads back", func(t *testing.T) {
-		if res, err := Execute(root, OpWrite, "server.properties", []byte("motd=changed\n"), ""); err != nil || res.Code != "" {
+		if res, err := run(root, OpWrite, "server.properties", []byte("motd=changed\n"), ""); err != nil || res.Code != "" {
 			t.Fatalf("write failed: %v / %+v", err, res)
 		}
 		b, err := os.ReadFile(filepath.Join(root, "server.properties"))
@@ -202,13 +207,13 @@ func TestExecuteHappyPath(t *testing.T) {
 			return os.ErrPermission // a test runner cannot chown; the write must still succeed
 		}
 		defer func() { ownWritten = prev }()
-		if res, err := Execute(root, OpWrite, "ops.json", []byte("[]"), ""); err != nil || res.Code != "" {
+		if res, err := run(root, OpWrite, "ops.json", []byte("[]"), ""); err != nil || res.Code != "" {
 			t.Fatalf("creating a new file should succeed: %v / %+v", err, res)
 		}
 		if len(owned) != 1 || !strings.HasPrefix(owned[0], ".ops.json.felis-edit-") {
 			t.Errorf("files handed to the game uid = %v, want the one temporary sibling of ops.json", owned)
 		}
-		res, err := Execute(root, OpWrite, "nope/deep.txt", []byte("x"), "")
+		res, err := run(root, OpWrite, "nope/deep.txt", []byte("x"), "")
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
@@ -218,7 +223,7 @@ func TestExecuteHappyPath(t *testing.T) {
 	})
 
 	t.Run("missing file reads as not_found", func(t *testing.T) {
-		res, err := Execute(root, OpRead, "absent.txt", nil, "")
+		res, err := run(root, OpRead, "absent.txt", nil, "")
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
@@ -228,7 +233,7 @@ func TestExecuteHappyPath(t *testing.T) {
 	})
 
 	t.Run("reading a directory is bad_path, not a garbled read", func(t *testing.T) {
-		res, err := Execute(root, OpRead, "config", nil, "")
+		res, err := run(root, OpRead, "config", nil, "")
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
@@ -238,7 +243,7 @@ func TestExecuteHappyPath(t *testing.T) {
 	})
 
 	t.Run("oversized write is refused", func(t *testing.T) {
-		res, err := Execute(root, OpWrite, "big.txt", make([]byte, MaxWriteBytes+1), "")
+		res, err := run(root, OpWrite, "big.txt", make([]byte, MaxWriteBytes+1), "")
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
@@ -251,7 +256,7 @@ func TestExecuteHappyPath(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(root, "huge.bin"), make([]byte, MaxReadBytes+1), 0o644); err != nil {
 			t.Fatalf("write huge: %v", err)
 		}
-		res, err := Execute(root, OpRead, "huge.bin", nil, "")
+		res, err := run(root, OpRead, "huge.bin", nil, "")
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
@@ -272,7 +277,7 @@ func TestReadIsBinarySafe(t *testing.T) {
 		t.Fatalf("write raw: %v", err)
 	}
 
-	res, err := Execute(root, OpRead, "raw.bin", nil, "")
+	res, err := run(root, OpRead, "raw.bin", nil, "")
 	if err != nil || res.Code != "" {
 		t.Fatalf("read failed: %v / %+v", err, res)
 	}
@@ -333,7 +338,7 @@ func TestReadRefusesTheForwardingSecret(t *testing.T) {
 		"config/../config/paper-global.yml",
 		"config/./paper-global.yml",
 	} {
-		res, err := Execute(root, OpRead, spelling, nil, "")
+		res, err := run(root, OpRead, spelling, nil, "")
 		if err != nil {
 			t.Fatalf("%s: Execute: %v", spelling, err)
 		}
@@ -348,7 +353,7 @@ func TestReadRefusesTheForwardingSecret(t *testing.T) {
 
 	// The denial is READ-only and exact: a neighbouring file in the same directory
 	// stays readable, or the guard would have broken ordinary config repair.
-	res, err := Execute(root, OpRead, "config/paper.yml", nil, "")
+	res, err := run(root, OpRead, "config/paper.yml", nil, "")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -358,7 +363,7 @@ func TestReadRefusesTheForwardingSecret(t *testing.T) {
 
 	// Writing it is still allowed: it leaks nothing, and the lobby entrypoint
 	// rewrites the file whole on every boot regardless.
-	res, err = Execute(root, OpWrite, "config/paper-global.yml", []byte("proxies: {}\n"), "")
+	res, err = run(root, OpWrite, "config/paper-global.yml", []byte("proxies: {}\n"), "")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -387,7 +392,7 @@ func TestReadRedactsRconPassword(t *testing.T) {
 		t.Fatalf("write nested server.properties: %v", err)
 	}
 
-	res, err := Execute(root, OpRead, "server.properties", nil, "")
+	res, err := run(root, OpRead, "server.properties", nil, "")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -406,7 +411,7 @@ func TestReadRedactsRconPassword(t *testing.T) {
 		}
 	}
 
-	nested, err := Execute(root, OpRead, "plugins/server.properties", nil, "")
+	nested, err := run(root, OpRead, "plugins/server.properties", nil, "")
 	if err != nil {
 		t.Fatalf("Execute nested: %v", err)
 	}
@@ -426,7 +431,7 @@ func TestWriteIsAtomic(t *testing.T) {
 		prev := syncWritten
 		syncWritten = func(*os.File) error { return syscall.ENOSPC }
 		defer func() { syncWritten = prev }()
-		res, err := Execute(root, OpWrite, "server.properties", []byte("motd=half"), "")
+		res, err := run(root, OpWrite, "server.properties", []byte("motd=half"), "")
 		if err != nil || res.Code != CodeNoSpace {
 			t.Fatalf("Execute = %+v, %v; want no_space", res, err)
 		}
@@ -440,7 +445,7 @@ func TestWriteIsAtomic(t *testing.T) {
 		if err := os.Chmod(props, 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if res, err := Execute(root, OpWrite, "server.properties", []byte("motd=x\n"), ""); err != nil || res.Code != "" {
+		if res, err := run(root, OpWrite, "server.properties", []byte("motd=x\n"), ""); err != nil || res.Code != "" {
 			t.Fatalf("write: %v / %+v", err, res)
 		}
 		info, err := os.Stat(props)
@@ -457,7 +462,7 @@ func TestWriteIsAtomic(t *testing.T) {
 		if err := os.Symlink("config/paper.yml", filepath.Join(root, "paper-link.yml")); err != nil {
 			t.Skipf("symlinks unavailable: %v", err)
 		}
-		if res, err := Execute(root, OpWrite, "paper-link.yml", []byte("verbose: true\n"), ""); err != nil || res.Code != "" {
+		if res, err := run(root, OpWrite, "paper-link.yml", []byte("verbose: true\n"), ""); err != nil || res.Code != "" {
 			t.Fatalf("write: %v / %+v", err, res)
 		}
 		if b, _ := os.ReadFile(filepath.Join(root, "config", "paper.yml")); string(b) != "verbose: true\n" {
@@ -472,7 +477,7 @@ func TestWriteIsAtomic(t *testing.T) {
 		if err := os.Symlink("../../outside/secret.txt", filepath.Join(root, "config", "climb")); err != nil {
 			t.Skipf("symlinks unavailable: %v", err)
 		}
-		res, err := Execute(root, OpWrite, "config/climb", []byte("pwned"), "")
+		res, err := run(root, OpWrite, "config/climb", []byte("pwned"), "")
 		if err != nil || res.Code != CodeBadPath {
 			t.Fatalf("Execute = %+v, %v; want bad_path", res, err)
 		}
@@ -488,7 +493,7 @@ func TestWriteDetectsConcurrentChange(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	read, err := Execute(root, OpRead, "server.properties", nil, "")
+	read, err := run(root, OpRead, "server.properties", nil, "")
 	if err != nil || read.Code != "" || len(read.SHA256) != 64 {
 		t.Fatalf("read = %+v, %v; want content and a sha256", read, err)
 	}
@@ -502,7 +507,7 @@ func TestWriteDetectsConcurrentChange(t *testing.T) {
 	if err := os.WriteFile(props, []byte("motd=theirs\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res, err := Execute(root, OpWrite, "server.properties", []byte("motd=mine\n"), read.SHA256)
+	res, err := run(root, OpWrite, "server.properties", []byte("motd=mine\n"), read.SHA256)
 	if err != nil || res.Code != CodeConflict {
 		t.Fatalf("stale write = %+v, %v; want a conflict", res, err)
 	}
@@ -514,7 +519,7 @@ func TestWriteDetectsConcurrentChange(t *testing.T) {
 	}
 
 	// With the current hash the save lands and reports the new one.
-	res, err = Execute(root, OpWrite, "server.properties", []byte("motd=mine\n"), res.SHA256)
+	res, err = run(root, OpWrite, "server.properties", []byte("motd=mine\n"), res.SHA256)
 	if err != nil || res.Code != "" || res.SHA256 != digest([]byte("motd=mine\n")) {
 		t.Fatalf("fresh write = %+v, %v", res, err)
 	}
@@ -523,7 +528,7 @@ func TestWriteDetectsConcurrentChange(t *testing.T) {
 	if err := os.Remove(props); err != nil {
 		t.Fatal(err)
 	}
-	res, err = Execute(root, OpWrite, "server.properties", []byte("motd=mine\n"), res.SHA256)
+	res, err = run(root, OpWrite, "server.properties", []byte("motd=mine\n"), res.SHA256)
 	if err != nil || res.Code != CodeConflict {
 		t.Fatalf("write over a deleted file = %+v, %v; want a conflict", res, err)
 	}

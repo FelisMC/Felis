@@ -1202,6 +1202,38 @@ paths:
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
 
+  /api/v1/internal/file-uploads/{id}:
+    get:
+      tags: [files]
+      operationId: internalFileUpload
+      summary: Stream one staged file upload to the Job landing it (one-time bearer token).
+      description: >-
+        PUT /api/v1/servers/{name}/files/upload stages the body on felis-api's disk
+        and creates a Job to land it in the world volume; the Job fetches the bytes
+        here. The Job holds no service token, so the route is public on the internal
+        face and the bearer token minted with the upload is the whole check. The
+        token opens its upload once. An unknown id, a wrong or missing token and a
+        spent token are all the same 404, so the route says nothing about which
+        uploads exist.
+      x-felis-face: [internal]
+      x-felis-tier: public
+      security: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - name: Authorization
+          in: header
+          required: true
+          description: Bearer followed by the token minted with the upload.
+          schema: { type: string }
+      responses:
+        '200':
+          description: The staged bytes, verbatim, with their Content-Length.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /api/v1/internal/servers/{name}/join-event:
     post:
       tags: [servers-internal]
@@ -4224,6 +4256,12 @@ paths:
                     The sha256 a read returned. When present, the write is refused with
                     409 file_changed if the file has changed (or been deleted) since.
                     Omit it to write unconditionally.
+                create_only:
+                  type: boolean
+                  description: >-
+                    true writes only if nothing is at the path yet (409 file_exists
+                    otherwise), for making a new file without replacing one that
+                    appeared meanwhile. Cannot be combined with expect_sha256.
       responses:
         '200':
           description: File written.
@@ -4251,7 +4289,11 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
         '409':
-          description: Server is not stopped (not_stopped), or a restore, backup or file write already holds its world volume (maintenance_in_progress).
+          description: >-
+            The file changed since expect_sha256 was read (file_changed), something is
+            already at the path with create_only (file_exists), the server is not
+            stopped (not_stopped), or a restore, backup or file change already holds its
+            world volume (maintenance_in_progress).
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
@@ -4269,6 +4311,286 @@ paths:
           $ref: '#/components/responses/ServiceUnavailable'
         '504':
           description: The file Job did not finish in time; retry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+    delete:
+      tags: [files]
+      operationId: deleteServerFile
+      summary: Delete a file or folder in a server's world volume (owner-or-admin; server must be stopped).
+      description: >-
+        Deletes a file, a symlink (never what it points at) or a folder with
+        everything in it. The world root itself is refused (400 bad_path). Same
+        stopped-gate, world lock and os.Root containment as a write. The panel
+        confirms first; this route does not. Audited as file.delete.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - name: path
+          in: query
+          required: true
+          description: File or folder to delete, relative to the world root.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [path, status]
+                properties:
+                  path: { type: string }
+                  status: { type: string, const: deleted }
+        '400':
+          description: Missing path, invalid server name, the world root, or a path that escapes it.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unknown server, or nothing at the path.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Server is not stopped (not_stopped), or a restore, backup or file change already holds its world volume (maintenance_in_progress).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          description: The file Job did not finish in time; retry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/servers/{name}/files/mkdir:
+    post:
+      tags: [files]
+      operationId: makeServerFolder
+      summary: Make a folder in a server's world volume (owner-or-admin; server must be stopped).
+      description: >-
+        Makes one folder. Its parent must already exist (404), and nothing may be at
+        the path yet (409 file_exists). Same stopped-gate, world lock and os.Root
+        containment as a write. Audited as file.mkdir.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - name: path
+          in: query
+          required: true
+          description: Folder to make, relative to the world root.
+          schema: { type: string }
+      responses:
+        '200':
+          description: Folder made.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [path, status]
+                properties:
+                  path: { type: string }
+                  status: { type: string, const: created }
+        '400':
+          description: Missing path, invalid server name, the world root, or a path that escapes it.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unknown server, or the parent folder does not exist.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Something is already at the path (file_exists), the server is not stopped (not_stopped), or a restore, backup or file change already holds its world volume (maintenance_in_progress).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          description: The file Job did not finish in time; retry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/servers/{name}/files/rename:
+    post:
+      tags: [files]
+      operationId: renameServerFile
+      summary: Move or rename a file or folder in a server's world volume (owner-or-admin; server must be stopped).
+      description: >-
+        Moves the file or folder at path to to. It never replaces: an existing
+        destination is 409 file_exists, and a missing destination folder is 404.
+        server.properties, config/paper-global.yml and config/ cannot be moved under
+        any name they are reached by (400 bad_path), because elsewhere the read path
+        would no longer withhold their secrets. Same stopped-gate, world lock and
+        os.Root containment as a write. Audited as file.rename.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - name: path
+          in: query
+          required: true
+          description: File or folder to move, relative to the world root.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to]
+              properties:
+                to: { type: string, minLength: 1, description: The new path, relative to the world root. }
+      responses:
+        '200':
+          description: Moved.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [path, to, status]
+                properties:
+                  path: { type: string }
+                  to: { type: string }
+                  status: { type: string, const: renamed }
+        '400':
+          description: Missing path or to, malformed body, invalid server name, the world root, a file felis manages, or a path that escapes the world root.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unknown server, nothing at path, or the destination folder does not exist.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Something is already at to (file_exists), the server is not stopped (not_stopped), or a restore, backup or file change already holds its world volume (maintenance_in_progress).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          description: The file Job did not finish in time; retry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/servers/{name}/files/upload:
+    put:
+      tags: [files]
+      operationId: uploadServerFile
+      summary: Upload a file into a server's world volume (owner-or-admin; server must be stopped).
+      description: >-
+        Lands the raw request body as the file at path, up to 64 MiB — a plugin jar,
+        a datapack, a world region. Content-Length is required (411
+        length_required). An existing file is 409 file_exists unless overwrite=true;
+        a folder at the path is 400 bad_path either way. The body is staged on
+        felis-api's disk first and then fetched by the file Job with a one-time
+        token, so the world lock is taken only after the body has arrived and a slow
+        upload holds off no backup. The file lands atomically: a synced temporary
+        sibling is checked against the staged size and SHA-256, then renamed into
+        place, so a failed upload leaves the old file whole. Same stopped-gate and
+        os.Root containment as a write. Audited as file.upload.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - name: path
+          in: query
+          required: true
+          description: File to create, relative to the world root. Its folder must exist.
+          schema: { type: string }
+        - name: overwrite
+          in: query
+          required: false
+          description: true replaces an existing file, keeping its mode. Anything else refuses to.
+          schema: { type: string, enum: ["true", "false"] }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        '200':
+          description: File uploaded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [path, status, sha256, size]
+                properties:
+                  path: { type: string }
+                  status: { type: string, const: uploaded }
+                  sha256: { type: string, pattern: '^[0-9a-f]{64}$', description: SHA-256 of the bytes landed. }
+                  size: { type: integer, format: int64, description: Bytes landed. }
+        '400':
+          description: >-
+            Missing path, invalid server name, a folder or the world root at the path,
+            a path that escapes the world root, or a body that ended before
+            Content-Length bytes arrived (upload_incomplete).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unknown server, or the folder does not exist.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: A file is already at the path and overwrite is not true (file_exists), the server is not stopped (not_stopped), or a restore, backup or file change already holds its world volume (maintenance_in_progress).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '411':
+          description: The request has no Content-Length (length_required).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '413':
+          description: The file is over 64 MiB (too_large).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          description: The file Job did not finish in time; retry.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '507':
+          description: >-
+            felis-api's staging disk has no room for the upload right now
+            (upload_staging_full), or the world volume has no room for it
+            (volume_full); nothing was changed.
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }

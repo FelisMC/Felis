@@ -1,7 +1,9 @@
-// Package fileedit implements the server file editor (list / read / write a file
-// in a server's world volume), the lever an owner reaches for when a server will
-// not boot because one line of server.properties or a plugin's YAML is wrong —
-// the one repair that otherwise requires a human with cluster access.
+// Package fileedit implements the server file manager: list, read, write, make a
+// folder, delete, rename and upload inside a server's world volume. It began as
+// the lever an owner reaches for when a server will not boot because one line of
+// server.properties or a plugin's YAML is wrong — the one repair that otherwise
+// requires a human with cluster access — and also covers the everyday chores: drop
+// in a plugin jar, clear out a folder, rename a world.
 //
 // felis-api cannot touch a world in-process: the world PVC is ReadWriteOnce and
 // its lifecycle is owned by the operator's StatefulSet, so the API has nothing to
@@ -26,12 +28,14 @@
 //
 // No pods/exec, no pods/portforward, not even pods:get — the least-privilege line
 // internal/platform/rbac.go draws and a test asserts. The write direction travels
-// the other way, on the Job spec felis-api creates (see ContentEnv).
+// the other way: an edit on the Job spec felis-api creates (see ContentEnv), an
+// upload fetched by the Job from felis-api's internal face (see Stage), because a
+// 64 MiB jar fits in neither a Job spec nor an environment.
 //
 // The price is latency: every operation is a Pod schedule + image pull, so a
 // listing takes seconds rather than milliseconds. That is inherent to RWO plus a
-// stopped server, not a property of this transport, and it is why the editor is a
-// repair tool rather than a file manager.
+// stopped server, not a property of this transport: the file manager works on a
+// stopped server, one operation per Job.
 //
 // The Editor depends on the Runner interface, so the orchestration and the error
 // mapping are unit-tested against an in-memory fake; the client-go implementation
@@ -70,6 +74,9 @@ var (
 	// ErrNoSpace is a write the world volume had no room for; the file is
 	// unchanged.
 	ErrNoSpace = errors.New("fileedit: the world volume is full")
+	// ErrExists is a create, mkdir, rename or upload whose target is already
+	// there.
+	ErrExists = errors.New("fileedit: the target already exists")
 )
 
 // Runner is the cluster-side half of one file operation: render and create the
@@ -187,7 +194,7 @@ type Editor struct {
 // List returns one directory's entries, resolved under the server's world root.
 // An empty path lists the world root itself.
 func (e *Editor) List(ctx context.Context, server, path string) ([]Entry, bool, error) {
-	res, err := e.run(ctx, server, OpList, path, nil, "")
+	res, err := e.run(ctx, server, JobParams{Op: OpList, Path: path})
 	if err != nil {
 		return nil, false, err
 	}
@@ -202,7 +209,7 @@ func (e *Editor) List(ctx context.Context, server, path string) ([]Entry, bool, 
 // Read returns a file's bytes, resolved under the server's world root, and the
 // SHA-256 of the file as it is on disk — the value to hand back as Write's expect.
 func (e *Editor) Read(ctx context.Context, server, path string) ([]byte, string, error) {
-	res, err := e.run(ctx, server, OpRead, path, nil, "")
+	res, err := e.run(ctx, server, JobParams{Op: OpRead, Path: path})
 	if err != nil {
 		return nil, "", err
 	}
@@ -217,26 +224,68 @@ func (e *Editor) Read(ctx context.Context, server, path string) ([]byte, string,
 // Write atomically replaces a file's contents, creating it if absent (but never
 // creating parent directories — see the write helper in exec.go), and returns the
 // new SHA-256. A non-empty expect makes it conditional: ErrConflict if the file no
-// longer hashes to it.
-func (e *Editor) Write(ctx context.Context, server, path string, content []byte, expect string) (string, error) {
-	res, err := e.run(ctx, server, OpWrite, path, content, expect)
+// longer hashes to it. createOnly refuses a path that exists with ErrExists.
+func (e *Editor) Write(ctx context.Context, server, path string, content []byte, expect string, createOnly bool) (string, error) {
+	res, err := e.run(ctx, server, JobParams{
+		Op: OpWrite, Path: path, Content: content, Expect: expect, CreateOnly: createOnly,
+	})
 	if err != nil {
 		return "", err
 	}
 	return res.SHA256, nil
 }
 
-// run is the shared body of all three operations: mint an op id, render the
-// params, run the Job, and translate the Result's code into a sentinel error.
+// Mkdir makes one directory; its parent must exist.
+func (e *Editor) Mkdir(ctx context.Context, server, path string) error {
+	_, err := e.run(ctx, server, JobParams{Op: OpMkdir, Path: path})
+	return err
+}
+
+// Delete removes a file, a link, or a directory with everything in it.
+func (e *Editor) Delete(ctx context.Context, server, path string) error {
+	_, err := e.run(ctx, server, JobParams{Op: OpDelete, Path: path})
+	return err
+}
+
+// Rename moves path to to. It never replaces an existing destination.
+func (e *Editor) Rename(ctx context.Context, server, path, to string) error {
+	_, err := e.run(ctx, server, JobParams{Op: OpRename, Path: path, To: to})
+	return err
+}
+
+// UploadSource is where an upload Job fetches its bytes: a one-time URL on
+// felis-api's internal face and the token that opens it (see Stage), plus the size
+// and SHA-256 the fetched bytes must match.
+type UploadSource struct {
+	URL    string
+	Token  string
+	Size   int64
+	SHA256 string
+}
+
+// Upload lands the staged bytes at path. The Job refuses bytes that do not match
+// src.Size and src.SHA256, so a nil error means exactly those landed. overwrite
+// lets it replace an existing file; without it an existing path is ErrExists.
+func (e *Editor) Upload(ctx context.Context, server, path string, src UploadSource, overwrite bool) error {
+	_, err := e.run(ctx, server, JobParams{
+		Op: OpUpload, Path: path, Overwrite: overwrite,
+		SourceURL: src.URL, UploadToken: src.Token, UploadSize: src.Size, UploadSHA256: src.SHA256,
+	})
+	return err
+}
+
+// run is the shared body of every operation: mint an op id, fill the rest of the
+// params from the Config, run the Job, and translate the Result's code into a
+// sentinel error. p carries the op and its own fields.
 //
 // The size check happens HERE, before a Job is created, as well as inside the Pod.
 // That is not redundancy for its own sake: an oversized write would otherwise be
 // rejected by the API SERVER (etcd's object limit) as an opaque failure, long after
 // felis-api had committed to the request, instead of as a clean 413.
-func (e *Editor) run(ctx context.Context, server, op, path string, content []byte, expect string) (Result, error) {
-	if op == OpWrite && len(content) > MaxWriteBytes {
+func (e *Editor) run(ctx context.Context, server string, p JobParams) (Result, error) {
+	if p.Op == OpWrite && len(p.Content) > MaxWriteBytes {
 		return Result{}, fmt.Errorf("%w: content is %d bytes, the limit is %d",
-			ErrTooLarge, len(content), MaxWriteBytes)
+			ErrTooLarge, len(p.Content), MaxWriteBytes)
 	}
 
 	cfg := e.Config.withDefaults()
@@ -252,26 +301,21 @@ func (e *Editor) run(ctx context.Context, server, op, path string, content []byt
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
-	payload, err := e.Runner.Run(ctx, JobParams{
-		Server:           server,
-		OpID:             opID,
-		Op:               op,
-		Path:             path,
-		Content:          content,
-		Expect:           expect,
-		WorldPVC:         naming.WorldPVCName(server),
-		Namespace:        cfg.Namespace,
-		ServiceAccount:   cfg.ServiceAccount,
-		Image:            cfg.Image,
-		WorldsRoot:       cfg.WorldsRoot,
-		Deadline:         cfg.Deadline,
-		CPULimit:         cfg.CPULimit,
-		MemLimit:         cfg.MemLimit,
-		RunAsUser:        cfg.RunAsUser,
-		RunAsGroup:       cfg.RunAsGroup,
-		FSGroup:          cfg.FSGroup,
-		TTLAfterFinished: cfg.TTLAfterFinished,
-	})
+	p.Server = server
+	p.OpID = opID
+	p.WorldPVC = naming.WorldPVCName(server)
+	p.Namespace = cfg.Namespace
+	p.ServiceAccount = cfg.ServiceAccount
+	p.Image = cfg.Image
+	p.WorldsRoot = cfg.WorldsRoot
+	p.Deadline = cfg.Deadline
+	p.CPULimit = cfg.CPULimit
+	p.MemLimit = cfg.MemLimit
+	p.RunAsUser = cfg.RunAsUser
+	p.RunAsGroup = cfg.RunAsGroup
+	p.FSGroup = cfg.FSGroup
+	p.TTLAfterFinished = cfg.TTLAfterFinished
+	payload, err := e.Runner.Run(ctx, p)
 	if err != nil {
 		return Result{}, err
 	}
@@ -301,6 +345,8 @@ func resultError(res Result) error {
 		return fmt.Errorf("%w: %s", ErrConflict, res.Error)
 	case CodeNoSpace:
 		return fmt.Errorf("%w: %s", ErrNoSpace, res.Error)
+	case CodeExists:
+		return fmt.Errorf("%w: %s", ErrExists, res.Error)
 	default:
 		return fmt.Errorf("fileedit: file operation failed (%s): %s", res.Code, res.Error)
 	}

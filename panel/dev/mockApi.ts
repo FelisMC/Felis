@@ -89,6 +89,8 @@ interface MockState {
   passkeys: Record<AccountID, { id: string; name: string; created_at: string }[]>;
   submissions: Submission[];
   updateWindow: { start: string | null; end: string | null };
+  // Each server's world volume, seeded on first visit.
+  files: Record<string, MockTree>;
 }
 
 // PLAYER_NAME mirrors the backend's mcNameRe (handlers_access.go) so the mock
@@ -446,6 +448,7 @@ function initialState(): MockState {
       },
     ],
     updateWindow: { start: null, end: null },
+    files: {},
   };
 }
 
@@ -2307,7 +2310,229 @@ async function handleServerRoute(ctx: SessionContext): Promise<boolean> {
   if (ctx.parts[4] === "access") {
     return handleAccessMock(ctx, serverInfo);
   }
+  if (ctx.parts[4] === "files" || ctx.parts[4] === "file") {
+    return handleFilesMock(ctx, serverInfo);
+  }
 
+  return false;
+}
+
+// ---- server files (handlers_files.go) ----
+
+interface MockFileNode {
+  is_dir: boolean;
+  data: Buffer;
+  mod_time: string;
+}
+type MockTree = Map<string, MockFileNode>;
+
+const MOCK_MAX_WRITE = 256 * 1024;
+const MOCK_MAX_READ = 1024 * 1024;
+const MOCK_MAX_UPLOAD = 64 * 1024 * 1024;
+const MOCK_SECRET_CONFIG = "config/paper-global.yml";
+const MOCK_MANAGED = new Set([MOCK_SECRET_CONFIG, "config", "server.properties"]);
+
+// seedFiles is a Paper server's volume after a few days of play: the configs an
+// owner edits, plugin jars, a world and its logs. Sizes are real-looking, the
+// binary content is zeros.
+function seedFiles(serverName: string): MockTree {
+  const tree: MockTree = new Map();
+  const ago = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString();
+  const dir = (p: string, hours: number) => tree.set(p, { is_dir: true, data: Buffer.alloc(0), mod_time: ago(hours) });
+  const file = (p: string, content: string | number, hours: number) =>
+    tree.set(p, {
+      is_dir: false,
+      data: typeof content === "string" ? Buffer.from(content) : Buffer.alloc(content),
+      mod_time: ago(hours),
+    });
+  dir("", 0);
+  file(
+    "server.properties",
+    `#Minecraft server properties\nmotd=${serverName}\nmax-players=20\nonline-mode=false\ndifficulty=normal\ngamemode=survival\npvp=true\nview-distance=10\nspawn-protection=16\nenable-rcon=true\nrcon.password=[redacted by felis]\n`,
+    30,
+  );
+  file("eula.txt", "eula=true\n", 400);
+  file("ops.json", "[]\n", 50);
+  file("whitelist.json", '[\n  {\n    "uuid": "069a79f4-44e9-4726-a5be-fca90e38aaf5",\n    "name": "Notch"\n  }\n]\n', 50);
+  file("banned-players.json", "[]\n", 50);
+  file("bukkit.yml", "settings:\n  allow-end: true\n  warn-on-overload: true\nspawn-limits:\n  monsters: 70\n", 300);
+  file("spigot.yml", "settings:\n  debug: false\n  restart-on-crash: true\n", 300);
+  dir("config", 300);
+  file(MOCK_SECRET_CONFIG, "# Do not hand-edit: felis rewrites this file on every boot.\n", 30);
+  file("config/paper-world-defaults.yml", "entities:\n  spawning:\n    per-player-mob-spawns: true\n", 300);
+  dir("plugins", 72);
+  file("plugins/LuckPerms-Bukkit-5.4.141.jar", 1_380_214, 72);
+  file("plugins/EssentialsX-2.20.1.jar", 3_120_876, 70);
+  file("plugins/Chunky-Bukkit-1.4.28.jar", 412_553, 12);
+  dir("plugins/LuckPerms", 72);
+  file("plugins/LuckPerms/config.yml", "server: global\nstorage-method: h2\n", 72);
+  dir("plugins/Essentials", 70);
+  file("plugins/Essentials/config.yml", "ops-name-color: '4'\nnickname-prefix: '~'\n", 70);
+  dir("world", 2);
+  file("world/level.dat", 2_431, 2);
+  file("world/session.lock", 3, 2);
+  dir("world/region", 2);
+  file("world/region/r.0.0.mca", 8_392_704, 2);
+  file("world/region/r.-1.0.mca", 5_246_976, 3);
+  file("world/region/r.0.-1.mca", 6_295_552, 26);
+  dir("world_nether", 26);
+  dir("world_the_end", 140);
+  dir("logs", 2);
+  file("logs/latest.log", `[12:00:00] [Server thread/INFO]: Starting minecraft server version 1.21.1\n[12:00:04] [Server thread/INFO]: Done (3.912s)! For help, type "help"\n`, 2);
+  return tree;
+}
+
+function filesOf(state: MockState, serverName: string): MockTree {
+  let tree = state.files[serverName];
+  if (!tree) {
+    tree = seedFiles(serverName);
+    state.files[serverName] = tree;
+  }
+  return tree;
+}
+
+function parentPath(p: string): string {
+  const i = p.lastIndexOf("/");
+  return i === -1 ? "" : p.slice(0, i);
+}
+
+// cleanFilePath is os.Root's containment in miniature: "." segments and empty
+// ones collapse, and ".." or an absolute path is 400 bad_path. null means the
+// response has been sent.
+function cleanFilePath(ctx: SessionContext, raw: string | null, allowRoot = false): string | null {
+  if (raw === null || (raw === "" && !allowRoot)) {
+    sendError(ctx.res, 400, "bad_request", "path is required");
+    return null;
+  }
+  if (raw.startsWith("/") || raw.split("/").includes("..")) {
+    sendError(ctx.res, 400, "bad_path", `${raw} escapes the world root`);
+    return null;
+  }
+  const p = raw.split("/").filter((s) => s !== "" && s !== ".").join("/");
+  if (p === "" && !allowRoot) {
+    sendError(ctx.res, 400, "bad_path", "the world root itself cannot be changed");
+    return null;
+  }
+  return p;
+}
+
+function mockSha(data: Buffer): string {
+  return createHash("sha256").update(data).digest("hex");
+}
+
+async function readRawBody(req: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  return Buffer.concat(chunks);
+}
+
+// handleFilesMock mirrors the file routes: owner-or-admin, the stopped gate, then
+// the op. Each real call is a Job that takes seconds; the pause stands in for it.
+async function handleFilesMock(ctx: SessionContext, serverInfo: MockServer): Promise<boolean> {
+  const route = ctx.parts.slice(4).join("/");
+  const known = ["GET files", "GET file", "PUT file", "DELETE file", "POST files/mkdir", "POST files/rename", "PUT files/upload"];
+  const key = `${ctx.method} ${route}`;
+  const fail = (status: number, code: string, message: string): true => {
+    sendError(ctx.res, status, code, message);
+    return true;
+  };
+  if (!known.includes(key)) return false;
+  if (!canManage(ctx.account, serverInfo)) {
+    sendError(ctx.res, 403, "forbidden", "server is not owned by this account");
+    return true;
+  }
+  if (serverInfo.phase !== "Stopped") {
+    sendError(ctx.res, 409, "not_stopped", "stop the server before editing its files");
+    return true;
+  }
+  const url = new URL(ctx.req.url ?? "/", "http://localhost");
+  const tree = filesOf(ctx.state, serverInfo.name);
+  const p = cleanFilePath(ctx, url.searchParams.get("path"), key === "GET files");
+  if (p === null) return true;
+  await new Promise((r) => setTimeout(r, 350));
+  const now = new Date().toISOString();
+  const node = tree.get(p);
+  const parent = tree.get(parentPath(p));
+
+  switch (key) {
+    case "GET files": {
+      if (!node) return fail(404, "not_found", `${p} does not exist`);
+      if (!node.is_dir) return fail(400, "bad_path", `${p} is not a directory`);
+      const entries = [...tree.entries()]
+        .filter(([k]) => k !== "" && parentPath(k) === p)
+        .map(([k, n]) => ({ name: k.slice(p === "" ? 0 : p.length + 1), size: n.is_dir ? 4096 : n.data.length, is_dir: n.is_dir, mod_time: n.mod_time }))
+        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      sendJSON(ctx.res, 200, { path: p, entries, truncated: false });
+      return true;
+    }
+    case "GET file": {
+      if (p === MOCK_SECRET_CONFIG) return fail(400, "bad_path", `${p} holds the proxy forwarding secret`);
+      if (!node) return fail(404, "not_found", `${p} does not exist`);
+      if (node.is_dir) return fail(400, "bad_path", `${p} is a directory, not a file`);
+      if (node.data.length > MOCK_MAX_READ) return fail(413, "too_large", `${p} is larger than the editor reads`);
+      sendJSON(ctx.res, 200, { path: p, content: node.data.toString("base64"), sha256: mockSha(node.data) });
+      return true;
+    }
+    case "PUT file": {
+      const body = await readJSON<{ content?: string; expect_sha256?: string; create_only?: boolean }>(ctx.req);
+      if (typeof body.content !== "string") return fail(400, "bad_request", "content is required");
+      const data = Buffer.from(body.content, "base64");
+      if (data.length > MOCK_MAX_WRITE) return fail(413, "too_large", "the content is larger than the editor writes");
+      if (!parent?.is_dir) return fail(404, "not_found", `folder ${parentPath(p)} does not exist`);
+      if (node?.is_dir) return fail(400, "bad_path", `${p} is a directory`);
+      if (body.create_only && node) return fail(409, "file_exists", `${p} already exists`);
+      if (body.expect_sha256 && (!node || mockSha(node.data) !== body.expect_sha256)) {
+        return fail(409, "file_changed", `${p} changed since it was read`);
+      }
+      tree.set(p, { is_dir: false, data, mod_time: now });
+      sendJSON(ctx.res, 200, { path: p, status: "written", sha256: mockSha(data) });
+      return true;
+    }
+    case "DELETE file": {
+      if (!node) return fail(404, "not_found", `${p} does not exist`);
+      for (const k of [...tree.keys()]) if (k === p || k.startsWith(`${p}/`)) tree.delete(k);
+      sendJSON(ctx.res, 200, { path: p, status: "deleted" });
+      return true;
+    }
+    case "POST files/mkdir": {
+      if (!parent?.is_dir) return fail(404, "not_found", `folder ${parentPath(p)} does not exist`);
+      if (node) return fail(409, "file_exists", `${p} already exists`);
+      tree.set(p, { is_dir: true, data: Buffer.alloc(0), mod_time: now });
+      sendJSON(ctx.res, 200, { path: p, status: "created" });
+      return true;
+    }
+    case "POST files/rename": {
+      const body = await readJSON<{ to?: string }>(ctx.req);
+      const to = cleanFilePath(ctx, body.to ?? "");
+      if (to === null) return true;
+      if (!node) return fail(404, "not_found", `${p} does not exist`);
+      if (MOCK_MANAGED.has(p)) return fail(400, "bad_path", `${p} is managed by felis and cannot be moved or renamed`);
+      if (tree.has(to)) return fail(409, "file_exists", `${to} already exists`);
+      if (!tree.get(parentPath(to))?.is_dir) return fail(404, "not_found", `folder ${parentPath(to)} does not exist`);
+      for (const [k, n] of [...tree.entries()]) {
+        if (k === p || k.startsWith(`${p}/`)) {
+          tree.delete(k);
+          tree.set(to + k.slice(p.length), n);
+        }
+      }
+      sendJSON(ctx.res, 200, { path: p, to, status: "renamed" });
+      return true;
+    }
+    case "PUT files/upload": {
+      const declared = Number(ctx.req.headers["content-length"] ?? NaN);
+      if (Number.isNaN(declared)) return fail(411, "length_required", "an upload needs a Content-Length");
+      if (declared > MOCK_MAX_UPLOAD) return fail(413, "too_large", "uploads are at most 64 MiB");
+      const data = await readRawBody(ctx.req);
+      if (!parent?.is_dir) return fail(404, "not_found", `folder ${parentPath(p)} does not exist`);
+      if (node?.is_dir) return fail(400, "bad_path", `${p} is a directory`);
+      if (node && url.searchParams.get("overwrite") !== "true") return fail(409, "file_exists", `${p} already exists`);
+      // Landing takes the Job a moment after the body is in.
+      await new Promise((r) => setTimeout(r, 900));
+      tree.set(p, { is_dir: false, data, mod_time: now });
+      sendJSON(ctx.res, 200, { path: p, status: "uploaded", sha256: mockSha(data), size: data.length });
+      return true;
+    }
+  }
   return false;
 }
 

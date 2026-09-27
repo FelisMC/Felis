@@ -220,7 +220,7 @@ per-server cooldown → global running cap**. Map the API result:
 | HTTP | Code | Cause | Fix |
 |---|---|---|---|
 | `403` | `forbidden` | `autostartPolicy=allowlist` and UUID not allowlisted, or `ownerOnly` and caller is not owner | Add the UUID / claim the server / set `autostartPolicy=public` |
-| `409` | `maintenance_in_progress` | A restore, backup or file write holds the server's world volume (§3b) | Wait for the Job to finish |
+| `409` | `maintenance_in_progress` | A restore, backup or file change holds the server's world volume (§3b) | Wait for the Job to finish |
 | `409` | `world_reclaiming` | The idle reaper is archiving the world (§3b item 3); afterwards the server is released with an empty world | Nothing to wait for; the old world stays in the archive |
 | `429` | (cooldown) | Wake retried within the 30s per-server `WakeCooldown` | Wait out the cooldown |
 | `503` | `at_capacity` | Global `MaxRunningServers` cap reached | Stop another server or raise the cap |
@@ -238,11 +238,11 @@ shortly.") lives in the Java plugin and is **[CODE-ONLY]** — the codes it reac
 to are produced by the Go-tested `authorizeWakeByUUID` / cooldown limiter, so
 grade the two halves separately.
 
-### 3b. Wake, restore, backup or file save refused with `maintenance_in_progress`
+### 3b. Wake, restore, backup or file change refused with `maintenance_in_progress`
 
 A server's world volume is ReadWriteOnce, and on a single node RWO lets a game
 pod and a restore Job mount it side by side. So felis-api serialises them per
-server: a restore, a backup, or a file write takes the world, and until its Job
+server: a restore, a backup, or a file change takes the world, and until its Job
 finishes every wake (panel or join) and every other world operation on that
 server gets `409 maintenance_in_progress`. File reads and listings never hold
 it. The operator applies the same rule when `desiredState` is flipped to
@@ -253,7 +253,8 @@ What holds the world, in order:
 
 1. An unfinished Job labelled `felis.lolicon.best/server=<name>` with
    `app.kubernetes.io/managed-by` `felis-restore`, `felis-backup`, or
-   `felis-files` plus `felis.lolicon.best/files-mode=write`:
+   `felis-files` with any `felis.lolicon.best/files-mode` but `list` or `read`
+   (a save, new file, new folder, rename, delete or upload; §18):
 
    ```sh
    kubectl -n minecraft get jobs -l felis.lolicon.best/server=<name>
@@ -281,7 +282,7 @@ What holds the world, in order:
    the lock before it deletes the world volume, keeps the world and retries the
    next day.
 
-A restore, backup or file write refused with `409 not_stopped` although the
+A restore, backup or file change refused with `409 not_stopped` although the
 panel shows `Stopped` means the game pod is still terminating (its shutdown save
 can take a while); retry once `kubectl -n minecraft get pods -l
 felis.lolicon.best/server=<name>` shows nothing.
@@ -465,7 +466,7 @@ installer (`sudo bash deploy/bootstrap.sh`) puts the value everywhere. [GO-TESTE
   stale. A proxy on another host is left alone: set `service-token` in its
   `felis-link.properties` to the value in Secret `felis/felis-service-token`, and
   it takes it within a few seconds.
-- **forwarding** — a server whose world a backup, restore or file write holds is
+- **forwarding** — a server whose world a backup, restore or file change holds is
   left running and named in the plan and the output; players cannot join it until
   it restarts, so stop and start it from the panel once that finishes. The next
   installer run restarts the proxy once more (its record of what the proxy was
@@ -970,7 +971,7 @@ The reap sequence (all [GO-TESTED] hermetically) preserves the world unless a
 0. The world must be at rest before it is archived. A server still meant to
    run is told to stop (`desiredState: Stopped`) and left for the next run; one
    still stopping, whose game pod still exists, or whose world a restore,
-   backup or file write holds is left too. Each of these counts in
+   backup or file change holds is left too. Each of these counts in
    `awaiting_stop=` and does not fail the run. Once the server is down, the
    reaper takes the world's maintenance lock (§3b) and holds it through the
    archive and the volume delete: nothing can start the server or touch its
@@ -2990,6 +2991,74 @@ for 10 seconds (the Free plan's limits).
 
 ---
 
+## 18. Server files: a change or an upload is refused
+
+The panel's Files page is for the server's owner or an admin, and only while
+the server is fully stopped. Each call runs a one-shot `felis files` Job in the
+`minecraft` namespace, labelled `app.kubernetes.io/managed-by=felis-files` and
+`felis.lolicon.best/files-mode=<list|read|write|mkdir|delete|rename|upload>`.
+A listing or a read holds nothing. Every change (a save, a new file or folder,
+a rename, a delete, an upload) holds the world for its Job (§3b), so a wake or a
+second change in the meantime gets `409 maintenance_in_progress`. The panel
+sends uploads one at a time and greys its other changes until they finish.
+
+| Status | Code | Meaning | What to do |
+|---|---|---|---|
+| `409` | `not_stopped` | The game pod is still there, usually finishing its shutdown save | Retry once `kubectl -n minecraft get pods -l felis.lolicon.best/server=<name>` shows nothing |
+| `409` | `maintenance_in_progress` | Another change, a backup, a restore or the reaper holds the world | §3b |
+| `409` | `file_exists` | A new file, new folder, rename, or upload sent without replace found something at the path | Pick another name or clear the path; the panel offers Replace for an upload |
+| `409` | `file_changed` | The file changed after the editor read it | The editor offers to load the latest or overwrite it |
+| `400` | `bad_path` | The path leaves the world volume (`..`, an absolute path, a link pointing out), or it would move `server.properties`, `config` or `config/paper-global.yml`, or read `config/paper-global.yml` | Those three keep their names: the read path withholds their secrets by name, and `paper-global.yml` holds the proxy forwarding secret every server shares |
+| `404` | `not_found` | The path, or a new folder's parent, is gone | Refresh the listing |
+| `413` | `too_large` | A read over 1 MiB, a save over 256 KiB, or an upload over 64 MiB | Upload a large file whole instead of editing it |
+| `411` | `length_required` | An upload without `Content-Length` (a chunked body) | Upload from the panel, or with `curl -T`, which sends the length |
+| `400` | `upload_incomplete` | The body ended before its declared length | Retry; nothing was changed |
+| `507` | `upload_staging_full` | Staging this upload would leave felis-api's staging filesystem under 10% free | Free space on the uploads volume |
+| `507` | `volume_full` | The world volume ran out of space; the old file is left as it was | Delete files the server no longer needs, or grow its volume |
+| `504` | `files_timeout` | felis-api stopped waiting after 90 s | See below: the Job may still finish |
+| `503` | `files_unavailable` | felis-api runs without the file Job runner, or (for an upload) without a staging directory or its internal address | Check felis-api's startup log |
+
+**An upload travels in two legs.** The browser sends the body to felis-api,
+which stages it under `/var/lib/felis/uploads/.file-staging` on the uploads
+volume (`felis-file-staging` in the pod's temp directory when that volume is not
+mounted). The Job then fetches it once from felis-api's internal face,
+`http://felis-api-internal.felis.svc.cluster.local:8081/api/v1/internal/file-uploads/<id>`,
+with a one-time token, checks the size and SHA-256, and lands it. The staged
+copy is deleted once the Job has answered, and a felis-api restart empties the
+directory. A Job that cannot fetch its upload, or fetches bytes that do not
+match, fails and leaves the target as it was; the panel shows a server error
+it can retry. The Job's log names the cause:
+
+```sh
+kubectl -n minecraft get jobs -l felis.lolicon.best/server=<name>,app.kubernetes.io/managed-by=felis-files
+kubectl -n minecraft logs job/<job>
+```
+
+**After `files_timeout`** the Job runs on to its own two-minute deadline and may
+still land the change. It keeps holding the world until it ends, so the next
+change waits on it with `maintenance_in_progress`; refresh the listing once it
+is gone to see whether the change landed. A Job is kept for two minutes after
+it ends, with its log.
+
+Every change is audited as `file.write`, `file.mkdir`, `file.delete`,
+`file.rename` (with `to`) or `file.upload` (with `size_bytes`, `sha256` and
+`overwrite`), with `server_name` set to `<server>:<path>`:
+
+```sh
+sudo k3s kubectl -n felis exec deploy/felis-postgres -c postgres -- psql -U postgres felis -c "
+  SELECT created_at, actor, action, server_name, payload
+  FROM audit_logs WHERE action LIKE 'file.%' ORDER BY created_at DESC LIMIT 20;"
+```
+
+[GO-TESTED: `internal/fileedit`, `handlers_files_test.go`, `cmd/felis/files_test.go`,
+`internal/maintenance`.] [VM-TESTED: a pod labelled as a files Job in `minecraft`
+reaches `felis-api-internal:8081`; a 256 KiB save's content, split across six
+variables, lands byte for byte through the real binary, where one 140 KB variable
+fails with `argument list too long`. An upload through the API, both legs end to
+end, has not been run on a cluster.]
+
+---
+
 ## Quick reference: symptom → section
 
 | Symptom | Section |
@@ -3033,3 +3102,4 @@ for 10 seconds (the Free plan's limits).
 | `FelisAuditWriteFailing` | §17 |
 | `felis breakGlass` sends no code / shows `Root override`; `otp_skipped` in the audit | §17 |
 | How long sessions, codes and audit rows are kept; export audit rows | §17 |
+| Files page: a change or upload refused (`file_exists`, `bad_path`, `too_large`, `upload_staging_full`, `volume_full`, `files_timeout`) | §18 |

@@ -6,9 +6,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	"felis.lolicon.best/internal/fileedit"
 	"felis.lolicon.best/internal/maintenance"
 )
 
@@ -84,7 +86,8 @@ type maintenanceOp struct {
 	calls  func() int
 }
 
-func maintenanceOps() (*API, *fakeCluster, []maintenanceOp) {
+func maintenanceOps(t *testing.T) (*API, *fakeCluster, []maintenanceOp) {
+	t.Helper()
 	repo := newFakeRepo()
 	repo.byName["survival"] = &ServerRecord{Name: "survival", OwnerID: "owner1"}
 	repo.backups = []fakeBackup{{view: BackupView{ID: "bk1", ServerName: "survival",
@@ -95,6 +98,8 @@ func maintenanceOps() (*API, *fakeCluster, []maintenanceOp) {
 	restorer, backuper, files := &fakeRestorer{}, &fakeBackuper{}, &fakeFileEditor{}
 	api := newTestAPI(repo, cl)
 	api.Restorer, api.Backuper, api.Files = restorer, backuper, files
+	api.FileStage = &fileedit.Stage{Dir: t.TempDir(), MinFree: 1e-9}
+	api.InternalBaseURL = "http://felis-api-internal.felis.svc.cluster.local:8081"
 	api.External = staticExternal{p: &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}}
 	return api, cl, []maintenanceOp{
 		{"restore", maintenance.KindRestore, "POST", "/api/v1/servers/survival/restore-backup", "",
@@ -103,22 +108,27 @@ func maintenanceOps() (*API, *fakeCluster, []maintenanceOp) {
 			func() int { return backuper.calls }},
 		{"file write", maintenance.KindFileWrite, "PUT", "/api/v1/servers/survival/file?path=server.properties",
 			`{"content":"aGk="}`, func() int { return files.calls }},
+		{"file mkdir", maintenance.KindFileWrite, "POST", "/api/v1/servers/survival/files/mkdir?path=plugins",
+			"", func() int { return files.calls }},
+		{"file delete", maintenance.KindFileWrite, "DELETE", "/api/v1/servers/survival/file?path=old.jar",
+			"", func() int { return files.calls }},
+		{"file rename", maintenance.KindFileWrite, "POST", "/api/v1/servers/survival/files/rename?path=a.txt",
+			`{"to":"b.txt"}`, func() int { return files.calls }},
+		{"file upload", maintenance.KindFileWrite, "PUT", "/api/v1/servers/survival/files/upload?path=plugins/x.jar",
+			"PK-jar-bytes", func() int { return files.calls }},
 	}
 }
 
 func (op maintenanceOp) do(api *API) *httptest.ResponseRecorder {
-	var hdr map[string]string
-	if op.body != "" {
-		hdr = jsonHeader
-	}
+	hdr := fileRouteHeader(strings.TrimPrefix(op.name, "file "), op.body)
 	return do(api.ExternalHandler(), op.method, op.path, op.body, hdr)
 }
 
 func TestMaintenanceOpsTakeAndReleaseTheLock(t *testing.T) {
-	_, _, ops := maintenanceOps()
+	_, _, ops := maintenanceOps(t)
 	for i := range ops {
 		t.Run(ops[i].name, func(t *testing.T) {
-			api, cl, ops := maintenanceOps()
+			api, cl, ops := maintenanceOps(t)
 			op := ops[i]
 			if w := op.do(api); w.Code/100 != 2 {
 				t.Fatalf("code = %d body %s", w.Code, w.Body.String())
@@ -147,11 +157,11 @@ func TestMaintenanceOpsRefusedWhileHeld(t *testing.T) {
 		// wake won the race.
 		{"server not stopped", fmt.Errorf("wrapped: %w", ErrNotStopped), "not_stopped"},
 	}
-	_, _, ops := maintenanceOps()
+	_, _, ops := maintenanceOps(t)
 	for i := range ops {
 		for _, rf := range refusals {
 			t.Run(ops[i].name+" / "+rf.name, func(t *testing.T) {
-				api, cl, ops := maintenanceOps()
+				api, cl, ops := maintenanceOps(t)
 				op := ops[i]
 				cl.maintErr["survival"] = rf.err
 				w := op.do(api)

@@ -300,11 +300,21 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// endpoints honestly return 503. It takes the typed clientset rather than the
 	// controller-runtime client because the log subresource lives only on the typed
 	// CoreV1 client, and one client covers its Job create, Pod list, and log read.
+	//
+	// Uploads additionally stage their bytes on this pod's disk until the Job
+	// fetches them from the internal face; whatever a previous process staged is
+	// orphaned (the index is in memory), so the stage starts empty.
 	var files api.FileEditor
+	var fileStage *fileedit.Stage
 	if felisImage != "" {
 		files = &fileedit.Editor{
 			Runner: fileedit.NewK8sRunner(clientset),
 			Config: fileEditConfig(cfg, felisImage),
+		}
+		fileStage = &fileedit.Stage{Dir: fileStagingDir()}
+		if err := fileStage.Sweep(); err != nil {
+			fmt.Fprintf(stderr, "felis api: %v — file uploads return 503\n", err)
+			fileStage = nil
 		}
 	} else {
 		fmt.Fprintln(stderr, "felis api: file editor disabled (needs FELIS_IMAGE) — file endpoints return 503")
@@ -353,8 +363,13 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		// restore behind each one.
 		RestoreChains: jobStatus,
 		Files:         files,
-		Submissions:   submissions,
-		Mailer:        mailer,
+		FileStage:     fileStage,
+		// The file Job fetches an upload from here; it runs in the minecraft
+		// namespace, where the internal face is reachable like it is for the login
+		// gate.
+		InternalBaseURL: internalAPIBaseURL(),
+		Submissions:     submissions,
+		Mailer:          mailer,
 		// The external face authenticates the local session cookie the sign-in doors
 		// mint, live once `felis breakGlass` flips local_auth_enabled on. Cloudflare
 		// Access, when the install sits behind it, is enforced at the edge only.
@@ -945,6 +960,16 @@ func uploadPartsDir(contextBase string) string {
 		return filepath.Join(platform.UploadsLocalPath, ".parts")
 	}
 	return filepath.Join(os.TempDir(), "felis-upload-parts")
+}
+
+// fileStagingDir is where file uploads wait for their Job: on the uploads
+// volume, whose capacity is its own, or the pod's /tmp when run by hand without
+// it — /tmp is the node's disk, which a burst of uploads should not fill.
+func fileStagingDir() string {
+	if fi, err := os.Stat(platform.UploadsLocalPath); err == nil && fi.IsDir() {
+		return filepath.Join(platform.UploadsLocalPath, ".file-staging")
+	}
+	return filepath.Join(os.TempDir(), "felis-file-staging")
 }
 
 // contextMaxBytes resolves [registry] context_max_bytes. 0 keeps the submit

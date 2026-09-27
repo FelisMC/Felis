@@ -4,13 +4,18 @@ import {
   AlertTriangle,
   ArrowUp,
   ChevronRight,
+  FilePlus,
   FileText,
   Folder,
   FolderOpen,
+  FolderPlus,
   Loader2,
+  Pencil,
   RefreshCw,
   Save,
   Square,
+  Trash2,
+  Upload,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { BackLink } from "@/components/BackLink";
@@ -18,6 +23,19 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { MessageLine } from "@/components/MessageLine";
 import { InlineConfirm } from "@/components/InlineConfirm";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { NameDialog } from "@/components/files/NameDialog";
+import { UploadQueue } from "@/components/files/UploadQueue";
+import { MAX_UPLOAD_BYTES, useUploads } from "@/components/files/useUploads";
+import {
+  SECRET_CONFIG_PATH,
+  isManaged,
+  joinPath,
+  nameProblem,
+  parentOf,
+  sortEntries,
+  type NameProblem,
+} from "@/components/files/names";
 import {
   Dialog,
   DialogContent,
@@ -73,19 +91,16 @@ function decodeText(bytes: Uint8Array): string | null {
   }
 }
 
-function joinPath(dir: string, name: string): string {
-  return dir === "" ? name : `${dir}/${name}`;
-}
+/** The name questions the page asks, each tied to the folder it was asked in. */
+type Naming =
+  | { kind: "file" | "folder"; dir: string }
+  | { kind: "rename"; dir: string; entry: ServerFileEntry };
 
-function parentOf(dir: string): string {
-  const i = dir.lastIndexOf("/");
-  return i === -1 ? "" : dir.slice(0, i);
-}
-
-/** ServerFiles is the world-volume file editor (the "one wrong line in
- *  server.properties" repair). Every call is owner-or-admin gated and refused
- *  with 409 not_stopped unless the server is fully stopped (the world volume is
- *  RWO), so the page gates up front instead of letting each call fail. */
+/** ServerFiles is the world-volume file manager: browse, edit a config (the "one
+ *  wrong line in server.properties" repair), make, rename, delete and upload.
+ *  Every call is owner-or-admin gated and refused with 409 not_stopped unless the
+ *  server is fully stopped (the world volume is RWO), so the page gates up front
+ *  instead of letting each call fail. */
 export function ServerFiles() {
   const { name = "" } = useParams();
   const { t, i18n } = useTranslation("files");
@@ -120,7 +135,7 @@ export function ServerFiles() {
       try {
         const r = await api.listServerFiles(name, p);
         if (ticket !== loadSeq.current) return;
-        setEntries(r.entries ?? []);
+        setEntries(sortEntries(r.entries ?? []));
         setTruncated(r.truncated === true);
         setDir(p);
       } catch (e) {
@@ -201,6 +216,12 @@ export function ServerFiles() {
 
   async function openFile(entry: ServerFileEntry) {
     const p = joinPath(dir, entry.name);
+    // The read path refuses this one outright; saying why beats a Job that
+    // answers "invalid path".
+    if (p === SECRET_CONFIG_PATH) {
+      setMsg({ kind: "error", text: t("secret_config_unreadable") });
+      return;
+    }
     setOpening(p);
     setMsg(null);
     try {
@@ -252,6 +273,115 @@ export function ServerFiles() {
     } finally {
       setSaving(false);
     }
+  }
+
+  // Uploads run one at a time. The listing is reread once the queue has drained
+  // rather than after each file: every listing is a Job of its own.
+  const landedSince = useRef(false);
+  const uploads = useUploads(name, () => {
+    landedSince.current = true;
+  });
+  useEffect(() => {
+    if (uploads.busy || !landedSince.current) return;
+    landedSince.current = false;
+    void load(dir);
+  }, [uploads.busy, dir, load]);
+  // A browser leaving the page takes the uploads with it.
+  useUnsavedGuard(uploads.busy);
+  // A file dropped anywhere else on the page would be opened by the browser in
+  // place of the panel, taking the queue with it; outside the list a drop does
+  // nothing. The list itself claims its drops first.
+  useEffect(() => {
+    const refuse = (e: DragEvent) => {
+      if (e.defaultPrevented || !e.dataTransfer?.types.includes("Files")) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "none";
+    };
+    window.addEventListener("dragover", refuse);
+    window.addEventListener("drop", refuse);
+    return () => {
+      window.removeEventListener("dragover", refuse);
+      window.removeEventListener("drop", refuse);
+    };
+  }, []);
+
+  const [naming, setNaming] = useState<Naming | null>(null);
+  // The entry outlives the dialog closing, so its title holds through the
+  // closing animation.
+  const [deleting, setDeleting] = useState<ServerFileEntry | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  // dragenter and dragleave fire for every child crossed, so the overlay counts
+  // them rather than flickering at each row.
+  const [dragDepth, setDragDepth] = useState(0);
+
+  // The name dialog mounts per question, so each one starts from its own name.
+  function ask(next: Naming) {
+    setMsg(null);
+    setNaming(next);
+  }
+
+  function problemText(p: NameProblem | null): string | null {
+    return p === null ? null : t(p);
+  }
+
+  function addFiles(files: readonly File[]) {
+    if (files.length === 0) return;
+    setMsg(null);
+    uploads.add(files, dir, entries);
+  }
+
+  // addDropped queues what was dropped. A folder arrives as an entry the browser
+  // cannot read as a file, so it is named as skipped instead of failing later.
+  function addDropped(data: DataTransfer) {
+    const files: File[] = [];
+    let folders = 0;
+    for (const item of Array.from(data.items ?? [])) {
+      if (item.kind !== "file") continue;
+      if (item.webkitGetAsEntry?.()?.isDirectory) {
+        folders++;
+        continue;
+      }
+      const f = item.getAsFile();
+      if (f) files.push(f);
+    }
+    if (data.items === undefined || data.items.length === 0) files.push(...Array.from(data.files));
+    addFiles(files);
+    if (folders > 0) setMsg({ kind: "error", text: t("upload_no_folders", { count: folders }) });
+  }
+
+  const draggingFiles = (e: React.DragEvent) => Array.from(e.dataTransfer.types).includes("Files");
+
+  async function createFile(n: string) {
+    if (!naming) return;
+    const p = joinPath(naming.dir, n);
+    const r = await api.createServerFile(name, p, "");
+    setConfirmDiscard(false);
+    setOpen({ path: p, text: "", original: "", editable: true, sha256: r.sha256 ?? "", conflict: false, error: null });
+    void load(naming.dir);
+  }
+
+  async function makeFolder(n: string) {
+    if (!naming) return;
+    const p = joinPath(naming.dir, n);
+    await api.mkdirServerFolder(name, p);
+    setMsg({ kind: "success", text: t("folder_created", { path: p }) });
+    void load(naming.dir);
+  }
+
+  async function renameEntry(n: string) {
+    if (naming?.kind !== "rename") return;
+    await api.renameServerFile(name, joinPath(naming.dir, naming.entry.name), joinPath(naming.dir, n));
+    setMsg({ kind: "success", text: t("renamed", { from: naming.entry.name, to: n }) });
+    void load(naming.dir);
+  }
+
+  async function deleteEntry() {
+    if (!deleting) return;
+    const p = joinPath(dir, deleting.name);
+    await api.deleteServerFile(name, p);
+    setMsg({ kind: "success", text: t("deleted", { path: p }) });
+    void load(dir);
   }
 
   const back = <BackLink to={`/servers/${name}`} label={t("back_to_console")} />;
@@ -338,9 +468,39 @@ export function ServerFiles() {
           ) : listErr ? (
             <ErrorState error={listErr} onRetry={() => load(dir)} />
           ) : (
-            <Card className="overflow-hidden">
+            <Card
+              className="relative overflow-hidden"
+              onDragEnter={(e) => {
+                if (!draggingFiles(e)) return;
+                e.preventDefault();
+                setDragDepth((d) => d + 1);
+              }}
+              onDragOver={(e) => {
+                if (!draggingFiles(e)) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "copy";
+              }}
+              onDragLeave={(e) => {
+                if (!draggingFiles(e)) return;
+                setDragDepth((d) => Math.max(0, d - 1));
+              }}
+              onDrop={(e) => {
+                if (!draggingFiles(e)) return;
+                e.preventDefault();
+                setDragDepth(0);
+                addDropped(e.dataTransfer);
+              }}
+            >
+              {dragDepth > 0 && (
+                <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-primary bg-background/85 text-center backdrop-blur-[1px]">
+                  <Upload className="h-7 w-7 text-primary" />
+                  <p className="px-4 text-sm font-medium">
+                    {t("drop_here", { dir: dir === "" ? t("root") : dir })}
+                  </p>
+                </div>
+              )}
               <CardContent className="p-0">
-                {/* Location bar: parent button + clickable breadcrumbs + refresh */}
+                {/* Location bar: parent button + clickable breadcrumbs + actions */}
                 <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
                   <Button
                     size="sm"
@@ -351,7 +511,7 @@ export function ServerFiles() {
                     <ArrowUp className="h-4 w-4" />
                     {t("up")}
                   </Button>
-                  <nav className="flex flex-wrap items-center gap-1 text-sm">
+                  <nav className="flex min-w-0 flex-wrap items-center gap-1 text-sm">
                     <button
                       type="button"
                       onClick={() => void load("")}
@@ -382,7 +542,52 @@ export function ServerFiles() {
                       );
                     })}
                   </nav>
-                  <div className="ml-auto">
+                  <div className="ml-auto flex items-center gap-1">
+                    {/* Each change is a Job holding the world lock, so while an
+                        upload holds it a change could only be refused. */}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => ask({ kind: "file", dir })}
+                      disabled={uploads.busy}
+                      aria-label={t("new_file")}
+                      title={uploads.busy ? t("wait_for_uploads") : t("new_file")}
+                    >
+                      <FilePlus className="h-4 w-4" />
+                      <span className="hidden md:inline">{t("new_file")}</span>
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => ask({ kind: "folder", dir })}
+                      disabled={uploads.busy}
+                      aria-label={t("new_folder")}
+                      title={uploads.busy ? t("wait_for_uploads") : t("new_folder")}
+                    >
+                      <FolderPlus className="h-4 w-4" />
+                      <span className="hidden md:inline">{t("new_folder")}</span>
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => fileInput.current?.click()}
+                      aria-label={t("upload")}
+                      title={t("upload_hint", { limit: formatBytes(MAX_UPLOAD_BYTES) })}
+                    >
+                      <Upload className="h-4 w-4" />
+                      <span className="hidden sm:inline">{t("upload")}</span>
+                    </Button>
+                    <input
+                      ref={fileInput}
+                      type="file"
+                      multiple
+                      hidden
+                      data-testid="upload-input"
+                      onChange={(e) => {
+                        addFiles(Array.from(e.target.files ?? []));
+                        e.target.value = "";
+                      }}
+                    />
                     <Button
                       size="sm"
                       variant="ghost"
@@ -396,6 +601,17 @@ export function ServerFiles() {
                   </div>
                 </div>
 
+                <UploadQueue
+                  items={uploads.items}
+                  dir={dir}
+                  onReplace={uploads.replace}
+                  onRetry={uploads.retry}
+                  onRemove={uploads.remove}
+                  onReplaceAll={uploads.replaceAll}
+                  onSkipAll={uploads.skipAll}
+                  onClearDone={uploads.clearDone}
+                />
+
                 {entries && entries.length === 0 ? (
                   <div className="p-4">
                     <EmptyState title={t("empty_dir_title")} hint={t("empty_dir_hint")} />
@@ -407,47 +623,92 @@ export function ServerFiles() {
                         <tr className="border-b border-border bg-muted/40 text-left text-[11px] uppercase tracking-wider text-muted-foreground">
                           <th className="px-4 py-2.5 font-medium">{t("col_name")}</th>
                           <th className="px-4 py-2.5 font-medium">{t("col_size")}</th>
-                          <th className="px-4 py-2.5 font-medium">{t("col_modified")}</th>
+                          <th className="hidden px-4 py-2.5 font-medium sm:table-cell">{t("col_modified")}</th>
+                          <th className="w-px px-2 py-2.5">
+                            <span className="sr-only">{t("col_actions")}</span>
+                          </th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border">
-                        {(entries ?? []).map((e) => (
-                          <tr
-                            key={e.name}
-                            onClick={() => (e.is_dir ? void load(joinPath(dir, e.name)) : void openFile(e))}
-                            className="cursor-pointer transition-colors hover:bg-muted/30"
-                          >
-                            <td className="px-4 py-3">
-                              {/* The name is a button so the keyboard and a screen
-                                  reader reach every row; its click bubbles to the
-                                  row, which opens it from anywhere on the row. */}
-                              <button
-                                type="button"
-                                aria-label={t(e.is_dir ? "open_folder" : "open_file", { name: e.name })}
-                                className="flex min-w-0 max-w-full items-center gap-2 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                              >
-                                {e.is_dir ? (
-                                  <Folder className="h-4 w-4 shrink-0 text-primary" />
-                                ) : (
-                                  <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
-                                )}
-                                <span className="truncate font-mono text-xs">{e.name}</span>
-                                {opening === joinPath(dir, e.name) && (
-                                  <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
-                                )}
-                              </button>
-                            </td>
-                            <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
-                              {e.is_dir ? "—" : formatBytes(e.size)}
-                            </td>
-                            <td
-                              className="px-4 py-3 whitespace-nowrap text-xs text-muted-foreground"
-                              title={e.mod_time}
+                        {(entries ?? []).map((e) => {
+                          const p = joinPath(dir, e.name);
+                          const managed = isManaged(p);
+                          return (
+                            <tr
+                              key={e.name}
+                              onClick={() => (e.is_dir ? void load(p) : void openFile(e))}
+                              className="cursor-pointer transition-colors hover:bg-muted/30"
                             >
-                              {e.mod_time ? formatRelative(e.mod_time, now, locale) : "—"}
-                            </td>
-                          </tr>
-                        ))}
+                              <td className="px-4 py-3">
+                                {/* The name is a button so the keyboard and a screen
+                                    reader reach every row; its click bubbles to the
+                                    row, which opens it from anywhere on the row. */}
+                                <button
+                                  type="button"
+                                  aria-label={t(e.is_dir ? "open_folder" : "open_file", { name: e.name })}
+                                  className="flex min-w-0 max-w-full items-center gap-2 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                >
+                                  {e.is_dir ? (
+                                    <Folder className="h-4 w-4 shrink-0 text-primary" />
+                                  ) : (
+                                    <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                  )}
+                                  <span className="truncate font-mono text-xs">{e.name}</span>
+                                  {opening === p && (
+                                    <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+                                  )}
+                                </button>
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap text-muted-foreground">
+                                {e.is_dir ? "—" : formatBytes(e.size)}
+                              </td>
+                              <td
+                                className="hidden px-4 py-3 whitespace-nowrap text-xs text-muted-foreground sm:table-cell"
+                                title={e.mod_time}
+                              >
+                                {e.mod_time ? formatRelative(e.mod_time, now, locale) : "—"}
+                              </td>
+                              <td className="px-2 py-1.5">
+                                {/* The actions stop at their own buttons: a click
+                                    here must not also open the row. */}
+                                <div className="flex items-center justify-end gap-0.5" onClick={(ev) => ev.stopPropagation()}>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
+                                    onClick={() => ask({ kind: "rename", dir, entry: e })}
+                                    disabled={managed || uploads.busy}
+                                    aria-label={t("rename_item", { name: e.name })}
+                                    title={
+                                      managed
+                                        ? t("managed_no_rename")
+                                        : uploads.busy
+                                          ? t("wait_for_uploads")
+                                          : t("rename_item", { name: e.name })
+                                    }
+                                  >
+                                    <Pencil className="h-3.5 w-3.5" />
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="h-8 w-8 p-0 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                                    onClick={() => {
+                                      setMsg(null);
+                                      setDeleting(e);
+                                      setDeleteOpen(true);
+                                    }}
+                                    disabled={uploads.busy}
+                                    aria-label={t("delete_item", { name: e.name })}
+                                    title={uploads.busy ? t("wait_for_uploads") : t("delete_item", { name: e.name })}
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -575,6 +836,35 @@ export function ServerFiles() {
           )}
         </DialogContent>
       </Dialog>
+
+      {naming && (
+        <NameDialog
+          open
+          onOpenChange={(v) => !v && setNaming(null)}
+          title={
+            naming.kind === "rename"
+              ? t("rename_title", { name: naming.entry.name })
+              : t(naming.kind === "file" ? "new_file" : "new_folder")
+          }
+          description={t("in_folder", { dir: naming.dir === "" ? t("root") : naming.dir })}
+          label={t("name_label")}
+          confirmLabel={t(naming.kind === "rename" ? "rename" : "create")}
+          initial={naming.kind === "rename" ? naming.entry.name : ""}
+          problem={(v) =>
+            problemText(nameProblem(v, entries, naming.kind === "rename" ? naming.entry.name : undefined))
+          }
+          onSubmit={naming.kind === "file" ? createFile : naming.kind === "folder" ? makeFolder : renameEntry}
+        />
+      )}
+
+      <ConfirmDialog
+        open={deleteOpen}
+        onOpenChange={setDeleteOpen}
+        title={t(deleting?.is_dir ? "delete_folder_title" : "delete_file_title", { name: deleting?.name ?? "" })}
+        description={t(deleting?.is_dir ? "delete_folder_body" : "delete_file_body")}
+        confirmLabel={t("delete")}
+        onConfirm={deleteEntry}
+      />
     </>
   );
 }

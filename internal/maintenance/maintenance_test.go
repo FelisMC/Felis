@@ -51,8 +51,13 @@ func filesJob(t *testing.T, server, op string) batchv1.Job {
 		Image: "felis:1", WorldsRoot: "/data", Deadline: time.Minute, CPULimit: "500m",
 		MemLimit: "256Mi", TTLAfterFinished: time.Minute,
 	}
-	if op == fileedit.OpWrite {
+	switch op {
+	case fileedit.OpWrite:
 		p.Content = []byte("motd=hi\n")
+	case fileedit.OpRename:
+		p.To = "server.properties.bak"
+	case fileedit.OpUpload:
+		p.SourceURL, p.UploadToken = "http://felis-api-internal.felis.svc.cluster.local:8081/x", "t"
 	}
 	j, err := fileedit.FilesJob(p)
 	if err != nil {
@@ -78,6 +83,10 @@ func TestJobKindMatchesTheExecutors(t *testing.T) {
 		{"restore", restoreJob(t, "survival"), KindRestore, true},
 		{"backup", backupJob(t, "survival"), KindBackup, true},
 		{"file write", filesJob(t, "survival", fileedit.OpWrite), KindFileWrite, true},
+		{"file mkdir", filesJob(t, "survival", fileedit.OpMkdir), KindFileWrite, true},
+		{"file delete", filesJob(t, "survival", fileedit.OpDelete), KindFileWrite, true},
+		{"file rename", filesJob(t, "survival", fileedit.OpRename), KindFileWrite, true},
+		{"file upload", filesJob(t, "survival", fileedit.OpUpload), KindFileWrite, true},
 		{"file read", filesJob(t, "survival", fileedit.OpRead), "", false},
 		{"file list", filesJob(t, "survival", fileedit.OpList), "", false},
 	} {
@@ -96,6 +105,11 @@ func TestUnlabelledFilesJobCountsAsWrite(t *testing.T) {
 	delete(j.Labels, LabelFilesMode)
 	if kind, ok := JobKind(&j); !ok || kind != KindFileWrite {
 		t.Fatalf("a files Job from before the mode label = %q, %v; want file-write", kind, ok)
+	}
+	// An operation a later build adds holds too, until this build learns it.
+	j.Labels[LabelFilesMode] = "chmod"
+	if kind, ok := JobKind(&j); !ok || kind != KindFileWrite {
+		t.Fatalf("a files Job with an unknown mode = %q, %v; want file-write", kind, ok)
 	}
 }
 

@@ -681,8 +681,8 @@ export const api = rejectingSync({
       urlPath`/servers/${name}/jobs`,
     ).then((r) => r.jobs ?? []),
 
-  // Server file editor (spec §7). All three routes are owner-or-admin gated and
-  // refuse with 409 not_stopped unless the server is fully stopped (the world
+  // Server file manager (spec §7). Every route is owner-or-admin gated and
+  // refuses with 409 not_stopped unless the server is fully stopped (the world
   // volume is RWO), so callers gate on phase === "Stopped". The path travels as a
   // query parameter — a file path contains "/" and never round-trips through a
   // path segment. Content is []byte on the wire, which Go's encoding/json renders
@@ -712,6 +712,59 @@ export const api = rejectingSync({
       "PUT",
       urlPath`/servers/${name}/file` + `?path=${encodeURIComponent(path)}`,
       expectSha256 ? { content, expect_sha256: expectSha256 } : { content },
+    ),
+
+  // createServerFile makes a new file with content, and only if nothing is at the
+  // path yet: something that appeared meanwhile is 409 file_exists, never replaced.
+  createServerFile: (name: string, path: string, content: string) =>
+    request<{ path: string; status: string; sha256: string }>(
+      "PUT",
+      urlPath`/servers/${name}/file` + `?path=${encodeURIComponent(path)}`,
+      { content, create_only: true },
+    ),
+
+  // deleteServerFile deletes a file, a link (never what it names) or a folder with
+  // everything in it. The route does not ask; the page confirms first.
+  deleteServerFile: (name: string, path: string) =>
+    request<{ path: string; status: string }>(
+      "DELETE",
+      urlPath`/servers/${name}/file` + `?path=${encodeURIComponent(path)}`,
+    ),
+
+  // mkdirServerFolder makes one folder in an existing parent (404 otherwise);
+  // anything already at the path is 409 file_exists.
+  mkdirServerFolder: (name: string, path: string) =>
+    request<{ path: string; status: string }>(
+      "POST",
+      urlPath`/servers/${name}/files/mkdir` + `?path=${encodeURIComponent(path)}`,
+    ),
+
+  // renameServerFile moves path to `to`, never over something: an existing `to`
+  // is 409 file_exists. The files felis manages refuse with 400 bad_path.
+  renameServerFile: (name: string, path: string, to: string) =>
+    request<{ path: string; to: string; status: string }>(
+      "POST",
+      urlPath`/servers/${name}/files/rename` + `?path=${encodeURIComponent(path)}`,
+      { to },
+    ),
+
+  // uploadServerFile sends a file's raw bytes (the browser sets Content-Length
+  // from the Blob) with progress. Without overwrite an existing file is 409
+  // file_exists; with it the file is replaced whole or not at all.
+  uploadServerFile: (
+    name: string,
+    path: string,
+    file: Blob,
+    overwrite: boolean,
+    opts?: { onProgress?: (sent: number) => void; signal?: AbortSignal },
+  ) =>
+    sendWithProgress<{ path: string; status: string; sha256: string; size: number }>(
+      "PUT",
+      urlPath`/servers/${name}/files/upload` +
+        `?path=${encodeURIComponent(path)}` +
+        (overwrite ? "&overwrite=true" : ""),
+      file,
+      opts,
     ),
 
   // Account linking (spec §10). Both are POST: start reports status from the
@@ -1168,6 +1221,19 @@ export function humanizeError(e: unknown): string {
       return t("files_timeout");
     case "files_unavailable":
       return t("files_unavailable");
+    // File manager: a create, folder, rename or upload never replaces what is
+    // already at the path (unless an upload asked to).
+    case "file_exists":
+      return t("file_exists");
+    // Uploads are staged on felis-api's disk before the file Job lands them: that
+    // disk can be at its floor (507), the body can stop short of its length, or a
+    // client can send none.
+    case "upload_staging_full":
+      return t("upload_staging_full");
+    case "upload_incomplete":
+      return t("upload_incomplete");
+    case "length_required":
+      return t("length_required");
     case "jobs_unavailable":
       return t("jobs_unavailable");
     // Builds, uploads and review: terminal-state conflicts and unwired subsystems.

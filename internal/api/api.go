@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	"felis.lolicon.best/internal/fileedit"
 )
 
 // API holds the dependencies shared by every handler.
@@ -84,13 +85,18 @@ type API struct {
 	// something has to start the restore once the snapshot is done.
 	RestoreChains RestoreChains
 
-	// Files is the server file editor (list / read / write a file in a stopped
-	// server's world volume — the "one wrong line in server.properties" repair).
+	// Files is the server file manager (list, read, write, make a folder, delete,
+	// rename and upload inside a stopped server's world volume).
 	// Like Restorer and Backuper it is optional: when nil the file routes report
 	// 503, so the owner-or-admin and stopped gates are exercised before the
 	// file-Job executor is wired. Unlike them its calls are synchronous, because
 	// the caller wants the listing or the bytes back, not a 202.
 	Files FileEditor
+	// FileStage holds uploads until the Job landing them fetches them, and
+	// InternalBaseURL is where that Job reaches felis-api's internal face to do so
+	// (handleUploadFile). Uploads report 503 unless both are set.
+	FileStage       *fileedit.Stage
+	InternalBaseURL string
 
 	// Submissions is the user-modpack approval lane (a user-directed extension over
 	// the §16 build subsystem; see internal/submit). It is optional: when
@@ -443,6 +449,11 @@ func (a *API) internalAPIRoutes() []apiRoute {
 		// snapshot a stopped world while the API is alive. Service-token auth (no
 		// Principal); the shared enqueueBackup tail enforces the RWO stopped-gate.
 		{Method: "POST", Pattern: "/api/v1/internal/servers/{name}/backup", Callers: ops, h: a.handleInternalBackup},
+
+		// A file upload's staged bytes, fetched once by the Job landing them. Public
+		// because that Job holds no service token; the one-time bearer token minted
+		// with the upload is the check (handlers_files.go).
+		{Method: "GET", Pattern: "/api/v1/internal/file-uploads/{id}", Public: true, h: a.handleInternalFileUpload},
 	}
 }
 
@@ -542,13 +553,14 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/jobs", h: a.handleServerJobs},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/restore-backup", h: a.handleRestoreBackup},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/backup", h: a.handleBackupNow},
-		// Server file editor: list / read / write a file in a STOPPED server's world
-		// volume (handlers_files.go). App-tier, exactly like the backup pair above and
-		// for the same reason — every route gates on owner-or-admin inside the handler,
-		// so an owner repairs their own broken server without an admin's Zero-Trust
-		// path. The path travels as ?path= rather than a segment because a file path
-		// contains '/' (the same reason DELETE /images takes ?ref=). {name}/files is
-		// the directory face; {name}/file is the single-file face.
+		// Server file manager: list, read, write, make a folder, delete, rename and
+		// upload in a STOPPED server's world volume (handlers_files.go). App-tier,
+		// exactly like the backup pair above and for the same reason — every route
+		// gates on owner-or-admin inside the handler, so an owner repairs their own
+		// broken server without an admin's Zero-Trust path. The path travels as ?path=
+		// rather than a segment because a file path contains '/' (the same reason
+		// DELETE /images takes ?ref=). {name}/files is the directory face; {name}/file
+		// is the single-file face.
 		//
 		// "Config editor" undersells the surface, so be precise about what app-tier
 		// now reaches: the mount is the server's WHOLE working directory, not a
@@ -560,6 +572,10 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/files", h: a.handleListFiles},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/file", h: a.handleReadFile},
 		{Method: "PUT", Pattern: "/api/v1/servers/{name}/file", h: a.handleWriteFile},
+		{Method: "DELETE", Pattern: "/api/v1/servers/{name}/file", h: a.handleDeleteFile},
+		{Method: "POST", Pattern: "/api/v1/servers/{name}/files/mkdir", h: a.handleMkdir},
+		{Method: "POST", Pattern: "/api/v1/servers/{name}/files/rename", h: a.handleRenameFile},
+		{Method: "PUT", Pattern: "/api/v1/servers/{name}/files/upload", h: a.handleUploadFile},
 		// Account linking (spec §10), web side: /start reports link status (it is the
 		// pointer handleClaim's 412 emits), /verify consumes the in-game code and binds
 		// the account. App-tier, not admin — linking your own account is an ordinary

@@ -3,8 +3,11 @@ package api
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"regexp"
+	"strconv"
+	"strings"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
 	"felis.lolicon.best/internal/fileedit"
@@ -32,15 +35,22 @@ import (
 // parallel type on this side of the seam.
 //
 // It returns fileedit.ErrNotFound / ErrBadPath / ErrTooLarge / ErrConflict /
-// ErrNoSpace, which writeFileEditError maps to 404 / 400 / 413 / 409 / 507.
+// ErrNoSpace / ErrExists, which writeFileEditError maps to 404 / 400 / 413 / 409 /
+// 507 / 409.
 //
-// Read and Write both return the file's SHA-256 (hex). Write's expect is the hash
-// a client read the file at; when set, a file that changed since is refused with
-// ErrConflict instead of being overwritten.
+// Read and Write return the file's SHA-256 (hex); Upload lands exactly the bytes
+// src describes or fails. Write's expect is the
+// hash a client read the file at; when set, a file that changed since is refused
+// with ErrConflict instead of being overwritten. createOnly and a false overwrite
+// refuse an existing path with ErrExists.
 type FileEditor interface {
 	List(ctx context.Context, server, path string) (entries []fileedit.Entry, truncated bool, err error)
 	Read(ctx context.Context, server, path string) (content []byte, sha256 string, err error)
-	Write(ctx context.Context, server, path string, content []byte, expect string) (sha256 string, err error)
+	Write(ctx context.Context, server, path string, content []byte, expect string, createOnly bool) (sha256 string, err error)
+	Mkdir(ctx context.Context, server, path string) error
+	Delete(ctx context.Context, server, path string) error
+	Rename(ctx context.Context, server, path, to string) error
+	Upload(ctx context.Context, server, path string, src fileedit.UploadSource, overwrite bool) error
 }
 
 // writeFileRequest is the PUT /servers/{name}/file body. Content is []byte, so
@@ -58,10 +68,14 @@ type FileEditor interface {
 // ExpectSHA256 is optional. The panel always sends the hash its read returned,
 // so a save over a file someone else changed in the meantime answers 409
 // file_changed; omitting it (a script, or "overwrite anyway") writes
-// unconditionally.
+// unconditionally. CreateOnly is the panel's "new file": the write lands only if
+// nothing is at the path yet (409 file_exists otherwise), so it can never
+// truncate a file the caller did not know was there. The two cannot be combined —
+// one says the file exists, the other that it must not.
 type writeFileRequest struct {
 	Content      *[]byte `json:"content"`
 	ExpectSHA256 string  `json:"expect_sha256,omitempty"`
+	CreateOnly   bool    `json:"create_only,omitempty"`
 }
 
 // handleListFiles serves GET /api/v1/servers/{name}/files?path=… — one directory's
@@ -105,10 +119,8 @@ func (a *API) handleReadFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	path := r.URL.Query().Get("path")
-	if path == "" {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
-			"the ?path= query parameter is required"))
+	path, ok := requirePath(w, r)
+	if !ok {
 		return
 	}
 
@@ -140,10 +152,8 @@ func (a *API) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	path := r.URL.Query().Get("path")
-	if path == "" {
-		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
-			"the ?path= query parameter is required"))
+	path, ok := requirePath(w, r)
+	if !ok {
 		return
 	}
 
@@ -173,6 +183,11 @@ func (a *API) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 			"expect_sha256 must be the 64-digit lowercase hex sha256 a read returned"))
 		return
 	}
+	if body.CreateOnly && body.ExpectSHA256 != "" {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
+			"create_only and expect_sha256 cannot be combined"))
+		return
+	}
 
 	// A write holds the world volume for its Job's lifetime (internal/maintenance);
 	// reads and listings do not, since a read-only mount cannot hurt a server
@@ -183,19 +198,249 @@ func (a *API) handleWriteFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer release()
 
-	sum, err := a.Files.Write(r.Context(), name, path, *body.Content, body.ExpectSHA256)
+	sum, err := a.Files.Write(r.Context(), name, path, *body.Content, body.ExpectSHA256, body.CreateOnly)
 	if err != nil {
 		writeFileEditError(w, r, err)
 		return
 	}
 
-	a.audit(r, "file.write", name+":"+path)
+	a.auditFile(r, "file.write", name, path, nil)
 	writeJSON(w, http.StatusOK, map[string]any{"path": path, "status": "written", "sha256": sum})
+}
+
+// requirePath reads the required ?path= query parameter, answering 400 when it
+// is absent.
+func requirePath(w http.ResponseWriter, r *http.Request) (string, bool) {
+	path := r.URL.Query().Get("path")
+	if path == "" {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request",
+			"the ?path= query parameter is required"))
+		return "", false
+	}
+	return path, true
+}
+
+// handleMkdir serves POST /api/v1/servers/{name}/files/mkdir?path=… — make one
+// folder. Its parent must exist (404 otherwise) and nothing may be at the path yet
+// (409 file_exists). Like every file change it holds the world lock and is
+// audited.
+func (a *API) handleMkdir(w http.ResponseWriter, r *http.Request) {
+	name, ok := a.authorizeFileOp(w, r)
+	if !ok {
+		return
+	}
+	path, ok := requirePath(w, r)
+	if !ok {
+		return
+	}
+	release, ok := a.acquireWorld(w, r, name, maintenance.KindFileWrite, "stop the server before editing its files")
+	if !ok {
+		return
+	}
+	defer release()
+
+	if err := a.Files.Mkdir(r.Context(), name, path); err != nil {
+		writeFileEditError(w, r, err)
+		return
+	}
+	a.auditFile(r, "file.mkdir", name, path, nil)
+	writeJSON(w, http.StatusOK, map[string]any{"path": path, "status": "created"})
+}
+
+// handleDeleteFile serves DELETE /api/v1/servers/{name}/file?path=… — delete a
+// file, a symlink (never what it points at), or a folder with everything in it.
+// The world root itself is refused (400 bad_path). The panel confirms first; this
+// route does not, because a script that says DELETE means it.
+func (a *API) handleDeleteFile(w http.ResponseWriter, r *http.Request) {
+	name, ok := a.authorizeFileOp(w, r)
+	if !ok {
+		return
+	}
+	path, ok := requirePath(w, r)
+	if !ok {
+		return
+	}
+	release, ok := a.acquireWorld(w, r, name, maintenance.KindFileWrite, "stop the server before editing its files")
+	if !ok {
+		return
+	}
+	defer release()
+
+	if err := a.Files.Delete(r.Context(), name, path); err != nil {
+		writeFileEditError(w, r, err)
+		return
+	}
+	a.auditFile(r, "file.delete", name, path, nil)
+	writeJSON(w, http.StatusOK, map[string]any{"path": path, "status": "deleted"})
+}
+
+// renameFileRequest is the POST /servers/{name}/files/rename body: the new path,
+// relative to the world root like ?path=.
+type renameFileRequest struct {
+	To string `json:"to"`
+}
+
+// handleRenameFile serves POST /api/v1/servers/{name}/files/rename?path=… — move
+// a file or folder to body.to. It never replaces: an existing destination is 409
+// file_exists. server.properties, config/paper-global.yml and config/ cannot be
+// moved (400 bad_path), since under another name the read path would no longer
+// know to withhold their secrets.
+func (a *API) handleRenameFile(w http.ResponseWriter, r *http.Request) {
+	name, ok := a.authorizeFileOp(w, r)
+	if !ok {
+		return
+	}
+	path, ok := requirePath(w, r)
+	if !ok {
+		return
+	}
+	var body renameFileRequest
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if body.To == "" {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_request", "the to field is required"))
+		return
+	}
+	release, ok := a.acquireWorld(w, r, name, maintenance.KindFileWrite, "stop the server before editing its files")
+	if !ok {
+		return
+	}
+	defer release()
+
+	if err := a.Files.Rename(r.Context(), name, path, body.To); err != nil {
+		writeFileEditError(w, r, err)
+		return
+	}
+	a.auditFile(r, "file.rename", name, path, map[string]any{"to": body.To})
+	writeJSON(w, http.StatusOK, map[string]any{"path": path, "to": body.To, "status": "renamed"})
+}
+
+// handleUploadFile serves PUT /api/v1/servers/{name}/files/upload?path=… — land
+// the raw request body as a file, up to fileedit.MaxUploadBytes. An existing file
+// is 409 file_exists unless ?overwrite=true.
+//
+// The body is staged on felis-api's disk first (fileedit.Stage) and fetched from
+// there by the Job, on the internal face, with a one-time token: it fits in
+// neither a Job spec nor an environment. The world lock is taken only once the
+// body has arrived, so a slow upload does not hold off a backup; the stopped gate
+// ran before the body was read and the lock re-checks that nothing started since.
+//
+// Content-Length is required (411 length_required): the stage reserves room for
+// the declared size before a byte is written, and a size promised up front is
+// what lets a short body be told from a whole one.
+func (a *API) handleUploadFile(w http.ResponseWriter, r *http.Request) {
+	name, ok := a.authorizeFileOp(w, r)
+	if !ok {
+		return
+	}
+	path, ok := requirePath(w, r)
+	if !ok {
+		return
+	}
+	if a.FileStage == nil || a.InternalBaseURL == "" {
+		writeError(w, r, newError(http.StatusServiceUnavailable, "files_unavailable",
+			"uploads are not configured"))
+		return
+	}
+	if r.ContentLength < 0 {
+		writeError(w, r, newError(http.StatusLengthRequired, "length_required",
+			"an upload needs a Content-Length"))
+		return
+	}
+	if r.ContentLength > fileedit.MaxUploadBytes {
+		writeError(w, r, newError(http.StatusRequestEntityTooLarge, "too_large",
+			"the file is %d bytes; uploads are at most %d", r.ContentLength, fileedit.MaxUploadBytes))
+		return
+	}
+	overwrite := r.URL.Query().Get("overwrite") == "true"
+
+	staged, drop, err := a.FileStage.Put(r.Body, r.ContentLength)
+	switch {
+	case errors.Is(err, fileedit.ErrStageFull):
+		writeError(w, r, newError(http.StatusInsufficientStorage, "upload_staging_full",
+			"felis has no room to take this upload right now; try again later or ask an admin"))
+		return
+	case errors.Is(err, fileedit.ErrShortUpload):
+		writeError(w, r, newError(http.StatusBadRequest, "upload_incomplete",
+			"the upload ended before all %d bytes arrived", r.ContentLength))
+		return
+	case err != nil:
+		writeError(w, r, err)
+		return
+	}
+	defer drop()
+
+	release, ok := a.acquireWorld(w, r, name, maintenance.KindFileWrite, "stop the server before editing its files")
+	if !ok {
+		return
+	}
+	defer release()
+
+	err = a.Files.Upload(r.Context(), name, path, fileedit.UploadSource{
+		URL:    a.InternalBaseURL + "/api/v1/internal/file-uploads/" + staged.ID,
+		Token:  staged.Token,
+		Size:   staged.Size,
+		SHA256: staged.SHA256,
+	}, overwrite)
+	if err != nil {
+		writeFileEditError(w, r, err)
+		return
+	}
+	a.auditFile(r, "file.upload", name, path, map[string]any{
+		"size_bytes": staged.Size, "sha256": staged.SHA256, "overwrite": overwrite,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"path": path, "status": "uploaded", "sha256": staged.SHA256, "size": staged.Size,
+	})
+}
+
+// handleInternalFileUpload serves GET /api/v1/internal/file-uploads/{id} — the
+// staged bytes of one upload, to the one Job created to land them. It is Public on
+// the internal face: the Job holds no service token (it holds no credential at
+// all), so the bearer token minted with the upload is the whole check, and it
+// opens that upload once. An unknown id, a wrong token and a spent one are the
+// same 404, so the route answers nothing about which uploads exist.
+func (a *API) handleInternalFileUpload(w http.ResponseWriter, r *http.Request) {
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if a.FileStage == nil || !ok {
+		writeError(w, r, newError(http.StatusNotFound, "not_found", "no such upload"))
+		return
+	}
+	f, size, err := a.FileStage.Open(r.PathValue("id"), token)
+	if errors.Is(err, fileedit.ErrNotStaged) {
+		writeError(w, r, newError(http.StatusNotFound, "not_found", "no such upload"))
+		return
+	}
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	defer f.Close()
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, f)
+}
+
+// auditFile records a file change. The target is "<server>:<path>", as file.write
+// has always recorded it; extra, when set, is the payload.
+func (a *API) auditFile(r *http.Request, action, server, path string, extra map[string]any) {
+	p := principalFromContext(r.Context())
+	e := AuditEntry{Actor: auditActor(p), Action: action, ServerName: server + ":" + path}
+	if p != nil {
+		e.ActorUserID = p.UserID
+	}
+	if extra != nil {
+		e.Payload = auditPayload(extra)
+	}
+	a.auditEntry(r, e)
 }
 
 var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
-// authorizeFileOp is the shared front half of all three file handlers — the gate
+// authorizeFileOp is the shared front half of every file handler — the gate
 // that decides whether this caller may touch this server's world at all. It
 // mirrors the backup/restore gate step for step, because it is guarding the same
 // resource under the same physical constraint:
@@ -211,7 +456,7 @@ var sha256Hex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 //	   silently fails to mount
 //	⑤ the FileEditor must be wired, else 503
 //
-// Single-sourcing it is what keeps the three faces from drifting: a read path that
+// Single-sourcing it is what keeps the handlers from drifting: a read path that
 // forgot the stopped gate would not merely fail, it would hang waiting for a Pod
 // that can never be scheduled.
 //
@@ -270,7 +515,7 @@ func (a *API) authorizeFileOp(w http.ResponseWriter, r *http.Request) (string, b
 	return name, true
 }
 
-// writeFileEditError maps executor errors onto HTTP status codes. The three
+// writeFileEditError maps executor errors onto HTTP status codes. The
 // sentinels are caller-fault and get precise answers; a timeout is reported as 504
 // so the caller knows to retry rather than believing the edit was rejected; and
 // anything else collapses to a 500 by writeError, so no cluster detail leaks.
@@ -291,6 +536,8 @@ func writeFileEditError(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, r, newError(http.StatusConflict, "file_changed", "%s", err.Error()))
 	case errors.Is(err, fileedit.ErrNoSpace):
 		writeError(w, r, newError(http.StatusInsufficientStorage, "volume_full", "%s", err.Error()))
+	case errors.Is(err, fileedit.ErrExists):
+		writeError(w, r, newError(http.StatusConflict, "file_exists", "%s", err.Error()))
 	case errors.Is(err, context.DeadlineExceeded):
 		writeError(w, r, newError(http.StatusGatewayTimeout, "files_timeout",
 			"the file operation did not finish in time; retry shortly"))

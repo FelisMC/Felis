@@ -1,13 +1,28 @@
 package fileedit
 
 import (
+	"bytes"
 	"encoding/base64"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 )
+
+// opParams is testParams with what each op needs to render.
+func opParams(op string) JobParams {
+	p := testParams(op)
+	switch op {
+	case OpRename:
+		p.To = "server.properties.bak"
+	case OpUpload:
+		p.SourceURL, p.UploadToken = "http://felis-api-internal.felis.svc:8081/api/v1/internal/file-uploads/0a", "tok"
+	}
+	return p
+}
 
 func testParams(op string) JobParams {
 	return JobParams{
@@ -105,16 +120,28 @@ func TestFilesJobIsolation(t *testing.T) {
 		}
 	})
 
-	// Only a write creates a file it must hand back to the game uid, so only a
-	// write keeps CHOWN; a read stays at DAC_OVERRIDE alone (asserted above).
-	t.Run("a write also keeps CHOWN", func(t *testing.T) {
-		w, err := FilesJob(testParams(OpWrite))
-		if err != nil {
-			t.Fatalf("FilesJob: %v", err)
-		}
-		add := w.Spec.Template.Spec.Containers[0].SecurityContext.Capabilities.Add
-		if len(add) != 2 || add[0] != "CHOWN" || add[1] != "DAC_OVERRIDE" {
-			t.Fatalf("write capabilities = %v, want [CHOWN DAC_OVERRIDE]", add)
+	// The ops that create a file or folder hand it back to the game uid, so they
+	// keep CHOWN; the rest stay at DAC_OVERRIDE alone.
+	t.Run("only the creating ops keep CHOWN", func(t *testing.T) {
+		for _, tc := range []struct {
+			op    string
+			chown bool
+		}{
+			{OpList, false}, {OpRead, false}, {OpDelete, false}, {OpRename, false},
+			{OpWrite, true}, {OpMkdir, true}, {OpUpload, true},
+		} {
+			j, err := FilesJob(opParams(tc.op))
+			if err != nil {
+				t.Fatalf("%s: FilesJob: %v", tc.op, err)
+			}
+			add := j.Spec.Template.Spec.Containers[0].SecurityContext.Capabilities.Add
+			want := []corev1.Capability{"DAC_OVERRIDE"}
+			if tc.chown {
+				want = []corev1.Capability{"CHOWN", "DAC_OVERRIDE"}
+			}
+			if !slices.Equal(add, want) {
+				t.Errorf("%s capabilities = %v, want %v", tc.op, add, want)
+			}
 		}
 	})
 
@@ -174,10 +201,10 @@ func TestFilesJobExpectArg(t *testing.T) {
 	}
 }
 
-// TestFilesJobWorldMountIsReadOnlyExceptForWrite pins the guarantee that only a
-// write can mutate a world. For list and read the kernel refuses the write, not
+// TestFilesJobWorldMountIsReadOnlyForReads pins the guarantee that list and read
+// cannot mutate a world. For them the kernel refuses the write, not
 // merely the code — a defence that survives a bug in the entrypoint.
-func TestFilesJobWorldMountIsReadOnlyExceptForWrite(t *testing.T) {
+func TestFilesJobWorldMountIsReadOnlyForReads(t *testing.T) {
 	cases := []struct {
 		op           string
 		wantReadOnly bool
@@ -185,10 +212,14 @@ func TestFilesJobWorldMountIsReadOnlyExceptForWrite(t *testing.T) {
 		{OpList, true},
 		{OpRead, true},
 		{OpWrite, false},
+		{OpMkdir, false},
+		{OpDelete, false},
+		{OpRename, false},
+		{OpUpload, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.op, func(t *testing.T) {
-			job, err := FilesJob(testParams(tc.op))
+			job, err := FilesJob(opParams(tc.op))
 			if err != nil {
 				t.Fatalf("FilesJob: %v", err)
 			}
@@ -203,11 +234,23 @@ func TestFilesJobWorldMountIsReadOnlyExceptForWrite(t *testing.T) {
 	}
 }
 
+// envLookup reads a rendered container's environment the way the Job's process
+// sees it.
+func envLookup(env []corev1.EnvVar) func(string) (string, bool) {
+	return func(name string) (string, bool) {
+		for _, e := range env {
+			if e.Name == name {
+				return e.Value, true
+			}
+		}
+		return "", false
+	}
+}
+
 // TestFilesJobContentEnv pins the write channel: content rides the Job spec
-// base64-encoded, and ONLY for a write — a list or read Job spec must carry no
-// caller content at all.
+// base64-encoded, and ONLY for a write — no other Job spec carries caller content.
 func TestFilesJobContentEnv(t *testing.T) {
-	t.Run("write carries base64 content", func(t *testing.T) {
+	t.Run("write carries the content, reassembled by the entrypoint", func(t *testing.T) {
 		p := testParams(OpWrite)
 		p.Content = []byte("motd=hello\n\x00\xff")
 		job, err := FilesJob(p)
@@ -215,15 +258,16 @@ func TestFilesJobContentEnv(t *testing.T) {
 			t.Fatalf("FilesJob: %v", err)
 		}
 		env := job.Spec.Template.Spec.Containers[0].Env
-		if len(env) != 1 || env[0].Name != ContentEnv {
-			t.Fatalf("env = %+v, want exactly %s", env, ContentEnv)
+		want := []corev1.EnvVar{
+			{Name: ContentPartsEnv, Value: "1"},
+			{Name: ContentEnv + "_0", Value: base64.StdEncoding.EncodeToString(p.Content)},
 		}
-		got, err := base64.StdEncoding.DecodeString(env[0].Value)
-		if err != nil {
-			t.Fatalf("env value is not base64: %v", err)
+		if !slices.Equal(env, want) {
+			t.Fatalf("env = %+v, want %+v", env, want)
 		}
-		if string(got) != string(p.Content) {
-			t.Fatalf("decoded %q, want %q — arbitrary bytes must survive", got, p.Content)
+		got, err := ContentFromEnv(envLookup(env))
+		if err != nil || string(got) != string(p.Content) {
+			t.Fatalf("reassembled %q, %v; want %q — arbitrary bytes must survive", got, err, p.Content)
 		}
 		// The content must never leak into argv, which is world-readable on the node.
 		if strings.Contains(strings.Join(job.Spec.Template.Spec.Containers[0].Args, " "), "motd=hello") {
@@ -231,9 +275,52 @@ func TestFilesJobContentEnv(t *testing.T) {
 		}
 	})
 
-	for _, op := range []string{OpList, OpRead} {
-		t.Run(op+" carries no content env", func(t *testing.T) {
-			job, err := FilesJob(testParams(op))
+	// execve refuses one environment string over 128 KiB and the container never
+	// starts, so the largest write must arrive in parts each well under it.
+	t.Run("the largest write is split under the kernel's per-variable limit", func(t *testing.T) {
+		p := testParams(OpWrite)
+		p.Content = make([]byte, MaxWriteBytes)
+		for i := range p.Content {
+			p.Content[i] = byte(i * 7)
+		}
+		job, err := FilesJob(p)
+		if err != nil {
+			t.Fatalf("FilesJob: %v", err)
+		}
+		env := job.Spec.Template.Spec.Containers[0].Env
+		if len(env) != 1+maxContentParts || env[0].Value != strconv.Itoa(maxContentParts) {
+			t.Fatalf("%d variables, count %q; want the count and %d parts", len(env), env[0].Value, maxContentParts)
+		}
+		for _, e := range env {
+			if len(e.Value) > contentChunk || len(e.Name)+1+len(e.Value) >= 128<<10 {
+				t.Fatalf("%s is %d bytes; each part must fit in %d", e.Name, len(e.Value), contentChunk)
+			}
+		}
+		got, err := ContentFromEnv(envLookup(env))
+		if err != nil || !bytes.Equal(got, p.Content) {
+			t.Fatalf("reassembled %d bytes, %v; want the %d written", len(got), err, len(p.Content))
+		}
+	})
+
+	t.Run("an empty write is zero parts", func(t *testing.T) {
+		p := testParams(OpWrite)
+		p.Content = []byte{}
+		job, err := FilesJob(p)
+		if err != nil {
+			t.Fatalf("FilesJob: %v", err)
+		}
+		env := job.Spec.Template.Spec.Containers[0].Env
+		if want := []corev1.EnvVar{{Name: ContentPartsEnv, Value: "0"}}; !slices.Equal(env, want) {
+			t.Fatalf("env = %+v, want %+v", env, want)
+		}
+		if got, err := ContentFromEnv(envLookup(env)); err != nil || len(got) != 0 {
+			t.Fatalf("reassembled %q, %v; want empty", got, err)
+		}
+	})
+
+	for _, op := range []string{OpList, OpRead, OpMkdir, OpDelete, OpRename} {
+		t.Run(op+" carries no env", func(t *testing.T) {
+			job, err := FilesJob(opParams(op))
 			if err != nil {
 				t.Fatalf("FilesJob: %v", err)
 			}
@@ -241,6 +328,62 @@ func TestFilesJobContentEnv(t *testing.T) {
 				t.Fatalf("env = %+v, want none for a %s", env, op)
 			}
 		})
+	}
+}
+
+// TestFilesJobOpArgs pins what each op hands the entrypoint beyond --op and
+// --path, and that the upload token rides the environment, never argv.
+func TestFilesJobOpArgs(t *testing.T) {
+	args := func(p JobParams) []string {
+		t.Helper()
+		j, err := FilesJob(p)
+		if err != nil {
+			t.Fatalf("FilesJob(%s): %v", p.Op, err)
+		}
+		return j.Spec.Template.Spec.Containers[0].Args[6:]
+	}
+	read, err := FilesJob(testParams(OpRead))
+	if err != nil {
+		t.Fatalf("FilesJob: %v", err)
+	}
+	if got, want := read.Spec.Template.Spec.Containers[0].Args, []string{"--op", "read", "--path", "server.properties", "--worlds-root", "/data"}; !slices.Equal(got, want) {
+		t.Fatalf("read args = %v, want %v", got, want)
+	}
+
+	create := testParams(OpWrite)
+	create.CreateOnly = true
+	if got := args(create); !slices.Equal(got, []string{"--create-only"}) {
+		t.Errorf("create-only write args = %v", got)
+	}
+	readCreate := testParams(OpRead)
+	readCreate.CreateOnly = true
+	if got := args(readCreate); len(got) != 0 {
+		t.Errorf("a read carries write flags: %v", got)
+	}
+	if got := args(opParams(OpRename)); !slices.Equal(got, []string{"--to", "server.properties.bak"}) {
+		t.Errorf("rename args = %v", got)
+	}
+
+	up := opParams(OpUpload)
+	up.UploadSize, up.UploadSHA256 = 1234, strings.Repeat("c", 64)
+	want := []string{"--source-url", up.SourceURL, "--size", "1234", "--sha256", strings.Repeat("c", 64)}
+	if got := args(up); !slices.Equal(got, want) {
+		t.Errorf("upload args = %v, want %v", got, want)
+	}
+	up.Overwrite = true
+	if got := args(up); !slices.Equal(got, append(want, "--overwrite")) {
+		t.Errorf("overwriting upload args = %v", got)
+	}
+	j, err := FilesJob(up)
+	if err != nil {
+		t.Fatalf("FilesJob: %v", err)
+	}
+	c := j.Spec.Template.Spec.Containers[0]
+	if want := []corev1.EnvVar{{Name: UploadTokenEnv, Value: "tok"}}; !slices.Equal(c.Env, want) {
+		t.Errorf("upload env = %+v, want %+v", c.Env, want)
+	}
+	if slices.Contains(c.Args, "tok") {
+		t.Errorf("the upload token is in argv: %v", c.Args)
 	}
 }
 
@@ -285,7 +428,9 @@ func TestFilesJobRejectsBadParams(t *testing.T) {
 		{"no image", func(p *JobParams) { p.Image = "" }},
 		{"no world PVC", func(p *JobParams) { p.WorldPVC = "" }},
 		{"no op id", func(p *JobParams) { p.OpID = "" }},
-		{"unknown op", func(p *JobParams) { p.Op = "delete" }},
+		{"unknown op", func(p *JobParams) { p.Op = "chmod" }},
+		{"upload without a source", func(p *JobParams) { p.Op, p.UploadToken = OpUpload, "tok" }},
+		{"upload without a token", func(p *JobParams) { p.Op, p.SourceURL = OpUpload, "http://x" }},
 		{"oversized content", func(p *JobParams) {
 			p.Op, p.Content = OpWrite, make([]byte, MaxWriteBytes+1)
 		}},
