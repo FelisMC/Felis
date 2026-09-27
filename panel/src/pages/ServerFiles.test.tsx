@@ -227,3 +227,66 @@ describe("ServerFiles from the keyboard", () => {
     expect(mocks.readServerFile.mock.calls).toEqual([["lobby", "server.properties"]]);
   });
 });
+
+describe("ServerFiles folder answers arriving out of order", () => {
+  type Listing = { path: string; truncated: boolean; entries: { name: string; size: number; is_dir: boolean; mod_time: string }[] };
+  function deferred() {
+    let resolve!: (v: Listing) => void;
+    let reject!: (e: unknown) => void;
+    const promise = new Promise<Listing>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+  const entry = (name: string, is_dir = false) => ({ name, size: 8, is_dir, mod_time: "2026-09-01T00:00:00Z" });
+  const listing = (path: string, ...names: string[]): Listing => ({ path, truncated: false, entries: names.map((n) => entry(n)) });
+
+  let world: ReturnType<typeof deferred>;
+  let plugins: ReturnType<typeof deferred>;
+  beforeEach(() => {
+    world = deferred();
+    plugins = deferred();
+    mocks.listServerFiles.mockImplementation((_name: string, path: string) => {
+      if (path === "world") return world.promise;
+      if (path === "plugins") return plugins.promise;
+      return Promise.resolve({ path, truncated: false, entries: [entry("world", true), entry("plugins", true)] });
+    });
+  });
+
+  const folder = (name: string) => screen.findByRole("button", { name: i18next.t("files:open_folder", { name }) });
+  const refresh = () => screen.getByRole("button", { name: i18next.t("files:refresh") }) as HTMLButtonElement;
+
+  it.each([
+    ["answers", (d: ReturnType<typeof deferred>) => d.resolve(listing("world", "level.dat"))],
+    ["fails", (d: ReturnType<typeof deferred>) => d.reject(new Error("world listing broke"))],
+  ])("keeps the folder clicked last when the one left behind %s late", async (_label, settle) => {
+    renderFiles();
+    await userEvent.click(await folder("world"));
+    await userEvent.click(await folder("plugins"));
+    await act(async () => plugins.resolve(listing("plugins", "config.yml")));
+    expect(await screen.findByText("config.yml")).toBeTruthy();
+
+    await act(async () => settle(world));
+
+    expect(screen.getByText("config.yml")).toBeTruthy();
+    expect(screen.queryByText("level.dat")).toBeNull();
+    expect(screen.getByRole("button", { name: "plugins" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "world" })).toBeNull();
+    expect(refresh().disabled).toBe(false);
+  });
+
+  it("keeps loading while the folder clicked last is still on its way", async () => {
+    renderFiles();
+    await userEvent.click(await folder("world"));
+    await userEvent.click(await folder("plugins"));
+
+    await act(async () => world.resolve(listing("world", "level.dat")));
+    expect(screen.queryByText("level.dat")).toBeNull();
+    expect(refresh().disabled).toBe(true);
+
+    await act(async () => plugins.resolve(listing("plugins", "config.yml")));
+    expect(await screen.findByText("config.yml")).toBeTruthy();
+    expect(refresh().disabled).toBe(false);
+  });
+});

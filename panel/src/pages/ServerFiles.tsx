@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -108,20 +108,27 @@ export function ServerFiles() {
   const [listLoading, setListLoading] = useState(false);
   const [msg, setMsg] = useState<{ kind: "success" | "error"; text: string } | null>(null);
 
+  // Every load takes a ticket and only the newest one lands. The rows and the
+  // breadcrumbs stay clickable while a folder loads, so a slow answer for a
+  // folder already left behind would otherwise replace the one clicked after it.
+  const loadSeq = useRef(0);
   const load = useCallback(
     async (p: string) => {
+      const ticket = ++loadSeq.current;
       setListLoading(true);
       setListErr(null);
       try {
         const r = await api.listServerFiles(name, p);
+        if (ticket !== loadSeq.current) return;
         setEntries(r.entries ?? []);
         setTruncated(r.truncated === true);
         setDir(p);
       } catch (e) {
+        if (ticket !== loadSeq.current) return;
         setEntries(null);
         setListErr(e);
       } finally {
-        setListLoading(false);
+        if (ticket === loadSeq.current) setListLoading(false);
       }
     },
     [name],
