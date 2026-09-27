@@ -83,6 +83,30 @@ type State struct {
 	// still be mailed.
 	Recipients   []string `json:"recipients,omitempty"`
 	SMTPPassword string   `json:"smtp_password,omitempty"`
+	// Relay is the [smtp] relay of the last run that could read felis.toml,
+	// so a run of the watchdog that failed can still be mailed after the
+	// config stopped loading; nil when there is none.
+	Relay *Relay `json:"relay,omitempty"`
+}
+
+// Relay is the part of [smtp] a mail needs, besides the password.
+type Relay struct {
+	Host       string `json:"host"`
+	Port       int    `json:"port"`
+	From       string `json:"from"`
+	Username   string `json:"username,omitempty"`
+	RequireTLS bool   `json:"require_tls"`
+}
+
+// Open reports whether the owners were told of a condition that still holds:
+// an alert mailed (or logged) and not seen gone since, one-off events aside.
+func (s *State) Open() bool {
+	for _, a := range s.Alerts {
+		if !a.Notified.IsZero() && a.ClearedAt.IsZero() && !a.Event {
+			return true
+		}
+	}
+	return false
 }
 
 const (
@@ -276,6 +300,9 @@ func without(all []Alert, skip ...[]Alert) []Alert {
 	return out
 }
 
+// ErrBadState is a state file that is not the JSON the watchdog writes.
+var ErrBadState = errors.New("watchdog: the state file is not one the watchdog wrote")
+
 // LoadState reads the state file; a missing file is a fresh state.
 func LoadState(path string) (*State, error) {
 	raw, err := os.ReadFile(path)
@@ -287,12 +314,28 @@ func LoadState(path string) (*State, error) {
 	}
 	var s State
 	if err := json.Unmarshal(raw, &s); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+		return nil, fmt.Errorf("%w: %s: %v", ErrBadState, path, err)
 	}
 	if s.Alerts == nil {
 		s.Alerts = map[string]*Alert{}
 	}
 	return &s, nil
+}
+
+// RecoverState is LoadState for a run that must go on: a state file that does
+// not parse (a disk that filled mid-write, a hand edit) is renamed aside and
+// the run starts from a fresh state, rather than every later run failing on
+// it and mailing nothing. aside is where it went, "" when nothing was moved.
+func RecoverState(path string, now time.Time) (s *State, aside string, err error) {
+	s, err = LoadState(path)
+	if !errors.Is(err, ErrBadState) {
+		return s, "", err
+	}
+	aside = fmt.Sprintf("%s.unreadable-%d", path, now.Unix())
+	if rerr := os.Rename(path, aside); rerr != nil {
+		return nil, "", fmt.Errorf("%w (and could not move it aside: %v)", err, rerr)
+	}
+	return &State{Alerts: map[string]*Alert{}}, aside, nil
 }
 
 // SaveState writes s atomically, readable by root only: it caches the relay

@@ -1837,6 +1837,7 @@ run_timer() { # exit status of the first backup
     FELIS_DB_BACKUP_METRICS=/var/lib/node_exporter/textfile_collector/felis_db_backup.prom \
     HOST_BIN=/usr/local/bin/felis STATE_DIR=/etc/felis bash -c '
     ok() { printf "OK: %s\n" "$*"; }; warn() { printf "WARN: %s\n" "$*"; }
+    log() { printf "LOG: %s\n" "$*"; }; die() { printf "DIE: %s\n" "$*"; exit 1; }
     systemctl() { printf "SYSTEMCTL: %s\n" "$*"; [ "$1" != start ] || return "$FIRST"; }
     journalctl() { printf "JOURNAL: pg_dump: connection refused\n"; }
     '"$tblock"'
@@ -1894,23 +1895,36 @@ esac
 
 wblock="$(awk '/^install_watchdog_timer\(\) \{/,/^}/' "$BS")"
 [ -n "$wblock" ] || { echo "FAIL: no install_watchdog_timer found in $BS"; exit 1; }
-[ "$(printf '%s\n' "$wblock" | wc -l)" -lt 60 ] \
+[ "$(printf '%s\n' "$wblock" | wc -l)" -lt 90 ] \
   || { echo "FAIL: the extracted block is not install_watchdog_timer -- did its closing brace move?"; exit 1; }
 qblock="$(awk '/^quiet_watchdog\(\) \{/,/^}/' "$BS")"
 [ -n "$qblock" ] || { echo "FAIL: no quiet_watchdog found in $BS"; exit 1; }
+hbblock=""
+for fn in write_heartbeat_url heartbeat_host summary_heartbeat validate_heartbeat_url; do
+  blk="$(awk "/^${fn}\\(\\) \\{/,/^}/" "$BS")"
+  [ -n "$blk" ] || { echo "FAIL: no ${fn} found in $BS"; exit 1; }
+  [ "$(printf '%s\n' "$blk" | wc -l)" -lt 30 ] \
+    || { echo "FAIL: the extracted block is not ${fn} -- did its closing brace move?"; exit 1; }
+  hbblock="${hbblock}${blk}
+"
+done
 
 tdir="$(mktemp -d)"
 run_watchdog_timer() { # $1: exit status of the first run, $2: FELIS_WORLDS_HOST_PATH, $3: NODE_IP
   FIRST="$1" FELIS_WORLDS_HOST_PATH="$2" NODE_IP="${3:-}" WATCHDOG_SERVICE="$tdir/felis-watchdog.service" WATCHDOG_TIMER="$tdir/felis-watchdog.timer" \
+    WATCHDOG_FAILED_SERVICE="$tdir/felis-watchdog-failed.service" WATCHDOG_HEARTBEAT_FILE="$tdir/watchdog-heartbeat-url" \
     WATCHDOG_STATE="$tdir/watchdog/state.json" WATCHDOG_QUIET_FILE=/run/felis/watchdog-quiet-until \
     FELIS_DB_BACKUP_DIR=/var/lib/felis/db-backups FELIS_ARCHIVE_LOCAL_PATH=/var/lib/felis/archives FELIS_GAME_PORT=25577 \
     HOST_BIN=/usr/local/bin/felis STATE_DIR=/etc/felis bash -c '
     set -Eeuo pipefail
     ok() { printf "OK: %s\n" "$*"; }; warn() { printf "WARN: %s\n" "$*"; }
     systemctl() { printf "SYSTEMCTL: %s\n" "$*"; [ "$1" != start ] || return "$FIRST"; }
+    log() { printf "LOG: %s\n" "$*"; }; die() { printf "DIE: %s\n" "$*"; exit 1; }
     journalctl() { printf "JOURNAL: parse /etc/felis/felis.host.toml\n"; }
+    FELIS_WATCHDOG_HEARTBEAT_URL="${FELIS_WATCHDOG_HEARTBEAT_URL:-}"
+    '"$hbblock"'
     '"$wblock"'
-    install_watchdog_timer' 2>&1
+    eval "${SCRIPT:-install_watchdog_timer}"' 2>&1
 }
 
 out="$(run_watchdog_timer 0 "")"
@@ -1929,6 +1943,78 @@ if [ "$(stat -c %a "$tdir/watchdog" 2>/dev/null || stat -f %Lp "$tdir/watchdog")
 else
   echo "FAIL the watchdog state directory must be 0700"; fails=$((fails + 1))
 fi
+
+# A run that fails is reported by felis-watchdog-failed.service, and the heartbeat URL is
+# kept private and shown by its host only. The units name no heartbeat flag, so a binary
+# from before it still runs under them.
+failed_unit="$(cat "$tdir/felis-watchdog-failed.service")"
+expect "a failed run starts the failure report" "OnFailure=felis-watchdog-failed.service" "$unit"
+expect "the failure report runs the host binary against the watchdog's state" \
+  "ExecStart=/usr/local/bin/felis watchdog -unit-failed -config /etc/felis/felis.host.toml -state $tdir/watchdog/state.json -quiet-file /run/felis/watchdog-quiet-until
+" "$failed_unit"
+expect "the failure report is a oneshot" "Type=oneshot" "$failed_unit"
+expect "a wedged failure report is killed" "TimeoutStartSec=2min" "$failed_unit"
+case "$unit$failed_unit" in
+  *-heartbeat*) echo "FAIL the watchdog units must name no heartbeat flag (an older binary refuses it)"; fails=$((fails + 1)) ;;
+  *) echo "PASS the watchdog units name no heartbeat flag" ;;
+esac
+case "$out" in
+  *"pings the heartbeat"*) echo "FAIL without a heartbeat URL the install must claim no heartbeat: $out"; fails=$((fails + 1)) ;;
+  *) echo "PASS without a heartbeat URL the install claims none" ;;
+esac
+[ ! -e "$tdir/watchdog-heartbeat-url" ] && echo "PASS no heartbeat URL writes no file" \
+  || { echo "FAIL no heartbeat URL must write no file"; fails=$((fails + 1)); }
+
+out="$(FELIS_WATCHDOG_HEARTBEAT_URL=https://hc-ping.com/5f1e0c2a-key run_watchdog_timer 0 "")"
+expect "the heartbeat URL is kept where felis watchdog reads it" "https://hc-ping.com/5f1e0c2a-key" "$(cat "$tdir/watchdog-heartbeat-url" 2>&1)"
+if [ "$(stat -c %a "$tdir/watchdog-heartbeat-url" 2>/dev/null || stat -f %Lp "$tdir/watchdog-heartbeat-url")" = 600 ]; then
+  echo "PASS the heartbeat URL file is private (its path pings the check)"
+else
+  echo "FAIL the heartbeat URL file must be 0600"; fails=$((fails + 1))
+fi
+expect "the install says the watchdog pings the heartbeat" \
+  "OK: watchdog: checks every 2 minutes and mails the owners' verified addresses and pings the heartbeat at https://hc-ping.com/... (journalctl -u felis-watchdog)" "$out"
+case "$out" in
+  *5f1e0c2a*) echo "FAIL the install printed the heartbeat URL's key: $out"; fails=$((fails + 1)) ;;
+  *) echo "PASS the install shows the heartbeat by its host only" ;;
+esac
+out="$(run_watchdog_timer 0 "")"
+expect "a re-run without the variable keeps the heartbeat" "https://hc-ping.com/5f1e0c2a-key" "$(cat "$tdir/watchdog-heartbeat-url" 2>&1)"
+expect "a re-run without the variable still reports the heartbeat" "and pings the heartbeat at https://hc-ping.com/..." "$out"
+out="$(SCRIPT=summary_heartbeat run_watchdog_timer 0 "")"
+expect "the summary names the heartbeat by its host" "LOG: Heartbeat: every watchdog run pings https://hc-ping.com/...;" "$out"
+out="$(FELIS_WATCHDOG_HEARTBEAT_URL=off run_watchdog_timer 0 "")"
+[ ! -e "$tdir/watchdog-heartbeat-url" ] && echo "PASS off removes the heartbeat" \
+  || { echo "FAIL FELIS_WATCHDOG_HEARTBEAT_URL=off must remove the file"; fails=$((fails + 1)); }
+leftover="$(find "$tdir" -maxdepth 1 -name 'watchdog-heartbeat-url.*')"
+[ -z "$leftover" ] && echo "PASS writing the heartbeat URL leaves no temporary file" \
+  || { echo "FAIL temporary files left: $leftover"; fails=$((fails + 1)); }
+out="$(SCRIPT=summary_heartbeat run_watchdog_timer 0 "")"
+expect "without a heartbeat the summary says so loudly" "WARN: NO HEARTBEAT: nothing off this machine notices it going down or its watchdog stopping." "$out"
+expect "and says how to add one" "then re-run with FELIS_WATCHDOG_HEARTBEAT_URL=<its ping URL> (docs/troubleshooting.md §14)." "$out"
+out="$(FELIS_WATCHDOG_HEARTBEAT_URL='https://user:pw@status.example:8443?rid=5f1e0c2a' SCRIPT='write_heartbeat_url; heartbeat_host' run_watchdog_timer 0 "")"
+expect "the host shown drops the sign-in and the query" "https://status.example:8443/..." "$out"
+rm -f "$tdir/watchdog-heartbeat-url"
+for good in "" off https://hc-ping.com/5f1e0c2a http://10.0.0.5:8000/ping/5f1e0c2a; do
+  out="$(FELIS_WATCHDOG_HEARTBEAT_URL="$good" SCRIPT='validate_heartbeat_url; echo fine' run_watchdog_timer 0 "")"
+  expect "the heartbeat URL <$good> is accepted" "fine" "$out"
+done
+for bad in hc-ping.com/5f1e0c2a ftp://hc-ping.com/5f1e0c2a https:///5f1e0c2a 'https://hc-ping.com/5f1e 0c2a' 'https://hc-ping.com/5f1e"0c2a' "$(printf 'https://hc-ping.com/5f1e\n0c2a')"; do
+  out="$(FELIS_WATCHDOG_HEARTBEAT_URL="$bad" SCRIPT='validate_heartbeat_url; echo fine' run_watchdog_timer 0 "")"
+  case "$out" in
+    *"DIE: FELIS_WATCHDOG_HEARTBEAT_URL must"*fine*|*5f1e*) echo "FAIL the heartbeat URL <$bad>: $out"; fails=$((fails + 1)) ;;
+    *"DIE: FELIS_WATCHDOG_HEARTBEAT_URL must"*) echo "PASS the heartbeat URL <$bad> is refused without being echoed" ;;
+    *) echo "FAIL the heartbeat URL <$bad> was accepted: $out"; fails=$((fails + 1)) ;;
+  esac
+done
+case "$(awk '/^validate_settings\(\) \{/,/^}/' "$BS")" in
+  *validate_heartbeat_url*) echo "PASS the heartbeat URL is checked before anything is installed" ;;
+  *) echo "FAIL validate_settings must call validate_heartbeat_url"; fails=$((fails + 1)) ;;
+esac
+case "$(awk '/^summary\(\) \{/,/^}/' "$BS")" in
+  *summary_offsite*summary_heartbeat*) echo "PASS the install's summary ends on the heartbeat" ;;
+  *) echo "FAIL summary must call summary_heartbeat"; fails=$((fails + 1)) ;;
+esac
 
 out="$(run_watchdog_timer 0 /srv/worlds)"
 expect "a custom worlds root is watched for free space" "-disk-paths /,/var/lib/rancher/k3s,/var/lib/felis,/srv/worlds," "$(cat "$tdir/felis-watchdog.service")"

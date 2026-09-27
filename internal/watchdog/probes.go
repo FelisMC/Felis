@@ -38,6 +38,8 @@ const (
 	diskLowFor      = 15 * time.Minute
 	diskCriticalFor = 5 * time.Minute
 	memoryLowFor    = 15 * time.Minute
+	// watchdogFailedFor is five failed runs in a row.
+	watchdogFailedFor = 10 * time.Minute
 
 	// jobFailureWindow is how far back a failed Job is still news.
 	jobFailureWindow = 24 * time.Hour
@@ -290,6 +292,30 @@ func nodeFindings(n *corev1.Node) []Finding {
 		}
 	}
 	return out
+}
+
+// WatchdogFailed is the watchdog's own run failing (felis-watchdog-failed.service,
+// through OnFailure=): while it fails no other check runs and nothing else is
+// mailed. detail is how the run ended. It waits watchdogFailedFor, so one run cut
+// short by a slow host mails nobody.
+func WatchdogFailed(detail string) Finding {
+	return Finding{
+		Key: "watchdog/run", Severity: Critical, For: watchdogFailedFor,
+		Summary:   "平台巡检本身运行失败，其他检查都没有执行，出了别的问题也不会有告警：" + detail,
+		SummaryEN: "the platform watchdog itself fails, so no other check runs and nothing else is mailed: " + detail,
+		Hint:      "journalctl -u felis-watchdog -n 50; sudo felis watchdog -dry-run (docs/troubleshooting.md §14)",
+	}
+}
+
+// StateSetAside is a state file RecoverState moved aside: the alerts it held
+// start over, so a condition still firing is mailed again as new.
+func StateSetAside(aside string) Finding {
+	return Finding{
+		Key: "watchdog/state", Severity: Warning, Event: true,
+		Summary:   fmt.Sprintf("平台巡检的状态文件无法读取，已移到 %s 并重新开始：仍未恢复的告警会当作新告警再发一次", aside),
+		SummaryEN: fmt.Sprintf("the watchdog's state file was unreadable and was moved to %s; its alerts start over, so one still firing is mailed again as new", aside),
+		Hint:      "df -h /var/lib/felis (a full disk cuts writes short)",
+	}
 }
 
 // KubeAPIDown is the finding for an API server that did not answer.

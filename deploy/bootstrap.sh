@@ -266,6 +266,13 @@ FELIS_OFFSITE_BUCKET="${FELIS_OFFSITE_BUCKET:-}"
 FELIS_OFFSITE_REGION="${FELIS_OFFSITE_REGION:-}"
 FELIS_OFFSITE_PREFIX="${FELIS_OFFSITE_PREFIX:-}"
 FELIS_OFFSITE_DB_KEEP="${FELIS_OFFSITE_DB_KEEP:-}"
+# The watchdog's heartbeat (troubleshooting §14): the ping URL of a check at a monitoring
+# service such as Healthchecks.io, a dead man's switch. Every watchdog run pings it, and
+# the service mails its own users when the pings stop or report failure: the host down,
+# the watchdog broken, alerts that reach no one. Nothing on this host can report its own
+# death. The URL is kept in /etc/felis/watchdog-heartbeat-url, mode 0600, as its path is
+# the key that pings the check; off removes it, and a re-run without it keeps it.
+FELIS_WATCHDOG_HEARTBEAT_URL="${FELIS_WATCHDOG_HEARTBEAT_URL:-}"
 INSTALL_MODE="${FELIS_INSTALL_MODE:-}"
 # strict stops the install on any preflight problem (preflight below); warn reports them
 # and goes on, for a host the checks misjudge.
@@ -416,6 +423,8 @@ NANO_SERVICE="/etc/systemd/system/felis-nano.service"
 DB_BACKUP_SERVICE="/etc/systemd/system/felis-db-backup.service"
 DB_BACKUP_TIMER="/etc/systemd/system/felis-db-backup.timer"
 WATCHDOG_SERVICE="/etc/systemd/system/felis-watchdog.service"
+# OnFailure= of felis-watchdog.service: reports a run that failed (felis watchdog -unit-failed).
+WATCHDOG_FAILED_SERVICE="/etc/systemd/system/felis-watchdog-failed.service"
 WATCHDOG_TIMER="/etc/systemd/system/felis-watchdog.timer"
 UPDATE_CHECK_SERVICE="/etc/systemd/system/felis-update-check.service"
 UPDATE_CHECK_TIMER="/etc/systemd/system/felis-update-check.timer"
@@ -436,6 +445,8 @@ BUILD_TOOLS_STATUS="/var/lib/felis/build-tools/status.json"
 # restarts the control plane and the system servers on purpose. cleanup removes it; the
 # time in it is the backstop for an installer killed before its EXIT trap runs.
 WATCHDOG_QUIET_FILE="/run/felis/watchdog-quiet-until"
+# FELIS_WATCHDOG_HEARTBEAT_URL, where felis watchdog reads it by default.
+WATCHDOG_HEARTBEAT_FILE="${STATE_DIR}/watchdog-heartbeat-url"
 VELOCITY_DIR="/opt/felis/velocity"
 VELOCITY_USER="felis-velocity"
 VELOCITY_SERVICE="/etc/systemd/system/felis-velocity.service"
@@ -926,6 +937,7 @@ validate_settings() {
   validate_listen FELIS_NANO_LISTEN "$FELIS_NANO_LISTEN"
   validate_cidr FELIS_NANO_PROXY_CIDR "$FELIS_NANO_PROXY_CIDR"
   validate_offsite_settings
+  validate_heartbeat_url
   case "$FELIS_PREFLIGHT" in
     strict|warn) ;;
     *) die "FELIS_PREFLIGHT must be strict or warn (got '${FELIS_PREFLIGHT}')" ;;
@@ -1026,6 +1038,18 @@ validate_offsite_settings() {
   if [ -n "$FELIS_OFFSITE_DB_KEEP" ] && ! [[ "$FELIS_OFFSITE_DB_KEEP" =~ ^[1-9][0-9]*$ ]]; then
     die "FELIS_OFFSITE_DB_KEEP must be a positive number of bundles, got: ${FELIS_OFFSITE_DB_KEEP}"
   fi
+}
+
+# validate_heartbeat_url checks FELIS_WATCHDOG_HEARTBEAT_URL before anything is
+# installed: a check's http(s) ping URL, or off. The messages leave the URL out: its path
+# is the key that pings the check.
+validate_heartbeat_url() {
+  case "$FELIS_WATCHDOG_HEARTBEAT_URL" in
+    "" | off) ;;
+    *[[:space:]]* | *\"* | *\'* | *\\*) die "FELIS_WATCHDOG_HEARTBEAT_URL must not contain spaces, quotes or backslashes" ;;
+    http://[!/]* | https://[!/]*) ;;
+    *) die "FELIS_WATCHDOG_HEARTBEAT_URL must be the http:// or https:// ping URL of a monitoring service's check, or off" ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -4685,11 +4709,6 @@ summary_offsite() {
   fi
 }
 
-# The platform watchdog: every two minutes it checks the control plane, the login gate,
-# the fleet, PostgreSQL, the game proxy, the database backups and the host's disks and
-# memory, and mails the owners (their verified addresses, over the [smtp] relay) what
-# has stayed wrong long enough to matter. It runs on the host so a k3s that is down is
-# still reported. The first run happens now, so a broken unit shows up in this install.
 # The daily version check. Felis applies no update on its own; `felis update --record`
 # compares what this host runs with the newest upstream releases and stores the result,
 # which the panel's Updates page shows with the command that applies each update. It runs
@@ -4730,21 +4749,47 @@ EOF
   ok "version check: daily; the panel's Updates page shows what has a newer release (journalctl -u felis-update-check)"
 }
 
+# The platform watchdog: every two minutes it checks the control plane, the login gate,
+# the fleet, PostgreSQL, the game proxy, the database backups and the host's disks and
+# memory, and mails the owners (their verified addresses, over the [smtp] relay) what
+# has stayed wrong long enough to matter. It runs on the host so a k3s that is down is
+# still reported. The first run happens now, so a broken unit shows up in this install.
+# A run that fails starts felis-watchdog-failed.service (OnFailure=), which mails the
+# failure once five runs in a row failed, through the relay the last good run cached, and
+# pings the heartbeat's failure endpoint. The heartbeat (FELIS_WATCHDOG_HEARTBEAT_URL) is
+# what notices a host that is down or a watchdog that no longer runs at all. The units
+# name no heartbeat flag: felis watchdog reads WATCHDOG_HEARTBEAT_FILE by default, so an
+# older binary put back under these units still runs.
 install_watchdog_timer() {
   local disks="/,/var/lib/rancher/k3s,/var/lib/felis" path
   for path in "$FELIS_WORLDS_HOST_PATH" "$FELIS_ARCHIVE_LOCAL_PATH" "$FELIS_DB_BACKUP_DIR"; do
     if [ -n "$path" ]; then disks="${disks},${path}"; fi
   done
+  write_heartbeat_url
   install -d -m 0700 "$(dirname "$WATCHDOG_STATE")"
   cat > "$WATCHDOG_SERVICE" <<EOF
 [Unit]
 Description=Felis platform watchdog (health checks, owner alert mail)
 After=network-online.target k3s.service
+OnFailure=felis-watchdog-failed.service
 
 [Service]
 Type=oneshot
 ExecStart=${HOST_BIN} watchdog -config ${STATE_DIR}/felis.host.toml -state ${WATCHDOG_STATE} -quiet-file ${WATCHDOG_QUIET_FILE} -backup-dir ${FELIS_DB_BACKUP_DIR} -proxy-addr 127.0.0.1:${FELIS_GAME_PORT} -disk-paths ${disks}${NODE_IP:+ -node-ip ${NODE_IP}}
 TimeoutStartSec=3min
+Nice=5
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectSystem=full
+EOF
+  cat > "$WATCHDOG_FAILED_SERVICE" <<EOF
+[Unit]
+Description=Felis platform watchdog failure report (owner alert mail, heartbeat failure ping)
+
+[Service]
+Type=oneshot
+ExecStart=${HOST_BIN} watchdog -unit-failed -config ${STATE_DIR}/felis.host.toml -state ${WATCHDOG_STATE} -quiet-file ${WATCHDOG_QUIET_FILE}
+TimeoutStartSec=2min
 Nice=5
 PrivateTmp=yes
 NoNewPrivileges=yes
@@ -4764,12 +4809,56 @@ WantedBy=timers.target
 EOF
   systemctl daemon-reload
   systemctl enable --now felis-watchdog.timer
+  local reach="mails the owners' verified addresses"
+  if [ -f "$WATCHDOG_HEARTBEAT_FILE" ]; then
+    reach="${reach} and pings the heartbeat at $(heartbeat_host)"
+  fi
   if systemctl start felis-watchdog.service; then
-    ok "watchdog: checks every 2 minutes and mails the owners' verified addresses (journalctl -u felis-watchdog)"
+    ok "watchdog: checks every 2 minutes and ${reach} (journalctl -u felis-watchdog)"
   else
     journalctl -u felis-watchdog.service -n 20 --no-pager >&2 || true
     warn "the first watchdog run failed (log above); nothing will be mailed until it runs: sudo systemctl start felis-watchdog.service"
   fi
+}
+
+# write_heartbeat_url keeps FELIS_WATCHDOG_HEARTBEAT_URL in WATCHDOG_HEARTBEAT_FILE, mode
+# 0600 and replaced whole; off removes the file, and no value keeps it as it is.
+write_heartbeat_url() {
+  local tmp
+  case "$FELIS_WATCHDOG_HEARTBEAT_URL" in
+    "") return 0 ;;
+    off)
+      rm -f -- "$WATCHDOG_HEARTBEAT_FILE"
+      return 0
+      ;;
+  esac
+  # mktemp creates the file 0600, before the key is in it.
+  tmp="$(mktemp "${WATCHDOG_HEARTBEAT_FILE}.XXXXXX")"
+  printf '%s\n' "$FELIS_WATCHDOG_HEARTBEAT_URL" > "$tmp"
+  mv -f -- "$tmp" "$WATCHDOG_HEARTBEAT_FILE"
+}
+
+# heartbeat_host is the heartbeat URL as the install shows it: its scheme and host.
+heartbeat_host() {
+  local url rest host
+  url="$(head -n 1 "$WATCHDOG_HEARTBEAT_FILE")"
+  rest="${url#*://}"
+  host="${rest%%/*}"
+  host="${host%%\?*}"
+  host="${host##*@}"
+  printf '%s://%s/...' "${url%%://*}" "$host"
+}
+
+# summary_heartbeat closes the install on the heartbeat: without one, nothing off this
+# machine notices it going down.
+summary_heartbeat() {
+  if [ -f "$WATCHDOG_HEARTBEAT_FILE" ]; then
+    log "Heartbeat: every watchdog run pings $(heartbeat_host); that service mails you when the pings stop."
+    return 0
+  fi
+  warn "NO HEARTBEAT: nothing off this machine notices it going down or its watchdog stopping."
+  warn "Create a check at a monitoring service (Healthchecks.io or alike; period 2 min, grace 10 min),"
+  warn "then re-run with FELIS_WATCHDOG_HEARTBEAT_URL=<its ping URL> (docs/troubleshooting.md §14)."
 }
 
 # The build lane's tools: kaniko and trivy (pinned by digest in internal/build/tools.go)
@@ -5374,6 +5463,7 @@ summary() {
   fi
   echo
   summary_offsite
+  summary_heartbeat
   echo
 }
 

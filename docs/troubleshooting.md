@@ -1537,6 +1537,8 @@ Every two minutes the host checks:
 | Host memory available below 10% | 15 min | warning |
 | The host no longer holds the address the install was made on (§13c) | 5 min | critical |
 | The system clock is not synchronized by NTP (§13c) | 30 min | warning |
+| The watchdog's own runs keep failing (`watchdog/run`, below) | 10 min | critical |
+| The watchdog's state file did not parse and was moved aside (`watchdog/state`, below) | at once, once | warning |
 
 How it mails:
 
@@ -1562,7 +1564,8 @@ How it mails:
   PostgreSQL or of the API server can therefore still be mailed. [GO-TESTED: a
   run with the API server and PostgreSQL both down caches the host copy.]
 - **No relay or no verified owner address:** each alert is written to the
-  journal only.
+  journal only, and a run with a heartbeat pings its failure endpoint while an
+  alert is open (below).
 
 Commands:
 
@@ -1579,6 +1582,74 @@ A `-dry-run` from a shell uses the command's defaults, and those do not include
 the game-proxy or the address check. The unit carries `-proxy-addr
 127.0.0.1:<game port>`, `-node-ip <install address>` and the disk list the
 install chose. `systemctl cat felis-watchdog` shows them.
+
+### The heartbeat: what notices the host itself going down
+
+A host that is off, a timer that stopped, a watchdog that fails before it can
+mail: the host reports none of these about itself. A heartbeat covers them.
+Every run pings a check at an outside monitoring service (Healthchecks.io, or
+one that copies its API), and that service mails you when the pings stop.
+
+1. Create a check there with a period of 2 minutes and a grace of 10 minutes.
+2. Re-run the installer with `FELIS_WATCHDOG_HEARTBEAT_URL=<the check's ping
+   URL>`. It writes the URL to `/etc/felis/watchdog-heartbeat-url` (root-only,
+   0600). The URL's path is the check's key, so the install and the journal
+   show only its scheme and host.
+
+A later install without the variable keeps the file, and
+`FELIS_WATCHDOG_HEARTBEAT_URL=off` removes it. An install with no heartbeat
+ends with a `NO HEARTBEAT` warning. [SH-TESTED: `deploy/bootstrap_test.sh`]
+
+What a run pings:
+
+| The run | Ping |
+|---|---|
+| Its alerts reach the owners (mailed, or nothing due) | `GET <url>` |
+| An alert is open and reaches no one (no relay, no verified owner address), the mail fails, or the state does not save | `POST <url>/fail`, with the reason and the findings in the body |
+| One of those failures while the installer runs | nothing |
+| A host standing by for another host's off-site bucket (§16) | nothing: the host that writes the bucket pings the check |
+
+A URL with a query (`?`) has no `/fail` endpoint, so a failing run sends no
+ping and the check trips once its grace runs out. A ping that times out (10 s)
+or gets a non-2xx answer logs `felis watchdog: heartbeat: ...`; the run's exit
+status stays that of its checks and its mail. [GO-TESTED:
+`TestHeartbeatSend`, `TestWatchdogRunHeartbeat`]
+
+A bundle (§16) carries `/etc/felis` and the heartbeat file with it. A host
+rebuilt from one stands by and pings nothing until `felis offsite take-over`;
+from then on it pings the same check.
+
+### When the watchdog itself fails
+
+`felis-watchdog.service` carries `OnFailure=felis-watchdog-failed.service`. A
+failed run (a crash, the 3 min time limit, a `felis.toml` that no longer loads)
+starts `felis watchdog -unit-failed`, which:
+
+- pings the heartbeat's `/fail` at once with systemd's result, e.g.
+  `felis-watchdog.service failed: result exit-code, exit status 3`, except
+  while the installer runs or the host stands by;
+- records `watchdog/run` and mails it once runs have kept failing for 10
+  minutes. The relay and recipients come from `felis.toml` when it loads and
+  from the watchdog's cache when it does not. The first passing run resolves
+  it like any other finding.
+
+[VM-TESTED: on systemd 252, a failing unit with this `OnFailure=` passed
+`result exit-code, exit status 3` to the fallback, which posted it to a local
+`/fail` endpoint; with the installer's quiet file present it withheld the
+ping. GO-TESTED: `TestWatchdogUnitFailedBrokenConfig`, six failures two
+minutes apart mail once, at 10 minutes, through the cached relay.]
+
+A state file (`/var/lib/felis/watchdog/state.json`) that does not parse is
+renamed to `state.json.unreadable-<unix time>`. The run starts from a fresh
+state and mails `watchdog/state` once. The fresh state has lost the open
+alerts' history, so each problem still present is mailed again as new. A
+power loss right after a save or a hand edit usually causes this; check
+`df -h /var/lib/felis`, then delete the set-aside copy. [GO-TESTED: `TestRecoverState`]
+
+```bash
+journalctl -u felis-watchdog-failed -n 20   # what the fallback reported and pinged
+systemctl status felis-watchdog             # the failed run's result
+```
 
 ### Metrics
 
@@ -2631,6 +2702,7 @@ for 10 seconds (the Free plan's limits).
 | Node out of disk; pods evicted / ImagePullBackOff | §13b |
 | Which metric to scrape | §14 |
 | An alert mail from the watchdog; nothing is mailed when something breaks | §14 |
+| The host went down and nothing noticed; `NO HEARTBEAT` at install; `felis-watchdog-failed` in the journal; `state.json.unreadable-*` | §14 |
 | `FelisOperatorDown` / `FelisAPIDown` / `FelisLoginGateDown` / `FelisReconcileStuck` | §14, §1, §2 |
 | Upgrade / roll back a bad control-plane image | §15 |
 | `image_change_unconfirmed` / `image_not_in_registry` / `registry_unavailable`; move a world to a newer Minecraft | §15b |

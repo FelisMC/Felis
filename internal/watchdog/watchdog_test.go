@@ -1,6 +1,7 @@
 package watchdog
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -203,5 +204,67 @@ func TestQuietUntil(t *testing.T) {
 	}
 	if got := QuietUntil(marker); got.Unix() != 1790000000 {
 		t.Errorf("QuietUntil = %v", got)
+	}
+}
+
+// TestRecoverState: a state file that does not parse is moved aside, whole,
+// and the run starts over; a good or missing one is loaded as LoadState does.
+func TestRecoverState(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(path, []byte(`{"alerts": {"memo`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, aside, err := RecoverState(path, t0)
+	if err != nil || s == nil || s.Alerts == nil || len(s.Alerts) != 0 {
+		t.Fatalf("RecoverState(bad) = %+v, %q, %v; want a fresh state", s, aside, err)
+	}
+	if want := path + ".unreadable-" + fmt.Sprint(t0.Unix()); aside != want {
+		t.Fatalf("aside = %q, want %q", aside, want)
+	}
+	if raw, err := os.ReadFile(aside); err != nil || string(raw) != `{"alerts": {"memo` {
+		t.Fatalf("the moved file = %q, %v; want the bad state kept as it was", raw, err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("the bad state is still at %s (%v)", path, err)
+	}
+
+	good := &State{Recipients: []string{"owner@example.com"}}
+	run(good, Report{Findings: []Finding{finding("memory", Warning, 0)}}, t0)
+	if err := SaveState(path, good); err != nil {
+		t.Fatal(err)
+	}
+	s, aside, err = RecoverState(path, t0)
+	if err != nil || aside != "" || s.Alerts["memory"] == nil || len(s.Recipients) != 1 {
+		t.Fatalf("RecoverState(good) = %+v, %q, %v", s, aside, err)
+	}
+	s, aside, err = RecoverState(filepath.Join(dir, "missing.json"), t0)
+	if err != nil || aside != "" || s.Alerts == nil {
+		t.Fatalf("RecoverState(missing) = %+v, %q, %v", s, aside, err)
+	}
+}
+
+// TestStateOpen: open is a condition the owners were told of that still holds.
+func TestStateOpen(t *testing.T) {
+	s := &State{}
+	f := finding("memory", Warning, time.Hour)
+	run(s, Report{Findings: []Finding{f}}, t0)
+	if s.Open() {
+		t.Fatal("a pending alert, never mailed, counts as open")
+	}
+	run(s, Report{Findings: []Finding{f}}, t0.Add(time.Hour))
+	if !s.Open() {
+		t.Fatal("a mailed alert still firing is not open")
+	}
+	run(s, Report{}, t0.Add(time.Hour+time.Minute))
+	if s.Open() {
+		t.Fatal("an alert seen gone counts as open")
+	}
+	ev := finding("watchdog/state", Warning, 0)
+	ev.Event = true
+	e := &State{}
+	run(e, Report{Findings: []Finding{ev}}, t0)
+	if e.Open() {
+		t.Fatal("a one-off event counts as open")
 	}
 }

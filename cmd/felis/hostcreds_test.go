@@ -183,7 +183,7 @@ password_ref = "FELIS_TEST_UNSET_RELAY_PW"
 	var stdout, stderr bytes.Buffer
 	cmdWatchdog([]string{
 		"-config", cfgPath, "-state", statePath, "-quiet-file", filepath.Join(dir, "quiet"),
-		"-backup-dir", "", "-disk-paths", dir, "-smtp-password-file", pwPath,
+		"-backup-dir", "", "-disk-paths", dir, "-smtp-password-file", pwPath, "-heartbeat-file", filepath.Join(dir, "no-heartbeat"),
 	}, &stdout, &stderr)
 	if !strings.Contains(stdout.String(), "kube-api") {
 		t.Fatalf("the run found the API server up; the test needs it down (stdout %s)", stdout.String())
