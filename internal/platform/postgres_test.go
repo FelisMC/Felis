@@ -4,6 +4,7 @@ import (
 	"net/netip"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -18,39 +19,153 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
-// admits reports whether np lets a pod with podLabels in namespace ns open a
-// TCP connection to port.
-func admits(np *networkingv1.NetworkPolicy, ns string, podLabels map[string]string, port int32) bool {
+// podAddr is the address the source pods of these checks dial from: one in k3s's
+// default pod network, which an ipBlock peer has to exclude to keep them out.
+var podAddr = netip.MustParseAddr("10.42.0.17")
+
+// admits reports whether np lets a pod with podLabels in namespace ns, dialing
+// from podAddr, open a TCP connection to port on the pods np selects. It follows
+// the NetworkPolicy rules rather than the shapes this package happens to render:
+// a policy that does not govern ingress restricts nothing; a rule with no ports
+// covers every port and one with no peers every source; a port without a number
+// covers every port of its protocol; a peer's selectors are full label selectors,
+// matched against the pod and against its namespace's labels as Objects renders
+// them (the name label only); an ipBlock admits the pod by its address. A named
+// port fails the test: it resolves against a container spec this does not see.
+func admits(t *testing.T, np *networkingv1.NetworkPolicy, ns string, podLabels map[string]string, port int32) bool {
+	t.Helper()
+	if len(np.Spec.PolicyTypes) > 0 && !slices.Contains(np.Spec.PolicyTypes, networkingv1.PolicyTypeIngress) {
+		return true
+	}
+	selector := func(s *metav1.LabelSelector) labels.Selector {
+		sel, err := metav1.LabelSelectorAsSelector(s)
+		if err != nil {
+			t.Fatalf("policy %s: selector %v: %v", np.Name, s, err)
+		}
+		return sel
+	}
+	prefix := func(cidr string) netip.Prefix {
+		p, err := netip.ParsePrefix(cidr)
+		if err != nil {
+			t.Fatalf("policy %s: ipBlock %q: %v", np.Name, cidr, err)
+		}
+		return p
+	}
 	for _, rule := range np.Spec.Ingress {
 		portOK := len(rule.Ports) == 0
 		for _, p := range rule.Ports {
-			if (p.Protocol == nil || *p.Protocol == corev1.ProtocolTCP) && p.Port != nil && p.Port.IntVal == port {
+			switch {
+			case p.Protocol != nil && *p.Protocol != corev1.ProtocolTCP:
+			case p.Port == nil:
 				portOK = true
+			case p.Port.Type == intstr.String:
+				t.Fatalf("policy %s: named port %q, which this evaluator cannot resolve", np.Name, p.Port.StrVal)
+			case p.EndPort != nil:
+				portOK = portOK || (p.Port.IntVal <= port && port <= *p.EndPort)
+			default:
+				portOK = portOK || p.Port.IntVal == port
 			}
 		}
 		if !portOK {
 			continue
 		}
+		if len(rule.From) == 0 {
+			return true
+		}
 		for _, peer := range rule.From {
 			if peer.IPBlock != nil {
+				in := prefix(peer.IPBlock.CIDR).Contains(podAddr)
+				for _, e := range peer.IPBlock.Except {
+					in = in && !prefix(e).Contains(podAddr)
+				}
+				if in {
+					return true
+				}
 				continue
 			}
 			nsOK := peer.NamespaceSelector == nil && ns == np.Namespace
 			if peer.NamespaceSelector != nil {
-				nsOK = labels.SelectorFromSet(peer.NamespaceSelector.MatchLabels).
-					Matches(labels.Set{"kubernetes.io/metadata.name": ns})
+				nsOK = selector(peer.NamespaceSelector).Matches(labels.Set{"kubernetes.io/metadata.name": ns})
 			}
-			podOK := peer.PodSelector == nil ||
-				labels.SelectorFromSet(peer.PodSelector.MatchLabels).Matches(labels.Set(podLabels))
+			podOK := peer.PodSelector == nil || selector(peer.PodSelector).Matches(labels.Set(podLabels))
 			if nsOK && podOK {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// The evaluator itself, against the NetworkPolicy rules it claims to follow: the
+// fence checks below mean nothing if it waves through a shape it does not read.
+func TestAdmits_FollowsTheNetworkPolicyRules(t *testing.T) {
+	tcp, udp := corev1.ProtocolTCP, corev1.ProtocolUDP
+	port := func(n int32) *intstr.IntOrString { p := intstr.FromInt32(n); return &p }
+	endPort := func(n int32) *int32 { return &n }
+	api := map[string]string{"component": "api"}
+	other := map[string]string{"component": "reaper"}
+	policy := func(rules ...networkingv1.NetworkPolicyIngressRule) *networkingv1.NetworkPolicy {
+		return netpol("under-test", "felis", metav1.LabelSelector{}, rules)
+	}
+	inFelis := &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "felis"}}
+	on5432 := []networkingv1.NetworkPolicyPort{{Protocol: &tcp, Port: port(5432)}}
+
+	for _, c := range []struct {
+		name   string
+		np     *networkingv1.NetworkPolicy
+		ns     string
+		labels map[string]string
+		port   int32
+		want   bool
+	}{
+		{"no rules admit nothing", policy(), "felis", api, 5432, false},
+		{"a rule without peers admits every source", policy(networkingv1.NetworkPolicyIngressRule{Ports: on5432}), "minecraft", other, 5432, true},
+		{"a rule without ports covers every port", policy(networkingv1.NetworkPolicyIngressRule{
+			From: []networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{MatchLabels: api}}}}), "felis", api, 9999, true},
+		{"a port without a number covers every TCP port", policy(networkingv1.NetworkPolicyIngressRule{
+			Ports: []networkingv1.NetworkPolicyPort{{Protocol: &tcp}}}), "felis", api, 9999, true},
+		{"a UDP port admits no TCP connection", policy(networkingv1.NetworkPolicyIngressRule{
+			Ports: []networkingv1.NetworkPolicyPort{{Protocol: &udp, Port: port(5432)}}}), "felis", api, 5432, false},
+		{"a port range covers its inside", policy(networkingv1.NetworkPolicyIngressRule{
+			Ports: []networkingv1.NetworkPolicyPort{{Port: port(5000), EndPort: endPort(6000)}}}), "felis", api, 5432, true},
+		{"a port range stops at its end", policy(networkingv1.NetworkPolicyIngressRule{
+			Ports: []networkingv1.NetworkPolicyPort{{Port: port(5000), EndPort: endPort(5431)}}}), "felis", api, 5432, false},
+		{"another port", policy(networkingv1.NetworkPolicyIngressRule{Ports: on5432,
+			From: []networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{MatchLabels: api}}}}), "felis", api, 5433, false},
+		{"an ipBlock over the pod network admits a pod", policy(networkingv1.NetworkPolicyIngressRule{Ports: on5432,
+			From: []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: "0.0.0.0/0"}}}}), "minecraft", other, 5432, true},
+		{"an ipBlock excepting the pod's address", policy(networkingv1.NetworkPolicyIngressRule{Ports: on5432,
+			From: []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: "10.0.0.0/8", Except: []string{"10.42.0.0/16"}}}}}), "minecraft", other, 5432, false},
+		{"an ipBlock elsewhere", policy(networkingv1.NetworkPolicyIngressRule{Ports: on5432,
+			From: []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: "192.168.0.0/16"}}}}), "minecraft", other, 5432, false},
+		{"a pod selector alone stays in the policy's namespace", policy(networkingv1.NetworkPolicyIngressRule{Ports: on5432,
+			From: []networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{MatchLabels: api}}}}), "minecraft", api, 5432, false},
+		{"an empty namespace selector spans every namespace", policy(networkingv1.NetworkPolicyIngressRule{Ports: on5432,
+			From: []networkingv1.NetworkPolicyPeer{{NamespaceSelector: &metav1.LabelSelector{}, PodSelector: &metav1.LabelSelector{MatchLabels: api}}}}), "minecraft", api, 5432, true},
+		{"a namespace selector without a pod selector admits the whole namespace", policy(networkingv1.NetworkPolicyIngressRule{Ports: on5432,
+			From: []networkingv1.NetworkPolicyPeer{{NamespaceSelector: inFelis}}}), "felis", other, 5432, true},
+		{"a namespace selector keeps other namespaces out", policy(networkingv1.NetworkPolicyIngressRule{Ports: on5432,
+			From: []networkingv1.NetworkPolicyPeer{{NamespaceSelector: inFelis}}}), "minecraft", api, 5432, false},
+		{"matchExpressions narrow a selector", policy(networkingv1.NetworkPolicyIngressRule{Ports: on5432,
+			From: []networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+				{Key: "component", Operator: metav1.LabelSelectorOpIn, Values: []string{"api"}}}}}}}), "felis", other, 5432, false},
+		{"matchExpressions admit what they match", policy(networkingv1.NetworkPolicyIngressRule{Ports: on5432,
+			From: []networkingv1.NetworkPolicyPeer{{PodSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{
+				{Key: "component", Operator: metav1.LabelSelectorOpNotIn, Values: []string{"api"}}}}}}}), "felis", other, 5432, true},
+		{"a policy that governs only egress restricts no ingress", &networkingv1.NetworkPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "egress-only", Namespace: "felis"},
+			Spec:       networkingv1.NetworkPolicySpec{PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeEgress}},
+		}, "minecraft", other, 5432, true},
+	} {
+		if got := admits(t, c.np, c.ns, c.labels, c.port); got != c.want {
+			t.Errorf("%s: admitted = %v, want %v", c.name, got, c.want)
+		}
+	}
 }
 
 func podTemplateOf(t *testing.T, objs []Object, kind, name string) corev1.PodTemplateSpec {
@@ -137,11 +252,11 @@ func TestPostgresIngress_AdmitsExactlyTheDatabaseClients(t *testing.T) {
 		// the Minecraft namespace must not borrow them.
 		{"api labels outside the control namespace", p.MinecraftNamespace, podTemplateOf(t, objs, "Deployment", "felis-api").Labels, false},
 	} {
-		if got := admits(np, c.ns, c.labels, PostgresPort); got != c.want {
+		if got := admits(t, np, c.ns, c.labels, PostgresPort); got != c.want {
 			t.Errorf("%s (%s, %v): admitted = %v, want %v", c.who, c.ns, c.labels, got, c.want)
 		}
 	}
-	if admits(np, p.ControlNamespace, podTemplateOf(t, objs, "Deployment", "felis-api").Labels, PostgresPort+1) {
+	if admits(t, np, p.ControlNamespace, podTemplateOf(t, objs, "Deployment", "felis-api").Labels, PostgresPort+1) {
 		t.Error("the policy admits felis-api on a port other than the database's")
 	}
 }
