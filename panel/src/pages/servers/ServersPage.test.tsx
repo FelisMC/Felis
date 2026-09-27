@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, beforeAll, afterEach } from "vitest";
+import { act, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import type { FleetServer, MyServerView } from "@/lib/types";
@@ -338,6 +338,63 @@ describe("ServersPage order and paging", () => {
     expect(await tableOrder()).toEqual(["srv-21"]);
     // A new order starts again from its first page.
     await sortBy(user, "Sort by status");
+    expect(await tableOrder()).toEqual(names.slice(0, 20));
+  });
+});
+
+describe("ServersPage with nothing matching", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("clears the search and the phase filter from the empty state", async () => {
+    tier.isAdmin = false;
+    const mine = (name: string): MyServerView => ({
+      name,
+      subdomain: name,
+      owned: true,
+      claimable: false,
+      phase: "Running",
+      playersOnline: 0,
+      playersMax: 20,
+    });
+    calls.myServers.mockResolvedValue([mine("survival"), mine("creative")]);
+    const user = renderPage();
+    await tableOrder();
+
+    const search = screen.getByPlaceholderText(/Search/) as HTMLInputElement;
+    await user.type(search, "zzz");
+    await user.click(screen.getByRole("combobox", { name: "Filter by phase" }));
+    await user.click(await screen.findByRole("option", { name: "Stopping" }));
+    expect(screen.getByText("No matching servers found.")).toBeTruthy();
+    expect(screen.getByText("No server matches the current search or filter.")).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(await tableOrder()).toEqual(["creative", "survival"]);
+    expect(search.value).toBe("");
+    expect(screen.getByRole("combobox", { name: "Filter by phase" }).textContent).toBe("All phases");
+  });
+
+  it("starts the cleared list from its first page", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const names = Array.from({ length: 21 }, (_, i) => `srv-${String(i + 1).padStart(2, "0")}`);
+    calls.fleet.mockResolvedValue(names.map((n) => row(n, { phase: "Running", ready: true })));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(
+      <MemoryRouter>
+        <ServersPage />
+      </MemoryRouter>,
+    );
+    await tableOrder();
+    await user.click(screen.getByRole("combobox", { name: "Filter by phase" }));
+    await user.click(await screen.findByRole("option", { name: "Running" }));
+    await user.click(screen.getByRole("button", { name: /Next/ }));
+    expect(await tableOrder()).toEqual(["srv-21"]);
+
+    // The next reread finds every server stopped, so the filtered page empties.
+    calls.fleet.mockResolvedValue(names.map((n) => row(n, {})));
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    await user.click(await screen.findByRole("button", { name: "Clear filters" }));
     expect(await tableOrder()).toEqual(names.slice(0, 20));
   });
 });

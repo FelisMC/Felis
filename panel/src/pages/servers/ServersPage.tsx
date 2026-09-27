@@ -402,8 +402,20 @@ export function ServersPage() {
           ) : visible.length === 0 ? (
             <EmptyState
               title={isAdmin ? t("fleet_no_match_title") : t("servers:search_no_match")}
-              hint={isAdmin ? t("fleet_no_match_hint") : t("servers:search_clear_btn")}
-            />
+              hint={t("fleet_no_match_hint")}
+            >
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setQuery("");
+                  setPhaseFilter("all");
+                  setPage(1);
+                }}
+              >
+                {t("servers:search_clear_btn")}
+              </Button>
+            </EmptyState>
           ) : (
             <>
               {/* Cards until the table fits (two per row from md). The admin
