@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -106,6 +107,101 @@ func TestLocalContextStorePutOverwrites(t *testing.T) {
 	}
 	if string(got) != "\x1f\x8bsecond upload" {
 		t.Fatalf("stored %q, want the second upload (a re-upload supersedes)", got)
+	}
+}
+
+// Put flushes the new bytes to disk before the rename publishes them, then the
+// directory entries the rename and a first upload's mkdir wrote. A crash at any
+// point leaves the previous blob or the whole new one, never an empty file behind
+// a digest the database already recorded.
+func TestLocalContextStorePutFlushesAroundTheRename(t *testing.T) {
+	base := t.TempDir()
+	s := &LocalContextStore{Base: base}
+	blob := filepath.Join(base, "sub-abc", contextBlobName)
+	var synced []string
+	s.sync = func(f *os.File) error {
+		name := f.Name()
+		if strings.HasSuffix(name, ".tmp") {
+			name = "temp"
+		}
+		published := "none"
+		if b, err := os.ReadFile(blob); err == nil {
+			published = string(b)
+		}
+		synced = append(synced, name+" published="+published)
+		return f.Sync()
+	}
+
+	if _, err := s.Put(context.Background(), "sub-abc", strings.NewReader("\x1f\x8bbytes")); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	want := []string{
+		"temp published=none",
+		filepath.Join(base, "sub-abc") + " published=\x1f\x8bbytes",
+		base + " published=\x1f\x8bbytes",
+	}
+	if strings.Join(synced, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("flushes =\n%q\nwant\n%q", synced, want)
+	}
+}
+
+// A flush that fails refuses the upload. Before the rename the previous context
+// stays in place and no temp file is left; after it the new bytes are in place
+// but not promised, so the error still reaches the caller. A filesystem that
+// cannot sync a directory at all has no stronger promise to give.
+func TestLocalContextStorePutFlushFailures(t *testing.T) {
+	boom := errors.New("disk said no")
+	for _, tc := range []struct {
+		name    string
+		fail    func(f *os.File) error
+		wantErr error
+		want    string
+	}{
+		{"file", func(f *os.File) error {
+			if strings.HasSuffix(f.Name(), ".tmp") {
+				return boom
+			}
+			return nil
+		}, boom, "\x1f\x8bold"},
+		{"directory", func(f *os.File) error {
+			if strings.HasSuffix(f.Name(), ".tmp") {
+				return nil
+			}
+			return boom
+		}, boom, "\x1f\x8bnew"},
+		{"directory sync invalid", func(f *os.File) error {
+			if strings.HasSuffix(f.Name(), ".tmp") {
+				return nil
+			}
+			return &os.PathError{Op: "sync", Path: f.Name(), Err: syscall.EINVAL}
+		}, nil, "\x1f\x8bnew"},
+		{"directory sync not supported", func(f *os.File) error {
+			if strings.HasSuffix(f.Name(), ".tmp") {
+				return nil
+			}
+			return &os.PathError{Op: "sync", Path: f.Name(), Err: syscall.ENOTSUP}
+		}, nil, "\x1f\x8bnew"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			s := &LocalContextStore{Base: base}
+			ctx := context.Background()
+			if _, err := s.Put(ctx, "sub-abc", strings.NewReader("\x1f\x8bold")); err != nil {
+				t.Fatalf("first Put: %v", err)
+			}
+			s.sync = tc.fail
+			if _, err := s.Put(ctx, "sub-abc", strings.NewReader("\x1f\x8bnew")); !errors.Is(err, tc.wantErr) {
+				t.Fatalf("Put = %v, want %v", err, tc.wantErr)
+			}
+			got, err := os.ReadFile(filepath.Join(base, "sub-abc", contextBlobName))
+			if err != nil || string(got) != tc.want {
+				t.Fatalf("stored = %q, %v; want %q", got, err, tc.want)
+			}
+			entries, _ := os.ReadDir(filepath.Join(base, "sub-abc"))
+			if len(entries) != 1 {
+				t.Fatalf("dir holds %d entries, want only %s", len(entries), contextBlobName)
+			}
+		})
 	}
 }
 

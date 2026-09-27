@@ -2,6 +2,7 @@ package submit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -47,6 +48,10 @@ type LocalContextStore struct {
 	// MinFree is the share of Base's filesystem an upload must leave free; 0 uses
 	// DefaultUploadsMinFree.
 	MinFree float64
+
+	// sync flushes a file or directory to disk; nil is (*os.File).Sync. Tests
+	// replace it to watch or fail the flushes.
+	sync func(*os.File) error
 }
 
 // DefaultUploadsMinFree is the share of the uploads filesystem an upload must
@@ -98,7 +103,9 @@ func (s *LocalContextStore) dir(id string) (string, error) {
 // fully successful copy. So a failed, truncated, or oversize upload never
 // replaces a good context and never leaves a half-written blob for Kaniko to
 // read; a re-upload while the submission is still pending simply supersedes the
-// previous one. It returns the number of bytes stored.
+// previous one. It returns the number of bytes stored, and once it does the blob
+// survives a crash: the bytes are flushed before the rename and the directory
+// entries after it.
 func (s *LocalContextStore) Put(_ context.Context, id string, r io.Reader) (int64, error) {
 	dir, err := s.dir(id)
 	if err != nil {
@@ -113,6 +120,12 @@ func (s *LocalContextStore) Put(_ context.Context, id string, r io.Reader) (int6
 	}
 	tmpName := tmp.Name()
 	n, err := io.Copy(tmp, r)
+	if err == nil {
+		// The bytes reach the disk before the rename can publish them, so a crash
+		// right after it finds the whole blob behind the digest the database
+		// already holds.
+		err = s.flush(tmp)
+	}
 	if err != nil {
 		tmp.Close()
 		os.Remove(tmpName)
@@ -126,7 +139,35 @@ func (s *LocalContextStore) Put(_ context.Context, id string, r io.Reader) (int6
 		os.Remove(tmpName)
 		return 0, fmt.Errorf("submit: commit context blob: %w", err)
 	}
+	// The rename, and a first upload's new directory, are entries in their parent
+	// directories: flush those too, or a crash can undo them.
+	for _, d := range []string{dir, s.Base} {
+		if err := s.syncDir(d); err != nil {
+			return 0, fmt.Errorf("submit: sync context dir: %w", err)
+		}
+	}
 	return n, nil
+}
+
+func (s *LocalContextStore) flush(f *os.File) error {
+	if s.sync != nil {
+		return s.sync(f)
+	}
+	return f.Sync()
+}
+
+// syncDir flushes dir's entries to disk. A filesystem that cannot sync a
+// directory has no stronger promise to give.
+func (s *LocalContextStore) syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	if err := s.flush(d); err != nil && !errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.ENOTSUP) {
+		return err
+	}
+	return nil
 }
 
 // Exists reports whether a context blob has been stored for id. Approve consults
