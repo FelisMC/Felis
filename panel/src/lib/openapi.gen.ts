@@ -1174,6 +1174,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/backups/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete one world backup (admin, or the user who owned the world).
+         * @description The backup leaves every list, restore and the backup budget at once; the reaper's next daily run deletes the archive and the off-site copy's next sync removes the bucket's copy. A user gets 404 for a backup outside their scope, as their list never shows it. Refused while a restore on the backup's server may still read it.
+         */
+        delete: operations["deleteBackup"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/servers/{name}/restore-backup": {
         parameters: {
             query?: never;
@@ -5683,6 +5703,51 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    deleteBackup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The backup is deleted; its archive goes at the reaper's next run. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        id: string;
+                        /** @constant */
+                        status: "expired";
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            /** @description No present backup with this id in the caller's scope (no_backup). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description A restore running on the backup's server may be reading it (restore_in_progress). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     restoreBackup: {

@@ -78,7 +78,8 @@ type Catalog interface {
 	// MarkOffsite records that the archive of row id is in the bucket.
 	MarkOffsite(ctx context.Context, id string, at time.Time) error
 	// ExpiredRefs lists the backup_ref of every row past its retention
-	// (deleted and expires_at < now) whose archive was copied off-site.
+	// (deleted, or expired: deleted through the API; and expires_at < now)
+	// whose archive was copied off-site.
 	ExpiredRefs(ctx context.Context, now time.Time) ([]string, error)
 	// PresentWorlds lists every present archive, for a restore of the volume.
 	PresentWorlds(ctx context.Context) ([]WorldBackup, error)

@@ -533,11 +533,12 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		// identity (including email_verified) to drive the setup flow.
 		{Method: "GET", Pattern: "/api/v1/me", SetupAllowed: true, h: a.handleMe},
 		{Method: "GET", Pattern: "/api/v1/me/servers", SetupAllowed: true, h: a.handleMyServers},
-		// World backups (spec §7, §466). Both are app-tier: GET /backups is scoped
+		// World backups (spec §7, §466). All are app-tier: GET /backups is scoped
 		// inside the handler (admin sees all; a user sees only worlds they formerly
-		// owned), and restore is gated by owner-or-admin PLUS a former-owner match, so
-		// neither sits behind adminOnly.
+		// owned), DELETE takes the same scope, and restore is gated by owner-or-admin
+		// PLUS a former-owner match, so none sits behind adminOnly.
 		{Method: "GET", Pattern: "/api/v1/backups", h: a.handleListBackups},
+		{Method: "DELETE", Pattern: "/api/v1/backups/{id}", h: a.handleDeleteBackup},
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/jobs", h: a.handleServerJobs},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/restore-backup", h: a.handleRestoreBackup},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/backup", h: a.handleBackupNow},

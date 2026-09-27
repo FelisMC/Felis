@@ -343,7 +343,7 @@ func isArchive(reason string) bool { return reason == ReasonInactive || reason =
 func (s *fakeStore) ListExpiredBackups(_ context.Context, now time.Time) ([]StoredBackup, error) {
 	var out []StoredBackup
 	for _, b := range s.backups {
-		if b.status == "present" && b.expires.Before(now) {
+		if b.status == "present" && b.expires.Before(now) || b.status == "expired" {
 			out = append(out, StoredBackup{ID: b.id, ServerName: b.server, BackupRef: b.ref, SizeBytes: b.size})
 		}
 	}
@@ -932,27 +932,29 @@ func TestCapacityEvictionOrderSparesSoleCopies(t *testing.T) {
 	}
 }
 
-// Retention pass: backups past expires_at are deleted from the backend and
-// marked deleted; unexpired backups are untouched.
+// Retention pass: backups past expires_at, and any its owner deleted (status
+// expired) whatever its expires_at, are deleted from the backend and marked
+// deleted; unexpired backups are untouched.
 func TestExpiredBackupsDeleted(t *testing.T) {
 	r, st, _, ar := newReaper(DefaultConfig())
 	st.backups = []*fakeBackup{
 		{id: "gone", server: "s1", ref: "ref-gone", size: 5, status: "present", createdAt: idleBy(120 * Day), expires: idleBy(1 * Day)},
 		{id: "keep", server: "s2", ref: "ref-keep", size: 5, status: "present", createdAt: idleBy(10 * Day), expires: testNow.Add(80 * Day)},
+		{id: "dropped", server: "s3", ref: "ref-dropped", size: 5, status: "expired", createdAt: idleBy(10 * Day), expires: testNow.Add(80 * Day)},
 	}
 
 	sum := mustRun(t, r)
-	if sum.BackupsExpired != 1 {
-		t.Fatalf("BackupsExpired = %d, want 1", sum.BackupsExpired)
+	if sum.BackupsExpired != 2 {
+		t.Fatalf("BackupsExpired = %d, want 2", sum.BackupsExpired)
 	}
-	if len(ar.deletes) != 1 || ar.deletes[0] != "ref-gone" {
-		t.Fatalf("deleted archives = %v, want [ref-gone]", ar.deletes)
+	if len(ar.deletes) != 2 || ar.deletes[0] != "ref-gone" || ar.deletes[1] != "ref-dropped" {
+		t.Fatalf("deleted archives = %v, want [ref-gone ref-dropped]", ar.deletes)
 	}
 	byID := map[string]string{}
 	for _, b := range st.backups {
 		byID[b.id] = b.status
 	}
-	if byID["gone"] != "deleted" || byID["keep"] != "present" {
+	if byID["gone"] != "deleted" || byID["keep"] != "present" || byID["dropped"] != "deleted" {
 		t.Fatalf("expiry hit wrong rows: %v", byID)
 	}
 }

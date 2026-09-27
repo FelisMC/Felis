@@ -170,7 +170,7 @@ func (s *PGStore) ExcessBackups(ctx context.Context, server, owner, reason strin
 
 func (s *PGStore) ListExpiredBackups(ctx context.Context, now time.Time) ([]StoredBackup, error) {
 	const q = `SELECT id, server_name, backup_ref, size_bytes, reason, COALESCE(sha256, '') FROM world_backups
-		WHERE status = 'present' AND expires_at < $1 ORDER BY expires_at ASC`
+		WHERE (status = 'present' AND expires_at < $1) OR status = 'expired' ORDER BY expires_at ASC`
 	return s.queryBackups(ctx, q, now)
 }
 

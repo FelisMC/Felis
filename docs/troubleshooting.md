@@ -1082,6 +1082,32 @@ the error its container exited on under Recent operations on the server's
 backup page. [GO-TESTED: `TestBackupNow`, `TestCheckRoom`,
 `TestReaperConfigManualKeys`, `TestLatestJobsExplainsFailures`]
 
+### Deleting one backup
+
+The delete button on a backup row (`DELETE /api/v1/backups/{id}`) takes that backup
+out of every list, every restore and the `max_local_bytes` count at once: its row
+turns `expired`, with `expires_at` pulled back to the moment of the delete. An admin
+may delete any backup, a user only one of a world they owned (the scope that lists
+it); any other id is `404 no_backup`. While a restore on that server may be reading
+the archive (a restore Job still running, or a safety snapshot whose restore of this
+backup has yet to start) the delete is `409 restore_in_progress`. The audit action
+is `backup.delete`, with the backup id, former owner and size in its payload.
+
+The archive stays on the backup volume until the reaper's next daily run, whose
+retention pass deletes every `expired` row's archive whatever its `expires_at`; the
+off-site copy goes at the sync after the delete. Until that run an admin can take
+the delete back, with the id from the audit entry; clearing `offsite_at` has the
+next sync copy it off site again in case its copy is already gone:
+
+```sh
+sudo k3s kubectl -n felis exec deploy/felis-postgres -c postgres -- psql -U postgres felis -c \
+  "UPDATE world_backups SET status = 'present', expires_at = now() + interval '30 days', offsite_at = NULL
+   WHERE id = '<backup id>' AND status = 'expired'"
+```
+
+[GO-TESTED: `TestDeleteBackup`, `TestExpiredBackupsDeleted`,
+`TestSyncExpiresOnlyPastRetention`; PG-TESTED: `TestOwnerDeletedBackup`]
+
 ### Every world at once: `felis backup-now`
 
 A world lives only in its volume, and the off-site copy holds only its archives.

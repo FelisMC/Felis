@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -542,3 +543,226 @@ func TestRestoreBackup(t *testing.T) {
 		}
 	})
 }
+
+// TestDeleteBackup covers DELETE /api/v1/backups/{id}: the scope that lists a
+// backup deletes it, the row turns expired (out of lists, restores and the
+// budget, expires_at pulled to now so the reaper and the off-site sync take it
+// next), an out-of-scope id reads as unknown, and a restore that may be reading
+// the archive holds the delete off.
+func TestDeleteBackup(t *testing.T) {
+	owner := &Principal{UserID: "owner1", Email: "owner1@example.net", Role: "user"}
+	admin := &Principal{UserID: "admin1", Email: "admin1@example.net", Role: "admin", ViaAdminAccess: true}
+	expires := time.Unix(1_706_000_000, 0)
+
+	mk := func(p *Principal) (*API, *fakeRepo) {
+		repo := newFakeRepo()
+		repo.backups = []fakeBackup{
+			{view: BackupView{ID: "bk1", ServerName: "survival", FormerOwner: "owner1",
+				Status: "present", Reason: "manual", SizeBytes: 1024,
+				CreatedAt: time.Unix(1_699_000_000, 0), ExpiresAt: expires}, ref: "ref-bk1"},
+			{view: BackupView{ID: "bk2", ServerName: "creative", FormerOwner: "owner2",
+				Status: "present", Reason: "inactive_15d", SizeBytes: 2048,
+				CreatedAt: time.Unix(1_699_500_000, 0), ExpiresAt: expires}, ref: "ref-bk2"},
+		}
+		api := newTestAPI(repo, newFakeCluster())
+		api.External = staticExternal{p: p}
+		return api, repo
+	}
+	del := func(api *API, id string) *httptest.ResponseRecorder {
+		return do(api.ExternalHandler(), "DELETE", "/api/v1/backups/"+id, "", nil)
+	}
+	status := func(repo *fakeRepo, id string) string {
+		for _, b := range repo.backups {
+			if b.view.ID == id {
+				return b.view.Status
+			}
+		}
+		return ""
+	}
+
+	t.Run("former owner deletes -> 200, expired, audited", func(t *testing.T) {
+		api, repo := mk(owner)
+		w := del(api, "bk1")
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("body not JSON: %v (%s)", err, w.Body.String())
+		}
+		if len(resp) != 2 || resp["id"] != "bk1" || resp["status"] != "expired" {
+			t.Fatalf("body = %v, want {id: bk1, status: expired}", resp)
+		}
+		b := repo.backups[0].view
+		if b.Status != "expired" || !b.ExpiresAt.Equal(api.now()) {
+			t.Fatalf("row = %s expiring %v, want expired expiring %v", b.Status, b.ExpiresAt, api.now())
+		}
+		if status(repo, "bk2") != "present" {
+			t.Fatal("deleting bk1 touched bk2")
+		}
+		if n, _ := repo.BackupStoreBytes(t.Context()); n != 2048 {
+			t.Fatalf("backup budget counts %d bytes, want 2048", n)
+		}
+		lw := do(api.ExternalHandler(), "GET", "/api/v1/backups", "", nil)
+		if strings.Contains(lw.Body.String(), `"bk1"`) {
+			t.Fatalf("deleted backup still listed: %s", lw.Body.String())
+		}
+		if len(repo.audits) != 1 {
+			t.Fatalf("audits = %+v, want one", repo.audits)
+		}
+		a := repo.audits[0]
+		if a.Action != "backup.delete" || a.Actor != "owner1@example.net" || a.ActorUserID != "owner1" || a.ServerName != "survival" {
+			t.Fatalf("audit = %+v", a)
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(a.Payload, &payload); err != nil {
+			t.Fatalf("payload not JSON: %v (%s)", err, a.Payload)
+		}
+		if payload["backup_id"] != "bk1" || payload["former_owner"] != "owner1" || payload["size_bytes"] != float64(1024) {
+			t.Fatalf("payload = %v", payload)
+		}
+		if w := del(api, "bk1"); w.Code != http.StatusNotFound || decodeErr(t, w) != "no_backup" {
+			t.Fatalf("second delete: code = %d body %s, want 404 no_backup", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("expires_at already past stays put", func(t *testing.T) {
+		api, repo := mk(owner)
+		past := api.now().Add(-time.Hour)
+		repo.backups[0].view.ExpiresAt = past
+		if w := del(api, "bk1"); w.Code != http.StatusOK {
+			t.Fatalf("code = %d (%s)", w.Code, w.Body.String())
+		}
+		if got := repo.backups[0].view.ExpiresAt; !got.Equal(past) {
+			t.Fatalf("expires_at = %v, want %v", got, past)
+		}
+	})
+
+	t.Run("admin deletes another's backup -> 200", func(t *testing.T) {
+		api, repo := mk(admin)
+		if w := del(api, "bk2"); w.Code != http.StatusOK {
+			t.Fatalf("code = %d, want 200 (%s)", w.Code, w.Body.String())
+		}
+		if status(repo, "bk2") != "expired" {
+			t.Fatalf("bk2 = %s, want expired", status(repo, "bk2"))
+		}
+	})
+
+	for _, tc := range []struct {
+		name string
+		p    *Principal
+		id   string
+		prep func(*fakeRepo)
+	}{
+		{"another user's backup", owner, "bk2", nil},
+		{"unknown id", admin, "nope", nil},
+		{"already deleted", admin, "bk1", func(r *fakeRepo) { r.backups[0].view.Status = "deleted" }},
+		{"already expired", owner, "bk1", func(r *fakeRepo) { r.backups[0].view.Status = "expired" }},
+		{"no user id against no former owner", &Principal{Role: "user"}, "bk1",
+			func(r *fakeRepo) { r.backups[0].view.FormerOwner = "" }},
+	} {
+		t.Run(tc.name+" -> 404 no_backup", func(t *testing.T) {
+			api, repo := mk(tc.p)
+			if tc.prep != nil {
+				tc.prep(repo)
+			}
+			before := []string{status(repo, "bk1"), status(repo, "bk2")}
+			w := del(api, tc.id)
+			if w.Code != http.StatusNotFound || decodeErr(t, w) != "no_backup" {
+				t.Fatalf("code = %d body %s, want 404 no_backup", w.Code, w.Body.String())
+			}
+			if after := []string{status(repo, "bk1"), status(repo, "bk2")}; after[0] != before[0] || after[1] != before[1] {
+				t.Fatalf("statuses %v -> %v, want unchanged", before, after)
+			}
+			if len(repo.audits) != 0 {
+				t.Fatalf("refused delete audited: %+v", repo.audits)
+			}
+		})
+	}
+
+	for _, tc := range []struct {
+		name string
+		jobs []AsyncJob
+		want int
+	}{
+		{"restore running", []AsyncJob{{Kind: "restore", State: "running"}}, http.StatusConflict},
+		{"snapshot before restoring this backup", []AsyncJob{{Kind: "backup", State: "running",
+			ThenRestore: "pending", RestoreBackupID: "bk1"}}, http.StatusConflict},
+		{"snapshot done, restore of this backup still to start", []AsyncJob{{Kind: "backup", State: "succeeded",
+			ThenRestore: "pending", RestoreBackupID: "bk1"}}, http.StatusConflict},
+		{"snapshot before restoring another backup", []AsyncJob{{Kind: "backup", State: "running",
+			ThenRestore: "pending", RestoreBackupID: "bk9"}}, http.StatusOK},
+		{"restore of this backup started and finished", []AsyncJob{
+			{Kind: "restore", State: "succeeded"},
+			{Kind: "backup", State: "succeeded", ThenRestore: "started", RestoreBackupID: "bk1"}}, http.StatusOK},
+		{"chain abandoned", []AsyncJob{{Kind: "backup", State: "failed",
+			ThenRestore: "abandoned", RestoreBackupID: "bk1"}}, http.StatusOK},
+		{"restore failed", []AsyncJob{{Kind: "restore", State: "failed"}}, http.StatusOK},
+		{"plain backup running", []AsyncJob{{Kind: "backup", State: "running"}}, http.StatusOK},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			api, repo := mk(owner)
+			js := &fakeJobStatus{jobs: tc.jobs}
+			api.JobStatus = js
+			w := del(api, "bk1")
+			if w.Code != tc.want {
+				t.Fatalf("code = %d, want %d (%s)", w.Code, tc.want, w.Body.String())
+			}
+			if js.got != "survival" {
+				t.Fatalf("jobs read for %q, want survival", js.got)
+			}
+			want := "expired"
+			if tc.want == http.StatusConflict {
+				want = "present"
+				if decodeErr(t, w) != "restore_in_progress" {
+					t.Fatalf("error code %q, want restore_in_progress", decodeErr(t, w))
+				}
+			}
+			if status(repo, "bk1") != want {
+				t.Fatalf("bk1 = %s, want %s", status(repo, "bk1"), want)
+			}
+		})
+	}
+
+	t.Run("deleted by someone else after the lookup -> 404, not audited", func(t *testing.T) {
+		api, repo := mk(owner)
+		api.Repo = expireFails{repo, ErrNotFound}
+		if w := del(api, "bk1"); w.Code != http.StatusNotFound || decodeErr(t, w) != "no_backup" {
+			t.Fatalf("code = %d body %s, want 404 no_backup", w.Code, w.Body.String())
+		}
+		if len(repo.audits) != 0 {
+			t.Fatalf("lost race audited: %+v", repo.audits)
+		}
+	})
+
+	t.Run("expire fails -> 500, not audited", func(t *testing.T) {
+		api, repo := mk(owner)
+		api.Repo = expireFails{repo, errors.New("connection reset")}
+		if w := del(api, "bk1"); w.Code != http.StatusInternalServerError {
+			t.Fatalf("code = %d, want 500 (%s)", w.Code, w.Body.String())
+		}
+		if len(repo.audits) != 0 {
+			t.Fatalf("failed delete audited: %+v", repo.audits)
+		}
+	})
+
+	t.Run("job status error -> 500, kept", func(t *testing.T) {
+		api, repo := mk(owner)
+		api.JobStatus = &fakeJobStatus{err: errors.New("apiserver down")}
+		if w := del(api, "bk1"); w.Code != http.StatusInternalServerError {
+			t.Fatalf("code = %d, want 500 (%s)", w.Code, w.Body.String())
+		}
+		if status(repo, "bk1") != "present" || len(repo.audits) != 0 {
+			t.Fatalf("bk1 = %s audits %d, want present and none", status(repo, "bk1"), len(repo.audits))
+		}
+	})
+}
+
+// expireFails is a repo whose ExpireBackup answers err after the handler's
+// lookup found the backup: ErrNotFound is a concurrent delete winning.
+type expireFails struct {
+	*fakeRepo
+	err error
+}
+
+func (f expireFails) ExpireBackup(context.Context, string, time.Time) error { return f.err }

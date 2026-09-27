@@ -631,6 +631,14 @@ export const api = rejectingSync({
     );
   },
 
+  // deleteBackup deletes one backup, in the same scope that lists it (an admin any,
+  // a user only a world they formerly owned; any other id is 404 no_backup). It
+  // leaves every list and restore at once; the reaper deletes the archive on its
+  // next daily run and the off-site sync its copy. 409 restore_in_progress while a
+  // restore on that server may still be reading it.
+  deleteBackup: (id: string) =>
+    request<{ id: string; status: "expired" }>("DELETE", urlPath`/backups/${id}`),
+
   // restoreBackup starts an ASYNC restore of a server's world from a backup
   // (spec §7 POST restore-backup). It accepts an optional backupId in the body: when
   // absent the backend restores the latest backup and resolves its opaque ref

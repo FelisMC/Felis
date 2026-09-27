@@ -44,7 +44,7 @@ func (c PGCatalog) MarkOffsite(ctx context.Context, id string, at time.Time) err
 
 func (c PGCatalog) ExpiredRefs(ctx context.Context, now time.Time) ([]string, error) {
 	return c.refs(ctx, `SELECT backup_ref FROM world_backups
-		WHERE status = 'deleted' AND expires_at < $1 AND offsite_at IS NOT NULL`, now)
+		WHERE status IN ('deleted', 'expired') AND expires_at < $1 AND offsite_at IS NOT NULL`, now)
 }
 
 func (c PGCatalog) refs(ctx context.Context, q string, args ...any) ([]string, error) {

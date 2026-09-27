@@ -3803,6 +3803,46 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
 
+  /api/v1/backups/{id}:
+    delete:
+      tags: [backups]
+      operationId: deleteBackup
+      summary: Delete one world backup (admin, or the user who owned the world).
+      description: >-
+        The backup leaves every list, restore and the backup budget at once;
+        the reaper's next daily run deletes the archive and the off-site copy's
+        next sync removes the bucket's copy. A user gets 404 for a backup
+        outside their scope, as their list never shows it. Refused while a
+        restore on the backup's server may still read it.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The backup is deleted; its archive goes at the reaper's next run.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id: { type: string }
+                  status: { type: string, const: expired }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No present backup with this id in the caller's scope (no_backup).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: A restore running on the backup's server may be reading it (restore_in_progress).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   /api/v1/servers/{name}/restore-backup:
     post:
       tags: [backups]

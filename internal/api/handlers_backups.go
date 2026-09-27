@@ -74,6 +74,75 @@ func (a *API) handleListBackups(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"backups": backups, "total": total})
 }
 
+// handleDeleteBackup deletes one world backup (DELETE /api/v1/backups/{id}). An
+// admin may delete any; a user only one of a world they owned, the scope that
+// lists and restores it, and any other id reads as unknown (404), as it does in
+// their list. The row turns expired at once, so no list, restore or backup
+// budget counts it again; the reaper's next retention pass deletes the archive
+// and the off-site copy's next sync the bucket's copy. A reaped world's backup
+// is that world's only copy, which the panel says before it asks.
+//
+// A restore running on the backup's server may be reading the archive, so the
+// delete waits for it: a restore Job still running, or a safety snapshot whose
+// restore of this backup has yet to start, is 409 restore_in_progress. Without
+// a JobStatus reader there is nothing to ask and the delete goes ahead: the
+// reaper removes the archive at its next daily run, long after any restore
+// admitted before the delete has read it.
+func (a *API) handleDeleteBackup(w http.ResponseWriter, r *http.Request) {
+	p := principalFromContext(r.Context())
+	backup, err := a.Repo.BackupByID(r.Context(), r.PathValue("id"))
+	if err == nil && !p.IsAdmin() && (p.UserID == "" || backup.FormerOwner != p.UserID) {
+		err = ErrNotFound
+	}
+	if errors.Is(err, ErrNotFound) {
+		writeError(w, r, newError(http.StatusNotFound, "no_backup", "no matching backup exists"))
+		return
+	}
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if a.JobStatus != nil {
+		jobs, err := a.JobStatus.LatestJobs(r.Context(), backup.ServerName)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		if restoreMayRead(jobs, backup.ID) {
+			writeError(w, r, newError(http.StatusConflict, "restore_in_progress",
+				"a restore is running on this backup's server and may be reading it; delete it once the restore finishes"))
+			return
+		}
+	}
+	if err := a.Repo.ExpireBackup(r.Context(), backup.ID, a.now()); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, r, newError(http.StatusNotFound, "no_backup", "no matching backup exists"))
+			return
+		}
+		writeError(w, r, err)
+		return
+	}
+	e := AuditEntry{Actor: auditActor(p), ActorUserID: p.UserID, Action: "backup.delete", ServerName: backup.ServerName}
+	e.Payload = auditPayload(map[string]any{"backup_id": backup.ID, "former_owner": backup.FormerOwner, "size_bytes": backup.SizeBytes})
+	a.auditEntry(r, e)
+	writeJSON(w, http.StatusOK, map[string]any{"id": backup.ID, "status": "expired"})
+}
+
+// restoreMayRead reports whether one of a server's Jobs may still read backup
+// id's archive: any restore Job not yet finished (which archive it extracts is
+// not on the Job), or a safety snapshot whose restore of id has not started.
+func restoreMayRead(jobs []AsyncJob, id string) bool {
+	for _, j := range jobs {
+		if j.Kind == "restore" && j.State == "running" {
+			return true
+		}
+		if j.ThenRestore == maintenance.ThenRestorePending && j.RestoreBackupID == id {
+			return true
+		}
+	}
+	return false
+}
+
 // handleRestoreBackup starts restoring a server's world from a backup (spec §7
 // POST /servers/{name}/restore-backup; spec §466). It accepts an optional JSON
 // body with a backup_id; when absent it restores the latest backup for the server

@@ -792,6 +792,17 @@ describe("image whitelist and builds wire shapes", () => {
       expect(String(url)).toBe("/backups");
     });
 
+    it("deleteBackup sends DELETE to the escaped backup id", async () => {
+      const fetchSpy = fakeFetch({ id: "bk/1", status: "expired" });
+      vi.stubGlobal("fetch", fetchSpy);
+      const res = await api.deleteBackup("bk/1");
+      expect(res).toEqual({ id: "bk/1", status: "expired" });
+      const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(String(url)).toBe("/backups/bk%2F1");
+      expect((opts as RequestInit).method).toBe("DELETE");
+      expect((opts as RequestInit).body).toBeUndefined();
+    });
+
     it("restoreBackup sends backup_id, and safety_snapshot only when turned off", async () => {
       const fetchSpy = fakeFetch(
         { name: "survival", status: "restoring", backup_id: "bk1", safety_snapshot: true },

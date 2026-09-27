@@ -10,6 +10,7 @@ import {
   RotateCcw,
   ShieldCheck,
   ShieldX,
+  Trash2,
   UserMinus,
   XCircle,
 } from "lucide-react";
@@ -17,6 +18,7 @@ import { useTranslation } from "react-i18next";
 import { BackLink } from "@/components/BackLink";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { ConfirmFooter } from "@/components/ConfirmFooter";
 import { MessageLine, InlineError } from "@/components/MessageLine";
 import {
@@ -43,12 +45,13 @@ const BACKUP_PAGE_SIZE = 20;
 
 const CELL = "whitespace-nowrap md:px-4 md:py-3.5";
 
-/** BackupRow is one backup in the table, with its own restore action. `isLatest`
+/** BackupRow is one backup in the table, with its own restore and delete actions. `isLatest`
  *  marks the row a restore with no pick recovers: the newest one that is not
  *  corrupt, which is what the backend's LatestBackup selects. Under the reason it
  *  shows what the reaper's read-back found — corrupt (restore refused), verified,
  *  or entries the archive could not hold. `showOwner` surfaces the former owner
- *  (admins list every world's backups; a user only ever sees their own). */
+ *  (admins list every world's backups; a user only ever sees their own). `only`
+ *  says this is the one backup the server has, which the delete confirm names. */
 function BackupRow({
   b,
   isLatest,
@@ -56,7 +59,10 @@ function BackupRow({
   locale,
   showOwner,
   serverName,
+  jobs,
+  only,
   onReloadStatus,
+  onDeleted,
 }: {
   b: BackupView;
   isLatest: boolean;
@@ -64,7 +70,10 @@ function BackupRow({
   locale: string;
   showOwner?: boolean;
   serverName: string;
+  jobs: ServerJob[];
+  only: boolean;
   onReloadStatus: () => void;
+  onDeleted: (gone: boolean) => void;
 }) {
   const { t } = useTranslation("backups");
   const expired = isExpired(b.expires_at, now);
@@ -132,26 +141,133 @@ function BackupRow({
         </td>
       )}
       <td className={cn(CELL, "ml-auto text-right")}>
-        {b.corrupt ? (
-          <span className="text-xs text-destructive/70 font-medium px-3 py-1.5">
-            {t("corrupt_short")}
-          </span>
-        ) : !expired ? (
-          <RestoreControls
-            serverName={serverName}
+        <div className="flex items-center justify-end gap-1">
+          {b.corrupt ? (
+            <span className="text-xs text-destructive/70 font-medium px-3 py-1.5">
+              {t("corrupt_short")}
+            </span>
+          ) : !expired ? (
+            <RestoreControls
+              serverName={serverName}
+              backup={b}
+              now={now}
+              locale={locale}
+              onReloadStatus={onReloadStatus}
+              buttonVariant={isLatest ? "destructive" : "outline"}
+            />
+          ) : (
+            <span className="text-xs text-muted-foreground/40 font-medium px-3 py-1.5">
+              {t("expired")}
+            </span>
+          )}
+          <DeleteBackupButton
             backup={b}
             now={now}
             locale={locale}
-            onReloadStatus={onReloadStatus}
-            buttonVariant={isLatest ? "destructive" : "outline"}
+            only={only}
+            busy={restoreMayRead(jobs, b.id)}
+            onDeleted={onDeleted}
           />
-        ) : (
-          <span className="text-xs text-muted-foreground/40 font-medium px-3 py-1.5">
-            {t("expired")}
-          </span>
-        )}
+        </div>
       </td>
     </tr>
+  );
+}
+
+/** restoreMayRead mirrors the backend's delete gate: a restore Job still running on
+ *  the server (which archive it extracts is not on the Job), or a safety snapshot
+ *  whose restore of this backup has yet to start, may be reading the archive. */
+function restoreMayRead(jobs: ServerJob[], id: string): boolean {
+  return jobs.some(
+    (j) =>
+      (j.kind === "restore" && j.state === "running") ||
+      (j.then_restore === "pending" && j.restore_backup_id === id),
+  );
+}
+
+/** DeleteBackupButton deletes one backup behind a confirm that says what goes: the
+ *  row leaves the list at once and can no longer be restored, and the archive and
+ *  its off-site copy follow at the next cleanup and sync. A reclaimed or released
+ *  world's archive may be the only copy of that world, and the server's only backup
+ *  is the last way back, so the dialog says either before it asks. While a restore
+ *  may be reading the archive the button waits, since the API would refuse (409);
+ *  a backup someone else deleted meanwhile just refreshes the list. */
+function DeleteBackupButton({
+  backup,
+  now,
+  locale,
+  only,
+  busy,
+  onDeleted,
+}: {
+  backup: BackupView;
+  now: number;
+  locale: string;
+  only: boolean;
+  busy: boolean;
+  onDeleted: (gone: boolean) => void;
+}) {
+  const { t } = useTranslation("backups");
+  const [open, setOpen] = useState(false);
+  const archive = backup.reason === "inactive_15d" || backup.reason === "released";
+
+  async function confirmDelete() {
+    try {
+      await api.deleteBackup(backup.id);
+    } catch (e: any) {
+      if (e && e.code === "no_backup") {
+        onDeleted(true);
+        return;
+      }
+      if (e && e.code === "restore_in_progress") throw new Error(t("delete_restore_busy"));
+      throw e;
+    }
+    onDeleted(false);
+  }
+
+  // A disabled button takes no pointer events, so the reason sits on a wrapper.
+  return (
+    <>
+      <span title={busy ? t("delete_restore_busy") : undefined}>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+          onClick={() => setOpen(true)}
+          disabled={busy}
+          aria-label={t("delete_btn")}
+          title={t("delete_btn")}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </Button>
+      </span>
+      <ConfirmDialog
+        open={open}
+        onOpenChange={setOpen}
+        title={t("delete_title")}
+        description={
+          <>
+            {t("delete_confirm", {
+              relative: formatRelative(backup.created_at, now, locale),
+              absolute: formatAbsolute(backup.created_at, locale),
+              size: formatBytes(backup.size_bytes),
+            })}
+            {(archive || only) && (
+              <span className="mt-3 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 p-3 text-amber-700 dark:text-amber-400">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <span className="flex flex-col gap-1">
+                  {archive && <span>{t("delete_archive_warning")}</span>}
+                  {only && <span>{t("delete_only_warning")}</span>}
+                </span>
+              </span>
+            )}
+            <span className="mt-3 block text-xs">{t("delete_cleanup_note")}</span>
+          </>
+        }
+        confirmLabel={t("delete_confirm_yes")}
+        onConfirm={confirmDelete}
+      />
+    </>
   );
 }
 
@@ -481,6 +597,12 @@ export function ServerBackups() {
     [name, page],
     { keepPrevious: true },
   );
+  // Deleting the last row of a later page leaves it empty: step back, one settled
+  // read at a time, to a page that still has backups.
+  const pageEmpty = !backupsQ.loading && !!backupsQ.data && backupsQ.data.backups.length === 0 && page > 1;
+  useEffect(() => {
+    if (pageEmpty) setPage((p) => Math.max(1, p - 1));
+  }, [pageEmpty]);
 
   // Ownership resolves from /me/servers for a non-admin (status carries no `owned`).
   // While it is pending show the header with a spinner rather than flashing the list
@@ -537,6 +659,12 @@ export function ServerBackups() {
     } finally {
       setBackingUp(false);
     }
+  }
+
+  // A deleted backup (or one already gone when asked) leaves the list, reread now.
+  function handleDeleted(gone: boolean) {
+    setBackupMsg({ kind: "success", text: t(gone ? "delete_gone" : "deleted") });
+    backupsQ.reload();
   }
 
   const back = (
@@ -657,10 +785,13 @@ export function ServerBackups() {
                           locale={locale}
                           showOwner={isAdmin}
                           serverName={name}
+                          jobs={jobsQ.data ?? []}
+                          only={total === 1}
                           onReloadStatus={() => {
                             statusQ.reload();
                             jobsQ.reload();
                           }}
+                          onDeleted={handleDeleted}
                         />
                       ))}
                     </tbody>

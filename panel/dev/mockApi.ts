@@ -1277,6 +1277,26 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
         sendJSON(ctx.res, 200, { ok: true, signed_out: signedOut });
         return true;
       }
+      if (ctx.method === "DELETE" && ctx.parts[2] === "backups" && ctx.parts[3] && ctx.parts.length === 4) {
+        // Mirrors handleDeleteBackup: the scope that lists a backup deletes it and
+        // any other id is 404 no_backup; a restore on its server that may still be
+        // reading it is 409 restore_in_progress. The row turns expired at once.
+        const b = ctx.state.backups.find((x) => x.id === ctx.parts[3] && x.status === "present");
+        if (!b || !(isAdmin(ctx.account.role) || b.former_owner === ctx.account.id)) {
+          sendError(ctx.res, 404, "no_backup", "no matching backup exists");
+          return true;
+        }
+        const reading = (ctx.state.jobs[b.server_name] ?? []).some(
+          (j) => (j.kind === "restore" && j.state === "running") || (j.then_restore === "pending" && j.restore_backup_id === b.id),
+        );
+        if (reading) {
+          sendError(ctx.res, 409, "restore_in_progress", "a restore is running on this backup's server and may be reading it; delete it once the restore finishes");
+          return true;
+        }
+        b.status = "expired";
+        sendJSON(ctx.res, 200, { id: b.id, status: "expired" });
+        return true;
+      }
       if (ctx.method === "DELETE" && ctx.parts[2] === "account" && ctx.parts[3] === "passkey" && ctx.parts[4] === "credentials" && ctx.parts[5]) {
         // The real API asks for the re-auth before it looks the passkey up.
         if (refusedForReauth(ctx)) return true;

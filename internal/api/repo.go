@@ -413,6 +413,11 @@ type Repo interface {
 	// none matches. Like LatestBackup the returned BackupRecord carries the
 	// server-side backup_ref the restore path needs; the client never sees it.
 	BackupByID(ctx context.Context, id string) (*BackupRecord, error)
+	// ExpireBackup takes one present backup out of every list, restore and budget
+	// at once (status expired, expires_at no later than at), leaving its archive
+	// for the reaper's next retention pass and its off-site copy for the next
+	// sync. ErrNotFound when no present backup has that id.
+	ExpireBackup(ctx context.Context, id string, at time.Time) error
 	// LastBackupRequest returns when an on-demand backup of the server was last
 	// accepted (its newest backup.create audit row) at or after since, or the zero
 	// time when there was none. The since bound keeps the lookup inside the

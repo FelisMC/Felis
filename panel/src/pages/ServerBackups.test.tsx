@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import i18next from "i18next";
@@ -15,6 +15,7 @@ const calls = vi.hoisted(() => ({
   listBackups: vi.fn(),
   stop: vi.fn(),
   restoreBackup: vi.fn(),
+  deleteBackup: vi.fn(),
 }));
 vi.mock("@/lib/tier", () => ({
   useTier: () => ({
@@ -215,5 +216,156 @@ describe("ServerBackups back up now", () => {
     expect((await screen.findByRole("alert")).textContent).toContain(humanizeError(outage));
     expect(screen.getByText("Page 1 of 3")).toBeTruthy();
     expect(backUp().disabled).toBe(false);
+  });
+});
+
+describe("ServerBackups delete", () => {
+  const row = (when: string) => screen.getByText(when).closest("tr") as HTMLElement;
+  const deleteIn = (when: string) =>
+    within(row(when)).getByRole("button", { name: "Delete backup" }) as HTMLButtonElement;
+  const archiveWarning = () => screen.queryByText(i18next.t("backups:delete_archive_warning"));
+  const onlyWarning = () => screen.queryByText(i18next.t("backups:delete_only_warning"));
+
+  it("deletes the picked backup after the confirm, then rereads the list", async () => {
+    calls.listBackups
+      .mockResolvedValueOnce({ backups: [backup("bk-new", 1), backup("bk-ok", 2)], total: 2 })
+      .mockResolvedValue({ backups: [backup("bk-new", 1)], total: 1 });
+    calls.deleteBackup.mockResolvedValue({ id: "bk-ok", status: "expired" });
+    renderPage();
+    await screen.findByText("2 hours ago");
+    await userEvent.click(deleteIn("2 hours ago"));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Delete this backup?")).toBeTruthy();
+    expect(dialog.textContent).toContain("1.0 MiB");
+    expect(dialog.textContent).toContain(i18next.t("backups:delete_cleanup_note"));
+    expect(archiveWarning()).toBeNull();
+    expect(onlyWarning()).toBeNull();
+    expect(calls.deleteBackup).not.toHaveBeenCalled();
+
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete backup" }));
+    expect(calls.deleteBackup).toHaveBeenCalledExactlyOnceWith("bk-ok");
+    expect(await screen.findByText("Backup deleted.")).toBeTruthy();
+    await vi.waitFor(() => expect(screen.queryByText("2 hours ago")).toBeNull());
+    expect(calls.listBackups).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it.each(["inactive_15d", "released"])("warns that a %s archive may be the world's only copy", async (reason) => {
+    calls.listBackups.mockResolvedValue({
+      backups: [{ ...backup("bk-arc", 4), reason }, backup("bk-man", 5)],
+      total: 2,
+    });
+    renderPage();
+    await screen.findByText("4 hours ago");
+    await userEvent.click(deleteIn("4 hours ago"));
+    await screen.findByRole("dialog");
+    expect(archiveWarning()).toBeTruthy();
+    expect(onlyWarning()).toBeNull();
+  });
+
+  it("says when it is the server's only backup", async () => {
+    calls.listBackups.mockResolvedValue({ backups: [backup("bk-1", 3)], total: 1 });
+    renderPage();
+    await screen.findByText("3 hours ago");
+    await userEvent.click(deleteIn("3 hours ago"));
+    await screen.findByRole("dialog");
+    expect(onlyWarning()).toBeTruthy();
+    expect(archiveWarning()).toBeNull();
+  });
+
+  it("keeps the dialog open and says why when a restore may be reading it", async () => {
+    calls.listBackups.mockResolvedValue({ backups: [backup("bk-1", 3), backup("bk-2", 4)], total: 2 });
+    calls.deleteBackup.mockRejectedValue({ status: 409, code: "restore_in_progress", message: "busy" });
+    renderPage();
+    await screen.findByText("3 hours ago");
+    await userEvent.click(deleteIn("3 hours ago"));
+    const dialog = await screen.findByRole("dialog");
+    await userEvent.click(within(dialog).getByRole("button", { name: "Delete backup" }));
+    expect(await within(dialog).findByText(i18next.t("backups:delete_restore_busy"))).toBeTruthy();
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    expect(calls.listBackups).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Backup deleted.")).toBeNull();
+  });
+
+  it("rereads the list when the backup was already gone", async () => {
+    calls.listBackups
+      .mockResolvedValueOnce({ backups: [backup("bk-1", 3), backup("bk-2", 4)], total: 2 })
+      .mockResolvedValue({ backups: [backup("bk-2", 4)], total: 1 });
+    calls.deleteBackup.mockRejectedValue({ status: 404, code: "no_backup", message: "no matching backup exists" });
+    renderPage();
+    await screen.findByText("3 hours ago");
+    await userEvent.click(deleteIn("3 hours ago"));
+    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete backup" }));
+    expect(await screen.findByText(i18next.t("backups:delete_gone"))).toBeTruthy();
+    await vi.waitFor(() => expect(screen.queryByText("3 hours ago")).toBeNull());
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("waits while any restore runs on the server", async () => {
+    calls.listBackups.mockResolvedValue({ backups: [backup("bk-1", 3), backup("bk-2", 4)], total: 2 });
+    calls.serverJobs.mockResolvedValue([{ name: "restore-survival-aa", kind: "restore", state: "running" }]);
+    renderPage();
+    await screen.findByText("3 hours ago");
+    await vi.waitFor(() => expect(deleteIn("3 hours ago").disabled).toBe(true));
+    expect(deleteIn("4 hours ago").disabled).toBe(true);
+    expect(deleteIn("3 hours ago").parentElement?.title).toBe(i18next.t("backups:delete_restore_busy"));
+  });
+
+  it("waits only on the backup a safety snapshot is about to restore", async () => {
+    calls.listBackups.mockResolvedValue({ backups: [backup("bk-1", 3), backup("bk-2", 4)], total: 2 });
+    calls.serverJobs.mockResolvedValue([
+      { name: "backup-survival-bb", kind: "backup", state: "succeeded", then_restore: "pending", restore_backup_id: "bk-2" },
+      { name: "restore-survival-cc", kind: "restore", state: "succeeded" },
+    ]);
+    renderPage();
+    await screen.findByText("4 hours ago");
+    await vi.waitFor(() => expect(deleteIn("4 hours ago").disabled).toBe(true));
+    expect(deleteIn("3 hours ago").disabled).toBe(false);
+    expect(deleteIn("3 hours ago").parentElement?.title).toBe("");
+  });
+
+  it("steps back a page when the delete empties the last one", async () => {
+    let lastGone = false;
+    calls.listBackups.mockImplementation(async ({ offset }: { offset: number }) => ({
+      backups: offset === 40 ? (lastGone ? [] : [backup("bk-last", 90)]) : [backup(`bk-${offset}`, 50)],
+      total: lastGone ? 40 : 41,
+    }));
+    calls.deleteBackup.mockImplementation(async () => {
+      lastGone = true;
+      return { id: "bk-last", status: "expired" };
+    });
+    renderPage();
+    await screen.findByText("Page 1 of 3");
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await screen.findByText("Page 3 of 3");
+    await screen.findByText("4 days ago");
+    await userEvent.click(deleteIn("4 days ago"));
+    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete backup" }));
+    expect(await screen.findByText("Page 2 of 2")).toBeTruthy();
+    expect(calls.listBackups).toHaveBeenLastCalledWith({ server: "survival", limit: 20, offset: 20 });
+  });
+
+  it("keeps stepping back past pages emptied meanwhile", async () => {
+    let gone = false;
+    calls.listBackups.mockImplementation(async ({ offset }: { offset: number }) => ({
+      backups: offset === 0 ? [backup("bk-0", 50)] : gone ? [] : [backup(`bk-${offset}`, 90)],
+      total: gone ? 20 : 41,
+    }));
+    calls.deleteBackup.mockImplementation(async () => {
+      gone = true;
+      return { id: "bk-40", status: "expired" };
+    });
+    renderPage();
+    await screen.findByText("Page 1 of 3");
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await userEvent.click(screen.getByRole("button", { name: "Next" }));
+    await screen.findByText("Page 3 of 3");
+    await screen.findByText("4 days ago");
+    await userEvent.click(deleteIn("4 days ago"));
+    await userEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Delete backup" }));
+    await vi.waitFor(() => expect(calls.listBackups).toHaveBeenLastCalledWith({ server: "survival", limit: 20, offset: 0 }));
+    expect(await screen.findByText("2 days ago")).toBeTruthy();
+    expect(screen.queryByText(/^Page \d+ of/)).toBeNull();
   });
 });

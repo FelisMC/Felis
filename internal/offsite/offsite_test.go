@@ -233,7 +233,7 @@ func (c *fakeCatalog) MarkOffsite(_ context.Context, id string, at time.Time) er
 func (c *fakeCatalog) ExpiredRefs(_ context.Context, now time.Time) ([]string, error) {
 	var out []string
 	for _, r := range c.rows {
-		if r.status == "deleted" && r.expires.Before(now) && !r.offsite.IsZero() {
+		if (r.status == "deleted" || r.status == "expired") && r.expires.Before(now) && !r.offsite.IsZero() {
 			out = append(out, r.Ref)
 		}
 	}
@@ -374,23 +374,26 @@ func TestSyncFailureLeavesRowPending(t *testing.T) {
 }
 
 // TestSyncExpiresOnlyPastRetention: a remote archive goes once its row has
-// expired; one evicted early from the local disk stays until then, and an
+// expired, or once its owner deleted it (status expired, expires_at pulled to
+// the delete); one evicted early from the local disk stays until then, and an
 // object with no row at all is left alone.
 func TestSyncExpiresOnlyPastRetention(t *testing.T) {
 	cat := &fakeCatalog{rows: []*row{
 		{WorldBackup: WorldBackup{ID: "old", Ref: "/a/old.tar.gz"}, status: "deleted", expires: now.Add(-time.Hour), offsite: now.Add(-100 * 24 * time.Hour)},
 		{WorldBackup: WorldBackup{ID: "evicted", Ref: "/a/evicted.tar.gz"}, status: "deleted", expires: now.Add(30 * 24 * time.Hour), offsite: now.Add(-24 * time.Hour)},
+		{WorldBackup: WorldBackup{ID: "dropped", Ref: "/a/dropped.tar.gz"}, status: "expired", expires: now.Add(-time.Minute), offsite: now.Add(-24 * time.Hour)},
 	}}
 	s, b := newSyncer(t, cat)
-	for _, k := range []string{"worlds/old.tar.gz.fenc", "worlds/evicted.tar.gz.fenc", "worlds/unknown.tar.gz.fenc"} {
+	for _, k := range []string{"worlds/old.tar.gz.fenc", "worlds/evicted.tar.gz.fenc", "worlds/dropped.tar.gz.fenc", "worlds/unknown.tar.gz.fenc"} {
 		b.objs[k] = []byte("x")
 	}
 	res, err := s.Run(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.WorldsExpired != 1 || len(b.removed) != 1 || b.removed[0] != "worlds/old.tar.gz.fenc" {
-		t.Fatalf("removed %v (expired %d), want only the expired archive", b.removed, res.WorldsExpired)
+	sort.Strings(b.removed)
+	if res.WorldsExpired != 2 || len(b.removed) != 2 || b.removed[0] != "worlds/dropped.tar.gz.fenc" || b.removed[1] != "worlds/old.tar.gz.fenc" {
+		t.Fatalf("removed %v (expired %d), want the expired and the owner-deleted archive", b.removed, res.WorldsExpired)
 	}
 	if res.RemoteWorlds != 2 {
 		t.Fatalf("remote worlds = %d, want 2 left", res.RemoteWorlds)

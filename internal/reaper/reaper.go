@@ -288,7 +288,9 @@ type Store interface {
 	// copy of a deleted world and is never listed.
 	EvictableBackups(ctx context.Context) ([]StoredBackup, error)
 
-	// ListExpiredBackups lists status=present backups whose expires_at < now.
+	// ListExpiredBackups lists status=present backups whose expires_at < now,
+	// and every status=expired one: a backup its owner deleted (the API marks it
+	// so and leaves the archive to this pass).
 	ListExpiredBackups(ctx context.Context, now time.Time) ([]StoredBackup, error)
 
 	// MarkBackupDeleted flips a backup to status=deleted, deleted_at=at.

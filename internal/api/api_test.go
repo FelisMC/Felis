@@ -1058,6 +1058,20 @@ func (f *fakeRepo) BackupByID(_ context.Context, id string) (*BackupRecord, erro
 	return nil, ErrNotFound
 }
 
+func (f *fakeRepo) ExpireBackup(_ context.Context, id string, at time.Time) error {
+	for i := range f.backups {
+		b := &f.backups[i]
+		if b.view.Status == "present" && b.view.ID == id {
+			b.view.Status = "expired"
+			if at.Before(b.view.ExpiresAt) {
+				b.view.ExpiresAt = at
+			}
+			return nil
+		}
+	}
+	return ErrNotFound
+}
+
 // ---- staff / session auth fakes (spec §B, passwordless) ----
 // Each method mirrors the PGRepo contract: a returned StaffUser is copied so a
 // test cannot mutate the stored row by reference, SessionUser re-reads the

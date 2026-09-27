@@ -968,6 +968,25 @@ func (p *PGRepo) BackupByID(ctx context.Context, id string) (*BackupRecord, erro
 	return &b, nil
 }
 
+// ExpireBackup marks one present backup expired. The reaper's ListExpiredBackups
+// picks expired rows up whatever their expires_at; pulling expires_at in to at is
+// what lets the off-site copy drop the bucket's copy (KeptRefs, ExpiredRefs)
+// instead of keeping it to the original date.
+func (p *PGRepo) ExpireBackup(ctx context.Context, id string, at time.Time) error {
+	res, err := p.db.ExecContext(ctx,
+		`UPDATE world_backups SET status = 'expired', expires_at = LEAST(expires_at, $2)
+		 WHERE id = $1 AND status = 'present'`, id, at)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // LastBackupRequest reads the newest backup.create audit row for the server
 // since the given time; the created_at index bounds the scan to that window.
 func (p *PGRepo) LastBackupRequest(ctx context.Context, serverName string, since time.Time) (time.Time, error) {
