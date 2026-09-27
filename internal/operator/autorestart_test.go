@@ -164,6 +164,49 @@ func TestRunningServerDegradesOnlyAfterThreeMisses(t *testing.T) {
 	}
 }
 
+// A miss count lives in the operator's memory, so it has to go with the run it
+// counts: a server meant to stop and a server deleted leave none behind.
+func TestProbeMissCountsGoWithTheServer(t *testing.T) {
+	missOnce := func(t *testing.T) (*operator.Reconciler, client.Client) {
+		t.Helper()
+		down := false
+		r, c := newReconciler(t, switchProber{down: &down}, runningServer(), rconSecret())
+		reconcile(t, r, "survival")
+		markPodReady(t, c, "survival")
+		reconcile(t, r, "survival")
+		down = true
+		reconcile(t, r, "survival")
+		if got := r.ProbeMissesTracked(); got != 1 {
+			t.Fatalf("after a miss: %d servers tracked, want 1", got)
+		}
+		return r, c
+	}
+
+	t.Run("stopped", func(t *testing.T) {
+		r, c := missOnce(t)
+		s := getServer(t, c, "survival")
+		s.Spec.DesiredState = v1alpha1.DesiredStopped
+		if err := c.Update(context.Background(), s); err != nil {
+			t.Fatalf("set desiredState=Stopped: %v", err)
+		}
+		reconcile(t, r, "survival")
+		if got := r.ProbeMissesTracked(); got != 0 {
+			t.Fatalf("after the stop: %d servers tracked, want 0", got)
+		}
+	})
+
+	t.Run("deleted", func(t *testing.T) {
+		r, c := missOnce(t)
+		if err := c.Delete(context.Background(), getServer(t, c, "survival")); err != nil {
+			t.Fatalf("delete server: %v", err)
+		}
+		reconcile(t, r, "survival")
+		if got := r.ProbeMissesTracked(); got != 0 {
+			t.Fatalf("after the delete: %d servers tracked, want 0", got)
+		}
+	})
+}
+
 // A Failed server wakes when its next auto-restart falls due, and every 5m
 // once the attempts are spent, instead of every 2s.
 func TestFailedServerRequeuesWhenTheRetryIsDue(t *testing.T) {

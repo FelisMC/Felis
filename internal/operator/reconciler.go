@@ -143,10 +143,13 @@ type Reconciler struct {
 	Watch *ReconcileWatch
 
 	// probeFailures counts consecutive failed RCON probes of a Running server,
-	// by UID. In memory: an operator restart forgets them, which only delays a
-	// degrade by a few probes.
+	// by namespaced name. In memory: an operator restart forgets them, which only
+	// delays a degrade by a few probes. A count goes when a probe succeeds, when
+	// the server is meant to stop and when it is deleted. A later server of the
+	// same name inherits nothing that matters: it reaches Running only through a
+	// probe that succeeds, and that clears the count.
 	probeMu       sync.Mutex
-	probeFailures map[types.UID]int
+	probeFailures map[types.NamespacedName]int
 }
 
 func (r *Reconciler) now() metav1.Time {
@@ -191,7 +194,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 func (r *Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var server v1alpha1.MinecraftServer
 	if err := r.Get(ctx, req.NamespacedName, &server); err != nil {
-		// Deletion is handled by owner references on the children.
+		// Deletion is handled by owner references on the children; the probe-miss
+		// count is the one part of a server kept in memory.
+		if apierrors.IsNotFound(err) {
+			r.clearProbeFailures(req.NamespacedName)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
@@ -208,6 +215,8 @@ func (r *Reconciler) reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	var res ctrl.Result
 	var err error
 	if desired == v1alpha1.DesiredStopped {
+		// Misses count only against a Running server; the next run starts afresh.
+		r.clearProbeFailures(req.NamespacedName)
 		res, err = r.reconcileStopped(ctx, &server)
 	} else {
 		res, err = r.reconcileRunning(ctx, &server)
@@ -388,7 +397,7 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 		if err != nil {
 			// One missed probe of a Running server is noise (a lag spike, a save);
 			// it keeps its status and endpoint until the misses run consecutive.
-			if server.Status.Phase == v1alpha1.PhaseRunning && r.noteProbeFailure(server) < runningProbeMissesBeforeDegrade {
+			if server.Status.Phase == v1alpha1.PhaseRunning && r.noteProbeFailure(client.ObjectKeyFromObject(server)) < runningProbeMissesBeforeDegrade {
 				return ctrl.Result{RequeueAfter: requeueProbeRetry}, nil
 			}
 			r.markStarting(server, "RconNotReachable", err.Error())
@@ -403,7 +412,7 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 			}
 			return ctrl.Result{RequeueAfter: r.startingRequeue(server, readinessTimeout(server))}, nil
 		}
-		r.clearProbeFailures(server)
+		r.clearProbeFailures(client.ObjectKeyFromObject(server))
 		players = pc
 		// A tally that could not be read pauses idle auto-stop (below) instead of
 		// counting as an empty server; the condition says so, so a server that
@@ -1060,20 +1069,20 @@ func (r *Reconciler) startingRequeue(server *v1alpha1.MinecraftServer, timeout t
 	return max(wait, requeueStarting)
 }
 
-func (r *Reconciler) noteProbeFailure(server *v1alpha1.MinecraftServer) int {
+func (r *Reconciler) noteProbeFailure(key types.NamespacedName) int {
 	r.probeMu.Lock()
 	defer r.probeMu.Unlock()
 	if r.probeFailures == nil {
-		r.probeFailures = map[types.UID]int{}
+		r.probeFailures = map[types.NamespacedName]int{}
 	}
-	r.probeFailures[server.UID]++
-	return r.probeFailures[server.UID]
+	r.probeFailures[key]++
+	return r.probeFailures[key]
 }
 
-func (r *Reconciler) clearProbeFailures(server *v1alpha1.MinecraftServer) {
+func (r *Reconciler) clearProbeFailures(key types.NamespacedName) {
 	r.probeMu.Lock()
 	defer r.probeMu.Unlock()
-	delete(r.probeFailures, server.UID)
+	delete(r.probeFailures, key)
 }
 
 // recoverFailedStart retries a start that timed out. Once a backoff past the
