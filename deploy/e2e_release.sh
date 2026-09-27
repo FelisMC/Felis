@@ -109,4 +109,4 @@ case "${1:-}" in
     exit 2
     ;;
 esac
-exit "$fails"
+[ "$fails" -eq 0 ] || exit 1

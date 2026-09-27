@@ -138,6 +138,12 @@ jobs:
           tar -xJf shellcheck.tar.xz
           ./shellcheck-v0.11.0/shellcheck -S warning $(git ls-files '*.sh')
 
+      # An exit status is 8 bits, so `exit "$fails"` reads 256 failures as a pass. The suites
+      # exit 1 on any failure; this keeps the next one from carrying its count out.
+      - name: No script exits with its failure count
+        run: |
+          if git grep -nE 'exit +"?\$\{?[a-z_]*fail[a-z_]*\}?"?[[:space:]]*$' -- '*.sh'; then exit 1; fi
+
       - run: sh deploy/bootstrap_test.sh
       - run: sh deploy/uninstall_test.sh
       - run: bash deploy/e2e_release_test.sh

@@ -1414,9 +1414,13 @@ expect "and pushed to exactly that endpoint, with the platform login" "DOCKER --
 
 out="$(run_push registry.felis.svc:50000/felis/felis:demo)"
 expect "a ref outside the registry is refused with a warning" "WARN: not mirroring" "$out"
-case "$out" in
-  *"DOCKER push"*) echo "FAIL: a non-registry ref must not be pushed"; fails=$((fails + 1)) ;;
-esac
+# The push runs with the platform login, `docker --config <dir> push`, so any docker line
+# with a push in it counts.
+if printf '%s\n' "$out" | grep -q '^DOCKER .*push '; then
+  echo "FAIL a ref outside the registry was pushed: $out"; fails=$((fails + 1))
+else
+  echo "PASS a ref outside the registry is not pushed"
+fi
 
 out="$(run_push registry.felis.svc:5000/felis/felis:demo 1)"
 expect "a failed push fails the install loudly" "DIE: could not mirror" "$out"
@@ -4605,5 +4609,5 @@ if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"
 else
   echo "$fails FAILED"
+  exit 1
 fi
-exit "$fails"

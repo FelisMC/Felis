@@ -387,5 +387,5 @@ if [ "$fails" -eq 0 ]; then
   echo "ALL PASS"
 else
   echo "$fails FAILED"
+  exit 1
 fi
-exit "$fails"

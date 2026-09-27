@@ -240,5 +240,5 @@ if [ "$fails" -eq 0 ]; then
   echo "ALL PASS (${phase})"
 else
   echo "${fails} FAILED (${phase})"
+  exit 1
 fi
-exit "$fails"

@@ -184,5 +184,4 @@ same "  and says so" "::error::gh release view answered without a tag" "$out"
 same "  and writes no outputs" "" "$(cat "$root/out")"
 
 echo
-if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "${fails} FAILED"; fi
-exit "$fails"
+if [ "$fails" -eq 0 ]; then echo "ALL PASS"; else echo "${fails} FAILED"; exit 1; fi
