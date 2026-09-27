@@ -984,25 +984,41 @@ out="$(run_verify "")"
 expect "a release without SHA256SUMS falls back to a source build" "publishes no SHA256SUMS" "$out"
 case "$out" in *VERIFIED*) echo "FAIL: a release without SHA256SUMS must not verify"; fails=$((fails + 1)) ;; esac
 
-# download_release_binary itself, with the real verify_release_checksum: the stand-in asset
-# writes to the same log as ok and warn each time it runs, so the log shows whether the hash
-# was checked before the file was first executed, and that a refused one never runs at all.
+# download_release_binary itself, with the real verify_release_checksum, run the way the
+# installer runs it: under set -Eeuo pipefail, from acquire_felis_binary or
+# acquire_nano_binary. The stand-in asset writes to the same log as ok and warn each time it
+# runs, so the log shows whether the hash was checked before the file was first executed,
+# and that a refused one never runs at all.
 dblock="$(awk '/^download_release_binary\(\) \{/,/^}/' "$BS")"
 [ -n "$dblock" ] || { echo "FAIL: no download_release_binary found in $BS"; exit 1; }
 [ "$(printf '%s\n' "$dblock" | wc -l)" -lt 100 ] \
   || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
+acqblock=""
+for fn in acquire_felis_binary acquire_nano_binary; do
+  blk="$(awk "/^${fn}\\(\\) \\{/,/^}/" "$BS")"
+  [ -n "$blk" ] || { echo "FAIL: no ${fn} found in $BS"; exit 1; }
+  [ "$(printf '%s\n' "$blk" | wc -l)" -lt 40 ] \
+    || { echo "FAIL: the extracted block is not ${fn} -- did its closing brace move?"; exit 1; }
+  acqblock="${acqblock}${blk}
+"
+done
 ddir="$sdir/download"
 mkdir -p "$ddir/bin"
 printf '#!/bin/sh\necho "RAN: $*" >> "%s"\necho "felis v9.9.9"\n' "$ddir/log" > "$ddir/asset"
 dsum="$(sha256sum <"$ddir/asset" | cut -d' ' -f1)"
 
-run_download() { # SHA256SUMS-content ("" = the release has none); the log lands in $ddir/log
+# run_download SUMS [entry]: SHA256SUMS-content ("" = the release has none), and the caller
+# (acquire_felis_binary by default). INSTALL_FAILS makes install(1) fail, FETCH_FAILS a
+# command inside fetch_source. The log lands in $ddir/log; stdout says what the caller did.
+run_download() {
   rm -f "$ddir/bin/felis"
   : > "$ddir/log"
-  SUMS="$1" ASSET="$ddir/asset" LOG="$ddir/log" FELIS_REF=v9.9.9 HOST_BIN="$ddir/bin/felis" \
-    TMPDIR="$sdir" bash -c '
+  SUMS="$1" ENTRY="${2:-acquire_felis_binary}" ASSET="$ddir/asset" LOG="$ddir/log" FELIS_REF=v9.9.9 \
+    HOST_BIN="$ddir/bin/felis" TMPDIR="$sdir" INSTALL_FAILS="${INSTALL_FAILS:-}" FETCH_FAILS="${FETCH_FAILS:-}" bash -c '
+    set -Eeuo pipefail
     ok() { printf "OK: %s\n" "$*" >> "$LOG"; }
     warn() { printf "WARN: %s\n" "$*" >> "$LOG"; }
+    log() { :; }
     remember_temp() { :; }
     felis_asset_arch() { echo amd64; }
     keep_previous_host_binary() { :; }
@@ -1013,41 +1029,80 @@ run_download() { # SHA256SUMS-content ("" = the release has none); the log lands
         *) return 1 ;;
       esac
     }
+    use_release_binary() { :; }
+    bootstrap_from_tui() { return 1; }
+    resolve_install_ref() { :; }
+    fetch_source() { echo FETCH_SOURCE; [ -z "$FETCH_FAILS" ] || { false; echo "FETCH WENT ON"; }; }
+    install_go_toolchain() { :; }
+    build_nano_binary() { echo BUILD_NANO; }
+    [ -z "$INSTALL_FAILS" ] || install() { echo "install: No space left on device" >&2; return 1; }
+    FELIS_ARTIFACT_DIR="" HAVE_PREBUILT_BINARY=""
     '"$vblock"'
     '"$dblock"'
-    download_release_binary'
+    '"$acqblock"'
+    "$ENTRY"
+    echo "PREBUILT[$HAVE_PREBUILT_BINARY]"' 2>&1
 }
 same_log() { # label want
   if [ "$(cat "$ddir/log")" = "$2" ]; then echo "PASS $1"; else printf 'FAIL %s: got\n%s\nwant\n%s\n' "$1" "$(cat "$ddir/log")" "$2"; fails=$((fails + 1)); fi
+}
+same_out() { # label want got-rc: the caller's exit status and its whole output
+  if [ "$3" = 0 ] && [ "$out" = "$2" ]; then echo "PASS $1"; else printf 'FAIL %s: exit %s, got\n%s\nwant\n%s\n' "$1" "$3" "$out" "$2"; fails=$((fails + 1)); fi
 }
 refused_download() { # label: nothing installed, and the staged download removed
   if [ -e "$ddir/bin/felis" ]; then echo "FAIL $1: a binary was installed"; fails=$((fails + 1)); else echo "PASS $1 installs nothing"; fi
   left="$(ls -A "$ddir/bin")"
   if [ -z "$left" ]; then echo "PASS $1 leaves no staged download"; else echo "FAIL $1 left $left"; fails=$((fails + 1)); fi
 }
+died_midway() { # label rc: the run stopped at the failure, and the caller went no further
+  if [ "$2" -ne 0 ]; then echo "PASS $1 stops the install"; else echo "FAIL $1 must stop the install"; fails=$((fails + 1)); fi
+  case "$out" in
+    *PREBUILT*|*"WENT ON"*|*BUILD_NANO*) echo "FAIL $1 went on: $out"; fails=$((fails + 1)) ;;
+    *) echo "PASS $1 goes no further" ;;
+  esac
+}
 
-run_download "$(printf '%s  felis-linux-amd64\n' "$dsum")"
-rc=$?
-if [ "$rc" -eq 0 ]; then echo "PASS a verified release binary installs"; else echo "FAIL a verified release binary must install (exit $rc)"; fails=$((fails + 1)); fi
+out="$(run_download "$(printf '%s  felis-linux-amd64\n' "$dsum")")"
+same_out "a verified release binary installs, with no source build" "PREBUILT[1]" $?
 same_log "the release binary is hashed before it is first executed" "$(printf '%s\n' \
   "OK: felis-linux-amd64 matches release v9.9.9's SHA256SUMS" \
   "RAN: version" \
   "OK: installed felis-linux-amd64 v9.9.9 at $ddir/bin/felis")"
 if cmp -s "$ddir/asset" "$ddir/bin/felis"; then echo "PASS the installed binary is the download"; else echo "FAIL the installed binary is not the download"; fails=$((fails + 1)); fi
 
-run_download "$(printf '%s  felis-linux-amd64\n' deadbeef)"
-rc=$?
-if [ "$rc" -ne 0 ]; then echo "PASS a mismatched release binary asks for the source build"; else echo "FAIL a mismatched release binary must ask for the source build"; fails=$((fails + 1)); fi
+out="$(run_download "$(printf '%s  felis-linux-amd64\n' deadbeef)")"
+same_out "a mismatched release binary asks for the source build" "FETCH_SOURCE
+PREBUILT[]" $?
 same_log "a mismatched release binary is never executed" \
   "WARN: downloaded felis-linux-amd64 hashes to ${dsum}, but release v9.9.9's SHA256SUMS says deadbeef; discarding it and building v9.9.9 from source on this host instead"
 refused_download "a mismatched release binary"
 
-run_download ""
-rc=$?
-if [ "$rc" -ne 0 ]; then echo "PASS a release binary without SHA256SUMS asks for the source build"; else echo "FAIL a release binary without SHA256SUMS must ask for the source build"; fails=$((fails + 1)); fi
+out="$(run_download "")"
+same_out "a release binary without SHA256SUMS asks for the source build" "FETCH_SOURCE
+PREBUILT[]" $?
 same_log "a release binary without SHA256SUMS is never executed" \
   "WARN: release v9.9.9 publishes no SHA256SUMS, so felis-linux-amd64 cannot be verified; building v9.9.9 from source on this host instead"
 refused_download "a release binary without SHA256SUMS"
+
+# errexit reaches inside: run as an if or && condition it did not, and an install(1) that
+# failed after HOST_BIN was removed read as an installed binary.
+out="$(INSTALL_FAILS=1 run_download "$(printf '%s  felis-linux-amd64\n' "$dsum")")"
+died_midway "an install(1) of the release binary that fails" $?
+case "$(cat "$ddir/log")" in
+  *"OK: installed"*) echo "FAIL a failed install(1) reported the binary installed"; fails=$((fails + 1)) ;;
+  *) echo "PASS a failed install(1) reports nothing installed" ;;
+esac
+out="$(FETCH_FAILS=1 run_download "")"
+died_midway "a failure inside the source fetch the download fell back to" $?
+
+out="$(run_download "$(printf '%s  felis-linux-amd64\n' "$dsum")" acquire_nano_binary)"
+same_out "nano: a verified release binary installs, with no source build" "PREBUILT[1]" $?
+out="$(run_download "" acquire_nano_binary)"
+same_out "nano: no usable release binary builds nano from source" "FETCH_SOURCE
+BUILD_NANO
+PREBUILT[]" $?
+out="$(INSTALL_FAILS=1 run_download "$(printf '%s  felis-linux-amd64\n' "$dsum")" acquire_nano_binary)"
+died_midway "nano: an install(1) of the release binary that fails" $?
 
 # --- cloudflared is a pinned release, checked before it is installed ---------------------
 cfblock="$(awk '/^install_cloudflared\(\) \{/,/^}/' "$BS")"
@@ -2720,9 +2775,9 @@ esac
 
 # The binary names the release, the release names the images, and each image is looked for in
 # the release's bundles before anything is pulled or built.
-imorder="$(awk '/^main\(\) \{/,/^}/' "$BS" | grep -nE '^[[:space:]]*(install_k3s|configure_registry_mirror|install_artifact_binary|fetch_source|select_release_artifacts|resolve_felis_image|import_release_images felis registry postgres|import_platform_images|build_image|pin_platform_images)$' | sed 's/^[0-9]*:[[:space:]]*//' | tr '\n' ' ')"
+imorder="$(awk '/^main\(\) \{/,/^}/' "$BS" | grep -nE '^[[:space:]]*(install_k3s|configure_registry_mirror|acquire_felis_binary|select_release_artifacts|resolve_felis_image|import_release_images felis registry postgres|import_platform_images|build_image|pin_platform_images)$' | sed 's/^[0-9]*:[[:space:]]*//' | tr '\n' ' ')"
 expect "main takes the binary, then the release's images, before pulling or building any" \
-  "install_k3s configure_registry_mirror install_artifact_binary fetch_source select_release_artifacts resolve_felis_image import_release_images felis registry postgres import_platform_images build_image pin_platform_images " "$imorder"
+  "install_k3s configure_registry_mirror acquire_felis_binary select_release_artifacts resolve_felis_image import_release_images felis registry postgres import_platform_images build_image pin_platform_images " "$imorder"
 if awk '/^main\(\) \{/,/^}/' "$BS" | grep -qE '^[[:space:]]*install_docker$'; then
   echo "FAIL: main installs Docker up front; only a build may (ensure_docker)"; fails=$((fails + 1))
 else
@@ -2919,6 +2974,26 @@ case "$out" in *"PREV LEFT"*) echo "FAIL: the previous binary copy must be remov
 out="$(run_host_bin 1 0 fresh)"
 expect "a first install has nothing to restore" "BIN: new" "$out"
 case "$out" in *WARN:*) echo "FAIL: a first install must not restore the binary it just installed"; fails=$((fails + 1)) ;; esac
+# A copy cut short (a full disk) stops the run, and the exit's restore must not put it over
+# the binary it was taken from.
+rm -f "$hbdir"/felis*
+printf 'old\n' > "$hbdir/felis"; chmod 0755 "$hbdir/felis"
+out="$(HOST_BIN="$hbdir/felis" bash -c '
+  set -e
+  warn() { printf "WARN: %s\n" "$*"; }
+  HOST_BIN_PREV=""; HOST_BIN_KEPT=0; HOST_BIN_IN_USE=0
+  '"$(awk '/^keep_previous_host_binary\(\) \{/,/^}/' "$BS")"'
+  '"$(awk '/^restore_previous_host_binary\(\) \{/,/^}/' "$BS")"'
+  cp() { printf "ol" > "$2"; return 1; }
+  on_exit() { restore_previous_host_binary "$?"; printf "BIN: %s\n" "$(cat "$HOST_BIN")"; [ ! -e "$HOST_BIN.prev" ] || echo "PREV LEFT"; }
+  trap on_exit EXIT
+  keep_previous_host_binary
+  echo KEPT' 2>&1)"
+expect "a copy of the binary cut short leaves the binary as it was" "BIN: old" "$out"
+case "$out" in
+  *KEPT*|*"PREV LEFT"*) echo "FAIL a copy of the binary cut short went on or was left behind: $out"; fails=$((fails + 1)) ;;
+  *) echo "PASS a copy of the binary cut short stops the run and is removed" ;;
+esac
 rm -rf "$hbdir"
 
 

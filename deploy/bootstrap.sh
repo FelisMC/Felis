@@ -609,7 +609,12 @@ keep_previous_host_binary() {
   [ -x "$HOST_BIN" ] || return 0
   HOST_BIN_PREV="${HOST_BIN}.prev"
   rm -f "$HOST_BIN_PREV"
-  cp "$HOST_BIN" "$HOST_BIN_PREV"
+  # A copy cut short (a full disk) is no copy: the failed run would install it over the
+  # binary it was taken from.
+  if ! cp "$HOST_BIN" "$HOST_BIN_PREV"; then
+    rm -f "$HOST_BIN_PREV"
+    return 1
+  fi
 }
 
 restore_previous_host_binary() { # exit-status
@@ -2427,9 +2432,13 @@ use_release_binary() {
   [ "$FELIS_VERSION_BOOTSTRAP" = "release" ]
 }
 
-# download_release_binary installs the prebuilt felis binary for $FELIS_REF onto the host.
-# It returns non-zero to ask the caller to build that same tag from source instead; it never
-# dies, because no reachable failure here is worth aborting an install over.
+# download_release_binary installs the prebuilt felis binary for $FELIS_REF onto the host and
+# sets HAVE_PREBUILT_BINARY. It leaves HAVE_PREBUILT_BINARY empty, and returns 0, to ask the
+# caller to build that same tag from source instead: a release without a usable asset is no
+# reason to abort an install. Callers run it as a plain command, so errexit covers the steps
+# that replace HOST_BIN. Bash turns errexit off inside a function run as an if or && condition,
+# and there an install(1) that failed after the rm below left no binary at all while the
+# install went on as if it had one.
 #
 # One asset covers the panel too: internal/panel/panel.go go:embeds internal/panel/static, and
 # release.yml builds through the repo Dockerfile so that tree holds the real npm output rather
@@ -2438,7 +2447,7 @@ download_release_binary() {
   local arch asset tmp got
   if ! arch="$(felis_asset_arch)"; then
     warn "no prebuilt felis binary for architecture $(uname -m); building ${FELIS_REF} from source on this host instead"
-    return 1
+    return 0
   fi
   asset="felis-linux-${arch}"
 
@@ -2465,7 +2474,7 @@ download_release_binary() {
     # different commit than the tag the operator asked for. Falling back keeps the tag and
     # changes only how it is obtained, so no operator action is needed at all.
     warn "release ${FELIS_REF} publishes no usable ${asset}; building ${FELIS_REF} from source on this host instead"
-    return 1
+    return 0
   fi
 
   # The hash comes BEFORE the exec below: until the file matches the release's SHA256SUMS it
@@ -2474,7 +2483,7 @@ download_release_binary() {
   # fall back to the source build of the same tag, which trusts only the git fetch.
   if ! verify_release_checksum "$FELIS_REF" "$asset" "$tmp"; then
     rm -f "$tmp"
-    return 1
+    return 0
   fi
   chmod 0755 "$tmp"
 
@@ -2487,7 +2496,7 @@ download_release_binary() {
   if [ "$got" != "felis ${FELIS_REF}" ]; then
     rm -f "$tmp"
     warn "downloaded ${asset} reports '${got:-nothing}' rather than 'felis ${FELIS_REF}'; building ${FELIS_REF} from source on this host instead"
-    return 1
+    return 0
   fi
 
   # install(1) onto a freshly created destination, matching install_embedded_binary. A rename
@@ -5679,15 +5688,32 @@ build_nano_binary() {
   ok "felis binary on host at ${HOST_BIN}"
 }
 
+# acquire_felis_binary is the full install's four ways to a felis binary, in preference
+# order. FELIS_ARTIFACT_DIR and the release download skip compiling: each is the CI artifact
+# for its tag, panel included. The other arms leave HAVE_PREBUILT_BINARY unset where a source
+# build is what actually happens, which is what routes build_image. Neither the download nor
+# fetch_source is an if condition or a command before && or ||: errexit is off inside those.
+acquire_felis_binary() {
+  if [ -n "$FELIS_ARTIFACT_DIR" ]; then
+    install_artifact_binary
+  elif bootstrap_from_tui; then
+    install_embedded_binary
+  else
+    if use_release_binary; then
+      download_release_binary
+    fi
+    [ -n "$HAVE_PREBUILT_BINARY" ] || fetch_source
+  fi
+}
+
 acquire_nano_binary() {
   # The release channel takes the same prebuilt binary the control plane does. This is the
   # biggest win on this path: a host that only wants the auth multiplexer stops needing a Go
   # toolchain and a checkout at all.
   if use_release_binary; then
     resolve_install_ref
-    if download_release_binary; then
-      return 0
-    fi
+    download_release_binary
+    [ -z "$HAVE_PREBUILT_BINARY" ] || return 0
   fi
   # Raw curl|bash with no usable release: build it straight from source with a pinned Go
   # toolchain — nano needs one static binary, not an image, so dragging in docker
@@ -5930,19 +5956,7 @@ main() {
   # The registry mirror must exist before the bundle's pods start pulling (and
   # before any re-run's rollouts).
   configure_registry_mirror
-  # Four ways to end up with a felis binary, in preference order. FELIS_ARTIFACT_DIR and the
-  # release download skip compiling: each is the CI artifact for its tag, panel included. The
-  # other arms leave HAVE_PREBUILT_BINARY unset where a source build is what actually
-  # happens, which is what routes build_image below.
-  if [ -n "$FELIS_ARTIFACT_DIR" ]; then
-    install_artifact_binary
-  elif bootstrap_from_tui; then
-    install_embedded_binary
-  elif use_release_binary && download_release_binary; then
-    :
-  else
-    fetch_source
-  fi
+  acquire_felis_binary
   select_release_artifacts
   resolve_felis_image
   # The registry's and the database's own images must be in containerd before their
