@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, clientError, humanizeError, type SetupState } from "@/lib/api";
+import type { ApiError } from "@/lib/types";
 import { base64urlToBytes, bytesToBase64url } from "@/lib/utils";
 import { useTier } from "@/lib/tier";
 import { InlineError } from "@/components/MessageLine";
@@ -27,6 +28,15 @@ import { InlineError } from "@/components/MessageLine";
 // a spent token. The step endpoints and /me are all SetupAllowed, so the lockdown
 // session can complete the wizard; the backend lifts the lockdown once a passkey is
 // enrolled, and we hand off to / once nothing remains.
+// retryable tells a failure worth another try with the same link (the server or
+// the network failed, or asked to slow down) from a link that cannot work. The
+// redeem spends the token only together with the session it mints, so a failed
+// try leaves the link as it was.
+function retryable(e: unknown): boolean {
+  const status = (e as Partial<ApiError> | undefined)?.status;
+  return status === 0 || status === 429 || (typeof status === "number" && status >= 500);
+}
+
 export function Setup() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
@@ -35,7 +45,8 @@ export function Setup() {
 
   const [state, setState] = useState<SetupState | null>(null);
   const [booting, setBooting] = useState(true);
-  const [fatal, setFatal] = useState<string | null>(null);
+  const [fatal, setFatal] = useState<{ message: string; retryable: boolean } | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const finishing = useRef(false);
 
   // Boot: redeem the URL token, or resume from the session if the token is already
@@ -63,7 +74,7 @@ export function Setup() {
         }
         if (alive) setState(st);
       } catch (e) {
-        if (alive) setFatal(humanizeError(e));
+        if (alive) setFatal({ message: humanizeError(e), retryable: retryable(e) });
       } finally {
         if (alive) setBooting(false);
       }
@@ -71,7 +82,13 @@ export function Setup() {
     return () => {
       alive = false;
     };
-  }, [params]);
+  }, [params, attempt]);
+
+  const retry = () => {
+    setFatal(null);
+    setBooting(true);
+    setAttempt((n) => n + 1);
+  };
 
   // reload re-reads progress after a wizard step so the view advances to the next.
   const reload = useCallback(async () => {
@@ -103,12 +120,27 @@ export function Setup() {
     );
   }
 
+  if (fatal?.retryable) {
+    return (
+      <AuthLayout title={t("setup_failed_title")} subtitle={t("setup_failed_subtitle")}>
+        <Card>
+          <CardContent className="space-y-4 pt-6 text-sm">
+            <p role="alert" className="text-muted-foreground">{fatal.message}</p>
+            <Button className="w-full" onClick={retry}>
+              {t("setup_retry")}
+            </Button>
+          </CardContent>
+        </Card>
+      </AuthLayout>
+    );
+  }
+
   if (fatal) {
     return (
       <AuthLayout title={t("setup_invalid_title")} subtitle={t("setup_invalid_subtitle")}>
         <Card>
           <CardContent className="space-y-4 pt-6 text-sm">
-            <p role="alert" className="text-muted-foreground">{fatal}</p>
+            <p role="alert" className="text-muted-foreground">{fatal.message}</p>
             <p className="text-muted-foreground">
               {t("setup_invalid_hint_prefix")}
               <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">

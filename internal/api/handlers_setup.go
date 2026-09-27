@@ -62,26 +62,32 @@ func (a *API) handleSetupRedeem(w http.ResponseWriter, r *http.Request) {
 	sum := sha256.Sum256([]byte(token))
 	tokenHash := hex.EncodeToString(sum[:])
 
-	now := a.now()
-	userID, err := a.Repo.ConsumeSetupToken(r.Context(), tokenHash, now)
+	// A regular felis_session; the lockdown is a product-level restriction the
+	// frontend enforces until email is verified / a passkey is bound. The token and
+	// the session are written together: a new setup link takes `felis setup` on
+	// the node, so a failure here must leave this one working.
+	sessionToken, session, err := a.mintSession(r, "", provenSignIn)
 	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	userID, err := a.Repo.RedeemSetupToken(r.Context(), tokenHash, a.now(), session)
+	switch {
+	case errors.Is(err, ErrNotFound):
 		// Unknown, already-consumed, or expired — uniform 400 so the token cannot
 		// be used as an oracle.
 		a.authFailure(r, "setup_redeem", "bad_token", nil)
 		writeError(w, r, newError(http.StatusBadRequest, "setup_token_invalid",
 			"this setup link is invalid or has already been used"))
 		return
-	}
-
-	u, err := a.Repo.UserByID(r.Context(), userID)
-	if err != nil {
+	case err != nil:
 		writeError(w, r, err)
 		return
 	}
+	setSessionCookie(w, sessionToken, session.ExpiresAt)
 
-	// Mint the session — a regular felis_session; the lockdown is a product-level
-	// restriction the frontend enforces until email is verified / a passkey is bound.
-	if err := a.startSession(w, r, u.ID, provenSignIn); err != nil {
+	u, err := a.Repo.UserByID(r.Context(), userID)
+	if err != nil {
 		writeError(w, r, err)
 		return
 	}

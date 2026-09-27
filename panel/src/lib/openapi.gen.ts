@@ -964,7 +964,7 @@ export interface paths {
         put?: never;
         /**
          * Redeem a one-time setup token into a lockdown session (spec §B).
-         * @description Public, pre-session first-run door: consumes the one-time setup token minted by the felis TUI (stored and looked up by SHA-256 hash, like session cookies), mints a host-only felis_session, and returns the remaining setup steps so the SPA can drive the wizard. An unknown, consumed, or expired token returns a uniform 400 setup_token_invalid. Gated on local_auth_enabled.
+         * @description Public, pre-session first-run door: consumes the one-time setup token minted by the felis TUI (stored and looked up by SHA-256 hash, like session cookies), mints a host-only felis_session, and returns the remaining setup steps so the SPA can drive the wizard. An unknown, consumed, or expired token returns a uniform 400 setup_token_invalid. Gated on local_auth_enabled. The token is spent in the same transaction that stores the session, so a redemption that fails with 500 leaves the link working for another try.
          */
         post: operations["setupRedeem"];
         delete?: never;
@@ -5345,6 +5345,7 @@ export interface operations {
                 };
             };
             429: components["responses"]["RateLimited"];
+            500: components["responses"]["InternalError"];
         };
     };
     setupStatus: {

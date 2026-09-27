@@ -1,9 +1,13 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"testing"
+	"time"
 )
 
 // TestSetupNoSMTPFlow pins the no-SMTP onboarding contract: setup completes on email
@@ -135,6 +139,55 @@ func TestSetupCompletesForNoEmailPlayer(t *testing.T) {
 	if s := status(t); s["setup_required"] != false || s["has_passkey"] != true || s["email"] != "" {
 		t.Fatalf("post-passkey player status = %v, want setup_required=false has_passkey=true email=\"\"", s)
 	}
+}
+
+// Redeeming a setup link signs the owner in once. A link the store does not know
+// (unknown, spent, expired) is the uniform 400; a store that fails is an outage,
+// answered as one, so the page does not tell the owner a link that still works
+// was used up.
+func TestSetupRedeem(t *testing.T) {
+	const raw = "setup-token-raw"
+	sum := sha256.Sum256([]byte(raw))
+	hash := hex.EncodeToString(sum[:])
+	body := `{"token":"` + raw + `"}`
+	setup := func() (*fakeRepo, http.Handler) {
+		repo := newFakeRepo()
+		repo.settings[LocalAuthEnabledKey] = []byte("true")
+		repo.staff["owner"] = &StaffUser{ID: "o1", Username: "owner", Role: "admin"}
+		repo.setupTokens[hash] = fakeSetupToken{TokenHash: hash, UserID: "o1",
+			ExpiresAt: time.Unix(1_700_000_000, 0).Add(10 * time.Minute)}
+		return repo, newTestAPI(repo, newFakeCluster()).ExternalHandler()
+	}
+
+	t.Run("redeems once", func(t *testing.T) {
+		repo, h := setup()
+		w := do(h, "POST", "/api/v1/auth/setup/redeem", body, jsonHeader)
+		if w.Code != http.StatusOK {
+			t.Fatalf("redeem: code = %d, want 200 (%s)", w.Code, w.Body.String())
+		}
+		cookies := w.Result().Cookies()
+		if len(cookies) != 1 || cookies[0].Name != sessionCookieName {
+			t.Fatalf("cookies = %v, want one %s", cookies, sessionCookieName)
+		}
+		if s, ok := repo.sessions[hashCookie(cookies[0].Value)]; !ok || s.userID != "o1" {
+			t.Fatalf("session for the cookie = %+v (found %v), want one of o1", s, ok)
+		}
+		if w := do(h, "POST", "/api/v1/auth/setup/redeem", body, jsonHeader); w.Code != http.StatusBadRequest ||
+			errCode(w.Body.Bytes()) != "setup_token_invalid" || len(w.Result().Cookies()) != 0 {
+			t.Fatalf("replay: code = %d err = %q cookies = %v, want 400 setup_token_invalid and none",
+				w.Code, errCode(w.Body.Bytes()), w.Result().Cookies())
+		}
+	})
+
+	t.Run("store outage", func(t *testing.T) {
+		repo, h := setup()
+		repo.failRedeemSetup = errors.New("connection refused")
+		w := do(h, "POST", "/api/v1/auth/setup/redeem", body, jsonHeader)
+		if w.Code != http.StatusInternalServerError || errCode(w.Body.Bytes()) != "internal" || len(w.Result().Cookies()) != 0 {
+			t.Fatalf("outage: code = %d err = %q cookies = %v, want 500 internal and no cookie",
+				w.Code, errCode(w.Body.Bytes()), w.Result().Cookies())
+		}
+	})
 }
 
 // errCode returns the error.code of a JSON error body, or "" if body is not one (a

@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -595,8 +596,10 @@ func TestCrossingMigrationsDoNotDeadlock(t *testing.T) {
 // ---- setup tokens (migration 0012) --------------------------------------------------
 
 // A setup token redeems once, never at or after expiry, and racing redeems of one
-// token yield one session.
-func TestConsumeSetupTokenContract(t *testing.T) {
+// token yield one session. The session is written with the spend: the token's
+// user owns it, and a redemption whose session cannot be stored leaves the token
+// for the next try.
+func TestRedeemSetupTokenContract(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "setup")
 	t0 := mustNow().Truncate(time.Second)
@@ -606,25 +609,62 @@ func TestConsumeSetupTokenContract(t *testing.T) {
 			t.Fatalf("CreateSetupToken: %v", err)
 		}
 	}
+	var mu sync.Mutex
+	minted := 0
+	redeem := func(hash string, at time.Time) (string, string, error) {
+		mu.Lock()
+		minted++
+		s := api.NewSession{TokenHash: "st-sess-" + strconv.Itoa(minted) + "-" + suffix(t), UserID: "ignored", ExpiresAt: t0.Add(time.Hour)}
+		mu.Unlock()
+		id, err := repo.RedeemSetupToken(ctx, hash, at, s)
+		return id, s.TokenHash, err
+	}
+	sessionOf := func(hash string) string {
+		t.Helper()
+		su, err := repo.SessionUser(ctx, hash, t0)
+		if errors.Is(err, api.ErrNotFound) {
+			return ""
+		}
+		if err != nil {
+			t.Fatalf("SessionUser: %v", err)
+		}
+		return su.ID
+	}
+
 	once := "st-once-" + suffix(t)
 	create(once)
-	if got, err := repo.ConsumeSetupToken(ctx, once, t0); err != nil || got != u.ID {
+	got, sess, err := redeem(once, t0)
+	if err != nil || got != u.ID {
 		t.Fatalf("redeem = %q, %v; want %s", got, err, u.ID)
 	}
-	if _, err := repo.ConsumeSetupToken(ctx, once, t0); !errors.Is(err, api.ErrNotFound) {
-		t.Fatalf("replay = %v, want ErrNotFound", err)
+	if owner := sessionOf(sess); owner != u.ID {
+		t.Fatalf("redeemed session belongs to %q, want %s", owner, u.ID)
 	}
-	if _, err := repo.ConsumeSetupToken(ctx, "st-never-"+suffix(t), t0); !errors.Is(err, api.ErrNotFound) {
+	if _, sess, err := redeem(once, t0); !errors.Is(err, api.ErrNotFound) || sessionOf(sess) != "" {
+		t.Fatalf("replay = %v (session stored: %v), want ErrNotFound and no session", err, sessionOf(sess) != "")
+	}
+	if _, _, err := redeem("st-never-"+suffix(t), t0); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("unknown token = %v, want ErrNotFound", err)
 	}
 
 	late := "st-late-" + suffix(t)
 	create(late)
-	if _, err := repo.ConsumeSetupToken(ctx, late, t0.Add(10*time.Minute)); !errors.Is(err, api.ErrNotFound) {
+	if _, _, err := redeem(late, t0.Add(10*time.Minute)); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("redeem at expiry = %v, want ErrNotFound", err)
 	}
-	if got, err := repo.ConsumeSetupToken(ctx, late, t0.Add(10*time.Minute-time.Second)); err != nil || got != u.ID {
+	if got, _, err := redeem(late, t0.Add(10*time.Minute-time.Second)); err != nil || got != u.ID {
 		t.Fatalf("redeem a second before expiry = %q, %v; want %s (the refused try must not spend it)", got, err, u.ID)
+	}
+
+	// The session's hash is taken, so storing it fails: the token stays unspent.
+	kept := "st-kept-" + suffix(t)
+	create(kept)
+	taken := newSession(t, u.ID, "st-taken", t0.Add(time.Hour))
+	if _, err := repo.RedeemSetupToken(ctx, kept, t0, api.NewSession{TokenHash: taken, ExpiresAt: t0.Add(time.Hour)}); err == nil || errors.Is(err, api.ErrNotFound) {
+		t.Fatalf("redeem into a taken session hash = %v, want the insert failure", err)
+	}
+	if got, _, err := redeem(kept, t0); err != nil || got != u.ID {
+		t.Fatalf("retry after the failed session = %q, %v; want %s (the token must survive)", got, err, u.ID)
 	}
 
 	raced := "st-race-" + suffix(t)
@@ -635,7 +675,7 @@ func TestConsumeSetupTokenContract(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_, errs[i] = repo.ConsumeSetupToken(ctx, raced, t0)
+			_, _, errs[i] = redeem(raced, t0)
 		}(i)
 	}
 	wg.Wait()

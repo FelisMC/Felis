@@ -80,11 +80,26 @@ const (
 )
 
 // startSession mints a session for userID and sets its cookie. Every sign-in door
-// ends here, so every session records the device it was minted for.
+// ends here (or at mintSession), so every session records the device it was
+// minted for.
 func (a *API) startSession(w http.ResponseWriter, r *http.Request, userID string, proof signInProof) error {
-	token, err := newSessionToken()
+	token, s, err := a.mintSession(r, userID, proof)
 	if err != nil {
 		return err
+	}
+	if err := a.Repo.CreateSession(r.Context(), s); err != nil {
+		return err
+	}
+	setSessionCookie(w, token, s.ExpiresAt)
+	return nil
+}
+
+// mintSession makes a session cookie value and the row that stores it, for a door
+// that writes the row itself.
+func (a *API) mintSession(r *http.Request, userID string, proof signInProof) (string, NewSession, error) {
+	token, err := newSessionToken()
+	if err != nil {
+		return "", NewSession{}, err
 	}
 	now := a.now()
 	expires := now.Add(sessionTTL)
@@ -96,18 +111,14 @@ func (a *API) startSession(w http.ResponseWriter, r *http.Request, userID string
 	if proof == provenSignIn {
 		reauth = now
 	}
-	if err := a.Repo.CreateSession(r.Context(), NewSession{
+	return token, NewSession{
 		TokenHash: hashCookie(token),
 		UserID:    userID,
 		ExpiresAt: expires,
 		UserAgent: truncateUTF8(r.UserAgent(), maxSessionUserAgent),
 		ClientIP:  ip,
 		ReauthAt:  reauth,
-	}); err != nil {
-		return err
-	}
-	setSessionCookie(w, token, expires)
-	return nil
+	}, nil
 }
 
 // currentSessionHash is the storage key of the session cookie r carries, or ""

@@ -94,6 +94,7 @@ type fakeRepo struct {
 	failRevokeOthers error
 	failMarkReauth   error
 	failGetSetting   error
+	failRedeemSetup  error
 	// player email OTPs (spec §B2). Keyed by row id; the verify path scans for the
 	// newest live (user, purpose) just as the PG query does.
 	otps map[string]*fakeEmailOTP
@@ -1779,15 +1780,23 @@ func (f *fakeRepo) ApproveOpLogin(_ context.Context, id, approverUserID string, 
 	return nil
 }
 
-// ConsumeSetupToken atomically marks a one-time setup token consumed and returns
-// its user_id, or ErrNotFound when absent, already consumed, or expired.
-func (f *fakeRepo) ConsumeSetupToken(_ context.Context, tokenHash string, now time.Time) (string, error) {
+// RedeemSetupToken spends a setup token and stores s for its user, or ErrNotFound
+// when the token is absent, already spent, or expired. failRedeemSetup fails the
+// whole redemption.
+func (f *fakeRepo) RedeemSetupToken(ctx context.Context, tokenHash string, now time.Time, s NewSession) (string, error) {
+	if f.failRedeemSetup != nil {
+		return "", f.failRedeemSetup
+	}
 	tok, ok := f.setupTokens[tokenHash]
 	if !ok || !tok.ConsumedAt.IsZero() || !tok.ExpiresAt.After(now) {
 		return "", ErrNotFound
 	}
 	tok.ConsumedAt = now
 	f.setupTokens[tokenHash] = tok
+	s.UserID = tok.UserID
+	if err := f.CreateSession(ctx, s); err != nil {
+		return "", err
+	}
 	return tok.UserID, nil
 }
 

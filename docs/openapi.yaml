@@ -3359,7 +3359,9 @@ paths:
         the felis TUI (stored and looked up by SHA-256 hash, like session cookies),
         mints a host-only felis_session, and returns the remaining setup steps so the
         SPA can drive the wizard. An unknown, consumed, or expired token returns a
-        uniform 400 setup_token_invalid. Gated on local_auth_enabled.
+        uniform 400 setup_token_invalid. Gated on local_auth_enabled. The token is
+        spent in the same transaction that stores the session, so a redemption that
+        fails with 500 leaves the link working for another try.
       x-felis-face: [external]
       x-felis-tier: public
       security: []
@@ -3407,6 +3409,8 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '429':
           $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
 
   /api/v1/auth/setup/status:
     get:

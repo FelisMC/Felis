@@ -1416,8 +1416,17 @@ func (p *PGRepo) InsertOperator(ctx context.Context, id, username, email string)
 // CreateSession records a minted session by the sha-256 of its cookie value
 // (spec §B). Only the hash is stored, mirroring tokens.
 func (p *PGRepo) CreateSession(ctx context.Context, s NewSession) error {
+	return insertSession(ctx, p.db, s)
+}
+
+// sqlExecer is the write half shared by *sql.DB and *sql.Tx.
+type sqlExecer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func insertSession(ctx context.Context, db sqlExecer, s NewSession) error {
 	reauth := sql.NullTime{Time: s.ReauthAt, Valid: !s.ReauthAt.IsZero()}
-	_, err := p.db.ExecContext(ctx,
+	_, err := db.ExecContext(ctx,
 		`INSERT INTO sessions (token_hash, user_id, expires_at, user_agent, client_ip, reauth_at)
 		 VALUES ($1, $2, $3, $4, $5, $6)`,
 		s.TokenHash, s.UserID, s.ExpiresAt, s.UserAgent, s.ClientIP, reauth)
@@ -2956,12 +2965,19 @@ func (p *PGRepo) ConsumeOpLoginRequest(ctx context.Context, id string, now time.
 
 // ---- setup token redemption (spec §B) ----
 
-// ConsumeSetupToken atomically marks a one-time setup token consumed and returns
-// its user_id, or ErrNotFound when the token is absent, already consumed, or
-// expired. The /setup?token=... web flow redeems it for a lockdown session.
-func (p *PGRepo) ConsumeSetupToken(ctx context.Context, tokenHash string, now time.Time) (string, error) {
+// RedeemSetupToken spends a one-time setup token and stores s as a session of the
+// token's user in one transaction, so a failure leaves the token unspent. It
+// returns the user id, or ErrNotFound when the token is absent, already spent, or
+// expired.
+func (p *PGRepo) RedeemSetupToken(ctx context.Context, tokenHash string, now time.Time, s NewSession) (string, error) {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+
 	var userID string
-	switch err := p.db.QueryRowContext(ctx,
+	switch err := tx.QueryRowContext(ctx,
 		`UPDATE setup_tokens SET consumed_at = $2
 		 WHERE token_hash = $1 AND consumed_at IS NULL AND expires_at > $2
 		 RETURNING user_id`,
@@ -2971,6 +2987,13 @@ func (p *PGRepo) ConsumeSetupToken(ctx context.Context, tokenHash string, now ti
 	case err != nil:
 		return "", err
 	}
+	s.UserID = userID
+	if err := insertSession(ctx, tx, s); err != nil {
+		return "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "", err
+	}
 	return userID, nil
 }
 
@@ -2978,7 +3001,7 @@ func (p *PGRepo) ConsumeSetupToken(ctx context.Context, tokenHash string, now ti
 // hash (the raw value rides in the /setup?token=... URL). The setup Owner-bind
 // path uses CompleteOwnerSetup so identity binding, local auth, and this token
 // commit atomically; this lower-level helper remains for callers that already
-// established the user. The token is redeemed exactly once by ConsumeSetupToken.
+// established the user. The token is redeemed exactly once by RedeemSetupToken.
 func (p *PGRepo) CreateSetupToken(ctx context.Context, tokenHash, userID string, expiresAt time.Time) error {
 	_, err := p.db.ExecContext(ctx,
 		`INSERT INTO setup_tokens (token_hash, user_id, expires_at) VALUES ($1, $2, $3)`,

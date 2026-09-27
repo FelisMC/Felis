@@ -722,11 +722,13 @@ type Repo interface {
 	// it ended.
 	RevokeOtherUserSessions(ctx context.Context, userID, keepTokenHash string) (int, error)
 
-	// ConsumeSetupToken atomically marks a one-time setup token consumed and returns
-	// its user_id, or ErrNotFound when the token is absent, already consumed, or
-	// expired. The /setup?token=... web flow redeems it for a lockdown session that
-	// can only complete passwordless login setup (verify email / enroll passkey).
-	ConsumeSetupToken(ctx context.Context, tokenHash string, now time.Time) (userID string, err error)
+	// RedeemSetupToken spends a one-time setup token and stores s as a session of
+	// the token's user (s.UserID is ignored) in one transaction, so a failure
+	// leaves the token unspent for another try. It returns the user id, or
+	// ErrNotFound when the token is absent, already spent, or expired. The /setup?token=... web flow redeems it for a lockdown
+	// session that can only complete passwordless login setup (verify email /
+	// enroll passkey).
+	RedeemSetupToken(ctx context.Context, tokenHash string, now time.Time, s NewSession) (userID string, err error)
 
 	// ---- runtime platform settings (spec §B platform_settings) ----
 
