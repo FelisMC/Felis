@@ -420,7 +420,9 @@ spec:
                   status ping is never sufficient — spec §5).
                 type: boolean
               readySignalAt:
-                description: ReadySignalAt is when the first RCON probe succeeded.
+                description: |-
+                  ReadySignalAt is when the first RCON probe of the current run succeeded.
+                  Every Starting pass clears it, so each start is measured once.
                 format: date-time
                 type: string
               startRequestedAt:

@@ -923,6 +923,11 @@ func (r *Reconciler) markStarting(server *v1alpha1.MinecraftServer, reason, msg 
 		t := r.now()
 		server.Status.StartRequestedAt = &t
 	}
+	// A server back in Starting is on its way to a new ready: a pod that dropped
+	// out under a Running server, a retry after Failed, an auto-restart. Keeping
+	// the last run's ready time would make markRunningReady treat the start as
+	// already observed, and every start after the first would go unmeasured.
+	server.Status.ReadySignalAt = nil
 	server.Status.Endpoint = v1alpha1.EndpointStatus{Mode: v1alpha1.EndpointFallback, Address: server.Spec.FallbackServer}
 	server.Status.LiveMotd = server.Spec.Motd.Starting
 	r.setCondition(server, v1alpha1.ConditionReady, metav1.ConditionFalse, reason, msg)

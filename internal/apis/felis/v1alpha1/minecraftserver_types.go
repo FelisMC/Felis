@@ -328,7 +328,8 @@ type MinecraftServerStatus struct {
 	Players PlayersStatus `json:"players,omitempty"`
 	// LiveMotd is the MOTD currently advertised for the active phase.
 	LiveMotd string `json:"liveMotd,omitempty"`
-	// ReadySignalAt is when the first RCON probe succeeded.
+	// ReadySignalAt is when the first RCON probe of the current run succeeded.
+	// Every Starting pass clears it, so each start is measured once.
 	ReadySignalAt *metav1.Time `json:"readySignalAt,omitempty"`
 	// StartRequestedAt is when the current start attempt was first observed
 	// (the first Starting reconcile after desiredState=Running). It anchors the

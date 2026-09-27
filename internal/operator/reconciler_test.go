@@ -1025,6 +1025,48 @@ func TestReconcileRunning_StartDurationObservedOnce(t *testing.T) {
 	}
 }
 
+// A pod that drops out of readiness under a Running server sends it back through
+// Starting; its way back to ready is a start like any other, and is observed as
+// one, measured from the new Starting pass. Before, readySignalAt kept the first
+// run's time, so every start after the first went unobserved.
+func TestReconcileRunning_ObservesStartDurationAfterAPodBlip(t *testing.T) {
+	r, c := newReconciler(t, fakeProber{}, runningServer(), rconSecret())
+	base := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	clock := base
+	r.Now = func() metav1.Time { return metav1.NewTime(clock) }
+
+	reconcile(t, r, "survival") // Starting
+	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival") // Running: the first start's observation
+	beforeCount, beforeSum := startDurationState(t)
+
+	clock = base.Add(10 * time.Minute)
+	sts := getSTS(t, c, "survival")
+	sts.Status.ReadyReplicas = 0
+	if err := c.Status().Update(context.Background(), sts); err != nil {
+		t.Fatalf("update sts status: %v", err)
+	}
+	reconcile(t, r, "survival") // the pod is not ready: back to Starting
+	if s := getServer(t, c, "survival"); s.Status.Phase != v1alpha1.PhaseStarting || s.Status.ReadySignalAt != nil {
+		t.Fatalf("after the blip: phase %s, readySignalAt %v; want Starting and none", s.Status.Phase, s.Status.ReadySignalAt)
+	}
+
+	clock = base.Add(10*time.Minute + 45*time.Second)
+	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival") // Running again
+
+	afterCount, afterSum := startDurationState(t)
+	if got := afterCount - beforeCount; got != 1 {
+		t.Fatalf("histogram sample count delta = %d, want exactly 1 observation for the restart", got)
+	}
+	if got := afterSum - beforeSum; got != 45 {
+		t.Errorf("observed restart duration = %vs, want 45s", got)
+	}
+	if s := getServer(t, c, "survival"); s.Status.ReadySignalAt == nil || !s.Status.ReadySignalAt.Equal(ptrTime(metav1.NewTime(clock))) {
+		t.Errorf("readySignalAt = %v, want the restart's ready time %v", s.Status.ReadySignalAt, clock)
+	}
+}
+
 // A server whose RCON Secret does not exist yet is the normal case on first
 // reconcile — felis-api writes spec.rcon.secretRef but holds secrets:get, not
 // create, so the name it points at is a promise the operator has to keep. Before
