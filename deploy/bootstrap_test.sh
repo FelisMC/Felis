@@ -2038,13 +2038,14 @@ rm -rf "$ldir2"
 dnblock="$(awk '/^detect_node_ip\(\) \{/,/^}/' "$BS")"
 prdblock="$(awk '/^persisted_root_domain\(\) \{/,/^}/' "$BS")"
 { [ -n "$dnblock" ] && [ -n "$prdblock" ]; } || { echo "FAIL: detect_node_ip / persisted_root_domain not found in $BS"; exit 1; }
-printf '%s\n' "$prdblock" "$dnblock" > "$fnfile"
-run_detect() { # state-dir [FELIS_ROOT_DOMAIN]
-  STATE_DIR="$1" RD="${2:-}" FNFILE="$fnfile" bash -c '
+printf '%s\n' "$prdblock" "$dnblock" "$(awk '/^ipv4_to_int\(\) \{/,/^}/' "$BS")" > "$fnfile"
+run_detect() { # state-dir [FELIS_ROOT_DOMAIN]; IPOUT and HOSTOUT stand in for ip route get and hostname -I
+  STATE_DIR="$1" RD="${2:-}" FNFILE="$fnfile" IPOUT="${IPOUT-1.1.1.1 via 10.0.0.1 dev eth0 src 10.0.0.5 uid 0}" HOSTOUT="${HOSTOUT:-}" bash -c '
     die() { printf "DIE: %s\n" "$*"; exit 1; }
     log() { printf "LOG: %s\n" "$*"; }
     warn() { printf "WARN: %s\n" "$*"; }
-    ip() { echo "1.1.1.1 via 10.0.0.1 dev eth0 src 10.0.0.5 uid 0"; }
+    ip() { [ -z "$IPOUT" ] || printf "%s\n" "$IPOUT"; }
+    hostname() { [ "$1" = -I ] && printf "%s \n" "$HOSTOUT"; }
     . "$FNFILE"
     if [ -n "$RD" ]; then FELIS_ROOT_DOMAIN="$RD"; fi
     detect_node_ip
@@ -2062,6 +2063,12 @@ expect "the installed domain is reused when unset" "ROOT=r.example.com" "$(run_d
 rm -f "$adir/felis.host.toml"
 expect "a first install takes FELIS_ROOT_DOMAIN" "ROOT=new.example.net" "$(run_detect "$adir" new.example.net)"
 expect "a first install defaults to nip.io" "ROOT=10.0.0.5.nip.io" "$(run_detect "$adir")"
+# Without an IPv4 default route, hostname -I is the fallback; it lists IPv6 addresses
+# too, and the first IPv4 one is taken.
+expect "the fallback skips IPv6 addresses" "ROOT=192.168.1.20.nip.io" \
+  "$(IPOUT='' HOSTOUT='fd00::5 2001:db8::20 192.168.1.20 10.42.0.1' run_detect "$adir")"
+expect "a host with IPv6 addresses alone is refused" "DIE: could not determine this host's primary IPv4 address" \
+  "$(IPOUT='' HOSTOUT='fd00::5 2001:db8::20' run_detect "$adir")"
 
 rm -rf "$adir"
 rm -f "$fnfile"

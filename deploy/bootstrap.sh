@@ -1116,7 +1116,15 @@ persisted_root_domain() {
 
 detect_node_ip() {
   NODE_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')"
-  [ -n "${NODE_IP:-}" ] || NODE_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  if [ -z "${NODE_IP:-}" ]; then
+    # No IPv4 default route. hostname -I lists the IPv6 addresses too, in interface
+    # order, and an IPv6 one would end up in the nip.io name, the /32 policies and the
+    # certificate's IP entry: take the first IPv4 one.
+    local a
+    for a in $(hostname -I 2>/dev/null); do
+      if ipv4_to_int "$a" >/dev/null; then NODE_IP="$a"; break; fi
+    done
+  fi
   [ -n "${NODE_IP:-}" ] || die "could not determine this host's primary IPv4 address"
 
   # Precedence: an explicit FELIS_ROOT_DOMAIN, then whatever the last run persisted, then
