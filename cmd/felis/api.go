@@ -100,7 +100,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 
 	// Before anything serves: an api on a schema it was not built for answers with
 	// errors, or writes rows the other version cannot read.
-	drv, err := openStore(ctx, cfg.Database.URL, false)
+	drv, err := openPodStore(ctx, cfg.Database.URL, "api", stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis api: open database: %v\n", err)
 		return 1

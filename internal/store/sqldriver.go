@@ -79,15 +79,50 @@ func newPool(dsn string) (*sql.DB, error) {
 
 // Open dials dsn and returns a PostgresDriver. The caller owns Close.
 func Open(ctx context.Context, dsn string) (*PostgresDriver, error) {
+	return OpenRetrying(ctx, dsn, 0, 0, nil)
+}
+
+// OpenRetrying is Open for a pod that has only just started. Until window has passed
+// it retries, every interval, a ping the server never answered (a refused, reset or
+// timed-out dial), reporting each retry to onRetry. k3s admits a new pod's address to
+// a NetworkPolicy's allow set a moment after the pod starts: a drill measured about
+// 70ms of refused dials, and the reaper, which dials within milliseconds of starting,
+// failed every pod of every run on `connection refused` against a healthy database.
+// An error the server answered with is final, except 57P03 (cannot_connect_now: it is
+// starting up or shutting down).
+func OpenRetrying(ctx context.Context, dsn string, window, interval time.Duration, onRetry func(error)) (*PostgresDriver, error) {
 	db, err := newPool(dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open postgres: %w", err)
 	}
-	if err := db.PingContext(ctx); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("ping postgres: %w", err)
+	deadline := time.Now().Add(window)
+	for {
+		err := db.PingContext(ctx)
+		if err == nil {
+			return &PostgresDriver{db: db}, nil
+		}
+		if !unansweredDial(err) || !time.Now().Before(deadline) || ctx.Err() != nil {
+			db.Close()
+			return nil, fmt.Errorf("ping postgres: %w", err)
+		}
+		onRetry(err)
+		select {
+		case <-ctx.Done():
+			db.Close()
+			return nil, fmt.Errorf("ping postgres: %w", err)
+		case <-time.After(interval):
+		}
 	}
-	return &PostgresDriver{db: db}, nil
+}
+
+// unansweredDial reports whether a ping failed before the server said anything, or
+// with the one answer that means "try again shortly".
+func unansweredDial(err error) bool {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code == "57P03" // cannot_connect_now
+	}
+	return true
 }
 
 // DB exposes the underlying pool for the access layer.

@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"time"
 
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/dbbackup"
@@ -138,6 +139,33 @@ func openStore(ctx context.Context, url string, allowPending bool) (*store.Postg
 	if err != nil {
 		return nil, err
 	}
+	return checkSchema(ctx, drv, allowPending)
+}
+
+// podDBWindow and podDBInterval bound how long a pod that has just started retries its
+// first database dial while the network policy has yet to admit it
+// (store.OpenRetrying). A minute is far past the sync lag and far inside every Job's
+// deadline. Vars so a test can shrink them.
+var (
+	podDBWindow   = time.Minute
+	podDBInterval = time.Second
+)
+
+// openPodStore is openStore for felis-api and the reaper and backup Jobs, whose first
+// dial comes milliseconds after their pod starts.
+func openPodStore(ctx context.Context, url, prog string, stderr io.Writer) (*store.PostgresDriver, error) {
+	drv, err := store.OpenRetrying(ctx, url, podDBWindow, podDBInterval, func(err error) {
+		fmt.Fprintf(stderr, "felis %s: %v; retrying (a pod that has just started waits for the network policy to admit it)\n", prog, err)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return checkSchema(ctx, drv, false)
+}
+
+// checkSchema closes drv and fails when its schema is not the one this build was
+// written against (see openStore).
+func checkSchema(ctx context.Context, drv *store.PostgresDriver, allowPending bool) (*store.PostgresDriver, error) {
 	s, err := store.ReadSchema(ctx, drv)
 	if err == nil {
 		err = s.Err()

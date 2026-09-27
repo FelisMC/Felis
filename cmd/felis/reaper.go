@@ -78,7 +78,7 @@ func cmdReaper(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	drv, err := openStore(ctx, cfg.Database.URL, false)
+	drv, err := openPodStore(ctx, cfg.Database.URL, "reaper", stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis reaper: open database: %v\n", err)
 		return 1

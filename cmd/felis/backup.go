@@ -15,7 +15,6 @@ import (
 	"felis.lolicon.best/internal/config"
 	"felis.lolicon.best/internal/naming"
 	"felis.lolicon.best/internal/reaper"
-	"felis.lolicon.best/internal/store"
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
@@ -100,7 +99,7 @@ func cmdBackup(args []string, stdout, stderr io.Writer) int {
 			len(a.Skipped), strings.Join(a.Skipped[:min(len(a.Skipped), 10)], ", "))
 	}
 
-	drv, err := store.Open(ctx, cfg.Database.URL)
+	drv, err := openPodStore(ctx, cfg.Database.URL, "backup", stderr)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis backup: open database: %v\n", err)
 		return 1
