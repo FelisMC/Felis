@@ -43,8 +43,12 @@ func (c PGCatalog) MarkOffsite(ctx context.Context, id string, at time.Time) err
 }
 
 func (c PGCatalog) ExpiredRefs(ctx context.Context, now time.Time) ([]string, error) {
-	rows, err := c.DB.QueryContext(ctx, `SELECT backup_ref FROM world_backups
+	return c.refs(ctx, `SELECT backup_ref FROM world_backups
 		WHERE status = 'deleted' AND expires_at < $1 AND offsite_at IS NOT NULL`, now)
+}
+
+func (c PGCatalog) refs(ctx context.Context, q string, args ...any) ([]string, error) {
+	rows, err := c.DB.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -58,6 +62,16 @@ func (c PGCatalog) ExpiredRefs(ctx context.Context, now time.Time) ([]string, er
 		out = append(out, ref)
 	}
 	return out, rows.Err()
+}
+
+func (c PGCatalog) NewestOffsite(ctx context.Context) (time.Time, error) {
+	var at sql.NullTime
+	err := c.DB.QueryRowContext(ctx, `SELECT max(offsite_at) FROM world_backups`).Scan(&at)
+	return at.Time, err
+}
+
+func (c PGCatalog) KeptRefs(ctx context.Context, now time.Time) ([]string, error) {
+	return c.refs(ctx, `SELECT backup_ref FROM world_backups WHERE status = 'present' OR expires_at >= $1`, now)
 }
 
 // PendingCount is how many present archives wait for their copy, and since

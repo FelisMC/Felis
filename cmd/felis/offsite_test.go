@@ -673,3 +673,67 @@ func TestRestoredHostKeepsStandingBy(t *testing.T) {
 		t.Errorf("upgraded host's status = %+v", st)
 	}
 }
+
+// TestOffsiteSyncerSnapshotsAndSweeps: the pass `offsite sync` runs takes its
+// snapshot the way `felis db backup` does, in the database pod, into the
+// bundle directory, keeping the newest one there; and it sweeps unrecorded
+// world objects only past the longest retention [archive] gives any backup.
+func TestOffsiteSyncerSnapshotsAndSweeps(t *testing.T) {
+	dir := newPodRig(t)
+	bundles := filepath.Join(dir, "bundles")
+	env := &offsiteEnv{cfg: config.OffsiteConfig{DBKeep: 5}}
+	var log bytes.Buffer
+	cfg := &config.Config{Database: podDB, Archive: config.ArchiveConfig{Retention: "120d"}}
+	s := offsiteSyncer(cfg, env, offsiteSources{dbDir: bundles}, "/archives", "/uploads", nil, &log)
+	if s.DBDir != bundles || s.DBKeep != 5 || s.ArchiveDir != "/archives" || s.UploadsDir != "/uploads" {
+		t.Fatalf("syncer = %+v", s)
+	}
+	if s.OrphanAfter != 120*24*time.Hour {
+		t.Errorf("OrphanAfter = %s, want the 120d retention", s.OrphanAfter)
+	}
+	if s.Snapshot == nil {
+		t.Fatal("the pass takes no snapshot after copying archives")
+	}
+	for i := 0; i < 2; i++ {
+		if err := s.Snapshot(context.Background()); err != nil {
+			t.Fatalf("snapshot %d: %v", i, err)
+		}
+	}
+	got, err := dbbackup.List(bundles)
+	if err != nil || len(got) != 1 || got[0].Label != dbbackup.LabelOffsite {
+		t.Fatalf("bundle directory = %+v, %v; want the newest offsite bundle alone", got, err)
+	}
+	if _, err := dbbackupVerify(got[0].Path); err != nil {
+		t.Fatalf("the snapshot does not verify: %v", err)
+	}
+	// The MinecraftServer objects are exported alongside, as in the daily bundle.
+	argv, _ := os.ReadFile(filepath.Join(dir, "k3s.args"))
+	if ran := string(argv); !strings.Contains(ran, podExecPrefix+"pg_dump --format=custom") || !strings.Contains(ran, "kubectl get minecraftservers") {
+		t.Errorf("k3s ran %q, want pg_dump in the pod and the server export", ran)
+	}
+	if !strings.Contains(log.String(), "took database bundle "+got[0].Name) {
+		t.Errorf("the snapshot is not logged:\n%s", log.String())
+	}
+
+	for _, c := range []struct {
+		archive config.ArchiveConfig
+		want    time.Duration
+	}{
+		{config.ArchiveConfig{}, 90 * 24 * time.Hour},
+		{config.ArchiveConfig{ScheduledRetention: "200d"}, 200 * 24 * time.Hour},
+		{config.ArchiveConfig{ManualRetention: "150d", Retention: "30d", ScheduledRetention: "60d"}, 150 * 24 * time.Hour},
+	} {
+		s := offsiteSyncer(&config.Config{Database: podDB, Archive: c.archive}, env, offsiteSources{dbDir: bundles}, "", "", nil, io.Discard)
+		if s.OrphanAfter != c.want {
+			t.Errorf("%+v: OrphanAfter = %s, want %s", c.archive, s.OrphanAfter, c.want)
+		}
+	}
+	log.Reset()
+	s = offsiteSyncer(&config.Config{Database: podDB, Archive: config.ArchiveConfig{Retention: "soon"}}, env, offsiteSources{}, "", "", nil, &log)
+	if s.OrphanAfter != 0 || !strings.Contains(log.String(), "world objects no backup records are kept") {
+		t.Errorf("a retention that does not parse: OrphanAfter %s, log %q; want no sweep, said", s.OrphanAfter, log.String())
+	}
+	if s.Snapshot != nil {
+		t.Error("a pass that copies no bundles takes a snapshot")
+	}
+}

@@ -62,6 +62,10 @@ const (
 	LabelPreMigrate = "pre-migrate"
 	LabelPreRestore = "pre-restore"
 	LabelManual     = "manual"
+	// LabelOffsite is the bundle an off-site copy takes after copying world
+	// archives (internal/offsite), so the newest bundle off the machine lists
+	// them.
+	LabelOffsite = "offsite"
 
 	manifestEntry = "MANIFEST.json"
 	dumpEntry     = "db.dump"

@@ -36,6 +36,7 @@ var defaultKeep = map[string]int{
 	dbbackup.LabelDaily:      14,
 	dbbackup.LabelPreMigrate: 10,
 	dbbackup.LabelPreRestore: 5,
+	dbbackup.LabelOffsite:    1,
 }
 
 // cmdDB implements `felis db`: logical backups of the control-plane database
@@ -136,7 +137,7 @@ func libpqQuote(v string) string {
 func dbBackup(fs *flag.FlagSet, dir *string, args []string, stdout, stderr io.Writer) int {
 	cfgPath := fs.String("config", "/etc/felis/felis.toml", "path to felis.toml")
 	label := fs.String("label", dbbackup.LabelManual, "bundle label; daily/pre-migrate/pre-restore bundles are pruned, manual ones never")
-	keep := fs.Int("keep", -1, "bundles of this label to keep (default: daily 14, pre-migrate 10, pre-restore 5, manual all)")
+	keep := fs.Int("keep", -1, "bundles of this label to keep (default: daily 14, pre-migrate 10, pre-restore 5, offsite 1, manual all)")
 	stateDir := fs.String("state-dir", dbbackup.DefaultStateDir, `host state directory to bundle ("" for none)`)
 	noServers := fs.Bool("no-servers", false, "leave the MinecraftServer objects out of the bundle")
 	metrics := fs.String("metrics-file", "", "node-exporter textfile to rewrite on success (e.g. /var/lib/node_exporter/textfile_collector/felis_db_backup.prom)")

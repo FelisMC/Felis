@@ -2024,8 +2024,8 @@ along). One bundle is `felis-db-<UTC stamp>-<label>.tar`:
 
 next to a `.sha256` sidecar in `sha256sum` format. **A bundle contains the
 secrets; treat it like `/etc/felis` itself.** Retention per label: `daily` 14
-(`FELIS_DB_BACKUP_KEEP`), `pre-migrate` 10, `pre-restore` 5, `manual` never
-pruned.
+(`FELIS_DB_BACKUP_KEEP`), `pre-migrate` 10, `pre-restore` 5, `offsite` 1
+(taken by the off-site copy, §16), `manual` never pruned.
 
 Installer knobs: `FELIS_DB_BACKUP_DIR`, `FELIS_DB_BACKUP_KEEP`,
 `FELIS_DB_BACKUP_TIME`, `FELIS_DB_BACKUP_METRICS` and
@@ -2175,10 +2175,10 @@ off-site bucket (next sections) plus a fresh install. What the host holds:
 
 | Data | On the host | In the bucket | Brought back by | Lost at most |
 |---|---|---|---|---|
-| Control-plane database (accounts, passkeys, ownership, quotas, audit, submissions, the `world_backups` index) | felis-postgres, `/var/lib/felis/postgres` | every bundle, copied within the hour of being written | `fetch-db`, `db restore` | changes since the newest bundle: up to a day plus an hour with the daily timer |
+| Control-plane database (accounts, passkeys, ownership, quotas, audit, submissions, the `world_backups` index) | felis-postgres, `/var/lib/felis/postgres` | every bundle, copied within the hour of being written, plus a fresh one after every pass that copied a world archive | `fetch-db`, `db restore` | changes since the newest bundle: up to a day plus an hour with the daily timer |
 | Host state (`/etc/felis`: secrets, both `felis.toml` copies, `offsite.env`, the mail relay password and uploads bucket keys, panel TLS pair) | `/etc/felis` | inside every bundle | `tar -x` of the bundle's `state/` | as the database |
 | MinecraftServer objects | k3s | inside every bundle (`k8s/minecraftservers.json`) | `kubectl apply` | as the database |
-| World archives (reaper, "Back up now", pre-restore snapshots) | `felis-backups` volume | each one within the hour | `fetch-worlds` | archives written in the last hour |
+| World archives (reaper, "Back up now", pre-restore snapshots) | `felis-backups` volume | each one within the hour, followed by a bundle listing it | `fetch-worlds` | archives written in the last hour |
 | Live worlds | `world-*` volumes under `/var/lib/rancher/k3s/storage` | **only as their archives** | a restore from the newest archive (§10) | everything since that world's newest archive |
 | User images | `registry` volume | hourly; image lists kept 14 days | `fetch-images` | images pushed in the last hour |
 | Submission uploads (modpacks awaiting or past review) | `felis-uploads` volume | hourly; upload lists kept 14 days | `fetch-uploads` | uploads of the last hour |
@@ -2313,7 +2313,9 @@ host yourself, plus the off-site encryption key if the copy is in the bucket.
    and the volume lacks, provisioning the `felis-backups` volume first if
    nothing has used it yet (a short-lived `felis-bind-felis-backups-*` pod). It
    lists any it could not find in the bucket. Restore a world from its archive
-   as usual (§10, §13).
+   as usual (§10, §13). With the newest bundle restored, every archive in the
+   bucket is listed; an older bundle leaves the archives copied after it
+   unlisted, and the sync removes those once they pass the longest retention.
 8. Make this host the one that writes the bucket, and send its first copy:
 
    ```
@@ -2418,6 +2420,24 @@ What runs:
   its retention (`expires_at`) has passed. An object already in the bucket at
   the right size is recorded without being sent again, so a run cut short
   resumes. [GO-TESTED: `internal/offsite`]
+- A run that copied a world archive then takes a fresh `offsite` database
+  bundle (`felis-db-<stamp>-offsite.tar`, the same layout as a daily one, host
+  state from `-state-dir`, default `/etc/felis`) and sends it, so the newest
+  bundle in the bucket lists every archive there and a restore from it fetches
+  them all. The host keeps one such bundle locally, and the bucket keeps it
+  only while it is the newest; the `db_keep` count covers the other labels, so
+  a busy day of snapshots never pushes the dailies out. A run that copied
+  nothing, or whose newest bundle already postdates the last copy, takes none.
+  The panel's backup card keeps watching `felis-db-backup.timer` alone.
+  [GO-TESTED: `internal/offsite`, `TestOffsiteSyncerSnapshotsAndSweeps`]
+  [PG-TESTED]
+- A world archive in the bucket that no row lists (the database came back
+  from a bundle older than the archive) is removed once it has been in the
+  bucket longer than the longest `[archive]` retention (`retention`,
+  `manual_retention`, `scheduled_retention`); younger ones stay, and the run
+  logs how many and when each goes. The sweep skips a database that lists no
+  archive at all, so a sync against a database not restored yet removes
+  nothing. [GO-TESTED: `internal/offsite`]
 - The same run copies the user images in the platform registry: every
   repository outside `felis/` and `mirror/`, each manifest the registry's index
   lists and every layer it names, read through the loopback hostPort. A layer
@@ -2450,8 +2470,8 @@ What runs:
   truncation, reordering and a wrong key are all refused on the way back.
   `felis-key-id` and `felis-writer` next to them hold the key's id and the
   host writing the bucket in the clear.
-- A pass sends the database bundles first, then world archives, images and
-  uploads. Each object has its own time limit: 10 minutes plus its size at
+- A pass sends the database bundles first, then world archives, the bundle
+  listing them, images and uploads. Each object has its own time limit: 10 minutes plus its size at
   512 KiB/s (about 6 hours for 10 GiB). An archive the uplink cannot send in
   that time fails alone, stays pending and is tried again next pass; the rest
   of the pass still goes. A pass over a big archive can run for hours; the

@@ -240,6 +240,26 @@ func (c *fakeCatalog) ExpiredRefs(_ context.Context, now time.Time) ([]string, e
 	return out, nil
 }
 
+func (c *fakeCatalog) NewestOffsite(context.Context) (time.Time, error) {
+	var at time.Time
+	for _, r := range c.rows {
+		if r.offsite.After(at) {
+			at = r.offsite
+		}
+	}
+	return at, nil
+}
+
+func (c *fakeCatalog) KeptRefs(_ context.Context, now time.Time) ([]string, error) {
+	var out []string
+	for _, r := range c.rows {
+		if r.status == "present" || !r.expires.Before(now) {
+			out = append(out, r.Ref)
+		}
+	}
+	return out, nil
+}
+
 func writeFile(t *testing.T, dir, name string, size int) []byte {
 	t.Helper()
 	data := make([]byte, size)

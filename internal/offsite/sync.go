@@ -12,7 +12,11 @@
 // deletes an idle world only after that (internal/reaper). Remote world
 // objects go when their row has expired, so the bucket keeps each archive for
 // the same retention the panel promises, including archives evicted early from
-// the local disk to make room. Remote bundles are pruned to the newest DBKeep.
+// the local disk to make room; an object whose row a restore did not bring
+// back goes once it is older than the longest retention. Remote bundles are
+// pruned to the newest DBKeep. A pass that copies archives then sends a fresh
+// bundle, whose rows list them, so the newest bundle in the bucket lists every
+// archive in it and a restore from it can fetch them all.
 package offsite
 
 import (
@@ -78,6 +82,12 @@ type Catalog interface {
 	ExpiredRefs(ctx context.Context, now time.Time) ([]string, error)
 	// PresentWorlds lists every present archive, for a restore of the volume.
 	PresentWorlds(ctx context.Context) ([]WorldBackup, error)
+	// NewestOffsite is the latest offsite_at of any row: when the bucket last
+	// gained an archive. Zero when no archive was ever copied.
+	NewestOffsite(ctx context.Context) (time.Time, error)
+	// KeptRefs lists the backup_ref of every row whose archive the bucket
+	// keeps: present ones, and the rest until their expires_at.
+	KeptRefs(ctx context.Context, now time.Time) ([]string, error)
 }
 
 // Syncer copies what is missing from the bucket and prunes what has expired.
@@ -89,9 +99,16 @@ type Syncer struct {
 	// there is none yet (nothing has been archived on this install).
 	ArchiveDir string
 	// DBDir holds the database bundles; DBKeep is how many of the newest the
-	// bucket keeps.
+	// bucket keeps, not counting the newest Snapshot bundle.
 	DBDir  string
 	DBKeep int
+	// Snapshot writes a bundle labelled dbbackup.LabelOffsite into DBDir. A
+	// pass that leaves the bucket holding an archive newer than its newest
+	// bundle takes one and sends it (snapshotDB); nil takes none.
+	Snapshot func(ctx context.Context) error
+	// OrphanAfter is how old a world object no row keeps (KeptRefs) may get
+	// before it goes: the longest retention of any archive. Zero keeps them.
+	OrphanAfter time.Duration
 	// Images is the platform registry whose user images are copied (images.go);
 	// nil copies none.
 	Images ImageSource
@@ -190,10 +207,11 @@ func (s *Syncer) logf(format string, args ...any) {
 	}
 }
 
-// Run does one pass: database bundles, world archives, registry images,
-// submission uploads, then expiry. The bundles go first: they are small, and
-// every restore starts from one. A failure on one item is recorded and the
-// pass carries on; the returned error is non-nil when anything failed.
+// Run does one pass: database bundles, world archives, a bundle listing the
+// archives just copied, registry images, submission uploads, then expiry. The
+// bundles go first: they are small, and every restore starts from one. A
+// failure on one item is recorded and the pass carries on; the returned error
+// is non-nil when anything failed.
 func (s *Syncer) Run(ctx context.Context) (Result, error) {
 	var res Result
 	fail := func(format string, args ...any) {
@@ -214,9 +232,11 @@ func (s *Syncer) Run(ctx context.Context) (Result, error) {
 	}
 	s.syncDB(ctx, &res, fail)
 	s.syncWorlds(ctx, remoteWorlds, &res, fail)
+	s.snapshotDB(ctx, &res, fail)
 	s.syncImages(ctx, &res, fail)
 	s.syncUploads(ctx, &res, fail)
 	s.expireWorlds(ctx, remoteWorlds, &res, fail)
+	s.sweepWorlds(ctx, remoteWorlds, &res, fail)
 
 	for _, size := range remoteWorlds {
 		res.RemoteWorlds++
@@ -333,10 +353,7 @@ func (s *Syncer) syncDB(ctx context.Context, res *Result, fail func(string, ...a
 	// Bundle names start with their UTC stamp, so reversed order is newest first.
 	ranked := slices.Sorted(maps.Keys(names))
 	slices.Reverse(ranked)
-	kept := map[string]bool{}
-	for _, name := range ranked[:min(keep, len(ranked))] {
-		kept[name] = true
-	}
+	kept := keptBundles(ranked, keep)
 	for _, b := range local {
 		if !kept[b.Name] {
 			continue
@@ -367,6 +384,7 @@ func (s *Syncer) syncDB(ctx context.Context, res *Result, fail func(string, ...a
 		delete(remote, key)
 		res.DBPruned++
 	}
+	res.RemoteDB, res.NewestDB = 0, ""
 	for _, name := range ranked {
 		if _, ok := remote[DBKey(name)]; ok {
 			res.RemoteDB++
@@ -375,6 +393,59 @@ func (s *Syncer) syncDB(ctx context.Context, res *Result, fail func(string, ...a
 			}
 		}
 	}
+}
+
+// keptBundles picks the bundles the bucket keeps from ranked, newest first:
+// the newest keep that are not snapshots, and the newest snapshot while it is
+// the newest of all. A pass takes a snapshot whenever it copies archives, up to
+// once an hour, so counting them in keep would push the daily bundles, the
+// restore points of the last fortnight, out of the bucket within a day; one
+// older than the newest daily lists nothing that daily does not.
+func keptBundles(ranked []string, keep int) map[string]bool {
+	kept := map[string]bool{}
+	n := 0
+	for i, name := range ranked {
+		if _, label, _ := dbbackup.ParseBundleName(name); label == dbbackup.LabelOffsite {
+			if i == 0 {
+				kept[name] = true
+			}
+			continue
+		}
+		if n++; n > keep {
+			break
+		}
+		kept[name] = true
+	}
+	return kept
+}
+
+// snapshotDB takes a bundle and sends it when the bucket holds an archive
+// copied after its newest bundle was taken. A restore finds archives through
+// the world_backups rows of the bundle it restores: an archive with no row
+// there is neither fetched back nor ever expired, and until the next daily
+// bundle, up to a day later, every archive copied since the last one was in
+// that state. The comparison is by second, the resolution of bundle names; a
+// bundle taken in the second of the copy was taken after it.
+func (s *Syncer) snapshotDB(ctx context.Context, res *Result, fail func(string, ...any)) {
+	if s.Snapshot == nil || s.DBDir == "" {
+		return
+	}
+	copied, err := s.Catalog.NewestOffsite(ctx)
+	if err != nil {
+		fail("read when an archive was last copied: %v", err)
+		return
+	}
+	if copied.IsZero() {
+		return
+	}
+	if taken, _, ok := dbbackup.ParseBundleName(res.NewestDB); ok && !copied.Truncate(time.Second).After(taken) {
+		return
+	}
+	if err := s.Snapshot(ctx); err != nil {
+		fail("take a database bundle listing the archives just copied: %v", err)
+		return
+	}
+	s.syncDB(ctx, res, fail)
 }
 
 func (s *Syncer) expireWorlds(ctx context.Context, remote map[string]int64, res *Result, fail func(string, ...any)) {
@@ -397,6 +468,61 @@ func (s *Syncer) expireWorlds(ctx context.Context, remote map[string]int64, res 
 		}
 		delete(remote, key)
 		res.WorldsExpired++
+	}
+}
+
+// sweepWorlds removes world objects no row keeps once they are older than
+// OrphanAfter, the longest any archive is kept: what a restore from an older
+// bundle leaves in the bucket (its archives were copied after that bundle),
+// and the copy of a row whose MarkOffsite failed before the row expired.
+// Younger ones are kept and reported, as the reaper does on the archive
+// volume. A catalog that keeps nothing is a database not restored yet, whose
+// rows would keep everything, so nothing is swept on it; an object whose age
+// the bucket does not report stays.
+func (s *Syncer) sweepWorlds(ctx context.Context, remote map[string]int64, res *Result, fail func(string, ...any)) {
+	if s.OrphanAfter <= 0 {
+		return
+	}
+	refs, err := s.Catalog.KeptRefs(ctx, s.now())
+	if err != nil {
+		fail("list the world archives the bucket keeps: %v", err)
+		return
+	}
+	if len(refs) == 0 {
+		return
+	}
+	kept := make(map[string]bool, len(refs))
+	for _, ref := range refs {
+		if key, ok := WorldKey(ref); ok {
+			kept[key] = true
+		}
+	}
+	objs, err := s.Bucket.List(ctx, worldsDir)
+	if err != nil {
+		fail("list %s in the bucket: %v", worldsDir, err)
+		return
+	}
+	cutoff := s.now().Add(-s.OrphanAfter)
+	var young []string
+	for _, o := range objs {
+		if _, ok := remote[o.Key]; !ok || kept[o.Key] || !strings.HasSuffix(o.Key, objExt) {
+			continue
+		}
+		if o.Modified.IsZero() || o.Modified.After(cutoff) {
+			young = append(young, path.Base(o.Key))
+			continue
+		}
+		if err := s.Bucket.Remove(ctx, o.Key); err != nil {
+			fail("remove %s, which no backup records: %v", o.Key, err)
+			continue
+		}
+		delete(remote, o.Key)
+		res.WorldsExpired++
+		s.logf("removed world archive %s: no backup records it, and it was copied %s ago, past the longest retention", path.Base(o.Key), s.now().Sub(o.Modified).Round(time.Hour))
+	}
+	if len(young) > 0 {
+		s.logf("%d world archives in the bucket have no backup record (a database restored from an older bundle?); each goes once it is older than %s: %s",
+			len(young), s.OrphanAfter, strings.Join(young[:min(len(young), 5)], ", "))
 	}
 }
 

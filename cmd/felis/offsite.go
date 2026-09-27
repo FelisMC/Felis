@@ -211,6 +211,7 @@ func offsiteSync(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int 
 	archiveDir := fs.String("archive-dir", "", "host directory of the world archive volume (default: resolved from the backup PVC through the cluster)")
 	backupPVC := fs.String("backup-pvc", "felis-backups", `the world archive PVC, in the [k8s] namespace ("" when backups are off)`)
 	dbDir := fs.String("db-dir", dbbackup.DefaultDir, `database bundle directory ("" copies no bundles)`)
+	stateDir := fs.String("state-dir", dbbackup.DefaultStateDir, `host state directory bundled into the database bundle taken after archives are copied ("" for none)`)
 	registry := fs.String("registry", "", `host[:port] of the registry whose user images are copied (default: the in-cluster registry's loopback hostPort; "off" copies none)`)
 	uploadsDir := fs.String("uploads-dir", "", "host directory of the submission uploads volume (default: resolved from the uploads PVC through the cluster)")
 	uploadsPVC := fs.String("uploads-pvc", platform.UploadsPVCName, `the submission uploads PVC, in the control-plane namespace ("" copies no uploads)`)
@@ -225,7 +226,7 @@ func offsiteSync(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int 
 	}
 	st, lease := startRun(env.cfg, env.key, *statusFile, time.Now())
 	res, err := runOffsiteSync(cfg, env, offsiteSources{
-		archiveDir: *archiveDir, backupPVC: *backupPVC, dbDir: *dbDir,
+		archiveDir: *archiveDir, backupPVC: *backupPVC, dbDir: *dbDir, stateDir: *stateDir,
 		registry:   offsiteRegistryEndpoint(*registry, cfg.Registry),
 		uploadsDir: *uploadsDir, uploadsPVC: *uploadsPVC,
 	}, &lease, stderr)
@@ -299,12 +300,13 @@ func recordRun(st *offsite.Status, res offsite.Result, err error, lease offsite.
 }
 
 // offsiteSources is where one sync pass reads from: the world archive volume
-// (archiveDir, or the backupPVC's directory), the bundle directory, the
-// registry's loopback endpoint and the uploads volume (uploadsDir, or the
-// uploadsPVC's directory). An empty source is skipped.
+// (archiveDir, or the backupPVC's directory), the bundle directory (with the
+// host state the pass bundles, stateDir), the registry's loopback endpoint and
+// the uploads volume (uploadsDir, or the uploadsPVC's directory). An empty
+// source is skipped.
 type offsiteSources struct {
 	archiveDir, backupPVC  string
-	dbDir                  string
+	dbDir, stateDir        string
 	registry               string
 	uploadsDir, uploadsPVC string
 }
@@ -346,15 +348,59 @@ func runOffsiteSync(cfg *config.Config, env *offsiteEnv, src offsiteSources, lea
 		return offsite.Result{}, fmt.Errorf("open database: %w", err)
 	}
 	defer drv.Close()
-	s := &offsite.Syncer{
-		Bucket: env.bucket, Catalog: offsite.PGCatalog{DB: drv.DB()}, Key: env.key,
-		ArchiveDir: archiveDir, DBDir: src.dbDir, DBKeep: env.cfg.DBKeep, UploadsDir: uploadsDir, Lease: lease, Log: log,
-	}
+	s := offsiteSyncer(cfg, env, src, archiveDir, uploadsDir, lease, log)
+	s.Catalog = offsite.PGCatalog{DB: drv.DB()}
 	if src.registry != "" {
 		s.Images = newRegistryImages(src.registry)
 		s.ImagePins = imagePins(drv.DB(), cfg.Registry.URL)
 	}
 	return s.Run(ctx)
+}
+
+// offsiteSyncer is the pass runOffsiteSync runs over the resolved archive and
+// uploads directories, before its catalog and registry are attached. It
+// snapshots the database into the bundle directory after copying archives, and
+// sweeps world objects no backup records once they outlive every retention in
+// [archive]; a retention that does not parse sweeps none.
+func offsiteSyncer(cfg *config.Config, env *offsiteEnv, src offsiteSources, archiveDir, uploadsDir string, lease *offsite.Lease, log io.Writer) *offsite.Syncer {
+	s := &offsite.Syncer{
+		Bucket: env.bucket, Key: env.key,
+		ArchiveDir: archiveDir, DBDir: src.dbDir, DBKeep: env.cfg.DBKeep, UploadsDir: uploadsDir, Lease: lease, Log: log,
+	}
+	if src.dbDir != "" {
+		s.Snapshot = offsiteSnapshot(cfg.Database, src.dbDir, src.stateDir, log)
+	}
+	if rc, err := reaperConfig(cfg); err != nil {
+		fmt.Fprintf(log, "felis offsite: world objects no backup records are kept: %v\n", err)
+	} else {
+		s.OrphanAfter = max(rc.Retention, rc.ManualRetention, rc.ScheduledRetention)
+	}
+	return s
+}
+
+// offsiteSnapshot takes the bundle a pass sends after copying world archives
+// (offsite.Syncer.Snapshot): what `felis db backup` takes, labelled offsite,
+// with the newest one kept in dir. It is not recorded for the panel, whose
+// backup card watches felis-db-backup.timer: snapshots come only when archives
+// are copied, and would hide a daily timer that stopped.
+func offsiteSnapshot(db config.DatabaseConfig, dir, stateDir string, log io.Writer) func(context.Context) error {
+	return func(ctx context.Context) error {
+		tools, err := dbTools(db)
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+		defer cancel()
+		path, err := dbbackup.Backup(ctx, dbbackup.BackupOptions{
+			DatabaseURL: db.URL, Tools: tools, Dir: dir, Label: dbbackup.LabelOffsite,
+			Keep: defaultKeep[dbbackup.LabelOffsite], StateDir: stateDir, Version: resolvedVersion(),
+			ExportServers: exportMinecraftServers, Log: log,
+		})
+		if err == nil {
+			fmt.Fprintf(log, "felis offsite: took database bundle %s, which lists the archives just copied\n", filepath.Base(path))
+		}
+		return err
+	}
 }
 
 // volumeKind names a PVC the off-site copy reads or restores, for messages,
