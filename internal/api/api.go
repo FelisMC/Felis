@@ -752,10 +752,10 @@ func (a *API) buildFace(face string, routes []apiRoute, guard func(http.Handler)
 			h = callersOnly(rt.Callers, h)
 		}
 		if rt.Owner {
-			h = a.ownerOnly(rt.h)
+			h = a.ownerOnly(h)
 		}
 		if rt.Admin {
-			h = a.adminOnly(rt.h)
+			h = a.adminOnly(h)
 		}
 		// Default-deny setup-lockdown: wrap every authenticated route unless it
 		// explicitly opts out. The wrapper is nil-principal safe, so it is inert on
