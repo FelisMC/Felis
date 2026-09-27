@@ -80,7 +80,8 @@ sequenceDiagram
         API-->>Panel: 412 not_linked
     else linked
         Repo-->>API: true
-        API->>Repo: QuotaAvailable(user_id)
+        API->>Repo: QuotaCheck(user_id, the server's real size)
+        Note over API,Repo: all four caps: servers, CPU, memory, storage
         alt quota exhausted
             Repo-->>API: false
             API-->>Panel: 403 quota_exceeded

@@ -346,32 +346,6 @@ func (p *PGRepo) CompleteOwnerSetup(ctx context.Context, newUserID, code string,
 	return userID, mcUUID, authSource, nil
 }
 
-// QuotaAvailable treats a missing quota row or a NULL max_servers as unlimited;
-// otherwise it compares the live owned-server count against the cap (spec §9.3).
-// It is the single-dimension convenience read; handlers use the four-dimension
-// QuotaCheck. The former audit-#4 TOCTOU (check and claim in separate statements)
-// is closed inside ClaimServer, which re-runs the four-dimension gate under a
-// per-user advisory lock in the SAME transaction as the ownership write.
-func (p *PGRepo) QuotaAvailable(ctx context.Context, userID string) (bool, error) {
-	var maxServers sql.NullInt64
-	switch err := p.db.QueryRowContext(ctx,
-		`SELECT max_servers FROM quotas WHERE user_id = $1`, userID).Scan(&maxServers); {
-	case errors.Is(err, sql.ErrNoRows):
-		return true, nil
-	case err != nil:
-		return false, err
-	}
-	if !maxServers.Valid {
-		return true, nil
-	}
-	var n int64
-	if err := p.db.QueryRowContext(ctx,
-		`SELECT count(*) FROM servers WHERE owner_id = $1 AND deleted_at IS NULL`, userID).Scan(&n); err != nil {
-		return false, err
-	}
-	return n < maxServers.Int64, nil
-}
-
 // QuotaCheck reports whether accepting a server with resource spec `incoming`
 // would push userID over any quota cap. excludeName is the server row whose own
 // cached resources should be excluded ("" for a fresh claim where the row

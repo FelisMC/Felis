@@ -335,15 +335,14 @@ func (f *fakeRepo) ServerByName(_ context.Context, n string) (*ServerRecord, err
 	}
 	return nil, ErrNotFound
 }
-func (f *fakeRepo) IsLinked(_ context.Context, u string) (bool, error)       { return f.linked[u], nil }
-func (f *fakeRepo) QuotaAvailable(_ context.Context, u string) (bool, error) { return f.quota[u], nil }
+func (f *fakeRepo) IsLinked(_ context.Context, u string) (bool, error) { return f.linked[u], nil }
 
 func (f *fakeRepo) QuotaCheck(_ context.Context, userID string, _ string, incoming ResourceSpec) (bool, error) {
 	f.quotaChecked = append(f.quotaChecked, incoming)
-	// For hermetic tests, QuotaCheck delegates to the same QuotaAvailable
-	// store — tests that care about per-dimension checks should use
-	// fakeQuotas with direct inspection.
-	return f.QuotaAvailable(context.TODO(), userID)
+	// For hermetic tests, QuotaCheck answers from the per-user quota flag —
+	// tests that care about per-dimension checks should use fakeQuotas with
+	// direct inspection.
+	return f.quota[userID], nil
 }
 
 func (f *fakeRepo) UpdateServerResources(ctx context.Context, name string, cpu, mem, stor int) error {

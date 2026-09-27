@@ -605,9 +605,6 @@ func TestSetQuotasReplacesEveryCap(t *testing.T) {
 
 	set(api.QuotaInput{MaxServers: n(0), MaxCPUMilli: n(2000), MaxMemoryMB: n(4096), MaxStorageGB: n(20)}, "0/2000/4096/20")
 	gate(false)
-	if ok, err := repo.QuotaAvailable(ctx, u.ID); err != nil || ok {
-		t.Fatalf("QuotaAvailable at max_servers 0 = %v, %v; want false", ok, err)
-	}
 	if _, err := repo.ClaimServer(ctx, name, u.ID); !errors.Is(err, api.ErrQuotaExceeded) {
 		t.Fatalf("claim at max_servers 0 = %v, want ErrQuotaExceeded", err)
 	}
@@ -618,9 +615,6 @@ func TestSetQuotasReplacesEveryCap(t *testing.T) {
 	gate(false)
 	set(api.QuotaInput{}, "-/-/-/-")
 	gate(true)
-	if ok, err := repo.QuotaAvailable(ctx, u.ID); err != nil || !ok {
-		t.Fatalf("QuotaAvailable with every cap lifted = %v, %v; want true", ok, err)
-	}
 	if claimed, err := repo.ClaimServer(ctx, name, u.ID); err != nil || !claimed {
 		t.Fatalf("claim with every cap lifted = %v, %v; want claimed", claimed, err)
 	}

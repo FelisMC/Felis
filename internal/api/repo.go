@@ -166,9 +166,8 @@ type StaffUser struct {
 // be public (unlike a session token), so it is safe at rest. CredentialID is the
 // authenticator's globally-unique handle (base64url) and PublicKey the COSE key
 // (base64); SignCount is the uint32 signature counter captured at registration.
-// LastUsedAt is nil until an assertion stamps it. The passkey login door now exists
-// (Public /auth/passkey/login/{begin,finish}, #72), but no path yet writes
-// last_used_at, so in practice it stays nil; wiring the stamp is a follow-up there.
+// LastUsedAt is nil until a passkey sign-in or step-up stamps it
+// (AdvanceCredentialSignCount, with the advanced counter).
 type PasskeyCredential struct {
 	ID           string
 	UserID       string
@@ -326,9 +325,6 @@ type Repo interface {
 	// the API clock so expiry is testable. It returns the effective userID plus the
 	// bound mc_uuid and authSource (for the response + audit).
 	RedeemPlayerBindCode(ctx context.Context, newUserID, code string, now time.Time) (userID, mcUUID, authSource string, err error)
-	// QuotaAvailable reports whether the user is under their max_servers quota
-	// (spec §9.3 step ②, evaluated before provisioning).
-	QuotaAvailable(ctx context.Context, userID string) (bool, error)
 	// QuotaCheck reports whether claiming a server with the given resource spec
 	// would push the user over any of their four quota caps: max_servers,
 	// max_cpu_milli, max_memory_mb, and max_storage_gb (spec §9.3 / §22). A nil
