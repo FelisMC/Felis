@@ -14,6 +14,7 @@ import net.kyori.adventure.inventory.Book;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.TextComponent;
 import net.kyori.adventure.text.event.ClickEvent;
+import net.kyori.adventure.text.format.TextDecoration;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -119,6 +120,13 @@ public final class LoginFlowTest {
                 List.of(CODE + " " + stub.panelUrl), seat.books);
         assertTrue("chat carries the code", seat.chat.get(0).contains(CODE));
         assertTrue("chat names the panel URL", seat.chat.get(1).contains(stub.panelUrl) && seat.chat.get(2).contains(stub.panelUrl));
+        // The client makes nothing in server chat clickable by itself: a player who
+        // closed the book had to type the URL out.
+        for (int i = 1; i <= 2; i++) {
+            List<ClickEvent> clicks = new ArrayList<>();
+            collectClicks(LoginBook.chatLine(seat.chat.get(i)), clicks);
+            assertEq("chat line " + i + " opens the panel URL", List.of(ClickEvent.openUrl(stub.panelUrl)), clicks);
+        }
         assertEq("no release before the link", 0, seat.releases.size());
 
         int before = stub.hits("/link/status/");
@@ -357,6 +365,19 @@ public final class LoginFlowTest {
         collectClicks(page, clicks);
         assertEq("one click, opening the login page", List.of(ClickEvent.openUrl(CONSOLE + "/link")), clicks);
         assertTrue("the page says to use the system browser", plain(page).contains("SYSTEM browser"));
+
+        // A chat line keeps its text; only the address in it turns into a link.
+        Component line = LoginBook.chatLine("§e[Felis] 打开 §b" + CONSOLE + "/link §e完成登录（勿用微信/QQ内置浏览器）。");
+        assertEq("chat line text", "[Felis] 打开 " + CONSOLE + "/link 完成登录（勿用微信/QQ内置浏览器）。", plain(line));
+        List<Component> links = new ArrayList<>();
+        collectLinks(line, links);
+        assertEq("one link in the line", 1, links.size());
+        assertEq("the link is the address alone", CONSOLE + "/link", plain(links.get(0)));
+        assertEq("the link opens it", ClickEvent.openUrl(CONSOLE + "/link"), links.get(0).clickEvent());
+        assertEq("the link looks like one", TextDecoration.State.TRUE, links.get(0).decoration(TextDecoration.UNDERLINED));
+        List<ClickEvent> none = new ArrayList<>();
+        collectClicks(LoginBook.chatLine(LoginFlow.SIGNED_IN), none);
+        assertEq("a line without an address has no link", List.of(), none);
     }
 
     // ---- fakes ----
@@ -640,6 +661,15 @@ public final class LoginFlowTest {
             sb.append(plain(child));
         }
         return sb.toString();
+    }
+
+    private static void collectLinks(Component c, List<Component> out) {
+        if (c.clickEvent() != null) {
+            out.add(c);
+        }
+        for (Component child : c.children()) {
+            collectLinks(child, out);
+        }
     }
 
     private static void collectClicks(Component c, List<ClickEvent> out) {

@@ -397,21 +397,8 @@ public final class FelisVelocityPlugin {
         async(player, () -> {
             try {
                 LinkCode code = linkClient.requestCode(player.getUniqueId());
-                player.sendMessage(Component.text(
-                        zh ? "你的绑定码：" : "Your link code: ", NamedTextColor.GREEN)
-                        .append(Component.text(code.code(), NamedTextColor.YELLOW)));
-                String panelUrl = code.panelUrl();
-                if (panelUrl != null) {
-                    player.sendMessage(Component.text(
-                            zh ? "在这里输入它完成绑定（几分钟内有效）："
-                               : "Enter it here to finish linking (valid a few minutes):",
-                            NamedTextColor.GRAY));
-                    player.sendMessage(Component.text("  " + panelUrl, NamedTextColor.WHITE));
-                } else {
-                    player.sendMessage(Component.text(
-                            zh ? "在网页控制台 → 账户 中输入它完成绑定（几分钟内有效）。"
-                               : "Enter it on the web console → Account to finish linking (valid a few minutes).",
-                            NamedTextColor.GRAY));
+                for (Component line : LinkCodeCard.lines(code.code(), code.panelUrl(), zh)) {
+                    player.sendMessage(line);
                 }
             } catch (LinkException e) {
                 logger.warn("link code request failed for {} (status={}, code={}): {}",

@@ -26,8 +26,9 @@
 #      prompt, the op-login approval card names the account and leaves its
 #      name for the admin to type, and the loader mods' shared /link refuses the
 #      console and an offline-mode server before minting, fetches the code off the
-#      server thread and answers on it, and turns any failure into one line.
-#      InviteCardTest and OpApprovalCardTest need the
+#      server thread and answers on it, and turns any failure into one line; the
+#      /link reply makes the panel address a link the player can click open.
+#      InviteCardTest, OpApprovalCardTest and LinkCodeCardTest need the
 #      adventure jars the velocity plugin compiles
 #      against; they are fetched from Maven Central below, pinned by version and
 #      checked by digest (a test run against silently-substituted bytes is not a
@@ -212,6 +213,14 @@ javac -cp "$adventure_api:$adventure_key:$examination_api" -d "$work/opcard-clas
   plugins/velocity/test/best/lolicon/felis/velocity/OpApprovalCardTest.java
 java -cp "$work/opcard-classes:$adventure_api:$adventure_key:$examination_api" \
   best.lolicon.felis.velocity.OpApprovalCardTest
+
+echo "==> LinkCodeCardTest (/link reply, velocity)"
+mkdir -p "$work/linkcard-classes"
+javac -cp "$adventure_api:$adventure_key:$examination_api" -d "$work/linkcard-classes" \
+  plugins/velocity/src/main/java/best/lolicon/felis/velocity/LinkCodeCard.java \
+  plugins/velocity/test/best/lolicon/felis/velocity/LinkCodeCardTest.java
+java -cp "$work/linkcard-classes:$adventure_api:$adventure_key:$examination_api" \
+  best.lolicon.felis.velocity.LinkCodeCardTest
 
 # --- 2. production compile gates ------------------------------------------------
 

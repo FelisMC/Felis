@@ -49,7 +49,7 @@ final class LoginFlow {
     interface Seat {
         String name();
 
-        /** chat sends one line, with § colour codes. */
+        /** chat sends one line, with § colour codes; a web address in it opens when clicked. */
         void chat(String line);
 
         /** showCode opens the login book. It may throw for a client that refuses it. */

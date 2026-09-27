@@ -230,7 +230,7 @@ public final class FelisLimboPlugin extends LimboPlugin implements Listener {
 
         @Override
         public void chat(String line) {
-            player.sendMessage(line);
+            player.sendMessage(LoginBook.chatLine(line));
         }
 
         @Override
