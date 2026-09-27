@@ -148,6 +148,16 @@ export function ServersPage() {
 
   usePolling(reload, REFRESH_MS);
 
+  // The refresh button answers its own click alone. The background reread every
+  // few seconds leaves it still and clickable; a spin and a disabled button on
+  // each tick read as the page stalling.
+  const [refreshing, setRefreshing] = useState(false);
+  if (refreshing && !loading) setRefreshing(false);
+  const refresh = () => {
+    setRefreshing(true);
+    reload();
+  };
+
   const servers = useMemo<UnifiedServer[]>(() => {
     if (!data) return [];
     if (isAdmin) {
@@ -253,12 +263,12 @@ export function ServersPage() {
             <Button
               variant="outline"
               size="sm"
-              onClick={reload}
-              disabled={loading}
+              onClick={refresh}
+              disabled={refreshing}
               aria-label={t("fleet_refresh")}
               title={t("fleet_refresh")}
             >
-              <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+              <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
             </Button>
             {isAdmin && cfg && <CreateServerDialog cfg={cfg} onCreated={reload} />}
           </div>

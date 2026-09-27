@@ -428,3 +428,41 @@ describe("ServersPage with nothing matching", () => {
     expect(await tableOrder()).toEqual(names.slice(0, 20));
   });
 });
+
+describe("ServersPage refresh button", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("stays still and clickable through the background reread, and spins for its own click", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    calls.fleet.mockResolvedValue([row("survival", {})]);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(
+      <MemoryRouter>
+        <ServersPage />
+      </MemoryRouter>,
+    );
+    await tableOrder();
+    const button = screen.getByRole("button", { name: "Refresh now" }) as HTMLButtonElement;
+    const spinning = () => button.querySelector("svg")?.classList.contains("animate-spin");
+
+    // The background reread hangs; the button does not show it.
+    let finish: (v: FleetServer[]) => void = () => {};
+    calls.fleet.mockReturnValueOnce(new Promise<FleetServer[]>((r) => (finish = r)));
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(calls.fleet).toHaveBeenCalledTimes(2);
+    expect(button.disabled).toBe(false);
+    expect(spinning()).toBe(false);
+
+    calls.fleet.mockReturnValueOnce(new Promise<FleetServer[]>((r) => (finish = r)));
+    await user.click(button);
+    expect(calls.fleet).toHaveBeenCalledTimes(3);
+    expect(button.disabled).toBe(true);
+    expect(spinning()).toBe(true);
+
+    await act(async () => finish([row("survival", {})]));
+    expect(button.disabled).toBe(false);
+    expect(spinning()).toBe(false);
+  });
+});
