@@ -1853,6 +1853,9 @@ func (c *fakeCluster) WorldVolumeExists(_ context.Context, n string) (bool, erro
 }
 
 func (c *fakeCluster) SetDesiredState(_ context.Context, n string, s v1alpha1.DesiredState) error {
+	if _, ok := c.byName[n]; !ok {
+		return ErrNotFound // the MinecraftServer is gone, as K8sCluster.getServer reports it
+	}
 	if err := c.wakeErr[n]; err != nil && s == v1alpha1.DesiredRunning {
 		return err
 	}

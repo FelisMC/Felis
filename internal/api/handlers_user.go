@@ -112,7 +112,7 @@ func (a *API) handleStop(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.Cluster.SetDesiredState(r.Context(), name, v1alpha1.DesiredStopped); err != nil {
-		writeError(w, r, err)
+		a.writeLookupError(w, r, err) // a row whose MinecraftServer is gone is 404, as for a wake
 		return
 	}
 	a.audit(r, "stop", name)
