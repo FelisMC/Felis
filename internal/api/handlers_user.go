@@ -1145,15 +1145,10 @@ func quantityToMilli(q resource.Quantity) int {
 	return int(q.MilliValue())
 }
 
-// quantityToMB converts a K8s resource.Quantity to whole megabytes, rounding up
-// (e.g. "4Gi"→4096, "1G"→1000). A zero/unset quantity returns 0.
+// quantityToMB converts a K8s resource.Quantity to whole MiB, the MB of the quota
+// columns, rounding up so a size between two counts as the larger: "4Gi"→4096,
+// "1G"→954. A zero/unset quantity returns 0.
 func quantityToMB(q resource.Quantity) int {
-	if q.IsZero() {
-		return 0
-	}
-	mb := q.Value() / (1024 * 1024)
-	if mb < 1 {
-		return 1
-	}
-	return int(mb)
+	const mib = 1 << 20
+	return int((q.Value() + mib - 1) / mib)
 }
