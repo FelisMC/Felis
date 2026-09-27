@@ -46,7 +46,8 @@ import java.util.function.LongSupplier;
  * reports ready, transfers everyone waiting on it. A waiter stays as long as its
  * server is on the way up, through the operator's restart backoff, and drops out on a
  * successful transfer, when the player leaves the proxy, when the start is given up or
- * the server stopped, or when felis-api stops answering for the wait window.
+ * the server stopped, or when felis-api stops answering for the wait window. A transfer
+ * that fails without the backend saying why queues the player again for another dial.
  *
  * <p>Every transition out of login is checked against felis-api's link status, and
  * command/menu queue entries are checked the same way. The wake is then gated
@@ -79,6 +80,9 @@ public final class WaitingRouter {
     // The login gate re-sends its release with backoff (and during a felis-api outage
     // on every retry), so a denial line is shown at most once per this interval.
     private static final long GATE_NOTICE_INTERVAL_MILLIS = 15_000L;
+    // How many times a player is dialled into a server that fails the connect without
+    // saying why. The retries ride the queue, a tick apart, each after a fresh ready poll.
+    private static final int TRANSFER_ATTEMPTS = 3;
 
     private final ProxyServer proxy;
     private final Logger log;
@@ -249,7 +253,8 @@ public final class WaitingRouter {
                     NamedTextColor.RED));
             return;
         }
-        transfer(player, lobbyServer, lobby.get());
+        // One dial: the lobby is no queue target, and the player can simply ask again.
+        transfer(player, lobbyServer, lobby.get(), false, TRANSFER_ATTEMPTS);
     }
 
     /**
@@ -505,7 +510,7 @@ public final class WaitingRouter {
             if (w.fromMenu && listener != null) {
                 listener.onReady(player, w.serverName);
             }
-            transfer(player, w.serverName, backend.get());
+            transfer(player, w.serverName, backend.get(), w.fromMenu, w.attempts + 1);
         }
     }
 
@@ -644,7 +649,7 @@ public final class WaitingRouter {
         if (fromMenu && listener != null) {
             listener.onReady(player, serverName);
         }
-        transfer(player, serverName, backend.get());
+        transfer(player, serverName, backend.get(), fromMenu, 1);
         return true;
     }
 
@@ -724,7 +729,7 @@ public final class WaitingRouter {
                        : "Starting « " + serverName + " » — you'll be moved in automatically.",
                     NamedTextColor.GRAY));
         }
-        waiting.put(id, new Waiter(serverName, clock.getAsLong(), fromMenu));
+        waiting.put(id, new Waiter(serverName, clock.getAsLong(), fromMenu, 0));
     }
 
     // The server's start failed and its automatic retries are spent: nothing more is
@@ -745,26 +750,51 @@ public final class WaitingRouter {
                 NamedTextColor.RED));
     }
 
-    private void transfer(Player player, String serverName, RegisteredServer backend) {
+    /**
+     * transfer dials a player into a server; attempt numbers this dial among the ones
+     * made for the same move. A connect that fails without the backend saying why — the
+     * server went away between the ready poll and the dial, its port is not listening
+     * yet, the network dropped — puts the player back in the queue until
+     * {@link #TRANSFER_ATTEMPTS} dials are spent: a later tick polls the server again,
+     * registers the address it reports and dials once more. A refusal that carries a
+     * reason (ban, whitelist, full, mods) is final at once, and so is a dial another
+     * connection or a pre-connect listener pre-empted.
+     */
+    private void transfer(Player player, String serverName, RegisteredServer backend,
+                          boolean fromMenu, int attempt) {
         player.createConnectionRequest(backend).connect().whenComplete((result, err) -> {
-            if (err != null || (result != null && !result.isSuccessful())) {
-                plugin.stats().count(ProxyStats.Event.TRANSFER_FAILED);
-                log.warn("Felis: transfer of {} to {} failed: {}", player.getUniqueId(), serverName,
-                        err != null ? err.toString() : result.getStatus());
-                boolean zh = FelisVelocityPlugin.zh(player);
-                Component line = Component.text(
-                        zh ? "无法把你连接到「" + serverName + "」。"
-                           : "Couldn't connect you to « " + serverName + " ».",
-                        NamedTextColor.RED);
-                // A backend that refuses the login says why (ban, whitelist, full, mods);
-                // "please try again" is wrong advice for all of those.
-                Optional<Component> reason = result == null ? Optional.empty() : result.getReasonComponent();
-                line = reason.isPresent()
-                        ? line.append(Component.text(zh ? " 原因：" : " Reason: ", NamedTextColor.RED))
-                              .append(reason.get())
-                        : line.append(Component.text(zh ? "请重试。" : " Please try again.", NamedTextColor.RED));
-                player.sendMessage(line);
+            if (err == null && (result == null || result.isSuccessful())) {
+                return;
             }
+            plugin.stats().count(ProxyStats.Event.TRANSFER_FAILED);
+            log.warn("Felis: transfer of {} to {} failed (attempt {}/{}): {}", player.getUniqueId(), serverName,
+                    attempt, TRANSFER_ATTEMPTS, err != null ? err.toString() : result.getStatus());
+            boolean zh = FelisVelocityPlugin.zh(player);
+            boolean unexplained = err != null
+                    || (result.getStatus() == ConnectionRequestBuilder.Status.SERVER_DISCONNECTED
+                        && result.getReasonComponent().isEmpty());
+            // putIfAbsent: a player who queued for another server meanwhile keeps that wait.
+            if (unexplained && attempt < TRANSFER_ATTEMPTS
+                    && waiting.putIfAbsent(player.getUniqueId(),
+                            new Waiter(serverName, clock.getAsLong(), fromMenu, attempt)) == null) {
+                player.sendMessage(Component.text(
+                        zh ? "没能连上「" + serverName + "」，稍后自动重试……"
+                           : "Couldn't reach « " + serverName + " »; trying again shortly…",
+                        NamedTextColor.YELLOW));
+                return;
+            }
+            Component line = Component.text(
+                    zh ? "无法把你连接到「" + serverName + "」。"
+                       : "Couldn't connect you to « " + serverName + " ».",
+                    NamedTextColor.RED);
+            // A backend that refuses the login says why (ban, whitelist, full, mods);
+            // "please try again" is wrong advice for all of those.
+            Optional<Component> reason = result == null ? Optional.empty() : result.getReasonComponent();
+            line = reason.isPresent()
+                    ? line.append(Component.text(zh ? " 原因：" : " Reason: ", NamedTextColor.RED))
+                          .append(reason.get())
+                    : line.append(Component.text(zh ? "请重试。" : " Please try again.", NamedTextColor.RED));
+            player.sendMessage(line);
         });
     }
 
@@ -786,6 +816,7 @@ public final class WaitingRouter {
         final String serverName;
         final boolean fromMenu; // true → notify the felis:control face on transfer
         final long sinceMillis;
+        final int attempts; // dials into serverName already made and failed
         // Only the drain touches these, one tick at a time (the ticking flag orders
         // the ticks), so they need no further synchronization.
         long deadlineMillis;
@@ -793,9 +824,10 @@ public final class WaitingRouter {
         int restartsSeen;
         boolean stopSeen;
 
-        Waiter(String serverName, long nowMillis, boolean fromMenu) {
+        Waiter(String serverName, long nowMillis, boolean fromMenu, int attempts) {
             this.serverName = serverName;
             this.fromMenu = fromMenu;
+            this.attempts = attempts;
             this.sinceMillis = nowMillis;
             this.deadlineMillis = nowMillis + WAIT_TIMEOUT_MILLIS;
             this.noticedMillis = nowMillis;

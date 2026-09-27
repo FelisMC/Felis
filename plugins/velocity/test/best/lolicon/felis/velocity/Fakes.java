@@ -19,6 +19,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
+import java.net.ConnectException;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -239,6 +240,8 @@ final class Fakes {
         volatile String virtualHost;
         volatile RegisteredServer current;
         volatile boolean connectSucceeds = true;
+        /** connectThrows fails every connect the way an unreachable backend does, with no result. */
+        volatile boolean connectThrows;
         volatile String disconnectedWith;
         final List<String> messages = Collections.synchronizedList(new ArrayList<>());
         /**
@@ -331,6 +334,10 @@ final class Fakes {
                             status = ConnectionRequestBuilder.Status.CONNECTION_CANCELLED;
                         } else {
                             connects.add(dest.getServerInfo().getName());
+                            if (connectThrows) {
+                                return CompletableFuture.failedFuture(
+                                        new ConnectException("Connection refused"));
+                            }
                             status = connectSucceeds && refusal == null
                                     ? ConnectionRequestBuilder.Status.SUCCESS
                                     : ConnectionRequestBuilder.Status.SERVER_DISCONNECTED;

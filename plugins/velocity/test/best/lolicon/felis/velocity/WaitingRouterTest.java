@@ -586,24 +586,87 @@ public final class WaitingRouterTest {
                 () -> log.count("WARN", "join-event for " + p.id + " on beta failed (status=500)") == 1);
         api.joinStatus = 204;
 
-        // A transfer the backend refuses is counted, logged and told.
-        Fakes.FakePlayer refused = player(null, true);
-        refused.current = lobby;
-        refused.connectSucceeds = false;
-        router.enqueueFromInvite(refused.player, "beta");
-        // The chat line is the last thing the failure path does; the count comes first.
-        Fakes.await("failed transfer: told", () -> refused.said("Couldn't connect you to « beta »"));
-        assertEq("failed transfer counted", 1L, plugin.stats().total(ProxyStats.Event.TRANSFER_FAILED));
-        assertEq("failed transfer: logged", 1, log.count("WARN", "transfer of " + refused.id + " to beta failed"));
+        // A connect that fails without the backend saying why puts the player back in the
+        // queue; the next tick polls the server again and dials once more.
+        long failed = plugin.stats().total(ProxyStats.Event.TRANSFER_FAILED);
+        int queued = router.waitingCount();
+        Fakes.FakePlayer flaky = player(null, true);
+        flaky.current = lobby;
+        flaky.connectThrows = true;
+        router.enqueueFromInvite(flaky.player, "beta");
+        // The chat line is the last thing the failure path does; the requeue comes first.
+        Fakes.await("unreachable: told it retries", () -> flaky.said("Couldn't reach « beta »; trying again shortly"));
+        assertEq("unreachable: queued again", queued + 1, router.waitingCount());
+        assertEq("unreachable: counted", failed + 1, plugin.stats().total(ProxyStats.Event.TRANSFER_FAILED));
+        assertEq("unreachable: logged", 1,
+                log.count("WARN", "transfer of " + flaky.id + " to beta failed (attempt 1/3)"));
+        assertEq("unreachable: no final word yet", false, flaky.said("Couldn't connect you"));
+        flaky.connectThrows = false;
+        int polls = api.count("GET " + SERVERS + "beta/status");
+        router.tick();
+        assertEq("retry: polled again", polls + 1, api.count("GET " + SERVERS + "beta/status"));
+        assertEq("retry: dialled again, and in", List.of("beta", "beta"), List.copyOf(flaky.connects));
+        assertEq("retry: out of the queue", queued, router.waitingCount());
+        assertEq("retry: nothing more counted", failed + 1, plugin.stats().total(ProxyStats.Event.TRANSFER_FAILED));
 
-        // A backend that kicks the login says why; "please try again" is wrong for a ban.
+        // The dials are bounded: a backend that keeps dropping them gets the final word on
+        // the third. A menu wait stays one through its retries, so the lobby hears each.
+        List<String> told = Collections.synchronizedList(new ArrayList<>());
+        router.setMenuTransferListener((pl, server) -> told.add(pl.getUsername() + "@" + server));
+        Fakes.FakePlayer dropped = player(null, true);
+        dropped.current = lobby;
+        dropped.connectSucceeds = false;
+        router.enqueueFromMenu(dropped.player, "beta");
+        Fakes.await("dropped: queued again", () -> dropped.said("Couldn't reach « beta »; trying again shortly"));
+        router.tick();
+        assertEq("dropped: second dial", 2, dropped.connects.size());
+        assertEq("dropped: queued after the second", queued + 1, router.waitingCount());
+        router.tick();
+        assertEq("dropped: third dial", 3, dropped.connects.size());
+        assertEq("dropped: given up", queued, router.waitingCount());
+        assertEq("dropped: told to try again", true, dropped.said("Couldn't connect you to « beta ». Please try again."));
+        assertEq("dropped: one final word", 1, count(dropped.messages, "Couldn't connect you"));
+        assertEq("dropped: every dial counted", failed + 4, plugin.stats().total(ProxyStats.Event.TRANSFER_FAILED));
+        String at = dropped.name + "@beta";
+        assertEq("dropped: the lobby told before every dial", List.of(at, at, at), List.copyOf(told));
+        router.tick();
+        assertEq("dropped: no fourth dial", 3, dropped.connects.size());
+
+        // A player already waiting for another server keeps that wait: the failed join is
+        // told as final instead of replacing it.
+        Fakes.FakePlayer busy = player(null, true);
+        busy.current = lobby;
+        router.enqueueFromCommand(busy.player, "zeta");
+        Fakes.await("busy: waiting for zeta", () -> router.waitingCount() == queued + 1);
+        busy.connectThrows = true;
+        router.enqueueFromInvite(busy.player, "beta");
+        Fakes.await("busy: told", () -> busy.said("Couldn't connect you to « beta ». Please try again."));
+        router.tick();
+        assertEq("busy: beta not dialled again", 1, busy.connects.size());
+        assertEq("busy: still waiting for zeta", queued + 1, router.waitingCount());
+        router.onDisconnect(new DisconnectEvent(busy.player, DisconnectEvent.LoginStatus.SUCCESSFUL_LOGIN));
+
+        // A pre-connect listener that cancels the move is final too.
+        Fakes.FakePlayer cancelled = player(null, true);
+        cancelled.current = lobby;
+        cancelled.preConnect = target -> null;
+        router.enqueueFromInvite(cancelled.player, "beta");
+        Fakes.await("cancelled: told", () -> cancelled.said("Couldn't connect you to « beta »"));
+        assertEq("cancelled: not queued", queued, router.waitingCount());
+        assertEq("failed transfers counted", failed + 6, plugin.stats().total(ProxyStats.Event.TRANSFER_FAILED));
+
+        // A backend that kicks the login says why; "please try again" is wrong for a ban,
+        // and so is dialling again.
         Fakes.FakePlayer full = player(null, true);
         full.current = lobby;
         full.refusals.put("beta", "The server is full");
         router.enqueueFromInvite(full.player, "beta");
         Fakes.await("refused transfer: told the reason", () -> full.said("Couldn't connect you to « beta ». Reason: The server is full"));
-        assertEq("refused transfer counted", 2L, plugin.stats().total(ProxyStats.Event.TRANSFER_FAILED));
+        assertEq("refused transfer counted", failed + 7, plugin.stats().total(ProxyStats.Event.TRANSFER_FAILED));
         assertEq("refused transfer: no retry advice", false, full.said("try again"));
+        assertEq("refused transfer: not queued", queued, router.waitingCount());
+        router.tick();
+        assertEq("refused transfer: dialled once", 1, full.connects.size());
     }
 
     // /felis lobby and /felis go lobby: the lobby is a system server, so it never
@@ -641,6 +704,15 @@ public final class WaitingRouterTest {
         full.refusals.put("lobby", "Server is full");
         router.toLobby(full.player);
         Fakes.await("lobby refused: told", () -> full.said("Couldn't connect you to « lobby ». Reason: Server is full"));
+
+        // The lobby gets one dial: it is no queue target, and the player can ask again.
+        Fakes.FakePlayer cut = player(null, true);
+        cut.current = beta;
+        cut.connectThrows = true;
+        int queued = router.waitingCount();
+        router.toLobby(cut.player);
+        assertEq("lobby unreachable: told", true, cut.said("Couldn't connect you to « lobby ». Please try again."));
+        assertEq("lobby unreachable: not queued", queued, router.waitingCount());
     }
 
     private static void disconnectAndRelease() {
