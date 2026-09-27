@@ -810,6 +810,147 @@ gtmp="$(printf '%s\n' "$out" | sed -n 's/^TEMP: //p')"
 expect "the Go download is staged in a directory the cleanup removes" \
   "CURL: ${gtmp:-<none>}/go1.26.4.linux-amd64.tar.gz" "$out"
 
+# --- every download retries --------------------------------------------------------------
+# curl without --retry gives up on the first 503 or timeout: one blip in the ViaVersion, Go
+# or Docker repository download stopped a fresh install halfway.
+noretry="$(grep -nE 'curl -(fsSL|sfL)' "$BS" | grep -vE '^[0-9]+:[[:space:]]*#|<(raw-)?url>' | grep -v -- '--retry' || true)"
+if [ -z "$noretry" ]; then
+  echo "PASS every curl download in the installer retries"
+else
+  echo "FAIL curl downloads without --retry:"; printf '%s\n' "$noretry"; fails=$((fails + 1))
+fi
+
+# --- a release asset's download is tried three times -------------------------------------
+# curl's --retry does not cover a connection reset mid-stream, the likely failure on an
+# image bundle of several hundred MiB, and what the installer falls back to is a build on
+# the host that preflight may not have counted on. A release that does not list the asset
+# (still uploading) falls back at once: no download can find it.
+
+dlblock="$(awk '/^download_release_asset\(\) \{/,/^}/' "$BS")"
+[ -n "$dlblock" ] || { echo "FAIL: no download_release_asset found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$dlblock" | wc -l)" -lt 40 ] \
+  || { echo "FAIL: the extracted block is not download_release_asset -- did its closing brace move?"; exit 1; }
+dldir="$(mktemp -d)"
+run_dl() { # [script]; DL_FAILS curl calls fail (exit ${DL_RC:-56}) after writing part of the file
+  rm -f "$dldir/calls" "$dldir/asset"
+  DLDIR="$dldir" bash -c '
+    set -Eeuo pipefail
+    log() { printf "LOG: %s\n" "$*"; }; warn() { printf "WARN: %s\n" "$*"; }
+    sleep() { printf "SLEEP: %s\n" "$*"; }
+    load_release_json() { :; }
+    github_asset_id() { [ -z "${DL_UNLISTED:-}" ] || return 1; echo 4242; }
+    repo_slug() { echo FelisMC/Felis; }
+    curl() {
+      local out="" a stdin=""
+      printf "%s\n" "$*" >> "$DLDIR/calls"
+      [ "${*: -1}" = https://api.github.com/repos/FelisMC/Felis/releases/assets/4242 ] || { echo "curl: wrong url ${*: -1}" >&2; return 3; }
+      for a in "$@"; do [ "$a" != - ] || stdin="$(command cat)"; done
+      [ -z "$stdin" ] || printf "%s\n" "$stdin" > "$DLDIR/stdin"
+      while [ "$#" -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done
+      if [ "$(wc -l < "$DLDIR/calls")" -le "${DL_FAILS:-0}" ]; then
+        printf "half a bund" > "$out"; return "${DL_RC:-56}"
+      fi
+      [ -n "${DL_EMPTY:-}" ] && { : > "$out"; return 0; }
+      printf "the whole bundle\n" > "$out"
+    }
+    FELIS_REPO_URL=https://github.com/FelisMC/Felis FELIS_GITHUB_TOKEN="${DL_TOKEN:-}"
+    '"$dlblock"'
+    if download_release_asset v9.9.9 felis-image-felis-linux-amd64.tar "$DLDIR/asset"; then echo FETCHED; else echo "GAVE UP"; fi' 2>&1
+}
+calls() { [ -f "$dldir/calls" ] && wc -l < "$dldir/calls" | tr -d ' ' || echo 0; }
+
+out="$(DL_FAILS=2 run_dl)"
+expect "a download reset twice mid-stream gets the asset on the third try" "FETCHED" "$out"
+expect "the third try's file is the whole asset" "the whole bundle" "$(cat "$dldir/asset" 2>/dev/null)"
+expect "each failed try is reported with curl's exit code" "WARN: downloading felis-image-felis-linux-amd64.tar failed (attempt 2/3, curl exit 56); retrying" "$out"
+expect "the tries are spaced" "SLEEP: 5" "$out"
+expect "a download that works on the third try takes three" 3 "$(calls)"
+
+out="$(DL_FAILS=9 run_dl)"
+expect "a download that keeps failing gives up" "GAVE UP" "$out"
+expect "it gives up after three tries" 3 "$(calls)"
+if [ -e "$dldir/asset" ]; then
+  echo "FAIL a failed download left part of the asset behind"; fails=$((fails + 1))
+else
+  echo "PASS a failed download leaves no part of the asset behind"
+fi
+out="$(DL_EMPTY=1 run_dl)"
+expect "an empty file is a failed download" "GAVE UP" "$out"
+expect "an empty file is tried again" 3 "$(calls)"
+
+out="$(DL_UNLISTED=1 DL_FAILS=9 run_dl)"
+expect "a release that does not list the asset gives up" "GAVE UP" "$out"
+if [ "$(calls) $(printf '%s\n' "$out" | grep -c SLEEP)" = "0 0" ]; then
+  echo "PASS an unlisted asset is not downloaded, nor waited for"
+else
+  echo "FAIL an unlisted asset was tried $(calls) times"; fails=$((fails + 1))
+fi
+
+out="$(run_dl)"
+expect "a download that works takes one try" 1 "$(calls)"
+expect "a stalled transfer counts as a failure curl retries" "--speed-limit 1024 --speed-time 60" "$(cat "$dldir/calls")"
+DL_TOKEN=tok-secret run_dl >/dev/null
+case "$(cat "$dldir/calls")" in
+  *tok-secret*) echo "FAIL the token reached curl's argv"; fails=$((fails + 1)) ;;
+  *) echo "PASS the token stays out of curl's argv" ;;
+esac
+expect "the token goes to curl on stdin" 'header = "Authorization: Bearer tok-secret"' "$(cat "$dldir/stdin" 2>/dev/null)"
+expect "a download with a token counts a stalled transfer as a failure too" "--speed-limit 1024 --speed-time 60" "$(cat "$dldir/calls")"
+rm -rf "$dldir"
+
+# --- a build preflight did not count on checks its room first ---------------------------
+# A release install budgets no Docker; an asset it then cannot use is built here, with
+# Docker's images and build cache under /var/lib/containerd. Without the room the install
+# must stop before Docker is installed, not fill the disk halfway through a build.
+
+edblock="$(awk '/^ensure_docker\(\) \{/,/^}/' "$BS"; awk '/^unplanned_build_room\(\) \{/,/^}/' "$BS")"
+case "$edblock" in *"install_docker"*"FELIS_PREFLIGHT=warn to build anyway"*) ;; *) echo "FAIL: ensure_docker / unplanned_build_room not found in $BS"; exit 1 ;; esac
+run_ed() { # [DOCKER_INSTALLED]; ED_FREE_MIB free on the filesystem holding /var/lib/containerd
+  DOCKER_INSTALLED="${1:-}" bash -c '
+    set -Eeuo pipefail
+    ok() { printf "OK: %s\n" "$*"; }; warn() { printf "WARN: %s\n" "$*"; }; die() { printf "DIE: %s\n" "$*"; exit 1; }
+    install_docker() { echo INSTALL; }
+    systemctl() { echo "SYSTEMCTL $*"; }
+    path_populated() { [ -n "${ED_POPULATED:-}" ]; }
+    existing_ancestor() { echo /; }
+    df() { echo DF >&2; echo "Filesystem 1024-blocks Used Available Capacity Mounted"
+      echo "/dev/vda1 41943040 1 $(( ${ED_FREE_MIB:-60000} * 1024 )) 50% /"; }
+    bootstrap_from_tui() { return 1; }
+    '"$(awk '/^use_release_binary\(\) \{/,/^}/' "$BS")"'
+    '"$(awk '/^release_assets_expected\(\) \{/,/^}/' "$BS")"'
+    '"$(awk '/^host_builds_expected\(\) \{/,/^}/' "$BS")"'
+    FELIS_SKIP_FETCH="" FELIS_REF_PINNED="" FELIS_ARTIFACT_DIR="" FELIS_GAME_STACK=pinned
+    FELIS_VERSION_BOOTSTRAP="${ED_CHANNEL:-release}" FELIS_PREFLIGHT="${ED_MODE:-strict}"
+    '"$edblock"'
+    ensure_docker; echo "installed=$DOCKER_INSTALLED"' 2>&1
+}
+
+out="$(ED_FREE_MIB=1000 run_ed)"
+expect "a release install without room for an unplanned build stops" \
+  "DIE: building here what the release did not supply takes about 8192 MiB under /var/lib/containerd, and / has 1000 MiB free; nothing has been built" "$out"
+case "$out" in
+  *INSTALL*) echo "FAIL Docker was installed on a host without room to build"; fails=$((fails + 1)) ;;
+  *) echo "PASS the stop comes before Docker is installed" ;;
+esac
+expect "a release install with the room builds" "INSTALL" "$(ED_FREE_MIB=9000 run_ed)"
+expect "Docker's own cache needs only the rerun's room" "INSTALL" "$(ED_POPULATED=1 ED_FREE_MIB=3000 run_ed)"
+expect "a cache on a nearly full disk still stops" "takes about 2048 MiB" "$(ED_POPULATED=1 ED_FREE_MIB=1500 run_ed)"
+out="$(ED_CHANNEL=dev ED_FREE_MIB=1000 run_ed)"
+expect "a source build's room is preflight's to check" "installed=1" "$out"
+case "$out" in
+  *DF*) echo "FAIL a planned build measured the disk again"; fails=$((fails + 1)) ;;
+  *) echo "PASS a planned build is not measured again" ;;
+esac
+out="$(ED_MODE=warn ED_FREE_MIB=1000 run_ed)"
+expect "FELIS_PREFLIGHT=warn builds anyway, saying so" "WARN: building here what the release did not supply takes about 8192 MiB" "$out"
+expect "FELIS_PREFLIGHT=warn installs Docker" "INSTALL" "$out"
+out="$(ED_FREE_MIB=1000 run_ed 1)"
+expect "a Docker this run installed is started again" "SYSTEMCTL start docker" "$out"
+case "$out" in
+  *DF*|*DIE*) echo "FAIL a restart of Docker checked the room again"; fails=$((fails + 1)) ;;
+  *) echo "PASS a restart of Docker is not checked again" ;;
+esac
+
 # --- a release binary is hashed against SHA256SUMS before anything runs it ---------------
 # download_release_binary executes the asset as root to read its version stamp, so the
 # checksum has to come first, and every failure has to fall back to the source build.

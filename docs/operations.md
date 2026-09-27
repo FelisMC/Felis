@@ -136,7 +136,9 @@ the images are in the registry, when:
 - the release publishes no `SHA256SUMS` (one cut before release assets existed, or still
   uploading), or an asset is missing, fails its checksum or is malformed. Only that image is
   built (the registry and PostgreSQL images are pulled from Docker Hub instead), and a
-  warning names it; troubleshooting §15c lists the messages.
+  warning names it; troubleshooting §15c lists the messages. Each download is tried
+  three times first, and a host without the room for the build stops before installing
+  Docker (troubleshooting §15c).
 
 `FELIS_ARTIFACT_DIR=<absolute path>` installs from a directory instead of the release: a
 release's assets downloaded there (every `felis-*` file and `SHA256SUMS`), or the directory

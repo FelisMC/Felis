@@ -1730,7 +1730,7 @@ install_docker_apt() {
 
   log "installing docker apt repository"
   install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL "https://download.docker.com/linux/${repo_os}/gpg" -o "$keyring" \
+  curl -fsSL --retry 5 --retry-delay 2 "https://download.docker.com/linux/${repo_os}/gpg" -o "$keyring" \
     || die "failed to download Docker GPG key for ${repo_os}"
   chmod a+r "$keyring"
 
@@ -1774,7 +1774,7 @@ install_docker_rpm() {
 
   log "installing docker rpm repository"
   mkdir -p "$(dirname "$repo_file")"
-  curl -fsSL "$repo_url" -o "$repo_file" \
+  curl -fsSL --retry 5 --retry-delay 2 "$repo_url" -o "$repo_file" \
     || die "failed to download Docker repo file: ${repo_url}"
   pkg_install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 }
@@ -1810,11 +1810,32 @@ install_docker() {
 # is built here, so an install from a release's assets never installs Docker at all.
 ensure_docker() {
   if [ -z "$DOCKER_INSTALLED" ]; then
+    host_builds_expected || unplanned_build_room
     install_docker
     DOCKER_INSTALLED=1
   else
     systemctl start docker
   fi
+}
+
+# unplanned_build_room runs before the first build of a run whose preflight counted on none:
+# a release asset that could not be downloaded or checked (the warnings before it name
+# which) is built here instead, with Docker's images and build cache under
+# /var/lib/containerd. When that filesystem lacks preflight_disk's room for them the install
+# stops here, before Docker is installed, instead of filling the disk halfway through a
+# build; FELIS_PREFLIGHT=warn goes on, as it does past preflight's own problems.
+unplanned_build_room() {
+  local path=/var/lib/containerd need=8192 line mount avail problem
+  path_populated "$path" && need=2048
+  line="$(df -Pk "$(existing_ancestor "$path")" 2>/dev/null | awk 'NR == 2 { print $6, $4 }')" || return 0
+  read -r mount avail <<<"$line"
+  [ -n "$avail" ] && [ "$avail" -lt $((need * 1024)) ] || return 0
+  problem="building here what the release did not supply takes about ${need} MiB under ${path}, and ${mount} has $((avail / 1024)) MiB free"
+  if [ "$FELIS_PREFLIGHT" = warn ]; then
+    warn "${problem}; FELIS_PREFLIGHT=warn, building anyway"
+    return 0
+  fi
+  die "${problem}; nothing has been built. Rerun the installer once the release's assets download, free space on ${mount}, or set FELIS_PREFLIGHT=warn to build anyway"
 }
 
 # stop_docker hands back the ~150 MiB the docker daemon holds once a step is done with it; the
@@ -2319,28 +2340,41 @@ github_asset_id() {
 #
 # -f is not cosmetic: without it curl writes GitHub's error JSON into the output file and
 # still exits 0.
+#
+# curl's --retry covers transient HTTP statuses and timeouts, and --speed-limit makes a
+# transfer stalled under 1 KiB/s for a minute one of those. A connection reset mid-stream
+# is outside its retry set, and on an image bundle of several hundred MiB it is the likely
+# failure, so the outer loop tries the whole download twice more (meta_get's reasoning):
+# what the caller falls back to is a build on this host that preflight may not have
+# counted on (ensure_docker checks the room for it).
 download_release_asset() {
-  local tag="$1" name="$2" dest="$3" id ua url rc=0
+  local tag="$1" name="$2" dest="$3" id ua url rc attempt
   ua="felis-bootstrap (+${FELIS_REPO_URL})"
   # Loaded here, in this shell, so the lookup's subshell below finds it cached.
   load_release_json "$tag" || return 1
   id="$(github_asset_id "$tag" "$name")" || return 1
   url="https://api.github.com/repos/$(repo_slug)/releases/assets/${id}"
   log "downloading ${name} from release ${tag}"
-  if [ -n "$FELIS_GITHUB_TOKEN" ]; then
-    printf 'header = "Authorization: Bearer %s"\n' "$FELIS_GITHUB_TOKEN" \
-      | curl -fsSL --retry 5 --retry-delay 2 --config - \
-          -A "$ua" -H "Accept: application/octet-stream" -o "$dest" "$url" || rc=$?
-  else
-    curl -fsSL --retry 5 --retry-delay 2 \
-      -A "$ua" -H "Accept: application/octet-stream" -o "$dest" "$url" || rc=$?
-  fi
-  # curl -f leaves a PARTIAL file behind when a transfer dies mid-stream, so a failed
-  # download must not hand the caller something it could mistake for a complete one.
-  if [ "$rc" -ne 0 ] || [ ! -s "$dest" ]; then
+  for attempt in 1 2 3; do
+    rc=0
+    if [ -n "$FELIS_GITHUB_TOKEN" ]; then
+      printf 'header = "Authorization: Bearer %s"\n' "$FELIS_GITHUB_TOKEN" \
+        | curl -fsSL --retry 5 --retry-delay 2 --speed-limit 1024 --speed-time 60 --config - \
+            -A "$ua" -H "Accept: application/octet-stream" -o "$dest" "$url" || rc=$?
+    else
+      curl -fsSL --retry 5 --retry-delay 2 --speed-limit 1024 --speed-time 60 \
+        -A "$ua" -H "Accept: application/octet-stream" -o "$dest" "$url" || rc=$?
+    fi
+    [ "$rc" -eq 0 ] && [ -s "$dest" ] && return 0
+    # curl -f leaves a PARTIAL file behind when a transfer dies mid-stream, so a failed
+    # download must not hand the caller something it could mistake for a complete one.
     rm -f "$dest"
-    return 1
-  fi
+    if [ "$attempt" -lt 3 ]; then
+      warn "downloading ${name} failed (attempt ${attempt}/3, curl exit ${rc}); retrying"
+      sleep 5
+    fi
+  done
+  return 1
 }
 
 # verify_release_checksum checks the downloaded asset $2 (at $3) against the SHA256SUMS
@@ -3446,7 +3480,7 @@ install_via_plugins() {
     log "downloading ${name} ${version}"
     tmp="$(mktemp "${VELOCITY_DIR}/.${name}.jar.XXXXXX")"
     remember_temp "$tmp"
-    curl -fsSL "$url" -o "$tmp" || die "failed to download ${name} ${version}: ${url}"
+    curl -fsSL --retry 5 --retry-delay 2 "$url" -o "$tmp" || die "failed to download ${name} ${version}: ${url}"
     have="$(sha256sum <"$tmp" | cut -d' ' -f1)"
     [ "$have" = "$want" ] \
       || die "${name} ${version} checksum mismatch: got ${have}, expected ${want}"
@@ -5568,7 +5602,7 @@ install_go_toolchain() {
   # A private directory, not a fixed /tmp name another local user could have planted first.
   tmp="$(mktemp -d)"
   remember_temp "$tmp"
-  curl -fsSL "$url" -o "${tmp}/${tarball}" || die "failed to download the Go toolchain: ${url}"
+  curl -fsSL --retry 5 --retry-delay 2 "$url" -o "${tmp}/${tarball}" || die "failed to download the Go toolchain: ${url}"
   # Checked before the old toolchain is removed, so a refusal leaves the host as it was.
   # Hash stdin, never the path — same reason as install_via_plugins.
   have="$(sha256sum <"${tmp}/${tarball}" | cut -d' ' -f1)"

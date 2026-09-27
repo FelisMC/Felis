@@ -1969,7 +1969,16 @@ A release install takes its images and the Velocity plugin from the release's as
 (operations §1, "Where the binary and the images come from"). When one cannot be used the
 installer names it and the reason, and builds that image with Docker instead (the registry
 and PostgreSQL images are pulled from Docker Hub). Nothing unchecked is used either way
-**[SH-TESTED]**.
+**[SH-TESTED]**. Each download is tried three times, five seconds apart, before it counts as
+failed, and a transfer that stalls under 1 KiB/s for a minute is cut off and tried again.
+
+Preflight counts no Docker builds for a release install, so the first build it falls back
+to checks the room first: Docker's images and build cache take about 8 GiB under
+`/var/lib/containerd` (2 GiB when Docker already has a cache there). Without it the install
+stops before Docker is installed, with `building here what the release did not supply takes
+about … MiB under /var/lib/containerd, and … has … MiB free; nothing has been built`. Rerun
+once the asset downloads (the messages above it say which one failed), free that space, or
+set `FELIS_PREFLIGHT=warn` to build anyway **[SH-TESTED]**.
 
 | Message | Meaning | What to do |
 |---|---|---|
