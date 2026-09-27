@@ -68,6 +68,38 @@ describe("DBBackupCard", () => {
     expect(screen.getByText("The newest backup lacks the server definitions")).toBeTruthy();
   });
 
+  it("turns an old daily backup red and hands over the daily unit", async () => {
+    const old = new Date(Date.now() - 30 * 3600 * 1000).toISOString();
+    calls.getDBBackup.mockResolvedValue(status({ at: old, daily_at: old }, true));
+    render(<DBBackupCard />);
+    expect(await screen.findByText("Overdue")).toBeTruthy();
+    expect(screen.getByText("The newest backup is more than 26 hours old")).toBeTruthy();
+    expect(screen.getByText(/find out why the timer missed it:$/)).toBeTruthy();
+    expect(screen.getByText("yesterday").className).toBe("text-destructive");
+    expect(screen.getByTitle("sudo systemctl start felis-db-backup.service")).toBeTruthy();
+  });
+
+  it("names the stopped daily timer under a fresh manual backup", async () => {
+    const daily = new Date(Date.now() - 50 * 3600 * 1000).toISOString();
+    calls.getDBBackup.mockResolvedValue(
+      status({ label: "manual", name: "felis-db-20260926T101500Z-manual.tar", daily_at: daily }, true),
+    );
+    render(<DBBackupCard />);
+    expect(await screen.findByText("Overdue")).toBeTruthy();
+    expect(screen.getByText("The daily backup last completed 2 days ago, past the 26-hour limit")).toBeTruthy();
+    expect(screen.getByText(/^The newer backup above was taken by hand or by another job and can be restored from/)).toBeTruthy();
+    // The manual bundle itself is fresh: its age stays out of the alarm.
+    expect(screen.getByText("3 hours ago").className).toBe("");
+    expect(screen.getByTitle("sudo systemctl start felis-db-backup.service")).toBeTruthy();
+  });
+
+  it("says the daily timer never completed when only other kinds exist", async () => {
+    calls.getDBBackup.mockResolvedValue(status({ label: "pre-migrate", name: "felis-db-20260926T101500Z-pre-migrate.tar" }, true));
+    render(<DBBackupCard />);
+    expect(await screen.findByText("The daily timer has not completed a backup yet")).toBeTruthy();
+    expect(screen.getByText(/^The newer backup above was taken by hand/)).toBeTruthy();
+  });
+
   it("names an off-site copy snapshot by its kind", async () => {
     calls.getDBBackup.mockResolvedValue(status({ label: "offsite", name: "felis-db-20260926T101500Z-offsite.tar" }));
     render(<DBBackupCard />);

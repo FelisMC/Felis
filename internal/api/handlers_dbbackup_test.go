@@ -69,6 +69,41 @@ func TestDBBackupFreshness(t *testing.T) {
 	}
 }
 
+// TestDBBackupDailyDecides: a fresh manual record says nothing about the
+// timer, so the daily bundle it carries decides; a daily record from before
+// daily_at existed is its own daily bundle.
+func TestDBBackupDailyDecides(t *testing.T) {
+	now := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name      string
+		label     string
+		dailyAge  time.Duration // 0: no daily_at in the record
+		stale     bool
+		wantDaily time.Time
+	}{
+		{"manual over a 30h-old daily", "manual", 30 * time.Hour, true, now.Add(-30 * time.Hour)},
+		{"manual over this morning's daily", "manual", 8 * time.Hour, false, now.Add(-8 * time.Hour)},
+		{"manual with no daily at all", "pre-migrate", 0, true, time.Time{}},
+		{"a daily record written before daily_at", "daily", 0, false, now.Add(-time.Hour)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			api, repo := seedUpdatesAPI(t)
+			api.Now = func() time.Time { return now }
+			st := dbbackup.Status{At: now.Add(-time.Hour), Name: "felis-db-x-" + tc.label + ".tar", Label: tc.label, Dir: "/var/lib/felis/db-backups"}
+			if tc.dailyAge > 0 {
+				st.DailyAt = now.Add(-tc.dailyAge)
+			}
+			raw, _ := json.Marshal(st)
+			repo.settings[dbbackup.StatusKey] = raw
+
+			code, v := getDBBackup(t, api)
+			if code != http.StatusOK || v.Last == nil || v.Stale != tc.stale || !v.Last.DailyAt.Equal(tc.wantDaily) || !v.Last.At.Equal(st.At) {
+				t.Fatalf("code %d, view %+v, want stale %v daily_at %s", code, v, tc.stale, tc.wantDaily)
+			}
+		})
+	}
+}
+
 func TestDBBackupStoreOutageIsAnError(t *testing.T) {
 	api, repo := seedUpdatesAPI(t)
 	repo.failGetSetting = errors.New("connection reset")

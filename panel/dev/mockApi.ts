@@ -1013,6 +1013,7 @@ async function handleSession(ctx: SessionContext): Promise<boolean> {
           felis_version: "dev",
           schema_version: 31,
           dir: "/var/lib/felis/db-backups",
+          daily_at: at.toISOString(),
         },
         stale: false,
         max_age_seconds: 26 * 3600,

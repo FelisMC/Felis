@@ -23,7 +23,9 @@ const LABEL_KEY: Record<DBBackupLabel, string> = {
   manual: "dbbackup_label_manual",
 };
 
-const FIX_COMMANDS = ["sudo felis db backup", "journalctl -u felis-db-backup -n 50 --no-pager"];
+// The daily unit itself, run now: its bundle is what clears the alarm, and a
+// failure lands in the log the second command reads.
+const FIX_COMMANDS = ["sudo systemctl start felis-db-backup.service", "journalctl -u felis-db-backup -n 50 --no-pager"];
 // A bundle the cluster did not add its MinecraftServer objects to: see why the
 // cluster did not answer, then take a whole one.
 const SERVERS_COMMANDS = ["sudo k3s kubectl get minecraftservers -A", "sudo felis db backup"];
@@ -78,6 +80,10 @@ export function DBBackupCard() {
   const last = data?.last ?? null;
   const maxAgeHours = data ? Math.round(data.max_age_seconds / 3600) : 26;
   const serversError = last?.servers_error ?? "";
+  // Stale goes by the daily timer's newest bundle. When the newest record is
+  // another kind, the alarm names the timer and leaves that bundle's own age
+  // alone: it can still be restored from.
+  const lastIsDaily = last?.label === "daily";
 
   const state: "loading" | "error" | "never" | "stale" | "ok" = !data
     ? error
@@ -88,6 +94,15 @@ export function DBBackupCard() {
       : data.stale
         ? "stale"
         : "ok";
+  const dailyAlarm = state === "stale" && !lastIsDaily;
+  const staleTitle =
+    state === "never"
+      ? t("dbbackup_never_title")
+      : !dailyAlarm
+        ? t("dbbackup_stale_title", { hours: maxAgeHours })
+        : last?.daily_at
+          ? t("dbbackup_daily_stale_title", { hours: maxAgeHours, when: formatRelative(last.daily_at, Date.now(), locale) })
+          : t("dbbackup_daily_never_title");
 
   const badge = (() => {
     switch (state) {
@@ -176,7 +191,7 @@ export function DBBackupCard() {
         {last && (
           <dl className="grid grid-cols-2 gap-x-6 gap-y-4 lg:grid-cols-4">
             <Field label={t("dbbackup_field_when")} title={formatAbsolute(last.at, locale)}>
-              <span className={cn(state === "stale" && "text-destructive")}>
+              <span className={cn(state === "stale" && lastIsDaily && "text-destructive")}>
                 {formatRelative(last.at, Date.now(), locale) || "—"}
               </span>
               <span className="block truncate text-[11px] font-normal text-muted-foreground">
@@ -206,10 +221,10 @@ export function DBBackupCard() {
             <div className="flex items-start gap-2 text-destructive">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
               <div className="space-y-1">
-                <p className="font-semibold">
-                  {state === "never" ? t("dbbackup_never_title") : t("dbbackup_stale_title", { hours: maxAgeHours })}
+                <p className="font-semibold">{staleTitle}</p>
+                <p className="text-xs leading-relaxed text-destructive/90">
+                  {dailyAlarm ? t("dbbackup_daily_fix_hint") : t("dbbackup_fix_hint")}
                 </p>
-                <p className="text-xs leading-relaxed text-destructive/90">{t("dbbackup_fix_hint")}</p>
               </div>
             </div>
             <div className="space-y-2">

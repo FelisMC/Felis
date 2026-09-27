@@ -17,7 +17,7 @@ import (
 // response bodies. Each named schema is compared with the Go struct the handler
 // actually encodes: the property set must equal the struct's JSON field set, and
 // `required` must list exactly the fields that are always on the wire (no
-// omitempty). The panel's types are checked against the same schemas at compile
+// omitempty or omitzero). The panel's types are checked against the same schemas at compile
 // time (panel/src/lib/types.parity.ts), so a field added here without the docs
 // fails in Go, and one added to the docs without the panel fails in tsc.
 func TestOpenAPISchemasMatchWireStructs(t *testing.T) {
@@ -125,7 +125,10 @@ func wireFields(t reflect.Type) map[string]wireField {
 		if name == "" {
 			name = f.Name
 		}
-		out[name] = wireField{omitempty: strings.Contains(","+opts+",", ",omitempty,"), typ: f.Type}
+		// omitzero leaves a field out too, and is the one that does for a
+		// struct such as time.Time.
+		opts = "," + opts + ","
+		out[name] = wireField{omitempty: strings.Contains(opts, ",omitempty,") || strings.Contains(opts, ",omitzero,"), typ: f.Type}
 	}
 	return out
 }

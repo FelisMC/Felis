@@ -341,8 +341,12 @@ func PostgresDown(err error) Finding {
 	}
 }
 
-// BackupFinding reports a control-plane database backup older than a day, or
-// none at all, in dir, and a fresh one that would restore no servers.
+// BackupFinding reports a daily control-plane database backup older than a
+// day, or none at all, in dir, and a fresh one that would restore no servers.
+// The age goes by the daily bundles alone: a manual or off-site bundle taken
+// since would keep a stopped timer quiet until it too is a day old. The
+// servers check reads the newest bundle of any label, the one a lost host
+// restores from.
 func BackupFinding(dir string, now time.Time) *Finding {
 	bundles, err := dbbackup.List(dir)
 	if err != nil {
@@ -353,19 +357,28 @@ func BackupFinding(dir string, now time.Time) *Finding {
 			Hint:      "docs/troubleshooting.md §16",
 		}
 	}
-	if len(bundles) > 0 && now.Sub(bundles[0].Created) <= maxBackupAge {
+	daily, ok := dbbackup.Newest(bundles, dbbackup.LabelDaily)
+	if ok && now.Sub(daily.Created) <= maxBackupAge {
 		return serversFinding(bundles[0])
 	}
 	f := &Finding{
 		Key: "db-backup", Severity: Critical, For: backupFor,
 		Summary:   fmt.Sprintf("%s 里没有任何控制面数据库备份", dir),
 		SummaryEN: fmt.Sprintf("no control-plane database backup in %s", dir),
-		Hint:      "journalctl -u felis-db-backup -n 50; take one now with `sudo felis db backup` (docs/troubleshooting.md §16)",
+		Hint:      "journalctl -u felis-db-backup -n 50; once fixed, run it now with `sudo systemctl start felis-db-backup` (docs/troubleshooting.md §16)",
 	}
-	if len(bundles) > 0 {
-		age := roundHours(now.Sub(bundles[0].Created))
-		f.Summary = fmt.Sprintf("最新的控制面数据库备份已是 %s 前（%s）", age, bundles[0].Name)
-		f.SummaryEN = fmt.Sprintf("the newest control-plane database backup is %s old (%s)", age, bundles[0].Name)
+	switch {
+	case ok:
+		age := roundHours(now.Sub(daily.Created))
+		f.Summary = fmt.Sprintf("最新的每日控制面数据库备份已是 %s 前（%s）", age, daily.Name)
+		f.SummaryEN = fmt.Sprintf("the newest daily control-plane database backup is %s old (%s)", age, daily.Name)
+	case len(bundles) > 0:
+		f.Summary = fmt.Sprintf("%s 里没有每日定时的控制面数据库备份", dir)
+		f.SummaryEN = fmt.Sprintf("no daily control-plane database backup in %s", dir)
+	}
+	if len(bundles) > 0 && bundles[0].Label != dbbackup.LabelDaily {
+		f.Summary += fmt.Sprintf("；更新的 %s 来自手动或其他任务，定时任务修好之前它会一天天变旧", bundles[0].Name)
+		f.SummaryEN += fmt.Sprintf("; the newer %s came from a manual run or another job and ages while the timer stays broken", bundles[0].Name)
 	}
 	return f
 }

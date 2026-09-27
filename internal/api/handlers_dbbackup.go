@@ -16,8 +16,8 @@ import (
 // something on this install right now".
 
 // dbBackupView is the wire shape. Last is null until the first backup has been
-// recorded; Stale is true for a missing record too, so the panel has a single
-// flag for "nobody could restore today's state".
+// recorded; Stale is true for a missing record or daily backup too, so the
+// panel has a single flag for "the daily backups have stopped".
 type dbBackupView struct {
 	Last          *dbbackup.Status `json:"last"`
 	Stale         bool             `json:"stale"`
@@ -43,7 +43,14 @@ func (a *API) handleGetDBBackup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
+	// Staleness goes by the daily timer's newest bundle: a manual or
+	// pre-migrate one recorded since would hide a timer that has stopped. A
+	// daily record is its own daily bundle, also when written before daily_at
+	// existed. No daily bundle leaves the zero time, centuries past the limit.
+	if st.Label == dbbackup.LabelDaily {
+		st.DailyAt = st.At
+	}
 	view.Last = &st
-	view.Stale = st.At.IsZero() || a.now().Sub(st.At) > dbbackup.StaleAfter
+	view.Stale = a.now().Sub(st.DailyAt) > dbbackup.StaleAfter
 	writeJSON(w, http.StatusOK, view)
 }

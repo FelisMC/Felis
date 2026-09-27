@@ -690,7 +690,7 @@ production install:
 - **Rehearse the rebuild** once on a spare VM: troubleshooting.md §16 "Rebuild on a new
   host", every step but 8 (take-over) and 11 (the tunnel), then its checks: sign in with
   an email code, restore one world and join it. `felis offsite status` and `felis db check` exit
-  non-zero when the copy or the newest bundle is stale; wire them into your monitoring,
+  non-zero when the copy or the newest daily bundle is stale; wire them into your monitoring,
   or rely on the watchdog's mail.
 
 ### Moving to another host (planned)

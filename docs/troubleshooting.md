@@ -1665,7 +1665,7 @@ Every two minutes the host checks:
 | Node `NotReady`, or kubelet reports Disk/Memory/PID pressure (§13b) | 2–5 min | critical |
 | PostgreSQL unreachable | 3 min | critical |
 | The game proxy (`felis-velocity`) refuses connections on the game port | 3 min | critical |
-| Newest control-plane database backup over 26h old, or none (§16) | 10 min | critical |
+| Newest daily control-plane database backup over 26h old, or none (§16); a newer manual or off-site bundle leaves it standing | 10 min | critical |
 | A watched filesystem below 15% free (below 5%: critical) | 15 min (5 min) | warning |
 | Host memory available below 10% | 15 min | warning |
 | The host no longer holds the address the install was made on (§13c) | 5 min | critical |
@@ -2187,13 +2187,18 @@ Installer knobs: `FELIS_DB_BACKUP_DIR`, `FELIS_DB_BACKUP_KEEP`,
 
 ### Is the newest backup fresh?
 
-Three places answer, all with the same 26 h limit:
+Four places answer, all with the same 26 h limit on the newest **daily**
+bundle, the one `felis-db-backup.timer` writes. A manual, `pre-migrate` or
+`offsite` bundle taken since counts for a restore and leaves the alarm
+standing: the timer has still stopped, and that bundle only ages from here.
 
 - The panel: **管理 → 维护与备份** shows the newest backup, its kind and size,
-  and turns red with the fix commands when it is missing or overdue (read from
-  the `db_backup_last` platform setting each backup writes).
+  and turns red with the fix commands when the daily one is missing or overdue
+  (read from the `db_backup_last` platform setting each backup writes; its
+  `daily_at` is the newest daily bundle on disk when it was written).
 - `sudo felis db check` exits 1 with the reason; `sudo felis db list` shows every
   bundle with its age.
+- The watchdog mails the owners (§14).
 - Prometheus: `FelisDBBackupStale` (critical) and `FelisDBBackupMetricMissing`
   (warning) in `deploy/alerts/`. They read
   `felis_db_backup_last_success_timestamp_seconds`, which each daily run writes
@@ -2207,7 +2212,7 @@ When a backup is overdue:
 ```
 sudo systemctl status felis-db-backup.timer          # enabled? next run?
 sudo journalctl -u felis-db-backup -n 50 --no-pager   # why the last run failed
-sudo felis db backup                                  # take one now (label manual)
+sudo systemctl start felis-db-backup.service         # run the daily backup now; clears the alarm
 ```
 
 **A bundle without the MinecraftServer objects.** When the cluster does not

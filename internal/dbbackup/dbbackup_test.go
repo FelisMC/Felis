@@ -290,8 +290,18 @@ func TestBackupRecordsFreshness(t *testing.T) {
 	}
 	st := pg.recorded(t)
 	info, _ := os.Stat(path)
-	if st.Name != filepath.Base(path) || st.Label != LabelDaily || !st.At.Equal(t0) || st.SizeBytes != info.Size() || st.SchemaVersion != 21 {
+	if st.Name != filepath.Base(path) || st.Label != LabelDaily || !st.At.Equal(t0) || st.SizeBytes != info.Size() || st.SchemaVersion != 21 || !st.DailyAt.Equal(t0) {
 		t.Fatalf("recorded %+v", st)
+	}
+	// A manual bundle an hour later is the newest record, and carries the
+	// daily one's time for the panel to judge the timer by.
+	if _, err := Backup(context.Background(), BackupOptions{
+		DatabaseURL: testURL, Dir: dir, Label: LabelManual, Tools: pg.tools, Now: at(t0.Add(time.Hour)), Record: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if st := pg.recorded(t); st.Label != LabelManual || !st.At.Equal(t0.Add(time.Hour)) || !st.DailyAt.Equal(t0) {
+		t.Fatalf("recorded after a manual backup %+v, want daily_at %s", st, t0)
 	}
 
 	prom, err := os.ReadFile(metrics)
@@ -701,14 +711,29 @@ func TestListPruneCheck(t *testing.T) {
 		t.Error("a pruned bundle's sidecar survived")
 	}
 
-	if b, err := Check(dir, 26*time.Hour, t0); err != nil || b.Label != LabelPreMigrate {
+	// Check goes by the newest daily bundle: the pre-migrate one taken an hour
+	// ago says nothing about the timer.
+	if b, err := Check(dir, 26*time.Hour, t0); err != nil || b.Name != "felis-db-20260923T033000Z-daily.tar" {
 		t.Errorf("Check fresh = %v, %v", b, err)
 	}
-	if _, err := Check(dir, 26*time.Hour, t0.Add(30*time.Hour)); err == nil {
-		t.Error("Check accepted a 31h-old newest bundle")
+	if b, err := Check(dir, 26*time.Hour, t0.Add(3*time.Hour)); err == nil || b.Name != "felis-db-20260923T033000Z-daily.tar" ||
+		err.Error() != "newest daily database backup felis-db-20260923T033000Z-daily.tar is 27h0m old (limit 26h0m0s)" {
+		t.Errorf("Check with a fresh pre-migrate bundle over a 27h-old daily one = %v, %v", b, err)
 	}
 	if _, err := Check(filepath.Join(dir, "none"), time.Hour, t0); err == nil {
 		t.Error("Check accepted an empty directory")
+	}
+	only := t.TempDir()
+	if _, err := Backup(context.Background(), BackupOptions{DatabaseURL: testURL, Dir: only, Label: LabelManual, Tools: pg.tools, Now: at(t0), Record: true}); err != nil {
+		t.Fatal(err)
+	}
+	// No daily bundle: the record leaves daily_at out (a zero time would read
+	// as year 1), so the panel shows none.
+	if args, _ := os.ReadFile(filepath.Join(pg.dir, "record.args")); !strings.Contains(string(args), `"label":"manual"`) || strings.Contains(string(args), "daily_at") {
+		t.Errorf("record without a daily bundle = %s", args)
+	}
+	if _, err := Check(only, 26*time.Hour, t0); err == nil || err.Error() != "no daily database backup in "+only+" (felis-db-backup.timer writes them)" {
+		t.Errorf("Check with a fresh manual bundle alone = %v", err)
 	}
 }
 

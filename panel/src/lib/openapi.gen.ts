@@ -1103,7 +1103,7 @@ export interface paths {
         };
         /**
          * Freshness of the newest control-plane database backup (admin).
-         * @description What the host's felis-db-backup.timer (or a manual `felis db backup`) last recorded in platform_settings. last is null before the first backup; stale is true then, and whenever the newest backup is older than max_age_seconds. Read-only: backups run on the host, never through the API.
+         * @description What the host's felis-db-backup.timer (or a manual `felis db backup`) last recorded in platform_settings. last is null before the first backup; stale is true then, and whenever the newest daily backup (last.daily_at) is missing or older than max_age_seconds. Read-only: backups run on the host, never through the API.
          */
         get: operations["getDBBackup"];
         put?: never;
@@ -2343,8 +2343,13 @@ export interface components {
                 dir: string;
                 /** @description Why the bundle lacks the MinecraftServer objects (the cluster did not answer the export), when it does. A restore from it brings back the database but no servers. */
                 servers_error?: string;
+                /**
+                 * Format: date-time
+                 * @description When the newest daily bundle (felis-db-backup.timer) in dir was written, as of this record; absent when dir held none. Equal to at when this record is a daily one.
+                 */
+                daily_at?: string;
             } | null;
-            /** @description True when there is no record or it is older than max_age_seconds. */
+            /** @description True when there is no record, no daily bundle, or the newest daily bundle is older than max_age_seconds. A newer manual, pre-migrate or off-site bundle leaves it as it is: the daily timer has still stopped. */
             stale: boolean;
             /**
              * Format: int64

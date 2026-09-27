@@ -157,9 +157,10 @@ const StatusKey = "db_backup_last"
 // failed every try: a restore from it brings back no servers.
 var ErrServersMissing = errors.New("the bundle holds the database but not the MinecraftServer objects")
 
-// StaleAfter is how old the newest backup may get before it counts as missed:
-// a day plus the timer's randomized delay and a slow dump. `felis db check`,
-// the admin panel and the FelisDBBackupStale alert (deploy/alerts) share it.
+// StaleAfter is how old the newest daily backup may get before it counts as
+// missed: a day plus the timer's randomized delay and a slow dump. `felis db
+// check`, the watchdog, the admin panel and the FelisDBBackupStale alert
+// (deploy/alerts) share it.
 const StaleAfter = 26 * time.Hour
 
 // Status is the value stored under StatusKey.
@@ -174,6 +175,11 @@ type Status struct {
 	// ServersError is why the bundle lacks the MinecraftServer objects, when
 	// it does.
 	ServersError string `json:"servers_error,omitempty"`
+	// DailyAt is when the newest daily bundle in Dir was written, as of this
+	// record: the timer's own freshness, which a manual, pre-migrate or
+	// off-site bundle taken since leaves as it was. Zero when Dir held none,
+	// and in records written before the field existed.
+	DailyAt time.Time `json:"daily_at,omitzero"`
 }
 
 // Manifest describes a bundle.
@@ -402,6 +408,17 @@ func List(dir string) ([]Bundle, error) {
 	return out, nil
 }
 
+// Newest is the first bundle of label in bundles, which List orders newest
+// first.
+func Newest(bundles []Bundle, label string) (Bundle, bool) {
+	for _, b := range bundles {
+		if b.Label == label {
+			return b, true
+		}
+	}
+	return Bundle{}, false
+}
+
 // Prune deletes all but the newest keep bundles of label (and their sidecars)
 // and returns what it removed. keep <= 0 removes nothing.
 func Prune(dir, label string, keep int) ([]string, error) {
@@ -626,9 +643,15 @@ func listArchive(ctx context.Context, c conn, t Tools, path string) error {
 	return err
 }
 
-// record upserts st into platform_settings. The JSON travels as a psql
-// variable, quoted by psql itself, over stdin (-c does not interpolate).
+// record upserts st into platform_settings, with DailyAt read off st.Dir. The
+// JSON travels as a psql variable, quoted by psql itself, over stdin (-c does
+// not interpolate).
 func record(ctx context.Context, c conn, t Tools, st Status) error {
+	if all, err := List(st.Dir); err == nil {
+		if d, ok := Newest(all, LabelDaily); ok {
+			st.DailyAt = d.Created
+		}
+	}
 	v, err := json.Marshal(st)
 	if err != nil {
 		return err
@@ -835,19 +858,21 @@ func Age(d time.Duration) string {
 	}
 }
 
-// Check reports the newest bundle in dir and an error when there is none or it
-// is older than maxAge.
+// Check reports the newest daily bundle in dir and an error when there is none
+// or it is older than maxAge. The daily timer is what keeps the backups
+// current, so a manual, pre-migrate or off-site bundle taken since is left out:
+// it would hide a timer that has stopped.
 func Check(dir string, maxAge time.Duration, now time.Time) (*Bundle, error) {
 	all, err := List(dir)
 	if err != nil {
 		return nil, err
 	}
-	if len(all) == 0 {
-		return nil, fmt.Errorf("no database backup in %s", dir)
+	daily, ok := Newest(all, LabelDaily)
+	if !ok {
+		return nil, fmt.Errorf("no daily database backup in %s (felis-db-backup.timer writes them)", dir)
 	}
-	newest := all[0]
-	if age := now.Sub(newest.Created); age > maxAge {
-		return &newest, fmt.Errorf("newest database backup %s is %s old (limit %s)", newest.Name, Age(age), maxAge)
+	if age := now.Sub(daily.Created); age > maxAge {
+		return &daily, fmt.Errorf("newest daily database backup %s is %s old (limit %s)", daily.Name, Age(age), maxAge)
 	}
-	return &newest, nil
+	return &daily, nil
 }

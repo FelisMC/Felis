@@ -415,10 +415,11 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
-// dbCheck is the freshness probe: exit 1 when the newest bundle is missing or
-// older than -max-age, for a monitor or the break-glass console to act on.
+// dbCheck is the freshness probe: exit 1 when the newest daily bundle is
+// missing or older than -max-age, for a monitor or the break-glass console to
+// act on.
 func dbCheck(fs *flag.FlagSet, dir *string, args []string, stdout, stderr io.Writer) int {
-	maxAge := fs.Duration("max-age", dbbackup.StaleAfter, "oldest acceptable newest bundle")
+	maxAge := fs.Duration("max-age", dbbackup.StaleAfter, "oldest acceptable newest daily bundle")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -427,7 +428,7 @@ func dbCheck(fs *flag.FlagSet, dir *string, args []string, stdout, stderr io.Wri
 		fmt.Fprintf(stderr, "felis db check: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(stdout, "felis db check: ok, newest backup %s (%s ago)\n", b.Name, dbbackup.Age(time.Since(b.Created)))
+	fmt.Fprintf(stdout, "felis db check: ok, newest daily backup %s (%s ago)\n", b.Name, dbbackup.Age(time.Since(b.Created)))
 	return 0
 }
 

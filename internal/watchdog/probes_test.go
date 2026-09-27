@@ -149,16 +149,34 @@ func TestBackupFinding(t *testing.T) {
 	if f := BackupFinding(dir, t0); f == nil || !strings.Contains(f.SummaryEN, "no control-plane database backup") {
 		t.Fatalf("empty dir: %+v", f)
 	}
-	touch := func(at time.Time) {
-		if err := os.WriteFile(filepath.Join(dir, dbbackup.BundleName(at, "daily")), []byte("x"), 0o600); err != nil {
+	touch := func(at time.Time, label string) {
+		if err := os.WriteFile(filepath.Join(dir, dbbackup.BundleName(at, label)), []byte("x"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	touch(t0.Add(-30 * time.Hour))
-	if f := BackupFinding(dir, t0); f == nil || !strings.Contains(f.SummaryEN, "30h old") {
-		t.Fatalf("stale: %+v", f)
+	// A manual bundle alone: the timer has never written one.
+	touch(t0.Add(-time.Hour), "manual")
+	if f := BackupFinding(dir, t0); f == nil || f.Key != "db-backup" ||
+		f.SummaryEN != "no daily control-plane database backup in "+dir+"; the newer felis-db-20260924T110000Z-manual.tar came from a manual run or another job and ages while the timer stays broken" ||
+		f.Summary != dir+" 里没有每日定时的控制面数据库备份；更新的 felis-db-20260924T110000Z-manual.tar 来自手动或其他任务，定时任务修好之前它会一天天变旧" {
+		t.Fatalf("manual only: %+v", f)
 	}
-	touch(t0.Add(-2 * time.Hour))
+	// A stale daily bundle under that fresh manual one: still the timer's alarm.
+	touch(t0.Add(-30*time.Hour), "daily")
+	if f := BackupFinding(dir, t0); f == nil || f.Key != "db-backup" ||
+		f.SummaryEN != "the newest daily control-plane database backup is 30h old (felis-db-20260923T060000Z-daily.tar); the newer felis-db-20260924T110000Z-manual.tar came from a manual run or another job and ages while the timer stays broken" ||
+		!strings.Contains(f.Hint, "sudo systemctl start felis-db-backup") {
+		t.Fatalf("stale daily under a fresh manual: %+v", f)
+	}
+	stale := t.TempDir()
+	if err := os.WriteFile(filepath.Join(stale, dbbackup.BundleName(t0.Add(-30*time.Hour), "daily")), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if f := BackupFinding(stale, t0); f == nil || f.SummaryEN != "the newest daily control-plane database backup is 30h old (felis-db-20260923T060000Z-daily.tar)" ||
+		f.Summary != "最新的每日控制面数据库备份已是 30h 前（felis-db-20260923T060000Z-daily.tar）" {
+		t.Fatalf("stale daily alone: %+v", f)
+	}
+	touch(t0.Add(-2*time.Hour), "daily")
 	if f := BackupFinding(dir, t0); f != nil {
 		t.Fatalf("fresh backup reported: %+v", f)
 	}

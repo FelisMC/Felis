@@ -469,12 +469,14 @@ export interface DBBackupRecord {
   dir: string;
   /** Why the bundle lacks the MinecraftServer objects, when it does: a restore from it brings back no servers. */
   servers_error?: string;
+  /** When the newest daily bundle in dir was written, as of this record; absent when there was none. */
+  daily_at?: string;
 }
 
 export interface DBBackupStatus {
   /** Null until the host has recorded its first backup. */
   last: DBBackupRecord | null;
-  /** True when there is no record or it is older than max_age_seconds. */
+  /** True when there is no record, no daily bundle, or the newest daily bundle is older than max_age_seconds. */
   stale: boolean;
   max_age_seconds: number;
 }
