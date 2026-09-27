@@ -35,6 +35,9 @@ import type { Build, BuildStatus, Submission } from "@/lib/types";
 const PAGE_SIZE = 10;
 const POLL_MS = 4000;
 const SEARCH_DEBOUNCE_MS = 300;
+// The server caps a page of submissions at 100 (submit.MaxListLimit); the picker
+// shows that newest page and searches the server for anything older.
+const SUBMISSION_PICK_LIMIT = 100;
 
 const isActive = (b: Build) => b.status === "pending" || b.status === "building";
 
@@ -92,34 +95,42 @@ export function ImageBuildPage() {
   const [triggering, setTriggering] = useState(false);
   const [triggerError, setTriggerError] = useState<string | null>(null);
 
-  const [submissions, setSubmissions] = useState<Submission[]>([]);
-  const [loadingSubmissions, setLoadingSubmissions] = useState(false);
+  // The submission picker reads while the dialog is open. Its search runs on
+  // the server (id, submitter or name), so a submission older than the newest
+  // page is still one query away, and a failed read says why instead of
+  // passing for an empty list.
+  const [subSearch, setSubSearch] = useState("");
+  const [subQuery, setSubQuery] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => setSubQuery(subSearch.trim()), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [subSearch]);
+  const subsQ = useAsync(
+    () =>
+      dialogOpen
+        ? // A non-owner only ever sees approved rows, so the server narrows to those.
+          api.listSubmissions({
+            status: isOwner ? undefined : "approved",
+            query: subQuery || undefined,
+            limit: SUBMISSION_PICK_LIMIT,
+          })
+        : Promise.resolve(null),
+    [dialogOpen, isOwner, subQuery],
+    { keepPrevious: true },
+  );
+  const submissions = useMemo(() => subsQ.data?.submissions ?? [], [subsQ.data]);
   const [selectedSub, setSelectedSub] = useState<Submission | null>(null);
 
+  // The picked submission stays in the list while a search narrows past it, so
+  // the picker keeps naming what filled the form.
   const visibleSubmissions = useMemo(() => {
-    if (isOwner) {
-      return submissions;
-    }
-    return submissions.filter((s) => s.status === "approved");
-  }, [submissions, isOwner]);
-
-  useEffect(() => {
-    if (dialogOpen) {
-      setLoadingSubmissions(true);
-      // The newest page is what a build is picked from; a non-owner only ever
-      // sees approved rows, so the server narrows to those.
-      api.listSubmissions({ status: isOwner ? undefined : "approved", limit: 100 })
-        .then((p) => setSubmissions(p.submissions))
-        .catch(() => {})
-        .finally(() => {
-          setLoadingSubmissions(false);
-        });
-    }
-  }, [dialogOpen, isOwner]);
+    const shown = isOwner ? submissions : submissions.filter((s) => s.status === "approved");
+    return selectedSub && !shown.some((s) => s.id === selectedSub.id) ? [selectedSub, ...shown] : shown;
+  }, [submissions, isOwner, selectedSub]);
 
   const handleSelectSubmission = (subId: string) => {
     if (!subId || subId.startsWith("_")) return;
-    const sub = submissions.find((s) => s.id === subId);
+    const sub = visibleSubmissions.find((s) => s.id === subId);
     if (!sub) return;
 
     setSelectedSub(sub);
@@ -229,6 +240,8 @@ export function ImageBuildPage() {
           if (!o) {
             setTriggerError(null);
             setSelectedSub(null);
+            setSubSearch("");
+            setSubQuery("");
           }
         }}>
           <DialogTrigger asChild>
@@ -248,18 +261,30 @@ export function ImageBuildPage() {
                 <Label htmlFor="build-import-submission" className="text-xs font-semibold text-muted-foreground">
                   {t("build_import_submission_label")}
                 </Label>
+                <SearchInput
+                  value={subSearch}
+                  onChange={setSubSearch}
+                  placeholder={t("build_import_search_placeholder")}
+                  className="min-w-0"
+                />
                 <Select onValueChange={handleSelectSubmission} disabled={triggering}>
                   <SelectTrigger id="build-import-submission" className="w-full text-xs h-9 bg-background [&>span]:flex [&>span]:w-full [&>span]:items-center [&>span]:justify-between [&>span]:gap-2 pr-2">
                     <SelectValue placeholder={t("build_import_submission_placeholder")} />
                   </SelectTrigger>
                   <SelectContent className="max-h-60 overflow-y-auto">
-                    {loadingSubmissions ? (
+                    {subsQ.loading && !subsQ.data ? (
                       <SelectItem value="_loading" disabled>
                         {t("common:loading_config")}...
                       </SelectItem>
+                    ) : subsQ.error && !subsQ.data ? (
+                      <SelectItem value="_failed" disabled>
+                        {t("build_import_submission_unavailable")}
+                      </SelectItem>
                     ) : visibleSubmissions.length === 0 ? (
                       <SelectItem value="_none" disabled>
-                        {t("build_import_submission_none")}
+                        {subQuery
+                          ? t("build_import_submission_no_match", { query: subQuery })
+                          : t("build_import_submission_none")}
                       </SelectItem>
                     ) : (
                       visibleSubmissions.map((sub) => (
@@ -287,6 +312,22 @@ export function ImageBuildPage() {
                     )}
                   </SelectContent>
                 </Select>
+                {!!subsQ.error && (
+                  <div role="alert" className="flex flex-wrap items-center justify-between gap-2 text-xs text-destructive">
+                    <span>{t("build_import_submission_failed", { reason: humanizeError(subsQ.error) })}</span>
+                    <Button type="button" size="sm" variant="outline" className="h-7" onClick={subsQ.reload}>
+                      {t("common:try_again")}
+                    </Button>
+                  </div>
+                )}
+                {!!subsQ.data && subsQ.data.total > subsQ.data.submissions.length && (
+                  <p className="text-[10px] text-muted-foreground leading-normal">
+                    {t("build_import_submission_more", {
+                      shown: subsQ.data.submissions.length,
+                      total: subsQ.data.total,
+                    })}
+                  </p>
+                )}
                 <p className="text-[10px] text-muted-foreground/80 leading-normal">
                   {t("build_import_submission_hint")}
                 </p>

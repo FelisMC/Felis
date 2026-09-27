@@ -1,11 +1,12 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import i18next from "i18next";
 import { ImageBuildPage } from "./ImageBuildPage";
-import type { Build } from "@/lib/types";
+import { humanizeError } from "@/lib/api";
+import type { Build, Submission, SubmissionPage } from "@/lib/types";
 
 const calls = vi.hoisted(() => ({
   listBuilds: vi.fn(),
@@ -230,5 +231,123 @@ describe("ImageBuildPage cancel", () => {
     const dialog = await openCancel();
     await userEvent.click(within(dialog).getByRole("button", { name: t("admin:cancel_build_confirm") }));
     expect((await within(dialog).findByRole("alert")).textContent).toBe("build already finished");
+  });
+});
+
+describe("ImageBuildPage submission picker", () => {
+  // Radix Select measures and captures the pointer, which jsdom leaves out.
+  beforeAll(() => {
+    Element.prototype.hasPointerCapture ??= () => false;
+    Element.prototype.releasePointerCapture ??= () => {};
+    Element.prototype.scrollIntoView ??= () => {};
+  });
+
+  const sub = (id: string, display_name: string): Submission => ({
+    id,
+    submitted_by: "user-1",
+    display_name,
+    context_ref: `submissions/${id}.tar.gz`,
+    status: "approved",
+    created_at: "2026-09-01T00:00:00Z",
+  });
+  const subPage = (subs: Submission[], total = subs.length): SubmissionPage => ({
+    submissions: subs,
+    total,
+    counts: { pending_review: 0, approved: total, rejected: 0 },
+  });
+  const NEWEST = sub("sub-250", "Newest Pack");
+  const ANCIENT = sub("sub-3", "Ancient Pack");
+
+  async function openDialog() {
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole("button", { name: t("admin:trigger_build_title") }));
+    const dialog = screen.getByRole("dialog", { name: t("admin:trigger_build_title") });
+    return { user, dialog };
+  }
+  const picker = () => screen.getByRole("combobox", { name: t("admin:build_import_submission_label") });
+  const search = (dialog: HTMLElement) => within(dialog).getByPlaceholderText(t("admin:build_import_search_placeholder"));
+
+  it("says why the submissions did not load and reads them again", async () => {
+    const outage = { status: 503, code: "unavailable", message: "db down" };
+    calls.listSubmissions.mockRejectedValueOnce(outage).mockResolvedValue(subPage([NEWEST]));
+    const { user, dialog } = await openDialog();
+
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert.textContent).toBe(
+      i18next.t("admin:build_import_submission_failed", { reason: humanizeError(outage) }) + t("common:try_again"),
+    );
+    await user.click(picker());
+    expect((await screen.findByRole("option")).textContent).toBe(t("admin:build_import_submission_unavailable"));
+    await user.keyboard("{Escape}");
+
+    await user.click(within(alert).getByRole("button", { name: t("common:try_again") }));
+    await vi.waitFor(() => expect(within(dialog).queryByRole("alert")).toBeNull());
+    await user.click(picker());
+    expect(await screen.findByRole("option", { name: /Newest Pack/ })).toBeTruthy();
+  });
+
+  it("searches the server for a submission older than the newest page", async () => {
+    calls.listSubmissions.mockResolvedValue(subPage([NEWEST], 250));
+    const { user, dialog } = await openDialog();
+    const more = i18next.t("admin:build_import_submission_more", { shown: 1, total: 250 });
+    expect(await within(dialog).findByText(more)).toBeTruthy();
+    expect(calls.listSubmissions).toHaveBeenLastCalledWith({ status: undefined, query: undefined, limit: 100 });
+
+    calls.listSubmissions.mockResolvedValue(subPage([ANCIENT]));
+    await user.type(search(dialog), "ancient");
+    await vi.waitFor(() =>
+      expect(calls.listSubmissions).toHaveBeenLastCalledWith({ status: undefined, query: "ancient", limit: 100 }),
+    );
+    await vi.waitFor(() => expect(within(dialog).queryByText(more)).toBeNull());
+    expect(within(dialog).queryByText(/Listing the newest/)).toBeNull();
+    await user.click(picker());
+    await user.click(await screen.findByRole("option", { name: /Ancient Pack/ }));
+    expect((within(dialog).getByLabelText(new RegExp(t("admin:context_ref_label"))) as HTMLInputElement).value).toBe(
+      "submissions/sub-3.tar.gz",
+    );
+
+    // Closed and opened again, the picker starts over from the newest page.
+    calls.listSubmissions.mockResolvedValue(subPage([NEWEST], 250));
+    await user.keyboard("{Escape}");
+    await user.click(screen.getByRole("button", { name: t("admin:trigger_build_title") }));
+    const again = screen.getByRole("dialog", { name: t("admin:trigger_build_title") });
+    expect((search(again) as HTMLInputElement).value).toBe("");
+    expect(await within(again).findByText(more)).toBeTruthy();
+    expect(calls.listSubmissions).toHaveBeenLastCalledWith({ status: undefined, query: undefined, limit: 100 });
+  });
+
+  it("keeps naming the picked submission while a search narrows past it", async () => {
+    calls.listSubmissions.mockResolvedValue(subPage([NEWEST, ANCIENT]));
+    const { user, dialog } = await openDialog();
+    await user.click(picker());
+    await user.click(await screen.findByRole("option", { name: /Ancient Pack/ }));
+    expect(picker().textContent).toContain("Ancient Pack");
+
+    calls.listSubmissions.mockResolvedValue(subPage([NEWEST]));
+    await user.type(search(dialog), "newest");
+    await vi.waitFor(() => expect(calls.listSubmissions).toHaveBeenLastCalledWith(expect.objectContaining({ query: "newest" })));
+    // Open, the list hides the rest of the dialog from the accessibility tree.
+    const trigger = picker();
+    await user.click(trigger);
+    await screen.findByRole("option", { name: /Newest Pack/ });
+    expect(trigger.textContent).toContain("Ancient Pack");
+    expect(screen.getAllByRole("option").map((o) => o.textContent?.includes("Ancient Pack"))).toEqual([true, false]);
+  });
+
+  it("names a search that found nothing", async () => {
+    calls.listSubmissions.mockResolvedValue(subPage([NEWEST]));
+    const { user, dialog } = await openDialog();
+    await within(dialog).findByText(t("admin:build_import_submission_hint"));
+
+    calls.listSubmissions.mockResolvedValue(subPage([]));
+    await user.type(search(dialog), "zzz");
+    await vi.waitFor(() => expect(calls.listSubmissions).toHaveBeenLastCalledWith(expect.objectContaining({ query: "zzz" })));
+    await user.click(picker());
+    await vi.waitFor(async () =>
+      expect((await screen.findByRole("option")).textContent).toBe(
+        i18next.t("admin:build_import_submission_no_match", { query: "zzz" }),
+      ),
+    );
   });
 });
