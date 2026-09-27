@@ -430,6 +430,9 @@ UPDATE_CHECK_SERVICE="/etc/systemd/system/felis-update-check.service"
 UPDATE_CHECK_TIMER="/etc/systemd/system/felis-update-check.timer"
 WATCHDOG_STATE="/var/lib/felis/watchdog/state.json"
 OFFSITE_ENV="${STATE_DIR}/offsite.env"
+# Where summary_offsite shows a newly generated off-site key: the operator's terminal alone.
+# stdout and stderr are what `2>&1 | tee install.log`, cloud-init and CI keep on disk.
+OFFSITE_KEY_TTY=/dev/tty
 # Host copies of the credentials `felis setup` takes at the keyboard, one bare value per
 # file, mode 0600 (cmd/felis/hostcreds.go); apply_setup_credential_secrets applies their
 # Secrets from them on every run.
@@ -4761,15 +4764,32 @@ summary_offsite() {
     return 0
   fi
   if [ "${OFFSITE_KEY_NEW:-0}" = 1 ]; then
-    echo
-    warn "================================================================================"
-    warn "The off-site copies are encrypted with this key. Store it NOW somewhere other than"
-    warn "this machine (a password manager): without it nothing in the bucket can be read."
-    warn ""
-    warn "    FELIS_OFFSITE_KEY=${FELIS_OFFSITE_KEY}"
-    warn ""
-    warn "It is also in ${OFFSITE_ENV}, which is lost with this machine."
-    warn "================================================================================"
+    # The key itself goes to the terminal alone: whatever reads stdout and stderr (a tee'd
+    # log, cloud-init, a CI artifact) keeps them on disk. The output says where the key is.
+    if { {
+      echo
+      warn "================================================================================"
+      warn "The off-site copies are encrypted with this key. Store it NOW somewhere other than"
+      warn "this machine (a password manager): without it nothing in the bucket can be read."
+      warn ""
+      warn "    FELIS_OFFSITE_KEY=${FELIS_OFFSITE_KEY}"
+      warn ""
+      warn "It is also in ${OFFSITE_ENV}, which is lost with this machine."
+      warn "================================================================================"
+    } >"$OFFSITE_KEY_TTY" 2>&1; } 2>/dev/null; then
+      warn "Off-site copy: the new encryption key was shown on the terminal and is in ${OFFSITE_ENV}; keep a copy of it off this machine."
+    else
+      echo
+      warn "================================================================================"
+      warn "The off-site copies are encrypted with a new key. Store it NOW somewhere other than"
+      warn "this machine (a password manager): without it nothing in the bucket can be read."
+      warn "With no terminal to show it on, it stays out of this output; read it with"
+      warn ""
+      warn "    sudo grep '^FELIS_OFFSITE_KEY=' ${OFFSITE_ENV}"
+      warn ""
+      warn "That file is lost with this machine."
+      warn "================================================================================"
+    fi
   else
     log "Off-site copy: the encryption key is in ${OFFSITE_ENV}; keep a copy of it off this machine."
   fi

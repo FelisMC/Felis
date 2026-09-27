@@ -2397,6 +2397,7 @@ odir="$(mktemp -d)"
 run_offsite() { # script; runs with the off-site functions sourced
   STATE_DIR="$odir" OFFSITE_ENV="$odir/offsite.env" OFFSITE_SERVICE="$odir/felis-offsite.service" \
     OFFSITE_TIMER="$odir/felis-offsite.timer" FNFILE="$ofile" HOST_BIN=fakefelis \
+    OFFSITE_KEY_TTY="${OFFSITE_KEY_TTY:-$odir/no-terminal/tty}" \
     FELIS_DB_BACKUP_DIR=/var/lib/felis/db-backups FELIS_BACKUP_PVC=felis-backups bash -c '
     set -Eeuo pipefail
     die() { printf "DIE: %s\n" "$*"; exit 1; }
@@ -2467,10 +2468,13 @@ esac
 out="$(run_offsite 'if offsite_enabled; then echo ENABLED; else echo "OFF (exit $?)"; fi')"
 expect "a configured bucket is found in a long [offsite] section" "ENABLED" "$out"
 
-# First configured install: the key is generated, the file is private, the key is shown once.
+# First configured install: the key is generated, the file is private, the key is shown once,
+# on the terminal alone. stdout and stderr are what a tee'd install log keeps; warn writes
+# to stderr here as in bootstrap.sh.
 rm -f "$odir/felis.host.toml"
-out="$(FELIS_OFFSITE_ENDPOINT=https://s3.example FELIS_OFFSITE_BUCKET=felis \
-  FELIS_OFFSITE_ACCESS_KEY=AK FELIS_OFFSITE_SECRET_KEY=SK run_offsite 'configure_offsite; summary_offsite')"
+out="$(FELIS_OFFSITE_ENDPOINT=https://s3.example FELIS_OFFSITE_BUCKET=felis OFFSITE_KEY_TTY="$odir/tty" \
+  FELIS_OFFSITE_ACCESS_KEY=AK FELIS_OFFSITE_SECRET_KEY=SK \
+  run_offsite 'warn() { printf "WARN: %s\n" "$*" >&2; }; configure_offsite; summary_offsite')"
 envf="$(cat "$odir/offsite.env" 2>/dev/null)"
 expect "the access key is kept for the unit" "FELIS_OFFSITE_ACCESS_KEY='AK'" "$envf"
 expect "an encryption key is generated" "FELIS_OFFSITE_KEY='" "$envf"
@@ -2485,7 +2489,15 @@ if [ "$(stat -c %a "$odir/offsite.env" 2>/dev/null || stat -f %Lp "$odir/offsite
 else
   echo "FAIL offsite.env must be 0600"; fails=$((fails + 1))
 fi
-expect "a new key is shown once, with the warning to keep it elsewhere" "WARN:     FELIS_OFFSITE_KEY=${key}" "$out"
+tty_out="$(cat "$odir/tty" 2>/dev/null)"
+expect "a new key is shown on the terminal" "WARN:     FELIS_OFFSITE_KEY=${key}" "$tty_out"
+expect "the terminal gets the warning to keep it elsewhere" "WARN: The off-site copies are encrypted with this key. Store it NOW somewhere other than
+WARN: this machine (a password manager): without it nothing in the bucket can be read." "$tty_out"
+case "$out" in
+  *"$key"*) echo "FAIL the new key reached the install's output, which a log keeps"; fails=$((fails + 1)) ;;
+  *) echo "PASS the new key stays out of the install's output" ;;
+esac
+expect "the output says where the key shown on the terminal is" "WARN: Off-site copy: the new encryption key was shown on the terminal and is in $odir/offsite.env" "$out"
 
 # A re-run with new credentials keeps the key; a different key is refused.
 out="$(FELIS_OFFSITE_ENDPOINT=https://s3.example FELIS_OFFSITE_BUCKET=felis \
@@ -2513,6 +2525,27 @@ rm -f "$odir"/offsite.env.*
 rm -f "$odir/offsite.env"
 out="$(FELIS_OFFSITE_ENDPOINT=https://s3.example FELIS_OFFSITE_BUCKET=felis run_offsite configure_offsite)"
 expect "a bucket without credentials is refused" "DIE: [offsite] names a bucket but there are no credentials" "$out"
+
+# No terminal (CI, cloud-init, ssh without -t): the key is shown nowhere, and the output
+# names the command that reads it.
+out="$(FELIS_OFFSITE_ENDPOINT=https://s3.example FELIS_OFFSITE_BUCKET=felis \
+  FELIS_OFFSITE_ACCESS_KEY=AK FELIS_OFFSITE_SECRET_KEY=SK run_offsite 'configure_offsite; summary_offsite')"
+key2="$(sed -n "s/^FELIS_OFFSITE_KEY='\(.*\)'$/\1/p" "$odir/offsite.env")"
+if [ -n "$key2" ]; then
+  case "$out" in
+    *"$key2"*) echo "FAIL with no terminal the new key reached the install's output"; fails=$((fails + 1)) ;;
+    *) echo "PASS with no terminal the new key stays out of the install's output" ;;
+  esac
+  case "$out" in
+    *no-terminal*) echo "FAIL the terminal that could not be opened left an error in the output: $out"; fails=$((fails + 1)) ;;
+    *) echo "PASS the terminal that could not be opened leaves no error in the output" ;;
+  esac
+else
+  echo "FAIL the install without a terminal generated no key"; fails=$((fails + 1))
+fi
+expect "with no terminal the output says the key stays out of it" "WARN: With no terminal to show it on, it stays out of this output; read it with" "$out"
+expect "with no terminal the output names the command that reads the key" "WARN:     sudo grep '^FELIS_OFFSITE_KEY=' $odir/offsite.env" "$out"
+rm -f "$odir/offsite.env"
 
 out="$(run_offsite 'configure_offsite; install_offsite_timer; summary_offsite; echo "enabled=$OFFSITE_ENABLED"')"
 expect "no bucket leaves the off-site copy off" "enabled=0" "$out"
@@ -2558,8 +2591,9 @@ case "$out" in
   *"This run generated"*) echo "FAIL a kept key was called generated"; fails=$((fails + 1)) ;;
   *) echo "PASS a kept key that mismatches is not called generated" ;;
 esac
-out="$(OFFSITE_ENABLED=1 OFFSITE_KEY_NEW=1 FELIS_OFFSITE_KEY=NEWKEY run_offsite 'install_offsite_timer; summary_offsite')"
-expect "a key the bucket takes is shown once" "WARN:     FELIS_OFFSITE_KEY=NEWKEY" "$out"
+rm -f "$odir/tty"
+out="$(OFFSITE_ENABLED=1 OFFSITE_KEY_NEW=1 FELIS_OFFSITE_KEY=NEWKEY OFFSITE_KEY_TTY="$odir/tty" run_offsite 'install_offsite_timer; summary_offsite')"
+expect "a key the bucket takes is shown on the terminal" "WARN:     FELIS_OFFSITE_KEY=NEWKEY" "$(cat "$odir/tty" 2>/dev/null)"
 
 # A rehearsal on a spare machine restores the production host's [offsite] settings: the
 # install must find the production host writing the bucket, say this host stands by, and

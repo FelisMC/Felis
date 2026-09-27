@@ -2622,7 +2622,10 @@ Optional: `FELIS_OFFSITE_REGION`, `FELIS_OFFSITE_PREFIX` (a key prefix, so one
 bucket can hold several installs) and `FELIS_OFFSITE_DB_KEEP` (default 30).
 The installer writes `[offsite]` into `felis.toml`, keeps the credentials and
 a generated encryption key in `/etc/felis/offsite.env` (mode 0600), and
-**prints the key once**. Store it in a password manager: the bucket holds only
+**shows the key once, on the terminal**. It stays out of the installer's output, so a
+`2>&1 | tee` log, cloud-init's log or a CI artifact never holds it; with no terminal
+to show it on, the installer names the command that reads it from `offsite.env`
+instead. Store it in a password manager: the bucket holds only
 sealed objects, and without the key they cannot be read. A later re-run keeps
 the key; it refuses a `FELIS_OFFSITE_KEY` that differs from the one in
 `offsite.env`, since every object already in the bucket is sealed with it.
