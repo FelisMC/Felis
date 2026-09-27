@@ -20,6 +20,7 @@ for (const [account, path] of [
   ["linked", "/account"],
   ["owner", "/servers"],
   ["owner", "/admin/users"],
+  ["owner", "/servers/survival/luckperms"],
 ] as const) {
   test(`${path} fits a 375px screen for ${account}`, async ({ page, signIn }) => {
     await signIn(account);
@@ -29,3 +30,23 @@ for (const [account, path] of [
     await expectFitsScreen(page);
   });
 }
+
+test("the LuckPerms player list leaves the rest of the page on the first screen", async ({ page, signIn }) => {
+  await signIn("owner");
+  await page.goto("/servers/survival/luckperms");
+  const list = page.getByRole("button", { name: "mock_player", exact: true }).locator("..");
+  await expect(list).toBeVisible();
+
+  // Twelve players online: the list scrolls inside its card, so the prompt
+  // under it shows without scrolling the page.
+  await expect(page.getByText(t("servers:luckperms_select_player_prompt"))).toBeInViewport({ ratio: 1 });
+  const { scrollHeight, clientHeight } = await list.evaluate((el) => ({
+    scrollHeight: el.scrollHeight,
+    clientHeight: el.clientHeight,
+  }));
+  expect(scrollHeight).toBeGreaterThan(clientHeight);
+
+  // The last one is still a tap away.
+  await page.getByRole("button", { name: "Herobrine", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: t("servers:luckperms_player_lookup") })).toHaveValue("Herobrine");
+});

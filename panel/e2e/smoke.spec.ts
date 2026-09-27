@@ -73,3 +73,19 @@ test("a player's pages load on demand and never pull in the admin pages", async 
   await expect.poll(() => fetched.some((p) => ACCOUNT_PAGE.test(p))).toBe(true);
   expect(fetched.filter((p) => ADMIN_PAGE.test(p))).toEqual([]);
 });
+
+test("on a wide screen the LuckPerms player list runs down its column", async ({ page, signIn }) => {
+  await signIn("owner");
+  await page.goto("/servers/survival/luckperms");
+  const list = page.getByRole("button", { name: "mock_player", exact: true }).locator("..");
+  await expect(list).toBeVisible();
+
+  const listBox = (await list.boundingBox())!;
+  const cardBox = (await list.locator("..").boundingBox())!;
+  expect(cardBox.height).toBeGreaterThanOrEqual(500);
+  expect(Math.abs(listBox.y + listBox.height - (cardBox.y + cardBox.height))).toBeLessThanOrEqual(2);
+
+  // A taller screen grows the card to its cap, whatever the roster holds.
+  await page.setViewportSize({ width: 1280, height: 1000 });
+  await expect.poll(async () => (await list.locator("..").boundingBox())!.height).toBe(700);
+});
