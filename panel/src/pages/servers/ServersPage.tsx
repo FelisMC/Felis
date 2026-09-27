@@ -67,7 +67,43 @@ function isLive(phase: Phase): boolean {
   return phase === "Running" || phase === "Starting" || phase === "Stopping";
 }
 
-const PAGE_SIZE = 6;
+// Twenty to a page: an even count fills the two-column cards, and a fleet of a
+// dozen or so needs no paging at all.
+const PAGE_SIZE = 20;
+
+type SortKey = "name" | "status" | "players";
+
+const SORT_KEYS: SortKey[] = ["name", "status", "players"];
+
+const SORT_LABEL: Record<SortKey, string> = {
+  name: "fleet_sort_name",
+  status: "fleet_sort_status",
+  players: "fleet_sort_players",
+};
+
+const labelOrder = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+function byName(a: UnifiedServer, b: UnifiedServer): number {
+  return (
+    labelOrder.compare(a.displayName || a.name, b.displayName || b.name) ||
+    (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
+  );
+}
+
+/** compareBy orders servers by the picked key, then by name. The name settles
+ *  every tie, so a list that rereads every few seconds keeps each row in place
+ *  until the key itself changes. Status runs live to idle, the order of the
+ *  phase filter. */
+function compareBy(key: SortKey): (a: UnifiedServer, b: UnifiedServer) => number {
+  switch (key) {
+    case "status":
+      return (a, b) => PHASES.indexOf(shownPhase(a)) - PHASES.indexOf(shownPhase(b)) || byName(a, b);
+    case "players":
+      return (a, b) => b.playersOnline - a.playersOnline || byName(a, b);
+    default:
+      return byName;
+  }
+}
 
 interface UnifiedServer {
   name: string;
@@ -107,6 +143,7 @@ export function ServersPage() {
 
   const [query, setQuery] = useState("");
   const [phaseFilter, setPhaseFilter] = useState<Phase | "all">("all");
+  const [sort, setSort] = useState<SortKey>("name");
   const [page, setPage] = useState(1);
 
   usePolling(reload, REFRESH_MS);
@@ -181,16 +218,18 @@ export function ServersPage() {
   const visible = useMemo(() => {
     const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
     const phaseOk = (s: UnifiedServer) => phaseFilter === "all" || shownPhase(s) === phaseFilter;
-    if (terms.length === 0) return servers.filter(phaseOk);
+    const order = compareBy(sort);
+    if (terms.length === 0) return servers.filter(phaseOk).sort(order);
     const scored: { s: UnifiedServer; score: number }[] = [];
     for (const s of servers) {
       if (!phaseOk(s)) continue;
       const score = matchScore([s.name, s.displayName ?? "", s.subdomain ?? "", s.owner ?? ""], terms);
       if (score >= 0) scored.push({ s, score });
     }
-    scored.sort((a, b) => b.score - a.score);
+    // A search leads with the best match; the picked order ranks equal matches.
+    scored.sort((a, b) => b.score - a.score || order(a.s, b.s));
     return scored.map((x) => x.s);
-  }, [servers, query, phaseFilter]);
+  }, [servers, query, phaseFilter, sort]);
 
   const totalPages = Math.max(1, Math.ceil(visible.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
@@ -315,7 +354,7 @@ export function ServersPage() {
                 setPage(1);
               }}
             >
-              <SelectTrigger className="w-44" aria-label={t("fleet_filter_phase")}>
+              <SelectTrigger className="w-[calc(50%-0.375rem)] sm:w-44" aria-label={t("fleet_filter_phase")}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -323,6 +362,24 @@ export function ServersPage() {
                 {PHASES.map((p) => (
                   <SelectItem key={p} value={p}>
                     {t(PHASE_KEY[p])}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select
+              value={sort}
+              onValueChange={(v) => {
+                setSort(v as SortKey);
+                setPage(1);
+              }}
+            >
+              <SelectTrigger className="w-[calc(50%-0.375rem)] sm:w-44" aria-label={t("fleet_sort")}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SORT_KEYS.map((k) => (
+                  <SelectItem key={k} value={k}>
+                    {t(SORT_LABEL[k])}
                   </SelectItem>
                 ))}
               </SelectContent>

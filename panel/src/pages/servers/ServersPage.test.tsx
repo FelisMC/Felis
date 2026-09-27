@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, beforeAll } from "vitest";
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import type { FleetServer, MyServerView } from "@/lib/types";
 import { ServersPage } from "./ServersPage";
@@ -42,6 +43,37 @@ async function tableRow(name: string) {
   const tr = cell.closest("tr");
   if (!tr) throw new Error(`no row for ${name}`);
   return within(tr);
+}
+
+// Radix Select opens with pointer capture and scrolls the picked item into view,
+// neither of which jsdom implements.
+beforeAll(() => {
+  Element.prototype.hasPointerCapture ??= () => false;
+  Element.prototype.releasePointerCapture ??= () => {};
+  Element.prototype.scrollIntoView ??= () => {};
+});
+
+// The labels of the desktop table's rows, top to bottom.
+async function tableOrder() {
+  const table = await screen.findByRole("table");
+  return within(table)
+    .getAllByRole("row")
+    .slice(1)
+    .map((tr) => tr.querySelector("td span.font-medium")?.textContent);
+}
+
+function renderPage() {
+  render(
+    <MemoryRouter>
+      <ServersPage />
+    </MemoryRouter>,
+  );
+  return userEvent.setup();
+}
+
+async function sortBy(user: ReturnType<typeof userEvent.setup>, option: string) {
+  await user.click(screen.getByRole("combobox", { name: "Sort order" }));
+  await user.click(await screen.findByRole("option", { name: option }));
 }
 
 beforeEach(() => {
@@ -241,5 +273,71 @@ describe("ServersPage retiring servers", () => {
     const survival = await tableRow("survival");
     expect(survival.getByText("Given up")).toBeTruthy();
     expect(survival.queryByRole("button", { name: /Wake/ })).toBeNull();
+  });
+});
+
+describe("ServersPage order and paging", () => {
+  it("lists by name, and on request by status or by players online", async () => {
+    calls.fleet.mockResolvedValue([
+      row("survival", { phase: "Running", ready: true, playersOnline: 3 }),
+      row("creative", { phase: "Stopped" }),
+      row("skyblock", { phase: "Running", ready: true, playersOnline: 7 }),
+      // Ordered by the label it shows, and counted as starting once asked to wake.
+      row("lobby", { displayName: "Arcade", phase: "Stopped", desiredState: "Running" }),
+      row("node-10", { phase: "Failed" }),
+      row("node-2", { phase: "Failed" }),
+    ]);
+    const user = renderPage();
+
+    expect(await tableOrder()).toEqual(["Arcade", "creative", "node-2", "node-10", "skyblock", "survival"]);
+
+    await sortBy(user, "Sort by status");
+    expect(await tableOrder()).toEqual(["skyblock", "survival", "Arcade", "node-2", "node-10", "creative"]);
+
+    await sortBy(user, "Most players first");
+    expect(await tableOrder()).toEqual(["skyblock", "survival", "Arcade", "creative", "node-2", "node-10"]);
+  });
+
+  it("leads a search with the best match and ranks equal matches by the picked order", async () => {
+    calls.fleet.mockResolvedValue([
+      row("my-surv", { phase: "Running", ready: true, playersOnline: 9 }),
+      row("survival-b", { phase: "Running", ready: true, playersOnline: 5 }),
+      row("survival-a", { phase: "Running", ready: true, playersOnline: 2 }),
+    ]);
+    const user = renderPage();
+    await tableOrder();
+    await user.type(screen.getByPlaceholderText(/Search/), "surv");
+
+    // "surv" opens both survival names and sits inside my-surv, which ranks it below.
+    expect(await tableOrder()).toEqual(["survival-a", "survival-b", "my-surv"]);
+    await sortBy(user, "Most players first");
+    expect(await tableOrder()).toEqual(["survival-b", "survival-a", "my-surv"]);
+    await user.clear(screen.getByPlaceholderText(/Search/));
+    expect(await tableOrder()).toEqual(["my-surv", "survival-b", "survival-a"]);
+  });
+
+  it("keeps servers that show the same label in name order", async () => {
+    // The fleet comes off an informer cache, which lists in no fixed order.
+    calls.fleet.mockResolvedValue([
+      row("zeta", { displayName: "Survival" }),
+      row("alpha", { displayName: "Survival" }),
+    ]);
+    renderPage();
+    const table = await screen.findByRole("table");
+    expect(within(table).getAllByText(/^(alpha|zeta)$/).map((e) => e.textContent)).toEqual(["alpha", "zeta"]);
+  });
+
+  it("shows twenty servers to a page", async () => {
+    const names = Array.from({ length: 21 }, (_, i) => `srv-${String(i + 1).padStart(2, "0")}`);
+    calls.fleet.mockResolvedValue(names.map((n) => row(n, {})));
+    const user = renderPage();
+
+    expect(await tableOrder()).toEqual(names.slice(0, 20));
+    expect(screen.getByText("Page 1 of 2")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /Next/ }));
+    expect(await tableOrder()).toEqual(["srv-21"]);
+    // A new order starts again from its first page.
+    await sortBy(user, "Sort by status");
+    expect(await tableOrder()).toEqual(names.slice(0, 20));
   });
 });
