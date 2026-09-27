@@ -1478,6 +1478,63 @@ else
 fi
 rm -f "$kubcalls"
 
+# --- write_file_atomic leaves the old file whole when a write fails ----------------------
+# secrets.env, offsite.env and felis.host.toml were written with a plain `cat >`: a full
+# disk or a crash halfway left a truncated file that the next run took as the truth.
+
+wablock="$(awk '/^write_file_atomic\(\) \{/,/^}/' "$BS")"
+[ -n "$wablock" ] || { echo "FAIL: no write_file_atomic found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$wablock" | wc -l)" -lt 20 ] \
+  || { echo "FAIL: the extracted block is not write_file_atomic -- did its closing brace move?"; exit 1; }
+wafile="$(mktemp)"
+printf '%s\n' "$wablock" > "$wafile"
+wadir="$(mktemp -d)"
+run_atomic() { # script; under the installer's shell options, its temp files removed on exit as cleanup does
+  FNFILE="$wafile" bash -c '
+    set -Eeuo pipefail
+    die() { printf "DIE: %s\n" "$*"; exit 1; }
+    TEMP_PATHS=()
+    remember_temp() { TEMP_PATHS+=("$1"); }
+    trap '\''for p in "${TEMP_PATHS[@]-}"; do [ -z "$p" ] || rm -f -- "$p"; done'\'' EXIT
+    . "$FNFILE"
+    '"$1" 2>&1
+}
+mode_of() { ls -l "$1" | cut -c1-10; }
+
+printf 'A=1\nB=2\n' > "$wadir/in.new"
+printf 'DB_PASSWORD=new\nSESSION_SECRET=new\n' > "$wadir/in.replace"
+out="$(run_atomic "umask 000; write_file_atomic '$wadir/new.env' 0600 < '$wadir/in.new'; echo done")"
+expect "an atomic write finishes" "done" "$out"
+expect "an atomic write holds all of its input" "$(printf 'A=1\nB=2')" "$(cat "$wadir/new.env")"
+expect "an atomic write is private under a permissive umask" "-rw-------" "$(mode_of "$wadir/new.env")"
+run_atomic "write_file_atomic '$wadir/new.env' 0640 < '$wadir/in.new'" >/dev/null
+expect "an atomic write sets the mode it is given" "-rw-r-----" "$(mode_of "$wadir/new.env")"
+
+printf 'DB_PASSWORD=old-and-whole\nSESSION_SECRET=kept\n' > "$wadir/old.env"
+out="$(run_atomic "cat() { head -c 7; return 1; }; write_file_atomic '$wadir/old.env' 0600 < '$wadir/in.replace'; echo survived")"
+expect "a write that fails halfway dies" "DIE: could not write $wadir/old.env; it is left as it was" "$out"
+expect "a write that fails halfway leaves the old file whole" \
+  "$(printf 'DB_PASSWORD=old-and-whole\nSESSION_SECRET=kept')" "$(cat "$wadir/old.env")"
+out="$(run_atomic "sync() { return 1; }; write_file_atomic '$wadir/old.env' 0600 < '$wadir/in.replace'")"
+expect "content that did not reach the disk does not replace the old file" "DIE: could not write $wadir/old.env" "$out"
+expect "the old file survives a failed sync" "DB_PASSWORD=old-and-whole" "$(cat "$wadir/old.env")"
+left="$(cd "$wadir" && ls -a | grep '^old\.env\.' || true)"
+if [ -z "$left" ]; then
+  echo "PASS a failed write leaves no temp file beside the old one"
+else
+  echo "FAIL a failed write left $left beside old.env"; fails=$((fails + 1))
+fi
+rm -rf "$wadir" "$wafile"
+
+# The installer never runs load_or_make_secrets alone (it would mint real secrets), so
+# its writer is checked by what it calls.
+lsblock="$(awk '/^load_or_make_secrets\(\) \{/,/^}/' "$BS")"
+expect "secrets.env is written whole or not at all" 'write_file_atomic "$SECRETS_ENV" 0600 <<EOF' "$lsblock"
+case "$lsblock" in
+  *'> "$SECRETS_ENV"'*) echo "FAIL load_or_make_secrets still writes secrets.env in place"; fails=$((fails + 1)) ;;
+  *) echo "PASS load_or_make_secrets writes secrets.env nowhere else" ;;
+esac
+
 # --- installer re-runs keep the operator's [registry] overrides --------------------------
 # §15's upgrade path is re-running the installer, but the build-lane mirrors and the
 # uploads backend live in [registry] as hand-written keys (docs/troubleshooting.md §8e or
@@ -1498,7 +1555,7 @@ alblock="$(awk '/^auth_lines\(\) \{/,/^}/' "$BS")"
 # The blocks quote themselves (the awk program uses single quotes), so they are
 # sourced from a file instead of being spliced into a single-quoted bash -c.
 fnfile="$(mktemp)"
-printf '%s\n' "$prblock" "$pablock" "$poblock" "$oblock" "$palblock" "$ahblock" "$alblock" "$wrblock" > "$fnfile"
+printf '%s\n' "$prblock" "$pablock" "$poblock" "$oblock" "$palblock" "$ahblock" "$alblock" "$wablock" "$wrblock" > "$fnfile"
 
 rdir="$(mktemp -d)"
 cat > "$rdir/felis.host.toml" <<'TOML'
@@ -1539,6 +1596,9 @@ run_write() { # out-file [state-dir] [database-deployment]; under the installer'
     set -Eeuo pipefail
     trap '\''echo "ERR near line $LINENO (exit $?)" >&2'\'' ERR
     log() { :; }
+    die() { printf "DIE: %s\n" "$*" >&2; exit 1; }
+    remember_temp() { :; }
+    [ -z "${CAT_FAILS:-}" ] || cat() { head -c 40; return 1; }
     persisted_smtp_block() { :; }
     persisted_auth_source_blocks() { :; }
     . "$FNFILE"
@@ -1603,6 +1663,16 @@ else
   diff "$rdir/out.toml" "$rdir/out2.toml" | head
   fails=$((fails + 1))
 fi
+expect "the config is private: its url holds the database password" "-rw-------" "$(ls -l "$rdir/out.toml" | cut -c1-10)"
+# A re-run that cannot finish writing (a full disk) keeps the config it carries from.
+out="$(CAT_FAILS=1 run_write "$rdir/felis.host.toml" 2>&1 || true)"
+expect "a config write that fails halfway dies" "DIE: could not write $rdir/felis.host.toml; it is left as it was" "$out"
+if cmp -s "$rdir/out.toml" "$rdir/felis.host.toml"; then
+  echo "PASS a config write that fails halfway leaves the old config whole"
+else
+  echo "FAIL a failed write cut felis.host.toml short:"; head -3 "$rdir/felis.host.toml"; fails=$((fails + 1))
+fi
+rm -f "$rdir"/felis.host.toml.*
 
 # --- installer re-runs keep [auth]; a different root domain is refused ------------------
 # The Cloudflare edge setup writes access_jwt_aud and client_ip_header into [auth] (the
@@ -2110,7 +2180,7 @@ esac
 # must say so loudly.
 
 ofile="$(mktemp)"
-for fn in validate_offsite_settings persisted_offsite_block offsite_block offsite_enabled configure_offsite install_offsite_timer summary_offsite; do
+for fn in write_file_atomic validate_offsite_settings persisted_offsite_block offsite_block offsite_enabled configure_offsite install_offsite_timer summary_offsite; do
   blk="$(awk "/^${fn}\\(\\) \\{/,/^}/" "$BS")"
   [ -n "$blk" ] || { echo "FAIL: no ${fn} found in $BS"; exit 1; }
   [ "$(printf '%s\n' "$blk" | wc -l)" -lt 120 ] \
@@ -2126,6 +2196,7 @@ run_offsite() { # script; runs with the off-site functions sourced
     set -Eeuo pipefail
     die() { printf "DIE: %s\n" "$*"; exit 1; }
     log() { printf "LOG: %s\n" "$*"; }; ok() { printf "OK: %s\n" "$*"; }; warn() { printf "WARN: %s\n" "$*"; }
+    remember_temp() { :; }
     systemctl() { printf "SYSTEMCTL: %s\n" "$*" >&2; }
     fakefelis() { printf "RUN: %s\n" "$*" >&2; [ -z "${CHECK_FAILS:-}" ] || { echo "bucket: access denied" >&2; return 1; }
       [ -z "${KEY_MISMATCH:-}" ] || { echo "the bucket records key id 1111111111111111, this key is 2222222222222222" >&2; return 3; }
@@ -2225,6 +2296,14 @@ out="$(FELIS_OFFSITE_ENDPOINT=https://s3.example FELIS_OFFSITE_BUCKET=felis \
   FELIS_OFFSITE_KEY=c29tZXRoaW5nIGVsc2UgZW50aXJlbHkgZGlmZmVyZW50IQ== run_offsite configure_offsite)"
 expect "a different key is refused" "DIE: FELIS_OFFSITE_KEY differs from the key in" "$out"
 expect "the refusal leaves the key alone" "FELIS_OFFSITE_KEY='${key}'" "$(cat "$odir/offsite.env")"
+# A re-run that cannot finish writing offsite.env (a full disk) keeps the key that sealed
+# the bucket: a file cut short before that line would have a new key minted next run.
+out="$(FELIS_OFFSITE_ENDPOINT=https://s3.example FELIS_OFFSITE_BUCKET=felis \
+  FELIS_OFFSITE_ACCESS_KEY=AK3 run_offsite 'cat() { head -c 30; return 1; }; configure_offsite')"
+expect "a write of offsite.env that fails halfway dies" "DIE: could not write $odir/offsite.env; it is left as it was" "$out"
+expect "a failed write keeps the key that sealed the bucket" "FELIS_OFFSITE_KEY='${key}'" "$(cat "$odir/offsite.env")"
+expect "a failed write keeps the credentials that worked" "FELIS_OFFSITE_ACCESS_KEY='AK2'" "$(cat "$odir/offsite.env")"
+rm -f "$odir"/offsite.env.*
 
 rm -f "$odir/offsite.env"
 out="$(FELIS_OFFSITE_ENDPOINT=https://s3.example FELIS_OFFSITE_BUCKET=felis run_offsite configure_offsite)"
