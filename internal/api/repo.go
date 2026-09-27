@@ -432,13 +432,19 @@ type Repo interface {
 	// ErrConflict, and changes nothing, if the subdomain is already bound to a
 	// different server.
 	SeedServer(ctx context.Context, name, subdomain string, cpuMilli, memoryMB, storageMB int) error
-	// UpdateServerResources updates the resource cache columns for a server
-	// after a spec mutation (spec §7 PATCH), so the per-owner aggregate stays in
-	// sync.
+	// UpdateServerResources overwrites a server's resource cache with the size the
+	// cluster holds (a claim writes it through; a resize the cluster refused is put
+	// back with it), so the per-owner aggregate stays in sync.
 	UpdateServerResources(ctx context.Context, name string, cpuMilli, memoryMB, storageMB int) error
-	// ServerResources returns the cached resource spec for a server, or zeroes
-	// when the row does not exist or has been cleared.
-	ServerResources(ctx context.Context, name string) (ResourceSpec, error)
+	// ResizeServer writes a server's new CPU and memory to its resource cache,
+	// keeping its storage, in the owner's claim lane (the lock ClaimServer and
+	// RedeemMigration take): resizes and claims of one owner's servers queue, and
+	// each counts the sizes the others wrote. A resize that grows CPU or memory
+	// must first fit every cap with the server's whole size counted; one that does
+	// not returns ErrQuotaExceeded and writes nothing. prev is what the cache held.
+	// A server with no owner has no caps to fit, and one with no live row writes
+	// nothing and returns zeroes.
+	ResizeServer(ctx context.Context, name string, cpuMilli, memoryMB int) (prev ResourceSpec, err error)
 	// Audit appends one audit row.
 	Audit(ctx context.Context, e AuditEntry) error
 

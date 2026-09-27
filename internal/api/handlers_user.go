@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 
@@ -1046,51 +1047,40 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 		resUpdated = true
 	}
 
-	// Resource-cache consistency + quota enforcement (spec §9.3 / §22): every
-	// resource-mutating patch must update the cached columns so QuotaCheck
-	// can aggregate per-owner usage without cross-system CRD reads. For OWNED
-	// servers the owner's cumulative usage must also stay within their quota caps.
+	// Resource-cache consistency + quota enforcement (spec §9.3 / §22): the cached
+	// columns are all the per-owner quota sums read, so the new size is written
+	// there before the cluster sees it, in the owner's claim lane and only if it
+	// fits (ResizeServer). Only growth is held to the caps: a change that grows
+	// neither CPU nor memory cannot push the owner past one, and it is how an admin
+	// brings a server back under a cap lowered below what the owner already uses.
 	if resUpdated {
 		newCPU := quantityToMilli(newResources.Limits[corev1.ResourceCPU])
 		newMemMB := quantityToMB(newResources.Limits[corev1.ResourceMemory])
 
-		rec, err := a.Repo.ServerByName(r.Context(), name)
-		if err != nil && !errors.Is(err, ErrNotFound) {
+		prev, err := a.Repo.ResizeServer(r.Context(), name, newCPU, newMemMB)
+		if errors.Is(err, ErrQuotaExceeded) {
+			writeError(w, r, newError(http.StatusForbidden, "quota_exceeded",
+				"this change would exceed the server owner's resource quota"))
+			return
+		}
+		if err != nil {
 			writeError(w, r, err)
 			return
 		}
-		var cur ResourceSpec
-		if rec != nil {
-			if cur, err = a.Repo.ServerResources(r.Context(), name); err != nil {
-				writeError(w, r, err)
-				return
-			}
-		}
-		// Only growth is held to the caps. A change that grows neither CPU nor memory
-		// cannot push the owner past one, and it is how an admin brings a server back
-		// under a cap lowered below what the owner already uses.
-		if rec != nil && rec.OwnerID != "" && (newCPU > cur.CPUMilli || newMemMB > cur.MemoryMB) {
-			ok, err := a.Repo.QuotaCheck(r.Context(), rec.OwnerID, name,
-				ResourceSpec{CPUMilli: newCPU, MemoryMB: newMemMB})
-			if err != nil {
-				writeError(w, r, err)
-				return
-			}
-			if !ok {
-				writeError(w, r, newError(http.StatusForbidden, "quota_exceeded",
-					"this change would exceed the server owner's resource quota"))
-				return
-			}
-		}
-
 		if err := a.Cluster.PatchServerSpec(r.Context(), name, patch); err != nil {
+			// The cache now holds a size the cluster may not: it goes back to the size
+			// the cluster reports, or, when that cannot be read either, to the one it
+			// held before.
+			ctx := context.WithoutCancel(r.Context())
+			if _, rerr := a.claimResources(ctx, name); rerr != nil {
+				if rerr := a.Repo.UpdateServerResources(ctx, name, prev.CPUMilli, prev.MemoryMB, prev.StorageMB); rerr != nil {
+					log.Printf("api: resize of %s refused by the cluster, resource cache left at the new size (request_id=%s): %v",
+						name, requestIDFromContext(ctx), rerr)
+				}
+			}
 			a.writeLookupError(w, r, err)
 			return
 		}
-		// A resource patch cannot change storage, so its cached contribution must
-		// be preserved: passing 0 would silently zero the storage dimension of the
-		// owner's four-cap aggregate (the cached columns are its only input).
-		_ = a.Repo.UpdateServerResources(r.Context(), name, newCPU, newMemMB, cur.StorageMB)
 	} else {
 		if err := a.Cluster.PatchServerSpec(r.Context(), name, patch); err != nil {
 			a.writeLookupError(w, r, err)

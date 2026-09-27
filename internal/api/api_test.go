@@ -51,11 +51,13 @@ type fakeRepo struct {
 	// finds too small for the servers moving in; it refuses only a source that owns one.
 	migrateQuotaRefuse map[string]bool
 	// serverResources / resourceUpdates mirror the cached resource columns:
-	// ServerResources is what the resize path reads (to preserve storage), and
-	// UpdateServerResources records the write for assertions.
+	// serverResources is what the cache held (ResizeServer keeps its storage), and
+	// UpdateServerResources and ResizeServer record their writes for assertions.
 	serverResources map[string]ResourceSpec
 	resourceUpdates map[string]ResourceSpec
-	// quotaChecked records the size every QuotaCheck was asked about, in order.
+	resizeErr       error // ResizeServer fails with it (a store outage)
+	// quotaChecked records the size every QuotaCheck, and every ResizeServer that
+	// grows an owned server, was asked about, in order.
 	quotaChecked []ResourceSpec
 	audits       []AuditEntry
 	failAudit    error // Audit fails with it (a store outage)
@@ -342,14 +344,36 @@ func (f *fakeRepo) QuotaCheck(_ context.Context, userID string, _ string, incomi
 	return f.QuotaAvailable(context.TODO(), userID)
 }
 
-func (f *fakeRepo) UpdateServerResources(_ context.Context, name string, cpu, mem, stor int) error {
+func (f *fakeRepo) UpdateServerResources(ctx context.Context, name string, cpu, mem, stor int) error {
+	if err := ctx.Err(); err != nil {
+		return err // as the database driver refuses a done context
+	}
 	f.resourceUpdates[name] = ResourceSpec{CPUMilli: cpu, MemoryMB: mem, StorageMB: stor}
 	return nil
 }
 
-func (f *fakeRepo) ServerResources(_ context.Context, name string) (ResourceSpec, error) {
-	return f.serverResources[name], nil
+// ResizeServer mirrors PGRepo.ResizeServer: an owned server that grows is checked
+// with its whole size, storage taken from the cache, and a refusal writes nothing.
+func (f *fakeRepo) ResizeServer(_ context.Context, name string, cpu, mem int) (ResourceSpec, error) {
+	if f.resizeErr != nil {
+		return ResourceSpec{}, f.resizeErr
+	}
+	rec, ok := f.byName[name]
+	if !ok {
+		return ResourceSpec{}, nil
+	}
+	prev := f.serverResources[name]
+	next := ResourceSpec{CPUMilli: cpu, MemoryMB: mem, StorageMB: prev.StorageMB}
+	if rec.OwnerID != "" && (cpu > prev.CPUMilli || mem > prev.MemoryMB) {
+		f.quotaChecked = append(f.quotaChecked, next)
+		if !f.quota[rec.OwnerID] {
+			return ResourceSpec{}, ErrQuotaExceeded
+		}
+	}
+	f.resourceUpdates[name] = next
+	return prev, nil
 }
+
 func (f *fakeRepo) CreateLinkCode(_ context.Context, code, mcUUID, authSource string, expiresAt time.Time) error {
 	f.linkCodes[code] = fakeLinkCode{mcUUID: mcUUID, authSource: authSource, expiresAt: expiresAt}
 	return nil
@@ -1806,6 +1830,8 @@ type fakeCluster struct {
 	orphanWorld map[string]bool              // names with a world volume but no server (CR deleted by hand)
 	createErr   error
 	pingErr     error
+	patchErr    error // PatchServerSpec fails with it after finding the server
+	goneOnPatch bool  // PatchServerSpec finds the server deleted since it was read
 	// maintErr / wakeErr: what AcquireMaintenance / SetDesiredState(Running)
 	// return for a server (the world-volume lock, internal/maintenance).
 	maintErr map[string]error
@@ -1902,6 +1928,13 @@ func (c *fakeCluster) PatchServerSpec(_ context.Context, n string, p ServerSpecP
 	info, ok := c.byName[n]
 	if !ok {
 		return ErrNotFound
+	}
+	if c.goneOnPatch {
+		delete(c.byName, n)
+		return ErrNotFound
+	}
+	if c.patchErr != nil {
+		return c.patchErr
 	}
 	c.patched[n] = p
 	// Apply only the fields the lifecycle view exposes, so a follow-up read sees

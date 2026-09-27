@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -473,4 +475,79 @@ func TestPatchServerOverQuotaMayShrink(t *testing.T) {
 			t.Fatalf("a refused growth %s reached the cluster", body)
 		}
 	}
+}
+
+// A resize is written to the resource cache, the figures the owner's quota sums
+// read, before the cluster sees it. The write used to come after the patch with its
+// error dropped, so a failed write left the owner's new size uncounted. When the
+// cluster then refuses the patch, the cache is put back: to what the cluster
+// reports, or, when the server is gone from it, to what the cache held.
+func TestPatchServerResizeCache(t *testing.T) {
+	const body = `{"resources":{"cpu":"2"}}`
+	before := ResourceSpec{CPUMilli: 750, MemoryMB: 2048, StorageMB: 5120}
+	mk := func() (*API, *fakeRepo, *fakeCluster) {
+		api, repo, cl, _ := newPatchAPI()
+		seedResources(cl)
+		cl.byName["survival"].StorageSize = "10Gi"
+		repo.serverResources["survival"] = before
+		return api, repo, cl
+	}
+
+	t.Run("a cache that cannot be written stops the patch", func(t *testing.T) {
+		api, repo, cl := mk()
+		repo.resizeErr = errors.New("database unreachable")
+		if w := patchSurvival(api, body); w.Code != http.StatusInternalServerError {
+			t.Fatalf("code = %d body %s, want 500", w.Code, w.Body.String())
+		}
+		if _, ok := cl.patched["survival"]; ok || len(repo.audits) != 0 {
+			t.Fatalf("patched=%+v audits=%+v, want neither", cl.patched, repo.audits)
+		}
+	})
+
+	t.Run("the patch lands with the new size cached", func(t *testing.T) {
+		api, repo, cl := mk()
+		if w := patchSurvival(api, body); w.Code != http.StatusOK {
+			t.Fatalf("code = %d body %s, want 200", w.Code, w.Body.String())
+		}
+		if _, ok := cl.patched["survival"]; !ok {
+			t.Fatal("the patch did not reach the cluster")
+		}
+		if got, want := repo.resourceUpdates["survival"], (ResourceSpec{CPUMilli: 2000, MemoryMB: 4096, StorageMB: 5120}); got != want {
+			t.Fatalf("resource cache = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("the cluster refuses: the cache takes the cluster's size", func(t *testing.T) {
+		api, repo, cl := mk()
+		cl.patchErr = errors.New("apiserver unavailable")
+		if w := patchSurvival(api, body); w.Code != http.StatusInternalServerError {
+			t.Fatalf("code = %d body %s, want 500", w.Code, w.Body.String())
+		}
+		if got, want := repo.resourceUpdates["survival"], (ResourceSpec{CPUMilli: 1000, MemoryMB: 4096, StorageMB: 10240}); got != want {
+			t.Fatalf("resource cache = %+v, want the cluster's %+v", got, want)
+		}
+	})
+
+	t.Run("the server is gone: the cache takes back what it held", func(t *testing.T) {
+		api, repo, cl := mk()
+		cl.goneOnPatch = true
+		if w := patchSurvival(api, body); w.Code != http.StatusNotFound || decodeErr(t, w) != "not_found" {
+			t.Fatalf("code = %d body %s, want 404 not_found", w.Code, w.Body.String())
+		}
+		if got := repo.resourceUpdates["survival"]; got != before {
+			t.Fatalf("resource cache = %+v, want %+v", got, before)
+		}
+	})
+
+	t.Run("a client that hangs up still gets the cache put back", func(t *testing.T) {
+		api, repo, cl := mk()
+		cl.patchErr = context.Canceled
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		r := httptest.NewRequest("PATCH", "/api/v1/servers/survival", strings.NewReader(body)).WithContext(ctx)
+		api.ExternalHandler().ServeHTTP(httptest.NewRecorder(), r)
+		if got, want := repo.resourceUpdates["survival"], (ResourceSpec{CPUMilli: 1000, MemoryMB: 4096, StorageMB: 10240}); got != want {
+			t.Fatalf("resource cache = %+v, want the cluster's %+v", got, want)
+		}
+	})
 }
