@@ -49,6 +49,22 @@ import (
 // the code marks Identity (UUIDs trusted verbatim); config can never add another.
 const mojangSessionServer = "https://sessionserver.mojang.com/session/minecraft/hasJoined"
 
+// passkeyRelyingParty is the one WebAuthn relying party both web faces share: its id
+// is the player console host, derived from server.root_domain the way the panel
+// handler derives it when auth.panel_hostname is unset, and its origins are that host
+// plus the operator host. An empty id means the install names no panel host at all.
+func passkeyRelyingParty(cfg *config.Config) (string, []string) {
+	rpID := defaultPanelHostname(cfg.Server.RootDomain, cfg.Auth.PanelHostname)
+	if rpID == "" {
+		return "", nil
+	}
+	origins := []string{"https://" + rpID}
+	if admin := defaultAdminHostname(cfg.Server.RootDomain, cfg.Auth.AdminHostname); admin != "" && admin != rpID {
+		origins = append(origins, "https://"+admin)
+	}
+	return rpID, origins
+}
+
 // authSourcesFromConfig builds the multiplexer's priority list from the configured
 // [[auth_source]] entries: Mojang leads as the code-owned identity anchor (正版优先, the ONLY
 // Identity source — config can only append namespace-rewritten third-party sources, never a
@@ -393,22 +409,15 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 	// enrolled once asserts on either face — one binding, usable on the player console
 	// AND the operator console. Both hosts are therefore listed as permitted origins,
 	// while the RP id stays the panel host so the credential's scope is ONE relying
-	// party, not two. Wired only when auth.panel_hostname is configured; otherwise
-	// a.Passkey stays nil and the passkey routes honestly return 503 (the authenticated
-	// enrollment boundary is still enforced by the handlers).
-	if cfg.Auth.PanelHostname != "" {
-		origins := []string{"https://" + cfg.Auth.PanelHostname}
-		if admin := defaultAdminHostname(cfg.Server.RootDomain, cfg.Auth.AdminHostname); admin != "" && admin != cfg.Auth.PanelHostname {
-			origins = append(origins, "https://"+admin)
-		}
-		pv, err := passkey.New(cfg.Auth.PanelHostname, "Felis", origins)
-		if err != nil {
-			fmt.Fprintf(stderr, "felis api: passkey verifier disabled: %v — passkey endpoints return 503\n", err)
-		} else {
-			a.Passkey = pv
-		}
+	// party, not two. Without a panel host (neither auth.panel_hostname nor
+	// server.root_domain) a.Passkey stays nil and the passkey routes honestly return
+	// 503 (the authenticated enrollment boundary is still enforced by the handlers).
+	if rpID, origins := passkeyRelyingParty(cfg); rpID == "" {
+		fmt.Fprintln(stderr, "felis api: passkey verifier disabled (no panel host: set server.root_domain or auth.panel_hostname) — passkey endpoints return 503")
+	} else if pv, err := passkey.New(rpID, "Felis", origins); err != nil {
+		fmt.Fprintf(stderr, "felis api: passkey verifier disabled: %v — passkey endpoints return 503\n", err)
 	} else {
-		fmt.Fprintln(stderr, "felis api: passkey verifier disabled (auth.panel_hostname unset) — passkey endpoints return 503")
+		a.Passkey = pv
 	}
 
 	// Derive the console hostnames when felis.toml leaves them unset, exactly as the

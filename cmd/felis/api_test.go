@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,6 +16,37 @@ import (
 	"felis.lolicon.best/internal/build"
 	"felis.lolicon.best/internal/config"
 )
+
+// The passkey relying party follows the panel host the SPA is served on: an install
+// that names only its root domain still gets passkeys, on console.<root>, with the
+// operator host as the second origin; only an install with no panel host goes without.
+func TestPasskeyRelyingParty(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		root, panel, admin string
+		wantRP             string
+		wantOrigins        []string
+	}{
+		{"root domain only", "example.net", "", "", "console.example.net",
+			[]string{"https://console.example.net", "https://op.console.example.net"}},
+		{"configured hosts", "example.net", " play.example.net ", "ops.example.net", "play.example.net",
+			[]string{"https://play.example.net", "https://ops.example.net"}},
+		{"operator host equal to the panel host", "example.net", "console.example.net", "console.example.net",
+			"console.example.net", []string{"https://console.example.net"}},
+		{"panel host without a root domain", "", "console.example.org", "", "console.example.org",
+			[]string{"https://console.example.org"}},
+		{"no host at all", "", "", "", "", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.Config{}
+			cfg.Server.RootDomain, cfg.Auth.PanelHostname, cfg.Auth.AdminHostname = tc.root, tc.panel, tc.admin
+			rp, origins := passkeyRelyingParty(cfg)
+			if rp != tc.wantRP || !slices.Equal(origins, tc.wantOrigins) {
+				t.Fatalf("relying party = %q %q, want %q %q", rp, origins, tc.wantRP, tc.wantOrigins)
+			}
+		})
+	}
+}
 
 // TestAuthSourcesFromConfig pins the one place the hasJoined identity anchor is decided:
 // Mojang is prepended in code, first, and is the only source whose UUIDs are trusted as-is.
