@@ -315,6 +315,67 @@ func TestMigrateRedeemBinding(t *testing.T) {
 	}
 }
 
+// TestMigrateRedeemOverQuota: a target whose quota cannot take the source's servers is
+// refused with 403 migrate_quota_exceeded, and the refusal leaves everything as it was —
+// no server moved, the source live, the migration still code_issued, nothing audited or
+// mailed — so the same code redeems once an admin raises the quota.
+func TestMigrateRedeemOverQuota(t *testing.T) {
+	const uuid = "88888888-8888-8888-8888-888888888888"
+	src := &Principal{UserID: "u1", Email: "old@example.net", Role: "user"}
+	tgt := &Principal{UserID: "u2", Email: "new@example.net", Role: "user"}
+
+	repo := newFakeRepo()
+	repo.seedUser(UserView{ID: "u1", Username: "old", Email: "old@example.net", Role: "user"})
+	repo.seedUser(UserView{ID: "u2", Username: "new", Email: "new@example.net", Role: "user"})
+	repo.links[uuid] = "u1"
+	repo.byName["alpha"] = &ServerRecord{Name: "alpha", OwnerID: "u1"}
+	repo.migrateQuotaRefuse = map[string]bool{"u2": true}
+
+	mk, mailer, _ := migrateEnv(repo)
+	ehSrc := mk(src).ExternalHandler()
+	if w := startMigrate(t, mk(src).InternalHandler(), uuid); w.Code != http.StatusCreated {
+		t.Fatalf("start: %d (%s)", w.Code, w.Body.String())
+	}
+	if w := do(ehSrc, "POST", "/api/v1/account/migrate/confirm/otp/start", "", jsonHeader); w.Code != http.StatusAccepted {
+		t.Fatalf("otp start: %d (%s)", w.Code, w.Body.String())
+	}
+	if w := do(ehSrc, "POST", "/api/v1/account/migrate/confirm/otp/verify", `{"code":"`+mailer.code+`"}`, jsonHeader); w.Code != http.StatusOK {
+		t.Fatalf("otp verify: %d (%s)", w.Code, w.Body.String())
+	}
+	w := do(ehSrc, "POST", "/api/v1/account/migrate/issue-code", `{"target_user_id":"u2"}`, jsonHeader)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("issue-code: %d (%s)", w.Code, w.Body.String())
+	}
+	mcode, _ := acctBody(t, w)["code"].(string)
+	audits, notices := len(repo.audits), len(mailer.notices)
+
+	ehTgt := mk(tgt).ExternalHandler()
+	w = do(ehTgt, "POST", "/api/v1/account/migrate/redeem", `{"code":"`+mcode+`"}`, jsonHeader)
+	if w.Code != http.StatusForbidden || decodeErr(t, w) != "migrate_quota_exceeded" {
+		t.Fatalf("redeem over quota: code = %d body %s, want 403 migrate_quota_exceeded", w.Code, w.Body.String())
+	}
+	if repo.byName["alpha"].OwnerID != "u1" {
+		t.Fatalf("server moved on a refused redeem: owner=%s", repo.byName["alpha"].OwnerID)
+	}
+	if d, _ := repo.UserDetail(context.Background(), "u1"); d.DeletedAt != nil || d.Disabled {
+		t.Fatalf("source retired on a refused redeem: %+v", d)
+	}
+	if m, _ := repo.MigrationForSource(context.Background(), "u1"); m == nil || m.State != "code_issued" {
+		t.Fatalf("migration after a refused redeem = %+v, want still code_issued", m)
+	}
+	if len(repo.audits) != audits || len(mailer.notices) != notices {
+		t.Fatalf("a refused redeem audited %v / mailed %q", repo.audits[audits:], mailer.notices[notices:])
+	}
+
+	delete(repo.migrateQuotaRefuse, "u2")
+	if w := do(ehTgt, "POST", "/api/v1/account/migrate/redeem", `{"code":"`+mcode+`"}`, jsonHeader); w.Code != http.StatusOK {
+		t.Fatalf("redeem once the quota fits: code = %d body %s, want 200", w.Code, w.Body.String())
+	}
+	if repo.byName["alpha"].OwnerID != "u2" {
+		t.Fatalf("server not moved once the quota fits: owner=%s", repo.byName["alpha"].OwnerID)
+	}
+}
+
 // TestMigrateGuards covers the input/state refusals: an unlinked UUID has no account to
 // migrate; a code cannot be issued before confirmation; the target may be neither the
 // source itself nor an unknown account.

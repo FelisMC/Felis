@@ -410,6 +410,11 @@ func (a *API) handleMigrateIssueCode(w http.ResponseWriter, r *http.Request) {
 var errMigrateNotConfirmed = newError(http.StatusConflict, "not_confirmed",
 	"confirm the migration on this browser first; a confirmation lasts 10 minutes")
 
+// errMigrateQuotaExceeded refuses a redeem whose servers would push the target over
+// its quota. The code stays unspent, so raising the quota and redeeming again works.
+var errMigrateQuotaExceeded = newError(http.StatusForbidden, "migrate_quota_exceeded",
+	"the servers this migration moves do not fit this account's quota; ask an admin to raise it, then redeem the same code again before it expires")
+
 // migrateRedeemRequest is the redeem body: the one-time code the target received.
 type migrateRedeemRequest struct {
 	Code string `json:"code"`
@@ -439,6 +444,10 @@ func (a *API) handleMigrateRedeem(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, ErrLinkCodeInvalid) {
 			writeError(w, r, newError(http.StatusBadRequest, "invalid_code", "migrate code is invalid or expired"))
+			return
+		}
+		if errors.Is(err, ErrQuotaExceeded) {
+			writeError(w, r, errMigrateQuotaExceeded)
 			return
 		}
 		writeError(w, r, err)

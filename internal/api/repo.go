@@ -825,9 +825,12 @@ type Repo interface {
 	// the migration 'redeemed' — all in one transaction. It returns the source user id
 	// and the moved server names for the audit trail. No matching or expired code, or a
 	// code whose named target is a different user → ErrLinkCodeInvalid (an intercepted
-	// code is useless to anyone but the named target). Server ownership is the only thing
-	// moved — the mc_uuid link and web credentials stay with their accounts. now drives
-	// expiry and the terminal timestamps.
+	// code is useless to anyone but the named target). When the source owns servers, the
+	// target's quota must hold with all of them added in, checked under ClaimServer's
+	// lock for both accounts; over any cap → ErrQuotaExceeded, with nothing moved and the
+	// code left unspent. Server ownership is the only thing moved — the mc_uuid link and
+	// web credentials stay with their accounts. now drives expiry and the terminal
+	// timestamps.
 	RedeemMigration(ctx context.Context, targetUserID, codeHash string, now time.Time) (sourceUserID string, movedServers []string, err error)
 }
 

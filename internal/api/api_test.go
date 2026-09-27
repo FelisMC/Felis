@@ -47,6 +47,9 @@ type fakeRepo struct {
 	// claimQuotaRefuse simulates ClaimServer's atomic quota gate (audit #4)
 	// refusing a name whose advisory pre-check already passed.
 	claimQuotaRefuse map[string]bool
+	// migrateQuotaRefuse names redeeming targets whose quota RedeemMigration's gate
+	// finds too small for the servers moving in; it refuses only a source that owns one.
+	migrateQuotaRefuse map[string]bool
 	// serverResources / resourceUpdates mirror the cached resource columns:
 	// ServerResources is what the resize path reads (to preserve storage), and
 	// UpdateServerResources records the write for assertions.
@@ -1470,6 +1473,13 @@ func (f *fakeRepo) RedeemMigration(_ context.Context, targetUserID, codeHash str
 	}
 	if mig == nil {
 		return "", nil, ErrLinkCodeInvalid
+	}
+	if f.migrateQuotaRefuse[targetUserID] {
+		for _, rec := range f.byName {
+			if rec.OwnerID == mig.sourceUserID {
+				return "", nil, ErrQuotaExceeded // before anything moves, as the real gate
+			}
+		}
 	}
 	// Re-point every server the source owns to the target (byName holds pointers).
 	var moved []string

@@ -5709,6 +5709,14 @@ paths:
               schema: { $ref: '#/components/schemas/Error' }
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: >
+            The source's servers would push the caller over a quota cap
+            (migrate_quota_exceeded). Nothing moved and the code is unspent; it redeems once
+            the quota fits, until it expires.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/me/submissions:
     post:

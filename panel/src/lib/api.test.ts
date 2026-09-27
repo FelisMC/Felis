@@ -218,6 +218,12 @@ describe("account migration wire shapes", () => {
       code: "MIGR-1234",
     });
   });
+
+  it("says a redeem over quota can be retried with the same code once the quota fits", () => {
+    expect(humanizeError({ status: 403, code: "migrate_quota_exceeded" })).toBe(
+      "The servers this migration brings over don't fit your quota. Ask an admin to raise it, then redeem the same code again before it expires.",
+    );
+  });
 });
 
 // Pin the GET /fleet wire shape (the SysAdmin cockpit's read). It is the ONLY

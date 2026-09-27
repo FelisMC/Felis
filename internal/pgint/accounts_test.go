@@ -340,6 +340,12 @@ func TestMigrationUnderConcurrency(t *testing.T) {
 // waitForLockWait polls until a statement starting with prefix is waiting on a lock.
 func waitForLockWait(t *testing.T, prefix string) {
 	t.Helper()
+	waitForLockWaiters(t, prefix, 1)
+}
+
+// waitForLockWaiters polls until want statements starting with prefix wait on a lock.
+func waitForLockWaiters(t *testing.T, prefix string, want int) {
+	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		var n int
@@ -348,12 +354,12 @@ func waitForLockWait(t *testing.T, prefix string) {
 			prefix).Scan(&n); err != nil {
 			t.Fatalf("read pg_stat_activity: %v", err)
 		}
-		if n > 0 {
+		if n >= want {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("no statement %q waited on a lock within 5s", prefix)
+	t.Fatalf("fewer than %d statements %q waited on a lock within 5s", want, prefix)
 }
 
 // A restart that reaches the source while its redeem is in flight must not leave the
@@ -397,6 +403,192 @@ func TestStartMigrationBehindARedeem(t *testing.T) {
 	}
 	if n := liveMigrations(t, src.ID); n != 0 {
 		t.Fatalf("live migrations for the retired source = %d, want 0", n)
+	}
+}
+
+// untouched checks a refused redeem left the source as it was: its servers, the
+// account and its session live, and the code still issued.
+func untouched(t *testing.T, what, srcID, session string, servers ...string) {
+	t.Helper()
+	for _, s := range servers {
+		if owner := serverOwner(t, s); owner != srcID {
+			t.Fatalf("%s moved %s to %s", what, s, owner)
+		}
+	}
+	var live, sessionLive bool
+	if err := db.QueryRow(`SELECT NOT disabled AND deleted_at IS NULL FROM users WHERE id = $1`, srcID).Scan(&live); err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	if err := db.QueryRow(`SELECT revoked_at IS NULL FROM sessions WHERE token_hash = $1`, session).Scan(&sessionLive); err != nil {
+		t.Fatalf("read source session: %v", err)
+	}
+	if !live || !sessionLive {
+		t.Fatalf("%s: source live=%v, session live=%v; want both", what, live, sessionLive)
+	}
+	if m, err := repo.MigrationForSource(context.Background(), srcID); err != nil || m.State != "code_issued" {
+		t.Fatalf("%s: migration = %+v, %v; want still code_issued", what, m, err)
+	}
+}
+
+// A redeem moves the source's servers only when the target's four caps hold with all
+// of them added in. Over any cap it changes nothing, and the same code redeems once
+// the quota fits. Deleted servers count on neither side.
+func TestMigrationRedeemWithinTargetQuota(t *testing.T) {
+	ctx := context.Background()
+	now := mustNow()
+	src := newUser(t, "user", "migq-src")
+	dst := newUser(t, "user", "migq-dst")
+	sfx := suffix(t)
+	a, b := "mqa-"+sfx, "mqb-"+sfx
+	seedOwnedServer(t, a, src.ID, false)
+	seedOwnedServer(t, b, src.ID, false)
+	seedOwnedServer(t, "mqgone-"+sfx, src.ID, true)
+	seedOwnedServer(t, "mqown-"+sfx, dst.ID, false)
+	mustExec(t, `UPDATE servers SET cached_storage_mb = 400 WHERE name IN ($1, $2)`, a, b)
+	mustExec(t, `UPDATE servers SET cached_storage_mb = 225 WHERE name = $1`, "mqown-"+sfx)
+	seedOwnedServer(t, "mqowngone-"+sfx, dst.ID, true)
+	session := newSession(t, src.ID, "migq-src", now.Add(time.Hour))
+	startToCode(t, src.ID, dst.ID, "h-quota", now, now.Add(10*time.Minute))
+
+	// With both servers the target would own 3 servers, 300 millicores, 384 MB of
+	// memory and 1025 MB of storage. Each cap one short of its figure refuses on its
+	// own; storage is capped in whole GB, and 1 GB is 1024 MB.
+	n := func(v int) *int { return &v }
+	for _, c := range []struct {
+		name string
+		q    api.QuotaInput
+	}{
+		{"servers", api.QuotaInput{MaxServers: n(2)}},
+		{"cpu", api.QuotaInput{MaxCPUMilli: n(299)}},
+		{"memory", api.QuotaInput{MaxMemoryMB: n(383)}},
+		{"storage", api.QuotaInput{MaxStorageGB: n(1)}},
+	} {
+		if _, err := repo.SetQuotas(ctx, dst.ID, c.q, "pgint"); err != nil {
+			t.Fatalf("SetQuotas(%s): %v", c.name, err)
+		}
+		if _, _, err := repo.RedeemMigration(ctx, dst.ID, "h-quota", now); !errors.Is(err, api.ErrQuotaExceeded) {
+			t.Fatalf("redeem over the %s cap = %v, want ErrQuotaExceeded", c.name, err)
+		}
+		untouched(t, "a redeem over the "+c.name+" cap", src.ID, session, a, b)
+	}
+
+	// Every cap at its figure fits, storage at the next whole GB.
+	if _, err := repo.SetQuotas(ctx, dst.ID, api.QuotaInput{MaxServers: n(3), MaxCPUMilli: n(300), MaxMemoryMB: n(384), MaxStorageGB: n(2)}, "pgint"); err != nil {
+		t.Fatalf("SetQuotas(fits): %v", err)
+	}
+	_, moved, err := repo.RedeemMigration(ctx, dst.ID, "h-quota", now)
+	sort.Strings(moved)
+	if err != nil || strings.Join(moved, ",") != a+","+b {
+		t.Fatalf("redeem once the quota fits = %v, %v; want [%s %s]", moved, err, a, b)
+	}
+	if o := serverOwner(t, a); o != dst.ID {
+		t.Fatalf("owner of %s after the redeem = %s, want the target", a, o)
+	}
+
+	// A source that owns nothing brings nothing, so it retires even into a target
+	// already over a cap.
+	empty := newUser(t, "user", "migq-empty")
+	startToCode(t, empty.ID, dst.ID, "h-empty", now, now.Add(10*time.Minute))
+	if _, err := repo.SetQuotas(ctx, dst.ID, api.QuotaInput{MaxServers: n(0)}, "pgint"); err != nil {
+		t.Fatalf("SetQuotas(0): %v", err)
+	}
+	if _, moved, err := repo.RedeemMigration(ctx, dst.ID, "h-empty", now); err != nil || len(moved) != 0 {
+		t.Fatalf("redeem of a source with no servers = %v, %v; want nothing moved", moved, err)
+	}
+	var retired bool
+	if err := db.QueryRow(`SELECT disabled AND deleted_at IS NOT NULL FROM users WHERE id = $1`, empty.ID).Scan(&retired); err != nil || !retired {
+		t.Fatalf("empty source after its redeem: retired=%v, %v; want retired", retired, err)
+	}
+}
+
+// holdLane takes a user's claim lane (ClaimServer's advisory lock) in a transaction the
+// caller ends.
+func holdLane(t *testing.T, userIDs ...string) *sql.Tx {
+	t.Helper()
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	for _, id := range userIDs {
+		if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtext($1))`, id); err != nil {
+			tx.Rollback() //nolint:errcheck // the test is failing anyway
+			t.Fatalf("hold lane: %v", err)
+		}
+	}
+	return tx
+}
+
+// A redeem decides under both accounts' claim lanes: a server either account claims
+// while the redeem waits is counted against the target's quota. The target holds one
+// server of a two-server cap and the source one, so either claim tips it over.
+func TestMigrationRedeemWaitsForClaims(t *testing.T) {
+	ctx := context.Background()
+	now := mustNow()
+	n := func(v int) *int { return &v }
+	for _, lane := range []string{"target", "source"} {
+		src := newUser(t, "user", "migw-src")
+		dst := newUser(t, "user", "migw-dst")
+		sfx := suffix(t)
+		mine, claimed := "mwa-"+sfx, "mwc-"+sfx
+		seedOwnedServer(t, mine, src.ID, false)
+		seedOwnedServer(t, "mwown-"+sfx, dst.ID, false)
+		mustExec(t, `INSERT INTO servers (name, cached_cpu_milli, cached_memory_mb, cached_storage_mb) VALUES ($1, 100, 128, 1)`, claimed)
+		if _, err := repo.SetQuotas(ctx, dst.ID, api.QuotaInput{MaxServers: n(2)}, "pgint"); err != nil {
+			t.Fatalf("SetQuotas: %v", err)
+		}
+		session := newSession(t, src.ID, "migw-src", now.Add(time.Hour))
+		startToCode(t, src.ID, dst.ID, "h-wait", now, now.Add(10*time.Minute))
+		claimer := dst.ID
+		if lane == "source" {
+			claimer = src.ID
+		}
+
+		hold := holdLane(t, claimer)
+		redeemed := make(chan error, 1)
+		go func() {
+			_, _, err := repo.RedeemMigration(ctx, dst.ID, "h-wait", now)
+			redeemed <- err
+		}()
+		waitForLockWait(t, "SELECT pg_advisory_xact_lock")
+		if _, err := hold.Exec(`UPDATE servers SET owner_id = $2 WHERE name = $1`, claimed, claimer); err != nil {
+			t.Fatalf("%s claim: %v", lane, err)
+		}
+		if err := hold.Commit(); err != nil {
+			t.Fatalf("%s claim commit: %v", lane, err)
+		}
+		if err := <-redeemed; !errors.Is(err, api.ErrQuotaExceeded) {
+			t.Fatalf("redeem behind a %s claim = %v, want ErrQuotaExceeded", lane, err)
+		}
+		untouched(t, "a redeem behind a "+lane+" claim", src.ID, session, mine)
+	}
+}
+
+// Two migrations crossing between one pair of accounts take their lanes in one order,
+// so neither deadlocks the other: both wait behind a holder of both lanes and, once it
+// lets go, both redeem.
+func TestCrossingMigrationsDoNotDeadlock(t *testing.T) {
+	ctx := context.Background()
+	now := mustNow()
+	x := newUser(t, "user", "migx-a")
+	y := newUser(t, "user", "migx-b")
+	sfx := suffix(t)
+	seedOwnedServer(t, "mxa-"+sfx, x.ID, false)
+	seedOwnedServer(t, "mxb-"+sfx, y.ID, false)
+	startToCode(t, x.ID, y.ID, "h-x", now, now.Add(10*time.Minute))
+	startToCode(t, y.ID, x.ID, "h-y", now, now.Add(10*time.Minute))
+
+	hold := holdLane(t, x.ID, y.ID)
+	errs := make(chan error, 2)
+	go func() { _, _, err := repo.RedeemMigration(ctx, y.ID, "h-x", now); errs <- err }()
+	go func() { _, _, err := repo.RedeemMigration(ctx, x.ID, "h-y", now); errs <- err }()
+	waitForLockWaiters(t, "SELECT pg_advisory_xact_lock", 2)
+	if err := hold.Commit(); err != nil {
+		t.Fatalf("release lanes: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("crossing redeem: %v", err)
+		}
 	}
 }
 

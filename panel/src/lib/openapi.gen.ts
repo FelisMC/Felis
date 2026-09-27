@@ -7685,6 +7685,15 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            /** @description The source's servers would push the caller over a quota cap (migrate_quota_exceeded). Nothing moved and the code is unspent; it redeems once the quota fits, until it expires. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     mySubmissions: {

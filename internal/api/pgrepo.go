@@ -396,7 +396,7 @@ func (p *PGRepo) QuotaCheck(ctx context.Context, userID string, excludeName stri
 		return false, err
 	}
 
-	return quotaAllows(maxServers, maxCPU, maxMem, maxStor, count, cpuSum, memSum, storSum, incoming), nil
+	return quotaAllows(maxServers, maxCPU, maxMem, maxStor, count, cpuSum, memSum, storSum, 1, incoming), nil
 }
 
 // UpdateServerResources updates the resource cache for a server after a spec
@@ -498,7 +498,7 @@ func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string) (bool, er
 		return false, err
 	}
 	if !quotaAllows(maxServers, maxCPU, maxMem, maxStor, count, cpuSum, memSum, storSum,
-		ResourceSpec{CPUMilli: cpu, MemoryMB: mem, StorageMB: stor}) {
+		1, ResourceSpec{CPUMilli: cpu, MemoryMB: mem, StorageMB: stor}) {
 		return false, ErrQuotaExceeded
 	}
 
@@ -526,13 +526,14 @@ func (p *PGRepo) ClaimServer(ctx context.Context, name, userID string) (bool, er
 }
 
 // quotaAllows applies the four spec §9.3 caps to one per-owner aggregate plus
-// the incoming spec. Shared by QuotaCheck (the advisory pre-check) and
-// ClaimServer (the atomic gate) so the two can never drift. An invalid (NULL or
+// incomingCount servers whose specs sum to incoming. Shared by QuotaCheck (the
+// advisory pre-check), ClaimServer (the atomic gate) and RedeemMigration (a
+// migration's servers arriving at once) so they can never drift. An invalid (NULL or
 // missing) cap means unlimited for that dimension; storage is compared in MB
 // against max_storage_gb × 1024.
 func quotaAllows(maxServers, maxCPU, maxMem, maxStor sql.NullInt64,
-	count, cpuSum, memSum, storSum int64, incoming ResourceSpec) bool {
-	if maxServers.Valid && count >= maxServers.Int64 {
+	count, cpuSum, memSum, storSum, incomingCount int64, incoming ResourceSpec) bool {
+	if maxServers.Valid && count+incomingCount > maxServers.Int64 {
 		return false
 	}
 	if maxCPU.Valid && cpuSum+int64(incoming.CPUMilli) > maxCPU.Int64 {
@@ -2490,6 +2491,54 @@ func (p *PGRepo) RedeemMigration(ctx context.Context, targetUserID, codeHash str
 		return "", nil, ErrLinkCodeInvalid
 	case err != nil:
 		return "", nil, err
+	}
+
+	// Take both accounts' claim lanes, ClaimServer's lock, in id order so two
+	// migrations crossing between the same pair cannot deadlock. The target's makes
+	// the quota read below and the move one consistent decision against its own
+	// claims; the source's keeps a claim of its own from landing between the count
+	// of its servers and their move.
+	lanes := []string{sourceUserID, targetUserID}
+	if lanes[1] < lanes[0] {
+		lanes[0], lanes[1] = lanes[1], lanes[0]
+	}
+	for _, id := range lanes {
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, id); err != nil {
+			return "", nil, err
+		}
+	}
+
+	// The target's four caps (spec §9.3) must hold with every server the source owns
+	// added in, as a claim of each would. Over any cap, nothing moves and the code
+	// stays unspent, so the target can have an admin raise its quota and redeem again
+	// before the code expires. A source that owns nothing moves nothing, and retires
+	// even into a target already over a cap.
+	var n, cpu, mem, stor int64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT COUNT(*), COALESCE(SUM(cached_cpu_milli), 0), COALESCE(SUM(cached_memory_mb), 0), COALESCE(SUM(cached_storage_mb), 0)
+		 FROM servers WHERE owner_id = $1 AND deleted_at IS NULL`,
+		sourceUserID).Scan(&n, &cpu, &mem, &stor); err != nil {
+		return "", nil, err
+	}
+	if n > 0 {
+		var maxServers, maxCPU, maxMem, maxStor sql.NullInt64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT max_servers, max_cpu_milli, max_memory_mb, max_storage_gb
+			 FROM quotas WHERE user_id = $1`, targetUserID).Scan(
+			&maxServers, &maxCPU, &maxMem, &maxStor); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return "", nil, err
+		}
+		var count, cpuSum, memSum, storSum int64
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*), COALESCE(SUM(cached_cpu_milli), 0), COALESCE(SUM(cached_memory_mb), 0), COALESCE(SUM(cached_storage_mb), 0)
+			 FROM servers WHERE owner_id = $1 AND deleted_at IS NULL`,
+			targetUserID).Scan(&count, &cpuSum, &memSum, &storSum); err != nil {
+			return "", nil, err
+		}
+		if !quotaAllows(maxServers, maxCPU, maxMem, maxStor, count, cpuSum, memSum, storSum,
+			n, ResourceSpec{CPUMilli: int(cpu), MemoryMB: int(mem), StorageMB: int(stor)}) {
+			return "", nil, ErrQuotaExceeded
+		}
 	}
 
 	// Re-point every server the source owns to the target, collecting the names for
