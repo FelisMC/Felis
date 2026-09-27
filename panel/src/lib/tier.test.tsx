@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, render, screen } from "@testing-library/react";
-import { TierProvider, useTier } from "./tier";
+import { ACCESS_RECHECK_MS, TierProvider, useTier } from "./tier";
+import { ACCESS_REFUSED_EVENT } from "./api";
 import type { Identity } from "./types";
 
 const calls = vi.hoisted(() => ({ me: vi.fn() }));
@@ -30,6 +31,9 @@ async function boot() {
 
 beforeEach(() => {
   calls.me.mockReset();
+});
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("TierProvider after a /me that failed with anything but a 401", () => {
@@ -65,5 +69,44 @@ describe("TierProvider after a /me that failed with anything but a 401", () => {
 
     expect(tier.identityError).toBe(err503);
     expect(tier.unauthenticated).toBe(false);
+  });
+});
+
+// An admin demoted while the page is open keeps the admin pages up until /me is
+// read again; the first refused call does that, at most once per interval.
+describe("TierProvider after a role refusal", () => {
+  const demoted: Identity = { ...admin, role: "user", is_admin: false };
+  const refuse = () =>
+    act(async () => {
+      window.dispatchEvent(new Event(ACCESS_REFUSED_EVENT));
+    });
+
+  it("re-reads /me and takes the admin view down once the account was demoted", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    calls.me.mockResolvedValue(admin);
+    await boot();
+    expect(screen.getByText("admin")).toBeTruthy();
+
+    calls.me.mockResolvedValue(demoted);
+    await act(() => vi.advanceTimersByTimeAsync(ACCESS_RECHECK_MS));
+    await refuse();
+    expect(await screen.findByText("not admin")).toBeTruthy();
+    expect(calls.me).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-reads at most once per interval", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    calls.me.mockResolvedValue(admin);
+    await boot();
+
+    await act(() => vi.advanceTimersByTimeAsync(ACCESS_RECHECK_MS / 2));
+    await refuse();
+    expect(calls.me).toHaveBeenCalledTimes(1);
+
+    await act(() => vi.advanceTimersByTimeAsync(ACCESS_RECHECK_MS / 2));
+    await refuse();
+    await refuse();
+    expect(calls.me).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("admin")).toBeTruthy();
   });
 });

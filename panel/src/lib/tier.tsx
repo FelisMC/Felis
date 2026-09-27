@@ -8,7 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import type { Identity } from "./types";
-import { api, SESSION_EXPIRED_EVENT } from "./api";
+import { ACCESS_REFUSED_EVENT, api, SESSION_EXPIRED_EVENT } from "./api";
 import { deriveAuth, isUnauthorized, type AuthState } from "./auth";
 
 // TierProvider fetches GET /me at boot and re-fetches on demand (refresh), exposing
@@ -32,10 +32,12 @@ import { deriveAuth, isUnauthorized, type AuthState } from "./auth";
 //     re-reads /me after a login / logout so the gate re-evaluates without a reload.
 //
 //  4. Session-aware while open: a 401 from any protected call (api.ts announces
-//     SESSION_EXPIRED_EVENT), the tab coming back into view, or the window
+//     SESSION_EXPIRED_EVENT), a role refusal (ACCESS_REFUSED_EVENT, at most once
+//     per ACCESS_RECHECK_MS), the tab coming back into view, or the window
 //     regaining focus re-reads /me through `revalidate()`. It leaves `loading`
-//     alone, so the app stays mounted during the check; only a 401 changes what
-//     is shown, and `sessionEnded` tells the login page why the person landed there.
+//     alone, so the app stays mounted during the check; a 401 signs the person
+//     out, a changed role redraws the gates (a demoted admin loses the admin
+//     pages), and `sessionEnded` tells the login page why the person landed there.
 //
 // Rules 1–2 are UX truth, not a security control — see DESIGN-WEB-3SIDES §1.
 
@@ -56,6 +58,9 @@ export interface TierState extends AuthState {
 // A tab returning to view re-checks /me at most this often; a 401 from a real
 // call re-checks at once.
 const REVALIDATE_EVERY_MS = 60_000;
+// A role refusal from a real call re-checks at most this often, so a page that
+// keeps polling a refused route does not re-read /me on every tick.
+export const ACCESS_RECHECK_MS = 10_000;
 
 const TierContext = createContext<TierState>({
   identity: null,
@@ -153,11 +158,17 @@ export function TierProvider({ children }: { children: ReactNode }) {
       if (Date.now() - lastCheck.current < REVALIDATE_EVERY_MS) return;
       void revalidate();
     };
+    const onRefused = () => {
+      if (Date.now() - lastCheck.current < ACCESS_RECHECK_MS) return;
+      void revalidate();
+    };
     window.addEventListener(SESSION_EXPIRED_EVENT, onExpired);
+    window.addEventListener(ACCESS_REFUSED_EVENT, onRefused);
     window.addEventListener("focus", onReturn);
     document.addEventListener("visibilitychange", onReturn);
     return () => {
       window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
+      window.removeEventListener(ACCESS_REFUSED_EVENT, onRefused);
       window.removeEventListener("focus", onReturn);
       document.removeEventListener("visibilitychange", onReturn);
     };

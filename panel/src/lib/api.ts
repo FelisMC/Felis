@@ -79,6 +79,18 @@ function announceSessionExpired(err: ApiError, path: string): void {
   window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
 }
 
+// A 403 forbidden or not_admin is the role gate refusing the call. The account
+// may have been demoted since /me was read, which leaves admin pages and buttons
+// up that every call now refuses. TierProvider hears this and re-reads /me, which
+// takes them down; a refusal the current role explains changes nothing there.
+export const ACCESS_REFUSED_EVENT = "felis:access-refused";
+const ROLE_REFUSALS = new Set(["forbidden", "not_admin"]);
+
+function announceAccessRefused(err: ApiError): void {
+  if (err.status !== 403 || !ROLE_REFUSALS.has(err.code) || typeof window === "undefined") return;
+  window.dispatchEvent(new Event(ACCESS_REFUSED_EVENT));
+}
+
 // CONNECTION_EVENT reports when requests stop reaching the API (detail.ok =
 // false) and when one gets through again (true). A fetch that rejects never
 // saw a response: the network is down, or Cloudflare Access redirected the
@@ -178,6 +190,7 @@ function failed(path: string, status: number, statusText: string, text: string):
       };
   announceSetupRequired(err);
   announceSessionExpired(err, path);
+  announceAccessRefused(err);
   return err;
 }
 

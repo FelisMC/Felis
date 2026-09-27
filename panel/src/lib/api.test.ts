@@ -12,7 +12,7 @@ vi.mock("./config", () => ({
 }));
 
 // Imported after the mock so api.ts picks up the mocked loadConfig.
-const { api, SETUP_REQUIRED_EVENT, SESSION_EXPIRED_EVENT, CONNECTION_EVENT, humanizeError, isConnectionLost, clientError } =
+const { api, SETUP_REQUIRED_EVENT, SESSION_EXPIRED_EVENT, ACCESS_REFUSED_EVENT, CONNECTION_EVENT, humanizeError, isConnectionLost, clientError } =
   await import("./api");
 
 function fakeFetch(body: unknown, init?: { ok?: boolean; status?: number }) {
@@ -1097,6 +1097,21 @@ describe("session and connection signals", () => {
     await expect(api.me()).rejects.toMatchObject({ status: 401 });
     await expect(api.setupStatus()).rejects.toMatchObject({ status: 401 });
     expect(seen).toHaveLength(0);
+  });
+
+  it("announces a role refusal, and no other 403", async () => {
+    const seen = listen(ACCESS_REFUSED_EVENT);
+    const refuse = async (status: number, code: string) => {
+      vi.stubGlobal("fetch", fakeFetch({ error: { code, message: "x" } }, { ok: false, status }));
+      await expect(api.myServers()).rejects.toMatchObject({ status, code });
+    };
+    for (const code of ["reauth_required", "setup_required", "quota_exceeded", "local_auth_disabled"]) await refuse(403, code);
+    await refuse(409, "forbidden");
+    expect(seen).toHaveLength(0);
+
+    await refuse(403, "forbidden");
+    await refuse(403, "not_admin");
+    expect(seen).toHaveLength(2);
   });
 
   it("reports a fetch that got no response, and the next one that did", async () => {
