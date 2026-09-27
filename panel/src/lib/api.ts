@@ -1169,6 +1169,8 @@ export function humanizeError(e: unknown): string {
       return t("build_unavailable");
     case "build_logs_unavailable":
       return t("build_logs_unavailable");
+    case "scan_document_not_kept":
+      return t("scan_document_not_kept");
     case "already_reviewed":
       return t("already_reviewed");
     case "context_changed":

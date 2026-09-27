@@ -1066,6 +1066,24 @@ describe("responses that are not the API's JSON", () => {
     await expect(api.me()).rejects.toMatchObject({ status: 200, code: "upstream_unavailable" });
   });
 
+  it("names a scan file the build did not keep in the UI language, never in the backend's English", async () => {
+    const { default: i18next } = await import("i18next");
+    const err = {
+      status: 404,
+      code: "scan_document_not_kept",
+      message: "this build's scan kept no sbom: it was too large to keep, or the step that writes it failed",
+    };
+    expect(humanizeError(err)).toBe(
+      "This build kept no copy of that scan file: it was too large to keep, or the step that writes it failed.",
+    );
+    await i18next.changeLanguage("zh-CN");
+    try {
+      expect(humanizeError(err)).toBe("这次构建没有留下这份扫描文件：文件太大没有保存，或者生成它的步骤失败了。");
+    } finally {
+      await i18next.changeLanguage("en-US");
+    }
+  });
+
   it("maps an unknown 5xx code to the unavailable line", () => {
     expect(humanizeError({ status: 500, code: "internal", message: "internal error" })).toMatch(/unavailable/i);
     expect(humanizeError({ status: 413, code: "error", message: "Payload Too Large" })).toMatch(/larger/i);

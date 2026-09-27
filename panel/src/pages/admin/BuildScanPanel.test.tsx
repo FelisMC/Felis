@@ -124,7 +124,7 @@ describe("BuildScanPanel", () => {
     });
     await userEvent.click(within(panel).getByRole("button", { name: "Trivy report" }));
     expect((await within(panel).findByRole("alert")).textContent).toBe(
-      "Couldn't download: this build's scan kept no report: it was too large to keep, or the step that writes it failed",
+      "Couldn't download: This build kept no copy of that scan file: it was too large to keep, or the step that writes it failed.",
     );
   });
 
