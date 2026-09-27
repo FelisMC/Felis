@@ -42,6 +42,7 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 	quietPath := fs.String("quiet-file", "/run/felis/watchdog-quiet-until", "Unix time before which nothing is mailed; the installer writes it while it restarts things on purpose")
 	backupDir := fs.String("backup-dir", "/var/lib/felis/db-backups", `control-plane database backups to check for freshness ("" skips the check)`)
 	diskPaths := fs.String("disk-paths", "/,/var/lib/rancher/k3s,/var/lib/felis", "comma-separated paths whose filesystems must keep free space")
+	certDirs := fs.String("k3s-cert-dirs", strings.Join(watchdog.K3sCertDirs, ","), `k3s certificate directories whose *.crt files must not be near expiry ("" skips the check)`)
 	proxyAddr := fs.String("proxy-addr", "", `game proxy address to dial, e.g. 127.0.0.1:25565 ("" skips the check)`)
 	nodeIP := fs.String("node-ip", "", `the node address the install was made on, which must stay on this host ("" skips the check)`)
 	controlNS := fs.String("control-namespace", platform.DefaultControlNamespace, "namespace of the control plane")
@@ -137,6 +138,7 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 	}
 	report.Findings = append(report.Findings, watchdog.DiskFindings(splitList(*diskPaths))...)
 	add(watchdog.MemoryFinding("/proc/meminfo"))
+	add(watchdog.CertFinding(splitList(*certDirs), now))
 	if *nodeIP != "" {
 		if held, err := watchdog.HostAddresses(); err == nil {
 			add(watchdog.AddressFinding(*nodeIP, held))

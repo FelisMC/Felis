@@ -1509,6 +1509,55 @@ boot before a reboot.
 
 ---
 
+## 13d. k3s certificates expire after a year
+
+k3s issues its own client and serving certificates (the API server's, the
+kubelet's, the admin kubeconfig's, etcd's) for 365 days and its CA certificates
+for ten years. It renews the client and serving certificates only as it starts:
+each start reissues, from the same keys, every one that has expired or is within
+120 days of expiring. A host that reboots or takes a k3s upgrade
+(`FELIS_UPGRADE_DEPS=1`, docs/operations.md §4) inside that window renews them
+unnoticed. A host that runs a year without restarting k3s loses its API server
+and its node the day they lapse, and the panel can no longer start, stop or back
+up servers. No restart renews a CA certificate; that takes `k3s certificate
+rotate-ca` and the procedure in the k3s documentation (Certificate Management).
+
+The watchdog reads the `*.crt` files under `/var/lib/rancher/k3s/server/tls`
+(and its `etcd`, `kube-controller-manager` and `kube-scheduler` directories) and
+`/var/lib/rancher/k3s/agent`, the set `k3s certificate check` reads, and never
+the keys beside them. It reports the certificate that expires first as
+`k3s-certs`: a warning 30 days before, critical in the last 7 days and once it
+has lapsed, and the hint says whether a restart renews it (a CA it does not).
+`felis watchdog -k3s-cert-dirs ""` turns the check off. [GO-TESTED: `TestCertFinding`]
+[VM-VERIFIED: against the real certificates of a v1.36.4+k3s1 install, with the
+clock moved ahead]
+
+Check and renew:
+
+```sh
+sudo k3s certificate check --output table   # every certificate, its expiry and residual time
+sudo systemctl restart k3s                  # reissues the ones within 120 days of expiry
+sudo k3s certificate check --output table   # the renewed ones show about a year again
+```
+
+A restart stops k3s alone. The unit's `KillMode=process` leaves the containers
+running, so game servers, PostgreSQL and the control plane keep serving while
+the API server comes back within a minute. [VM-VERIFIED: every container ID and
+restart count unchanged across `systemctl restart k3s`] `k3s-killall.sh` stops
+every container along with k3s; keep it out of this.
+
+To renew ahead of the 120-day window (to line it up with a maintenance slot),
+reissue every client and serving certificate at once:
+
+```sh
+sudo systemctl stop k3s && sudo k3s certificate rotate && sudo systemctl start k3s
+```
+
+The panel's own certificate (`/etc/felis/panel-tls.crt`, which the installer
+self-signs for 825 days) is a different certificate, outside this check.
+
+---
+
 ## 14. Health alerts, and metrics for diagnosis (spec §23)
 
 Every full install runs `felis watchdog` from `felis-watchdog.timer`, which
@@ -1537,6 +1586,7 @@ Every two minutes the host checks:
 | Host memory available below 10% | 15 min | warning |
 | The host no longer holds the address the install was made on (§13c) | 5 min | critical |
 | The system clock is not synchronized by NTP (§13c) | 30 min | warning |
+| A k3s certificate expires within 30 days (within 7 days, or lapsed: critical) (§13d) | at once | warning |
 | The watchdog's own runs keep failing (`watchdog/run`, below) | 10 min | critical |
 | The watchdog's state file did not parse and was moved aside (`watchdog/state`, below) | at once, once | warning |
 
