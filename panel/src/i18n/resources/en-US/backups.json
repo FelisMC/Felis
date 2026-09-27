@@ -15,6 +15,7 @@
   "backup_now": "Back up now",
   "backup_in_progress": "Starting backup…",
   "backup_started": "Backup started — its progress shows under recent operations below.",
+  "backup_world_busy": "A backup or restore is already running; back up once it finishes.",
   "backup_requires_stopped": "Stop the server before backing it up.",
   "expires_in": "Expires {{when}}",
   "expired": "Expired",

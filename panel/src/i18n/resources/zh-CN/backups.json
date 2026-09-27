@@ -15,6 +15,7 @@
   "backup_now": "立即备份",
   "backup_in_progress": "正在启动备份……",
   "backup_started": "已开始备份——进度可在下方“最近操作”中查看。",
+  "backup_world_busy": "已有备份或回档在进行，等它结束再备份。",
   "backup_requires_stopped": "备份前需要先停止服务器。",
   "expires_in": "{{when}}过期",
   "expired": "已过期",

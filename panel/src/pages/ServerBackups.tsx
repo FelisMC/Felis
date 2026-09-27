@@ -27,12 +27,12 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { PhaseBadge } from "@/components/PhaseBadge";
-import { Loading, ErrorState, EmptyState, NotYours } from "@/components/States";
+import { PhaseBadge, pendingPower, shownPhase, startFailure } from "@/components/PhaseBadge";
+import { Loading, ErrorState, EmptyState, NotYours, RefreshError } from "@/components/States";
 import { PageHeader } from "@/components/PageHeader";
 import { Pagination } from "@/components/Pagination";
 import { api, humanizeError } from "@/lib/api";
-import { useAsync } from "@/lib/hooks";
+import { useAsync, usePolling, STATUS_POLL_FAST_MS, STATUS_POLL_SLOW_MS } from "@/lib/hooks";
 import { useTier } from "@/lib/tier";
 import { canManage, ownershipPending } from "@/lib/ownership";
 import { formatBytes, formatRelative, formatAbsolute, isExpired } from "@/lib/format";
@@ -459,6 +459,16 @@ export function ServerBackups() {
   const { t, i18n } = useTranslation("backups");
   const { isAdmin, loading: tierLoading } = useTier();
   const statusQ = useAsync(() => api.status(name), [name]);
+  // "Back up now" and the badge follow the server, so a wake from the lobby or an
+  // idle stop shows here without a reload: reread fast while it is on its way
+  // somewhere, slow while nothing is due.
+  const moving =
+    !!statusQ.data &&
+    (statusQ.data.phase === "Starting" ||
+      statusQ.data.phase === "Stopping" ||
+      pendingPower(statusQ.data) !== null ||
+      startFailure(statusQ.data) === "retrying");
+  usePolling(statusQ.reload, moving ? STATUS_POLL_FAST_MS : STATUS_POLL_SLOW_MS);
   const mineQ = useAsync(
     () => (isAdmin ? Promise.resolve([]) : api.myServers()),
     [isAdmin, name],
@@ -541,7 +551,7 @@ export function ServerBackups() {
       </>
     );
   }
-  if (statusQ.error) {
+  if (statusQ.error && !statusQ.data) {
     return (
       <>
         {back}
@@ -560,6 +570,11 @@ export function ServerBackups() {
     .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
   const total = backupsQ.data?.total ?? 0;
   const latestID = page === 1 ? all.find((b) => !b.corrupt)?.id : undefined;
+  // A server just woken still reads Stopped until its pod starts, so the gate is
+  // where it is heading. A backup or restore already under way holds the world
+  // (the API would answer 409), so the button waits for it too.
+  const phase = shownPhase(statusQ.data);
+  const worldBusy = (jobsQ.data ?? []).some((j) => j.state === "running" || j.then_restore === "pending");
 
   const header = (
     <PageHeader
@@ -573,9 +588,13 @@ export function ServerBackups() {
               size="sm"
               variant="outline"
               onClick={handleBackupNow}
-              disabled={backingUp || statusQ.data.phase !== "Stopped"}
+              disabled={backingUp || phase !== "Stopped" || worldBusy}
               title={
-                statusQ.data.phase !== "Stopped" ? t("backup_requires_stopped") : undefined
+                phase !== "Stopped"
+                  ? t("backup_requires_stopped")
+                  : worldBusy
+                    ? t("backup_world_busy")
+                    : undefined
               }
             >
               {backingUp ? (
@@ -586,7 +605,7 @@ export function ServerBackups() {
               {backingUp ? t("backup_in_progress") : t("backup_now")}
             </Button>
           )}
-          <PhaseBadge phase={statusQ.data.phase} />
+          <PhaseBadge phase={phase} failure={startFailure(statusQ.data)} autoRestarts={statusQ.data.autoRestarts} />
         </div>
       }
       className="mb-6"
@@ -597,6 +616,7 @@ export function ServerBackups() {
     <>
       {back}
       {header}
+      {!!statusQ.error && <RefreshError error={statusQ.error} className="mb-4" />}
       {pending ? (
         <Loading />
       ) : mineQ.error ? (

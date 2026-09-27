@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import i18next from "i18next";
 import { ServerBackups } from "./ServerBackups";
+import { humanizeError } from "@/lib/api";
 import type { BackupView } from "@/lib/types";
 
 const calls = vi.hoisted(() => ({
@@ -152,5 +153,67 @@ describe("ServerBackups", () => {
     await restoreRunningServer(Infinity);
     expect(calls.restoreBackup).not.toHaveBeenCalled();
     expect(screen.getByText(i18next.t("backups:stop_timeout"))).toBeTruthy();
+  });
+});
+
+describe("ServerBackups back up now", () => {
+  const backUp = () => screen.getByRole("button", { name: "Back up now" }) as HTMLButtonElement;
+
+  it("follows the server, so a stop lands on the page without a reload", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    calls.status.mockResolvedValue({ name: "survival", displayName: "Survival", phase: "Running", desiredState: "Running" });
+    renderPage();
+    await screen.findByText("Page 1 of 3");
+    expect(backUp().disabled).toBe(true);
+    expect(backUp().title).toBe("Stop the server before backing it up.");
+
+    calls.status.mockResolvedValue({ name: "survival", displayName: "Survival", phase: "Stopped", desiredState: "Stopped" });
+    await act(() => vi.advanceTimersByTimeAsync(14_000));
+    expect(backUp().disabled).toBe(true);
+    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    expect(backUp().disabled).toBe(false);
+    expect(backUp().title).toBe("");
+  });
+
+  it("rereads fast while the server is on its way somewhere", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    calls.status.mockResolvedValue({ name: "survival", displayName: "Survival", phase: "Stopping", desiredState: "Stopped" });
+    renderPage();
+    await screen.findByText("Page 1 of 3");
+    const before = calls.status.mock.calls.length;
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    expect(calls.status.mock.calls.length).toBe(before + 1);
+  });
+
+  it("counts a server just woken as starting and offers no backup", async () => {
+    calls.status.mockResolvedValue({ name: "survival", displayName: "Survival", phase: "Stopped", desiredState: "Running" });
+    renderPage();
+    await screen.findByText("Page 1 of 3");
+    expect(backUp().disabled).toBe(true);
+    expect(screen.getByText("Starting")).toBeTruthy();
+  });
+
+  it.each([
+    ["a backup running", { name: "backup-survival-aa", kind: "backup", state: "running" }],
+    // The safety snapshot is done and the restore it leads to has yet to start.
+    ["a restore about to start", { name: "backup-survival-bb", kind: "backup", state: "succeeded", then_restore: "pending" }],
+  ])("waits for %s", async (_, job) => {
+    calls.serverJobs.mockResolvedValue([job]);
+    renderPage();
+    await screen.findByText("Page 1 of 3");
+    await vi.waitFor(() => expect(backUp().disabled).toBe(true));
+    expect(backUp().title).toBe("A backup or restore is already running; back up once it finishes.");
+  });
+
+  it("keeps the page when a reread fails, and says the status may be stale", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    renderPage();
+    await screen.findByText("Page 1 of 3");
+    const outage = { status: 503, code: "unavailable", message: "status unavailable" };
+    calls.status.mockRejectedValue(outage);
+    await act(() => vi.advanceTimersByTimeAsync(15_000));
+    expect((await screen.findByRole("alert")).textContent).toContain(humanizeError(outage));
+    expect(screen.getByText("Page 1 of 3")).toBeTruthy();
+    expect(backUp().disabled).toBe(false);
   });
 });
