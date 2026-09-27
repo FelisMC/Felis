@@ -92,6 +92,16 @@ describe("CreateServerDialog request body", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("stops the display name at the length the API takes", async () => {
+    const user = await openDialog();
+
+    await fillValid(user);
+    await user.type(screen.getByLabelText("Display name (optional)"), "x".repeat(70));
+    await user.click(create());
+
+    expect(sent().displayName).toBe("x".repeat(64));
+  });
+
   it("leaves a blank display name out, and sends the default sizes and policy", async () => {
     const user = await openDialog();
 

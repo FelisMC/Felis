@@ -21,6 +21,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { api, humanizeError } from "@/lib/api";
 import { splitImageRef } from "@/lib/format";
+import { DISPLAY_NAME_MAX } from "@/lib/naming";
 import { useAsync } from "@/lib/hooks";
 import type { AutostartPolicy } from "@/lib/types";
 import { InlineError } from "@/components/MessageLine";
@@ -237,6 +238,7 @@ export function EditServerDialog({
             <Input
               id="es-display"
               placeholder={t("create_server_display_name_placeholder")}
+              maxLength={DISPLAY_NAME_MAX}
               value={form.displayName}
               onChange={(e) => set("displayName", e.target.value)}
             />

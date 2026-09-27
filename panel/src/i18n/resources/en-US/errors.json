@@ -52,6 +52,7 @@
   "passkey_aborted": "Passkey registration was aborted.",
   "bad_name": "That server name is invalid — use 3–32 lowercase letters, digits or dashes, and avoid reserved names.",
   "bad_subdomain": "That subdomain is invalid — use 3–32 lowercase letters, digits or dashes, and avoid reserved names.",
+  "bad_display_name": "That display name is invalid — use at most 64 characters, all visible ones or spaces, with no line breaks, tabs or invisible control characters.",
   "at_capacity": "The cluster is at its running-server cap — try again once a server stops.",
   "storage_immutable": "Storage size can't be changed online.",
   "bad_idle_stop": "Idle stop must be between 1 minute and 24 hours, or Never.",

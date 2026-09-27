@@ -21,6 +21,10 @@ export const RESERVED_SERVER_NAMES: readonly string[] = [
 
 const SERVER_NAME_RE = /^[a-z0-9-]{3,32}$/;
 
+// DISPLAY_NAME_MAX mirrors naming.MaxDisplayName. The input counts UTF-16 units, so an
+// emoji takes two of them there: the box may stop a little early, never late.
+export const DISPLAY_NAME_MAX = 64;
+
 export type ServerNameIssue = "shape" | "reserved";
 
 /** serverNameIssue says why the API would refuse this name, or null if it takes it. */

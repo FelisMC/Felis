@@ -3143,16 +3143,17 @@ export interface operations {
                 "application/json": {
                     name: string;
                     subdomain: string;
-                    display_name?: string;
+                    /** @description Trimmed; at most 64 characters, all visible ones or spaces (400 bad_display_name otherwise). */
+                    displayName?: string;
                     image?: string;
                     memory?: string;
                     storage?: string;
-                    autostart_policy?: string;
+                    autostartPolicy?: string;
                     resources?: {
                         cpu?: string;
-                        cpu_request?: string;
+                        cpuRequest?: string;
                         memory?: string;
-                        memory_request?: string;
+                        memoryRequest?: string;
                     };
                 };
             };
@@ -8022,7 +8023,7 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": {
-                    /** @description Trimmed. An empty name clears it, and the server goes by its name again. */
+                    /** @description Trimmed. An empty name clears it, and the server goes by its name again. At most 64 characters, all visible ones or spaces (400 bad_display_name otherwise). */
                     displayName?: string;
                     autostartPolicy?: string;
                     /** @description Re-admitted against the whitelist (a pinned name:tag@sha256:… ref is admitted by its name:tag) and pinned like create does. A pin equal to the current image is no change; any other needs confirmImageChange. */

@@ -1106,18 +1106,21 @@ paths:
               properties:
                 name: { type: string }
                 subdomain: { type: string }
-                display_name: { type: string }
+                displayName:
+                  type: string
+                  maxLength: 64
+                  description: Trimmed; at most 64 characters, all visible ones or spaces (400 bad_display_name otherwise).
                 image: { type: string }
                 memory: { type: string }
                 storage: { type: string }
-                autostart_policy: { type: string }
+                autostartPolicy: { type: string }
                 resources:
                   type: object
                   properties:
                     cpu: { type: string }
-                    cpu_request: { type: string }
+                    cpuRequest: { type: string }
                     memory: { type: string }
-                    memory_request: { type: string }
+                    memoryRequest: { type: string }
       responses:
         '201':
           description: Created; starts Stopped.
@@ -6090,7 +6093,10 @@ paths:
               properties:
                 displayName:
                   type: string
-                  description: Trimmed. An empty name clears it, and the server goes by its name again.
+                  maxLength: 64
+                  description: >-
+                    Trimmed. An empty name clears it, and the server goes by its name again. At
+                    most 64 characters, all visible ones or spaces (400 bad_display_name otherwise).
                 autostartPolicy: { type: string }
                 image:
                   type: string

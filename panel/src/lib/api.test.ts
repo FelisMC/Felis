@@ -444,6 +444,12 @@ describe("api access-control wire shapes", () => {
     );
   });
 
+  it("says what a display name may hold when the server refuses one", () => {
+    expect(humanizeError({ status: 400, code: "bad_display_name" })).toBe(
+      "That display name is invalid — use at most 64 characters, all visible ones or spaces, with no line breaks, tabs or invisible control characters.",
+    );
+  });
+
   it("says email codes are off when the install has no mail relay", async () => {
     const { humanizeError } = await import("./api");
     expect(humanizeError({ status: 503, code: "mail_unavailable" })).toBe(

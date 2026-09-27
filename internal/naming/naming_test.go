@@ -149,3 +149,41 @@ func TestValidateHostname(t *testing.T) {
 		t.Error("ValidateHostname should reject an empty root domain")
 	}
 }
+
+func TestCleanDisplayName(t *testing.T) {
+	str := func(rs ...rune) string { return string(rs) }
+	rainbow := str(0x1F3F3, 0xFE0F, 0x200D, 0x1F308)
+	cjk := func(n int) string {
+		s := ""
+		for range n {
+			s += "生"
+		}
+		return s
+	}
+	for _, c := range []struct {
+		name, in, want string
+		ok             bool
+	}{
+		{"trimmed", "  Survival World  ", "Survival World", true},
+		{"empty", "", "", true},
+		{"only spaces", "   ", "", true},
+		{"cjk and punctuation", "生存服 · 第二季!", "生存服 · 第二季!", true},
+		{"emoji joined by zwj", "Pride " + rainbow, "Pride " + rainbow, true},
+		{"ideographic space inside", "生存" + str(0x3000) + "服", "生存" + str(0x3000) + "服", true},
+		{"64 characters of 3 bytes each", cjk(64), cjk(64), true},
+		{"65 characters", cjk(65), "", false},
+		{"tab", "a" + str(0x09) + "b", "", false},
+		{"newline", "a" + str(0x0A) + "b", "", false},
+		{"nul", "a" + str(0x00), "", false},
+		{"right-to-left override", "abc" + str(0x202E) + "exe.txt", "", false},
+		{"zero-width space", "ad" + str(0x200B) + "min", "", false},
+		{"line separator", "a" + str(0x2028) + "b", "", false},
+		{"private use", "a" + str(0xE000), "", false},
+		{"invalid utf-8", string([]byte{'a', 0xff}), "", false},
+	} {
+		got, err := naming.CleanDisplayName(c.in)
+		if (err == nil) != c.ok || got != c.want {
+			t.Errorf("%s: CleanDisplayName(%q) = %q, %v; want %q, ok=%v", c.name, c.in, got, err, c.want, c.ok)
+		}
+	}
+}

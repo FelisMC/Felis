@@ -79,6 +79,15 @@ describe("EditServerDialog request body", () => {
     expect(calls.patchServer).toHaveBeenCalledWith("survival", { displayName: "" });
   });
 
+  it("stops the display name at the length the API takes", async () => {
+    const user = await openDialog();
+    await user.clear(screen.getByLabelText("Display name (optional)"));
+    await user.type(screen.getByLabelText("Display name (optional)"), "x".repeat(70));
+    await user.click(save());
+
+    expect(calls.patchServer).toHaveBeenCalledWith("survival", { displayName: "x".repeat(64) });
+  });
+
   it("lifts the CPU limit when the field is emptied", async () => {
     const user = await openDialog();
     await user.clear(cpuInput());

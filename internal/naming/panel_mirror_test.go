@@ -1,6 +1,7 @@
 package naming
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"slices"
@@ -11,7 +12,8 @@ import (
 // The panel's create form checks names as they are typed with its own copy of
 // this rule (panel/src/lib/naming.ts). A name reserved or a length changed here
 // without the panel would let the form send what the API refuses, or refuse what
-// it takes, so the copy is compared to the source.
+// it takes, so the copy is compared to the source. The copy also holds the display-name
+// length the create and edit forms stop at.
 func TestPanelMirrorsServerNameRule(t *testing.T) {
 	raw, err := os.ReadFile("../../panel/src/lib/naming.ts")
 	if err != nil {
@@ -38,6 +40,9 @@ func TestPanelMirrorsServerNameRule(t *testing.T) {
 	}
 
 	if want := "const SERVER_NAME_RE = /" + serverNameRE.String() + "/;"; !strings.Contains(src, want) {
+		t.Errorf("panel/src/lib/naming.ts lacks %q", want)
+	}
+	if want := fmt.Sprintf("export const DISPLAY_NAME_MAX = %d;", MaxDisplayName); !strings.Contains(src, want) {
 		t.Errorf("panel/src/lib/naming.ts lacks %q", want)
 	}
 }

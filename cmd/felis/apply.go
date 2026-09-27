@@ -160,6 +160,10 @@ func buildMinecraftServerFromApplyRequest(req applyRequest, namespace string) (*
 	if err := naming.ValidateServerName(req.Subdomain); err != nil {
 		return nil, fmt.Errorf("invalid subdomain: %w", err)
 	}
+	displayName, err := naming.CleanDisplayName(req.DisplayName)
+	if err != nil {
+		return nil, fmt.Errorf("invalid displayName: %w", err)
+	}
 	if strings.TrimSpace(req.Image) == "" {
 		return nil, fmt.Errorf("image is required")
 	}
@@ -229,7 +233,7 @@ func buildMinecraftServerFromApplyRequest(req applyRequest, namespace string) (*
 		},
 		Spec: v1alpha1.MinecraftServerSpec{
 			Subdomain:       req.Subdomain,
-			DisplayName:     req.DisplayName,
+			DisplayName:     displayName,
 			Image:           req.Image,
 			JavaMemory:      deriveApplyJavaHeap(memLim),
 			DesiredState:    v1alpha1.DesiredStopped,

@@ -178,6 +178,16 @@ func TestPatchServerRejections(t *testing.T) {
 			wantCode: http.StatusBadRequest, wantErr: "bad_name",
 		},
 		{
+			name:     "display name too long",
+			body:     `{"displayName":"` + strings.Repeat("x", 65) + `"}`,
+			wantCode: http.StatusBadRequest, wantErr: "bad_display_name",
+		},
+		{
+			name:     "display name with a right-to-left override",
+			body:     `{"displayName":"abc` + string(rune(0x202E)) + `exe.txt"}`,
+			wantCode: http.StatusBadRequest, wantErr: "bad_display_name",
+		},
+		{
 			name:     "empty autostart policy",
 			body:     `{"autostartPolicy":""}`,
 			wantCode: http.StatusBadRequest, wantErr: "bad_request",

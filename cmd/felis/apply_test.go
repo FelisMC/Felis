@@ -140,11 +140,12 @@ func TestDeriveApplyJavaHeap(t *testing.T) {
 
 func TestBuildMinecraftServerFromApplyRequest_Valid(t *testing.T) {
 	req := applyRequest{
-		Name:      "test-server",
-		Subdomain: "test-server",
-		Image:     "registry.felis.svc/paper:1.21",
-		Memory:    "4Gi",
-		Storage:   "20Gi",
+		Name:        "test-server",
+		Subdomain:   "test-server",
+		DisplayName: "  Test Server  ",
+		Image:       "registry.felis.svc/paper:1.21",
+		Memory:      "4Gi",
+		Storage:     "20Gi",
 	}
 	ms, err := buildMinecraftServerFromApplyRequest(req, "minecraft")
 	if err != nil {
@@ -158,6 +159,9 @@ func TestBuildMinecraftServerFromApplyRequest_Valid(t *testing.T) {
 	}
 	if ms.Spec.Subdomain != "test-server" {
 		t.Errorf("Subdomain = %q", ms.Spec.Subdomain)
+	}
+	if ms.Spec.DisplayName != "Test Server" {
+		t.Errorf("DisplayName = %q, want it trimmed to Test Server", ms.Spec.DisplayName)
 	}
 	if ms.Spec.Image != "registry.felis.svc/paper:1.21" {
 		t.Errorf("Image = %q", ms.Spec.Image)
@@ -282,6 +286,11 @@ func TestBuildMinecraftServerFromApplyRequest_Errors(t *testing.T) {
 			"empty subdomain",
 			applyRequest{Name: ok, Subdomain: "", Image: "x", Memory: "1Gi", Storage: "1Gi"},
 			"invalid subdomain",
+		},
+		{
+			"display name with a tab",
+			applyRequest{Name: ok, Subdomain: ok, DisplayName: "a" + string(rune(0x09)) + "b", Image: "x", Memory: "1Gi", Storage: "1Gi"},
+			"invalid displayName",
 		},
 		{
 			"empty image",

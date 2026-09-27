@@ -23,7 +23,7 @@ import { Label } from "@/components/ui/label";
 import { api, humanizeError } from "@/lib/api";
 import { useAsync } from "@/lib/hooks";
 import { hostFor, type RuntimeConfig } from "@/lib/config";
-import { serverNameIssue, type ServerNameIssue } from "@/lib/naming";
+import { DISPLAY_NAME_MAX, serverNameIssue, type ServerNameIssue } from "@/lib/naming";
 import type { AutostartPolicy, CreateServerRequest } from "@/lib/types";
 import { InlineError } from "@/components/MessageLine";
 
@@ -164,6 +164,7 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
             <Input
               id="cs-display"
               placeholder={t("create_server_display_name_placeholder")}
+              maxLength={DISPLAY_NAME_MAX}
               value={form.displayName ?? ""}
               onChange={(e) => set("displayName", e.target.value)}
             />

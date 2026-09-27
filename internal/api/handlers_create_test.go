@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"felis.lolicon.best/internal/apis/felis/v1alpha1"
+	"felis.lolicon.best/internal/naming"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
@@ -42,6 +44,12 @@ const admittedImage = "registry.felis.svc:5000/mc:1"
 // writing their own JSON.
 const validCreateBody = `{"name":"survival","subdomain":"survival",` +
 	`"image":"registry.felis.svc:5000/mc:1","memory":"2Gi","storage":"10Gi"}`
+
+// createBodyWithDisplayName is validCreateBody with a displayName, JSON-escaped.
+func createBodyWithDisplayName(name string) string {
+	quoted, _ := json.Marshal(name)
+	return strings.TrimSuffix(validCreateBody, "}") + `,"displayName":` + string(quoted) + "}"
+}
 
 // TestCreateServerSuccess covers the happy path end-to-end: the form is
 // validated, the business rows are seeded, the CRD is created cold and unowned,
@@ -196,6 +204,16 @@ func TestCreateServerRejections(t *testing.T) {
 			wantCode: http.StatusBadRequest, wantErr: "bad_subdomain",
 		},
 		{
+			name:     "display name too long",
+			body:     createBodyWithDisplayName(strings.Repeat("生", naming.MaxDisplayName+1)),
+			wantCode: http.StatusBadRequest, wantErr: "bad_display_name",
+		},
+		{
+			name:     "display name with a line break",
+			body:     createBodyWithDisplayName("Survival" + string(rune(0x0A)) + "Realm"),
+			wantCode: http.StatusBadRequest, wantErr: "bad_display_name",
+		},
+		{
 			name:     "bad autostart policy",
 			body:     `{"name":"survival","subdomain":"survival","image":"registry.felis.svc:5000/mc:1","memory":"2Gi","storage":"10Gi","autostartPolicy":"sometimes"}`,
 			wantCode: http.StatusBadRequest, wantErr: "bad_request",
@@ -328,5 +346,17 @@ func TestCreateServerWithoutBuilderIs503(t *testing.T) {
 	}
 	if _, created := cl.created["survival"]; created {
 		t.Error("no CRD may be created without a Builder")
+	}
+}
+
+// The display name is trimmed before it is written, like a patch does.
+func TestCreateServerTrimsDisplayName(t *testing.T) {
+	api, _, cl, _ := newCreateAPI()
+	w := do(api.ExternalHandler(), "POST", "/api/v1/servers", createBodyWithDisplayName("  Survival Realm  "), nil)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("code = %d, want 201 (%s)", w.Code, w.Body.String())
+	}
+	if got := cl.created["survival"].DisplayName; got != "Survival Realm" {
+		t.Fatalf("created displayName = %q, want %q", got, "Survival Realm")
 	}
 }

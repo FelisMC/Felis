@@ -1119,6 +1119,8 @@ export function humanizeError(e: unknown): string {
       return t("bad_name");
     case "bad_subdomain":
       return t("bad_subdomain");
+    case "bad_display_name":
+      return t("bad_display_name");
     case "at_capacity":
       return t("at_capacity");
     case "storage_immutable":

@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 var (
@@ -143,6 +145,33 @@ func ValidateSystemServerName(name string) error {
 		return fmt.Errorf("naming: system server name %q must not start or end with '-'", name)
 	}
 	return nil
+}
+
+// zeroWidthJoiner (U+200D) glues emoji such as the rainbow flag into one picture.
+const zeroWidthJoiner = 0x200D
+
+// MaxDisplayName is the most characters a server's display name may have. The
+// panel shows it on one line in the fleet grid and the server header.
+const MaxDisplayName = 64
+
+// CleanDisplayName trims a server's display name and checks what is left: at most
+// MaxDisplayName characters, every one a visible character or a space. Control
+// characters, line breaks and the invisible format characters (bidi overrides,
+// zero-width spaces) are refused, since they would break the line the panel puts
+// the name on or make it read as something else; the zero-width joiner stays,
+// because emoji such as the rainbow flag are built with it. An empty result is
+// valid: the server then goes by its name.
+func CleanDisplayName(s string) (string, error) {
+	s = strings.TrimSpace(s)
+	if n := utf8.RuneCountInString(s); n > MaxDisplayName {
+		return "", fmt.Errorf("naming: display name has %d characters, at most %d are allowed", n, MaxDisplayName)
+	}
+	for _, r := range s {
+		if r == utf8.RuneError || !unicode.IsGraphic(r) && r != zeroWidthJoiner {
+			return "", fmt.Errorf("naming: display name contains %U, which is not a visible character", r)
+		}
+	}
+	return s, nil
 }
 
 // worldVolumeName mirrors operator.dataVolumeName: the per-server StatefulSet's

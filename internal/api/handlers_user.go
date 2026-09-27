@@ -455,6 +455,11 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, newError(http.StatusBadRequest, "bad_subdomain", "invalid subdomain: %v", err))
 		return
 	}
+	displayName, err := naming.CleanDisplayName(body.DisplayName)
+	if err != nil {
+		writeError(w, r, newError(http.StatusBadRequest, "bad_display_name", "invalid display name: %v", err))
+		return
+	}
 
 	policy, err := parseAutostartPolicy(body.AutostartPolicy)
 	if err != nil {
@@ -569,7 +574,7 @@ func (a *API) handleCreateServer(w http.ResponseWriter, r *http.Request) {
 	in := CreateServerInput{
 		Name:            body.Name,
 		Subdomain:       body.Subdomain,
-		DisplayName:     body.DisplayName,
+		DisplayName:     displayName,
 		Image:           image,
 		JavaMemory:      javaMemory,
 		StorageSize:     storage,
@@ -930,7 +935,11 @@ func (a *API) handlePatchServer(w http.ResponseWriter, r *http.Request) {
 
 	if body.DisplayName != nil {
 		// An empty name is allowed: the panel then shows the server's name.
-		displayName := strings.TrimSpace(*body.DisplayName)
+		displayName, err := naming.CleanDisplayName(*body.DisplayName)
+		if err != nil {
+			writeError(w, r, newError(http.StatusBadRequest, "bad_display_name", "invalid display name: %v", err))
+			return
+		}
 		patch.DisplayName = &displayName
 		changed = append(changed, "displayName")
 	}
