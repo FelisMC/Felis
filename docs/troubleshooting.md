@@ -1080,6 +1080,56 @@ the error its container exited on under Recent operations on the server's
 backup page. [GO-TESTED: `TestBackupNow`, `TestCheckRoom`,
 `TestReaperConfigManualKeys`, `TestLatestJobsExplainsFailures`]
 
+### Every world at once: `felis backup-now`
+
+A world lives only in its volume, and the off-site copy holds only its archives.
+Before anything that could lose a volume (growing the disk, moving the data to its
+own disk, moving to another host: operations.md §2 and §5), archive every world
+from the node:
+
+```bash
+sudo felis backup-now                    # the plan; nothing changes
+sudo felis backup-now -yes               # archive every stopped world, one at a time
+sudo felis backup-now -yes -stop         # stop the running servers first
+sudo felis backup-now -yes alpha bravo   # only these servers
+```
+
+It runs as root because it reads the ops token (`felis/felis-ops-token`, §6) and
+asks felis-api's internal face for each backup. Each archive is an ordinary manual
+backup (the same Job, the same 10% free-disk check, the audit action
+`backup.create` with the source `internal:ops` and the sudo user as actor), exempt
+from the owner cooldown and the `max_local_bytes` cap like the break-glass console.
+
+- **The plan** lists every user server with its phase and what the run does with
+  it: `back up`, `stop, then back up`, `skip: running (stop it first, or pass
+  -stop)`, or `skip: no world volume (never started, nothing to save)`. With
+  nothing to archive it ends `Nothing to back up.`
+- **Each archive counts against `manual_keep`**: a server that already holds that
+  many manual backups loses its oldest, and the plan says so. Raise
+  `[archive] manual_keep` first when those older backups matter.
+- **Stopped servers go first**, so a felis-api that cannot take a backup is found
+  before anything is stopped for one. The run waits for each Job (`alpha: archived
+  in 42s`) before starting the next.
+- **`-stop` disconnects the players** and leaves those servers stopped (`Left
+  stopped: …`; start them from the panel). Each stop writes `break_glass.halt` to
+  the audit log. A server still up after 10 minutes counts as failed, and the run
+  moves on.
+- **An unreachable felis-api ends the run** (`Stopped: nothing more can be backed
+  up until felis-api answers`). Ctrl-C ends it after the current step; a backup Job
+  already started runs to its end.
+- **The archives stay on the node** until the hourly off-site copy. After a run
+  that archived something the command prints `sudo systemctl start
+  felis-offsite.service`, which sends them now; `sudo felis offsite status` shows
+  what still waits.
+
+It exits 0 when every world with a volume was archived, 1 when a backup failed, a
+running server was skipped (no `-stop`) or the run was interrupted, and 2 for a
+name that is no user server. [GO-TESTED: `TestBackupNowPlanChangesNothing`,
+`TestBackupNowPlanWithNothingToSave`, `TestBackupNowBacksUpEachWorldInTurn`,
+`TestBackupNowSkipsRunningServersWithoutStop`,
+`TestBackupNowStopsAtAnUnreachableAPI`, `TestBackupNowStopsWhenInterrupted`,
+`TestBackupNowNamedServers`]
+
 ### Scheduled backups (daily restore points)
 
 A world played every day never idles 15 days, so the reaper never archives it.

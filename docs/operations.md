@@ -262,6 +262,95 @@ its threshold, and §13b covers a full disk. On a host that built its images,
 `docker builder prune -af` (with Docker started) reclaims the build cache when space is
 short; the next upgrade rebuilds it.
 
+### Growing the disk
+
+Everything above shares the root filesystem, so more room means a bigger root
+filesystem. It grows in place, with everything running: enlarge the virtual disk at the
+provider, then the partition and the filesystem on it.
+
+```bash
+sudo felis backup-now -yes                      # a mistyped partition number is how a resize loses a disk
+lsblk -f                                        # which disk and partition hold /, and whether LVM sits on it
+sudo growpart /dev/vda 3                        # cloud-utils-growpart (RHEL) / cloud-guest-utils (Debian, Ubuntu)
+# LVM (the RHEL-family default):
+sudo pvresize /dev/vda3
+sudo lvextend -r -l +100%FREE /dev/<vg>/root    # -r grows the filesystem with it
+# no LVM:
+sudo xfs_growfs /                               # xfs
+sudo resize2fs /dev/vda3                        # ext4
+df -h /
+```
+
+`felis backup-now` (troubleshooting.md §10) archives every stopped world; add `-stop` to
+include the running ones.
+
+### Moving the data to its own disk [VM-VERIFIED]
+
+The bulk lives under `/var/lib/rancher/k3s`: the worlds, the world archives, the registry
+and the images. On a disk of its own it grows without touching the system, and a full
+world store leaves the root filesystem alone. The database and its bundles
+(`/var/lib/felis`) are small and stay on the root disk. The move takes the platform down
+for the copy plus a minute or two: the drill copied 4.2 GB in 18 s, and felis-api answered
+`/readyz` 14 s after k3s started on the new disk.
+
+1. Attach the disk and put a filesystem on it (the whole disk; `lsblk` shows it empty):
+
+   ```bash
+   sudo mkfs.xfs /dev/vdb
+   U=$(sudo blkid -s UUID -o value /dev/vdb)
+   ```
+
+2. Archive every world, stopping the servers so each one saves, and keep the watchdog
+   quiet for the next hour (the marker the installer writes: no mail, no failure pings
+   to the heartbeat, until the time in it):
+
+   ```bash
+   sudo felis backup-now -yes -stop
+   sudo install -d -m 0755 /run/felis
+   echo $(( $(date +%s) + 3600 )) | sudo tee /run/felis/watchdog-quiet-until
+   ```
+
+3. Stop k3s and copy:
+
+   ```bash
+   sudo systemctl stop k3s
+   sudo /usr/local/bin/k3s-killall.sh       # the containers k3s leaves running, and their mounts
+   sudo mkdir -p /mnt/felis-data
+   sudo mount UUID=$U /mnt/felis-data
+   sudo rsync -aHAX --numeric-ids /var/lib/rancher/k3s/ /mnt/felis-data/
+   sudo umount /mnt/felis-data
+   ```
+
+   `-X` carries the SELinux labels k3s set itself. Leave `restorecon` out: it would reset
+   runc and the CNI binaries from `container_runtime_exec_t` to the policy default.
+
+4. Mount it in place, and tie k3s to the mount:
+
+   ```bash
+   sudo mv /var/lib/rancher/k3s /var/lib/rancher/k3s.old
+   sudo mkdir /var/lib/rancher/k3s
+   echo "UUID=$U /var/lib/rancher/k3s xfs defaults,nofail 0 0" | sudo tee -a /etc/fstab
+   sudo mkdir -p /etc/systemd/system/k3s.service.d
+   printf '[Unit]\nRequiresMountsFor=/var/lib/rancher/k3s\n' | sudo tee /etc/systemd/system/k3s.service.d/data-disk.conf
+   sudo systemctl daemon-reload
+   sudo mount /var/lib/rancher/k3s
+   sudo systemctl start k3s
+   ```
+
+   The drop-in is what keeps the data safe: k3s started on the empty mount point creates
+   a new, empty cluster there. With it, a disk that does not come up fails the start with
+   `A dependency job for k3s.service failed`, and `nofail` keeps the host booting so you
+   can reach it. In the drill a detached disk left k3s inactive and the mount point empty;
+   reattached, `systemctl start k3s` mounted it and started.
+
+5. Check that `sudo k3s kubectl -n felis get pods` shows every pod ready and
+   `findmnt /var/lib/rancher/k3s` names the new disk, then start the servers from the
+   panel and `sudo rm /run/felis/watchdog-quiet-until`. Once the host has run a day,
+   `sudo rm -rf /var/lib/rancher/k3s.old` frees the root disk.
+
+The watchdog already watches `/var/lib/rancher/k3s` as a filesystem of its own (its
+`-disk-paths`), so the new disk's fill level is mailed like the root's.
+
 ## 3. Uninstall
 
 `deploy/uninstall.sh` takes off what the installer put on. It prints what it will remove
@@ -603,6 +692,52 @@ production install:
   an email code, restore one world and join it. `felis offsite status` and `felis db check` exit
   non-zero when the copy or the newest bundle is stale; wire them into your monitoring,
   or rely on the watchdog's mail.
+
+### Moving to another host (planned)
+
+A planned move is the rebuild of troubleshooting.md §16, with the old host still there to
+hand over a copy that misses nothing. It needs the off-site bucket: that is how the world
+archives reach the new host (§16 step 7). The platform is down from step 1 until the new
+host serves.
+
+1. **On the old host**, stop everything that changes a world, then send the last copy:
+
+   ```bash
+   sudo install -d -m 0755 /run/felis
+   echo $(( $(date +%s) + 4 * 3600 )) | sudo tee /run/felis/watchdog-quiet-until
+   sudo systemctl stop felis-velocity                                   # no joins, so no server wakes
+   sudo felis backup-now -yes -stop                                     # every world archived; the servers stay stopped
+   sudo k3s kubectl -n felis scale deploy/felis-operator --replicas=0   # nothing starts a server from here on
+   sudo felis db backup                                                 # a bundle that lists those archives
+   sudo systemctl start felis-offsite.service
+   sudo felis offsite status                                            # again until nothing waits
+   ```
+
+   The order matters. The new host fetches the archives its restored database lists, so
+   the bundle comes after the last archive. The operator goes after `backup-now`, which
+   needs it to stop the servers. The quiet marker keeps the watchdog from mailing the
+   owners about the stopped proxy and operator for the next 4 hours.
+2. **On the new host**, follow troubleshooting.md §16 "Rebuild on a new host" from step 1;
+   `fetch-db latest` picks the bundle the old host just sent. Step 8 (`felis offsite
+   take-over`) makes the new host the one that writes the bucket, and from then on the
+   old host copies nothing more. Steps 10 and 11 move the names and the tunnel.
+3. **Check the new host** before announcing it: sign in with an email code, restore one
+   world and join it, and see `sudo felis offsite status` show a recent `last success` and
+   no stand-by notice.
+4. **Retire the old host.** It holds the last copy of every world outside the bucket, so
+   keep it powered off with its disk for a few days first, disabled so a boot brings
+   nothing up:
+
+   ```bash
+   sudo systemctl disable k3s felis-velocity felis-watchdog.timer felis-offsite.timer \
+       felis-db-backup.timer felis-update-check.timer felis-build-tools.timer
+   sudo poweroff
+   ```
+
+   Then uninstall it (§3) or wipe it.
+
+Each step is covered where it is documented (backup-now in troubleshooting.md §10, the
+rebuild in §16); the sequence as a whole has not been rehearsed as one move.
 
 ## 6. Changing the root domain [VM-VERIFIED] [GO-TESTED] [SH-TESTED]
 

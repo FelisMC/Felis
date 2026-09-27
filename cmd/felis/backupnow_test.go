@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -151,6 +152,10 @@ func TestRequestBackup(t *testing.T) {
 		_, err := requestBackup(context.Background(), hc, srv.URL, "tok", "survival", "alice")
 		if err == nil || !strings.Contains(err.Error(), "unreachable") {
 			t.Fatalf("err = %v, want an 'unreachable' transport error", err)
+		}
+		// backup-now ends its run on this error alone.
+		if !errors.Is(err, errBackupAPIUnreachable) {
+			t.Fatalf("err = %v, want it to wrap errBackupAPIUnreachable", err)
 		}
 	})
 }
