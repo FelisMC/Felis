@@ -279,13 +279,15 @@ public final class FelisVelocityPlugin {
     }
 
     /** async for a task a player is waiting on: a refusal is told to them at once. */
-    void async(Player player, Runnable task) {
-        if (!async(task)) {
-            player.sendMessage(Component.text(
-                    zh(player) ? "服务器现在很忙，请过一会儿再试。"
-                               : "The network is busy right now — try again in a moment.",
-                    NamedTextColor.YELLOW));
+    boolean async(Player player, Runnable task) {
+        if (async(task)) {
+            return true;
         }
+        player.sendMessage(Component.text(
+                zh(player) ? "服务器现在很忙，请过一会儿再试。"
+                           : "The network is busy right now — try again in a moment.",
+                NamedTextColor.YELLOW));
+        return false;
     }
 
     // A run that falls due while the previous one is still going is skipped (SkipIfRunning).

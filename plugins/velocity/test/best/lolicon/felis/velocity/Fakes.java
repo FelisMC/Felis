@@ -500,6 +500,11 @@ final class Fakes {
         volatile String menuAccessError;
         /** menuAccessHold, while set, holds every menu-access request until it opens. */
         volatile CountDownLatch menuAccessHold;
+        /**
+         * holds maps a "METHOD path" prefix to a latch: a matching request waits for it to
+         * open (5 s at most), the way a slow felis-api keeps a call hanging.
+         */
+        final Map<String, CountDownLatch> holds = new ConcurrentHashMap<>();
         /** bodies holds the last request body per "METHOD path". */
         final Map<String, String> bodies = new ConcurrentHashMap<>();
         /** calls lists every request as "METHOD path", in arrival order. */
@@ -522,6 +527,15 @@ final class Fakes {
             String path = ex.getRequestURI().getPath();
             bodies.put(method + " " + path, new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
             calls.add(method + " " + path);
+            for (Map.Entry<String, CountDownLatch> h : holds.entrySet()) {
+                if ((method + " " + path).startsWith(h.getKey())) {
+                    try {
+                        h.getValue().await(5, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+            }
             String status = "/api/v1/internal/account/link/status/";
             String servers = "/api/v1/internal/servers/";
             String menuAccess = "/api/v1/internal/player/menu-access/";

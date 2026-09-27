@@ -24,6 +24,7 @@ import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -96,6 +97,11 @@ public final class WaitingRouter {
     private final Map<UUID, Waiter> waiting = new ConcurrentHashMap<>();
     private final Map<UUID, String> pendingTargets = new ConcurrentHashMap<>();
     private final Map<UUID, Long> lastGateNotice = new ConcurrentHashMap<>();
+    // Players whose login release or queue entry is being authorized right now. The
+    // gate re-sends its release every 1 to 8 s and a player can click a tile again;
+    // while felis-api was slow each of those ran its own link check and wake, so one
+    // player woke the server, and was told it was starting, several times over.
+    private final Set<UUID> authorizing = ConcurrentHashMap.newKeySet();
     // tick is scheduled at a fixed rate and makes blocking calls; when felis-api is
     // slow a run can outlast the interval, and overlapping runs would multiply the
     // load on the thing that is already slow.
@@ -332,7 +338,17 @@ public final class WaitingRouter {
             return null;
         }
 
-        return EventTask.async(() -> authorizeLoginRelease(event));
+        UUID id = player.getUniqueId();
+        if (!authorizing.add(id)) {
+            return null; // the release already being authorized answers; the gate asks again after
+        }
+        return EventTask.async(() -> {
+            try {
+                authorizeLoginRelease(event);
+            } finally {
+                authorizing.remove(id);
+            }
+        });
     }
 
     private void authorizeLoginRelease(ServerPreConnectEvent event) {
@@ -593,28 +609,56 @@ public final class WaitingRouter {
                        : "You're already on « " + serverName + " ».", NamedTextColor.YELLOW));
             return;
         }
-        plugin.async(player, () -> {
+        // A wait that is already on for this server answers a second click itself: going
+        // round again would only wake the server once more and restart the wait.
+        Waiter queued = waiting.get(id);
+        if (queued != null && queued.serverName.equalsIgnoreCase(serverName)) {
+            player.sendMessage(Component.text(
+                    zh ? "你已在排队等待「" + queued.serverName + "」，就绪后会自动把你传送过去。"
+                       : "You're already waiting for « " + queued.serverName + " » — you'll be moved in when it's ready.",
+                    NamedTextColor.GRAY));
+            return;
+        }
+        if (!authorizing.add(id)) {
+            player.sendMessage(Component.text(
+                    zh ? "上一个请求还在处理，请稍候。" : "Still working on your last request — hold on a moment.",
+                    NamedTextColor.GRAY));
+            return;
+        }
+        boolean taken = plugin.async(player, () -> {
             try {
-                if (!linked(id)) {
-                    player.sendMessage(Component.text(
-                            zh ? "请先完成登录，再加入服务器。"
-                               : "Finish signing in before joining a server.", NamedTextColor.YELLOW));
-                    return;
-                }
-            } catch (LinkException e) {
-                log.warn("Felis: could not verify queue entry for {} (status={}): {}",
-                        id, e.statusCode(), e.getMessage());
-                player.sendMessage(Component.text(
-                        zh ? "登录验证暂时不可用，请稍后重试。"
-                           : "Login verification is temporarily unavailable. Please try again shortly.",
-                        NamedTextColor.RED));
-                return;
+                authorizeEntry(player, zh, serverName, fromMenu);
+            } finally {
+                authorizing.remove(id);
             }
-            if (joinIfRunning(player, serverName, fromMenu)) {
-                return;
-            }
-            wakeAndWaitLinked(player, serverName, fromMenu);
         });
+        if (!taken) {
+            authorizing.remove(id);
+        }
+    }
+
+    private void authorizeEntry(Player player, boolean zh, String serverName, boolean fromMenu) {
+        UUID id = player.getUniqueId();
+        try {
+            if (!linked(id)) {
+                player.sendMessage(Component.text(
+                        zh ? "请先完成登录，再加入服务器。"
+                           : "Finish signing in before joining a server.", NamedTextColor.YELLOW));
+                return;
+            }
+        } catch (LinkException e) {
+            log.warn("Felis: could not verify queue entry for {} (status={}): {}",
+                    id, e.statusCode(), e.getMessage());
+            player.sendMessage(Component.text(
+                    zh ? "登录验证暂时不可用，请稍后重试。"
+                       : "Login verification is temporarily unavailable. Please try again shortly.",
+                    NamedTextColor.RED));
+            return;
+        }
+        if (joinIfRunning(player, serverName, fromMenu)) {
+            return;
+        }
+        wakeAndWaitLinked(player, serverName, fromMenu);
     }
 
     /**

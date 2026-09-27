@@ -17,7 +17,10 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * WaitingRouterTest drives the real WaitingRouter, ServerRegistry, FelisApiClient and
@@ -75,6 +78,7 @@ public final class WaitingRouterTest {
             longStart();
             menuAndCommands();
             joins();
+            slowApi();
             backToLobby();
             disconnectAndRelease();
         } finally {
@@ -102,6 +106,8 @@ public final class WaitingRouterTest {
                 view("lambda", false, "10.43.0.25:25565"),
                 view("omicron", false, "10.43.0.26:25565"),
                 view("sigma", false, "10.43.0.27:25565"),
+                view("upsilon", false, "10.43.0.28:25565"),
+                view("omega", false, "10.43.0.29:25565"),
                 view("fresh", false, null)));
         if (withGone) {
             list.add(view("gone", false, "10.43.0.9:25565"));
@@ -667,6 +673,87 @@ public final class WaitingRouterTest {
         assertEq("refused transfer: not queued", queued, router.waitingCount());
         router.tick();
         assertEq("refused transfer: dialled once", 1, full.connects.size());
+    }
+
+    // A slow felis-api still gets one authorization per player at a time: the login
+    // gate's re-sent release and a second click wait for the first instead of each
+    // running its own link check and wake.
+    private static void slowApi() throws InterruptedException {
+        // The gate sends its release again while the first is still at the link check.
+        Fakes.FakePlayer slow = player("upsilon.mc.test", true);
+        assertEq("slow release: routed to login", "login", choose(slow));
+        CountDownLatch linkHeld = new CountDownLatch(1);
+        api.holds.put(LINK + slow.id, linkHeld);
+        AtomicReference<ServerPreConnectEvent> first = new AtomicReference<>();
+        Thread gate = new Thread(() -> first.set(release(slow)));
+        gate.start();
+        Fakes.await("slow release: the first at the link check", () -> api.count(LINK + slow.id) == 1);
+        ServerPreConnectEvent again = release(slow);
+        assertEq("slow release: the re-sent one denied at once", "denied", allowedTo(again));
+        linkHeld.countDown();
+        gate.join();
+        api.holds.remove(LINK + slow.id);
+        assertEq("slow release: the first goes to the lobby", "lobby", allowedTo(first.get()));
+        assertEq("slow release: one link check", 1, api.count(LINK + slow.id));
+        assertEq("slow release: woken once", 1, api.count("POST " + SERVERS + "upsilon/wake"));
+        assertEq("slow release: told once", 1, count(slow.messages, "Starting « upsilon »"));
+        assertEq("slow release: the next release authorized again", "lobby", allowedTo(release(slow)));
+        router.onDisconnect(new DisconnectEvent(slow.player, DisconnectEvent.LoginStatus.SUCCESSFUL_LOGIN));
+
+        // A second entry while the first is still waking the server is told to hold on.
+        int queued = router.waitingCount();
+        Fakes.FakePlayer eager = player(null, true);
+        eager.current = lobby;
+        String omegaWake = "POST " + SERVERS + "omega/wake";
+        CountDownLatch wakeHeld = new CountDownLatch(1);
+        api.holds.put(omegaWake, wakeHeld);
+        router.enqueueFromMenu(eager.player, "omega");
+        Fakes.await("eager: the first entry waking", () -> api.count(omegaWake) == 1);
+        router.enqueueFromCommand(eager.player, "omega");
+        assertEq("eager: the second told to hold on", true, eager.said("Still working on your last request"));
+        wakeHeld.countDown();
+        api.holds.remove(omegaWake);
+        Fakes.await("eager: queued", () -> router.waitingCount() == queued + 1);
+        Thread.sleep(200); // let anything wrongly submitted land too
+        assertEq("eager: woken once", 1, api.count(omegaWake));
+        assertEq("eager: one link check", 1, api.count(LINK + eager.id));
+
+        // Queued, a click for the same server is answered from the queue.
+        router.enqueueFromMenu(eager.player, "OMEGA");
+        assertEq("eager: told it is waiting", true, eager.said("You're already waiting for « omega »"));
+        Thread.sleep(200);
+        assertEq("eager: still one link check", 1, api.count(LINK + eager.id));
+        assertEq("eager: still woken once", 1, api.count(omegaWake));
+        assertEq("eager: told it is starting once", 1, count(eager.messages, "Starting « omega »"));
+        router.onDisconnect(new DisconnectEvent(eager.player, DisconnectEvent.LoginStatus.SUCCESSFUL_LOGIN));
+
+        // An entry the full call pool turns away leaves nothing behind to block the next.
+        CountDownLatch busy = new CountDownLatch(1);
+        Runnable parked = () -> {
+            try {
+                busy.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        };
+        // Fill every thread and queue slot; a thread that starts late frees a queue slot,
+        // so fill again until the pool still refuses after settling.
+        do {
+            while (plugin.async(parked)) {
+                // next slot
+            }
+            Thread.sleep(50);
+        } while (plugin.async(parked));
+        Fakes.FakePlayer turned = player(null, true);
+        turned.current = lobby;
+        router.enqueueFromCommand(turned.player, "omega");
+        assertEq("pool full: told", true, turned.said("The network is busy right now"));
+        busy.countDown();
+        Fakes.await("pool drained", () -> plugin.async(() -> { }));
+        router.enqueueFromCommand(turned.player, "omega");
+        Fakes.await("pool drained: queued", () -> router.waitingCount() == queued + 1);
+        assertEq("pool drained: not told to hold on", false, turned.said("Still working"));
+        router.onDisconnect(new DisconnectEvent(turned.player, DisconnectEvent.LoginStatus.SUCCESSFUL_LOGIN));
     }
 
     // /felis lobby and /felis go lobby: the lobby is a system server, so it never
