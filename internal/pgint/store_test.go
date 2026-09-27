@@ -175,7 +175,7 @@ func TestSetUserDisabledIsAtomic(t *testing.T) {
 	ctx := context.Background()
 	u := newUser(t, "user", "disable")
 	hash := "h-" + suffix(t)
-	if err := repo.CreateSession(ctx, api.NewSession{TokenHash: hash, UserID: u.ID, ExpiresAt: mustNow().Add(time.Hour)}); err != nil {
+	if err := repo.CreateSession(ctx, api.NewSession{TokenHash: hash, UserID: u.ID, CreatedAt: mustNow(), ExpiresAt: mustNow().Add(time.Hour)}); err != nil {
 		t.Fatal(err)
 	}
 

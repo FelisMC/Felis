@@ -11,6 +11,13 @@ import (
 // PGRepo is the production Repo backed by Postgres (spec §6). It owns only the
 // business projection the CRD cannot express. The SQL here is exercised by
 // integration tests against a live database, not the hermetic api_test.go suite.
+//
+// A method handed the API clock (now, or a NewSession minted on it) stamps the
+// times it writes from that clock, column defaults included: a transaction on two
+// clocks records one event at two instants, and the fake, which only has the API
+// clock, stops describing it. now() is for methods given no clock. The updated_at
+// triggers (0010) stay on now(): display bookkeeping no reader compares to the API
+// clock.
 type PGRepo struct {
 	db *sql.DB
 }
@@ -136,9 +143,9 @@ func (p *PGRepo) VerifyLinkCode(ctx context.Context, userID, code string, now ti
 				return "", "", ErrConflict
 			}
 			if _, err := tx.ExecContext(ctx,
-				`UPDATE account_links SET user_id = $1, auth_source = $2, verified_at = now()
+				`UPDATE account_links SET user_id = $1, auth_source = $2, verified_at = $4
 				  WHERE mc_uuid = $3`,
-				userID, authSource, mcUUID); err != nil {
+				userID, authSource, mcUUID, now); err != nil {
 				return "", "", fmt.Errorf("take over retired link: %w", err)
 			}
 		}
@@ -149,9 +156,9 @@ func (p *PGRepo) VerifyLinkCode(ctx context.Context, userID, code string, now ti
 	// Yggdrasil this time gets the latest source stored), keeping the persisted
 	// value equal to the one returned to the caller.
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO account_links (user_id, mc_uuid, auth_source) VALUES ($1, $2, $3)
+		`INSERT INTO account_links (user_id, mc_uuid, auth_source, verified_at) VALUES ($1, $2, $3, $4)
 		 ON CONFLICT (user_id, mc_uuid) DO UPDATE SET auth_source = EXCLUDED.auth_source`,
-		userID, mcUUID, authSource); err != nil {
+		userID, mcUUID, authSource, now); err != nil {
 		return "", "", fmt.Errorf("write account link: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
@@ -209,9 +216,9 @@ func (p *PGRepo) RedeemPlayerBindCode(ctx context.Context, newUserID, code strin
 		mcUUID).Scan(&userID, &existingRole, &disabled, &deleted); {
 	case errors.Is(err, sql.ErrNoRows):
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO users (id, username, role) VALUES ($1, $2, 'user')
+			`INSERT INTO users (id, username, role, created_at) VALUES ($1, $2, 'user', $3)
 			 ON CONFLICT (username) DO NOTHING`,
-			newUserID, mcUUID); err != nil {
+			newUserID, mcUUID, now); err != nil {
 			return "", "", "", fmt.Errorf("create player: %w", err)
 		}
 		// Re-read by username so a cross-code race converges on the winner's row
@@ -231,9 +238,9 @@ func (p *PGRepo) RedeemPlayerBindCode(ctx context.Context, newUserID, code strin
 			return "", "", "", ErrPlayerAccountRetired
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO account_links (user_id, mc_uuid, auth_source) VALUES ($1, $2, $3)
+			`INSERT INTO account_links (user_id, mc_uuid, auth_source, verified_at) VALUES ($1, $2, $3, $4)
 			 ON CONFLICT (mc_uuid) DO NOTHING`,
-			userID, mcUUID, authSource); err != nil {
+			userID, mcUUID, authSource, now); err != nil {
 			return "", "", "", fmt.Errorf("write account link: %w", err)
 		}
 	case err != nil:
@@ -298,13 +305,13 @@ func (p *PGRepo) CompleteOwnerSetup(ctx context.Context, newUserID, code string,
 		`SELECT user_id FROM account_links WHERE mc_uuid = $1`, mcUUID).Scan(&userID); {
 	case errors.Is(err, sql.ErrNoRows):
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO users (id, username, role) VALUES ($1, $2, 'owner')`,
-			newUserID, mcUUID); err != nil {
+			`INSERT INTO users (id, username, role, created_at) VALUES ($1, $2, 'owner', $3)`,
+			newUserID, mcUUID, now); err != nil {
 			return "", "", "", fmt.Errorf("create owner: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO account_links (user_id, mc_uuid, auth_source) VALUES ($1, $2, $3)`,
-			newUserID, mcUUID, authSource); err != nil {
+			`INSERT INTO account_links (user_id, mc_uuid, auth_source, verified_at) VALUES ($1, $2, $3, $4)`,
+			newUserID, mcUUID, authSource, now); err != nil {
 			return "", "", "", fmt.Errorf("write account link: %w", err)
 		}
 		userID = newUserID
@@ -318,14 +325,14 @@ func (p *PGRepo) CompleteOwnerSetup(ctx context.Context, newUserID, code string,
 	}
 
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO platform_settings (key, value) VALUES ($1, $2::jsonb)
-		 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
-		LocalAuthEnabledKey, "true"); err != nil {
+		`INSERT INTO platform_settings (key, value, updated_at) VALUES ($1, $2::jsonb, $3)
+		 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`,
+		LocalAuthEnabledKey, "true", now); err != nil {
 		return "", "", "", fmt.Errorf("enable local auth: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO setup_tokens (token_hash, user_id, expires_at) VALUES ($1, $2, $3)`,
-		tokenHash, userID, tokenExpiresAt); err != nil {
+		`INSERT INTO setup_tokens (token_hash, user_id, expires_at, created_at) VALUES ($1, $2, $3, $4)`,
+		tokenHash, userID, tokenExpiresAt, now); err != nil {
 		return "", "", "", fmt.Errorf("mint setup token: %w", err)
 	}
 
@@ -1427,9 +1434,9 @@ type sqlExecer interface {
 func insertSession(ctx context.Context, db sqlExecer, s NewSession) error {
 	reauth := sql.NullTime{Time: s.ReauthAt, Valid: !s.ReauthAt.IsZero()}
 	_, err := db.ExecContext(ctx,
-		`INSERT INTO sessions (token_hash, user_id, expires_at, user_agent, client_ip, reauth_at)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		s.TokenHash, s.UserID, s.ExpiresAt, s.UserAgent, s.ClientIP, reauth)
+		`INSERT INTO sessions (token_hash, user_id, created_at, last_seen_at, expires_at, user_agent, client_ip, reauth_at)
+		 VALUES ($1, $2, $3, $3, $4, $5, $6, $7)`,
+		s.TokenHash, s.UserID, s.CreatedAt, s.ExpiresAt, s.UserAgent, s.ClientIP, reauth)
 	return err
 }
 
@@ -2615,10 +2622,10 @@ func (p *PGRepo) RedeemMigration(ctx context.Context, targetUserID, codeHash str
 	// Re-point every server the source owns to the target, collecting the names for
 	// the audit trail. Server ownership is the only thing that moves.
 	rows, err := tx.QueryContext(ctx,
-		`UPDATE servers SET owner_id = $2, claimed_at = now()
+		`UPDATE servers SET owner_id = $2, claimed_at = $3
 		 WHERE owner_id = $1 AND deleted_at IS NULL
 		 RETURNING name`,
-		sourceUserID, targetUserID)
+		sourceUserID, targetUserID, now)
 	if err != nil {
 		return "", nil, err
 	}
@@ -2641,13 +2648,13 @@ func (p *PGRepo) RedeemMigration(ctx context.Context, targetUserID, codeHash str
 	// log in nor start another migration (double-spend defense). The servers just moved
 	// away, so there is nothing left to release.
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE sessions SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL`,
-		sourceUserID); err != nil {
+		`UPDATE sessions SET revoked_at = $2 WHERE user_id = $1 AND revoked_at IS NULL`,
+		sourceUserID, now); err != nil {
 		return "", nil, err
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE users SET disabled = true, deleted_at = now() WHERE id = $1 AND deleted_at IS NULL`,
-		sourceUserID); err != nil {
+		`UPDATE users SET disabled = true, deleted_at = $2 WHERE id = $1 AND deleted_at IS NULL`,
+		sourceUserID, now); err != nil {
 		return "", nil, err
 	}
 

@@ -614,7 +614,7 @@ func TestRedeemSetupTokenContract(t *testing.T) {
 	redeem := func(hash string, at time.Time) (string, string, error) {
 		mu.Lock()
 		minted++
-		s := api.NewSession{TokenHash: "st-sess-" + strconv.Itoa(minted) + "-" + suffix(t), UserID: "ignored", ExpiresAt: t0.Add(time.Hour)}
+		s := api.NewSession{TokenHash: "st-sess-" + strconv.Itoa(minted) + "-" + suffix(t), UserID: "ignored", CreatedAt: at, ExpiresAt: t0.Add(time.Hour)}
 		mu.Unlock()
 		id, err := repo.RedeemSetupToken(ctx, hash, at, s)
 		return id, s.TokenHash, err
@@ -660,7 +660,7 @@ func TestRedeemSetupTokenContract(t *testing.T) {
 	kept := "st-kept-" + suffix(t)
 	create(kept)
 	taken := newSession(t, u.ID, "st-taken", t0.Add(time.Hour))
-	if _, err := repo.RedeemSetupToken(ctx, kept, t0, api.NewSession{TokenHash: taken, ExpiresAt: t0.Add(time.Hour)}); err == nil || errors.Is(err, api.ErrNotFound) {
+	if _, err := repo.RedeemSetupToken(ctx, kept, t0, api.NewSession{TokenHash: taken, CreatedAt: t0, ExpiresAt: t0.Add(time.Hour)}); err == nil || errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("redeem into a taken session hash = %v, want the insert failure", err)
 	}
 	if got, _, err := redeem(kept, t0); err != nil || got != u.ID {

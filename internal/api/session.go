@@ -114,6 +114,7 @@ func (a *API) mintSession(r *http.Request, userID string, proof signInProof) (st
 	return token, NewSession{
 		TokenHash: hashCookie(token),
 		UserID:    userID,
+		CreatedAt: now,
 		ExpiresAt: expires,
 		UserAgent: truncateUTF8(r.UserAgent(), maxSessionUserAgent),
 		ClientIP:  ip,

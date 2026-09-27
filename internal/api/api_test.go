@@ -1093,10 +1093,8 @@ func (f *fakeRepo) UpsertOwner(_ context.Context, id, username, email string) er
 	return nil
 }
 func (f *fakeRepo) CreateSession(_ context.Context, ns NewSession) error {
-	// The API clock minted ExpiresAt, so this is the sign-in time on that clock.
-	now := ns.ExpiresAt.Add(-sessionTTL)
 	f.sessions[ns.TokenHash] = &fakeSession{
-		userID: ns.UserID, expiresAt: ns.ExpiresAt, createdAt: now, lastSeen: now,
+		userID: ns.UserID, expiresAt: ns.ExpiresAt, createdAt: ns.CreatedAt, lastSeen: ns.CreatedAt,
 		userAgent: ns.UserAgent, clientIP: ns.ClientIP, reauthAt: ns.ReauthAt,
 	}
 	return nil

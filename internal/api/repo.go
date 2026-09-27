@@ -212,6 +212,9 @@ type SessionedUser struct {
 type NewSession struct {
 	TokenHash string
 	UserID    string
+	// CreatedAt is the sign-in instant on the API clock: the session is created
+	// and last seen then, so the staff idle cutoff (also API clock) measures it.
+	CreatedAt time.Time
 	ExpiresAt time.Time
 	UserAgent string
 	ClientIP  string

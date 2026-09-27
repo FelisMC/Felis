@@ -15,7 +15,7 @@ func newSession(t *testing.T, userID, tag string, expires time.Time) string {
 	t.Helper()
 	hash := tag + "-" + suffix(t)
 	if err := repo.CreateSession(context.Background(), api.NewSession{
-		TokenHash: hash, UserID: userID, ExpiresAt: expires,
+		TokenHash: hash, UserID: userID, CreatedAt: mustNow(), ExpiresAt: expires,
 		UserAgent: "agent " + tag, ClientIP: "192.0.2.1",
 	}); err != nil {
 		t.Fatalf("CreateSession(%s): %v", tag, err)
@@ -207,7 +207,7 @@ func TestSessionReauthProof(t *testing.T) {
 	proven := "proven-" + suffix(t)
 	signedIn := now.Add(-time.Minute)
 	if err := repo.CreateSession(ctx, api.NewSession{
-		TokenHash: proven, UserID: u.ID, ExpiresAt: now.Add(time.Hour), ReauthAt: signedIn,
+		TokenHash: proven, UserID: u.ID, CreatedAt: signedIn, ExpiresAt: now.Add(time.Hour), ReauthAt: signedIn,
 	}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
