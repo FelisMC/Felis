@@ -7,3 +7,7 @@ func (r *Reconciler) ProbeMissesTracked() int {
 	defer r.probeMu.Unlock()
 	return len(r.probeFailures)
 }
+
+// ArrivalWindow is how long after a run's first ready probe a zero tally starts no
+// idle countdown.
+const ArrivalWindow = arrivalWindow

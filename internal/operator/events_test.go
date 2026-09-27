@@ -101,8 +101,10 @@ func TestIdleStopRecordsAnEvent(t *testing.T) {
 	reconcile(t, r, "survival")
 	markPodReady(t, c, "survival")
 	reconcile(t, r, "survival")
+	clock = base.Add(operator.ArrivalWindow)
+	reconcile(t, r, "survival")
 	drain(rec)
-	clock = base.Add(61 * time.Second)
+	clock = base.Add(operator.ArrivalWindow + 61*time.Second)
 	reconcile(t, r, "survival")
 	expectEvents(t, rec, "idle", "Normal IdleStop no players online for 60s; set desiredState to Stopped")
 }

@@ -435,10 +435,14 @@ func TestReconcileStopped_SkipsSaveWithoutReadyPodOrRcon(t *testing.T) {
 
 // --- idle auto-stop tests (spec §8) ---------------------------------------
 
-// TestIdleAutoStop_EmptyServerGetsTimestamp verifies that the first Running
-// reconcile with zero players stamps EmptySince and keeps the server Running.
+// TestIdleAutoStop_EmptyServerGetsTimestamp verifies that the first zero
+// sampled once the arrival window is over stamps EmptySince and keeps the server
+// Running.
 func TestIdleAutoStop_EmptyServerGetsTimestamp(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}, runningServer(), rconSecret())
+	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	clock := base
+	r.Now = func() metav1.Time { return metav1.NewTime(clock) }
 	// Enable idle auto-stop with a generous timeout so we don't trigger the
 	// actual stop in this test.
 	s := getServer(t, c, "survival")
@@ -450,13 +454,15 @@ func TestIdleAutoStop_EmptyServerGetsTimestamp(t *testing.T) {
 	reconcile(t, r, "survival")
 	markPodReady(t, c, "survival")
 	reconcile(t, r, "survival")
+	clock = base.Add(operator.ArrivalWindow)
+	reconcile(t, r, "survival")
 
 	server := getServer(t, c, "survival")
 	if server.Status.Phase != v1alpha1.PhaseRunning || !server.Status.Ready {
 		t.Fatalf("phase = %s ready=%v, want Running ready", server.Status.Phase, server.Status.Ready)
 	}
-	if server.Status.EmptySince == nil {
-		t.Fatal("EmptySince should be set for an empty server with idle autostop enabled")
+	if server.Status.EmptySince == nil || !server.Status.EmptySince.Equal(ptrTime(metav1.NewTime(clock))) {
+		t.Fatalf("EmptySince = %v, want %v: the first zero after the arrival window", server.Status.EmptySince, clock)
 	}
 }
 
@@ -478,21 +484,24 @@ func TestIdleAutoStop_StopsAfterTimeout(t *testing.T) {
 		t.Fatalf("enable idle: %v", err)
 	}
 
-	// First reconcile: Running, 0 players → stamp EmptySince = base.
+	// Running, 0 players: the first sample past the arrival window stamps EmptySince.
 	reconcile(t, r, "survival")
 	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival")
+	stamp := base.Add(operator.ArrivalWindow)
+	clock = stamp
 	reconcile(t, r, "survival")
 
 	server := getServer(t, c, "survival")
 	if server.Status.Phase != v1alpha1.PhaseRunning {
 		t.Fatalf("phase = %s, want Running", server.Status.Phase)
 	}
-	if server.Status.EmptySince == nil || !server.Status.EmptySince.Equal(ptrTime(metav1.NewTime(base))) {
-		t.Fatalf("EmptySince = %v, want %v", server.Status.EmptySince, base)
+	if server.Status.EmptySince == nil || !server.Status.EmptySince.Equal(ptrTime(metav1.NewTime(stamp))) {
+		t.Fatalf("EmptySince = %v, want %v", server.Status.EmptySince, stamp)
 	}
 
 	// Advance past timeout.
-	clock = base.Add(61 * time.Second)
+	clock = stamp.Add(61 * time.Second)
 	reconcile(t, r, "survival")
 
 	server = getServer(t, c, "survival")
@@ -506,6 +515,9 @@ func TestIdleAutoStop_StopsAfterTimeout(t *testing.T) {
 func TestIdleAutoStop_ResetsWhenPlayerJoins(t *testing.T) {
 	emptyProber := fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}
 	r, c := newReconciler(t, emptyProber, runningServer(), rconSecret())
+	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	clock := base
+	r.Now = func() metav1.Time { return metav1.NewTime(clock) }
 
 	s := getServer(t, c, "survival")
 	s.Spec.Idle = v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: 900}
@@ -513,9 +525,11 @@ func TestIdleAutoStop_ResetsWhenPlayerJoins(t *testing.T) {
 		t.Fatalf("enable idle: %v", err)
 	}
 
-	// First reconcile: Running, 0 players → stamp EmptySince.
+	// Running, 0 players past the arrival window → stamp EmptySince.
 	reconcile(t, r, "survival")
 	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival")
+	clock = base.Add(operator.ArrivalWindow)
 	reconcile(t, r, "survival")
 
 	server := getServer(t, c, "survival")
@@ -553,6 +567,7 @@ func TestIdleAutoStop_UnreadTallyNeverStops(t *testing.T) {
 	reconcile(t, r, "survival")
 	markPodReady(t, c, "survival")
 	reconcile(t, r, "survival")
+	clock = base.Add(operator.ArrivalWindow)
 
 	// The tally becomes unreadable: nothing is stamped, the last count stays.
 	r.Prober = fakeProber{}
@@ -578,7 +593,7 @@ func TestIdleAutoStop_UnreadTallyNeverStops(t *testing.T) {
 		t.Fatalf("PlayersCounted = %+v, want True after a readable reply", cond)
 	}
 	r.Prober = fakeProber{}
-	clock = base.Add(10 * time.Minute)
+	clock = base.Add(operator.ArrivalWindow + 10*time.Minute)
 	reconcile(t, r, "survival")
 	server = getServer(t, c, "survival")
 	if server.Spec.DesiredState != v1alpha1.DesiredRunning {
@@ -633,21 +648,135 @@ func TestIdleAutoStop_SystemServerNeverIdles(t *testing.T) {
 func TestIdleAutoStop_RequeuesUntilDeadline(t *testing.T) {
 	r, c := newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}, runningServer(), rconSecret())
 	base := time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
-	r.Now = func() metav1.Time { return metav1.NewTime(base) }
+	clock := base
+	r.Now = func() metav1.Time { return metav1.NewTime(clock) }
 
 	s := getServer(t, c, "survival")
-	s.Spec.Idle = v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: 30}
+	s.Spec.Idle = v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: 90}
 	if err := c.Update(context.Background(), s); err != nil {
 		t.Fatalf("enable idle: %v", err)
 	}
 
 	reconcile(t, r, "survival")
 	markPodReady(t, c, "survival")
+	// Inside the arrival window there is no deadline yet; the idle probe cadence
+	// notices the window closing.
+	if res := reconcile(t, r, "survival"); res.RequeueAfter != 30*time.Second {
+		t.Fatalf("RequeueAfter = %v, want the 30s idle probe while players may still be arriving", res.RequeueAfter)
+	}
+	clock = base.Add(operator.ArrivalWindow)
 	res := reconcile(t, r, "survival")
 
-	if res.RequeueAfter != 30*time.Second {
-		t.Fatalf("RequeueAfter = %v, want exactly 30s (wake at the auto-stop deadline)", res.RequeueAfter)
+	if res.RequeueAfter != 90*time.Second {
+		t.Fatalf("RequeueAfter = %v, want exactly 90s (wake at the auto-stop deadline)", res.RequeueAfter)
 	}
+}
+
+// idleServer is a Running server with a 60s idle auto-stop, probed as empty on a
+// clock the test moves; ready is when its first ready probe ran.
+func idleServer(t *testing.T) (r *operator.Reconciler, c client.Client, clock *time.Time, ready time.Time) {
+	t.Helper()
+	srv := runningServer()
+	srv.Spec.Idle = v1alpha1.IdleSpec{AutoStopEnabled: true, EmptySecondsBeforeStop: 60}
+	r, c = newReconciler(t, fakeProber{players: operator.PlayerCount{Online: 0, Max: 20, Known: true}}, srv, rconSecret())
+	ready = time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC)
+	now := ready
+	clock = &now
+	r.Now = func() metav1.Time { return metav1.NewTime(*clock) }
+	reconcile(t, r, "survival")
+	markPodReady(t, c, "survival")
+	reconcile(t, r, "survival")
+	return r, c, clock, ready
+}
+
+// expectIdle checks the idle countdown after one more reconcile at at.
+func expectIdle(t *testing.T, r *operator.Reconciler, c client.Client, clock *time.Time, at time.Time, desired v1alpha1.DesiredState, emptySince *time.Time) {
+	t.Helper()
+	*clock = at
+	reconcile(t, r, "survival")
+	s := getServer(t, c, "survival")
+	gotSince, wantSince := "none", "none"
+	if s.Status.EmptySince != nil {
+		gotSince = s.Status.EmptySince.UTC().String()
+	}
+	if emptySince != nil {
+		wantSince = emptySince.UTC().String()
+	}
+	if s.Spec.DesiredState != desired || gotSince != wantSince {
+		t.Fatalf("at %v: desiredState=%s emptySince=%s, want %s and %s", at, s.Spec.DesiredState, gotSince, desired, wantSince)
+	}
+}
+
+// TestIdleAutoStop_ArrivalWindowHoldsTheCountdown: a server comes up because
+// someone asked for it, and that player is still being moved in when the first
+// ready probe reads zero. With a short timeout, the countdown stamped then stopped
+// the server just as they got in; it starts once the arrival window is over.
+func TestIdleAutoStop_ArrivalWindowHoldsTheCountdown(t *testing.T) {
+	r, c, clock, ready := idleServer(t)
+	if s := getServer(t, c, "survival"); s.Status.Phase != v1alpha1.PhaseRunning || s.Status.EmptySince != nil {
+		t.Fatalf("first ready probe: phase=%s emptySince=%v, want Running and no countdown", s.Status.Phase, s.Status.EmptySince)
+	}
+	expectIdle(t, r, c, clock, ready.Add(2*time.Minute), v1alpha1.DesiredRunning, nil)
+	expectIdle(t, r, c, clock, ready.Add(operator.ArrivalWindow-time.Second), v1alpha1.DesiredRunning, nil)
+	stamp := ready.Add(operator.ArrivalWindow)
+	expectIdle(t, r, c, clock, stamp, v1alpha1.DesiredRunning, &stamp)
+	expectIdle(t, r, c, clock, stamp.Add(59*time.Second), v1alpha1.DesiredRunning, &stamp)
+	expectIdle(t, r, c, clock, stamp.Add(60*time.Second), v1alpha1.DesiredStopped, &stamp)
+}
+
+// TestIdleAutoStop_CalledBackStopStartsAFreshRun: a wake can land after the idle
+// stop but before the scale-down completes, and the same pod comes straight back.
+// The stop's EmptySince used to survive into that run and stop it again at its
+// first zero, with the player who woke it still on the way in.
+func TestIdleAutoStop_CalledBackStopStartsAFreshRun(t *testing.T) {
+	r, c, clock, ready := idleServer(t)
+	stamp := ready.Add(operator.ArrivalWindow)
+	expectIdle(t, r, c, clock, stamp, v1alpha1.DesiredRunning, &stamp)
+	expectIdle(t, r, c, clock, stamp.Add(61*time.Second), v1alpha1.DesiredStopped, &stamp)
+
+	reconcile(t, r, "survival") // scaled down; the fake pod still counts as ready
+	s := getServer(t, c, "survival")
+	if s.Status.Phase != v1alpha1.PhaseStopping {
+		t.Fatalf("phase = %s, want Stopping while the pod is still up", s.Status.Phase)
+	}
+	s.Spec.DesiredState = v1alpha1.DesiredRunning
+	if err := c.Update(context.Background(), s); err != nil {
+		t.Fatalf("wake: %v", err)
+	}
+
+	woke := stamp.Add(70 * time.Second)
+	expectIdle(t, r, c, clock, woke, v1alpha1.DesiredRunning, nil)
+	if s := getServer(t, c, "survival"); s.Status.Phase != v1alpha1.PhaseRunning {
+		t.Fatalf("phase = %s, want Running on the pod that came back", s.Status.Phase)
+	}
+	// The run that came back gets its own arrival window.
+	expectIdle(t, r, c, clock, woke.Add(2*time.Minute), v1alpha1.DesiredRunning, nil)
+}
+
+// TestIdleAutoStop_RestartStartsAFreshRun: a run that drops back to Starting (the
+// pod restarted) comes back to players reconnecting. The old run's EmptySince
+// stopped it at its first zero.
+func TestIdleAutoStop_RestartStartsAFreshRun(t *testing.T) {
+	r, c, clock, ready := idleServer(t)
+	stamp := ready.Add(operator.ArrivalWindow)
+	expectIdle(t, r, c, clock, stamp, v1alpha1.DesiredRunning, &stamp)
+
+	*clock = stamp.Add(30 * time.Second)
+	sts := getSTS(t, c, "survival")
+	sts.Status.ReadyReplicas = 0
+	if err := c.Status().Update(context.Background(), sts); err != nil {
+		t.Fatalf("update sts status: %v", err)
+	}
+	reconcile(t, r, "survival")
+	if s := getServer(t, c, "survival"); s.Status.Phase != v1alpha1.PhaseStarting || s.Status.EmptySince != nil {
+		t.Fatalf("after the restart: phase=%s emptySince=%v, want Starting and no countdown", s.Status.Phase, s.Status.EmptySince)
+	}
+
+	back := stamp.Add(45 * time.Second)
+	*clock = back
+	markPodReady(t, c, "survival")
+	expectIdle(t, r, c, clock, back, v1alpha1.DesiredRunning, nil)
+	expectIdle(t, r, c, clock, back.Add(2*time.Minute), v1alpha1.DesiredRunning, nil)
 }
 
 // TestIdleAutoStop_RequeuesWhileOccupied verifies the slow probe cadence that

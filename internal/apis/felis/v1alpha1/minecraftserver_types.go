@@ -329,7 +329,7 @@ type MinecraftServerStatus struct {
 	// LiveMotd is the MOTD currently advertised for the active phase.
 	LiveMotd string `json:"liveMotd,omitempty"`
 	// ReadySignalAt is when the first RCON probe of the current run succeeded.
-	// Every Starting pass clears it, so each start is measured once.
+	// Every Starting or Stopping pass clears it, so each start is measured once.
 	ReadySignalAt *metav1.Time `json:"readySignalAt,omitempty"`
 	// StartRequestedAt is when the current start attempt was first observed
 	// (the first Starting reconcile after desiredState=Running). It anchors the
@@ -340,8 +340,10 @@ type MinecraftServerStatus struct {
 	StartRequestedAt *metav1.Time `json:"startRequestedAt,omitempty"`
 	// EmptySince is when the operator first observed 0 online players during a
 	// Running phase (spec §8 idle auto-stop). It is reset when a player joins
-	// or the server stops, so the empty-duration counter starts fresh each time
-	// the server becomes unoccupied.
+	// or the server restarts or stops, so the empty-duration counter starts fresh
+	// each time the server becomes unoccupied. A zero sampled within three minutes
+	// of a run's first ready probe stamps nothing: the players it came up for may
+	// not be in yet.
 	EmptySince *metav1.Time `json:"emptySince,omitempty"`
 	// StopNoticeAt is when the operator told the players on a server that it is
 	// about to stop (desiredState flipped to Stopped with players online). The stop

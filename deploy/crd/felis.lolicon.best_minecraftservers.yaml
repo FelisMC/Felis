@@ -370,8 +370,10 @@ spec:
                 description: |-
                   EmptySince is when the operator first observed 0 online players during
                   a Running phase (spec §8 idle auto-stop). It is reset when a player joins
-                  or the server stops, so the empty-duration counter starts fresh each time
-                  the server becomes unoccupied.
+                  or the server restarts or stops, so the empty-duration counter starts fresh
+                  each time the server becomes unoccupied. A zero sampled within three minutes
+                  of a run's first ready probe stamps nothing: the players it came up for may
+                  not be in yet.
                 format: date-time
                 type: string
               endpoint:
@@ -422,7 +424,7 @@ spec:
               readySignalAt:
                 description: |-
                   ReadySignalAt is when the first RCON probe of the current run succeeded.
-                  Every Starting pass clears it, so each start is measured once.
+                  Every Starting or Stopping pass clears it, so each start is measured once.
                 format: date-time
                 type: string
               startRequestedAt:

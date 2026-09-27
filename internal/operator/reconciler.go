@@ -61,6 +61,13 @@ const (
 	maxAutoRestarts            = v1alpha1.MaxAutoRestarts
 	autoRestartBaseBackoff     = time.Minute
 	defaultReadinessTimeoutSec = 300
+	// arrivalWindow is how long after a run's first ready probe a zero tally starts
+	// no idle countdown. A server usually comes up because someone asked for it: the
+	// player who woke it is still being moved in from the lobby, players a restart
+	// dropped are reconnecting, and a modpack client sits in its configuration phase,
+	// missing from `list`, for a minute or more. Sampled before they arrived, the
+	// zero stopped a server with a short idle timeout just as they got in.
+	arrivalWindow = 3 * time.Minute
 )
 
 // RconSecretAnnotation stamps the pod template with a fingerprint of the
@@ -437,15 +444,16 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 	if players.Known && idleStopApplies(server) {
 		if players.Online == 0 {
 			if server.Status.EmptySince == nil {
-				t := r.now()
-				server.Status.EmptySince = &t
+				if now := r.now(); !arriving(server, now) {
+					server.Status.EmptySince = &now
+				}
 			} else if r.now().Time.Sub(server.Status.EmptySince.Time).Seconds() >=
 				float64(server.Spec.Idle.EmptySecondsBeforeStop) {
 				// Merge patch, not Update: an unrelated reconcile writes status
 				// concurrently, and shipping the whole object back risks
 				// clobbering it (the reaper's Stop uses the same pattern for
 				// the same reason). EmptySince is deliberately left for
-				// markStopped to clear once the scale-down completes.
+				// markStopping to clear once the scale-down starts.
 				patch := client.MergeFrom(server.DeepCopy())
 				server.Spec.DesiredState = v1alpha1.DesiredStopped
 				if err := r.Patch(ctx, server, patch); err != nil {
@@ -492,6 +500,14 @@ func (r *Reconciler) reconcileRunning(ctx context.Context, server *v1alpha1.Mine
 func idleStopApplies(server *v1alpha1.MinecraftServer) bool {
 	return server.Labels[v1alpha1.LabelSystemRole] == "" &&
 		server.Spec.Idle.AutoStopEnabled && server.Spec.Idle.EmptySecondsBeforeStop > 0
+}
+
+// arriving reports whether a zero tally at now may only mean the players this run
+// came up for are not in yet: it is the run's first ready probe (ReadySignalAt is
+// stamped after it) or within arrivalWindow of that probe.
+func arriving(server *v1alpha1.MinecraftServer, now metav1.Time) bool {
+	ready := server.Status.ReadySignalAt
+	return ready == nil || now.Time.Before(ready.Add(arrivalWindow))
 }
 
 func (r *Reconciler) reconcileStopped(ctx context.Context, server *v1alpha1.MinecraftServer) (ctrl.Result, error) {
@@ -937,6 +953,9 @@ func (r *Reconciler) markStarting(server *v1alpha1.MinecraftServer, reason, msg 
 	// the last run's ready time would make markRunningReady treat the start as
 	// already observed, and every start after the first would go unmeasured.
 	server.Status.ReadySignalAt = nil
+	// The empty clock belongs to a run too: the last run's would stop the new one at
+	// its first zero, before anyone it came up for is in.
+	server.Status.EmptySince = nil
 	server.Status.Endpoint = v1alpha1.EndpointStatus{Mode: v1alpha1.EndpointFallback, Address: server.Spec.FallbackServer}
 	server.Status.LiveMotd = server.Spec.Motd.Starting
 	r.setCondition(server, v1alpha1.ConditionReady, metav1.ConditionFalse, reason, msg)
@@ -982,6 +1001,11 @@ func (r *Reconciler) markRunningReady(server *v1alpha1.MinecraftServer, players 
 
 func (r *Reconciler) markStopping(server *v1alpha1.MinecraftServer) {
 	server.Status.Phase = v1alpha1.PhaseStopping
+	// The run ends here. A wake can land before the scale-down completes and bring the
+	// pod straight back: the idle stop's stale clock would then stop it again at its
+	// first zero, and the players the wake is for get their arrival window.
+	server.Status.EmptySince = nil
+	server.Status.ReadySignalAt = nil
 	server.Status.Ready = false
 	server.Status.ObservedGeneration = server.Generation
 	server.Status.Endpoint = v1alpha1.EndpointStatus{Mode: v1alpha1.EndpointFallback, Address: server.Spec.FallbackServer}
