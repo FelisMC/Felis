@@ -2000,18 +2000,23 @@ func (p *PGRepo) UserDetail(ctx context.Context, userID string) (*UserDetail, er
 	linkRows, err := p.db.QueryContext(ctx,
 		`SELECT mc_uuid::text, COALESCE(auth_source, 'mojang'), verified_at
 		 FROM account_links WHERE user_id = $1 ORDER BY verified_at`, userID)
+	// A failed read is the call's failure: an empty list would tell the admin the
+	// user has no Minecraft account linked.
 	if err != nil {
-		return &d, nil // best-effort; linked accounts are informational
+		return nil, err
 	}
 	defer linkRows.Close()
 	for linkRows.Next() {
 		var a LinkedAccount
 		if err := linkRows.Scan(&a.MCUUID, &a.AuthSource, &a.VerifiedAt); err != nil {
-			return &d, nil
+			return nil, err
 		}
 		d.LinkedAccounts = append(d.LinkedAccounts, a)
 	}
-	return &d, linkRows.Err()
+	if err := linkRows.Err(); err != nil {
+		return nil, err
+	}
+	return &d, nil
 }
 
 // CreateUser mints a new user row. A username conflict → ErrConflict.
