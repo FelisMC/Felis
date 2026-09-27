@@ -52,7 +52,9 @@ interface Props {
 export function CreateServerDialog({ cfg, onCreated }: Props) {
   const { t } = useTranslation("servers");
   const [open, setOpen] = useState(false);
-  const images = useAsync(() => api.listImages(), []);
+  // The whitelist is read each time the dialog opens, so an image added, enabled
+  // or retired since the page loaded shows up or drops out without a reload.
+  const images = useAsync(() => (open ? api.listImages() : Promise.resolve(null)), [open]);
 
   const [form, setForm] = useState<CreateServerRequest>({
     name: "",
@@ -66,17 +68,27 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  // A refusal answers the form as it was sent; any edit, or opening the dialog
+  // again, starts past it.
   function set<K extends keyof CreateServerRequest>(k: K, v: CreateServerRequest[K]) {
     setForm((f) => ({ ...f, [k]: v }));
+    setError(null);
+  }
+
+  function openChange(next: boolean) {
+    setOpen(next);
+    if (next) setError(null);
   }
 
   const enabledImages = (images.data ?? []).filter((i) => i.enabled);
+  // An image chosen before it was disabled or removed no longer counts as chosen.
+  const image = enabledImages.some((i) => i.image_ref === form.image) ? form.image : "";
   const nameIssue = serverNameIssue(form.name);
   const subdomainIssue = serverNameIssue(form.subdomain);
   const canSubmit =
     nameIssue === null &&
     subdomainIssue === null &&
-    !!form.image &&
+    !!image &&
     !!form.memory &&
     !!form.storage &&
     !submitting;
@@ -109,7 +121,7 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
     value && issue ? "text-xs text-destructive" : "text-xs text-muted-foreground";
 
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={openChange}>
       <DialogTrigger asChild>
         <Button size="sm" className="gap-1.5">
           <Plus className="h-4 w-4" />
@@ -172,15 +184,17 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
 
           <div className="grid gap-2">
             <Label htmlFor="create-server-image">{t("create_server_image")}</Label>
-            <Select value={form.image} onValueChange={(v) => set("image", v)}>
+            <Select value={image} onValueChange={(v) => set("image", v)}>
               <SelectTrigger id="create-server-image">
                 <SelectValue
                   placeholder={
                     images.loading
                       ? t("create_server_image_loading")
-                      : enabledImages.length
-                        ? t("create_server_image_choose")
-                        : t("create_server_image_none")
+                      : images.error
+                        ? t("create_server_image_unavailable")
+                        : enabledImages.length
+                          ? t("create_server_image_choose")
+                          : t("create_server_image_none")
                   }
                 />
               </SelectTrigger>
@@ -192,6 +206,14 @@ export function CreateServerDialog({ cfg, onCreated }: Props) {
                 ))}
               </SelectContent>
             </Select>
+            {!!images.error && (
+              <div role="alert" className="flex items-center justify-between gap-3 text-xs text-destructive">
+                <span>{t("create_server_image_failed", { reason: humanizeError(images.error) })}</span>
+                <Button variant="outline" size="sm" className="shrink-0" onClick={images.reload}>
+                  {t("common:try_again")}
+                </Button>
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-4">

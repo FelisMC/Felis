@@ -144,6 +144,8 @@
   "create_server_image": "Image",
   "create_server_image_loading": "Loading images…",
   "create_server_image_choose": "Choose an image",
+  "create_server_image_unavailable": "Image list not loaded",
+  "create_server_image_failed": "Couldn't load the image list: {{reason}}",
   "create_server_image_none": "No whitelisted images",
   "create_server_memory": "Memory",
   "create_server_storage": "Storage",

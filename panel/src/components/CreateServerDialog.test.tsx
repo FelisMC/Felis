@@ -189,3 +189,72 @@ describe("CreateServerDialog names", () => {
     expect(subdomainBox().getAttribute("aria-invalid")).toBe("false");
   });
 });
+
+describe("CreateServerDialog on reopening", () => {
+  const cancel = () => screen.getByRole("button", { name: "Cancel" });
+  const reopen = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.click(screen.getByRole("button", { name: "New server" }));
+    await screen.findByRole("dialog");
+  };
+
+  it("rereads the image whitelist each time it opens", async () => {
+    const NEW = "registry.example.test/fabric:1.21";
+    const user = await openDialog();
+    await user.click(cancel());
+    expect(calls.listImages).toHaveBeenCalledTimes(1);
+
+    calls.listImages.mockResolvedValue([image(PAPER, true), image(NEW, true)]);
+    await reopen(user);
+    expect(calls.listImages).toHaveBeenCalledTimes(2);
+    await user.click(screen.getByRole("combobox", { name: "Image" }));
+    const options = await screen.findAllByRole("option");
+    expect(options.map((o) => o.textContent)).toEqual([PAPER, NEW]);
+  });
+
+  it("drops a chosen image that was disabled while the dialog was closed", async () => {
+    const user = await openDialog();
+    await fillValid(user);
+    expect(create().disabled).toBe(false);
+    await user.click(cancel());
+
+    calls.listImages.mockResolvedValue([image(PAPER, false)]);
+    await reopen(user);
+    expect(await screen.findByText("No whitelisted images")).toBeTruthy();
+    expect(nameBox().value).toBe("survival");
+    expect(create().disabled).toBe(true);
+  });
+
+  it("clears a refusal once the form is edited, and when the dialog opens again", async () => {
+    const refusal = { status: 409, code: "conflict", message: "server survival already exists" };
+    calls.createServer.mockRejectedValue(refusal);
+    const user = await openDialog();
+    await fillValid(user);
+
+    await user.click(create());
+    expect(screen.getByText(humanizeError(refusal))).toBeTruthy();
+    await user.type(nameBox(), "-2");
+    expect(screen.queryByText(humanizeError(refusal))).toBeNull();
+
+    await user.click(create());
+    expect(screen.getByText(humanizeError(refusal))).toBeTruthy();
+    await user.click(cancel());
+    await reopen(user);
+    expect(screen.queryByText(humanizeError(refusal))).toBeNull();
+  });
+
+  it("says when the whitelist could not be read, and reads it again on request", async () => {
+    const outage = { status: 503, code: "unavailable", message: "images unavailable" };
+    calls.listImages.mockRejectedValueOnce(outage);
+    const user = await openDialog();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(humanizeError(outage));
+    expect(screen.getByText("Image list not loaded")).toBeTruthy();
+    expect(screen.queryByText("No whitelisted images")).toBeNull();
+
+    await user.click(within(alert).getByRole("button", { name: "Try again" }));
+    expect(calls.listImages).toHaveBeenCalledTimes(2);
+    await pick(user, "Image", PAPER);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+});

@@ -144,6 +144,8 @@
   "create_server_image": "镜像",
   "create_server_image_loading": "加载镜像列表中…",
   "create_server_image_choose": "选择一个镜像",
+  "create_server_image_unavailable": "镜像列表未读到",
+  "create_server_image_failed": "镜像列表读取失败：{{reason}}",
   "create_server_image_none": "暂无白名单镜像",
   "create_server_memory": "内存",
   "create_server_storage": "存储",
