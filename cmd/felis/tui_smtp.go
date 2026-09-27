@@ -279,8 +279,11 @@ func validateSMTPFrom(s string) error {
 // pre-fills the non-secret fields. The password (the felis-smtp Secret and its
 // host copy) is deliberately never read back — it must be re-entered to change.
 // Any read error falls back to a blank form rather than blocking reconfig.
-func currentSMTPInputs() smtpInputs {
-	cfg, err := config.Load(hostSetupConfigPath)
+func currentSMTPInputs() smtpInputs { return smtpInputsFrom(hostSetupConfigPath) }
+
+// smtpInputsFrom is currentSMTPInputs for the config at path.
+func smtpInputsFrom(path string) smtpInputs {
+	cfg, err := config.Load(path)
 	if err != nil || cfg.SMTP.Host == "" {
 		return smtpInputs{}
 	}

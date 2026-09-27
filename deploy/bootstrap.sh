@@ -4849,6 +4849,19 @@ heartbeat_host() {
   printf '%s://%s/...' "${url%%://*}" "$host"
 }
 
+# summary_alerts says where the watchdog's alerts go. They go by mail only: through the
+# [smtp] relay `felis setup` configures (e, configure email), to every enabled Owner's
+# verified address. With no relay each alert, like each sign-in code, is only written to
+# the journal. Without this line the operator learns that from an outage no one heard of.
+summary_alerts() {
+  if persisted_smtp_block | grep -Eq '^[[:space:]]*host[[:space:]]*=[[:space:]]*"[^"]'; then
+    log "Alerts: the watchdog mails the Owner's verified email address through the [smtp] relay."
+    return 0
+  fi
+  warn "NO ALERT MAIL: no email relay is configured, so the watchdog's alerts and the sign-in codes are only written to the journal."
+  warn "Configure one in 'sudo felis setup' (e: configure email) and verify the Owner's email in the panel; alerts go to that address."
+}
+
 # summary_heartbeat closes the install on the heartbeat: without one, nothing off this
 # machine notices it going down.
 summary_heartbeat() {
@@ -5463,6 +5476,7 @@ summary() {
   fi
   echo
   summary_offsite
+  summary_alerts
   summary_heartbeat
   echo
 }

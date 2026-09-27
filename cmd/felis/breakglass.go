@@ -637,9 +637,19 @@ func runSetupTUI(ctx context.Context, s ownerStore, db config.DatabaseConfig, ro
 	return runConsoleTUI(ctx, s, db, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, consoleModeSetup, recoveryConfig{})
 }
 
-func runConsoleTUI(ctx context.Context, s ownerStore, db config.DatabaseConfig, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool, mode consoleMode, recovery recoveryConfig) (breakGlassResult, error) {
+// newConsoleRoot is the console's root model as the host runs it: the summary
+// reads this host's alert route.
+func newConsoleRoot(ctx context.Context, s ownerStore, db config.DatabaseConfig, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool, mode consoleMode, recovery recoveryConfig) *rootModel {
 	rm := newRootModel(ctx, s, db, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, mode)
 	rm.recovery = recovery
+	rm.alertRoute = func(ctx context.Context) alertRoute {
+		return hostAlertRoute(ctx, hostSetupConfigPath, db.URL, defaultHeartbeatFile)
+	}
+	return rm
+}
+
+func runConsoleTUI(ctx context.Context, s ownerStore, db config.DatabaseConfig, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool, mode consoleMode, recovery recoveryConfig) (breakGlassResult, error) {
+	rm := newConsoleRoot(ctx, s, db, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser, adminExists, mode, recovery)
 	final, err := tea.NewProgram(rm, tea.WithAltScreen()).Run()
 	if err != nil {
 		return breakGlassResult{}, err

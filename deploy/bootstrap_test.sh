@@ -2012,9 +2012,53 @@ case "$(awk '/^validate_settings\(\) \{/,/^}/' "$BS")" in
   *) echo "FAIL validate_settings must call validate_heartbeat_url"; fails=$((fails + 1)) ;;
 esac
 case "$(awk '/^summary\(\) \{/,/^}/' "$BS")" in
-  *summary_offsite*summary_heartbeat*) echo "PASS the install's summary ends on the heartbeat" ;;
-  *) echo "FAIL summary must call summary_heartbeat"; fails=$((fails + 1)) ;;
+  *summary_offsite*summary_alerts*summary_heartbeat*) echo "PASS the install's summary ends on the alerts, then the heartbeat" ;;
+  *) echo "FAIL summary must call summary_alerts, then summary_heartbeat"; fails=$((fails + 1)) ;;
 esac
+
+# The watchdog alerts by mail only, through the [smtp] relay. An install without one must
+# say that its alerts are only logged; one with a relay must not cry wolf.
+sablock="$(awk '/^summary_alerts\(\) \{/,/^}/' "$BS")"
+[ -n "$sablock" ] || { echo "FAIL: no summary_alerts found in $BS"; exit 1; }
+[ "$(printf '%s\n' "$sablock" | wc -l)" -lt 20 ] \
+  || { echo "FAIL: the extracted block is not summary_alerts -- did its closing brace move?"; exit 1; }
+run_summary_alerts() { # state-dir
+  STATE_DIR="$1" SBLOCK_FILE="$sfn" bash -c '
+    log() { printf "LOG: %s\n" "$*"; }; warn() { printf "WARN: %s\n" "$*"; }
+    . "$SBLOCK_FILE"
+    '"$sablock"'
+    summary_alerts' 2>&1
+}
+out="$(run_summary_alerts "$smtp_dir")"
+expect "with a relay the summary says the alerts are mailed" "LOG: Alerts: the watchdog mails the Owner's verified email address through the [smtp] relay." "$out"
+case "$out" in
+  *WARN*) echo "FAIL a configured relay must not be warned about: $out"; fails=$((fails + 1)) ;;
+  *) echo "PASS a configured relay is not warned about" ;;
+esac
+alerts_dir="$(mktemp -d)"
+printf '[smtp]\n  host = "relay.lan"\n  port = 25\n  from = "felis@example.net"\n' > "$alerts_dir/felis.host.toml"
+out="$(run_summary_alerts "$alerts_dir")"
+expect "a relay that signs in with no username still mails the alerts" "LOG: Alerts: the watchdog mails" "$out"
+alerts_case=0
+for toml in '' '[server]
+listen = "0.0.0.0:8080"' '[smtp]
+  host = ""
+  port = 587' '[smtp]
+  port = 587
+
+[relay]
+  host = "mail.example"'; do
+  alerts_case=$((alerts_case + 1))
+  rm -f "$alerts_dir/felis.host.toml"
+  [ -z "$toml" ] || printf '%s\n' "$toml" > "$alerts_dir/felis.host.toml"
+  out="$(run_summary_alerts "$alerts_dir")"
+  expect "no relay (case $alerts_case): the summary says alerts are only logged" "WARN: NO ALERT MAIL: no email relay is configured, so the watchdog's alerts and the sign-in codes are only written to the journal." "$out"
+  expect "no relay (case $alerts_case): the summary says how to add one" "WARN: Configure one in 'sudo felis setup' (e: configure email) and verify the Owner's email in the panel" "$out"
+  case "$out" in
+    *"LOG: Alerts"*) echo "FAIL no relay must not claim the alerts are mailed: $out"; fails=$((fails + 1)) ;;
+  esac
+done
+rm -rf "$alerts_dir"
 
 out="$(run_watchdog_timer 0 /srv/worlds)"
 expect "a custom worlds root is watched for free space" "-disk-paths /,/var/lib/rancher/k3s,/var/lib/felis,/srv/worlds," "$(cat "$tdir/felis-watchdog.service")"

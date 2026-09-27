@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -20,6 +22,8 @@ type summaryModel struct {
 	routedHosts   []string
 	alreadySetUp  bool // re-run: Owner pre-existed
 	localHint     bool // show the self-signed-cert note
+	// alerts is where the watchdog's alerts go; nil leaves the rows out.
+	alerts *alertRoute
 }
 
 func (m *summaryModel) Init() tea.Cmd { return nil }
@@ -73,6 +77,12 @@ func (m *summaryModel) View() string {
 	if m.panelURL != "" {
 		card.WriteString(tuiLabel.Render("panel     ") + m.panelURL + "\n")
 	}
+	if m.alerts != nil {
+		line, ok := m.alerts.alertsLine()
+		card.WriteString(routeRow("alerts    ", line, ok))
+		line, ok = m.alerts.heartbeatLine()
+		card.WriteString(routeRow("heartbeat ", line, ok))
+	}
 	b.WriteString(tuiCardStyle.Render(strings.TrimRight(card.String(), "\n")) + "\n\n")
 
 	b.WriteString(tuiHint.Render("ℹ Everything else — servers, users, plugins — is configured in the panel. You won't need this console again.") + "\n")
@@ -82,4 +92,71 @@ func (m *summaryModel) View() string {
 
 	b.WriteString("\n" + tuiAction("c", "change connection", "s", "change storage", "e", "configure email", "enter/esc", "exit"))
 	return b.String()
+}
+
+// alertRoute is where this host's watchdog alerts go, as the summary shows it:
+// by mail through the [smtp] relay to the Owners' verified addresses, and the
+// heartbeat that notices the host itself going down (docs/troubleshooting.md
+// §14). Setup runs mail-less by design, so a fresh install has neither; the
+// summary says so where the Owner can press e.
+type alertRoute struct {
+	relay        string   // "host:port", "" with no [smtp] relay
+	recipients   []string // enabled Owners' verified addresses
+	lookupErr    error    // the recipients could not be read
+	heartbeat    string   // the heartbeat URL's scheme and host, "" with none
+	heartbeatErr error    // the heartbeat file does not read
+}
+
+// hostAlertRoute reads the route from the host config at cfgPath, the database
+// at dbURL and the heartbeat file at heartbeatPath: what the next watchdog run
+// uses.
+func hostAlertRoute(ctx context.Context, cfgPath, dbURL, heartbeatPath string) alertRoute {
+	var r alertRoute
+	if in := smtpInputsFrom(cfgPath); in.host != "" {
+		r.relay = in.host + ":" + in.port
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	r.recipients, r.lookupErr = ownerEmails(ctx, dbURL)
+	u, err := readHeartbeatURL(heartbeatPath)
+	switch {
+	case err != nil:
+		r.heartbeatErr = err
+	case u != "":
+		r.heartbeat = redactURL(u)
+	}
+	return r
+}
+
+// alertsLine is the summary's alerts row; ok is false when the alerts reach no one.
+func (r alertRoute) alertsLine() (line string, ok bool) {
+	switch {
+	case r.relay == "":
+		return "only logged: no email relay (press e)", false
+	case r.lookupErr != nil:
+		return "via " + r.relay + "; could not read the Owner addresses", false
+	case len(r.recipients) == 0:
+		return "only logged: no verified Owner email (panel → Account)", false
+	}
+	return "mailed to " + strings.Join(r.recipients, ", ") + " via " + r.relay, true
+}
+
+// heartbeatLine is the summary's heartbeat row; ok is false with no heartbeat.
+func (r alertRoute) heartbeatLine() (line string, ok bool) {
+	switch {
+	case r.heartbeatErr != nil:
+		return "unreadable: " + r.heartbeatErr.Error(), false
+	case r.heartbeat == "":
+		return "none: no outside check (troubleshooting.md §14)", false
+	}
+	return r.heartbeat + " every 2 minutes", true
+}
+
+// routeRow renders one alert row, marked and in the warning style when it
+// needs action: the mark reads without colour too.
+func routeRow(label, line string, ok bool) string {
+	if !ok {
+		line = tuiWarn.Render("⚠ " + line)
+	}
+	return tuiLabel.Render(label) + line + "\n"
 }

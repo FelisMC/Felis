@@ -1565,7 +1565,14 @@ How it mails:
   run with the API server and PostgreSQL both down caches the host copy.]
 - **No relay or no verified owner address:** each alert is written to the
   journal only, and a run with a heartbeat pings its failure endpoint while an
-  alert is open (below).
+  alert is open (below). Setup runs without mail, so a fresh install is in
+  this state. The install ends with `NO ALERT MAIL`, and the card at the end
+  of `sudo felis setup` has an `alerts` row that says where alerts go: `mailed
+  to <address> via <relay>`, or what is missing, marked `⚠`. Press `e` there
+  to configure email, then verify the Owner's address in the panel (Account →
+  Email Verification). The `heartbeat` row below it shows the check that is
+  pinged. [SH-TESTED; GO-TESTED: `TestAlertRouteLines`,
+  `TestHostAlertRoute`]
 
 Commands:
 

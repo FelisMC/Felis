@@ -144,6 +144,9 @@ type rootModel struct {
 	namespace   string // minecraft workload namespace (cfg.K8s.Namespace); target of the halt op
 	adminExists bool
 	recovery    recoveryConfig // how the account operations mail a recovery code
+	// alertRoute reads where the watchdog's alerts go for the summary; nil
+	// leaves those rows out.
+	alertRoute func(context.Context) alertRoute
 }
 
 func newRootModel(ctx context.Context, store ownerStore, db config.DatabaseConfig, rootDomain, adminHostname, panelHostname, accessAud, namespace, osUser string, adminExists bool, mode consoleMode) *rootModel {
@@ -556,6 +559,7 @@ func (m *rootModel) showSummary() (tea.Model, tea.Cmd) {
 		routedHosts:   routed,
 		localHint:     m.result.connectMethod == connectLocal,
 		alreadySetUp:  m.result.alreadySetUp,
+		alerts:        m.readAlertRoute(),
 	})
 }
 
@@ -576,7 +580,18 @@ func (m *rootModel) showStatus() (tea.Model, tea.Cmd) {
 		accessLabel:  accessLabel,
 		alreadySetUp: true,
 		localHint:    m.accessAud == "" && rootDomainEmbeddedIP(m.rootDomain) != "",
+		alerts:       m.readAlertRoute(),
 	})
+}
+
+// readAlertRoute reads the alert route afresh, so the summary shows a relay the
+// Owner just configured with e.
+func (m *rootModel) readAlertRoute() *alertRoute {
+	if m.alertRoute == nil {
+		return nil
+	}
+	r := m.alertRoute(m.ctx)
+	return &r
 }
 
 func panelURLFor(method connectMethod, panelHostname, rootDomain, adminHostname string) string {
