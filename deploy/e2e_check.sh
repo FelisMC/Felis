@@ -9,8 +9,8 @@
 #
 # It asks what an operator's first minutes ask: the binary runs, the control plane and its
 # database are rolled out and ready, a database backup can be taken and restored, the panel
-# answers on its NodePort, the proxy answers a Minecraft status ping, and the host timers
-# are there.
+# answers on its NodePort, the proxy answers a Minecraft status ping, the host timers are
+# all there and waiting, and the backup and watchdog runs the installer made succeeded.
 # A rerun must also leave the proxy running (it restarts only when what it runs changed)
 # and keep every earlier answer.
 set -euo pipefail
@@ -133,10 +133,35 @@ if [ "$phase" != release ]; then
     fail "a Job can be created from the reaper CronJob"
   fi
 fi
-# A release may predate a timer; what this commit installs has them all.
+# A release may predate a timer. What this commit installs has every timer bootstrap.sh
+# names, enabled and waiting, and no felis timer it does not name. The off-site copy's
+# comes only with an [offsite] bucket, which no e2e host has.
 if [ "$phase" != release ]; then
-  for timer in felis-db-backup.timer felis-watchdog.timer felis-update-check.timer; do
-    check "${timer} is scheduled" systemctl is-enabled --quiet "$timer"
+  timers="$(sed -n 's|^[A-Z_]*_TIMER="/etc/systemd/system/\(felis-[a-z-]*\.timer\)"$|\1|p' "$(dirname "$0")/bootstrap.sh")"
+  check "bootstrap.sh names the felis timers" test -n "$timers"
+  for timer in $timers; do
+    if [ "$timer" = felis-offsite.timer ]; then
+      check "${timer} is not installed without an [offsite] bucket" test ! -e "/etc/systemd/system/${timer}"
+      continue
+    fi
+    check "${timer} is enabled" systemctl is-enabled --quiet "$timer"
+    check "${timer} is waiting" systemctl is-active --quiet "$timer"
+  done
+  for timer in $(systemctl list-unit-files --no-legend 'felis-*.timer' | awk '{print $1}'); do
+    check "${timer} is a timer bootstrap.sh installs" grep -qxF "$timer" <<<"$timers"
+  done
+  # The installer runs the backup and the watchdog once itself and only warns when that
+  # fails: a unit that cannot run (a flag the binary lacks, a path its sandbox hides) shows
+  # here. Without an [smtp] relay the watchdog has no mail to fail on.
+  for unit in felis-db-backup.service felis-watchdog.service; do
+    check "${unit} has run" test "$(systemctl show -p ExecMainStartTimestampMonotonic --value "$unit")" != 0
+    check "${unit}'s last run succeeded" test "$(systemctl show -p Result --value "$unit")" = success
+  done
+  # A failed watchdog run starts the unit its OnFailure= names, which must be installed.
+  on_failure="$(systemctl show -p OnFailure --value felis-watchdog.service)"
+  check "felis-watchdog.service names an OnFailure= unit" test -n "$on_failure"
+  for unit in $on_failure; do
+    check "${unit} is installed" test "$(systemctl show -p LoadState --value "$unit")" = loaded
   done
 fi
 
