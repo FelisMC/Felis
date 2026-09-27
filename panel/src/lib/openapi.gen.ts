@@ -7766,7 +7766,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
-            /** @description The per-user submission allowance is spent — too many of the caller's submissions are awaiting review, or their stored-upload budget is full (submission_quota_exceeded). */
+            /** @description The per-user submission allowance is spent — too many of the caller's submissions are awaiting review, or their stored-upload budget is full (submission_quota_exceeded). The budget counts pending uploads and rejected ones until they are reaped, 7 days after review; approved uploads leave it. */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -7833,7 +7833,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
-            /** @description The upload would exceed the caller's per-user stored-context budget (submission_quota_exceeded). */
+            /** @description The upload would exceed the caller's per-user stored-context budget (submission_quota_exceeded), which counts their pending and rejected uploads; approved ones leave it. */
             403: {
                 headers: {
                     [name: string]: unknown;

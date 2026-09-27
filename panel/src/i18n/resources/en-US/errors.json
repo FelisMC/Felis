@@ -69,7 +69,7 @@
   "build_logs_unavailable": "Build logs aren't available right now.",
   "already_reviewed": "This submission has already been reviewed.",
   "context_changed": "The submitter uploaded the build context again after you reviewed it. Download and review the new upload before approving.",
-  "submission_quota_exceeded": "Your submission quota is full: too many pending reviews, or your stored uploads are at the limit.",
+  "submission_quota_exceeded": "Your submission quota is full: too many pending reviews, or your pending and rejected uploads fill your storage allowance. Withdraw a pending one, or wait: a rejected upload frees its space 7 days after review, and approved ones don't count.",
   "submission_cooldown": "Too many submission requests — try again shortly.",
   "submissions_unavailable": "Submissions aren't available right now.",
   "uploads_unavailable": "Uploads aren't available right now.",

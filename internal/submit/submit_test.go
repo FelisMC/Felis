@@ -887,6 +887,58 @@ func TestUploadContextStorageBudget(t *testing.T) {
 	}
 }
 
+// An approved context stays on the store for rebuilds, out of its uploader's
+// hands; it leaves their budget, so approval gives the allowance back. It still
+// fills the store's total, and a rejected context keeps its uploader's budget
+// until it is reaped.
+func TestApprovedContextsLeaveTheUploadersBudget(t *testing.T) {
+	m, _, _ := newManager()
+	fb := newFakeBlobs()
+	m.Blobs = fb
+	m.MaxStoredBytesPerUser = 5 // one gzBody("x") of 5 bytes
+	m.MaxStoredBytesTotal = 10
+	ctx := context.Background()
+	create := func(user string) *Submission {
+		t.Helper()
+		sub, err := m.Create(ctx, CreateRequest{DisplayName: "P", SubmittedBy: user})
+		if err != nil {
+			t.Fatalf("create for %s: %v", user, err)
+		}
+		return sub
+	}
+	upload := func(sub *Submission) (*Submission, error) {
+		return m.UploadContext(ctx, sub.ID, sub.SubmittedBy, strings.NewReader(gzBody("x")))
+	}
+
+	a, b := create("user-1"), create("user-1")
+	a, err := upload(a)
+	if err != nil {
+		t.Fatalf("upload A: %v", err)
+	}
+	if _, err := upload(b); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("upload B beside a pending A = %v, want ErrQuotaExceeded", err)
+	}
+	if _, err := m.Approve(ctx, a.ID, "admin@example.test", a.ContextSHA256); err != nil {
+		t.Fatalf("approve A: %v", err)
+	}
+	if _, err := upload(b); err != nil {
+		t.Fatalf("upload B beside an approved A = %v, want accepted", err)
+	}
+
+	// A (approved) and B hold the store's 10 bytes between them.
+	if _, err := upload(create("user-2")); !errors.Is(err, ErrUploadsFull) {
+		t.Fatalf("upload into a store the approved A helps fill = %v, want ErrUploadsFull", err)
+	}
+
+	if _, err := m.Reject(ctx, b.ID, "admin@example.test", "no"); err != nil {
+		t.Fatalf("reject B: %v", err)
+	}
+	m.MaxStoredBytesTotal = 100
+	if _, err := upload(create("user-1")); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("upload beside a rejected B = %v, want ErrQuotaExceeded", err)
+	}
+}
+
 // A single oversize blob stays a 400 (ErrInvalid), distinct from the 403 the
 // per-user budget answers with — the two failure classes must not collapse.
 func TestUploadContextOversizeIsNotQuotaError(t *testing.T) {

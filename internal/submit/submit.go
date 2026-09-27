@@ -155,10 +155,12 @@ const (
 	// enough to stage a couple of packs, far short of a flood. Override per
 	// Manager via MaxPendingPerUser.
 	defaultMaxPendingPerUser = 5
-	// defaultMaxStoredBytesPerUser caps the total bytes one user's stored
-	// contexts may occupy on the uploads store. The uploads PVC renders at a
-	// fixed 5Gi (platform/workloads.go); without a per-user budget one account
-	// could fill it and every other user's upload would start failing. Two GiB
+	// defaultMaxStoredBytesPerUser caps the total bytes one user's unapproved
+	// contexts (pending, and rejected ones until ReapRejected takes them) may
+	// occupy on the uploads store; approved ones count only toward the total,
+	// since an admin chose to keep them. The uploads PVC renders at a fixed 5Gi
+	// (platform/workloads.go); without a per-user budget one account could fill
+	// it and every other user's upload would start failing. Two GiB
 	// leaves room for a couple of full-size modpacks (a single blob may be 1 GiB)
 	// while keeping a small user base from exhausting the volume; size the PVC
 	// above users × this budget before raising it. Override per Manager via
@@ -597,7 +599,7 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (*Submission, e
 //     has already consumed it, once rejected it is dead;
 //   - the body must be a gzip tarball (context.tar.gz) and is size-capped, so a
 //     wrong-format or oversize upload is rejected as a 400 without persisting;
-//   - a user's stored contexts are budgeted (MaxStoredBytesPerUser): the write
+//   - a user's unapproved contexts are budgeted (MaxStoredBytesPerUser): the write
 //     is capped at the remaining budget, so an upload that would exceed it is
 //     refused as a spent allowance (403) before the excess is persisted;
 //   - so are everyone's together (MaxStoredBytesTotal), and a local store checks
@@ -825,15 +827,19 @@ func (m *Manager) ReapStaleParts(olderThan time.Duration) (int, error) {
 	return m.Parts.Reap(m.now().Add(-olderThan))
 }
 
-// storedBytes sums the stored-blob sizes of submittedBy's submissions (user) and
-// of everyone's (total), excluding excludeID — the submission a pending re-upload
-// is about to replace, whose bytes must not be counted twice. Sizes are read from
-// the blob store itself, the same source of truth uploads/approval consult, so
-// the sums cannot drift from what is actually occupying the volume (including
-// blobs uploaded before any budget existed). A staged chunked upload counts as
-// well, so parts spread over several pending submissions cannot hold more than
-// the budget allows. With fresh unset, a blob size read or written within
-// blobSizeTTL is used as it stands (blobSize). A size that cannot be read is
+// storedBytes sums the stored-blob sizes of submittedBy's unapproved submissions
+// (user) and of everyone's submissions (total), excluding excludeID — the
+// submission a pending re-upload is about to replace, whose bytes must not be
+// counted twice. An approved context leaves its uploader's budget: an admin chose
+// to keep it (it rebuilds the image after a registry loss), and the uploader can
+// neither withdraw nor replace it, so charging it would spend their allowance for
+// good. It still fills the store, so it stays in total. Sizes are read from the
+// blob store itself, the same source of truth uploads/approval consult, so the
+// sums cannot drift from what is actually occupying the volume (including blobs
+// uploaded before any budget existed). A staged chunked upload counts as well, so
+// parts spread over several pending submissions cannot hold more than the budget
+// allows. With fresh unset, a blob size read or written within blobSizeTTL is
+// used as it stands (blobSize). A size that cannot be read is
 // ErrStoreUnavailable, for the caller to try again.
 func (m *Manager) storedBytes(ctx context.Context, submittedBy, excludeID string, fresh bool) (user, total int64, err error) {
 	subs, err := m.Store.ListSubmissions(ctx)
@@ -856,7 +862,7 @@ func (m *Manager) storedBytes(ctx context.Context, submittedBy, excludeID string
 			n += staged
 		}
 		total += n
-		if s.SubmittedBy == submittedBy {
+		if s.SubmittedBy == submittedBy && s.Status != StatusApproved {
 			user += n
 		}
 	}

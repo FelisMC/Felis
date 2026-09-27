@@ -69,7 +69,7 @@
   "build_logs_unavailable": "构建日志暂时不可用。",
   "already_reviewed": "该提交已经审核过了。",
   "context_changed": "提交者在你审阅之后重新上传了构建上下文。请重新下载并审阅新的上传再通过。",
-  "submission_quota_exceeded": "你的提交配额已满：待审核提交过多，或已存上传总量达到上限。",
+  "submission_quota_exceeded": "你的提交配额已满：待审核提交过多，或待审核和被拒绝的上传占满了存储额度。可以撤回一个待审核的提交；被拒绝的上传在审核 7 天后释放空间，已批准的不占额度。",
   "submission_cooldown": "操作太频繁——请稍后再试。",
   "submissions_unavailable": "提交流程当前不可用。",
   "uploads_unavailable": "上传功能当前不可用。",
