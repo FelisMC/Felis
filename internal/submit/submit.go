@@ -656,8 +656,17 @@ func (m *Manager) UploadContext(ctx context.Context, id, submittedBy string, r i
 		return nil, err
 	}
 	if !won {
-		// Reviewed while the bytes streamed in. The blob was replaced anyway, but
-		// the approved digest no longer matches it, so its build refuses them.
+		// The row stopped being pending while the bytes streamed in.
+		if _, err := m.Store.GetSubmission(ctx, id); errors.Is(err, ErrNotFound) {
+			// Withdrawn or deleted: its reap ran before this blob landed, and no
+			// row will ever count or delete it, so the upload deletes it itself.
+			if err := m.deleteBlob(ctx, id); err != nil {
+				return nil, err
+			}
+			return nil, ErrNotFound
+		}
+		// Reviewed. The blob was replaced anyway, but the approved digest no
+		// longer matches it, so its build refuses them.
 		return nil, ErrAlreadyReviewed
 	}
 	sub.ContextSHA256 = digest

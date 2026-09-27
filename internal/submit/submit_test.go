@@ -1246,6 +1246,60 @@ func (a approvingBlobs) Put(ctx context.Context, id string, r io.Reader) (int64,
 	return n, err
 }
 
+// A withdraw or delete that lands while an upload's bytes stream in reaps the
+// submission before the blob exists. The upload finds its row gone and deletes
+// the blob itself: nothing else would, and no row would ever count it.
+func TestUploadRacingRemovalLeavesNoBlob(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		remove func(m *Manager, id string) error
+	}{
+		{"withdraw", func(m *Manager, id string) error {
+			_, err := m.Withdraw(context.Background(), id, "user-1")
+			return err
+		}},
+		{"delete", func(m *Manager, id string) error { _, err := m.Delete(context.Background(), id); return err }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			m, st, _ := newManager()
+			fb := newFakeBlobs()
+			m.Blobs = fb
+			seed, _ := m.Create(ctx, CreateRequest{DisplayName: "Pack", SubmittedBy: "user-1"})
+			if _, err := m.UploadContext(ctx, seed.ID, "user-1", strings.NewReader(gzBody("first"))); err != nil {
+				t.Fatalf("first upload: %v", err)
+			}
+
+			m.Blobs = racingBlobs{fakeBlobs: fb, race: func() {
+				if err := tc.remove(m, seed.ID); err != nil {
+					t.Fatalf("%s: %v", tc.name, err)
+				}
+			}}
+			if _, err := m.UploadContext(ctx, seed.ID, "user-1", strings.NewReader(gzBody("second"))); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("racing upload = %v, want ErrNotFound", err)
+			}
+			if _, ok := st.subs[seed.ID]; ok {
+				t.Fatal("the row must stay gone")
+			}
+			if len(fb.stored) != 0 {
+				t.Fatalf("stored blobs = %v, want none", keysOf(fb.stored))
+			}
+		})
+	}
+}
+
+// racingBlobs runs race before Put stores the bytes, the window a withdraw or
+// delete lands in while an upload streams.
+type racingBlobs struct {
+	*fakeBlobs
+	race func()
+}
+
+func (r racingBlobs) Put(ctx context.Context, id string, rd io.Reader) (int64, error) {
+	r.race()
+	return r.fakeBlobs.Put(ctx, id, rd)
+}
+
 func sha256Hex(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
