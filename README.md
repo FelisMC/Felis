@@ -35,7 +35,7 @@ curl -fsSL https://raw.githubusercontent.com/FelisMC/Felis/main/deploy/bootstrap
 
 脚本将自动安装 K3s，在 K3s 内部署 PostgreSQL 与控制平面，并启动设置向导。完成后浏览器访问已配置的域名进入控制面板即可使用。
 
-安装发布版时，二进制、全部镜像与 Velocity 插件都取自该版本在 CI 里预构建好的 release 附件，逐个核对 `SHA256SUMS` 后导入，主机上无需 Docker、Gradle 或 Go，也不从 Docker Hub 拉取；某个附件缺失或校验不符时，只有那一个镜像退回到本机构建，并给出提示（见 [故障排查 §15c](docs/troubleshooting.md)）。内网或受限网络的主机可以先把 release 附件拷到本机，再用 `FELIS_ARTIFACT_DIR=<绝对路径>` 安装（见 [运维手册 §1](docs/operations.md#1-supported-hosts)）。旧版本装在宿主上的 PostgreSQL 会在重跑时整库迁进 K3s，宿主上的那份停用保留，供回退（见 [运维手册 §4](docs/operations.md#4-upgrading-the-pieces-around-felis)）。
+安装发布版时，二进制、全部镜像与 Velocity 插件都取自该版本在 CI 里预构建好的 release 附件，逐个核对 `SHA256SUMS` 后导入，主机上无需 Docker、Gradle 或 Go，也不从 Docker Hub 拉取；某个附件缺失或校验不符时，只有那一个镜像退回到本机构建，并给出提示（见 [故障排查 §15c](docs/troubleshooting.md)）。附件也可以先拷到本机，再用 `FELIS_ARTIFACT_DIR=<绝对路径>` 安装，Felis 自己的二进制、镜像和插件就都取自这个目录；k3s 及其镜像、JRE、cloudflared、Velocity 和 Via 插件照旧从 GitHub 与 PaperMC 下载，RHEL、Fedora、openSUSE Leap 这类开着 SELinux 的主机还要从 rpm.rancher.io 装 k3s-selinux，系统软件包来自发行版的源。所以出网受限的主机要放行这几处的 HTTPS（或设 `https_proxy`），preflight 会在改动主机之前逐个探测，完全断网的主机目前装不了（地址清单见 [运维手册 §1](docs/operations.md#1-supported-hosts)）。旧版本装在宿主上的 PostgreSQL 会在重跑时整库迁进 K3s，宿主上的那份停用保留，供回退（见 [运维手册 §4](docs/operations.md#4-upgrading-the-pieces-around-felis)）。
 
 动手之前，脚本先检查内存、磁盘、端口、网段冲突、已有的 Kubernetes 和外网连通，把所有问题一次列出并停下，主机上什么都没改（检查项见 [运维手册 §1](docs/operations.md#1-supported-hosts)）。
 

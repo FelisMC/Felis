@@ -1228,6 +1228,20 @@ systemd_is_init() { [ -d /run/systemd/system ]; }
 
 mem_total_kb() { awk '/^MemTotal:/ { print $2 }' /proc/meminfo; }
 
+# k3s_adds_selinux_rpm reports whether k3s's install.sh will install k3s-selinux from
+# Rancher's RPM repository (rpm.rancher.io), mirroring its setup_selinux and
+# install_selinux_rpm: on a host with an SELinux policy directory that is Red Hat-like (one
+# of these release files) or names suse first in ID_LIKE. dnf or zypper failing to reach the
+# repository fails the k3s install. $1 is a root to read under, for the tests.
+k3s_adds_selinux_rpm() {
+  local root="${1:-}" f
+  [ -d "${root}/usr/share/selinux" ] || return 1
+  for f in redhat-release centos-release oracle-release fedora-release system-release; do
+    [ -r "${root}/etc/${f}" ] && return 0
+  done
+  [ "${OS_ID_LIKE%% *}" = suse ]
+}
+
 preflight_platform() {
   case "$(uname -m)" in
     x86_64|amd64|aarch64|arm64) ;;
@@ -1436,7 +1450,12 @@ preflight_hosts() {
       printf '%s\n' "api.github.com required"
     fi
   fi
-  [ -x "$K3S_BIN" ] || printf '%s\n' "raw.githubusercontent.com required"
+  if ! [ -x "$K3S_BIN" ]; then
+    printf '%s\n' "raw.githubusercontent.com required"
+    if k3s_adds_selinux_rpm; then
+      printf '%s\n' "rpm.rancher.io required"
+    fi
+  fi
   [ -n "$FELIS_VELOCITY_FORK_JAR" ] || printf '%s\n' "fill-data.papermc.io required"
   if host_builds_expected; then
     printf '%s\n' "registry-1.docker.io required"

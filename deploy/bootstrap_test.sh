@@ -3473,7 +3473,8 @@ run_pf() {
     pid_unit() { printf "%s\n" "${PF_UNITS:-}" | awk -v p="$1" "\$1 == p { print \$2 }"; }
     existing_ancestor() { printf "%s\n" "$1"; }
     path_populated() { case " ${PF_POPULATED:-} " in *" $1 "*) return 0 ;; esac; return 1; }
-    preflight; echo "WENT ON"' 2>&1
+    k3s_adds_selinux_rpm() { [ -n "${PF_SELINUX_RPM:-}" ]; }
+    if [ -n "${PF_HOSTS:-}" ]; then preflight_hosts; else preflight; echo "WENT ON"; fi' 2>&1
 }
 out="$(run_pf)"
 expect "a healthy host passes preflight" "OK: preflight passed" "$out"
@@ -3579,6 +3580,46 @@ expect "the release channel cannot install without GitHub's API" "cannot reach a
 out="$(PF_TUI=1 PF_DOWN=api.github.com run_pf)"
 expect "the setup console only warns without it: its binary is already here" "WARN: preflight: cannot reach api.github.com" "$out"
 expect "and goes on" "OK: preflight passed" "$out"
+
+# k3s's install.sh installs k3s-selinux from Rancher's RPM repository on an SELinux host of
+# the Red Hat or SUSE family (the CentOS Stream VM has its rancher-k3s-common.repo), and the
+# k3s install fails when dnf cannot reach it.
+out="$(PF_SELINUX_RPM=1 PF_DOWN=rpm.rancher.io run_pf)"
+expect "k3s's SELinux package repository is required where its installer adds it" "cannot reach rpm.rancher.io over HTTPS" "$out"
+out="$(PF_DOWN=rpm.rancher.io run_pf)"
+expect "and not probed where it does not" "OK: preflight passed" "$out"
+: > "$pfroot/k3s"; chmod +x "$pfroot/k3s"
+out="$(PF_SELINUX_RPM=1 PF_DOWN=rpm.rancher.io run_pf)"
+expect "nor once k3s is installed" "OK: preflight passed" "$out"
+rm -f "$pfroot/k3s"
+# The same test install.sh makes, against a root laid out as each family's host is.
+selroot="$(mktemp -d)"
+adds_rpm() { OS_ID_LIKE="$1" bash -c "$(awk '/^k3s_adds_selinux_rpm\(\) \{/,/^}/' "$BS")"'
+  if k3s_adds_selinux_rpm "$0"; then echo yes; else echo no; fi' "$selroot"; }
+mkdir -p "$selroot/etc"
+: > "$selroot/etc/centos-release"
+expect "a Red Hat-like host without an SELinux policy directory gets no k3s-selinux" no "$(adds_rpm "rhel fedora")"
+mkdir -p "$selroot/usr/share/selinux"
+rm "$selroot/etc/centos-release"
+for f in redhat-release centos-release oracle-release fedora-release system-release; do
+  : > "$selroot/etc/$f"
+  expect "a host with /etc/$f and an SELinux policy directory gets k3s-selinux" yes "$(adds_rpm "")"
+  rm "$selroot/etc/$f"
+done
+expect "so does one whose ID_LIKE names suse first (openSUSE Leap)" yes "$(adds_rpm "suse opensuse")"
+expect "install.sh adds no repository where suse comes second (Tumbleweed)" no "$(adds_rpm "opensuse suse")"
+expect "nor on Debian with SELinux policies installed" no "$(adds_rpm debian)"
+rm -rf "$selroot"
+
+# docs/operations.md lists the hosts an install from FELIS_ARTIFACT_DIR still downloads from,
+# for a network that admits only those: every host preflight probes there must be in it.
+ops="$(dirname "$BS")/../docs/operations.md"
+artdoc="$(awk '/^`FELIS_ARTIFACT_DIR=<absolute path>` installs/,/^### /' "$ops" 2>/dev/null)"
+hosts="$(PF_HOSTS=1 PF_ARTIFACT_DIR=/srv/felis-release PF_SELINUX_RPM=1 run_pf)"
+expect "an install from FELIS_ARTIFACT_DIR probes GitHub" "github.com required" "$hosts"
+for h in $(printf '%s\n' "$hosts" | awk '{ print $1 }'); do
+  expect "operations.md names ${h} for an install from FELIS_ARTIFACT_DIR" "| \`${h}\`" "$artdoc"
+done
 
 # Three problems, one report, nothing done.
 out="$(PF_MEM_KB=1000000 PF_ARCH=armv7l PF_DOWN=github.com run_pf)"

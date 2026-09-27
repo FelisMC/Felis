@@ -60,8 +60,10 @@ once, then stops with nothing touched **[SH-TESTED]**:
   (a Docker network there is the usual case); a wider route such as a `10.0.0.0/8` VPN
   is a warning;
 - HTTPS to the hosts it downloads from: GitHub and PaperMC's download API always, Docker
-  Hub when it builds images on the host. A host counts as reachable once a TLS handshake
-  with it completes, and each gets three tries two seconds apart. Installing a release, an
+  Hub when it builds images on the host, Rancher's RPM repository where k3s's installer
+  adds it (the list is under "Where the binary and the images come from"). A host counts
+  as reachable once a TLS handshake with it completes, and each gets three tries two
+  seconds apart. Installing a release, an
   unreachable Docker Hub is a warning (it is needed only if an asset turns out unusable);
   from `FELIS_ARTIFACT_DIR` it is not checked.
 
@@ -144,9 +146,27 @@ the images are in the registry, when:
 release's assets downloaded there (every `felis-*` file and `SHA256SUMS`), or the directory
 `deploy/build-release-artifacts.sh <version> <dir>` wrote. Nothing of Felis's own is
 downloaded or built (except the game images under `FELIS_GAME_STACK=latest`, which no release
-ships), so an asset the directory lacks, or one failing its checksum, stops the install; k3s,
-the JRE, cloudflared and Velocity still come from GitHub and PaperMC. It
+ships), so an asset the directory lacks, or one failing its checksum, stops the install. It
 cannot be combined with `FELIS_REF` or `FELIS_SKIP_FETCH`, which name a source too.
+
+The rest of the host's software still downloads, so the host needs outbound HTTPS to these,
+directly or through `https_proxy`. A host with no outbound access cannot be installed yet
+**[SH-TESTED]**:
+
+| Host | What comes from it |
+|---|---|
+| `github.com`, and the githubusercontent.com hosts its release downloads redirect to | k3s and its images (`k3s-airgap-images-<arch>.tar.zst`), cloudflared, the Temurin JRE, ViaVersion, ViaBackwards and ViaRewind |
+| `raw.githubusercontent.com` | k3s's install script, until k3s is installed |
+| `rpm.rancher.io` | k3s-selinux, which k3s's install script adds on an SELinux host of the Red Hat or SUSE family (CentOS Stream, RHEL, Rocky, Alma, Fedora, openSUSE Leap), until k3s is installed |
+| `fill-data.papermc.io` | the Velocity jar, unless `FELIS_VELOCITY_FORK_JAR` supplies one |
+| the distribution's package mirrors | the base packages (CA certificates, OpenSSL, curl and tar where missing), and container-selinux beside k3s-selinux |
+
+Preflight probes each named host above before it changes anything and lists every one it
+cannot reach in one refusal (`cannot reach … over HTTPS`); the package manager reports its
+own mirrors. An override adds a host the download itself tries: `FELIS_JRE_VERSION` reads
+`api.adoptium.net`, a `FELIS_VELOCITY_VERSION` other than the pinned one reads
+`fill.papermc.io`, and `FELIS_GAME_STACK=latest` builds its images on the host from Docker
+Hub (which preflight probes), PaperMC, Limbo's CI and LuckPerms.
 
 ```
 # on a machine with access: the release's assets for the host's architecture
