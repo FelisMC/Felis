@@ -1,4 +1,5 @@
 import { useState, useMemo } from "react";
+import { Link } from "react-router-dom";
 import { Boxes, CheckCircle2, CircleSlash, Plus, Trash2, Wrench } from "lucide-react";
 import { SearchInput } from "@/components/SearchInput";
 import { StatCard } from "@/components/StatCard";
@@ -64,10 +65,12 @@ export function ImageAdmin() {
     const total = images.length;
     const enabled = images.filter((img) => img.enabled).length;
     const disabled = total - enabled;
-    const buildCount = total;
-    return { total, enabled, disabled, buildCount };
+    return { total, enabled, disabled };
   }, [images]);
-  const { total, enabled, disabled, buildCount } = stats;
+  const { total, enabled, disabled } = stats;
+  // The pipeline card counts builds, which live in their own history: one row is
+  // enough, the answer carries the total. A read that failed shows a dash.
+  const buildsQ = useAsync(() => api.listBuilds({ limit: 1 }), []);
 
   // Filtered & Paginated Images
   const filteredImages = useMemo(() => {
@@ -185,7 +188,17 @@ export function ImageAdmin() {
         <StatCard icon={Boxes} label={t("filter_all")} value={total} accentClass="text-primary bg-primary/10" />
         <StatCard icon={CheckCircle2} label={t("enabled")} value={enabled} accentClass="text-emerald-500 bg-emerald-500/10" />
         <StatCard icon={CircleSlash} label={t("disabled")} value={disabled} accentClass="text-zinc-500 bg-zinc-500/10" />
-        <StatCard icon={Wrench} label={t("builds_title")} value={buildCount} accentClass="text-primary bg-primary/10" />
+        <Link
+          to="/admin/builds"
+          className="block rounded-lg transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <StatCard
+            icon={Wrench}
+            label={t("builds_title")}
+            value={buildsQ.data ? buildsQ.data.total : "—"}
+            accentClass="text-primary bg-primary/10"
+          />
+        </Link>
       </div>
 
       {/* Whitelist Table Card */}

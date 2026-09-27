@@ -6,7 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 import i18next from "i18next";
 import { ImageAdmin } from "./ImageAdmin";
 
-const calls = vi.hoisted(() => ({ listImages: vi.fn(), removeImage: vi.fn() }));
+const calls = vi.hoisted(() => ({ listImages: vi.fn(), removeImage: vi.fn(), listBuilds: vi.fn() }));
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
   return { ...actual, api: { ...actual.api, ...calls } };
@@ -18,6 +18,7 @@ const REF = "registry.felis.svc:5000/paper:1.21";
 beforeEach(() => {
   for (const fn of Object.values(calls)) fn.mockReset();
   calls.listImages.mockResolvedValue([{ image_ref: REF, source: "external", enabled: true }]);
+  calls.listBuilds.mockResolvedValue({ builds: [], total: 0 });
   // A native dialog here would block (or be blocked in an embedded browser).
   vi.spyOn(window, "confirm").mockImplementation(() => {
     throw new Error("window.confirm used");
@@ -92,5 +93,39 @@ describe("ImageAdmin source", () => {
     await userEvent.type(screen.getByRole("textbox"), "推荐");
     await vi.waitFor(() => expect(screen.queryByText("docker.io/itzg/minecraft-server:java21")).toBeNull());
     expect(screen.getByText("registry.felis.svc:5000/paper:demo")).toBeTruthy();
+  });
+});
+
+describe("ImageAdmin build pipeline card", () => {
+  const renderPage = () =>
+    render(
+      <MemoryRouter>
+        <ImageAdmin />
+      </MemoryRouter>,
+    );
+  const card = () => screen.getByRole("link", { name: new RegExp(t("admin:builds_title")) });
+
+  it("counts builds, whatever the number of images, and leads to the pipeline", async () => {
+    calls.listImages.mockResolvedValue([
+      { image_ref: REF, source: "external", enabled: true },
+      { image_ref: `${REF}-b`, source: "external", enabled: false },
+    ]);
+    calls.listBuilds.mockResolvedValue({
+      builds: [{ id: "b-7", image_ref: REF, status: "succeeded", requested_by: "admin", created_at: "2026-09-01T00:00:00Z" }],
+      total: 7,
+    });
+    renderPage();
+
+    await vi.waitFor(() => expect(card().textContent).toBe(`7${t("admin:builds_title")}`));
+    expect(card().getAttribute("href")).toBe("/admin/builds");
+    expect(calls.listBuilds.mock.calls).toEqual([[{ limit: 1 }]]);
+  });
+
+  it("shows a dash when the build history can't be read", async () => {
+    calls.listBuilds.mockRejectedValue({ status: 503, code: "build_unavailable", message: "builder off" });
+    renderPage();
+    await screen.findByText(REF);
+
+    await vi.waitFor(() => expect(card().textContent).toBe(`—${t("admin:builds_title")}`));
   });
 });
