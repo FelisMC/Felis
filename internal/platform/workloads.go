@@ -825,21 +825,32 @@ func worldsRootPVC(p Params) *corev1.PersistentVolumeClaim {
 // reaperPodSpec is the reaper Job's pod template. It lives apart from the CronJob
 // literal only so the optional node pin is one visible branch: with ReaperNode
 // set the pod carries a kubernetes.io/hostname selector, keeping the reaper on
-// the node that actually holds the worlds hostPath on a multi-node cluster. The
-// retention-only shape gets no service account token: it never calls the API.
+// the node that actually holds the worlds hostPath on a multi-node cluster.
+//
+// Only the reaping shape runs as SAReaper. The retention-only shape never calls the
+// API, so it gets no token and runs as the namespace's default ServiceAccount:
+// felis-reaper is rendered only alongside its Role (rbac.go), and a pod naming a
+// ServiceAccount that does not exist is never created. Every stock install renders
+// this shape, and its Jobs used to hit their deadline without a single pod.
+//
+// "default" is spelled out. An install upgraded from the broken shape still carries
+// the deprecated serviceAccount: felis-reaper the API server copied into the
+// template, and an empty serviceAccountName is filled back in from it.
 func reaperPodSpec(p Params, container corev1.Container, volumes []corev1.Volume) corev1.PodSpec {
 	spec := corev1.PodSpec{
-		ServiceAccountName: SAReaper,
-		PriorityClassName:  controlPlanePriorityName,
-		RestartPolicy:      corev1.RestartPolicyNever,
-		SecurityContext:    reaperPodSecurityContext(),
-		Containers:         []corev1.Container{container},
-		Volumes:            volumes,
+		PriorityClassName: controlPlanePriorityName,
+		RestartPolicy:     corev1.RestartPolicyNever,
+		SecurityContext:   reaperPodSecurityContext(),
+		Containers:        []corev1.Container{container},
+		Volumes:           volumes,
 	}
 	if p.ReaperNode != "" {
 		spec.NodeSelector = map[string]string{"kubernetes.io/hostname": p.ReaperNode}
 	}
-	if p.WorldsHostPath == "" {
+	if p.WorldsHostPath != "" {
+		spec.ServiceAccountName = SAReaper
+	} else {
+		spec.ServiceAccountName = "default"
 		spec.AutomountServiceAccountToken = boolPtr(false)
 	}
 	return spec

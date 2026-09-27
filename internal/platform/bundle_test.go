@@ -226,3 +226,58 @@ func TestRenderYAML_Deterministic(t *testing.T) {
 		t.Error("RenderYAML must be deterministic across calls")
 	}
 }
+
+// TestObjects_EveryPodRunsAsARenderedServiceAccount keeps every pod template in the
+// bundle on a ServiceAccount the bundle renders in the same namespace, or on the
+// namespace's default one. A pod naming a missing ServiceAccount is never created:
+// the retention-only reaper once named felis-reaper, which renders only with the
+// reaping shape, so on every stock install its Jobs timed out without a pod.
+func TestObjects_EveryPodRunsAsARenderedServiceAccount(t *testing.T) {
+	retention := testParams()
+	retention.BackupPVC, retention.ArchiveLocalPath = "felis-backups", "/backups"
+	reaping := retention
+	reaping.WorldsHostPath = "/var/lib/felis/worlds"
+	for _, c := range []struct {
+		name string
+		p    Params
+		pods int
+	}{
+		{"no archive store", testParams(), 4},
+		{"retention only", retention, 5},
+		{"reaping", reaping, 5},
+	} {
+		objs := Objects(c.p)
+		sas := map[string]bool{}
+		for _, o := range objs {
+			if sa, ok := o.(*corev1.ServiceAccount); ok {
+				sas[sa.Namespace+"/"+sa.Name] = true
+			}
+		}
+		pods := 0
+		for _, o := range objs {
+			var spec *corev1.PodSpec
+			switch w := o.(type) {
+			case *appsv1.Deployment:
+				spec = &w.Spec.Template.Spec
+			case *appsv1.StatefulSet:
+				spec = &w.Spec.Template.Spec
+			case *appsv1.DaemonSet:
+				spec = &w.Spec.Template.Spec
+			case *batchv1.Job:
+				spec = &w.Spec.Template.Spec
+			case *batchv1.CronJob:
+				spec = &w.Spec.JobTemplate.Spec.Template.Spec
+			default:
+				continue
+			}
+			pods++
+			if sa := spec.ServiceAccountName; sa != "" && sa != "default" && !sas[o.GetNamespace()+"/"+sa] {
+				t.Errorf("%s: %T %s/%s runs as ServiceAccount %q, which the bundle does not render there",
+					c.name, o, o.GetNamespace(), o.GetName(), sa)
+			}
+		}
+		if pods != c.pods {
+			t.Errorf("%s: %d pod templates checked, want %d", c.name, pods, c.pods)
+		}
+	}
+}

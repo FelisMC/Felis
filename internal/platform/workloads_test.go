@@ -873,6 +873,9 @@ func TestReaperCronJob_RetentionOnlyShape(t *testing.T) {
 	if ps.AutomountServiceAccountToken == nil || *ps.AutomountServiceAccountToken {
 		t.Error("a retention-only run never calls the API and must not mount a service account token")
 	}
+	if ps.ServiceAccountName != "default" {
+		t.Errorf("serviceAccountName = %q, want the namespace default spelled out: felis-reaper renders only with the reaping shape, and an empty name is filled back in from an upgraded install's deprecated serviceAccount", ps.ServiceAccountName)
+	}
 	if c.SecurityContext == nil || c.SecurityContext.Capabilities == nil || len(c.SecurityContext.Capabilities.Add) != 1 || c.SecurityContext.Capabilities.Add[0] != "DAC_OVERRIDE" {
 		t.Error("it reads back and deletes archives other identities wrote, so it keeps DAC_OVERRIDE")
 	}

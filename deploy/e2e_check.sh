@@ -119,6 +119,20 @@ if [ "$phase" != release ]; then
   fi
   rm -rf "$bundle_dir"
 fi
+# The daily reaper is what deletes expired archives. Run it once from its CronJob: the API
+# accepts a pod template naming a ServiceAccount that does not exist, and only the Job's
+# pod creation fails, so rendering it proves nothing. A release may carry exactly that bug.
+if [ "$phase" != release ]; then
+  reaper_job="felis-e2e-reaper-${phase}"
+  "${KUBECTL[@]}" -n minecraft delete job "$reaper_job" --ignore-not-found >/dev/null
+  if "${KUBECTL[@]}" -n minecraft create job --from=cronjob/felis-reaper "$reaper_job" >/dev/null; then
+    check "the reaper CronJob runs to completion" \
+      "${KUBECTL[@]}" -n minecraft wait --for=condition=complete "job/${reaper_job}" --timeout=180s
+    "${KUBECTL[@]}" -n minecraft delete job "$reaper_job" --ignore-not-found >/dev/null
+  else
+    fail "a Job can be created from the reaper CronJob"
+  fi
+fi
 # A release may predate a timer; what this commit installs has them all.
 if [ "$phase" != release ]; then
   for timer in felis-db-backup.timer felis-watchdog.timer felis-update-check.timer; do
