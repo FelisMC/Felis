@@ -313,6 +313,20 @@ func (a *API) handleOpLoginFinish(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, invalid)
 		return
 	}
+	// A disabled or soft-deleted account finishes nothing, whatever it proved: start
+	// found it through the live-only UserByEmail, but an admin may have retired it
+	// since (audit #33; a soft delete disables the account too). Checked before the
+	// code is touched, like the approval, and answered with the same uniform failure.
+	d, err := a.Repo.UserDetail(r.Context(), loginReq.UserID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if d.Disabled {
+		a.authFailure(r, "op_login", "account_retired", a.opLoginAccount(r, loginReq.UserID))
+		writeError(w, r, invalid)
+		return
+	}
 	// Consume the mailed code (op_login purpose). A wrong/expired/locked code charges an
 	// attempt without minting anything and returns the uniform failure — the code, not
 	// the request, is the problem, and the request stays approved for a retry.

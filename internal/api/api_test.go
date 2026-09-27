@@ -95,6 +95,7 @@ type fakeRepo struct {
 	failMarkReauth   error
 	failGetSetting   error
 	failRedeemSetup  error
+	failUserDetail   error
 	// player email OTPs (spec §B2). Keyed by row id; the verify path scans for the
 	// newest live (user, purpose) just as the PG query does.
 	otps map[string]*fakeEmailOTP
@@ -1271,6 +1272,9 @@ func (f *fakeRepo) ListUsers(_ context.Context, opts ListUsersOpts) ([]UserView,
 }
 
 func (f *fakeRepo) UserDetail(_ context.Context, userID string) (*UserDetail, error) {
+	if f.failUserDetail != nil {
+		return nil, f.failUserDetail
+	}
 	deletedAt := time.Unix(1_700_000_000, 0)
 	for _, su := range f.seededUsers {
 		if su.view.ID == userID {

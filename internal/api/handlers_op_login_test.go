@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -434,6 +435,65 @@ func TestOpLoginFinishUniform(t *testing.T) {
 		// The right code still completes.
 		if w := finishOp(eh, reqID, code); w.Code != http.StatusOK {
 			t.Fatalf("retry with right code: code = %d, want 200 (%s)", w.Code, w.Body.String())
+		}
+	})
+}
+
+// An account an admin retires between the approval and the finish signs in
+// nowhere: finish answers the uniform failure, sets no cookie, stores no session,
+// and leaves the code as it was.
+func TestOpLoginFinishRefusesRetiredAccount(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		retire func(repo *fakeRepo)
+	}{
+		{"disabled", func(repo *fakeRepo) {
+			u := UserView{ID: "a1", Username: "op", Email: "Op@Example.NET", Role: "admin", Disabled: true}
+			repo.seededUsers = append(repo.seededUsers, seededUser{view: u, detail: UserDetail{UserView: u}})
+		}},
+		{"deleted", func(repo *fakeRepo) { repo.deletedIDs["a1"] = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			api, repo, mailer := seedOpLoginAPI(t)
+			eh, ih := api.ExternalHandler(), api.InternalHandler()
+			reqID := acctBody(t, startOp(eh, "op@example.net"))["request_id"].(string)
+			if w := approveOp(ih, reqID, opUUID, "op"); w.Code != http.StatusOK {
+				t.Fatalf("approve: %d (%s)", w.Code, w.Body.String())
+			}
+			tc.retire(repo)
+
+			w := finishOp(eh, reqID, mailer.code)
+			if w.Code != http.StatusBadRequest || decodeErr(t, w) != "op_login_invalid" || len(w.Result().Cookies()) != 0 {
+				t.Fatalf("finish: code = %d body %s cookies %v, want 400 op_login_invalid and none",
+					w.Code, w.Body.String(), w.Result().Cookies())
+			}
+			if len(repo.sessions) != 0 {
+				t.Fatalf("sessions = %d, want none", len(repo.sessions))
+			}
+			for _, o := range repo.otps {
+				if o.consumed || o.attempts != 0 {
+					t.Errorf("the code must stay untouched: consumed=%v attempts=%d", o.consumed, o.attempts)
+				}
+			}
+		})
+	}
+
+	// A store that cannot say whether the account is live is an outage: the finish
+	// can be retried with the same approval, so it is not told to start over.
+	t.Run("store outage", func(t *testing.T) {
+		api, repo, mailer := seedOpLoginAPI(t)
+		eh, ih := api.ExternalHandler(), api.InternalHandler()
+		reqID := acctBody(t, startOp(eh, "op@example.net"))["request_id"].(string)
+		if w := approveOp(ih, reqID, opUUID, "op"); w.Code != http.StatusOK {
+			t.Fatalf("approve: %d (%s)", w.Code, w.Body.String())
+		}
+		repo.failUserDetail = errors.New("connection refused")
+		if w := finishOp(eh, reqID, mailer.code); w.Code != http.StatusInternalServerError {
+			t.Fatalf("finish: code = %d body %s, want 500", w.Code, w.Body.String())
+		}
+		repo.failUserDetail = nil
+		if w := finishOp(eh, reqID, mailer.code); w.Code != http.StatusOK {
+			t.Fatalf("retry: code = %d body %s, want 200", w.Code, w.Body.String())
 		}
 	})
 }

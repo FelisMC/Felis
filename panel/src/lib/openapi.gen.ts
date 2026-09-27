@@ -944,7 +944,7 @@ export interface paths {
         put?: never;
         /**
          * Redeem an approved op.console request plus its mailed code into a staff session (spec §B).
-         * @description Public, pre-session final leg: mints a host-only staff session only when BOTH factors have landed — the request is approved-and-live AND the mailed code verifies. Every failure (unknown handle, not-yet-approved, wrong or locked code, an account past its daily wrong-code budget, lost race) collapses into one uniform 400 op_login_invalid, so a code-less caller learns nothing. Admin is re-asserted before the session is issued.
+         * @description Public, pre-session final leg: mints a host-only staff session only when BOTH factors have landed — the request is approved-and-live AND the mailed code verifies. Every failure (unknown handle, not-yet-approved, wrong or locked code, an account past its daily wrong-code budget, an account disabled or deleted since the start, lost race) collapses into one uniform 400 op_login_invalid, so a code-less caller learns nothing. Admin is re-asserted before the session is issued.
          */
         post: operations["opLoginFinish"];
         delete?: never;
@@ -5254,7 +5254,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description request_id and code are required (bad_request); or the login could not be completed — unknown handle, not approved, wrong or locked code, or lost race, all uniform (op_login_invalid). */
+            /** @description request_id and code are required (bad_request); or the login could not be completed — unknown handle, not approved, wrong or locked code, an account disabled or deleted since the start, or lost race, all uniform (op_login_invalid). */
             400: {
                 headers: {
                     [name: string]: unknown;
