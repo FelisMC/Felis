@@ -984,13 +984,70 @@ out="$(run_verify "")"
 expect "a release without SHA256SUMS falls back to a source build" "publishes no SHA256SUMS" "$out"
 case "$out" in *VERIFIED*) echo "FAIL: a release without SHA256SUMS must not verify"; fails=$((fails + 1)) ;; esac
 
+# download_release_binary itself, with the real verify_release_checksum: the stand-in asset
+# writes to the same log as ok and warn each time it runs, so the log shows whether the hash
+# was checked before the file was first executed, and that a refused one never runs at all.
 dblock="$(awk '/^download_release_binary\(\) \{/,/^}/' "$BS")"
 [ -n "$dblock" ] || { echo "FAIL: no download_release_binary found in $BS"; exit 1; }
-v="$(printf '%s\n' "$dblock" | grep -n 'verify_release_checksum' | head -1 | cut -d: -f1)"
-x="$(printf '%s\n' "$dblock" | grep -n '"\$tmp" version' | head -1 | cut -d: -f1)"
-[ -n "$v" ] && [ -n "$x" ] && [ "$v" -lt "$x" ] \
-  && echo "PASS the release binary is verified before it is executed" \
-  || { echo "FAIL: download_release_binary must call verify_release_checksum before running the binary (lines: $v $x)"; fails=$((fails + 1)); }
+[ "$(printf '%s\n' "$dblock" | wc -l)" -lt 100 ] \
+  || { echo "FAIL: the extracted block is not the function -- did its closing brace move?"; exit 1; }
+ddir="$sdir/download"
+mkdir -p "$ddir/bin"
+printf '#!/bin/sh\necho "RAN: $*" >> "%s"\necho "felis v9.9.9"\n' "$ddir/log" > "$ddir/asset"
+dsum="$(sha256sum <"$ddir/asset" | cut -d' ' -f1)"
+
+run_download() { # SHA256SUMS-content ("" = the release has none); the log lands in $ddir/log
+  rm -f "$ddir/bin/felis"
+  : > "$ddir/log"
+  SUMS="$1" ASSET="$ddir/asset" LOG="$ddir/log" FELIS_REF=v9.9.9 HOST_BIN="$ddir/bin/felis" \
+    TMPDIR="$sdir" bash -c '
+    ok() { printf "OK: %s\n" "$*" >> "$LOG"; }
+    warn() { printf "WARN: %s\n" "$*" >> "$LOG"; }
+    remember_temp() { :; }
+    felis_asset_arch() { echo amd64; }
+    keep_previous_host_binary() { :; }
+    download_release_asset() {
+      case "$2" in
+        SHA256SUMS) [ -n "$SUMS" ] || return 1; printf "%s" "$SUMS" > "$3" ;;
+        felis-linux-amd64) cat "$ASSET" > "$3" ;;
+        *) return 1 ;;
+      esac
+    }
+    '"$vblock"'
+    '"$dblock"'
+    download_release_binary'
+}
+same_log() { # label want
+  if [ "$(cat "$ddir/log")" = "$2" ]; then echo "PASS $1"; else printf 'FAIL %s: got\n%s\nwant\n%s\n' "$1" "$(cat "$ddir/log")" "$2"; fails=$((fails + 1)); fi
+}
+refused_download() { # label: nothing installed, and the staged download removed
+  if [ -e "$ddir/bin/felis" ]; then echo "FAIL $1: a binary was installed"; fails=$((fails + 1)); else echo "PASS $1 installs nothing"; fi
+  left="$(ls -A "$ddir/bin")"
+  if [ -z "$left" ]; then echo "PASS $1 leaves no staged download"; else echo "FAIL $1 left $left"; fails=$((fails + 1)); fi
+}
+
+run_download "$(printf '%s  felis-linux-amd64\n' "$dsum")"
+rc=$?
+if [ "$rc" -eq 0 ]; then echo "PASS a verified release binary installs"; else echo "FAIL a verified release binary must install (exit $rc)"; fails=$((fails + 1)); fi
+same_log "the release binary is hashed before it is first executed" "$(printf '%s\n' \
+  "OK: felis-linux-amd64 matches release v9.9.9's SHA256SUMS" \
+  "RAN: version" \
+  "OK: installed felis-linux-amd64 v9.9.9 at $ddir/bin/felis")"
+if cmp -s "$ddir/asset" "$ddir/bin/felis"; then echo "PASS the installed binary is the download"; else echo "FAIL the installed binary is not the download"; fails=$((fails + 1)); fi
+
+run_download "$(printf '%s  felis-linux-amd64\n' deadbeef)"
+rc=$?
+if [ "$rc" -ne 0 ]; then echo "PASS a mismatched release binary asks for the source build"; else echo "FAIL a mismatched release binary must ask for the source build"; fails=$((fails + 1)); fi
+same_log "a mismatched release binary is never executed" \
+  "WARN: downloaded felis-linux-amd64 hashes to ${dsum}, but release v9.9.9's SHA256SUMS says deadbeef; discarding it and building v9.9.9 from source on this host instead"
+refused_download "a mismatched release binary"
+
+run_download ""
+rc=$?
+if [ "$rc" -ne 0 ]; then echo "PASS a release binary without SHA256SUMS asks for the source build"; else echo "FAIL a release binary without SHA256SUMS must ask for the source build"; fails=$((fails + 1)); fi
+same_log "a release binary without SHA256SUMS is never executed" \
+  "WARN: release v9.9.9 publishes no SHA256SUMS, so felis-linux-amd64 cannot be verified; building v9.9.9 from source on this host instead"
+refused_download "a release binary without SHA256SUMS"
 
 # --- cloudflared is a pinned release, checked before it is installed ---------------------
 cfblock="$(awk '/^install_cloudflared\(\) \{/,/^}/' "$BS")"
