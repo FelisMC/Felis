@@ -227,11 +227,13 @@ export interface BackupView {
 }
 
 /** ServerJob is one row of GET /api/v1/servers/{name}/jobs — the observable
- *  outcome of an async backup/restore Job. The API only enqueues Jobs, so this
- *  projection is how a 202 that later failed becomes visible in the panel. */
+ *  outcome of an async backup/restore/export Job. The API only enqueues Jobs, so
+ *  this projection is how a 202 that later failed becomes visible in the panel.
+ *  An export_world Job holds the world until its download ends; an
+ *  export_backup Job only reads the backup store. */
 export interface ServerJob {
   name: string;
-  kind: string; // "backup" | "restore"
+  kind: string; // "backup" | "restore" | "export_world" | "export_backup"
   state: string; // "running" | "succeeded" | "failed"
   message?: string;
   started_at?: string;
@@ -245,6 +247,28 @@ export interface ServerJob {
   /** A backup felis-api took on its own: the daily restore point of a world
    *  played since its last one, taken once the server stops. */
   scheduled?: boolean;
+}
+
+// ---- World export (internal/api/exports.go exportTicketView, exportStatusView) ----
+
+/** ExportTicket is the 202 of POST /servers/{name}/backups/{id}/export and
+ *  /servers/{name}/world/export: the one-time handle of a download being
+ *  prepared. Only the viewer who asked can read or use it, and it opens the
+ *  download once. `filename` is what the browser saves. */
+export interface ExportTicket {
+  ticket: string;
+  state: "pending";
+  filename: string;
+}
+
+/** ExportStatus is GET /exports/{ticket}: "pending" while the export Job is on
+ *  its way, "ready" once felis-api holds the archive and waits (90 s) for the
+ *  browser to fetch it, "failed" when the Job gave up, with its reason in
+ *  message. A ticket already downloaded or past its time answers 410
+ *  export_expired instead. */
+export interface ExportStatus {
+  state: "pending" | "ready" | "failed";
+  message?: string;
 }
 
 // ---- Scheduled tasks (internal/api/schedules.go Schedule, scheduleInput) ----

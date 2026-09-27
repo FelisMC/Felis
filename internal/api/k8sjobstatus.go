@@ -25,6 +25,7 @@ const (
 
 	jobManagedByBackup  = "felis-backup"
 	jobManagedByRestore = "felis-restore"
+	jobManagedByExport  = "felis-export"
 
 	// jobBackupReasonLabel marks the backup Job of a scheduled restore point
 	// (backupjob.LabelReason).
@@ -45,9 +46,9 @@ func NewK8sJobStatus(c client.Client, namespace string) *K8sJobStatus {
 	return &K8sJobStatus{c: c, namespace: namespace}
 }
 
-// LatestJobs lists this server's backup/restore Jobs newest-first, capped so a
-// long history cannot balloon the response. Jobs the label selector catches but
-// another component created (unknown managed-by) are dropped.
+// LatestJobs lists this server's backup, restore and export Jobs newest-first,
+// capped so a long history cannot balloon the response. Jobs the label selector
+// catches but another component created (unknown managed-by) are dropped.
 func (k *K8sJobStatus) LatestJobs(ctx context.Context, serverName string) ([]AsyncJob, error) {
 	var list batchv1.JobList
 	if err := k.c.List(ctx, &list, client.InNamespace(k.namespace),
@@ -147,7 +148,10 @@ func jobToAsyncJob(j *batchv1.Job) (AsyncJob, bool) {
 }
 
 // RunningWorldJobs counts the backup and restore Jobs of every server that
-// have yet to finish (BackupScheduler waits for them).
+// have yet to finish (BackupScheduler waits for them). Export Jobs are left
+// out: one moves at its browser's pace, a download left running for an hour
+// must not hold every world's restore point back, and the export limits
+// (exportMaxActive) already bound the load they add.
 func (k *K8sJobStatus) RunningWorldJobs(ctx context.Context) (int, error) {
 	var list batchv1.JobList
 	if err := k.c.List(ctx, &list, client.InNamespace(k.namespace), client.HasLabels{jobManagedByLabel}); err != nil {
@@ -156,7 +160,7 @@ func (k *K8sJobStatus) RunningWorldJobs(ctx context.Context) (int, error) {
 	n := 0
 	for i := range list.Items {
 		j := &list.Items[i]
-		if _, ok := jobOutcome(j); ok && !maintenance.JobFinished(j) {
+		if _, ok := jobOutcome(j); ok && j.Labels[jobManagedByLabel] != jobManagedByExport && !maintenance.JobFinished(j) {
 			n++
 		}
 	}
@@ -225,6 +229,13 @@ func jobOutcome(j *batchv1.Job) (AsyncJob, bool) {
 		kind = "backup"
 	case jobManagedByRestore:
 		kind = "restore"
+	case jobManagedByExport:
+		// As maintenance.JobKind reads it: only a Job that says it reads a
+		// backup is not a world export.
+		kind = "export_world"
+		if j.Labels[maintenance.LabelExportMode] == maintenance.ExportModeBackup {
+			kind = "export_backup"
+		}
 	default:
 		return AsyncJob{}, false
 	}

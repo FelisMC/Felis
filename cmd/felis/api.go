@@ -33,6 +33,7 @@ import (
 	"felis.lolicon.best/internal/restore"
 	"felis.lolicon.best/internal/retention"
 	"felis.lolicon.best/internal/submit"
+	"felis.lolicon.best/internal/worldexport"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
@@ -292,6 +293,17 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "felis api: backup executor disabled (needs FELIS_IMAGE and FELIS_BACKUP_PVC) — backup endpoint returns 503")
 	}
 
+	// World export: a weak-SA Job mounts the world PVC, or the backup PVC, read-only
+	// and PUTs the archive to the internal face, which streams it on to the owner's
+	// browser (internal/worldexport). A backup export mounts the backup PVC, so it
+	// is wired under the restore gate; otherwise the export routes return 503.
+	var exporter api.Exporter
+	if felisImage != "" && backupPVC != "" {
+		exporter = worldexport.New(clientset, exportConfig(cfg, felisImage, backupPVC))
+	} else {
+		fmt.Fprintln(stderr, "felis api: world export disabled (needs FELIS_IMAGE and FELIS_BACKUP_PVC) — export endpoints return 503")
+	}
+
 	// Server file editor: a weak-SA Job mounts ONLY the target world PVC and runs
 	// `felis files`, printing its result for felis-api to read back through
 	// pods/log (see internal/fileedit). It needs FELIS_IMAGE but — unlike restore
@@ -368,6 +380,7 @@ func cmdAPI(args []string, stdout, stderr io.Writer) int {
 		// namespace, where the internal face is reachable like it is for the login
 		// gate.
 		InternalBaseURL: internalAPIBaseURL(),
+		Exporter:        exporter,
 		Submissions:     submissions,
 		Mailer:          mailer,
 		Schedules:       repo,
@@ -680,6 +693,17 @@ func restoreConfig(cfg *config.Config, image, backupPVC string) restore.Config {
 // mounts to self-record its world_backups row.
 func backupConfig(cfg *config.Config, image, backupPVC string) backupjob.Config {
 	return backupjob.Config{
+		Namespace:  cfg.K8s.Namespace,
+		Image:      image,
+		BackupPVC:  backupPVC,
+		BackupRoot: cfg.Archive.LocalPath,
+	}
+}
+
+// exportConfig builds the world export executor's config. BackupRoot mirrors
+// restoreConfig: the stored refs are absolute paths under [archive] local_path.
+func exportConfig(cfg *config.Config, image, backupPVC string) worldexport.Config {
+	return worldexport.Config{
 		Namespace:  cfg.K8s.Namespace,
 		Image:      image,
 		BackupPVC:  backupPVC,

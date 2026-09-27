@@ -22,6 +22,7 @@ Commands:
   backup            Archive a world into the backup store and record it (internal Job entrypoint)
   backup-now        Archive every user server's world now, one at a time (or the named ones; -stop stops running ones first; prints the plan, -yes applies; requires root/sudo)
   files             List, read, write, mkdir, delete, rename or upload one path in a stopped server's world (internal Job entrypoint)
+  export            Archive a stopped server's world, or read one of its backups, and hand it to felis-api for download (internal Job entrypoint)
   egress-gate       Hold a build or game server pod until its egress NetworkPolicy is enforced (internal init container entrypoint)
   fetch-context     Fetch and extract a submission's build context (internal Job entrypoint)
   scan-gate         Apply the scan policy to a build's Trivy report and hand felis-api the report and SBOM (internal Job entrypoint)
@@ -66,6 +67,7 @@ var commands = map[string]func(args []string, stdout, stderr io.Writer) int{
 	"backup":             cmdBackup,
 	"backup-now":         cmdBackupNow,
 	"files":              cmdFiles,
+	"export":             cmdExport,
 	"egress-gate":        cmdEgressGate,
 	"fetch-context":      cmdFetchContext,
 	"scan-gate":          cmdScanGate,

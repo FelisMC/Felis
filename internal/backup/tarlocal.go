@@ -426,6 +426,14 @@ func writeTarGz(ctx context.Context, w io.Writer, srcDir string) (tarStats, erro
 	return st, nil
 }
 
+// WriteTarGz archives srcDir into w laid out exactly as Archive lays out a
+// backup, so an exported world restores like any other archive, and returns the
+// entries it left out. The world export Job streams it straight into its upload.
+func WriteTarGz(ctx context.Context, w io.Writer, srcDir string) ([]string, error) {
+	st, err := writeTarGz(ctx, w, srcDir)
+	return st.skipped, err
+}
+
 // dirMeta is a directory's recorded permission bits and modification time,
 // applied once nothing more is written into it.
 type dirMeta struct {

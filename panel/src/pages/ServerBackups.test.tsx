@@ -16,6 +16,10 @@ const calls = vi.hoisted(() => ({
   stop: vi.fn(),
   restoreBackup: vi.fn(),
   deleteBackup: vi.fn(),
+  startBackupExport: vi.fn(),
+  startWorldExport: vi.fn(),
+  exportStatus: vi.fn(),
+  exportDownloadURL: vi.fn(),
 }));
 vi.mock("@/lib/tier", () => ({
   useTier: () => ({
@@ -203,7 +207,7 @@ describe("ServerBackups back up now", () => {
     renderPage();
     await screen.findByText("Page 1 of 3");
     await vi.waitFor(() => expect(backUp().disabled).toBe(true));
-    expect(backUp().title).toBe("A backup or restore is already running; back up once it finishes.");
+    expect(backUp().title).toBe("A backup, restore or world export is already running; back up once it finishes.");
   });
 
   it("keeps the page when a reread fails, and says the status may be stale", async () => {
@@ -367,5 +371,243 @@ describe("ServerBackups delete", () => {
     await vi.waitFor(() => expect(calls.listBackups).toHaveBeenLastCalledWith({ server: "survival", limit: 20, offset: 0 }));
     expect(await screen.findByText("2 days ago")).toBeTruthy();
     expect(screen.queryByText(/^Page \d+ of/)).toBeNull();
+  });
+});
+
+describe("ServerBackups export", () => {
+  const row = (when: string) => screen.getByText(when).closest("tr") as HTMLElement;
+  const downloadIn = (when: string) =>
+    within(row(when)).getByRole("button", { name: "Download backup" }) as HTMLButtonElement;
+  const exportWorld = () => screen.getByRole("button", { name: /^(Export world|Preparing…)$/ }) as HTMLButtonElement;
+  const backUp = () => screen.getByRole("button", { name: "Back up now" }) as HTMLButtonElement;
+  const text = (key: string, opts?: Record<string, string>) => i18next.t(key, opts);
+
+  // Every hidden link the page clicks, as it was at the click.
+  function watchLinks() {
+    const clicked: { href: string | null; download: string; hidden: boolean; connected: boolean }[] = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      clicked.push({
+        href: this.getAttribute("href"),
+        download: this.download,
+        hidden: this.hidden,
+        connected: this.isConnected,
+      });
+    });
+    return clicked;
+  }
+
+  // readyAfter answers "pending" for the first n reads of the ticket, then "ready".
+  function readyAfter(n: number) {
+    let reads = 0;
+    calls.exportStatus.mockImplementation(async () => ({ state: reads++ < n ? "pending" : "ready" }));
+  }
+
+  beforeEach(() => {
+    calls.listBackups.mockResolvedValue({ backups: [backup("bk-1", 3), backup("bk-2", 4)], total: 2 });
+    calls.exportDownloadURL.mockImplementation(async (ticket: string) => `/api/v1/exports/${ticket}/download`);
+  });
+
+  it("downloads a backup through a hidden link once felis-api holds it, never before", async () => {
+    const clicked = watchLinks();
+    calls.startBackupExport.mockResolvedValue({ ticket: "t1", state: "pending", filename: "survival-backup-bk-1.tar.gz" });
+    readyAfter(2);
+    renderPage();
+    await screen.findByText("3 hours ago");
+    vi.useFakeTimers();
+    await act(async () => {
+      fireEvent.click(downloadIn("3 hours ago"));
+    });
+    expect(calls.startBackupExport).toHaveBeenCalledExactlyOnceWith("survival", "bk-1");
+    expect(screen.getByRole("status").textContent).toBe(text("backups:export_progress_backup"));
+    // One download at a time: every other export waits, and says why.
+    expect(downloadIn("3 hours ago").disabled).toBe(true);
+    expect(downloadIn("4 hours ago").disabled).toBe(true);
+    expect(downloadIn("4 hours ago").parentElement?.title).toBe(text("backups:export_another"));
+    expect(exportWorld().disabled).toBe(true);
+
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    expect(calls.exportStatus).toHaveBeenCalledTimes(2);
+    expect(calls.exportStatus).toHaveBeenCalledWith("t1");
+    expect(clicked).toEqual([]);
+
+    await act(() => vi.advanceTimersByTimeAsync(2_000));
+    expect(calls.exportDownloadURL).toHaveBeenCalledExactlyOnceWith("t1");
+    expect(clicked).toEqual([
+      { href: "/api/v1/exports/t1/download", download: "survival-backup-bk-1.tar.gz", hidden: true, connected: true },
+    ]);
+    expect(document.querySelectorAll("a[download]")).toHaveLength(0);
+    expect(screen.getByRole("status").textContent).toBe(
+      text("backups:export_started_backup", { filename: "survival-backup-bk-1.tar.gz" }),
+    );
+    expect(downloadIn("4 hours ago").disabled).toBe(false);
+    expect(exportWorld().disabled).toBe(false);
+
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(calls.exportStatus).toHaveBeenCalledTimes(3);
+
+    // The next download can start once this one has.
+    await act(async () => {
+      fireEvent.click(downloadIn("4 hours ago"));
+    });
+    expect(calls.startBackupExport).toHaveBeenLastCalledWith("survival", "bk-2");
+    expect(calls.startBackupExport).toHaveBeenCalledTimes(2);
+  });
+
+  it("starts one export for a double click", async () => {
+    watchLinks();
+    calls.startBackupExport.mockResolvedValue({ ticket: "t1", state: "pending", filename: "a.tar.gz" });
+    readyAfter(0);
+    renderPage();
+    await screen.findByText("3 hours ago");
+    await act(async () => {
+      fireEvent.click(downloadIn("3 hours ago"));
+      fireEvent.click(downloadIn("3 hours ago"));
+    });
+    expect(calls.startBackupExport).toHaveBeenCalledTimes(1);
+  });
+
+  it("exports the stopped world and holds the world buttons meanwhile", async () => {
+    const clicked = watchLinks();
+    calls.startWorldExport.mockResolvedValue({ ticket: "t2", state: "pending", filename: "survival-world-20231114-221320.tar.gz" });
+    readyAfter(1);
+    renderPage();
+    await screen.findByText("3 hours ago");
+    expect(exportWorld().disabled).toBe(false);
+    expect(exportWorld().title).toBe(text("backups:export_world_hint"));
+    // The export Job holds the world as soon as it exists.
+    calls.serverJobs.mockResolvedValue([{ name: "export-survival-aa", kind: "export_world", state: "running" }]);
+    vi.useFakeTimers();
+    await act(async () => {
+      fireEvent.click(exportWorld());
+    });
+    expect(calls.startWorldExport).toHaveBeenCalledExactlyOnceWith("survival");
+    expect(calls.startBackupExport).not.toHaveBeenCalled();
+    expect(exportWorld().textContent).toBe("Preparing…");
+    expect(screen.getByRole("status").textContent).toBe(text("backups:export_progress_world"));
+    expect(backUp().disabled).toBe(true);
+
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    expect(clicked).toEqual([
+      { href: "/api/v1/exports/t2/download", download: "survival-world-20231114-221320.tar.gz", hidden: true, connected: true },
+    ]);
+    expect(screen.getByRole("status").textContent).toBe(
+      text("backups:export_started_world", { filename: "survival-world-20231114-221320.tar.gz" }),
+    );
+    // Until the download ends the Job still holds the world.
+    expect(exportWorld().textContent).toBe("Export world");
+    expect(exportWorld().disabled).toBe(true);
+    expect(exportWorld().title).toBe(text("backups:export_world_busy"));
+    expect(backUp().title).toBe(text("backups:backup_world_busy"));
+    expect(screen.getByText("World export", { selector: "li span" })).toBeTruthy();
+  });
+
+  it("offers the world export only while the server is stopped", async () => {
+    calls.status.mockResolvedValue({ name: "survival", displayName: "Survival", phase: "Running", desiredState: "Running" });
+    renderPage();
+    await screen.findByText("3 hours ago");
+    expect(exportWorld().disabled).toBe(true);
+    expect(exportWorld().title).toBe(text("backups:export_requires_stopped"));
+    // A backup is still downloadable while the server runs.
+    expect(downloadIn("3 hours ago").disabled).toBe(false);
+  });
+
+  it("waits for a backup or restore that holds the world, but not for a backup download", async () => {
+    calls.serverJobs.mockResolvedValue([{ name: "backup-survival-aa", kind: "backup", state: "running" }]);
+    const { unmount } = renderPage();
+    await screen.findByText("3 hours ago");
+    await vi.waitFor(() => expect(exportWorld().disabled).toBe(true));
+    expect(exportWorld().title).toBe(text("backups:export_world_busy"));
+    unmount();
+
+    calls.serverJobs.mockResolvedValue([{ name: "export-survival-bb", kind: "export_backup", state: "running" }]);
+    renderPage();
+    expect(await screen.findByText("Backup download", { selector: "li span" })).toBeTruthy();
+    expect(exportWorld().disabled).toBe(false);
+    expect(backUp().disabled).toBe(false);
+  });
+
+  it("offers a download on exactly the rows a restore is offered on", async () => {
+    calls.listBackups.mockResolvedValue({
+      backups: [
+        backup("bk-ok", 3),
+        backup("bk-bad", 4, true),
+        { ...backup("bk-old", 5), expires_at: new Date(Date.now() - 3600_000).toISOString() },
+      ],
+      total: 3,
+    });
+    renderPage();
+    await screen.findByText("3 hours ago");
+    for (const [when, offered] of [
+      ["3 hours ago", true],
+      ["4 hours ago", false],
+      ["5 hours ago", false],
+    ] as const) {
+      expect(within(row(when)).queryByRole("button", { name: "Restore" }) !== null).toBe(offered);
+      expect(within(row(when)).queryByRole("button", { name: "Download backup" }) !== null).toBe(offered);
+    }
+  });
+
+  it("says why a failed export produced nothing", async () => {
+    const clicked = watchLinks();
+    calls.startBackupExport.mockResolvedValue({ ticket: "t3", state: "pending", filename: "a.tar.gz" });
+    calls.exportStatus
+      .mockResolvedValueOnce({ state: "pending" })
+      .mockResolvedValue({ state: "failed", message: "felis export: ref is not under backup root" });
+    renderPage();
+    await screen.findByText("3 hours ago");
+    vi.useFakeTimers();
+    await act(async () => {
+      fireEvent.click(downloadIn("3 hours ago"));
+    });
+    await act(() => vi.advanceTimersByTimeAsync(4_000));
+    expect(screen.getByRole("alert").textContent).toBe(
+      text("backups:export_failed_because", { reason: "felis export: ref is not under backup root" }),
+    );
+    expect(clicked).toEqual([]);
+    expect(calls.exportDownloadURL).not.toHaveBeenCalled();
+    expect(downloadIn("3 hours ago").disabled).toBe(false);
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(calls.exportStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["the limits", "backup", { status: 429, code: "export_busy", message: "one export at a time per user" }, "errors:export_busy"],
+    ["a stale ticket", "status", { status: 410, code: "export_expired", message: "this export has expired" }, "errors:export_expired"],
+    ["an unwired deployment", "backup", { status: 503, code: "export_unavailable", message: "export is not configured" }, "errors:export_unavailable"],
+    ["a server that is not stopped", "world", { status: 409, code: "not_stopped", message: "stop the server" }, "backups:export_requires_stopped"],
+  ] as const)("words a refusal for %s", async (_, where, err, key) => {
+    const clicked = watchLinks();
+    calls.startBackupExport.mockResolvedValue({ ticket: "t4", state: "pending", filename: "a.tar.gz" });
+    calls.startWorldExport.mockRejectedValue(err);
+    if (where === "backup") calls.startBackupExport.mockRejectedValue(err);
+    calls.exportStatus.mockRejectedValue(err);
+    renderPage();
+    await screen.findByText("3 hours ago");
+    vi.useFakeTimers();
+    await act(async () => {
+      fireEvent.click(where === "world" ? exportWorld() : downloadIn("3 hours ago"));
+    });
+    await act(() => vi.advanceTimersByTimeAsync(2_000));
+    expect(screen.getByRole("alert").textContent).toBe(text(key));
+    expect(clicked).toEqual([]);
+    expect(exportWorld().disabled).toBe(false);
+  });
+
+  it("stops reading the ticket once the page is left", async () => {
+    const clicked = watchLinks();
+    calls.startBackupExport.mockResolvedValue({ ticket: "t5", state: "pending", filename: "a.tar.gz" });
+    readyAfter(1);
+    const { unmount } = renderPage();
+    await screen.findByText("3 hours ago");
+    vi.useFakeTimers();
+    await act(async () => {
+      fireEvent.click(downloadIn("3 hours ago"));
+    });
+    await act(() => vi.advanceTimersByTimeAsync(2_000));
+    expect(calls.exportStatus).toHaveBeenCalledTimes(1);
+    unmount();
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    expect(calls.exportStatus).toHaveBeenCalledTimes(1);
+    expect(clicked).toEqual([]);
   });
 });

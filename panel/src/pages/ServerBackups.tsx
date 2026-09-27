@@ -5,6 +5,7 @@ import {
   Archive,
   CheckCircle2,
   Clock,
+  Download,
   HardDrive,
   Loader2,
   RotateCcw,
@@ -45,13 +46,15 @@ const BACKUP_PAGE_SIZE = 20;
 
 const CELL = "whitespace-nowrap md:px-4 md:py-3.5";
 
-/** BackupRow is one backup in the table, with its own restore and delete actions. `isLatest`
- *  marks the row a restore with no pick recovers: the newest one that is not
- *  corrupt, which is what the backend's LatestBackup selects. Under the reason it
- *  shows what the reaper's read-back found — corrupt (restore refused), verified,
- *  or entries the archive could not hold. `showOwner` surfaces the former owner
- *  (admins list every world's backups; a user only ever sees their own). `only`
- *  says this is the one backup the server has, which the delete confirm names. */
+/** BackupRow is one backup in the table, with its own restore, download and delete
+ *  actions. `isLatest` marks the row a restore with no pick recovers: the newest
+ *  one that is not corrupt, which is what the backend's LatestBackup selects.
+ *  Under the reason it shows what the reaper's read-back found — corrupt (restore
+ *  refused), verified, or entries the archive could not hold. `showOwner`
+ *  surfaces the former owner (admins list every world's backups; a user only
+ *  ever sees their own). `only` says this is the one backup the server has,
+ *  which the delete confirm names. `exporting` is the download the page is
+ *  preparing, if any. */
 function BackupRow({
   b,
   isLatest,
@@ -61,8 +64,10 @@ function BackupRow({
   serverName,
   jobs,
   only,
+  exporting,
   onReloadStatus,
   onDeleted,
+  onExport,
 }: {
   b: BackupView;
   isLatest: boolean;
@@ -72,8 +77,10 @@ function BackupRow({
   serverName: string;
   jobs: ServerJob[];
   only: boolean;
+  exporting: ExportTarget | null;
   onReloadStatus: () => void;
   onDeleted: (gone: boolean) => void;
+  onExport: (target: ExportTarget) => void;
 }) {
   const { t } = useTranslation("backups");
   const expired = isExpired(b.expires_at, now);
@@ -147,14 +154,17 @@ function BackupRow({
               {t("corrupt_short")}
             </span>
           ) : !expired ? (
-            <RestoreControls
-              serverName={serverName}
-              backup={b}
-              now={now}
-              locale={locale}
-              onReloadStatus={onReloadStatus}
-              buttonVariant={isLatest ? "destructive" : "outline"}
-            />
+            <>
+              <RestoreControls
+                serverName={serverName}
+                backup={b}
+                now={now}
+                locale={locale}
+                onReloadStatus={onReloadStatus}
+                buttonVariant={isLatest ? "destructive" : "outline"}
+              />
+              <DownloadBackupButton id={b.id} exporting={exporting} onExport={onExport} />
+            </>
           ) : (
             <span className="text-xs text-muted-foreground/40 font-medium px-3 py-1.5">
               {t("expired")}
@@ -183,6 +193,57 @@ function restoreMayRead(jobs: ServerJob[], id: string): boolean {
       (j.kind === "restore" && j.state === "running") ||
       (j.then_restore === "pending" && j.restore_backup_id === id),
   );
+}
+
+/** ExportTarget is what a download copies: the server's current world, or one of
+ *  its backups. */
+type ExportTarget = { kind: "world" } | { kind: "backup"; id: string };
+
+/** DownloadBackupButton asks for a copy of one backup. The page prepares the
+ *  download (one at a time, as felis-api allows one per person), so the button
+ *  spins while it is this backup's and waits while it is another's. */
+function DownloadBackupButton({
+  id,
+  exporting,
+  onExport,
+}: {
+  id: string;
+  exporting: ExportTarget | null;
+  onExport: (target: ExportTarget) => void;
+}) {
+  const { t } = useTranslation("backups");
+  const mine = exporting?.kind === "backup" && exporting.id === id;
+  // A disabled button takes no pointer events, so the reason sits on a wrapper.
+  return (
+    <span title={exporting && !mine ? t("export_another") : undefined}>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="h-8 w-8 text-muted-foreground hover:bg-primary/10 hover:text-primary"
+        onClick={() => onExport({ kind: "backup", id })}
+        disabled={exporting !== null}
+        aria-label={t("download_btn")}
+        title={t("download_btn")}
+      >
+        {mine ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+      </Button>
+    </span>
+  );
+}
+
+/** saveDownload hands a ready export to the browser the way a link would: a
+ *  hidden <a download> it clicks once. felis-api answers with an attachment, so
+ *  the browser's own download manager streams the archive to disk; reading it
+ *  into a Blob first would hold a whole world in the tab's memory. */
+function saveDownload(url: string, filename: string) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.rel = "noopener";
+  a.hidden = true;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 /** DeleteBackupButton deletes one backup behind a confirm that says what goes: the
@@ -409,6 +470,9 @@ const POLL_MS = 2500;
 // them in game and holds the stop 30 s, then the pre-stop save and the pod's own
 // shutdown save follow.
 const MAX_POLLS = 48;
+// How often an export being prepared rereads its ticket: the Job needs a few
+// seconds to start, and a ready ticket waits 90 s for the browser.
+const EXPORT_POLL_MS = 2000;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function RestoreControls({
@@ -566,7 +630,8 @@ function RestoreControls({
 
 /** ServerBackups is the per-server backup surface (/servers/:name/backups): view the
  *  world archives kept for this server and (B2) roll the world back to any of them
- *  that has not expired. It owns its own gating — ownership from /me/servers, since GET status
+ *  that has not expired, or download one, or the stopped world itself, as a
+ *  .tar.gz. It owns its own gating — ownership from /me/servers, since GET status
  *  never carries `owned` — but deliberately does NOT gate on readiness the way
  *  ServerPlayers does: backups are read from Postgres, not RCON, and a restore in
  *  fact requires the server to be STOPPED, so this page must work while it is asleep. */
@@ -667,6 +732,68 @@ export function ServerBackups() {
     backupsQ.reload();
   }
 
+  // The download being prepared. The ref guards a second click landing before
+  // the render that disables the buttons; alive stops the wait once the page
+  // is left (the export is then abandoned: nobody fetches it).
+  const [exporting, setExporting] = useState<ExportTarget | null>(null);
+  const exportRun = useRef(false);
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+
+  // A download is prepared before it starts: the POST answers a one-time ticket,
+  // an export Job hands the archive to felis-api, and this reads the ticket
+  // until felis-api holds it. Only then does the browser fetch it, as a link, so
+  // any size of world streams straight to disk. A ready ticket waits 90 s for
+  // that fetch, so it follows at once. A pending ticket ends on its own (410
+  // export_expired after 10 min), which bounds the wait.
+  async function runExport(target: ExportTarget) {
+    if (exportRun.current) return;
+    exportRun.current = true;
+    setExporting(target);
+    setBackupMsg(null);
+    try {
+      const tk =
+        target.kind === "world" ? await api.startWorldExport(name) : await api.startBackupExport(name, target.id);
+      jobsQ.reload(); // a world export now holds the world
+      for (;;) {
+        await sleep(EXPORT_POLL_MS);
+        if (!alive.current) return;
+        const s = await api.exportStatus(tk.ticket);
+        if (s.state === "ready") break;
+        if (s.state === "failed") {
+          setBackupMsg({
+            kind: "error",
+            text: s.message ? t("export_failed_because", { reason: s.message }) : t("export_failed"),
+          });
+          return;
+        }
+      }
+      saveDownload(await api.exportDownloadURL(tk.ticket), tk.filename);
+      setBackupMsg({
+        kind: "success",
+        text: t(target.kind === "world" ? "export_started_world" : "export_started_backup", { filename: tk.filename }),
+      });
+    } catch (e: any) {
+      if (!alive.current) return;
+      setBackupMsg({
+        kind: "error",
+        text:
+          target.kind === "world" && e && e.code === "not_stopped" ? t("export_requires_stopped") : humanizeError(e),
+      });
+    } finally {
+      exportRun.current = false;
+      if (alive.current) {
+        setExporting(null);
+        jobsQ.reload();
+      }
+    }
+  }
+
   const back = (
     <BackLink to={`/servers/${name}`} label={t("back_to_console")} />
   );
@@ -699,10 +826,13 @@ export function ServerBackups() {
   const total = backupsQ.data?.total ?? 0;
   const latestID = page === 1 ? all.find((b) => !b.corrupt)?.id : undefined;
   // A server just woken still reads Stopped until its pod starts, so the gate is
-  // where it is heading. A backup or restore already under way holds the world
-  // (the API would answer 409), so the button waits for it too.
+  // where it is heading. A backup, restore or world export already under way
+  // holds the world (the API would answer 409), so the buttons wait for it too;
+  // a backup download only reads the backup store and holds nothing.
   const phase = shownPhase(statusQ.data);
-  const worldBusy = (jobsQ.data ?? []).some((j) => j.state === "running" || j.then_restore === "pending");
+  const worldBusy = (jobsQ.data ?? []).some(
+    (j) => (j.state === "running" && j.kind !== "export_backup") || j.then_restore === "pending",
+  );
 
   const header = (
     <PageHeader
@@ -711,6 +841,32 @@ export function ServerBackups() {
       subtitle={t("title")}
       actions={
         <div className="flex items-center gap-2">
+          {owned && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => runExport({ kind: "world" })}
+              disabled={exporting !== null || phase !== "Stopped" || worldBusy}
+              title={
+                exporting?.kind === "backup"
+                  ? t("export_another")
+                  : exporting
+                    ? undefined
+                    : phase !== "Stopped"
+                      ? t("export_requires_stopped")
+                      : worldBusy
+                        ? t("export_world_busy")
+                        : t("export_world_hint")
+              }
+            >
+              {exporting?.kind === "world" ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Download className="h-4 w-4" />
+              )}
+              {exporting?.kind === "world" ? t("export_preparing") : t("export_world")}
+            </Button>
+          )}
           {owned && (
             <Button
               size="sm"
@@ -753,6 +909,15 @@ export function ServerBackups() {
         <NotYours title={t("not_yours_title")} body={t("not_yours_body")} />
       ) : (
         <div className="space-y-4">
+          {exporting && (
+            <div
+              role="status"
+              className="flex items-center gap-2 rounded-md border border-sky-500/20 bg-sky-500/10 p-3 text-sm text-sky-600 dark:text-sky-400"
+            >
+              <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
+              <p>{t(exporting.kind === "world" ? "export_progress_world" : "export_progress_backup")}</p>
+            </div>
+          )}
           {backupMsg && <MessageLine kind={backupMsg.kind} message={backupMsg.text} />}
           <p className="text-sm text-muted-foreground">{t("subtitle")}</p>
           {backupsQ.loading && !backupsQ.data ? (
@@ -787,11 +952,13 @@ export function ServerBackups() {
                           serverName={name}
                           jobs={jobsQ.data ?? []}
                           only={total === 1}
+                          exporting={exporting}
                           onReloadStatus={() => {
                             statusQ.reload();
                             jobsQ.reload();
                           }}
                           onDeleted={handleDeleted}
+                          onExport={runExport}
                         />
                       ))}
                     </tbody>
@@ -811,8 +978,8 @@ export function ServerBackups() {
             </>
           )}
 
-          {/* Async world-operation history: every backup/restore 202 lands here, so a
-              Job that later failed stays visible (with its message) without kubectl. */}
+          {/* Async world-operation history: every backup/restore/export 202 lands here,
+              so a Job that later failed stays visible (with its message) without kubectl. */}
           {jobsQ.error ? (
             <ErrorState error={jobsQ.error} onRetry={jobsQ.reload} />
           ) : (
@@ -833,6 +1000,8 @@ export function ServerBackups() {
                           <div className="flex min-w-0 items-center gap-2">
                             {j.kind === "restore" ? (
                               <RotateCcw className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
+                            ) : j.kind === "export_world" || j.kind === "export_backup" ? (
+                              <Download className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
                             ) : (
                               <Archive className="h-3.5 w-3.5 shrink-0 text-muted-foreground/60" />
                             )}
@@ -845,6 +1014,10 @@ export function ServerBackups() {
                                   : j.scheduled
                                   ? t("job_scheduled")
                                   : t("job_backup")
+                                : j.kind === "export_world"
+                                ? t("job_export_world")
+                                : j.kind === "export_backup"
+                                ? t("job_export_backup")
                                 : j.kind}
                             </span>
                             {at && (

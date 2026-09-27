@@ -958,11 +958,11 @@ func (p *PGRepo) LatestBackup(ctx context.Context, serverName string) (*BackupRe
 // BackupByID returns a single present backup by its id, or ErrNotFound.
 func (p *PGRepo) BackupByID(ctx context.Context, id string) (*BackupRecord, error) {
 	const q = `SELECT id, server_name, COALESCE(former_owner, ''), backup_ref, COALESCE(size_bytes, 0),
-		corrupt_at IS NOT NULL
+		corrupt_at IS NOT NULL, COALESCE(sha256, '')
 		FROM world_backups WHERE id = $1 AND status = 'present'`
 	var b BackupRecord
 	switch err := p.db.QueryRowContext(ctx, q, id).Scan(
-		&b.ID, &b.ServerName, &b.FormerOwner, &b.BackupRef, &b.SizeBytes, &b.Corrupt); {
+		&b.ID, &b.ServerName, &b.FormerOwner, &b.BackupRef, &b.SizeBytes, &b.Corrupt, &b.SHA256); {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
 	case err != nil:

@@ -7,6 +7,7 @@ import (
 	"felis.lolicon.best/internal/backupjob"
 	"felis.lolicon.best/internal/fileedit"
 	"felis.lolicon.best/internal/restore"
+	"felis.lolicon.best/internal/worldexport"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 )
@@ -66,6 +67,20 @@ func filesJob(t *testing.T, server, op string) batchv1.Job {
 	return *j
 }
 
+func exportJob(t *testing.T, server, mode string) batchv1.Job {
+	t.Helper()
+	j, err := worldexport.ExportJob(worldexport.JobParams{
+		Server: server, ID: "0011223344556677", Mode: mode, WorldPVC: "world-" + server + "-0",
+		BackupPVC: "felis-backups", BackupRef: "/backups/a.tar.gz", TargetURL: "http://api/x", Token: "t",
+		Namespace: "minecraft", ServiceAccount: "felis-restore", Image: "felis:1",
+		BackupRoot: "/backups", WorldsRoot: "/world",
+	})
+	if err != nil {
+		t.Fatalf("ExportJob: %v", err)
+	}
+	return *j
+}
+
 func finished(j batchv1.Job, cond batchv1.JobConditionType) batchv1.Job {
 	j.Status.Conditions = append(j.Status.Conditions, batchv1.JobCondition{Type: cond, Status: corev1.ConditionTrue})
 	return j
@@ -89,6 +104,8 @@ func TestJobKindMatchesTheExecutors(t *testing.T) {
 		{"file upload", filesJob(t, "survival", fileedit.OpUpload), KindFileWrite, true},
 		{"file read", filesJob(t, "survival", fileedit.OpRead), "", false},
 		{"file list", filesJob(t, "survival", fileedit.OpList), "", false},
+		{"world export", exportJob(t, "survival", worldexport.ModeWorld), KindExport, true},
+		{"backup export", exportJob(t, "survival", worldexport.ModeBackup), "", false},
 	} {
 		kind, ok := JobKind(&tc.job)
 		if kind != tc.kind || ok != tc.ok {
@@ -206,5 +223,19 @@ func TestHolderFromLock(t *testing.T) {
 		if held && kind != KindBackup {
 			t.Errorf("%s: kind = %q", tc.name, kind)
 		}
+	}
+}
+
+// An export Job that does not say it reads a backup holds, like a files Job
+// with an unknown mode: a world export a newer build labels differently must
+// not let the server start under it.
+func TestExportJobWithoutModeHolds(t *testing.T) {
+	j := exportJob(t, "survival", worldexport.ModeBackup)
+	if j.Labels[LabelExportMode] != ExportModeBackup {
+		t.Fatalf("export mode label = %q", j.Labels[LabelExportMode])
+	}
+	delete(j.Labels, LabelExportMode)
+	if kind, ok := JobKind(&j); !ok || kind != KindExport {
+		t.Fatalf("an export Job without a mode = %q, %v; want export", kind, ok)
 	}
 }

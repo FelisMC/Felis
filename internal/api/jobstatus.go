@@ -14,7 +14,7 @@ import (
 // object an operator with kubectl could read. The route is the API-side outlet.
 type AsyncJob struct {
 	Name       string    `json:"name"`
-	Kind       string    `json:"kind"`  // "backup" | "restore"
+	Kind       string    `json:"kind"`  // "backup" | "restore" | "export_world" | "export_backup"
 	State      string    `json:"state"` // "running" | "succeeded" | "failed"
 	Message    string    `json:"message,omitempty"`
 	StartedAt  time.Time `json:"started_at,omitzero"`

@@ -1,6 +1,6 @@
 // Package maintenance is the per-server mutual exclusion between a game server
 // and the Jobs that write or snapshot its world volume (restore, backup, file
-// write). The world PVC is ReadWriteOnce, and RWO is exclusive per NODE: on a
+// write, world export). The world PVC is ReadWriteOnce, and RWO is exclusive per NODE: on a
 // single-node cluster the game pod and a restore pod mount it side by side, so
 // the access mode alone guards nothing. A server woken mid-restore boots on a
 // half-extracted world and the restore then prunes what it wrote; a server woken
@@ -29,7 +29,10 @@
 //
 // File reads and listings are not holders. They mount the volume read-only for a
 // second or two, and a server starting beside one cannot hurt either side, so
-// nobody waits for them.
+// nobody waits for them. A world export mounts it read-only too, but it holds:
+// it archives the world for as long as the download takes, and a server started
+// beside it would hand the owner a torn archive. Exporting a backup reads only
+// the backup store and holds nothing.
 package maintenance
 
 import (
@@ -50,14 +53,18 @@ const (
 	Grace = 2 * time.Minute
 
 	// LabelServer / LabelManagedBy are the labels every maintenance executor puts
-	// on its Job (internal/restore, internal/backupjob, internal/fileedit keep
-	// their own copies; maintenance_test pins them against these).
+	// on its Job (internal/restore, internal/backupjob, internal/fileedit and
+	// internal/worldexport keep their own copies; maintenance_test pins them
+	// against these).
 	LabelServer    = "felis.lolicon.best/server"
 	LabelManagedBy = "app.kubernetes.io/managed-by"
 	// LabelFilesMode is the file operation (list, read, write, mkdir, delete,
 	// rename, upload) a files Job performs. Every one but list and read holds the
 	// volume.
 	LabelFilesMode = "felis.lolicon.best/files-mode"
+	// LabelExportMode is what an export Job archives: ExportModeWorld (the live
+	// world, which holds the volume) or ExportModeBackup (a stored archive).
+	LabelExportMode = "felis.lolicon.best/export-mode"
 
 	// LabelThenRestore marks a backup Job that is the safety snapshot in front of
 	// a restore. Its value is the chain's state: ThenRestorePending until felis-api
@@ -85,6 +92,7 @@ const (
 	KindRestore   = "restore"
 	KindBackup    = "backup"
 	KindFileWrite = "file-write"
+	KindExport    = "export"
 	// KindReap is the reaper archiving an idle world and reclaiming its volume.
 	// It runs no Job: the reaper holds the Annotation itself and rewrites it
 	// well inside Grace for as long as it works on the world.
@@ -98,11 +106,18 @@ const (
 	FilesModeRead = "read"
 )
 
+// The LabelExportMode values.
+const (
+	ExportModeWorld  = "world"
+	ExportModeBackup = "backup"
+)
+
 // JobKind names the holder a Job represents, or reports false for a Job that
-// holds nothing (a file read, a build, anything else in the namespace). A files
-// Job holds unless it is a list or a read, so an operation this build does not
-// know — and a Job without LabelFilesMode, which can only be an old one still
-// inside its TTL — counts as a change: over-counting is the safe side.
+// holds nothing (a file read, a backup export, a build, anything else in the
+// namespace). A files Job holds unless it is a list or a read, so an operation
+// this build does not know — and a Job without LabelFilesMode, which can only be
+// an old one still inside its TTL — counts as a change: over-counting is the
+// safe side. An export Job holds unless it names a backup, for the same reason.
 func JobKind(j *batchv1.Job) (string, bool) {
 	switch j.Labels[LabelManagedBy] {
 	case "felis-restore":
@@ -112,6 +127,10 @@ func JobKind(j *batchv1.Job) (string, bool) {
 	case "felis-files":
 		if mode := j.Labels[LabelFilesMode]; mode != FilesModeList && mode != FilesModeRead {
 			return KindFileWrite, true
+		}
+	case "felis-export":
+		if j.Labels[LabelExportMode] != ExportModeBackup {
+			return KindExport, true
 		}
 	}
 	return "", false

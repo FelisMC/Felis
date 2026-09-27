@@ -98,6 +98,12 @@ type API struct {
 	FileStage       *fileedit.Stage
 	InternalBaseURL string
 
+	// Exporter starts the Job behind a world or backup download (exports.go),
+	// which PUTs the archive to InternalBaseURL. Optional like Restorer: the
+	// export routes report 503 unless both are set, after the owner-or-admin,
+	// backup and stopped gates.
+	Exporter Exporter
+
 	// Schedules stores the servers' scheduled tasks (schedules.go), which
 	// RunSchedules fires. Optional: when nil the schedule routes report 503 and
 	// RunSchedules does nothing.
@@ -221,6 +227,9 @@ type API struct {
 
 	streamCapOnce sync.Once
 	streamCap     *streamLimiter
+
+	exportsOnce sync.Once
+	exports     *exportRegistry
 
 	authDoorOnce    sync.Once
 	authDoorBuckets *bucketSet
@@ -459,6 +468,13 @@ func (a *API) internalAPIRoutes() []apiRoute {
 		// because that Job holds no service token; the one-time bearer token minted
 		// with the upload is the check (handlers_files.go).
 		{Method: "GET", Pattern: "/api/v1/internal/file-uploads/{id}", Public: true, h: a.handleInternalFileUpload},
+
+		// An export Job's archive, held open until the owner's browser downloads
+		// it. Public for the same reason as file uploads: the Job holds no service
+		// token, and the one-time bearer token minted with the export is the check
+		// (exports.go). The body is read at the browser's pace, so the handler
+		// lifts the minimum-rate body deadline and applies its own stall bound.
+		{Method: "PUT", Pattern: "/api/v1/internal/exports/{id}", Public: true, h: a.handleInternalExportUpload},
 	}
 }
 
@@ -558,6 +574,14 @@ func (a *API) externalAPIRoutes() []apiRoute {
 		{Method: "GET", Pattern: "/api/v1/servers/{name}/jobs", h: a.handleServerJobs},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/restore-backup", h: a.handleRestoreBackup},
 		{Method: "POST", Pattern: "/api/v1/servers/{name}/backup", h: a.handleBackupNow},
+		// World export (exports.go): download a backup, or a stopped server's world
+		// as it is now, straight to the browser. App-tier with the restore gate
+		// inside each start route; the ticket routes answer only the user who
+		// started the export.
+		{Method: "POST", Pattern: "/api/v1/servers/{name}/backups/{id}/export", h: a.handleExportBackup},
+		{Method: "POST", Pattern: "/api/v1/servers/{name}/world/export", h: a.handleExportWorld},
+		{Method: "GET", Pattern: "/api/v1/exports/{ticket}", h: a.handleExportStatus},
+		{Method: "GET", Pattern: "/api/v1/exports/{ticket}/download", h: a.handleExportDownload},
 		// Server file manager: list, read, write, make a folder, delete, rename and
 		// upload in a STOPPED server's world volume (handlers_files.go). App-tier,
 		// exactly like the backup pair above and for the same reason — every route

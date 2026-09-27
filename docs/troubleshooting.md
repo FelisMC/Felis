@@ -346,9 +346,9 @@ grade the two halves separately.
 
 A server's world volume is ReadWriteOnce, and on a single node RWO lets a game
 pod and a restore Job mount it side by side. So felis-api serialises them per
-server: a restore, a backup, or a file change takes the world, and until its Job
-finishes every wake (panel or join) and every other world operation on that
-server gets `409 maintenance_in_progress`. File reads and listings never hold
+server: a restore, a backup, a world download or a file change takes the world,
+and until its Job finishes every wake (panel or join) and every other world
+operation on that server gets `409 maintenance_in_progress`. File reads and listings never hold
 it. The operator applies the same rule when `desiredState` is flipped to
 `Running` by anything other than felis-api: the StatefulSet is not scaled up,
 and the `Ready` condition reads `MaintenanceInProgress` until the Job ends.
@@ -356,9 +356,11 @@ and the `Ready` condition reads `MaintenanceInProgress` until the Job ends.
 What holds the world, in order:
 
 1. An unfinished Job labelled `felis.lolicon.best/server=<name>` with
-   `app.kubernetes.io/managed-by` `felis-restore`, `felis-backup`, or
+   `app.kubernetes.io/managed-by` `felis-restore`, `felis-backup`,
    `felis-files` with any `felis.lolicon.best/files-mode` but `list` or `read`
-   (a save, new file, new folder, rename, delete or upload; §18):
+   (a save, new file, new folder, rename, delete or upload; §18), or
+   `felis-export` with any `felis.lolicon.best/export-mode` but `backup` (a
+   world download, held until the download ends; §10):
 
    ```sh
    kubectl -n minecraft get jobs -l felis.lolicon.best/server=<name>
@@ -1212,6 +1214,68 @@ sudo k3s kubectl -n felis exec deploy/felis-postgres -c postgres -- psql -U post
 
 [GO-TESTED: `TestDeleteBackup`, `TestExpiredBackupsDeleted`,
 `TestSyncExpiresOnlyPastRetention`; PG-TESTED: `TestOwnerDeletedBackup`]
+
+### Downloading a backup or the world (export)
+
+The download button on a backup row (`POST /api/v1/servers/{name}/backups/{id}/export`)
+and "Export world" in the page header (`POST /api/v1/servers/{name}/world/export`)
+hand the owner a `.tar.gz`. Who may download a backup follows delete and restore:
+an admin any, a user only one of a world they owned (`404 no_backup` otherwise), a
+backup of another server is `403`, and a corrupt one `409 backup_corrupt`. The
+world export needs the server stopped (`409 not_stopped`) and a world volume
+(`409 no_world_volume`), and it takes the world like a backup does (§3b), so
+nothing starts the server until the download ends. The audit actions are
+`backup.export` and `world.export`.
+
+Neither archive is staged anywhere. felis-api starts a `felis-export` Job in the
+server namespace (managed-by `felis-export`, label `felis.lolicon.best/export-mode`
+`world` or `backup`), which mounts the world or the backup volume read-only and
+PUTs the archive to felis-api's internal face with a one-time token; felis-api
+streams it straight to the browser. The panel polls `GET /api/v1/exports/{ticket}`
+until it reads `ready`, then opens `GET /api/v1/exports/{ticket}/download` as a
+plain link. The ticket belongs to the user who asked, opens the download once,
+and has these clocks:
+
+| Limit | Value | When it runs out |
+|---|---|---|
+| Job reaching felis-api | 10 min | the ticket answers `410 export_expired` |
+| Browser opening the download once `ready` | 90 s | the Job's upload gets `410`, the ticket is spent |
+| Either end sending nothing mid-transfer | 2 min | the download is cut off |
+| The Job as a whole | 2 h (`activeDeadlineSeconds`) | Kubernetes ends it |
+
+At most one export per user runs at a time, two across the platform, and six per
+user per hour; past any of them the start is `429 export_busy` with `Retry-After`.
+A deployment without `FELIS_IMAGE` and `FELIS_BACKUP_PVC` answers
+`503 export_unavailable` (felis-api logs `world export disabled` at start).
+
+A backup download carries the archive's length and is checked against the sha256
+recorded when it was written. The last chunk is held back until the digest
+matches, so a mismatch cuts the download off short, the browser shows it failed,
+and the Job exits with `409 backup_corrupt`. A digest mismatch does not mark the
+backup corrupt; the reaper's next read-back does. A world download has no length
+and no digest: a read error in the Job cuts it off the same way.
+
+Why an export failed shows under Recent operations as the Job's last line. A Job
+that fails before it reaches felis-api (an archive missing from the backup
+volume, say) also ends the panel's wait with that line. The rest happen after
+the panel has handed the download to the browser:
+
+- `felis-api answered 410 Gone: this export has expired …`: nobody opened the
+  download within 90 s (the tab was closed, or the browser blocked the download).
+- `felis-api answered 410 Gone: the download ended before the archive did …`:
+  the browser cancelled or lost the connection mid-way.
+- `felis-api answered 404 Not Found: no such export`: felis-api restarted since
+  the export began, or the ticket had already run out. Tickets live only in
+  felis-api's memory, so start the export again.
+
+A world export whose Job never reaches felis-api keeps the world until the Job's
+deadline; `kubectl -n minecraft delete job -l app.kubernetes.io/managed-by=felis-export,felis.lolicon.best/server=<name>`
+releases it at once. [GO-TESTED: `TestExportBackupGate`, `TestExportWorldGate`,
+`TestExportLimits`, `TestExportRendezvous`, `TestExportExpiry`,
+`TestExportStatusReportsFailedJob`, `TestExportRegistryRaces`,
+`TestExportBackupDigest`, `TestExportUploadPace`, `TestK8sExportJobs`,
+`TestExportJobIsolation`, `TestExportJobDefaults`, `TestCmdExportWorld`,
+`TestCmdExportBackup`, `TestCmdExportWiring`]
 
 ### Every world at once: `felis backup-now`
 
@@ -3243,6 +3307,7 @@ PG-TESTED: `TestScheduleStoreRunCAS`, `TestDueSchedules`, `TestSchedulesFollowTh
 | Registry push/pull unreachable | §9 |
 | World deleted unexpectedly / backup skipped | §10 |
 | Reaper `awaiting_stop` stays above 0; `corrupt=` / backup shown as damaged; `orphan_archives` | §10 |
+| Backup or world download refused or cut off (`export_busy`, `export_expired`, `export_unavailable`) | §10 |
 | Idle auto-stop not firing; player count 0; `PlayersCounted=False` | §11 |
 | A config field seems ignored | §12 |
 | PVC left behind after delete | §13 |

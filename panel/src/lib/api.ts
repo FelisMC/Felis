@@ -10,6 +10,8 @@ import type {
   ContextUploadProgress,
   CreateServerRequest,
   CreateUserRequest,
+  ExportStatus,
+  ExportTicket,
   FleetServer,
   Identity,
   KickResult,
@@ -673,6 +675,29 @@ export const api = rejectingSync({
   backupNow: (name: string) =>
     request<{ name: string; status: string }>("POST", urlPath`/servers/${name}/backup`),
 
+  // World export: a copy of one backup (startBackupExport, the same scope as
+  // delete and restore) or of a stopped server's current world (startWorldExport,
+  // 409 not_stopped otherwise; the world is held until the download ends). The
+  // reply is a one-time ticket bound to the caller. An export Job then hands the
+  // archive to felis-api: exportStatus reads "pending" until it has, and once
+  // "ready" the browser must open exportDownloadURL within 90 s. The download
+  // streams through felis-api, so it is opened as a link (an <a download>) and
+  // never read into memory. 429 export_busy past the limits (one per person at a
+  // time, two across the platform, six an hour); 410 export_expired once the
+  // ticket was used or its time ran out.
+  startBackupExport: (name: string, id: string) =>
+    request<ExportTicket>("POST", urlPath`/servers/${name}/backups/${id}/export`),
+
+  startWorldExport: (name: string) =>
+    request<ExportTicket>("POST", urlPath`/servers/${name}/world/export`),
+
+  exportStatus: (ticket: string) => request<ExportStatus>("GET", urlPath`/exports/${ticket}`),
+
+  exportDownloadURL: async (ticket: string) => {
+    const { apiBase } = await loadConfig();
+    return `${apiBase}${urlPath`/exports/${ticket}/download`}`;
+  },
+
   // serverJobs lists the newest backup/restore Jobs of one server, newest first
   // (GET /servers/{name}/jobs). Owner-or-admin gated server-side; a Job's
   // failure text rides `message`. The backend answers 503 until the job-status
@@ -1223,6 +1248,17 @@ export function humanizeError(e: unknown): string {
       return t("backup_store_full");
     case "restore_unavailable":
       return t("restore_unavailable");
+    // World export: over the per-person, platform or hourly limit (429), a
+    // ticket already used or past its time (410), a download asked for before
+    // the archive arrived (409), or export not wired on this deployment (503).
+    case "export_busy":
+      return t("export_busy");
+    case "export_expired":
+      return t("export_expired");
+    case "export_not_ready":
+      return t("export_not_ready");
+    case "export_unavailable":
+      return t("export_unavailable");
     // Server create/edit (spec §22): the portability regex + reservation list are
     // enforced server-side, and the create form's own checks are weaker, so these
     // refusals reach the dialog as-is.

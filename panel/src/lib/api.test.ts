@@ -7,8 +7,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // falsy, and EVERY admin silently renders as a non-admin while typecheck/build stay
 // green. This fixture is the canonical mirror of handlers_user.go handleMe.
 
+// apiBase stays "" (paths read bare) unless a test that builds a whole URL sets it.
+const cfg = vi.hoisted(() => ({ apiBase: "" }));
 vi.mock("./config", () => ({
-  loadConfig: async () => ({ apiBase: "", rootDomain: "example.test" }),
+  loadConfig: async () => ({ apiBase: cfg.apiBase, rootDomain: "example.test" }),
 }));
 
 // Imported after the mock so api.ts picks up the mocked loadConfig.
@@ -1597,6 +1599,73 @@ describe("copy for the generic server codes", () => {
     );
     expect(humanizeError({ status: 400, code: "no_session", message: "raw" })).toBe(
       "This only works in a browser signed in to Felis.",
+    );
+  });
+});
+
+describe("world export wire shapes", () => {
+  beforeEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    cfg.apiBase = "";
+  });
+
+  function sent(fetchSpy: typeof fetch): [string, RequestInit] {
+    const [url, opts] = (fetchSpy as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    return [String(url), opts as RequestInit];
+  }
+
+  const ticket = { ticket: "ab".repeat(32), state: "pending", filename: "survival-backup-bk1.tar.gz" };
+
+  it("startBackupExport POSTs to /servers/{name}/backups/{id}/export with no body", async () => {
+    const fetchSpy = fakeFetch(ticket, { status: 202 });
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.startBackupExport("survival", "bk/1")).toEqual(ticket);
+    const [url, opts] = sent(fetchSpy);
+    expect(url).toBe("/servers/survival/backups/bk%2F1/export");
+    expect(opts.method).toBe("POST");
+    expect(opts.body).toBeUndefined();
+  });
+
+  it("startWorldExport POSTs to /servers/{name}/world/export", async () => {
+    const fetchSpy = fakeFetch(ticket, { status: 202 });
+    vi.stubGlobal("fetch", fetchSpy);
+    await api.startWorldExport("survival");
+    const [url, opts] = sent(fetchSpy);
+    expect(url).toBe("/servers/survival/world/export");
+    expect(opts.method).toBe("POST");
+  });
+
+  it("exportStatus GETs /exports/{ticket}", async () => {
+    const fetchSpy = fakeFetch({ state: "failed", message: "felis export: no such file" });
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.exportStatus("t/1")).toEqual({ state: "failed", message: "felis export: no such file" });
+    const [url, opts] = sent(fetchSpy);
+    expect(url).toBe("/exports/t%2F1");
+    expect(opts.method).toBe("GET");
+  });
+
+  it("exportDownloadURL is the full download address, and sends nothing", async () => {
+    cfg.apiBase = "https://api.example.test/api/v1";
+    const fetchSpy = fakeFetch({});
+    vi.stubGlobal("fetch", fetchSpy);
+    expect(await api.exportDownloadURL("t/1")).toBe("https://api.example.test/api/v1/exports/t%2F1/download");
+    await expect(api.exportDownloadURL("..")).rejects.toMatchObject({ code: "bad_path_param" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("words the export refusals itself", () => {
+    expect(humanizeError({ status: 429, code: "export_busy", message: "raw" })).toBe(
+      "Too many downloads are being prepared right now (one at a time per person, six an hour) — try again in a few minutes.",
+    );
+    expect(humanizeError({ status: 410, code: "export_expired", message: "raw" })).toBe(
+      "This download has expired or was already used — start the export again.",
+    );
+    expect(humanizeError({ status: 409, code: "export_not_ready", message: "raw" })).toBe(
+      "The download isn't ready yet — wait a moment and try again.",
+    );
+    expect(humanizeError({ status: 503, code: "export_unavailable", message: "raw" })).toBe(
+      "Downloading worlds and backups isn't set up on this deployment — ask an administrator.",
     );
   });
 });

@@ -143,6 +143,10 @@ type BackupRecord struct {
 	SizeBytes   int64
 	// Corrupt reports that the archive failed a read-back (see BackupView).
 	Corrupt bool
+	// SHA256 is the digest recorded when the archive was written, which an
+	// export checks the bytes against as they stream. Empty for an archive from
+	// before digests were kept.
+	SHA256 string
 }
 
 // StaffUser is the login-side projection of a users row (spec §B passwordless

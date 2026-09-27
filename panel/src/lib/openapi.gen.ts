@@ -159,6 +159,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/internal/exports/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Hand one export's archive over for download (one-time bearer token).
+         * @description The export Job PUTs the tar.gz here, chunked for a world and with its Content-Length for a backup. The Job holds no service token, so the route is public on the internal face and the bearer token minted with the export is the whole check; an unknown id, a wrong or missing token and a token already used are all the same 404. The request then waits, body unread, up to 90 seconds for the owner's browser to open the download, and is read at the browser's pace: the 16 KiB/s minimum body rate does not apply, and the body fails only after 2 minutes without a byte. It answers once the download has ended.
+         */
+        put: operations["internalExportUpload"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/internal/servers/{name}/join-event": {
         parameters: {
             query?: never;
@@ -1254,6 +1274,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/servers/{name}/backups/{id}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start downloading one backup (owner-or-admin plus a former-owner match).
+         * @description Starts a Job that reads the archive from the backup store and hands it to felis-api, which streams it to the browser (poll GET /exports/{ticket}, then open its download). The archive is checked against the sha256 recorded when it was written as it streams; a mismatch aborts the download. A user gets 404 for a backup outside their scope, as their list never shows it. One export per user at a time, 2 across the install, 6 per user per hour.
+         */
+        post: operations["exportBackup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/servers/{name}/world/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start downloading a stopped server's world as it is now (owner-or-admin).
+         * @description Starts a Job that archives the server's data volume, read-only, and hands it to felis-api, which streams it to the browser (poll GET /exports/{ticket}, then open its download). The server must be fully stopped, and it cannot start until the download has ended or the Job's 2 hour deadline passes. Same limits as a backup export.
+         */
+        post: operations["exportWorld"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/exports/{ticket}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Where an export stands (the user who started it only).
+         * @description The panel polls this until the state reads ready, then opens the download. Another user's ticket is 404, as an unknown one is.
+         */
+        get: operations["exportStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/exports/{ticket}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download a ready export (once, by the user who started it).
+         * @description The first request spends the ticket, whatever becomes of it. The archive streams as the Job sends it, with Content-Length when it is known; a download that cannot finish (the Job died, or a backup did not match its recorded sha256) is cut off, so the browser reports it failed. HEAD is refused, since it would spend the ticket on no body.
+         */
+        get: operations["exportDownload"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/servers/{name}/jobs": {
         parameters: {
             query?: never;
@@ -1262,8 +1362,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Latest async world operations (backup/restore) for a server (owner-or-admin).
-         * @description Backup and restore run as cluster Jobs, so a 202 that later failed left its only trace in the Job object. This route projects the newest such Jobs, newest first, so failures are observable without kubectl. State is "running" | "succeeded" | "failed".
+         * Latest async world operations (backup, restore, export) for a server (owner-or-admin).
+         * @description Backup, restore and export run as cluster Jobs, so a 202 that later failed left its only trace in the Job object. This route projects the newest such Jobs, newest first, so failures are observable without kubectl. State is "running" | "succeeded" | "failed".
          */
         get: operations["listServerJobs"];
         put?: never;
@@ -2799,6 +2899,25 @@ export interface components {
             /** @description World entries the archive could not hold (symbolic links, devices, sockets). Omitted when zero. */
             skipped_entries?: number;
         };
+        /** @description An export just started (internal/api/exports.go exportTicketView). The ticket opens GET /exports/{ticket} and its download for the user who started it, and nobody else. */
+        ExportTicket: {
+            /** @description 64 hex characters. */
+            ticket: string;
+            /** @constant */
+            state: "pending";
+            /** @description What the download saves as. */
+            filename: string;
+        };
+        /** @description Where an export stands (internal/api/exports.go exportStatusView). */
+        ExportStatus: {
+            /**
+             * @description pending while its Job starts; ready once the archive waits for the download, which must begin within 90 seconds; failed when the Job died first.
+             * @enum {string}
+             */
+            state: "pending" | "ready" | "failed";
+            /** @description Why a failed export's Job died. Omitted otherwise. */
+            message?: string;
+        };
         /** @description One image build (internal/build Build). */
         Build: {
             id: string;
@@ -3489,6 +3608,46 @@ export interface operations {
                 };
             };
             404: components["responses"]["NotFound"];
+        };
+    };
+    internalExportUpload: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Bearer followed by the token minted with the export. */
+                Authorization: string;
+            };
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/gzip": string;
+            };
+        };
+        responses: {
+            204: components["responses"]["NoContent"];
+            404: components["responses"]["NotFound"];
+            /** @description The backup did not match the sha256 recorded when it was written, and the download was aborted (backup_corrupt). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Nobody opened the download within 90 seconds, or the browser left before the archive ended (export_expired). */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
         };
     };
     joinEvent: {
@@ -6132,6 +6291,216 @@ export interface operations {
             507: components["responses"]["InsufficientStorage"];
         };
     };
+    exportBackup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Export started. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportTicket"];
+                };
+            };
+            /** @description Malformed server name (bad_name). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Unknown server, or no present backup with this id in the caller's scope (no_backup). */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The backup failed a read-back (backup_corrupt). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description An export limit is reached (export_busy); Retry-After gives the seconds to wait. */
+            429: {
+                headers: {
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    exportWorld: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Export started. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportTicket"];
+                };
+            };
+            /** @description Malformed server name (bad_name). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description Unknown server. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description Server is not stopped (not_stopped), has no world volume yet (no_world_volume), or a restore, backup, file write or export already holds its world volume (maintenance_in_progress). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description An export limit is reached (export_busy); Retry-After gives the seconds to wait. */
+            429: {
+                headers: {
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            503: components["responses"]["ServiceUnavailable"];
+        };
+    };
+    exportStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticket: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The export's state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportStatus"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            /** @description The export was downloaded, or expired before it was (export_expired). */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
+    exportDownload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                ticket: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The tar.gz, as an attachment. */
+            200: {
+                headers: {
+                    "Content-Disposition"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/gzip": string;
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+            /** @description A method other than GET (method_not_allowed). */
+            405: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The export is still pending (export_not_ready). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+            /** @description The export was downloaded, failed, or expired before it was (export_expired). */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     listServerJobs: {
         parameters: {
             query?: never;
@@ -6143,7 +6512,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The server's newest backup/restore jobs. */
+            /** @description The server's newest backup, restore and export jobs. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -6154,7 +6523,7 @@ export interface operations {
                         jobs: {
                             name: string;
                             /** @enum {string} */
-                            kind: "backup" | "restore";
+                            kind: "backup" | "restore" | "export_world" | "export_backup";
                             /** @enum {string} */
                             state: "running" | "succeeded" | "failed";
                             message?: string;

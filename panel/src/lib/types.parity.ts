@@ -39,6 +39,8 @@ export type WireParity = [
   Holds<Parity<T.Schedule, S["Schedule"]>>,
   Holds<Parity<T.ScheduleInput, S["ScheduleInput"]>>,
   Holds<Parity<T.BackupView, S["BackupView"]>>,
+  Holds<Parity<T.ExportTicket, S["ExportTicket"]>>,
+  Holds<Parity<T.ExportStatus, S["ExportStatus"]>>,
   Holds<Parity<T.Build, S["Build"]>>,
   Holds<Parity<T.BuildScan, S["BuildScan"]>>,
   Holds<Parity<T.ScanSummary, S["ScanSummary"]>>,

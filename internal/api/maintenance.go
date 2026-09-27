@@ -11,9 +11,9 @@ import (
 )
 
 // maintenanceError maps the world-volume lock's refusals onto their 409s:
-// maintenance_in_progress while a restore, backup or file write holds the volume,
-// not_stopped (with the caller's wording) while the server is not fully down.
-// Anything else passes through unchanged.
+// maintenance_in_progress while a restore, backup, file write or world export
+// holds the volume, not_stopped (with the caller's wording) while the server is
+// not fully down. Anything else passes through unchanged.
 func maintenanceError(err error, notStopped string) error {
 	var busy *MaintenanceBusyError
 	switch {
@@ -37,6 +37,8 @@ func maintenanceLabel(kind string) string {
 		return "a backup"
 	case maintenance.KindFileWrite:
 		return "a file write"
+	case maintenance.KindExport:
+		return "a world export"
 	case maintenance.KindReap:
 		return "the idle-world reaper"
 	}

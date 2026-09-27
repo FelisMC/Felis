@@ -255,8 +255,9 @@ type fakeSession struct {
 // fakeBackup mirrors a world_backups row: the client-facing view plus the
 // server-side backup_ref the list queries never expose.
 type fakeBackup struct {
-	view BackupView
-	ref  string
+	view   BackupView
+	ref    string
+	sha256 string
 }
 
 // fakeLinkCode mirrors an account_link_codes row.
@@ -1051,7 +1052,7 @@ func (f *fakeRepo) BackupByID(_ context.Context, id string) (*BackupRecord, erro
 			return &BackupRecord{
 				ID: b.view.ID, ServerName: b.view.ServerName,
 				FormerOwner: b.view.FormerOwner, BackupRef: b.ref,
-				SizeBytes: b.view.SizeBytes, Corrupt: b.view.Corrupt,
+				SizeBytes: b.view.SizeBytes, Corrupt: b.view.Corrupt, SHA256: b.sha256,
 			}, nil
 		}
 	}

@@ -344,8 +344,8 @@ func TestBackupReadBack(t *testing.T) {
 	if b, err := repo.BackupByID(ctx, newer); err != nil || !b.Corrupt {
 		t.Fatalf("BackupByID(corrupt) = (%+v, %v); want Corrupt", b, err)
 	}
-	if b, err := repo.BackupByID(ctx, older); err != nil || b.Corrupt {
-		t.Fatalf("BackupByID(intact) = (%+v, %v); want not Corrupt", b, err)
+	if b, err := repo.BackupByID(ctx, older); err != nil || b.Corrupt || b.SHA256 != "aa" {
+		t.Fatalf("BackupByID(intact) = (%+v, %v); want not Corrupt, sha256 aa", b, err)
 	}
 
 	views, _, err := repo.AllBackups(ctx, api.BackupListOpts{Server: name, Limit: api.MaxBackupListLimit})

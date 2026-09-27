@@ -122,7 +122,7 @@ tags:
   - name: console
     description: Read (SSE) and write (RCON) server console (external face, app tier).
   - name: backups
-    description: World backup listing and restore (external face, app tier).
+    description: World backup listing, restore and export (external face, app tier).
   - name: schedules
     description: Scheduled tasks of your own servers (external face, app tier).
   - name: account
@@ -731,6 +731,34 @@ components:
           type: integer
           description: World entries the archive could not hold (symbolic links, devices, sockets). Omitted when zero.
 
+    ExportTicket:
+      type: object
+      description: >-
+        An export just started (internal/api/exports.go exportTicketView). The
+        ticket opens GET /exports/{ticket} and its download for the user who
+        started it, and nobody else.
+      required: [ticket, state, filename]
+      properties:
+        ticket: { type: string, description: 64 hex characters. }
+        state: { type: string, const: pending }
+        filename: { type: string, description: What the download saves as. }
+
+    ExportStatus:
+      type: object
+      description: Where an export stands (internal/api/exports.go exportStatusView).
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [pending, ready, failed]
+          description: >-
+            pending while its Job starts; ready once the archive waits for the
+            download, which must begin within 90 seconds; failed when the Job
+            died first.
+        message:
+          type: string
+          description: Why a failed export's Job died. Omitted otherwise.
+
     Build:
       type: object
       description: One image build (internal/build Build).
@@ -1297,6 +1325,52 @@ paths:
               schema: { type: string, format: binary }
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /api/v1/internal/exports/{id}:
+    put:
+      tags: [backups]
+      operationId: internalExportUpload
+      summary: Hand one export's archive over for download (one-time bearer token).
+      description: >-
+        The export Job PUTs the tar.gz here, chunked for a world and with its
+        Content-Length for a backup. The Job holds no service token, so the route
+        is public on the internal face and the bearer token minted with the
+        export is the whole check; an unknown id, a wrong or missing token and a
+        token already used are all the same 404. The request then waits, body
+        unread, up to 90 seconds for the owner's browser to open the download,
+        and is read at the browser's pace: the 16 KiB/s minimum body rate does
+        not apply, and the body fails only after 2 minutes without a byte. It
+        answers once the download has ended.
+      x-felis-face: [internal]
+      x-felis-tier: public
+      security: []
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+        - name: Authorization
+          in: header
+          required: true
+          description: Bearer followed by the token minted with the export.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/gzip:
+            schema: { type: string, format: binary }
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: The backup did not match the sha256 recorded when it was written, and the download was aborted (backup_corrupt).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '410':
+          description: Nobody opened the download within 90 seconds, or the browser left before the archive ended (export_expired).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /api/v1/internal/servers/{name}/join-event:
     post:
@@ -4066,14 +4140,196 @@ paths:
         '507':
           $ref: '#/components/responses/InsufficientStorage'
 
+  # ------------------------------------------------------ world export (app) ---
+  /api/v1/servers/{name}/backups/{id}/export:
+    post:
+      tags: [backups]
+      operationId: exportBackup
+      summary: Start downloading one backup (owner-or-admin plus a former-owner match).
+      description: >-
+        Starts a Job that reads the archive from the backup store and hands it to
+        felis-api, which streams it to the browser (poll GET /exports/{ticket},
+        then open its download). The archive is checked against the sha256
+        recorded when it was written as it streams; a mismatch aborts the
+        download. A user gets 404 for a backup outside their scope, as their
+        list never shows it. One export per user at a time, 2 across the
+        install, 6 per user per hour.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '202':
+          description: Export started.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExportTicket' }
+        '400':
+          description: Malformed server name (bad_name).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unknown server, or no present backup with this id in the caller's scope (no_backup).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: The backup failed a read-back (backup_corrupt).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: An export limit is reached (export_busy); Retry-After gives the seconds to wait.
+          headers:
+            Retry-After:
+              schema: { type: integer }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/servers/{name}/world/export:
+    post:
+      tags: [backups]
+      operationId: exportWorld
+      summary: Start downloading a stopped server's world as it is now (owner-or-admin).
+      description: >-
+        Starts a Job that archives the server's data volume, read-only, and hands
+        it to felis-api, which streams it to the browser (poll GET
+        /exports/{ticket}, then open its download). The server must be fully
+        stopped, and it cannot start until the download has ended or the Job's
+        2 hour deadline passes. Same limits as a backup export.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: name, in: path, required: true, schema: { type: string } }
+      responses:
+        '202':
+          description: Export started.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExportTicket' }
+        '400':
+          description: Malformed server name (bad_name).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: Unknown server.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: Server is not stopped (not_stopped), has no world volume yet (no_world_volume), or a restore, backup, file write or export already holds its world volume (maintenance_in_progress).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: An export limit is reached (export_busy); Retry-After gives the seconds to wait.
+          headers:
+            Retry-After:
+              schema: { type: integer }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+
+  /api/v1/exports/{ticket}:
+    get:
+      tags: [backups]
+      operationId: exportStatus
+      summary: Where an export stands (the user who started it only).
+      description: >-
+        The panel polls this until the state reads ready, then opens the
+        download. Another user's ticket is 404, as an unknown one is.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: ticket, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The export's state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ExportStatus' }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          description: The export was downloaded, or expired before it was (export_expired).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /api/v1/exports/{ticket}/download:
+    get:
+      tags: [backups]
+      operationId: exportDownload
+      summary: Download a ready export (once, by the user who started it).
+      description: >-
+        The first request spends the ticket, whatever becomes of it. The archive
+        streams as the Job sends it, with Content-Length when it is known; a
+        download that cannot finish (the Job died, or a backup did not match its
+        recorded sha256) is cut off, so the browser reports it failed. HEAD is
+        refused, since it would spend the ticket on no body.
+      x-felis-face: [external]
+      x-felis-tier: app
+      security: [{ sessionCookie: [] }]
+      parameters:
+        - { name: ticket, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: The tar.gz, as an attachment.
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+          content:
+            application/gzip:
+              schema: { type: string, format: binary }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '405':
+          description: A method other than GET (method_not_allowed).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '409':
+          description: The export is still pending (export_not_ready).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '410':
+          description: The export was downloaded, failed, or expired before it was (export_expired).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
   # -------------------------------------------------- async job status (app) ---
   /api/v1/servers/{name}/jobs:
     get:
       tags: [backups]
       operationId: listServerJobs
-      summary: Latest async world operations (backup/restore) for a server (owner-or-admin).
+      summary: Latest async world operations (backup, restore, export) for a server (owner-or-admin).
       description: >-
-        Backup and restore run as cluster Jobs, so a 202 that later failed left
+        Backup, restore and export run as cluster Jobs, so a 202 that later failed left
         its only trace in the Job object. This route projects the newest such
         Jobs, newest first, so failures are observable without kubectl. State is
         "running" | "succeeded" | "failed".
@@ -4084,7 +4340,7 @@ paths:
         - { name: name, in: path, required: true, schema: { type: string } }
       responses:
         '200':
-          description: The server's newest backup/restore jobs.
+          description: The server's newest backup, restore and export jobs.
           content:
             application/json:
               schema:
@@ -4099,7 +4355,7 @@ paths:
                       required: [name, kind, state]
                       properties:
                         name: { type: string }
-                        kind: { type: string, enum: [backup, restore] }
+                        kind: { type: string, enum: [backup, restore, export_world, export_backup] }
                         state: { type: string, enum: [running, succeeded, failed] }
                         message: { type: string }
                         started_at: { type: string, format: date-time }

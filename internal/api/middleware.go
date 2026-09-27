@@ -210,6 +210,18 @@ func (b *deadlineBody) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// takeBodyDeadline lifts withBodyDeadline from a request whose body is read at
+// someone else's pace (an export's upload waits for the browser, then moves at
+// its speed), and returns the controller the handler bounds it with instead.
+func takeBodyDeadline(w http.ResponseWriter, r *http.Request) *http.ResponseController {
+	if b, ok := r.Body.(*deadlineBody); ok {
+		r.Body = b.ReadCloser
+		_ = b.rc.SetReadDeadline(time.Time{})
+		return b.rc
+	}
+	return http.NewResponseController(w)
+}
+
 // requireInternal enforces service-token auth for the internal face and stashes
 // the caller the token belongs to, which callersOnly checks against the route.
 // It never applies Zero Trust (spec §14 red line).
