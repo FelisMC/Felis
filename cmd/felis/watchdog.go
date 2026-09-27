@@ -37,6 +37,7 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	cfgPath := fs.String("config", "/etc/felis/felis.toml", "path to felis.toml (the host copy, which reaches PostgreSQL on 127.0.0.1)")
 	statePath := fs.String("state", "/var/lib/felis/watchdog/state.json", "state kept between runs (root only: it caches the relay password)")
+	fallbackState := fs.String("fallback-state", watchdog.FallbackStatePath, "where a run keeps its state while -state cannot be written, so what it mailed is not mailed again (tmpfs: until the host restarts; \"\" keeps none)")
 	smtpPasswordFile := fs.String("smtp-password-file", hostSMTPPasswordPath, "the relay password `felis setup` keeps on the host; the felis-smtp Secret stands in while it is missing")
 	quietPath := fs.String("quiet-file", "/run/felis/watchdog-quiet-until", "Unix time before which nothing is mailed; the installer writes it while it restarts things on purpose")
 	backupDir := fs.String("backup-dir", "/var/lib/felis/db-backups", `control-plane database backups to check for freshness ("" skips the check)`)
@@ -59,7 +60,7 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 	now := time.Now()
 	if *unitFailed {
 		return watchdogUnitFailed(unitFailedRun{
-			cfgPath: *cfgPath, statePath: *statePath, quietPath: *quietPath,
+			cfgPath: *cfgPath, statePath: *statePath, fallbackPath: *fallbackState, quietPath: *quietPath,
 			offsiteStatus: *offsiteStatus, heartbeatFile: *heartbeatFile,
 			result: os.Getenv("MONITOR_SERVICE_RESULT"), exitStatus: os.Getenv("MONITOR_EXIT_STATUS"),
 			send: watchdogSender, client: http.DefaultClient, now: now,
@@ -70,7 +71,8 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "felis watchdog: %v\n", err)
 		return 1
 	}
-	state, aside, err := watchdog.RecoverState(*statePath, now)
+	loadPath := watchdog.NewestState(*statePath, *fallbackState)
+	state, aside, err := watchdog.RecoverState(loadPath, now)
 	if err != nil {
 		fmt.Fprintf(stderr, "felis watchdog: %v\n", err)
 		return 1
@@ -85,7 +87,7 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	if aside != "" {
-		fmt.Fprintf(stderr, "felis watchdog: %s was unreadable; moved it to %s and started over\n", *statePath, aside)
+		fmt.Fprintf(stderr, "felis watchdog: %s was unreadable; moved it to %s and started over\n", loadPath, aside)
 		f := watchdog.StateSetAside(aside)
 		add(&f)
 	}
@@ -176,7 +178,7 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 
 	m := configMailer(cfg.SMTP, state.SMTPPassword, watchdogSender)
 	unheard, mailFailed := m.deliver(ctx, state, plan, subject, body, mailHold(*quietPath, cfg.Offsite.Enabled(), *offsiteStatus, now), now, stdout, stderr)
-	saveErr := watchdog.SaveState(*statePath, state)
+	saveErr := watchdog.SaveStateOr(*statePath, *fallbackState, state)
 	if saveErr != nil {
 		fmt.Fprintf(stderr, "felis watchdog: save state: %v\n", saveErr)
 	}
@@ -192,7 +194,9 @@ func cmdWatchdog(args []string, stdout, stderr io.Writer) int {
 // failureReport is what the heartbeat's failure ping carries, "" when the run
 // pings success: the alerts this run knows of reach no one (a mail that
 // failed, or no relay or recipient while something is open), or the state did
-// not save and the next run mails the same alerts again.
+// not save to its file: kept on tmpfs it holds until the host restarts, which
+// forgets what was mailed, and with nowhere to keep it the next run mails the
+// same alerts again.
 func failureReport(unheard string, mailFailed bool, saveErr error, open bool, r watchdog.Report) string {
 	var why []string
 	if unheard != "" && (mailFailed || open) {
@@ -278,7 +282,7 @@ func smtpPassword(c config.SMTPConfig, cached string) string {
 
 // unitFailedRun is one run of felis-watchdog-failed.service.
 type unitFailedRun struct {
-	cfgPath, statePath, quietPath, offsiteStatus, heartbeatFile string
+	cfgPath, statePath, fallbackPath, quietPath, offsiteStatus, heartbeatFile string
 	// result and exitStatus are what systemd hands an OnFailure= unit
 	// (MONITOR_SERVICE_RESULT, MONITOR_EXIT_STATUS; systemd 251 and later).
 	result, exitStatus string
@@ -313,7 +317,7 @@ func watchdogUnitFailed(r unitFailedRun, stdout, stderr io.Writer) int {
 	if beat.url, err = readHeartbeatURL(r.heartbeatFile); err != nil {
 		fmt.Fprintf(stderr, "felis watchdog: %v; pinging no heartbeat\n", err)
 	}
-	state, err := watchdog.LoadState(r.statePath)
+	state, err := watchdog.LoadState(watchdog.NewestState(r.statePath, r.fallbackPath))
 	if err != nil {
 		// The next run that gets that far moves a state that does not parse
 		// aside (watchdog.RecoverState).
@@ -336,7 +340,7 @@ func watchdogUnitFailed(r unitFailedRun, stdout, stderr io.Writer) int {
 	if mailFailed {
 		code = 1
 	}
-	if err := watchdog.SaveState(r.statePath, state); err != nil {
+	if err := watchdog.SaveStateOr(r.statePath, r.fallbackPath, state); err != nil {
 		fmt.Fprintf(stderr, "felis watchdog: save state: %v\n", err)
 		code = 1
 	}

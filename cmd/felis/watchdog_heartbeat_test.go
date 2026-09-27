@@ -364,7 +364,7 @@ func unitFailedFixture(t *testing.T, cfg string) (unitFailedRun, *alertRecorder,
 	}
 	f := &alertRecorder{}
 	return unitFailedRun{
-		cfgPath: cfgPath, statePath: statePath, quietPath: filepath.Join(dir, "quiet"),
+		cfgPath: cfgPath, statePath: statePath, fallbackPath: filepath.Join(t.TempDir(), "watchdog-state.json"), quietPath: filepath.Join(dir, "quiet"),
 		offsiteStatus: filepath.Join(dir, "offsite-status.json"), heartbeatFile: beatFile,
 		result: "exit-code", exitStatus: "1", send: f.sender, client: srv.Client(), now: time.Now(),
 	}, f, log
@@ -406,6 +406,32 @@ func TestWatchdogUnitFailedBrokenConfig(t *testing.T) {
 	}
 	if a := state.Alerts["memory"]; a == nil || !a.ClearedAt.IsZero() || !a.Notified.Before(start) {
 		t.Fatalf("memory alert = %+v, want it untouched", a)
+	}
+}
+
+// TestWatchdogUnitFailedStateThatDoesNotSave: with the state file read-only,
+// each report keeps the state in the fallback and the next one reads it, so
+// the failure is mailed once, after five in a row, and never again.
+func TestWatchdogUnitFailedStateThatDoesNotSave(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into a read-only directory")
+	}
+	r, f, _ := unitFailedFixture(t, "[database\n")
+	dir := filepath.Dir(r.statePath)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	start := r.now
+	for i := 0; i <= 8; i++ {
+		r.now = start.Add(time.Duration(i) * 2 * time.Minute)
+		var stdout, stderr bytes.Buffer
+		if code := watchdogUnitFailed(r, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "; kept in "+r.fallbackPath) {
+			t.Fatalf("run %d: exit %d, stderr %s; want exit 1 and the state kept in the fallback", i, code, stderr.String())
+		}
+		if want := min(max(i-4, 0), 1); len(f.sent) != want {
+			t.Fatalf("run %d, %v after the first failure: mailed %d, want %d", i, r.now.Sub(start), len(f.sent), want)
+		}
 	}
 }
 

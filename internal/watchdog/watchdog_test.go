@@ -244,6 +244,91 @@ func TestRecoverState(t *testing.T) {
 	}
 }
 
+// TestSaveStateOr: a state file that cannot be written leaves the state in the
+// fallback, which the next run reads; once the file takes it again the fallback
+// goes, and a fallback older than the file is never read.
+func TestSaveStateOr(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes into a read-only directory")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	fbDir := filepath.Join(t.TempDir(), "run")
+	fallback := filepath.Join(fbDir, "watchdog-state.json")
+	before := &State{Recipients: []string{"owner@example.com"}}
+	if err := SaveState(path, before); err != nil {
+		t.Fatal(err)
+	}
+	if got := NewestState(path, fallback); got != path {
+		t.Fatalf("no fallback yet: NewestState = %q, want the file", got)
+	}
+
+	mailed := &State{Recipients: []string{"owner@example.com"}}
+	run(mailed, Report{Findings: []Finding{finding("memory", Warning, 0)}}, t0)
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o700) })
+	err := SaveStateOr(path, fallback, mailed)
+	if err == nil || !strings.HasSuffix(err.Error(), "; kept in "+fallback+" until the host restarts") {
+		t.Fatalf("SaveStateOr on a read-only directory = %v, want the error saying where the state went", err)
+	}
+	if got := NewestState(path, fallback); got != fallback {
+		t.Fatalf("after a failed save: NewestState = %q, want the fallback", got)
+	}
+	s, err := LoadState(fallback)
+	if err != nil || s.Alerts["memory"] == nil || !s.Alerts["memory"].Notified.Equal(t0) {
+		t.Fatalf("fallback = %+v, %v; want the alert mailed at t0", s, err)
+	}
+
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveStateOr(path, fallback, s); err != nil {
+		t.Fatalf("SaveStateOr once the file is writable: %v", err)
+	}
+	if _, err := os.Stat(fallback); !os.IsNotExist(err) {
+		t.Fatalf("the fallback outlived a good save (%v)", err)
+	}
+	if got := NewestState(path, fallback); got != path {
+		t.Fatalf("after a good save: NewestState = %q, want the file", got)
+	}
+
+	// A fallback older than the file (one whose removal failed) stays unread.
+	if err := SaveState(fallback, before); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(fallback, past, past); err != nil {
+		t.Fatal(err)
+	}
+	if got := NewestState(path, fallback); got != path {
+		t.Fatalf("stale fallback: NewestState = %q, want the file", got)
+	}
+
+	// No fallback: the error is the file's alone, and nothing else is read.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	err = SaveStateOr(path, "", mailed)
+	if err == nil || strings.Contains(err.Error(), "; ") || NewestState(path, "") != path {
+		t.Fatalf("SaveStateOr with no fallback = %v, NewestState = %q", err, NewestState(path, ""))
+	}
+
+	// With nowhere to keep it, the error says that too.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(fbDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(fbDir, 0o700) })
+	err = SaveStateOr(path, fallback, mailed)
+	if err == nil || !strings.Contains(err.Error(), "; nor in "+fallback+": ") {
+		t.Fatalf("SaveStateOr with both read-only = %v", err)
+	}
+}
+
 // TestStateOpen: open is a condition the owners were told of that still holds.
 func TestStateOpen(t *testing.T) {
 	s := &State{}

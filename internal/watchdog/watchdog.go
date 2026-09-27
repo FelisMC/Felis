@@ -367,6 +367,45 @@ func SaveState(path string, s *State) error {
 	return os.Rename(tmp.Name(), path)
 }
 
+// FallbackStatePath is where a run keeps its state when the state file cannot be
+// written (a full or read-only /var/lib): tmpfs, which lasts until the host
+// restarts, next to the installer's quiet marker.
+const FallbackStatePath = "/run/felis/watchdog-state.json"
+
+// NewestState is the state file a run reads: fallback when a run wrote it after
+// path (its save to path failed, SaveStateOr), else path.
+func NewestState(path, fallback string) string {
+	fb, err := os.Stat(fallback) // "" is no fallback: it does not stat
+	if err != nil {
+		return path
+	}
+	if st, err := os.Stat(path); err == nil && !fb.ModTime().After(st.ModTime()) {
+		return path
+	}
+	return fallback
+}
+
+// SaveStateOr saves s to path and drops fallback. When path cannot be written it
+// saves s to fallback instead, so the next run still knows what this one mailed
+// and does not mail it again every two minutes. The error is path's either way,
+// saying where the state went.
+func SaveStateOr(path, fallback string, s *State) error {
+	err := SaveState(path, s)
+	if err == nil {
+		if fallback != "" {
+			os.Remove(fallback)
+		}
+		return nil
+	}
+	if fallback == "" {
+		return err
+	}
+	if ferr := SaveState(fallback, s); ferr != nil {
+		return fmt.Errorf("%w; nor in %s: %v", err, fallback, ferr)
+	}
+	return fmt.Errorf("%w; kept in %s until the host restarts", err, fallback)
+}
+
 // QuietUntil reads the maintenance marker the installer writes while it
 // restarts things on purpose: a Unix timestamp, before which nothing is mailed.
 // A missing or unreadable marker means no quiet period.

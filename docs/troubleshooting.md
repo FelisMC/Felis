@@ -1787,6 +1787,17 @@ alerts' history, so each problem still present is mailed again as new. A
 power loss right after a save or a hand edit usually causes this; check
 `df -h /var/lib/felis`, then delete the set-aside copy. [GO-TESTED: `TestRecoverState`]
 
+A state file that cannot be written (a full or read-only `/var/lib/felis`)
+leaves the run's state in `/run/felis/watchdog-state.json` (tmpfs, root-only).
+The next run reads whichever of the two was written last, so an alert that was
+mailed is not mailed again every two minutes. Each such run logs `save state:
+...; kept in /run/felis/watchdog-state.json until the host restarts`, exits 1
+and pings the heartbeat's `/fail`; after five in a row `watchdog/run` is mailed
+once. The first run whose state file saves again deletes the tmpfs copy. A
+restart before that forgets what was mailed, so the open problems are mailed
+again as new. [GO-TESTED: `TestSaveStateOr`, `TestWatchdogRunStateThatDoesNotSave`,
+`TestWatchdogUnitFailedStateThatDoesNotSave`]
+
 ```bash
 journalctl -u felis-watchdog-failed -n 20   # what the fallback reported and pinged
 systemctl status felis-watchdog             # the failed run's result

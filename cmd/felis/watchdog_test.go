@@ -99,10 +99,12 @@ func TestMailHold(t *testing.T) {
 // the heartbeat URL points at a ping log.
 type watchdogHost struct {
 	dir, statePath string
-	args           []string
-	rec            *alertRecorder
-	pings          *pingLog
-	url            string
+	// fallbackPath stands in for /run/felis, in a directory of its own.
+	fallbackPath string
+	args         []string
+	rec          *alertRecorder
+	pings        *pingLog
+	url          string
 }
 
 func newWatchdogHost(t *testing.T, cfg string, state *watchdog.State) *watchdogHost {
@@ -110,7 +112,8 @@ func newWatchdogHost(t *testing.T, cfg string, state *watchdog.State) *watchdogH
 	dir := t.TempDir()
 	t.Setenv("KUBECONFIG", filepath.Join(dir, "no-kubeconfig"))
 	pings, srv := newPingServer(t)
-	h := &watchdogHost{dir: dir, statePath: filepath.Join(dir, "state.json"), rec: &alertRecorder{}, pings: pings, url: srv.URL}
+	h := &watchdogHost{dir: dir, statePath: filepath.Join(dir, "state.json"), fallbackPath: filepath.Join(t.TempDir(), "watchdog-state.json"),
+		rec: &alertRecorder{}, pings: pings, url: srv.URL}
 	writeTestFile(t, filepath.Join(dir, "felis.toml"), cfg, 0o600)
 	writeTestFile(t, filepath.Join(dir, "watchdog-heartbeat-url"), srv.URL+"/check-key\n", 0o600)
 	if state != nil {
@@ -119,7 +122,7 @@ func newWatchdogHost(t *testing.T, cfg string, state *watchdog.State) *watchdogH
 		}
 	}
 	h.args = []string{
-		"-config", filepath.Join(dir, "felis.toml"), "-state", h.statePath, "-quiet-file", filepath.Join(dir, "quiet"),
+		"-config", filepath.Join(dir, "felis.toml"), "-state", h.statePath, "-fallback-state", h.fallbackPath, "-quiet-file", filepath.Join(dir, "quiet"),
 		"-backup-dir", "", "-disk-paths", dir, "-k3s-cert-dirs", "", "-smtp-password-file", filepath.Join(dir, "smtp-password"),
 		"-offsite-status", filepath.Join(dir, "offsite-status.json"), "-build-tools-status", filepath.Join(dir, "build-tools.json"),
 		"-heartbeat-file", filepath.Join(dir, "watchdog-heartbeat-url"),
@@ -292,8 +295,9 @@ func TestWatchdogRunChecksWhatIsConfigured(t *testing.T) {
 }
 
 // TestWatchdogRunStateThatDoesNotSave: a pass whose state does not save mails
-// as usual, exits 1 and posts the failure to the heartbeat, since the next run
-// mails the same alerts again.
+// as usual, keeps its state in the fallback, exits 1 and posts the failure to
+// the heartbeat. The next pass reads the fallback and mails nothing again; the
+// first one whose state saves drops the fallback.
 func TestWatchdogRunStateThatDoesNotSave(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root writes into a read-only directory")
@@ -304,10 +308,24 @@ func TestWatchdogRunStateThatDoesNotSave(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.Chmod(h.dir, 0o700) })
+	kept := "; kept in " + h.fallbackPath + " until the host restarts"
+	for i := range 2 {
+		code, stdout, stderr := h.run()
+		pings, bodies := h.pings.got()
+		if code != 1 || len(h.rec.sent) != 1 || !strings.Contains(stderr, "felis watchdog: save state: ") || !strings.Contains(stderr, kept) ||
+			len(pings) != i+1 || pings[i] != "POST /check-key/fail" || !strings.HasPrefix(bodies[i], "the watchdog state did not save: ") {
+			t.Fatalf("pass %d: exit %d, mailed %v, pings %v %q; want exit 1, one mail in all and the save failure posted to /fail\nstdout %s\nstderr %s", i, code, h.rec.sent, pings, bodies, stdout, stderr)
+		}
+	}
+
+	if err := os.Chmod(h.dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	code, stdout, stderr := h.run()
-	pings, bodies := h.pings.got()
-	if code != 1 || len(h.rec.sent) != 1 || !strings.Contains(stderr, "felis watchdog: save state: ") ||
-		len(pings) != 1 || pings[0] != "POST /check-key/fail" || !strings.HasPrefix(bodies[0], "the watchdog state did not save: ") {
-		t.Errorf("exit %d, mailed %v, pings %v %q; want exit 1, one mail and the save failure posted to /fail\nstdout %s\nstderr %s", code, h.rec.sent, pings, bodies, stdout, stderr)
+	if _, err := os.Stat(h.fallbackPath); code != 0 || len(h.rec.sent) != 1 || !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("once the state saves: exit %d, mailed %v, fallback %v; want exit 0, no new mail, the fallback gone\nstdout %s\nstderr %s", code, h.rec.sent, err, stdout, stderr)
+	}
+	if s, err := watchdog.LoadState(h.statePath); err != nil || s.Alerts["postgres"] == nil || s.Alerts["postgres"].Notified.IsZero() {
+		t.Fatalf("saved state = %+v, %v; want the mailed PostgreSQL alert", s, err)
 	}
 }
