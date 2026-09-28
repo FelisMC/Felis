@@ -938,11 +938,13 @@ func TestFileDownloadGate(t *testing.T) {
 		edit              func(*API, *fakeCluster)
 		code              int
 		errCode           string
+		// msg, when set, is what the refusal must say.
+		msg string
 	}{
 		{name: "stranger", user: "stranger", query: "a.yml", code: http.StatusForbidden, errCode: "forbidden"},
 		{name: "principal without an account", user: "nouser", query: "a.yml", code: http.StatusForbidden, errCode: "forbidden"},
 		{name: "running", user: "owner1", query: "a.yml", edit: func(_ *API, c *fakeCluster) { c.byName["survival"].Ready = true },
-			code: http.StatusConflict, errCode: "not_stopped"},
+			code: http.StatusConflict, errCode: "not_stopped", msg: "stop the server before working with its files"},
 		{name: "no world volume", user: "owner1", query: "a.yml", edit: func(_ *API, c *fakeCluster) { c.noWorld["survival"] = true },
 			code: http.StatusConflict, errCode: "no_world_volume"},
 		{name: "no file editor", user: "owner1", query: "a.yml", edit: func(a *API, _ *fakeCluster) { a.Files = nil },
@@ -969,6 +971,9 @@ func TestFileDownloadGate(t *testing.T) {
 			}
 			if got := decodeErr(t, w); got != tc.errCode {
 				t.Errorf("error code = %q, want %q", got, tc.errCode)
+			}
+			if tc.msg != "" && !strings.Contains(w.Body.String(), tc.msg) {
+				t.Errorf("body %s does not say %q", w.Body.String(), tc.msg)
 			}
 			// Nothing is left behind: no Job, no audit, no ticket, no start
 			// counted against the hour.

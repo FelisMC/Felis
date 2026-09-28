@@ -608,7 +608,7 @@ func (a *API) authorizeFileOp(w http.ResponseWriter, r *http.Request) (string, b
 	}
 	if info.Ready || info.DesiredState != string(v1alpha1.DesiredStopped) {
 		writeError(w, r, newError(http.StatusConflict, "not_stopped",
-			"stop the server before editing its files"))
+			"stop the server before working with its files"))
 		return "", false
 	}
 
