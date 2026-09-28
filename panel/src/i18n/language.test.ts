@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import i18next from "i18next";
 import LanguageDetector from "i18next-browser-languagedetector";
 import { i18nOptions } from "./index";
@@ -14,6 +14,13 @@ async function boot(languages: string[]) {
   await instance.init(i18nOptions);
   return instance;
 }
+
+// Importing ./index boots the app's own instance, which on some Node versions (22,
+// which CI runs) caches jsdom's en-US in storage before the first test; a first
+// visit starts from empty storage, and no test may inherit another's choice.
+beforeEach(() => {
+  localStorage.clear();
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
