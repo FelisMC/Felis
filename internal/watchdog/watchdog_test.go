@@ -262,6 +262,13 @@ func TestSaveStateOr(t *testing.T) {
 	if got := NewestState(path, fallback); got != path {
 		t.Fatalf("no fallback yet: NewestState = %q, want the file", got)
 	}
+	// An earlier run wrote the file, minutes before this one. Linux stamps files
+	// from a coarse clock, so two writes a test makes back to back can share an
+	// mtime, and a tie reads the file.
+	earlier := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(path, earlier, earlier); err != nil {
+		t.Fatal(err)
+	}
 
 	mailed := &State{Recipients: []string{"owner@example.com"}}
 	run(mailed, Report{Findings: []Finding{finding("memory", Warning, 0)}}, t0)
