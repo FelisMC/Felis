@@ -31,7 +31,7 @@ func TestUserDetailLinkReadFailure(t *testing.T) {
 			}
 		}
 	}
-	mustExec(t, "CREATE ROLE "+role+" LOGIN")
+	mustExec(t, "CREATE ROLE "+role+" LOGIN PASSWORD 'pgint'")
 	t.Cleanup(drop)
 	mustExec(t, "GRANT USAGE ON SCHEMA public TO "+role)
 	mustExec(t, "GRANT SELECT ON users, servers TO "+role)
@@ -39,7 +39,7 @@ func TestUserDetailLinkReadFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dsn.User = url.User(role)
+	dsn.User = url.UserPassword(role, "pgint")
 	drv, err := store.Open(ctx, dsn.String())
 	if err != nil {
 		t.Fatalf("open as %s: %v", role, err)
